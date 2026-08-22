@@ -4,3 +4,13 @@
 __pycache__/
 *.pyc
 .venv/
+
+
+# START Ruler Generated Files
+/.agents/skills
+/.claude/skills
+/.codex/config.toml
+/.pi/skills
+/AGENTS.md
+/CLAUDE.md
+# END Ruler Generated Files
