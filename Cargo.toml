@@ -1,0 +1,64 @@
+[workspace]
+resolver = "3"
+members = [
+  "crates/types",
+  "crates/loop",
+  "crates/ai",
+  "crates/session",
+  "crates/context",
+  "crates/permission",
+  "crates/tools",
+  "crates/mcp-cli",
+  "crates/kernel",
+  "crates/runtime",
+  "crates/acp",
+  "crates/tui",
+  "crates/cli",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+rust-version = "1.94"
+
+[workspace.dependencies]
+yi-types = { path = "crates/types" }
+yi-loop = { path = "crates/loop" }
+yi-ai = { path = "crates/ai" }
+yi-session = { path = "crates/session" }
+yi-context = { path = "crates/context" }
+yi-permission = { path = "crates/permission" }
+yi-tools = { path = "crates/tools" }
+yi-mcp-cli = { path = "crates/mcp-cli" }
+yi-kernel = { path = "crates/kernel" }
+yi-runtime = { path = "crates/runtime" }
+yi-acp = { path = "crates/acp" }
+yi-tui = { path = "crates/tui" }
+yi-cli = { path = "crates/cli" }
+serde = { version = "1", default-features = false, features = ["derive", "std"] }
+serde_json = { version = "1", default-features = false, features = ["std"] }
+thiserror = "2"
+
+[workspace.lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+todo = "deny"
+unimplemented = "deny"
+await_holding_lock = "deny"
+await_holding_invalid_type = "deny"
+disallowed_methods = "deny"
+
+[profile.dist]
+inherits = "release"
+opt-level = "s"
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = "symbols"
+debug = false
+incremental = false
+
+[profile.dist.package."*"]
+opt-level = "s"

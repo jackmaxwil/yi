@@ -1,0 +1,15 @@
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+await-holding-invalid-types = [
+  { path = "std::sync::MutexGuard", reason = "held across await deadlocks; use tokio::sync::Mutex" },
+  { path = "std::sync::RwLockReadGuard" },
+  { path = "std::sync::RwLockWriteGuard" },
+]
+
+[[disallowed-methods]]
+path = "std::process::Command::new"
+reason = "process spawns live in yi-tools (design 9); scoped allow at the call site there"
+
+[[disallowed-methods]]
+path = "std::time::SystemTime::now"
+reason = "clock reads are I/O; inject time, scoped allow where a timestamp is the job"

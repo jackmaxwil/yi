@@ -1,0 +1,6 @@
+[profile.default]
+retries = 1
+slow-timeout = { period = "30s", terminate-after = 2 }
+
+[test-groups]
+kernel = { max-threads = 1 }
