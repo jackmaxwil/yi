@@ -697,7 +697,6 @@ version = "0.1.0"
 name = "yi-ai"
 version = "0.1.0"
 dependencies = [
- "serde",
  "serde_json",
  "tokio",
  "ureq",
