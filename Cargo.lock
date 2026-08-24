@@ -736,6 +736,13 @@ version = "0.1.0"
 [[package]]
 name = "yi-runtime"
 version = "0.1.0"
+dependencies = [
+ "serde_json",
+ "tokio",
+ "yi-ai",
+ "yi-loop",
+ "yi-types",
+]
 
 [[package]]
 name = "yi-session"

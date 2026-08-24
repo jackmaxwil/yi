@@ -105,7 +105,7 @@ fn tool_result_message(finalized: &Finalized) -> AgentMessage {
 
 fn emit_tool_batch_events(
     finalized: &[Finalized],
-    emit: &mut dyn FnMut(AgentEvent),
+    emit: &mut (dyn FnMut(AgentEvent) + Send),
 ) -> Vec<AgentMessage> {
     let mut messages = Vec::new();
     for item in finalized {
@@ -172,7 +172,7 @@ async fn execute_tool_calls(
     calls: Vec<ExtractedCall>,
     mode: ExecutionMode,
     signal: &InterruptSignal,
-    emit: &mut dyn FnMut(AgentEvent),
+    emit: &mut (dyn FnMut(AgentEvent) + Send),
 ) -> (Vec<Finalized>, bool) {
     let sequential = mode == ExecutionMode::Sequential
         || calls.iter().any(|call| {
@@ -208,7 +208,7 @@ async fn execute_tool_calls(
 
 fn fail_truncated_calls(
     calls: Vec<ExtractedCall>,
-    emit: &mut dyn FnMut(AgentEvent),
+    emit: &mut (dyn FnMut(AgentEvent) + Send),
 ) -> Vec<Finalized> {
     calls
         .into_iter()
@@ -243,7 +243,7 @@ async fn stream_assistant_response<S: StreamFn>(
     config: &LoopConfig,
     model: &Model,
     signal: &InterruptSignal,
-    emit: &mut dyn FnMut(AgentEvent),
+    emit: &mut (dyn FnMut(AgentEvent) + Send),
     stream: &S,
 ) -> AgentMessage {
     let mut messages = context.messages.clone();
@@ -335,7 +335,7 @@ pub async fn run_loop<S: StreamFn>(
     new_messages: Vec<AgentMessage>,
     config: &LoopConfig,
     signal: &InterruptSignal,
-    emit: &mut dyn FnMut(AgentEvent),
+    emit: &mut (dyn FnMut(AgentEvent) + Send),
     stream: &S,
 ) -> Vec<AgentMessage> {
     let mut collected: Vec<AgentMessage> = Vec::new();
