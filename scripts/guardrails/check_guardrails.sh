@@ -14,6 +14,8 @@ run "$PY" scripts/guardrails/check_filenames.py
 run "$PY" scripts/guardrails/check_glob_reexport.py
 run "$PY" scripts/guardrails/check_panic.py
 run "$PY" scripts/guardrails/check_file_size.py
+run "$PY" scripts/guardrails/check_fn_size.py
+run "$PY" scripts/guardrails/check_schemas_lock.py
 run "$PY" scripts/guardrails/check_env_surface.py
 run "$PY" scripts/guardrails/check_duplication.py
 run "$PY" scripts/guardrails/check_test_size.py

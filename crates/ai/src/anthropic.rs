@@ -377,298 +377,321 @@ impl Mapper {
         calculate_cost(&model, self.usage_mut());
     }
 
+    fn partial(&self) -> AgentMessage {
+        self.output.clone()
+    }
+
     pub fn push(&mut self, payload: &Value) -> Vec<AssistantMessageEvent> {
         let mut events = Vec::new();
-        let partial = |mapper: &Self| mapper.output.clone();
         match payload.get("type").and_then(Value::as_str) {
-            Some("message_start") => {
-                let message = &payload["message"];
-                if let AgentMessage::Assistant {
-                    response_id, model, ..
-                } = &mut self.output
-                {
-                    if let Some(id) = message.get("id").and_then(Value::as_str) {
-                        *response_id = Some(id.to_owned());
-                    }
-                    if let Some(response_model) = message.get("model").and_then(Value::as_str) {
-                        *model = response_model.to_owned();
-                    }
-                }
-                let usage_value = &message["usage"];
-                let read = |key: &str| usage_value.get(key).and_then(Value::as_i64).unwrap_or(0);
-                {
-                    let usage = self.usage_mut();
-                    usage.input = read("input_tokens");
-                    usage.output = read("output_tokens");
-                    usage.cache_read = read("cache_read_input_tokens");
-                    usage.cache_write = read("cache_creation_input_tokens");
-                    let write1h = usage_value
-                        .get("cache_creation")
-                        .and_then(|creation| creation.get("ephemeral_1h_input_tokens"))
-                        .and_then(Value::as_i64)
-                        .unwrap_or(0);
-                    usage.cache_write1h = Some(write1h);
-                }
-                self.recompute_totals();
-            }
-            Some("content_block_start") => {
-                let api_index = payload.get("index").and_then(Value::as_u64).unwrap_or(0);
-                let block = &payload["content_block"];
-                let content_index = self.content_mut().len();
-                match block.get("type").and_then(Value::as_str) {
-                    Some("text") => {
-                        let text = block.get("text").and_then(Value::as_str).unwrap_or("");
-                        self.content_mut().push(Content::Text {
-                            text: text.to_owned(),
-                            text_signature: None,
-                        });
-                        self.partial_json.push(None);
-                        self.api_indices.push(api_index);
-                        events.push(AssistantMessageEvent::TextStart {
-                            content_index,
-                            partial: partial(self),
-                        });
-                    }
-                    Some("thinking") => {
-                        self.content_mut().push(Content::Thinking {
-                            thinking: block
-                                .get("thinking")
-                                .and_then(Value::as_str)
-                                .unwrap_or("")
-                                .to_owned(),
-                            thinking_signature: Some(
-                                block
-                                    .get("signature")
-                                    .and_then(Value::as_str)
-                                    .unwrap_or("")
-                                    .to_owned(),
-                            ),
-                            redacted: None,
-                        });
-                        self.partial_json.push(None);
-                        self.api_indices.push(api_index);
-                        events.push(AssistantMessageEvent::ThinkingStart {
-                            content_index,
-                            partial: partial(self),
-                        });
-                    }
-                    Some("redacted_thinking") => {
-                        self.content_mut().push(Content::Thinking {
-                            thinking: "[Reasoning redacted]".to_owned(),
-                            thinking_signature: block
-                                .get("data")
-                                .and_then(Value::as_str)
-                                .map(str::to_owned),
-                            redacted: Some(true),
-                        });
-                        self.partial_json.push(None);
-                        self.api_indices.push(api_index);
-                        events.push(AssistantMessageEvent::ThinkingStart {
-                            content_index,
-                            partial: partial(self),
-                        });
-                    }
-                    Some("tool_use") => {
-                        let arguments = block
-                            .get("input")
-                            .and_then(Value::as_object)
-                            .cloned()
-                            .unwrap_or_default();
-                        self.content_mut().push(Content::ToolCall {
-                            id: block
-                                .get("id")
-                                .and_then(Value::as_str)
-                                .unwrap_or("")
-                                .to_owned(),
-                            name: block
-                                .get("name")
-                                .and_then(Value::as_str)
-                                .unwrap_or("")
-                                .to_owned(),
-                            arguments,
-                            thought_signature: None,
-                            namespace: None,
-                        });
-                        self.partial_json.push(Some(String::new()));
-                        self.api_indices.push(api_index);
-                        events.push(AssistantMessageEvent::ToolCallStart {
-                            content_index,
-                            partial: partial(self),
-                        });
-                    }
-                    _ => {
-                        self.partial_json.push(None);
-                        self.api_indices.push(api_index);
-                    }
-                }
-            }
-            Some("content_block_delta") => {
-                let api_index = payload.get("index").and_then(Value::as_u64).unwrap_or(0);
-                let Some(content_index) = self.local_index(api_index) else {
-                    return events;
-                };
-                let delta = &payload["delta"];
-                match delta.get("type").and_then(Value::as_str) {
-                    Some("text_delta") => {
-                        let chunk = delta.get("text").and_then(Value::as_str).unwrap_or("");
-                        if let Some(Content::Text { text, .. }) =
-                            self.content_mut().get_mut(content_index)
-                        {
-                            text.push_str(chunk);
-                        }
-                        events.push(AssistantMessageEvent::TextDelta {
-                            content_index,
-                            delta: chunk.to_owned(),
-                            partial: partial(self),
-                        });
-                    }
-                    Some("thinking_delta") => {
-                        let chunk = delta.get("thinking").and_then(Value::as_str).unwrap_or("");
-                        if let Some(Content::Thinking { thinking, .. }) =
-                            self.content_mut().get_mut(content_index)
-                        {
-                            thinking.push_str(chunk);
-                        }
-                        events.push(AssistantMessageEvent::ThinkingDelta {
-                            content_index,
-                            delta: chunk.to_owned(),
-                            partial: partial(self),
-                        });
-                    }
-                    Some("input_json_delta") => {
-                        let chunk = delta
-                            .get("partial_json")
-                            .and_then(Value::as_str)
-                            .unwrap_or("");
-                        let parsed =
-                            if let Some(Some(buffer)) = self.partial_json.get_mut(content_index) {
-                                buffer.push_str(chunk);
-                                parse_streaming_json(buffer)
-                            } else {
-                                Map::new()
-                            };
-                        if let Some(Content::ToolCall { arguments, .. }) =
-                            self.content_mut().get_mut(content_index)
-                        {
-                            *arguments = parsed;
-                        }
-                        events.push(AssistantMessageEvent::ToolCallDelta {
-                            content_index,
-                            delta: chunk.to_owned(),
-                            partial: partial(self),
-                        });
-                    }
-                    Some("signature_delta") => {
-                        let chunk = delta.get("signature").and_then(Value::as_str).unwrap_or("");
-                        if let Some(Content::Thinking {
-                            thinking_signature, ..
-                        }) = self.content_mut().get_mut(content_index)
-                        {
-                            match thinking_signature {
-                                Some(signature) => signature.push_str(chunk),
-                                None => *thinking_signature = Some(chunk.to_owned()),
-                            }
-                        }
-                    }
-                    _ => {}
-                }
-            }
-            Some("content_block_stop") => {
-                let api_index = payload.get("index").and_then(Value::as_u64).unwrap_or(0);
-                let Some(content_index) = self.local_index(api_index) else {
-                    return events;
-                };
-                let block = self.content_mut().get(content_index).cloned();
-                match block {
-                    Some(Content::Text { text, .. }) => {
-                        events.push(AssistantMessageEvent::TextEnd {
-                            content_index,
-                            content: text,
-                            partial: partial(self),
-                        });
-                    }
-                    Some(Content::Thinking { thinking, .. }) => {
-                        events.push(AssistantMessageEvent::ThinkingEnd {
-                            content_index,
-                            content: thinking,
-                            partial: partial(self),
-                        });
-                    }
-                    Some(Content::ToolCall { .. }) => {
-                        let final_arguments = self
-                            .partial_json
-                            .get(content_index)
-                            .and_then(|buffer| buffer.as_deref())
-                            .map(parse_streaming_json)
-                            .unwrap_or_default();
-                        if let Some(Content::ToolCall { arguments, .. }) =
-                            self.content_mut().get_mut(content_index)
-                            && (!final_arguments.is_empty() || arguments.is_empty())
-                        {
-                            *arguments = final_arguments;
-                        }
-                        if let Some(block) = self.content_mut().get(content_index).cloned() {
-                            events.push(AssistantMessageEvent::ToolCallEnd {
-                                content_index,
-                                tool_call: block,
-                                partial: partial(self),
-                            });
-                        }
-                    }
-                    _ => {}
-                }
-            }
-            Some("message_delta") => {
-                if let Some(reason) = payload
-                    .get("delta")
-                    .and_then(|delta| delta.get("stop_reason"))
-                    .and_then(Value::as_str)
-                {
-                    let details = payload
-                        .get("delta")
-                        .and_then(|delta| delta.get("stop_details"));
-                    let (stop_reason, error_message) = map_stop_reason(reason, details);
-                    if let AgentMessage::Assistant {
-                        stop_reason: message_stop,
-                        raw_stop_reason,
-                        error_message: message_error,
-                        ..
-                    } = &mut self.output
-                    {
-                        *message_stop = stop_reason;
-                        *raw_stop_reason = Some(reason.to_owned());
-                        if error_message.is_some() {
-                            *message_error = error_message;
-                        }
-                    }
-                }
-                if let Some(usage_value) = payload.get("usage") {
-                    let usage = self.usage_mut();
-                    let update = |target: &mut i64, key: &str| {
-                        if let Some(value) = usage_value.get(key).and_then(Value::as_i64) {
-                            *target = value;
-                        }
-                    };
-                    update(&mut usage.input, "input_tokens");
-                    update(&mut usage.output, "output_tokens");
-                    update(&mut usage.cache_read, "cache_read_input_tokens");
-                    update(&mut usage.cache_write, "cache_creation_input_tokens");
-                    if let Some(reasoning) = usage_value
-                        .get("output_tokens_details")
-                        .and_then(|details| details.get("thinking_tokens"))
-                        .and_then(Value::as_i64)
-                    {
-                        usage.reasoning = Some(reasoning);
-                    }
-                }
-                self.recompute_totals();
-            }
+            Some("message_start") => self.on_message_start(payload),
+            Some("content_block_start") => self.on_block_start(payload, &mut events),
+            Some("content_block_delta") => self.on_block_delta(payload, &mut events),
+            Some("content_block_stop") => self.on_block_stop(payload, &mut events),
+            Some("message_delta") => self.on_message_delta(payload),
             Some("message_stop") => {
                 self.finished = true;
             }
             _ => {}
         }
         events
+    }
+
+    fn on_message_start(&mut self, payload: &Value) {
+        {
+            let message = &payload["message"];
+            if let AgentMessage::Assistant {
+                response_id, model, ..
+            } = &mut self.output
+            {
+                if let Some(id) = message.get("id").and_then(Value::as_str) {
+                    *response_id = Some(id.to_owned());
+                }
+                if let Some(response_model) = message.get("model").and_then(Value::as_str) {
+                    *model = response_model.to_owned();
+                }
+            }
+            let usage_value = &message["usage"];
+            let read = |key: &str| usage_value.get(key).and_then(Value::as_i64).unwrap_or(0);
+            {
+                let usage = self.usage_mut();
+                usage.input = read("input_tokens");
+                usage.output = read("output_tokens");
+                usage.cache_read = read("cache_read_input_tokens");
+                usage.cache_write = read("cache_creation_input_tokens");
+                let write1h = usage_value
+                    .get("cache_creation")
+                    .and_then(|creation| creation.get("ephemeral_1h_input_tokens"))
+                    .and_then(Value::as_i64)
+                    .unwrap_or(0);
+                usage.cache_write1h = Some(write1h);
+            }
+        }
+        self.recompute_totals();
+    }
+
+    fn on_block_start(&mut self, payload: &Value, events: &mut Vec<AssistantMessageEvent>) {
+        {
+            let api_index = payload.get("index").and_then(Value::as_u64).unwrap_or(0);
+            let block = &payload["content_block"];
+            let content_index = self.content_mut().len();
+            match block.get("type").and_then(Value::as_str) {
+                Some("text") => {
+                    let text = block.get("text").and_then(Value::as_str).unwrap_or("");
+                    self.content_mut().push(Content::Text {
+                        text: text.to_owned(),
+                        text_signature: None,
+                    });
+                    self.partial_json.push(None);
+                    self.api_indices.push(api_index);
+                    events.push(AssistantMessageEvent::TextStart {
+                        content_index,
+                        partial: self.partial(),
+                    });
+                }
+                Some("thinking") => {
+                    self.content_mut().push(Content::Thinking {
+                        thinking: block
+                            .get("thinking")
+                            .and_then(Value::as_str)
+                            .unwrap_or("")
+                            .to_owned(),
+                        thinking_signature: Some(
+                            block
+                                .get("signature")
+                                .and_then(Value::as_str)
+                                .unwrap_or("")
+                                .to_owned(),
+                        ),
+                        redacted: None,
+                    });
+                    self.partial_json.push(None);
+                    self.api_indices.push(api_index);
+                    events.push(AssistantMessageEvent::ThinkingStart {
+                        content_index,
+                        partial: self.partial(),
+                    });
+                }
+                Some("redacted_thinking") => {
+                    self.content_mut().push(Content::Thinking {
+                        thinking: "[Reasoning redacted]".to_owned(),
+                        thinking_signature: block
+                            .get("data")
+                            .and_then(Value::as_str)
+                            .map(str::to_owned),
+                        redacted: Some(true),
+                    });
+                    self.partial_json.push(None);
+                    self.api_indices.push(api_index);
+                    events.push(AssistantMessageEvent::ThinkingStart {
+                        content_index,
+                        partial: self.partial(),
+                    });
+                }
+                Some("tool_use") => {
+                    let arguments = block
+                        .get("input")
+                        .and_then(Value::as_object)
+                        .cloned()
+                        .unwrap_or_default();
+                    self.content_mut().push(Content::ToolCall {
+                        id: block
+                            .get("id")
+                            .and_then(Value::as_str)
+                            .unwrap_or("")
+                            .to_owned(),
+                        name: block
+                            .get("name")
+                            .and_then(Value::as_str)
+                            .unwrap_or("")
+                            .to_owned(),
+                        arguments,
+                        thought_signature: None,
+                        namespace: None,
+                    });
+                    self.partial_json.push(Some(String::new()));
+                    self.api_indices.push(api_index);
+                    events.push(AssistantMessageEvent::ToolCallStart {
+                        content_index,
+                        partial: self.partial(),
+                    });
+                }
+                _ => {
+                    self.partial_json.push(None);
+                    self.api_indices.push(api_index);
+                }
+            }
+        }
+    }
+
+    fn on_block_delta(&mut self, payload: &Value, events: &mut Vec<AssistantMessageEvent>) {
+        {
+            let api_index = payload.get("index").and_then(Value::as_u64).unwrap_or(0);
+            let Some(content_index) = self.local_index(api_index) else {
+                return;
+            };
+            let delta = &payload["delta"];
+            match delta.get("type").and_then(Value::as_str) {
+                Some("text_delta") => {
+                    let chunk = delta.get("text").and_then(Value::as_str).unwrap_or("");
+                    if let Some(Content::Text { text, .. }) =
+                        self.content_mut().get_mut(content_index)
+                    {
+                        text.push_str(chunk);
+                    }
+                    events.push(AssistantMessageEvent::TextDelta {
+                        content_index,
+                        delta: chunk.to_owned(),
+                        partial: self.partial(),
+                    });
+                }
+                Some("thinking_delta") => {
+                    let chunk = delta.get("thinking").and_then(Value::as_str).unwrap_or("");
+                    if let Some(Content::Thinking { thinking, .. }) =
+                        self.content_mut().get_mut(content_index)
+                    {
+                        thinking.push_str(chunk);
+                    }
+                    events.push(AssistantMessageEvent::ThinkingDelta {
+                        content_index,
+                        delta: chunk.to_owned(),
+                        partial: self.partial(),
+                    });
+                }
+                Some("input_json_delta") => {
+                    let chunk = delta
+                        .get("partial_json")
+                        .and_then(Value::as_str)
+                        .unwrap_or("");
+                    let parsed =
+                        if let Some(Some(buffer)) = self.partial_json.get_mut(content_index) {
+                            buffer.push_str(chunk);
+                            parse_streaming_json(buffer)
+                        } else {
+                            Map::new()
+                        };
+                    if let Some(Content::ToolCall { arguments, .. }) =
+                        self.content_mut().get_mut(content_index)
+                    {
+                        *arguments = parsed;
+                    }
+                    events.push(AssistantMessageEvent::ToolCallDelta {
+                        content_index,
+                        delta: chunk.to_owned(),
+                        partial: self.partial(),
+                    });
+                }
+                Some("signature_delta") => {
+                    let chunk = delta.get("signature").and_then(Value::as_str).unwrap_or("");
+                    if let Some(Content::Thinking {
+                        thinking_signature, ..
+                    }) = self.content_mut().get_mut(content_index)
+                    {
+                        match thinking_signature {
+                            Some(signature) => signature.push_str(chunk),
+                            None => *thinking_signature = Some(chunk.to_owned()),
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    fn on_block_stop(&mut self, payload: &Value, events: &mut Vec<AssistantMessageEvent>) {
+        {
+            let api_index = payload.get("index").and_then(Value::as_u64).unwrap_or(0);
+            let Some(content_index) = self.local_index(api_index) else {
+                return;
+            };
+            let block = self.content_mut().get(content_index).cloned();
+            match block {
+                Some(Content::Text { text, .. }) => {
+                    events.push(AssistantMessageEvent::TextEnd {
+                        content_index,
+                        content: text,
+                        partial: self.partial(),
+                    });
+                }
+                Some(Content::Thinking { thinking, .. }) => {
+                    events.push(AssistantMessageEvent::ThinkingEnd {
+                        content_index,
+                        content: thinking,
+                        partial: self.partial(),
+                    });
+                }
+                Some(Content::ToolCall { .. }) => {
+                    let final_arguments = self
+                        .partial_json
+                        .get(content_index)
+                        .and_then(|buffer| buffer.as_deref())
+                        .map(parse_streaming_json)
+                        .unwrap_or_default();
+                    if let Some(Content::ToolCall { arguments, .. }) =
+                        self.content_mut().get_mut(content_index)
+                        && (!final_arguments.is_empty() || arguments.is_empty())
+                    {
+                        *arguments = final_arguments;
+                    }
+                    if let Some(block) = self.content_mut().get(content_index).cloned() {
+                        events.push(AssistantMessageEvent::ToolCallEnd {
+                            content_index,
+                            tool_call: block,
+                            partial: self.partial(),
+                        });
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    fn on_message_delta(&mut self, payload: &Value) {
+        {
+            if let Some(reason) = payload
+                .get("delta")
+                .and_then(|delta| delta.get("stop_reason"))
+                .and_then(Value::as_str)
+            {
+                let details = payload
+                    .get("delta")
+                    .and_then(|delta| delta.get("stop_details"));
+                let (stop_reason, error_message) = map_stop_reason(reason, details);
+                if let AgentMessage::Assistant {
+                    stop_reason: message_stop,
+                    raw_stop_reason,
+                    error_message: message_error,
+                    ..
+                } = &mut self.output
+                {
+                    *message_stop = stop_reason;
+                    *raw_stop_reason = Some(reason.to_owned());
+                    if error_message.is_some() {
+                        *message_error = error_message;
+                    }
+                }
+            }
+            if let Some(usage_value) = payload.get("usage") {
+                let usage = self.usage_mut();
+                let update = |target: &mut i64, key: &str| {
+                    if let Some(value) = usage_value.get(key).and_then(Value::as_i64) {
+                        *target = value;
+                    }
+                };
+                update(&mut usage.input, "input_tokens");
+                update(&mut usage.output, "output_tokens");
+                update(&mut usage.cache_read, "cache_read_input_tokens");
+                update(&mut usage.cache_write, "cache_creation_input_tokens");
+                if let Some(reasoning) = usage_value
+                    .get("output_tokens_details")
+                    .and_then(|details| details.get("thinking_tokens"))
+                    .and_then(Value::as_i64)
+                {
+                    usage.reasoning = Some(reasoning);
+                }
+            }
+        }
+        self.recompute_totals();
     }
 
     pub fn finish(mut self) -> AssistantMessageEvent {

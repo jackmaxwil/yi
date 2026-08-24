@@ -103,121 +103,140 @@ fn convert_messages(model: &Model, context: &LlmContext) -> Vec<Value> {
                 }
             },
             AgentMessage::Assistant { content, .. } => {
-                let text: String = content
-                    .iter()
-                    .filter_map(|block| match block {
-                        Content::Text { text, .. } if !text.trim().is_empty() => {
-                            Some(text.as_str())
-                        }
-                        _ => None,
-                    })
-                    .collect::<Vec<_>>()
-                    .join("");
-                let thinking: Vec<&Content> = content
-                    .iter()
-                    .filter(|block| {
-                        matches!(block, Content::Thinking { thinking, .. } if !thinking.trim().is_empty())
-                    })
-                    .collect();
-                let tool_calls: Vec<Value> = content
-                    .iter()
-                    .filter_map(|block| match block {
-                        Content::ToolCall {
-                            id,
-                            name,
-                            arguments,
-                            ..
-                        } => Some(json!({
-                            "id": id,
-                            "type": "function",
-                            "function": {
-                                "name": name,
-                                "arguments": Value::Object(arguments.clone()).to_string(),
-                            },
-                        })),
-                        _ => None,
-                    })
-                    .collect();
-                let mut message = json!({"role": "assistant", "content": Value::Null});
-                if !text.is_empty() {
-                    message["content"] = Value::String(text.clone());
-                }
-                if let Some(Content::Thinking {
-                    thinking,
-                    thinking_signature,
-                    ..
-                }) = thinking.first()
-                    && let Some(field) = thinking_signature
-                        .as_deref()
-                        .filter(|signature| REASONING_FIELDS.contains(signature))
-                {
-                    message[field] = Value::String(thinking.clone());
-                }
-                if !tool_calls.is_empty() {
-                    message["tool_calls"] = Value::Array(tool_calls);
-                }
-                let has_content = message["content"].is_string();
-                if has_content || message.get("tool_calls").is_some() {
+                if let Some(message) = assistant_param(content) {
                     params.push(message);
                 }
             }
             AgentMessage::ToolResult { .. } => {
-                let mut images: Vec<Value> = Vec::new();
-                while let Some(AgentMessage::ToolResult {
-                    tool_call_id,
-                    content,
-                    ..
-                }) = transformed.get(index)
-                {
-                    let text: String = content
-                        .iter()
-                        .filter_map(|block| match block {
-                            Content::Text { text, .. } => Some(text.as_str()),
-                            _ => None,
-                        })
-                        .collect::<Vec<_>>()
-                        .join("\n");
-                    let has_images = content
-                        .iter()
-                        .any(|block| matches!(block, Content::Image { .. }));
-                    let body = if !text.is_empty() {
-                        text
-                    } else if has_images {
-                        "(see attached image)".to_owned()
-                    } else {
-                        "(no tool output)".to_owned()
-                    };
-                    params.push(json!({
-                        "role": "tool",
-                        "content": body,
-                        "tool_call_id": tool_call_id,
-                    }));
-                    if has_images && model.input.iter().any(|kind| kind == "image") {
-                        for block in content {
-                            if let Content::Image { data, mime_type } = block {
-                                images.push(json!({
-                                    "type": "image_url",
-                                    "image_url": {"url": format!("data:{mime_type};base64,{data}")},
-                                }));
-                            }
-                        }
-                    }
-                    index = index.saturating_add(1);
-                }
-                index = index.saturating_sub(1);
-                if !images.is_empty() {
-                    let mut parts = vec![
-                        json!({"type": "text", "text": "Attached image(s) from tool result:"}),
-                    ];
-                    parts.extend(images);
-                    params.push(json!({"role": "user", "content": parts}));
-                }
+                index = push_tool_results(model, &transformed, index, &mut params);
             }
             _ => {}
         }
         index = index.saturating_add(1);
     }
     params
+}
+
+fn assistant_param(content: &[Content]) -> Option<Value> {
+    {
+        let text: String = content
+            .iter()
+            .filter_map(|block| match block {
+                Content::Text { text, .. } if !text.trim().is_empty() => Some(text.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("");
+        let thinking: Vec<&Content> = content
+                    .iter()
+                    .filter(|block| {
+                        matches!(block, Content::Thinking { thinking, .. } if !thinking.trim().is_empty())
+                    })
+                    .collect();
+        let tool_calls: Vec<Value> = content
+            .iter()
+            .filter_map(|block| match block {
+                Content::ToolCall {
+                    id,
+                    name,
+                    arguments,
+                    ..
+                } => Some(json!({
+                    "id": id,
+                    "type": "function",
+                    "function": {
+                        "name": name,
+                        "arguments": Value::Object(arguments.clone()).to_string(),
+                    },
+                })),
+                _ => None,
+            })
+            .collect();
+        let mut message = json!({"role": "assistant", "content": Value::Null});
+        if !text.is_empty() {
+            message["content"] = Value::String(text.clone());
+        }
+        if let Some(Content::Thinking {
+            thinking,
+            thinking_signature,
+            ..
+        }) = thinking.first()
+            && let Some(field) = thinking_signature
+                .as_deref()
+                .filter(|signature| REASONING_FIELDS.contains(signature))
+        {
+            message[field] = Value::String(thinking.clone());
+        }
+        if !tool_calls.is_empty() {
+            message["tool_calls"] = Value::Array(tool_calls);
+        }
+        let has_content = message["content"].is_string();
+        if has_content || message.get("tool_calls").is_some() {
+            return Some(message);
+        }
+        None
+    }
+}
+
+fn push_tool_results(
+    model: &Model,
+    transformed: &[AgentMessage],
+    start: usize,
+    params: &mut Vec<Value>,
+) -> usize {
+    let mut index = start;
+    {
+        let mut images: Vec<Value> = Vec::new();
+        while let Some(AgentMessage::ToolResult {
+            tool_call_id,
+            content,
+            ..
+        }) = transformed.get(index)
+        {
+            let text: String = content
+                .iter()
+                .filter_map(|block| match block {
+                    Content::Text { text, .. } => Some(text.as_str()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            let has_images = content
+                .iter()
+                .any(|block| matches!(block, Content::Image { .. }));
+            let body = if !text.is_empty() {
+                text
+            } else if has_images {
+                "(see attached image)".to_owned()
+            } else {
+                "(no tool output)".to_owned()
+            };
+            params.push(json!({
+                "role": "tool",
+                "content": body,
+                "tool_call_id": tool_call_id,
+            }));
+            if has_images && model.input.iter().any(|kind| kind == "image") {
+                for block in content {
+                    if let Content::Image { data, mime_type } = block {
+                        images.push(json!({
+                            "type": "image_url",
+                            "image_url": {"url": format!("data:{mime_type};base64,{data}")},
+                        }));
+                    }
+                }
+            }
+            index = index.saturating_add(1);
+        }
+        index = index.saturating_sub(1);
+        if !images.is_empty() {
+            let mut parts =
+                vec![json!({"type": "text", "text": "Attached image(s) from tool result:"})];
+            parts.extend(images);
+            params.push(json!({"role": "user", "content": parts}));
+        }
+    }
+    index
 }
 
 fn convert_tools(tools: &[ToolDef]) -> Vec<Value> {
@@ -367,7 +386,6 @@ impl ChunkMapper {
 
     pub fn push_chunk(&mut self, chunk: &Value) -> Vec<AssistantMessageEvent> {
         let mut events = Vec::new();
-        let partial = |mapper: &Self| mapper.output.clone();
         if let Some(id) = chunk.get("id").and_then(Value::as_str)
             && let AgentMessage::Assistant { response_id, .. } = &mut self.output
             && response_id.is_none()
@@ -411,6 +429,21 @@ impl ChunkMapper {
         let Some(delta) = choice.get("delta") else {
             return events;
         };
+        self.on_text_delta(delta, &mut events);
+        self.on_thinking_delta(delta, &mut events);
+        if let Some(tool_calls) = delta.get("tool_calls").and_then(Value::as_array) {
+            for tool_call in tool_calls {
+                self.on_tool_call_delta(tool_call, &mut events);
+            }
+        }
+        events
+    }
+
+    fn partial(&self) -> AgentMessage {
+        self.output.clone()
+    }
+
+    fn on_text_delta(&mut self, delta: &Value, events: &mut Vec<AssistantMessageEvent>) {
         if let Some(text) = delta.get("content").and_then(Value::as_str)
             && !text.is_empty()
         {
@@ -425,7 +458,7 @@ impl ChunkMapper {
                     self.text_index = Some(content_index);
                     events.push(AssistantMessageEvent::TextStart {
                         content_index,
-                        partial: partial(self),
+                        partial: self.partial(),
                     });
                     content_index
                 }
@@ -438,9 +471,12 @@ impl ChunkMapper {
             events.push(AssistantMessageEvent::TextDelta {
                 content_index,
                 delta: text.to_owned(),
-                partial: partial(self),
+                partial: self.partial(),
             });
         }
+    }
+
+    fn on_thinking_delta(&mut self, delta: &Value, events: &mut Vec<AssistantMessageEvent>) {
         for field in REASONING_FIELDS {
             let Some(text) = delta.get(field).and_then(Value::as_str) else {
                 continue;
@@ -460,7 +496,7 @@ impl ChunkMapper {
                     self.thinking_index = Some(content_index);
                     events.push(AssistantMessageEvent::ThinkingStart {
                         content_index,
-                        partial: partial(self),
+                        partial: self.partial(),
                     });
                     content_index
                 }
@@ -473,89 +509,89 @@ impl ChunkMapper {
             events.push(AssistantMessageEvent::ThinkingDelta {
                 content_index,
                 delta: text.to_owned(),
-                partial: partial(self),
+                partial: self.partial(),
             });
             break;
         }
-        if let Some(tool_calls) = delta.get("tool_calls").and_then(Value::as_array) {
-            for tool_call in tool_calls {
-                let stream_index = tool_call.get("index").and_then(Value::as_u64);
-                let id = tool_call.get("id").and_then(Value::as_str).unwrap_or("");
-                let name = tool_call
+    }
+
+    fn on_tool_call_delta(&mut self, tool_call: &Value, events: &mut Vec<AssistantMessageEvent>) {
+        {
+            let stream_index = tool_call.get("index").and_then(Value::as_u64);
+            let id = tool_call.get("id").and_then(Value::as_str).unwrap_or("");
+            let name = tool_call
+                .get("function")
+                .and_then(|function| function.get("name"))
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            let slot_position = self
+                .tools
+                .iter()
+                .position(|slot| {
+                    (stream_index.is_some() && slot.stream_index == stream_index)
+                        || (!id.is_empty() && slot.id == id)
+                })
+                .unwrap_or_else(|| {
+                    let content_index = self.content_mut().len();
+                    self.content_mut().push(Content::ToolCall {
+                        id: id.to_owned(),
+                        name: name.to_owned(),
+                        arguments: serde_json::Map::new(),
+                        thought_signature: None,
+                        namespace: None,
+                    });
+                    self.tools.push(ToolSlot {
+                        content_index,
+                        stream_index,
+                        id: id.to_owned(),
+                        partial_args: String::new(),
+                    });
+                    events.push(AssistantMessageEvent::ToolCallStart {
+                        content_index,
+                        partial: self.output.clone(),
+                    });
+                    self.tools.len().saturating_sub(1)
+                });
+            let (content_index, parsed, delta_text) = {
+                let Some(slot) = self.tools.get_mut(slot_position) else {
+                    return;
+                };
+                if slot.id.is_empty() && !id.is_empty() {
+                    slot.id = id.to_owned();
+                }
+                let arguments = tool_call
                     .get("function")
-                    .and_then(|function| function.get("name"))
+                    .and_then(|function| function.get("arguments"))
                     .and_then(Value::as_str)
                     .unwrap_or("");
-                let slot_position = self
-                    .tools
-                    .iter()
-                    .position(|slot| {
-                        (stream_index.is_some() && slot.stream_index == stream_index)
-                            || (!id.is_empty() && slot.id == id)
-                    })
-                    .unwrap_or_else(|| {
-                        let content_index = self.content_mut().len();
-                        self.content_mut().push(Content::ToolCall {
-                            id: id.to_owned(),
-                            name: name.to_owned(),
-                            arguments: serde_json::Map::new(),
-                            thought_signature: None,
-                            namespace: None,
-                        });
-                        self.tools.push(ToolSlot {
-                            content_index,
-                            stream_index,
-                            id: id.to_owned(),
-                            partial_args: String::new(),
-                        });
-                        events.push(AssistantMessageEvent::ToolCallStart {
-                            content_index,
-                            partial: self.output.clone(),
-                        });
-                        self.tools.len().saturating_sub(1)
-                    });
-                let (content_index, parsed, delta_text) = {
-                    let Some(slot) = self.tools.get_mut(slot_position) else {
-                        continue;
-                    };
-                    if slot.id.is_empty() && !id.is_empty() {
-                        slot.id = id.to_owned();
-                    }
-                    let arguments = tool_call
-                        .get("function")
-                        .and_then(|function| function.get("arguments"))
-                        .and_then(Value::as_str)
-                        .unwrap_or("");
-                    slot.partial_args.push_str(arguments);
-                    (
-                        slot.content_index,
-                        parse_streaming_json(&slot.partial_args),
-                        arguments.to_owned(),
-                    )
-                };
-                if let Some(Content::ToolCall {
-                    id: block_id,
-                    name: block_name,
-                    arguments,
-                    ..
-                }) = self.content_mut().get_mut(content_index)
-                {
-                    if block_id.is_empty() && !id.is_empty() {
-                        *block_id = id.to_owned();
-                    }
-                    if block_name.is_empty() && !name.is_empty() {
-                        *block_name = name.to_owned();
-                    }
-                    *arguments = parsed;
+                slot.partial_args.push_str(arguments);
+                (
+                    slot.content_index,
+                    parse_streaming_json(&slot.partial_args),
+                    arguments.to_owned(),
+                )
+            };
+            if let Some(Content::ToolCall {
+                id: block_id,
+                name: block_name,
+                arguments,
+                ..
+            }) = self.content_mut().get_mut(content_index)
+            {
+                if block_id.is_empty() && !id.is_empty() {
+                    *block_id = id.to_owned();
                 }
-                events.push(AssistantMessageEvent::ToolCallDelta {
-                    content_index,
-                    delta: delta_text,
-                    partial: partial(self),
-                });
+                if block_name.is_empty() && !name.is_empty() {
+                    *block_name = name.to_owned();
+                }
+                *arguments = parsed;
             }
+            events.push(AssistantMessageEvent::ToolCallDelta {
+                content_index,
+                delta: delta_text,
+                partial: self.partial(),
+            });
         }
-        events
     }
 
     pub fn finish(mut self) -> Vec<AssistantMessageEvent> {
