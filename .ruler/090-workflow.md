@@ -10,3 +10,5 @@
   directories are untracked — edit .ruler and run `npx @intellectronica/ruler apply`, never the
   generated files.
 - Commits: imperative subject; body only when the why is not obvious from the diff.
+- A user-visible behavior change updates the ARCHITECTURE feature ledger and,
+  when structural, the changelog — in the same change as the code.
