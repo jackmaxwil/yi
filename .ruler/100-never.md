@@ -12,4 +12,8 @@
   scripts/guardrails/baselines/env_vars.json (hard cap 40).
 - Never unwrap/expect/panic outside tests; never pass a bare String or u64
   across a crate boundary where a newtype exists.
+- Never edit python/yi_runtime/src/rlm/{__init__,harness,skill}.py — they are
+  byte-verbatim from prime-agent-runtime; only mcp.py/mcp_base.py are Yi-owned.
+- Never put MCP sockets, tokens, or an MCP SDK inside the kernel process —
+  kernel Python shells out to the one-shot `yi mcp --json` CLI (design 5.2).
 - Never scaffold ahead of the current phase gate.
