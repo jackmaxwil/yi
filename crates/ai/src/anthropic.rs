@@ -6,8 +6,6 @@ use yi_types::model::{LlmContext, Model, ToolDef};
 
 use crate::catalog::calculate_cost;
 use crate::json_salvage::{parse_json_with_repair, parse_streaming_json};
-use crate::retry::{RetryPolicy, is_retryable_status, retry_delay};
-use crate::sse::SseDecoder;
 use crate::transform::{normalize_anthropic_tool_call_id, transform_messages};
 
 pub const ANTHROPIC_VERSION: &str = "2023-06-01";
@@ -340,22 +338,7 @@ pub struct Mapper {
 impl Mapper {
     pub fn new(model: &Model) -> Self {
         Self {
-            output: AgentMessage::Assistant {
-                content: Vec::new(),
-                api: model.api.clone(),
-                provider: model.provider.clone(),
-                model: model.id.clone(),
-                response_model: None,
-                response_id: None,
-                diagnostics: None,
-                usage: Usage::zero(),
-                stop_reason: StopReason::Pending,
-                deferred: None,
-                error_message: None,
-                raw_stop_reason: None,
-                end_turn: None,
-                timestamp: 0,
-            },
+            output: crate::request::empty_assistant(model),
             partial_json: Vec::new(),
             api_indices: Vec::new(),
             model: model.clone(),
@@ -689,39 +672,21 @@ impl Mapper {
     }
 
     pub fn finish(mut self) -> AssistantMessageEvent {
-        let stop_reason = match &self.output {
-            AgentMessage::Assistant { stop_reason, .. } => *stop_reason,
-            _ => StopReason::Error,
-        };
-        if !self.finished || stop_reason == StopReason::Pending {
+        let pending = matches!(
+            &self.output,
+            AgentMessage::Assistant {
+                stop_reason: StopReason::Pending,
+                ..
+            }
+        );
+        if !self.finished || pending {
             return self.fail("Anthropic stream ended without a stop reason");
         }
-        if stop_reason == StopReason::Error || stop_reason == StopReason::Aborted {
-            return AssistantMessageEvent::Error {
-                reason: stop_reason,
-                error: self.output,
-            };
-        }
-        AssistantMessageEvent::Done {
-            reason: stop_reason,
-            message: self.output,
-        }
+        crate::request::terminal_event(self.output)
     }
 
     pub fn fail(&mut self, message: &str) -> AssistantMessageEvent {
-        if let AgentMessage::Assistant {
-            stop_reason,
-            error_message,
-            ..
-        } = &mut self.output
-        {
-            *stop_reason = StopReason::Error;
-            *error_message = Some(message.to_owned());
-        }
-        AssistantMessageEvent::Error {
-            reason: StopReason::Error,
-            error: self.output.clone(),
-        }
+        crate::request::fail_message(&mut self.output, message)
     }
 
     pub fn start_event(&self) -> AssistantMessageEvent {
@@ -746,95 +711,29 @@ fn run_request(
     api_key: &str,
     sender: &Sender<AssistantMessageEvent>,
 ) -> Result<(), String> {
-    let policy = RetryPolicy::default();
-    let started = std::time::Instant::now();
     let url = format!("{}/v1/messages", model.base_url);
-    let agent = ureq::AgentBuilder::new()
-        .timeout_connect(std::time::Duration::from_secs(30))
-        .timeout_read(std::time::Duration::from_secs(60))
-        .build();
-    let mut attempt: u32 = 0;
-    let response = loop {
-        let request = agent
-            .post(&url)
-            .set("x-api-key", api_key)
-            .set("anthropic-version", ANTHROPIC_VERSION)
-            .set("accept", "application/json")
-            .set("content-type", "application/json");
-        match request.send_string(&body.to_string()) {
-            Ok(response) => break response,
-            Err(ureq::Error::Status(status, response)) => {
-                let retryable = is_retryable_status(status)
-                    && attempt < policy.max_attempts
-                    && started.elapsed() < policy.max_total_wall;
-                if !retryable {
-                    let text = response.into_string().unwrap_or_default();
-                    return Err(format!("HTTP {status}: {text}"));
-                }
-                let retry_after_ms = response
-                    .header("retry-after-ms")
-                    .and_then(|value| value.parse::<f64>().ok());
-                let retry_after = response
-                    .header("retry-after")
-                    .and_then(|value| value.parse::<f64>().ok());
-                if let Some(delay) = retry_delay(attempt, retry_after_ms, retry_after, &policy) {
-                    std::thread::sleep(delay);
-                }
-                attempt = attempt.saturating_add(1);
-            }
-            Err(error) => {
-                if attempt < policy.max_attempts && started.elapsed() < policy.max_total_wall {
-                    if let Some(delay) = retry_delay(attempt, None, None, &policy) {
-                        std::thread::sleep(delay);
-                    }
-                    attempt = attempt.saturating_add(1);
-                    continue;
-                }
-                return Err(error.to_string());
-            }
-        }
-    };
-
+    let headers = [
+        ("x-api-key", api_key.to_owned()),
+        ("anthropic-version", ANTHROPIC_VERSION.to_owned()),
+    ];
+    let response = crate::request::send_with_retry(&url, &headers, body)?;
     let mut mapper = Mapper::new(model);
     let _ = sender.blocking_send(mapper.start_event());
-    let mut reader = response.into_reader();
-    let mut decoder = SseDecoder::default();
-    let mut buffer = [0u8; 8192];
-    let mut pending = Vec::new();
-    loop {
-        let read =
-            std::io::Read::read(&mut reader, &mut buffer).map_err(|error| error.to_string())?;
-        if read == 0 {
-            break;
+    crate::request::pump_sse(response, |sse| {
+        let kind = sse.event.as_deref().unwrap_or("");
+        if kind == "error" {
+            return Err(sse.data);
         }
-        pending.extend_from_slice(buffer.get(..read).unwrap_or_default());
-        let Ok(chunk) = std::str::from_utf8(&pending) else {
-            continue;
-        };
-        let chunk = chunk.to_owned();
-        pending.clear();
-        for sse in decoder.feed(&chunk) {
-            let kind = sse.event.as_deref().unwrap_or("");
-            if kind == "error" {
-                return Err(sse.data);
-            }
-            if !ANTHROPIC_MESSAGE_EVENTS.contains(&kind) {
-                continue;
-            }
-            let payload = parse_json_with_repair(&sse.data)
-                .map_err(|error| format!("Could not parse Anthropic SSE event {kind}: {error}"))?;
-            for event in mapper.push(&payload) {
-                let _ = sender.blocking_send(event);
-            }
+        if !ANTHROPIC_MESSAGE_EVENTS.contains(&kind) {
+            return Ok(());
         }
-    }
-    for sse in decoder.finish() {
-        if let Ok(payload) = parse_json_with_repair(&sse.data) {
-            for event in mapper.push(&payload) {
-                let _ = sender.blocking_send(event);
-            }
+        let payload = parse_json_with_repair(&sse.data)
+            .map_err(|error| format!("Could not parse Anthropic SSE event {kind}: {error}"))?;
+        for event in mapper.push(&payload) {
+            let _ = sender.blocking_send(event);
         }
-    }
+        Ok(())
+    })?;
     let _ = sender.blocking_send(mapper.finish());
     Ok(())
 }
