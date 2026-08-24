@@ -1333,8 +1333,10 @@ startup are why we are here.
 1. Every dependency is listed below with its reason and the alternative considered. A crate not
    in the table cannot be added without editing the table (CI diff check on `Cargo.lock`).
 2. Default features off everywhere (`default-features = false`); enable the minimum.
-3. Optional surfaces are cargo features, not defaults: `tui` (ratatui), `mcp` (rmcp), `kernel`
-   (zeromq). `cargo build --release` with default features = headless agent with ACP + RPC + kernel.
+3. Optional surfaces are cargo features, not defaults: `tui` (ratatui), `docs` (anydoc). MCP is
+   config-gated, not a feature (D36); the kernel is compiled unconditionally (D38) and boots
+   lazily on first `ipython` call. `cargo build --release` with default features = headless
+   agent with ACP + RPC + kernel.
 4. No C toolchain dependencies in the default build: no `openssl-sys`, no `libgit2-sys`,
    no `libsqlite3-sys`, no `zmq-sys`. Shelling out to `git` beats linking libgit2.
 5. Budgets are ratcheted in CI (§9): release binary size, startup time, direct dependency count,
@@ -1395,7 +1397,6 @@ size builds only as an experiment, never required.
 | Feature | Crate | Adds | Note |
 |---|---|---|---|
 | `tui` | `ratatui` (features `crossterm`, `scrolling-regions`; no `all-widgets`), `crossterm` (`bracketed-paste`; **no** `event-stream` — the UI thread polls synchronously), `tui-textarea` (no features), `pulldown-cmark` (no default features), `unicode-width` (already a ratatui dep); dev: `vt100`, `insta` | ≈ 1 MiB budget | phase 7; `yi` without `tui` is the headless/ACP build |
-| `kernel` | `zeromq`, `hmac`, `sha2` | ≈ 0.4 MiB | on by default; off for a pure-chat build |
 | `docs` | `anydoc` (+ `pdf-inspector`, `zip`, `quick-xml`, `cfb`, `flate2`, `lopdf`…) | measured (§14.6) | off by default; `read` of office/PDF files |
 | `reduce` | none at runtime (`toml` build-dep only); possibly `regex` — measured | small | on by default (§14.3) |
 
@@ -1416,7 +1417,7 @@ size builds only as an experiment, never required.
 | `yi --version` startup (hyperfine, warm) | ≤ 5 ms | `guardrails/startup_ms_budget.json` |
 | `yi ask --help` | ≤ 8 ms | same |
 | direct deps (default features) | ≤ 16 | `guardrails/deps_budget.json` |
-| transitive deps (default features) | ≤ 125 (raised from 110 with D36/D37: rmcp + futures tree; phase 4 adds zeromq/hmac) | same |
+| transitive deps (default features) | ≤ 135 (raised from 125 with phase 4: the pure-Rust `zeromq` tree pins rand/regex/dashmap internals, wrapped in deny.toml; they never cross into Yi code) | same |
 | `cargo bloat` top-30 | report only, attached to PR | CI artifact |
 
 Measured, not guessed: phase 0 builds an empty `yi-cli` with each candidate (ureq vs reqwest,

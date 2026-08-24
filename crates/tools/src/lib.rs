@@ -3,6 +3,7 @@
 mod builtins;
 mod exec;
 pub mod hashline;
+mod ipython;
 mod process;
 mod tool;
 
@@ -10,6 +11,7 @@ use std::sync::Arc;
 
 pub use builtins::{BashTool, GlobTool, GrepTool, WriteTool};
 pub use exec::{ExecTool, discover_exec_tools};
+pub use ipython::{IpythonTool, KernelBridge, KernelCellOutcome};
 pub use process::{CommandCapture, OUTPUT_CAP, run_captured};
 pub use tool::{CancelFlag, Tool, ToolContext, ToolKind, ToolOutput, error_output, text_output};
 

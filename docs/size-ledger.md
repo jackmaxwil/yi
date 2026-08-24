@@ -13,3 +13,4 @@ the §13.3 table is the expected outcome, this ledger wins if they disagree.
 | 2026-08-24 | phase 2b: hashline (xxhash-rust xxh32) + yi-permission (sha2) + prompt.md in the edit tool | 2858992 | 2.1 | 9 / 83 |
 | 2026-08-24 | 2c/D36 MCP compiled-in: rmcp 3.1.4 (client + child-process transport, default-features off; chrono transitively — wrapper exception) + yi-mcp-cli in every build | 3853616 | 3.9 | 10 / 107 |
 | 2026-08-24 | 2c batch 2 (D37): streamable-HTTP client feature of rmcp (sse-stream, futures-util, http as type-level directs) + OAuth over ureq | 4151984 | 2.4 | 13 / 111 |
+| 2026-08-24 | phase 4 (kernel): zeromq 0.6 pure-Rust (rand/regex/dashmap internals, deny-wrapped) + hmac; yi-kernel + ipython + subagent host in the binary | 4666400 | 3.8 | 15 / 132 |

@@ -196,13 +196,6 @@ fn build_session(args: &Args, interactive_ask: bool) -> Result<AgentSession, i32
     } else {
         yi_runtime::PermissionMode::Ask
     };
-    let mut tools = yi_runtime::builtin_tools();
-    if let Some(home) = std::env::var_os("HOME") {
-        for tool in yi_runtime::discover_exec_tools(&std::path::Path::new(&home).join(".yi/tools"))
-        {
-            tools.push(std::sync::Arc::new(tool));
-        }
-    }
     let asker: Option<yi_runtime::Asker> = if interactive_ask {
         Some(std::sync::Arc::new(tty_ask))
     } else {
@@ -215,9 +208,51 @@ fn build_session(args: &Args, interactive_ask: bool) -> Result<AgentSession, i32
         asker,
         session.events_sender(),
     ));
-    session.use_tools(tools, cwd, Some(broker));
-    session.enable_compaction();
+    let home = std::env::var_os("HOME")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_default();
+    let tools_home = home.clone();
+    let system_prompt = session_system_prompt(args);
+    let provider = std::sync::Arc::clone(session_provider(&session));
+    yi_runtime::attach_runtime(
+        &mut session,
+        yi_runtime::RuntimeWiring {
+            provider,
+            system_prompt,
+            tool_execution: yi_loop_default(),
+            cwd,
+            home: home.clone(),
+            broker: Some(broker),
+            tools: std::sync::Arc::new(move || {
+                let mut tools = yi_runtime::builtin_tools();
+                for tool in yi_runtime::discover_exec_tools(&tools_home.join(".yi/tools")) {
+                    tools.push(std::sync::Arc::new(tool));
+                }
+                tools
+            }),
+            depth: 0,
+            max_depth: 1,
+            rlm_dir: default_session_dir(args).join(format!("rlm-{}", std::process::id())),
+        },
+    );
     Ok(session)
+}
+
+fn session_system_prompt(args: &Args) -> String {
+    let mode_fragment = yi_runtime::mode_fragment(if args.yolo {
+        yi_runtime::PermissionMode::Yolo
+    } else {
+        yi_runtime::PermissionMode::Ask
+    });
+    if args.system.is_empty() {
+        mode_fragment.to_owned()
+    } else {
+        format!("{}\n\n{mode_fragment}", args.system)
+    }
+}
+
+fn session_provider(session: &AgentSession) -> &std::sync::Arc<ProviderStream> {
+    session.provider_arc()
 }
 
 fn default_session_dir(args: &Args) -> std::path::PathBuf {

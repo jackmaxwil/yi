@@ -89,6 +89,8 @@ Summarize the prefix to provide context for the retained suffix:
 
 Be concise. Focus on what's needed to understand the kept suffix."#;
 
+pub const KERNEL_PERSIST_SUMMARY_NOTE: &str = "Note: the IPython kernel keeps running after this summary — every Python variable, import, and helper you defined stays available. The cells that defined them won't appear above, so record in the summary any names worth remembering so you reuse them instead of redefining them.";
+
 pub fn build_summarization_prompt(
     custom_instructions: Option<&str>,
     previous_summary: Option<&str>,
@@ -103,5 +105,7 @@ pub fn build_summarization_prompt(
             "\n\n<user-instructions>\nThe user provided these instructions for this summary. Follow them with high priority while keeping the section format above: emphasize what they ask to focus on, and preserve verbatim anything they ask to remember.\n{instructions}\n</user-instructions>"
         ));
     }
+    prompt.push_str("\n\n");
+    prompt.push_str(KERNEL_PERSIST_SUMMARY_NOTE);
     prompt
 }

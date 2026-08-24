@@ -128,6 +128,10 @@ impl Compactor {
         self.pending.store(true, Ordering::Relaxed);
     }
 
+    pub fn scheduled(&self) -> bool {
+        self.pending.load(Ordering::Relaxed)
+    }
+
     /// Observes the window's prefill baseline from the first server usage row
     /// of the window (design P3 BodyAfterPrefix): input-side tokens only —
     /// the reply is body, not prefix.

@@ -437,6 +437,32 @@ impl AgentSession {
         }
     }
 
+    /// Host-status delivery hook (design B6 role split): pushes a user-role
+    /// steering message, consumed at the next message boundary (or the next
+    /// turn when idle).
+    pub fn notice_hook(&self) -> Arc<dyn Fn(&str) + Send + Sync> {
+        let shared = Arc::clone(&self.shared);
+        Arc::new(move |text: &str| {
+            if let Ok(mut queue) = shared.steer.lock() {
+                queue.push(user_message(text));
+            }
+        })
+    }
+
+    /// Detached form of [`Self::attribute_child_usage`] usable after the
+    /// session moves: the hook holds only the shared state.
+    pub fn attribution_handle(&self) -> Arc<dyn Fn(&Usage) + Send + Sync> {
+        let shared = Arc::clone(&self.shared);
+        Arc::new(move |child: &Usage| attribute_to_shared(&shared, child))
+    }
+
+    /// Folds a child's billable usage onto this session's last assistant
+    /// message (design B9/P14): in-memory usage aggregates, and the store —
+    /// when attached — gains a `child_usage_attributed` usage record.
+    pub fn attribute_child_usage(&self, child: &Usage) {
+        attribute_to_shared(&self.shared, child);
+    }
+
     pub fn messages(&self) -> Vec<AgentMessage> {
         self.shared
             .messages
@@ -448,11 +474,45 @@ impl AgentSession {
     pub fn provider(&self) -> &ProviderStream {
         &self.provider
     }
+
+    pub fn provider_arc(&self) -> &Arc<ProviderStream> {
+        &self.provider
+    }
 }
 
 fn user_message(text: &str) -> AgentMessage {
     AgentMessage::User {
         content: UserContent::Text(text.to_owned()),
         timestamp: 0,
+    }
+}
+
+fn attribute_to_shared(shared: &Arc<Shared>, child: &Usage) {
+    if let Ok(mut messages) = shared.messages.lock()
+        && let Some(AgentMessage::Assistant { usage, .. }) = messages
+            .iter_mut()
+            .rev()
+            .find(|message| matches!(message, AgentMessage::Assistant { .. }))
+    {
+        yi_context::attribution::attribute_child_usage(usage, child);
+    }
+    let store = shared.store.lock().ok().and_then(|slot| slot.clone());
+    if let Some(store) = store {
+        let mut session = yi_session::lock_session(&store);
+        let id = session.next_id();
+        let _ = session.append_record(yi_types::record::LaneRecord::Usage {
+            id,
+            lane: "main".to_owned(),
+            usage: child.clone(),
+            cause: yi_context::attribution::CHILD_USAGE_CAUSE.to_owned(),
+            run_id: None,
+            entry_id: None,
+            attempt: None,
+            stop_reason: None,
+            tool_call_id: None,
+            details: None,
+            seq: 0,
+            timestamp: 0,
+        });
     }
 }

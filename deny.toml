@@ -11,17 +11,31 @@ allow = ["MIT", "Apache-2.0", "Apache-2.0 WITH LLVM-exception", "BSD-2-Clause", 
 multiple-versions = "deny"
 # once_cell: banned for direct use (std OnceLock); rustls/ureq pull it transitively.
 # syn 2+3 duplicate: proc-macro build deps only, zero runtime bytes.
+# zeromq wrappers: the pure-Rust zmq stack pins rand/regex/dashmap internals
+# (design 13.3 — libzmq FFI rejected by rule 4; these stay wire-internal to
+# the kernel channels and never cross into Yi code).
 deny = [
   "reqwest", "hyper", "openssl-sys", "native-tls",
-  "git2", "libgit2-sys", "gix", "regex", "clap", "anyhow",
+  "git2", "libgit2-sys", "gix", "clap", "anyhow",
+  { crate = "regex", wrappers = ["zeromq"] },
   { crate = "chrono", wrappers = ["rmcp"] },
-  { crate = "once_cell", wrappers = ["rustls", "ureq", "tracing-core"] },
-  "lazy_static", "rand", "syntect", "textwrap", "toml",
+  { crate = "once_cell", wrappers = ["rustls", "ureq", "tracing-core", "zeromq"] },
+  { crate = "rand", wrappers = ["zeromq"] },
+  "lazy_static", "syntect", "textwrap", "toml",
   "tracing-subscriber",
 ]
 # base64 0.22/0.23 duplicate: ureq 2 pins 0.22, rmcp pins 0.23; collapses when
 # ureq 3 migration lands (advisories note above).
-skip = [{ crate = "syn" }, { crate = "windows-sys" }, { crate = "base64" }]
+# thiserror 1+2 and getrandom 0.2/0.3 duplicates ride the zeromq pin; both
+# collapse when zeromq updates its error/rand stack.
+skip = [
+  { crate = "syn" },
+  { crate = "windows-sys" },
+  { crate = "base64" },
+  { crate = "thiserror" },
+  { crate = "thiserror-impl" },
+  { crate = "getrandom" },
+]
 
 [advisories]
 yanked = "deny"

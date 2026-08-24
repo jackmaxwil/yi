@@ -4,6 +4,7 @@ pub mod compaction;
 pub mod entry;
 pub mod event;
 pub mod harness;
+pub mod kernel;
 pub mod mcp;
 pub mod message;
 pub mod model;
