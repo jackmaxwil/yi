@@ -1,15 +1,16 @@
 # Yi — Architecture Map
 
 ```
-version: 0.5.7          # bump on any structural change; log it below
+version: 0.5.8          # bump on any structural change; log it below
 design:  YI_DESIGN.md   # the deep design; § refs below point into it
-status:  phase 0        # wire types + Pi-generated golden fixtures green; faux provider next
+status:  phase 0 done   # exit met: Pi v4 fixtures round-trip byte-identical; faux replay green. Phase 1 next (yi-loop, yi-ai providers, AgentSession, yi ask)
 ```
 
 ## Changelog
 
 | ver | date | change |
 |---|---|---|
+| 0.5.8 | 2026-08-23 | Phase 0 exit met: yi-types wire layer + AssistantMessageEvent enum + faux replay (yi-ai), all gates green. schemas.lock generation deferred to phase 1 alongside the first schema churn. |
 | 0.5.7 | 2026-08-23 | Pi session format re-verified against source: v4 mutation log, not v3 → D32; S5/S7/§3 corrected; yi-types wire types + golden fixtures land (byte-identical round-trip). |
 | 0.5.6 | 2026-08-22 | Repo-plumbing review (codex/jcode/atuin/rainfrog/mdfried manifests, CI, toolchain) → D31: release/dist profile split, centralized workspace deps, toolchain pin = MSRV, naming law, lints opt-in gate, src/-scoped ratchets. Phase 0 scaffold begun. |
 | 0.5.5 | 2026-08-22 | Doc cleanup: staleness fixes (P17/P18 refs, naming table cut, decision log ordered, A.10 retitled, X1 `--session-dir`); §6/§12/R8/A.1/changelog compressed to single sources; summed event budget re-based 13→18 (measured: 13 loop + 5 `_yi/*`). |
