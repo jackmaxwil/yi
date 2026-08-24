@@ -1,7 +1,9 @@
 #![forbid(unsafe_code)]
 
+pub mod compaction;
 pub mod entry;
 pub mod event;
+pub mod harness;
 pub mod message;
 pub mod model;
 pub mod permission;

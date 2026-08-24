@@ -378,6 +378,11 @@ pub async fn run_loop<S: StreamFn>(
                 collected.push(message);
             }
 
+            if let Some(compact) = &config.maybe_compact
+                && let Some(compacted) = compact(&context.messages).await
+            {
+                context.messages = compacted;
+            }
             let message =
                 stream_assistant_response(context, config, &current_model, signal, emit, stream)
                     .await;

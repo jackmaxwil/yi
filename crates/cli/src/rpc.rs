@@ -108,7 +108,7 @@ impl RpcState {
         Ok(())
     }
 
-    fn handle(
+    async fn handle(
         &mut self,
         command_type: &str,
         id: Option<&str>,
@@ -116,6 +116,33 @@ impl RpcState {
     ) -> Value {
         let text_arg = |key: &str| payload.get(key).and_then(Value::as_str).unwrap_or("");
         match command_type {
+            "compact" => {
+                let applied = self.session.compact_now().await;
+                data_frame(
+                    id,
+                    "compact",
+                    json!({
+                        "applied": applied,
+                        "scheduled": !applied && self.session.status() == Status::Running,
+                    }),
+                )
+            }
+            "compact_status" => match self.session.compactor() {
+                Some(compactor) => {
+                    let status = compactor.status(&self.session.messages(), &self.session.model());
+                    data_frame(
+                        id,
+                        "compact_status",
+                        json!({
+                            "tokens": status.tokens,
+                            "contextWindow": status.context_window,
+                            "percent": status.percent,
+                            "scheduled": status.scheduled,
+                        }),
+                    )
+                }
+                None => error_frame(id, "compact_status", "auto-compaction is not enabled"),
+            },
             "prompt" => {
                 let message = text_arg("message");
                 if self.session.prompt(message).is_err() {
@@ -176,7 +203,7 @@ impl RpcState {
                         "sessionFile": file,
                         "sessionId": self.session_id,
                         "sessionName": name,
-                        "autoCompactionEnabled": false,
+                        "autoCompactionEnabled": self.session.compactor().is_some(),
                         "messageCount": self.session.messages().len(),
                         "pendingMessageCount": self.session.pending_count(),
                     }),
@@ -401,7 +428,7 @@ pub fn run_rpc(session: AgentSession, options: &RpcOptions) -> i32 {
                                 .and_then(Value::as_str)
                                 .unwrap_or("")
                                 .to_owned();
-                            let frame = state.handle(&command_type, id.as_deref(), &payload);
+                            let frame = state.handle(&command_type, id.as_deref(), &payload).await;
                             write_line(&frame);
                         }
                         _ => write_line(&error_frame(None, "", "invalid command: not a JSON object")),

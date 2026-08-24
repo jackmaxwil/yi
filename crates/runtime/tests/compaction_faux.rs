@@ -1,0 +1,212 @@
+use std::error::Error;
+use std::sync::Arc;
+
+use yi_ai::faux::{faux_assistant_message, faux_text};
+use yi_context::{Settings, Tokens};
+use yi_loop::ExecutionMode;
+use yi_runtime::{AgentSession, ProviderStream, SessionConfig};
+use yi_session::{CreateOptions, JsonlRepo, SessionRepo};
+use yi_types::entry::Entry;
+use yi_types::message::{AgentMessage, StopReason, UserContent};
+use yi_types::model::{Model, ModelCost};
+
+fn faux_model(context_window: u64) -> Model {
+    let zero = || serde_json::Number::from(0u64);
+    Model {
+        id: "faux-1".to_owned(),
+        name: "Faux".to_owned(),
+        api: "faux".to_owned(),
+        provider: "faux".to_owned(),
+        base_url: "http://localhost:0".to_owned(),
+        reasoning: false,
+        input: vec!["text".to_owned()],
+        cost: ModelCost {
+            input: zero(),
+            output: zero(),
+            cache_read: zero(),
+            cache_write: zero(),
+            tiers: None,
+        },
+        context_window,
+        max_tokens: 16_384,
+        compat: None,
+        thinking_level_map: None,
+        headers: None,
+    }
+}
+
+fn reply_with_usage(text: &str, input: i64, total: i64) -> AgentMessage {
+    let mut message = faux_assistant_message(vec![faux_text(text)], StopReason::Stop);
+    if let AgentMessage::Assistant { usage, .. } = &mut message {
+        usage.input = input;
+        usage.output = total.saturating_sub(input);
+        usage.total_tokens = total;
+    }
+    message
+}
+
+fn tight_settings() -> Settings {
+    Settings {
+        enabled: true,
+        reserve_tokens: Tokens(1_000),
+        keep_recent_tokens: Tokens(10),
+    }
+}
+
+fn session_for_compaction(provider: Arc<ProviderStream>) -> AgentSession {
+    let mut session = AgentSession::new(
+        SessionConfig {
+            system_prompt: "sys".to_owned(),
+            model: faux_model(2_000),
+            thinking_level: None,
+            tool_execution: ExecutionMode::Sequential,
+        },
+        provider,
+    );
+    session.enable_compaction_with(tight_settings());
+    session
+}
+
+fn compaction_entries(store: &yi_session::SharedSession) -> Vec<Entry> {
+    yi_session::lock_session(store)
+        .find_entries(&yi_session::EntryQuery {
+            order: yi_session::EntryOrder::OldestFirst,
+            ..yi_session::EntryQuery::default()
+        })
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|entry| matches!(entry, Entry::Compaction { .. }))
+        .collect()
+}
+
+#[tokio::test]
+async fn auto_compaction_fires_at_the_message_boundary_and_persists() -> Result<(), Box<dyn Error>>
+{
+    let root = std::env::temp_dir().join(format!("yi-compact-e2e-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let mut repo = JsonlRepo::new(root.clone(), "/tmp/yi-compact-test");
+    let store = repo.create(CreateOptions {
+        id: Some("compact-one".to_owned()),
+        ..CreateOptions::default()
+    })?;
+
+    let provider = Arc::new(ProviderStream::new(None, None));
+    provider.queue_faux(vec![
+        reply_with_usage(&format!("big reply {}", "x".repeat(400)), 100, 5_000),
+        faux_assistant_message(
+            vec![faux_text("## Goal\nSummarized history for the test")],
+            StopReason::Stop,
+        ),
+        reply_with_usage("second answer", 50, 300),
+    ]);
+    let session = session_for_compaction(provider);
+    session.attach_store(Arc::clone(&store))?;
+
+    session.prompt("first requirement: keep the guardrails green")?;
+    session.wait_idle().await;
+    assert!(compaction_entries(&store).is_empty());
+
+    session.prompt("second ask with enough characters to keep recent")?;
+    session.wait_idle().await;
+    assert_eq!(session.store_error(), None);
+
+    let compactions = compaction_entries(&store);
+    assert_eq!(compactions.len(), 1);
+    let Entry::Compaction {
+        summary,
+        retained_tail,
+        tokens_before,
+        details,
+        ..
+    } = &compactions[0]
+    else {
+        return Err("expected compaction entry".into());
+    };
+    assert!(summary.contains("Summarized history for the test"));
+    assert!(*tokens_before > 0);
+    assert!(
+        retained_tail.iter().any(|message| matches!(
+            message,
+            AgentMessage::User { content: UserContent::Text(text), .. }
+                if text.contains("first requirement")
+        )),
+        "retention floor must keep the first user message verbatim"
+    );
+    let details = details.clone().ok_or("expected details")?;
+    let parsed: yi_types::compaction::CompactionDetails = serde_json::from_value(details)?;
+    let window = parsed.window.ok_or("expected window ids")?;
+    assert_eq!(window.number, 1);
+    assert!(window.previous.is_some());
+
+    let in_memory = session.messages();
+    assert!(matches!(
+        in_memory.first(),
+        Some(AgentMessage::CompactionSummary { .. })
+    ));
+
+    drop(session);
+    drop(store);
+    let reopened = repo.open("compact-one")?;
+    let resumed = {
+        let provider = Arc::new(ProviderStream::new(None, None));
+        let mut session = session_for_compaction(provider);
+        session.enable_compaction_with(Settings {
+            enabled: false,
+            ..tight_settings()
+        });
+        session
+    };
+    resumed.attach_store(reopened)?;
+    let loaded = resumed.messages();
+    assert!(
+        matches!(
+            loaded.first(),
+            Some(AgentMessage::CompactionSummary { summary, .. })
+                if summary.contains("Summarized history for the test")
+        ),
+        "projection after reopen must start from the compaction summary"
+    );
+    std::fs::remove_dir_all(&root)?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn compact_now_applies_immediately_when_idle() -> Result<(), Box<dyn Error>> {
+    let provider = Arc::new(ProviderStream::new(None, None));
+    provider.queue_faux(vec![
+        reply_with_usage(&format!("long body {}", "y".repeat(400)), 100, 5_000),
+        faux_assistant_message(vec![faux_text("## Goal\nIdle summary")], StopReason::Stop),
+    ]);
+    let session = session_for_compaction(provider);
+    session.prompt("please do the thing with sufficient text here")?;
+    session.wait_idle().await;
+
+    assert!(session.compact_now().await);
+    let messages = session.messages();
+    assert!(matches!(
+        messages.first(),
+        Some(AgentMessage::CompactionSummary { summary, .. }) if summary.contains("Idle summary")
+    ));
+    Ok(())
+}
+
+#[tokio::test]
+async fn compaction_below_threshold_is_a_no_op() -> Result<(), Box<dyn Error>> {
+    let provider = Arc::new(ProviderStream::new(None, None));
+    provider.queue_faux(vec![
+        reply_with_usage("tiny", 10, 50),
+        reply_with_usage("also tiny", 10, 60),
+    ]);
+    let session = session_for_compaction(provider);
+    session.prompt("one")?;
+    session.wait_idle().await;
+    session.prompt("two")?;
+    session.wait_idle().await;
+    assert!(
+        !session
+            .messages()
+            .iter()
+            .any(|message| matches!(message, AgentMessage::CompactionSummary { .. }))
+    );
+    Ok(())
+}

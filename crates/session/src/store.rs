@@ -131,6 +131,34 @@ impl SessionStore {
         Ok(id)
     }
 
+    pub fn next_id(&mut self) -> String {
+        self.ids.next_id()
+    }
+
+    pub fn append_compaction(
+        &mut self,
+        lane: &str,
+        summary: String,
+        retained_tail: Vec<AgentMessage>,
+        tokens_before: u64,
+        details: Option<Value>,
+    ) -> Result<String, SessionError> {
+        let id = self.ids.next_id();
+        let entry = Entry::Compaction {
+            id: id.clone(),
+            summary,
+            retained_tail,
+            tokens_before,
+            details,
+            usage: None,
+            parent_id: None,
+            seq: 0,
+            timestamp: 0,
+        };
+        self.append_entry(entry, lane)?;
+        Ok(id)
+    }
+
     pub fn append_custom(
         &mut self,
         lane: &str,

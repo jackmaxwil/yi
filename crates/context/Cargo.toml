@@ -5,5 +5,10 @@ edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 
+[dependencies]
+yi-types = { workspace = true }
+yi-session = { workspace = true }
+serde_json = { workspace = true }
+
 [lints]
 workspace = true

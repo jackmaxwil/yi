@@ -868,6 +868,11 @@ dependencies = [
 [[package]]
 name = "yi-context"
 version = "0.1.0"
+dependencies = [
+ "serde_json",
+ "yi-session",
+ "yi-types",
+]
 
 [[package]]
 name = "yi-kernel"
@@ -904,6 +909,7 @@ dependencies = [
  "serde_json",
  "tokio",
  "yi-ai",
+ "yi-context",
  "yi-loop",
  "yi-permission",
  "yi-session",

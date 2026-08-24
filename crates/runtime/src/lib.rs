@@ -1,10 +1,12 @@
 #![forbid(unsafe_code)]
 
+pub mod compaction;
 pub mod permission;
 pub mod provider;
 pub mod session;
 pub mod tools;
 
+pub use compaction::{CompactStatus, Compactor};
 pub use permission::{AskOutcome, Asker, PermissionBroker};
 pub use provider::{ProviderStream, available_models, resolve_model};
 pub use session::{AgentSession, SessionConfig, SessionError, Status};

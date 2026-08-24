@@ -216,6 +216,7 @@ fn build_session(args: &Args, interactive_ask: bool) -> Result<AgentSession, i32
         session.events_sender(),
     ));
     session.use_tools(tools, cwd, Some(broker));
+    session.enable_compaction();
     Ok(session)
 }
 

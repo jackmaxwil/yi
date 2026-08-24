@@ -24,6 +24,9 @@ type TransformFn = dyn Fn(&[AgentMessage]) -> Option<Vec<AgentMessage>> + Send +
 type StopFn = dyn Fn(&TurnSnapshot) -> bool + Send + Sync;
 type PrepareFn = dyn Fn(&TurnSnapshot) -> Option<NextTurn> + Send + Sync;
 type QueueFn = dyn Fn() -> Vec<AgentMessage> + Send + Sync;
+type CompactFuture =
+    std::pin::Pin<Box<dyn std::future::Future<Output = Option<Vec<AgentMessage>>> + Send>>;
+type CompactFn = dyn Fn(&[AgentMessage]) -> CompactFuture + Send + Sync;
 
 pub struct LoopConfig {
     pub model: Model,
@@ -34,6 +37,10 @@ pub struct LoopConfig {
     pub prepare_next_turn: Option<Box<PrepareFn>>,
     pub get_steering_messages: Option<Box<QueueFn>>,
     pub get_follow_up_messages: Option<Box<QueueFn>>,
+    /// Design P13: runs at every message boundary inside the tool loop — a
+    /// tool-heavy turn can blow the window before the turn ends. Some(new)
+    /// replaces the in-flight history with the compacted view.
+    pub maybe_compact: Option<Box<CompactFn>>,
 }
 
 impl LoopConfig {
@@ -47,6 +54,7 @@ impl LoopConfig {
             prepare_next_turn: None,
             get_steering_messages: None,
             get_follow_up_messages: None,
+            maybe_compact: None,
         }
     }
 }

@@ -70,6 +70,7 @@ pub struct AgentSession {
     provider: Arc<ProviderStream>,
     shared: Arc<Shared>,
     tools: Vec<Arc<dyn yi_loop::AgentTool>>,
+    compactor: Option<Arc<crate::compaction::Compactor>>,
 }
 
 impl AgentSession {
@@ -93,7 +94,26 @@ impl AgentSession {
                 signal: InterruptSignal::default(),
             }),
             tools: Vec::new(),
+            compactor: None,
         }
+    }
+
+    /// Turns on auto-compaction (design P13): checked at every message
+    /// boundary inside the tool loop, so a tool-heavy turn compacts before it
+    /// blows the window.
+    pub fn enable_compaction(&mut self) {
+        self.enable_compaction_with(yi_context::Settings::default());
+    }
+
+    pub fn enable_compaction_with(&mut self, settings: yi_context::Settings) {
+        let window_id = format!("win-{}", yi_session::now_ms());
+        let mut compactor = crate::compaction::Compactor::new(window_id);
+        compactor.settings = settings;
+        self.compactor = Some(Arc::new(compactor));
+    }
+
+    pub fn compactor(&self) -> Option<Arc<crate::compaction::Compactor>> {
+        self.compactor.clone()
     }
 
     pub fn subscribe(&self) -> broadcast::Receiver<AgentEvent> {
@@ -157,21 +177,15 @@ impl AgentSession {
     ) -> Result<usize, yi_session::SessionError> {
         let loaded: Vec<AgentMessage> = {
             let session = yi_session::lock_session(&store);
-            session
-                .find_entries_on_branch(
-                    "main",
-                    &yi_session::EntryQuery {
-                        order: yi_session::EntryOrder::OldestFirst,
-                        ..yi_session::EntryQuery::default()
-                    },
-                    &yi_session::BranchBounds::default(),
-                )?
-                .into_iter()
-                .filter_map(|entry| match entry {
-                    yi_types::entry::Entry::Message { message, .. } => Some(message),
-                    _ => None,
-                })
-                .collect()
+            let entries = session.find_entries_on_branch(
+                "main",
+                &yi_session::EntryQuery {
+                    order: yi_session::EntryOrder::OldestFirst,
+                    ..yi_session::EntryQuery::default()
+                },
+                &yi_session::BranchBounds::default(),
+            )?;
+            yi_context::project(&entries)
         };
         let count = loaded.len();
         if let Ok(mut messages) = self.shared.messages.lock() {
@@ -288,10 +302,11 @@ impl AgentSession {
         let model = self.model();
         let tool_execution = self.config.tool_execution;
         let tools = self.tools.clone();
+        let compactor = self.compactor.clone();
         let prompt = user_message(text);
         tokio::spawn(async move {
             let mut context = LoopContext {
-                system_prompt,
+                system_prompt: system_prompt.clone(),
                 messages: shared
                     .messages
                     .lock()
@@ -301,8 +316,41 @@ impl AgentSession {
             };
             let steer = Arc::clone(&shared);
             let follow = Arc::clone(&shared);
-            let mut config = LoopConfig::new(model);
+            let mut config = LoopConfig::new(model.clone());
             config.tool_execution = tool_execution;
+            config.convert_to_llm = Box::new(yi_context::convert_to_llm);
+            if let Some(compactor) = compactor.clone() {
+                let compact_shared = Arc::clone(&shared);
+                let compact_provider = Arc::clone(&provider);
+                let compact_model = model.clone();
+                let compact_system = system_prompt.clone();
+                config.maybe_compact = Some(Box::new(move |messages: &[AgentMessage]| {
+                    let compactor = Arc::clone(&compactor);
+                    let shared = Arc::clone(&compact_shared);
+                    let provider = Arc::clone(&compact_provider);
+                    let model = compact_model.clone();
+                    let system_prompt = compact_system.clone();
+                    let messages = messages.to_vec();
+                    Box::pin(async move {
+                        let store = shared
+                            .store
+                            .lock()
+                            .map(|handle| handle.clone())
+                            .unwrap_or_default();
+                        let signal = yi_loop::interrupt::InterruptSignal::default();
+                        compactor
+                            .maybe_compact(
+                                &messages,
+                                &model,
+                                &system_prompt,
+                                provider.as_ref(),
+                                store.as_ref(),
+                                &signal,
+                            )
+                            .await
+                    })
+                }));
+            }
             config.get_steering_messages = Some(Box::new(move || {
                 steer
                     .steer
@@ -318,12 +366,16 @@ impl AgentSession {
                     .unwrap_or_default()
             }));
             let emit_shared = Arc::clone(&shared);
+            let emit_compactor = compactor.clone();
             let mut emit = move |event: AgentEvent| {
                 if let AgentEvent::MessageEnd { message } = &event {
-                    if let AgentMessage::Assistant { usage, .. } = message
-                        && let Ok(mut last) = emit_shared.last_usage.lock()
-                    {
-                        *last = Some(usage.clone());
+                    if let AgentMessage::Assistant { usage, .. } = message {
+                        if let Ok(mut last) = emit_shared.last_usage.lock() {
+                            *last = Some(usage.clone());
+                        }
+                        if let Some(compactor) = &emit_compactor {
+                            compactor.on_usage(usage);
+                        }
                     }
                     persist_message(&emit_shared, message);
                 }
@@ -347,6 +399,42 @@ impl AgentSession {
             shared.idle.notify_waiters();
         });
         Ok(())
+    }
+
+    /// Schedules a compaction (design P13). Running sessions compact at the
+    /// next message boundary inside the tool loop; idle sessions compact
+    /// immediately. Returns true when a compaction was applied now.
+    pub async fn compact_now(&self) -> bool {
+        let Some(compactor) = &self.compactor else {
+            return false;
+        };
+        compactor.schedule();
+        if self.status() == Status::Running {
+            return false;
+        }
+        let messages = self.messages();
+        let model = self.model();
+        let store = self.store();
+        let signal = yi_loop::interrupt::InterruptSignal::default();
+        let replaced = compactor
+            .maybe_compact(
+                &messages,
+                &model,
+                &self.config.system_prompt,
+                self.provider.as_ref(),
+                store.as_ref(),
+                &signal,
+            )
+            .await;
+        match replaced {
+            Some(new_messages) => {
+                if let Ok(mut slot) = self.shared.messages.lock() {
+                    *slot = new_messages;
+                }
+                true
+            }
+            None => false,
+        }
     }
 
     pub fn messages(&self) -> Vec<AgentMessage> {

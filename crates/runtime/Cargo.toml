@@ -12,6 +12,7 @@ workspace = true
 yi-types = { workspace = true }
 yi-loop = { workspace = true }
 yi-ai = { workspace = true }
+yi-context = { workspace = true }
 yi-session = { workspace = true }
 yi-tools = { workspace = true }
 yi-permission = { workspace = true }
