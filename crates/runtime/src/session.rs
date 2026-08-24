@@ -43,9 +43,25 @@ struct Shared {
     follow_up: Mutex<Vec<AgentMessage>>,
     status: Mutex<Status>,
     last_usage: Mutex<Option<Usage>>,
+    store: Mutex<Option<yi_session::SharedSession>>,
+    store_error: Mutex<Option<String>>,
     events: broadcast::Sender<AgentEvent>,
     idle: tokio::sync::Notify,
     signal: InterruptSignal,
+}
+
+fn persist_message(shared: &Shared, message: &AgentMessage) {
+    let store = shared
+        .store
+        .lock()
+        .map(|handle| handle.clone())
+        .unwrap_or_default();
+    if let Some(store) = store
+        && let Err(error) = yi_session::lock_session(&store).append_message("main", message.clone())
+        && let Ok(mut slot) = shared.store_error.lock()
+    {
+        *slot = Some(error.to_string());
+    }
 }
 
 pub struct AgentSession {
@@ -68,6 +84,8 @@ impl AgentSession {
                 follow_up: Mutex::new(Vec::new()),
                 status: Mutex::new(Status::Idle),
                 last_usage: Mutex::new(None),
+                store: Mutex::new(None),
+                store_error: Mutex::new(None),
                 events,
                 idle: tokio::sync::Notify::new(),
                 signal: InterruptSignal::default(),
@@ -98,6 +116,56 @@ impl AgentSession {
 
     pub fn set_tools(&mut self, tools: Vec<Arc<dyn yi_loop::AgentTool>>) {
         self.tools = tools;
+    }
+
+    /// Attaches a session store: loads the main branch's messages as the
+    /// in-memory history, then persists every subsequent MessageEnd to it.
+    pub fn attach_store(
+        &self,
+        store: yi_session::SharedSession,
+    ) -> Result<usize, yi_session::SessionError> {
+        let loaded: Vec<AgentMessage> = {
+            let session = yi_session::lock_session(&store);
+            session
+                .find_entries_on_branch(
+                    "main",
+                    &yi_session::EntryQuery {
+                        order: yi_session::EntryOrder::OldestFirst,
+                        ..yi_session::EntryQuery::default()
+                    },
+                    &yi_session::BranchBounds::default(),
+                )?
+                .into_iter()
+                .filter_map(|entry| match entry {
+                    yi_types::entry::Entry::Message { message, .. } => Some(message),
+                    _ => None,
+                })
+                .collect()
+        };
+        let count = loaded.len();
+        if let Ok(mut messages) = self.shared.messages.lock() {
+            *messages = loaded;
+        }
+        if let Ok(mut slot) = self.shared.store.lock() {
+            *slot = Some(store);
+        }
+        Ok(count)
+    }
+
+    pub fn store(&self) -> Option<yi_session::SharedSession> {
+        self.shared
+            .store
+            .lock()
+            .map(|handle| handle.clone())
+            .unwrap_or_default()
+    }
+
+    pub fn store_error(&self) -> Option<String> {
+        self.shared
+            .store_error
+            .lock()
+            .map(|slot| slot.clone())
+            .unwrap_or_default()
     }
 
     pub fn steer(&self, text: &str) {
@@ -173,11 +241,13 @@ impl AgentSession {
             }));
             let emit_shared = Arc::clone(&shared);
             let mut emit = move |event: AgentEvent| {
-                if let AgentEvent::MessageEnd { message } = &event
-                    && let AgentMessage::Assistant { usage, .. } = message
-                    && let Ok(mut last) = emit_shared.last_usage.lock()
-                {
-                    *last = Some(usage.clone());
+                if let AgentEvent::MessageEnd { message } = &event {
+                    if let AgentMessage::Assistant { usage, .. } = message
+                        && let Ok(mut last) = emit_shared.last_usage.lock()
+                    {
+                        *last = Some(usage.clone());
+                    }
+                    persist_message(&emit_shared, message);
                 }
                 let _ = emit_shared.events.send(event);
             };

@@ -774,6 +774,7 @@ dependencies = [
  "tokio",
  "yi-ai",
  "yi-loop",
+ "yi-session",
  "yi-types",
 ]
 
