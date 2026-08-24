@@ -6,7 +6,7 @@ import sys, tomllib, pathlib
 sys.path.insert(0, str(pathlib.Path(__file__).parent))
 from _common import ROOT, fail
 
-FEATURE_ALLOWLIST = {"yi-cli": {"default", "kernel", "reduce", "docs", "tui", "mcp"}}
+FEATURE_ALLOWLIST = {"yi-cli": {"default", "kernel", "reduce", "docs", "tui"}}
 errs = []
 for m in sorted((ROOT / "crates").glob("*/Cargo.toml")):
     folder = m.parent.name

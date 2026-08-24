@@ -1,3 +1,9 @@
+# Dev-deps never ship; targets limited to the platforms Yi builds for (drops
+# wasm/windows-only subtrees from the ban graph).
+[graph]
+targets = ["aarch64-apple-darwin", "x86_64-apple-darwin", "x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu"]
+exclude-dev = true
+
 [licenses]
 allow = ["MIT", "Apache-2.0", "Apache-2.0 WITH LLVM-exception", "BSD-2-Clause", "BSD-3-Clause", "ISC", "Unicode-3.0", "Zlib", "CDLA-Permissive-2.0", "BSL-1.0"]
 
@@ -7,8 +13,9 @@ multiple-versions = "deny"
 # syn 2+3 duplicate: proc-macro build deps only, zero runtime bytes.
 deny = [
   "reqwest", "hyper", "openssl-sys", "native-tls",
-  "git2", "libgit2-sys", "gix", "regex", "clap", "anyhow", "chrono",
-  { crate = "once_cell", wrappers = ["rustls", "ureq"] },
+  "git2", "libgit2-sys", "gix", "regex", "clap", "anyhow",
+  { crate = "chrono", wrappers = ["rmcp"] },
+  { crate = "once_cell", wrappers = ["rustls", "ureq", "tracing-core"] },
   "lazy_static", "rand", "syntect", "textwrap", "toml",
   "tracing-subscriber",
 ]

@@ -316,7 +316,33 @@ fn yi_loop_default() -> yi_runtime::ExecutionMode {
     yi_runtime::ExecutionMode::Sequential
 }
 
+/// D36: MCP is compiled in but runtime-gated; `mcp.enabled = true` in
+/// ~/.yi/config.json is the only switch.
+fn mcp_enabled() -> bool {
+    let Some(home) = std::env::var_os("HOME") else {
+        return false;
+    };
+    let path = std::path::Path::new(&home).join(".yi/config.json");
+    let Ok(content) = std::fs::read_to_string(path) else {
+        return false;
+    };
+    serde_json::from_str::<serde_json::Value>(&content)
+        .ok()
+        .and_then(|config| config.pointer("/mcp/enabled").and_then(|v| v.as_bool()))
+        .unwrap_or(false)
+}
+
 fn main() {
+    if std::env::args().nth(1).as_deref() == Some("mcp") {
+        if !mcp_enabled() {
+            eprintln!(
+                "error: mcp is disabled; set {{\"mcp\": {{\"enabled\": true}}}} in ~/.yi/config.json"
+            );
+            std::process::exit(2);
+        }
+        let raw: Vec<String> = std::env::args().skip(2).collect();
+        std::process::exit(yi_mcp_cli::run(&raw));
+    }
     let args = match parse_args() {
         Ok(args) => args,
         Err(error) => {

@@ -5,5 +5,16 @@ edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 
+[dependencies]
+yi-types = { workspace = true }
+rmcp = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+lexopt = { workspace = true }
+
+[dev-dependencies]
+rmcp = { workspace = true, features = ["server", "transport-io", "macros"] }
+
 [lints]
 workspace = true
