@@ -8,3 +8,4 @@ the §13.3 table is the expected outcome, this ledger wins if they disagree.
 |---|---|---|---|---|
 | 2026-08-22 | phase 0 scaffold: empty 13-crate workspace, no external deps | 286064 | 1.4 | 0 / 0 |
 | 2026-08-24 | phase 1: tokio(rt,sync,time,macros) + ureq2(tls,native-certs) + lexopt + serde stack, full loop/providers/runtime/cli | 1614528 | 2.3 | 5 / 68 |
+| 2026-08-24 | phase 2 (session+tools): + globset (pulls regex-automata, aho-corasick), yi-session + yi-tools + adapters in the binary | 2229856 | 2.3 | 7 / 75 |
