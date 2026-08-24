@@ -70,6 +70,21 @@ yi mcp @fs tools-get read_file --schema expected.json --schema-mode strict
 `--schema-mode compatible` (default) allows the server to add fields; `strict`
 requires byte-identical schemas.
 
+## Auth (HTTP servers)
+
+Remote servers may require OAuth. Login is a **user action** — a 401 never
+opens a browser; the error names the command. Ask the user to run:
+
+```bash
+yi mcp login <server-url>        # browser flow; tokens go to the OS keychain
+yi mcp logout <server-url>       # delete stored tokens
+```
+
+After login, `connect` and session commands attach credentials automatically
+(`--profile <name>` selects among multiple logins; `--no-profile` skips).
+Tokens refresh transparently; a session stuck in `unauthorized` needs a new
+login.
+
 ## Output
 
 `--json` prints one MCP-spec-shaped JSON document on stdout; errors go to
