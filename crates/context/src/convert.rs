@@ -73,11 +73,24 @@ pub fn convert_to_llm(messages: &[AgentMessage]) -> Vec<AgentMessage> {
                 ))
             }
             AgentMessage::Custom {
-                content, timestamp, ..
-            } => Some(AgentMessage::User {
-                content: content.clone(),
-                timestamp: *timestamp,
-            }),
+                custom_type,
+                content,
+                timestamp,
+                ..
+            } => match crate::wrapper::internal_source_of_custom(custom_type) {
+                Some(source) => Some(crate::wrapper::wrap_internal(
+                    source,
+                    match content {
+                        yi_types::message::UserContent::Text(text) => text,
+                        yi_types::message::UserContent::Blocks(_) => "",
+                    },
+                    *timestamp,
+                )),
+                None => Some(AgentMessage::User {
+                    content: content.clone(),
+                    timestamp: *timestamp,
+                }),
+            },
             AgentMessage::BranchSummary {
                 summary, timestamp, ..
             } => Some(as_user(

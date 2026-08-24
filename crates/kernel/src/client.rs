@@ -204,7 +204,8 @@ pub(crate) fn now_iso() -> String {
     format!("{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}.{millis:03}Z")
 }
 
-fn civil_from_days(days: u64) -> (u64, u64, u64) {
+/// Hinnant civil-from-days, shared with the runtime scheduler (H1 cron math).
+pub fn civil_from_days(days: u64) -> (u64, u64, u64) {
     // Howard Hinnant's civil-from-days, unsigned since the epoch is 1970.
     let z = days + 719_468;
     let era = z / 146_097;

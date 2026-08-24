@@ -38,12 +38,28 @@ pub fn internal_source(message: &AgentMessage) -> Option<&str> {
         .then_some(&rest[..end])
 }
 
+/// Custom entry kinds that ride the L4 wrapper: their LLM rendering is
+/// `<yi_internal_context source="…">` and they are dropped at compaction so
+/// injected prompts never accumulate across windows.
+pub fn internal_source_of_custom(custom_type: &str) -> Option<&'static str> {
+    match custom_type {
+        "heartbeat_prompt" => Some("heartbeat"),
+        "advisory" => Some("advisory"),
+        _ => None,
+    }
+}
+
 /// Removes wrapped internal-context messages — applied to the region being
 /// summarized so per-window injections die with their window.
 pub fn drop_internal(messages: &[AgentMessage]) -> Vec<AgentMessage> {
     messages
         .iter()
-        .filter(|message| internal_source(message).is_none())
+        .filter(|message| {
+            if let AgentMessage::Custom { custom_type, .. } = message {
+                return internal_source_of_custom(custom_type).is_none();
+            }
+            internal_source(message).is_none()
+        })
         .cloned()
         .collect()
 }

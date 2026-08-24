@@ -362,7 +362,11 @@ impl RpcState {
     }
 }
 
-pub fn run_rpc(session: AgentSession, options: &RpcOptions) -> i32 {
+pub fn run_rpc(
+    session: AgentSession,
+    options: &RpcOptions,
+    runtime: tokio::runtime::Runtime,
+) -> i32 {
     let mut repo = JsonlRepo::new(
         options.session_dir.clone(),
         options.cwd.display().to_string(),
@@ -386,17 +390,6 @@ pub fn run_rpc(session: AgentSession, options: &RpcOptions) -> i32 {
         session_id,
         steering_mode: "all".to_owned(),
         follow_up_mode: "all".to_owned(),
-    };
-
-    let runtime = match tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-    {
-        Ok(runtime) => runtime,
-        Err(error) => {
-            eprintln!("error: {error}");
-            return 1;
-        }
     };
 
     runtime.block_on(async move {

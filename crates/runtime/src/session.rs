@@ -64,6 +64,18 @@ fn persist_message(shared: &Shared, message: &AgentMessage) {
     }
 }
 
+#[derive(Clone)]
+struct RunParts {
+    shared: Arc<Shared>,
+    provider: Arc<ProviderStream>,
+    system_prompt: String,
+    model: Model,
+    tool_execution: ExecutionMode,
+    tools: Vec<Arc<dyn yi_loop::AgentTool>>,
+    compactor: Option<Arc<crate::compaction::Compactor>>,
+    on_compacted: Option<Arc<dyn Fn() + Send + Sync>>,
+}
+
 pub struct AgentSession {
     config: SessionConfig,
     model: Mutex<Model>,
@@ -72,7 +84,14 @@ pub struct AgentSession {
     tools: Vec<Arc<dyn yi_loop::AgentTool>>,
     compactor: Option<Arc<crate::compaction::Compactor>>,
     on_compacted: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
+    schedule: Mutex<Option<ScheduleParts>>,
 }
+
+type ScheduleParts = (
+    Arc<crate::schedule::JobStore>,
+    Arc<crate::schedule::HeartbeatService>,
+    crate::schedule::Scheduler,
+);
 
 impl AgentSession {
     pub fn new(config: SessionConfig, provider: Arc<ProviderStream>) -> Self {
@@ -97,7 +116,28 @@ impl AgentSession {
             tools: Vec::new(),
             compactor: None,
             on_compacted: Mutex::new(None),
+            schedule: Mutex::new(None),
         }
+    }
+
+    /// Design H10: the scheduler and heartbeat surface live with the session;
+    /// dropping the session stops the timer.
+    pub fn set_schedule(
+        &self,
+        store: Arc<crate::schedule::JobStore>,
+        heartbeats: Arc<crate::schedule::HeartbeatService>,
+        scheduler: crate::schedule::Scheduler,
+    ) {
+        if let Ok(mut slot) = self.schedule.lock() {
+            *slot = Some((store, heartbeats, scheduler));
+        }
+    }
+
+    pub fn heartbeat_service(&self) -> Option<Arc<crate::schedule::HeartbeatService>> {
+        self.schedule
+            .lock()
+            .ok()
+            .and_then(|slot| slot.as_ref().map(|(_, service, _)| Arc::clone(service)))
     }
 
     /// Fires after each applied compaction (design K10 post-compaction sync);
@@ -297,8 +337,87 @@ impl AgentSession {
 
     /// Returns at admission; the run streams in a spawned task (R6).
     pub fn prompt(&self, text: &str) -> Result<(), SessionError> {
+        self.prompt_message(user_message(text))
+    }
+
+    /// Design H9: a heartbeat (or any prepared message) starts an idle
+    /// session's turn without being re-wrapped as plain user text.
+    pub fn prompt_message(&self, prompt: AgentMessage) -> Result<(), SessionError> {
+        let parts = RunParts {
+            shared: Arc::clone(&self.shared),
+            provider: Arc::clone(&self.provider),
+            system_prompt: self.config.system_prompt.clone(),
+            model: self.model(),
+            tool_execution: self.config.tool_execution,
+            tools: self.tools.clone(),
+            compactor: self.compactor.clone(),
+            on_compacted: self.on_compacted.lock().ok().and_then(|slot| slot.clone()),
+        };
+        Self::spawn_run(parts, prompt)
+    }
+
+    /// Detached run-starter for the scheduler (design H9): lets a heartbeat
+    /// wake an idle session without a `&self` borrow. Tools and model are
+    /// snapshotted at handle creation — re-wire after `set_model`/`use_tools`.
+    pub fn run_handle(
+        &self,
+    ) -> Arc<dyn Fn(AgentMessage) -> Result<(), SessionError> + Send + Sync> {
+        let parts = RunParts {
+            shared: Arc::clone(&self.shared),
+            provider: Arc::clone(&self.provider),
+            system_prompt: self.config.system_prompt.clone(),
+            model: self.model(),
+            tool_execution: self.config.tool_execution,
+            tools: self.tools.clone(),
+            compactor: self.compactor.clone(),
+            on_compacted: self.on_compacted.lock().ok().and_then(|slot| slot.clone()),
+        };
+        Arc::new(move |prompt| Self::spawn_run(parts.clone(), prompt))
+    }
+
+    /// Design H9 delivery seam: running session → queued (Steer drains at the
+    /// next message boundary, FollowUp at turn end); idle session → the
+    /// message starts a run.
+    pub fn heartbeat_hook(
+        &self,
+    ) -> Arc<dyn Fn(AgentMessage, yi_types::schedule::DeliveryMode) + Send + Sync> {
+        let shared = Arc::clone(&self.shared);
+        let run = self.run_handle();
+        Arc::new(move |message, mode| {
+            let running = shared
+                .status
+                .lock()
+                .map(|status| *status == Status::Running)
+                .unwrap_or(false);
+            if running {
+                let queue = match mode {
+                    yi_types::schedule::DeliveryMode::Steer => &shared.steer,
+                    yi_types::schedule::DeliveryMode::FollowUp => &shared.follow_up,
+                };
+                if let Ok(mut pending) = queue.lock() {
+                    pending.push(message);
+                }
+            } else {
+                let _ = run(message);
+            }
+        })
+    }
+
+    /// Detached busy probe for the scheduler's defer table (design H8).
+    pub fn activity_handle(&self) -> Arc<dyn Fn() -> bool + Send + Sync> {
+        let shared = Arc::clone(&self.shared);
+        Arc::new(move || {
+            shared
+                .status
+                .lock()
+                .map(|status| *status == Status::Running)
+                .unwrap_or(false)
+        })
+    }
+
+    fn spawn_run(parts: RunParts, prompt: AgentMessage) -> Result<(), SessionError> {
         {
-            let Ok(mut status) = self.shared.status.lock() else {
+            let Ok(mut status) = parts.shared.status.lock() else {
                 return Err(SessionError::Busy);
             };
             if *status == Status::Running {
@@ -306,15 +425,16 @@ impl AgentSession {
             }
             *status = Status::Running;
         }
-        let shared = Arc::clone(&self.shared);
-        let provider = Arc::clone(&self.provider);
-        let system_prompt = self.config.system_prompt.clone();
-        let model = self.model();
-        let tool_execution = self.config.tool_execution;
-        let tools = self.tools.clone();
-        let compactor = self.compactor.clone();
-        let on_compacted = self.on_compacted.lock().ok().and_then(|slot| slot.clone());
-        let prompt = user_message(text);
+        let RunParts {
+            shared,
+            provider,
+            system_prompt,
+            model,
+            tool_execution,
+            tools,
+            compactor,
+            on_compacted,
+        } = parts;
         tokio::spawn(async move {
             let mut context = LoopContext {
                 system_prompt: system_prompt.clone(),

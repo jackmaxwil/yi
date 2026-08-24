@@ -877,10 +877,10 @@ sequenceDiagram
 
 | # | Primitive | Signature | Purity | Source |
 |---|---|---|---|---|
-| H1 | Schedule | `Once{at} \| Cron{expr} \| Interval{ms ≥ 10_000}`; `parse("in 5m" \| "every 10m" \| "at <ISO>" \| "<5-field cron>")` | pure | prime `parseAgentCronSchedule` |
+| H1 | Schedule | `Once{at} \| Cron{expr} \| Interval{ms ≥ 10_000}`; `parse("in 5m" \| "every 10m" \| "at <ISO>" \| "<5-field cron>")`; cron and `at <ISO>` evaluate in **UTC** (std has no tzdata; chrono banned §13.5) — prime used process-local time | pure | prime `parseAgentCronSchedule` |
 | H2 | Job | `{id, status: Active\|Paused\|Completed\|Cancelled, source: Cron\|Heartbeat\|RlmHeartbeat, delivery: Steer\|FollowUp, session_id, cwd, label, prompt, schedule, next_run_at, last_run_at, run_count, last_error}` | data | prime `AgentCronJob` |
 | H3 | next_run | `fn(&Schedule, after: Instant) -> Option<Instant>` | pure | prime |
-| H4 | Store | `scheduled-jobs.json` per session: `{jobs, dispatches}`; write = lock + tmp + fsync + rename; `on_change` listener | I/O | prime `AgentCronJobStore` |
+| H4 | Store | `scheduled-jobs.json` per session: `{jobs, dispatches}`; Yi-owned format (D39): camelCase, epoch-ms timestamps; write = lock + tmp + fsync + rename; `on_change` listener | I/O | prime `AgentCronJobStore` |
 | H5 | claim_due | `fn(now) -> Vec<Dispatch{id, job_id, claimed_at, scheduled_for}>` persisted **before** delivery; `record_result(dispatch, Ran\|Skipped\|Error)` | I/O | prime |
 | H6 | recover | on start: unresolved claims → interrupted; missed ticks coalesced; schedule advanced | I/O | prime `recoverInterruptedDispatches` |
 | H7 | lanes | in-process there is one session ⇒ one serial queue. Per-session lanes arrive with the daemon (phase 6) | data | prime `dispatchLanes` (later) |

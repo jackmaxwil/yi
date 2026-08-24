@@ -4,6 +4,7 @@ pub mod compaction;
 pub mod kernel;
 pub mod permission;
 pub mod provider;
+pub mod schedule;
 pub mod session;
 pub mod subagent;
 pub mod tools;

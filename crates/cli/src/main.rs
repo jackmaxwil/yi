@@ -270,10 +270,6 @@ fn default_session_dir(args: &Args) -> std::path::PathBuf {
 fn run(args: &Args) -> i32 {
     use std::io::IsTerminal;
     let interactive = std::io::stdin().is_terminal();
-    let session = match build_session(args, interactive) {
-        Ok(session) => session,
-        Err(code) => return code,
-    };
     let runtime = match tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -282,6 +278,15 @@ fn run(args: &Args) -> i32 {
         Err(error) => {
             eprintln!("error: {error}");
             return 1;
+        }
+    };
+    // Session wiring spawns runtime tasks (the H4 scheduler timer), so the
+    // runtime context must exist before build_session.
+    let session = {
+        let _guard = runtime.enter();
+        match build_session(args, interactive) {
+            Ok(session) => session,
+            Err(code) => return code,
         }
     };
     let json = args.json;
@@ -396,15 +401,28 @@ fn main() {
             std::process::exit(run(&args));
         }
         "rpc" => {
-            let session = match build_session(&args, false) {
-                Ok(session) => session,
-                Err(code) => std::process::exit(code),
+            let runtime = match tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+            {
+                Ok(runtime) => runtime,
+                Err(error) => {
+                    eprintln!("error: {error}");
+                    std::process::exit(1);
+                }
+            };
+            let session = {
+                let _guard = runtime.enter();
+                match build_session(&args, false) {
+                    Ok(session) => session,
+                    Err(code) => std::process::exit(code),
+                }
             };
             let options = rpc::RpcOptions {
                 session_dir: default_session_dir(&args),
                 cwd: effective_cwd(&args),
             };
-            std::process::exit(rpc::run_rpc(session, &options));
+            std::process::exit(rpc::run_rpc(session, &options, runtime));
         }
         "" => println!("yi {version} (yi ask, yi rpc; more surfaces land in later phases)"),
         other => {

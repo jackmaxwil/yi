@@ -65,7 +65,7 @@ pub struct SubagentHost {
     children: Mutex<HashMap<String, ChildRecord>>,
 }
 
-fn random_suffix() -> Result<String, String> {
+pub(crate) fn random_suffix() -> Result<String, String> {
     use std::io::Read;
     let mut buffer = [0_u8; 4];
     std::fs::File::open("/dev/urandom")
@@ -574,6 +574,47 @@ pub fn attach_runtime(session: &mut AgentSession, wiring: RuntimeWiring) -> Arc<
         attribute: session.attribution_handle(),
     }));
     host.register(&mut registry);
+    let store = Arc::new(crate::schedule::JobStore::open(
+        wiring.rlm_dir.join("scheduled-jobs.json"),
+    ));
+    let heartbeats = Arc::new(crate::schedule::HeartbeatService {
+        store: Arc::clone(&store),
+        session_id: wiring
+            .rlm_dir
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "session".to_owned()),
+        cwd: wiring.cwd.to_string_lossy().into_owned(),
+    });
+    heartbeats.register(&mut registry);
+    {
+        let hook = session.heartbeat_hook();
+        let busy = session.activity_handle();
+        let deliver: Arc<crate::schedule::DeliverFn> = Arc::new(move |job| {
+            let activity = crate::schedule::SessionActivity {
+                is_streaming: busy(),
+                ..Default::default()
+            };
+            if crate::schedule::should_defer(job, &activity) {
+                return crate::schedule::RunOutcome::Skipped;
+            }
+            let mode = job
+                .delivery_mode
+                .unwrap_or(crate::schedule::DEFAULT_HEARTBEAT_DELIVERY_MODE);
+            hook(
+                crate::schedule::heartbeat_message(job, yi_session::now_ms()),
+                mode,
+            );
+            crate::schedule::RunOutcome::Ran
+        });
+        let scheduler = crate::schedule::Scheduler::start(Arc::clone(&store), deliver, || {
+            format!(
+                "dsp-{}",
+                random_suffix().unwrap_or_else(|_| "00000000".to_owned())
+            )
+        });
+        session.set_schedule(Arc::clone(&store), Arc::clone(&heartbeats), scheduler);
+    }
     let restore_notice = session.notice_hook();
     let service = Arc::new(crate::kernel::KernelService::new(
         crate::kernel::KernelServiceOptions {
