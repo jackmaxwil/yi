@@ -10,5 +10,9 @@
   directories are untracked — edit .ruler and run `npx @intellectronica/ruler apply`, never the
   generated files.
 - Commits: imperative subject; body only when the why is not obvious from the diff.
+- Never include a "Co-Authored-By: Claude" trailer (or any assistant co-author trailer) in a
+  commit message.
+- Commit messages containing backticks or `$(` go through `git commit -F -` with a quoted
+  heredoc, never `-m` — zsh command-substitutes inside double quotes and mangles the message.
 - A user-visible behavior change updates the ARCHITECTURE feature ledger and,
   when structural, the changelog — in the same change as the code.

@@ -14,24 +14,30 @@ scripts/guardrails/boundaries.toml.
 |---|---|
 | yi-types | every serde shape: messages, entries, events, model/tool wire. The schema authority; deps = serde only |
 | yi-loop | pure run_loop + interrupt module; no Result in its public API; <= 1,000 lines |
-| yi-ai | provider adapters (anthropic-messages, openai-chat, faux), SSE decoder, JSON salvage, message transform, retry policy, bundled model catalog |
-| yi-session | Pi v4 entry-tree store (phase 2) |
-| yi-context | context primitives P1-P18 (phase 3) |
-| yi-permission | modes, rules, holds (phase 2b) |
-| yi-tools | Tool trait + builtins incl. hashline (phase 2) |
+| yi-ai | provider adapters (anthropic-messages, openai-completions incl. OpenRouter, faux), SSE decoder, JSON salvage, message transform, retry policy, bundled model catalog |
+| yi-session | Pi v4 entry-tree store: mutation-log replay, JSONL + memory repos, torn-tail repair, fork/branch, conformance-tested against Pi fixtures |
+| yi-context | context primitives P2-P18: projection, chars/4 accounting, compaction policy/cut/prompts, retention floor, window chain, ledger reader, source budgets, world-state diffs, convertToLlm |
+| yi-permission | pure decide() with fixed precedence, catastrophic denylist (all modes incl. yolo), sha256-sealed session rules, holds, mode prompt fragments |
+| yi-tools | Tool trait + builtins: bash, glob, grep, write, hashline read/edit (line+tag addressing, brace block resolver, snapshots, prepare/commit patcher) |
 | yi-kernel | Jupyter/ZMQ client (phase 4) |
 | yi-runtime | AgentSession composition; subagent/schedule/advisor as modules; the only LoopConfig constructor; the glue that keeps yi-loop and yi-ai independent |
 | yi-acp | ACP v2 server (phase 5b) |
 | yi-tui | inline-viewport TUI, feature-gated (phase 7) |
-| yi-cli | the yi binary: ask today; rpc/acp/serve/sessions later |
+| yi-cli | the yi binary: ask and rpc today; acp/serve/sessions later |
 
-## Data flow (phase 1 slice)
+## Data flow
 
-yi ask -> AgentSession.prompt (returns at admission, run spawned) ->
-run_loop -> ProviderStream (StreamFn impl dispatching on model.api) ->
-adapter builds request, pumps SSE, maps to AssistantMessageEvents ->
-loop assembles turns, executes tools, drains steer/follow-up queues ->
-AgentEvent broadcast -> renderer (text deltas or JSON lines).
+yi ask / yi rpc -> AgentSession.prompt (returns at admission, run spawned) ->
+run_loop: at each message boundary the compaction hook may replace the
+in-flight history (summary + retained tail, appended to the store as a v4
+Compaction entry) -> convertToLlm (L4: summaries/bash/custom become user
+messages, internal-context wrappers recognized) -> ProviderStream (StreamFn
+dispatching on model.api) -> adapter builds request, pumps SSE, maps to
+AssistantMessageEvents -> loop assembles turns; every tool call passes the
+PermissionBroker gate (catastrophic denylist > configured deny > session
+rule > configured allow/ask > hold > mode) before executing; steer and
+follow-up queues drain between turns -> MessageEnd persists to the session
+store -> AgentEvent broadcast -> renderer (text deltas or JSON lines).
 
 ## Invariants (the absences that matter)
 
