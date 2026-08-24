@@ -1530,7 +1530,6 @@ dependencies = [
 name = "yi-mcp-cli"
 version = "0.1.0"
 dependencies = [
- "lexopt",
  "rmcp",
  "serde",
  "serde_json",
