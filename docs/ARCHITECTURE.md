@@ -3,7 +3,7 @@
 ```
 version: 0.6.2          # bump on any structural change; log it below
 design:  YI_DESIGN.md   # the deep design; § refs below point into it
-status:  phase 2 core done  # yi-session + tools + yi rpc green vs faux; protocol tests spawn the real binary. Pi RpcClient differential run + live-provider turn pending an API key. 2b (hashline/permission) next
+status:  phase 2 core done  # live exit met 2026-08-24: real tool-call turn vs openrouter/deepseek-v4-flash-0731 (cache hits + cost verified). Pi RpcClient differential run deferred to D17 infra. 2b (hashline/permission) next
 ```
 
 ## Changelog
