@@ -76,6 +76,28 @@ pub struct Usage {
     pub cost: Cost,
 }
 
+impl Usage {
+    pub fn zero() -> Self {
+        let zero = || serde_json::Number::from(0u64);
+        Self {
+            input: 0,
+            output: 0,
+            cache_read: 0,
+            cache_write: 0,
+            cache_write1h: None,
+            reasoning: None,
+            total_tokens: 0,
+            cost: Cost {
+                input: zero(),
+                output: zero(),
+                cache_read: zero(),
+                cache_write: zero(),
+                total: zero(),
+            },
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DiagnosticErrorInfo {
     #[serde(skip_serializing_if = "Option::is_none")]

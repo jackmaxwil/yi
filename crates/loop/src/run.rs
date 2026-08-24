@@ -3,7 +3,7 @@ use std::sync::Arc;
 use serde_json::{Map, Value};
 use tokio::sync::mpsc::Receiver;
 use yi_types::event::{AgentEvent, AssistantMessageEvent, ToolResult};
-use yi_types::message::{AgentMessage, Content, Cost, StopReason, Usage};
+use yi_types::message::{AgentMessage, Content, StopReason, Usage};
 use yi_types::model::{LlmContext, Model, ToolDef};
 
 use crate::config::{ExecutionMode, LoopConfig, TurnSnapshot};
@@ -25,26 +25,6 @@ pub trait StreamFn: Send + Sync {
     ) -> Receiver<AssistantMessageEvent>;
 }
 
-fn zero_usage() -> Usage {
-    let zero = || serde_json::Number::from(0u64);
-    Usage {
-        input: 0,
-        output: 0,
-        cache_read: 0,
-        cache_write: 0,
-        cache_write1h: None,
-        reasoning: None,
-        total_tokens: 0,
-        cost: Cost {
-            input: zero(),
-            output: zero(),
-            cache_read: zero(),
-            cache_write: zero(),
-            total: zero(),
-        },
-    }
-}
-
 fn synthesized_error_message(model: &Model, text: &str) -> AgentMessage {
     AgentMessage::Assistant {
         content: Vec::new(),
@@ -54,7 +34,7 @@ fn synthesized_error_message(model: &Model, text: &str) -> AgentMessage {
         response_model: None,
         response_id: None,
         diagnostics: None,
-        usage: zero_usage(),
+        usage: Usage::zero(),
         stop_reason: StopReason::Error,
         deferred: None,
         error_message: Some(text.to_owned()),

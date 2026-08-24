@@ -1,6 +1,6 @@
 use serde_json::{Map, Value};
 use yi_types::event::AssistantMessageEvent;
-use yi_types::message::{AgentMessage, Content, Cost, StopReason, Usage};
+use yi_types::message::{AgentMessage, Content, StopReason, Usage};
 
 pub const FAUX_API: &str = "faux";
 pub const FAUX_PROVIDER: &str = "faux";
@@ -8,23 +8,7 @@ pub const FAUX_MODEL_ID: &str = "faux-1";
 const CHUNK_CHARS: usize = 16;
 
 pub fn zero_usage() -> Usage {
-    let zero = || serde_json::Number::from(0u64);
-    Usage {
-        input: 0,
-        output: 0,
-        cache_read: 0,
-        cache_write: 0,
-        cache_write1h: None,
-        reasoning: None,
-        total_tokens: 0,
-        cost: Cost {
-            input: zero(),
-            output: zero(),
-            cache_read: zero(),
-            cache_write: zero(),
-            total: zero(),
-        },
-    }
+    Usage::zero()
 }
 
 pub fn faux_text(text: &str) -> Content {
