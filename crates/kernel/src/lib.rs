@@ -27,6 +27,7 @@ pub const SNAPSHOT_MAX_OUTPUT_CHARS: usize = 1_000_000;
 // on-disk copy is the fallback if this is exceeded.
 pub const SNAPSHOT_DISPOSE_TIMEOUT_MS: u64 = 5_000;
 pub const SNAPSHOT_EXECUTION_TIMEOUT_MS: u64 = 5_000;
+pub const KERNEL_STATE_LISTING_TIMEOUT_MS: u64 = 5_000;
 pub const KERNEL_ABORT_GRACE_MS: u64 = 1_000;
 pub const KERNEL_BUSY_REUSE_WAIT_MS: u64 = 5_000;
 pub const KERNEL_BUSY_INTERRUPT_INTERVAL_MS: u64 = 500;

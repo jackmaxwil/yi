@@ -38,10 +38,12 @@ pub fn build_snapshot_code(
     manifest_path: &Path,
     max_bytes: u64,
     max_variable_bytes: u64,
+    prune_oversized: bool,
 ) -> String {
     let out = py_path(out_path);
     let manifest = py_path(manifest_path);
     let marker = py_str(RESULT_MARKER);
+    let prune = if prune_oversized { "True" } else { "False" };
     // All builtins are sourced via the locally-imported _b alias so the helper
     // keeps working even when the user namespace shadows names like list/open.
     format!(
@@ -80,7 +82,9 @@ pub fn build_snapshot_code(
 
     payload = {{}}
     skipped = []
+    oversized = []
     total = 0
+    identify_oversized = {prune}
     for name in _b.list(ns.keys()):
         # Skip internals (dunder/underscore), IPython-injected names, and live
         # handles. A name matching a builtin (e.g. "list") is a user shadow worth
@@ -89,16 +93,18 @@ pub fn build_snapshot_code(
             continue
         value = ns[name]
         remaining = {max_bytes} - total
-        buffer = SnapshotBuffer(_b.min({max_variable_bytes}, remaining))
+        buffer_limit = {max_variable_bytes} if identify_oversized else _b.min({max_variable_bytes}, remaining)
+        buffer = SnapshotBuffer(buffer_limit)
         # Modules are pickled by reference and re-imported on restore.
         try:
             dill.dump(value, buffer)
             blob = buffer.getvalue()
         except SnapshotSizeLimitExceeded:
-            if remaining < {max_variable_bytes}:
+            if not identify_oversized and remaining < {max_variable_bytes}:
                 skipped.append({{"name": name, "reason": "exceeds aggregate snapshot size cap"}})
             else:
                 skipped.append({{"name": name, "reason": "exceeds per-variable snapshot size cap"}})
+                oversized.append(name)
             continue
         except _b.Exception as _err:
             skipped.append({{"name": name, "reason": _b.type(_err).__name__ + ": " + _b.str(_err)[:200]}})
@@ -125,10 +131,12 @@ pub fn build_snapshot_code(
 
     bytes_written = os.path.getsize({out})
     saved = _b.sorted(payload.keys())
+    pruned = _b.sorted(name for name in oversized if name in ns) if identify_oversized else []
     manifest = {{
         "version": 1,
         "savedNames": saved,
         "skipped": skipped,
+        "pruned": pruned,
         "bytes": bytes_written,
         "pythonVersion": sys.version.split()[0],
         "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
@@ -138,7 +146,26 @@ pub fn build_snapshot_code(
             json.dump(manifest, fh)
     except _b.Exception:
         pass
-    _b.print({marker} + json.dumps({{"saved": saved, "skipped": skipped, "bytes": bytes_written}}))
+    pruned_ids = {{_b.id(ns[name]) for name in pruned}}
+    while True:
+        try:
+            for name in pruned:
+                if name in ns:
+                    del ns[name]
+            output_cache = ns.get("Out")
+            if _b.isinstance(output_cache, _b.dict):
+                for key in _b.list(output_cache.keys()):
+                    if _b.id(output_cache[key]) in pruned_ids:
+                        del output_cache[key]
+            for name in hidden:
+                if name in ns and _b.id(ns[name]) in pruned_ids:
+                    del ns[name]
+            break
+        except _b.KeyboardInterrupt:
+            # Deletion is idempotent. Finish the short critical section so a
+            # snapshot timeout cannot leave only some purge candidates live.
+            continue
+    _b.print({marker} + json.dumps({{"saved": saved, "skipped": skipped, "pruned": pruned, "bytes": bytes_written}}))
 
 
 try:
@@ -200,6 +227,36 @@ finally:
     )
 }
 
+/// Marker-line list of live user-defined names, filtered like the snapshot.
+/// Never raises.
+pub fn build_list_names_code() -> String {
+    let marker = py_str(RESULT_MARKER);
+    format!(
+        r#"def _yi_list_state_names():
+    import builtins as _b, json
+    ip = None
+    try:
+        ip = get_ipython()  # noqa: F821 (injected by IPython)
+    except _b.Exception:
+        ip = None
+    ns = ip.user_ns if ip is not None else _b.globals()
+    hidden = _b.set(_b.getattr(ip, "user_ns_hidden", {{}}) or {{}}) if ip is not None else _b.set()
+    always_skip = {{"rlm", "mcp", "asyncio", "In", "Out", "get_ipython", "exit", "quit", "open"}}
+    names = []
+    for name in _b.list(ns.keys()):
+        if name.startswith("_") or name in hidden or name in always_skip:
+            continue
+        names.append(name)
+    _b.print({marker} + json.dumps({{"names": _b.sorted(names)}}))
+
+
+try:
+    _yi_list_state_names()
+finally:
+    del _yi_list_state_names"#
+    )
+}
+
 fn marker_line(stdout: &str) -> Option<&str> {
     let index = stdout.rfind(RESULT_MARKER)?;
     let rest = &stdout[index.saturating_add(RESULT_MARKER.len())..];
@@ -225,6 +282,19 @@ pub fn parse_restore_result(stdout: &str, path: &Path) -> Option<KernelRestoreRe
     Some(result)
 }
 
+/// Sorted list of live user-defined names, or None if the marker was
+/// absent/invalid.
+pub fn parse_list_names(stdout: &str) -> Option<Vec<String>> {
+    let value = marker_value(stdout)?;
+    let names = value.get("names")?.as_array()?;
+    Some(
+        names
+            .iter()
+            .filter_map(|name| name.as_str().map(str::to_owned))
+            .collect(),
+    )
+}
+
 impl KernelManager {
     pub(crate) fn schedule_snapshot(&self) {
         let Some(config) = &self.inner.snapshot else {
@@ -235,7 +305,7 @@ impl KernelManager {
         let task = tokio::spawn(async move {
             tokio::time::sleep(std::time::Duration::from_millis(debounce)).await;
             let manager = KernelManager { inner };
-            let _ = manager.capture_snapshot(true).await;
+            let _ = manager.capture_snapshot(true, false).await;
         });
         if let Ok(mut timer) = self.inner.snapshot_timer.lock() {
             if let Some(previous) = timer.take() {
@@ -248,10 +318,20 @@ impl KernelManager {
     /// Persist the namespace now (final flush path). Best-effort: `None` on
     /// any failure, with a diagnostic in the kernel stderr tail.
     pub async fn snapshot_state(&self) -> Option<KernelSnapshotResult> {
-        self.capture_snapshot(false).await
+        self.capture_snapshot(false, false).await
     }
 
-    async fn capture_snapshot(&self, bounded: bool) -> Option<KernelSnapshotResult> {
+    /// Persist the namespace, then remove variables above the per-variable cap
+    /// from the live namespace (post-compaction RAM relief, design K10).
+    pub async fn prune_oversized_variables(&self) -> Option<KernelSnapshotResult> {
+        self.capture_snapshot(true, true).await
+    }
+
+    async fn capture_snapshot(
+        &self,
+        bounded: bool,
+        prune_oversized: bool,
+    ) -> Option<KernelSnapshotResult> {
         let config = self.inner.snapshot.clone()?;
         if !self.is_running() {
             return None;
@@ -263,6 +343,7 @@ impl KernelManager {
             config
                 .max_variable_bytes
                 .unwrap_or(DEFAULT_SNAPSHOT_MAX_VARIABLE_BYTES),
+            prune_oversized,
         );
         let result = self
             .execute_internal(&code, bounded.then_some(SNAPSHOT_EXECUTION_TIMEOUT_MS))
@@ -316,6 +397,35 @@ impl KernelManager {
             Err(error) => {
                 self.inner
                     .diagnostic(&format!("state restore error: {error}"));
+                None
+            }
+        }
+    }
+
+    /// Live user-defined top-level names, or None if the kernel isn't
+    /// running. Never fails a caller; bounded like a snapshot cell.
+    pub async fn list_namespace_names(&self) -> Option<Vec<String>> {
+        if !self.is_running() {
+            return None;
+        }
+        let code = build_list_names_code();
+        match self
+            .execute_internal(&code, Some(crate::KERNEL_STATE_LISTING_TIMEOUT_MS))
+            .await
+        {
+            Ok(result) if result.status == ExecuteStatus::Ok => parse_list_names(&result.stdout),
+            Ok(result) => {
+                let detail = result
+                    .error
+                    .map(|error| error.evalue)
+                    .unwrap_or(result.stderr);
+                self.inner
+                    .diagnostic(&format!("namespace listing failed: {detail}"));
+                None
+            }
+            Err(error) => {
+                self.inner
+                    .diagnostic(&format!("namespace listing error: {error}"));
                 None
             }
         }
@@ -404,6 +514,7 @@ mod tests {
             Path::new("/tmp/out.json"),
             DEFAULT_SNAPSHOT_MAX_BYTES,
             DEFAULT_SNAPSHOT_MAX_VARIABLE_BYTES,
+            false,
         );
         assert!(code.contains("268435456"), "aggregate cap must be inlined");
         assert!(

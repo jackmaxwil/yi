@@ -86,3 +86,31 @@ async fn session_dir_snapshot_revives_through_the_service() -> TestResult {
     let _ = std::fs::remove_dir_all(&dir);
     Ok(())
 }
+
+#[tokio::test]
+async fn post_compaction_sync_prunes_and_reports_names() -> TestResult {
+    let dir = std::env::temp_dir().join(format!("yi-sync-svc-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir)?;
+    let notices = Arc::new(Mutex::new(Vec::new()));
+    let service = service(&dir, &notices);
+
+    assert!(
+        service.sync_after_compaction().await.is_none(),
+        "sync must be a peek, never a boot: no kernel, no notice"
+    );
+
+    let outcome = cell(&service, "kept = 1")
+        .await
+        .map_err(|e| e.to_string())?;
+    assert_eq!(outcome.result.status, yi_types::kernel::ExecuteStatus::Ok);
+
+    let notice = service.sync_after_compaction().await.ok_or("sync notice")?;
+    assert!(
+        notice.contains("<ipython_state>") && notice.contains("kept"),
+        "the notice must list surviving names: {notice}"
+    );
+    service.dispose().await;
+    let _ = std::fs::remove_dir_all(&dir);
+    Ok(())
+}

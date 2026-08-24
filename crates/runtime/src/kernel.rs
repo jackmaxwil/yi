@@ -310,6 +310,47 @@ impl KernelService {
         }
     }
 
+    /// A peek, never a boot: post-compaction sync must not spawn a kernel
+    /// just to report on one.
+    async fn manager_if_running(&self) -> Option<Arc<KernelManager>> {
+        let slot = self.manager.lock().await;
+        slot.as_ref()
+            .filter(|manager| manager.is_running())
+            .map(Arc::clone)
+    }
+
+    /// Post-compaction kernel sync (prime `_syncKernelStateAfterCompaction`,
+    /// adapted): prune oversized variables, list what survives, and return the
+    /// model-facing notice — or None when no kernel is live to report on.
+    pub async fn sync_after_compaction(&self) -> Option<String> {
+        let manager = self.manager_if_running().await?;
+        let pruned = manager
+            .prune_oversized_variables()
+            .await
+            .map(|result| result.pruned)
+            .unwrap_or_default();
+        let names = manager.list_namespace_names().await;
+        if names.is_none() && !manager.is_running() {
+            return None;
+        }
+        let detail = match &names {
+            None => String::new(),
+            Some(names) if names.is_empty() => " You have not defined any names yet.".to_owned(),
+            Some(names) => format!(" These names are still defined: {}.", names.join(", ")),
+        };
+        let pruned_detail = if pruned.is_empty() {
+            String::new()
+        } else {
+            format!(
+                " Variables above the per-variable snapshot limit were removed: {}.",
+                pruned.join(", ")
+            )
+        };
+        Some(format!(
+            "<ipython_state>\nYour IPython kernel persisted through compaction; its remaining variables, imports, and helpers are still available.{pruned_detail}{detail}\n</ipython_state>"
+        ))
+    }
+
     pub async fn dispose(&self) {
         self.kill().await;
     }

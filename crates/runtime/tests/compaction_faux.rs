@@ -178,6 +178,13 @@ async fn compact_now_applies_immediately_when_idle() -> Result<(), Box<dyn Error
         faux_assistant_message(vec![faux_text("## Goal\nIdle summary")], StopReason::Stop),
     ]);
     let session = session_for_compaction(provider);
+    let compacted = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    {
+        let compacted = Arc::clone(&compacted);
+        session.set_on_compacted(Arc::new(move || {
+            compacted.store(true, std::sync::atomic::Ordering::SeqCst);
+        }));
+    }
     session.prompt("please do the thing with sufficient text here")?;
     session.wait_idle().await;
 
@@ -187,6 +194,10 @@ async fn compact_now_applies_immediately_when_idle() -> Result<(), Box<dyn Error
         messages.first(),
         Some(AgentMessage::CompactionSummary { summary, .. }) if summary.contains("Idle summary")
     ));
+    assert!(
+        compacted.load(std::sync::atomic::Ordering::SeqCst),
+        "an applied compaction must fire the post-compaction hook (kernel sync)"
+    );
     Ok(())
 }
 

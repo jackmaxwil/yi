@@ -71,6 +71,7 @@ pub struct AgentSession {
     shared: Arc<Shared>,
     tools: Vec<Arc<dyn yi_loop::AgentTool>>,
     compactor: Option<Arc<crate::compaction::Compactor>>,
+    on_compacted: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
 }
 
 impl AgentSession {
@@ -95,6 +96,15 @@ impl AgentSession {
             }),
             tools: Vec::new(),
             compactor: None,
+            on_compacted: Mutex::new(None),
+        }
+    }
+
+    /// Fires after each applied compaction (design K10 post-compaction sync);
+    /// the hook must be non-blocking — spawn any kernel work.
+    pub fn set_on_compacted(&self, hook: Arc<dyn Fn() + Send + Sync>) {
+        if let Ok(mut slot) = self.on_compacted.lock() {
+            *slot = Some(hook);
         }
     }
 
@@ -303,6 +313,7 @@ impl AgentSession {
         let tool_execution = self.config.tool_execution;
         let tools = self.tools.clone();
         let compactor = self.compactor.clone();
+        let on_compacted = self.on_compacted.lock().ok().and_then(|slot| slot.clone());
         let prompt = user_message(text);
         tokio::spawn(async move {
             let mut context = LoopContext {
@@ -324,12 +335,14 @@ impl AgentSession {
                 let compact_provider = Arc::clone(&provider);
                 let compact_model = model.clone();
                 let compact_system = system_prompt.clone();
+                let compact_hook = on_compacted.clone();
                 config.maybe_compact = Some(Box::new(move |messages: &[AgentMessage]| {
                     let compactor = Arc::clone(&compactor);
                     let shared = Arc::clone(&compact_shared);
                     let provider = Arc::clone(&compact_provider);
                     let model = compact_model.clone();
                     let system_prompt = compact_system.clone();
+                    let hook = compact_hook.clone();
                     let messages = messages.to_vec();
                     Box::pin(async move {
                         let store = shared
@@ -338,7 +351,7 @@ impl AgentSession {
                             .map(|handle| handle.clone())
                             .unwrap_or_default();
                         let signal = yi_loop::interrupt::InterruptSignal::default();
-                        compactor
+                        let replaced = compactor
                             .maybe_compact(
                                 &messages,
                                 &model,
@@ -347,7 +360,13 @@ impl AgentSession {
                                 store.as_ref(),
                                 &signal,
                             )
-                            .await
+                            .await;
+                        if replaced.is_some()
+                            && let Some(hook) = &hook
+                        {
+                            hook();
+                        }
+                        replaced
                     })
                 }));
             }
@@ -430,6 +449,11 @@ impl AgentSession {
             Some(new_messages) => {
                 if let Ok(mut slot) = self.shared.messages.lock() {
                     *slot = new_messages;
+                }
+                if let Ok(slot) = self.on_compacted.lock()
+                    && let Some(hook) = slot.as_ref()
+                {
+                    hook();
                 }
                 true
             }

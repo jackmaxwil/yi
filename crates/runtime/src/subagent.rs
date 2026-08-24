@@ -586,6 +586,19 @@ pub fn attach_runtime(session: &mut AgentSession, wiring: RuntimeWiring) -> Arc<
             })),
         },
     ));
+    {
+        let service = Arc::clone(&service);
+        let notice = session.notice_hook();
+        session.set_on_compacted(Arc::new(move || {
+            let service = Arc::clone(&service);
+            let notice = Arc::clone(&notice);
+            tokio::spawn(async move {
+                if let Some(text) = service.sync_after_compaction().await {
+                    notice(&text);
+                }
+            });
+        }));
+    }
     let mut tools = (wiring.tools)();
     tools.push(crate::kernel::ipython_tool(service));
     session.use_tools(tools, wiring.cwd.clone(), wiring.broker.clone());

@@ -226,3 +226,62 @@ async fn namespace_snapshot_revives_across_kernels() -> TestResult {
     let _ = std::fs::remove_dir_all(&dir);
     Ok(())
 }
+
+#[tokio::test]
+async fn prune_removes_oversized_variables_and_list_names_reports() -> TestResult {
+    let dir = std::env::temp_dir().join(format!("yi-prune-e2e-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let kernel = manager_with_snapshot(Some(KernelSnapshotConfig {
+        path: snapshot_path_in(&dir),
+        manifest_path: manifest_path_in(&dir),
+        max_bytes: None,
+        // Tiny cap so the test does not have to allocate 16 MiB.
+        max_variable_bytes: Some(1_024),
+        debounce_ms: None,
+    }))?;
+
+    let cell = kernel
+        .execute("small = 7\nbig = 'x' * 100_000", ExecuteOptions::default())
+        .await?;
+    assert_eq!(cell.status, ExecuteStatus::Ok);
+
+    let names = kernel
+        .list_namespace_names()
+        .await
+        .ok_or("list_namespace_names")?;
+    assert!(
+        names.contains(&"big".to_owned()) && names.contains(&"small".to_owned()),
+        "listing must report user names: {names:?}"
+    );
+    assert!(
+        !names.iter().any(|name| name == "In" || name == "Out"),
+        "listing must filter IPython-injected names"
+    );
+
+    let pruned = kernel
+        .prune_oversized_variables()
+        .await
+        .ok_or("prune result")?;
+    assert_eq!(
+        pruned.pruned,
+        vec!["big".to_owned()],
+        "the over-cap variable must be pruned"
+    );
+    assert!(
+        pruned.saved.contains(&"small".to_owned()),
+        "under-cap variables must survive a prune"
+    );
+
+    let gone = kernel.execute("big", ExecuteOptions::default()).await?;
+    assert_eq!(
+        gone.error.as_ref().map(|error| error.ename.as_str()),
+        Some("NameError"),
+        "a pruned variable must be deleted from the live namespace"
+    );
+    let kept = kernel.execute("small", ExecuteOptions::default()).await?;
+    assert_eq!(kept.result.as_deref(), Some("7"));
+
+    kernel.dispose().await;
+    let _ = std::fs::remove_dir_all(&dir);
+    Ok(())
+}
