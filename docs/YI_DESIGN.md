@@ -1277,7 +1277,7 @@ Chosen: **Yi**. Binary `yi`, crates `yi-*`, config `~/.yi/`, env `YI_*`, Python 
 | 2b | hashline read/edit; `yi-permission` (ask/auto/yolo, rules, holds) | OMP error-text parity tests |
 | 3 | `yi-context` P2–P14, P16–P18; auto-compaction | compaction e2e; attribution |
 | 4 | `yi-kernel` + venv bootstrap + `ipython`; `runtime::subagent` via `rlm()` | prime `agent-session-recursion` scenarios (depth 1) |
-| 4b | dill snapshot/restore | |
+| 4b | dill snapshot/restore | namespace revives across real kernels; unpicklable skipped; dispose flush + restore notice |
 | 5 | `runtime::schedule` (in-process), `runtime::advisor` | heartbeat + advisor e2e, `/advisor stats` |
 | 5b | `yi-acp` v2 server | v2 client (Afterlife) drives Yi end-to-end |
 | 6 | `yi serve` daemon over ACP v2; goals | reconnect keeps heartbeats |

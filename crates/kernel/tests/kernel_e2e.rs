@@ -7,7 +7,9 @@ use yi_kernel::bootstrap::{
 };
 use yi_kernel::client::{
     AbortFlag, ExecuteOptions, HostFuture, HostHandlers, KernelManager, KernelOptions,
+    KernelSnapshotConfig,
 };
+use yi_kernel::snapshot::{manifest_path_in, snapshot_path_in};
 use yi_types::kernel::ExecuteStatus;
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
@@ -34,6 +36,10 @@ fn home() -> PathBuf {
 }
 
 fn manager() -> Result<KernelManager, String> {
+    manager_with_snapshot(None)
+}
+
+fn manager_with_snapshot(snapshot: Option<KernelSnapshotConfig>) -> Result<KernelManager, String> {
     let python = ensure_kernel_python(&BootstrapOptions {
         on_progress: Some(Box::new(|message| eprintln!("{message}"))),
         home: home(),
@@ -49,6 +55,7 @@ fn manager() -> Result<KernelManager, String> {
         runtime_source_dir: default_runtime_source_dir(),
         host: Some(Arc::new(EchoHost)),
         on_progress: None,
+        snapshot,
     })
 }
 
@@ -148,5 +155,74 @@ async fn cells_stream_error_host_request_interrupt_and_shutdown() -> TestResult 
     );
     let dead = kernel.execute("1", ExecuteOptions::default()).await;
     assert!(dead.is_err(), "a shut-down kernel must refuse new cells");
+    Ok(())
+}
+
+#[tokio::test]
+async fn namespace_snapshot_revives_across_kernels() -> TestResult {
+    let dir = std::env::temp_dir().join(format!("yi-snap-e2e-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let config = KernelSnapshotConfig {
+        path: snapshot_path_in(&dir),
+        manifest_path: manifest_path_in(&dir),
+        max_bytes: None,
+        max_variable_bytes: None,
+        debounce_ms: None,
+    };
+
+    let first = manager_with_snapshot(Some(config.clone()))?;
+    let restore = first.restore_state().await.ok_or("restore result")?;
+    assert!(
+        restore.restored.is_empty() && restore.failed.is_empty(),
+        "a missing snapshot file must report an empty restore, not an error"
+    );
+    let cell = first
+        .execute(
+            "x = 41\nwords = ['a', 'b']\nunpicklable = (i for i in [1])",
+            ExecuteOptions::default(),
+        )
+        .await?;
+    assert_eq!(cell.status, ExecuteStatus::Ok);
+    let snapshot = first.snapshot_state().await.ok_or("snapshot result")?;
+    assert!(
+        snapshot.saved.contains(&"x".to_owned()) && snapshot.saved.contains(&"words".to_owned()),
+        "user variables must be saved: {:?}",
+        snapshot.saved
+    );
+    assert!(
+        snapshot
+            .skipped
+            .iter()
+            .any(|skip| skip.name == "unpicklable"),
+        "an unpicklable variable must be skipped, not fatal: {:?}",
+        snapshot.skipped
+    );
+    assert!(
+        !snapshot
+            .saved
+            .iter()
+            .any(|name| name == "In" || name == "Out"),
+        "IPython-injected names must never be snapshotted"
+    );
+    assert!(snapshot.bytes > 0 && config.path.is_file());
+    first.dispose().await;
+
+    let second = manager_with_snapshot(Some(config.clone()))?;
+    let restore = second.restore_state().await.ok_or("restore result")?;
+    assert!(
+        restore.restored.contains(&"x".to_owned()),
+        "a fresh kernel must revive snapshotted names: {restore:?}"
+    );
+    let cell = second
+        .execute("print(x + 1, words)", ExecuteOptions::default())
+        .await?;
+    assert!(
+        cell.stdout.contains("42 ['a', 'b']"),
+        "revived values must be usable: {} {}",
+        cell.stdout,
+        cell.stderr
+    );
+    second.dispose().await;
+    let _ = std::fs::remove_dir_all(&dir);
     Ok(())
 }

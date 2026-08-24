@@ -21,7 +21,7 @@ use crate::{
     DEFAULT_MAX_OUTPUT_CHARS, HOST_REQUEST_DISPOSE_TIMEOUT_MS, IOPUB_SUBSCRIBE_DELAY_MS,
     KERNEL_ABORT_GRACE_MS, KERNEL_BUSY_AFTER_INTERRUPT_MESSAGE, KERNEL_BUSY_INTERRUPT_INTERVAL_MS,
     KERNEL_BUSY_REUSE_WAIT_MS, KERNEL_SHUTDOWN_TIMEOUT_MS, MAX_LATE_SENT_AGENT_MESSAGE_HANDLERS,
-    PORTS_RESOLVE_TIMEOUT_MS, READY_TIMEOUT_MS,
+    PORTS_RESOLVE_TIMEOUT_MS, READY_TIMEOUT_MS, SNAPSHOT_DISPOSE_TIMEOUT_MS,
 };
 
 const STDERR_TAIL_CAP: usize = 16_384;
@@ -71,6 +71,17 @@ pub trait HostHandlers: Send + Sync {
     fn dispatch(&self, request_type: &str, payload: Map<String, Value>) -> Option<HostFuture>;
 }
 
+/// Where and how the kernel namespace is persisted (design K10). Only
+/// sessions with an artifact directory get a revivable snapshot.
+#[derive(Debug, Clone)]
+pub struct KernelSnapshotConfig {
+    pub path: PathBuf,
+    pub manifest_path: PathBuf,
+    pub max_bytes: Option<u64>,
+    pub max_variable_bytes: Option<u64>,
+    pub debounce_ms: Option<u64>,
+}
+
 pub struct KernelOptions {
     pub python: Option<PathBuf>,
     pub cwd: Option<PathBuf>,
@@ -80,6 +91,7 @@ pub struct KernelOptions {
     pub runtime_source_dir: PathBuf,
     pub host: Option<Arc<dyn HostHandlers>>,
     pub on_progress: Option<Arc<ProgressFn>>,
+    pub snapshot: Option<KernelSnapshotConfig>,
 }
 
 pub type StreamFn = dyn FnMut(&str, &str) + Send;
@@ -153,10 +165,12 @@ pub(crate) struct Inner {
     pub(crate) kernel_stderr: Mutex<String>,
     pub(crate) in_flight_host: Mutex<Vec<tokio::task::JoinHandle<()>>>,
     pub(crate) child_pid: Mutex<Option<u32>>,
+    pub(crate) snapshot: Option<KernelSnapshotConfig>,
+    pub(crate) snapshot_timer: Mutex<Option<tokio::task::JoinHandle<()>>>,
 }
 
 pub struct KernelManager {
-    inner: Arc<Inner>,
+    pub(crate) inner: Arc<Inner>,
 }
 
 fn boot_gate() -> &'static Arc<tokio::sync::Semaphore> {
@@ -414,8 +428,17 @@ impl Inner {
         self.idle_notify.notify_waiters();
     }
 
+    pub(crate) fn clear_snapshot_timer(&self) {
+        if let Ok(mut timer) = self.snapshot_timer.lock()
+            && let Some(task) = timer.take()
+        {
+            task.abort();
+        }
+    }
+
     pub(crate) fn cleanup_resources(self: &Arc<Self>) {
         self.start_generation.fetch_add(1, Ordering::SeqCst);
+        self.clear_snapshot_timer();
         if let Ok(mut handlers) = self.late_handlers.lock() {
             handlers.clear();
         }
@@ -524,6 +547,8 @@ impl KernelManager {
                 kernel_stderr: Mutex::new(String::new()),
                 in_flight_host: Mutex::new(Vec::new()),
                 child_pid: Mutex::new(None),
+                snapshot: options.snapshot,
+                snapshot_timer: Mutex::new(None),
             }),
         })
     }
@@ -790,7 +815,18 @@ impl KernelManager {
         if self.inner.state() == Lifecycle::Shutdown {
             return Err(ExecuteError::ShutDown);
         }
-        self.execute_inner(code, options).await
+        let internal = options.internal;
+        let result = self.execute_inner(code, options).await;
+        // Refresh the on-disk snapshot after real work so a later resume (or a
+        // crash before graceful shutdown) revives the most recent namespace.
+        if !internal
+            && result
+                .as_ref()
+                .is_ok_and(|result| result.status == ExecuteStatus::Ok)
+        {
+            self.schedule_snapshot();
+        }
+        result
     }
 
     async fn wait_for_active_to_clear_for_reuse(
@@ -1002,7 +1038,20 @@ impl KernelManager {
 
     pub async fn dispose(&self) {
         let inner = &self.inner;
+        // Captured before any await: teardowns and newer starts bump the counter.
         let generation = inner.start_generation.load(Ordering::SeqCst);
+        // Final namespace flush while the kernel is still live (session end),
+        // bounded so a wedged kernel can't hang dispose; the debounced on-disk
+        // copy is the fallback if this is exceeded.
+        if inner.snapshot.is_some() && self.is_running() {
+            inner.clear_snapshot_timer();
+            let deadline = std::time::Duration::from_millis(SNAPSHOT_DISPOSE_TIMEOUT_MS);
+            let _ = tokio::time::timeout(deadline, self.snapshot_state()).await;
+        }
+        if inner.stale(generation) {
+            // Superseded mid-flush: the newer owner already cleaned this kernel.
+            return;
+        }
         inner.set_state(Lifecycle::Shutdown);
         let in_flight: Vec<_> = inner
             .in_flight_host

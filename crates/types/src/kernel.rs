@@ -142,6 +142,42 @@ pub struct BootstrapVersion {
     pub extra_args: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub skills: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub snapshot: Option<String>,
     #[serde(flatten)]
     pub extra: Map<String, Value>,
+}
+
+/// One name the snapshot/restore helpers could not process, with a short
+/// reason (design K10).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct KernelSnapshotSkip {
+    pub name: String,
+    #[serde(default)]
+    pub reason: String,
+}
+
+/// Marker-line result of one namespace snapshot (design K10). The kernel-side
+/// helper prints it as a single JSON line after the result marker.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct KernelSnapshotResult {
+    #[serde(default)]
+    pub saved: Vec<String>,
+    #[serde(default)]
+    pub skipped: Vec<KernelSnapshotSkip>,
+    #[serde(default)]
+    pub bytes: u64,
+    #[serde(default)]
+    pub path: String,
+}
+
+/// Marker-line result of one namespace restore (design K10).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct KernelRestoreResult {
+    #[serde(default)]
+    pub restored: Vec<String>,
+    #[serde(default)]
+    pub failed: Vec<KernelSnapshotSkip>,
+    #[serde(default)]
+    pub path: String,
 }

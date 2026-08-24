@@ -7,6 +7,7 @@ pub mod framing;
 pub mod journal;
 pub(crate) mod pump;
 pub mod reduce;
+pub mod snapshot;
 
 // Generous backstop for a kernel that is alive but wedged: crashes are detected
 // within one 25ms poll via the exit handler, warm boots return in under a second,

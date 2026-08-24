@@ -1,0 +1,88 @@
+use std::error::Error;
+use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
+
+use yi_runtime::{HostRegistry, KernelService, KernelServiceOptions, restore_notice_text};
+use yi_tools::{CancelFlag, KernelBridge};
+
+type TestResult = Result<(), Box<dyn Error>>;
+
+async fn cell(
+    service: &Arc<KernelService>,
+    code: &'static str,
+) -> Result<yi_tools::KernelCellOutcome, String> {
+    let service = Arc::clone(service);
+    tokio::task::spawn_blocking(move || {
+        let cancelled: CancelFlag = Arc::new(|| false);
+        KernelBridge::execute_cell(service.as_ref(), code, &cancelled)
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+fn service(session_dir: &std::path::Path, notices: &Arc<Mutex<Vec<String>>>) -> Arc<KernelService> {
+    let mut registry = HostRegistry::default();
+    registry.register_mcp_stubs();
+    let notices = Arc::clone(notices);
+    Arc::new(KernelService::new(KernelServiceOptions {
+        cwd: std::env::temp_dir(),
+        home: std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .unwrap_or_default(),
+        session_dir: Some(session_dir.to_path_buf()),
+        host: Arc::new(registry),
+        on_restore: Some(Arc::new(move |restore| {
+            if let Ok(mut queue) = notices.lock() {
+                queue.push(restore_notice_text(restore));
+            }
+        })),
+    }))
+}
+
+#[tokio::test]
+async fn session_dir_snapshot_revives_through_the_service() -> TestResult {
+    let dir = std::env::temp_dir().join(format!("yi-snap-svc-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir)?;
+    let notices = Arc::new(Mutex::new(Vec::new()));
+
+    let first = service(&dir, &notices);
+    let outcome = cell(&first, "answer = 42")
+        .await
+        .map_err(|e| e.to_string())?;
+    assert_eq!(outcome.result.status, yi_types::kernel::ExecuteStatus::Ok);
+    first.dispose().await;
+    assert!(
+        notices
+            .lock()
+            .map(|queue| queue.is_empty())
+            .unwrap_or(false),
+        "no snapshot existed, so the first boot must not announce a restore"
+    );
+    assert!(
+        dir.join("kernel-state.dill").is_file(),
+        "dispose must flush a final snapshot to the session dir"
+    );
+
+    let second = service(&dir, &notices);
+    let outcome = cell(&second, "print(answer)")
+        .await
+        .map_err(|e| e.to_string())?;
+    assert!(
+        outcome.result.stdout.contains("42"),
+        "a fresh kernel must revive the prior namespace: {} {}",
+        outcome.result.stdout,
+        outcome.result.stderr
+    );
+    let announced = notices
+        .lock()
+        .map(|queue| queue.join("\n"))
+        .unwrap_or_default();
+    assert!(
+        announced.contains("<ipython_state_restored>") && announced.contains("answer"),
+        "the model must be told which names were revived, only after bootstrap: {announced}"
+    );
+    second.dispose().await;
+    let _ = std::fs::remove_dir_all(&dir);
+    Ok(())
+}

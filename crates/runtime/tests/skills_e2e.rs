@@ -121,6 +121,7 @@ async fn bundled_python_skills_work_through_the_kernel() -> TestResult {
             .unwrap_or_default(),
         session_dir: None,
         host: Arc::new(registry),
+        on_restore: None,
     }));
 
     let status_cell = cell(

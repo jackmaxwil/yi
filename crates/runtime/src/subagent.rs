@@ -574,12 +574,16 @@ pub fn attach_runtime(session: &mut AgentSession, wiring: RuntimeWiring) -> Arc<
         attribute: session.attribution_handle(),
     }));
     host.register(&mut registry);
+    let restore_notice = session.notice_hook();
     let service = Arc::new(crate::kernel::KernelService::new(
         crate::kernel::KernelServiceOptions {
             cwd: wiring.cwd.clone(),
             home: wiring.home.clone(),
             session_dir: Some(wiring.rlm_dir.clone()),
             host: Arc::new(registry),
+            on_restore: Some(Arc::new(move |restore| {
+                restore_notice(&crate::kernel::restore_notice_text(restore));
+            })),
         },
     ));
     let mut tools = (wiring.tools)();

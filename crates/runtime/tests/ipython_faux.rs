@@ -80,6 +80,7 @@ async fn ipython_tool_runs_a_cell_through_the_full_agent_loop() -> Result<(), Bo
         home: home(),
         session_dir: None,
         host: Arc::new(registry),
+        on_restore: None,
     }));
     let mut tools = yi_tools::builtin_tools();
     tools.push(ipython_tool(Arc::clone(&service)));

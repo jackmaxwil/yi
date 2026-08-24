@@ -6,6 +6,7 @@ use yi_types::kernel::BootstrapVersion;
 pub const BOOTSTRAP_SCHEMA: u64 = 1;
 const PYTHON_VERSION: &str = "3.11";
 const IPYKERNEL_REQUIREMENT: &str = "ipykernel";
+const STATE_SNAPSHOT_REQUIREMENT: &str = "dill";
 pub const DEFAULT_RLM_EXTRA_UV_ARGS: [&str; 12] = [
     "requests",
     "httpx",
@@ -302,6 +303,7 @@ fn bootstrap_version_current(version: Option<&BootstrapVersion>, runtime_identit
             && version.runtime == runtime_identity
             && version.extra_args == DEFAULT_RLM_EXTRA_UV_ARGS
             && version.skills == expected_skills()
+            && version.snapshot.as_deref() == Some(STATE_SNAPSHOT_REQUIREMENT)
     })
 }
 
@@ -315,6 +317,7 @@ fn write_bootstrap_version(venv: &Path, runtime_identity: &str) -> Result<(), St
             .map(|arg| (*arg).to_owned())
             .collect(),
         skills: expected_skills(),
+        snapshot: Some(STATE_SNAPSHOT_REQUIREMENT.to_owned()),
         extra: serde_json::Map::new(),
     };
     let text = serde_json::to_string(&version).map_err(|error| error.to_string())?;
@@ -434,6 +437,7 @@ fn bootstrap_venv(
         "--python",
         &python_text,
         IPYKERNEL_REQUIREMENT,
+        STATE_SNAPSHOT_REQUIREMENT,
         &runtime_dir,
     ];
     install.extend(DEFAULT_RLM_EXTRA_UV_ARGS);
@@ -539,6 +543,7 @@ mod tests {
                 .map(|arg| (*arg).to_owned())
                 .collect(),
             skills: expected_skills(),
+            snapshot: Some(STATE_SNAPSHOT_REQUIREMENT.to_owned()),
             extra: serde_json::Map::new(),
         }
     }
@@ -560,6 +565,12 @@ mod tests {
             Some(&wrong_extras),
             "sha256:abc"
         ));
+        let mut no_snapshot = version("sha256:abc");
+        no_snapshot.snapshot = None;
+        assert!(
+            !bootstrap_version_current(Some(&no_snapshot), "sha256:abc"),
+            "a pre-dill venv must rebuild once"
+        );
         assert!(!bootstrap_version_current(None, "sha256:abc"));
     }
 

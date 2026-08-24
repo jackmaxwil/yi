@@ -9,7 +9,9 @@ pub mod subagent;
 pub mod tools;
 
 pub use compaction::{CompactStatus, Compactor};
-pub use kernel::{HostRegistry, KernelService, KernelServiceOptions, ipython_tool};
+pub use kernel::{
+    HostRegistry, KernelService, KernelServiceOptions, ipython_tool, restore_notice_text,
+};
 pub use permission::{AskOutcome, Asker, PermissionBroker};
 pub use provider::{ProviderStream, available_models, resolve_model};
 pub use session::{AgentSession, SessionConfig, SessionError, Status};

@@ -178,11 +178,14 @@ impl HostHandlers for HostRegistry {
     }
 }
 
+pub type RestoreNoticeFn = dyn Fn(&yi_types::kernel::KernelRestoreResult) + Send + Sync;
+
 pub struct KernelServiceOptions {
     pub cwd: PathBuf,
     pub home: PathBuf,
     pub session_dir: Option<PathBuf>,
     pub host: Arc<dyn HostHandlers>,
+    pub on_restore: Option<Arc<RestoreNoticeFn>>,
 }
 
 /// Lazy kernel provisioner (prime `IpythonKernelProvisioner`, adapted): boots
@@ -236,6 +239,20 @@ impl KernelService {
             }
             *slot = None;
         }
+        // Only sessions with an on-disk directory get a revivable snapshot
+        // (design K10) — prime's artifact-dir gate.
+        let snapshot = self.options.session_dir.as_deref().map(|dir| {
+            yi_kernel::client::KernelSnapshotConfig {
+                path: yi_kernel::snapshot::snapshot_path_in(dir),
+                manifest_path: yi_kernel::snapshot::manifest_path_in(dir),
+                max_bytes: None,
+                max_variable_bytes: None,
+                debounce_ms: None,
+            }
+        });
+        let snapshot_existed = snapshot
+            .as_ref()
+            .is_some_and(|config| config.path.is_file());
         let manager = Arc::new(KernelManager::new(KernelOptions {
             python: None,
             cwd: Some(self.options.cwd.clone()),
@@ -245,8 +262,17 @@ impl KernelService {
             runtime_source_dir: yi_kernel::bootstrap::default_runtime_source_dir(),
             host: Some(Arc::clone(&self.options.host)),
             on_progress: Some(Arc::new(|message: &str| eprintln!("{message}"))),
+            snapshot,
         })?);
         manager.start().await?;
+        // Revive a prior namespace before the bootstrap cell, so the bootstrap
+        // then overwrites live handles (rlm, skills) on top of anything
+        // restored (design K10).
+        let pending_restore = if snapshot_existed {
+            Some(manager.restore_state().await.unwrap_or_default())
+        } else {
+            None
+        };
         let imports: Vec<&str> = yi_kernel::bootstrap::PYTHON_SKILLS
             .iter()
             .map(|(import_name, _)| *import_name)
@@ -267,6 +293,11 @@ impl KernelService {
             return Err(format!(
                 "Failed to initialize rlm runtime in the IPython kernel:\n{details}"
             ));
+        }
+        // Only tell the model what was revived once the kernel is actually
+        // usable — a restore notice must never outlive a failed bootstrap.
+        if let (Some(restore), Some(on_restore)) = (pending_restore, &self.options.on_restore) {
+            on_restore(&restore);
         }
         *slot = Some(Arc::clone(&manager));
         Ok(manager)
@@ -336,6 +367,35 @@ impl KernelService {
 
 pub fn ipython_tool(service: Arc<KernelService>) -> Arc<dyn yi_tools::Tool> {
     Arc::new(yi_tools::IpythonTool { bridge: service })
+}
+
+/// Model-facing notice for a completed restore (prime
+/// `_onIpythonStateRestored`, adapted).
+pub fn restore_notice_text(restore: &yi_types::kernel::KernelRestoreResult) -> String {
+    let mut lines = vec!["<ipython_state_restored>".to_owned()];
+    if restore.restored.is_empty() {
+        lines.push(
+            "Your previous IPython kernel state could not be revived; the kernel is starting fresh, so re-create any variables, imports, or loaded data you need.".to_owned(),
+        );
+    } else {
+        lines.push(format!(
+            "Your IPython kernel state was revived from your previous session. These names are available again: {}.",
+            restore.restored.join(", ")
+        ));
+    }
+    if !restore.failed.is_empty() {
+        let names: Vec<&str> = restore
+            .failed
+            .iter()
+            .map(|failure| failure.name.as_str())
+            .collect();
+        lines.push(format!(
+            "These could not be restored and must be recreated if needed: {}.",
+            names.join(", ")
+        ));
+    }
+    lines.push("</ipython_state_restored>".to_owned());
+    lines.join("\n")
 }
 
 impl KernelBridge for KernelService {
