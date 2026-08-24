@@ -37,7 +37,7 @@ yi-acp = { path = "crates/acp" }
 yi-tui = { path = "crates/tui" }
 yi-cli = { path = "crates/cli" }
 serde = { version = "1", default-features = false, features = ["derive", "std"] }
-serde_json = { version = "1", default-features = false, features = ["std"] }
+serde_json = { version = "1", default-features = false, features = ["std", "preserve_order"] }
 thiserror = "2"
 
 [workspace.lints.clippy]

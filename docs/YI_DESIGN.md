@@ -1370,7 +1370,7 @@ size builds only as an experiment, never required.
 
 | Crate | Why | Features | Size class | Alternative considered |
 |---|---|---|---|---|
-| `serde`, `serde_json` | pi-ai wire compat, session JSONL, RPC, ACP | `derive`; json `std` only | medium (unavoidable) | hand-rolled JSON rejected — compat correctness matters more |
+| `serde`, `serde_json` | pi-ai wire compat, session JSONL, RPC, ACP | `derive`; json `std` + `preserve_order` (pulls `indexmap` — required: byte-identical round-trip of Pi files means arbitrary JSON objects must keep key order) | medium (unavoidable) | hand-rolled JSON rejected — compat correctness matters more |
 | `tokio` | async runtime for provider streams, kernel sockets, scheduler timer | `rt`, `sync`, `time`, `io-util`, `net`, `process`, `macros`; **no** `rt-multi-thread` unless measured | medium | `smol` smaller but `zeromq` and `agent-client-protocol` are tokio-shaped |
 | `ureq` + `rustls` + `rustls-platform-verifier` | HTTP + SSE streaming to providers; blocking client driven from `spawn_blocking`, body read incrementally | `rustls`, no `json`, no `brotli`; platform verifier ⇒ **no bundled root store** | small | `reqwest` rejected: hyper + tower + h2 stack ≈ +1.5–2.5 MiB; `native-tls` rejected: openssl on Linux |
 | `zeromq` (pure Rust) | Jupyter channels (DEALER/SUB) | `tokio-runtime`, no `tcp-transport` extras beyond TCP | medium | `zmq` (libzmq FFI) rejected by rule 4; custom shim rejected to keep prime's Python verbatim |
