@@ -61,7 +61,7 @@ pub fn calculate_cost(model: &Model, usage: &mut yi_types::message::Usage) {
     );
     let mut matched: i128 = -1;
     for tier in model.cost.tiers.as_deref().unwrap_or_default() {
-        if u128::from(input_tokens) > u128::from(tier.input_tokens_above)
+        if i128::from(input_tokens) > i128::from(tier.input_tokens_above)
             && i128::from(tier.input_tokens_above) > matched
         {
             rates = (

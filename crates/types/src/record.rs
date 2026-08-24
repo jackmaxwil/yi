@@ -145,3 +145,110 @@ pub enum LaneRecord {
         timestamp: u64,
     },
 }
+
+impl LaneRecord {
+    pub fn id(&self) -> &str {
+        match self {
+            Self::OperationStarted { id, .. }
+            | Self::AbortRequested { id, .. }
+            | Self::OperationFinished { id, .. }
+            | Self::StepAttempt { id, .. }
+            | Self::ToolStarted { id, .. }
+            | Self::QueueEnqueued { id, .. }
+            | Self::QueueCancelled { id, .. }
+            | Self::WriteDeferred { id, .. }
+            | Self::Usage { id, .. } => id,
+        }
+    }
+
+    pub fn lane(&self) -> &str {
+        match self {
+            Self::OperationStarted { lane, .. }
+            | Self::AbortRequested { lane, .. }
+            | Self::OperationFinished { lane, .. }
+            | Self::StepAttempt { lane, .. }
+            | Self::ToolStarted { lane, .. }
+            | Self::QueueEnqueued { lane, .. }
+            | Self::QueueCancelled { lane, .. }
+            | Self::WriteDeferred { lane, .. }
+            | Self::Usage { lane, .. } => lane,
+        }
+    }
+
+    pub fn seq(&self) -> u64 {
+        match self {
+            Self::OperationStarted { seq, .. }
+            | Self::AbortRequested { seq, .. }
+            | Self::OperationFinished { seq, .. }
+            | Self::StepAttempt { seq, .. }
+            | Self::ToolStarted { seq, .. }
+            | Self::QueueEnqueued { seq, .. }
+            | Self::QueueCancelled { seq, .. }
+            | Self::WriteDeferred { seq, .. }
+            | Self::Usage { seq, .. } => *seq,
+        }
+    }
+
+    pub fn type_name(&self) -> &'static str {
+        match self {
+            Self::OperationStarted { .. } => "operation_started",
+            Self::AbortRequested { .. } => "abort_requested",
+            Self::OperationFinished { .. } => "operation_finished",
+            Self::StepAttempt { .. } => "step_attempt",
+            Self::ToolStarted { .. } => "tool_started",
+            Self::QueueEnqueued { .. } => "queue_enqueued",
+            Self::QueueCancelled { .. } => "queue_cancelled",
+            Self::WriteDeferred { .. } => "write_deferred",
+            Self::Usage { .. } => "usage",
+        }
+    }
+
+    pub fn run_id(&self) -> Option<&str> {
+        match self {
+            Self::OperationStarted { .. } => None,
+            Self::AbortRequested { run_id, .. }
+            | Self::OperationFinished { run_id, .. }
+            | Self::StepAttempt { run_id, .. }
+            | Self::ToolStarted { run_id, .. }
+            | Self::WriteDeferred { run_id, .. } => Some(run_id),
+            Self::QueueEnqueued { run_id, .. }
+            | Self::QueueCancelled { run_id, .. }
+            | Self::Usage { run_id, .. } => run_id.as_deref(),
+        }
+    }
+
+    pub fn operation_kind(&self) -> Option<&'static str> {
+        match self {
+            Self::OperationStarted { intent, .. } => Some(match intent {
+                OperationIntent::Run { .. } => "run",
+                OperationIntent::Compaction { .. } => "compaction",
+                OperationIntent::Navigation { .. } => "navigation",
+            }),
+            _ => None,
+        }
+    }
+
+    pub fn usage(&self) -> Option<&Usage> {
+        match self {
+            Self::Usage { usage, .. } => Some(usage),
+            _ => None,
+        }
+    }
+
+    pub fn assign(&mut self, new_seq: u64, new_timestamp: u64) {
+        match self {
+            Self::OperationStarted { seq, timestamp, .. }
+            | Self::AbortRequested { seq, timestamp, .. }
+            | Self::OperationFinished { seq, timestamp, .. }
+            | Self::StepAttempt { seq, timestamp, .. }
+            | Self::ToolStarted { seq, timestamp, .. }
+            | Self::QueueEnqueued { seq, timestamp, .. }
+            | Self::QueueCancelled { seq, timestamp, .. }
+            | Self::WriteDeferred { seq, timestamp, .. }
+            | Self::Usage { seq, timestamp, .. } => {
+                *seq = new_seq;
+                *timestamp = new_timestamp;
+            }
+        }
+    }
+}

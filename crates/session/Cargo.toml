@@ -5,5 +5,11 @@ edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+yi-types.workspace = true
+
 [lints]
 workspace = true

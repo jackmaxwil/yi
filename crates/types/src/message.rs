@@ -64,15 +64,17 @@ pub struct Cost {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Usage {
-    pub input: u64,
-    pub output: u64,
-    pub cache_read: u64,
-    pub cache_write: u64,
+    pub input: i64,
+    pub output: i64,
+    pub cache_read: i64,
+    pub cache_write: i64,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub cache_write1h: Option<u64>,
+    pub cache_write1h: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub reasoning: Option<u64>,
-    pub total_tokens: u64,
+    pub reasoning: Option<i64>,
+    // Pi writes negative token deltas in usage adjustment records; unsigned fields
+    // would fail to load those session files.
+    pub total_tokens: i64,
     pub cost: Cost,
 }
 

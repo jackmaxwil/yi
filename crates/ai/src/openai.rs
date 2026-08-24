@@ -290,18 +290,18 @@ fn map_finish_reason(reason: &str) -> (StopReason, Option<String>) {
 }
 
 fn parse_chunk_usage(raw: &Value, model: &Model) -> Usage {
-    let get = |value: &Value, key: &str| value.get(key).and_then(Value::as_u64).unwrap_or(0);
+    let get = |value: &Value, key: &str| value.get(key).and_then(Value::as_i64).unwrap_or(0);
     let prompt = get(raw, "prompt_tokens");
     let details = raw.get("prompt_tokens_details");
     let cache_read = details
         .and_then(|value| value.get("cached_tokens"))
-        .and_then(Value::as_u64)
-        .or_else(|| raw.get("prompt_cache_hit_tokens").and_then(Value::as_u64))
-        .or_else(|| raw.get("cached_tokens").and_then(Value::as_u64))
+        .and_then(Value::as_i64)
+        .or_else(|| raw.get("prompt_cache_hit_tokens").and_then(Value::as_i64))
+        .or_else(|| raw.get("cached_tokens").and_then(Value::as_i64))
         .unwrap_or(0);
     let cache_write = details
         .and_then(|value| value.get("cache_write_tokens"))
-        .and_then(Value::as_u64)
+        .and_then(Value::as_i64)
         .unwrap_or(0);
     let input = prompt
         .saturating_sub(cache_read)
@@ -315,7 +315,7 @@ fn parse_chunk_usage(raw: &Value, model: &Model) -> Usage {
     usage.reasoning = raw
         .get("completion_tokens_details")
         .and_then(|value| value.get("reasoning_tokens"))
-        .and_then(Value::as_u64);
+        .and_then(Value::as_i64);
     usage.total_tokens = input
         .saturating_add(output)
         .saturating_add(cache_read)

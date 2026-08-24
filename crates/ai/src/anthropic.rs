@@ -395,7 +395,7 @@ impl Mapper {
                     }
                 }
                 let usage_value = &message["usage"];
-                let read = |key: &str| usage_value.get(key).and_then(Value::as_u64).unwrap_or(0);
+                let read = |key: &str| usage_value.get(key).and_then(Value::as_i64).unwrap_or(0);
                 {
                     let usage = self.usage_mut();
                     usage.input = read("input_tokens");
@@ -405,7 +405,7 @@ impl Mapper {
                     let write1h = usage_value
                         .get("cache_creation")
                         .and_then(|creation| creation.get("ephemeral_1h_input_tokens"))
-                        .and_then(Value::as_u64)
+                        .and_then(Value::as_i64)
                         .unwrap_or(0);
                     usage.cache_write1h = Some(write1h);
                 }
@@ -644,8 +644,8 @@ impl Mapper {
                 }
                 if let Some(usage_value) = payload.get("usage") {
                     let usage = self.usage_mut();
-                    let update = |target: &mut u64, key: &str| {
-                        if let Some(value) = usage_value.get(key).and_then(Value::as_u64) {
+                    let update = |target: &mut i64, key: &str| {
+                        if let Some(value) = usage_value.get(key).and_then(Value::as_i64) {
                             *target = value;
                         }
                     };
@@ -656,7 +656,7 @@ impl Mapper {
                     if let Some(reasoning) = usage_value
                         .get("output_tokens_details")
                         .and_then(|details| details.get("thinking_tokens"))
-                        .and_then(Value::as_u64)
+                        .and_then(Value::as_i64)
                     {
                         usage.reasoning = Some(reasoning);
                     }
