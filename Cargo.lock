@@ -122,6 +122,10 @@ version = "0.1.0"
 [[package]]
 name = "yi-ai"
 version = "0.1.0"
+dependencies = [
+ "serde_json",
+ "yi-types",
+]
 
 [[package]]
 name = "yi-cli"

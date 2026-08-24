@@ -42,7 +42,10 @@ pub enum Fact {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[expect(clippy::large_enum_variant, reason = "wire DTOs mirror the JSON; variants are parse-then-drop, boxing buys nothing")]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "wire DTOs mirror the JSON; variants are parse-then-drop, boxing buys nothing"
+)]
 #[serde(tag = "kind", rename_all = "lowercase")]
 pub enum Mutation {
     Entry {
