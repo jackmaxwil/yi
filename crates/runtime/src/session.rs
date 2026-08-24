@@ -173,12 +173,11 @@ impl AgentSession {
             }));
             let emit_shared = Arc::clone(&shared);
             let mut emit = move |event: AgentEvent| {
-                if let AgentEvent::MessageEnd { message } = &event {
-                    if let AgentMessage::Assistant { usage, .. } = message {
-                        if let Ok(mut last) = emit_shared.last_usage.lock() {
-                            *last = Some(usage.clone());
-                        }
-                    }
+                if let AgentEvent::MessageEnd { message } = &event
+                    && let AgentMessage::Assistant { usage, .. } = message
+                    && let Ok(mut last) = emit_shared.last_usage.lock()
+                {
+                    *last = Some(usage.clone());
                 }
                 let _ = emit_shared.events.send(event);
             };

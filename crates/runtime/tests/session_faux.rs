@@ -50,7 +50,7 @@ async fn prompt_runs_to_idle_with_events() -> Result<(), Box<dyn Error>> {
     );
     let mut events = session.subscribe();
     session.prompt("hi")?;
-    assert!(matches!(session.prompt("again"), Err(_)));
+    assert!(session.prompt("again").is_err());
     session.wait_idle().await;
     assert_eq!(session.status(), Status::Idle);
     let mut kinds = Vec::new();

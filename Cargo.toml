@@ -39,6 +39,7 @@ yi-cli = { path = "crates/cli" }
 serde = { version = "1", default-features = false, features = ["derive", "std"] }
 serde_json = { version = "1", default-features = false, features = ["std", "preserve_order"] }
 thiserror = "2"
+lexopt = "0.3"
 tokio = { version = "1", default-features = false, features = ["rt", "sync", "time", "macros"] }
 ureq = { version = "2", default-features = false, features = ["tls", "native-certs"] }
 
