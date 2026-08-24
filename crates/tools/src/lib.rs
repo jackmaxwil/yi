@@ -2,6 +2,7 @@
 
 mod builtins;
 mod exec;
+pub mod hashline;
 mod process;
 mod tool;
 
