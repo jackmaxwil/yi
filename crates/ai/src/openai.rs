@@ -5,6 +5,7 @@ use yi_types::message::{AgentMessage, Content, StopReason, Usage, UserContent};
 use yi_types::model::{LlmContext, Model, ToolDef};
 
 use crate::catalog::calculate_cost;
+use crate::compat::{compat_bool, compat_str};
 use crate::json_salvage::{parse_json_with_repair, parse_streaming_json};
 use crate::transform::transform_messages;
 
@@ -69,7 +70,7 @@ fn convert_messages(model: &Model, context: &LlmContext) -> Vec<Value> {
     );
     let mut params: Vec<Value> = Vec::new();
     if !context.system_prompt.is_empty() {
-        let role = if model.reasoning {
+        let role = if model.reasoning && compat_bool(model, "supportsDeveloperRole", true) {
             "developer"
         } else {
             "system"
@@ -103,7 +104,7 @@ fn convert_messages(model: &Model, context: &LlmContext) -> Vec<Value> {
                 }
             },
             AgentMessage::Assistant { content, .. } => {
-                if let Some(message) = assistant_param(content) {
+                if let Some(message) = assistant_param(model, content) {
                     params.push(message);
                 }
             }
@@ -117,7 +118,7 @@ fn convert_messages(model: &Model, context: &LlmContext) -> Vec<Value> {
     params
 }
 
-fn assistant_param(content: &[Content]) -> Option<Value> {
+fn assistant_param(model: &Model, content: &[Content]) -> Option<Value> {
     {
         let text: String = content
             .iter()
@@ -169,6 +170,12 @@ fn assistant_param(content: &[Content]) -> Option<Value> {
         }
         if !tool_calls.is_empty() {
             message["tool_calls"] = Value::Array(tool_calls);
+        }
+        if compat_bool(model, "requiresReasoningContentOnAssistantMessages", false)
+            && model.reasoning
+            && message.get("reasoning_content").is_none()
+        {
+            message["reasoning_content"] = Value::String(String::new());
         }
         let has_content = message["content"].is_string();
         if has_content || message.get("tool_calls").is_some() {
@@ -282,18 +289,40 @@ pub fn build_params(model: &Model, context: &LlmContext, options: &OpenAiOptions
     {
         params["tools"] = Value::Array(convert_tools(tools));
     }
-    if model.reasoning
-        && let Some(effort) = &options.reasoning_effort
-    {
-        let mapped = model
-            .thinking_level_map
-            .as_ref()
-            .and_then(|map| map.get(effort.as_str()))
-            .and_then(Value::as_str)
-            .unwrap_or(effort);
-        params["reasoning_effort"] = json!(mapped);
+    if model.reasoning {
+        apply_reasoning_params(model, options, &mut params);
     }
     params
+}
+
+fn mapped_effort<'a>(model: &'a Model, effort: &'a str) -> &'a str {
+    model
+        .thinking_level_map
+        .as_ref()
+        .and_then(|map| map.get(effort))
+        .and_then(Value::as_str)
+        .unwrap_or(effort)
+}
+
+fn apply_reasoning_params(model: &Model, options: &OpenAiOptions, params: &mut Value) {
+    if compat_str(model, "thinkingFormat") == Some("openrouter") {
+        let off = model
+            .thinking_level_map
+            .as_ref()
+            .and_then(|map| map.get("off"));
+        match &options.reasoning_effort {
+            Some(effort) => {
+                params["reasoning"] = json!({"effort": mapped_effort(model, effort)});
+            }
+            None if !matches!(off, Some(Value::Null)) => {
+                params["reasoning"] =
+                    json!({"effort": off.and_then(Value::as_str).unwrap_or("none")});
+            }
+            None => {}
+        }
+    } else if let Some(effort) = &options.reasoning_effort {
+        params["reasoning_effort"] = json!(mapped_effort(model, effort));
+    }
 }
 
 fn map_finish_reason(reason: &str) -> (StopReason, Option<String>) {

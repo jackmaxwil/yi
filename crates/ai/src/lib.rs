@@ -3,6 +3,7 @@
 pub mod anthropic;
 pub mod auth;
 pub mod catalog;
+mod compat;
 pub mod faux;
 pub mod json_salvage;
 pub mod openai;

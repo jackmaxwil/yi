@@ -5,6 +5,7 @@ use yi_types::message::{AgentMessage, Content, StopReason, Usage, UserContent};
 use yi_types::model::{LlmContext, Model, ToolDef};
 
 use crate::catalog::calculate_cost;
+use crate::compat::compat_bool;
 use crate::json_salvage::{parse_json_with_repair, parse_streaming_json};
 use crate::transform::{normalize_anthropic_tool_call_id, transform_messages};
 
@@ -28,15 +29,6 @@ pub struct AnthropicOptions {
     pub temperature: Option<f64>,
     pub thinking: Thinking,
     pub cache: bool,
-}
-
-fn compat_bool(model: &Model, key: &str, default: bool) -> bool {
-    model
-        .compat
-        .as_ref()
-        .and_then(|compat| compat.get(key))
-        .and_then(Value::as_bool)
-        .unwrap_or(default)
 }
 
 fn text_block(text: &str) -> Value {

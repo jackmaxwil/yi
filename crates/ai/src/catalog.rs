@@ -5,6 +5,7 @@ use yi_types::model::Model;
 
 const ANTHROPIC_DATA: &str = include_str!("../data/anthropic.json");
 const OPENAI_DATA: &str = include_str!("../data/openai.json");
+const OPENROUTER_DATA: &str = include_str!("../data/openrouter.json");
 
 fn parse_catalog(data: &str, models: &mut HashMap<(String, String), Model>) {
     let Ok(Value::Object(by_api)) = serde_json::from_str::<Value>(data) else {
@@ -31,6 +32,7 @@ impl Catalog {
         let mut models = HashMap::new();
         parse_catalog(ANTHROPIC_DATA, &mut models);
         parse_catalog(OPENAI_DATA, &mut models);
+        parse_catalog(OPENROUTER_DATA, &mut models);
         Self { models }
     }
 

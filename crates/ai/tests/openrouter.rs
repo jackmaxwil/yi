@@ -1,0 +1,131 @@
+use serde_json::json;
+use std::error::Error;
+use yi_ai::catalog::Catalog;
+use yi_ai::openai::{ChunkMapper, OpenAiOptions, build_params};
+use yi_types::message::{AgentMessage, Content, StopReason, Usage, UserContent};
+use yi_types::model::{LlmContext, Model};
+
+type TestResult = Result<(), Box<dyn Error>>;
+
+const TARGET: &str = "deepseek/deepseek-v4-flash-0731";
+
+fn target_model() -> Result<Model, Box<dyn Error>> {
+    Catalog::bundled()
+        .get("openrouter", TARGET)
+        .cloned()
+        .ok_or_else(|| format!("bundled catalog is missing openrouter/{TARGET}").into())
+}
+
+fn history_context() -> LlmContext {
+    LlmContext {
+        system_prompt: "be terse".to_owned(),
+        messages: vec![
+            AgentMessage::User {
+                content: UserContent::Text("hi".to_owned()),
+                timestamp: 0,
+            },
+            AgentMessage::Assistant {
+                content: vec![Content::Text {
+                    text: "hello".to_owned(),
+                    text_signature: None,
+                }],
+                api: "openai-completions".to_owned(),
+                provider: "openrouter".to_owned(),
+                model: TARGET.to_owned(),
+                response_model: None,
+                response_id: None,
+                diagnostics: None,
+                usage: Usage::zero(),
+                stop_reason: StopReason::Stop,
+                deferred: None,
+                error_message: None,
+                raw_stop_reason: None,
+                end_turn: None,
+                timestamp: 0,
+            },
+            AgentMessage::User {
+                content: UserContent::Text("again".to_owned()),
+                timestamp: 0,
+            },
+        ],
+        tools: None,
+    }
+}
+
+#[test]
+fn bundled_catalog_resolves_the_dev_target_model() -> TestResult {
+    let model = target_model()?;
+    assert_eq!(model.api, "openai-completions");
+    assert_eq!(model.base_url, "https://openrouter.ai/api/v1");
+    assert!(model.reasoning);
+    Ok(())
+}
+
+#[test]
+fn build_params_honors_the_openrouter_compat_flags() -> TestResult {
+    let model = target_model()?;
+    let params = build_params(
+        &model,
+        &history_context(),
+        &OpenAiOptions {
+            reasoning_effort: Some("high".to_owned()),
+            session_id: Some("session-1".to_owned()),
+            ..OpenAiOptions::default()
+        },
+    );
+
+    assert_eq!(params["messages"][0]["role"], "system");
+    assert_eq!(params["reasoning"], json!({"effort": "high"}));
+    assert!(params.get("reasoning_effort").is_none());
+    assert!(params.get("store").is_none());
+    assert!(params.get("prompt_cache_key").is_none());
+    let assistant = &params["messages"][2];
+    assert_eq!(assistant["role"], "assistant");
+    assert_eq!(assistant["reasoning_content"], "");
+    Ok(())
+}
+
+#[test]
+fn build_params_defaults_reasoning_effort_to_none_when_unset() -> TestResult {
+    let model = target_model()?;
+    let params = build_params(&model, &history_context(), &OpenAiOptions::default());
+    assert_eq!(params["reasoning"], json!({"effort": "none"}));
+    Ok(())
+}
+
+#[test]
+fn chunk_mapper_captures_openrouter_reasoning_deltas_and_cached_usage() -> TestResult {
+    let model = target_model()?;
+    let mut mapper = ChunkMapper::new(&model);
+    for chunk in [
+        json!({"id": "gen-1", "choices": [{"delta": {"reasoning": "thinking about it"}}]}),
+        json!({"id": "gen-1", "choices": [{"delta": {"content": "the answer"}}]}),
+        json!({"id": "gen-1", "choices": [{"delta": {}, "finish_reason": "stop"}],
+               "usage": {"prompt_tokens": 100, "completion_tokens": 20,
+                          "prompt_tokens_details": {"cached_tokens": 60}}}),
+    ] {
+        mapper.push_chunk(&chunk);
+    }
+    let events = mapper.finish();
+    let Some(yi_types::event::AssistantMessageEvent::Done { reason, message }) = events.last()
+    else {
+        return Err(format!("expected done event: {:?}", events.last()).into());
+    };
+    let AgentMessage::Assistant { content, usage, .. } = message else {
+        return Err("expected assistant message".into());
+    };
+    assert_eq!(*reason, StopReason::Stop);
+    assert!(content.iter().any(|block| matches!(
+        block,
+        Content::Thinking { thinking, thinking_signature, .. }
+            if thinking == "thinking about it" && thinking_signature.as_deref() == Some("reasoning")
+    )));
+    assert!(content.iter().any(|block| matches!(
+        block,
+        Content::Text { text, .. } if text == "the answer"
+    )));
+    assert_eq!(usage.cache_read, 60);
+    assert_eq!(usage.input, 40);
+    assert_eq!(usage.output, 20);
+    Ok(())
+}

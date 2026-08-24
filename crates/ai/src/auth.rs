@@ -20,6 +20,7 @@ pub fn api_key(provider: &str) -> Option<Secret> {
     let variable = match provider {
         "anthropic" => "ANTHROPIC_API_KEY",
         "openai" => "OPENAI_API_KEY",
+        "openrouter" => "OPENROUTER_API_KEY",
         _ => return None,
     };
     std::env::var(variable)

@@ -25,7 +25,7 @@ struct Args {
 fn parse_args() -> Result<Args, lexopt::Error> {
     use lexopt::prelude::*;
     let mut command = String::new();
-    let mut model = "anthropic/claude-opus-4-5".to_owned();
+    let mut model = None;
     let mut system = String::new();
     let mut thinking = None;
     let mut json = false;
@@ -39,7 +39,7 @@ fn parse_args() -> Result<Args, lexopt::Error> {
             Long("version") => {
                 command = "version".to_owned();
             }
-            Long("model") => model = parser.value()?.string()?,
+            Long("model") => model = Some(parser.value()?.string()?),
             Long("system") => system = parser.value()?.string()?,
             Long("thinking") => thinking = Some(parser.value()?.string()?),
             Long("json") => json = true,
@@ -59,7 +59,7 @@ fn parse_args() -> Result<Args, lexopt::Error> {
     }
     Ok(Args {
         command,
-        model,
+        model: model.or_else(configured_model).unwrap_or_default(),
         system,
         thinking,
         json,
@@ -113,6 +113,18 @@ fn render_text(event: &AgentEvent) -> Option<String> {
     }
 }
 
+/// Yi has no built-in default model; the user's config carries it.
+fn configured_model() -> Option<String> {
+    let home = std::env::var_os("HOME")?;
+    let path = std::path::Path::new(&home).join(".yi/config.json");
+    let content = std::fs::read_to_string(path).ok()?;
+    let config: serde_json::Value = serde_json::from_str(&content).ok()?;
+    config
+        .get("model")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned)
+}
+
 fn effective_cwd(args: &Args) -> std::path::PathBuf {
     args.cwd.as_ref().map_or_else(
         || std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")),
@@ -121,6 +133,12 @@ fn effective_cwd(args: &Args) -> std::path::PathBuf {
 }
 
 fn build_session(args: &Args) -> Result<AgentSession, i32> {
+    if args.model.is_empty() {
+        eprintln!(
+            "error: no model configured (pass --model provider/id or set \"model\" in ~/.yi/config.json)"
+        );
+        return Err(2);
+    }
     let Some(model) = resolve(&args.model) else {
         eprintln!("error: unknown model {} (use provider/id)", args.model);
         return Err(2);
