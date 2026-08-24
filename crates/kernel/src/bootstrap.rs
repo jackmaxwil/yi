@@ -37,6 +37,7 @@ pub struct BootstrapOptions {
     pub on_progress: Option<Box<ProgressFn>>,
     pub home: PathBuf,
     pub runtime_source_dir: PathBuf,
+    pub skills_source_dir: PathBuf,
 }
 
 impl BootstrapOptions {
@@ -54,6 +55,21 @@ pub fn default_runtime_source_dir() -> PathBuf {
         .join("..")
         .join("python")
         .join("yi_runtime")
+}
+
+/// Bundled Python skills installed into the kernel venv (design §3):
+/// (import name, directory under python/skills). Install order is declared
+/// order — the dependency toposort is excised until a skill grows a sibling
+/// dep.
+pub const PYTHON_SKILLS: [(&str, &str); 2] =
+    [("compact", "compact"), ("attach_image", "attach-image")];
+
+pub fn default_skills_source_dir() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+        .join("python")
+        .join("skills")
 }
 
 fn env_path(name: &str) -> Option<PathBuf> {
@@ -207,14 +223,36 @@ fn ensure_uv(options: &BootstrapOptions) -> Result<PathBuf, String> {
 }
 
 pub fn resolve_runtime_identity(source_dir: &Path) -> Result<String, String> {
-    // A failure here must surface rather than fall back to a static identity:
-    // recording one for a local checkout would permanently mask later source changes.
+    resolve_python_identity(source_dir, None)
+}
+
+/// Content hash of the runtime package plus (when present) the bundled skills
+/// tree: any Python change invalidates the venv. A failure here must surface
+/// rather than fall back to a static identity — recording one would
+/// permanently mask later source changes.
+pub fn resolve_python_identity(
+    source_dir: &Path,
+    skills_dir: Option<&Path>,
+) -> Result<String, String> {
     let mut files = vec![source_dir.join("pyproject.toml")];
     collect_py_files(&source_dir.join("src").join("rlm"), &mut files)?;
+    if let Some(skills_dir) = skills_dir {
+        for (_, subdir) in PYTHON_SKILLS {
+            let skill_dir = skills_dir.join(subdir);
+            if skill_dir.is_dir() {
+                files.push(skill_dir.join("pyproject.toml"));
+                collect_py_files(&skill_dir.join("src"), &mut files)?;
+            }
+        }
+    }
     files.sort();
     let mut hash = Sha256::new();
     for file in &files {
-        let relative = file.strip_prefix(source_dir).unwrap_or(file);
+        let relative = file
+            .strip_prefix(source_dir)
+            .ok()
+            .or_else(|| skills_dir.and_then(|dir| file.strip_prefix(dir).ok()))
+            .unwrap_or(file);
         hash.update(relative.to_string_lossy().as_bytes());
         hash.update(b"\0");
         let contents =
@@ -250,12 +288,20 @@ fn read_bootstrap_version(venv: &Path) -> Option<BootstrapVersion> {
     serde_json::from_str(&text).ok()
 }
 
+fn expected_skills() -> Vec<String> {
+    PYTHON_SKILLS
+        .iter()
+        .map(|(import_name, _)| (*import_name).to_owned())
+        .collect()
+}
+
 fn bootstrap_version_current(version: Option<&BootstrapVersion>, runtime_identity: &str) -> bool {
     version.is_some_and(|version| {
         version.schema == BOOTSTRAP_SCHEMA
             && version.ipykernel == IPYKERNEL_REQUIREMENT
             && version.runtime == runtime_identity
             && version.extra_args == DEFAULT_RLM_EXTRA_UV_ARGS
+            && version.skills == expected_skills()
     })
 }
 
@@ -268,7 +314,7 @@ fn write_bootstrap_version(venv: &Path, runtime_identity: &str) -> Result<(), St
             .iter()
             .map(|arg| (*arg).to_owned())
             .collect(),
-        skills: Vec::new(),
+        skills: expected_skills(),
         extra: serde_json::Map::new(),
     };
     let text = serde_json::to_string(&version).map_err(|error| error.to_string())?;
@@ -392,6 +438,28 @@ fn bootstrap_venv(
     ];
     install.extend(DEFAULT_RLM_EXTRA_UV_ARGS);
     run(&uv, &install, false)?;
+    for (import_name, subdir) in PYTHON_SKILLS {
+        let skill_dir = options.skills_source_dir.join(subdir);
+        if !skill_dir.is_dir() {
+            options.progress(&format!(
+                "Warning: Python skill {import_name} source missing at {}; skipping",
+                skill_dir.display()
+            ));
+            continue;
+        }
+        let skill_text = skill_dir.to_string_lossy().into_owned();
+        if let Err(error) = run(
+            &uv,
+            &["pip", "install", "--python", &python_text, &skill_text],
+            false,
+        ) {
+            // A broken skill degrades to its unavailable wrapper in the
+            // bootstrap cell; it must never fail the whole venv.
+            options.progress(&format!(
+                "Warning: Python skill {import_name} failed to install and will be unavailable: {error}"
+            ));
+        }
+    }
     write_bootstrap_version(venv, runtime_identity)
 }
 
@@ -431,7 +499,10 @@ pub fn ensure_kernel_python(options: &BootstrapOptions) -> Result<PathBuf, Strin
 
     let venv = resolve_writable_venv_dir(&options.home)?;
     let python = venv.join("bin").join("python");
-    let runtime_identity = resolve_runtime_identity(&options.runtime_source_dir)?;
+    let runtime_identity = resolve_python_identity(
+        &options.runtime_source_dir,
+        Some(&options.skills_source_dir),
+    )?;
     if kernel_ready(&python, &venv, &runtime_identity) {
         return Ok(python);
     }
@@ -467,7 +538,7 @@ mod tests {
                 .iter()
                 .map(|arg| (*arg).to_owned())
                 .collect(),
-            skills: Vec::new(),
+            skills: expected_skills(),
             extra: serde_json::Map::new(),
         }
     }

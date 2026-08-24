@@ -27,6 +27,7 @@ pub struct Compactor {
     scope: Scope,
     window: Mutex<Window>,
     pending: AtomicBool,
+    instructions: Mutex<Option<String>>,
 }
 
 fn lock_window(window: &Mutex<Window>) -> std::sync::MutexGuard<'_, Window> {
@@ -97,7 +98,7 @@ async fn complete_text(
     Err("summarizer stream ended without a terminal event".to_owned())
 }
 
-fn directive_message(prepared: &Preparation) -> AgentMessage {
+fn directive_message(prepared: &Preparation, instructions: Option<&str>) -> AgentMessage {
     let mut text = String::new();
     if let Some(previous) = &prepared.previous_summary {
         text.push_str(&format!(
@@ -105,7 +106,7 @@ fn directive_message(prepared: &Preparation) -> AgentMessage {
         ));
     }
     text.push_str(&prompts::build_summarization_prompt(
-        None,
+        instructions,
         prepared.previous_summary.as_deref(),
     ));
     AgentMessage::User {
@@ -121,10 +122,22 @@ impl Compactor {
             scope: Scope::BodyAfterPrefix,
             window: Mutex::new(Window::new_initial(initial_window_id)),
             pending: AtomicBool::new(false),
+            instructions: Mutex::new(None),
         }
     }
 
     pub fn schedule(&self) {
+        self.pending.store(true, Ordering::Relaxed);
+    }
+
+    /// Schedule with optional summary-focus instructions (the kernel
+    /// `compact.run` path); a later call replaces earlier instructions.
+    pub fn schedule_with_instructions(&self, instructions: Option<String>) {
+        if let Ok(mut slot) = self.instructions.lock()
+            && instructions.is_some()
+        {
+            *slot = instructions;
+        }
         self.pending.store(true, Ordering::Relaxed);
     }
 
@@ -193,6 +206,11 @@ impl Compactor {
             return None;
         }
         self.pending.store(false, Ordering::Relaxed);
+        let instructions = self
+            .instructions
+            .lock()
+            .ok()
+            .and_then(|mut slot| slot.take());
         let entries: Vec<Entry> = match store {
             Some(store) => yi_session::lock_session(store)
                 .find_entries_on_branch(
@@ -211,7 +229,7 @@ impl Compactor {
             system_prompt: system_prompt.to_owned(),
             messages: {
                 let mut converted = convert_to_llm(window_messages);
-                converted.push(directive_message(&prepared));
+                converted.push(directive_message(&prepared, instructions.as_deref()));
                 converted
             },
             tools: None,

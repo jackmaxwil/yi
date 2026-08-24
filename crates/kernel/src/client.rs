@@ -670,6 +670,7 @@ impl KernelManager {
                 }),
                 home,
                 runtime_source_dir: runtime,
+                skills_source_dir: crate::bootstrap::default_skills_source_dir(),
             };
             ensure_kernel_python(&options)
         })

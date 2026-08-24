@@ -475,6 +475,7 @@ impl SubagentHost {
                 "id": model.id,
                 "name": model.name,
                 "selector": format!("{}/{}", model.provider, model.id),
+                "input": model.input,
             })
             .as_object()
             .cloned()
@@ -510,16 +511,33 @@ pub fn attach_runtime(session: &mut AgentSession, wiring: RuntimeWiring) -> Arc<
     let mut registry = crate::kernel::HostRegistry::default();
     registry.register_mcp_stubs();
     if let Some(compactor) = session.compactor() {
-        let schedule = Arc::clone(&compactor);
-        registry.register("compact.run", move |_payload| {
-            schedule.schedule();
-            Box::pin(async { Ok(Map::new()) })
+        // compact.run only schedules and returns — running inline would abort
+        // the turn whose cell awaits the reply (design §6).
+        registry.register("compact.run", move |payload| {
+            let instructions = payload
+                .get("instructions")
+                .and_then(Value::as_str)
+                .map(str::to_owned);
+            compactor.schedule_with_instructions(instructions);
+            Box::pin(async {
+                let mut reply = Map::new();
+                reply.insert("scheduled".to_owned(), Value::Bool(true));
+                Ok(reply)
+            })
         });
+    }
+    if let Some(status) = session.compact_status_handle() {
         registry.register("compact.status", move |_payload| {
-            let scheduled = compactor.scheduled();
+            let status = status();
             Box::pin(async move {
                 let mut reply = Map::new();
-                reply.insert("scheduled".to_owned(), Value::Bool(scheduled));
+                reply.insert("tokens".to_owned(), Value::from(status.tokens));
+                reply.insert(
+                    "context_window".to_owned(),
+                    Value::from(status.context_window),
+                );
+                reply.insert("percent".to_owned(), Value::from(status.percent));
+                reply.insert("scheduled".to_owned(), Value::Bool(status.scheduled));
                 Ok(reply)
             })
         });

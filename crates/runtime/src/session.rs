@@ -449,6 +449,26 @@ impl AgentSession {
         })
     }
 
+    /// Detached compact-status reader for host handlers (kernel
+    /// `compact.status`): captures shared state and a model snapshot taken
+    /// now — a later `set_model` leaves percent computed against the old
+    /// window until re-wired.
+    pub fn compact_status_handle(
+        &self,
+    ) -> Option<Arc<dyn Fn() -> crate::compaction::CompactStatus + Send + Sync>> {
+        let compactor = self.compactor.clone()?;
+        let shared = Arc::clone(&self.shared);
+        let model = self.model();
+        Some(Arc::new(move || {
+            let messages = shared
+                .messages
+                .lock()
+                .map(|messages| messages.clone())
+                .unwrap_or_default();
+            compactor.status(&messages, &model)
+        }))
+    }
+
     /// Detached form of [`Self::attribute_child_usage`] usable after the
     /// session moves: the hook holds only the shared state.
     pub fn attribution_handle(&self) -> Arc<dyn Fn(&Usage) + Send + Sync> {

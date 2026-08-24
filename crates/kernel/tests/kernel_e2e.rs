@@ -2,7 +2,9 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use serde_json::{Map, Value};
-use yi_kernel::bootstrap::{BootstrapOptions, default_runtime_source_dir, ensure_kernel_python};
+use yi_kernel::bootstrap::{
+    BootstrapOptions, default_runtime_source_dir, default_skills_source_dir, ensure_kernel_python,
+};
 use yi_kernel::client::{
     AbortFlag, ExecuteOptions, HostFuture, HostHandlers, KernelManager, KernelOptions,
 };
@@ -36,6 +38,7 @@ fn manager() -> Result<KernelManager, String> {
         on_progress: Some(Box::new(|message| eprintln!("{message}"))),
         home: home(),
         runtime_source_dir: default_runtime_source_dir(),
+        skills_source_dir: default_skills_source_dir(),
     })?;
     KernelManager::new(KernelOptions {
         python: Some(python),

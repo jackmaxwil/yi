@@ -8,9 +8,9 @@ use yi_kernel::client::{
 };
 use yi_tools::{CancelFlag, KernelBridge, KernelCellOutcome};
 
-/// Bootstrap cell (prime `ipython.ts:23-143`, no Python skills yet): binds
-/// `rlm` and `mcp` in the namespace, or a loud placeholder when the runtime
-/// package is missing.
+/// Base bootstrap cell (prime `ipython.ts:23-143`): binds `rlm` and `mcp` in
+/// the namespace, or a loud placeholder when the runtime package is missing.
+/// Bundled Python skills are appended by [`rlm_bootstrap_code`].
 pub const RLM_BOOTSTRAP_CODE: &str = r#"
 import asyncio
 import os as _prime_agent_os
@@ -57,6 +57,84 @@ except Exception as _prime_agent_rlm_error:
 
     rlm = _PrimeAgentMissingRlm()
 "#;
+
+const SKILL_WRAPPER_CODE: &str = r#"
+import importlib as _prime_agent_importlib
+import inspect as _prime_agent_inspect
+import sys as _prime_agent_sys
+import types as _prime_agent_types
+
+class _PrimeAgentCallableSkillModule(_prime_agent_types.ModuleType):
+    async def __call__(self, *args, **kwargs):
+        result = self.run(*args, **kwargs)
+        if _prime_agent_inspect.isawaitable(result):
+            return await result
+        return result
+
+class _PrimeAgentUnavailableSkill:
+    def __init__(self, name, error):
+        self.__name__ = name
+        self._prime_agent_import_error = error
+        self.__doc__ = f"Python skill {name} is unavailable: {error}"
+
+    async def run(self, *args, **kwargs):
+        raise RuntimeError(
+            f"Python skill {self.__name__} is unavailable in this IPython kernel. "
+            f"Import error: {self._prime_agent_import_error}"
+        )
+
+    async def __call__(self, *args, **kwargs):
+        return await self.run(*args, **kwargs)
+
+    def __repr__(self):
+        return f"<unavailable Python skill {self.__name__!r}: {self._prime_agent_import_error}>"
+
+def _prime_agent_wrap_skill_module(module):
+    run = getattr(module, "run", None)
+    if not callable(run):
+        return module
+    if isinstance(module, _PrimeAgentCallableSkillModule):
+        return module
+    wrapped = _PrimeAgentCallableSkillModule(module.__name__)
+    wrapped.__dict__.update(module.__dict__)
+    try:
+        wrapped.__signature__ = _prime_agent_inspect.signature(run)
+    except Exception:
+        pass
+    doc = getattr(run, "__doc__", None)
+    if doc:
+        wrapped.__doc__ = doc
+    _prime_agent_sys.modules[module.__name__] = wrapped
+    return wrapped
+
+_PRIME_AGENT_SKILL_IMPORT_ERRORS = {}
+
+for _prime_agent_skill_name in %IMPORTS%:
+    try:
+        globals()[_prime_agent_skill_name] = _prime_agent_wrap_skill_module(
+            _prime_agent_importlib.import_module(_prime_agent_skill_name)
+        )
+    except Exception as _prime_agent_skill_error:
+        _PRIME_AGENT_SKILL_IMPORT_ERRORS[_prime_agent_skill_name] = str(_prime_agent_skill_error)
+        globals()[_prime_agent_skill_name] = _PrimeAgentUnavailableSkill(
+            _prime_agent_skill_name,
+            str(_prime_agent_skill_error),
+        )
+"#;
+
+/// Full bootstrap cell (prime `buildRlmBootstrapCode`): the base cell plus
+/// the skill-module wrapper for every bundled Python skill.
+pub fn rlm_bootstrap_code(import_names: &[&str]) -> String {
+    if import_names.is_empty() {
+        return RLM_BOOTSTRAP_CODE.trim().to_owned();
+    }
+    let imports = serde_json::to_string(import_names).unwrap_or_else(|_| "[]".to_owned());
+    format!(
+        "{}\n{}",
+        RLM_BOOTSTRAP_CODE.trim(),
+        SKILL_WRAPPER_CODE.replace("%IMPORTS%", &imports).trim()
+    )
+}
 
 pub type HostHandlerFn = dyn Fn(Map<String, Value>) -> HostFuture + Send + Sync;
 
@@ -169,8 +247,12 @@ impl KernelService {
             on_progress: Some(Arc::new(|message: &str| eprintln!("{message}"))),
         })?);
         manager.start().await?;
+        let imports: Vec<&str> = yi_kernel::bootstrap::PYTHON_SKILLS
+            .iter()
+            .map(|(import_name, _)| *import_name)
+            .collect();
         let bootstrap = manager
-            .execute(RLM_BOOTSTRAP_CODE.trim(), ExecuteOptions::default())
+            .execute(&rlm_bootstrap_code(&imports), ExecuteOptions::default())
             .await
             .map_err(|error| error.to_string())?;
         if bootstrap.status != yi_types::kernel::ExecuteStatus::Ok {
