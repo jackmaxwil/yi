@@ -1,5 +1,15 @@
 use serde::{Deserialize, Serialize};
-use serde_json::Number;
+use serde_json::{Number, Value};
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CostTier {
+    pub input_tokens_above: u64,
+    pub input: Number,
+    pub output: Number,
+    pub cache_read: Number,
+    pub cache_write: Number,
+}
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -8,6 +18,8 @@ pub struct ModelCost {
     pub output: Number,
     pub cache_read: Number,
     pub cache_write: Number,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tiers: Option<Vec<CostTier>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -23,6 +35,12 @@ pub struct Model {
     pub cost: ModelCost,
     pub context_window: u64,
     pub max_tokens: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub compat: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub thinking_level_map: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub headers: Option<Value>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

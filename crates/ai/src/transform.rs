@@ -1,0 +1,251 @@
+use std::collections::{HashMap, HashSet};
+
+use yi_types::message::{AgentMessage, Content, StopReason};
+use yi_types::model::Model;
+
+fn is_vision(model: &Model) -> bool {
+    model.input.iter().any(|kind| kind == "image")
+}
+
+fn downgrade_images(content: &[Content], placeholder: &str) -> Vec<Content> {
+    let mut result = Vec::new();
+    let mut previous_was_placeholder = false;
+    for block in content {
+        if matches!(block, Content::Image { .. }) {
+            if !previous_was_placeholder {
+                result.push(Content::Text {
+                    text: placeholder.to_owned(),
+                    text_signature: None,
+                });
+            }
+            previous_was_placeholder = true;
+            continue;
+        }
+        previous_was_placeholder =
+            matches!(block, Content::Text { text, .. } if text == placeholder);
+        result.push(block.clone());
+    }
+    result
+}
+
+pub fn normalize_anthropic_tool_call_id(id: &str) -> String {
+    id.chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() || character == '_' || character == '-' {
+                character
+            } else {
+                '_'
+            }
+        })
+        .take(64)
+        .collect()
+}
+
+/// Port of pi-ai transformMessages: cross-model content downgrades, tool-call
+/// id normalization, dropped errored/aborted assistants, synthetic tool
+/// results for orphaned calls.
+pub fn transform_messages(
+    messages: &[AgentMessage],
+    model: &Model,
+    normalize_id: Option<fn(&str) -> String>,
+) -> Vec<AgentMessage> {
+    let vision = is_vision(model);
+    let mut id_map: HashMap<String, String> = HashMap::new();
+    let mut transformed: Vec<AgentMessage> = Vec::new();
+
+    for message in messages {
+        match message {
+            AgentMessage::User { content, timestamp } => {
+                let content = match content {
+                    yi_types::message::UserContent::Blocks(blocks) if !vision => {
+                        yi_types::message::UserContent::Blocks(downgrade_images(
+                            blocks,
+                            "(image omitted: model does not support images)",
+                        ))
+                    }
+                    other => other.clone(),
+                };
+                transformed.push(AgentMessage::User {
+                    content,
+                    timestamp: *timestamp,
+                });
+            }
+            AgentMessage::ToolResult {
+                tool_call_id,
+                tool_name,
+                content,
+                details,
+                usage,
+                added_tool_names,
+                is_error,
+                timestamp,
+            } => {
+                let content = if vision {
+                    content.clone()
+                } else {
+                    downgrade_images(
+                        content,
+                        "(tool image omitted: model does not support images)",
+                    )
+                };
+                let tool_call_id = id_map
+                    .get(tool_call_id)
+                    .cloned()
+                    .unwrap_or_else(|| tool_call_id.clone());
+                transformed.push(AgentMessage::ToolResult {
+                    tool_call_id,
+                    tool_name: tool_name.clone(),
+                    content,
+                    details: details.clone(),
+                    usage: usage.clone(),
+                    added_tool_names: added_tool_names.clone(),
+                    is_error: *is_error,
+                    timestamp: *timestamp,
+                });
+            }
+            AgentMessage::Assistant {
+                content,
+                api,
+                provider,
+                model: message_model,
+                stop_reason,
+                ..
+            } => {
+                if *stop_reason == StopReason::Error || *stop_reason == StopReason::Aborted {
+                    continue;
+                }
+                let same_model =
+                    provider == &model.provider && api == &model.api && message_model == &model.id;
+                let mut new_content: Vec<Content> = Vec::new();
+                for block in content {
+                    match block {
+                        Content::Thinking {
+                            thinking,
+                            thinking_signature,
+                            redacted,
+                        } => {
+                            if redacted == &Some(true) {
+                                if same_model {
+                                    new_content.push(block.clone());
+                                }
+                                continue;
+                            }
+                            let has_signature = thinking_signature
+                                .as_deref()
+                                .is_some_and(|signature| !signature.trim().is_empty());
+                            if same_model && has_signature {
+                                new_content.push(block.clone());
+                                continue;
+                            }
+                            if thinking.trim().is_empty() {
+                                continue;
+                            }
+                            if same_model {
+                                new_content.push(block.clone());
+                            } else {
+                                new_content.push(Content::Text {
+                                    text: thinking.clone(),
+                                    text_signature: None,
+                                });
+                            }
+                        }
+                        Content::ToolCall {
+                            id,
+                            name,
+                            arguments,
+                            thought_signature,
+                            namespace,
+                        } => {
+                            let thought_signature = if same_model {
+                                thought_signature.clone()
+                            } else {
+                                None
+                            };
+                            let id = if !same_model {
+                                if let Some(normalize) = normalize_id {
+                                    let normalized = normalize(id);
+                                    if normalized != *id {
+                                        id_map.insert(id.clone(), normalized.clone());
+                                    }
+                                    normalized
+                                } else {
+                                    id.clone()
+                                }
+                            } else {
+                                id.clone()
+                            };
+                            new_content.push(Content::ToolCall {
+                                id,
+                                name: name.clone(),
+                                arguments: arguments.clone(),
+                                thought_signature,
+                                namespace: namespace.clone(),
+                            });
+                        }
+                        other => new_content.push(other.clone()),
+                    }
+                }
+                let mut kept = message.clone();
+                if let AgentMessage::Assistant { content, .. } = &mut kept {
+                    *content = new_content;
+                }
+                transformed.push(kept);
+            }
+            _ => {}
+        }
+    }
+
+    let mut result: Vec<AgentMessage> = Vec::new();
+    let mut pending: Vec<(String, String)> = Vec::new();
+    let mut seen_results: HashSet<String> = HashSet::new();
+    let synthesize = |pending: &mut Vec<(String, String)>,
+                      seen: &mut HashSet<String>,
+                      result: &mut Vec<AgentMessage>| {
+        for (id, name) in pending.drain(..) {
+            if seen.contains(&id) {
+                continue;
+            }
+            result.push(AgentMessage::ToolResult {
+                tool_call_id: id,
+                tool_name: name,
+                content: vec![Content::Text {
+                    text: "No result provided".to_owned(),
+                    text_signature: None,
+                }],
+                details: None,
+                usage: None,
+                added_tool_names: None,
+                is_error: true,
+                timestamp: 0,
+            });
+        }
+        seen.clear();
+    };
+
+    for message in transformed {
+        match &message {
+            AgentMessage::Assistant { content, .. } => {
+                synthesize(&mut pending, &mut seen_results, &mut result);
+                pending = content
+                    .iter()
+                    .filter_map(|block| match block {
+                        Content::ToolCall { id, name, .. } => Some((id.clone(), name.clone())),
+                        _ => None,
+                    })
+                    .collect();
+                result.push(message);
+            }
+            AgentMessage::ToolResult { tool_call_id, .. } => {
+                seen_results.insert(tool_call_id.clone());
+                result.push(message);
+            }
+            AgentMessage::User { .. } => {
+                synthesize(&mut pending, &mut seen_results, &mut result);
+                result.push(message);
+            }
+            _ => result.push(message),
+        }
+    }
+    synthesize(&mut pending, &mut seen_results, &mut result);
+    result
+}

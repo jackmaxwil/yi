@@ -28,9 +28,13 @@ fn faux_model() -> Model {
             output: zero(),
             cache_read: zero(),
             cache_write: zero(),
+            tiers: None,
         },
         context_window: 128_000,
         max_tokens: 16_384,
+        compat: None,
+        thinking_level_map: None,
+        headers: None,
     }
 }
 
