@@ -45,3 +45,4 @@ when it changes rather than editing them by hand.
 - [D32](adr/d32.md) - Pi session compat targets the v4 mutation log
 - [D33](adr/d33.md) - yi rpc writes v4 only; phase-2 exit narrows to RPC protocol tests
 - [D34](adr/d34.md) - OpenRouter as the third native provider; no built-in default model
+- [D35](adr/d35.md) - Phase 2b scope trims (registers, per-segment decisions, minimal holds)
