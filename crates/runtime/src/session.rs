@@ -66,6 +66,7 @@ fn persist_message(shared: &Shared, message: &AgentMessage) {
 
 pub struct AgentSession {
     config: SessionConfig,
+    model: Mutex<Model>,
     provider: Arc<ProviderStream>,
     shared: Arc<Shared>,
     tools: Vec<Arc<dyn yi_loop::AgentTool>>,
@@ -76,6 +77,7 @@ impl AgentSession {
         provider.set_thinking_level(config.thinking_level.clone());
         let (events, _) = broadcast::channel(1024);
         Self {
+            model: Mutex::new(config.model.clone()),
             config,
             provider,
             shared: Arc::new(Shared {
@@ -183,6 +185,53 @@ impl AgentSession {
             .unwrap_or_default()
     }
 
+    pub fn model(&self) -> Model {
+        self.model
+            .lock()
+            .map(|model| model.clone())
+            .unwrap_or_else(|poisoned| poisoned.into_inner().clone())
+    }
+
+    pub fn set_model(&self, model: Model) {
+        if let Ok(mut slot) = self.model.lock() {
+            *slot = model;
+        }
+    }
+
+    pub fn set_thinking_level(&self, level: Option<String>) {
+        self.provider.set_thinking_level(level);
+    }
+
+    pub fn pending_count(&self) -> usize {
+        let steer = self
+            .shared
+            .steer
+            .lock()
+            .map(|queue| queue.len())
+            .unwrap_or(0);
+        let follow = self
+            .shared
+            .follow_up
+            .lock()
+            .map(|queue| queue.len())
+            .unwrap_or(0);
+        steer.saturating_add(follow)
+    }
+
+    /// Clears the in-memory history and detaches any store; attach_store
+    /// afterwards to point the session at a fresh or different session file.
+    pub fn reset(&self) {
+        if let Ok(mut messages) = self.shared.messages.lock() {
+            messages.clear();
+        }
+        if let Ok(mut store) = self.shared.store.lock() {
+            *store = None;
+        }
+        if let Ok(mut slot) = self.shared.store_error.lock() {
+            *slot = None;
+        }
+    }
+
     pub fn steer(&self, text: &str) {
         if let Ok(mut queue) = self.shared.steer.lock() {
             queue.push(user_message(text));
@@ -222,7 +271,7 @@ impl AgentSession {
         let shared = Arc::clone(&self.shared);
         let provider = Arc::clone(&self.provider);
         let system_prompt = self.config.system_prompt.clone();
-        let model = self.config.model.clone();
+        let model = self.model();
         let tool_execution = self.config.tool_execution;
         let tools = self.tools.clone();
         let prompt = user_message(text);

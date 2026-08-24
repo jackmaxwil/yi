@@ -1,5 +1,7 @@
 #![forbid(unsafe_code)]
 
+mod rpc;
+
 use std::sync::Arc;
 
 use yi_runtime::{AgentSession, ProviderStream, SessionConfig, resolve_model};
@@ -15,6 +17,8 @@ struct Args {
     thinking: Option<String>,
     json: bool,
     yolo: bool,
+    session_dir: Option<String>,
+    cwd: Option<String>,
     prompt: String,
 }
 
@@ -26,6 +30,8 @@ fn parse_args() -> Result<Args, lexopt::Error> {
     let mut thinking = None;
     let mut json = false;
     let mut yolo = false;
+    let mut session_dir = None;
+    let mut cwd = None;
     let mut prompt_parts: Vec<String> = Vec::new();
     let mut parser = lexopt::Parser::from_env();
     while let Some(argument) = parser.next()? {
@@ -38,6 +44,8 @@ fn parse_args() -> Result<Args, lexopt::Error> {
             Long("thinking") => thinking = Some(parser.value()?.string()?),
             Long("json") => json = true,
             Long("yolo") => yolo = true,
+            Long("session-dir") => session_dir = Some(parser.value()?.string()?),
+            Long("cwd") => cwd = Some(parser.value()?.string()?),
             Value(value) => {
                 let value = value.string()?;
                 if command.is_empty() {
@@ -56,6 +64,8 @@ fn parse_args() -> Result<Args, lexopt::Error> {
         thinking,
         json,
         yolo,
+        session_dir,
+        cwd,
         prompt: prompt_parts.join(" "),
     })
 }
@@ -103,10 +113,17 @@ fn render_text(event: &AgentEvent) -> Option<String> {
     }
 }
 
-fn run(args: &Args) -> i32 {
+fn effective_cwd(args: &Args) -> std::path::PathBuf {
+    args.cwd.as_ref().map_or_else(
+        || std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")),
+        std::path::PathBuf::from,
+    )
+}
+
+fn build_session(args: &Args) -> Result<AgentSession, i32> {
     let Some(model) = resolve(&args.model) else {
         eprintln!("error: unknown model {} (use provider/id)", args.model);
-        return 2;
+        return Err(2);
     };
     let api_key = yi_ai_key(&model.provider);
     if api_key.is_none() && model.provider != "faux" {
@@ -114,7 +131,7 @@ fn run(args: &Args) -> i32 {
             "error: no API key for provider {} (set the provider env var)",
             model.provider
         );
-        return 4;
+        return Err(4);
     }
     let provider = Arc::new(ProviderStream::new(api_key, None));
     if model.provider == "faux" {
@@ -130,7 +147,7 @@ fn run(args: &Args) -> i32 {
         provider,
     );
     if args.yolo {
-        let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+        let cwd = effective_cwd(args);
         let mut tools = yi_runtime::builtin_tools();
         if let Some(home) = std::env::var_os("HOME") {
             for tool in
@@ -141,6 +158,26 @@ fn run(args: &Args) -> i32 {
         }
         session.use_tools(tools, cwd);
     }
+    Ok(session)
+}
+
+fn default_session_dir(args: &Args) -> std::path::PathBuf {
+    args.session_dir.as_ref().map_or_else(
+        || {
+            std::env::var_os("HOME").map_or_else(
+                || std::path::PathBuf::from(".yi/sessions"),
+                |home| std::path::Path::new(&home).join(".yi/sessions"),
+            )
+        },
+        std::path::PathBuf::from,
+    )
+}
+
+fn run(args: &Args) -> i32 {
+    let session = match build_session(args) {
+        Ok(session) => session,
+        Err(code) => return code,
+    };
     let runtime = match tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -236,7 +273,18 @@ fn main() {
             }
             std::process::exit(run(&args));
         }
-        "" => println!("yi {version} (phase 1: yi ask; more surfaces land in phase 2)"),
+        "rpc" => {
+            let session = match build_session(&args) {
+                Ok(session) => session,
+                Err(code) => std::process::exit(code),
+            };
+            let options = rpc::RpcOptions {
+                session_dir: default_session_dir(&args),
+                cwd: effective_cwd(&args),
+            };
+            std::process::exit(rpc::run_rpc(session, &options));
+        }
+        "" => println!("yi {version} (yi ask, yi rpc; more surfaces land in later phases)"),
         other => {
             eprintln!("error: unknown command {other}");
             std::process::exit(2);

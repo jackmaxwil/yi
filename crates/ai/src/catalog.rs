@@ -38,6 +38,12 @@ impl Catalog {
         self.models.get(&(provider.to_owned(), id.to_owned()))
     }
 
+    pub fn models(&self) -> Vec<Model> {
+        let mut listed: Vec<Model> = self.models.values().cloned().collect();
+        listed.sort_by(|left, right| (&left.provider, &left.id).cmp(&(&right.provider, &right.id)));
+        listed
+    }
+
     pub fn len(&self) -> usize {
         self.models.len()
     }

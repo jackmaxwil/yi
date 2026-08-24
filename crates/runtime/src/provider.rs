@@ -15,6 +15,10 @@ pub fn resolve_model(provider: &str, id: &str) -> Option<Model> {
     Catalog::bundled().get(provider, id).cloned()
 }
 
+pub fn available_models() -> Vec<Model> {
+    Catalog::bundled().models()
+}
+
 fn adaptive(model: &Model) -> bool {
     model
         .compat
