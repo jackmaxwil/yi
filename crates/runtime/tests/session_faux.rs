@@ -1,6 +1,6 @@
 use std::error::Error;
 use std::sync::Arc;
-use yi_ai::faux::{faux_assistant_message, faux_text};
+use yi_ai::faux::{faux_assistant_message, faux_text, faux_tool_call};
 use yi_loop::ExecutionMode;
 use yi_runtime::{AgentSession, ProviderStream, SessionConfig, Status};
 use yi_session::{CreateOptions, JsonlRepo, SessionRepo};
@@ -85,6 +85,56 @@ fn session_with_reply(text: &str) -> AgentSession {
         },
         provider,
     )
+}
+
+#[tokio::test]
+async fn executes_a_read_tool_call_through_the_adapter() -> Result<(), Box<dyn Error>> {
+    let dir = std::env::temp_dir().join(format!("yi-runtime-tool-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir)?;
+    std::fs::write(dir.join("fact.txt"), "the answer is 42")?;
+
+    let provider = Arc::new(ProviderStream::new(None, None));
+    let mut call_args = serde_json::Map::new();
+    call_args.insert("path".to_owned(), serde_json::json!("fact.txt"));
+    provider.queue_faux(vec![
+        faux_assistant_message(
+            vec![faux_tool_call("call-1", "read", call_args)],
+            StopReason::ToolUse,
+        ),
+        faux_assistant_message(vec![faux_text("done")], StopReason::Stop),
+    ]);
+    let mut session = AgentSession::new(
+        SessionConfig {
+            system_prompt: "sys".to_owned(),
+            model: faux_model(),
+            thinking_level: None,
+            tool_execution: ExecutionMode::Sequential,
+        },
+        provider,
+    );
+    session.use_tools(yi_tools::builtin_tools(), dir.clone());
+    let mut events = session.subscribe();
+    session.prompt("read the fact")?;
+    session.wait_idle().await;
+
+    let mut tool_result_text = String::new();
+    while let Ok(event) = events.try_recv() {
+        if let AgentEvent::ToolExecutionEnd {
+            result, is_error, ..
+        } = event
+        {
+            assert!(!is_error);
+            for content in result.content {
+                if let yi_types::message::Content::Text { text, .. } = content {
+                    tool_result_text.push_str(&text);
+                }
+            }
+        }
+    }
+    assert!(tool_result_text.contains("the answer is 42"));
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
 }
 
 #[tokio::test]

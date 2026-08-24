@@ -118,6 +118,21 @@ impl AgentSession {
         self.tools = tools;
     }
 
+    /// Wires yi-tools implementations through the loop adapter; aborting the
+    /// session cancels any tool subprocess still running.
+    pub fn use_tools(&mut self, tools: Vec<Arc<dyn yi_tools::Tool>>, cwd: std::path::PathBuf) {
+        let adapters = tools
+            .into_iter()
+            .map(|tool| {
+                let shared = Arc::clone(&self.shared);
+                let cancelled: yi_tools::CancelFlag = Arc::new(move || shared.signal.is_fired());
+                Arc::new(crate::tools::ToolAdapter::new(tool, cwd.clone(), cancelled))
+                    as Arc<dyn yi_loop::AgentTool>
+            })
+            .collect();
+        self.tools = adapters;
+    }
+
     /// Attaches a session store: loads the main branch's messages as the
     /// in-memory history, then persists every subsequent MessageEnd to it.
     pub fn attach_store(

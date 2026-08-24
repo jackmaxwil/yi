@@ -14,6 +14,7 @@ struct Args {
     system: String,
     thinking: Option<String>,
     json: bool,
+    yolo: bool,
     prompt: String,
 }
 
@@ -24,6 +25,7 @@ fn parse_args() -> Result<Args, lexopt::Error> {
     let mut system = String::new();
     let mut thinking = None;
     let mut json = false;
+    let mut yolo = false;
     let mut prompt_parts: Vec<String> = Vec::new();
     let mut parser = lexopt::Parser::from_env();
     while let Some(argument) = parser.next()? {
@@ -35,7 +37,7 @@ fn parse_args() -> Result<Args, lexopt::Error> {
             Long("system") => system = parser.value()?.string()?,
             Long("thinking") => thinking = Some(parser.value()?.string()?),
             Long("json") => json = true,
-            Long("yolo") => {}
+            Long("yolo") => yolo = true,
             Value(value) => {
                 let value = value.string()?;
                 if command.is_empty() {
@@ -53,6 +55,7 @@ fn parse_args() -> Result<Args, lexopt::Error> {
         system,
         thinking,
         json,
+        yolo,
         prompt: prompt_parts.join(" "),
     })
 }
@@ -117,7 +120,7 @@ fn run(args: &Args) -> i32 {
     if model.provider == "faux" {
         provider.queue_faux(vec![yi_ai_faux_reply(&args.prompt)]);
     }
-    let session = AgentSession::new(
+    let mut session = AgentSession::new(
         SessionConfig {
             system_prompt: args.system.clone(),
             model,
@@ -126,6 +129,18 @@ fn run(args: &Args) -> i32 {
         },
         provider,
     );
+    if args.yolo {
+        let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+        let mut tools = yi_runtime::builtin_tools();
+        if let Some(home) = std::env::var_os("HOME") {
+            for tool in
+                yi_runtime::discover_exec_tools(&std::path::Path::new(&home).join(".yi/tools"))
+            {
+                tools.push(std::sync::Arc::new(tool));
+            }
+        }
+        session.use_tools(tools, cwd);
+    }
     let runtime = match tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
