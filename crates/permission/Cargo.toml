@@ -5,5 +5,11 @@ edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 
+[dependencies]
+globset.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+yi-types.workspace = true
+
 [lints]
 workspace = true

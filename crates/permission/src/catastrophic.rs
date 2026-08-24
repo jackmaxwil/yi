@@ -1,0 +1,194 @@
+use std::path::{Component, Path, PathBuf};
+
+/// Credential stores, protected recursively: destroying one private key inside
+/// ~/.ssh is as damaging as destroying the directory.
+const PROTECTED_CREDENTIAL_SUBPATHS: [&str; 5] = [".ssh", ".gnupg", ".aws", ".kube", ".docker"];
+
+/// Home directories whose wholesale destruction is unacceptable but whose
+/// individual files are legitimately edited; matched exactly.
+const PROTECTED_HOME_SUBPATHS: [&str; 7] = [
+    ".config",
+    ".yi",
+    ".claude",
+    ".local",
+    ".local/share",
+    "Documents",
+    "Desktop",
+];
+
+const PROTECTED_SYSTEM_PATHS: [&str; 20] = [
+    "/",
+    "/bin",
+    "/boot",
+    "/dev",
+    "/etc",
+    "/lib",
+    "/lib64",
+    "/opt",
+    "/proc",
+    "/root",
+    "/sbin",
+    "/srv",
+    "/sys",
+    "/usr",
+    "/var",
+    "/Applications",
+    "/System",
+    "/Library",
+    "/Users",
+    "/home",
+];
+
+/// System paths whose contents are as critical as the directory itself.
+const SYSTEM_PATHS_PROTECTED_RECURSIVELY: [&str; 12] = [
+    "/bin", "/boot", "/dev", "/etc", "/lib", "/lib64", "/proc", "/sbin", "/sys", "/usr",
+    "/var/lib", "/System",
+];
+
+pub struct CatastrophicContext {
+    pub home_dir: Option<PathBuf>,
+    pub working_dir: Option<PathBuf>,
+    /// The workspace `.git` directory (design M10 addition): denied in every
+    /// mode including yolo — losing it loses the undo story for everything.
+    pub workspace_git: Option<PathBuf>,
+}
+
+impl CatastrophicContext {
+    pub fn detect(cwd: &Path) -> Self {
+        Self {
+            home_dir: std::env::var_os("HOME").map(PathBuf::from),
+            working_dir: Some(cwd.to_path_buf()),
+            workspace_git: Some(cwd.join(".git")),
+        }
+    }
+}
+
+/// Lexically remove `.` and `..` so `/home/u/../..` is seen as `/`. Never
+/// touches the filesystem: canonicalize() fails on the file being created (the
+/// common case) and a hostile argument cannot slow a lexical pass down. Not
+/// symlink-aware by design — a `..` popped across a symlinked component
+/// resolves differently than the kernel would; the write-time symlink recheck
+/// (T10) is the compensating layer.
+pub fn lexical_normalize(path: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::ParentDir => {
+                out.pop();
+            }
+            Component::CurDir => {}
+            other => out.push(other.as_os_str()),
+        }
+    }
+    if out.as_os_str().is_empty() {
+        return PathBuf::from("/");
+    }
+    out
+}
+
+fn expand(raw: &str, context: &CatastrophicContext) -> PathBuf {
+    let mut text = raw.to_owned();
+    if let Some(home) = &context.home_dir {
+        let home_str = home.to_string_lossy().into_owned();
+        for var in ["${HOME}", "$HOME"] {
+            text = text.replace(var, &home_str);
+        }
+        if text == "~" {
+            text = home_str.clone();
+        } else if let Some(rest) = text.strip_prefix("~/") {
+            text = format!("{home_str}/{rest}");
+        }
+    }
+    let path = PathBuf::from(&text);
+    if path.is_absolute() {
+        return lexical_normalize(&path);
+    }
+    match &context.working_dir {
+        Some(cwd) => lexical_normalize(&cwd.join(path)),
+        None => path,
+    }
+}
+
+/// Whether destroying this path is categorically unacceptable. Checked before
+/// decide() and denied in every mode including yolo (design M10, D15).
+pub fn is_catastrophic(path: &Path, context: &CatastrophicContext) -> bool {
+    let path = lexical_normalize(path);
+    if PROTECTED_SYSTEM_PATHS
+        .iter()
+        .any(|protected| path == Path::new(protected))
+    {
+        return true;
+    }
+    if SYSTEM_PATHS_PROTECTED_RECURSIVELY
+        .iter()
+        .any(|protected| path.starts_with(protected))
+    {
+        return true;
+    }
+    if let Some(git) = &context.workspace_git {
+        let git = lexical_normalize(git);
+        if path == git || path.starts_with(&git) {
+            return true;
+        }
+    }
+    let Some(home) = &context.home_dir else {
+        return false;
+    };
+    let home = lexical_normalize(home);
+    if path == home {
+        return true;
+    }
+    if PROTECTED_CREDENTIAL_SUBPATHS
+        .iter()
+        .any(|sub| path.starts_with(home.join(sub)))
+    {
+        return true;
+    }
+    PROTECTED_HOME_SUBPATHS
+        .iter()
+        .any(|sub| path == home.join(sub))
+}
+
+const DESTRUCTIVE_COMMANDS: [&str; 4] = ["rm", "rmdir", "shred", "unlink"];
+
+/// Best-effort command screening: when a command's verb is destructive, every
+/// path-shaped token is checked against the denylist. Deliberately no shell
+/// parsing cleverness (D15) — this is a belt over path-based checks, and an
+/// unparseable command is its own decision input elsewhere (D26).
+pub fn command_targets_catastrophic(
+    command: &str,
+    context: &CatastrophicContext,
+) -> Option<String> {
+    let mut tokens = command.split_whitespace();
+    let verb = tokens.next()?;
+    let verb = verb.rsplit('/').next().unwrap_or(verb);
+    let destructive = DESTRUCTIVE_COMMANDS.contains(&verb)
+        || (verb == "sudo"
+            && command
+                .split_whitespace()
+                .nth(1)
+                .is_some_and(|second| DESTRUCTIVE_COMMANDS.contains(&second)));
+    if !destructive {
+        return None;
+    }
+    for token in command.split_whitespace().skip(1) {
+        if token.starts_with('-') {
+            continue;
+        }
+        let bare = token.trim_end_matches(['*', '/']);
+        let looks_pathish = bare.starts_with('/')
+            || bare.starts_with('~')
+            || bare.starts_with("$HOME")
+            || bare.starts_with("${HOME}")
+            || bare == "."
+            || bare == "..";
+        if !looks_pathish && !token.contains('/') {
+            continue;
+        }
+        let expanded = expand(bare, context);
+        if is_catastrophic(&expanded, context) {
+            return Some(expanded.to_string_lossy().into_owned());
+        }
+    }
+    None
+}

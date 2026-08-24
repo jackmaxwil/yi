@@ -113,7 +113,7 @@ async fn executes_a_read_tool_call_through_the_adapter() -> Result<(), Box<dyn E
         },
         provider,
     );
-    session.use_tools(yi_tools::builtin_tools(), dir.clone());
+    session.use_tools(yi_tools::builtin_tools(), dir.clone(), None);
     let mut events = session.subscribe();
     session.prompt("read the fact")?;
     session.wait_idle().await;
@@ -170,5 +170,96 @@ async fn persists_a_turn_to_the_store_and_resumes_from_it() -> Result<(), Box<dy
     })?;
     assert_eq!(entries.len(), 4);
     std::fs::remove_dir_all(&root)?;
+    Ok(())
+}
+
+fn tool_call_session(command: &str) -> AgentSession {
+    let provider = Arc::new(ProviderStream::new(None, None));
+    let mut call_args = serde_json::Map::new();
+    call_args.insert("command".to_owned(), serde_json::json!(command));
+    provider.queue_faux(vec![
+        faux_assistant_message(
+            vec![faux_tool_call("call-1", "bash", call_args)],
+            StopReason::ToolUse,
+        ),
+        faux_assistant_message(vec![faux_text("done")], StopReason::Stop),
+    ]);
+    AgentSession::new(
+        SessionConfig {
+            system_prompt: "sys".to_owned(),
+            model: faux_model(),
+            thinking_level: None,
+            tool_execution: ExecutionMode::Sequential,
+        },
+        provider,
+    )
+}
+
+async fn run_gated(
+    command: &str,
+    mode: yi_runtime::PermissionMode,
+) -> Result<(bool, String), Box<dyn Error>> {
+    static PERM_DIR_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let unique = PERM_DIR_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let dir = std::env::temp_dir().join(format!("yi-runtime-perm-{}-{unique}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir)?;
+    let mut session = tool_call_session(command);
+    let broker = Arc::new(yi_runtime::PermissionBroker::new(
+        mode,
+        dir.clone(),
+        Vec::new(),
+        None,
+        session.events_sender(),
+    ));
+    session.use_tools(yi_tools::builtin_tools(), dir.clone(), Some(broker));
+    let mut events = session.subscribe();
+    session.prompt("run it")?;
+    session.wait_idle().await;
+    let mut outcome = (false, String::new());
+    while let Ok(event) = events.try_recv() {
+        if let AgentEvent::ToolExecutionEnd {
+            result, is_error, ..
+        } = event
+        {
+            let text: String = result
+                .content
+                .iter()
+                .map(|content| match content {
+                    yi_types::message::Content::Text { text, .. } => text.clone(),
+                    _ => String::new(),
+                })
+                .collect();
+            outcome = (!is_error, text);
+        }
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+    Ok(outcome)
+}
+
+#[tokio::test]
+async fn headless_ask_mode_denies_with_evidence() -> Result<(), Box<dyn Error>> {
+    let (allowed, text) = run_gated("echo hello", yi_runtime::PermissionMode::Ask).await?;
+    assert!(!allowed);
+    assert!(text.contains("Permission denied"), "{text}");
+    assert!(text.contains("no interactive surface"), "{text}");
+    assert!(text.contains("echo hello"), "{text}");
+    Ok(())
+}
+
+#[tokio::test]
+async fn yolo_mode_runs_the_command() -> Result<(), Box<dyn Error>> {
+    let (allowed, text) = run_gated("echo hello", yi_runtime::PermissionMode::Yolo).await?;
+    assert!(allowed, "{text}");
+    assert!(text.contains("hello"), "{text}");
+    Ok(())
+}
+
+#[tokio::test]
+async fn catastrophic_targets_are_denied_even_in_yolo() -> Result<(), Box<dyn Error>> {
+    let (allowed, text) = run_gated("rm -rf ~/.ssh", yi_runtime::PermissionMode::Yolo).await?;
+    assert!(!allowed);
+    assert!(text.contains("protected path"), "{text}");
+    assert!(text.contains("denied in every mode"), "{text}");
     Ok(())
 }

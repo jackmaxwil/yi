@@ -132,7 +132,23 @@ fn effective_cwd(args: &Args) -> std::path::PathBuf {
     )
 }
 
-fn build_session(args: &Args) -> Result<AgentSession, i32> {
+fn tty_ask(title: &str, description: &str) -> yi_runtime::AskOutcome {
+    use std::io::Write;
+    eprintln!("\n{title}\n{description}");
+    eprint!("Allow? [y]es once / [a]lways / [N]o: ");
+    let _ = std::io::stderr().flush();
+    let mut line = String::new();
+    if std::io::stdin().read_line(&mut line).is_err() {
+        return yi_runtime::AskOutcome::Reject;
+    }
+    match line.trim().to_lowercase().as_str() {
+        "y" | "yes" => yi_runtime::AskOutcome::AllowOnce,
+        "a" | "always" => yi_runtime::AskOutcome::AllowAlways,
+        _ => yi_runtime::AskOutcome::Reject,
+    }
+}
+
+fn build_session(args: &Args, interactive_ask: bool) -> Result<AgentSession, i32> {
     if args.model.is_empty() {
         eprintln!(
             "error: no model configured (pass --model provider/id or set \"model\" in ~/.yi/config.json)"
@@ -155,27 +171,51 @@ fn build_session(args: &Args) -> Result<AgentSession, i32> {
     if model.provider == "faux" {
         provider.queue_faux(vec![yi_ai_faux_reply(&args.prompt)]);
     }
+    let mode_fragment = yi_runtime::mode_fragment(if args.yolo {
+        yi_runtime::PermissionMode::Yolo
+    } else {
+        yi_runtime::PermissionMode::Ask
+    });
+    let system_prompt = if args.system.is_empty() {
+        mode_fragment.to_owned()
+    } else {
+        format!("{}\n\n{mode_fragment}", args.system)
+    };
     let mut session = AgentSession::new(
         SessionConfig {
-            system_prompt: args.system.clone(),
+            system_prompt,
             model,
             thinking_level: args.thinking.clone(),
             tool_execution: yi_loop_default(),
         },
         provider,
     );
-    if args.yolo {
-        let cwd = effective_cwd(args);
-        let mut tools = yi_runtime::builtin_tools();
-        if let Some(home) = std::env::var_os("HOME") {
-            for tool in
-                yi_runtime::discover_exec_tools(&std::path::Path::new(&home).join(".yi/tools"))
-            {
-                tools.push(std::sync::Arc::new(tool));
-            }
+    let cwd = effective_cwd(args);
+    let mode = if args.yolo {
+        yi_runtime::PermissionMode::Yolo
+    } else {
+        yi_runtime::PermissionMode::Ask
+    };
+    let mut tools = yi_runtime::builtin_tools();
+    if let Some(home) = std::env::var_os("HOME") {
+        for tool in yi_runtime::discover_exec_tools(&std::path::Path::new(&home).join(".yi/tools"))
+        {
+            tools.push(std::sync::Arc::new(tool));
         }
-        session.use_tools(tools, cwd);
     }
+    let asker: Option<yi_runtime::Asker> = if interactive_ask {
+        Some(std::sync::Arc::new(tty_ask))
+    } else {
+        None
+    };
+    let broker = std::sync::Arc::new(yi_runtime::PermissionBroker::new(
+        mode,
+        cwd.clone(),
+        Vec::new(),
+        asker,
+        session.events_sender(),
+    ));
+    session.use_tools(tools, cwd, Some(broker));
     Ok(session)
 }
 
@@ -192,7 +232,9 @@ fn default_session_dir(args: &Args) -> std::path::PathBuf {
 }
 
 fn run(args: &Args) -> i32 {
-    let session = match build_session(args) {
+    use std::io::IsTerminal;
+    let interactive = std::io::stdin().is_terminal();
+    let session = match build_session(args, interactive) {
         Ok(session) => session,
         Err(code) => return code,
     };
@@ -292,7 +334,7 @@ fn main() {
             std::process::exit(run(&args));
         }
         "rpc" => {
-            let session = match build_session(&args) {
+            let session = match build_session(&args, false) {
                 Ok(session) => session,
                 Err(code) => std::process::exit(code),
             };

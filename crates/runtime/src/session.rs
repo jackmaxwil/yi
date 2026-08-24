@@ -121,18 +121,32 @@ impl AgentSession {
     }
 
     /// Wires yi-tools implementations through the loop adapter; aborting the
-    /// session cancels any tool subprocess still running.
-    pub fn use_tools(&mut self, tools: Vec<Arc<dyn yi_tools::Tool>>, cwd: std::path::PathBuf) {
+    /// session cancels any tool subprocess still running. `permission` gates
+    /// every call (M6); None runs ungated (the yolo-equivalent internal path).
+    pub fn use_tools(
+        &mut self,
+        tools: Vec<Arc<dyn yi_tools::Tool>>,
+        cwd: std::path::PathBuf,
+        permission: Option<Arc<crate::permission::PermissionBroker>>,
+    ) {
         let adapters = tools
             .into_iter()
             .map(|tool| {
                 let shared = Arc::clone(&self.shared);
                 let cancelled: yi_tools::CancelFlag = Arc::new(move || shared.signal.is_fired());
-                Arc::new(crate::tools::ToolAdapter::new(tool, cwd.clone(), cancelled))
-                    as Arc<dyn yi_loop::AgentTool>
+                Arc::new(crate::tools::ToolAdapter::new(
+                    tool,
+                    cwd.clone(),
+                    cancelled,
+                    permission.clone(),
+                )) as Arc<dyn yi_loop::AgentTool>
             })
             .collect();
         self.tools = adapters;
+    }
+
+    pub fn events_sender(&self) -> tokio::sync::broadcast::Sender<AgentEvent> {
+        self.shared.events.clone()
     }
 
     /// Attaches a session store: loads the main branch's messages as the

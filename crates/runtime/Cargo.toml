@@ -14,5 +14,6 @@ yi-loop = { workspace = true }
 yi-ai = { workspace = true }
 yi-session = { workspace = true }
 yi-tools = { workspace = true }
+yi-permission = { workspace = true }
 tokio = { workspace = true }
 serde_json = { workspace = true }

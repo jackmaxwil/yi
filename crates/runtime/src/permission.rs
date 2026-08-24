@@ -1,0 +1,227 @@
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
+
+use serde_json::{Map, Value};
+use tokio::sync::broadcast;
+use yi_permission::{
+    CatastrophicContext, ConfigRule, Decision, Hold, PermissionMode, SessionRules, ToolCall,
+    canonical_command_identity, canonical_tool_identity, decide,
+};
+use yi_tools::ToolKind;
+use yi_types::event::AgentEvent;
+use yi_types::permission::{RuleDecision, RuleKind};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AskOutcome {
+    AllowOnce,
+    AllowAlways,
+    Reject,
+}
+
+pub type Asker = Arc<dyn Fn(&str, &str) -> AskOutcome + Send + Sync>;
+
+pub struct PermissionBroker {
+    pub mode: PermissionMode,
+    config_rules: Vec<ConfigRule>,
+    session_rules: Mutex<SessionRules>,
+    holds: Vec<Hold>,
+    context: CatastrophicContext,
+    cwd: PathBuf,
+    asker: Option<Asker>,
+    events: broadcast::Sender<AgentEvent>,
+}
+
+pub struct CallOutcome {
+    pub allowed: bool,
+    pub reason: String,
+}
+
+fn extract_targets(tool_name: &str, args: &Map<String, Value>, cwd: &Path) -> Vec<PathBuf> {
+    let mut targets = Vec::new();
+    let mut push = |raw: &str| {
+        let candidate = PathBuf::from(raw);
+        targets.push(if candidate.is_absolute() {
+            candidate
+        } else {
+            cwd.join(candidate)
+        });
+    };
+    if let Some(path) = args.get("path").and_then(Value::as_str) {
+        push(path);
+    }
+    if tool_name == "edit"
+        && let Some(patch) = args.get("patch").and_then(Value::as_str)
+    {
+        for line in patch.lines() {
+            let trimmed = line.trim();
+            if let Some(inner) = trimmed
+                .strip_prefix('[')
+                .and_then(|rest| rest.strip_suffix(']'))
+            {
+                let path_part = inner.rsplit_once('#').map_or(inner, |(path, _)| path);
+                if !path_part.is_empty() {
+                    push(path_part);
+                }
+            }
+        }
+    }
+    targets
+}
+
+impl PermissionBroker {
+    pub fn new(
+        mode: PermissionMode,
+        cwd: PathBuf,
+        config_rules: Vec<ConfigRule>,
+        asker: Option<Asker>,
+        events: broadcast::Sender<AgentEvent>,
+    ) -> Self {
+        Self {
+            mode,
+            config_rules,
+            session_rules: Mutex::new(SessionRules::new()),
+            holds: Vec::new(),
+            context: CatastrophicContext::detect(&cwd),
+            cwd,
+            asker,
+            events,
+        }
+    }
+
+    /// Decides one tool call, running the interactive ask flow when needed.
+    /// Headless (no asker), an Ask degrades to a denial that carries the
+    /// evidence (D26): never a silent terminal error.
+    pub fn decide_call(
+        &self,
+        tool_name: &str,
+        kind: ToolKind,
+        irreversible: bool,
+        tool_call_id: &str,
+        args: &Map<String, Value>,
+    ) -> CallOutcome {
+        let command = if tool_name == "bash" {
+            args.get("command").and_then(Value::as_str)
+        } else {
+            None
+        };
+        let cwd_text = self.cwd.to_string_lossy().into_owned();
+        let (rule_kind, canonical, display) = match command {
+            Some(command) => (
+                RuleKind::Command,
+                canonical_command_identity(command, &cwd_text),
+                command.to_owned(),
+            ),
+            None => {
+                let arguments_json =
+                    serde_json::to_string(&Value::Object(args.clone())).unwrap_or_default();
+                let display = args
+                    .get("path")
+                    .and_then(Value::as_str)
+                    .map(|path| format!("{tool_name} {path}"))
+                    .unwrap_or_else(|| tool_name.to_owned());
+                (
+                    RuleKind::StructuredTool,
+                    canonical_tool_identity(tool_name, &arguments_json),
+                    display,
+                )
+            }
+        };
+        let targets = extract_targets(tool_name, args, &self.cwd);
+        let call = ToolCall {
+            tool_name,
+            reads_only: matches!(kind, ToolKind::Read),
+            irreversible,
+            rule_kind,
+            canonical: &canonical,
+            display: &display,
+            targets: &targets,
+            command,
+        };
+        let session_rules = self
+            .session_rules
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let decision = decide(
+            &call,
+            self.mode,
+            &self.config_rules,
+            &session_rules,
+            &self.holds,
+            &self.context,
+        );
+        drop(session_rules);
+        match decision {
+            Decision::Allow { reason } => CallOutcome {
+                allowed: true,
+                reason,
+            },
+            Decision::Deny { reason } => CallOutcome {
+                allowed: false,
+                reason,
+            },
+            Decision::Ask { title, description } => self.run_ask(
+                tool_call_id,
+                &title,
+                &description,
+                rule_kind,
+                &canonical,
+                &display,
+            ),
+        }
+    }
+
+    fn run_ask(
+        &self,
+        tool_call_id: &str,
+        title: &str,
+        description: &str,
+        rule_kind: RuleKind,
+        canonical: &str,
+        display: &str,
+    ) -> CallOutcome {
+        let _ = self.events.send(AgentEvent::PermissionRequested {
+            tool_call_id: tool_call_id.to_owned(),
+            title: title.to_owned(),
+            description: description.to_owned(),
+        });
+        let outcome = match &self.asker {
+            Some(asker) => asker(title, description),
+            None => {
+                let _ = self.events.send(AgentEvent::PermissionResolved {
+                    tool_call_id: tool_call_id.to_owned(),
+                    allowed: false,
+                });
+                return CallOutcome {
+                    allowed: false,
+                    reason: format!(
+                        "Permission required but no interactive surface is available. {description} Run with --yolo, or add an allow rule for this call."
+                    ),
+                };
+            }
+        };
+        let allowed = matches!(outcome, AskOutcome::AllowOnce | AskOutcome::AllowAlways);
+        let _ = self.events.send(AgentEvent::PermissionResolved {
+            tool_call_id: tool_call_id.to_owned(),
+            allowed,
+        });
+        if outcome == AskOutcome::AllowAlways {
+            let mut session_rules = self
+                .session_rules
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let _cap_is_soft =
+                session_rules.insert(rule_kind, canonical, display, RuleDecision::Allow);
+        }
+        if allowed {
+            CallOutcome {
+                allowed: true,
+                reason: "allowed by user".to_owned(),
+            }
+        } else {
+            CallOutcome {
+                allowed: false,
+                reason: format!("The user denied this call. {description}"),
+            }
+        }
+    }
+}

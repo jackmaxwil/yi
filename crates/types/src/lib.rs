@@ -4,5 +4,6 @@ pub mod entry;
 pub mod event;
 pub mod message;
 pub mod model;
+pub mod permission;
 pub mod record;
 pub mod wire;
