@@ -2,7 +2,7 @@
 "yi-loop" = ["yi-types"]
 "yi-ai" = ["yi-types"]
 "yi-session" = ["yi-types"]
-"yi-context" = ["yi-types", "yi-session"]
+"yi-context" = ["yi-types"]
 "yi-permission" = ["yi-types"]
 "yi-tools" = ["yi-types", "yi-permission"]
 "yi-mcp-cli" = ["yi-types"]
