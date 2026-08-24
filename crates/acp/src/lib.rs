@@ -1,1 +1,514 @@
 #![forbid(unsafe_code)]
+
+pub mod update;
+
+use std::collections::HashMap;
+use std::io::Write;
+use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
+
+use serde_json::{Value, json};
+use tokio::task::JoinHandle;
+use yi_runtime::session_store::{
+    CreateOptions, EntryOrder, EntryQuery, JsonlRepo, SessionRepo, SharedSession, lock_session,
+};
+use yi_runtime::{AgentSession, AskOutcome, Asker, available_models, resolve_model};
+use yi_types::acp::{
+    AcpConfigOption, AcpErrorResponse, AcpErrorShape, AcpFrame, AcpImplementation,
+    AcpInitializeResult, AcpNotification, AcpPermissionOption, AcpPermissionOptionKind,
+    AcpPermissionOutcome, AcpResponse, AcpSessionResult, AcpSessionUpdate, AcpUpdateParams,
+};
+
+use crate::update::{IdMap, replay_updates, to_updates};
+
+pub const PROTOCOL_VERSION: u16 = 2;
+pub const VERSION_MISMATCH_ERROR: &str =
+    "Unsupported protocol version: this agent speaks ACP v2 or later";
+
+const INVALID_PARAMS: i64 = -32602;
+const METHOD_NOT_FOUND: i64 = -32601;
+const INTERNAL_ERROR: i64 = -32603;
+
+/// Builds one wired `AgentSession`; the composition root (yi-cli) supplies
+/// this so yi-acp never touches yi-tools/yi-ai/yi-permission directly (§2).
+pub type SessionBuilder = Arc<dyn Fn(Option<Asker>) -> Result<AgentSession, String> + Send + Sync>;
+
+/// Line sink for outgoing frames; injectable so the permission bridge and
+/// mappers are testable without a real stdout.
+pub type LineSink = Arc<dyn Fn(&Value) + Send + Sync>;
+
+pub struct AcpOptions {
+    pub session_dir: PathBuf,
+    pub cwd: PathBuf,
+    pub build: SessionBuilder,
+    pub agent_version: String,
+}
+
+pub fn stdout_sink() -> LineSink {
+    Arc::new(|value: &Value| {
+        let mut stdout = std::io::stdout().lock();
+        if serde_json::to_writer(&mut stdout, value).is_ok() {
+            let _stdout_gone_means_exit = stdout.write_all(b"\n");
+            let _flush = stdout.flush();
+        }
+    })
+}
+
+/// Design C1: v2 or later is served as v2; v1 gets the exact mismatch error.
+pub fn negotiate(protocol_version: u64) -> Result<u16, String> {
+    if protocol_version >= u64::from(PROTOCOL_VERSION) {
+        Ok(PROTOCOL_VERSION)
+    } else {
+        Err(VERSION_MISMATCH_ERROR.to_owned())
+    }
+}
+
+type PendingAsks = Arc<Mutex<HashMap<String, std::sync::mpsc::Sender<Value>>>>;
+
+/// Design C5: the sync `Asker` seam bridged over `session/request_permission`.
+/// The request is written synchronously BEFORE blocking, and the response is
+/// routed by the stdin reader thread directly into the std channel — the
+/// blocked executor thread is never needed to receive it (no deadlock on the
+/// current-thread runtime).
+pub fn bridge_asker(session_id: String, sink: LineSink, pending: PendingAsks) -> Asker {
+    let counter = Arc::new(Mutex::new(0_u64));
+    Arc::new(move |title: &str, description: &str| {
+        let id = {
+            let mut counter = counter
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            *counter = counter.saturating_add(1);
+            let n = *counter;
+            format!("perm_{session_id}_{n}")
+        };
+        let (sender, receiver) = std::sync::mpsc::channel();
+        if let Ok(mut map) = pending.lock() {
+            map.insert(id.clone(), sender);
+        }
+        let params = yi_types::acp::AcpPermissionParams {
+            session_id: session_id.clone(),
+            title: title.to_owned(),
+            description: Some(description.to_owned()),
+            options: vec![
+                AcpPermissionOption {
+                    option_id: "allow_once".to_owned(),
+                    name: "Allow once".to_owned(),
+                    kind: AcpPermissionOptionKind::AllowOnce,
+                },
+                AcpPermissionOption {
+                    option_id: "allow_always".to_owned(),
+                    name: "Always allow".to_owned(),
+                    kind: AcpPermissionOptionKind::AllowAlways,
+                },
+                AcpPermissionOption {
+                    option_id: "reject_once".to_owned(),
+                    name: "Reject".to_owned(),
+                    kind: AcpPermissionOptionKind::RejectOnce,
+                },
+            ],
+        };
+        let request = AcpFrame {
+            jsonrpc: "2.0".to_owned(),
+            id: Some(Value::String(id.clone())),
+            method: "session/request_permission".to_owned(),
+            params: serde_json::to_value(&params).ok(),
+        };
+        sink(&json!(request));
+        let response = receiver.recv();
+        if let Ok(mut map) = pending.lock() {
+            map.remove(&id);
+        }
+        let Ok(response) = response else {
+            return AskOutcome::Reject;
+        };
+        let outcome = response
+            .get("result")
+            .and_then(|result| result.get("outcome"))
+            .cloned()
+            .unwrap_or(Value::Null);
+        match serde_json::from_value::<AcpPermissionOutcome>(outcome) {
+            Ok(AcpPermissionOutcome::Selected { option_id }) => match option_id.as_str() {
+                "allow_once" => AskOutcome::AllowOnce,
+                "allow_always" => AskOutcome::AllowAlways,
+                _ => AskOutcome::Reject,
+            },
+            _ => AskOutcome::Reject,
+        }
+    })
+}
+
+struct SessionHandle {
+    session: AgentSession,
+    forwarder: JoinHandle<()>,
+}
+
+impl Drop for SessionHandle {
+    fn drop(&mut self) {
+        self.forwarder.abort();
+    }
+}
+
+struct AcpState {
+    repo: JsonlRepo,
+    sessions: HashMap<String, SessionHandle>,
+    build: SessionBuilder,
+    sink: LineSink,
+    pending: PendingAsks,
+    agent_version: String,
+    initialized: bool,
+}
+
+fn update_notification(session_id: &str, update: AcpSessionUpdate) -> Value {
+    json!(AcpNotification {
+        jsonrpc: "2.0".to_owned(),
+        method: "session/update".to_owned(),
+        params: json!(AcpUpdateParams {
+            session_id: session_id.to_owned(),
+            update,
+        }),
+    })
+}
+
+fn config_options(session: &AgentSession) -> Vec<AcpConfigOption> {
+    let model = session.model();
+    let models: Vec<Value> = available_models()
+        .iter()
+        .map(|candidate| {
+            let value = format!("{}/{}", candidate.provider, candidate.id);
+            json!({"value": value, "name": candidate.name})
+        })
+        .collect();
+    let levels: Vec<Value> = ["off", "minimal", "low", "medium", "high"]
+        .iter()
+        .map(|level| json!({"value": level, "name": level}))
+        .collect();
+    vec![
+        AcpConfigOption {
+            config_id: "model".to_owned(),
+            name: "Model".to_owned(),
+            kind: json!({
+                "type": "select",
+                "value": format!("{}/{}", model.provider, model.id),
+                "options": models,
+            }),
+        },
+        AcpConfigOption {
+            config_id: "thought_level".to_owned(),
+            name: "Thinking level".to_owned(),
+            kind: json!({"type": "select", "value": "off", "options": levels}),
+        },
+    ]
+}
+
+fn prompt_text(params: &Value) -> String {
+    params
+        .get("prompt")
+        .and_then(Value::as_array)
+        .map(|blocks| {
+            blocks
+                .iter()
+                .filter_map(|block| {
+                    (block.get("type").and_then(Value::as_str) == Some("text"))
+                        .then(|| block.get("text").and_then(Value::as_str))
+                        .flatten()
+                })
+                .collect::<Vec<_>>()
+                .join("")
+        })
+        .unwrap_or_default()
+}
+
+impl AcpState {
+    fn attach(&mut self, store: &SharedSession) -> Result<String, String> {
+        let session_id = lock_session(store).metadata().id.clone();
+        let asker = bridge_asker(
+            session_id.clone(),
+            Arc::clone(&self.sink),
+            Arc::clone(&self.pending),
+        );
+        let session = (self.build)(Some(asker))?;
+        session
+            .attach_store(Arc::clone(store))
+            .map_err(|error| error.to_string())?;
+        let mut events = session.subscribe();
+        let sink = Arc::clone(&self.sink);
+        let forward_id = session_id.clone();
+        let mut ids = IdMap::new(session.model().context_window);
+        let forwarder = tokio::spawn(async move {
+            loop {
+                match events.recv().await {
+                    Ok(event) => {
+                        for update in to_updates(&event, &mut ids) {
+                            sink(&update_notification(&forward_id, update));
+                        }
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                }
+            }
+        });
+        self.sessions
+            .insert(session_id.clone(), SessionHandle { session, forwarder });
+        Ok(session_id)
+    }
+
+    fn session(&self, params: &Value) -> Result<(&SessionHandle, String), (i64, String)> {
+        let id = params
+            .get("sessionId")
+            .and_then(Value::as_str)
+            .ok_or((INVALID_PARAMS, "missing sessionId".to_owned()))?;
+        self.sessions
+            .get(id)
+            .map(|handle| (handle, id.to_owned()))
+            .ok_or((INVALID_PARAMS, format!("unknown session {id}")))
+    }
+
+    fn session_result(&self, session_id: &str) -> Value {
+        let options = self
+            .sessions
+            .get(session_id)
+            .map(|handle| config_options(&handle.session))
+            .unwrap_or_default();
+        json!(AcpSessionResult {
+            session_id: session_id.to_owned(),
+            config_options: options,
+        })
+    }
+
+    fn handle(&mut self, method: &str, params: &Value) -> Result<Value, (i64, String)> {
+        match method {
+            "initialize" => {
+                let requested = params
+                    .get("protocolVersion")
+                    .and_then(Value::as_u64)
+                    .ok_or((INVALID_PARAMS, "missing protocolVersion".to_owned()))?;
+                let agreed = negotiate(requested).map_err(|message| (INVALID_PARAMS, message))?;
+                self.initialized = true;
+                Ok(json!(AcpInitializeResult {
+                    protocol_version: agreed,
+                    info: AcpImplementation {
+                        name: "yi".to_owned(),
+                        version: self.agent_version.clone(),
+                    },
+                    capabilities: json!({}),
+                    auth_methods: Vec::new(),
+                }))
+            }
+            "session/new" => {
+                let store = self
+                    .repo
+                    .create(CreateOptions::default())
+                    .map_err(|error| (INTERNAL_ERROR, error.to_string()))?;
+                let session_id = self
+                    .attach(&store)
+                    .map_err(|error| (INTERNAL_ERROR, error))?;
+                Ok(self.session_result(&session_id))
+            }
+            "session/prompt" => {
+                let (handle, _) = self.session(params)?;
+                let text = prompt_text(params);
+                if handle.session.prompt(&text).is_err() {
+                    handle.session.follow_up(&text);
+                }
+                Ok(json!({}))
+            }
+            "session/cancel" => {
+                let (handle, _) = self.session(params)?;
+                handle.session.abort();
+                Ok(json!({}))
+            }
+            "session/list" => {
+                let sessions: Vec<Value> = self
+                    .repo
+                    .list()
+                    .map_err(|error| (INTERNAL_ERROR, error.to_string()))?
+                    .iter()
+                    .map(|metadata| {
+                        json!({
+                            "sessionId": metadata.id,
+                            "attached": self.sessions.contains_key(&metadata.id),
+                        })
+                    })
+                    .collect();
+                Ok(json!({"sessions": sessions}))
+            }
+            "session/resume" => {
+                let id = params
+                    .get("sessionId")
+                    .and_then(Value::as_str)
+                    .ok_or((INVALID_PARAMS, "missing sessionId".to_owned()))?
+                    .to_owned();
+                if !self.sessions.contains_key(&id) {
+                    let store = self
+                        .repo
+                        .open(&id)
+                        .map_err(|error| (INVALID_PARAMS, error.to_string()))?;
+                    self.attach(&store)
+                        .map_err(|error| (INTERNAL_ERROR, error))?;
+                }
+                if params
+                    .get("replayFrom")
+                    .is_some_and(|replay| !replay.is_null())
+                {
+                    self.replay(&id)?;
+                }
+                Ok(self.session_result(&id))
+            }
+            "session/close" => {
+                let id = self.session(params)?.1;
+                self.sessions.remove(&id);
+                Ok(json!({}))
+            }
+            "session/delete" => {
+                let id = params
+                    .get("sessionId")
+                    .and_then(Value::as_str)
+                    .ok_or((INVALID_PARAMS, "missing sessionId".to_owned()))?
+                    .to_owned();
+                self.sessions.remove(&id);
+                self.repo
+                    .delete(&id)
+                    .map_err(|error| (INVALID_PARAMS, error.to_string()))?;
+                Ok(json!({}))
+            }
+            "session/set_config_option" => {
+                let (handle, id) = self.session(params)?;
+                let config_id = params.get("configId").and_then(Value::as_str).unwrap_or("");
+                let value = params.get("value").and_then(Value::as_str).unwrap_or("");
+                match config_id {
+                    "model" => {
+                        let (provider, model_id) = value
+                            .split_once('/')
+                            .ok_or((INVALID_PARAMS, format!("unknown model {value}")))?;
+                        let model = resolve_model(provider, model_id)
+                            .ok_or((INVALID_PARAMS, format!("unknown model {value}")))?;
+                        handle.session.set_model(model);
+                    }
+                    "thought_level" => {
+                        handle.session.set_thinking_level(
+                            Some(value.to_owned()).filter(|level| level != "off"),
+                        );
+                    }
+                    other => {
+                        return Err((
+                            INVALID_PARAMS,
+                            format!("unsupported config option in this build: {other}"),
+                        ));
+                    }
+                }
+                let result = self.session_result(&id);
+                let options = result.get("configOptions").cloned().unwrap_or(Value::Null);
+                Ok(json!({"configOptions": options}))
+            }
+            other => Err((METHOD_NOT_FOUND, format!("unknown method {other}"))),
+        }
+    }
+
+    /// Design C6: the stored branch walked through the C3 vocabulary as
+    /// `session/update` notifications, emitted after the resume response.
+    fn replay(&mut self, session_id: &str) -> Result<(), (i64, String)> {
+        let Some(handle) = self.sessions.get(session_id) else {
+            return Ok(());
+        };
+        let Some(store) = handle.session.store() else {
+            return Ok(());
+        };
+        let entries = lock_session(&store)
+            .find_entries(&EntryQuery {
+                order: EntryOrder::OldestFirst,
+                ..EntryQuery::default()
+            })
+            .map_err(|error| (INTERNAL_ERROR, error.to_string()))?;
+        let mut ids = IdMap::new(handle.session.model().context_window);
+        for updated in replay_updates(&entries, &mut ids) {
+            (self.sink)(&update_notification(session_id, updated));
+        }
+        Ok(())
+    }
+}
+
+fn respond(sink: &LineSink, id: Value, outcome: Result<Value, (i64, String)>) {
+    let frame = match outcome {
+        Ok(result) => json!(AcpResponse {
+            jsonrpc: "2.0".to_owned(),
+            id,
+            result,
+        }),
+        Err((code, message)) => json!(AcpErrorResponse {
+            jsonrpc: "2.0".to_owned(),
+            id,
+            error: AcpErrorShape { code, message },
+        }),
+    };
+    sink(&frame);
+}
+
+pub fn run_acp(options: AcpOptions, runtime: tokio::runtime::Runtime) -> i32 {
+    let repo = JsonlRepo::new(options.session_dir, options.cwd.display().to_string());
+    let sink = stdout_sink();
+    let pending: PendingAsks = Arc::new(Mutex::new(HashMap::new()));
+    let mut state = AcpState {
+        repo,
+        sessions: HashMap::new(),
+        build: options.build,
+        sink: Arc::clone(&sink),
+        pending: Arc::clone(&pending),
+        agent_version: options.agent_version,
+        initialized: false,
+    };
+    runtime.block_on(async move {
+        let (line_tx, mut line_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+        std::thread::spawn(move || {
+            use std::io::BufRead;
+            let stdin = std::io::stdin();
+            for line in stdin.lock().lines() {
+                let Ok(line) = line else { break };
+                let trimmed = line.trim();
+                if trimmed.is_empty() {
+                    continue;
+                }
+                // Permission responses are routed here, off the executor:
+                // the asker blocks the current-thread runtime while waiting.
+                if let Ok(value) = serde_json::from_str::<Value>(trimmed)
+                    && value.get("method").is_none()
+                    && let Some(id) = value.get("id").and_then(Value::as_str)
+                {
+                    let sender = pending.lock().ok().and_then(|map| map.get(id).cloned());
+                    if let Some(sender) = sender {
+                        let _ = sender.send(value);
+                        continue;
+                    }
+                }
+                if line_tx.send(trimmed.to_owned()).is_err() {
+                    break;
+                }
+            }
+        });
+        while let Some(line) = line_rx.recv().await {
+            let Ok(incoming) = serde_json::from_str::<AcpFrame>(&line) else {
+                respond(
+                    &sink,
+                    Value::Null,
+                    Err((-32700, "parse error: not a JSON-RPC frame".to_owned())),
+                );
+                continue;
+            };
+            let params = incoming.params.unwrap_or(Value::Null);
+            match incoming.id {
+                Some(id) => {
+                    let outcome = state.handle(&incoming.method, &params);
+                    respond(&sink, id, outcome);
+                }
+                None => {
+                    if incoming.method == "session/cancel" {
+                        let _ = state.handle("session/cancel", &params);
+                    }
+                }
+            }
+        }
+        for handle in state.sessions.values() {
+            handle.session.abort();
+        }
+        0
+    })
+}

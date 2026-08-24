@@ -10,6 +10,7 @@ use yi_types::event::AssistantMessageEvent;
 use yi_types::message::{AgentMessage, StopReason};
 use yi_types::model::{Model, ModelCost};
 
+#[derive(Clone)]
 struct Args {
     command: String,
     model: String,
@@ -148,7 +149,7 @@ fn tty_ask(title: &str, description: &str) -> yi_runtime::AskOutcome {
     }
 }
 
-fn build_session(args: &Args, interactive_ask: bool) -> Result<AgentSession, i32> {
+fn build_session(args: &Args, asker: Option<yi_runtime::Asker>) -> Result<AgentSession, i32> {
     if args.model.is_empty() {
         eprintln!(
             "error: no model configured (pass --model provider/id or set \"model\" in ~/.yi/config.json)"
@@ -195,11 +196,6 @@ fn build_session(args: &Args, interactive_ask: bool) -> Result<AgentSession, i32
         yi_runtime::PermissionMode::Yolo
     } else {
         yi_runtime::PermissionMode::Ask
-    };
-    let asker: Option<yi_runtime::Asker> = if interactive_ask {
-        Some(std::sync::Arc::new(tty_ask))
-    } else {
-        None
     };
     let broker = std::sync::Arc::new(yi_runtime::PermissionBroker::new(
         mode,
@@ -284,7 +280,9 @@ fn run(args: &Args) -> i32 {
     // runtime context must exist before build_session.
     let session = {
         let _guard = runtime.enter();
-        match build_session(args, interactive) {
+        let asker: Option<yi_runtime::Asker> =
+            interactive.then(|| std::sync::Arc::new(tty_ask) as yi_runtime::Asker);
+        match build_session(args, asker) {
             Ok(session) => session,
             Err(code) => return code,
         }
@@ -413,7 +411,7 @@ fn main() {
             };
             let session = {
                 let _guard = runtime.enter();
-                match build_session(&args, false) {
+                match build_session(&args, None) {
                     Ok(session) => session,
                     Err(code) => std::process::exit(code),
                 }
@@ -424,7 +422,34 @@ fn main() {
             };
             std::process::exit(rpc::run_rpc(session, &options, runtime));
         }
-        "" => println!("yi {version} (yi ask, yi rpc; more surfaces land in later phases)"),
+        "acp" => {
+            let runtime = match tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+            {
+                Ok(runtime) => runtime,
+                Err(error) => {
+                    eprintln!("error: {error}");
+                    std::process::exit(1);
+                }
+            };
+            let build_args = args.clone();
+            let build: yi_acp::SessionBuilder = {
+                let runtime_handle = runtime.handle().clone();
+                std::sync::Arc::new(move |asker| {
+                    let _guard = runtime_handle.enter();
+                    build_session(&build_args, asker).map_err(|code| format!("exit code {code}"))
+                })
+            };
+            let options = yi_acp::AcpOptions {
+                session_dir: default_session_dir(&args),
+                cwd: effective_cwd(&args),
+                build,
+                agent_version: version.to_owned(),
+            };
+            std::process::exit(yi_acp::run_acp(options, runtime));
+        }
+        "" => println!("yi {version} (yi ask, yi rpc, yi acp; more surfaces land in later phases)"),
         other => {
             eprintln!("error: unknown command {other}");
             std::process::exit(2);

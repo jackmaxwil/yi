@@ -1774,6 +1774,12 @@ checksum = "aee1b19627c7c60102ab80d3a9cbe18de90bfe03bfa6c3715447681f0e8c8af6"
 [[package]]
 name = "yi-acp"
 version = "0.1.0"
+dependencies = [
+ "serde_json",
+ "tokio",
+ "yi-runtime",
+ "yi-types",
+]
 
 [[package]]
 name = "yi-ai"
@@ -1792,6 +1798,7 @@ dependencies = [
  "lexopt",
  "serde_json",
  "tokio",
+ "yi-acp",
  "yi-mcp-cli",
  "yi-runtime",
  "yi-types",

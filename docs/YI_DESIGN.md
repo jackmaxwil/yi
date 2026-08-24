@@ -14,7 +14,7 @@ skill creation.
 
 | Topic | Decision |
 |---|---|
-| Language | Rust. Deliberately small dependency tree (§13): `tokio` (subset), `serde`, `ureq`+`rustls` (platform verifier), `zeromq`, `agent-client-protocol`, `jiff`, `globset`, `lexopt`; `ratatui` feature-gated; `rmcp` (minimal features, no reqwest) config-gated at runtime (D36). Binary-size, startup and dep-count budgets ratcheted in CI. |
+| Language | Rust. Deliberately small dependency tree (§13): `tokio` (subset), `serde`, `ureq`+`rustls` (platform verifier), `zeromq`, `jiff`, `globset`, `lexopt`; `ratatui` feature-gated; `rmcp` (minimal features, no reqwest) config-gated at runtime (D36). Binary-size, startup and dep-count budgets ratcheted in CI. |
 | Core shape | Pi: pure `run_loop` + callback struct, 13-variant event enum, two queues (steer / follow-up), entry tree session store, compaction as an appended entry. |
 | Pi compatibility | **Wire-level, not type-level.** Byte-compatible session JSONL (v3 + harness entries), Pi RPC JSONL protocol, Pi `AgentEvent` JSON. Pi's own tests for those boundaries run against the yi binary (§3). |
 | pi-ai | Rust mirror of pi-ai's *types* (`Message`, `AssistantMessageEvent`, `StopReason`, `Usage`, `Model`) with identical serde shapes; provider implementations ported for Anthropic + OpenAI-compatible (+ responses API). Model catalog = pi-ai's generated data as JSON. No Node sidecar. |
@@ -61,7 +61,7 @@ crates/
                 Contains `subagent`, `schedule`, `advisor` as MODULES (single-impl, single-consumer:
                 a crate each would buy build fan-out, not a boundary — jcode's own anti-rule).
                 File-size guardrail keeps them honest. deps: all above.
-  yi-acp        ACP v2 server, Event → session/update. deps: yi-runtime, agent-client-protocol.
+  yi-acp        ACP v2 server, Event → session/update; hand-rolled v2 wire subset (D40). deps: yi-runtime, yi-types.
   yi-tui        ratatui shell (feature `tui`). Consumes Event + AgentSession methods only. deps: yi-runtime.
   yi-cli        `yi` binary: composition root; `yi rpc` (Pi RPC JSONL, ~300-line adapter over the
                 Event stream — a mode, not a crate) and `yi ask` live here. deps: all.
@@ -921,7 +921,7 @@ flowchart LR
 | V12 | directives | `fn(&UserEntry) -> Vec<Directive{entry_id, text}>` — constraint-sentence extraction (negation/scope markers), verbatim, append-only header panel | pure | new (§7.6) · mempalace |
 | V13 | transcript | advisor tool `transcript{entry_id, range?}` → full text of a digest-named user/assistant entry; never thinking, never cross-session | I/O | new (§7.6) · ARC |
 
-### 8.13 ACP (`yi-acp`, v2 from `agent-client-protocol`)
+### 8.13 ACP (`yi-acp`, v2 wire subset hand-rolled per D40; names verified against `agent-client-protocol-schema` as a read-only reference)
 
 | # | Primitive | Signature | Purity | Source |
 |---|---|---|---|---|
@@ -1279,7 +1279,7 @@ Chosen: **Yi**. Binary `yi`, crates `yi-*`, config `~/.yi/`, env `YI_*`, Python 
 | 4 | `yi-kernel` + venv bootstrap + `ipython`; `runtime::subagent` via `rlm()` | prime `agent-session-recursion` scenarios (depth 1) |
 | 4b | dill snapshot/restore | namespace revives across real kernels; unpicklable skipped; dispose flush + restore notice |
 | 5 | `runtime::schedule` (in-process), `runtime::advisor` | heartbeat + advisor e2e, `/advisor stats` |
-| 5b | `yi-acp` v2 server | v2 client (Afterlife) drives Yi end-to-end |
+| 5b | `yi-acp` v2 server | v2 client (Afterlife) drives Yi end-to-end (gate held by a scripted v2 client over the real binary until Afterlife exists) |
 | 6 | `yi serve` daemon over ACP v2; goals | reconnect keeps heartbeats |
 | 7 | `yi-tui` (ratatui, §8.14) | optional; RPC + ACP are the primary surfaces until then; ≤ 4k lines, ≤ 1 MiB |
 
@@ -1379,13 +1379,13 @@ size builds only as an experiment, never required.
 | Crate | Why | Features | Size class | Alternative considered |
 |---|---|---|---|---|
 | `serde`, `serde_json` | pi-ai wire compat, session JSONL, RPC, ACP | `derive`; json `std` + `preserve_order` (pulls `indexmap` — required: byte-identical round-trip of Pi files means arbitrary JSON objects must keep key order) | medium (unavoidable) | hand-rolled JSON rejected — compat correctness matters more |
-| `tokio` | async runtime for provider streams, kernel sockets, scheduler timer | `rt`, `sync`, `time`, `io-util`, `net`, `process`, `macros`; **no** `rt-multi-thread` unless measured | medium | `smol` smaller but `zeromq` and `agent-client-protocol` are tokio-shaped |
+| `tokio` | async runtime for provider streams, kernel sockets, scheduler timer | `rt`, `sync`, `time`, `io-util`, `net`, `process`, `macros`; **no** `rt-multi-thread` unless measured | medium | `smol` smaller but `zeromq` is tokio-shaped |
 | `ureq` + `rustls` + `rustls-platform-verifier` | HTTP + SSE streaming to providers; blocking client driven from `spawn_blocking`, body read incrementally | `rustls`, no `json`, no `brotli`; platform verifier ⇒ **no bundled root store** | small | `reqwest` rejected: hyper + tower + h2 stack ≈ +1.5–2.5 MiB; `native-tls` rejected: openssl on Linux |
 | `rmcp` | MCP protocol types + client + stdio child-process transport for `yi mcp` (§5.2, D36) | default-features off; `client`, `transport-child-process`, `transport-streamable-http-client` (trait only — HTTP impl is ureq-based, no reqwest) | measured (size-ledger) | hand-rolled MCP client rejected: protocol churn outpaces a private impl; official SDK tracks spec |
 | `sse-stream` | the `Sse` event type named by rmcp's `StreamableHttpClient` trait (D37) | type-only: Yi parses SSE bytes itself over ureq | ~0 (already transitive via rmcp) | re-export absent from rmcp; naming the type requires the direct dep |
 | `zeromq` (pure Rust) | Jupyter channels (DEALER/SUB) | `tokio-runtime`, no `tcp-transport` extras beyond TCP | medium | `zmq` (libzmq FFI) rejected by rule 4; custom wire shim rejected — standard Jupyter keeps ipykernel stock |
 | `hmac`, `sha2` | Jupyter message signing; permission rule digests | — | small | — |
-| `agent-client-protocol` (+ `-schema`) | ACP v1/v2 types and JSON-RPC plumbing | `unstable-v2`, `schemars` **off** | medium | hand-written types rejected: v2 is still moving; crate tracks it |
+| ~~`agent-client-protocol`~~ | **Rejected at phase 5b (D40).** Measured 2.0.0: +55 workspace transitive (cap 135), `schemars` non-optional via the pinned `-schema` crate (the "schemars off" condition this row assumed no longer exists), a second async stack (async-io/async-process/blocking) beside tokio, and v2 still feature-gated `unstable_protocol_v2` | — | Yi hand-rolls the v2 wire subset it emits: serde shapes in `yi-types::acp`, JSON-RPC 2.0 codec in `yi-acp`; C9's unknown-field tolerance is the forward-compat story |
 | `xxhash-rust` | hashline tag (`xxh32`) | `xxh32` only | tiny | — |
 | `globset` | permission rule patterns, file tools | — | small (pulls `regex-automata`, `aho-corasick`) | `glob` crate smaller but no brace sets; accept `globset`, **ban separate `regex`** |
 | `lexopt` | CLI parsing | — | tiny | `clap` rejected: +300–600 KiB and slower startup for help text nobody reads |
