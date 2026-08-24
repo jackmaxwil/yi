@@ -1,6 +1,6 @@
 # Architecture rules
 
-Thirteen crates under crates/ (twelve default + yi-mcp-cli behind cargo feature `mcp`).
+Thirteen crates under crates/, all in the default build; yi-mcp-cli is runtime-gated by `mcp.enabled` config (D36), not a cargo feature.
 Naming law: folder `x/` is crate `yi-x` — enforced by scripts/guardrails/check_manifests.py.
 
 Dependency direction is an allowlist in scripts/guardrails/boundaries.toml: unknown crate =

@@ -14,11 +14,11 @@ skill creation.
 
 | Topic | Decision |
 |---|---|
-| Language | Rust. Deliberately small dependency tree (§13): `tokio` (subset), `serde`, `ureq`+`rustls` (platform verifier), `zeromq`, `agent-client-protocol`, `jiff`, `globset`, `lexopt`; `ratatui` and `rmcp` feature-gated. Binary-size, startup and dep-count budgets ratcheted in CI. |
+| Language | Rust. Deliberately small dependency tree (§13): `tokio` (subset), `serde`, `ureq`+`rustls` (platform verifier), `zeromq`, `agent-client-protocol`, `jiff`, `globset`, `lexopt`; `ratatui` feature-gated; `rmcp` (minimal features, no reqwest) config-gated at runtime (D36). Binary-size, startup and dep-count budgets ratcheted in CI. |
 | Core shape | Pi: pure `run_loop` + callback struct, 13-variant event enum, two queues (steer / follow-up), entry tree session store, compaction as an appended entry. |
 | Pi compatibility | **Wire-level, not type-level.** Byte-compatible session JSONL (v3 + harness entries), Pi RPC JSONL protocol, Pi `AgentEvent` JSON. Pi's own tests for those boundaries run against the yi binary (§3). |
 | pi-ai | Rust mirror of pi-ai's *types* (`Message`, `AssistantMessageEvent`, `StopReason`, `Usage`, `Model`) with identical serde shapes; provider implementations ported for Anthropic + OpenAI-compatible (+ responses API). Model catalog = pi-ai's generated data as JSON. No Node sidecar. |
-| MCP | **Not in the core, off by default.** Shipped as a CLI surface modelled on `apify/mcpc` (`ref/tools/mcpc`): `<bin> mcp connect … @s`, `@s tools-list|tools-get|tools-call`, `grep`, `--json`. The agent reaches it through `bash` and through the kernel, never through a registered tool. No bridge process unless the server is stateful and the user asks for one (§5.2). |
+| MCP | **Not in the core, off by default** — config-gated (`mcp.enabled`), compiled into every build (D36). Shipped as a CLI surface modelled on `apify/mcpc` (`ref/tools/mcpc`): `<bin> mcp connect … @s`, `@s tools-list|tools-get|tools-call`, `grep`, `--json`. The agent reaches it through `bash` and through the kernel, never through a registered tool. No bridge process unless the server is stateful and the user asks for one (§5.2). |
 | Python | Jupyter wire protocol over `zeromq` crate; `ipykernel`; `prime-agent-runtime` Python package reused **verbatim**. |
 | Blast-radius classifier | Cut. Permission engine is modes + rules + `irreversible` tool flag. |
 | Advisor | Redesigned (§7). OMP's is the anti-pattern. |
@@ -55,7 +55,7 @@ crates/
   yi-context    token accounting, compaction policy + cut-point, summarizer, ledger, assembly. deps: yi-types (store access stays in yi-runtime).
   yi-permission modes, rules, session rule state, holds (advisor), approval request/response. deps: yi-types.
   yi-tools      Tool trait + builtins: read/hashline-edit/write/glob/grep/bash/exec-tools/ipython/subagent/ask. deps: yi-types, yi-permission.
-  yi-mcp-cli    mcpc-shaped MCP subcommand (§5.2), cargo feature `mcp` of yi-cli — compiled out of the default build (D9). deps: rmcp, yi-types.
+  yi-mcp-cli    mcpc-shaped MCP subcommand (§5.2), compiled into every build, runtime-gated by `mcp.enabled` config, default false (D36, supersedes D9 feature flag). deps: rmcp (minimal, no reqwest), yi-types.
   yi-kernel     Jupyter client: connection file, ZMQ shell/iopub/control, HMAC, comm host.request dispatch. deps: yi-types.
   yi-runtime    AgentSession: composes everything above; the ONLY constructor of LoopConfig.
                 Contains `subagent`, `schedule`, `advisor` as MODULES (single-impl, single-consumer:
@@ -243,9 +243,10 @@ What is changed, because of the no-resident-process preference:
 - Config sources: `~/.<bin>/mcp.json` and standard files (`.vscode/mcp.json`, `.mcp.json`)
   by explicit path. Stdio entries spawn a process for the duration of one command only.
 
-Crate: `yi-mcp-cli` (name to follow the rename), depends on `rmcp` for protocol types and
-transports. It is a dependency of `yi-cli` only; no runtime crate may import it (boundary
-check).
+Crate: `yi-mcp-cli`, depends on `rmcp` (default-features off: client + child-process transport;
+streamable HTTP through a ureq-based transport impl, never reqwest — D36) for protocol types
+and transports. Compiled into every build; `mcp.enabled = false` is the only gate. It is a
+dependency of `yi-cli` only; no runtime crate may import it (boundary check).
 
 Skills: discovery roots (workspace `.yi/skills`, `skills/`, `.pi/skills`, `.claude/skills`, `.agents/skills`;
 global equivalents), `SKILL.md` frontmatter metadata only at startup, body on invoke. Python
@@ -1032,7 +1033,7 @@ in any of the five manifests).
 | X9 | signals | Ctrl+C: first press cancels the turn (`InterruptSignal`), second within 1 s exits; SIGTERM/SIGHUP run the same teardown, promise-memoized so concurrent callers await one teardown; kernel and children get `shutdown` with a 5 s deadline | I/O | OMP `session-teardown.ts`, prime |
 | X10 | completions | none at launch (`lexopt` has no generator); a static `completions/yi.{bash,zsh,fish}` is added when subcommands stabilize | — | — |
 
-`yi mcp` (feature `mcp`, D9) follows the same X1–X6 conventions with `--json` output in MCP-spec
+`yi mcp` (config-gated by `mcp.enabled`, D36) follows the same X1–X6 conventions with `--json` output in MCP-spec
 shape; the proxy mode is cut.
 
 ### 8.16 Pi extension bridge, L3: remote-rendered UI (D14 revised)
@@ -1267,7 +1268,7 @@ Chosen: **Yi**. Binary `yi`, crates `yi-*`, config `~/.yi/`, env `YI_*`, Python 
 | 0 | workspace, guardrails, `yi-types` (pi-ai + Pi entry types, serde-exact), faux provider | Pi session fixtures parse and re-serialize byte-identical |
 | 1 | `yi-loop` (incl. interrupt), `yi-ai` (anthropic, openai), `yi-runtime` AgentSession, `yi ask` | Pi `agent-loop` fixtures pass; real turn end-to-end |
 | 2 | `yi-session` JSONL + conformance, `yi rpc` mode, `yi-tools` (read/write/glob/grep/bash, exec tools) | Pi RPC tests pass against `yi rpc` |
-| 2c | `yi-mcp-cli` (stateless connect/list/get/call/grep, `--json`, skill); off by default | mcpc's own shell examples run against it |
+| 2c | `yi-mcp-cli` (stateless connect/list/get/call/grep, `--json`, skill); config-gated off by default (D36) | mcpc's own shell examples run against it |
 | 2b | hashline read/edit; `yi-permission` (ask/auto/yolo, rules, holds) | OMP error-text parity tests |
 | 3 | `yi-context` P2–P14, P16–P18; auto-compaction | compaction e2e; attribution |
 | 4 | `yi-kernel` + venv bootstrap + `ipython`; `runtime::subagent` via `rlm()` | prime `agent-session-recursion` scenarios (depth 1) |
@@ -1373,6 +1374,7 @@ size builds only as an experiment, never required.
 | `serde`, `serde_json` | pi-ai wire compat, session JSONL, RPC, ACP | `derive`; json `std` + `preserve_order` (pulls `indexmap` — required: byte-identical round-trip of Pi files means arbitrary JSON objects must keep key order) | medium (unavoidable) | hand-rolled JSON rejected — compat correctness matters more |
 | `tokio` | async runtime for provider streams, kernel sockets, scheduler timer | `rt`, `sync`, `time`, `io-util`, `net`, `process`, `macros`; **no** `rt-multi-thread` unless measured | medium | `smol` smaller but `zeromq` and `agent-client-protocol` are tokio-shaped |
 | `ureq` + `rustls` + `rustls-platform-verifier` | HTTP + SSE streaming to providers; blocking client driven from `spawn_blocking`, body read incrementally | `rustls`, no `json`, no `brotli`; platform verifier ⇒ **no bundled root store** | small | `reqwest` rejected: hyper + tower + h2 stack ≈ +1.5–2.5 MiB; `native-tls` rejected: openssl on Linux |
+| `rmcp` | MCP protocol types + client + stdio child-process transport for `yi mcp` (§5.2, D36) | default-features off; `client`, `transport-child-process`, `transport-streamable-http-client` (trait only — HTTP impl is ureq-based, no reqwest) | measured (size-ledger) | hand-rolled MCP client rejected: protocol churn outpaces a private impl; official SDK tracks spec |
 | `zeromq` (pure Rust) | Jupyter channels (DEALER/SUB) | `tokio-runtime`, no `tcp-transport` extras beyond TCP | medium | `zmq` (libzmq FFI) rejected by rule 4; custom shim rejected to keep prime's Python verbatim |
 | `hmac`, `sha2` | Jupyter message signing; permission rule digests | — | small | — |
 | `agent-client-protocol` (+ `-schema`) | ACP v1/v2 types and JSON-RPC plumbing | `unstable-v2`, `schemars` **off** | medium | hand-written types rejected: v2 is still moving; crate tracks it |
@@ -1392,14 +1394,13 @@ size builds only as an experiment, never required.
 | Feature | Crate | Adds | Note |
 |---|---|---|---|
 | `tui` | `ratatui` (features `crossterm`, `scrolling-regions`; no `all-widgets`), `crossterm` (`bracketed-paste`; **no** `event-stream` — the UI thread polls synchronously), `tui-textarea` (no features), `pulldown-cmark` (no default features), `unicode-width` (already a ratatui dep); dev: `vt100`, `insta` | ≈ 1 MiB budget | phase 7; `yi` without `tui` is the headless/ACP build |
-| `mcp` | `rmcp` | ≈ 0.5–1 MiB (pulls `reqwest` — the only place it is tolerated, and only in this feature) | §5.2; `yi mcp` subcommand behind cargo feature `mcp`, compiled out of default builds (D9) |
 | `kernel` | `zeromq`, `hmac`, `sha2` | ≈ 0.4 MiB | on by default; off for a pure-chat build |
 | `docs` | `anydoc` (+ `pdf-inspector`, `zip`, `quick-xml`, `cfb`, `flate2`, `lopdf`…) | measured (§14.6) | off by default; `read` of office/PDF files |
 | `reduce` | none at runtime (`toml` build-dep only); possibly `regex` — measured | small | on by default (§14.3) |
 
 ### 13.5 Banned
 
-`reqwest` (default build), `hyper`, `openssl-sys`, `native-tls`, `git2`/`libgit2-sys`, `gix`
+`reqwest` (unconditionally — D36 removed the mcp-feature tolerance; rmcp runs minimal features with a ureq-based streamable-HTTP transport), `hyper`, `openssl-sys`, `native-tls`, `git2`/`libgit2-sys`, `gix`
 (≈ 3 MiB), `regex` (use `globset`'s automata or hand-written matchers), `clap`, `anyhow`, `syntect` with onig / `two-face`, `arborium`, `ratatui-image`, `textwrap` (hand-rolled wrap, U14), `toml` (config is JSON, X7), `color-eyre`/`human-panic`/`better-panic`
 (errors are typed at crate boundaries; `Box<dyn Error>` inside binaries is fine), `chrono`
 (`jiff` chosen), `once_cell`/`lazy_static` (std `OnceLock`), `rand` (ids from `getrandom` or
