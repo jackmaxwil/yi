@@ -19,7 +19,7 @@ skill creation.
 | Pi compatibility | **Wire-level, not type-level.** Byte-compatible session JSONL (v3 + harness entries), Pi RPC JSONL protocol, Pi `AgentEvent` JSON. Pi's own tests for those boundaries run against the yi binary (§3). |
 | pi-ai | Rust mirror of pi-ai's *types* (`Message`, `AssistantMessageEvent`, `StopReason`, `Usage`, `Model`) with identical serde shapes; provider implementations ported for Anthropic + OpenAI-compatible (+ responses API). Model catalog = pi-ai's generated data as JSON. No Node sidecar. |
 | MCP | **Not in the core, off by default** — config-gated (`mcp.enabled`), compiled into every build (D36). Shipped as a CLI surface modelled on `apify/mcpc` (`ref/tools/mcpc`): `<bin> mcp connect … @s`, `@s tools-list|tools-get|tools-call`, `grep`, `--json`. The agent reaches it through `bash` and through the kernel, never through a registered tool. No bridge process unless the server is stateful and the user asks for one (§5.2). |
-| Python | Jupyter wire protocol over `zeromq` crate; `ipykernel`; `prime-agent-runtime` Python package reused **verbatim**. |
+| Python | Jupyter wire protocol over `zeromq` crate; `ipykernel`; kernel-side package `python/yi_runtime` (module `rlm`) — seeded by copying prime-agent-runtime, owned and evolved by Yi. |
 | Blast-radius classifier | Cut. Permission engine is modes + rules + `irreversible` tool flag. |
 | Advisor | Redesigned (§7). OMP's is the anti-pattern. |
 | Skills | Read-only discovery from disk + Python skills in the kernel venv. No creation, no learning, no refine. Skills roots are model-write-denied. |
@@ -66,10 +66,13 @@ crates/
   yi-cli        `yi` binary: composition root; `yi rpc` (Pi RPC JSONL, ~300-line adapter over the
                 Event stream — a mode, not a crate) and `yi ask` live here. deps: all.
 python/
-  yi_runtime/  = prime-agent-runtime (rlm/__init__.py, harness.py, skill.py) unchanged; mcp.py rewritten
-                  as a subprocess wrapper over `<bin> mcp --json` (§5.2); module name `rlm`, `RLM_*` env
-                  names and the ready-check string kept byte-verbatim (§6).
-  skills/       goal, compact, rlm-heartbeat, agent-message, attach-image, edit (hashline-backed)
+  yi_runtime/  = Yi's kernel-side Python package, seeded from prime-agent-runtime
+                  (rlm/__init__.py, harness.py, skill.py copied; mcp.py rewritten as a subprocess
+                  wrapper over `<bin> mcp --json`, §5.2). Yi owns the whole package; the module
+                  name `rlm`, `RLM_*` env names and the ready-check string are Yi's wire-internal
+                  vocabulary (§6), changeable with the design.
+  skills/       compact + attach-image (landed with the kernel); goal, rlm-heartbeat,
+                  agent-message with their phases; edit written fresh (hashline-backed)
 ```
 
 Rules, CI-enforced (§9): `yi-types` has no async/fs/net deps, **no workspace error enum**
@@ -335,9 +338,11 @@ side raises its own KeyError), `mcp.refresh` throws, `mcp.begin_login` is not re
 Scheduling handlers (`compact.run`) only *schedule* and return — running inline would abort
 the turn whose cell awaits the reply; `rlm.run` returns at admission for the same reason.
 
-Python runtime: kept **byte-verbatim** — module name `rlm`, `RLM_*` env names and the
-`RUNTIME_READY_CHECK` string included (renaming was branding with a real diff cost; the names
-are wire-internal). The one rewritten file is `mcp.py` (§5.2), which must keep
+Python runtime: seeded by copying prime-agent-runtime verbatim — a one-time de-risk for the
+port, not a parity obligation; the package is Yi's and evolves freely. The module name `rlm`,
+`RLM_*` env names and the `RUNTIME_READY_CHECK` string were kept because renaming was branding
+with a real diff cost and the names are wire-internal; change them whenever it pays, updating
+host and check together. `mcp.py` was rewritten at the seed (§5.2) and must keep
 `McpIntegration`, `mcp.list_tools`, `mcp.call_tool` importable or the ready-check string
 changes with it. `RLM_DEPTH`/`RLM_MAX_DEPTH` are set but never read by Python; the host-side
 depth check is authoritative.
@@ -1378,7 +1383,7 @@ size builds only as an experiment, never required.
 | `ureq` + `rustls` + `rustls-platform-verifier` | HTTP + SSE streaming to providers; blocking client driven from `spawn_blocking`, body read incrementally | `rustls`, no `json`, no `brotli`; platform verifier ⇒ **no bundled root store** | small | `reqwest` rejected: hyper + tower + h2 stack ≈ +1.5–2.5 MiB; `native-tls` rejected: openssl on Linux |
 | `rmcp` | MCP protocol types + client + stdio child-process transport for `yi mcp` (§5.2, D36) | default-features off; `client`, `transport-child-process`, `transport-streamable-http-client` (trait only — HTTP impl is ureq-based, no reqwest) | measured (size-ledger) | hand-rolled MCP client rejected: protocol churn outpaces a private impl; official SDK tracks spec |
 | `sse-stream` | the `Sse` event type named by rmcp's `StreamableHttpClient` trait (D37) | type-only: Yi parses SSE bytes itself over ureq | ~0 (already transitive via rmcp) | re-export absent from rmcp; naming the type requires the direct dep |
-| `zeromq` (pure Rust) | Jupyter channels (DEALER/SUB) | `tokio-runtime`, no `tcp-transport` extras beyond TCP | medium | `zmq` (libzmq FFI) rejected by rule 4; custom shim rejected to keep prime's Python verbatim |
+| `zeromq` (pure Rust) | Jupyter channels (DEALER/SUB) | `tokio-runtime`, no `tcp-transport` extras beyond TCP | medium | `zmq` (libzmq FFI) rejected by rule 4; custom wire shim rejected — standard Jupyter keeps ipykernel stock |
 | `hmac`, `sha2` | Jupyter message signing; permission rule digests | — | small | — |
 | `agent-client-protocol` (+ `-schema`) | ACP v1/v2 types and JSON-RPC plumbing | `unstable-v2`, `schemars` **off** | medium | hand-written types rejected: v2 is still moving; crate tracks it |
 | `xxhash-rust` | hashline tag (`xxh32`) | `xxh32` only | tiny | — |
@@ -1795,6 +1800,13 @@ The implementation reads **only these spans**. Every row was verified against th
 *port verbatim* = translate the span 1:1; *port adapted* = same behavior, Rust-shaped; *read-only
 reference* = read for contract, write fresh. The `### excise` blocks name the largest token sinks
 an implementer must NOT read.
+
+Port actions govern the initial translation only. Yi copied features it wanted from agents it
+liked; verbatim porting was the de-risk tactic for that first implementation. Once a span has
+landed, the resulting code is Yi's — no upstream tracking, no long-term parity, and later
+divergence needs no ref re-read (the design tables, not these spans, are the authority for
+evolved behavior). The Pi v4 session-file format is the one deliberate byte-compatibility
+contract, and it is interop with a format, not parity with code.
 
 ### A.1 pi (loop, events, session, compaction, faux, wire types)
 

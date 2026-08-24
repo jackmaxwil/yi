@@ -1,10 +1,10 @@
-"""Persistent harness-state helpers for Prime Agent's RLM kernel.
+"""Persistent harness-state helpers for Yi's RLM kernel.
 
 The state model is intentionally small: it records prompt notes, memory,
 skills, subagent specs, and refinement events in the session-local harness
 store by default; pass ``global_=True`` for the cross-session global store.
-Execution still belongs to Prime Agent's TypeScript host and the existing
-``rlm.run`` recursion bridge.
+Execution still belongs to the Yi host and the existing ``rlm.run``
+recursion bridge.
 """
 
 from __future__ import annotations

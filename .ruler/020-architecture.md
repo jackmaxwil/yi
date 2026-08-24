@@ -19,8 +19,9 @@ error, stale entry = error, undeclared internal dep = error. Standing rules (YI_
 - yi-tools never depends on yi-kernel: the `ipython` tool reaches the kernel through the
   `KernelBridge` capability seam; yi-runtime implements it (KernelService) and owns the
   host-handler vocabulary (HostRegistry, design §6).
-- python/yi_runtime is the kernel-side Python package: `rlm/__init__.py`, `harness.py`,
-  `skill.py` are byte-verbatim from prime-agent-runtime; only `mcp.py`/`mcp_base.py` are
-  Yi-owned (subprocess wrapper over `yi mcp --json`). Any edit to the package must keep
-  `RUNTIME_READY_CHECK` passing (pinned by crates/kernel/tests/ready_check.rs) and changes
-  the runtime identity hash, forcing a venv rebuild on next boot.
+- python/yi_runtime is Yi's kernel-side Python package (module name `rlm`). It was seeded
+  by copying prime-agent-runtime at phase 4 to de-risk the port; Yi owns it outright and
+  evolves it freely — there is no upstream to track. Mechanical facts on edits: keep
+  `RUNTIME_READY_CHECK` passing (pinned by crates/kernel/tests/ready_check.rs; the check
+  string in bootstrap.rs moves with the package), and any package change moves the runtime
+  identity hash, forcing a venv rebuild on next boot.

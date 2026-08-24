@@ -1,4 +1,4 @@
-"""Tiny rlm-compatible kernel shim for Prime Agent."""
+"""Yi's kernel-side runtime shim (module name `rlm`)."""
 
 from __future__ import annotations
 
@@ -82,7 +82,7 @@ def _spawn_handle_from_payload(payload: Any) -> RLMSpawnHandle:
 
 
 async def host_request(request_type: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
-    """Send a typed request to the Prime Agent host and await its reply.
+    """Send a typed request to the Yi host and await its reply.
 
     This is the kernel side of the generic host bridge: Python skills call
     ``await host_request("<type>", {...})`` and the TypeScript host dispatches
@@ -146,7 +146,7 @@ async def host_request(request_type: str, payload: dict[str, Any] | None = None)
 
 
 async def run(prompt: str, **kwargs: Any) -> RLMSpawnHandle:
-    """Spawn a recursive Prime Agent child and return once its task is admitted.
+    """Spawn a recursive Yi child and return once its task is admitted.
 
     ``model`` selects a child with an exact ``provider/model`` selector.
     ``thinking`` sets the child reasoning level (e.g. 'off', 'low', 'medium', 'high');
