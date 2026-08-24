@@ -52,7 +52,7 @@ crates/
                 ≤ 1,000 lines. deps: yi-types, tokio (Notify only).
   yi-ai         providers (anthropic, openai-chat, openai-responses), model catalog, StreamFn impl. deps: yi-types.
   yi-session    entry tree repo (JSONL + in-memory), projection, rebuild_context, conformance tests. deps: yi-types.
-  yi-context    token accounting, compaction policy + cut-point, summarizer, ledger, assembly. deps: yi-types, yi-session.
+  yi-context    token accounting, compaction policy + cut-point, summarizer, ledger, assembly. deps: yi-types (store access stays in yi-runtime).
   yi-permission modes, rules, session rule state, holds (advisor), approval request/response. deps: yi-types.
   yi-tools      Tool trait + builtins: read/hashline-edit/write/glob/grep/bash/exec-tools/ipython/subagent/ask. deps: yi-types, yi-permission.
   yi-mcp-cli    mcpc-shaped MCP subcommand (§5.2), cargo feature `mcp` of yi-cli — compiled out of the default build (D9). deps: rmcp, yi-types.
