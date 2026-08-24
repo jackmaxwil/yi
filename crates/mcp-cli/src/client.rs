@@ -1,6 +1,7 @@
 use rmcp::ServiceExt;
 use rmcp::model::{CallToolRequestParams, PaginatedRequestParams};
-use rmcp::transport::TokioChildProcess;
+use rmcp::transport::streamable_http_client::StreamableHttpClientTransportConfig;
+use rmcp::transport::{StreamableHttpClientTransport, TokioChildProcess};
 use serde_json::{Map, Value, json};
 use yi_types::mcp::McpServerSpec;
 
@@ -28,12 +29,11 @@ fn to_value<T: serde::Serialize>(value: &T) -> Value {
     serde_json::to_value(value).unwrap_or(Value::Null)
 }
 
-fn command_for(spec: &McpServerSpec) -> Result<tokio::process::Command, String> {
-    let McpServerSpec::Stdio { command, args, env } = spec else {
-        return Err(
-            "streamable-HTTP transport is not wired yet (ureq transport is the next 2c batch); use a stdio config entry".to_owned(),
-        );
-    };
+fn stdio_command(
+    command: &str,
+    args: &[String],
+    env: &Map<String, Value>,
+) -> tokio::process::Command {
     let mut cmd = tokio::process::Command::new(command);
     cmd.args(args);
     for (key, value) in env {
@@ -41,29 +41,62 @@ fn command_for(spec: &McpServerSpec) -> Result<tokio::process::Command, String> 
             cmd.env(key, text);
         }
     }
-    Ok(cmd)
+    cmd
 }
 
 /// One-shot execution (design §5.2): connect, negotiate, run the op, exit.
 /// No resident process, no sockets held after return.
 pub fn one_shot(spec: &McpServerSpec, op: Op) -> Result<Value, String> {
+    one_shot_with_auth(spec, op, None)
+}
+
+/// Same, with a Bearer token attached to every HTTP request (stdio ignores it).
+pub fn one_shot_with_auth(
+    spec: &McpServerSpec,
+    op: Op,
+    auth_token: Option<String>,
+) -> Result<Value, String> {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .map_err(|error| error.to_string())?;
     runtime.block_on(async move {
-        let transport =
-            TokioChildProcess::new(command_for(spec)?).map_err(|error| error.to_string())?;
-        let service =
-            ().serve(transport)
-                .await
-                .map_err(|error| format!("connect failed: {error}"))?;
-        let info = service
-            .peer_info()
-            .ok_or("server sent no initialize result")?;
-        let outcome = run_op(&service, &info, op).await;
-        let _ = service.cancel().await;
-        outcome
+        match spec {
+            McpServerSpec::Stdio { command, args, env } => {
+                let transport = TokioChildProcess::new(stdio_command(command, args, env))
+                    .map_err(|error| error.to_string())?;
+                let service =
+                    ().serve(transport)
+                        .await
+                        .map_err(|error| format!("connect failed: {error}"))?;
+                let info = service
+                    .peer_info()
+                    .ok_or("server sent no initialize result")?;
+                let outcome = run_op(&service, &info, op).await;
+                let _ = service.cancel().await;
+                outcome
+            }
+            McpServerSpec::Http { url } => {
+                let mut config = StreamableHttpClientTransportConfig::with_uri(url.clone());
+                if let Some(token) = auth_token {
+                    config = config.auth_header(token);
+                }
+                let transport = StreamableHttpClientTransport::with_client(
+                    crate::http::UreqHttpClient::default(),
+                    config,
+                );
+                let service =
+                    ().serve(transport)
+                        .await
+                        .map_err(|error| format!("connect failed: {error}"))?;
+                let info = service
+                    .peer_info()
+                    .ok_or("server sent no initialize result")?;
+                let outcome = run_op(&service, &info, op).await;
+                let _ = service.cancel().await;
+                outcome
+            }
+        }
     })
 }
 

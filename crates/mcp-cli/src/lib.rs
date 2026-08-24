@@ -5,8 +5,13 @@ pub mod callargs;
 pub mod client;
 pub mod config;
 pub mod grep;
+pub mod http;
+pub mod oauth;
 pub mod output;
+pub mod pkce;
+pub mod profiles;
 pub mod sessions;
+pub mod tokens;
 
 use std::path::PathBuf;
 
@@ -15,7 +20,9 @@ use yi_types::mcp::{McpServerSpec, McpSessionState};
 
 use args::{Command, Flags, SchemaMode, SessionOp};
 use client::Op;
+use profiles::ProfilesStore;
 use sessions::SessionsStore;
+use tokens::{TokenStore, Tokens};
 
 pub const SKILL: &str = include_str!("SKILL.md");
 
@@ -23,7 +30,12 @@ const HELP: &str = "yi mcp — MCP client (stateless: each command connects, run
 
 Commands:
   connect <server> [@session]   connect and snapshot tools (<server>: config
-                                entry name, <file>:<entry>, or config path)
+                                entry name, <file>:<entry>, config path, or URL)
+                                [--profile <name> | --no-profile]
+  login <server-url>            OAuth 2.1 + PKCE login; tokens go to the OS
+                                keychain (mcp.tokenStore config: keychain|file)
+                                [--profile <name>] [--scopes a,b] [--client-id id] [--no-browser]
+  logout <server-url>           delete stored tokens [--profile <name>] [--purge]
   close @session                mark a session disconnected
   restart @session              reconnect and refresh the snapshot
   grep <pattern> [-m <n>]       search cached tools/instructions, all sessions
@@ -45,6 +57,39 @@ fn home_dir() -> PathBuf {
     std::env::var_os("HOME").map_or_else(|| PathBuf::from("."), PathBuf::from)
 }
 
+fn token_store() -> Tokens {
+    let home = home_dir();
+    let configured = std::fs::read_to_string(home.join(".yi/config.json"))
+        .ok()
+        .and_then(|text| serde_json::from_str::<Value>(&text).ok())
+        .and_then(|config| {
+            config
+                .pointer("/mcp/tokenStore")
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+        });
+    Tokens::new(
+        TokenStore::from_config(configured.as_deref()),
+        sessions::mcp_root(&home),
+    )
+}
+
+/// Bearer token for an HTTP spec via its OAuth profile; stdio needs none.
+/// Never triggers a login — a missing or dead credential is an error that
+/// names the login command.
+fn auth_for(spec: &McpServerSpec, profile_name: Option<&str>) -> Result<Option<String>, String> {
+    let McpServerSpec::Http { url } = spec else {
+        return Ok(None);
+    };
+    let profiles = ProfilesStore::open(sessions::mcp_root(&home_dir()));
+    let name = profile_name.unwrap_or("default");
+    let Some(profile) = profiles.get(name, url) else {
+        return Ok(None);
+    };
+    let agent = ureq::AgentBuilder::new().build();
+    oauth::access_token(&agent, &profile, &token_store()).map(Some)
+}
+
 fn snapshot_from(connected: &Value) -> Value {
     json!({
         "tools": connected.get("tools").cloned().unwrap_or(Value::Array(Vec::new())),
@@ -56,16 +101,36 @@ fn do_connect(
     store: &mut SessionsStore,
     server: &str,
     session: Option<String>,
+    profile: Option<&str>,
+    no_profile: bool,
     flags: &Flags,
 ) -> i32 {
     let (entry_name, spec) = match config::resolve_server(server, &home_dir()) {
         Ok(found) => found,
         Err(error) => return fail(&error, 2),
     };
+    let auth = if no_profile {
+        None
+    } else {
+        match auth_for(&spec, profile) {
+            Ok(token) => token,
+            Err(error) => return fail(&error, 3),
+        }
+    };
     let name = session.unwrap_or_else(|| sessions::default_session_name(&entry_name));
     let mut record = sessions::new_record(&name, spec.clone());
+    if let Some(profile) = profile {
+        record
+            .extra
+            .insert("profile".to_owned(), Value::String(profile.to_owned()));
+    }
+    if no_profile {
+        record
+            .extra
+            .insert("noProfile".to_owned(), Value::Bool(true));
+    }
     let _ = store.upsert(&record);
-    match client::one_shot(&spec, Op::Discover) {
+    match client::one_shot_with_auth(&spec, Op::Discover, auth) {
         Ok(connected) => {
             record.state = McpSessionState::Live;
             record.protocol_version = connected
@@ -93,17 +158,21 @@ fn do_connect(
             0
         }
         Err(error) => {
-            let _ = store.set_state(&name, McpSessionState::Disconnected);
+            let state = if error.contains("Auth required") || error.contains("status 401") {
+                McpSessionState::Unauthorized
+            } else {
+                McpSessionState::Disconnected
+            };
+            let _ = store.set_state(&name, state);
+            if state == McpSessionState::Unauthorized {
+                return fail(
+                    &format!("@{name}: unauthorized. Run: yi mcp login {server}"),
+                    3,
+                );
+            }
             fail(&format!("@{name}: {error}"), 3)
         }
     }
-}
-
-fn spec_of(store: &SessionsStore, session: &str) -> Result<McpServerSpec, String> {
-    store
-        .get(session)
-        .map(|record| record.spec)
-        .ok_or_else(|| format!("unknown session @{session} (yi mcp connect <server> @{session})"))
 }
 
 fn compare_schema(
@@ -134,16 +203,42 @@ fn find_tool(listing: &Value, name: &str) -> Option<Value> {
 }
 
 fn do_session_op(store: &mut SessionsStore, session: &str, op: SessionOp, flags: &Flags) -> i32 {
-    let spec = match spec_of(store, session) {
-        Ok(spec) => spec,
-        Err(error) => return fail(&error, 2),
+    let record = match store.get(session) {
+        Some(record) => record,
+        None => {
+            return fail(
+                &format!("unknown session @{session} (yi mcp connect <server> @{session})"),
+                2,
+            );
+        }
+    };
+    let spec = record.spec.clone();
+    let profile_name = record
+        .extra
+        .get("profile")
+        .and_then(Value::as_str)
+        .map(str::to_owned);
+    let skip_auth = record
+        .extra
+        .get("noProfile")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let auth = if skip_auth {
+        None
+    } else {
+        match auth_for(&spec, profile_name.as_deref()) {
+            Ok(token) => token,
+            Err(error) => return fail(&error, 3),
+        }
     };
     let run = |store: &mut SessionsStore, client_op: Op| -> Result<Value, String> {
-        let result = client::one_shot(&spec, client_op);
-        let state = if result.is_ok() {
-            McpSessionState::Live
-        } else {
-            McpSessionState::Disconnected
+        let result = client::one_shot_with_auth(&spec, client_op, auth.clone());
+        let state = match &result {
+            Ok(_) => McpSessionState::Live,
+            Err(error) if error.contains("Auth required") || error.contains("status 401") => {
+                McpSessionState::Unauthorized
+            }
+            Err(_) => McpSessionState::Disconnected,
         };
         let _ = store.set_state(session, state);
         result
@@ -225,8 +320,79 @@ pub fn run(raw_args: &[String]) -> i32 {
             println!("{SKILL}");
             0
         }
-        Command::Connect { server, session } => {
-            do_connect(&mut store, &server, session, &parsed.flags)
+        Command::Connect {
+            server,
+            session,
+            profile,
+            no_profile,
+        } => do_connect(
+            &mut store,
+            &server,
+            session,
+            profile.as_deref(),
+            no_profile,
+            &parsed.flags,
+        ),
+        Command::Login {
+            server,
+            profile,
+            scopes,
+            client_id,
+            no_browser,
+        } => {
+            let agent = ureq::AgentBuilder::new().build();
+            let options = oauth::LoginOptions {
+                profile: profile.clone(),
+                scopes,
+                client_id,
+                no_browser,
+            };
+            match oauth::login(&agent, &server, &options) {
+                Ok((record, credential)) => {
+                    let key = oauth::profile_key(&record.name, &record.server_url);
+                    let mut profiles = ProfilesStore::open(sessions::mcp_root(&home_dir()));
+                    if let Err(error) = profiles
+                        .upsert(&record)
+                        .and_then(|()| token_store().save(&key, &credential))
+                    {
+                        return fail(&error, 3);
+                    }
+                    output::emit(
+                        &json!({
+                            "profile": record.name,
+                            "server": record.server_url,
+                            "issuer": record.issuer,
+                            "state": "authorized",
+                        }),
+                        parsed.flags.json,
+                        parsed.flags.max_chars,
+                    );
+                    0
+                }
+                Err(error) => fail(&error, 3),
+            }
+        }
+        Command::Logout {
+            server,
+            profile,
+            purge,
+        } => {
+            let key = oauth::profile_key(&profile, &server);
+            if let Err(error) = token_store().delete(&key) {
+                return fail(&error, 3);
+            }
+            if purge {
+                let mut profiles = ProfilesStore::open(sessions::mcp_root(&home_dir()));
+                if let Err(error) = profiles.remove(&profile, &server) {
+                    return fail(&error, 3);
+                }
+            }
+            output::emit(
+                &json!({"profile": profile, "server": server, "state": "logged_out"}),
+                parsed.flags.json,
+                parsed.flags.max_chars,
+            );
+            0
         }
         Command::Close { session } => {
             match store.set_state(&session, McpSessionState::Disconnected) {

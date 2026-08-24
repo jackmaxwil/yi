@@ -1416,7 +1416,7 @@ size builds only as an experiment, never required.
 | `yi --version` startup (hyperfine, warm) | ≤ 5 ms | `guardrails/startup_ms_budget.json` |
 | `yi ask --help` | ≤ 8 ms | same |
 | direct deps (default features) | ≤ 16 | `guardrails/deps_budget.json` |
-| transitive deps (default features) | ≤ 110 | same |
+| transitive deps (default features) | ≤ 125 (raised from 110 with D36/D37: rmcp + futures tree; phase 4 adds zeromq/hmac) | same |
 | `cargo bloat` top-30 | report only, attached to PR | CI artifact |
 
 Measured, not guessed: phase 0 builds an empty `yi-cli` with each candidate (ureq vs reqwest,

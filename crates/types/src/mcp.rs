@@ -56,3 +56,52 @@ pub struct McpSessionsFile {
     #[serde(flatten)]
     pub extra: Map<String, Value>,
 }
+
+/// OAuth profile metadata for one MCP server (design D37). Stored in
+/// `~/.yi/mcp/profiles.json` — metadata only, never tokens.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct McpOauthProfile {
+    pub name: String,
+    pub server_url: String,
+    pub issuer: String,
+    pub client_id: String,
+    pub authorization_endpoint: String,
+    pub token_endpoint: String,
+    /// Whether the callback must carry a matching `iss` parameter (RFC 9207).
+    #[serde(default)]
+    pub iss_required: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub scopes: Vec<String>,
+    pub created_at: u64,
+    pub updated_at: u64,
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+/// The profiles file: `{ "profiles": { key: profile } }`, keyed
+/// `<profile-name>@<server-host>`.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct McpProfilesFile {
+    #[serde(default)]
+    pub profiles: Map<String, Value>,
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+/// One credential set, serialized only into the token store (keychain entry
+/// or a 0600 file — design D37); never into profiles or sessions files.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct McpTokenSet {
+    pub access_token: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub refresh_token: Option<String>,
+    /// Absolute expiry in epoch ms; 0 = unknown (treat as non-expiring).
+    #[serde(default)]
+    pub expires_at_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope: Option<String>,
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}

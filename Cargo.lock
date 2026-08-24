@@ -1586,10 +1586,16 @@ dependencies = [
 name = "yi-mcp-cli"
 version = "0.1.0"
 dependencies = [
+ "futures-util",
+ "http",
  "rmcp",
  "serde",
  "serde_json",
+ "sha2",
+ "sse-stream",
+ "thiserror",
  "tokio",
+ "ureq",
  "yi-types",
 ]
 

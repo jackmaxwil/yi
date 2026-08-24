@@ -43,6 +43,20 @@ pub enum Command {
     Connect {
         server: String,
         session: Option<String>,
+        profile: Option<String>,
+        no_profile: bool,
+    },
+    Login {
+        server: String,
+        profile: String,
+        scopes: Vec<String>,
+        client_id: Option<String>,
+        no_browser: bool,
+    },
+    Logout {
+        server: String,
+        profile: String,
+        purge: bool,
     },
     Close {
         session: String,
@@ -82,7 +96,11 @@ fn split_flags(args: &[String]) -> Result<SplitArgs, String> {
         let arg = &args[index];
         match arg.as_str() {
             "--json" => flags.json = true,
-            "--max-chars" | "--max-results" | "--schema" | "--schema-mode" | "-m" => {
+            "--no-profile" | "--no-browser" | "--purge" => {
+                options.push((arg.clone(), String::new()));
+            }
+            "--max-chars" | "--max-results" | "--schema" | "--schema-mode" | "-m" | "--profile"
+            | "--scopes" | "--client-id" => {
                 let value = args
                     .get(index + 1)
                     .ok_or_else(|| format!("{arg} requires a value"))?;
@@ -216,8 +234,37 @@ pub fn parse(args: &[String]) -> Result<Parsed, String> {
                             .ok_or_else(|| format!("session name must start with @: {word}"))
                     })
                     .transpose()?;
-                Command::Connect { server, session }
+                Command::Connect {
+                    server,
+                    session,
+                    profile: option(&options, "--profile").map(str::to_owned),
+                    no_profile: option(&options, "--no-profile").is_some(),
+                }
             }
+            "login" => Command::Login {
+                server: positional
+                    .get(1)
+                    .ok_or("login requires a server URL")?
+                    .clone(),
+                profile: option(&options, "--profile")
+                    .unwrap_or("default")
+                    .to_owned(),
+                scopes: option(&options, "--scopes")
+                    .map(|value| value.split(',').map(str::to_owned).collect())
+                    .unwrap_or_default(),
+                client_id: option(&options, "--client-id").map(str::to_owned),
+                no_browser: option(&options, "--no-browser").is_some(),
+            },
+            "logout" => Command::Logout {
+                server: positional
+                    .get(1)
+                    .ok_or("logout requires a server URL")?
+                    .clone(),
+                profile: option(&options, "--profile")
+                    .unwrap_or("default")
+                    .to_owned(),
+                purge: option(&options, "--purge").is_some(),
+            },
             "close" | "restart" => {
                 let session = positional
                     .get(1)
