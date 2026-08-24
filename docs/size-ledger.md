@@ -7,3 +7,4 @@ the §13.3 table is the expected outcome, this ledger wins if they disagree.
 | date | change | dist binary (bytes) | `yi --version` (ms) | deps direct/transitive |
 |---|---|---|---|---|
 | 2026-08-22 | phase 0 scaffold: empty 13-crate workspace, no external deps | 286064 | 1.4 | 0 / 0 |
+| 2026-08-24 | phase 1: tokio(rt,sync,time,macros) + ureq2(tls,native-certs) + lexopt + serde stack, full loop/providers/runtime/cli | 1614528 | 2.3 | 5 / 68 |

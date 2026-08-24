@@ -1,15 +1,16 @@
 # Yi — Architecture Map
 
 ```
-version: 0.5.8          # bump on any structural change; log it below
+version: 0.5.9          # bump on any structural change; log it below
 design:  YI_DESIGN.md   # the deep design; § refs below point into it
-status:  phase 0 done   # exit met: Pi v4 fixtures round-trip byte-identical; faux replay green. Phase 1 next (yi-loop, yi-ai providers, AgentSession, yi ask)
+status:  phase 1 code done  # loop/providers/runtime/yi ask green vs faux; live-provider turn pending an API key. docs/solutions added
 ```
 
 ## Changelog
 
 | ver | date | change |
 |---|---|---|
+| 0.5.9 | 2026-08-24 | Phase 1 landed: yi-loop (L1-L12, I1/I2/I4), yi-ai (anthropic-messages + openai-chat adapters, SSE, JSON salvage, transform, retry, bundled catalog), yi-runtime AgentSession + ProviderStream glue, yi ask (text/json). Exit partially met: loop parity + faux e2e green; live-provider turn awaits a key. docs/solutions/ generated (ADRs from the decision log, architecture, coding practices). |
 | 0.5.8 | 2026-08-23 | Phase 0 exit met: yi-types wire layer + AssistantMessageEvent enum + faux replay (yi-ai), all gates green. schemas.lock generation deferred to phase 1 alongside the first schema churn. |
 | 0.5.7 | 2026-08-23 | Pi session format re-verified against source: v4 mutation log, not v3 → D32; S5/S7/§3 corrected; yi-types wire types + golden fixtures land (byte-identical round-trip). |
 | 0.5.6 | 2026-08-22 | Repo-plumbing review (codex/jcode/atuin/rainfrog/mdfried manifests, CI, toolchain) → D31: release/dist profile split, centralized workspace deps, toolchain pin = MSRV, naming law, lints opt-in gate, src/-scoped ratchets. Phase 0 scaffold begun. |
