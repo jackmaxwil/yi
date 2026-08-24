@@ -12,3 +12,4 @@ the §13.3 table is the expected outcome, this ledger wins if they disagree.
 | 2026-08-24 | D34 OpenRouter: data/openrouter.json (139 KB, 349 models) baked into the catalog + yi rpc surface | 2693296 | 2.3 | 7 / 75 |
 | 2026-08-24 | phase 2b: hashline (xxhash-rust xxh32) + yi-permission (sha2) + prompt.md in the edit tool | 2858992 | 2.1 | 9 / 83 |
 | 2026-08-24 | 2c/D36 MCP compiled-in: rmcp 3.1.4 (client + child-process transport, default-features off; chrono transitively — wrapper exception) + yi-mcp-cli in every build | 3853616 | 3.9 | 10 / 107 |
+| 2026-08-24 | 2c batch 2 (D37): streamable-HTTP client feature of rmcp (sse-stream, futures-util, http as type-level directs) + OAuth over ureq | 4151984 | 2.4 | 13 / 111 |

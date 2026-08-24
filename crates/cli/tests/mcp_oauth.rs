@@ -61,7 +61,7 @@ struct Output {
     stderr: String,
 }
 
-fn yi_mcp(home: &PathBuf, args: &[&str]) -> Result<Output, Box<dyn Error>> {
+fn yi_mcp(home: &std::path::Path, args: &[&str]) -> Result<Output, Box<dyn Error>> {
     let output = command(env!("CARGO_BIN_EXE_yi"))
         .arg("mcp")
         .args(args)
@@ -90,7 +90,7 @@ fn drive_browser(auth_url: &str) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-fn login(home: &PathBuf, server: &str) -> Result<i32, Box<dyn Error>> {
+fn login(home: &std::path::Path, server: &str) -> Result<i32, Box<dyn Error>> {
     let mut child = command(env!("CARGO_BIN_EXE_yi"))
         .args(["mcp", "login", server, "--no-browser", "--json"])
         .env("HOME", home)
@@ -112,7 +112,7 @@ fn login(home: &PathBuf, server: &str) -> Result<i32, Box<dyn Error>> {
     Ok(status.code().unwrap_or(-1))
 }
 
-fn token_file(home: &PathBuf, port: u16) -> PathBuf {
+fn token_file(home: &std::path::Path, port: u16) -> PathBuf {
     home.join(".yi/mcp/tokens")
         .join(format!("default_127.0.0.1_{port}.json"))
 }

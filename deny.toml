@@ -19,7 +19,9 @@ deny = [
   "lazy_static", "rand", "syntect", "textwrap", "toml",
   "tracing-subscriber",
 ]
-skip = [{ crate = "syn" }, { crate = "windows-sys" }]
+# base64 0.22/0.23 duplicate: ureq 2 pins 0.22, rmcp pins 0.23; collapses when
+# ureq 3 migration lands (advisories note above).
+skip = [{ crate = "syn" }, { crate = "windows-sys" }, { crate = "base64" }]
 
 [advisories]
 yanked = "deny"
