@@ -85,6 +85,7 @@ pub struct AgentSession {
     compactor: Option<Arc<crate::compaction::Compactor>>,
     on_compacted: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
     schedule: Mutex<Option<ScheduleParts>>,
+    advisor: Mutex<Option<Arc<crate::advisor::AdvisorRuntime>>>,
 }
 
 type ScheduleParts = (
@@ -117,7 +118,18 @@ impl AgentSession {
             compactor: None,
             on_compacted: Mutex::new(None),
             schedule: Mutex::new(None),
+            advisor: Mutex::new(None),
         }
+    }
+
+    pub fn set_advisor(&self, advisor: Arc<crate::advisor::AdvisorRuntime>) {
+        if let Ok(mut slot) = self.advisor.lock() {
+            *slot = Some(advisor);
+        }
+    }
+
+    pub fn advisor(&self) -> Option<Arc<crate::advisor::AdvisorRuntime>> {
+        self.advisor.lock().ok().and_then(|slot| slot.clone())
     }
 
     /// Design H10: the scheduler and heartbeat surface live with the session;
@@ -399,6 +411,28 @@ impl AgentSession {
                 }
             } else {
                 let _ = run(message);
+            }
+        })
+    }
+
+    /// Design V8 delivery: running session → steer queue (next tool
+    /// boundary); idle → follow-up queue (drains on the next prompt or
+    /// heartbeat). The advisor never wakes an idle primary.
+    pub fn advisory_hook(&self) -> Arc<dyn Fn(AgentMessage) + Send + Sync> {
+        let shared = Arc::clone(&self.shared);
+        Arc::new(move |message| {
+            let running = shared
+                .status
+                .lock()
+                .map(|status| *status == Status::Running)
+                .unwrap_or(false);
+            let queue = if running {
+                &shared.steer
+            } else {
+                &shared.follow_up
+            };
+            if let Ok(mut pending) = queue.lock() {
+                pending.push(message);
             }
         })
     }

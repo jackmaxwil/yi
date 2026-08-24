@@ -34,13 +34,20 @@ pub enum HoldSource {
     User,
 }
 
-/// Soft-block (design M5, D35-minimal): a matching call becomes Ask with the
-/// hold's reason attached. TTL and advisor sourcing land with phase 5.
+/// Soft-block (design M5): a matching call becomes Ask with the hold's
+/// reason attached; an expired hold is inert.
 #[derive(Debug, Clone)]
 pub struct Hold {
     pub pattern: String,
     pub reason: String,
     pub source: HoldSource,
+    pub expires_at_ms: Option<u64>,
+}
+
+impl Hold {
+    pub fn expired(&self, now_ms: u64) -> bool {
+        self.expires_at_ms.is_some_and(|at| at <= now_ms)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

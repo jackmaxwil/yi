@@ -154,6 +154,26 @@ impl RpcState {
                 }
                 ok_frame(id, "prompt")
             }
+            "heartbeat" => {
+                let input = text_arg("command");
+                match self.session.heartbeat_service() {
+                    Some(service) => {
+                        let outcome = yi_runtime::schedule::parse_heartbeat_command(input)
+                            .and_then(|command| {
+                                service.apply(&command, yi_runtime::session_store::now_ms())
+                            });
+                        match outcome {
+                            Ok(text) => data_frame(id, "heartbeat", json!({"text": text})),
+                            Err(error) => error_frame(id, "heartbeat", &error),
+                        }
+                    }
+                    None => error_frame(id, "heartbeat", "no scheduler is attached"),
+                }
+            }
+            "advisor_stats" => match self.session.advisor() {
+                Some(advisor) => data_frame(id, "advisor_stats", json!({"text": advisor.stats()})),
+                None => error_frame(id, "advisor_stats", "the advisor is not attached"),
+            },
             "steer" => {
                 self.session.steer(text_arg("message"));
                 ok_frame(id, "steer")

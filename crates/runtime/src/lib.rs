@@ -1,5 +1,6 @@
 #![forbid(unsafe_code)]
 
+pub mod advisor;
 pub mod compaction;
 pub mod kernel;
 pub mod permission;

@@ -504,6 +504,93 @@ pub struct RuntimeWiring {
 /// Wires kernel (ipython + host handlers) and subagents onto a session, and
 /// makes every spawned child wire itself the same way at depth+1 — the depth
 /// check in `spawn` is what terminates the recursion (design B2).
+fn wire_schedule(
+    session: &AgentSession,
+    wiring: &RuntimeWiring,
+    registry: &mut crate::kernel::HostRegistry,
+) {
+    let store = Arc::new(crate::schedule::JobStore::open(
+        wiring.rlm_dir.join("scheduled-jobs.json"),
+    ));
+    let heartbeats = Arc::new(crate::schedule::HeartbeatService {
+        store: Arc::clone(&store),
+        session_id: wiring
+            .rlm_dir
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "session".to_owned()),
+        cwd: wiring.cwd.to_string_lossy().into_owned(),
+    });
+    heartbeats.register(registry);
+    let hook = session.heartbeat_hook();
+    let busy = session.activity_handle();
+    let deliver: Arc<crate::schedule::DeliverFn> = Arc::new(move |job| {
+        let activity = crate::schedule::SessionActivity {
+            is_streaming: busy(),
+            ..Default::default()
+        };
+        if crate::schedule::should_defer(job, &activity) {
+            return crate::schedule::RunOutcome::Skipped;
+        }
+        let mode = job
+            .delivery_mode
+            .unwrap_or(crate::schedule::DEFAULT_HEARTBEAT_DELIVERY_MODE);
+        hook(
+            crate::schedule::heartbeat_message(job, yi_session::now_ms()),
+            mode,
+        );
+        crate::schedule::RunOutcome::Ran
+    });
+    let scheduler = crate::schedule::Scheduler::start(Arc::clone(&store), deliver, || {
+        format!(
+            "dsp-{}",
+            random_suffix().unwrap_or_else(|_| "00000000".to_owned())
+        )
+    });
+    session.set_schedule(Arc::clone(&store), Arc::clone(&heartbeats), scheduler);
+}
+
+fn wire_advisor(session: &AgentSession, wiring: &RuntimeWiring, tools: &[Arc<dyn yi_tools::Tool>]) {
+    let hold_sink: Option<crate::advisor::HoldSink> = wiring.broker.as_ref().map(|broker| {
+        let broker = Arc::clone(broker);
+        Arc::new(move |advice: &yi_types::advisor::Advice| {
+            if !broker.can_ask() {
+                return false;
+            }
+            broker.insert_hold(yi_permission::Hold {
+                pattern: advice.target.clone().unwrap_or_default(),
+                reason: advice.text.clone(),
+                source: yi_permission::HoldSource::Advisor,
+                expires_at_ms: Some(yi_session::now_ms().saturating_add(3_600_000)),
+            });
+            true
+        }) as crate::advisor::HoldSink
+    });
+    let probe_tools: Vec<Arc<dyn yi_tools::Tool>> = tools.to_vec();
+    let irreversible: Arc<crate::advisor::signals::IrreversibleProbe> =
+        Arc::new(move |name: &str, args: &Map<String, Value>| {
+            probe_tools
+                .iter()
+                .find(|tool| tool.name() == name)
+                .is_some_and(|tool| tool.irreversible(args))
+        });
+    // V10: ADVISOR.md attention text, project-local, best-effort.
+    let attention = std::fs::read_to_string(wiring.cwd.join("ADVISOR.md")).ok();
+    let advisor = crate::advisor::attach_advisor(
+        session,
+        crate::advisor::AdvisorConfig {
+            attention,
+            ..crate::advisor::AdvisorConfig::default()
+        },
+        crate::advisor::AdvisorDeps {
+            hold_sink,
+            irreversible: Some(irreversible),
+            llm: None,
+        },
+    );
+    session.set_advisor(advisor);
+}
+
 pub fn attach_runtime(session: &mut AgentSession, wiring: RuntimeWiring) -> Arc<SubagentHost> {
     if session.compactor().is_none() {
         session.enable_compaction();
@@ -574,47 +661,7 @@ pub fn attach_runtime(session: &mut AgentSession, wiring: RuntimeWiring) -> Arc<
         attribute: session.attribution_handle(),
     }));
     host.register(&mut registry);
-    let store = Arc::new(crate::schedule::JobStore::open(
-        wiring.rlm_dir.join("scheduled-jobs.json"),
-    ));
-    let heartbeats = Arc::new(crate::schedule::HeartbeatService {
-        store: Arc::clone(&store),
-        session_id: wiring
-            .rlm_dir
-            .file_name()
-            .map(|name| name.to_string_lossy().into_owned())
-            .unwrap_or_else(|| "session".to_owned()),
-        cwd: wiring.cwd.to_string_lossy().into_owned(),
-    });
-    heartbeats.register(&mut registry);
-    {
-        let hook = session.heartbeat_hook();
-        let busy = session.activity_handle();
-        let deliver: Arc<crate::schedule::DeliverFn> = Arc::new(move |job| {
-            let activity = crate::schedule::SessionActivity {
-                is_streaming: busy(),
-                ..Default::default()
-            };
-            if crate::schedule::should_defer(job, &activity) {
-                return crate::schedule::RunOutcome::Skipped;
-            }
-            let mode = job
-                .delivery_mode
-                .unwrap_or(crate::schedule::DEFAULT_HEARTBEAT_DELIVERY_MODE);
-            hook(
-                crate::schedule::heartbeat_message(job, yi_session::now_ms()),
-                mode,
-            );
-            crate::schedule::RunOutcome::Ran
-        });
-        let scheduler = crate::schedule::Scheduler::start(Arc::clone(&store), deliver, || {
-            format!(
-                "dsp-{}",
-                random_suffix().unwrap_or_else(|_| "00000000".to_owned())
-            )
-        });
-        session.set_schedule(Arc::clone(&store), Arc::clone(&heartbeats), scheduler);
-    }
+    wire_schedule(session, &wiring, &mut registry);
     let restore_notice = session.notice_hook();
     let service = Arc::new(crate::kernel::KernelService::new(
         crate::kernel::KernelServiceOptions {
@@ -642,6 +689,7 @@ pub fn attach_runtime(session: &mut AgentSession, wiring: RuntimeWiring) -> Arc<
     }
     let mut tools = (wiring.tools)();
     tools.push(crate::kernel::ipython_tool(service));
+    wire_advisor(session, &wiring, &tools);
     session.use_tools(tools, wiring.cwd.clone(), wiring.broker.clone());
     host
 }

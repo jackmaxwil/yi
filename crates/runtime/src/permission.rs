@@ -24,7 +24,7 @@ pub struct PermissionBroker {
     pub mode: PermissionMode,
     config_rules: Vec<ConfigRule>,
     session_rules: Mutex<SessionRules>,
-    holds: Vec<Hold>,
+    holds: Mutex<Vec<Hold>>,
     context: CatastrophicContext,
     cwd: PathBuf,
     asker: Option<Asker>,
@@ -80,11 +80,31 @@ impl PermissionBroker {
             mode,
             config_rules,
             session_rules: Mutex::new(SessionRules::new()),
-            holds: Vec::new(),
+            holds: Mutex::new(Vec::new()),
             context: CatastrophicContext::detect(&cwd),
             cwd,
             asker,
             events,
+        }
+    }
+
+    /// Whether an interactive asker exists — without one, an advisor Hold
+    /// would be an Ask nobody can answer (D28), so callers degrade it.
+    pub fn can_ask(&self) -> bool {
+        self.asker.is_some()
+    }
+
+    /// Design M5/V8: installs an advisor (or user) hold; matching calls
+    /// become Ask with the reason shown until cleared or expired.
+    pub fn insert_hold(&self, hold: Hold) {
+        if let Ok(mut holds) = self.holds.lock() {
+            holds.push(hold);
+        }
+    }
+
+    pub fn clear_holds(&self) {
+        if let Ok(mut holds) = self.holds.lock() {
+            holds.clear();
         }
     }
 
@@ -141,12 +161,24 @@ impl PermissionBroker {
             .session_rules
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let now = yi_session::now_ms();
+        let active_holds: Vec<Hold> = self
+            .holds
+            .lock()
+            .map(|holds| {
+                holds
+                    .iter()
+                    .filter(|hold| !hold.expired(now))
+                    .cloned()
+                    .collect()
+            })
+            .unwrap_or_default();
         let decision = decide(
             &call,
             self.mode,
             &self.config_rules,
             &session_rules,
-            &self.holds,
+            &active_holds,
             &self.context,
         );
         drop(session_rules);

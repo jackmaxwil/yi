@@ -166,3 +166,50 @@ fn rejects_unknown_commands_and_answers_queries() -> TestResult {
     std::fs::remove_dir_all(&dir)?;
     Ok(())
 }
+
+#[test]
+fn heartbeat_and_advisor_surfaces_respond() -> TestResult {
+    let dir = temp_dir("surfaces")?;
+    let frames = run_rpc(
+        &dir,
+        &[
+            serde_json::json!({"id": "h", "type": "heartbeat", "command": "/heartbeat every 10m run the tests"}),
+            serde_json::json!({"id": "s", "type": "heartbeat", "command": "/heartbeat status"}),
+            serde_json::json!({"id": "a", "type": "advisor_stats"}),
+        ],
+    )?;
+    let responses = responses(&frames);
+    let set = responses
+        .iter()
+        .find(|frame| frame["id"] == "h")
+        .ok_or("missing heartbeat response")?;
+    assert_eq!(set["success"], true);
+    assert!(
+        set["data"]["text"]
+            .as_str()
+            .is_some_and(|text| text.contains("Heartbeat set")),
+        "set must confirm: {set}"
+    );
+    let status = responses
+        .iter()
+        .find(|frame| frame["id"] == "s")
+        .ok_or("missing status response")?;
+    assert!(
+        status["data"]["text"]
+            .as_str()
+            .is_some_and(|text| text.contains("run the tests")),
+        "status must list the job: {status}"
+    );
+    let stats = responses
+        .iter()
+        .find(|frame| frame["id"] == "a")
+        .ok_or("missing advisor_stats response")?;
+    assert!(
+        stats["data"]["text"]
+            .as_str()
+            .is_some_and(|text| text.starts_with("advisor:")),
+        "/advisor stats must render: {stats}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+    Ok(())
+}

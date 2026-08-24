@@ -176,6 +176,7 @@ fn holds_turn_matching_calls_into_ask_with_reason() -> TestResult {
         pattern: "migrations".to_owned(),
         reason: "schema migrations need review this session".to_owned(),
         source: HoldSource::User,
+        expires_at_ms: None,
     }];
     let call = bash_call("rm migrations/0001.sql", "c3");
     let Decision::Ask { description, .. } =

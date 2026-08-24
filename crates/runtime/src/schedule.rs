@@ -757,7 +757,11 @@ impl Scheduler {
         mut new_id: impl FnMut() -> String + Send + 'static,
     ) -> Self {
         let now = yi_session::now_ms();
-        store.mutate(|state| recover_interrupted_in_state(state, now, None));
+        // Recovery only mutates when a claim was orphaned; an empty store must
+        // not materialize scheduled-jobs.json on every session start.
+        if !store.snapshot().dispatches.is_empty() {
+            store.mutate(|state| recover_interrupted_in_state(state, now, None));
+        }
         let changed = store.changed();
         let task = tokio::spawn(async move {
             loop {
