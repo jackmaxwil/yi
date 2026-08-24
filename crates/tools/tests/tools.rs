@@ -4,9 +4,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use serde_json::{Map, Value, json};
-use yi_tools::{
-    BashTool, GlobTool, GrepTool, ReadTool, Tool, ToolContext, WriteTool, discover_exec_tools,
-};
+use yi_tools::{BashTool, GlobTool, GrepTool, Tool, ToolContext, WriteTool, discover_exec_tools};
 use yi_types::message::Content;
 
 type TestResult = Result<(), Box<dyn Error>>;
@@ -50,7 +48,7 @@ fn write_then_read_round_trips_through_the_working_directory() -> TestResult {
     let dir = temp_dir("read-write")?;
     let context = ToolContext::new(dir.0.clone());
 
-    let written = WriteTool.execute(
+    let written = WriteTool::default().execute(
         args(&[
             ("path", json!("notes/hello.txt")),
             ("content", json!("line one\nline two\nline three")),
@@ -59,7 +57,10 @@ fn write_then_read_round_trips_through_the_working_directory() -> TestResult {
     );
     assert!(!written.is_error, "{}", output_text(&written));
 
-    let read = ReadTool.execute(
+    let read = yi_tools::hashline::tool::HashlineReadTool {
+        state: yi_tools::hashline::tool::shared_hashline_state(),
+    }
+    .execute(
         args(&[
             ("path", json!("notes/hello.txt")),
             ("offset", json!(2)),
@@ -68,7 +69,14 @@ fn write_then_read_round_trips_through_the_working_directory() -> TestResult {
         &context,
     );
     assert!(!read.is_error);
-    assert!(output_text(&read).starts_with("line two"));
+    let text = output_text(&read);
+    assert!(
+        text.lines()
+            .next()
+            .is_some_and(|l| l.starts_with("[notes/hello.txt#")),
+        "{text}"
+    );
+    assert!(text.contains("2:line two"), "{text}");
     Ok(())
 }
 
@@ -76,7 +84,10 @@ fn write_then_read_round_trips_through_the_working_directory() -> TestResult {
 fn read_reports_a_missing_file_as_a_tool_error() -> TestResult {
     let dir = temp_dir("read-missing")?;
     let context = ToolContext::new(dir.0.clone());
-    let read = ReadTool.execute(args(&[("path", json!("absent.txt"))]), &context);
+    let read = yi_tools::hashline::tool::HashlineReadTool {
+        state: yi_tools::hashline::tool::shared_hashline_state(),
+    }
+    .execute(args(&[("path", json!("absent.txt"))]), &context);
     assert!(read.is_error);
     Ok(())
 }

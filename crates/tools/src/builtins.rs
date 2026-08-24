@@ -8,75 +8,13 @@ use crate::tool::{
     Tool, ToolContext, ToolKind, ToolOutput, error_output, require_str, resolve_path, text_output,
 };
 
-const READ_LINE_CAP: usize = 2_000;
 const MATCH_CAP: usize = 1_000;
 const GREP_HIT_CAP: usize = 200;
 
-pub struct ReadTool;
-
-impl Tool for ReadTool {
-    fn name(&self) -> &str {
-        "read"
-    }
-
-    fn description(&self) -> &str {
-        "Read a file from disk. Optional offset (1-based line) and limit select a line range."
-    }
-
-    fn schema(&self) -> Value {
-        json!({
-            "type": "object",
-            "properties": {
-                "path": {"type": "string", "description": "File path (absolute, or relative to the working directory)"},
-                "offset": {"type": "integer", "description": "1-based first line to read"},
-                "limit": {"type": "integer", "description": "Maximum number of lines to read"}
-            },
-            "required": ["path"]
-        })
-    }
-
-    fn kind(&self) -> ToolKind {
-        ToolKind::Read
-    }
-
-    fn execute(&self, input: Map<String, Value>, context: &ToolContext) -> ToolOutput {
-        let path = match require_str(&input, "path") {
-            Ok(path) => resolve_path(context, path),
-            Err(message) => return error_output(message),
-        };
-        let content = match fs::read_to_string(&path) {
-            Ok(content) => content,
-            Err(error) => {
-                return error_output(format!("failed to read {}: {error}", path.display()));
-            }
-        };
-        let offset = input
-            .get("offset")
-            .and_then(Value::as_u64)
-            .map_or(0, |line| line.saturating_sub(1) as usize);
-        let limit = input
-            .get("limit")
-            .and_then(Value::as_u64)
-            .map_or(READ_LINE_CAP, |limit| limit as usize)
-            .min(READ_LINE_CAP);
-        let lines: Vec<&str> = content.split('\n').collect();
-        let selected = lines
-            .iter()
-            .skip(offset)
-            .take(limit)
-            .copied()
-            .collect::<Vec<_>>()
-            .join("\n");
-        let elided = lines.len().saturating_sub(offset.saturating_add(limit));
-        if elided > 0 {
-            text_output(format!("{selected}\n[{elided} more lines not shown]"))
-        } else {
-            text_output(selected)
-        }
-    }
+#[derive(Default)]
+pub struct WriteTool {
+    pub hashline: Option<crate::hashline::tool::SharedHashline>,
 }
-
-pub struct WriteTool;
 
 impl Tool for WriteTool {
     fn name(&self) -> &str {
@@ -117,11 +55,16 @@ impl Tool for WriteTool {
             return error_output(format!("failed to create {}: {error}", parent.display()));
         }
         match fs::write(&path, content) {
-            Ok(()) => text_output(format!(
-                "Wrote {} bytes to {}",
-                content.len(),
-                path.display()
-            )),
+            Ok(()) => {
+                if let Some(state) = &self.hashline {
+                    crate::hashline::tool::record_write_snapshot(state, &path, content);
+                }
+                text_output(format!(
+                    "Wrote {} bytes to {}",
+                    content.len(),
+                    path.display()
+                ))
+            }
             Err(error) => error_output(format!("failed to write {}: {error}", path.display())),
         }
     }

@@ -1,8 +1,15 @@
+pub mod apply;
+pub mod blocks;
+pub mod clipboard;
 pub mod format;
+pub mod input;
 pub mod messages;
 pub mod mismatch;
 pub mod normalize;
 pub mod parser;
+pub mod patcher;
 pub mod prefixes;
+pub mod snapshots;
 pub mod tokenizer;
+pub mod tool;
 pub mod types;
