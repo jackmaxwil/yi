@@ -314,6 +314,15 @@ fn session_system_prompt(args: &Args) -> String {
             args.system
         )
     };
+    let cwd = effective_cwd(args);
+    let home = std::env::var_os("HOME")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_default();
+    let budgets = yi_runtime::SourceBudgets::default();
+    if let Some(catalog) = yi_runtime::skills_catalog(&cwd, &home, budgets.skills_meta) {
+        prompt.push_str("\n\n");
+        prompt.push_str(&catalog.text);
+    }
     if let Some(spec) = &args.schema
         && let Ok(schema) = schema::Schema::load(spec)
     {

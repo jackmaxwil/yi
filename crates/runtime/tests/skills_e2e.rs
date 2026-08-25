@@ -179,3 +179,108 @@ async fn bundled_python_skills_work_through_the_kernel() -> TestResult {
     service.dispose().await;
     Ok(())
 }
+
+fn skill_dir(root: &std::path::Path, name: &str, frontmatter: &str) -> TestResult {
+    let dir = root.join(name);
+    std::fs::create_dir_all(&dir)?;
+    std::fs::write(dir.join("SKILL.md"), frontmatter)?;
+    Ok(())
+}
+
+#[test]
+fn the_catalog_lists_both_roots_and_the_project_shadows_the_global() -> TestResult {
+    let root = std::env::temp_dir().join(format!("yi-skills-catalog-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let home = root.join("home");
+    let project = root.join("project");
+    std::fs::create_dir_all(home.join(".yi/skills"))?;
+    std::fs::create_dir_all(project.join(".yi/skills"))?;
+    skill_dir(
+        &home.join(".yi/skills"),
+        "brainstorm",
+        "---\nname: brainstorm\ndescription: \"Use before creative work.\"\n---\nbody\n",
+    )?;
+    skill_dir(
+        &home.join(".yi/skills"),
+        "shared",
+        "---\nname: shared\ndescription: The global copy.\n---\nbody\n",
+    )?;
+    skill_dir(
+        &project.join(".yi/skills"),
+        "shared",
+        "---\nname: shared\ndescription: The project copy.\n---\nbody\n",
+    )?;
+
+    let catalog = yi_runtime::skills_catalog(&project, &home, yi_runtime::Bytes(16_384))
+        .ok_or("no catalog")?;
+    assert!(!catalog.truncated);
+    assert!(
+        catalog
+            .text
+            .contains("brainstorm: Use before creative work."),
+        "{}",
+        catalog.text
+    );
+    assert!(
+        catalog.text.contains("shared: The project copy."),
+        "{}",
+        catalog.text
+    );
+    assert!(
+        !catalog.text.contains("The global copy."),
+        "{}",
+        catalog.text
+    );
+    assert!(
+        catalog.text.contains(
+            &project
+                .join(".yi/skills/shared/SKILL.md")
+                .display()
+                .to_string()
+        ),
+        "the catalog must locate the file: {}",
+        catalog.text
+    );
+
+    let tight =
+        yi_runtime::skills_catalog(&project, &home, yi_runtime::Bytes(80)).ok_or("no catalog")?;
+    assert!(tight.truncated, "a catalog over budget must say so");
+    assert!(tight.text.len() < catalog.text.len());
+
+    let _ = std::fs::remove_dir_all(&root);
+    Ok(())
+}
+
+#[test]
+fn no_skills_roots_means_no_catalog_block() -> TestResult {
+    let root = std::env::temp_dir().join(format!("yi-skills-empty-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root)?;
+    assert!(yi_runtime::skills_catalog(&root, &root, yi_runtime::Bytes(16_384)).is_none());
+    let _ = std::fs::remove_dir_all(&root);
+    Ok(())
+}
+
+#[test]
+fn a_bundle_layout_is_walked_one_level_deeper() -> TestResult {
+    let root = std::env::temp_dir().join(format!("yi-skills-bundle-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let global = root.join("home/.yi/skills");
+    std::fs::create_dir_all(global.join("caveman"))?;
+    skill_dir(
+        &global.join("caveman"),
+        "surgical-patch",
+        "---\nname: surgical-patch\ndescription: Small bounded edits.\n---\nbody\n",
+    )?;
+    let catalog = yi_runtime::skills_catalog(&root, &root.join("home"), yi_runtime::Bytes(16_384))
+        .ok_or("no catalog")?;
+    assert!(
+        catalog
+            .text
+            .contains("surgical-patch: Small bounded edits."),
+        "{}",
+        catalog.text
+    );
+    let _ = std::fs::remove_dir_all(&root);
+    Ok(())
+}

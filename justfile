@@ -19,3 +19,8 @@ guardrails:
     bash scripts/guardrails/check_guardrails.sh
 
 check: fmt-check clippy guardrails
+
+# Bundled skills (14.1) are installed into the global root, not compiled in.
+install-skills:
+    mkdir -p ~/.yi/skills
+    cp -R skills/. ~/.yi/skills/
