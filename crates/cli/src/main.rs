@@ -1,6 +1,8 @@
 #![forbid(unsafe_code)]
 
 mod rpc;
+mod schema;
+mod sessions;
 
 use std::sync::Arc;
 
@@ -24,7 +26,17 @@ struct Args {
     headless: bool,
     keys: Option<String>,
     frames: Option<String>,
+    resume: Resume,
+    schema: Option<String>,
     prompt: String,
+}
+
+/// Which session file `yi ask` writes to (X1 `--continue` / `--session`).
+#[derive(Clone, PartialEq, Eq)]
+enum Resume {
+    Fresh,
+    Leaf,
+    Named(String),
 }
 
 fn parse_args() -> Result<Args, lexopt::Error> {
@@ -41,6 +53,9 @@ fn parse_args() -> Result<Args, lexopt::Error> {
     let mut headless = false;
     let mut keys = None;
     let mut frames = None;
+    let mut continue_leaf = false;
+    let mut session = None;
+    let mut schema = None;
     let mut prompt_parts: Vec<String> = Vec::new();
     let mut parser = lexopt::Parser::from_env();
     while let Some(argument) = parser.next()? {
@@ -59,6 +74,9 @@ fn parse_args() -> Result<Args, lexopt::Error> {
             Long("headless") => headless = true,
             Long("keys") => keys = Some(parser.value()?.string()?),
             Long("frames") => frames = Some(parser.value()?.string()?),
+            Long("continue") => continue_leaf = true,
+            Long("session") => session = Some(parser.value()?.string()?),
+            Long("schema") => schema = Some(parser.value()?.string()?),
             Value(value) => {
                 let value = value.string()?;
                 if command.is_empty() {
@@ -83,6 +101,12 @@ fn parse_args() -> Result<Args, lexopt::Error> {
         headless,
         keys,
         frames,
+        resume: match (session, continue_leaf) {
+            (Some(id), _) => Resume::Named(id),
+            (None, true) => Resume::Leaf,
+            (None, false) => Resume::Fresh,
+        },
+        schema,
         prompt: prompt_parts.join(" "),
     })
 }
@@ -191,20 +215,7 @@ fn build_session(
     if model.provider == "faux" {
         provider.queue_faux(vec![yi_ai_faux_reply(&args.prompt)]);
     }
-    let mode_fragment = yi_runtime::mode_fragment(if args.yolo {
-        yi_runtime::PermissionMode::Yolo
-    } else {
-        yi_runtime::PermissionMode::Ask
-    });
-    let system_prompt = if args.system.is_empty() {
-        format!("{}\n{mode_fragment}", yi_runtime::identity_fragment())
-    } else {
-        format!(
-            "{}\n{}\n\n{mode_fragment}",
-            yi_runtime::identity_fragment(),
-            args.system
-        )
-    };
+    let system_prompt = session_system_prompt(args);
     let mut session = AgentSession::new(
         SessionConfig {
             system_prompt,
@@ -263,7 +274,7 @@ fn session_system_prompt(args: &Args) -> String {
     } else {
         yi_runtime::PermissionMode::Ask
     });
-    if args.system.is_empty() {
+    let mut prompt = if args.system.is_empty() {
         format!("{}\n{mode_fragment}", yi_runtime::identity_fragment())
     } else {
         format!(
@@ -271,7 +282,14 @@ fn session_system_prompt(args: &Args) -> String {
             yi_runtime::identity_fragment(),
             args.system
         )
+    };
+    if let Some(spec) = &args.schema
+        && let Ok(schema) = schema::Schema::load(spec)
+    {
+        prompt.push_str("\n\n");
+        prompt.push_str(&schema.instruction());
     }
+    prompt
 }
 
 fn session_provider(session: &AgentSession) -> &std::sync::Arc<ProviderStream> {
@@ -314,8 +332,27 @@ fn run(args: &Args) -> i32 {
             Err(code) => return code,
         }
     };
+    if let Err(error) = attach_store(args, &session) {
+        // A requested resume that cannot be honoured is an error; an
+        // unavailable store for a fresh turn only costs the recording.
+        if args.resume == Resume::Fresh {
+            eprintln!("warning: session store unavailable: {error}");
+        } else {
+            eprintln!("error: {error}");
+            return 1;
+        }
+    }
     let json = args.json;
     let prompt = args.prompt.clone();
+    let schema = match args.schema.as_deref().map(schema::Schema::load) {
+        Some(Ok(schema)) => Some(schema),
+        Some(Err(error)) => {
+            eprintln!("error: {error}");
+            return 2;
+        }
+        None => None,
+    };
+    let mut answer = String::new();
     runtime.block_on(async move {
         let mut events = session.subscribe();
         if session.prompt(&prompt).is_err() {
@@ -327,14 +364,17 @@ fn run(args: &Args) -> i32 {
             let Ok(event) = events.recv().await else {
                 break;
             };
-            if json {
-                if let Ok(line) = serde_json::to_string(&event) {
-                    println!("{line}");
+            if json && let Ok(line) = serde_json::to_string(&event) {
+                println!("{line}");
+            }
+            if let Some(chunk) = render_text(&event) {
+                if schema.is_some() {
+                    answer.push_str(&chunk);
+                } else if !json {
+                    print!("{chunk}");
+                    use std::io::Write;
+                    let _ = std::io::stdout().flush();
                 }
-            } else if let Some(chunk) = render_text(&event) {
-                print!("{chunk}");
-                use std::io::Write;
-                let _ = std::io::stdout().flush();
             }
             match &event {
                 AgentEvent::MessageEnd {
@@ -354,7 +394,9 @@ fn run(args: &Args) -> i32 {
                     }
                 }
                 AgentEvent::AgentEnd { .. } => {
-                    if !json {
+                    if let Some(schema) = &schema {
+                        exit = emit_structured(schema, &answer, json);
+                    } else if !json {
                         println!();
                     }
                     break;
@@ -364,6 +406,120 @@ fn run(args: &Args) -> i32 {
         }
         exit
     })
+}
+
+/// X1: every `yi ask` turn is recorded, so `--continue` has a leaf to resume.
+fn attach_store(args: &Args, session: &AgentSession) -> Result<(), String> {
+    use yi_runtime::session_store::{CreateOptions, JsonlRepo, SessionRepo};
+    let mut repo = JsonlRepo::new(
+        default_session_dir(args),
+        effective_cwd(args).display().to_string(),
+    );
+    let existing = match &args.resume {
+        Resume::Fresh => None,
+        Resume::Leaf => sessions::latest_id(&mut repo),
+        Resume::Named(id) => Some(id.clone()),
+    };
+    let store = match existing {
+        Some(id) => repo.open(&id).map_err(|error| error.to_string())?,
+        None => repo
+            .create(CreateOptions::default())
+            .map_err(|error| error.to_string())?,
+    };
+    session
+        .attach_store(store)
+        .map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+/// T14: restore the files the last turn changed, from the cwd's leaf session.
+fn run_undo(args: &Args) -> i32 {
+    use yi_runtime::session_store::{JsonlRepo, SessionRepo};
+    let cwd = effective_cwd(args);
+    let mut repo = JsonlRepo::new(default_session_dir(args), cwd.display().to_string());
+    let id = match &args.resume {
+        Resume::Named(id) => Some(id.clone()),
+        _ => sessions::latest_id(&mut repo),
+    };
+    let Some(id) = id else {
+        eprintln!("error: no session for this directory");
+        return 1;
+    };
+    let store = match repo.open(&id) {
+        Ok(store) => store,
+        Err(error) => {
+            eprintln!("error: {error}");
+            return 1;
+        }
+    };
+    let home = std::env::var_os("HOME")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_default();
+    match yi_runtime::undo(&store, &cwd, &home) {
+        yi_runtime::UndoOutcome::Restored(changes) => {
+            report_undo(&changes, args.json);
+            0
+        }
+        yi_runtime::UndoOutcome::NoCheckpoint => {
+            eprintln!("error: session {id} has no checkpoint to restore");
+            1
+        }
+        yi_runtime::UndoOutcome::Failed(error) => {
+            eprintln!("error: {error}");
+            1
+        }
+    }
+}
+
+fn report_undo(changes: &[yi_runtime::Change], json: bool) {
+    let described: Vec<serde_json::Value> = changes
+        .iter()
+        .map(|change| {
+            serde_json::json!({
+                "path": change.path.display().to_string(),
+                "action": match change.kind {
+                    yi_runtime::ChangeKind::Restored => "restored",
+                    yi_runtime::ChangeKind::Deleted => "deleted",
+                },
+            })
+        })
+        .collect();
+    if json {
+        if let Ok(line) = serde_json::to_string(&serde_json::json!({ "reverted": described })) {
+            println!("{line}");
+        }
+        return;
+    }
+    if changes.is_empty() {
+        println!("nothing to revert");
+        return;
+    }
+    for change in changes {
+        let action = match change.kind {
+            yi_runtime::ChangeKind::Restored => "restored",
+            yi_runtime::ChangeKind::Deleted => "deleted ",
+        };
+        println!("{action}  {}", change.path.display());
+    }
+}
+
+/// D10: `--schema` answers are JSON or a non-zero exit, never prose.
+fn emit_structured(schema: &schema::Schema, answer: &str, json: bool) -> i32 {
+    let value = match schema::extract(answer) {
+        Ok(value) => value,
+        Err(error) => {
+            eprintln!("error: {error}");
+            return 3;
+        }
+    };
+    if let Err(error) = schema.validate(&value) {
+        eprintln!("error: answer does not match --schema: {error}");
+        return 3;
+    }
+    if !json && let Ok(line) = serde_json::to_string(&value) {
+        println!("{line}");
+    }
+    0
 }
 
 fn yi_ai_key(provider: &str) -> Option<yi_runtime::auth::Secret> {
@@ -659,6 +815,15 @@ fn main() {
             };
             std::process::exit(yi_acp::run_acp(options, runtime));
         }
+        "undo" => std::process::exit(run_undo(&args)),
+        "sessions" => {
+            let options = sessions::Options {
+                session_dir: default_session_dir(&args),
+                cwd: effective_cwd(&args).display().to_string(),
+                json: args.json,
+            };
+            std::process::exit(sessions::run(&args.prompt, &options));
+        }
         "serve" => std::process::exit(run_serve_command(&args, version)),
         "tui" => {
             let prompt = (!args.prompt.is_empty()).then(|| args.prompt.clone());
@@ -670,7 +835,7 @@ fn main() {
                 std::process::exit(run_tui_command(&args, None));
             }
             println!(
-                "yi {version} (yi [prompt], yi ask, yi rpc, yi acp, yi serve; more surfaces land in later phases)"
+                "yi {version} (yi [prompt], yi ask, yi sessions, yi rpc, yi acp, yi serve; more surfaces land in later phases)"
             );
         }
         other => {

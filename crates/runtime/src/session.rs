@@ -48,7 +48,12 @@ struct Shared {
     events: broadcast::Sender<AgentEvent>,
     idle: tokio::sync::Notify,
     signal: InterruptSignal,
+    on_turn_start: Mutex<Option<Arc<TurnStartHook>>>,
 }
+
+/// T14: runs once per turn, before the model can call a tool, so a checkpoint
+/// captures the tree the turn is about to change.
+pub type TurnStartHook = dyn Fn() + Send + Sync;
 
 fn persist_message(shared: &Shared, message: &AgentMessage) {
     let store = shared
@@ -114,6 +119,7 @@ impl AgentSession {
                 events,
                 idle: tokio::sync::Notify::new(),
                 signal: InterruptSignal::default(),
+                on_turn_start: Mutex::new(None),
             }),
             tools: Vec::new(),
             compactor: None,
@@ -121,6 +127,12 @@ impl AgentSession {
             schedule: Mutex::new(None),
             advisor: Mutex::new(None),
             goal: Mutex::new(None),
+        }
+    }
+
+    pub fn set_turn_start_hook(&self, hook: Arc<TurnStartHook>) {
+        if let Ok(mut slot) = self.shared.on_turn_start.lock() {
+            *slot = Some(hook);
         }
     }
 
@@ -525,6 +537,17 @@ impl AgentSession {
             on_compacted,
         } = parts;
         tokio::spawn(async move {
+            let hook = shared
+                .on_turn_start
+                .lock()
+                .ok()
+                .and_then(|slot| slot.clone());
+            if let Some(hook) = hook {
+                // Snapshotting shells out to git; the turn waits for it but the
+                // runtime thread does not.
+                let _hook_failure_never_fails_a_turn =
+                    tokio::task::spawn_blocking(move || hook()).await;
+            }
             let mut context = LoopContext {
                 system_prompt: system_prompt.clone(),
                 messages: shared

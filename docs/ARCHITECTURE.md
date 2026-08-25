@@ -1,15 +1,16 @@
 # Yi — Architecture Map
 
 ```
-version: 0.18.0         # bump on any structural change; log it below
+version: 0.19.0         # bump on any structural change; log it below
 design:  YI_DESIGN.md   # the deep design; § refs below point into it
-status:  phase 4 done   # yi-kernel (Jupyter client over pure-Rust zeromq) + uv venv bootstrap + verbatim rlm Python runtime (mcp.py rewritten over `yi mcp --json`) + ipython tool + runtime::subagent (rlm.run depth 1). Exit gate green: recursion scenarios incl. a live-kernel round trip. 4b done. Phase 5 done: runtime::schedule + runtime::advisor. Phase 5b done: yi-acp v2 server (hand-rolled wire, D40). Phase 6 done: yi-runtime::goal (G1-G6) + `yi serve` daemon (D4 supervisor + worker-per-root; exit gate green: a heartbeat dispatches while no client is attached and a reconnected client lists and resumes the session). Phase 7 done: `yi-tui` (D41 design — codex/atuin inline skeleton, opencode subagent UX, OMP HUD/status) in the default build; `yi [prompt]` opens the TUI on a TTY (X1). Phase 8 (D42): nothing is deferred any more — every deferred, stretch, and never-built row is open work in docs/TODOS.md (ids A1-M5), worked in that order. U13 stable-prefix streaming landed in 7; U18, dynamic viewport height, and the gitignore-aware @-walk are A3, A2, A4.
+status:  phase 4 done   # yi-kernel (Jupyter client over pure-Rust zeromq) + uv venv bootstrap + verbatim rlm Python runtime (mcp.py rewritten over `yi mcp --json`) + ipython tool + runtime::subagent (rlm.run depth 1). Exit gate green: recursion scenarios incl. a live-kernel round trip. 4b done. Phase 5 done: runtime::schedule + runtime::advisor. Phase 5b done: yi-acp v2 server (hand-rolled wire, D40). Phase 6 done: yi-runtime::goal (G1-G6) + `yi serve` daemon (D4 supervisor + worker-per-root; exit gate green: a heartbeat dispatches while no client is attached and a reconnected client lists and resumes the session). Phase 7 done: `yi-tui` (D41 design — codex/atuin inline skeleton, opencode subagent UX, OMP HUD/status) in the default build; `yi [prompt]` opens the TUI on a TTY (X1). Phase 8 (D42): nothing is deferred any more — every deferred, stretch, and never-built row is open work in docs/TODOS.md (ids A1-M5), worked in that order. U13 stable-prefix streaming landed in 7; U18, dynamic viewport height, and the gitignore-aware @-walk are A3, A2, A4. TODOS section B (CLI surfaces) is closed at 0.19.0, which also lands the T14 capture/restore half of C1.
 ```
 
 ## Changelog
 
 | ver | date | change |
 |---|---|---|
+| 0.19.0 | 2026-08-25 | TODOS B closed: `yi sessions list|show|rm`, `yi undo`, `--continue`, `--session`, `--schema`, and static `completions/yi.{bash,zsh,fish}` (X10). `yi ask` now records every turn to a session file — without that `--continue` has no leaf to resume. B2 needed checkpoints, so the T14 core lands with it: `yi-tools::checkpoint` (shadow gitdir, capture/restore) and a turn-start capture hook on `AgentSession` that writes a `custom{checkpoint}` entry; undo records the state it replaced, which is what makes it undoable. `--schema` answers are validated against a JSON Schema subset and exit 3 on a mismatch — never prose on stdout. |
 | 0.18.0 | 2026-08-24 | D43: `yi-tui` ceiling 5,000 → 10,000 lines. |
 | 0.17.3 | 2026-08-24 | Docs pass: README rewritten as a self-contained statement of what Yi is and why (no reference-codebase names — those belong in the design doc, not the front door). `.ruler` gains the two rules this session paid for (prove a regression test red before claiming the fix; a capability path is only exercised when the capability is advertised) and the ref/ category note. `yi-tui` budget row corrected to D41's 5,000 and its overage tracked as A10. |
 | 0.17.2 | 2026-08-24 | U34 morph fixed: a settled mark stops the frame timer, and the idle gap was being turned into progress, so the first animating frame consumed the whole morph and the wordmark snapped to the orb. Step is clamped to one frame (`logo::advance`). The mark now leads the live region with the streaming answer under it, so it holds one position while text grows. |
@@ -131,7 +132,7 @@ value/complexity: H/M/L. Status: **core** (launch), **gated** (cargo feature), *
 | permission modes/rules/holds, deterministic auto | 8.7 | core | H | M | |
 | model auto-review M7/M8 | 8.7, D3 | open (D1, D2) | L | H | undeferred D42 |
 | bash reduce (launch set) | 14.3, D13 | open (C2) | H | M | `vendor/rtk` vendored, unwired |
-| file checkpoints + /undo | 5.3 | open (C1, B2) | H | M | shadow gitdir; never built |
+| file checkpoints + /undo | 5.3 | live 0.19.0 (partial) | H | M | shadow gitdir capture at turn start, `yi undo` restore (undo is itself undoable); T14 `diff`, turn-end capture and a TUI surface still open (C1) |
 | kernel + ipython + rlm() subagents | 8.9, 8.10 | live 0.9.0 | H | H | earns its H complexity; B7/B13/agent_message.*/fork open (F1–F4) |
 | dill snapshot | 8.9 K10 | live 0.9.3 | M | L | kept per review |
 | heartbeats | 8.11 | live 0.9.5 | H | M | H7 per-session lanes open (G1): worker-per-root keeps one serial queue per session |
@@ -148,7 +149,7 @@ value/complexity: H/M/L. Status: **core** (launch), **gated** (cargo feature), *
 | docs conversion (anydoc) | 14.6 | open (M1) | M | L | `docs` feature; undeferred D42 |
 | modes (caveman/ponytail) + skills bundles | 14.1–14.2 | modes live; skills open (C3) | M | L | bundles on disk, no catalog |
 | branch summarization P15 | D7 | open (E1) | L | M | undeferred D42 |
-| structured output `--schema` | D10 | open (B4) | M | L | undeferred D42 |
+| structured output `--schema` | D10 | live 0.19.0 | M | L | JSON Schema subset (type/required/properties/items/enum); mismatch exits 3 |
 | worktree subagent isolation B11 | 8.10 | open (F5) | M | M | undeferred D42 |
 | embeddings / semantic search | 14.6 | cut until grep fails | L | H | |
 | auto-skills / refine / self-extension | 5, 14.5 | **cut** (policy) | — | — | never |

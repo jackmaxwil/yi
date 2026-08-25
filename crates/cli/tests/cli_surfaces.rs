@@ -1,0 +1,170 @@
+use std::error::Error;
+use std::path::PathBuf;
+use std::process::{Command, Output};
+
+use serde_json::Value;
+
+type TestResult = Result<(), Box<dyn Error>>;
+
+struct Workspace(PathBuf);
+
+impl Drop for Workspace {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+impl Workspace {
+    fn new(tag: &str) -> Result<Self, Box<dyn Error>> {
+        let dir = std::env::temp_dir().join(format!("yi-cli-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("project"))?;
+        std::fs::create_dir_all(dir.join("home"))?;
+        Ok(Self(dir))
+    }
+
+    fn project(&self) -> PathBuf {
+        self.0.join("project")
+    }
+
+    fn yi(&self, args: &[&str]) -> Result<Output, Box<dyn Error>> {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "these surfaces are the spawned binary's argv, exit code, and stdout"
+        )]
+        let mut command = Command::new(env!("CARGO_BIN_EXE_yi"));
+        command
+            .args(args)
+            .arg("--session-dir")
+            .arg(self.0.join("home/sessions"))
+            .arg("--cwd")
+            .arg(self.project())
+            .env("HOME", self.0.join("home"))
+            .current_dir(self.project());
+        Ok(command.output()?)
+    }
+}
+
+fn stdout(output: &Output) -> String {
+    String::from_utf8_lossy(&output.stdout).into_owned()
+}
+
+fn ask(workspace: &Workspace, prompt: &str, extra: &[&str]) -> Result<Output, Box<dyn Error>> {
+    let mut args = vec!["ask", "--model", "faux/faux-1"];
+    args.extend_from_slice(extra);
+    args.push(prompt);
+    workspace.yi(&args)
+}
+
+#[test]
+fn continue_resumes_the_leaf_session() -> TestResult {
+    let workspace = Workspace::new("continue")?;
+    ask(&workspace, "first", &[])?;
+    ask(&workspace, "second", &["--continue"])?;
+
+    let listed: Value =
+        serde_json::from_str(&stdout(&workspace.yi(&["sessions", "--json", "list"])?))?;
+    let sessions = listed.as_array().ok_or("list is not an array")?;
+    assert_eq!(sessions.len(), 1, "--continue must not open a second file");
+
+    let id = sessions
+        .first()
+        .and_then(|entry| entry.get("id"))
+        .and_then(Value::as_str)
+        .ok_or("no session id")?;
+    let shown = stdout(&workspace.yi(&["sessions", "show", id])?);
+    assert!(shown.contains("first"), "{shown}");
+    assert!(shown.contains("second"), "{shown}");
+    Ok(())
+}
+
+#[test]
+fn fresh_ask_starts_its_own_session() -> TestResult {
+    let workspace = Workspace::new("fresh")?;
+    ask(&workspace, "first", &[])?;
+    ask(&workspace, "second", &[])?;
+    let listed: Value =
+        serde_json::from_str(&stdout(&workspace.yi(&["sessions", "--json", "list"])?))?;
+    assert_eq!(listed.as_array().map(Vec::len), Some(2));
+    Ok(())
+}
+
+#[test]
+fn sessions_rm_removes_the_session() -> TestResult {
+    let workspace = Workspace::new("rm")?;
+    ask(&workspace, "only", &[])?;
+    let listed: Value =
+        serde_json::from_str(&stdout(&workspace.yi(&["sessions", "--json", "list"])?))?;
+    let id = listed
+        .get(0)
+        .and_then(|entry| entry.get("id"))
+        .and_then(Value::as_str)
+        .ok_or("no session id")?
+        .to_owned();
+    workspace.yi(&["sessions", "rm", &id])?;
+    let after: Value =
+        serde_json::from_str(&stdout(&workspace.yi(&["sessions", "--json", "list"])?))?;
+    assert_eq!(after.as_array().map(Vec::len), Some(0));
+    Ok(())
+}
+
+#[test]
+fn schema_validates_the_answer() -> TestResult {
+    let workspace = Workspace::new("schema")?;
+    let schema = r#"{"type":"object","required":["name"],"properties":{"name":{"type":"string"}}}"#;
+
+    // The faux provider echoes the prompt, so the prompt is the answer.
+    let matching = ask(&workspace, r#"{"name":"yi"}"#, &["--schema", schema])?;
+    assert_eq!(matching.status.code(), Some(0));
+    let answer: Value = serde_json::from_str(stdout(&matching).trim())?;
+    assert_eq!(answer.get("name").and_then(Value::as_str), Some("yi"));
+
+    let mismatched = ask(&workspace, r#"{"other":1}"#, &["--schema", schema])?;
+    assert_eq!(mismatched.status.code(), Some(3));
+    assert!(stdout(&mismatched).trim().is_empty(), "no prose on failure");
+
+    let prose = ask(&workspace, "not json at all", &["--schema", schema])?;
+    assert_eq!(prose.status.code(), Some(3));
+    Ok(())
+}
+
+#[test]
+fn undo_restores_the_files_a_turn_changed() -> TestResult {
+    let workspace = Workspace::new("undo")?;
+    let kept = workspace.project().join("kept.txt");
+    std::fs::write(&kept, "before\n")?;
+    ask(&workspace, "start a turn", &[])?;
+
+    std::fs::write(&kept, "after\n")?;
+    std::fs::write(workspace.project().join("created.txt"), "new\n")?;
+
+    let undone = workspace.yi(&["undo"])?;
+    if git_missing(&undone) {
+        return Ok(());
+    }
+    assert_eq!(undone.status.code(), Some(0), "{}", stdout(&undone));
+    assert_eq!(std::fs::read_to_string(&kept)?, "before\n");
+    assert!(!workspace.project().join("created.txt").exists());
+
+    workspace.yi(&["undo"])?;
+    assert_eq!(std::fs::read_to_string(&kept)?, "after\n");
+    Ok(())
+}
+
+#[test]
+fn undo_without_a_session_fails_loudly() -> TestResult {
+    let workspace = Workspace::new("undo-empty")?;
+    let output = workspace.yi(&["undo"])?;
+    assert_eq!(output.status.code(), Some(1));
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("no session"),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    Ok(())
+}
+
+/// Checkpoints are a no-op without git (design 5.3), and so is this test.
+fn git_missing(output: &Output) -> bool {
+    String::from_utf8_lossy(&output.stderr).contains("git is unavailable")
+}

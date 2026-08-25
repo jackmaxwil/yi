@@ -1,6 +1,7 @@
 #![forbid(unsafe_code)]
 
 pub mod advisor;
+pub mod checkpoint;
 pub mod compaction;
 pub mod goal;
 pub mod kernel;
@@ -11,6 +12,7 @@ pub mod session;
 pub mod subagent;
 pub mod tools;
 
+pub use checkpoint::{UndoOutcome, undo, wire_turn_checkpoints};
 pub use compaction::{CompactStatus, Compactor};
 pub use kernel::{
     HostRegistry, KernelService, KernelServiceOptions, ipython_tool, restore_notice_text,
@@ -33,4 +35,4 @@ pub use yi_ai::faux;
 pub use yi_loop::ExecutionMode;
 pub use yi_permission::{ConfigRule, ConfigRuleAction, PermissionMode, mode_fragment};
 pub use yi_session as session_store;
-pub use yi_tools::{builtin_tools, discover_exec_tools, edit_file, list_files};
+pub use yi_tools::{Change, ChangeKind, builtin_tools, discover_exec_tools, edit_file, list_files};

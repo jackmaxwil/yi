@@ -216,3 +216,29 @@ fn glob_skips_gitignored_paths() -> TestResult {
     assert!(!text.contains("target"));
     Ok(())
 }
+
+#[test]
+fn checkpoint_restore_reverts_a_turn() -> TestResult {
+    let project = temp_dir("checkpoint-project")?;
+    let shadow = temp_dir("checkpoint-shadow")?;
+    fs::write(project.0.join("kept.txt"), "before\n")?;
+    fs::write(project.0.join("removed.txt"), "gone\n")?;
+    let checkpoints = yi_tools::Checkpoints::open(&shadow.0, &project.0)?;
+    let turn_start = checkpoints.capture()?;
+
+    fs::write(project.0.join("kept.txt"), "after\n")?;
+    fs::remove_file(project.0.join("removed.txt"))?;
+    fs::write(project.0.join("created.txt"), "new\n")?;
+
+    let mut changed = checkpoints.restore(&turn_start)?;
+    changed.sort_by(|left, right| left.path.cmp(&right.path));
+    let names: Vec<String> = changed
+        .iter()
+        .map(|change| change.path.display().to_string())
+        .collect();
+    assert_eq!(names, ["created.txt", "kept.txt", "removed.txt"]);
+    assert_eq!(fs::read_to_string(project.0.join("kept.txt"))?, "before\n");
+    assert_eq!(fs::read_to_string(project.0.join("removed.txt"))?, "gone\n");
+    assert!(!project.0.join("created.txt").exists());
+    Ok(())
+}

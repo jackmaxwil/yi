@@ -2,6 +2,7 @@
 
 pub mod acp;
 pub mod advisor;
+pub mod checkpoint;
 pub mod compaction;
 pub mod entry;
 pub mod event;

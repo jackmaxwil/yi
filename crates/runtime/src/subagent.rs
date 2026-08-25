@@ -632,6 +632,7 @@ pub fn attach_runtime(session: &mut AgentSession, wiring: RuntimeWiring) -> Arc<
     if session.compactor().is_none() {
         session.enable_compaction();
     }
+    crate::checkpoint::wire_turn_checkpoints(session, &wiring.home, &wiring.cwd);
     let mut registry = crate::kernel::HostRegistry::default();
     registry.register_mcp_stubs();
     if let Some(compactor) = session.compactor() {
