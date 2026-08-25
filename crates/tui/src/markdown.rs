@@ -1,7 +1,6 @@
-use pulldown_cmark::{CodeBlockKind, Event, Options, Parser, Tag, TagEnd};
+use pulldown_cmark::{Alignment, CodeBlockKind, Event, Options, Parser, Tag, TagEnd};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use unicode_width::UnicodeWidthStr;
 
 use crate::colors::Theme;
 use crate::wrap::wrap_line;
@@ -53,9 +52,12 @@ struct Builder<'t> {
 
 #[derive(Default)]
 struct TableState {
-    rows: Vec<Vec<String>>,
-    current: Vec<String>,
+    alignments: Vec<Alignment>,
+    header: Vec<crate::table::TableCell>,
+    rows: Vec<Vec<crate::table::TableCell>>,
+    current: Vec<crate::table::TableCell>,
     in_cell: bool,
+    in_header: bool,
 }
 
 impl Builder<'_> {
@@ -88,11 +90,13 @@ impl Builder<'_> {
     }
 
     fn text(&mut self, text: &str) {
-        if let Some(table) = &mut self.table {
-            if table.in_cell
+        if self.table.is_some() {
+            let style = self.style();
+            if let Some(table) = &mut self.table
+                && table.in_cell
                 && let Some(cell) = table.current.last_mut()
             {
-                cell.push_str(text);
+                cell.push_span(Span::styled(text.to_owned(), style));
             }
             return;
         }
@@ -118,91 +122,71 @@ impl Builder<'_> {
     }
 }
 
-/// Minimal fixed-layout table: column widths from content (capped), header
-/// bold, rules dim. Cells truncate rather than wrap (D41 polish; codex ships
-/// no table engine, opencode gets one free from OpenTUI — this is the ~60
-/// lines that cover agent output tables).
-fn render_table(b: &mut Builder, rows: &[Vec<String>]) {
-    let columns = rows.iter().map(Vec::len).max().unwrap_or(0);
-    if columns == 0 {
-        return;
-    }
-    let available = b.width.saturating_sub(b.indent.len() + 2);
-    let cap = (available / columns).saturating_sub(3).clamp(4, 32);
-    let mut widths = vec![1_usize; columns];
-    for row in rows {
-        for (i, cell) in row.iter().enumerate() {
-            if let Some(slot) = widths.get_mut(i) {
-                *slot = (*slot).max(cell.trim().width().min(cap));
-            }
+fn reduce_inline<'e>(b: &mut Builder, event: Event<'e>) -> Option<Event<'e>> {
+    match event {
+        Event::Start(Tag::Emphasis) => b.push_style(|s| s.add_modifier(Modifier::ITALIC)),
+        Event::End(TagEnd::Emphasis) => b.pop_style(),
+        Event::Start(Tag::Strong) => b.push_style(|s| s.add_modifier(Modifier::BOLD)),
+        Event::End(TagEnd::Strong) => b.pop_style(),
+        Event::Start(Tag::Strikethrough) => {
+            b.push_style(|s| s.add_modifier(Modifier::CROSSED_OUT));
         }
-    }
-    let clip = |text: &str, max: usize| -> String {
-        let text = text.trim();
-        if text.width() <= max {
-            format!("{text}{}", " ".repeat(max - text.width()))
-        } else {
-            let mut out = String::new();
-            let mut used = 0;
-            for ch in text.chars() {
-                let w = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
-                if used + w > max.saturating_sub(1) {
-                    break;
+        Event::End(TagEnd::Strikethrough) => b.pop_style(),
+        Event::Start(Tag::Link { .. }) => {
+            b.push_style(|s| s.add_modifier(Modifier::UNDERLINED));
+            b.text("");
+        }
+        Event::End(TagEnd::Link) => b.pop_style(),
+        Event::Code(code) => {
+            let style = Style::default()
+                .fg(b.theme.accent)
+                .add_modifier(Modifier::BOLD);
+            if let Some(table) = &mut b.table {
+                if table.in_cell
+                    && let Some(cell) = table.current.last_mut()
+                {
+                    cell.push_span(Span::styled(code.into_string(), style));
                 }
-                used += w;
-                out.push(ch);
+                return None;
             }
-            format!("{out}…{}", " ".repeat(max.saturating_sub(used + 1)))
-        }
-    };
-    for (index, row) in rows.iter().enumerate() {
-        let mut spans = vec![Span::raw(b.indent.clone())];
-        for (i, width) in widths.iter().enumerate() {
-            let cell = row.get(i).map(String::as_str).unwrap_or("");
-            let style = if index == 0 {
-                Style::default().add_modifier(Modifier::BOLD)
-            } else {
-                b.style()
-            };
-            spans.push(Span::styled(clip(cell, *width), style));
-            if i + 1 < columns {
-                spans.push(Span::styled(" │ ".to_owned(), b.theme.dim_style()));
+            if b.spans.is_empty() && !b.indent.is_empty() {
+                let indent = b.indent.clone();
+                b.spans.push(Span::raw(indent));
             }
+            b.spans.push(Span::styled(code.into_string(), style));
         }
-        b.out.push(Line::from(spans));
-        if index == 0 {
-            let rule: String = widths
-                .iter()
-                .enumerate()
-                .map(|(i, w)| {
-                    let bar = "─".repeat(*w);
-                    if i + 1 < columns {
-                        format!("{bar}─┼─")
-                    } else {
-                        bar
-                    }
-                })
-                .collect();
-            b.out.push(Line::from(vec![
-                Span::raw(b.indent.clone()),
-                Span::styled(rule, b.theme.dim_style()),
-            ]));
-        }
+        other => return Some(other),
     }
+    None
 }
 
 fn reduce_table(b: &mut Builder, event: &Event) -> bool {
     match event {
-        Event::Start(Tag::Table(_)) => {
+        Event::Start(Tag::Table(alignments)) => {
             b.blank();
-            b.table = Some(TableState::default());
+            b.table = Some(TableState {
+                alignments: alignments.clone(),
+                ..TableState::default()
+            });
         }
-        Event::Start(Tag::TableHead | Tag::TableRow) => {
+        Event::Start(Tag::TableHead) => {
+            if let Some(table) = &mut b.table {
+                table.in_header = true;
+                table.current = Vec::new();
+            }
+        }
+        Event::Start(Tag::TableRow) => {
             if let Some(table) = &mut b.table {
                 table.current = Vec::new();
             }
         }
-        Event::End(TagEnd::TableHead | TagEnd::TableRow) => {
+        Event::End(TagEnd::TableHead) => {
+            if let Some(table) = &mut b.table {
+                table.header = std::mem::take(&mut table.current);
+                table.in_header = false;
+            }
+        }
+        Event::End(TagEnd::TableRow) => {
             if let Some(table) = &mut b.table {
                 let row = std::mem::take(&mut table.current);
                 table.rows.push(row);
@@ -210,7 +194,7 @@ fn reduce_table(b: &mut Builder, event: &Event) -> bool {
         }
         Event::Start(Tag::TableCell) => {
             if let Some(table) = &mut b.table {
-                table.current.push(String::new());
+                table.current.push(crate::table::TableCell::default());
                 table.in_cell = true;
             }
         }
@@ -221,7 +205,19 @@ fn reduce_table(b: &mut Builder, event: &Event) -> bool {
         }
         Event::End(TagEnd::Table) => {
             if let Some(table) = b.table.take() {
-                render_table(b, &table.rows);
+                let available = b.width.saturating_sub(b.indent.len());
+                let rendered = crate::table::render(
+                    table.header,
+                    table.rows,
+                    &table.alignments,
+                    available,
+                    b.theme,
+                );
+                let indent = b.indent.clone();
+                for mut line in rendered {
+                    line.spans.insert(0, Span::raw(indent.clone()));
+                    b.out.push(line);
+                }
             }
         }
         _ => return false,
@@ -247,6 +243,9 @@ pub fn render(source: &str, width: usize, theme: &Theme) -> Vec<Line<'static>> {
         Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TABLES,
     );
     for event in parser {
+        let Some(event) = reduce_inline(&mut b, event) else {
+            continue;
+        };
         match event {
             Event::Start(Tag::Heading { .. }) => {
                 b.blank();
@@ -318,34 +317,20 @@ pub fn render(source: &str, width: usize, theme: &Theme) -> Vec<Line<'static>> {
                 ));
             }
             Event::End(TagEnd::Item) => b.flush_line(),
-            Event::Start(Tag::Emphasis) => b.push_style(|s| s.add_modifier(Modifier::ITALIC)),
-            Event::End(TagEnd::Emphasis) => b.pop_style(),
-            Event::Start(Tag::Strong) => b.push_style(|s| s.add_modifier(Modifier::BOLD)),
-            Event::End(TagEnd::Strong) => b.pop_style(),
-            Event::Start(Tag::Strikethrough) => {
-                b.push_style(|s| s.add_modifier(Modifier::CROSSED_OUT));
-            }
-            Event::End(TagEnd::Strikethrough) => b.pop_style(),
-            Event::Start(Tag::Link { dest_url, .. }) => {
-                b.push_style(|s| s.add_modifier(Modifier::UNDERLINED));
-                b.text("");
-                let _ = dest_url;
-            }
-            Event::End(TagEnd::Link) => b.pop_style(),
-            Event::Code(code) => {
-                let style = Style::default()
-                    .fg(b.theme.accent)
-                    .add_modifier(Modifier::BOLD);
-                if b.spans.is_empty() && !b.indent.is_empty() {
-                    let indent = b.indent.clone();
-                    b.spans.push(Span::raw(indent));
-                }
-                b.spans.push(Span::styled(code.into_string(), style));
-            }
             event if reduce_table(&mut b, &event) => {}
             Event::Text(text) => b.text(&text),
             Event::SoftBreak => b.text(" "),
-            Event::HardBreak => b.flush_line(),
+            Event::HardBreak => {
+                if let Some(table) = &mut b.table {
+                    if table.in_cell
+                        && let Some(cell) = table.current.last_mut()
+                    {
+                        cell.hard_break();
+                    }
+                } else {
+                    b.flush_line();
+                }
+            }
             Event::Rule => {
                 b.blank();
                 let fill: String =

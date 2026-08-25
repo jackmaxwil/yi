@@ -357,11 +357,12 @@ fn markdown_tables_render_as_grids_not_raw_pipes() -> TestResult {
     let lines = yi_tui::markdown::render(source, 60, &theme);
     let text: Vec<String> = lines.iter().map(flat).collect();
     assert!(
-        text.iter().any(|l| l.contains("Tool") && l.contains("│")),
-        "header row renders with column separators: {text:?}"
+        text.iter()
+            .any(|l| l.contains("Tool") && l.contains("Status")),
+        "header row renders both columns: {text:?}"
     );
     assert!(
-        text.iter().any(|l| l.contains("┼")),
+        text.iter().any(|l| l.contains('━')),
         "header rule renders: {text:?}"
     );
     assert!(
@@ -430,5 +431,103 @@ fn orb_engine_feeds_the_kitty_painter() -> TestResult {
         background > 1000,
         "the background stays transparent for the terminal ground: {background}"
     );
+    Ok(())
+}
+
+#[test]
+fn table_cells_keep_inline_code_and_leak_nothing() -> TestResult {
+    let theme = theme();
+    let source = "| Tool | Does |\n|---|---|\n| `read` | Reads `files` |\n| `bash` | Runs |";
+    let lines = yi_tui::markdown::render(source, 60, &theme);
+    let text: Vec<String> = lines.iter().map(flat).collect();
+    assert!(
+        text.iter()
+            .any(|l| l.contains("read") && l.contains("Reads")),
+        "code-formatted cells stay in their row: {text:?}"
+    );
+    assert!(
+        !text
+            .iter()
+            .any(|l| l.contains("readbash") || l.contains("filesRuns")),
+        "no concatenated leak after the table: {text:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn streaming_commits_each_list_item_exactly_once() -> TestResult {
+    use yi_tui::app::{App, TuiOptions};
+    use yi_tui::keymap::default_keymap;
+    let mut app = App::new(
+        TuiOptions {
+            model_label: "faux-1".to_owned(),
+            session_name: "s".to_owned(),
+            cwd: "/tmp".to_owned(),
+            context_window: 128_000,
+            keys: Vec::new(),
+            initial_prompt: None,
+        },
+        theme(),
+        default_keymap(),
+        80,
+    );
+    let full =
+        "Tools:\n\n1. read — reads files\n\n2. edit — patches files\n\n3. bash — runs commands\n";
+    let assistant = |text: &str| yi_types::message::AgentMessage::Assistant {
+        content: vec![yi_types::message::Content::Text {
+            text: text.to_owned(),
+            text_signature: None,
+        }],
+        api: String::new(),
+        provider: String::new(),
+        model: String::new(),
+        response_model: None,
+        response_id: None,
+        diagnostics: None,
+        usage: yi_types::message::Usage::zero(),
+        stop_reason: yi_types::message::StopReason::Stop,
+        deferred: None,
+        error_message: None,
+        raw_stop_reason: None,
+        end_turn: None,
+        timestamp: 0,
+    };
+    app.reduce_agent(yi_types::event::AgentEvent::AgentStart);
+    for end in [10, 34, 60, full.len()] {
+        let message = assistant(full.get(..end).unwrap_or(full));
+        app.reduce_agent(yi_types::event::AgentEvent::MessageUpdate {
+            message: message.clone(),
+            assistant_message_event: yi_types::event::AssistantMessageEvent::TextDelta {
+                content_index: 0,
+                delta: String::new(),
+                partial: message,
+            },
+        });
+    }
+    app.reduce_agent(yi_types::event::AgentEvent::MessageEnd {
+        message: assistant(full),
+    });
+    let committed: Vec<String> = app
+        .take_commits()
+        .iter()
+        .map(|l| {
+            l.spans
+                .iter()
+                .map(|s| s.content.as_ref())
+                .collect::<String>()
+        })
+        .collect();
+    let joined = committed.join("\n");
+    for needle in [
+        "read — reads files",
+        "edit — patches files",
+        "bash — runs commands",
+    ] {
+        assert_eq!(
+            joined.matches(needle).count(),
+            1,
+            "each streamed item commits exactly once: {needle}\n{joined}"
+        );
+    }
     Ok(())
 }

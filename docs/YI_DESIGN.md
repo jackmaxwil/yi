@@ -2148,6 +2148,8 @@ the package stays a token sink.
 | stable-prefix `StreamingRender` + `code_fence.rs` | `ref/agents/codex/codex-rs/tui/src/streaming/render.rs:21-216`, `code_fence.rs:1-121` | 315 | port adapted (`:148-196` verbatim) |
 | `VT100Backend` | `ref/agents/codex/codex-rs/tui/src/test_backend.rs:1-135` | 135 | port adapted (ratatui 0.29 keeps `CrosstermBackend::writer` private — the parser sits behind a shared handle) |
 | terminal init/restore + sync-update draw + history flush | `ref/agents/codex/codex-rs/tui/src/tui.rs:227-248,304-383,422-512,579-621,929-1030` | ~300 | port adapted (`flush_pending_history_lines :929-952` verbatim) |
+| markdown table pipeline: styled-span cells, spillover filter, column metrics/kinds, priority shrink (binary-searched balance), aligned grid + in-cell wrap | `ref/agents/codex/codex-rs/tui/src/markdown_render.rs:151-244,1085-1470,1641-1785` | ~560 | port adapted (hyperlink remap + HTML-spillover heuristics dropped) |
+| key/value record fallback (fragmentation/starvation thresholds, aligned + stacked fields) | `ref/agents/codex/codex-rs/tui/src/markdown_render/table_key_value.rs:1-267` | 267 | port adapted |
 | `word_wrap_line` entry + URL-token guard | `ref/agents/codex/codex-rs/tui/src/wrapping.rs:400-460,682-727,855-862` (worker starts `:864`, end unverified) | ~110 | port adapted — codex's guard needs the banned `textwrap`+`url` crates; U14 hand-rolls wrap with the `://` no-break rule |
 
 Codex non-TUI ports (compaction / goals / subagents — D25; verified 2026-08-22, `core/` is

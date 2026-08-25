@@ -88,7 +88,7 @@ pub struct App {
     pub(crate) pending_open_tree: bool,
     live_markdown: String,
     live_thought: String,
-    live_committed: usize,
+    live_cut: usize,
     live_tools: Vec<ToolCell>,
     pub(crate) last_finished_tool: Option<ToolCell>,
     tool_started: HashMap<String, Instant>,
@@ -193,7 +193,7 @@ impl App {
             pending_open_tree: false,
             live_markdown: String::new(),
             live_thought: String::new(),
-            live_committed: 0,
+            live_cut: 0,
             live_tools: Vec::new(),
             last_finished_tool: None,
             tool_started: HashMap::new(),
@@ -311,27 +311,28 @@ impl App {
         Some(OrbState::Working)
     }
 
-    /// U13 streaming: lines of the stable prefix (blank-line boundary outside
-    /// code fences) commit to scrollback mid-turn; only the unstable tail
-    /// repaints in the live region. The prefix render is deterministic as the
-    /// source grows, so committed lines never change under the reader.
+    /// U13 streaming: each newly stable slice (blank-line boundary outside
+    /// code fences) renders standalone and commits; a byte cursor tracks what
+    /// has been committed. Slices never re-render, so trailing-blank trimming
+    /// in the renderer cannot misalign the committed count (the duplicated
+    /// list bug), and only the unstable tail repaints in the live region.
     fn commit_stable_prefix(&mut self) {
         let cut = crate::markdown::stable_cut(&self.live_markdown);
-        if cut == 0 {
+        if cut <= self.live_cut {
             return;
         }
+        let slice = self
+            .live_markdown
+            .get(self.live_cut..cut)
+            .unwrap_or_default()
+            .to_owned();
         let width = self.content_width();
-        let stable = self.live_markdown.get(..cut).unwrap_or_default().to_owned();
-        let rendered = crate::markdown::render(&stable, width, &self.theme);
-        if rendered.len() > self.live_committed {
-            if self.live_committed == 0 {
-                self.pending_commit.push(Line::default());
-            }
-            let fresh: Vec<Line<'static>> =
-                rendered.into_iter().skip(self.live_committed).collect();
-            self.live_committed += fresh.len();
-            self.pending_commit.extend(fresh);
+        let rendered = crate::markdown::render(&slice, width, &self.theme);
+        if !rendered.is_empty() {
+            self.pending_commit.push(Line::default());
+            self.pending_commit.extend(rendered);
         }
+        self.live_cut = cut;
     }
 
     fn spinner_phase(&self) -> usize {
@@ -458,19 +459,18 @@ impl App {
                 }
                 let text = text_of(content);
                 if !text.is_empty() {
+                    let remainder = text.get(self.live_cut..).unwrap_or_default();
                     let width = self.content_width();
-                    let rendered = crate::markdown::render(&text, width, &self.theme);
-                    let fresh: Vec<Line<'static>> =
-                        rendered.into_iter().skip(self.live_committed).collect();
-                    if self.live_committed == 0 && !fresh.is_empty() {
+                    let rendered = crate::markdown::render(remainder, width, &self.theme);
+                    if !rendered.is_empty() {
                         self.pending_commit.push(Line::default());
+                        self.pending_commit.extend(rendered);
                     }
-                    self.pending_commit.extend(fresh);
                     self.scheduler.request();
                 }
                 self.live_markdown.clear();
                 self.live_thought.clear();
-                self.live_committed = 0;
+                self.live_cut = 0;
                 if *stop_reason == StopReason::Error {
                     let text = error_message
                         .clone()
@@ -755,9 +755,12 @@ pub fn run_tui(
 
     let mut last_roster = Instant::now();
     let mut orb_shown = false;
+    let mut last_orb = Instant::now() - Duration::from_secs(1);
     while !app.quit {
         let timeout = app.scheduler.poll_timeout(Instant::now());
-        let timeout = if app.running {
+        let timeout = if app.kitty && app.orb_placement.is_some() {
+            timeout.min(Duration::from_millis(33))
+        } else if app.running {
             timeout.min(Duration::from_millis(90))
         } else {
             timeout
@@ -802,32 +805,33 @@ pub fn run_tui(
         if app.scheduler.should_draw(Instant::now()) {
             let start = Instant::now();
             draw(&mut app, &mut terminal, Some(&session));
-            if app.kitty {
-                match app.orb_placement {
-                    Some((col, row, state)) => {
-                        let clock = app.started_at.elapsed().as_secs_f64();
-                        if let Some(frame) = orb::evaluate(state, 64, clock) {
-                            let rgba = orb::kitty::paint_rgba(&frame, 64.0, ORB_PX);
-                            let _ = orb::kitty::emit(
-                                terminal.backend_mut(),
-                                &rgba,
-                                ORB_PX,
-                                col,
-                                row,
-                                ORB_COLS,
-                                ORB_ROWS,
-                            );
-                            orb_shown = true;
-                        }
-                    }
-                    None if orb_shown => {
-                        orb_shown = false;
-                        let _ = orb::kitty::delete(terminal.backend_mut());
-                    }
-                    None => {}
-                }
-            }
             app.scheduler.mark_drawn(start, Instant::now());
+        }
+        if app.kitty {
+            match app.orb_placement {
+                Some((col, row, state)) if last_orb.elapsed() >= Duration::from_millis(33) => {
+                    last_orb = Instant::now();
+                    let clock = app.started_at.elapsed().as_secs_f64();
+                    if let Some(frame) = orb::evaluate(state, 64, clock) {
+                        let rgba = orb::kitty::paint_rgba(&frame, 64.0, ORB_PX);
+                        let _ = orb::kitty::emit(
+                            terminal.backend_mut(),
+                            &rgba,
+                            ORB_PX,
+                            col,
+                            row,
+                            ORB_COLS,
+                            ORB_ROWS,
+                        );
+                        orb_shown = true;
+                    }
+                }
+                None if orb_shown => {
+                    orb_shown = false;
+                    let _ = orb::kitty::delete(terminal.backend_mut());
+                }
+                _ => {}
+            }
         }
     }
 
@@ -983,8 +987,7 @@ where
     let content_width = width.saturating_sub(2);
     let mut live_lines: Vec<Line<'static>> = Vec::new();
     if !app.live_markdown.is_empty() {
-        let cut = crate::markdown::stable_cut(&app.live_markdown);
-        let tail = app.live_markdown.get(cut..).unwrap_or_default();
+        let tail = app.live_markdown.get(app.live_cut..).unwrap_or_default();
         let rendered = crate::markdown::render(tail, content_width, &theme);
         let skip = rendered.len().saturating_sub(LIVE_TAIL_ROWS);
         live_lines.extend(rendered.into_iter().skip(skip));

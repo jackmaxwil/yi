@@ -126,6 +126,10 @@ pub fn emit(
     rows: u16,
 ) -> std::io::Result<()> {
     let payload = base64(rgba);
+    // Placements scroll with the text under them (insert_before pushes the
+    // old one up into the transcript) — delete every placement of the id
+    // before placing again, or each frame leaves a stamp behind.
+    write!(out, "\x1b_Ga=d,d=i,i={IMAGE_ID},q=2\x1b\\")?;
     write!(out, "\x1b7\x1b[{};{}H", row + 1, col + 1)?;
     let chunks: Vec<&str> = payload
         .as_bytes()
@@ -137,7 +141,7 @@ pub fn emit(
         if index == 0 {
             write!(
                 out,
-                "\x1b_Gf=32,s={px},v={px},a=T,i={IMAGE_ID},q=2,C=1,c={cols},r={rows},m={more};{chunk}\x1b\\"
+                "\x1b_Gf=32,s={px},v={px},a=T,i={IMAGE_ID},p=1,q=2,C=1,c={cols},r={rows},m={more};{chunk}\x1b\\"
             )?;
         } else {
             write!(out, "\x1b_Gm={more};{chunk}\x1b\\")?;

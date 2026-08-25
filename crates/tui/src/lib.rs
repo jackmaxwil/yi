@@ -15,6 +15,7 @@ pub mod markdown;
 pub mod orb;
 pub mod popup;
 pub mod status;
+pub mod table;
 pub mod term;
 pub mod tree;
 pub mod wrap;
