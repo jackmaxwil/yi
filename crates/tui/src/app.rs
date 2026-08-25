@@ -639,7 +639,7 @@ pub fn run_tui(
         }
         if app.scheduler.should_draw(Instant::now()) {
             let start = Instant::now();
-            draw(&mut app, &mut terminal, &session);
+            draw(&mut app, &mut terminal, Some(&session));
             app.scheduler.mark_drawn(start, Instant::now());
         }
     }
@@ -1027,18 +1027,17 @@ fn handle_escape(app: &mut App, cmd_tx: &tokio::sync::mpsc::UnboundedSender<Comm
     }
 }
 
-fn draw(
-    app: &mut App,
-    terminal: &mut ratatui::Terminal<term::Backend>,
-    session: &Arc<AgentSession>,
-) {
+pub fn draw<B>(app: &mut App, terminal: &mut ratatui::Terminal<B>, session: Option<&AgentSession>)
+where
+    B: ratatui::backend::Backend + std::io::Write,
+{
     let commits = std::mem::take(&mut app.pending_commit);
     let _ = term::commit_lines(terminal, commits);
-    if let Some(usage) = session.last_usage() {
+    if let Some(usage) = session.and_then(AgentSession::last_usage) {
         app.context_used = u64::try_from(usage.total_tokens).unwrap_or(0);
         app.cost_total = usage.cost.total.as_f64().unwrap_or(0.0);
     }
-    let goal = session.store().and_then(|store| {
+    let goal = session.and_then(AgentSession::store).and_then(|store| {
         yi_runtime::session_store::lock_session(&store)
             .goal()
             .map(|goal| GoalView {
@@ -1118,15 +1117,17 @@ fn draw(
     let composer = &app.composer.textarea;
 
     let _ = terminal.draw(|frame| {
+        // The inline viewport's buffer area starts at area.y, not 0 — a rect
+        // outside the area renders nowhere, silently.
         let area = frame.area();
-        let mut y = 0_u16;
+        let mut y = area.top();
         let put = |frame: &mut ratatui::Frame, lines: &[Line<'static>], y: &mut u16| {
             let height = u16::try_from(lines.len()).unwrap_or(0);
-            if height == 0 || *y >= area.height {
+            if height == 0 || *y >= area.bottom() {
                 return;
             }
-            let height = height.min(area.height - *y);
-            let rect = Rect::new(0, *y, area.width, height);
+            let height = height.min(area.bottom() - *y);
+            let rect = Rect::new(area.left(), *y, area.width, height);
             frame.render_widget(Paragraph::new(lines.to_vec()), rect);
             *y += height;
         };
@@ -1136,9 +1137,9 @@ fn draw(
         match &bottom_lines {
             Some(lines) => put(frame, lines, &mut y),
             None => {
-                if y < area.height {
-                    let height = composer_height.min(area.height - y);
-                    let rect = Rect::new(0, y, area.width, height);
+                if y < area.bottom() {
+                    let height = composer_height.min(area.bottom() - y);
+                    let rect = Rect::new(area.left(), y, area.width, height);
                     frame.render_widget(composer, rect);
                     y += height;
                 }

@@ -221,3 +221,27 @@ fn subagent_task_cell_focus_and_back() -> TestResult {
     let _ = std::fs::remove_dir_all(&dir);
     Ok(())
 }
+
+#[test]
+fn draw_paints_inside_the_inline_viewport_offset() -> TestResult {
+    let mut backend = VT100Backend::with_scrollback(80, 24, 200);
+    {
+        use std::io::Write;
+        backend.write_all(b"\n\n\n\n\n\n\n\n")?;
+    }
+    let mut terminal = ratatui::Terminal::with_options(
+        backend,
+        ratatui::TerminalOptions {
+            viewport: ratatui::Viewport::Inline(6),
+        },
+    )?;
+    let mut app = app();
+    yi_tui::app::draw(&mut app, &mut terminal, None);
+    let contents = terminal.backend().contents();
+    assert!(
+        contents.contains("faux-1"),
+        "the status row must land inside the offset viewport area \
+         (a rect anchored at y=0 renders nowhere): {contents}"
+    );
+    Ok(())
+}
