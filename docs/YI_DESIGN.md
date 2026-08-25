@@ -936,12 +936,17 @@ flowchart LR
 | C9 | extensions | `_yi/advisory`, `_yi/subagent_update`, `_yi/kernel_state`, `_yi/heartbeat_changed`, `_yi/compaction` updates + `_yi/heartbeat`, `_yi/goal` methods; unknown fields ignored, unknown kinds skipped | data | ACP v2 · jcode harness-api rule |
 
 
-### 8.14 TUI (`yi-tui`, feature `tui`; from codex, OMP, atuin, mdfried, rainfrog)
+### 8.14 TUI (`yi-tui`, feature `tui`; from codex, OMP, opencode, atuin, mdfried, rainfrog)
 
-Five references agree on the shape and disagree on the size. codex `tui` is 272k lines, OMP
-`packages/tui` + `modes` is 150k, atuin's search TUI is 7.8k, mdfried 13.8k, rainfrog 17.9k. The
-mechanisms below are the ~1.5k lines that all of them share; everything else is product
-surface. Target: `yi-tui` ≤ 4,000 lines including tests, ≤ 1 MiB added to the binary.
+Six references agree on the mechanics and disagree on the size. codex `tui` is 272k lines, OMP
+`packages/tui` + `modes` is 150k, opencode `packages/tui` 31.8k, atuin's search TUI is 7.8k,
+mdfried 13.8k, rainfrog 17.9k. The mechanisms below are the ~1.5k lines that all of them share;
+everything else is product surface. The split of roles (D41): codex/atuin/mdfried supply the
+mechanical skeleton (inline viewport, native scrollback, synchronous UI thread, keymap);
+opencode supplies the subagent UX (task cell + child-session focus — its alternate-screen
+retained scene graph is rejected, the UX ports onto the inline skeleton); OMP supplies the
+pinned HUD contract, the tree-spine progress meter, and the status-line anatomy. Target:
+`yi-tui` ≤ 5,000 lines including tests, ≤ 1 MiB added to the binary.
 
 Decisions:
 
@@ -974,6 +979,34 @@ Decisions:
 - **Tests** against a real VT parser (`vt100` dev-dep, codex `VT100Backend` ≈ 100 lines) plus
   `insta` snapshots of rendered cells. OMP's shadow-ledger fidelity test is the upgrade path if
   the inline mechanism ever diverges from ratatui's.
+- **Subagent = opencode's child-session model** (D41). A subagent is one two-line task cell in
+  the parent transcript (spinner/`✓` + `<agent> Task — <description>`, plus a live `↳` line
+  showing the child's most recent titled tool call while running, `↳ N toolcalls · elapsed`
+  when done), never nested or interleaved child output. Focus navigation is the inline
+  adaptation of opencode's route swap: focusing a child prints a rule into scrollback, replays
+  the child transcript (cells badged in the child's accent), and the live region becomes the
+  child's tail with the composer replaced by a nav footer (`<agent> (n of m) · tokens · cost ·
+  Parent ↑ Prev ← Next →`); Esc returns with a closing rule. Child sessions are read-only from
+  the TUI (mailbox is B13, deferred); child permission requests bubble to the parent's approval
+  view. opencode's contrast case is kept too: kernel-side child tool calls that arrive as
+  metadata (no child session) render as flat `↳` lines under one cell, no navigation.
+- **Pinned HUD above the composer** (D41, OMP's `AnchoredLiveContainer` contract): a block
+  rebuilt in place inside the live region, never committed to scrollback. Data source is U20
+  `cards(&AgentState)` — a pure view over goal, subagents, queued messages, and heartbeats;
+  no persisted state (D26 stands; a persisted todo/plan tool is planned and its HUD rows land
+  with it). The tree spine is the progress meter: connector glyphs lit accent top-down by
+  done/total, clamped ≥ 1 lit on any progress and never full until truly done. Queued steer /
+  follow-up messages render as OMP's numbered block. HUD auto-clears when everything settles.
+- **Status line is the composer's top border** (D41, OMP anatomy, ~350 adapted lines): left
+  group model (+ thinking level), mode slot (goal, priority-ordered, hidden when none),
+  `cwd@branch`, cost; right group session name colored by a stable hash into the theme accents,
+  with a subagent badge auto-unshifted when children are live. The gap between groups is the
+  context gauge — used portion in the session accent, a tick where speculative compaction
+  starts, a heavier tick at the auto-compact threshold, labels placed with collision avoidance,
+  > 100 % clamps with the percent in error color. Overflow runs OMP's named truncation cascade:
+  shrink session name to a floor, pop right segments, shrink path to a floor, drop left
+  segments skipping path. The spinner line narrates the current tool's `i` intent + `[esc]`,
+  with a double-tap `esc again to interrupt` confirm.
 
 | # | Primitive | Signature | Purity | Source |
 |---|---|---|---|---|
@@ -992,10 +1025,13 @@ Decisions:
 | U13 | markdown | `render(md, width) -> Vec<Line>`; streaming: `commit_complete_source()` up to the last `\n`, re-render only the final top-level block, full re-render on open fence / reference definition | pure | codex `markdown_stream.rs:84`, `streaming/render.rs` |
 | U14 | wrap | hand-rolled word wrap over `Span`s, unicode-width aware; never break inside a token containing `://` | pure | codex `wrapping.rs` (idea only) |
 | U15 | tool cell | one line: glyph (`◐` running · `✓` · `✗`) + `i` intent + elapsed; `Ctrl+O` toggles expansion of the last cell's result preview; consecutive reads coalesce into one cell; spinner phase shared by one ticker | pure | OMP `tool-execution.ts:271-324`, codex `exec_cell/` |
-| U16 | status line | one `format!`: `model · cwd@branch · ctx 42% · $0.12 · running\|idle`; git HEAD re-read by stat-polling (fs.watch misses atomic swaps) | pure | OMP `footer.ts:44` |
+| U16 | status line | composer top border (D41): left `model · ◉ thinking · mode · cwd@branch · $cost`, right session name (stable name-hash accent) + `👥 n` subagent badge; gap = context gauge (accent fill, speculation tick, threshold tick, collision-avoiding labels, >100 % clamps in error color); truncation cascade shrink-name → pop-right → shrink-path → drop-left-skip-path, floors 8 cells; git HEAD re-read by stat-polling (fs.watch misses atomic swaps) | pure | OMP `status-line/component.ts:1878-1943,1999-2118`, `footer.ts:101-267` |
 | U17 | colors | `COLORTERM`/`TERM` → `{TrueColor, Ansi256, Ansi16}`; `COLORFGBG` → light/dark, default dark; theme derived by blending fg into bg (user bg 12 % on dark, 4 % on light), `.dim()` at 16 colors | pure | codex `style.rs`, `terminal_palette.rs` |
 | U18 | external editor | `Ctrl+G`: drop the event reader, leave raw mode, spawn `$EDITOR` on a temp file, re-enter; the crossterm reader must be recreated or it eats keys | I/O | codex `event_stream.rs:11`, rainfrog `app.rs:447` |
 | U19 | tests | `VT100Backend = CrosstermBackend<vt100::Parser>` for scroll-region behavior; `TestBackend` + `insta` for cells; `handle_input` table tests | test | codex `test_backend.rs`, atuin |
+| U27 | task cell | two lines: `⠙\|✓\|✗ <agent> Task — <description>` + live `↳ <child's latest titled tool>` while running, `↳ N toolcalls · elapsed` done, `↳ <error ≤ 80 chars>` failed in error color; forced blank line above and below; counters computed from the child session's live event stream, not tool metadata | pure | opencode `session/index.tsx:2221-2334` |
+| U28 | HUD | pinned block in the live region, never committed: header (goal objective + status when active, else `Subagents`), rows `⠙\|☐\|☑` + strikethrough done + warning blocked, cap 8 + `… n more`; tree-spine connectors `├─\|│\|└────` lit accent top-down by done/total (≥ 1 lit on progress, full only when done); queued `Steering · n` block; auto-clear on settle; data = U20 `cards(&AgentState)` | pure | OMP `interactive-mode.ts:2344-2459,466-521`, `ui-helpers.ts:910-944` |
+| U29 | subagent focus | focus child: rule into scrollback, replay child cells badged in child accent, live region = child tail, composer swapped for nav footer `<agent> (n of m) · tokens (ctx %) · $cost · Parent ↑ Prev ← Next →`; status line dims whole-bar; read-only (B13 deferred); child permission requests bubble to parent U12; Esc/↑ back with closing rule | I/O | opencode `subagent-footer.tsx:65-129`, `session/index.tsx:433-462` |
 
 ```mermaid
 flowchart LR
@@ -1015,7 +1051,11 @@ flowchart LR
   R -- "prompt / steer / abort / permission reply" --> S
 ```
 
-Not ported, with the reference that proves the point: alt-screen pager (codex 1.8k; native
+Not ported, with the reference that proves the point: opencode's alternate screen + retained
+scene graph + own scrollbox/mouse selection (its subagent UX ports without them), its dialog
+framework + ~20 dialogs (~7k), 42-col sidebar, theme engine (Yi keeps U17); OMP's 24-segment
+preset system, powerline caps, shimmer, jj fallback (2,252-line status component → ~350
+adapted); alt-screen pager (codex 1.8k; native
 scrollback + `yi sessions show` cover it), images (OMP ~1k + 4 test files), status-line presets
 (OMP 3.1k), direct-write spinner path (OMP), 236-variant `AppEvent` (codex), `Component` trait
 with six methods (rainfrog — three panes do not need a framework), 4 Hz/15 Hz tick timers
@@ -1281,7 +1321,7 @@ Chosen: **Yi**. Binary `yi`, crates `yi-*`, config `~/.yi/`, env `YI_*`, Python 
 | 5 | `runtime::schedule` (in-process), `runtime::advisor` | heartbeat + advisor e2e, `/advisor stats` |
 | 5b | `yi-acp` v2 server | v2 client (Afterlife) drives Yi end-to-end (gate held by a scripted v2 client over the real binary until Afterlife exists) |
 | 6 | `yi serve` daemon over ACP v2; goals | reconnect keeps heartbeats (gate: e2e — heartbeat dispatches while no client is attached; a reconnected client lists and resumes the session) |
-| 7 | `yi-tui` (ratatui, §8.14) | optional; RPC + ACP are the primary surfaces until then; ≤ 4k lines, ≤ 1 MiB |
+| 7 | `yi-tui` (ratatui, §8.14, D41) | optional; RPC + ACP are the primary surfaces until then; ≤ 5k lines, ≤ 1 MiB (gate: TUI drives a real session end-to-end over vt100 — turn + tool cell + task cell with live `↳` + subagent focus and back) |
 
 ## 12. Further borrowings
 
@@ -1950,6 +1990,10 @@ dependency toposort — until a skill grows a sibling dep, install in declared o
 | `ADVISOR_RENDER_OPTIONS` + chunk-per-message | `ref/agents/omp/packages/coding-agent/src/advisor/delta-split.ts:30-98` | 69 | port verbatim/adapted |
 | paste atoms: collapse (`:2104-2152`), sanitize, marker, `expandPasteMarkers` (`:1758-1776`), atom registry | `ref/agents/omp/packages/tui/src/components/editor.ts:483-523,1758-1807,2104-2192` | 175 | port verbatim (semantics) |
 | intent: `injectIntentIntoSchema` (`:783-843`) + `resolveIntentMode`/`extractIntent` (`:878-891`) + prompt line | `ref/agents/omp/packages/agent/src/agent-loop.ts:783-891`, `prompts/system/system-prompt.md:112` | 110 | port adapted (`:878-891` verbatim) |
+| TUI (D41): TODO/subagent HUD render + tree-spine fill + walking-viewport caps | `ref/agents/omp/packages/coding-agent/src/modes/interactive-mode.ts:466-521,2344-2459` | ~175 | port adapted (U28) |
+| TUI (D41): queued-messages block (`Steering · n` groups, ` ↵ ` flatten, dequeue hint) | `ref/agents/omp/packages/coding-agent/src/modes/utils/ui-helpers.ts:910-944` | 35 | port adapted (U28) |
+| TUI (D41): status truncation cascade + context gauge fill | `ref/agents/omp/packages/coding-agent/src/modes/components/status-line/component.ts:1878-1943,1999-2118` | ~185 | port adapted (U16) |
+| TUI (D41): segment formats (model/mode/path/git/cost/context) + two-line footer (middle-ellipsis path, zero-omitted counters) | `ref/agents/omp/packages/coding-agent/src/modes/components/status-line/segments.ts:114-511`, `components/footer.ts:101-267` | — | read-only reference (U16) |
 
 **excise (omp — never open):** `packages/catalog/src/models.json` (296,381 lines),
 `crates/pi-natives/tools/cache/deepseek-v3.tokenizer.json` (263,173), `THIRD-PARTY-NOTICES.txt`
@@ -2047,8 +2091,21 @@ herdr `src/server/headless.rs` (11,761), `src/pane/terminal.rs` (6,713), `src/te
 | `Repository`/`TreeID` types + `repo.discover` | `ref/agents/opencode/packages/core/src/git.ts:14-42,184-203` | 49 | port adapted |
 | revert: `plan` (earliest-tree-per-path) + `stage` + `clear` | `ref/agents/opencode/packages/core/src/session/revert.ts:27-111` | 85 | port adapted |
 
+opencode TUI (§8.14, D41 — behavior specs for the subagent UX; the SolidJS/OpenTUI chassis is
+not ported):
+
+| item | source span | lines | action |
+|---|---|---|---|
+| `Task` component (lifecycle states, live `↳` from child session, counters from child store) | `ref/agents/opencode/packages/tui/src/routes/session/index.tsx:2221-2334` | ~115 | read-only reference (U27) |
+| `SubagentFooter` (label, `(n of m)`, child tokens/cost, nav controls) | `ref/agents/opencode/packages/tui/src/routes/session/subagent-footer.tsx:65-129` | 65 | port adapted (U29) |
+| child navigation commands + bindings | `ref/agents/opencode/packages/tui/src/routes/session/index.tsx:433-462`, `src/config/keybind.ts:103-106` | ~35 | read-only reference (U29) |
+| `InlineToolRow` + `BlockTool` chassis (icon column, permission-warning color, strikethrough denial, clickable failed rows) | `ref/agents/opencode/packages/tui/src/routes/session/index.tsx:1915-2044` | ~130 | read-only reference (U5/U15) |
+| `collapse-tool-output` (line + char budget, overflow flag) | `ref/agents/opencode/packages/tui/src/util/collapse-tool-output.ts` | 20 | port verbatim (U15) |
+
 **excise (opencode — never open):** `packages/opencode/` (177,340), `packages/app/` (170,663),
-`packages/console/` (41,975), `packages/tui/` (31,842), `packages/sdk/` (30,328).
+`packages/console/` (41,975), `packages/sdk/` (30,328). `packages/tui/` (31,842) was opened
+2026-08-24 for the D41 TUI study; only the spans above are implementation reads — the rest of
+the package stays a token sink.
 
 ### A.9 rtk (vendored at `vendor/rtk/` — §14.3)
 
