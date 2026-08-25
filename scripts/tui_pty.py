@@ -35,14 +35,20 @@ def main() -> int:
     parser.add_argument("--seconds", type=float, default=8.0)
     parser.add_argument("--send-quit", action="store_true",
                         help="send double ctrl-c after seconds/2")
+    parser.add_argument("--resize", metavar="COLSxROWS", action="append",
+                        default=[],
+                        help="resize the pty (and SIGWINCH) mid-run; repeatable")
     parser.add_argument("--binary", default="./target/debug/yi")
+    parser.add_argument("--term", default="xterm-256color",
+                        help="TERM for the child; use xterm-kitty to exercise "
+                             "the kitty graphics path")
     parser.add_argument("args", nargs=argparse.REMAINDER)
     options = parser.parse_args()
     yi_args = [a for a in options.args if a != "--"]
 
     pid, fd = pty.fork()
     if pid == 0:
-        os.environ["TERM"] = "xterm-256color"
+        os.environ["TERM"] = options.term
         os.execvp(options.binary, [options.binary, *yi_args])
 
     fcntl.ioctl(fd, termios.TIOCSWINSZ,
@@ -52,6 +58,13 @@ def main() -> int:
     start = time.time()
     sent_quit = False
     exit_status = None
+    pending_resizes = []
+    for spec in options.resize:
+        cols, _, rows = spec.partition("x")
+        pending_resizes.append((int(cols), int(rows)))
+    resize_step = options.seconds / (len(pending_resizes) + 2) if pending_resizes else 0
+    next_resize_at = resize_step
+
     while time.time() - start < options.seconds:
         done, status = os.waitpid(pid, os.WNOHANG)
         if done:
@@ -66,6 +79,12 @@ def main() -> int:
             out += chunk
             for _ in range(chunk.count(b"\x1b[6n")):
                 os.write(fd, b"\x1b[%d;1R" % options.rows)
+        if pending_resizes and time.time() - start > next_resize_at:
+            cols, rows = pending_resizes.pop(0)
+            fcntl.ioctl(fd, termios.TIOCSWINSZ,
+                        struct.pack("HHHH", rows, cols, 0, 0))
+            os.kill(pid, signal.SIGWINCH)
+            next_resize_at += resize_step
         if (options.send_quit and not sent_quit
                 and time.time() - start > options.seconds / 2):
             os.write(fd, b"\x03")

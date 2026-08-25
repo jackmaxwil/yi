@@ -129,12 +129,7 @@ fn faux_turn_renders_user_and_assistant_cells() -> TestResult {
 #[test]
 fn commit_lines_land_in_a_real_vt100_screen() -> TestResult {
     let backend = VT100Backend::with_scrollback(80, 24, 200);
-    let mut terminal = ratatui::Terminal::with_options(
-        backend,
-        ratatui::TerminalOptions {
-            viewport: ratatui::Viewport::Inline(6),
-        },
-    )?;
+    let mut terminal = yi_tui::terminal::Terminal::new(backend, 6)?;
     let theme = Theme::new(ColorTier::TrueColor, true);
     let cell = Cell::User {
         text: "hello vt100".to_owned(),
@@ -232,19 +227,179 @@ fn draw_paints_inside_the_inline_viewport_offset() -> TestResult {
         use std::io::Write;
         backend.write_all(b"\n\n\n\n\n\n\n\n")?;
     }
-    let mut terminal = ratatui::Terminal::with_options(
-        backend,
-        ratatui::TerminalOptions {
-            viewport: ratatui::Viewport::Inline(6),
-        },
-    )?;
+    let mut terminal = yi_tui::terminal::Terminal::new(backend, 6)?;
     let mut app = app();
-    yi_tui::app::draw(&mut app, &mut terminal, None);
+    yi_tui::render::draw(&mut app, &mut terminal, None);
     let contents = terminal.backend().contents();
     assert!(
         contents.contains("faux-1"),
         "the status row must land inside the offset viewport area \
          (a rect anchored at y=0 renders nowhere): {contents}"
+    );
+    Ok(())
+}
+
+#[test]
+fn external_editor_replaces_the_draft() -> TestResult {
+    let dir = std::env::temp_dir().join(format!("yi-tui-editor-{}", std::process::id()));
+    std::fs::create_dir_all(&dir)?;
+    let editor = dir.join("fake-editor.sh");
+    std::fs::write(
+        &editor,
+        "#!/bin/sh\nprintf 'edited elsewhere\\n' > \"$1\"\n",
+    )?;
+    let mut permissions = std::fs::metadata(&editor)?.permissions();
+    {
+        use std::os::unix::fs::PermissionsExt;
+        permissions.set_mode(0o755);
+    }
+    std::fs::set_permissions(&editor, permissions)?;
+    // SAFETY-free: the test process is the only reader of EDITOR here.
+    unsafe { std::env::set_var("EDITOR", &editor) };
+
+    let mut app = app();
+    let backend = ratatui::backend::TestBackend::new(80, 24);
+    let mut terminal = yi_tui::terminal::Terminal::new(backend, 6)?;
+    app.open_editor();
+    yi_tui::editor::process_pending_editor(&mut app, &mut terminal, false);
+
+    assert_eq!(app.composer_text(), "edited elsewhere");
+    let _ = std::fs::remove_dir_all(&dir);
+    Ok(())
+}
+
+fn tool_start(id: &str) -> yi_types::event::AgentEvent {
+    yi_types::event::AgentEvent::ToolExecutionStart {
+        tool_call_id: id.to_owned(),
+        tool_name: "read".to_owned(),
+        args: serde_json::json!({"i": format!("Reading {id}")}),
+    }
+}
+
+#[test]
+fn viewport_height_follows_the_live_region_and_stays_bottom_anchored() -> TestResult {
+    let mut backend = VT100Backend::with_scrollback(80, 24, 200);
+    {
+        use std::io::Write;
+        // A real session starts with the shell prompt on the last row; the
+        // inline viewport must anchor there, not at row 0.
+        backend.write_all(&b"\n".repeat(23))?;
+    }
+    let mut terminal = yi_tui::terminal::Terminal::new(backend, 4)?;
+    let mut app = app();
+
+    yi_tui::render::draw(&mut app, &mut terminal, None);
+    let idle_height = terminal.viewport_area().height;
+    assert_eq!(idle_height, 4, "idle live region is composer box + status");
+    assert!(
+        terminal.backend().row_text(23).contains("faux-1"),
+        "the status row must sit on the last screen row when idle, not {} rows above it: {:?}",
+        23 - terminal.viewport_area().bottom().saturating_sub(1),
+        terminal.backend().row_text(23)
+    );
+
+    for id in ["a", "b", "c", "d", "e"] {
+        app.reduce_agent(tool_start(id));
+    }
+    yi_tui::render::draw(&mut app, &mut terminal, None);
+    assert!(
+        terminal.viewport_area().height > idle_height,
+        "five live tool cells must grow the viewport past {idle_height} rows"
+    );
+    assert_eq!(
+        terminal.viewport_area().bottom(),
+        24,
+        "growth scrolls the rows above up; the viewport stays on the bottom row"
+    );
+    assert!(
+        terminal.backend().row_text(23).contains("faux-1"),
+        "status row after growth: {:?}",
+        terminal.backend().row_text(23)
+    );
+    Ok(())
+}
+
+#[test]
+fn resizing_the_window_leaves_one_composer_border() -> TestResult {
+    for (label, steps) in [
+        (
+            "grow",
+            vec![(90_u16, 30_u16), (100, 40), (110, 50), (122, 66)],
+        ),
+        ("shrink", vec![(110, 50), (100, 40), (90, 30), (80, 24)]),
+    ] {
+        let mut backend = VT100Backend::with_scrollback(122, 66, 200);
+        {
+            use std::io::Write;
+            backend.write_all(&b"\n".repeat(65))?;
+        }
+        let mut terminal = yi_tui::terminal::Terminal::new(backend, 4)?;
+        let mut app = app();
+        app.set_width(122);
+        app.commit_cell(&yi_tui::cell::Cell::User {
+            text: "a committed transcript line".to_owned(),
+        });
+        yi_tui::render::draw(&mut app, &mut terminal, None);
+
+        for (width, height) in steps {
+            // A real emulator reflows on resize: rows move and the cursor moves
+            // with them. vt100's `set_size` does not reflow, so scroll the
+            // screen and move the cursor by the same amount by hand.
+            {
+                use ratatui::backend::Backend;
+                use std::io::Write;
+                let before = terminal.backend_mut().get_cursor_position()?;
+                write!(terminal.backend_mut(), "\x1b[2S")?;
+                write!(
+                    terminal.backend_mut(),
+                    "\x1b[{};1H",
+                    before.y.saturating_sub(2) + 1
+                )?;
+            }
+            terminal.backend_mut().resize(width, height);
+            app.set_width(usize::from(width));
+            yi_tui::render::draw(&mut app, &mut terminal, None);
+        }
+
+        let contents = terminal.backend().contents();
+        let borders = contents.matches('\u{256d}').count();
+        assert_eq!(
+            borders, 1,
+            "{label}: every resize must repaint one composer box, \
+             not stack a stale one per step:\n{contents}"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn a_running_turn_aims_the_mark_at_the_orb() -> TestResult {
+    let backend = VT100Backend::with_scrollback(80, 24, 200);
+    let mut terminal = yi_tui::terminal::Terminal::new(backend, 4)?;
+    let mut app = app();
+    app.set_kitty(true);
+
+    yi_tui::render::draw(&mut app, &mut terminal, None);
+    assert_eq!(
+        app.logo_target(),
+        0.0,
+        "at rest the mark holds the wordmark"
+    );
+
+    app.reduce_agent(yi_types::event::AgentEvent::AgentStart);
+    yi_tui::render::draw(&mut app, &mut terminal, None);
+    assert_eq!(
+        app.logo_target(),
+        1.0,
+        "a running turn aims the morph at the orb"
+    );
+
+    app.reduce_agent(yi_types::event::AgentEvent::AgentEnd { messages: vec![] });
+    yi_tui::render::draw(&mut app, &mut terminal, None);
+    assert_eq!(
+        app.logo_target(),
+        0.0,
+        "the turn ending aims it back at the wordmark"
     );
     Ok(())
 }

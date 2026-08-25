@@ -1,9 +1,12 @@
-use pulldown_cmark::{Alignment, CodeBlockKind, Event, Options, Parser, Tag, TagEnd};
+use pulldown_cmark::{Alignment, CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 
 use crate::colors::Theme;
 use crate::wrap::wrap_line;
+
+const CODE_RAIL: &str = "│";
+const CODE_RAIL_INDENT: &str = "│ ";
 
 /// The newline gate (codex `markdown_stream.rs:82-96`, verbatim semantics):
 /// the longest prefix of `source` that ends at a newline is safe to commit;
@@ -47,6 +50,7 @@ struct Builder<'t> {
     indent: String,
     list_stack: Vec<Option<u64>>,
     in_code_block: bool,
+    link_dest: Option<String>,
     table: Option<TableState>,
 }
 
@@ -78,7 +82,15 @@ impl Builder<'_> {
             return;
         }
         let line = Line::from(std::mem::take(&mut self.spans));
-        let indent = format!("{}  ", self.indent);
+        // A wrapped list item hangs under the text after its marker; a wrapped
+        // paragraph does not. The base indent was two spaces, which the wrapper
+        // strips from a line start, so only continuation lines ever showed it —
+        // every wrapped paragraph read as a nested block.
+        let indent = if self.list_stack.is_empty() {
+            self.indent.clone()
+        } else {
+            format!("{}  ", self.indent)
+        };
         self.out.extend(wrap_line(&line, self.width, &indent));
     }
 
@@ -132,11 +144,22 @@ fn reduce_inline<'e>(b: &mut Builder, event: Event<'e>) -> Option<Event<'e>> {
             b.push_style(|s| s.add_modifier(Modifier::CROSSED_OUT));
         }
         Event::End(TagEnd::Strikethrough) => b.pop_style(),
-        Event::Start(Tag::Link { .. }) => {
-            b.push_style(|s| s.add_modifier(Modifier::UNDERLINED));
+        Event::Start(Tag::Link { dest_url, .. }) => {
+            b.link_dest = Some(dest_url.to_string());
+            b.push_style(|s| s.fg(b.theme.accent).add_modifier(Modifier::UNDERLINED));
             b.text("");
         }
-        Event::End(TagEnd::Link) => b.pop_style(),
+        Event::End(TagEnd::Link) => {
+            b.pop_style();
+            // codex appends the destination after the label; a label alone
+            // drops the only information a link carries.
+            if let Some(dest) = b.link_dest.take()
+                && !dest.is_empty()
+            {
+                let style = b.theme.dim_style();
+                b.spans.push(Span::styled(format!(" ({dest})"), style));
+            }
+        }
         Event::Code(code) => {
             let style = Style::default()
                 .fg(b.theme.accent)
@@ -233,9 +256,10 @@ pub fn render(source: &str, width: usize, theme: &Theme) -> Vec<Line<'static>> {
         out: Vec::new(),
         spans: Vec::new(),
         styles: vec![Style::default().fg(theme.text)],
-        indent: "  ".to_owned(),
+        indent: String::new(),
         list_stack: Vec::new(),
         in_code_block: false,
+        link_dest: None,
         table: None,
     };
     let parser = Parser::new_ext(
@@ -247,9 +271,19 @@ pub fn render(source: &str, width: usize, theme: &Theme) -> Vec<Line<'static>> {
             continue;
         };
         match event {
-            Event::Start(Tag::Heading { .. }) => {
+            Event::Start(Tag::Heading { level, .. }) => {
                 b.blank();
-                b.push_style(|s| s.add_modifier(Modifier::BOLD));
+                let accent = b.theme.accent;
+                // codex's ladder (`markdown_render.rs:107-125`): the level has
+                // to be legible without the literal `#` marks Yi drops.
+                b.push_style(move |s| match level {
+                    HeadingLevel::H1 => s
+                        .fg(accent)
+                        .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
+                    HeadingLevel::H2 => s.fg(accent).add_modifier(Modifier::BOLD),
+                    HeadingLevel::H3 => s.add_modifier(Modifier::BOLD | Modifier::ITALIC),
+                    _ => s.add_modifier(Modifier::ITALIC),
+                });
             }
             Event::End(TagEnd::Heading(_)) => {
                 b.pop_style();
@@ -270,21 +304,24 @@ pub fn render(source: &str, width: usize, theme: &Theme) -> Vec<Line<'static>> {
             }
             Event::Start(Tag::CodeBlock(kind)) => {
                 b.blank();
-                let fence = match kind {
-                    CodeBlockKind::Fenced(lang) if !lang.is_empty() => {
-                        format!("{}```{lang}", b.indent)
-                    }
-                    _ => format!("{}```", b.indent),
-                };
-                b.out
-                    .push(Line::from(Span::styled(fence, b.theme.dim_style())));
+                // OMP gives fenced code its own border hook rather than
+                // reprinting the author's backticks: a dim rail carries the
+                // block, and the language rides the opening rail.
+                if let CodeBlockKind::Fenced(lang) = &kind
+                    && !lang.is_empty()
+                {
+                    b.out.push(Line::from(Span::styled(
+                        format!("{}{CODE_RAIL} {lang}", b.indent),
+                        b.theme.dim_style(),
+                    )));
+                }
+                b.indent.push_str(CODE_RAIL_INDENT);
                 b.in_code_block = true;
             }
             Event::End(TagEnd::CodeBlock) => {
                 b.flush_line();
-                let fence = format!("{}```", b.indent);
-                b.out
-                    .push(Line::from(Span::styled(fence, b.theme.dim_style())));
+                let len = b.indent.len().saturating_sub(CODE_RAIL_INDENT.len());
+                b.indent.truncate(len);
                 b.in_code_block = false;
             }
             Event::Start(Tag::List(start)) => {
@@ -309,7 +346,12 @@ pub fn render(source: &str, width: usize, theme: &Theme) -> Vec<Line<'static>> {
                         *n = n.saturating_add(1);
                         marker
                     }
-                    _ => "- ".to_owned(),
+                    // OMP `md.bullet`, with depth glyphs so nesting reads.
+                    _ => match depth {
+                        0 => "• ".to_owned(),
+                        1 => "◦ ".to_owned(),
+                        _ => "‣ ".to_owned(),
+                    },
                 };
                 b.spans.push(Span::styled(
                     format!("{}{pad}{marker}", b.indent),
@@ -333,10 +375,8 @@ pub fn render(source: &str, width: usize, theme: &Theme) -> Vec<Line<'static>> {
             }
             Event::Rule => {
                 b.blank();
-                let fill: String =
-                    std::iter::repeat_n('─', width.saturating_sub(4).min(40)).collect();
                 b.out.push(Line::from(Span::styled(
-                    format!("{}{fill}", b.indent),
+                    format!("{}———", b.indent),
                     b.theme.dim_style(),
                 )));
             }

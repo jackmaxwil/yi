@@ -11,7 +11,8 @@ use ratatui::crossterm::terminal::{
 };
 use ratatui::prelude::CrosstermBackend;
 use ratatui::text::Line;
-use ratatui::{Terminal, TerminalOptions, Viewport};
+
+use crate::terminal::Terminal;
 
 /// `/dev/tty` when stdout is captured, so `$(yi …)` still gets a screen
 /// (atuin `TerminalWriter`, adapted).
@@ -31,19 +32,27 @@ pub struct TerminalGuard;
 
 impl TerminalGuard {
     pub fn new(writer: &mut impl Write) -> std::io::Result<Self> {
-        enable_raw_mode()?;
-        execute!(writer, EnableBracketedPaste)?;
-        // DISAMBIGUATE + REPORT_ALTERNATE_KEYS is the minimum for Shift+Enter
-        // (design U1); REPORT_ALL_KEYS breaks paste on some terminals.
-        let _ = execute!(
-            writer,
-            PushKeyboardEnhancementFlags(
-                KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
-                    | KeyboardEnhancementFlags::REPORT_ALTERNATE_KEYS
-            )
-        );
+        enter_terminal(writer)?;
         Ok(Self)
     }
+}
+
+/// Raw mode plus the U1 flags, without taking ownership of the restore: the
+/// external editor (U18) hands the tty to a child and re-enters afterwards
+/// while the startup guard still owns restore-on-exit.
+pub fn enter_terminal(writer: &mut impl Write) -> std::io::Result<()> {
+    enable_raw_mode()?;
+    execute!(writer, EnableBracketedPaste)?;
+    // DISAMBIGUATE + REPORT_ALTERNATE_KEYS is the minimum for Shift+Enter
+    // (design U1); REPORT_ALL_KEYS breaks paste on some terminals.
+    let _ = execute!(
+        writer,
+        PushKeyboardEnhancementFlags(
+            KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
+                | KeyboardEnhancementFlags::REPORT_ALTERNATE_KEYS
+        )
+    );
+    Ok(())
 }
 
 pub fn restore_terminal(writer: &mut impl Write) {
@@ -67,18 +76,13 @@ impl Drop for TerminalGuard {
 
 pub type Backend = CrosstermBackend<Box<dyn Write + Send>>;
 
-/// U2: inline viewport sized to the live region, clamped to `rows - 1`;
-/// the caller re-runs this on resize or live-region growth.
+/// U2: inline viewport anchored at the cursor; the height follows the live
+/// region from here on (`Terminal::set_viewport_height`).
 pub fn build_terminal(
     writer: Box<dyn Write + Send>,
     height: u16,
 ) -> std::io::Result<Terminal<Backend>> {
-    Terminal::with_options(
-        CrosstermBackend::new(writer),
-        TerminalOptions {
-            viewport: Viewport::Inline(height),
-        },
-    )
+    Terminal::new(CrosstermBackend::new(writer), height)
 }
 
 /// U3: commit finished cells above the viewport, batched inside a

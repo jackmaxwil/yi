@@ -946,7 +946,7 @@ mechanical skeleton (inline viewport, native scrollback, synchronous UI thread, 
 opencode supplies the subagent UX (task cell + child-session focus — its alternate-screen
 retained scene graph is rejected, the UX ports onto the inline skeleton); OMP supplies the
 pinned HUD contract, the tree-spine progress meter, and the status-line anatomy. Target:
-`yi-tui` ≤ 5,000 lines including tests, ≤ 1 MiB added to the binary.
+`yi-tui` ≤ 10,000 lines (D43), ≤ 1 MiB added to the binary.
 
 Decisions:
 
@@ -954,9 +954,13 @@ Decisions:
   independently and both document why: you cannot observe the terminal's scroll position, so
   never repaint what has scrolled off. Finished transcript cells are written *above* the viewport
   once and never touched; only the live region (streaming tail + composer + status) repaints.
-  ratatui's `Viewport::Inline` + `Terminal::insert_before` (feature `scrolling-regions`) is the
-  built-in form of codex's DEC scroll-region trick; use it first, copy codex's 250-line
-  `insert_history.rs` only if a measured terminal misbehaves.
+  ratatui's `Viewport::Inline` was the phase-7 form of codex's DEC scroll-region trick; its
+  height is fixed at construction, which the dynamic live region needs to change, so `yi-tui`
+  now owns a ~270-line `Terminal` derived from ratatui's with codex's mutable-viewport model
+  (`set_viewport_area`, growth by scroll region, clear-on-change) and ratatui's own
+  `Buffer::diff` + `insert_before_scrolling_regions` kept. Codex's buffer differ, hyperlink
+  coalescing, cursor styles, alt-screen/suspend paths and per-terminal scrollback strategies
+  are not ported.
 - **No alternate screen, no mouse, no images, no reflow on resize.** Old rows keep their old
   width (codex ships a 700-line reflow; OMP an 800-line width-epoch contract; neither is needed
   for a transcript the user can also open with `yi sessions show`).
@@ -974,10 +978,16 @@ Decisions:
   terminal. Conditional rules (`when = "input-empty"`) arrive with the second conditional binding.
 - **Markdown** via `pulldown-cmark` (no default features) → `Vec<Line>`; streaming commits the
   stable prefix (blank-line boundary outside code fences) to scrollback mid-turn, only the tail
-  repaints. Tables render as a minimal fixed-layout grid (content-derived widths capped, bold
-  header, dim rules, cells truncate — user-directed, supersedes the launch cut). No LaTeX, no
-  syntax highlighting at launch (code blocks are dim-fenced plain text; `syntect` with a
-  trimmed syntax set is a later `highlight` feature, never `two-face`/onig).
+  repaints. Heading levels follow codex's ladder (h1 accent bold+underlined, h2 accent bold, h3
+  bold italic, h4-6 italic) since Yi drops the literal `#`; bullets are OMP's `•`/`◦`/`‣` by
+  depth; a link keeps its destination as a dim ` (url)` suffix (codex) because a bare label
+  drops the only thing a link carries; fenced code hangs off a dim `│` rail with the language
+  on the opening rail rather than reprinting the author's backticks (OMP's border hook); `---`
+  is codex's `———`, which cannot be confused with a full-width divider. Tables are OMP's sharp
+  box (`┌┬┐├┼┤└┴┘`) with one rule under the header — codex's edgeless grid with a rule between
+  every body row was ported first and is most of the ink for none of the meaning. No LaTeX, no
+  syntax highlighting at launch (`syntect` with a trimmed syntax set is a later `highlight`
+  feature, never `two-face`/onig).
 - **Tests** against a real VT parser (`vt100` dev-dep, codex `VT100Backend` ≈ 100 lines) plus
   `insta` snapshots of rendered cells. OMP's shadow-ledger fidelity test is the upgrade path if
   the inline mechanism ever diverges from ratatui's.
@@ -1013,10 +1023,10 @@ Decisions:
 | # | Primitive | Signature | Purity | Source |
 |---|---|---|---|---|
 | U1 | TerminalGuard | RAII: raw mode, bracketed paste, kitty keyboard flags (`DISAMBIGUATE \| REPORT_ALTERNATE_KEYS`, needed for Shift+Enter), `/dev/tty` writer when stdout is not a TTY; `Drop` restores every step and logs failures instead of panicking; panic hook restores first | I/O | atuin `interactive.rs:1586`, mdfried `main.rs:107` |
-| U2 | Viewport | `Viewport::Inline(h)`; `h = live.desired_height(width) + composer.desired_height(width) + 1`, recomputed on change and clamped to `rows - 1`; falls back to fullscreen only when `h >= rows` | I/O | atuin `:1717`, codex `app.rs:889` |
+| U2 | Viewport | `yi-tui::terminal::Terminal` (codex-derived, mutable viewport): `h = live + hud + working + bottom + 1` recomputed every draw; `resize_viewport` ports codex's reflow rules — growth scrolls the rows above up, a terminal-driven shrink does not (the emulator already moved them), the clear runs from `min(prev, new)`. A viewport move triggers `invalidate_viewport` plus a rebuild of the rows above from the retained transcript (`yi-tui::history`), because a re-wrap leaves mangled copies of earlier frames there | I/O | atuin `:1717`, codex `tui.rs:892-946,1093-1135` |
 | U3 | commit | `insert_before(lines)` for a finished cell; batched per draw inside a synchronized-output bracket (`BeginSynchronizedUpdate/End`) | I/O | codex `tui.rs:929-971` |
 | U4 | Renderable | `trait { fn render(&self, area, buf); fn desired_height(&self, width) -> u16 }` — no layout tree; the bottom stack is `[live_cell, composer, status]` summed | trait | codex `render/renderable.rs:16` |
-| U5 | Cell | transcript unit: `User \| Assistant(markdown) \| Tool{intent, status, preview} \| Advisory \| Notice`; `fn lines(&self, width) -> Rc<[Line]>` memoized on `(width, version)` | pure | codex `HistoryCell`, OMP `Component` |
+| U5 | Cell | transcript unit: `User \| Assistant(markdown) \| Tool{intent, status, preview} \| Advisory \| Notice`; `fn lines(&self, width) -> Rc<[Line]>` memoized on `(width, version)`. Role delineation is three donors agreeing: a user turn is a `┃` accent bar (opencode) over a background tint (codex `user_message_bg`, OMP `userMsgBg`) with `› ` marking only its first line, and assistant prose hangs off a dim `• ` gutter (codex). The tint needs a known ground, so it is offered only where the theme supplies one and degrades to bar-plus-caret elsewhere — codex's own fallback when its bg probe fails. User turns are bracketed by OSC 133 prompt zones (OMP) so the terminal can navigate between them | pure | codex `HistoryCell`, opencode `session/index.tsx:1398-1420`, OMP `Component` |
 | U6 | frame scheduler | `request()` sets a dirty flag; loop draws when dirty and `now ≥ max(last + 16 ms, last_start + 2 × last_cost)` (cap 200 ms); no tick timer unless a spinner is live | pure | OMP `tui.ts:1229`, codex `frame_rate_limiter.rs` |
 | U7 | event loop | UI thread: `poll(100 ms)` → drain **all** pending terminal events → drain all runtime events → reduce → draw once. Runtime events tagged with session generation; stale ones dropped | I/O | atuin `:1917` (drain-then-draw), mdfried `renderer.rs`, `model.rs:265` |
 | U8 | keymap | `Action` enum (kebab serde), `KeyInput::{Single, Sequence}`, `Keymap{ map: HashMap<KeyInput, Vec<Rule>> }`, `resolve(key, &EvalContext) -> Option<Action>`; defaults in code, overrides in `~/.yi/config.json` `keys` | pure | atuin `keybindings/*` |
@@ -1034,6 +1044,7 @@ Decisions:
 | U27 | task cell | two lines: `⠙\|✓\|✗ <agent> Task — <description>` + live `↳ <child's latest titled tool>` while running, `↳ N toolcalls · elapsed` done, `↳ <error ≤ 80 chars>` failed in error color; forced blank line above and below; counters computed from the child session's live event stream, not tool metadata | pure | opencode `session/index.tsx:2221-2334` |
 | U28 | HUD | pinned block in the live region, never committed: header (goal objective + status when active, else `Subagents`), rows `⠙\|☐\|☑` + strikethrough done + warning blocked, cap 8 + `… n more`; tree-spine connectors `├─\|│\|└────` lit accent top-down by done/total (≥ 1 lit on progress, full only when done); queued `Steering · n` block; auto-clear on settle; data = U20 `cards(&AgentState)` | pure | OMP `interactive-mode.ts:2344-2459,466-521`, `ui-helpers.ts:910-944` |
 | U29 | subagent focus | focus child: rule into scrollback, replay child cells badged in child accent, live region = child tail, composer swapped for nav footer `<agent> (n of m) · tokens (ctx %) · $cost · Parent ↑ Prev ← Next →`; status line dims whole-bar; read-only (B13 deferred); child permission requests bubble to parent U12; Esc/↑ back with closing rule | I/O | opencode `subagent-footer.tsx:65-129`, `session/index.tsx:433-462` |
+| U34 | session mark | the mark and the activity indicator are one object: `logo::frame(phase, clock, size)` where phase 0 is a `Yi` wordmark built from the same dot primitives the orb uses and phase 1 is the working orb's own live frame. A turn drives the phase to 1 and its end drives it back, so the dots visibly rearrange between letters and orb — never a static mark beside a moving one. Pairing is angle-order about the centre with the orb ordering rotated to the offset that minimises total travel (crossing dots read as noise); easing is exponential ease-in, and `advance` clamps a step to one frame — the mark stops repainting when it settles, so the elapsed time since its last paint is unbounded and turning it into progress skips the animation entirely. The mark leads the live region, with streaming prose under it, so it holds one row while the answer grows. At rest the image is transmitted once and the frame timer stops; the kitty path is the only renderer, and non-kitty terminals keep the plain spinner line and reserve no rows | pure + I/O | new (over A.13) |
 | U33 | thinking orbs | thinking-orbs engine port (A.13): 9 deterministic mode painters produce z-sorted `OrbFrame` dot lists, geometry-exact against the library's own golden vectors (72 cases, 1e-4). Rendered ONLY via the kitty graphics protocol (TERM contains kitty/ghostty, or KITTY_WINDOW_ID): the canvas painter ported to RGBA — mirrored ink, feathered discs, alpha depth, transparent ground — transmitted as chunked base64 APC frames with one stable image id, scaled into an 8×4-cell rect beside the verb label at the working line; deleted when the turn ends. Non-kitty terminals keep the plain spinner line — no intermediate renderer (braille rejected: binary dots, one color per cell, cannot carry the radius+ink depth language). The working/default state evaluates the composing (ribbon) preset — orbits-64's sparse particles read as noise at cell-rect scale. Activity → verb: tool class → searching/solving, child running → connecting, prose streaming → composing, approval → listening, default working | pure + I/O | `ref/tui/thinking-orbs` (A.13) |
 | U32 | transcript modes | `TranscriptMode{Normal, Thinking, Verbose}` cycled on Ctrl+O: Normal collapses thought cells to `∴ thinking · N lines` and tools to one line; Thinking shows reasoning bodies dim-italic; Verbose adds tool result previews; committed cells keep the mode they rendered under (scrollback is immutable) | pure | Claude Code ctrl+o, OMP thinking display |
 | U31 | session tree selector | double-Esc (empty composer, idle, parent session only, 500 ms window) opens an overlay of the session's entry tree: `├─\|└─` connectors + `│` gutters, fuzzy search, filter modes (default \| no-tools \| user-only \| all), current path highlighted; select = rewind — `move_lane` the leaf to the chosen entry and reprint the transcript from the new branch (the Pi tree format is the store, nothing new persisted) | pure + I/O | OMP `tree-selector.ts`, `input-controller.ts:429-445` |
@@ -2140,7 +2151,7 @@ the package stays a token sink.
 | scroll-region insert + reverse-index pre-roll | `ref/agents/codex/codex-rs/tui/src/insert_history.rs:106-228` | 123 | fallback only — ratatui `insert_before` held at phase 7; port if a measured terminal misbehaves (§8.14) |
 | `SetScrollRegion`/`Reset` commands + `write_history_line` + `write_spans` | `ref/agents/codex/codex-rs/tui/src/insert_history.rs:290-491` | 199 | fallback only (same condition as above) |
 | wrap policy enums + URL-intact wrap + `leading_whitespace_prefix` | `ref/agents/codex/codex-rs/tui/src/insert_history.rs:43-57,230-288` | 72 | superseded by U14's hand-rolled wrap (phase 7) |
-| mutable-viewport terminal (fallback if ratatui `Inline` misbehaves) | `ref/agents/codex/codex-rs/tui/src/custom_terminal.rs:1-837` | 837 | read-only reference |
+| mutable-viewport terminal (the `Inline` fixed-height limit is the misbehavior; fallback taken) | `ref/agents/codex/codex-rs/tui/src/custom_terminal.rs:126-345,445-560`, `tui.rs:960-1005`, `tui/scrollback.rs:50-78` | ~270 | port adapted (U2, `yi-tui::terminal`) |
 | frame coalescing actor + handle | `ref/agents/codex/codex-rs/tui/src/tui/frame_requester.rs:28-128` | 89 | superseded — U6's synchronous dirty-flag scheduler needs no actor (phase 7) |
 | frame rate limiter | `ref/agents/codex/codex-rs/tui/src/tui/frame_rate_limiter.rs:1-38` | 38 | port adapted (folded into U6 `FrameScheduler`; 60 fps ceiling) |
 | `Renderable` trait (+ blanket impls) | `ref/agents/codex/codex-rs/tui/src/render/renderable.rs:16-74` | 58 | port verbatim/adapted |

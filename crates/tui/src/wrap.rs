@@ -110,7 +110,11 @@ pub fn wrap_line(line: &Line<'_>, width: usize, subsequent_indent: &str) -> Vec<
                 &mut word,
                 &mut word_width,
             );
-            if !current.is_empty() && current_width < limit(&out) {
+            // A space with nothing before it on the very first line is real
+            // indentation (a nested list marker, a padded cell), not a word
+            // separator — dropping it flattened every nested bullet.
+            let leading_indent = current.is_empty() && out.is_empty();
+            if (leading_indent || !current.is_empty()) && current_width < limit(&out) {
                 current_width += 1;
                 current.push(cell);
             }

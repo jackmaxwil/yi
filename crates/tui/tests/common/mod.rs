@@ -61,6 +61,30 @@ impl VT100Backend {
             .unwrap_or_default()
     }
 
+    /// Simulate a terminal window resize: the emulator changes size under the
+    /// running app, exactly as SIGWINCH does.
+    #[allow(dead_code)]
+    pub fn resize(&mut self, width: u16, height: u16) {
+        if let Ok(mut parser) = self.parser.0.lock() {
+            parser.set_size(height, width);
+        }
+    }
+
+    #[allow(dead_code)]
+    pub fn row_text(&self, row: u16) -> String {
+        self.parser
+            .0
+            .lock()
+            .map(|parser| {
+                let screen = parser.screen();
+                let width = screen.size().1;
+                (0..width)
+                    .filter_map(|col| screen.cell(row, col).map(vt100::Cell::contents))
+                    .collect::<String>()
+            })
+            .unwrap_or_default()
+    }
+
     fn cursor(&self) -> (u16, u16) {
         self.parser
             .0

@@ -163,7 +163,7 @@ pub(crate) fn handle_action(
             });
         }
         Action::ToggleHud => app.hud_hidden = !app.hud_hidden,
-        Action::ExternalEditor => {}
+        Action::ExternalEditor => app.pending_editor = true,
         Action::FocusChild => focus_move(app, FocusMove::Child),
         Action::FocusParent => focus_move(app, FocusMove::Parent),
         Action::FocusNextSibling => focus_move(app, FocusMove::Next),
@@ -175,6 +175,7 @@ pub(crate) fn handle_slash(app: &mut App, command: &str) {
     match command {
         "quit" => app.quit = true,
         "tree" => app.pending_open_tree = true,
+        "editor" => app.pending_editor = true,
         "expand" => {
             if let Some(cell) = app.last_finished_tool.clone() {
                 let width = app.width.saturating_sub(2);

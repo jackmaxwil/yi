@@ -8,7 +8,9 @@ changelog, feature ledger, decision log. Code follows the docs; deviating from
 a settled decision requires a new D-row in ARCHITECTURE.md first, in the same
 change.
 
-Terminology: pi, codex, omp, fx, and prime-agent are reference codebases under
-ref/ — read-only study material, not this project. "The agent" means Yi, the
+Terminology: pi, codex, omp, opencode, fx, jcode, and prime-agent are reference
+codebases under ref/, filed by category (ref/agents/, ref/tui/, ref/tools/, …) —
+read-only study material, not this project. Check the category before concluding
+a reference is absent; opencode lives under ref/agents/, not ref/tui/. "The agent" means Yi, the
 code in this repo, never you (the assistant). Work only inside the current
 phase gate (ARCHITECTURE.md header + "Phase gates"); do not scaffold ahead.

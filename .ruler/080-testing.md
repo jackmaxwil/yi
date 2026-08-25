@@ -15,4 +15,10 @@ not add the test.
 - No static echoes, passthrough assertions, or "the code ran" tests.
 - Provider behavior tests need no keys: the faux provider replays scripted
   event streams; drive mappers with canned payloads.
+- A regression test is run against the unfixed code before the fix is claimed:
+  temporarily revert the fix, watch it fail, restore. Two tests written this
+  way passed against the broken code on the first try — one modelled a
+  terminal reflow the emulator does not perform, the other asserted a shape
+  the fix had already made unreachable. A green test proves nothing until it
+  has been seen red for the right reason.
 - Tests avoid unwrap/expect by returning `Result<(), Box<dyn Error>>`.

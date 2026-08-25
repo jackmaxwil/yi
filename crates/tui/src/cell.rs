@@ -90,6 +90,73 @@ pub enum Cell {
     Divider,
 }
 
+pub const GUTTER: &str = "• ";
+const GUTTER_CONTINUATION: &str = "  ";
+
+/// codex `history_cell/messages.rs:530`: assistant prose hangs off a dim `• `
+/// on its first line and a two-column gutter after it, so a block of prose is
+/// attributable at a glance without a box or a color band.
+pub fn gutter(lines: Vec<Line<'static>>, first: bool, theme: &Theme) -> Vec<Line<'static>> {
+    let mut marked = first;
+    lines
+        .into_iter()
+        .map(|line| {
+            let prefix = if marked && line.spans.iter().any(|s| !s.content.trim().is_empty()) {
+                marked = false;
+                Span::styled(GUTTER.to_owned(), theme.dim_style())
+            } else {
+                Span::raw(GUTTER_CONTINUATION.to_owned())
+            };
+            let mut spans = vec![prefix];
+            spans.extend(line.spans);
+            Line::from(spans)
+        })
+        .collect()
+}
+
+/// Pad every row to the full width and paint the block style across it, so the
+/// tint reads as one band instead of ragged per-line highlights.
+fn tint(lines: Vec<Line<'static>>, width: usize, theme: &Theme) -> Vec<Line<'static>> {
+    let style = theme.user_style();
+    if style == Style::default() {
+        return lines;
+    }
+    lines
+        .into_iter()
+        .map(|line| {
+            let used: usize = line
+                .spans
+                .iter()
+                .map(|s| unicode_width::UnicodeWidthStr::width(s.content.as_ref()))
+                .sum();
+            let mut spans: Vec<Span<'static>> = line
+                .spans
+                .into_iter()
+                .map(|s| Span::styled(s.content, style.patch(s.style)))
+                .collect();
+            spans.push(Span::styled(" ".repeat(width.saturating_sub(used)), style));
+            Line::from(spans)
+        })
+        .collect()
+}
+
+/// opencode `routes/session/index.tsx:1398-1420`: the user turn carries a
+/// heavy left bar in the session accent over a panel fill. The bar is what
+/// survives at 16 colors, where the tint degrades to nothing.
+const USER_BAR: &str = "┃";
+
+fn bar(lines: Vec<Line<'static>>, theme: &Theme) -> Vec<Line<'static>> {
+    let style = theme.user_style().fg(theme.accent);
+    lines
+        .into_iter()
+        .map(|line| {
+            let mut spans = vec![Span::styled(USER_BAR.to_owned(), style)];
+            spans.extend(line.spans);
+            Line::from(spans)
+        })
+        .collect()
+}
+
 fn glyph(tool: &str) -> char {
     match tool {
         "bash" => '$',
@@ -226,21 +293,30 @@ impl Cell {
         match self {
             Cell::User { text } => {
                 let mut out = vec![Line::default()];
-                for raw in text.lines() {
+                let width = width.saturating_sub(USER_BAR.len());
+                for (index, raw) in text.lines().enumerate() {
+                    // The bar carries the block; the caret marks only where it
+                    // starts (codex `messages.rs:265`).
+                    let marker = if index == 0 { " › " } else { "   " };
                     out.extend(wrap_line(
                         &Line::from(vec![
-                            Span::styled("  › ", Style::default().fg(theme.accent)),
+                            Span::styled(marker, Style::default().fg(theme.accent)),
                             Span::styled(raw.to_owned(), Style::default().fg(theme.text)),
                         ]),
                         width,
-                        "    ",
+                        "   ",
                     ));
                 }
-                out
+                out.push(Line::default());
+                bar(tint(out, width, theme), theme)
             }
             Cell::Assistant { markdown } => {
                 let mut out = vec![Line::default()];
-                out.extend(markdown::render(markdown, width, theme));
+                out.extend(gutter(
+                    markdown::render(markdown, width.saturating_sub(GUTTER.len()), theme),
+                    true,
+                    theme,
+                ));
                 out
             }
             Cell::Thought { markdown } => {

@@ -16,7 +16,6 @@ impl Default for Composer {
     fn default() -> Self {
         let mut textarea = TextArea::default();
         textarea.set_cursor_line_style(ratatui::style::Style::default());
-        textarea.set_placeholder_text("Type a message — Enter send · Shift+Enter newline");
         Self {
             textarea,
             pastes: BTreeMap::new(),
@@ -68,8 +67,6 @@ impl Composer {
         self.textarea = TextArea::from(text.lines().map(str::to_owned).collect::<Vec<_>>());
         self.textarea
             .set_cursor_line_style(ratatui::style::Style::default());
-        self.textarea
-            .set_placeholder_text("Type a message — Enter send · Shift+Enter newline");
         self.textarea.move_cursor(tui_textarea::CursorMove::Bottom);
         self.textarea.move_cursor(tui_textarea::CursorMove::End);
     }

@@ -12,10 +12,16 @@ use unicode_width::UnicodeWidthStr;
 use crate::colors::Theme;
 use crate::wrap::wrap_line;
 
-const TABLE_COLUMN_GAP: usize = 2;
 const TABLE_CELL_PADDING: usize = 1;
-const TABLE_HEADER_SEPARATOR_CHAR: char = '━';
 const TABLE_BODY_SEPARATOR_CHAR: char = '─';
+// OMP `theme.boxSharp`: an outer box with inner rules and real junctions.
+// codex's pipeline (which this file ports) draws no edges at all and puts a
+// `─` rule between every body row — most of the ink for none of the meaning.
+const BOX_H: char = '─';
+const BOX_V: &str = "│";
+const BOX_TOP: [char; 3] = ['┌', '┬', '┐'];
+const BOX_MID: [char; 3] = ['├', '┼', '┤'];
+const BOX_BOTTOM: [char; 3] = ['└', '┴', '┘'];
 const MIN_COLUMN_WIDTH: usize = 3;
 
 const FIELD_LEADING_PADDING: usize = 1;
@@ -304,13 +310,19 @@ fn wrap_cell(cell: &TableCell, width: usize) -> Vec<Line<'static>> {
     wrapped
 }
 
-fn separator(widths: &[usize], ch: char, style: Style) -> Line<'static> {
-    let gap = " ".repeat(TABLE_COLUMN_GAP);
-    let text = widths
-        .iter()
-        .map(|w| ch.to_string().repeat(w + TABLE_CELL_PADDING * 2))
-        .collect::<Vec<_>>()
-        .join(&gap);
+fn rule(widths: &[usize], corners: [char; 3], style: Style) -> Line<'static> {
+    let [left, mid, right] = corners;
+    let mut text = String::new();
+    text.push(left);
+    for (index, width) in widths.iter().enumerate() {
+        if index > 0 {
+            text.push(mid);
+        }
+        for _ in 0..(width + TABLE_CELL_PADDING * 2) {
+            text.push(BOX_H);
+        }
+    }
+    text.push(right);
     Line::from(Span::styled(text, style))
 }
 
@@ -319,6 +331,7 @@ fn render_row(
     widths: &[usize],
     alignments: &[Alignment],
     row_style: Style,
+    border_style: Style,
 ) -> Vec<Line<'static>> {
     let wrapped: Vec<Vec<Line<'static>>> = row
         .iter()
@@ -328,15 +341,9 @@ fn render_row(
     let height = wrapped.iter().map(Vec::len).max().unwrap_or(1);
     let mut out = Vec::with_capacity(height);
     for row_line in 0..height {
-        let last_visible = wrapped
-            .iter()
-            .rposition(|lines| lines.get(row_line).is_some_and(|l| line_width(l) > 0));
-        let Some(last_visible) = last_visible else {
-            out.push(Line::default());
-            continue;
-        };
         let mut spans = Vec::new();
-        for (column, width) in widths.iter().enumerate().take(last_visible + 1) {
+        for (column, width) in widths.iter().enumerate() {
+            spans.push(Span::styled(BOX_V.to_owned(), border_style));
             spans.push(Span::raw(" ".repeat(TABLE_CELL_PADDING)));
             let line = wrapped
                 .get(column)
@@ -358,14 +365,12 @@ fn render_row(
                 span.style = row_style.patch(span.style);
             }
             spans.extend(styled.spans);
-            let last = column == last_visible;
-            if !last {
-                if right > 0 {
-                    spans.push(Span::raw(" ".repeat(right)));
-                }
-                spans.push(Span::raw(" ".repeat(TABLE_CELL_PADDING + TABLE_COLUMN_GAP)));
+            if right > 0 {
+                spans.push(Span::raw(" ".repeat(right)));
             }
+            spans.push(Span::raw(" ".repeat(TABLE_CELL_PADDING)));
         }
+        spans.push(Span::styled(BOX_V.to_owned(), border_style));
         out.push(Line::from(spans));
     }
     out
@@ -538,7 +543,9 @@ pub fn render(
         row.resize(columns, TableCell::default());
     }
     let metrics = collect_metrics(&header, &rows, columns);
-    let reserved = columns.saturating_sub(1) * TABLE_COLUMN_GAP + columns * TABLE_CELL_PADDING * 2;
+    // One vertical rule per column plus the closing one, and padding both
+    // sides of every cell.
+    let reserved = columns + 1 + columns * TABLE_CELL_PADDING * 2;
     let content_budget = available.saturating_sub(reserved);
     let header_style = Style::default()
         .fg(theme.accent)
@@ -548,22 +555,25 @@ pub fn render(
     let mut out = Vec::new();
     match compute_column_widths(&metrics, content_budget) {
         Some(widths) if !should_render_records(&rows, &widths, &metrics) => {
-            out.extend(render_row(&header, &widths, alignments, header_style));
-            out.push(separator(
+            out.push(rule(&widths, BOX_TOP, separator_style));
+            out.extend(render_row(
+                &header,
                 &widths,
-                TABLE_HEADER_SEPARATOR_CHAR,
+                alignments,
+                header_style,
                 separator_style,
             ));
-            for (index, row) in rows.iter().enumerate() {
-                out.extend(render_row(row, &widths, alignments, Style::default()));
-                if index + 1 < rows.len() {
-                    out.push(separator(
-                        &widths,
-                        TABLE_BODY_SEPARATOR_CHAR,
-                        separator_style,
-                    ));
-                }
+            out.push(rule(&widths, BOX_MID, separator_style));
+            for row in &rows {
+                out.extend(render_row(
+                    row,
+                    &widths,
+                    alignments,
+                    Style::default(),
+                    separator_style,
+                ));
             }
+            out.push(rule(&widths, BOX_BOTTOM, separator_style));
         }
         _ => {
             out.extend(render_records(

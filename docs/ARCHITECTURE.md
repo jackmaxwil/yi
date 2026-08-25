@@ -1,15 +1,25 @@
 # Yi — Architecture Map
 
 ```
-version: 0.14.3         # bump on any structural change; log it below
+version: 0.18.0         # bump on any structural change; log it below
 design:  YI_DESIGN.md   # the deep design; § refs below point into it
-status:  phase 4 done   # yi-kernel (Jupyter client over pure-Rust zeromq) + uv venv bootstrap + verbatim rlm Python runtime (mcp.py rewritten over `yi mcp --json`) + ipython tool + runtime::subagent (rlm.run depth 1). Exit gate green: recursion scenarios incl. a live-kernel round trip. 4b done. Phase 5 done: runtime::schedule + runtime::advisor. Phase 5b done: yi-acp v2 server (hand-rolled wire, D40). Phase 6 done: yi-runtime::goal (G1-G6) + `yi serve` daemon (D4 supervisor + worker-per-root; exit gate green: a heartbeat dispatches while no client is attached and a reconnected client lists and resumes the session). Phase 7 done: `yi-tui` (D41 design — codex/atuin inline skeleton, opencode subagent UX, OMP HUD/status) in the default build; `yi [prompt]` opens the TUI on a TTY (X1). Deferred from 7: U18 external editor, U13 stable-prefix streaming commits (live tail renders per frame, cells commit at MessageEnd), dynamic viewport height (fixed 16 rows), gitignore-aware @-walk. Next: on go.
+status:  phase 4 done   # yi-kernel (Jupyter client over pure-Rust zeromq) + uv venv bootstrap + verbatim rlm Python runtime (mcp.py rewritten over `yi mcp --json`) + ipython tool + runtime::subagent (rlm.run depth 1). Exit gate green: recursion scenarios incl. a live-kernel round trip. 4b done. Phase 5 done: runtime::schedule + runtime::advisor. Phase 5b done: yi-acp v2 server (hand-rolled wire, D40). Phase 6 done: yi-runtime::goal (G1-G6) + `yi serve` daemon (D4 supervisor + worker-per-root; exit gate green: a heartbeat dispatches while no client is attached and a reconnected client lists and resumes the session). Phase 7 done: `yi-tui` (D41 design — codex/atuin inline skeleton, opencode subagent UX, OMP HUD/status) in the default build; `yi [prompt]` opens the TUI on a TTY (X1). Phase 8 (D42): nothing is deferred any more — every deferred, stretch, and never-built row is open work in docs/TODOS.md (ids A1-M5), worked in that order. U13 stable-prefix streaming landed in 7; U18, dynamic viewport height, and the gitignore-aware @-walk are A3, A2, A4.
 ```
 
 ## Changelog
 
 | ver | date | change |
 |---|---|---|
+| 0.18.0 | 2026-08-24 | D43: `yi-tui` ceiling 5,000 → 10,000 lines. |
+| 0.17.3 | 2026-08-24 | Docs pass: README rewritten as a self-contained statement of what Yi is and why (no reference-codebase names — those belong in the design doc, not the front door). `.ruler` gains the two rules this session paid for (prove a regression test red before claiming the fix; a capability path is only exercised when the capability is advertised) and the ref/ category note. `yi-tui` budget row corrected to D41's 5,000 and its overage tracked as A10. |
+| 0.17.2 | 2026-08-24 | U34 morph fixed: a settled mark stops the frame timer, and the idle gap was being turned into progress, so the first animating frame consumed the whole morph and the wordmark snapped to the orb. Step is clamped to one frame (`logo::advance`). The mark now leads the live region with the streaming answer under it, so it holds one position while text grows. |
+| 0.17.1 | 2026-08-24 | U34 revised (user-directed): one orb, not two — the `Yi` wordmark and the thinking orb are the same dot cloud morphing between them, exponential ease-in, settled at rest with no repaint. The scrollback session header is dropped with it. `scripts/tui_pty.py --term` added: the harness hardcoded `xterm-256color`, so no kitty-graphics path had ever been exercised under a PTY. |
+| 0.17.0 | 2026-08-24 | TUI visual language (user-directed, reference-first): role delineation (opencode `┃` bar + codex/OMP tint + codex `• ` gutter), codex heading ladder, OMP bullets, visible link destinations, `│` code rail, OMP boxed tables, OSC 133 prompt zones, U34 session mark (a frozen U33 orb frame). Fixes: wrapped paragraphs no longer indent (the wrapper strips a line-leading indent, so only continuations showed it), nested bullets keep their indent, composer placeholder removed. `yi-tui::render` split out of `app`. |
+| 0.16.2 | 2026-08-24 | Resize, second pass: the cursor-delta heuristic fixed growing but not shrinking, so codex's real path is ported instead — `update_inline_viewport_for_resize_reflow` (no scroll when the terminal itself shrank, clear from `min(prev, new)`), `invalidate_viewport`, and rebuilding the rows above the viewport from transcript source (`yi-tui::history`, 256-cell ring). |
+| 0.16.1 | 2026-08-24 | Resize fix: a terminal reflows its screen on resize, so the viewport anchor went stale and each resize step left its composer box behind. Ported codex's cursor-delta re-anchor (`tui.rs:1156-1175`) with the cursor tracking it needs; `scripts/tui_pty.py` grew `--resize`. |
+| 0.16.0 | 2026-08-24 | TODOS A1: `yi-tui::terminal` — codex's mutable-viewport `Terminal` ported (A.10 fallback taken; ratatui's `Viewport::Inline` height is fixed at construction). The inline viewport now sizes itself to the live region every draw and stays bottom-anchored. |
+| 0.15.1 | 2026-08-24 | TODOS A3, A4: U18 external editor (Ctrl+G / `/editor`) wired; the file walk behind `glob`, `grep`, and the TUI `@` popup is gitignore-aware, one implementation in yi-tools surfaced through yi-runtime. |
+| 0.15.0 | 2026-08-24 | D42: every deferred/stretch/pattern row undeferred; open work enumerated in docs/TODOS.md and the feature ledger flipped to `open (<id>)`. Phase gates end at 7; TODOS.md is the queue. |
 | 0.14.3 | 2026-08-24 | Session retrospective hardening. Working/default orb evaluates the ribbon preset (orbits-64 reads as noise at cell-rect scale). New `.ruler/085-tui.md`: TUI verification (drive mode mandatory for TUI behavior changes, nonzero-offset vt100 cases, protocol lifecycle semantics as incident comments, `scripts/tui_pty.py` for the true-terminal path), reference-first UX (donor refs are the default, a smaller fresh implementation is a deviation to confirm), the visual-approach gate (medium/aesthetic decisions get a mock + sign-off before code), and byte-cursor streaming commits. New skill `yi-tui-verify` (drive-mode workflow + PTY harness); `yi-port` gains the banned-dep adaptation and reference-golden-fixture precedents. The CPR-answering PTY harness is promoted from session scratch to `scripts/tui_pty.py`. U13 row rewritten to the shipped slice-commit contract. |
 | 0.14.2 | 2026-08-24 | Orb + markdown fixes from live review. Kitty orbs: placements scroll with the text under them, so every placement of the image id is deleted before each re-place (plus a fixed placement id) — no more stamp trails up the transcript; emission decouples from the draw scheduler and runs at ~30 fps on its own loop cadence while an orb is live. Streaming: the stable-prefix committer now renders each newly stable slice standalone against a byte cursor — re-rendering the whole prefix let the renderer's trailing-blank trimming misalign the committed-line count, duplicating list items mid-stream. Tables: the codex table pipeline adopted outright on user direction (A.10 pass-3, port adapted): styled-span cells (inline code/bold inside cells survives by construction — the previous string-capture dropped `code` cells into a concatenated leak), spillover-row filtering, column metrics with Narrative/TokenHeavy/Compact kinds, priority shrinking with binary-searched balancing, aligned grid rendering with in-cell wrapping and ━/─ separators, and the key/value record fallback at codex's exact fragmentation/starvation thresholds. |
 | 0.14.1 | 2026-08-24 | User-directed TUI corrections. Orbs render via the **kitty graphics protocol only** (U33 revised): the reference canvas painter ported to RGBA (mirrored ink, feathered discs, alpha depth, transparent ground so Ghostty's blur shows through), chunked base64 APC frames under one stable image id, placed in an 8×4-cell rect at the working line beside the verb label, deleted at turn end; detection is TERM kitty/ghostty or KITTY_WINDOW_ID. The braille rasterizer is **deleted** — binary dots with one color per cell cannot carry the radius+ink depth language, and at readable density it saturates (516 dots onto 576 grid points); non-kitty terminals get the pre-orb spinner line back, nothing in between. Status line condensed: the transcript banner is gone (the `yi` wordmark in the status row is the branding), the context gauge bar is gone in favor of a compact `N% of 1M` segment (windows ≥ 1M collapse to M units), paths left-truncate at 24 cells, session ids display 8 chars. |
@@ -73,7 +83,7 @@ Budgets are ceilings (§9 ratchet); the target is always smaller.
 | `yi-kernel` | Jupyter client: ZMQ, HMAC, host.request (§8.9, §6) | types | 2,500 |
 | `yi-runtime` | AgentSession + modules `subagent`, `schedule`, `advisor` (§8.3, §8.10–8.12) | all above | 6,000 |
 | `yi-acp` | ACP v2 server, Event→update (§8.13, D1) | runtime | 2,000 |
-| `yi-tui` *(feature `tui`)* | inline-viewport TUI (§8.14) | runtime | 4,000 |
+| `yi-tui` | inline-viewport TUI (§8.14) | runtime | 10,000 (D43) |
 | `yi-cli` | composition root; ask / rpc / acp / serve / sessions / undo; `mcp` feature (§8.15, D9) | all | 2,000 |
 
 Non-crate: `python/yi_runtime` (prime verbatim, §6), `skills/` (bundles, §14.1), `vendor/rtk`
@@ -119,38 +129,38 @@ value/complexity: H/M/L. Status: **core** (launch), **gated** (cargo feature), *
 | context P1–P14, P16–P18; prefix-aligned P7 | 8.1 | core | H | M | P15 deferred (D7); live 0.7.0 (P12 live with the kernel, 0.9.0) |
 | hashline edit (+ registers, instrumented) | 8.8, D11 | core | H | M | boundary-repair excluded |
 | permission modes/rules/holds, deterministic auto | 8.7 | core | H | M | |
-| model auto-review M7/M8 | 8.7, D3 | deferred (ph 6+) | L | H | only if deterministic-auto nags |
-| bash reduce (launch set) | 14.3, D13 | core | H | M | 4 filters + TOML engine |
-| file checkpoints + /undo | 5.3 | core | H | M | shadow gitdir |
-| kernel + ipython + rlm() subagents | 8.9, 8.10 | live 0.9.0 | H | H | earns its H complexity; B7 updates/B13 mailbox/agent_message.*/fork deferred |
+| model auto-review M7/M8 | 8.7, D3 | open (D1, D2) | L | H | undeferred D42 |
+| bash reduce (launch set) | 14.3, D13 | open (C2) | H | M | `vendor/rtk` vendored, unwired |
+| file checkpoints + /undo | 5.3 | open (C1, B2) | H | M | shadow gitdir; never built |
+| kernel + ipython + rlm() subagents | 8.9, 8.10 | live 0.9.0 | H | H | earns its H complexity; B7/B13/agent_message.*/fork open (F1–F4) |
 | dill snapshot | 8.9 K10 | live 0.9.3 | M | L | kept per review |
-| heartbeats | 8.11 | live 0.9.5 | H | M | H7 per-session lanes still deferred: worker-per-root keeps one serial queue per session |
+| heartbeats | 8.11 | live 0.9.5 | H | M | H7 per-session lanes open (G1): worker-per-root keeps one serial queue per session |
 | goals + autonomous | 8.17, D25 | live 0.10.0 | H | M | codex ext/goal shape: out-of-transcript fact, continuation audit, error-turn blocks |
-| advisor (6 signals, Advise+ClaimAudit) | 7 | live 0.9.6 | H | M | the innovation focus; work-log context v3 (D19); two-tier default + headless Hold degrade (D28); V11 promote deferred |
-| CompactionCheck | 7.5, D8 | deferred | M | M | when compaction misbehaves |
-| SelectCandidate / best-of-N | 7.5, D10 | pattern | — | — | judge-selection over parallel subagents; never a TTC flag |
-| ACP v2 server | 8.13 | live 0.9.7 | H | M | Afterlife integration point; C7 diff content waits on T13; C8 mode/_yi options + `_yi/heartbeat_changed` deferred |
+| advisor (6 signals, Advise+ClaimAudit) | 7 | live 0.9.6 | H | M | the innovation focus; work-log context v3 (D19); two-tier default + headless Hold degrade (D28); V11 promote open (I1) |
+| CompactionCheck | 7.5, D8 | open (E2) | M | M | undeferred D42 |
+| SelectCandidate / best-of-N | 7.5, D10 | open (M5) | — | — | judge-selection over parallel subagents; never a TTC flag |
+| ACP v2 server | 8.13 | live 0.9.7 | H | M | Afterlife integration point; C7 diff content waits on T13 (open H1); C8 + `_yi/heartbeat_changed` open (H2, H3) |
 | ACP v1 adapter | D1 | **cut** | L | H | additive if a v1 client appears |
-| daemon (ACP-router supervisor + worker/root) | 7, D4 | live 0.10.0 | H | M | one protocol, isolation kept; H7 lanes + B8 ledger still deferred (one writer per root) |
+| daemon (ACP-router supervisor + worker/root) | 7, D4 | live 0.10.0 | H | M | one protocol, isolation kept; H7 lanes + B8 ledger open (G1, F6); one writer per root today |
 | TUI | 8.14 | gated `tui` (ph 7) | M | M | |
-| board + GitHub issues via `gh` | 14.4, D5 | deferred (plan on record) | M | M | zero persistence |
+| board + GitHub issues via `gh` | 14.4, D5 | open (K1) | M | M | zero persistence; undeferred D42 |
 | MCP CLI | 5.2, D9 | gated `mcp` | M | M | subcommand; proxy cut |
-| docs conversion (anydoc) | 14.6 | gated `docs` | M | L | |
-| modes (caveman/ponytail) + skills bundles | 14.1–14.2 | core | M | L | data + ~150 lines |
-| branch summarization P15 | D7 | deferred | L | M | |
-| structured output `--schema` | D10 | pattern | M | L | |
-| worktree subagent isolation B11 | 8.10 | deferred (ph 4c) | M | M | |
+| docs conversion (anydoc) | 14.6 | open (M1) | M | L | `docs` feature; undeferred D42 |
+| modes (caveman/ponytail) + skills bundles | 14.1–14.2 | modes live; skills open (C3) | M | L | bundles on disk, no catalog |
+| branch summarization P15 | D7 | open (E1) | L | M | undeferred D42 |
+| structured output `--schema` | D10 | open (B4) | M | L | undeferred D42 |
+| worktree subagent isolation B11 | 8.10 | open (F5) | M | M | undeferred D42 |
 | embeddings / semantic search | 14.6 | cut until grep fails | L | H | |
 | auto-skills / refine / self-extension | 5, 14.5 | **cut** (policy) | — | — | never |
 | catastrophic-path denylist M10 | 8.7, D15 | core | H | L | ~200 lines; absolute tier of jcode's gate |
-| hook bridge L1/L2 + **L3 remote-rendered UI** (U27–U30, A10, §8.16) | D14 | stretch | H | M | L2 ≈ 60–65 %; **L3 ≈ 92–96 %** of Pi's 78 examples unmodified; core cost ~1k lines under `tui` feature |
-| `yi-pi-compat` shim | D14 | stretch (external pkg) | M | M | real Bun ⇒ extensions' fs/spawn work; renderers/themes/games never |
-| provider pass-through (all pi-ai providers via sidecar) | 3.1, D16 | stretch | H | L | zero core lines beyond A10 |
+| hook bridge L1/L2 + **L3 remote-rendered UI** (U27–U30, A10, §8.16) | D14 | open (L1, L2) | H | M | L2 ≈ 60–65 %; **L3 ≈ 92–96 %** of Pi's 78 examples unmodified; core cost ~1k lines under `tui` feature |
+| `yi-pi-compat` shim | D14 | open (L3, external pkg) | M | M | real Bun ⇒ extensions' fs/spawn work; renderers/themes/games never |
+| provider pass-through (all pi-ai providers via sidecar) | 3.1, D16 | open (L4) | H | L | zero core lines beyond A10 |
 | Pi-differential testing (Pi as eval baseline) | 3.1, D17 | core (ph 3, test infra) | H | M | token ratchet reports Yi-vs-Pi |
-| bidirectional session handoff (`yi adopt`) | 3.1, D18 | stretch | M | L | reversible migration per session |
+| bidirectional session handoff (`yi adopt`) | 3.1, D18 | open (L5) | M | L | reversible migration per session |
 | Pi templates as commands + skills roots + theme import | 3.1 | core | M | L | folded into X1/§5/U17 |
-| AA benchmark adapters (harbor + pier) + E1–E9 gates | 15 | core (ph 3b) | H | L | ~250 lines Python; TB2.1/QnA free via harbor datasets |
-| ARC-AGI-3 client | 15.5 | pattern | — | — | not in the index; build only if pursued |
+| AA benchmark adapters (harbor + pier) + E1–E9 gates | 15 | open (J1, J2) | H | L | ~250 lines Python; TB2.1/QnA free via harbor datasets |
+| ARC-AGI-3 client | 15.5 | open (J7) | — | — | not in the AA index |
 | PTY interactive exec | 12, D30 | **cut** | M | H | auto-background + `ipython` cover it; per-session approval hole; ~3.7k lines |
 | freeform/grammar tool format (hashline) | 8.8 T1, D29 | core (ph 2b) | M | L | openai-responses only; ~50 lines |
 
@@ -158,6 +168,8 @@ value/complexity: H/M/L. Status: **core** (launch), **gated** (cargo feature), *
 
 | id | decision | why | reversible via |
 |---|---|---|---|
+| D43 | `yi-tui`'s ceiling is 10,000 lines, revising D41's 5,000 (which itself revised 4,000) | the crate now carries what the earlier numbers costed as one surface: a forked mutable-viewport terminal with its own history insertion, the resize-reflow path, a markdown renderer with tables, the orb engine and its morph, plus the transcript, HUD, status, keymap and drive-mode machinery. The budget was set before three of those existed. Ceilings are meant to make growth deliberate, not to be quietly exceeded — the honest move is to name the number that reflects the surface and hold it | lower it once a subsystem leaves the crate; the file and function ratchets still bind every part of it |
+| D42 | nothing stays deferred: every `deferred` / `stretch` / `pattern` row and every ledger row marked core-but-unbuilt becomes open work, enumerated two lines each in docs/TODOS.md (A1-M5) with the gate that closes it; the phase-gate ladder ends at 7 and TODOS.md is the queue after it. Cuts stay cut (ACP v1 D1, PTY exec D30, embeddings, auto-skills) — a cut is a decision, not a delay | user directive 2026-08-24; the deferral list had become the place work went to be forgotten (phase 3b evals were skipped outright, checkpoints and bash reduce sat as ledger `core` with no code), and a single ordered queue with a per-item done-gate is what the ledger's status column could not express | re-defer any row by moving it back to the ledger with a status and a reason |
 | D1 | ACP v2 only | no v1 client in this setup; dual wire shapes were the cost | add adapter (C4 in git history) |
 | D2 | Pi RPC kept | user call; cheap as a Renderer impl | — |
 | D3 | model auto-review deferred | 500 lines for one mode; deterministic auto covers launch | port A.4 spans |
@@ -201,6 +213,8 @@ value/complexity: H/M/L. Status: **core** (launch), **gated** (cargo feature), *
 | D30 | codex pass-2 batch: auto-background over PTY (approval attaches to the action, not the channel — every PTY stdin write bypasses the gate); skills = catalog under P16 2 %-window budget + file locator + existing `read`, no skills tool; hash-pinned trust for project exec tools; durable R3 queue; downgrade tolerance (§19 r6); M11 permission-mode fragments; S6 newline-retermination/deferred-create/tolerance-ladder; X7 precedence enum + strict unknown-key errors; workspace lints + stdio print bans + blob gate | 3.7k-line PTY subsystem vs 78 lines of policy; the rest are zero-to-low-cost hardening with codex receipts | per-row |
 
 ## Phase gates (condensed from §11)
+
+Gates 0-7 are closed; open work after 7 is docs/TODOS.md, not a gate (D42).
 
 0 scaffold+guardrails → 1 loop+ai+runtime+ask → 2 session+rpc+tools (+2b hashline/permission,
 2c mcp feature) → 3 context+compaction (+3b evals) → 4 kernel+subagents (+4b dill) →

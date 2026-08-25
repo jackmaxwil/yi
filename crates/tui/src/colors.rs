@@ -42,6 +42,11 @@ pub struct Theme {
     pub error: Color,
     pub warning: Color,
     pub success: Color,
+    /// codex `style.rs::user_message_bg`: the user block sits on the ground
+    /// lifted toward white. codex probes the terminal's background and falls
+    /// back to no tint when it cannot; Yi has no probe, so the tint is offered
+    /// only for the truecolor dark theme whose ground it already assumes.
+    pub user_bg: Option<Color>,
 }
 
 impl Theme {
@@ -60,6 +65,7 @@ impl Theme {
                 error: Color::Rgb(0xff, 0x75, 0x7f),
                 warning: Color::Rgb(0xff, 0xc7, 0x77),
                 success: Color::Rgb(0xc3, 0xe8, 0x8d),
+                user_bg: Some(Color::Rgb(0x2f, 0x33, 0x47)),
             };
         }
         let (muted, dim) = match tier {
@@ -76,6 +82,7 @@ impl Theme {
             error: Color::Red,
             warning: Color::Yellow,
             success: Color::Green,
+            user_bg: None,
         }
     }
 
@@ -84,6 +91,19 @@ impl Theme {
             ColorTier::Ansi16 => Style::default().add_modifier(Modifier::DIM),
             _ => Style::default().fg(self.dim),
         }
+    }
+
+    /// The whole user block carries the tint, blank spacer rows included, so
+    /// the band reads as one object.
+    pub fn user_style(&self) -> Style {
+        match self.user_bg {
+            Some(bg) => Style::default().bg(bg),
+            None => Style::default(),
+        }
+    }
+
+    pub fn accent_style(&self) -> Style {
+        Style::default().fg(self.accent)
     }
 
     pub fn muted_style(&self) -> Style {

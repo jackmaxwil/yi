@@ -190,11 +190,9 @@ pub fn run_headless(
     }
     let width = drive.width.max(20);
     let height = drive.height.max(8);
-    let mut terminal = match ratatui::Terminal::with_options(
+    let mut terminal = match crate::terminal::Terminal::new(
         HeadlessBackend(TestBackend::new(width, height)),
-        ratatui::TerminalOptions {
-            viewport: ratatui::Viewport::Inline(16.min(height - 1)),
-        },
+        4.min(height - 1),
     ) {
         Ok(terminal) => terminal,
         Err(error) => {
@@ -241,6 +239,7 @@ pub fn run_headless(
         }
         crate::app::sync_roster(&mut app, &host, &handle, &ui_tx);
         crate::app::process_pending_tree(&mut app, &session);
+        crate::editor::process_pending_editor(&mut app, &mut terminal, false);
 
         let step = match current.take() {
             Some(pending) => pending,
@@ -284,7 +283,7 @@ pub fn run_headless(
             (Step::Quit, _) => break,
         }
 
-        crate::app::draw(&mut app, &mut terminal, Some(&session));
+        crate::render::draw(&mut app, &mut terminal, Some(&session));
         if let Some(dir) = &drive.frames_dir {
             let frame = terminal.backend().0.to_string();
             if frame != last_frame {

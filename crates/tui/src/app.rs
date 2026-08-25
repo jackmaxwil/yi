@@ -4,9 +4,7 @@ use std::sync::mpsc::{Receiver, Sender};
 use std::time::{Duration, Instant};
 
 use ratatui::crossterm::event::{self, Event as CtEvent};
-use ratatui::layout::Rect;
-use ratatui::text::{Line, Span};
-use ratatui::widgets::Paragraph;
+use ratatui::text::Line;
 use serde_json::Value;
 use yi_runtime::{AgentSession, ChildStatus, SubagentHost};
 use yi_types::entry::Entry;
@@ -23,8 +21,7 @@ use crate::hud::{BoardCard, CardKind, CardStatus, GoalView, HudInput};
 use crate::input::handle_terminal_event;
 use crate::keymap::{Keymap, default_keymap};
 use crate::orb::{self, OrbState};
-use crate::popup::{BottomView, ListPopup};
-use crate::status::{StatusInput, render as render_status, working_line};
+use crate::popup::ListPopup;
 use crate::term;
 use crate::tree::{TreeFilter, TreeView};
 
@@ -62,13 +59,18 @@ pub struct TuiOptions {
     pub initial_prompt: Option<String>,
 }
 
-const VIEWPORT_ROWS: u16 = 16;
-const LIVE_TAIL_ROWS: usize = 6;
+// U2: the viewport starts at the height of an empty live region (composer
+// box + status row) anchored at the cursor, and grows upward from there —
+// codex's model. Starting tall would anchor the composer mid-screen until the
+// first history commit pushed it down.
+const MIN_VIEWPORT_ROWS: u16 = 4;
+
+pub(crate) const LIVE_TAIL_ROWS: usize = 6;
 const SPINNER_PERIOD_MS: u128 = 80;
 pub(crate) const ORB_COLS: u16 = 8;
 pub(crate) const ORB_ROWS: u16 = 4;
-const ORB_PX: usize = 192;
-pub(crate) const SLASH_COMMANDS: [&str; 3] = ["quit", "expand", "tree"];
+pub(crate) const ORB_PX: usize = 192;
+pub(crate) const SLASH_COMMANDS: [&str; 4] = ["quit", "expand", "tree", "editor"];
 
 pub struct TaskState {
     pub(crate) cell: TaskCell,
@@ -86,10 +88,18 @@ pub struct App {
     pub(crate) tree: Option<TreeView>,
     pub(crate) pending_commit: Vec<Line<'static>>,
     pub(crate) pending_open_tree: bool,
-    live_markdown: String,
-    live_thought: String,
-    live_cut: usize,
-    live_tools: Vec<ToolCell>,
+    pub(crate) pending_editor: bool,
+    pub(crate) pending_prompt_mark: bool,
+    /// U34: 0 = the `Yi` wordmark at rest, 1 = the working orb. The dots
+    /// travel between the two; there is one orb, never a static one beside a
+    /// moving one.
+    pub(crate) logo_phase: f64,
+    pub(crate) logo_target: f64,
+    pub(crate) history: crate::history::History,
+    pub(crate) live_markdown: String,
+    pub(crate) live_thought: String,
+    pub(crate) live_cut: usize,
+    pub(crate) live_tools: Vec<ToolCell>,
     pub(crate) last_finished_tool: Option<ToolCell>,
     tool_started: HashMap<String, Instant>,
     pub(crate) tasks: HashMap<String, TaskState>,
@@ -97,7 +107,7 @@ pub struct App {
     committed_tasks: HashSet<String>,
     pub(crate) steering: Vec<String>,
     pub(crate) running: bool,
-    intent: Option<String>,
+    pub(crate) intent: Option<String>,
     pub(crate) esc_armed_at: Option<Instant>,
     pub(crate) last_esc_at: Option<Instant>,
     pub(crate) ctrl_c_at: Option<Instant>,
@@ -107,14 +117,14 @@ pub struct App {
     user_turns: usize,
     pub(crate) mode: TranscriptMode,
     pub(crate) kitty: bool,
-    pub(crate) orb_placement: Option<(u16, u16, OrbState)>,
-    pending_title: Option<String>,
-    started_at: Instant,
+    pub(crate) orb_placement: Option<(u16, u16)>,
+    pub(crate) pending_title: Option<String>,
+    pub(crate) started_at: Instant,
     pub(crate) quit: bool,
     exit_code: i32,
     pub(crate) options: TuiOptions,
-    context_used: u64,
-    cost_total: f64,
+    pub(crate) context_used: u64,
+    pub(crate) cost_total: f64,
     pub(crate) width: usize,
 }
 
@@ -176,7 +186,7 @@ fn intent_of(args: &Value) -> Option<String> {
     args.get("i").and_then(Value::as_str).map(str::to_owned)
 }
 
-fn elapsed_ms(since: Instant) -> u64 {
+pub(crate) fn elapsed_ms(since: Instant) -> u64 {
     u64::try_from(since.elapsed().as_millis()).unwrap_or(0)
 }
 
@@ -191,6 +201,11 @@ impl App {
             tree: None,
             pending_commit: Vec::new(),
             pending_open_tree: false,
+            pending_editor: false,
+            pending_prompt_mark: false,
+            logo_phase: 0.0,
+            logo_target: 0.0,
+            history: crate::history::History::default(),
             live_markdown: String::new(),
             live_thought: String::new(),
             live_cut: 0,
@@ -234,6 +249,27 @@ impl App {
         self.focused.as_deref()
     }
 
+    pub fn set_width(&mut self, width: usize) {
+        self.width = width;
+    }
+
+    pub fn logo_target(&self) -> f64 {
+        self.logo_target
+    }
+
+    pub fn set_kitty(&mut self, kitty: bool) {
+        self.kitty = kitty;
+    }
+
+    pub fn composer_text(&self) -> String {
+        self.composer.text()
+    }
+
+    /// U18 entry point for surfaces other than the keymap (`/editor`, tests).
+    pub fn open_editor(&mut self) {
+        self.pending_editor = true;
+    }
+
     pub fn is_quit(&self) -> bool {
         self.quit
     }
@@ -267,11 +303,19 @@ impl App {
     }
 
     pub fn commit_cell(&mut self, cell: &Cell) {
+        if matches!(cell, Cell::User { .. }) {
+            self.pending_prompt_mark = true;
+        }
         let spinner = self.spinner_phase();
         let width = self.content_width();
         self.pending_commit
             .extend(cell.lines(width, &self.theme, self.mode, spinner));
+        self.retain(cell.clone());
         self.scheduler.request();
+    }
+
+    fn retain(&mut self, cell: Cell) {
+        self.history.retain(cell);
     }
 
     pub fn take_title(&mut self) -> Option<String> {
@@ -327,15 +371,22 @@ impl App {
             .unwrap_or_default()
             .to_owned();
         let width = self.content_width();
-        let rendered = crate::markdown::render(&slice, width, &self.theme);
+        let first = self.live_cut == 0;
+        let rendered = crate::markdown::render(
+            &slice,
+            width.saturating_sub(crate::cell::GUTTER.len()),
+            &self.theme,
+        );
         if !rendered.is_empty() {
             self.pending_commit.push(Line::default());
-            self.pending_commit.extend(rendered);
+            self.pending_commit
+                .extend(crate::cell::gutter(rendered, first, &self.theme));
+            self.retain(Cell::Assistant { markdown: slice });
         }
         self.live_cut = cut;
     }
 
-    fn spinner_phase(&self) -> usize {
+    pub(crate) fn spinner_phase(&self) -> usize {
         usize::try_from(self.started_at.elapsed().as_millis() / SPINNER_PERIOD_MS).unwrap_or(0)
     }
 
@@ -459,12 +510,24 @@ impl App {
                 }
                 let text = text_of(content);
                 if !text.is_empty() {
-                    let remainder = text.get(self.live_cut..).unwrap_or_default();
+                    let remainder = text.get(self.live_cut..).unwrap_or_default().to_owned();
                     let width = self.content_width();
-                    let rendered = crate::markdown::render(remainder, width, &self.theme);
+                    let first = self.live_cut == 0;
+                    let rendered = crate::markdown::render(
+                        &remainder,
+                        width.saturating_sub(crate::cell::GUTTER.len()),
+                        &self.theme,
+                    );
                     if !rendered.is_empty() {
                         self.pending_commit.push(Line::default());
-                        self.pending_commit.extend(rendered);
+                        self.pending_commit.extend(crate::cell::gutter(
+                            rendered,
+                            first,
+                            &self.theme,
+                        ));
+                        self.retain(Cell::Assistant {
+                            markdown: remainder,
+                        });
                     }
                     self.scheduler.request();
                 }
@@ -722,7 +785,7 @@ pub fn run_tui(
         default_hook(info);
     }));
     let (cols, rows) = ratatui::crossterm::terminal::size().unwrap_or((80, 24));
-    let height = VIEWPORT_ROWS.min(rows.saturating_sub(1)).max(6);
+    let height = MIN_VIEWPORT_ROWS.min(rows.saturating_sub(1)).max(1);
     let mut terminal = match term::build_terminal(writer, height) {
         Ok(terminal) => terminal,
         Err(error) => {
@@ -755,10 +818,14 @@ pub fn run_tui(
 
     let mut last_roster = Instant::now();
     let mut orb_shown = false;
+    let mut orb_at: Option<(u16, u16)> = None;
     let mut last_orb = Instant::now() - Duration::from_secs(1);
     while !app.quit {
         let timeout = app.scheduler.poll_timeout(Instant::now());
-        let timeout = if app.kitty && app.orb_placement.is_some() {
+        let orb_moving = app.kitty
+            && app.orb_placement.is_some()
+            && (app.logo_target > 0.0 || app.logo_phase > 0.0);
+        let timeout = if orb_moving {
             timeout.min(Duration::from_millis(33))
         } else if app.running {
             timeout.min(Duration::from_millis(90))
@@ -802,17 +869,34 @@ pub fn run_tui(
             app.pending_open_tree = false;
             open_tree(&mut app, &session);
         }
+        crate::editor::process_pending_editor(&mut app, &mut terminal, true);
         if app.scheduler.should_draw(Instant::now()) {
             let start = Instant::now();
-            draw(&mut app, &mut terminal, Some(&session));
+            crate::render::draw(&mut app, &mut terminal, Some(&session));
             app.scheduler.mark_drawn(start, Instant::now());
         }
         if app.kitty {
+            // U34: one image. The phase walks toward its target every frame, so
+            // the dots visibly travel between the `Yi` mark and the orb; a
+            // settled phase at rest needs no repaint at all.
+            let animating = app.logo_phase != app.logo_target || app.logo_target > 0.0;
+            let due =
+                animating && last_orb.elapsed() >= Duration::from_millis(crate::logo::FRAME_MS);
+            if !animating {
+                last_orb = Instant::now();
+            }
             match app.orb_placement {
-                Some((col, row, state)) if last_orb.elapsed() >= Duration::from_millis(33) => {
-                    last_orb = Instant::now();
+                Some((col, row)) if due || !orb_shown || orb_at != Some((col, row)) => {
+                    if due {
+                        app.logo_phase = crate::logo::advance(
+                            app.logo_phase,
+                            app.logo_target,
+                            last_orb.elapsed(),
+                        );
+                        last_orb = Instant::now();
+                    }
                     let clock = app.started_at.elapsed().as_secs_f64();
-                    if let Some(frame) = orb::evaluate(state, 64, clock) {
+                    if let Some(frame) = crate::logo::frame(app.logo_phase, clock, 64) {
                         let rgba = orb::kitty::paint_rgba(&frame, 64.0, ORB_PX);
                         let _ = orb::kitty::emit(
                             terminal.backend_mut(),
@@ -824,6 +908,7 @@ pub fn run_tui(
                             ORB_ROWS,
                         );
                         orb_shown = true;
+                        orb_at = Some((col, row));
                     }
                 }
                 None if orb_shown => {
@@ -954,185 +1039,4 @@ pub(crate) fn replay_child(app: &mut App, child_id: &str) {
     for cell in cells {
         app.commit_cell(&cell);
     }
-}
-
-pub fn draw<B>(app: &mut App, terminal: &mut ratatui::Terminal<B>, session: Option<&AgentSession>)
-where
-    B: ratatui::backend::Backend + std::io::Write,
-{
-    if let Some(title) = app.take_title() {
-        let osc = format!("\x1b]2;{title}\x07");
-        let _ = terminal.backend_mut().write_all(osc.as_bytes());
-    }
-    let commits = std::mem::take(&mut app.pending_commit);
-    let _ = term::commit_lines(terminal, commits);
-    if let Some(usage) = session.and_then(AgentSession::last_usage) {
-        app.context_used = u64::try_from(usage.total_tokens).unwrap_or(0);
-        app.cost_total = usage.cost.total.as_f64().unwrap_or(0.0);
-    }
-    let goal = session.and_then(AgentSession::store).and_then(|store| {
-        yi_runtime::session_store::lock_session(&store)
-            .goal()
-            .map(|goal| GoalView {
-                objective: goal.objective,
-                status: goal.status.as_str().to_owned(),
-                tokens_used: goal.tokens_used,
-                token_budget: goal.token_budget,
-            })
-    });
-    let spinner = app.spinner_phase();
-    let theme = app.theme;
-    let width = app.width;
-
-    let content_width = width.saturating_sub(2);
-    let mut live_lines: Vec<Line<'static>> = Vec::new();
-    if !app.live_markdown.is_empty() {
-        let tail = app.live_markdown.get(app.live_cut..).unwrap_or_default();
-        let rendered = crate::markdown::render(tail, content_width, &theme);
-        let skip = rendered.len().saturating_sub(LIVE_TAIL_ROWS);
-        live_lines.extend(rendered.into_iter().skip(skip));
-    } else if !app.live_thought.is_empty() {
-        // Reasoning-heavy models stream thought long before prose; show its
-        // dim tail so the screen is never silently blank mid-turn.
-        let cell = Cell::Thought {
-            markdown: app.live_thought.clone(),
-        };
-        let rendered = cell.lines(content_width, &theme, TranscriptMode::Thinking, spinner);
-        let skip = rendered.len().saturating_sub(LIVE_TAIL_ROWS);
-        live_lines.extend(rendered.into_iter().skip(skip));
-    }
-    for tool in &app.live_tools {
-        live_lines.extend(tool.lines(content_width, &theme, app.mode, spinner));
-    }
-    for id in &app.task_order {
-        if let Some(state) = app.tasks.get(id)
-            && state.cell.status == TaskStatus::Running
-        {
-            let mut cell = state.cell.clone();
-            cell.elapsed_ms = elapsed_ms(state.started);
-            live_lines.extend(cell.lines(width, &theme, spinner));
-        }
-    }
-    let hud_lines = if app.hud_hidden {
-        Vec::new()
-    } else {
-        crate::hud::render(&app.hud_input(goal), &theme, spinner)
-    };
-
-    let status_input = StatusInput {
-        model: app.options.model_label.clone(),
-        thinking: None,
-        mode: None,
-        cwd: app.options.cwd.clone(),
-        branch: None,
-        cost: if app.cost_total > 0.0 {
-            Some(format!("${:.2}", app.cost_total))
-        } else {
-            None
-        },
-        session_name: app.options.session_name.clone(),
-        subagents: app
-            .tasks
-            .values()
-            .filter(|s| s.cell.status == TaskStatus::Running)
-            .count(),
-        context_used: app.context_used,
-        context_window: app.options.context_window,
-        threshold_pct: Some(80),
-        focused_child: app.focused.clone(),
-    };
-    let status_row = render_status(&status_input, width, &theme);
-    let bottom_lines: Option<Vec<Line<'static>>> = if let Some(tree) = &app.tree {
-        Some(tree.lines(width, &theme, 8))
-    } else {
-        match &app.bottom {
-            Some(Bottom::Approval(view, _)) => Some(view.lines(width, &theme)),
-            Some(Bottom::Command(popup) | Bottom::File(popup)) => Some(popup.lines(width, &theme)),
-            None => None,
-        }
-    };
-    let show_working = app.running || matches!(app.bottom, Some(Bottom::Approval(..)));
-    let orb_state = app.orb_state();
-    let working: Vec<Line<'static>> = match orb_state {
-        Some(state) if app.kitty => {
-            // Four blank rows reserved for the kitty-protocol image; the
-            // label rides beside it as ordinary text.
-            let label = app
-                .intent
-                .clone()
-                .unwrap_or_else(|| state.label().to_owned());
-            let hint = if app.esc_armed_at.is_some() {
-                "esc again to interrupt"
-            } else {
-                "[esc] interrupt"
-            };
-            let mut rows: Vec<Line<'static>> = (0..ORB_ROWS).map(|_| Line::default()).collect();
-            if let Some(mid) = rows.get_mut(1) {
-                *mid = Line::from(vec![
-                    Span::raw(" ".repeat(usize::from(ORB_COLS) + 2)),
-                    Span::styled(label, ratatui::style::Style::default().fg(theme.text)),
-                    Span::styled(format!("  {hint}"), theme.dim_style()),
-                ]);
-            }
-            rows
-        }
-        Some(_) => vec![working_line(
-            app.intent.as_deref(),
-            spinner,
-            app.esc_armed_at.is_some(),
-            &theme,
-        )],
-        None => Vec::new(),
-    };
-    let border = if app.running {
-        theme.dim_style()
-    } else {
-        theme.muted_style()
-    };
-    app.composer.set_frame(border, theme.dim_style());
-    let composer_height = app.composer.desired_height();
-    let orb_active = app.kitty && orb_state.is_some();
-    let orb_at: std::cell::Cell<Option<(u16, u16)>> = std::cell::Cell::new(None);
-    let composer = &app.composer.textarea;
-
-    let _ = terminal.draw(|frame| {
-        // The inline viewport's buffer area starts at area.y, not 0 — a rect
-        // outside the area renders nowhere, silently.
-        let area = frame.area();
-        let mut y = area.top();
-        let put = |frame: &mut ratatui::Frame, lines: &[Line<'static>], y: &mut u16| {
-            let height = u16::try_from(lines.len()).unwrap_or(0);
-            if height == 0 || *y >= area.bottom() {
-                return;
-            }
-            let height = height.min(area.bottom() - *y);
-            let rect = Rect::new(area.left(), *y, area.width, height);
-            frame.render_widget(Paragraph::new(lines.to_vec()), rect);
-            *y += height;
-        };
-        put(frame, &live_lines, &mut y);
-        put(frame, &hud_lines, &mut y);
-        if show_working {
-            if orb_active && y < area.bottom() {
-                orb_at.set(Some((area.left(), y)));
-            }
-            put(frame, &working, &mut y);
-        }
-        match &bottom_lines {
-            Some(lines) => put(frame, lines, &mut y),
-            None => {
-                if y < area.bottom() {
-                    let height = composer_height.min(area.bottom() - y);
-                    let rect = Rect::new(area.left() + 1, y, area.width.saturating_sub(2), height);
-                    frame.render_widget(composer, rect);
-                    y += height;
-                }
-            }
-        }
-        put(frame, std::slice::from_ref(&status_row), &mut y);
-    });
-    app.orb_placement = match (orb_at.get(), orb_state) {
-        (Some((col, row)), Some(state)) => Some((col, row, state)),
-        _ => None,
-    };
 }

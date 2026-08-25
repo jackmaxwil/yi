@@ -299,7 +299,18 @@ fn markdown_renders_fences_dim_and_headings_bold() -> TestResult {
     let lines = yi_tui::markdown::render("# Title\n\n```rust\nlet x = 1;\n```", 60, &theme);
     let text: Vec<String> = lines.iter().map(flat).collect();
     assert!(text.iter().any(|l| l.contains("Title")));
-    assert!(text.iter().filter(|l| l.contains("```")).count() >= 2);
+    assert!(
+        !text.iter().any(|l| l.contains("```")),
+        "the author's fence markers are chrome, not content: {text:?}"
+    );
+    assert!(
+        text.iter().any(|l| l.contains("│ rust")),
+        "the rail carries the language instead: {text:?}"
+    );
+    assert!(
+        text.iter().any(|l| l.contains("│ let x = 1;")),
+        "fenced body hangs off the rail: {text:?}"
+    );
     let title_line = lines
         .iter()
         .find(|l| flat(l).contains("Title"))
@@ -362,8 +373,21 @@ fn markdown_tables_render_as_grids_not_raw_pipes() -> TestResult {
         "header row renders both columns: {text:?}"
     );
     assert!(
-        text.iter().any(|l| l.contains('━')),
-        "header rule renders: {text:?}"
+        text.iter().any(|l| l.starts_with('┌') && l.ends_with('┐')),
+        "the table is boxed: {text:?}"
+    );
+    assert!(
+        text.iter().any(|l| l.starts_with('├') && l.contains('┼')),
+        "header rule has real junctions: {text:?}"
+    );
+    assert!(
+        text.iter().any(|l| l.starts_with('└') && l.ends_with('┘')),
+        "the box closes: {text:?}"
+    );
+    assert_eq!(
+        text.iter().filter(|l| l.starts_with('├')).count(),
+        1,
+        "one rule under the header, none between body rows: {text:?}"
     );
     assert!(
         !text.iter().any(|l| l.contains("|---|")),
@@ -530,4 +554,102 @@ fn streaming_commits_each_list_item_exactly_once() -> TestResult {
         );
     }
     Ok(())
+}
+
+#[test]
+fn wrapped_paragraph_continuation_is_not_indented() {
+    let theme = Theme::new(ColorTier::TrueColor, true);
+    let source = "I can also spin up sub-agents (rlm) to work on parts of a task in parallel, \
+                  and I have a persistent Python kernel for scratch work.";
+    let lines = yi_tui::markdown::render(source, 60, &theme);
+    let texts: Vec<String> = lines
+        .iter()
+        .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
+        .collect();
+    let first = texts
+        .first()
+        .map_or(0, |t: &String| t.len() - t.trim_start().len());
+    for (i, text) in texts.iter().enumerate().skip(1) {
+        if text.trim().is_empty() {
+            continue;
+        }
+        let lead = text.len() - text.trim_start().len();
+        assert_eq!(
+            lead, first,
+            "continuation line {i} of a plain paragraph must align with its first line: {texts:?}"
+        );
+    }
+}
+
+#[test]
+fn logo_dots_travel_between_the_wordmark_and_the_orb() -> TestResult {
+    let rest = yi_tui::logo::frame(0.0, 0.0, 64).ok_or("no resting mark")?;
+    let working = yi_tui::logo::frame(1.0, 0.0, 64).ok_or("no working orb")?;
+    let mid = yi_tui::logo::frame(0.5, 0.0, 64).ok_or("no mid-morph frame")?;
+
+    // The mark at rest is the `Yi` strokes: every dot sits on one of the five
+    // segments, so the shape is letters and not a cloud.
+    assert!(
+        rest.dots.len() > 40,
+        "the mark has body: {}",
+        rest.dots.len()
+    );
+    // `Y` and `i` each end in a vertical stem, so the mark has two dense
+    // columns — a cloud or a ring would have none.
+    let mut columns: std::collections::BTreeMap<i64, usize> = std::collections::BTreeMap::new();
+    for dot in &rest.dots {
+        *columns.entry(dot.x.round() as i64).or_default() += 1;
+    }
+    let stems = columns.values().filter(|count| **count >= 6).count();
+    assert!(
+        stems >= 2,
+        "two stems stand in the mark: columns {columns:?}"
+    );
+
+    // Half way, the dots are in neither shape — that is the whole contract:
+    // they visibly rearrange rather than cutting between two pictures.
+    let count = mid.dots.len();
+    assert!(count > 0, "mid-morph renders dots");
+    let moved = mid
+        .dots
+        .iter()
+        .zip(&rest.dots)
+        .filter(|(m, r)| (m.x - r.x).abs() > 0.5 || (m.y - r.y).abs() > 0.5)
+        .count();
+    assert!(
+        moved * 2 > count,
+        "most dots have left the wordmark by half way: {moved}/{count}"
+    );
+    assert!(
+        !working.dots.is_empty(),
+        "the working end of the morph is the orb engine's own frame"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_long_idle_stretch_does_not_consume_the_whole_morph() {
+    let frame = std::time::Duration::from_millis(yi_tui::logo::FRAME_MS);
+    let one = yi_tui::logo::advance(0.0, 1.0, frame);
+    assert!(one > 0.0 && one < 0.2, "one frame is a small step: {one}");
+
+    // The mark stops repainting once it settles, so the gap since the last
+    // paint can be minutes. Turning that into progress skipped the animation
+    // entirely and the wordmark snapped straight to the orb.
+    let after_idle = yi_tui::logo::advance(0.0, 1.0, std::time::Duration::from_secs(90));
+    assert!(
+        after_idle <= one,
+        "a long idle gap still advances by at most one frame: {after_idle}"
+    );
+
+    let mut phase = 0.0;
+    let mut frames = 0;
+    while phase < 1.0 && frames < 1000 {
+        phase = yi_tui::logo::advance(phase, 1.0, frame);
+        frames += 1;
+    }
+    assert!(
+        (10..=40).contains(&frames),
+        "the morph takes a visible number of frames, not one: {frames}"
+    );
 }
