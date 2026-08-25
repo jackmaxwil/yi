@@ -28,6 +28,9 @@ deny = [
 # ureq 3 migration lands (advisories note above).
 # thiserror 1+2 and getrandom 0.2/0.3 duplicates ride the zeromq pin; both
 # collapse when zeromq updates its error/rand stack.
+# hashbrown 0.14/0.15 and unicode-width 0.1/0.2 duplicates ride the ratatui
+# 0.29 tree (lru pins hashbrown 0.15, unicode-truncate pins unicode-width 0.1);
+# both collapse when ratatui's pins catch up (D41, §13.4 tui).
 skip = [
   { crate = "syn" },
   { crate = "windows-sys" },
@@ -35,12 +38,15 @@ skip = [
   { crate = "thiserror" },
   { crate = "thiserror-impl" },
   { crate = "getrandom" },
+  { crate = "hashbrown" },
+  { crate = "unicode-width" },
 ]
 
 [advisories]
 yanked = "deny"
 ignore = [
   { id = "RUSTSEC-2025-0134", reason = "rustls-pemfile archived; pulled only by ureq 2 native-certs. Remove on the planned ureq 3 + rustls-platform-verifier migration (size-ledger item)." },
+  { id = "RUSTSEC-2024-0436", reason = "paste unmaintained; proc-macro build dep of ratatui 0.29, zero runtime bytes. Drops when ratatui replaces it (D41, §13.4 tui)." },
 ]
 
 [sources]

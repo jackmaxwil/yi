@@ -18,7 +18,9 @@ pub use kernel::{
 pub use permission::{AskOutcome, Asker, PermissionBroker};
 pub use provider::{ProviderStream, available_models, resolve_model};
 pub use session::{AgentSession, SessionConfig, SessionError, Status};
-pub use subagent::{RuntimeWiring, SubagentHost, SubagentHostOptions, attach_runtime};
+pub use subagent::{
+    ChildStatus, ChildView, RuntimeWiring, SubagentHost, SubagentHostOptions, attach_runtime,
+};
 pub use tools::ToolAdapter;
 pub use yi_ai::auth;
 pub use yi_ai::faux;

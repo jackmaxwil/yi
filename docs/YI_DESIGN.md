@@ -1032,6 +1032,7 @@ Decisions:
 | U27 | task cell | two lines: `⠙\|✓\|✗ <agent> Task — <description>` + live `↳ <child's latest titled tool>` while running, `↳ N toolcalls · elapsed` done, `↳ <error ≤ 80 chars>` failed in error color; forced blank line above and below; counters computed from the child session's live event stream, not tool metadata | pure | opencode `session/index.tsx:2221-2334` |
 | U28 | HUD | pinned block in the live region, never committed: header (goal objective + status when active, else `Subagents`), rows `⠙\|☐\|☑` + strikethrough done + warning blocked, cap 8 + `… n more`; tree-spine connectors `├─\|│\|└────` lit accent top-down by done/total (≥ 1 lit on progress, full only when done); queued `Steering · n` block; auto-clear on settle; data = U20 `cards(&AgentState)` | pure | OMP `interactive-mode.ts:2344-2459,466-521`, `ui-helpers.ts:910-944` |
 | U29 | subagent focus | focus child: rule into scrollback, replay child cells badged in child accent, live region = child tail, composer swapped for nav footer `<agent> (n of m) · tokens (ctx %) · $cost · Parent ↑ Prev ← Next →`; status line dims whole-bar; read-only (B13 deferred); child permission requests bubble to parent U12; Esc/↑ back with closing rule | I/O | opencode `subagent-footer.tsx:65-129`, `session/index.tsx:433-462` |
+| U31 | session tree selector | double-Esc (empty composer, idle, parent session only, 500 ms window) opens an overlay of the session's entry tree: `├─\|└─` connectors + `│` gutters, fuzzy search, filter modes (default \| no-tools \| user-only \| all), current path highlighted; select = rewind — `move_lane` the leaf to the chosen entry and reprint the transcript from the new branch (the Pi tree format is the store, nothing new persisted) | pure + I/O | OMP `tree-selector.ts`, `input-controller.ts:429-445` |
 
 ```mermaid
 flowchart LR
@@ -1994,6 +1995,7 @@ dependency toposort — until a skill grows a sibling dep, install in declared o
 | TUI (D41): queued-messages block (`Steering · n` groups, ` ↵ ` flatten, dequeue hint) | `ref/agents/omp/packages/coding-agent/src/modes/utils/ui-helpers.ts:910-944` | 35 | port adapted (U28) |
 | TUI (D41): status truncation cascade + context gauge fill | `ref/agents/omp/packages/coding-agent/src/modes/components/status-line/component.ts:1878-1943,1999-2118` | ~185 | port adapted (U16) |
 | TUI (D41): segment formats (model/mode/path/git/cost/context) + two-line footer (middle-ellipsis path, zero-omitted counters) | `ref/agents/omp/packages/coding-agent/src/modes/components/status-line/segments.ts:114-511`, `components/footer.ts:101-267` | — | read-only reference (U16) |
+| TUI (D41): double-Esc gate (500 ms, empty editor, idle, main-only) + tree selector (flatten, connectors/gutters, filter modes, search) | `ref/agents/omp/packages/coding-agent/src/modes/controllers/input-controller.ts:394-445`, `components/tree-selector.ts` | — | read-only reference (U31) |
 
 **excise (omp — never open):** `packages/catalog/src/models.json` (296,381 lines),
 `crates/pi-natives/tools/cache/deepseek-v3.tokenizer.json` (263,173), `THIRD-PARTY-NOTICES.txt`
@@ -2131,18 +2133,18 @@ the package stays a token sink.
 
 | item | source span | lines | action |
 |---|---|---|---|
-| scroll-region insert + reverse-index pre-roll | `ref/agents/codex/codex-rs/tui/src/insert_history.rs:106-228` | 123 | port adapted (`:165-217` verbatim) |
-| `SetScrollRegion`/`Reset` commands + `write_history_line` + `write_spans` | `ref/agents/codex/codex-rs/tui/src/insert_history.rs:290-491` | 199 | port verbatim |
-| wrap policy enums + URL-intact wrap + `leading_whitespace_prefix` | `ref/agents/codex/codex-rs/tui/src/insert_history.rs:43-57,230-288` | 72 | port verbatim |
+| scroll-region insert + reverse-index pre-roll | `ref/agents/codex/codex-rs/tui/src/insert_history.rs:106-228` | 123 | fallback only — ratatui `insert_before` held at phase 7; port if a measured terminal misbehaves (§8.14) |
+| `SetScrollRegion`/`Reset` commands + `write_history_line` + `write_spans` | `ref/agents/codex/codex-rs/tui/src/insert_history.rs:290-491` | 199 | fallback only (same condition as above) |
+| wrap policy enums + URL-intact wrap + `leading_whitespace_prefix` | `ref/agents/codex/codex-rs/tui/src/insert_history.rs:43-57,230-288` | 72 | superseded by U14's hand-rolled wrap (phase 7) |
 | mutable-viewport terminal (fallback if ratatui `Inline` misbehaves) | `ref/agents/codex/codex-rs/tui/src/custom_terminal.rs:1-837` | 837 | read-only reference |
-| frame coalescing actor + handle | `ref/agents/codex/codex-rs/tui/src/tui/frame_requester.rs:28-128` | 89 | port verbatim |
-| frame rate limiter | `ref/agents/codex/codex-rs/tui/src/tui/frame_rate_limiter.rs:1-38` | 38 | port verbatim |
+| frame coalescing actor + handle | `ref/agents/codex/codex-rs/tui/src/tui/frame_requester.rs:28-128` | 89 | superseded — U6's synchronous dirty-flag scheduler needs no actor (phase 7) |
+| frame rate limiter | `ref/agents/codex/codex-rs/tui/src/tui/frame_rate_limiter.rs:1-38` | 38 | port adapted (folded into U6 `FrameScheduler`; 60 fps ceiling) |
 | `Renderable` trait (+ blanket impls) | `ref/agents/codex/codex-rs/tui/src/render/renderable.rs:16-74` | 58 | port verbatim/adapted |
 | `commit_complete_source` + collector | `ref/agents/codex/codex-rs/tui/src/markdown_stream.rs:23-116` | 92 | port verbatim (`:82-96`) |
 | stable-prefix `StreamingRender` + `code_fence.rs` | `ref/agents/codex/codex-rs/tui/src/streaming/render.rs:21-216`, `code_fence.rs:1-121` | 315 | port adapted (`:148-196` verbatim) |
-| `VT100Backend` | `ref/agents/codex/codex-rs/tui/src/test_backend.rs:1-135` | 135 | port verbatim |
+| `VT100Backend` | `ref/agents/codex/codex-rs/tui/src/test_backend.rs:1-135` | 135 | port adapted (ratatui 0.29 keeps `CrosstermBackend::writer` private — the parser sits behind a shared handle) |
 | terminal init/restore + sync-update draw + history flush | `ref/agents/codex/codex-rs/tui/src/tui.rs:227-248,304-383,422-512,579-621,929-1030` | ~300 | port adapted (`flush_pending_history_lines :929-952` verbatim) |
-| `word_wrap_line` entry + URL-token guard | `ref/agents/codex/codex-rs/tui/src/wrapping.rs:400-460,682-727,855-862` (worker starts `:864`, end unverified) | ~110 | port verbatim (guard); worker adapted |
+| `word_wrap_line` entry + URL-token guard | `ref/agents/codex/codex-rs/tui/src/wrapping.rs:400-460,682-727,855-862` (worker starts `:864`, end unverified) | ~110 | port adapted — codex's guard needs the banned `textwrap`+`url` crates; U14 hand-rolls wrap with the `://` no-break rule |
 
 Codex non-TUI ports (compaction / goals / subagents — D25; verified 2026-08-22, `core/` is
 197,845 lines, not the 330k previously noted):
@@ -2220,7 +2222,7 @@ third persistence format); `ext/skills/src/{shadow_selection_experiment,dynamic_
 | `TerminalWriter` (`/dev/tty` / `CONOUT$`) | `.../interactive.rs:1390-1477` | 88 | port adapted |
 | drain-then-draw loop (drain inner `:1921-1997` verbatim) + cold-start paint | `.../interactive.rs:1891-2075` | 185 | port adapted |
 | keymap `Action` enum + parse tables + serde | `.../keybindings/actions.rs:7-241` | 235 | port adapted |
-| `SingleKey`/`KeyCodeValue`/`KeyInput` + parse + Display + serde | `.../keybindings/key.rs:6-310` | 305 | port verbatim |
+| `SingleKey`/`KeyCodeValue`/`KeyInput` + parse + Display + serde | `.../keybindings/key.rs:6-310` | 305 | port adapted (media keys and the super modifier dropped — Yi binds neither) |
 | `Keymap`/`KeyRule` + `resolve` + merge | `.../keybindings/keymap.rs:10-115` | 106 | port verbatim (`resolve :79-91`) |
 | `conditions.rs` | `.../keybindings/conditions.rs:1-369` | 369 | read-only reference (add at second conditional binding) |
 | four-way output routing | `ref/tui/atuin/crates/atuin/src/command/client/search.rs:243-258` | 16 | port verbatim |

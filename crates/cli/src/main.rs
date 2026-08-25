@@ -153,7 +153,10 @@ fn tty_ask(title: &str, description: &str) -> yi_runtime::AskOutcome {
     }
 }
 
-fn build_session(args: &Args, asker: Option<yi_runtime::Asker>) -> Result<AgentSession, i32> {
+fn build_session(
+    args: &Args,
+    asker: Option<yi_runtime::Asker>,
+) -> Result<(AgentSession, std::sync::Arc<yi_runtime::SubagentHost>), i32> {
     if args.model.is_empty() {
         eprintln!(
             "error: no model configured (pass --model provider/id or set \"model\" in ~/.yi/config.json)"
@@ -214,7 +217,7 @@ fn build_session(args: &Args, asker: Option<yi_runtime::Asker>) -> Result<AgentS
     let tools_home = home.clone();
     let system_prompt = session_system_prompt(args);
     let provider = std::sync::Arc::clone(session_provider(&session));
-    yi_runtime::attach_runtime(
+    let host = yi_runtime::attach_runtime(
         &mut session,
         yi_runtime::RuntimeWiring {
             provider,
@@ -235,7 +238,7 @@ fn build_session(args: &Args, asker: Option<yi_runtime::Asker>) -> Result<AgentS
             rlm_dir: default_session_dir(args).join(format!("rlm-{}", std::process::id())),
         },
     );
-    Ok(session)
+    Ok((session, host))
 }
 
 fn session_system_prompt(args: &Args) -> String {
@@ -287,7 +290,7 @@ fn run(args: &Args) -> i32 {
         let asker: Option<yi_runtime::Asker> =
             interactive.then(|| std::sync::Arc::new(tty_ask) as yi_runtime::Asker);
         match build_session(args, asker) {
-            Ok(session) => session,
+            Ok((session, _host)) => session,
             Err(code) => return code,
         }
     };
@@ -374,6 +377,155 @@ fn mcp_enabled() -> bool {
         .unwrap_or(false)
 }
 
+#[cfg(feature = "tui")]
+fn run_tui_command(args: &Args, initial_prompt: Option<String>) -> i32 {
+    use std::io::IsTerminal;
+    if !std::io::stdin().is_terminal() {
+        eprintln!("error: yi tui needs a terminal (use `yi ask` when piping)");
+        return 2;
+    }
+    let runtime = match tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+    {
+        Ok(runtime) => runtime,
+        Err(error) => {
+            eprintln!("error: {error}");
+            return 1;
+        }
+    };
+    let (ask_tx, ask_rx) = std::sync::mpsc::channel::<yi_tui::AskRequest>();
+    let asker: yi_runtime::Asker = std::sync::Arc::new(move |title, description| {
+        let (reply_tx, reply_rx) = std::sync::mpsc::channel();
+        let request = yi_tui::AskRequest {
+            title: title.to_owned(),
+            description: description.to_owned(),
+            reply: reply_tx,
+        };
+        if ask_tx.send(request).is_err() {
+            return yi_runtime::AskOutcome::Reject;
+        }
+        match reply_rx.recv() {
+            Ok(yi_tui::AskChoice::AllowOnce) => yi_runtime::AskOutcome::AllowOnce,
+            Ok(yi_tui::AskChoice::AllowAlways) => yi_runtime::AskOutcome::AllowAlways,
+            _ => yi_runtime::AskOutcome::Reject,
+        }
+    });
+    let (session, host) = {
+        let _guard = runtime.enter();
+        match build_session(args, Some(asker)) {
+            Ok(built) => built,
+            Err(code) => return code,
+        }
+    };
+    let session_name = {
+        use yi_runtime::session_store::SessionRepo;
+        let mut repo = yi_runtime::session_store::JsonlRepo::new(
+            default_session_dir(args),
+            effective_cwd(args).display().to_string(),
+        );
+        match repo.create(yi_runtime::session_store::CreateOptions::default()) {
+            Ok(store) => {
+                let name = yi_runtime::session_store::lock_session(&store)
+                    .metadata()
+                    .id
+                    .clone();
+                let _ = session.attach_store(store);
+                name
+            }
+            Err(error) => {
+                eprintln!("warning: session store unavailable: {error}");
+                "yi".to_owned()
+            }
+        }
+    };
+    let model = session.model();
+    let options = yi_tui::TuiOptions {
+        model_label: model.id.clone(),
+        session_name,
+        cwd: effective_cwd(args).display().to_string(),
+        context_window: model.context_window,
+        keys: configured_keys(),
+        initial_prompt,
+    };
+    yi_tui::run_tui(runtime, std::sync::Arc::new(session), host, ask_rx, options)
+}
+
+#[cfg(feature = "tui")]
+fn configured_keys() -> Vec<(String, String)> {
+    let Some(home) = std::env::var_os("HOME") else {
+        return Vec::new();
+    };
+    let path = std::path::Path::new(&home).join(".yi/config.json");
+    let Ok(raw) = std::fs::read_to_string(path) else {
+        return Vec::new();
+    };
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(&raw) else {
+        return Vec::new();
+    };
+    value
+        .get("keys")
+        .and_then(|keys| keys.as_object())
+        .map(|keys| {
+            keys.iter()
+                .filter_map(|(key, action)| {
+                    action
+                        .as_str()
+                        .map(|action| (key.clone(), action.to_owned()))
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+#[cfg(not(feature = "tui"))]
+fn run_tui_command(_args: &Args, _initial_prompt: Option<String>) -> i32 {
+    eprintln!("error: this build has no TUI (rebuild with the `tui` feature); use `yi ask`");
+    2
+}
+
+fn run_serve_command(args: &Args, version: &str) -> i32 {
+    let runtime = match tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+    {
+        Ok(runtime) => runtime,
+        Err(error) => {
+            eprintln!("error: {error}");
+            std::process::exit(1);
+        }
+    };
+    let socket = args.socket.clone().map_or_else(
+        || {
+            std::env::var_os("HOME").map_or_else(
+                || std::path::PathBuf::from(".yi/daemon.sock"),
+                |home| std::path::Path::new(&home).join(".yi/daemon.sock"),
+            )
+        },
+        std::path::PathBuf::from,
+    );
+    let mut worker_args = Vec::new();
+    if !args.model.is_empty() {
+        worker_args.push("--model".to_owned());
+        worker_args.push(args.model.clone());
+    }
+    if let Some(dir) = &args.session_dir {
+        worker_args.push("--session-dir".to_owned());
+        worker_args.push(dir.clone());
+    }
+    if args.yolo {
+        worker_args.push("--yolo".to_owned());
+    }
+    yi_acp::daemon::run_daemon(
+        yi_acp::daemon::DaemonOptions {
+            socket,
+            worker_args,
+            agent_version: version.to_owned(),
+        },
+        runtime,
+    )
+}
+
 fn main() {
     if std::env::args().nth(1).as_deref() == Some("mcp") {
         if !mcp_enabled() {
@@ -416,7 +568,7 @@ fn main() {
             let session = {
                 let _guard = runtime.enter();
                 match build_session(&args, None) {
-                    Ok(session) => session,
+                    Ok((session, _host)) => session,
                     Err(code) => std::process::exit(code),
                 }
             };
@@ -442,7 +594,9 @@ fn main() {
                 let runtime_handle = runtime.handle().clone();
                 std::sync::Arc::new(move |asker| {
                     let _guard = runtime_handle.enter();
-                    build_session(&build_args, asker).map_err(|code| format!("exit code {code}"))
+                    build_session(&build_args, asker)
+                        .map(|(session, _host)| session)
+                        .map_err(|code| format!("exit code {code}"))
                 })
             };
             let options = yi_acp::AcpOptions {
@@ -453,53 +607,34 @@ fn main() {
             };
             std::process::exit(yi_acp::run_acp(options, runtime));
         }
-        "serve" => {
-            let runtime = match tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-            {
-                Ok(runtime) => runtime,
-                Err(error) => {
-                    eprintln!("error: {error}");
-                    std::process::exit(1);
-                }
-            };
-            let socket = args.socket.clone().map_or_else(
-                || {
-                    std::env::var_os("HOME").map_or_else(
-                        || std::path::PathBuf::from(".yi/daemon.sock"),
-                        |home| std::path::Path::new(&home).join(".yi/daemon.sock"),
-                    )
-                },
-                std::path::PathBuf::from,
-            );
-            let mut worker_args = Vec::new();
-            if !args.model.is_empty() {
-                worker_args.push("--model".to_owned());
-                worker_args.push(args.model.clone());
-            }
-            if let Some(dir) = &args.session_dir {
-                worker_args.push("--session-dir".to_owned());
-                worker_args.push(dir.clone());
-            }
-            if args.yolo {
-                worker_args.push("--yolo".to_owned());
-            }
-            std::process::exit(yi_acp::daemon::run_daemon(
-                yi_acp::daemon::DaemonOptions {
-                    socket,
-                    worker_args,
-                    agent_version: version.to_owned(),
-                },
-                runtime,
-            ));
+        "serve" => std::process::exit(run_serve_command(&args, version)),
+        "tui" => {
+            let prompt = (!args.prompt.is_empty()).then(|| args.prompt.clone());
+            std::process::exit(run_tui_command(&args, prompt));
         }
-        "" => println!(
-            "yi {version} (yi ask, yi rpc, yi acp, yi serve; more surfaces land in later phases)"
-        ),
+        "" => {
+            use std::io::IsTerminal;
+            if std::io::stdin().is_terminal() && std::io::stdout().is_terminal() {
+                std::process::exit(run_tui_command(&args, None));
+            }
+            println!(
+                "yi {version} (yi [prompt], yi ask, yi rpc, yi acp, yi serve; more surfaces land in later phases)"
+            );
+        }
         other => {
-            eprintln!("error: unknown command {other}");
-            std::process::exit(2);
+            // X1: `yi <prompt words>` opens the TUI on a TTY, plain ask otherwise.
+            use std::io::IsTerminal;
+            let mut full = other.to_owned();
+            if !args.prompt.is_empty() {
+                full.push(' ');
+                full.push_str(&args.prompt);
+            }
+            if std::io::stdin().is_terminal() && std::io::stdout().is_terminal() {
+                std::process::exit(run_tui_command(&args, Some(full)));
+            }
+            let mut ask_args = args.clone();
+            ask_args.prompt = full;
+            std::process::exit(run(&ask_args));
         }
     }
 }

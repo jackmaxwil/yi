@@ -39,6 +39,15 @@ struct ChildRecord {
     session: Arc<AgentSession>,
 }
 
+#[derive(Clone)]
+pub struct ChildView {
+    pub child_id: String,
+    pub session_name: String,
+    pub status: ChildStatus,
+    pub error: Option<String>,
+    pub session: Arc<AgentSession>,
+}
+
 pub type ChildFactory =
     dyn Fn(Model, Option<String>, &Path) -> Result<AgentSession, String> + Send + Sync;
 pub type NoticeFn = dyn Fn(&str) + Send + Sync;
@@ -178,6 +187,28 @@ impl SubagentHost {
             options,
             children: Mutex::new(HashMap::new()),
         }
+    }
+
+    /// Live child handles for surfaces that render subagents (TUI U27/U29):
+    /// the session handle is the event-stream + store access, not control.
+    pub fn children_view(&self) -> Vec<ChildView> {
+        self.children
+            .lock()
+            .map(|children| {
+                let mut view: Vec<ChildView> = children
+                    .iter()
+                    .map(|(id, record)| ChildView {
+                        child_id: id.clone(),
+                        session_name: record.session_name.clone(),
+                        status: record.status,
+                        error: record.error.clone(),
+                        session: Arc::clone(&record.session),
+                    })
+                    .collect();
+                view.sort_by(|left, right| left.child_id.cmp(&right.child_id));
+                view
+            })
+            .unwrap_or_default()
     }
 
     fn create_child_dir(&self, parent_dir: &Path) -> Result<(PathBuf, String), String> {
