@@ -2,6 +2,7 @@
 
 pub mod advisor;
 pub mod compaction;
+pub mod goal;
 pub mod kernel;
 pub mod permission;
 pub mod provider;

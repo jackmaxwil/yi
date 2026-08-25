@@ -45,6 +45,7 @@ pub fn internal_source_of_custom(custom_type: &str) -> Option<&'static str> {
     match custom_type {
         "heartbeat_prompt" => Some("heartbeat"),
         "advisory" => Some("advisory"),
+        "goal_prompt" => Some("goal"),
         _ => None,
     }
 }

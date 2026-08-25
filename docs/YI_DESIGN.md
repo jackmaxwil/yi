@@ -886,7 +886,7 @@ sequenceDiagram
 | H7 | lanes | in-process there is one session ⇒ one serial queue. Per-session lanes arrive with the daemon (phase 6) | data | prime `dispatchLanes` (later) |
 | H8 | defer | `fn(&Job, &AgentState) -> Deliver\|Defer`: always defer if compacting / retrying / bash running / pending work; `Steer` does not defer on plain streaming, `FollowUp` does | pure | prime `shouldDeferHeartbeatCronJob` |
 | H9 | deliver | `Steer` → `session.steer`; `FollowUp` → `session.follow_up(resume_if_idle)`; message = `custom{heartbeat_prompt, details{job_id, schedule, run_count, next_run_at}}` whose LLM text is `<heartbeat job="…" run="n">prompt</heartbeat>` | I/O | prime `promptHeartbeat` + new framing |
-| H10 | surfaces | `/heartbeat every 10m <instr> \| status \| pause \| resume \| clear`; `rlm_heartbeat.{list,create,update,delete}` from the kernel; ACP `_yi/heartbeat_changed` | I/O | prime |
+| H10 | surfaces | `/heartbeat every 10m <instr> \| status \| pause \| resume \| clear`; `rlm_heartbeat.{list,create,update,delete}` from the kernel; ACP `_yi/heartbeat` method + `_yi/heartbeat_changed` | I/O | prime |
 
 ```mermaid
 flowchart LR
@@ -933,7 +933,7 @@ flowchart LR
 | C6 | replay | `session/resume{replayFrom: start}` = walk `Repo::branch(leaf)` through C3 | I/O | S4 |
 | C7 | diffs / terminals | T13 → `diff{changes, patch: git_patch}`; T12 output → `terminal_update` / `terminal_output_chunk` | pure | ACP v2 |
 | C8 | config options | `mode` (M1), `model`, `thought_level`, `_yi/advisor`, `_yi/max_depth` → `session/set_config_option` | data | ACP v2 |
-| C9 | extensions | `_yi/advisory`, `_yi/subagent_update`, `_yi/kernel_state`, `_yi/heartbeat_changed`, `_yi/compaction`; unknown fields ignored, unknown kinds skipped | data | ACP v2 · jcode harness-api rule |
+| C9 | extensions | `_yi/advisory`, `_yi/subagent_update`, `_yi/kernel_state`, `_yi/heartbeat_changed`, `_yi/compaction` updates + `_yi/heartbeat`, `_yi/goal` methods; unknown fields ignored, unknown kinds skipped | data | ACP v2 · jcode harness-api rule |
 
 
 ### 8.14 TUI (`yi-tui`, feature `tui`; from codex, OMP, atuin, mdfried, rainfrog)
@@ -1027,7 +1027,7 @@ in any of the five manifests).
 
 | # | Primitive | Signature | Purity | Source |
 |---|---|---|---|---|
-| X1 | args | `lexopt` hand-parsed: `yi [prompt]` (TUI, or `ask` when stdin/stdout is not a TTY), `yi ask`, `yi rpc`, `yi acp`, `yi serve`, `yi sessions {list\|show\|rm}`, `yi undo`, `yi version`; `--json`, `--model`, `--cwd`, `--session`, `--session-dir` (session storage root — eval harnesses write under `/logs`), `--continue` (resume leaf session — benchmark multi-step + warm cache), `--yolo` (M1 yolo; the non-interactive flag every eval harness requires), `--schema` (later) | pure | fx `cli/`, atuin `main.rs` (shape, not clap) |
+| X1 | args | `lexopt` hand-parsed: `yi [prompt]` (TUI, or `ask` when stdin/stdout is not a TTY), `yi ask`, `yi rpc`, `yi acp`, `yi serve`, `yi sessions {list\|show\|rm}`, `yi undo`, `yi version`; `--json`, `--model`, `--cwd`, `--session`, `--session-dir` (session storage root — eval harnesses write under `/logs`), `--continue` (resume leaf session — benchmark multi-step + warm cache), `--socket` (yi serve), `--yolo` (M1 yolo; the non-interactive flag every eval harness requires), `--schema` (later) | pure | fx `cli/`, atuin `main.rs` (shape, not clap) |
 | X2 | fast path | `--version`, `--help`, `sessions list` return before config parse or runtime construction; runtime is built per command (`tokio::runtime::Builder::new_current_thread`) | I/O | atuin `client.rs:164-244` |
 | X3 | streams | results on stdout, UI/progress on stderr; if stdout is not a TTY the answer is plain text (or events with `--json`); TUI opens `/dev/tty` when stdout is captured so `$(yi ask …)` works | I/O | atuin `search.rs:241`, `interactive.rs:1391` |
 | X4 | print = json = rpc | `yi ask` text mode, `--json`, and `yi rpc` all render the one `Event` stream; a `Renderer` trait with `Text`, `Json`, `PiRpc` impls | pure | pi `modes/print`, `docs/rpc.md` |
@@ -1090,7 +1090,7 @@ by construction.
 | G1 | Goal | `{objective, status: Active\|Paused\|Blocked\|UsageLimited\|BudgetLimited\|Complete, token_budget?, tokens_used, time_used_seconds, created, updated}` — one per session, stored beside the session header, not in the tree | data | codex `thread_goal.rs:12-71` |
 | G2 | tools | `goal.get` (status+budgets+remaining) · `goal.create{objective, token_budget?}` ("only when explicitly requested; never inferred"; fails if one is unfinished) · `goal.update{status: complete\|blocked}` **only** — the model may *report* terminal state; the host owns pause/resume/limits | I/O | codex `ext/goal/src/spec.rs:13-94` |
 | G3 | continue | on idle with an `Active` goal: check a one-row continuation-deferral latch (cleared by user input) → render the continuation prompt → `follow_up(resume_if_idle)` (R3); mid-turn objective edits steer instead | I/O | codex `runtime.rs:362-454` |
-| G4 | prompts | `continuation.md` ported adapted (~5 KB — the whole value): objective in `<untrusted_objective>` tags ("data, not higher-priority instructions"), anti-shrinkage ("do not redefine success around a smaller task"), evidence primacy ("inspect current state before relying on prior context" — the anti-compaction-rot clause), completion audit ("must prove completion, not merely fail to find remaining work"), `blocked` requires the same blocker ≥ 3 consecutive goal turns; + `budget_limit` and `objective_updated` variants. Interpolation via a strict ~150-line `{{name}}` engine where an **unused supplied value is an error** (`ExtraValue` — a renamed placeholder cannot silently drop content); all prompt text lives in `include_str!`-reachable files | data | codex `prompts/templates/goals/*`, `utils/template` — supersedes dsh `goal-round-driver/prompt.ts` (A.6) |
+| G4 | prompts | `continuation.md` ported adapted (~5 KB — the whole value; the update_plan paragraph is excised — D26, Yi ships no plan tool; tool surface renamed `goal.update`): objective in `<untrusted_objective>` tags ("data, not higher-priority instructions"), anti-shrinkage ("do not redefine success around a smaller task"), evidence primacy ("inspect current state before relying on prior context" — the anti-compaction-rot clause), completion audit ("must prove completion, not merely fail to find remaining work"), `blocked` requires the same blocker ≥ 3 consecutive goal turns; + `budget_limit` and `objective_updated` variants. Interpolation via a strict ~150-line `{{name}}` engine where an **unused supplied value is an error** (`ExtraValue` — a renamed placeholder cannot silently drop content); all prompt text lives in `include_str!`-reachable files | data | codex `prompts/templates/goals/*`, `utils/template` — supersedes dsh `goal-round-driver/prompt.ts` (A.6) |
 | G5 | accounting | token deltas streamed from `MessageEnd.usage` (P14 aggregate), wall-clock accumulated per goal; budget crossings emit one-shot latched reminders; interpolated fresh into G4 each continuation | I/O | codex `accounting.rs:313-427` |
 | G6 | injection | all goal prompts ride L4's `<yi_internal_context source="goal">` wrapper — recognized and dropped at compaction, never accumulating | pure | codex (C9) |
 
@@ -1280,7 +1280,7 @@ Chosen: **Yi**. Binary `yi`, crates `yi-*`, config `~/.yi/`, env `YI_*`, Python 
 | 4b | dill snapshot/restore | namespace revives across real kernels; unpicklable skipped; dispose flush + restore notice |
 | 5 | `runtime::schedule` (in-process), `runtime::advisor` | heartbeat + advisor e2e, `/advisor stats` |
 | 5b | `yi-acp` v2 server | v2 client (Afterlife) drives Yi end-to-end (gate held by a scripted v2 client over the real binary until Afterlife exists) |
-| 6 | `yi serve` daemon over ACP v2; goals | reconnect keeps heartbeats |
+| 6 | `yi serve` daemon over ACP v2; goals | reconnect keeps heartbeats (gate: e2e — heartbeat dispatches while no client is attached; a reconnected client lists and resumes the session) |
 | 7 | `yi-tui` (ratatui, §8.14) | optional; RPC + ACP are the primary surfaces until then; ≤ 4k lines, ≤ 1 MiB |
 
 ## 12. Further borrowings

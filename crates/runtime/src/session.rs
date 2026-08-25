@@ -86,6 +86,7 @@ pub struct AgentSession {
     on_compacted: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
     schedule: Mutex<Option<ScheduleParts>>,
     advisor: Mutex<Option<Arc<crate::advisor::AdvisorRuntime>>>,
+    goal: Mutex<Option<Arc<crate::goal::GoalService>>>,
 }
 
 type ScheduleParts = (
@@ -119,6 +120,7 @@ impl AgentSession {
             on_compacted: Mutex::new(None),
             schedule: Mutex::new(None),
             advisor: Mutex::new(None),
+            goal: Mutex::new(None),
         }
     }
 
@@ -143,6 +145,19 @@ impl AgentSession {
         if let Ok(mut slot) = self.schedule.lock() {
             *slot = Some((store, heartbeats, scheduler));
         }
+    }
+
+    pub fn set_goal_service(&self, service: Arc<crate::goal::GoalService>) {
+        if let Ok(mut slot) = self.goal.lock() {
+            *slot = Some(service);
+        }
+    }
+
+    pub fn goal_service(&self) -> Option<Arc<crate::goal::GoalService>> {
+        self.goal
+            .lock()
+            .ok()
+            .and_then(|slot| slot.as_ref().map(Arc::clone))
     }
 
     pub fn heartbeat_service(&self) -> Option<Arc<crate::schedule::HeartbeatService>> {
@@ -257,6 +272,19 @@ impl AgentSession {
             *slot = Some(store);
         }
         Ok(count)
+    }
+
+    pub fn store_handle(
+        &self,
+    ) -> std::sync::Arc<dyn Fn() -> Option<yi_session::SharedSession> + Send + Sync> {
+        let shared = Arc::clone(&self.shared);
+        std::sync::Arc::new(move || {
+            shared
+                .store
+                .lock()
+                .map(|handle| handle.clone())
+                .unwrap_or_default()
+        })
     }
 
     pub fn store(&self) -> Option<yi_session::SharedSession> {
@@ -412,6 +440,33 @@ impl AgentSession {
             } else {
                 let _ = run(message);
             }
+        })
+    }
+
+    /// Waits out any running turn, then starts a new one with the message
+    /// (design G3: goal continuation fires at idle, and AgentEnd is emitted
+    /// while the status is still Running — a status-gated hook would queue
+    /// into a follow-up that never drains).
+    pub fn wake_idle_hook(&self) -> Arc<dyn Fn(AgentMessage) + Send + Sync> {
+        let shared = Arc::clone(&self.shared);
+        let run = self.run_handle();
+        Arc::new(move |message| {
+            let shared = Arc::clone(&shared);
+            let run = Arc::clone(&run);
+            tokio::spawn(async move {
+                loop {
+                    let idle = shared
+                        .status
+                        .lock()
+                        .map(|status| *status == Status::Idle)
+                        .unwrap_or(true);
+                    if idle {
+                        break;
+                    }
+                    shared.idle.notified().await;
+                }
+                let _busy_means_queued = run(message);
+            });
         })
     }
 

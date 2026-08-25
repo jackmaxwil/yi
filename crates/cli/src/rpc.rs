@@ -170,6 +170,27 @@ impl RpcState {
                     None => error_frame(id, "heartbeat", "no scheduler is attached"),
                 }
             }
+            "goal" => match self.session.goal_service() {
+                Some(service) => {
+                    let outcome = match text_arg("action") {
+                        "get" => service.get(),
+                        "create" => service.create(
+                            text_arg("objective"),
+                            payload.get("tokenBudget").and_then(Value::as_u64),
+                        ),
+                        "update" => service.update(text_arg("status")),
+                        "objective" => service.set_objective(text_arg("objective")),
+                        other => Err(format!(
+                            "unknown goal action {other}; use get|create|update|objective"
+                        )),
+                    };
+                    match outcome {
+                        Ok(goal) => data_frame(id, "goal", json!({"goal": goal})),
+                        Err(error) => error_frame(id, "goal", &error),
+                    }
+                }
+                None => error_frame(id, "goal", "no goal service is attached"),
+            },
             "advisor_stats" => match self.session.advisor() {
                 Some(advisor) => data_frame(id, "advisor_stats", json!({"text": advisor.stats()})),
                 None => error_frame(id, "advisor_stats", "the advisor is not attached"),

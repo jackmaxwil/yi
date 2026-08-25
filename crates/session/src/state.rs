@@ -31,6 +31,7 @@ pub struct SessionState {
     stats: SessionStats,
     name: Option<String>,
     labels: HashMap<String, String>,
+    goal: Option<yi_types::goal::Goal>,
 }
 
 impl Default for SessionState {
@@ -52,6 +53,7 @@ impl SessionState {
             log: Vec::new(),
             stats: SessionStats::zero(),
             name: None,
+            goal: None,
             labels: HashMap::new(),
         }
     }
@@ -223,6 +225,10 @@ impl SessionState {
                     self.sequence = seq;
                     self.name = name.clone();
                 }
+                Fact::Goal { goal } => {
+                    self.sequence = seq;
+                    self.goal = Some(goal.clone());
+                }
                 Fact::Label { target_id, label } => {
                     if !self.entries_by_id.contains_key(target_id) {
                         return Err(invalid(format!(
@@ -373,6 +379,10 @@ impl SessionState {
             }
         }
         Ok(results)
+    }
+
+    pub fn goal(&self) -> Option<&yi_types::goal::Goal> {
+        self.goal.as_ref()
     }
 
     pub fn name(&self) -> Option<&str> {

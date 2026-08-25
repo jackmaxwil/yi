@@ -550,6 +550,12 @@ fn wire_schedule(
     session.set_schedule(Arc::clone(&store), Arc::clone(&heartbeats), scheduler);
 }
 
+fn wire_goal(session: &AgentSession, registry: &mut crate::kernel::HostRegistry) {
+    let service = crate::goal::attach_goal(session);
+    service.register(registry);
+    session.set_goal_service(service);
+}
+
 fn wire_advisor(session: &AgentSession, wiring: &RuntimeWiring, tools: &[Arc<dyn yi_tools::Tool>]) {
     let hold_sink: Option<crate::advisor::HoldSink> = wiring.broker.as_ref().map(|broker| {
         let broker = Arc::clone(broker);
@@ -662,6 +668,7 @@ pub fn attach_runtime(session: &mut AgentSession, wiring: RuntimeWiring) -> Arc<
     }));
     host.register(&mut registry);
     wire_schedule(session, &wiring, &mut registry);
+    wire_goal(session, &mut registry);
     let restore_notice = session.notice_hook();
     let service = Arc::new(crate::kernel::KernelService::new(
         crate::kernel::KernelServiceOptions {

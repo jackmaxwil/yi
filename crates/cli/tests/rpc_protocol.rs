@@ -213,3 +213,44 @@ fn heartbeat_and_advisor_surfaces_respond() -> TestResult {
     let _ = std::fs::remove_dir_all(&dir);
     Ok(())
 }
+
+#[test]
+fn goal_surface_round_trips() -> TestResult {
+    let dir = temp_dir("goal")?;
+    let frames = run_rpc(
+        &dir,
+        &[
+            serde_json::json!({"id": "c", "type": "goal", "action": "create", "objective": "ship it", "tokenBudget": 500}),
+            serde_json::json!({"id": "g", "type": "goal", "action": "get"}),
+            serde_json::json!({"id": "u", "type": "goal", "action": "update", "status": "complete"}),
+            serde_json::json!({"id": "x", "type": "goal", "action": "update", "status": "paused"}),
+        ],
+    )?;
+    let responses = responses(&frames);
+    let create = responses
+        .iter()
+        .find(|frame| frame["id"] == "c")
+        .ok_or("missing create response")?;
+    assert_eq!(create["success"], true);
+    assert_eq!(create["data"]["goal"]["objective"], "ship it");
+    assert_eq!(create["data"]["goal"]["remainingTokens"], 500);
+    let get = responses
+        .iter()
+        .find(|frame| frame["id"] == "g")
+        .ok_or("missing get response")?;
+    assert_eq!(get["data"]["goal"]["status"], "active");
+    let update = responses
+        .iter()
+        .find(|frame| frame["id"] == "u")
+        .ok_or("missing update response")?;
+    assert_eq!(update["data"]["goal"]["status"], "complete");
+    let rejected = responses
+        .iter()
+        .find(|frame| frame["id"] == "x")
+        .ok_or("missing rejected response")?;
+    assert_eq!(
+        rejected["success"], false,
+        "the model-facing surface must reject host-owned statuses (G2)"
+    );
+    Ok(())
+}

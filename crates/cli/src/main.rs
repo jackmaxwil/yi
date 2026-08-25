@@ -20,6 +20,7 @@ struct Args {
     yolo: bool,
     session_dir: Option<String>,
     cwd: Option<String>,
+    socket: Option<String>,
     prompt: String,
 }
 
@@ -33,6 +34,7 @@ fn parse_args() -> Result<Args, lexopt::Error> {
     let mut yolo = false;
     let mut session_dir = None;
     let mut cwd = None;
+    let mut socket = None;
     let mut prompt_parts: Vec<String> = Vec::new();
     let mut parser = lexopt::Parser::from_env();
     while let Some(argument) = parser.next()? {
@@ -47,6 +49,7 @@ fn parse_args() -> Result<Args, lexopt::Error> {
             Long("yolo") => yolo = true,
             Long("session-dir") => session_dir = Some(parser.value()?.string()?),
             Long("cwd") => cwd = Some(parser.value()?.string()?),
+            Long("socket") => socket = Some(parser.value()?.string()?),
             Value(value) => {
                 let value = value.string()?;
                 if command.is_empty() {
@@ -67,6 +70,7 @@ fn parse_args() -> Result<Args, lexopt::Error> {
         yolo,
         session_dir,
         cwd,
+        socket,
         prompt: prompt_parts.join(" "),
     })
 }
@@ -449,7 +453,50 @@ fn main() {
             };
             std::process::exit(yi_acp::run_acp(options, runtime));
         }
-        "" => println!("yi {version} (yi ask, yi rpc, yi acp; more surfaces land in later phases)"),
+        "serve" => {
+            let runtime = match tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+            {
+                Ok(runtime) => runtime,
+                Err(error) => {
+                    eprintln!("error: {error}");
+                    std::process::exit(1);
+                }
+            };
+            let socket = args.socket.clone().map_or_else(
+                || {
+                    std::env::var_os("HOME").map_or_else(
+                        || std::path::PathBuf::from(".yi/daemon.sock"),
+                        |home| std::path::Path::new(&home).join(".yi/daemon.sock"),
+                    )
+                },
+                std::path::PathBuf::from,
+            );
+            let mut worker_args = Vec::new();
+            if !args.model.is_empty() {
+                worker_args.push("--model".to_owned());
+                worker_args.push(args.model.clone());
+            }
+            if let Some(dir) = &args.session_dir {
+                worker_args.push("--session-dir".to_owned());
+                worker_args.push(dir.clone());
+            }
+            if args.yolo {
+                worker_args.push("--yolo".to_owned());
+            }
+            std::process::exit(yi_acp::daemon::run_daemon(
+                yi_acp::daemon::DaemonOptions {
+                    socket,
+                    worker_args,
+                    agent_version: version.to_owned(),
+                },
+                runtime,
+            ));
+        }
+        "" => println!(
+            "yi {version} (yi ask, yi rpc, yi acp, yi serve; more surfaces land in later phases)"
+        ),
         other => {
             eprintln!("error: unknown command {other}");
             std::process::exit(2);

@@ -9,6 +9,7 @@ rust-version.workspace = true
 workspace = true
 
 [dependencies]
+thiserror = { workspace = true }
 yi-types = { workspace = true }
 yi-loop = { workspace = true }
 yi-ai = { workspace = true }

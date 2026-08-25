@@ -205,6 +205,17 @@ impl SessionStore {
         })
     }
 
+    pub fn set_goal(&mut self, goal: yi_types::goal::Goal) -> Result<(), SessionError> {
+        self.commit(Mutation::Fact {
+            seq: self.state.next_sequence(),
+            fact: Fact::Goal { goal },
+        })
+    }
+
+    pub fn goal(&self) -> Option<yi_types::goal::Goal> {
+        self.state.goal().cloned()
+    }
+
     pub fn set_label(
         &mut self,
         target_id: &str,

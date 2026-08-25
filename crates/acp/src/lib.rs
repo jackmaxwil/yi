@@ -1,5 +1,6 @@
 #![forbid(unsafe_code)]
 
+pub mod daemon;
 pub mod update;
 
 use std::collections::HashMap;
@@ -399,6 +400,50 @@ impl AcpState {
                 let result = self.session_result(&id);
                 let options = result.get("configOptions").cloned().unwrap_or(Value::Null);
                 Ok(json!({"configOptions": options}))
+            }
+            "_yi/heartbeat" | "_yi/goal" => self.handle_extension(method, params),
+            other => Err((METHOD_NOT_FOUND, format!("unknown method {other}"))),
+        }
+    }
+
+    /// `_yi/*` extension methods (C9): the heartbeat and goal surfaces.
+    fn handle_extension(&mut self, method: &str, params: &Value) -> Result<Value, (i64, String)> {
+        let (handle, _) = self.session(params)?;
+        let text = |key: &str| params.get(key).and_then(Value::as_str).unwrap_or("");
+        match method {
+            "_yi/heartbeat" => {
+                let service = handle
+                    .session
+                    .heartbeat_service()
+                    .ok_or((INTERNAL_ERROR, "no scheduler is attached".to_owned()))?;
+                let outcome = yi_runtime::schedule::parse_heartbeat_command(text("command"))
+                    .and_then(|parsed| service.apply(&parsed, yi_runtime::session_store::now_ms()));
+                match outcome {
+                    Ok(reply) => Ok(json!({"text": reply})),
+                    Err(error) => Err((INVALID_PARAMS, error)),
+                }
+            }
+            "_yi/goal" => {
+                let service = handle
+                    .session
+                    .goal_service()
+                    .ok_or((INTERNAL_ERROR, "no goal service is attached".to_owned()))?;
+                let outcome = match text("action") {
+                    "get" => service.get(),
+                    "create" => service.create(
+                        text("objective"),
+                        params.get("tokenBudget").and_then(Value::as_u64),
+                    ),
+                    "update" => service.update(text("status")),
+                    "objective" => service.set_objective(text("objective")),
+                    other => Err(format!(
+                        "unknown goal action {other}; use get|create|update|objective"
+                    )),
+                };
+                match outcome {
+                    Ok(goal) => Ok(json!({"goal": goal})),
+                    Err(error) => Err((INVALID_PARAMS, error)),
+                }
             }
             other => Err((METHOD_NOT_FOUND, format!("unknown method {other}"))),
         }

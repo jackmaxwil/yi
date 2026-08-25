@@ -62,8 +62,11 @@ pub fn default_runtime_source_dir() -> PathBuf {
 /// (import name, directory under python/skills). Install order is declared
 /// order — the dependency toposort is excised until a skill grows a sibling
 /// dep.
-pub const PYTHON_SKILLS: [(&str, &str); 2] =
-    [("compact", "compact"), ("attach_image", "attach-image")];
+pub const PYTHON_SKILLS: [(&str, &str); 3] = [
+    ("compact", "compact"),
+    ("attach_image", "attach-image"),
+    ("goal", "goal"),
+];
 
 pub fn default_skills_source_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
