@@ -1,7 +1,7 @@
 # Yi — Architecture Map
 
 ```
-version: 0.19.0         # bump on any structural change; log it below
+version: 0.19.1         # bump on any structural change; log it below
 design:  YI_DESIGN.md   # the deep design; § refs below point into it
 status:  phase 4 done   # yi-kernel (Jupyter client over pure-Rust zeromq) + uv venv bootstrap + verbatim rlm Python runtime (mcp.py rewritten over `yi mcp --json`) + ipython tool + runtime::subagent (rlm.run depth 1). Exit gate green: recursion scenarios incl. a live-kernel round trip. 4b done. Phase 5 done: runtime::schedule + runtime::advisor. Phase 5b done: yi-acp v2 server (hand-rolled wire, D40). Phase 6 done: yi-runtime::goal (G1-G6) + `yi serve` daemon (D4 supervisor + worker-per-root; exit gate green: a heartbeat dispatches while no client is attached and a reconnected client lists and resumes the session). Phase 7 done: `yi-tui` (D41 design — codex/atuin inline skeleton, opencode subagent UX, OMP HUD/status) in the default build; `yi [prompt]` opens the TUI on a TTY (X1). Phase 8 (D42): nothing is deferred any more — every deferred, stretch, and never-built row is open work in docs/TODOS.md (ids A1-M5), worked in that order. U13 stable-prefix streaming landed in 7; U18, dynamic viewport height, and the gitignore-aware @-walk are A3, A2, A4. TODOS section B (CLI surfaces) is closed at 0.19.0, which also lands the T14 capture/restore half of C1.
 ```
@@ -10,6 +10,7 @@ status:  phase 4 done   # yi-kernel (Jupyter client over pure-Rust zeromq) + uv 
 
 | ver | date | change |
 |---|---|---|
+| 0.19.1 | 2026-08-25 | Quitting the TUI prints the command that brings the session back (`yi --session <id>`, OMP's parting hint), and the TUI now honours `--session` / `--continue`: a resumed session replays its stored entries so the screen and the model's context agree. A hint is only printed for a session that recorded something. |
 | 0.19.0 | 2026-08-25 | TODOS B closed: `yi sessions list|show|rm`, `yi undo`, `--continue`, `--session`, `--schema`, and static `completions/yi.{bash,zsh,fish}` (X10). `yi ask` now records every turn to a session file — without that `--continue` has no leaf to resume. B2 needed checkpoints, so the T14 core lands with it: `yi-tools::checkpoint` (shadow gitdir, capture/restore) and a turn-start capture hook on `AgentSession` that writes a `custom{checkpoint}` entry; undo records the state it replaced, which is what makes it undoable. `--schema` answers are validated against a JSON Schema subset and exit 3 on a mismatch — never prose on stdout. |
 | 0.18.0 | 2026-08-24 | D43: `yi-tui` ceiling 5,000 → 10,000 lines. |
 | 0.17.3 | 2026-08-24 | Docs pass: README rewritten as a self-contained statement of what Yi is and why (no reference-codebase names — those belong in the design doc, not the front door). `.ruler` gains the two rules this session paid for (prove a regression test red before claiming the fix; a capability path is only exercised when the capability is advertised) and the ref/ category note. `yi-tui` budget row corrected to D41's 5,000 and its overage tracked as A10. |
@@ -143,7 +144,7 @@ value/complexity: H/M/L. Status: **core** (launch), **gated** (cargo feature), *
 | ACP v2 server | 8.13 | live 0.9.7 | H | M | Afterlife integration point; C7 diff content waits on T13 (open H1); C8 + `_yi/heartbeat_changed` open (H2, H3) |
 | ACP v1 adapter | D1 | **cut** | L | H | additive if a v1 client appears |
 | daemon (ACP-router supervisor + worker/root) | 7, D4 | live 0.10.0 | H | M | one protocol, isolation kept; H7 lanes + B8 ledger open (G1, F6); one writer per root today |
-| TUI | 8.14 | gated `tui` (ph 7) | M | M | |
+| TUI | 8.14 | gated `tui` (ph 7) | M | M | resumable: `--session`/`--continue` replay the transcript, quit prints the resume command |
 | board + GitHub issues via `gh` | 14.4, D5 | open (K1) | M | M | zero persistence; undeferred D42 |
 | MCP CLI | 5.2, D9 | gated `mcp` | M | M | subcommand; proxy cut |
 | docs conversion (anydoc) | 14.6 | open (M1) | M | L | `docs` feature; undeferred D42 |

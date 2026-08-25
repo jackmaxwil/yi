@@ -168,3 +168,41 @@ fn undo_without_a_session_fails_loudly() -> TestResult {
 fn git_missing(output: &Output) -> bool {
     String::from_utf8_lossy(&output.stderr).contains("git is unavailable")
 }
+
+#[test]
+fn resuming_the_tui_replays_the_transcript() -> TestResult {
+    let workspace = Workspace::new("tui-resume")?;
+    ask(&workspace, "remembered prompt", &[])?;
+    let listed: Value =
+        serde_json::from_str(&stdout(&workspace.yi(&["sessions", "--json", "list"])?))?;
+    let id = listed
+        .get(0)
+        .and_then(|entry| entry.get("id"))
+        .and_then(Value::as_str)
+        .ok_or("no session id")?
+        .to_owned();
+
+    let keys = workspace.0.join("keys");
+    std::fs::write(&keys, "wait 200\nkey ctrl-c\nkey ctrl-c\n")?;
+    let frames = workspace.0.join("frames");
+    let resumed = workspace.yi(&[
+        "tui",
+        "--headless",
+        "--model",
+        "faux/faux-1",
+        "--session",
+        &id,
+        "--keys",
+        &keys.display().to_string(),
+        "--frames",
+        &frames.display().to_string(),
+    ])?;
+    let first = std::fs::read_to_string(frames.join("0000.txt"))?;
+    assert!(first.contains("remembered prompt"), "{first}");
+    assert!(
+        String::from_utf8_lossy(&resumed.stderr).contains(&format!("yi --session {id}")),
+        "{}",
+        String::from_utf8_lossy(&resumed.stderr)
+    );
+    Ok(())
+}

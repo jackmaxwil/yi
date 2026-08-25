@@ -211,6 +211,7 @@ pub fn run_headless(
     let mut app = App::new(options, theme, keymap, usize::from(width));
     let (ui_tx, ui_rx, cmd_tx, handle, runtime_thread) =
         crate::app::spawn_runtime_bridge(runtime, &session);
+    crate::app::replay_session(&mut app, &session);
     if let Some(prompt) = initial_prompt {
         let _ = cmd_tx.send(crate::app::Command::Prompt(prompt));
     }

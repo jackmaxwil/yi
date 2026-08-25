@@ -332,12 +332,14 @@ fn run(args: &Args) -> i32 {
             Err(code) => return code,
         }
     };
-    if let Err(error) = attach_store(args, &session) {
+    match attach_store(args, &session) {
+        Ok(_id) => {}
         // A requested resume that cannot be honoured is an error; an
         // unavailable store for a fresh turn only costs the recording.
-        if args.resume == Resume::Fresh {
+        Err(error) if args.resume == Resume::Fresh => {
             eprintln!("warning: session store unavailable: {error}");
-        } else {
+        }
+        Err(error) => {
             eprintln!("error: {error}");
             return 1;
         }
@@ -409,8 +411,8 @@ fn run(args: &Args) -> i32 {
 }
 
 /// X1: every `yi ask` turn is recorded, so `--continue` has a leaf to resume.
-fn attach_store(args: &Args, session: &AgentSession) -> Result<(), String> {
-    use yi_runtime::session_store::{CreateOptions, JsonlRepo, SessionRepo};
+fn attach_store(args: &Args, session: &AgentSession) -> Result<String, String> {
+    use yi_runtime::session_store::{CreateOptions, JsonlRepo, SessionRepo, lock_session};
     let mut repo = JsonlRepo::new(
         default_session_dir(args),
         effective_cwd(args).display().to_string(),
@@ -426,10 +428,21 @@ fn attach_store(args: &Args, session: &AgentSession) -> Result<(), String> {
             .create(CreateOptions::default())
             .map_err(|error| error.to_string())?,
     };
+    let id = lock_session(&store).metadata().id.clone();
     session
         .attach_store(store)
         .map_err(|error| error.to_string())?;
-    Ok(())
+    Ok(id)
+}
+
+/// OMP's parting hint: the exact command that brings this session back.
+/// Only for a session that recorded something — resuming an empty one
+/// restores nothing and reads as a broken suggestion.
+fn print_resume_hint(session: &AgentSession, id: &str) {
+    if session.messages().is_empty() {
+        return;
+    }
+    eprintln!("\n\x1b[2mResume this session with `yi --session {id}`\x1b[0m");
 }
 
 /// T14: restore the files the last turn changed, from the cwd's leaf session.
@@ -594,31 +607,21 @@ fn run_tui_command(args: &Args, initial_prompt: Option<String>) -> i32 {
             Err(code) => return code,
         }
     };
-    let session_name = {
-        use yi_runtime::session_store::SessionRepo;
-        let mut repo = yi_runtime::session_store::JsonlRepo::new(
-            default_session_dir(args),
-            effective_cwd(args).display().to_string(),
-        );
-        match repo.create(yi_runtime::session_store::CreateOptions::default()) {
-            Ok(store) => {
-                let name = yi_runtime::session_store::lock_session(&store)
-                    .metadata()
-                    .id
-                    .clone();
-                let _ = session.attach_store(store);
-                name
-            }
-            Err(error) => {
-                eprintln!("warning: session store unavailable: {error}");
-                "yi".to_owned()
-            }
+    let session_name = match attach_store(args, &session) {
+        Ok(id) => id,
+        Err(error) if args.resume == Resume::Fresh => {
+            eprintln!("warning: session store unavailable: {error}");
+            "yi".to_owned()
+        }
+        Err(error) => {
+            eprintln!("error: {error}");
+            return 1;
         }
     };
     let model = session.model();
     let options = yi_tui::TuiOptions {
         model_label: model.id.clone(),
-        session_name,
+        session_name: session_name.clone(),
         cwd: effective_cwd(args).display().to_string(),
         context_window: model.context_window,
         keys: configured_keys(),
@@ -647,16 +650,28 @@ fn run_tui_command(args: &Args, initial_prompt: Option<String>) -> i32 {
             width: 80,
             height: 24,
         };
-        return yi_tui::run_headless(
+        let session = std::sync::Arc::new(session);
+        let code = yi_tui::run_headless(
             runtime,
-            std::sync::Arc::new(session),
+            std::sync::Arc::clone(&session),
             host,
             ask_rx,
             options,
             drive,
         );
+        print_resume_hint(&session, &session_name);
+        return code;
     }
-    yi_tui::run_tui(runtime, std::sync::Arc::new(session), host, ask_rx, options)
+    let session = std::sync::Arc::new(session);
+    let code = yi_tui::run_tui(
+        runtime,
+        std::sync::Arc::clone(&session),
+        host,
+        ask_rx,
+        options,
+    );
+    print_resume_hint(&session, &session_name);
+    code
 }
 
 #[cfg(feature = "tui")]

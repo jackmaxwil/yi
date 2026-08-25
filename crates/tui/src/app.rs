@@ -812,6 +812,7 @@ pub fn run_tui(
     let mut app = App::new(options, Theme::new(tier, dark), keymap, usize::from(cols));
     app.kitty = orb::kitty::supported();
 
+    replay_session(&mut app, &session);
     if let Some(prompt) = app.options.initial_prompt.clone() {
         let _ = cmd_tx.send(Command::Prompt(prompt));
     }
@@ -1006,7 +1007,13 @@ pub(crate) fn replay_child(app: &mut App, child_id: &str) {
     let Some(session) = app.tasks.get(child_id).map(|s| Arc::clone(&s.session)) else {
         return;
     };
-    let (entries, _) = entries_of(&session);
+    replay_session(app, &session);
+}
+
+/// A resumed session (`yi --session <id>`) opens on its own transcript; the
+/// model's context and the screen must agree about what was said.
+pub(crate) fn replay_session(app: &mut App, session: &AgentSession) {
+    let (entries, _) = entries_of(session);
     let cells: Vec<Cell> = entries
         .iter()
         .filter_map(|entry| match entry {
