@@ -197,9 +197,13 @@ fn build_session(
         yi_runtime::PermissionMode::Ask
     });
     let system_prompt = if args.system.is_empty() {
-        mode_fragment.to_owned()
+        format!("{}\n{mode_fragment}", yi_runtime::identity_fragment())
     } else {
-        format!("{}\n\n{mode_fragment}", args.system)
+        format!(
+            "{}\n{}\n\n{mode_fragment}",
+            yi_runtime::identity_fragment(),
+            args.system
+        )
     };
     let mut session = AgentSession::new(
         SessionConfig {
@@ -260,9 +264,13 @@ fn session_system_prompt(args: &Args) -> String {
         yi_runtime::PermissionMode::Ask
     });
     if args.system.is_empty() {
-        mode_fragment.to_owned()
+        format!("{}\n{mode_fragment}", yi_runtime::identity_fragment())
     } else {
-        format!("{}\n\n{mode_fragment}", args.system)
+        format!(
+            "{}\n{}\n\n{mode_fragment}",
+            yi_runtime::identity_fragment(),
+            args.system
+        )
     }
 }
 
