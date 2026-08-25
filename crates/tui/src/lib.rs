@@ -5,6 +5,8 @@ pub mod approval;
 pub mod cell;
 pub mod colors;
 pub mod composer;
+pub mod drive;
+pub mod focus;
 pub mod frame;
 pub mod hud;
 pub mod keymap;
@@ -17,3 +19,4 @@ pub mod wrap;
 
 pub use app::{AskRequest, TuiOptions, run_tui};
 pub use approval::AskChoice;
+pub use drive::{DriveOptions, parse_script, run_headless};

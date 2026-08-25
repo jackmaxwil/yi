@@ -21,6 +21,9 @@ struct Args {
     session_dir: Option<String>,
     cwd: Option<String>,
     socket: Option<String>,
+    headless: bool,
+    keys: Option<String>,
+    frames: Option<String>,
     prompt: String,
 }
 
@@ -35,6 +38,9 @@ fn parse_args() -> Result<Args, lexopt::Error> {
     let mut session_dir = None;
     let mut cwd = None;
     let mut socket = None;
+    let mut headless = false;
+    let mut keys = None;
+    let mut frames = None;
     let mut prompt_parts: Vec<String> = Vec::new();
     let mut parser = lexopt::Parser::from_env();
     while let Some(argument) = parser.next()? {
@@ -50,6 +56,9 @@ fn parse_args() -> Result<Args, lexopt::Error> {
             Long("session-dir") => session_dir = Some(parser.value()?.string()?),
             Long("cwd") => cwd = Some(parser.value()?.string()?),
             Long("socket") => socket = Some(parser.value()?.string()?),
+            Long("headless") => headless = true,
+            Long("keys") => keys = Some(parser.value()?.string()?),
+            Long("frames") => frames = Some(parser.value()?.string()?),
             Value(value) => {
                 let value = value.string()?;
                 if command.is_empty() {
@@ -71,6 +80,9 @@ fn parse_args() -> Result<Args, lexopt::Error> {
         session_dir,
         cwd,
         socket,
+        headless,
+        keys,
+        frames,
         prompt: prompt_parts.join(" "),
     })
 }
@@ -380,7 +392,7 @@ fn mcp_enabled() -> bool {
 #[cfg(feature = "tui")]
 fn run_tui_command(args: &Args, initial_prompt: Option<String>) -> i32 {
     use std::io::IsTerminal;
-    if !std::io::stdin().is_terminal() {
+    if !args.headless && !std::io::stdin().is_terminal() {
         eprintln!("error: yi tui needs a terminal (use `yi ask` when piping)");
         return 2;
     }
@@ -448,6 +460,38 @@ fn run_tui_command(args: &Args, initial_prompt: Option<String>) -> i32 {
         keys: configured_keys(),
         initial_prompt,
     };
+    if args.headless {
+        let script = match &args.keys {
+            Some(path) => match std::fs::read_to_string(path) {
+                Ok(source) => match yi_tui::parse_script(&source) {
+                    Ok(script) => script,
+                    Err(error) => {
+                        eprintln!("error: --keys {path}: {error}");
+                        return 2;
+                    }
+                },
+                Err(error) => {
+                    eprintln!("error: --keys {path}: {error}");
+                    return 2;
+                }
+            },
+            None => Vec::new(),
+        };
+        let drive = yi_tui::DriveOptions {
+            script,
+            frames_dir: args.frames.clone().map(std::path::PathBuf::from),
+            width: 80,
+            height: 24,
+        };
+        return yi_tui::run_headless(
+            runtime,
+            std::sync::Arc::new(session),
+            host,
+            ask_rx,
+            options,
+            drive,
+        );
+    }
     yi_tui::run_tui(runtime, std::sync::Arc::new(session), host, ask_rx, options)
 }
 

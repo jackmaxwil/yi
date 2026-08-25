@@ -17,6 +17,7 @@ use crate::approval::{ApprovalView, AskChoice};
 use crate::cell::{Cell, TaskCell, TaskStatus, ToolCell, ToolStatus};
 use crate::colors::{Theme, detect_dark, detect_tier};
 use crate::composer::Composer;
+use crate::focus::{FocusMove, focus_move, set_focus};
 use crate::frame::FrameScheduler;
 use crate::hud::{BoardCard, CardKind, CardStatus, GoalView, HudInput};
 use crate::keymap::{
@@ -38,7 +39,7 @@ pub enum UiEvent {
     Child { child_id: String, event: AgentEvent },
 }
 
-enum Command {
+pub(crate) enum Command {
     Prompt(String),
     Steer(String),
     Abort,
@@ -67,16 +68,16 @@ const SPINNER_PERIOD_MS: u128 = 80;
 const SLASH_COMMANDS: [&str; 3] = ["quit", "expand", "tree"];
 
 pub struct TaskState {
-    cell: TaskCell,
-    started: Instant,
-    subscribed: bool,
-    session: Arc<AgentSession>,
+    pub(crate) cell: TaskCell,
+    pub(crate) started: Instant,
+    pub(crate) subscribed: bool,
+    pub(crate) session: Arc<AgentSession>,
 }
 
 pub struct App {
     theme: Theme,
     keymap: Keymap,
-    scheduler: FrameScheduler,
+    pub(crate) scheduler: FrameScheduler,
     composer: Composer,
     bottom: Option<Bottom>,
     tree: Option<TreeView>,
@@ -86,8 +87,8 @@ pub struct App {
     live_tools: Vec<ToolCell>,
     last_finished_tool: Option<ToolCell>,
     tool_started: HashMap<String, Instant>,
-    tasks: HashMap<String, TaskState>,
-    task_order: Vec<String>,
+    pub(crate) tasks: HashMap<String, TaskState>,
+    pub(crate) task_order: Vec<String>,
     committed_tasks: HashSet<String>,
     steering: Vec<String>,
     running: bool,
@@ -95,8 +96,9 @@ pub struct App {
     esc_armed_at: Option<Instant>,
     last_esc_at: Option<Instant>,
     ctrl_c_at: Option<Instant>,
-    focused: Option<String>,
+    pub(crate) focused: Option<String>,
     hud_hidden: bool,
+    seen_turn: bool,
     started_at: Instant,
     quit: bool,
     exit_code: i32,
@@ -106,7 +108,7 @@ pub struct App {
     width: usize,
 }
 
-fn text_of(content: &[Content]) -> String {
+pub(crate) fn text_of(content: &[Content]) -> String {
     content
         .iter()
         .filter_map(|c| match c {
@@ -128,7 +130,7 @@ fn thinking_of(content: &[Content]) -> String {
         .join("\n")
 }
 
-fn user_text(content: &UserContent) -> String {
+pub(crate) fn user_text(content: &UserContent) -> String {
     match content {
         UserContent::Text(text) => text.clone(),
         UserContent::Blocks(blocks) => text_of(blocks),
@@ -187,6 +189,7 @@ impl App {
             ctrl_c_at: None,
             focused: None,
             hud_hidden: false,
+            seen_turn: false,
             started_at: Instant::now(),
             quit: false,
             exit_code: 0,
@@ -207,6 +210,34 @@ impl App {
         self.focused.as_deref()
     }
 
+    pub fn is_quit(&self) -> bool {
+        self.quit
+    }
+
+    pub fn is_running(&self) -> bool {
+        self.running
+    }
+
+    pub fn has_run(&self) -> bool {
+        self.seen_turn
+    }
+
+    pub(crate) fn open_approval(&mut self, ask: AskRequest) {
+        self.bottom = Some(Bottom::Approval(
+            ApprovalView::new(ask.title, ask.description),
+            ask.reply,
+        ));
+        self.scheduler.request();
+    }
+
+    pub(crate) fn handle_event(
+        &mut self,
+        cmd_tx: &tokio::sync::mpsc::UnboundedSender<Command>,
+        ct_event: CtEvent,
+    ) {
+        handle_terminal_event(self, cmd_tx, ct_event);
+    }
+
     pub fn commit_cell(&mut self, cell: &Cell) {
         let spinner = self.spinner_phase();
         self.pending_commit
@@ -222,6 +253,7 @@ impl App {
         match event {
             AgentEvent::AgentStart => {
                 self.running = true;
+                self.seen_turn = true;
                 self.esc_armed_at = None;
             }
             AgentEvent::AgentEnd { .. } => {
@@ -492,16 +524,21 @@ impl App {
     }
 }
 
-/// U7 drain-then-draw loop on a synchronous UI thread. The tokio runtime
-/// lives on its own thread; user intents go out over an unbounded command
-/// channel, runtime events come back over std mpsc from forwarder tasks.
-pub fn run_tui(
+type Bridge = (
+    Sender<UiEvent>,
+    Receiver<UiEvent>,
+    tokio::sync::mpsc::UnboundedSender<Command>,
+    tokio::runtime::Handle,
+    std::thread::JoinHandle<()>,
+);
+
+/// The runtime lives on its own thread: events flow out over std mpsc
+/// forwarders, user intents flow in over the command channel, and every
+/// session call happens inside the runtime context (spawn_run needs it).
+pub(crate) fn spawn_runtime_bridge(
     runtime: tokio::runtime::Runtime,
-    session: Arc<AgentSession>,
-    host: Arc<SubagentHost>,
-    ask_rx: Receiver<AskRequest>,
-    options: TuiOptions,
-) -> i32 {
+    session: &Arc<AgentSession>,
+) -> Bridge {
     let (ui_tx, ui_rx) = std::sync::mpsc::channel::<UiEvent>();
     let (cmd_tx, mut cmd_rx) = tokio::sync::mpsc::unbounded_channel::<Command>();
     let handle = runtime.handle().clone();
@@ -516,7 +553,7 @@ pub fn run_tui(
         }
     });
 
-    let driver_session = Arc::clone(&session);
+    let driver_session = Arc::clone(session);
     let runtime_thread = std::thread::spawn(move || {
         runtime.block_on(async move {
             while let Some(command) = cmd_rx.recv().await {
@@ -540,6 +577,20 @@ pub fn run_tui(
             }
         });
     });
+    (ui_tx, ui_rx, cmd_tx, handle, runtime_thread)
+}
+
+/// U7 drain-then-draw loop on a synchronous UI thread. The tokio runtime
+/// lives on its own thread; user intents go out over an unbounded command
+/// channel, runtime events come back over std mpsc from forwarder tasks.
+pub fn run_tui(
+    runtime: tokio::runtime::Runtime,
+    session: Arc<AgentSession>,
+    host: Arc<SubagentHost>,
+    ask_rx: Receiver<AskRequest>,
+    options: TuiOptions,
+) -> i32 {
+    let (ui_tx, ui_rx, cmd_tx, handle, runtime_thread) = spawn_runtime_bridge(runtime, &session);
 
     let mut writer = match term::terminal_writer() {
         Ok(writer) => writer,
@@ -651,7 +702,14 @@ pub fn run_tui(
     app.exit_code
 }
 
-fn sync_roster(
+pub(crate) fn process_pending_tree(app: &mut App, session: &Arc<AgentSession>) {
+    if app.pending_open_tree {
+        app.pending_open_tree = false;
+        open_tree(app, session);
+    }
+}
+
+pub(crate) fn sync_roster(
     app: &mut App,
     host: &Arc<SubagentHost>,
     handle: &tokio::runtime::Handle,
@@ -685,7 +743,7 @@ fn sync_roster(
     app.sync_children(&children);
 }
 
-fn entries_of(session: &AgentSession) -> (Vec<Entry>, Option<String>) {
+pub(crate) fn entries_of(session: &AgentSession) -> (Vec<Entry>, Option<String>) {
     let Some(store) = session.store() else {
         return (Vec::new(), None);
     };
@@ -716,7 +774,7 @@ fn open_tree(app: &mut App, session: &Arc<AgentSession>) {
     app.scheduler.request();
 }
 
-fn replay_child(app: &mut App, child_id: &str) {
+pub(crate) fn replay_child(app: &mut App, child_id: &str) {
     let Some(session) = app.tasks.get(child_id).map(|s| Arc::clone(&s.session)) else {
         return;
     };
@@ -915,71 +973,6 @@ fn handle_action(
         Action::FocusNextSibling => focus_move(app, FocusMove::Next),
         Action::FocusPrevSibling => focus_move(app, FocusMove::Prev),
     }
-}
-
-enum FocusMove {
-    Child,
-    Parent,
-    Next,
-    Prev,
-}
-
-fn focus_move(app: &mut App, direction: FocusMove) {
-    let order = app.task_order.clone();
-    if order.is_empty() {
-        return;
-    }
-    let current = app
-        .focused
-        .as_ref()
-        .and_then(|id| order.iter().position(|x| x == id));
-    let target = match (direction, current) {
-        (FocusMove::Parent, _) => None,
-        (FocusMove::Child, None) => order.first().cloned(),
-        (FocusMove::Child, Some(_)) => return,
-        (FocusMove::Next, Some(i)) => order.get(i + 1).cloned().or_else(|| order.first().cloned()),
-        (FocusMove::Prev, Some(i)) => {
-            if i == 0 {
-                order.last().cloned()
-            } else {
-                order.get(i - 1).cloned()
-            }
-        }
-        (FocusMove::Next | FocusMove::Prev, None) => order.first().cloned(),
-    };
-    set_focus(app, target);
-}
-
-fn set_focus(app: &mut App, target: Option<String>) {
-    if app.focused == target {
-        return;
-    }
-    if let Some(previous) = app.focused.take() {
-        app.commit_cell(&Cell::Rule {
-            text: "back to parent".to_owned(),
-            accent_name: previous,
-        });
-    }
-    if let Some(child_id) = target {
-        let name = app
-            .tasks
-            .get(&child_id)
-            .map(|s| s.cell.description.clone())
-            .unwrap_or_default();
-        let position = app
-            .task_order
-            .iter()
-            .position(|id| id == &child_id)
-            .map(|i| i + 1)
-            .unwrap_or(1);
-        app.commit_cell(&Cell::Rule {
-            text: format!("subagent {name} ({position} of {})", app.task_order.len()),
-            accent_name: child_id.clone(),
-        });
-        replay_child(app, &child_id);
-        app.focused = Some(child_id);
-    }
-    app.scheduler.request();
 }
 
 fn handle_slash(app: &mut App, command: &str) {
