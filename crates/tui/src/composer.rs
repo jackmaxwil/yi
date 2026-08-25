@@ -16,6 +16,7 @@ impl Default for Composer {
     fn default() -> Self {
         let mut textarea = TextArea::default();
         textarea.set_cursor_line_style(ratatui::style::Style::default());
+        textarea.set_placeholder_text("Type a message — Enter send · Shift+Enter newline");
         Self {
             textarea,
             pastes: BTreeMap::new(),
@@ -67,8 +68,23 @@ impl Composer {
         self.textarea = TextArea::from(text.lines().map(str::to_owned).collect::<Vec<_>>());
         self.textarea
             .set_cursor_line_style(ratatui::style::Style::default());
+        self.textarea
+            .set_placeholder_text("Type a message — Enter send · Shift+Enter newline");
         self.textarea.move_cursor(tui_textarea::CursorMove::Bottom);
         self.textarea.move_cursor(tui_textarea::CursorMove::End);
+    }
+
+    /// The composer is a bordered box (codex/OMP shape); the block is
+    /// re-styled per draw so theme and running state stay current.
+    pub fn set_frame(&mut self, border: ratatui::style::Style, placeholder: ratatui::style::Style) {
+        use ratatui::widgets::{Block, BorderType, Borders};
+        self.textarea.set_placeholder_style(placeholder);
+        self.textarea.set_block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_type(BorderType::Rounded)
+                .border_style(border),
+        );
     }
 
     pub fn input(&mut self, event: KeyEvent) {
@@ -202,6 +218,6 @@ impl Composer {
 
     pub fn desired_height(&self) -> u16 {
         let lines = self.textarea.lines().len().clamp(1, 8);
-        u16::try_from(lines).unwrap_or(1)
+        u16::try_from(lines).unwrap_or(1).saturating_add(2)
     }
 }

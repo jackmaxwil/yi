@@ -1113,6 +1113,12 @@ where
         app.esc_armed_at.is_some(),
         &theme,
     );
+    let border = if app.running {
+        theme.dim_style()
+    } else {
+        ratatui::style::Style::default().fg(theme.accent)
+    };
+    app.composer.set_frame(border, theme.dim_style());
     let composer_height = app.composer.desired_height();
     let composer = &app.composer.textarea;
 
