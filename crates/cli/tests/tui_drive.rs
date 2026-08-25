@@ -11,7 +11,10 @@ fn headless_drive_renders_a_turn_and_dumps_frames() -> TestResult {
     let keys = dir.join("script.keys");
     std::fs::write(
         &keys,
-        "wait-idle 10000\ntype follow-up\nkey enter\nwait 200\nquit\n",
+        // `wait-idle` only blocks once the turn is actually running, and the
+        // prompt reaches the runtime over a channel, so the short wait is what
+        // makes the second wait-idle wait for the turn instead of skipping it.
+        "wait-idle 10000\ntype follow-up\nkey enter\nwait 200\nwait-idle 10000\nquit\n",
     )?;
     let frames = dir.join("frames");
 

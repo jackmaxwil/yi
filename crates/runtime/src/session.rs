@@ -652,15 +652,18 @@ impl AgentSession {
             if let Ok(mut messages) = shared.messages.lock() {
                 *messages = context.messages;
             }
+            if let Ok(mut status) = shared.status.lock() {
+                *status = Status::Idle;
+            }
+            shared.idle.notify_waiters();
+            // The end capture runs after the session is idle again: holding
+            // Running across it rejects the follow-up the user types the
+            // moment the answer lands.
             let end_hook = shared.on_turn_end.lock().ok().and_then(|slot| slot.clone());
             if let Some(hook) = end_hook {
                 let _hook_failure_never_fails_a_turn =
                     tokio::task::spawn_blocking(move || hook()).await;
             }
-            if let Ok(mut status) = shared.status.lock() {
-                *status = Status::Idle;
-            }
-            shared.idle.notify_waiters();
         });
         Ok(())
     }

@@ -1,4 +1,5 @@
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 
 use crate::process::command;
 
@@ -40,6 +41,8 @@ pub enum CheckpointError {
 pub struct Checkpoints {
     git_dir: PathBuf,
     work_tree: PathBuf,
+    // One shadow index, so two concurrent captures would race on index.lock.
+    serial: Mutex<()>,
 }
 
 impl Checkpoints {
@@ -48,6 +51,7 @@ impl Checkpoints {
         let checkpoints = Self {
             git_dir,
             work_tree: project.to_path_buf(),
+            serial: Mutex::new(()),
         };
         if !checkpoints.git_dir.join("HEAD").exists() {
             std::fs::create_dir_all(&checkpoints.git_dir)
@@ -98,6 +102,10 @@ impl Checkpoints {
     }
 
     fn git(&self, args: &[&str]) -> Result<String, CheckpointError> {
+        let _serialized = self
+            .serial
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let mut process = command("git");
         process
             .arg("--git-dir")
