@@ -218,7 +218,13 @@ impl Cell {
             }
             Cell::Thought { markdown } => {
                 let rendered = markdown::render(markdown, width, theme);
-                let mut out = Vec::new();
+                let mut out = vec![
+                    Line::default(),
+                    Line::from(Span::styled(
+                        "  ∴ thinking".to_owned(),
+                        theme.dim_style().add_modifier(Modifier::ITALIC),
+                    )),
+                ];
                 for line in rendered {
                     let text: String = line
                         .spans
@@ -226,7 +232,10 @@ impl Cell {
                         .map(|s| s.content.as_ref())
                         .collect::<String>();
                     out.extend(wrap_line(
-                        &Line::from(Span::styled(format!("  {text}"), theme.dim_style())),
+                        &Line::from(Span::styled(
+                            format!("  {}", text.trim_start()),
+                            theme.dim_style().add_modifier(Modifier::ITALIC),
+                        )),
                         width,
                         "  ",
                     ));

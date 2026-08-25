@@ -46,10 +46,23 @@ pub struct Theme {
 
 impl Theme {
     pub fn new(tier: ColorTier, dark: bool) -> Self {
-        // Blend ratios from design U17: user-visible dim text is the fg
-        // blended into the bg at 12 % on dark, 4 % on light backgrounds.
+        // Truecolor dark is the primary look: TokyoNight Moon values, chosen
+        // to sit on translucent dark grounds (Ghostty blur) without banding.
+        // Text stays Color::Reset so the terminal's own fg wins.
+        if tier == ColorTier::TrueColor && dark {
+            return Self {
+                tier,
+                dark,
+                accent: Color::Rgb(0x82, 0xaa, 0xff),
+                text: Color::Reset,
+                muted: Color::Rgb(0x82, 0x8b, 0xb8),
+                dim: Color::Rgb(0x63, 0x6d, 0xa6),
+                error: Color::Rgb(0xff, 0x75, 0x7f),
+                warning: Color::Rgb(0xff, 0xc7, 0x77),
+                success: Color::Rgb(0xc3, 0xe8, 0x8d),
+            };
+        }
         let (muted, dim) = match tier {
-            ColorTier::TrueColor if dark => (Color::Rgb(140, 140, 140), Color::Rgb(95, 95, 95)),
             ColorTier::TrueColor => (Color::Rgb(120, 120, 120), Color::Rgb(160, 160, 160)),
             _ => (Color::DarkGray, Color::DarkGray),
         };
@@ -82,12 +95,12 @@ impl Theme {
 }
 
 const ACCENTS: [Color; 6] = [
-    Color::Cyan,
-    Color::Magenta,
-    Color::Green,
-    Color::Yellow,
-    Color::Blue,
-    Color::LightRed,
+    Color::Rgb(0x82, 0xaa, 0xff),
+    Color::Rgb(0xc0, 0x99, 0xff),
+    Color::Rgb(0x4f, 0xd6, 0xbe),
+    Color::Rgb(0xff, 0xc7, 0x77),
+    Color::Rgb(0xc3, 0xe8, 0x8d),
+    Color::Rgb(0xff, 0x96, 0x6c),
 ];
 
 /// Stable identity color from a name (OMP `getSessionAccentHex`): every

@@ -302,3 +302,39 @@ fn markdown_renders_fences_dim_and_headings_bold() -> TestResult {
     );
     Ok(())
 }
+
+#[test]
+fn thought_cells_are_labeled_and_dim_while_prose_stays_bright() -> TestResult {
+    let theme = theme();
+    let thought = yi_tui::cell::Cell::Thought {
+        markdown: "weighing the options".to_owned(),
+    };
+    let lines = thought.lines(80, &theme, false, 0);
+    let text: Vec<String> = lines.iter().map(flat).collect();
+    assert!(
+        text.iter().any(|l| l.contains("∴ thinking")),
+        "reasoning carries its label: {text:?}"
+    );
+    assert!(
+        lines
+            .iter()
+            .flat_map(|l| &l.spans)
+            .filter(|s| !s.content.trim().is_empty())
+            .all(|s| s.style.add_modifier.contains(Modifier::ITALIC)),
+        "reasoning body renders dim italic"
+    );
+    let prose = yi_tui::cell::Cell::Assistant {
+        markdown: "the answer".to_owned(),
+    };
+    let lines = prose.lines(80, &theme, false, 0);
+    assert!(
+        lines
+            .iter()
+            .flat_map(|l| &l.spans)
+            .filter(|s| s.content.contains("the answer"))
+            .all(|s| !s.style.add_modifier.contains(Modifier::ITALIC)
+                && s.style.fg == Some(ratatui::style::Color::Reset)),
+        "prose stays bright terminal fg, never italic"
+    );
+    Ok(())
+}

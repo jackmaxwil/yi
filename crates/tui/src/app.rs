@@ -84,6 +84,7 @@ pub struct App {
     pending_commit: Vec<Line<'static>>,
     pending_open_tree: bool,
     live_markdown: String,
+    live_thought: String,
     live_tools: Vec<ToolCell>,
     last_finished_tool: Option<ToolCell>,
     tool_started: HashMap<String, Instant>,
@@ -175,6 +176,7 @@ impl App {
             pending_commit: Vec::new(),
             pending_open_tree: false,
             live_markdown: String::new(),
+            live_thought: String::new(),
             live_tools: Vec::new(),
             last_finished_tool: None,
             tool_started: HashMap::new(),
@@ -199,6 +201,24 @@ impl App {
             width,
         };
         app.scheduler.request();
+        let banner = Line::from(vec![
+            ratatui::text::Span::styled(
+                "  yi ".to_owned(),
+                ratatui::style::Style::default()
+                    .fg(app.theme.accent)
+                    .add_modifier(ratatui::style::Modifier::BOLD),
+            ),
+            ratatui::text::Span::styled(
+                format!(
+                    "{} · 易 · {}",
+                    env!("CARGO_PKG_VERSION"),
+                    app.options.model_label
+                ),
+                app.theme.dim_style(),
+            ),
+        ]);
+        app.pending_commit.push(Line::default());
+        app.pending_commit.push(banner);
         app
     }
 
@@ -277,6 +297,7 @@ impl App {
                 ..
             } => {
                 self.live_markdown = text_of(&content);
+                self.live_thought = thinking_of(&content);
                 self.scheduler.request();
             }
             AgentEvent::MessageEnd { message } => self.reduce_message_end(&message),
@@ -362,6 +383,7 @@ impl App {
                     self.commit_cell(&Cell::Assistant { markdown: text });
                 }
                 self.live_markdown.clear();
+                self.live_thought.clear();
                 if *stop_reason == StopReason::Error {
                     let text = error_message
                         .clone()
@@ -1049,6 +1071,15 @@ where
         let rendered = crate::markdown::render(&app.live_markdown, width, &theme);
         let skip = rendered.len().saturating_sub(LIVE_TAIL_ROWS);
         live_lines.extend(rendered.into_iter().skip(skip));
+    } else if !app.live_thought.is_empty() {
+        // Reasoning-heavy models stream thought long before prose; show its
+        // dim tail so the screen is never silently blank mid-turn.
+        let cell = Cell::Thought {
+            markdown: app.live_thought.clone(),
+        };
+        let rendered = cell.lines(width, &theme, false, spinner);
+        let skip = rendered.len().saturating_sub(LIVE_TAIL_ROWS);
+        live_lines.extend(rendered.into_iter().skip(skip));
     }
     for tool in &app.live_tools {
         live_lines.extend(tool.lines(width, &theme, false, spinner));
@@ -1109,7 +1140,7 @@ where
     let border = if app.running {
         theme.dim_style()
     } else {
-        ratatui::style::Style::default().fg(theme.accent)
+        theme.muted_style()
     };
     app.composer.set_frame(border, theme.dim_style());
     let composer_height = app.composer.desired_height();
@@ -1132,7 +1163,9 @@ where
         };
         put(frame, &live_lines, &mut y);
         put(frame, &hud_lines, &mut y);
-        put(frame, std::slice::from_ref(&status_row), &mut y);
+        if show_working {
+            put(frame, std::slice::from_ref(&working), &mut y);
+        }
         match &bottom_lines {
             Some(lines) => put(frame, lines, &mut y),
             None => {
@@ -1144,8 +1177,6 @@ where
                 }
             }
         }
-        if show_working {
-            put(frame, std::slice::from_ref(&working), &mut y);
-        }
+        put(frame, std::slice::from_ref(&status_row), &mut y);
     });
 }
