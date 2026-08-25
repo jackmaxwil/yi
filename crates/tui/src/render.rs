@@ -10,6 +10,12 @@ use crate::popup::BottomView;
 use crate::status::{StatusInput, working_line};
 use crate::term;
 
+/// OMP sizes the tree list at half the terminal, floor 5, minus the panel's
+/// own chrome rows.
+fn tree_rows(rows: usize) -> usize {
+    (rows / 2).max(5).min(rows.saturating_sub(9)).max(1)
+}
+
 pub fn draw<B>(
     app: &mut App,
     terminal: &mut crate::terminal::Terminal<B>,
@@ -120,7 +126,7 @@ pub fn draw<B>(
     };
     let status_row = crate::status::render(&status_input, width, &theme);
     let bottom_lines: Option<Vec<Line<'static>>> = if let Some(tree) = &app.tree {
-        Some(tree.lines(width, &theme, 8))
+        Some(tree.lines(width, &theme, tree_rows(app.rows)))
     } else {
         match &app.bottom {
             Some(Bottom::Approval(view, _)) => Some(view.lines(width, &theme)),

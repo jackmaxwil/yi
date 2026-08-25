@@ -106,6 +106,13 @@ impl Theme {
         Style::default().fg(self.accent)
     }
 
+    /// Selection background for list surfaces (OMP `selectedBg`): the dark
+    /// theme lifts its own ground, every other tier borrows the terminal's
+    /// grey so the bar reads as filled without inventing a palette.
+    pub fn selection_bg(&self) -> Color {
+        self.user_bg.unwrap_or(Color::DarkGray)
+    }
+
     pub fn muted_style(&self) -> Style {
         match self.tier {
             ColorTier::Ansi16 => Style::default().add_modifier(Modifier::DIM),

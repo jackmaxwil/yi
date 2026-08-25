@@ -33,6 +33,11 @@ def main() -> int:
     parser.add_argument("--rows", type=int, default=24)
     parser.add_argument("--cols", type=int, default=80)
     parser.add_argument("--seconds", type=float, default=8.0)
+    parser.add_argument("--send", action="append", default=[],
+                        help="key bytes to send mid-run, repeatable and evenly "
+                             "spaced; python escapes are decoded (\\x1b, \\r)")
+    parser.add_argument("--raw", help="write the child's untouched output here, "
+                                     "so escape sequences can be counted")
     parser.add_argument("--send-quit", action="store_true",
                         help="send double ctrl-c after seconds/2")
     parser.add_argument("--resize", metavar="COLSxROWS", action="append",
@@ -64,6 +69,10 @@ def main() -> int:
         pending_resizes.append((int(cols), int(rows)))
     resize_step = options.seconds / (len(pending_resizes) + 2) if pending_resizes else 0
     next_resize_at = resize_step
+    pending_sends = [bytes(spec, "utf-8").decode("unicode_escape").encode("latin-1")
+                     for spec in options.send]
+    send_step = options.seconds / (len(pending_sends) + 2) if pending_sends else 0
+    next_send_at = send_step
 
     while time.time() - start < options.seconds:
         done, status = os.waitpid(pid, os.WNOHANG)
@@ -85,6 +94,9 @@ def main() -> int:
                         struct.pack("HHHH", rows, cols, 0, 0))
             os.kill(pid, signal.SIGWINCH)
             next_resize_at += resize_step
+        if pending_sends and time.time() - start > next_send_at:
+            os.write(fd, pending_sends.pop(0))
+            next_send_at += send_step
         if (options.send_quit and not sent_quit
                 and time.time() - start > options.seconds / 2):
             os.write(fd, b"\x03")
@@ -109,6 +121,9 @@ def main() -> int:
         except ProcessLookupError:
             pass
 
+    if options.raw:
+        with open(options.raw, "wb") as handle:
+            handle.write(out)
     text = out.decode("utf-8", "replace")
     plain = re.sub(r"\x1b_G[^\x1b]*\x1b\\", "<kitty-image>", text)
     plain = re.sub(r"\x1b\[[0-9;?]*[a-zA-Z]|\x1b[<>=()78]|\x1b\\", "", plain)

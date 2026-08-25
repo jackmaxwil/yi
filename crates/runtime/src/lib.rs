@@ -7,6 +7,7 @@ pub mod goal;
 pub mod kernel;
 pub mod permission;
 pub mod provider;
+pub mod rewind;
 pub mod schedule;
 pub mod session;
 pub mod skills;
@@ -20,6 +21,7 @@ pub use kernel::{
 };
 pub use permission::{AskOutcome, Asker, PermissionBroker};
 pub use provider::{ProviderStream, available_models, resolve_model};
+pub use rewind::{Rewound, rewind_to};
 pub use session::{AgentSession, SessionConfig, SessionError, Status};
 pub use skills::{Skill, skills_catalog};
 pub use subagent::{

@@ -17,6 +17,10 @@ pub struct History {
 }
 
 impl History {
+    pub fn clear(&mut self) {
+        self.cells.clear();
+    }
+
     pub fn retain(&mut self, cell: Cell) {
         if self.cells.len() >= CAPACITY {
             self.cells.pop_front();

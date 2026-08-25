@@ -653,3 +653,133 @@ fn a_long_idle_stretch_does_not_consume_the_whole_morph() {
         "the morph takes a visible number of frames, not one: {frames}"
     );
 }
+
+#[test]
+fn tree_panel_matches_the_omp_layout() -> TestResult {
+    let entries = vec![
+        entry("a", None, 1, "root prompt"),
+        assistant_entry("r", Some("a"), 2, "root answer"),
+        entry("b", Some("r"), 3, "follow-up"),
+    ];
+    let view = TreeView::new(&entries, Some("b"), TreeFilter::Default);
+    let lines = view.lines(60, &theme(), 5);
+    let text: Vec<String> = lines.iter().map(flat).collect();
+    let first = text.first().ok_or("no lines")?;
+    assert!(
+        first.starts_with("╭─ Session Tree ") && first.ends_with('╮'),
+        "titled top border: {first}"
+    );
+    assert!(
+        text.iter().any(|line| line.contains("Enter: rewind.")),
+        "help row: {text:?}"
+    );
+    assert!(
+        text.iter().any(|line| line.contains("Search:")),
+        "search row: {text:?}"
+    );
+    assert!(
+        text.iter()
+            .any(|line| line.starts_with('├') && line.ends_with('┤')),
+        "section divider: {text:?}"
+    );
+    assert!(
+        text.iter().any(|line| line.contains("› ● user: follow-up")),
+        "cursor, active-path bullet and role prefix: {text:?}"
+    );
+    assert!(
+        text.iter().any(|line| line.contains("● assistant: ")),
+        "assistant rows carry their role: {text:?}"
+    );
+    assert_eq!(
+        text.last()
+            .map(|line| line.starts_with('╰') && line.ends_with('╯')),
+        Some(true),
+        "closed panel: {text:?}"
+    );
+    for line in &text {
+        assert_eq!(
+            line.chars().count(),
+            60,
+            "every panel row spans the width: {line}"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn tree_scrolls_around_the_selection_with_a_scrollbar() -> TestResult {
+    let mut entries = vec![entry("e0", None, 1, "prompt 0")];
+    for index in 1..12 {
+        entries.push(entry(
+            &format!("e{index}"),
+            Some(&format!("e{}", index - 1)),
+            index + 1,
+            &format!("prompt {index}"),
+        ));
+    }
+    let view = TreeView::new(&entries, Some("e11"), TreeFilter::Default);
+    let lines = view.lines(60, &theme(), 4);
+    let text: Vec<String> = lines.iter().map(flat).collect();
+    let rows: Vec<&String> = text
+        .iter()
+        .filter(|line| line.contains("prompt "))
+        .collect();
+    assert_eq!(rows.len(), 4, "the window holds max_rows rows: {text:?}");
+    assert!(
+        rows.iter().any(|line| line.contains("prompt 11")),
+        "the selection stays visible: {rows:?}"
+    );
+    assert!(
+        rows.iter().any(|line| line.contains('█')),
+        "an overflowing list gets a scrollbar thumb: {rows:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn alt_arrows_step_whole_turns() -> TestResult {
+    let entries = vec![
+        entry("u1", None, 1, "first ask"),
+        assistant_entry("a1", Some("u1"), 2, "first answer"),
+        entry("u2", Some("a1"), 3, "second ask"),
+        assistant_entry("a2", Some("u2"), 4, "second answer"),
+    ];
+    let mut view = TreeView::new(&entries, Some("a2"), TreeFilter::Default);
+    let up = yi_tui::keymap::SingleKey::parse("alt-up")?;
+    view.handle_key(&up);
+    let enter = yi_tui::keymap::SingleKey::parse("enter")?;
+    match view.handle_key(&enter) {
+        TreeResult::Rewind(id) => assert_eq!(id, "u2", "alt-up lands on the turn's user message"),
+        _ => return Err("enter must rewind".into()),
+    }
+    Ok(())
+}
+
+fn assistant_entry(id: &str, parent: Option<&str>, seq: u64, text: &str) -> yi_types::entry::Entry {
+    yi_types::entry::Entry::Message {
+        id: id.to_owned(),
+        message: yi_types::message::AgentMessage::Assistant {
+            content: vec![yi_types::message::Content::Text {
+                text: text.to_owned(),
+                text_signature: None,
+            }],
+            api: "faux".to_owned(),
+            provider: "faux".to_owned(),
+            model: "faux-1".to_owned(),
+            response_model: None,
+            response_id: None,
+            diagnostics: None,
+            usage: yi_types::message::Usage::zero(),
+            stop_reason: yi_types::message::StopReason::Stop,
+            deferred: None,
+            error_message: None,
+            raw_stop_reason: None,
+            end_turn: None,
+            timestamp: 0,
+        },
+        terminate: None,
+        parent_id: parent.map(str::to_owned),
+        seq,
+        timestamp: 0,
+    }
+}

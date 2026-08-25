@@ -18,6 +18,7 @@ pub mod markdown;
 pub mod orb;
 pub mod popup;
 pub mod render;
+pub mod rewind;
 pub mod status;
 pub mod table;
 pub mod term;

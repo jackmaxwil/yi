@@ -59,3 +59,67 @@ fn headless_drive_renders_a_turn_and_dumps_frames() -> TestResult {
     let _ = std::fs::remove_dir_all(&dir);
     Ok(())
 }
+
+/// A rewind has to be visible: the undone exchange leaves the transcript and
+/// the message it undid comes back to the composer unsent.
+#[test]
+fn rewinding_removes_the_exchange_and_restores_the_message() -> TestResult {
+    let dir = std::env::temp_dir().join(format!("yi-tui-rewind-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir)?;
+    let keys = dir.join("script.keys");
+    std::fs::write(
+        &keys,
+        "wait-idle 10000\ntype second question\nkey enter\nwait 200\nwait-idle 10000\n\
+         key esc\nkey esc\nwait 200\nkey up\nkey enter\nwait 500\nquit\n",
+    )?;
+    let frames = dir.join("frames");
+
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "the drive contract is the spawned binary's headless mode; tests must run the real process"
+    )]
+    let output = Command::new(env!("CARGO_BIN_EXE_yi"))
+        .args([
+            "tui",
+            "--headless",
+            "--model",
+            "faux/faux-1",
+            "--session-dir",
+            &dir.join("sessions").display().to_string(),
+            "--cwd",
+            &dir.display().to_string(),
+            "--keys",
+            &keys.display().to_string(),
+            "--frames",
+            &frames.display().to_string(),
+            "first question",
+        ])
+        .env("HOME", &dir)
+        .output()?;
+    assert!(
+        output.status.success(),
+        "drive run must exit 0: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let mut entries: Vec<_> = std::fs::read_dir(&frames)?.filter_map(Result::ok).collect();
+    entries.sort_by_key(std::fs::DirEntry::file_name);
+    let last = entries.last().ok_or("no frames dumped")?;
+    let final_frame = std::fs::read_to_string(last.path())?;
+
+    assert!(
+        final_frame.contains("first question"),
+        "the kept turn stays: {final_frame}"
+    );
+    assert!(
+        !final_frame.contains("› second question"),
+        "the rewound user turn leaves the transcript: {final_frame}"
+    );
+    assert!(
+        final_frame.contains("│second question"),
+        "the rewound message returns to the composer: {final_frame}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+    Ok(())
+}

@@ -40,7 +40,6 @@ pub(crate) enum Command {
     Prompt(String),
     Steer(String),
     Abort,
-    Rewind(String),
     Shutdown,
 }
 
@@ -88,6 +87,7 @@ pub struct App {
     pub(crate) tree: Option<TreeView>,
     pub(crate) pending_commit: Vec<Line<'static>>,
     pub(crate) pending_open_tree: bool,
+    pub(crate) pending_rewind: Option<String>,
     pub(crate) pending_editor: bool,
     pub(crate) pending_prompt_mark: bool,
     /// U34: 0 = the `Yi` wordmark at rest, 1 = the working orb. The dots
@@ -126,6 +126,7 @@ pub struct App {
     pub(crate) context_used: u64,
     pub(crate) cost_total: f64,
     pub(crate) width: usize,
+    pub(crate) rows: usize,
 }
 
 pub(crate) fn text_of(content: &[Content]) -> String {
@@ -201,6 +202,7 @@ impl App {
             tree: None,
             pending_commit: Vec::new(),
             pending_open_tree: false,
+            pending_rewind: None,
             pending_editor: false,
             pending_prompt_mark: false,
             logo_phase: 0.0,
@@ -236,6 +238,7 @@ impl App {
             context_used: 0,
             cost_total: 0.0,
             width,
+            rows: 24,
         };
         app.scheduler.request();
         app
@@ -247,6 +250,10 @@ impl App {
 
     pub fn focused(&self) -> Option<&str> {
         self.focused.as_deref()
+    }
+
+    pub fn set_rows(&mut self, rows: usize) {
+        self.rows = rows;
     }
 
     pub fn set_width(&mut self, width: usize) {
@@ -316,6 +323,17 @@ impl App {
 
     fn retain(&mut self, cell: Cell) {
         self.history.retain(cell);
+    }
+
+    /// Drops everything the screen was showing so a rewound branch can be
+    /// replayed onto a clean transcript.
+    pub(crate) fn reset_transcript(&mut self) {
+        self.history.clear();
+        self.pending_commit.clear();
+        self.live_markdown.clear();
+        self.live_thought.clear();
+        self.live_cut = 0;
+        self.live_tools.clear();
     }
 
     pub fn take_title(&mut self) -> Option<String> {
@@ -735,15 +753,6 @@ pub(crate) fn spawn_runtime_bridge(
                     }
                     Command::Steer(text) => driver_session.steer(&text),
                     Command::Abort => driver_session.abort(),
-                    Command::Rewind(id) => {
-                        if let Some(store) = driver_session.store() {
-                            let moved = yi_runtime::session_store::lock_session(&store)
-                                .move_lane("main", Some(&id));
-                            if moved.is_ok() {
-                                let _ = driver_session.attach_store(store);
-                            }
-                        }
-                    }
                     Command::Shutdown => break,
                 }
             }
@@ -810,6 +819,7 @@ pub fn run_tui(
     }
 
     let mut app = App::new(options, Theme::new(tier, dark), keymap, usize::from(cols));
+    app.set_rows(usize::from(rows));
     app.kitty = orb::kitty::supported();
 
     replay_session(&mut app, &session);
@@ -870,6 +880,7 @@ pub fn run_tui(
             app.pending_open_tree = false;
             open_tree(&mut app, &session);
         }
+        crate::rewind::process_pending_rewind(&mut app, &mut terminal, &session);
         crate::editor::process_pending_editor(&mut app, &mut terminal, true);
         if app.scheduler.should_draw(Instant::now()) {
             let start = Instant::now();
@@ -972,6 +983,25 @@ pub(crate) fn sync_roster(
     app.sync_children(&children);
 }
 
+/// The entries on the active branch only. `entries_of` returns the whole tree
+/// because the tree view draws every branch; a transcript must show the one
+/// the session is actually on, or a rewind leaves the abandoned turns on screen.
+pub(crate) fn branch_of(session: &AgentSession) -> Vec<Entry> {
+    let Some(store) = session.store() else {
+        return Vec::new();
+    };
+    yi_runtime::session_store::lock_session(&store)
+        .find_entries_on_branch(
+            "main",
+            &yi_runtime::session_store::EntryQuery {
+                order: yi_runtime::session_store::EntryOrder::OldestFirst,
+                ..yi_runtime::session_store::EntryQuery::default()
+            },
+            &yi_runtime::session_store::BranchBounds::default(),
+        )
+        .unwrap_or_default()
+}
+
 pub(crate) fn entries_of(session: &AgentSession) -> (Vec<Entry>, Option<String>) {
     let Some(store) = session.store() else {
         return (Vec::new(), None);
@@ -1013,7 +1043,7 @@ pub(crate) fn replay_child(app: &mut App, child_id: &str) {
 /// A resumed session (`yi --session <id>`) opens on its own transcript; the
 /// model's context and the screen must agree about what was said.
 pub(crate) fn replay_session(app: &mut App, session: &AgentSession) {
-    let (entries, _) = entries_of(session);
+    let entries = branch_of(session);
     let cells: Vec<Cell> = entries
         .iter()
         .filter_map(|entry| match entry {

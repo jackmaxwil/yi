@@ -20,8 +20,9 @@ pub(crate) fn handle_terminal_event(
             app.composer.handle_paste(&text);
             app.scheduler.request();
         }
-        CtEvent::Resize(cols, _) => {
+        CtEvent::Resize(cols, rows) => {
             app.width = usize::from(cols);
+            app.set_rows(usize::from(rows));
             app.scheduler.request();
         }
         CtEvent::Key(key_event) if key_event.kind != KeyEventKind::Release => {
@@ -30,7 +31,7 @@ pub(crate) fn handle_terminal_event(
             };
             app.scheduler.request();
             if app.tree.is_some() {
-                handle_tree_key(app, cmd_tx, &key);
+                handle_tree_key(app, &key);
                 return;
             }
             if app.bottom.is_some() {
@@ -67,11 +68,7 @@ pub(crate) fn handle_terminal_event(
     }
 }
 
-pub(crate) fn handle_tree_key(
-    app: &mut App,
-    cmd_tx: &tokio::sync::mpsc::UnboundedSender<Command>,
-    key: &SingleKey,
-) {
+pub(crate) fn handle_tree_key(app: &mut App, key: &SingleKey) {
     let Some(tree) = app.tree.as_mut() else {
         return;
     };
@@ -80,10 +77,7 @@ pub(crate) fn handle_tree_key(
         TreeResult::Close => app.tree = None,
         TreeResult::Rewind(id) => {
             app.tree = None;
-            let _ = cmd_tx.send(Command::Rewind(id.clone()));
-            app.commit_cell(&Cell::Notice {
-                text: format!("rewound to {id}"),
-            });
+            app.pending_rewind = Some(id);
         }
     }
 }

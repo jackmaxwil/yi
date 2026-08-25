@@ -21,6 +21,10 @@ pub enum TreeResult {
     Rewind(String),
 }
 
+const PAGE: usize = 8;
+
+const HELP: &str = "Enter: rewind. ↑/↓: move. Alt+↑/↓: previous/next turn. PgUp/PgDn: page. Home/End: first/last. Tab: filter. Type to search. Esc: close";
+
 #[derive(Debug, Clone)]
 struct Row {
     id: String,
@@ -65,6 +69,11 @@ fn entry_label(entry: &Entry) -> Option<(&'static str, String)> {
                     })
                     .collect::<Vec<_>>()
                     .join(" ");
+                let text = if text.trim().is_empty() {
+                    "(no content)".to_owned()
+                } else {
+                    text
+                };
                 Some(("assistant", text))
             }
             AgentMessage::ToolResult { tool_name, .. } => Some(("tool", format!("[{tool_name}]"))),
@@ -161,62 +170,138 @@ impl TreeView {
             .collect()
     }
 
+    /// OMP `TreeSelectorComponent`: a titled panel of
+    /// spacer / help / search / divider / spacer / rows / filter, and a row is
+    /// `cursor + gutter + active-path bullet + role: text` with the selection
+    /// carried by a full-width background.
     pub fn lines(&self, width: usize, theme: &Theme, max_rows: usize) -> Vec<Line<'static>> {
+        let inner = width.saturating_sub(4);
+        let mut out = vec![top_border(width, "Session Tree", theme)];
+        out.push(row(Vec::new(), inner, theme, None));
+        out.push(row(
+            vec![Span::styled(HELP.to_owned(), theme.muted_style())],
+            inner,
+            theme,
+            None,
+        ));
+        let mut search = vec![Span::styled("Search:".to_owned(), theme.muted_style())];
+        if !self.query.is_empty() {
+            search.push(Span::styled(
+                format!(" {}", self.query),
+                theme.accent_style(),
+            ));
+        }
+        out.push(row(search, inner, theme, None));
+        out.push(divider(width, theme));
+        out.push(row(Vec::new(), inner, theme, None));
+        for line in self.rows_lines(inner, theme, max_rows.max(1)) {
+            out.push(row(line, inner, theme, None));
+        }
+        if let Some(label) = self.filter_label() {
+            out.push(row(
+                vec![Span::styled(label.to_owned(), theme.muted_style())],
+                inner,
+                theme,
+                None,
+            ));
+        }
+        out.push(row(Vec::new(), inner, theme, None));
+        out.push(bottom_border(width, theme));
+        out
+    }
+
+    fn filter_label(&self) -> Option<&'static str> {
+        match self.filter {
+            TreeFilter::Default => None,
+            TreeFilter::UserOnly => Some("[user]"),
+            TreeFilter::All => Some("[all]"),
+        }
+    }
+
+    fn rows_lines(&self, inner: usize, theme: &Theme, max_rows: usize) -> Vec<Vec<Span<'static>>> {
         let visible = self.visible();
-        let mut out = vec![Line::from(vec![
-            Span::styled(
-                " Session tree ",
-                Style::default()
-                    .fg(theme.accent)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(
-                format!(
-                    "· {} · tab filter · enter rewind · esc close  {}",
-                    match self.filter {
-                        TreeFilter::Default => "messages",
-                        TreeFilter::UserOnly => "user only",
-                        TreeFilter::All => "all",
-                    },
-                    self.query
-                ),
+        if visible.is_empty() {
+            return vec![vec![Span::styled(
+                "No entries match".to_owned(),
                 theme.muted_style(),
-            ),
-        ])];
+            )]];
+        }
         let position = visible
             .iter()
             .position(|(i, _)| *i == self.selected)
             .unwrap_or(0);
-        let start = position.saturating_sub(max_rows.saturating_sub(1));
-        for (i, row) in visible.iter().skip(start).take(max_rows) {
-            let selected = *i == self.selected;
-            let connector = if row.is_last { "└─ " } else { "├─ " };
-            let indent = "│  ".repeat(row.depth);
-            let glyph = match row.role {
-                "user" => "› ",
-                "assistant" => "",
-                _ => "",
-            };
-            let style = if selected {
-                Style::default()
-                    .fg(theme.accent)
-                    .add_modifier(Modifier::BOLD)
-            } else if row.on_path {
-                Style::default().fg(theme.text)
+        let (start, end) = centered_window(position, visible.len(), max_rows);
+        let overflow = visible.len() > max_rows;
+        let content_width = inner.saturating_sub(usize::from(overflow));
+        let thumb = thumb_range(start, visible.len(), max_rows);
+        let mut lines = Vec::new();
+        for (offset, (index, entry)) in visible
+            .iter()
+            .enumerate()
+            .skip(start)
+            .take(end.saturating_sub(start))
+        {
+            let selected = *index == self.selected;
+            let background = selected.then(|| theme.selection_bg());
+            let mut spans = vec![Span::styled(
+                if selected { "› " } else { "  " }.to_owned(),
+                paint(theme.accent_style(), background),
+            )];
+            let prefix = gutter_prefix(entry);
+            if !prefix.is_empty() {
+                spans.push(Span::styled(prefix, paint(theme.dim_style(), background)));
+            }
+            if entry.on_path {
+                spans.push(Span::styled(
+                    "● ".to_owned(),
+                    paint(theme.accent_style(), background),
+                ));
+            }
+            spans.push(Span::styled(
+                role_prefix(entry.role),
+                paint(role_style(entry.role, theme), background),
+            ));
+            spans.push(Span::styled(
+                entry.label.clone(),
+                paint(Style::default().fg(theme.text), background),
+            ));
+            let mut spans = fit_spans(spans, content_width, background);
+            if overflow {
+                let row_index = offset.saturating_sub(start);
+                let in_thumb = row_index >= thumb.0 && row_index < thumb.1;
+                let (glyph, style) = if in_thumb {
+                    ("█", theme.accent_style())
+                } else {
+                    ("│", theme.muted_style())
+                };
+                spans.push(Span::styled(glyph.to_owned(), style));
+            }
+            lines.push(spans);
+        }
+        lines
+    }
+
+    /// Alt+↑/↓ steps whole turns: from anywhere in a turn to the user message
+    /// that started the previous or next one (OMP `previous/next turn`).
+    fn step_turn(&mut self, visible: &[usize], position: usize, forward: bool) {
+        let mut cursor = position;
+        loop {
+            cursor = if forward {
+                cursor.saturating_add(1)
             } else {
-                theme.muted_style()
+                match cursor.checked_sub(1) {
+                    Some(next) => next,
+                    None => return,
+                }
             };
-            let mut text = format!(" {indent}{connector}{glyph}{}", row.label);
-            text.truncate(width.saturating_sub(1));
-            out.push(Line::from(Span::styled(text, style)));
+            let Some(&index) = visible.get(cursor) else {
+                return;
+            };
+            if self.rows.get(index).is_some_and(|row| row.role == "user") {
+                self.selected = index;
+                return;
+            }
         }
-        if visible.len() > max_rows {
-            out.push(Line::from(Span::styled(
-                format!("   … {} more", visible.len() - max_rows),
-                theme.dim_style(),
-            )));
-        }
-        out
     }
 
     pub fn handle_key(&mut self, key: &SingleKey) -> TreeResult {
@@ -227,6 +312,14 @@ impl TreeView {
             .unwrap_or(0);
         match key.code {
             KeyCodeValue::Esc => TreeResult::Close,
+            KeyCodeValue::Up if key.alt => {
+                self.step_turn(&visible, position, false);
+                TreeResult::Open
+            }
+            KeyCodeValue::Down if key.alt => {
+                self.step_turn(&visible, position, true);
+                TreeResult::Open
+            }
             KeyCodeValue::Up => {
                 if let Some(&index) = visible.get(position.saturating_sub(1)) {
                     self.selected = index;
@@ -235,6 +328,37 @@ impl TreeView {
             }
             KeyCodeValue::Down => {
                 if let Some(&index) = visible.get(position + 1) {
+                    self.selected = index;
+                }
+                TreeResult::Open
+            }
+            KeyCodeValue::PageUp => {
+                if let Some(&index) = visible.get(position.saturating_sub(PAGE)) {
+                    self.selected = index;
+                } else if let Some(&index) = visible.first() {
+                    self.selected = index;
+                }
+                TreeResult::Open
+            }
+            KeyCodeValue::PageDown => {
+                match visible.get(position.saturating_add(PAGE)) {
+                    Some(&index) => self.selected = index,
+                    None => {
+                        if let Some(&index) = visible.last() {
+                            self.selected = index;
+                        }
+                    }
+                }
+                TreeResult::Open
+            }
+            KeyCodeValue::Home => {
+                if let Some(&index) = visible.first() {
+                    self.selected = index;
+                }
+                TreeResult::Open
+            }
+            KeyCodeValue::End => {
+                if let Some(&index) = visible.last() {
                     self.selected = index;
                 }
                 TreeResult::Open
@@ -262,4 +386,133 @@ impl TreeView {
             _ => TreeResult::Open,
         }
     }
+}
+
+fn paint(style: Style, background: Option<ratatui::style::Color>) -> Style {
+    match background {
+        Some(color) => style.bg(color),
+        None => style,
+    }
+}
+
+fn role_prefix(role: &str) -> String {
+    match role {
+        "user" => "user: ".to_owned(),
+        "assistant" => "assistant: ".to_owned(),
+        _ => String::new(),
+    }
+}
+
+fn role_style(role: &str, theme: &Theme) -> Style {
+    match role {
+        "user" => theme.accent_style(),
+        "assistant" => Style::default().fg(theme.success),
+        _ => theme.dim_style(),
+    }
+}
+
+fn gutter_prefix(row: &Row) -> String {
+    if row.depth == 0 {
+        return String::new();
+    }
+    let connector = if row.is_last { "└─ " } else { "├─ " };
+    format!("{}{connector}", "│  ".repeat(row.depth.saturating_sub(1)))
+}
+
+/// Pad or cut a row to the content width so a selection background covers it
+/// end to end (OMP `fit`).
+fn fit_spans(
+    spans: Vec<Span<'static>>,
+    width: usize,
+    background: Option<ratatui::style::Color>,
+) -> Vec<Span<'static>> {
+    let mut out: Vec<Span<'static>> = Vec::new();
+    let mut used = 0_usize;
+    for span in spans {
+        let span_width = unicode_width::UnicodeWidthStr::width(span.content.as_ref());
+        if used.saturating_add(span_width) <= width {
+            used = used.saturating_add(span_width);
+            out.push(span);
+            continue;
+        }
+        let room = width.saturating_sub(used);
+        if room > 0 {
+            let text: String = span.content.chars().take(room).collect();
+            used = used.saturating_add(unicode_width::UnicodeWidthStr::width(text.as_str()));
+            out.push(Span::styled(text, span.style));
+        }
+        break;
+    }
+    if used < width {
+        out.push(Span::styled(
+            " ".repeat(width.saturating_sub(used)),
+            paint(Style::default(), background),
+        ));
+    }
+    out
+}
+
+fn row(
+    spans: Vec<Span<'static>>,
+    inner: usize,
+    theme: &Theme,
+    background: Option<ratatui::style::Color>,
+) -> Line<'static> {
+    let bar = || Span::styled("│".to_owned(), theme.dim_style());
+    let mut out = vec![bar(), Span::raw(" ")];
+    out.extend(fit_spans(spans, inner, background));
+    out.push(Span::raw(" "));
+    out.push(bar());
+    Line::from(out)
+}
+
+fn top_border(width: usize, title: &str, theme: &Theme) -> Line<'static> {
+    let inner = width.saturating_sub(2);
+    let shown = format!(" {title} ");
+    let fill = inner
+        .saturating_sub(1)
+        .saturating_sub(unicode_width::UnicodeWidthStr::width(shown.as_str()));
+    Line::from(vec![
+        Span::styled("╭─".to_owned(), theme.dim_style()),
+        Span::styled(shown, theme.accent_style().add_modifier(Modifier::BOLD)),
+        Span::styled(format!("{}╮", "─".repeat(fill)), theme.dim_style()),
+    ])
+}
+
+fn divider(width: usize, theme: &Theme) -> Line<'static> {
+    Line::from(Span::styled(
+        format!("├{}┤", "─".repeat(width.saturating_sub(2))),
+        theme.dim_style(),
+    ))
+}
+
+fn bottom_border(width: usize, theme: &Theme) -> Line<'static> {
+    Line::from(Span::styled(
+        format!("╰{}╯", "─".repeat(width.saturating_sub(2))),
+        theme.dim_style(),
+    ))
+}
+
+/// OMP `centeredWindow`: keep the selection in the middle of the window
+/// instead of only scrolling when it leaves the edge.
+fn centered_window(selected: usize, total: usize, max_visible: usize) -> (usize, usize) {
+    let start = selected
+        .saturating_sub(max_visible / 2)
+        .min(total.saturating_sub(max_visible));
+    (start, start.saturating_add(max_visible).min(total))
+}
+
+fn thumb_range(scroll: usize, total: usize, height: usize) -> (usize, usize) {
+    if height == 0 || total <= height {
+        return (0, height);
+    }
+    let size = (height.saturating_mul(height) / total).clamp(1, height);
+    let travel = height.saturating_sub(size);
+    let max_offset = total.saturating_sub(height);
+    let start = if max_offset == 0 {
+        0
+    } else {
+        scroll.saturating_mul(travel) / max_offset
+    };
+    (start, start.saturating_add(size))
 }

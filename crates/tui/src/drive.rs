@@ -209,6 +209,7 @@ pub fn run_headless(
 
     let initial_prompt = options.initial_prompt.clone();
     let mut app = App::new(options, theme, keymap, usize::from(width));
+    app.set_rows(usize::from(height));
     let (ui_tx, ui_rx, cmd_tx, handle, runtime_thread) =
         crate::app::spawn_runtime_bridge(runtime, &session);
     crate::app::replay_session(&mut app, &session);
@@ -240,6 +241,7 @@ pub fn run_headless(
         }
         crate::app::sync_roster(&mut app, &host, &handle, &ui_tx);
         crate::app::process_pending_tree(&mut app, &session);
+        crate::rewind::process_pending_rewind(&mut app, &mut terminal, &session);
         crate::editor::process_pending_editor(&mut app, &mut terminal, false);
 
         let step = match current.take() {
