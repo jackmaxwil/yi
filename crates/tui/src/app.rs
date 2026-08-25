@@ -64,10 +64,29 @@ pub struct TuiOptions {
 // first history commit pushed it down.
 const MIN_VIEWPORT_ROWS: u16 = 4;
 
-pub(crate) const LIVE_TAIL_ROWS: usize = 6;
+/// Floor for the live tail on a very short screen.
+const LIVE_TAIL_MIN: usize = 6;
+
+/// Rows of the streaming answer the live region shows. A markdown table has
+/// no blank line inside it, so nothing commits until the message ends and the
+/// whole table sits in the live region — a fixed six-row tail cut its head off
+/// mid-stream and read as clipped prose. Half the screen, the same share the
+/// tree panel takes, keeps the viewport off the `insert_before` whole-screen
+/// path.
+pub fn live_tail_rows(rows: usize) -> usize {
+    (rows / 2).max(LIVE_TAIL_MIN)
+}
+
+/// The rows of a streaming block the live region can show on a `rows`-tall
+/// screen, taken from the end.
+pub fn live_tail(lines: Vec<Line<'static>>, rows: usize) -> Vec<Line<'static>> {
+    let skip = lines.len().saturating_sub(live_tail_rows(rows));
+    lines.into_iter().skip(skip).collect()
+}
+
 const SPINNER_PERIOD_MS: u128 = 80;
-pub(crate) const ORB_COLS: u16 = 8;
-pub(crate) const ORB_ROWS: u16 = 4;
+pub(crate) const ORB_COLS: u16 = 6;
+pub(crate) const ORB_ROWS: u16 = 3;
 pub(crate) const ORB_PX: usize = 192;
 pub(crate) const SLASH_COMMANDS: [&str; 4] = ["quit", "expand", "tree", "editor"];
 
@@ -323,6 +342,13 @@ impl App {
 
     fn retain(&mut self, cell: Cell) {
         self.history.retain(cell);
+    }
+
+    /// The retained transcript re-rendered, as the resize repaint draws the
+    /// rows above the viewport.
+    pub fn reflowed(&self, rows: usize) -> Vec<Line<'static>> {
+        self.history
+            .lines(self.content_width(), &self.theme, self.mode, rows)
     }
 
     /// Drops everything the screen was showing so a rewound branch can be

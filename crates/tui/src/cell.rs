@@ -91,6 +91,7 @@ pub enum Cell {
 }
 
 pub const GUTTER: &str = "• ";
+pub const CALLOUT_RAIL: &str = "▌";
 const GUTTER_CONTINUATION: &str = "  ";
 
 /// codex `history_cell/messages.rs:530`: assistant prose hangs off a dim `• `
@@ -101,10 +102,18 @@ pub fn gutter(lines: Vec<Line<'static>>, first: bool, theme: &Theme) -> Vec<Line
     lines
         .into_iter()
         .map(|line| {
-            let prefix = if marked && line.spans.iter().any(|s| !s.content.trim().is_empty()) {
+            let content = !line.spans.iter().all(|s| s.content.trim().is_empty());
+            // A callout carries its own rail; a dot beside it marks the same
+            // block twice.
+            let railed = line
+                .spans
+                .first()
+                .is_some_and(|s| s.content.trim_start().starts_with(CALLOUT_RAIL));
+            let prefix = if marked && content && !railed {
                 marked = false;
                 Span::styled(GUTTER.to_owned(), theme.dim_style())
             } else {
+                marked = marked && !content;
                 Span::raw(GUTTER_CONTINUATION.to_owned())
             };
             let mut spans = vec![prefix];
@@ -355,15 +364,27 @@ impl Cell {
             Cell::Tool(tool) => tool.lines(width, theme, mode, spinner_phase),
             Cell::Task(task) => task.lines(width, theme, spinner_phase),
             Cell::Advisory { source, text } => {
+                // The advisor speaks over the agent's own output, so it takes
+                // the callout rail and blank air rather than a dim aside that
+                // reads as one more line of prose.
                 let clean = strip_tags(text);
-                wrap_line(
+                let rail = Style::default().fg(theme.warning);
+                let body = wrap_line(
                     &Line::from(vec![
-                        Span::styled(format!("  ⚑ {source} "), Style::default().fg(theme.warning)),
-                        Span::styled(clean, theme.dim_style().add_modifier(Modifier::ITALIC)),
+                        Span::styled(format!("⚑ {source} "), rail.add_modifier(Modifier::BOLD)),
+                        Span::styled(clean, theme.muted_style()),
                     ]),
-                    width,
-                    "    ",
-                )
+                    width.saturating_sub(4),
+                    "",
+                );
+                let mut out = vec![Line::default()];
+                out.extend(body.into_iter().map(|line| {
+                    let mut spans = vec![Span::styled(format!("  {CALLOUT_RAIL} "), rail)];
+                    spans.extend(line.spans);
+                    Line::from(spans)
+                }));
+                out.push(Line::default());
+                out
             }
             Cell::Notice { text } => wrap_line(
                 &Line::from(Span::styled(

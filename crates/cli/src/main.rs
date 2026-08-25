@@ -46,7 +46,8 @@ fn parse_args() -> Result<Args, lexopt::Error> {
     let mut system = String::new();
     let mut thinking = None;
     let mut json = false;
-    let mut yolo = false;
+    // D48: yolo is the default; `--confirm` puts the ask gate back.
+    let mut yolo = true;
     let mut session_dir = None;
     let mut cwd = None;
     let mut socket = None;
@@ -68,6 +69,7 @@ fn parse_args() -> Result<Args, lexopt::Error> {
             Long("thinking") => thinking = Some(parser.value()?.string()?),
             Long("json") => json = true,
             Long("yolo") => yolo = true,
+            Long("confirm") => yolo = false,
             Long("session-dir") => session_dir = Some(parser.value()?.string()?),
             Long("cwd") => cwd = Some(parser.value()?.string()?),
             Long("socket") => socket = Some(parser.value()?.string()?),
@@ -828,6 +830,8 @@ fn run_serve_command(args: &Args, version: &str) -> i32 {
     }
     if args.yolo {
         worker_args.push("--yolo".to_owned());
+    } else {
+        worker_args.push("--confirm".to_owned());
     }
     yi_acp::daemon::run_daemon(
         yi_acp::daemon::DaemonOptions {

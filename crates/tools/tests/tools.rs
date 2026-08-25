@@ -427,6 +427,34 @@ fn without_auto_background_a_command_holds_the_turn() -> TestResult {
     Ok(())
 }
 
+#[test]
+fn an_inspecting_shell_command_is_not_flagged_irreversible() -> TestResult {
+    let tool = BashTool;
+    for command in [
+        "ls -la && git log --oneline -5 2>/dev/null",
+        "cat Cargo.toml | grep name",
+        "RUST_LOG=debug rg needle src; wc -l src/lib.rs",
+    ] {
+        assert!(
+            !tool.irreversible(&args(&[("command", json!(command))])),
+            "reads nothing back: {command}"
+        );
+    }
+    for command in [
+        "rm -rf build",
+        "ls -la && cargo build",
+        "git status && git commit -m x",
+        "echo hi > notes.txt",
+        "cat $(rm -rf /tmp/x)",
+    ] {
+        assert!(
+            tool.irreversible(&args(&[("command", json!(command))])),
+            "changes something: {command}"
+        );
+    }
+    Ok(())
+}
+
 fn text_of(content: &[Content]) -> String {
     content
         .iter()

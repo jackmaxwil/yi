@@ -242,6 +242,147 @@ fn status_context_segment_is_compact() -> TestResult {
     Ok(())
 }
 
+#[test]
+fn a_streaming_table_keeps_its_header_on_a_normal_screen() -> TestResult {
+    let source = "| crate | role |\n| --- | --- |\n| yi-types | shapes |\n| yi-loop | turns |\n| yi-ai | providers |\n| yi-session | transcripts |\n| yi-tools | tools |\n| yi-tui | screen |\n";
+    let rendered = yi_tui::markdown::render(source, 60, &theme());
+    assert!(rendered.len() > 6, "the table is taller than the old tail");
+    let shown: Vec<String> = yi_tui::app::live_tail(rendered.clone(), 48)
+        .iter()
+        .map(flat)
+        .collect();
+    assert!(
+        shown.iter().any(|line| line.contains("crate")),
+        "a table that fits the screen streams whole: {shown:?}"
+    );
+    let cramped: Vec<String> = yi_tui::app::live_tail(rendered, 8)
+        .iter()
+        .map(flat)
+        .collect();
+    assert!(
+        !cramped.iter().any(|line| line.contains("crate")),
+        "and only a screen with no room drops its head: {cramped:?}"
+    );
+    Ok(())
+}
+
+/// Feed `full` through the streaming path in small deltas, the way a provider
+/// delivers it, and hand back the app that rendered it.
+fn streamed(full: &str) -> yi_tui::app::App {
+    use yi_tui::app::{App, TuiOptions};
+    use yi_tui::keymap::default_keymap;
+    let mut app = App::new(
+        TuiOptions {
+            model_label: "faux-1".to_owned(),
+            session_name: "s".to_owned(),
+            cwd: "/tmp".to_owned(),
+            context_window: 128_000,
+            keys: Vec::new(),
+            initial_prompt: None,
+        },
+        theme(),
+        default_keymap(),
+        80,
+    );
+    let assistant = |text: &str| yi_types::message::AgentMessage::Assistant {
+        content: vec![yi_types::message::Content::Text {
+            text: text.to_owned(),
+            text_signature: None,
+        }],
+        api: String::new(),
+        provider: String::new(),
+        model: String::new(),
+        response_model: None,
+        response_id: None,
+        diagnostics: None,
+        usage: yi_types::message::Usage::zero(),
+        stop_reason: yi_types::message::StopReason::Stop,
+        deferred: None,
+        error_message: None,
+        raw_stop_reason: None,
+        end_turn: None,
+        timestamp: 0,
+    };
+    app.reduce_agent(yi_types::event::AgentEvent::AgentStart);
+    let mut end = 8;
+    while end < full.len() {
+        while !full.is_char_boundary(end.min(full.len())) {
+            end += 1;
+        }
+        let message = assistant(full.get(..end.min(full.len())).unwrap_or(full));
+        app.reduce_agent(yi_types::event::AgentEvent::MessageUpdate {
+            message: message.clone(),
+            assistant_message_event: yi_types::event::AssistantMessageEvent::TextDelta {
+                content_index: 0,
+                delta: String::new(),
+                partial: message,
+            },
+        });
+        end += 17;
+    }
+    app.reduce_agent(yi_types::event::AgentEvent::MessageEnd {
+        message: assistant(full),
+    });
+    app
+}
+
+#[test]
+fn a_reflow_repaint_bullets_the_message_not_every_paragraph() -> TestResult {
+    let mut app = streamed("One paragraph.\n\nTwo paragraph.\n\nThree paragraph.\n");
+    let live = app
+        .take_commits()
+        .iter()
+        .map(flat)
+        .filter(|line| line.trim_start().starts_with("\u{2022} "))
+        .count();
+    let reflowed = app
+        .reflowed(200)
+        .iter()
+        .map(flat)
+        .filter(|line| line.trim_start().starts_with("\u{2022} "))
+        .count();
+    assert_eq!(live, 1, "the live paint bullets the message once");
+    assert_eq!(
+        reflowed, live,
+        "a resize repaint draws what the live paint drew"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_callout_line_does_not_also_take_the_bullet() -> TestResult {
+    let mut app = streamed("> the premise, quoted\n\nAnd the prose after it.\n");
+    let doubled: Vec<String> = app
+        .take_commits()
+        .iter()
+        .map(flat)
+        .filter(|line| line.contains('\u{2022}') && line.contains('\u{258c}'))
+        .collect();
+    assert!(
+        doubled.is_empty(),
+        "a callout is marked once, by its rail: {doubled:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn the_status_bar_does_not_repeat_the_program_name() -> TestResult {
+    let input = StatusInput {
+        model: "deepseek/deepseek-v4".to_owned(),
+        cwd: "/home/dev/yi".to_owned(),
+        session_name: "01a03a5e".to_owned(),
+        ..StatusInput::default()
+    };
+    let text = flat(&yi_tui::status::render(&input, 80, &theme()));
+    let segments: Vec<&str> = text.split('\u{b7}').map(str::trim).collect();
+    assert!(
+        !segments.contains(&"yi"),
+        "the terminal already says whose window this is: {segments:?}"
+    );
+    assert!(text.contains("deepseek/deepseek-v4"), "{text}");
+    Ok(())
+}
+
 fn entry(id: &str, parent: Option<&str>, seq: u64, text: &str) -> yi_types::entry::Entry {
     yi_types::entry::Entry::Message {
         id: id.to_owned(),

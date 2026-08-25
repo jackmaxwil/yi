@@ -244,6 +244,61 @@ impl Tool for GrepTool {
     }
 }
 
+/// Shell verbs that only observe. Every other verb keeps the `Exec` default:
+/// the flag warns about blast radius, and this list is the set with none.
+const READ_ONLY_VERBS: [&str; 24] = [
+    "ls", "cat", "head", "tail", "wc", "pwd", "echo", "printf", "which", "type", "file", "stat",
+    "du", "df", "date", "env", "printenv", "grep", "rg", "ag", "find", "fd", "diff", "true",
+];
+
+/// `git` is half a read tool: only the reporting subcommands qualify.
+const READ_ONLY_GIT: [&str; 10] = [
+    "log",
+    "status",
+    "diff",
+    "show",
+    "blame",
+    "branch",
+    "describe",
+    "rev-parse",
+    "ls-files",
+    "shortlog",
+];
+
+/// Incident: every bash call reported as irreversible, so the advisor flagged
+/// `ls -la && git log` as needing confirmation and the warning stopped meaning
+/// anything. Each `&&`/`||`/`|`/`;` segment is screened on its own and the
+/// whole command is read-only only when every segment is.
+fn read_only_command(command: &str) -> bool {
+    command
+        .split(['|', ';', '\n'])
+        .flat_map(|part| part.split("&&"))
+        .all(read_only_segment)
+}
+
+fn read_only_segment(segment: &str) -> bool {
+    let tokens: Vec<&str> = segment
+        .split_whitespace()
+        // `2>/dev/null` overwrites nothing that exists.
+        .filter(|token| !(token.contains('>') && token.ends_with("/dev/null")))
+        .collect();
+    if tokens
+        .iter()
+        .any(|token| token.contains('>') || token.contains('`') || token.contains("$("))
+    {
+        return false;
+    }
+    let mut words = tokens.iter().skip_while(|word| word.contains('='));
+    let Some(verb) = words.next() else {
+        return true;
+    };
+    let verb = verb.rsplit('/').next().unwrap_or(verb);
+    if verb == "git" {
+        return words.next().is_some_and(|sub| READ_ONLY_GIT.contains(sub));
+    }
+    READ_ONLY_VERBS.contains(&verb)
+}
+
 pub struct BashTool;
 
 impl Tool for BashTool {
@@ -268,6 +323,13 @@ impl Tool for BashTool {
 
     fn kind(&self) -> ToolKind {
         ToolKind::Exec
+    }
+
+    fn irreversible(&self, input: &Map<String, Value>) -> bool {
+        match input.get("command").and_then(Value::as_str) {
+            Some(command) => !read_only_command(command),
+            None => false,
+        }
     }
 
     fn execute(&self, input: Map<String, Value>, context: &ToolContext) -> ToolOutput {

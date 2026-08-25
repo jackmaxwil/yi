@@ -3,7 +3,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use yi_runtime::AgentSession;
 
-use crate::app::{App, Bottom, LIVE_TAIL_ROWS, ORB_COLS, ORB_ROWS, elapsed_ms};
+use crate::app::{App, Bottom, ORB_COLS, ORB_ROWS, elapsed_ms, live_tail};
 use crate::cell::{Cell, TaskStatus, TranscriptMode};
 use crate::hud::GoalView;
 use crate::popup::BottomView;
@@ -72,8 +72,7 @@ pub fn draw<B>(
             app.live_cut == 0,
             &theme,
         );
-        let skip = rendered.len().saturating_sub(LIVE_TAIL_ROWS);
-        live_lines.extend(rendered.into_iter().skip(skip));
+        live_lines.extend(live_tail(rendered, app.rows));
     } else if !app.live_thought.is_empty() {
         // Reasoning-heavy models stream thought long before prose; show its
         // dim tail so the screen is never silently blank mid-turn.
@@ -81,8 +80,7 @@ pub fn draw<B>(
             markdown: app.live_thought.clone(),
         };
         let rendered = cell.lines(content_width, &theme, TranscriptMode::Thinking, spinner);
-        let skip = rendered.len().saturating_sub(LIVE_TAIL_ROWS);
-        live_lines.extend(rendered.into_iter().skip(skip));
+        live_lines.extend(live_tail(rendered, app.rows));
     }
     for tool in &app.live_tools {
         live_lines.extend(tool.lines(content_width, &theme, app.mode, spinner));

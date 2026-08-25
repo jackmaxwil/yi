@@ -21,7 +21,17 @@ impl History {
         self.cells.clear();
     }
 
+    /// Streaming commits one slice per stable blank line, and each slice
+    /// re-rendered on its own would take a fresh bullet gutter — a reflowed
+    /// repaint grew one bullet per paragraph where the live paint had one per
+    /// message. Consecutive slices merge back into the message they came from.
     pub fn retain(&mut self, cell: Cell) {
+        if let Cell::Assistant { markdown } = &cell
+            && let Some(Cell::Assistant { markdown: head }) = self.cells.back_mut()
+        {
+            head.push_str(markdown);
+            return;
+        }
         if self.cells.len() >= CAPACITY {
             self.cells.pop_front();
         }

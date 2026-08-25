@@ -69,7 +69,7 @@ fn fmt_tokens(tokens: u64) -> String {
 }
 
 fn left_segments(input: &StatusInput, path_max: usize) -> Vec<String> {
-    let mut segments = vec!["yi".to_owned()];
+    let mut segments = Vec::new();
     let mut model = input.model.clone();
     if let Some(thinking) = &input.thinking {
         model.push_str(&format!(" · ◉ {thinking}"));
@@ -137,7 +137,7 @@ pub fn render(input: &StatusInput, width: usize, theme: &Theme) -> Line<'static>
         path_max = path_max.saturating_sub(8).max(PATH_FLOOR);
         left = left_segments(input, path_max);
     }
-    let path_index = if input.mode.is_some() { 3 } else { 2 };
+    let path_index = if input.mode.is_some() { 2 } else { 1 };
     while measure(&left, &right) > width && left.len() > 1 {
         let drop = (0..left.len()).rev().find(|&i| i != path_index);
         match drop {
@@ -166,8 +166,6 @@ pub fn render(input: &StatusInput, width: usize, theme: &Theme) -> Line<'static>
             spans.push(Span::styled(" · ", theme.dim_style()));
         }
         let style = if i == 0 && !dimmed {
-            accent_style.add_modifier(Modifier::BOLD)
-        } else if i == 1 && !dimmed {
             Style::default().fg(theme.text)
         } else {
             seg_style
