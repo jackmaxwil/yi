@@ -117,32 +117,8 @@ impl BottomView for ListPopup {
     }
 }
 
-// ponytail: hidden-dir + .git skip only; gitignore-aware walk when the file
-// popup meets a real generated-heavy repo.
+/// U11: gitignore-aware file list for the `@` popup — one walk, shared with
+/// the `glob` and `grep` tools (yi-tools).
 pub fn walk_files(root: &std::path::Path, cap: usize) -> Vec<String> {
-    let mut out = Vec::new();
-    let mut stack = vec![root.to_path_buf()];
-    while let Some(dir) = stack.pop() {
-        let Ok(entries) = std::fs::read_dir(&dir) else {
-            continue;
-        };
-        let mut entries: Vec<_> = entries.filter_map(Result::ok).collect();
-        entries.sort_by_key(std::fs::DirEntry::file_name);
-        for entry in entries {
-            if out.len() >= cap {
-                return out;
-            }
-            let name = entry.file_name().to_string_lossy().into_owned();
-            if name.starts_with('.') || name == "target" || name == "node_modules" {
-                continue;
-            }
-            let path = entry.path();
-            if path.is_dir() {
-                stack.push(path);
-            } else if let Ok(rel) = path.strip_prefix(root) {
-                out.push(rel.to_string_lossy().into_owned());
-            }
-        }
-    }
-    out
+    yi_runtime::list_files(root, cap)
 }

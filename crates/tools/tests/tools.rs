@@ -187,3 +187,32 @@ fn discovers_and_runs_an_exec_tool_via_the_schema_contract() -> TestResult {
     assert!(output_text(&output).contains("greeting for"));
     Ok(())
 }
+
+#[test]
+fn glob_skips_gitignored_paths() -> TestResult {
+    let dir = temp_dir("gitignore")?;
+    let root = &dir.0;
+    fs::write(root.join(".gitignore"), "target/\n*.log\n!keep.log\n")?;
+    fs::write(root.join("main.rs"), "")?;
+    fs::write(root.join("noisy.log"), "")?;
+    fs::write(root.join("keep.log"), "")?;
+    fs::create_dir_all(root.join("target/debug"))?;
+    fs::write(root.join("target/debug/main.rs"), "")?;
+    fs::create_dir_all(root.join("src"))?;
+    fs::write(root.join("src/lib.rs"), "")?;
+    fs::write(root.join("src/.gitignore"), "lib.rs\n")?;
+
+    let listed = yi_tools::list_files(root, 100);
+    assert!(listed.contains(&"main.rs".to_owned()));
+    assert!(listed.contains(&"keep.log".to_owned()));
+    assert!(!listed.contains(&"noisy.log".to_owned()));
+    assert!(!listed.iter().any(|path| path.starts_with("target")));
+    assert!(!listed.contains(&"src/lib.rs".to_owned()));
+
+    let context = ToolContext::new(root.clone());
+    let output = GlobTool.execute(args(&[("pattern", json!("**/*.rs"))]), &context);
+    let text = output_text(&output);
+    assert!(text.contains("main.rs"));
+    assert!(!text.contains("target"));
+    Ok(())
+}

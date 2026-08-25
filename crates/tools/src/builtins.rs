@@ -70,9 +70,11 @@ impl Tool for WriteTool {
     }
 }
 
-fn walk_files(root: &Path, visit: &mut dyn FnMut(&Path) -> bool) {
+pub(crate) fn walk_files(root: &Path, visit: &mut dyn FnMut(&Path) -> bool) {
+    let mut ignore = crate::ignore::Ignore::default();
     let mut stack = vec![root.to_path_buf()];
     while let Some(dir) = stack.pop() {
+        ignore.push_dir(&dir);
         let Ok(entries) = fs::read_dir(&dir) else {
             continue;
         };
@@ -82,10 +84,10 @@ fn walk_files(root: &Path, visit: &mut dyn FnMut(&Path) -> bool) {
                 continue;
             };
             if file_type.is_dir() {
-                if path.file_name().is_none_or(|name| name != ".git") {
+                if !ignore.ignored(&path, true) {
                     stack.push(path);
                 }
-            } else if file_type.is_file() && !visit(&path) {
+            } else if file_type.is_file() && !ignore.ignored(&path, false) && !visit(&path) {
                 return;
             }
         }
@@ -310,4 +312,18 @@ impl Tool for BashTool {
         output.is_error = exit_code != 0 || capture.cancelled;
         output
     }
+}
+
+/// Relative paths under `root`, gitignore-filtered and sorted, for surfaces
+/// that offer a file picker (TUI `@`).
+pub fn list_files(root: &Path, cap: usize) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    walk_files(root, &mut |path| {
+        if let Ok(relative) = path.strip_prefix(root) {
+            out.push(relative.to_string_lossy().into_owned());
+        }
+        out.len() < cap
+    });
+    out.sort();
+    out
 }

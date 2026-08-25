@@ -33,4 +33,4 @@ pub use yi_ai::faux;
 pub use yi_loop::ExecutionMode;
 pub use yi_permission::{ConfigRule, ConfigRuleAction, PermissionMode, mode_fragment};
 pub use yi_session as session_store;
-pub use yi_tools::{builtin_tools, discover_exec_tools};
+pub use yi_tools::{builtin_tools, discover_exec_tools, edit_file, list_files};
