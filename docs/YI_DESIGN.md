@@ -1034,6 +1034,7 @@ Decisions:
 | U27 | task cell | two lines: `⠙\|✓\|✗ <agent> Task — <description>` + live `↳ <child's latest titled tool>` while running, `↳ N toolcalls · elapsed` done, `↳ <error ≤ 80 chars>` failed in error color; forced blank line above and below; counters computed from the child session's live event stream, not tool metadata | pure | opencode `session/index.tsx:2221-2334` |
 | U28 | HUD | pinned block in the live region, never committed: header (goal objective + status when active, else `Subagents`), rows `⠙\|☐\|☑` + strikethrough done + warning blocked, cap 8 + `… n more`; tree-spine connectors `├─\|│\|└────` lit accent top-down by done/total (≥ 1 lit on progress, full only when done); queued `Steering · n` block; auto-clear on settle; data = U20 `cards(&AgentState)` | pure | OMP `interactive-mode.ts:2344-2459,466-521`, `ui-helpers.ts:910-944` |
 | U29 | subagent focus | focus child: rule into scrollback, replay child cells badged in child accent, live region = child tail, composer swapped for nav footer `<agent> (n of m) · tokens (ctx %) · $cost · Parent ↑ Prev ← Next →`; status line dims whole-bar; read-only (B13 deferred); child permission requests bubble to parent U12; Esc/↑ back with closing rule | I/O | opencode `subagent-footer.tsx:65-129`, `session/index.tsx:433-462` |
+| U33 | thinking orbs | thinking-orbs engine port (A.13): 9 deterministic mode painters produce z-sorted `OrbFrame` dot lists, geometry-exact against the library's own golden vectors (72 cases, 1e-4); braille rasterizer (2×4 dots/cell, ink → dim/muted/text tiers, brightest dot picks the cell fg) renders the `20` preset inline in the working line (3×2 cells) and the `64` preset above the HUD (12×6); activity → verb: tool class → searching/solving, child running → connecting, prose streaming → composing, approval → listening, default working | pure | `ref/tui/thinking-orbs` (A.13) |
 | U32 | transcript modes | `TranscriptMode{Normal, Thinking, Verbose}` cycled on Ctrl+O: Normal collapses thought cells to `∴ thinking · N lines` and tools to one line; Thinking shows reasoning bodies dim-italic; Verbose adds tool result previews; committed cells keep the mode they rendered under (scrollback is immutable) | pure | Claude Code ctrl+o, OMP thinking display |
 | U31 | session tree selector | double-Esc (empty composer, idle, parent session only, 500 ms window) opens an overlay of the session's entry tree: `├─\|└─` connectors + `│` gutters, fuzzy search, filter modes (default \| no-tools \| user-only \| all), current path highlighted; select = rewind — `move_lane` the leaf to the chosen entry and reprint the transcript from the new branch (the Pi tree format is the store, nothing new persisted) | pure + I/O | OMP `tree-selector.ts`, `input-controller.ts:429-445` |
 
@@ -2239,6 +2240,25 @@ third persistence format); `ext/skills/src/{shadow_selection_experiment,dynamic_
 (17,110), `atuin-lab-share/` (7,963), `atuin-daemon/` (6,099), `keybindings/defaults.rs`
 (1,048 — their table, not the mechanism); mdfried `mdfrier/` (5,117), `document.rs` (1,236),
 `main.rs` (840), `what-terminal-font/` (442), `ratskin/` (330).
+
+
+### A.13 thinking-orbs (TUI working indicator — U33, D41)
+
+| item | source span | lines | action |
+|---|---|---|---|
+| engine core (Dot/Line/OrbFrame, hash/noise, fib lattice, projection, finalize, radius scale) | `ref/tui/thinking-orbs/src/engine/core.ts:1-165` | 165 | port verbatim |
+| mode painters ×9 (orbits, globe/rubik/wave, web, braid, ribbon/ring, morph) | `ref/tui/thinking-orbs/src/engine/{orbits,lattice,web,braid,ribbon,morph}.ts` | ~710 | port verbatim |
+| resolved (state × size) tunings | `ref/tui/thinking-orbs/spec/orbs-golden.json` `resolved` | 18 rows | baked as literals (skips the scaling machinery — no drift possible) |
+| golden vectors (72 cases, 11,288 dots, 6-decimal, tolerance 1e-4) | `ref/tui/thinking-orbs/spec/orbs-golden.json` | 625 KB | committed test fixture — the parity contract the reference holds its own SwiftUI/RN ports to |
+
+**excise (thinking-orbs — never open):** `package-lock.json`, `demo/`, `ports/`,
+`src/ThinkingOrb.tsx` + `src/theme.ts` (React/DOM behaviors — the TUI has its own theme and
+clock), `scripts/`.
+
+Parity note: dot lists are compared after a tolerance-quantized (z, x, y, r) canonical sort —
+coincident-z dots (the face-on ring lives at z = ±1 ulp) order by last-bit float noise that
+legitimately differs between engines, and draw order between truly coincident dots is
+visually meaningless.
 
 ### A.12 benchmarks (harbor · pier · terminal-bench-2-1 · SWE-Atlas · ARC-AGI-3)
 

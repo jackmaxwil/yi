@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 
 use ratatui::crossterm::event::{self, Event as CtEvent};
 use ratatui::layout::Rect;
-use ratatui::text::Line;
+use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use serde_json::Value;
 use yi_runtime::{AgentSession, ChildStatus, SubagentHost};
@@ -22,6 +22,7 @@ use crate::frame::FrameScheduler;
 use crate::hud::{BoardCard, CardKind, CardStatus, GoalView, HudInput};
 use crate::input::handle_terminal_event;
 use crate::keymap::{Keymap, default_keymap};
+use crate::orb::{self, OrbState};
 use crate::popup::{BottomView, ListPopup};
 use crate::status::{StatusInput, render as render_status, working_line};
 use crate::term;
@@ -286,6 +287,39 @@ impl App {
 
     pub fn take_title(&mut self) -> Option<String> {
         self.pending_title.take()
+    }
+
+    /// Activity → reference orb state (D41/A.13): the verb the agent is doing.
+    pub fn orb_state(&self) -> Option<OrbState> {
+        if matches!(self.bottom, Some(Bottom::Approval(..))) {
+            return Some(OrbState::Listening);
+        }
+        if !self.running {
+            return None;
+        }
+        if let Some(tool) = self
+            .live_tools
+            .iter()
+            .rev()
+            .find(|t| t.status == ToolStatus::Running)
+        {
+            return Some(match tool.name.as_str() {
+                "grep" | "glob" | "find" | "web_search" | "fetch" => OrbState::Searching,
+                "edit" | "write" => OrbState::Solving,
+                _ => OrbState::Working,
+            });
+        }
+        if self
+            .tasks
+            .values()
+            .any(|s| s.cell.status == TaskStatus::Running)
+        {
+            return Some(OrbState::Connecting);
+        }
+        if !self.live_markdown.is_empty() {
+            return Some(OrbState::Composing);
+        }
+        Some(OrbState::Working)
     }
 
     /// U13 streaming: lines of the stable prefix (blank-line boundary outside
@@ -924,6 +958,7 @@ where
             })
     });
     let spinner = app.spinner_phase();
+    let orb_clock = app.started_at.elapsed().as_secs_f64();
     let theme = app.theme;
     let width = app.width;
 
@@ -957,11 +992,20 @@ where
             live_lines.extend(cell.lines(width, &theme, spinner));
         }
     }
-    let hud_lines = if app.hud_hidden {
+    let mut hud_lines = if app.hud_hidden {
         Vec::new()
     } else {
         crate::hud::render(&app.hud_input(goal), &theme, spinner)
     };
+    if !hud_lines.is_empty()
+        && app.running
+        && let Some(state) = app.orb_state()
+        && let Some(frame) = orb::evaluate(state, 64, orb_clock)
+    {
+        let mut block = orb::raster::render(&frame, 64.0, 12, 6, &theme);
+        block.extend(std::mem::take(&mut hud_lines));
+        hud_lines = block;
+    }
     let status_input = StatusInput {
         model: app.options.model_label.clone(),
         thinking: None,
@@ -994,13 +1038,40 @@ where
             None => None,
         }
     };
-    let show_working = app.running;
-    let working = working_line(
-        app.intent.as_deref(),
-        spinner,
-        app.esc_armed_at.is_some(),
-        &theme,
-    );
+    let show_working = app.running || matches!(app.bottom, Some(Bottom::Approval(..)));
+    let working: Vec<Line<'static>> = match app.orb_state() {
+        Some(state) => match orb::evaluate(state, 20, orb_clock) {
+            Some(frame) => {
+                let mut rows = orb::raster::render(&frame, 20.0, 3, 2, &theme);
+                let label = app
+                    .intent
+                    .clone()
+                    .unwrap_or_else(|| state.label().to_owned());
+                let hint = if app.esc_armed_at.is_some() {
+                    "esc again to interrupt"
+                } else {
+                    "[esc] interrupt"
+                };
+                if let Some(first) = rows.first_mut() {
+                    first.spans.push(Span::styled(
+                        format!(" {label}"),
+                        ratatui::style::Style::default().fg(theme.text),
+                    ));
+                    first
+                        .spans
+                        .push(Span::styled(format!("  {hint}"), theme.dim_style()));
+                }
+                rows
+            }
+            None => vec![working_line(
+                app.intent.as_deref(),
+                spinner,
+                app.esc_armed_at.is_some(),
+                &theme,
+            )],
+        },
+        None => Vec::new(),
+    };
     let border = if app.running {
         theme.dim_style()
     } else {
@@ -1028,7 +1099,7 @@ where
         put(frame, &live_lines, &mut y);
         put(frame, &hud_lines, &mut y);
         if show_working {
-            put(frame, std::slice::from_ref(&working), &mut y);
+            put(frame, &working, &mut y);
         }
         match &bottom_lines {
             Some(lines) => put(frame, lines, &mut y),

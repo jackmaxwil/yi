@@ -12,6 +12,7 @@ pub mod hud;
 pub mod input;
 pub mod keymap;
 pub mod markdown;
+pub mod orb;
 pub mod popup;
 pub mod status;
 pub mod term;

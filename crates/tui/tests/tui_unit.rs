@@ -401,3 +401,28 @@ fn status_path_truncates_from_the_left() -> TestResult {
     );
     Ok(())
 }
+
+#[test]
+fn orb_rasterizes_to_braille_at_both_scales() -> TestResult {
+    use yi_tui::orb::{OrbState, evaluate, raster};
+    let theme = theme();
+    for (size, cols, rows) in [(20_u32, 3_usize, 2_usize), (64, 12, 6)] {
+        let frame = evaluate(OrbState::Working, size, 1.3).ok_or("preset missing")?;
+        assert!(!frame.dots.is_empty());
+        let lines = raster::render(&frame, f64::from(size), cols, rows, &theme);
+        assert_eq!(lines.len(), rows);
+        let cells = lines
+            .iter()
+            .flat_map(|l| &l.spans)
+            .flat_map(|s| s.content.chars())
+            .filter(|c| (0x2800..=0x28FF).contains(&(*c as u32)))
+            .count();
+        assert!(
+            cells >= 2,
+            "a working orb must light braille cells at {size}px: {cells}"
+        );
+    }
+    let listening = evaluate(OrbState::Listening, 20, 0.4).ok_or("listening preset")?;
+    assert!(!listening.dots.is_empty());
+    Ok(())
+}
