@@ -95,7 +95,14 @@ impl OrbState {
 /// Evaluate a (state, size) preset at clock time `clock` (seconds): the
 /// preset speed multiplies the shared clock, exactly as `ThinkingOrb` does.
 pub fn evaluate(state: OrbState, size: u32, clock: f64) -> Option<OrbFrame> {
-    let resolved = resolve(state.key(), size)?;
+    // orbits-64's sparse particles read as noise in an ~80px cell rect;
+    // ribbon's dense band survives the downscale, so the working/default
+    // state borrows the composing geometry (user-directed, D41).
+    let key = match state {
+        OrbState::Working => "composing",
+        other => other.key(),
+    };
+    let resolved = resolve(key, size)?;
     let opts = resolved.options();
     Some(frame(
         resolved.mode,
