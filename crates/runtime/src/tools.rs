@@ -15,6 +15,13 @@ pub struct ToolAdapter {
     cwd: PathBuf,
     cancelled: CancelFlag,
     permission: Option<Arc<PermissionBroker>>,
+    recovery_dir: Option<PathBuf>,
+    auto_background: Option<std::time::Duration>,
+}
+
+/// T19 tee target: the home root, never the user's working tree.
+fn default_recovery_dir() -> Option<PathBuf> {
+    std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".yi/tool-output"))
 }
 
 impl ToolAdapter {
@@ -29,7 +36,16 @@ impl ToolAdapter {
             cwd,
             cancelled,
             permission,
+            recovery_dir: default_recovery_dir(),
+            auto_background: None,
         }
+    }
+
+    /// D13: default off — a command that detaches on its own is a surprise
+    /// unless the user asked for it.
+    pub fn with_auto_background(mut self, limit: Option<std::time::Duration>) -> Self {
+        self.auto_background = limit;
+        self
     }
 }
 
@@ -56,6 +72,8 @@ impl AgentTool for ToolAdapter {
         let context = ToolContext {
             cwd: self.cwd.clone(),
             cancelled: Arc::clone(&self.cancelled),
+            recovery_dir: self.recovery_dir.clone(),
+            auto_background: self.auto_background,
         };
         let permission = self.permission.clone();
         let call_id = tool_call_id.to_owned();

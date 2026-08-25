@@ -17,6 +17,12 @@ pub type CancelFlag = Arc<dyn Fn() -> bool + Send + Sync>;
 pub struct ToolContext {
     pub cwd: PathBuf,
     pub cancelled: CancelFlag,
+    /// Where lossy tool output is tee'd so it stays recoverable (T19). None
+    /// means a reducer must hand back the raw text instead.
+    pub recovery_dir: Option<PathBuf>,
+    /// D13: how long a foreground command may hold the turn before it keeps
+    /// running as a job. None (the default) never backgrounds anything.
+    pub auto_background: Option<std::time::Duration>,
 }
 
 impl ToolContext {
@@ -24,6 +30,8 @@ impl ToolContext {
         Self {
             cwd,
             cancelled: Arc::new(|| false),
+            recovery_dir: None,
+            auto_background: None,
         }
     }
 }

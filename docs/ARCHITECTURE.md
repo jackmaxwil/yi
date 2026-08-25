@@ -1,7 +1,7 @@
 # Yi — Architecture Map
 
 ```
-version: 0.21.0         # bump on any structural change; log it below
+version: 0.22.0         # bump on any structural change; log it below
 design:  YI_DESIGN.md   # the deep design; § refs below point into it
 status:  phase 4 done   # yi-kernel (Jupyter client over pure-Rust zeromq) + uv venv bootstrap + verbatim rlm Python runtime (mcp.py rewritten over `yi mcp --json`) + ipython tool + runtime::subagent (rlm.run depth 1). Exit gate green: recursion scenarios incl. a live-kernel round trip. 4b done. Phase 5 done: runtime::schedule + runtime::advisor. Phase 5b done: yi-acp v2 server (hand-rolled wire, D40). Phase 6 done: yi-runtime::goal (G1-G6) + `yi serve` daemon (D4 supervisor + worker-per-root; exit gate green: a heartbeat dispatches while no client is attached and a reconnected client lists and resumes the session). Phase 7 done: `yi-tui` (D41 design — codex/atuin inline skeleton, opencode subagent UX, OMP HUD/status) in the default build; `yi [prompt]` opens the TUI on a TTY (X1). Phase 8 (D42): nothing is deferred any more — every deferred, stretch, and never-built row is open work in docs/TODOS.md (ids A1-M5), worked in that order. U13 stable-prefix streaming landed in 7; U18, dynamic viewport height, and the gitignore-aware @-walk are A3, A2, A4. TODOS section B (CLI surfaces) is closed at 0.19.0, which also lands the T14 capture/restore half of C1.
 ```
@@ -10,6 +10,7 @@ status:  phase 4 done   # yi-kernel (Jupyter client over pure-Rust zeromq) + uv 
 
 | ver | date | change |
 |---|---|---|
+| 0.22.0 | 2026-08-25 | TODOS C2 and C4. `yi-tools::reduce` is T17/T18/T19/T20 with hand-written filters: cargo keeps its diagnostics on a red run, grep is capped, everything else gets ANSI stripping, repeat collapse and head/tail — below a 2 KiB floor nothing is touched, and a lossy result is tee'd under `~/.yi/tool-output` (no tee ⇒ raw). The rtk TOML corpus stays unwired: it needs a regex dependency, which is a §13.3 decision, not a refactor. `yi-tools::jobs` gives `bash` the D13 background half — off unless `bash.autoBackgroundMs` is set, polled through the same tool with no command, and finished jobs reach the model through the R3 follow-up queue. |
 | 0.21.0 | 2026-08-25 | TODOS C3, C5 and C6. C3: `yi-runtime::skills` assembles the catalog (name, description, path) from the global and project roots, project shadowing global, fitted to the P16 `skills_meta` budget and appended to the system prompt; the model opens a skill with `read`. The bundled set installs into the global root (`just install-skills`) rather than into the binary. L13 lands as `yi-loop::repair`: a tool call naming `functions.Echo_tool` runs `echo` instead of failing, while an ambiguous or genuinely unknown name still fails with the model's own spelling. §12 model roles arrive as `yi-types::config::ModelRoles` — `"models": {primary, summarizer}` in `~/.yi/config.json`, the summarizer used for compaction's summary call only, since the window math must stay on the turn's model. |
 | 0.20.0 | 2026-08-25 | TODOS C1 and C7 closed. `yi-tools::diff` is T13: a unified patch with absolute paths, verified by `git apply` reproducing the post state, and the approval prompt for `write` now shows what the overwrite changes instead of only its path. T14 completes with a turn-end capture beside the turn-start one, `Checkpoints::diff(a, b)`, and `yi undo list`; undo deliberately skips the turn-end capture it is standing in, so undo/redo still toggles. |
 | 0.19.1 | 2026-08-25 | Quitting the TUI prints the command that brings the session back (`yi --session <id>`, OMP's parting hint), and the TUI now honours `--session` / `--continue`: a resumed session replays its stored entries so the screen and the model's context agree. A hint is only printed for a session that recorded something. |
@@ -134,7 +135,7 @@ value/complexity: H/M/L. Status: **core** (launch), **gated** (cargo feature), *
 | hashline edit (+ registers, instrumented) | 8.8, D11 | core | H | M | boundary-repair excluded |
 | permission modes/rules/holds, deterministic auto | 8.7 | core | H | M | |
 | model auto-review M7/M8 | 8.7, D3 | open (D1, D2) | L | H | undeferred D42 |
-| bash reduce (launch set) | 14.3, D13 | open (C2) | H | M | `vendor/rtk` vendored, unwired |
+| bash reduce (launch set) | 14.3, D13 | live 0.22.0 (Rust filters) | H | M | generic + cargo + grep, tee'd recovery; the rtk TOML corpus waits on a regex-dependency decision (C2) |
 | file checkpoints + /undo | 5.3 | live 0.20.0 | H | M | shadow gitdir, both capture points, restore, tree-to-tree diff, `yi undo list`; a TUI `/undo` command rides with A5 |
 | kernel + ipython + rlm() subagents | 8.9, 8.10 | live 0.9.0 | H | H | earns its H complexity; B7/B13/agent_message.*/fork open (F1–F4) |
 | dill snapshot | 8.9 K10 | live 0.9.3 | M | L | kept per review |

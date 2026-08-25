@@ -3,7 +3,6 @@ use std::path::Path;
 
 use serde_json::{Map, Value, json};
 
-use crate::process::{OUTPUT_CAP, run_captured};
 use crate::tool::{
     Tool, ToolContext, ToolKind, ToolOutput, error_output, require_str, resolve_path, text_output,
 };
@@ -260,9 +259,10 @@ impl Tool for BashTool {
         json!({
             "type": "object",
             "properties": {
-                "command": {"type": "string", "description": "Shell command to run"}
-            },
-            "required": ["command"]
+                "command": {"type": "string", "description": "Shell command to run. Omit it to check on a background job instead."},
+                "job": {"type": "integer", "description": "Background job to check on; defaults to the most recent"},
+                "wait": {"type": "integer", "description": "Seconds to wait for that job, clamped to 5-300"}
+            }
         })
     }
 
@@ -271,22 +271,40 @@ impl Tool for BashTool {
     }
 
     fn execute(&self, input: Map<String, Value>, context: &ToolContext) -> ToolOutput {
-        let command = match require_str(&input, "command") {
-            Ok(command) => command,
-            Err(message) => return error_output(message),
-        };
-        let mut process = crate::process::command("sh");
-        process.arg("-c").arg(command).current_dir(&context.cwd);
-        let capture = match run_captured(process, None, &context.cancelled, OUTPUT_CAP) {
-            Ok(capture) => capture,
-            Err(message) => return error_output(message),
-        };
-        let mut sections = Vec::new();
-        if !capture.stdout.is_empty() {
-            sections.push(capture.stdout.clone());
+        let command = input
+            .get("command")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        if command.trim().is_empty() {
+            return poll_job(&input);
         }
-        if !capture.stderr.is_empty() {
-            sections.push(format!("stderr:\n{}", capture.stderr));
+        let capture = match crate::jobs::run_or_background(
+            command,
+            &context.cwd,
+            &context.cancelled,
+            context.auto_background,
+        ) {
+            Ok(crate::jobs::Run::Finished(capture)) => *capture,
+            Ok(crate::jobs::Run::Backgrounded(id)) => {
+                let mut output = text_output(format!(
+                    "Backgrounded as job {id}. Call bash with no command (optionally job={id}) to check on it."
+                ));
+                output.result.details = json!({ "job": id.0, "backgrounded": true });
+                return output;
+            }
+            Err(message) => return error_output(message),
+        };
+        let exit_code_for_reduce = capture.exit_code.unwrap_or(-1);
+        let reduced = crate::reduce::reduce(
+            command,
+            &capture.stdout,
+            &capture.stderr,
+            exit_code_for_reduce,
+            context.recovery_dir.as_deref(),
+        );
+        let mut sections = Vec::new();
+        if !reduced.text.is_empty() {
+            sections.push(reduced.text.clone());
         }
         if capture.truncated {
             sections.push("[output truncated]".to_owned());
@@ -308,9 +326,57 @@ impl Tool for BashTool {
             "exitCode": exit_code,
             "truncated": capture.truncated,
             "cancelled": capture.cancelled,
+            "rawBytes": reduced.raw_bytes,
+            "outBytes": reduced.out_bytes,
         });
         output.is_error = exit_code != 0 || capture.cancelled;
         output
+    }
+}
+
+/// T12: checking on a job is the same tool with no command, never a second
+/// `jobs` tool the model has to discover.
+fn poll_job(input: &Map<String, Value>) -> ToolOutput {
+    let requested = input
+        .get("job")
+        .and_then(Value::as_u64)
+        .map(crate::jobs::JobId);
+    let deadline = input
+        .get("wait")
+        .and_then(Value::as_u64)
+        .map(crate::jobs::clamp_wait);
+    let started = std::time::Instant::now();
+    loop {
+        let report = match requested {
+            Some(id) => crate::jobs::registry().report(id),
+            None => crate::jobs::registry().latest(),
+        };
+        let Some(report) = report else {
+            return error_output("no background job to check on".to_owned());
+        };
+        if report.finished {
+            let exit_code = report.exit_code.unwrap_or(-1);
+            let mut output = text_output(format!(
+                "job {} finished (exit {exit_code}): {}\n{}",
+                report.id, report.command, report.output
+            ));
+            output.result.details = json!({ "job": report.id.0, "exitCode": exit_code });
+            output.is_error = exit_code != 0;
+            return output;
+        }
+        match deadline {
+            Some(limit) if started.elapsed() < limit => {
+                std::thread::sleep(std::time::Duration::from_millis(200));
+            }
+            _ => {
+                let mut output = text_output(format!(
+                    "job {} still running: {}",
+                    report.id, report.command
+                ));
+                output.result.details = json!({ "job": report.id.0, "running": true });
+                return output;
+            }
+        }
     }
 }
 

@@ -532,6 +532,8 @@ pub struct RuntimeWiring {
     pub rlm_dir: PathBuf,
     /// §12 roles resolved to models; `None` keeps the session's own model.
     pub summarizer: Option<Model>,
+    /// D13 `bash.autoBackgroundMs`; None keeps every command in the turn.
+    pub auto_background: Option<std::time::Duration>,
 }
 
 /// Wires kernel (ipython + host handlers) and subagents onto a session, and
@@ -628,6 +630,26 @@ fn wire_advisor(session: &AgentSession, wiring: &RuntimeWiring, tools: &[Arc<dyn
         },
     );
     session.set_advisor(advisor);
+}
+
+/// D13: a job that finishes between turns reports through the R3 follow-up
+/// queue, so the model hears about it without a turn being interrupted.
+fn wire_job_completions(session: &AgentSession) {
+    let follow_up = session.follow_up_hook();
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+            for report in yi_tools::jobs::registry().take_finished() {
+                follow_up(&format!(
+                    "<async_result job=\"{}\" exit=\"{}\">{}\n{}</async_result>",
+                    report.id,
+                    report.exit_code.unwrap_or(-1),
+                    report.command,
+                    report.output
+                ));
+            }
+        }
+    });
 }
 
 pub fn attach_runtime(session: &mut AgentSession, wiring: RuntimeWiring) -> Arc<SubagentHost> {
@@ -734,6 +756,12 @@ pub fn attach_runtime(session: &mut AgentSession, wiring: RuntimeWiring) -> Arc<
     let mut tools = (wiring.tools)();
     tools.push(crate::kernel::ipython_tool(service));
     wire_advisor(session, &wiring, &tools);
-    session.use_tools(tools, wiring.cwd.clone(), wiring.broker.clone());
+    session.use_tools_with_background(
+        tools,
+        wiring.cwd.clone(),
+        wiring.broker.clone(),
+        wiring.auto_background,
+    );
+    wire_job_completions(session);
     host
 }

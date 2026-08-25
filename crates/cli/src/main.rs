@@ -181,6 +181,14 @@ fn configured_roles() -> yi_types::config::ModelRoles {
         .unwrap_or_default()
 }
 
+/// D13: `bash.autoBackgroundMs` in the config, off unless the user sets it.
+fn configured_auto_background() -> Option<std::time::Duration> {
+    let millis = config_value()?
+        .pointer("/bash/autoBackgroundMs")?
+        .as_u64()?;
+    (millis > 0).then(|| std::time::Duration::from_millis(millis))
+}
+
 /// §12: an unset role falls back to the primary model.
 fn summarizer_model(args: &Args) -> Option<Model> {
     let spec = configured_roles().summarizer?;
@@ -294,6 +302,7 @@ fn build_session(
             max_depth: 1,
             rlm_dir: default_session_dir(args).join(format!("rlm-{}", std::process::id())),
             summarizer: summarizer_model(args),
+            auto_background: configured_auto_background(),
         },
     );
     Ok((session, host))

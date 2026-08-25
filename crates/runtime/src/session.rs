@@ -255,17 +255,30 @@ impl AgentSession {
         cwd: std::path::PathBuf,
         permission: Option<Arc<crate::permission::PermissionBroker>>,
     ) {
+        self.use_tools_with_background(tools, cwd, permission, None);
+    }
+
+    pub fn use_tools_with_background(
+        &mut self,
+        tools: Vec<Arc<dyn yi_tools::Tool>>,
+        cwd: std::path::PathBuf,
+        permission: Option<Arc<crate::permission::PermissionBroker>>,
+        auto_background: Option<std::time::Duration>,
+    ) {
         let adapters = tools
             .into_iter()
             .map(|tool| {
                 let shared = Arc::clone(&self.shared);
                 let cancelled: yi_tools::CancelFlag = Arc::new(move || shared.signal.is_fired());
-                Arc::new(crate::tools::ToolAdapter::new(
-                    tool,
-                    cwd.clone(),
-                    cancelled,
-                    permission.clone(),
-                )) as Arc<dyn yi_loop::AgentTool>
+                Arc::new(
+                    crate::tools::ToolAdapter::new(
+                        tool,
+                        cwd.clone(),
+                        cancelled,
+                        permission.clone(),
+                    )
+                    .with_auto_background(auto_background),
+                ) as Arc<dyn yi_loop::AgentTool>
             })
             .collect();
         self.tools = adapters;
@@ -721,6 +734,16 @@ impl AgentSession {
     /// Host-status delivery hook (design B6 role split): pushes a user-role
     /// steering message, consumed at the next message boundary (or the next
     /// turn when idle).
+    /// R3 delivery for work that finishes outside a turn (D13 background jobs).
+    pub fn follow_up_hook(&self) -> Arc<dyn Fn(&str) + Send + Sync> {
+        let shared = Arc::clone(&self.shared);
+        Arc::new(move |text: &str| {
+            if let Ok(mut queue) = shared.follow_up.lock() {
+                queue.push(user_message(text));
+            }
+        })
+    }
+
     pub fn notice_hook(&self) -> Arc<dyn Fn(&str) + Send + Sync> {
         let shared = Arc::clone(&self.shared);
         Arc::new(move |text: &str| {

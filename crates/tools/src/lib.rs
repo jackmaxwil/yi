@@ -7,7 +7,9 @@ mod exec;
 pub mod hashline;
 mod ignore;
 mod ipython;
+pub mod jobs;
 mod process;
+pub mod reduce;
 mod tool;
 
 use std::sync::Arc;
@@ -17,7 +19,9 @@ pub use checkpoint::{Change, ChangeKind, CheckpointError, Checkpoints, TreeId};
 pub use diff::{GitPatch, patch};
 pub use exec::{ExecTool, discover_exec_tools};
 pub use ipython::{IpythonTool, KernelBridge, KernelCellOutcome};
+pub use jobs::{JobId, JobReport, Run, run_or_background};
 pub use process::{CommandCapture, OUTPUT_CAP, edit_file, run_captured};
+pub use reduce::{Reduced, reduce};
 pub use tool::{CancelFlag, Tool, ToolContext, ToolKind, ToolOutput, error_output, text_output};
 
 pub fn builtin_tools() -> Vec<Arc<dyn Tool>> {

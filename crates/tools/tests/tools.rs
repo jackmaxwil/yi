@@ -317,3 +317,122 @@ fn checkpoint_diff_reports_what_changed_between_captures() -> TestResult {
     assert!(checkpoints.diff(&first, &first)?.is_empty());
     Ok(())
 }
+
+#[test]
+fn bash_output_is_reduced_and_recoverable() -> TestResult {
+    let dir = temp_dir("reduce-bash")?;
+    let tool = BashTool;
+    let mut context = ToolContext::new(dir.0.clone());
+    context.recovery_dir = Some(dir.0.join("tool-output"));
+    let output = tool.execute(
+        args(&[(
+            "command",
+            json!("for i in $(seq 1 2000); do echo line-$i; done"),
+        )]),
+        &context,
+    );
+    let text: String = output
+        .result
+        .content
+        .iter()
+        .map(|content| match content {
+            Content::Text { text, .. } => text.clone(),
+            _ => String::new(),
+        })
+        .collect();
+    assert!(text.contains("lines omitted"), "{text}");
+    assert!(text.contains("line-1\n"), "the head survives: {text}");
+    assert!(text.contains("line-2000"), "the tail survives: {text}");
+
+    let recovery = text
+        .rsplit_once("[full output: ")
+        .and_then(|(_, tail)| tail.split_once(']'))
+        .map(|(path, _)| PathBuf::from(path))
+        .ok_or("no recovery path")?;
+    let full = fs::read_to_string(&recovery)?;
+    assert!(full.contains("line-1000"), "the tee keeps what was dropped");
+    assert!(full.len() > text.len());
+    Ok(())
+}
+
+#[test]
+fn a_lossy_reduction_without_a_tee_returns_raw() -> TestResult {
+    let raw: String = (1..4_000).map(|n| format!("line-{n}\n")).collect();
+    let reduced = yi_tools::reduce("ls -R", &raw, "", 0, None);
+    assert_eq!(reduced.text, raw);
+    assert!(reduced.recovery.is_none());
+    Ok(())
+}
+
+#[test]
+fn a_verbose_command_is_left_alone() -> TestResult {
+    let raw: String = (1..4_000).map(|n| format!("line-{n}\n")).collect();
+    let reduced = yi_tools::reduce("cargo test -- --nocapture", &raw, "", 0, None);
+    assert_eq!(reduced.text, raw);
+    assert!(reduced.recovery.is_none());
+    Ok(())
+}
+
+#[test]
+fn a_failing_cargo_run_keeps_its_diagnostics() -> TestResult {
+    let mut raw = String::new();
+    for n in 1..200 {
+        raw.push_str(&format!("   Compiling crate-{n} v0.1.0\n"));
+    }
+    raw.push_str("error[E0425]: cannot find value `nope` in this scope\n");
+    raw.push_str("  --> src/lib.rs:3:5\n");
+    let dir = temp_dir("reduce-cargo")?;
+    let reduced = yi_tools::reduce("cargo build", &raw, "", 101, Some(&dir.0));
+    assert!(reduced.text.contains("E0425"), "{}", reduced.text);
+    assert!(reduced.out_bytes < reduced.raw_bytes);
+    Ok(())
+}
+
+#[test]
+fn a_slow_command_backgrounds_and_can_be_polled() -> TestResult {
+    let dir = temp_dir("background")?;
+    let tool = BashTool;
+    let mut context = ToolContext::new(dir.0.clone());
+    context.auto_background = Some(std::time::Duration::from_millis(200));
+    let started = tool.execute(args(&[("command", json!("sleep 1; echo woke"))]), &context);
+    let announcement = text_of(&started.result.content);
+    assert!(
+        announcement.contains("Backgrounded as job"),
+        "{announcement}"
+    );
+    let job = started
+        .result
+        .details
+        .get("job")
+        .and_then(Value::as_u64)
+        .ok_or("no job id")?;
+
+    let polled = tool.execute(args(&[("job", json!(job)), ("wait", json!(5))]), &context);
+    let finished = text_of(&polled.result.content);
+    assert!(finished.contains("woke"), "{finished}");
+    assert!(finished.contains("finished (exit 0)"), "{finished}");
+    Ok(())
+}
+
+#[test]
+fn without_auto_background_a_command_holds_the_turn() -> TestResult {
+    let dir = temp_dir("no-background")?;
+    let tool = BashTool;
+    let context = ToolContext::new(dir.0.clone());
+    let output = tool.execute(
+        args(&[("command", json!("sleep 0.3; echo done"))]),
+        &context,
+    );
+    assert!(text_of(&output.result.content).contains("done"));
+    Ok(())
+}
+
+fn text_of(content: &[Content]) -> String {
+    content
+        .iter()
+        .map(|block| match block {
+            Content::Text { text, .. } => text.clone(),
+            _ => String::new(),
+        })
+        .collect()
+}

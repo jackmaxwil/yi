@@ -16,7 +16,7 @@ pub fn command(program: impl AsRef<std::ffi::OsStr>) -> Command {
     Command::new(program)
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct CommandCapture {
     pub stdout: String,
     pub stderr: String,
