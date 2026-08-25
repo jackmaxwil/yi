@@ -1,10 +1,11 @@
 // thinking-orbs port (A.13, D41): geometry-exact engine — verified against
-// the library's own golden vectors — rendered to braille cells.
+// the library's own golden vectors — rendered through the kitty graphics
+// protocol (plain spinner everywhere else).
 
 pub mod core;
+pub mod kitty;
 pub mod modes;
 pub mod presets;
-pub mod raster;
 
 use std::collections::BTreeMap;
 

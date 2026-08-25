@@ -213,7 +213,7 @@ fn status_cascade_keeps_path_and_model_when_narrow() -> TestResult {
 }
 
 #[test]
-fn status_gauge_shows_percent_and_window() -> TestResult {
+fn status_context_segment_is_compact() -> TestResult {
     let input = StatusInput {
         model: "m".to_owned(),
         cwd: "/p".to_owned(),
@@ -225,9 +225,20 @@ fn status_gauge_shows_percent_and_window() -> TestResult {
     };
     let row = yi_tui::status::render(&input, 80, &theme());
     let text = flat(&row);
-    assert!(text.contains("50%"), "gauge carries the percent: {text}");
-    assert!(text.contains("128K"), "gauge carries the window: {text}");
-    assert!(text.contains('┃'), "threshold tick rendered: {text}");
+    assert!(
+        text.contains("50% of 128K"),
+        "compact context segment: {text}"
+    );
+    let wide = StatusInput {
+        context_window: 1_048_576,
+        ..input
+    };
+    let text = flat(&yi_tui::status::render(&wide, 80, &theme()));
+    assert!(
+        text.contains("of 1M"),
+        "megatoken windows collapse to 1M: {text}"
+    );
+    assert!(!text.contains('┃'), "the gauge bar is gone: {text}");
     Ok(())
 }
 
@@ -403,26 +414,21 @@ fn status_path_truncates_from_the_left() -> TestResult {
 }
 
 #[test]
-fn orb_rasterizes_to_braille_at_both_scales() -> TestResult {
-    use yi_tui::orb::{OrbState, evaluate, raster};
-    let theme = theme();
-    for (size, cols, rows) in [(20_u32, 3_usize, 2_usize), (64, 12, 6)] {
-        let frame = evaluate(OrbState::Working, size, 1.3).ok_or("preset missing")?;
-        assert!(!frame.dots.is_empty());
-        let lines = raster::render(&frame, f64::from(size), cols, rows, &theme);
-        assert_eq!(lines.len(), rows);
-        let cells = lines
-            .iter()
-            .flat_map(|l| &l.spans)
-            .flat_map(|s| s.content.chars())
-            .filter(|c| (0x2800..=0x28FF).contains(&(*c as u32)))
-            .count();
-        assert!(
-            cells >= 2,
-            "a working orb must light braille cells at {size}px: {cells}"
-        );
-    }
-    let listening = evaluate(OrbState::Listening, 20, 0.4).ok_or("listening preset")?;
-    assert!(!listening.dots.is_empty());
+fn orb_engine_feeds_the_kitty_painter() -> TestResult {
+    use yi_tui::orb::{OrbState, evaluate, kitty};
+    let frame = evaluate(OrbState::Working, 64, 1.3).ok_or("preset missing")?;
+    assert!(!frame.dots.is_empty());
+    let rgba = kitty::paint_rgba(&frame, 64.0, 96);
+    assert_eq!(rgba.len(), 96 * 96 * 4);
+    let lit = rgba.chunks(4).filter(|px| px[3] > 0).count();
+    assert!(
+        lit > 200,
+        "a working orb must light pixels with alpha depth: {lit}"
+    );
+    let background = rgba.chunks(4).filter(|px| px[3] == 0).count();
+    assert!(
+        background > 1000,
+        "the background stays transparent for the terminal ground: {background}"
+    );
     Ok(())
 }

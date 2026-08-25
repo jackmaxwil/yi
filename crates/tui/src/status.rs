@@ -53,6 +53,21 @@ fn shrink_middle(text: &str, max: usize) -> String {
     format!("{head}…{tail}")
 }
 
+fn fmt_tokens(tokens: u64) -> String {
+    if tokens >= 1_000_000 {
+        let m = tokens as f64 / 1_000_000.0;
+        if (m - m.round()).abs() < 0.05 {
+            format!("{}M", m.round() as u64)
+        } else {
+            format!("{m:.1}M")
+        }
+    } else if tokens >= 1000 {
+        format!("{}K", tokens / 1000)
+    } else {
+        tokens.to_string()
+    }
+}
+
 fn left_segments(input: &StatusInput, path_max: usize) -> Vec<String> {
     let mut segments = vec!["yi".to_owned()];
     let mut model = input.model.clone();
@@ -70,6 +85,10 @@ fn left_segments(input: &StatusInput, path_max: usize) -> Vec<String> {
     segments.push(path);
     if let Some(cost) = &input.cost {
         segments.push(cost.clone());
+    }
+    if input.context_window > 0 {
+        let pct = input.context_used * 100 / input.context_window;
+        segments.push(format!("{pct}% of {}", fmt_tokens(input.context_window)));
     }
     segments
 }
@@ -90,83 +109,6 @@ fn right_segments(input: &StatusInput, name_max: usize) -> Vec<String> {
     segments
 }
 
-/// The context gauge (OMP `#buildContextGaugeFill`, adapted): the gap between
-/// the groups is a `─` bar — used portion in the session accent, a heavier
-/// tick at the auto-compact threshold, the percent label near the fill head
-/// and the window label right-anchored, both skipped when the gap is narrow.
-fn gauge(
-    input: &StatusInput,
-    gap: usize,
-    theme: &Theme,
-    accent_style: Style,
-) -> Vec<Span<'static>> {
-    if gap == 0 {
-        return Vec::new();
-    }
-    if gap < 8 || input.context_window == 0 {
-        let fill: String = std::iter::repeat_n('─', gap).collect();
-        return vec![Span::styled(fill, theme.dim_style())];
-    }
-    let pct = (input.context_used * 100 / input.context_window).min(120);
-    let percent_label = format!("{pct}%");
-    let window_label = format!("{}K", input.context_window / 1000);
-    let bar_len = gap;
-    let mut cells: Vec<(char, bool, bool)> = (0..bar_len).map(|_| ('─', false, false)).collect();
-    let filled = ((pct.min(100) as usize) * bar_len) / 100;
-    let filled = if input.context_used > 0 {
-        filled.max(1)
-    } else {
-        filled
-    };
-    for (i, cell) in cells.iter_mut().enumerate() {
-        cell.1 = i < filled;
-    }
-    if let Some(threshold) = input.threshold_pct {
-        let index = ((threshold as usize) * bar_len / 100).min(bar_len.saturating_sub(1));
-        if let Some(cell) = cells.get_mut(index) {
-            cell.0 = '┃';
-        }
-    }
-    let mut spans: Vec<Span<'static>> = Vec::new();
-    let overflow = pct > 100;
-    let label_room = percent_label.len() + window_label.len() + 4;
-    let with_labels = bar_len >= label_room + 4;
-    let percent_at = if with_labels {
-        filled.min(bar_len.saturating_sub(label_room))
-    } else {
-        bar_len
-    };
-    let mut i = 0;
-    while i < bar_len {
-        if with_labels && i == percent_at {
-            let style = if overflow {
-                Style::default().fg(theme.error)
-            } else {
-                accent_style
-            };
-            spans.push(Span::styled(percent_label.clone(), style));
-            i += percent_label.len();
-            continue;
-        }
-        if with_labels && i == bar_len.saturating_sub(window_label.len() + 1) {
-            spans.push(Span::styled(window_label.clone(), theme.muted_style()));
-            i += window_label.len();
-            continue;
-        }
-        let (ch, lit, _) = cells.get(i).copied().unwrap_or(('─', false, false));
-        let style = if ch == '┃' {
-            theme.muted_style()
-        } else if lit {
-            accent_style
-        } else {
-            theme.dim_style()
-        };
-        spans.push(Span::styled(ch.to_string(), style));
-        i += 1;
-    }
-    spans
-}
-
 /// U16: one status row above the composer. Overflow runs OMP's named
 /// truncation cascade (`status-line/component.ts:1878-1943`): shrink the
 /// session name to a floor, pop right segments, shrink the path to a floor,
@@ -175,7 +117,7 @@ fn gauge(
 pub fn render(input: &StatusInput, width: usize, theme: &Theme) -> Line<'static> {
     let accent = name_accent(&input.session_name);
     let accent_style = Style::default().fg(accent);
-    let mut path_max = 40_usize;
+    let mut path_max = 24_usize;
     let mut name_max = 24_usize;
     let mut left = left_segments(input, path_max);
     let mut right = right_segments(input, name_max);
@@ -256,7 +198,7 @@ pub fn render(input: &StatusInput, width: usize, theme: &Theme) -> Line<'static>
             .map(|s| s.content.as_ref().width())
             .sum::<usize>();
     let gap = width.saturating_sub(used + 1);
-    spans.extend(gauge(input, gap, theme, accent_style));
+    spans.push(Span::raw(" ".repeat(gap)));
     spans.extend(right_spans);
     Line::from(spans)
 }

@@ -65,6 +65,9 @@ pub struct TuiOptions {
 const VIEWPORT_ROWS: u16 = 16;
 const LIVE_TAIL_ROWS: usize = 6;
 const SPINNER_PERIOD_MS: u128 = 80;
+pub(crate) const ORB_COLS: u16 = 8;
+pub(crate) const ORB_ROWS: u16 = 4;
+const ORB_PX: usize = 192;
 pub(crate) const SLASH_COMMANDS: [&str; 3] = ["quit", "expand", "tree"];
 
 pub struct TaskState {
@@ -103,6 +106,8 @@ pub struct App {
     seen_turn: bool,
     user_turns: usize,
     pub(crate) mode: TranscriptMode,
+    pub(crate) kitty: bool,
+    pub(crate) orb_placement: Option<(u16, u16, OrbState)>,
     pending_title: Option<String>,
     started_at: Instant,
     pub(crate) quit: bool,
@@ -206,6 +211,8 @@ impl App {
             seen_turn: false,
             user_turns: 0,
             mode: TranscriptMode::Normal,
+            kitty: false,
+            orb_placement: None,
             pending_title: Some("Yi".to_owned()),
             started_at: Instant::now(),
             quit: false,
@@ -216,24 +223,6 @@ impl App {
             width,
         };
         app.scheduler.request();
-        let banner = Line::from(vec![
-            ratatui::text::Span::styled(
-                "  yi ".to_owned(),
-                ratatui::style::Style::default()
-                    .fg(app.theme.accent)
-                    .add_modifier(ratatui::style::Modifier::BOLD),
-            ),
-            ratatui::text::Span::styled(
-                format!(
-                    "{} · 易 · {}",
-                    env!("CARGO_PKG_VERSION"),
-                    app.options.model_label
-                ),
-                app.theme.dim_style(),
-            ),
-        ]);
-        app.pending_commit.push(Line::default());
-        app.pending_commit.push(banner);
         app
     }
 
@@ -758,12 +747,14 @@ pub fn run_tui(
     }
 
     let mut app = App::new(options, Theme::new(tier, dark), keymap, usize::from(cols));
+    app.kitty = orb::kitty::supported();
 
     if let Some(prompt) = app.options.initial_prompt.clone() {
         let _ = cmd_tx.send(Command::Prompt(prompt));
     }
 
     let mut last_roster = Instant::now();
+    let mut orb_shown = false;
     while !app.quit {
         let timeout = app.scheduler.poll_timeout(Instant::now());
         let timeout = if app.running {
@@ -811,10 +802,38 @@ pub fn run_tui(
         if app.scheduler.should_draw(Instant::now()) {
             let start = Instant::now();
             draw(&mut app, &mut terminal, Some(&session));
+            if app.kitty {
+                match app.orb_placement {
+                    Some((col, row, state)) => {
+                        let clock = app.started_at.elapsed().as_secs_f64();
+                        if let Some(frame) = orb::evaluate(state, 64, clock) {
+                            let rgba = orb::kitty::paint_rgba(&frame, 64.0, ORB_PX);
+                            let _ = orb::kitty::emit(
+                                terminal.backend_mut(),
+                                &rgba,
+                                ORB_PX,
+                                col,
+                                row,
+                                ORB_COLS,
+                                ORB_ROWS,
+                            );
+                            orb_shown = true;
+                        }
+                    }
+                    None if orb_shown => {
+                        orb_shown = false;
+                        let _ = orb::kitty::delete(terminal.backend_mut());
+                    }
+                    None => {}
+                }
+            }
             app.scheduler.mark_drawn(start, Instant::now());
         }
     }
 
+    if orb_shown {
+        let _ = orb::kitty::delete(terminal.backend_mut());
+    }
     let _ = cmd_tx.send(Command::Shutdown);
     drop(terminal);
     drop(guard);
@@ -958,7 +977,6 @@ where
             })
     });
     let spinner = app.spinner_phase();
-    let orb_clock = app.started_at.elapsed().as_secs_f64();
     let theme = app.theme;
     let width = app.width;
 
@@ -992,20 +1010,12 @@ where
             live_lines.extend(cell.lines(width, &theme, spinner));
         }
     }
-    let mut hud_lines = if app.hud_hidden {
+    let hud_lines = if app.hud_hidden {
         Vec::new()
     } else {
         crate::hud::render(&app.hud_input(goal), &theme, spinner)
     };
-    if !hud_lines.is_empty()
-        && app.running
-        && let Some(state) = app.orb_state()
-        && let Some(frame) = orb::evaluate(state, 64, orb_clock)
-    {
-        let mut block = orb::raster::render(&frame, 64.0, 12, 6, &theme);
-        block.extend(std::mem::take(&mut hud_lines));
-        hud_lines = block;
-    }
+
     let status_input = StatusInput {
         model: app.options.model_label.clone(),
         thinking: None,
@@ -1039,37 +1049,36 @@ where
         }
     };
     let show_working = app.running || matches!(app.bottom, Some(Bottom::Approval(..)));
-    let working: Vec<Line<'static>> = match app.orb_state() {
-        Some(state) => match orb::evaluate(state, 20, orb_clock) {
-            Some(frame) => {
-                let mut rows = orb::raster::render(&frame, 20.0, 3, 2, &theme);
-                let label = app
-                    .intent
-                    .clone()
-                    .unwrap_or_else(|| state.label().to_owned());
-                let hint = if app.esc_armed_at.is_some() {
-                    "esc again to interrupt"
-                } else {
-                    "[esc] interrupt"
-                };
-                if let Some(first) = rows.first_mut() {
-                    first.spans.push(Span::styled(
-                        format!(" {label}"),
-                        ratatui::style::Style::default().fg(theme.text),
-                    ));
-                    first
-                        .spans
-                        .push(Span::styled(format!("  {hint}"), theme.dim_style()));
-                }
-                rows
+    let orb_state = app.orb_state();
+    let working: Vec<Line<'static>> = match orb_state {
+        Some(state) if app.kitty => {
+            // Four blank rows reserved for the kitty-protocol image; the
+            // label rides beside it as ordinary text.
+            let label = app
+                .intent
+                .clone()
+                .unwrap_or_else(|| state.label().to_owned());
+            let hint = if app.esc_armed_at.is_some() {
+                "esc again to interrupt"
+            } else {
+                "[esc] interrupt"
+            };
+            let mut rows: Vec<Line<'static>> = (0..ORB_ROWS).map(|_| Line::default()).collect();
+            if let Some(mid) = rows.get_mut(1) {
+                *mid = Line::from(vec![
+                    Span::raw(" ".repeat(usize::from(ORB_COLS) + 2)),
+                    Span::styled(label, ratatui::style::Style::default().fg(theme.text)),
+                    Span::styled(format!("  {hint}"), theme.dim_style()),
+                ]);
             }
-            None => vec![working_line(
-                app.intent.as_deref(),
-                spinner,
-                app.esc_armed_at.is_some(),
-                &theme,
-            )],
-        },
+            rows
+        }
+        Some(_) => vec![working_line(
+            app.intent.as_deref(),
+            spinner,
+            app.esc_armed_at.is_some(),
+            &theme,
+        )],
         None => Vec::new(),
     };
     let border = if app.running {
@@ -1079,6 +1088,8 @@ where
     };
     app.composer.set_frame(border, theme.dim_style());
     let composer_height = app.composer.desired_height();
+    let orb_active = app.kitty && orb_state.is_some();
+    let orb_at: std::cell::Cell<Option<(u16, u16)>> = std::cell::Cell::new(None);
     let composer = &app.composer.textarea;
 
     let _ = terminal.draw(|frame| {
@@ -1099,6 +1110,9 @@ where
         put(frame, &live_lines, &mut y);
         put(frame, &hud_lines, &mut y);
         if show_working {
+            if orb_active && y < area.bottom() {
+                orb_at.set(Some((area.left(), y)));
+            }
             put(frame, &working, &mut y);
         }
         match &bottom_lines {
@@ -1114,4 +1128,8 @@ where
         }
         put(frame, std::slice::from_ref(&status_row), &mut y);
     });
+    app.orb_placement = match (orb_at.get(), orb_state) {
+        (Some((col, row)), Some(state)) => Some((col, row, state)),
+        _ => None,
+    };
 }
