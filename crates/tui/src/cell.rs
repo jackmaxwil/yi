@@ -5,6 +5,31 @@ use crate::colors::{Theme, name_accent};
 use crate::markdown;
 use crate::wrap::wrap_line;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TranscriptMode {
+    Normal,
+    Thinking,
+    Verbose,
+}
+
+impl TranscriptMode {
+    pub fn next(self) -> Self {
+        match self {
+            Self::Normal => Self::Thinking,
+            Self::Thinking => Self::Verbose,
+            Self::Verbose => Self::Normal,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Normal => "normal",
+            Self::Thinking => "thinking",
+            Self::Verbose => "verbose",
+        }
+    }
+}
+
 pub const SPINNER_FRAMES: [char; 10] = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 
 pub fn spinner_frame(phase: usize) -> char {
@@ -62,6 +87,7 @@ pub enum Cell {
     Advisory { source: String, text: String },
     Notice { text: String },
     Rule { text: String, accent_name: String },
+    Divider,
 }
 
 fn glyph(tool: &str) -> char {
@@ -98,9 +124,10 @@ impl ToolCell {
         &self,
         width: usize,
         theme: &Theme,
-        expanded: bool,
+        mode: TranscriptMode,
         spinner_phase: usize,
     ) -> Vec<Line<'static>> {
+        let expanded = mode == TranscriptMode::Verbose;
         let style = match self.status {
             ToolStatus::Running => Style::default().fg(theme.text),
             ToolStatus::Done => theme.muted_style(),
@@ -193,7 +220,7 @@ impl Cell {
         &self,
         width: usize,
         theme: &Theme,
-        expanded: bool,
+        mode: TranscriptMode,
         spinner_phase: usize,
     ) -> Vec<Line<'static>> {
         match self {
@@ -217,6 +244,13 @@ impl Cell {
                 out
             }
             Cell::Thought { markdown } => {
+                if mode == TranscriptMode::Normal {
+                    let lines = markdown.lines().count();
+                    return vec![Line::from(Span::styled(
+                        format!("  ∴ thinking · {lines} lines"),
+                        theme.dim_style().add_modifier(Modifier::ITALIC),
+                    ))];
+                }
                 let rendered = markdown::render(markdown, width, theme);
                 let mut out = vec![
                     Line::default(),
@@ -242,16 +276,19 @@ impl Cell {
                 }
                 out
             }
-            Cell::Tool(tool) => tool.lines(width, theme, expanded, spinner_phase),
+            Cell::Tool(tool) => tool.lines(width, theme, mode, spinner_phase),
             Cell::Task(task) => task.lines(width, theme, spinner_phase),
-            Cell::Advisory { source, text } => wrap_line(
-                &Line::from(Span::styled(
-                    format!("  ⋯ {source}: {text}"),
-                    theme.dim_style().add_modifier(Modifier::ITALIC),
-                )),
-                width,
-                "    ",
-            ),
+            Cell::Advisory { source, text } => {
+                let clean = strip_tags(text);
+                wrap_line(
+                    &Line::from(vec![
+                        Span::styled(format!("  ⚑ {source} "), Style::default().fg(theme.warning)),
+                        Span::styled(clean, theme.dim_style().add_modifier(Modifier::ITALIC)),
+                    ]),
+                    width,
+                    "    ",
+                )
+            }
             Cell::Notice { text } => wrap_line(
                 &Line::from(Span::styled(
                     format!("  ⚑ {text}"),
@@ -260,6 +297,13 @@ impl Cell {
                 width,
                 "    ",
             ),
+            Cell::Divider => {
+                let fill: String = std::iter::repeat_n('─', width.saturating_sub(4)).collect();
+                vec![
+                    Line::default(),
+                    Line::from(Span::styled(format!("  {fill}"), theme.dim_style())),
+                ]
+            }
             Cell::Rule { text, accent_name } => {
                 let accent = name_accent(accent_name);
                 let label = format!("── {text} ");
@@ -272,4 +316,20 @@ impl Cell {
             }
         }
     }
+}
+
+/// Advisories arrive as `<advisory …>text</advisory>` markup; the tags are
+/// model-facing structure, not user content.
+pub fn strip_tags(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut in_tag = false;
+    for ch in text.chars() {
+        match ch {
+            '<' => in_tag = true,
+            '>' => in_tag = false,
+            c if !in_tag => out.push(c),
+            _ => {}
+        }
+    }
+    out.split_whitespace().collect::<Vec<_>>().join(" ")
 }

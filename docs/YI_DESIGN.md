@@ -972,10 +972,12 @@ Decisions:
 - **Keymap** is atuin's: a flat `Action` enum, `KeyInput` (single or sequence), an ordered rule
   list per key, `handle_input(&State, KeyInput) -> InputAction` pure and testable without a
   terminal. Conditional rules (`when = "input-empty"`) arrive with the second conditional binding.
-- **Markdown** via `pulldown-cmark` (no default features) → `Vec<Line>`; newline-gated streaming
-  with a stable-prefix re-render (codex). No table layout engine, no LaTeX, no syntax
-  highlighting at launch (code blocks are dim-fenced plain text; `syntect` with a trimmed
-  syntax set is a later `highlight` feature, never `two-face`/onig).
+- **Markdown** via `pulldown-cmark` (no default features) → `Vec<Line>`; streaming commits the
+  stable prefix (blank-line boundary outside code fences) to scrollback mid-turn, only the tail
+  repaints. Tables render as a minimal fixed-layout grid (content-derived widths capped, bold
+  header, dim rules, cells truncate — user-directed, supersedes the launch cut). No LaTeX, no
+  syntax highlighting at launch (code blocks are dim-fenced plain text; `syntect` with a
+  trimmed syntax set is a later `highlight` feature, never `two-face`/onig).
 - **Tests** against a real VT parser (`vt100` dev-dep, codex `VT100Backend` ≈ 100 lines) plus
   `insta` snapshots of rendered cells. OMP's shadow-ledger fidelity test is the upgrade path if
   the inline mechanism ever diverges from ratatui's.
@@ -1032,6 +1034,7 @@ Decisions:
 | U27 | task cell | two lines: `⠙\|✓\|✗ <agent> Task — <description>` + live `↳ <child's latest titled tool>` while running, `↳ N toolcalls · elapsed` done, `↳ <error ≤ 80 chars>` failed in error color; forced blank line above and below; counters computed from the child session's live event stream, not tool metadata | pure | opencode `session/index.tsx:2221-2334` |
 | U28 | HUD | pinned block in the live region, never committed: header (goal objective + status when active, else `Subagents`), rows `⠙\|☐\|☑` + strikethrough done + warning blocked, cap 8 + `… n more`; tree-spine connectors `├─\|│\|└────` lit accent top-down by done/total (≥ 1 lit on progress, full only when done); queued `Steering · n` block; auto-clear on settle; data = U20 `cards(&AgentState)` | pure | OMP `interactive-mode.ts:2344-2459,466-521`, `ui-helpers.ts:910-944` |
 | U29 | subagent focus | focus child: rule into scrollback, replay child cells badged in child accent, live region = child tail, composer swapped for nav footer `<agent> (n of m) · tokens (ctx %) · $cost · Parent ↑ Prev ← Next →`; status line dims whole-bar; read-only (B13 deferred); child permission requests bubble to parent U12; Esc/↑ back with closing rule | I/O | opencode `subagent-footer.tsx:65-129`, `session/index.tsx:433-462` |
+| U32 | transcript modes | `TranscriptMode{Normal, Thinking, Verbose}` cycled on Ctrl+O: Normal collapses thought cells to `∴ thinking · N lines` and tools to one line; Thinking shows reasoning bodies dim-italic; Verbose adds tool result previews; committed cells keep the mode they rendered under (scrollback is immutable) | pure | Claude Code ctrl+o, OMP thinking display |
 | U31 | session tree selector | double-Esc (empty composer, idle, parent session only, 500 ms window) opens an overlay of the session's entry tree: `├─\|└─` connectors + `│` gutters, fuzzy search, filter modes (default \| no-tools \| user-only \| all), current path highlighted; select = rewind — `move_lane` the leaf to the chosen entry and reprint the transcript from the new branch (the Pi tree format is the store, nothing new persisted) | pure + I/O | OMP `tree-selector.ts`, `input-controller.ts:429-445` |
 
 ```mermaid

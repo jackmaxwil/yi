@@ -1,6 +1,7 @@
 use pulldown_cmark::{CodeBlockKind, Event, Options, Parser, Tag, TagEnd};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
+use unicode_width::UnicodeWidthStr;
 
 use crate::colors::Theme;
 use crate::wrap::wrap_line;
@@ -15,6 +16,29 @@ pub fn commit_complete_source(source: &str) -> (&str, &str) {
     }
 }
 
+/// The streaming commit point (U13): the longest prefix ending at a blank
+/// line outside any code fence. Prefix markdown re-renders identically as
+/// the source grows, so its lines can be committed to scrollback while the
+/// tail keeps streaming.
+pub fn stable_cut(source: &str) -> usize {
+    let mut cut = 0;
+    let mut offset = 0;
+    let mut in_fence = false;
+    let mut previous_blank = false;
+    for line in source.split_inclusive('\n') {
+        let trimmed = line.trim();
+        if trimmed.starts_with("```") {
+            in_fence = !in_fence;
+        }
+        if !in_fence && trimmed.is_empty() && !previous_blank && offset > 0 {
+            cut = offset + line.len();
+        }
+        previous_blank = trimmed.is_empty();
+        offset += line.len();
+    }
+    cut
+}
+
 struct Builder<'t> {
     theme: &'t Theme,
     width: usize,
@@ -24,6 +48,14 @@ struct Builder<'t> {
     indent: String,
     list_stack: Vec<Option<u64>>,
     in_code_block: bool,
+    table: Option<TableState>,
+}
+
+#[derive(Default)]
+struct TableState {
+    rows: Vec<Vec<String>>,
+    current: Vec<String>,
+    in_cell: bool,
 }
 
 impl Builder<'_> {
@@ -56,6 +88,14 @@ impl Builder<'_> {
     }
 
     fn text(&mut self, text: &str) {
+        if let Some(table) = &mut self.table {
+            if table.in_cell
+                && let Some(cell) = table.current.last_mut()
+            {
+                cell.push_str(text);
+            }
+            return;
+        }
         if self.in_code_block {
             for raw in text.split_inclusive('\n') {
                 let chunk = raw.strip_suffix('\n');
@@ -78,6 +118,117 @@ impl Builder<'_> {
     }
 }
 
+/// Minimal fixed-layout table: column widths from content (capped), header
+/// bold, rules dim. Cells truncate rather than wrap (D41 polish; codex ships
+/// no table engine, opencode gets one free from OpenTUI — this is the ~60
+/// lines that cover agent output tables).
+fn render_table(b: &mut Builder, rows: &[Vec<String>]) {
+    let columns = rows.iter().map(Vec::len).max().unwrap_or(0);
+    if columns == 0 {
+        return;
+    }
+    let available = b.width.saturating_sub(b.indent.len() + 2);
+    let cap = (available / columns).saturating_sub(3).clamp(4, 32);
+    let mut widths = vec![1_usize; columns];
+    for row in rows {
+        for (i, cell) in row.iter().enumerate() {
+            if let Some(slot) = widths.get_mut(i) {
+                *slot = (*slot).max(cell.trim().width().min(cap));
+            }
+        }
+    }
+    let clip = |text: &str, max: usize| -> String {
+        let text = text.trim();
+        if text.width() <= max {
+            format!("{text}{}", " ".repeat(max - text.width()))
+        } else {
+            let mut out = String::new();
+            let mut used = 0;
+            for ch in text.chars() {
+                let w = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
+                if used + w > max.saturating_sub(1) {
+                    break;
+                }
+                used += w;
+                out.push(ch);
+            }
+            format!("{out}…{}", " ".repeat(max.saturating_sub(used + 1)))
+        }
+    };
+    for (index, row) in rows.iter().enumerate() {
+        let mut spans = vec![Span::raw(b.indent.clone())];
+        for (i, width) in widths.iter().enumerate() {
+            let cell = row.get(i).map(String::as_str).unwrap_or("");
+            let style = if index == 0 {
+                Style::default().add_modifier(Modifier::BOLD)
+            } else {
+                b.style()
+            };
+            spans.push(Span::styled(clip(cell, *width), style));
+            if i + 1 < columns {
+                spans.push(Span::styled(" │ ".to_owned(), b.theme.dim_style()));
+            }
+        }
+        b.out.push(Line::from(spans));
+        if index == 0 {
+            let rule: String = widths
+                .iter()
+                .enumerate()
+                .map(|(i, w)| {
+                    let bar = "─".repeat(*w);
+                    if i + 1 < columns {
+                        format!("{bar}─┼─")
+                    } else {
+                        bar
+                    }
+                })
+                .collect();
+            b.out.push(Line::from(vec![
+                Span::raw(b.indent.clone()),
+                Span::styled(rule, b.theme.dim_style()),
+            ]));
+        }
+    }
+}
+
+fn reduce_table(b: &mut Builder, event: &Event) -> bool {
+    match event {
+        Event::Start(Tag::Table(_)) => {
+            b.blank();
+            b.table = Some(TableState::default());
+        }
+        Event::Start(Tag::TableHead | Tag::TableRow) => {
+            if let Some(table) = &mut b.table {
+                table.current = Vec::new();
+            }
+        }
+        Event::End(TagEnd::TableHead | TagEnd::TableRow) => {
+            if let Some(table) = &mut b.table {
+                let row = std::mem::take(&mut table.current);
+                table.rows.push(row);
+            }
+        }
+        Event::Start(Tag::TableCell) => {
+            if let Some(table) = &mut b.table {
+                table.current.push(String::new());
+                table.in_cell = true;
+            }
+        }
+        Event::End(TagEnd::TableCell) => {
+            if let Some(table) = &mut b.table {
+                table.in_cell = false;
+            }
+        }
+        Event::End(TagEnd::Table) => {
+            if let Some(table) = b.table.take() {
+                render_table(b, &table.rows);
+            }
+        }
+        _ => return false,
+    }
+    true
+}
+
 pub fn render(source: &str, width: usize, theme: &Theme) -> Vec<Line<'static>> {
     let width = width.max(4);
     let mut b = Builder {
@@ -89,8 +240,12 @@ pub fn render(source: &str, width: usize, theme: &Theme) -> Vec<Line<'static>> {
         indent: "  ".to_owned(),
         list_stack: Vec::new(),
         in_code_block: false,
+        table: None,
     };
-    let parser = Parser::new_ext(source, Options::ENABLE_STRIKETHROUGH);
+    let parser = Parser::new_ext(
+        source,
+        Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TABLES,
+    );
     for event in parser {
         match event {
             Event::Start(Tag::Heading { .. }) => {
@@ -187,6 +342,7 @@ pub fn render(source: &str, width: usize, theme: &Theme) -> Vec<Line<'static>> {
                 }
                 b.spans.push(Span::styled(code.into_string(), style));
             }
+            event if reduce_table(&mut b, &event) => {}
             Event::Text(text) => b.text(&text),
             Event::SoftBreak => b.text(" "),
             Event::HardBreak => b.flush_line(),

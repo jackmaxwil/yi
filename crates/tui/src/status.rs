@@ -24,6 +24,20 @@ pub struct StatusInput {
 const NAME_FLOOR: usize = 8;
 const PATH_FLOOR: usize = 8;
 
+/// Paths truncate from the left — the tail (project dir) is the signal.
+fn shrink_left(text: &str, max: usize) -> String {
+    let count = text.chars().count();
+    if count <= max {
+        return text.to_owned();
+    }
+    let tail: String = text.chars().skip(count - max.saturating_sub(1)).collect();
+    let tail = tail
+        .split_once('/')
+        .map(|(_, rest)| format!("/{rest}"))
+        .unwrap_or(tail);
+    format!("…{tail}")
+}
+
 fn shrink_middle(text: &str, max: usize) -> String {
     if text.chars().count() <= max || max < 5 {
         return text.chars().take(max).collect();
@@ -40,8 +54,8 @@ fn shrink_middle(text: &str, max: usize) -> String {
 }
 
 fn left_segments(input: &StatusInput, path_max: usize) -> Vec<String> {
-    let mut segments = Vec::new();
-    let mut model = format!("⬢ {}", input.model);
+    let mut segments = vec!["yi".to_owned()];
+    let mut model = input.model.clone();
     if let Some(thinking) = &input.thinking {
         model.push_str(&format!(" · ◉ {thinking}"));
     }
@@ -49,7 +63,7 @@ fn left_segments(input: &StatusInput, path_max: usize) -> Vec<String> {
     if let Some(mode) = &input.mode {
         segments.push(format!("◉ {mode}"));
     }
-    let mut path = shrink_middle(&input.cwd, path_max);
+    let mut path = shrink_left(&input.cwd, path_max);
     if let Some(branch) = &input.branch {
         path.push_str(&format!("@{branch}"));
     }
@@ -66,7 +80,12 @@ fn right_segments(input: &StatusInput, name_max: usize) -> Vec<String> {
         segments.push(format!("👥 {}", input.subagents));
     }
     if !input.session_name.is_empty() {
-        segments.push(shrink_middle(&input.session_name, name_max));
+        let display = if input.session_name.chars().count() > 16 {
+            input.session_name.chars().take(8).collect()
+        } else {
+            input.session_name.clone()
+        };
+        segments.push(shrink_middle(&display, name_max));
     }
     segments
 }
@@ -176,7 +195,7 @@ pub fn render(input: &StatusInput, width: usize, theme: &Theme) -> Line<'static>
         path_max = path_max.saturating_sub(8).max(PATH_FLOOR);
         left = left_segments(input, path_max);
     }
-    let path_index = if input.mode.is_some() { 2 } else { 1 };
+    let path_index = if input.mode.is_some() { 3 } else { 2 };
     while measure(&left, &right) > width && left.len() > 1 {
         let drop = (0..left.len()).rev().find(|&i| i != path_index);
         match drop {
@@ -205,6 +224,8 @@ pub fn render(input: &StatusInput, width: usize, theme: &Theme) -> Line<'static>
             spans.push(Span::styled(" · ", theme.dim_style()));
         }
         let style = if i == 0 && !dimmed {
+            accent_style.add_modifier(Modifier::BOLD)
+        } else if i == 1 && !dimmed {
             Style::default().fg(theme.text)
         } else {
             seg_style

@@ -3,7 +3,7 @@ use std::sync::Arc;
 use std::sync::mpsc::{Receiver, Sender};
 use std::time::{Duration, Instant};
 
-use ratatui::crossterm::event::{self, Event as CtEvent, KeyEventKind};
+use ratatui::crossterm::event::{self, Event as CtEvent};
 use ratatui::layout::Rect;
 use ratatui::text::Line;
 use ratatui::widgets::Paragraph;
@@ -14,19 +14,18 @@ use yi_types::event::AgentEvent;
 use yi_types::message::{AgentMessage, Content, StopReason, UserContent};
 
 use crate::approval::{ApprovalView, AskChoice};
-use crate::cell::{Cell, TaskCell, TaskStatus, ToolCell, ToolStatus};
+use crate::cell::{Cell, TaskCell, TaskStatus, ToolCell, ToolStatus, TranscriptMode};
 use crate::colors::{Theme, detect_dark, detect_tier};
 use crate::composer::Composer;
-use crate::focus::{FocusMove, focus_move, set_focus};
+use crate::focus::set_focus;
 use crate::frame::FrameScheduler;
 use crate::hud::{BoardCard, CardKind, CardStatus, GoalView, HudInput};
-use crate::keymap::{
-    Action, EvalContext, KeyCodeValue, KeyInput, Keymap, SingleKey, default_keymap,
-};
-use crate::popup::{BottomView, ListPopup, PopupResult, walk_files};
+use crate::input::handle_terminal_event;
+use crate::keymap::{Keymap, default_keymap};
+use crate::popup::{BottomView, ListPopup};
 use crate::status::{StatusInput, render as render_status, working_line};
 use crate::term;
-use crate::tree::{TreeFilter, TreeResult, TreeView};
+use crate::tree::{TreeFilter, TreeView};
 
 pub struct AskRequest {
     pub title: String,
@@ -47,7 +46,7 @@ pub(crate) enum Command {
     Shutdown,
 }
 
-enum Bottom {
+pub(crate) enum Bottom {
     Approval(ApprovalView, Sender<AskChoice>),
     Command(ListPopup),
     File(ListPopup),
@@ -65,7 +64,7 @@ pub struct TuiOptions {
 const VIEWPORT_ROWS: u16 = 16;
 const LIVE_TAIL_ROWS: usize = 6;
 const SPINNER_PERIOD_MS: u128 = 80;
-const SLASH_COMMANDS: [&str; 3] = ["quit", "expand", "tree"];
+pub(crate) const SLASH_COMMANDS: [&str; 3] = ["quit", "expand", "tree"];
 
 pub struct TaskState {
     pub(crate) cell: TaskCell,
@@ -75,38 +74,42 @@ pub struct TaskState {
 }
 
 pub struct App {
-    theme: Theme,
-    keymap: Keymap,
+    pub(crate) theme: Theme,
+    pub(crate) keymap: Keymap,
     pub(crate) scheduler: FrameScheduler,
-    composer: Composer,
-    bottom: Option<Bottom>,
-    tree: Option<TreeView>,
-    pending_commit: Vec<Line<'static>>,
-    pending_open_tree: bool,
+    pub(crate) composer: Composer,
+    pub(crate) bottom: Option<Bottom>,
+    pub(crate) tree: Option<TreeView>,
+    pub(crate) pending_commit: Vec<Line<'static>>,
+    pub(crate) pending_open_tree: bool,
     live_markdown: String,
     live_thought: String,
+    live_committed: usize,
     live_tools: Vec<ToolCell>,
-    last_finished_tool: Option<ToolCell>,
+    pub(crate) last_finished_tool: Option<ToolCell>,
     tool_started: HashMap<String, Instant>,
     pub(crate) tasks: HashMap<String, TaskState>,
     pub(crate) task_order: Vec<String>,
     committed_tasks: HashSet<String>,
-    steering: Vec<String>,
-    running: bool,
+    pub(crate) steering: Vec<String>,
+    pub(crate) running: bool,
     intent: Option<String>,
-    esc_armed_at: Option<Instant>,
-    last_esc_at: Option<Instant>,
-    ctrl_c_at: Option<Instant>,
+    pub(crate) esc_armed_at: Option<Instant>,
+    pub(crate) last_esc_at: Option<Instant>,
+    pub(crate) ctrl_c_at: Option<Instant>,
     pub(crate) focused: Option<String>,
-    hud_hidden: bool,
+    pub(crate) hud_hidden: bool,
     seen_turn: bool,
+    user_turns: usize,
+    pub(crate) mode: TranscriptMode,
+    pending_title: Option<String>,
     started_at: Instant,
-    quit: bool,
+    pub(crate) quit: bool,
     exit_code: i32,
-    options: TuiOptions,
+    pub(crate) options: TuiOptions,
     context_used: u64,
     cost_total: f64,
-    width: usize,
+    pub(crate) width: usize,
 }
 
 pub(crate) fn text_of(content: &[Content]) -> String {
@@ -142,11 +145,18 @@ fn arg_summary(tool: &str, args: &Value) -> String {
     let arg = match tool {
         "bash" => args.get("cmd").or_else(|| args.get("command")),
         "read" | "edit" | "write" => args.get("path").or_else(|| args.get("file_path")),
+        "grep" | "glob" | "find" => args
+            .get("pattern")
+            .or_else(|| args.get("query"))
+            .or_else(|| args.get("glob")),
+        "ipython" => args.get("code"),
+        "fetch" | "web_search" => args.get("url").or_else(|| args.get("query")),
         _ => None,
     };
     match arg.and_then(Value::as_str) {
         Some(text) => {
-            let mut text = text.split_whitespace().collect::<Vec<_>>().join(" ");
+            let first = text.lines().next().unwrap_or("");
+            let mut text = first.split_whitespace().collect::<Vec<_>>().join(" ");
             if text.chars().count() > 60 {
                 text = text.chars().take(60).collect::<String>() + "…";
             }
@@ -177,6 +187,7 @@ impl App {
             pending_open_tree: false,
             live_markdown: String::new(),
             live_thought: String::new(),
+            live_committed: 0,
             live_tools: Vec::new(),
             last_finished_tool: None,
             tool_started: HashMap::new(),
@@ -192,6 +203,9 @@ impl App {
             focused: None,
             hud_hidden: false,
             seen_turn: false,
+            user_turns: 0,
+            mode: TranscriptMode::Normal,
+            pending_title: Some("Yi".to_owned()),
             started_at: Instant::now(),
             quit: false,
             exit_code: 0,
@@ -258,11 +272,43 @@ impl App {
         handle_terminal_event(self, cmd_tx, ct_event);
     }
 
+    fn content_width(&self) -> usize {
+        self.width.saturating_sub(2)
+    }
+
     pub fn commit_cell(&mut self, cell: &Cell) {
         let spinner = self.spinner_phase();
+        let width = self.content_width();
         self.pending_commit
-            .extend(cell.lines(self.width, &self.theme, false, spinner));
+            .extend(cell.lines(width, &self.theme, self.mode, spinner));
         self.scheduler.request();
+    }
+
+    pub fn take_title(&mut self) -> Option<String> {
+        self.pending_title.take()
+    }
+
+    /// U13 streaming: lines of the stable prefix (blank-line boundary outside
+    /// code fences) commit to scrollback mid-turn; only the unstable tail
+    /// repaints in the live region. The prefix render is deterministic as the
+    /// source grows, so committed lines never change under the reader.
+    fn commit_stable_prefix(&mut self) {
+        let cut = crate::markdown::stable_cut(&self.live_markdown);
+        if cut == 0 {
+            return;
+        }
+        let width = self.content_width();
+        let stable = self.live_markdown.get(..cut).unwrap_or_default().to_owned();
+        let rendered = crate::markdown::render(&stable, width, &self.theme);
+        if rendered.len() > self.live_committed {
+            if self.live_committed == 0 {
+                self.pending_commit.push(Line::default());
+            }
+            let fresh: Vec<Line<'static>> =
+                rendered.into_iter().skip(self.live_committed).collect();
+            self.live_committed += fresh.len();
+            self.pending_commit.extend(fresh);
+        }
     }
 
     fn spinner_phase(&self) -> usize {
@@ -287,9 +333,17 @@ impl App {
             AgentEvent::MessageStart {
                 message: AgentMessage::User { content, .. },
             } => {
-                let cell = Cell::User {
-                    text: user_text(&content),
-                };
+                let text = user_text(&content);
+                if self.user_turns > 0 {
+                    self.commit_cell(&Cell::Divider);
+                }
+                self.user_turns += 1;
+                let focus: String = text.split_whitespace().collect::<Vec<_>>().join(" ");
+                let focus: String = focus.chars().take(40).collect();
+                if !focus.is_empty() {
+                    self.pending_title = Some(format!("Yi — {focus}"));
+                }
+                let cell = Cell::User { text };
                 self.commit_cell(&cell);
             }
             AgentEvent::MessageUpdate {
@@ -298,6 +352,7 @@ impl App {
             } => {
                 self.live_markdown = text_of(&content);
                 self.live_thought = thinking_of(&content);
+                self.commit_stable_prefix();
                 self.scheduler.request();
             }
             AgentEvent::MessageEnd { message } => self.reduce_message_end(&message),
@@ -380,10 +435,19 @@ impl App {
                 }
                 let text = text_of(content);
                 if !text.is_empty() {
-                    self.commit_cell(&Cell::Assistant { markdown: text });
+                    let width = self.content_width();
+                    let rendered = crate::markdown::render(&text, width, &self.theme);
+                    let fresh: Vec<Line<'static>> =
+                        rendered.into_iter().skip(self.live_committed).collect();
+                    if self.live_committed == 0 && !fresh.is_empty() {
+                        self.pending_commit.push(Line::default());
+                    }
+                    self.pending_commit.extend(fresh);
+                    self.scheduler.request();
                 }
                 self.live_markdown.clear();
                 self.live_thought.clear();
+                self.live_committed = 0;
                 if *stop_reason == StopReason::Error {
                     let text = error_message
                         .clone()
@@ -835,217 +899,14 @@ pub(crate) fn replay_child(app: &mut App, child_id: &str) {
     }
 }
 
-fn handle_terminal_event(
-    app: &mut App,
-    cmd_tx: &tokio::sync::mpsc::UnboundedSender<Command>,
-    ct_event: CtEvent,
-) {
-    match ct_event {
-        CtEvent::Paste(text) => {
-            app.composer.handle_paste(&text);
-            app.scheduler.request();
-        }
-        CtEvent::Resize(cols, _) => {
-            app.width = usize::from(cols);
-            app.scheduler.request();
-        }
-        CtEvent::Key(key_event) if key_event.kind != KeyEventKind::Release => {
-            let Some(key) = SingleKey::from_event(&key_event) else {
-                return;
-            };
-            app.scheduler.request();
-            if app.tree.is_some() {
-                handle_tree_key(app, cmd_tx, &key);
-                return;
-            }
-            if app.bottom.is_some() {
-                handle_bottom_key(app, &key);
-                return;
-            }
-            let ctx = EvalContext {
-                input_empty: app.composer.is_empty(),
-            };
-            match app.keymap.resolve(&KeyInput::Single(key), &ctx) {
-                Some(action) => handle_action(app, cmd_tx, action),
-                None => {
-                    if key.code == KeyCodeValue::Char('/')
-                        && !key.ctrl
-                        && !key.alt
-                        && app.composer.is_empty()
-                    {
-                        app.bottom = Some(Bottom::Command(ListPopup::new(
-                            '/',
-                            SLASH_COMMANDS.iter().map(|s| (*s).to_owned()).collect(),
-                        )));
-                    } else if key.code == KeyCodeValue::Char('@') && !key.ctrl && !key.alt {
-                        let files = walk_files(std::path::Path::new(&app.options.cwd), 100);
-                        app.bottom = Some(Bottom::File(ListPopup::new('@', files)));
-                    } else if key.code == KeyCodeValue::Backspace && !key.ctrl && !key.alt {
-                        app.composer.backspace();
-                    } else {
-                        app.composer.input(key_event);
-                    }
-                }
-            }
-        }
-        _ => {}
-    }
-}
-
-fn handle_tree_key(
-    app: &mut App,
-    cmd_tx: &tokio::sync::mpsc::UnboundedSender<Command>,
-    key: &SingleKey,
-) {
-    let Some(tree) = app.tree.as_mut() else {
-        return;
-    };
-    match tree.handle_key(key) {
-        TreeResult::Open => {}
-        TreeResult::Close => app.tree = None,
-        TreeResult::Rewind(id) => {
-            app.tree = None;
-            let _ = cmd_tx.send(Command::Rewind(id.clone()));
-            app.commit_cell(&Cell::Notice {
-                text: format!("rewound to {id}"),
-            });
-        }
-    }
-}
-
-fn handle_bottom_key(app: &mut App, key: &SingleKey) {
-    let Some(mut bottom) = app.bottom.take() else {
-        return;
-    };
-    let result = match &mut bottom {
-        Bottom::Approval(view, _) => view.handle_key(key),
-        Bottom::Command(popup) | Bottom::File(popup) => popup.handle_key(key),
-    };
-    match result {
-        PopupResult::Open => app.bottom = Some(bottom),
-        PopupResult::Close => {
-            if let Bottom::Approval(view, reply) = bottom {
-                let _ = reply.send(view.outcome.unwrap_or(AskChoice::Reject));
-            }
-        }
-        PopupResult::Insert(text) => match bottom {
-            Bottom::Command(_) => {
-                let command = text.trim_start_matches('/').to_owned();
-                handle_slash(app, &command);
-            }
-            Bottom::File(_) => {
-                app.composer
-                    .textarea
-                    .insert_str(format!("{} ", text.trim_start_matches('@')));
-            }
-            Bottom::Approval(view, reply) => {
-                let _ = reply.send(view.outcome.unwrap_or(AskChoice::Reject));
-            }
-        },
-    }
-}
-
-fn handle_action(
-    app: &mut App,
-    cmd_tx: &tokio::sync::mpsc::UnboundedSender<Command>,
-    action: Action,
-) {
-    match action {
-        Action::Submit => {
-            if let Some(text) = app.composer.take_submission() {
-                if app.running {
-                    app.steering.push(text.clone());
-                    let _ = cmd_tx.send(Command::Steer(text));
-                } else {
-                    let _ = cmd_tx.send(Command::Prompt(text));
-                }
-            }
-        }
-        Action::InsertNewline => app.composer.insert_newline(),
-        Action::Abort => handle_escape(app, cmd_tx),
-        Action::Quit => {
-            let now = Instant::now();
-            if !app.composer.is_empty() {
-                app.composer.set_text("");
-                return;
-            }
-            match app.ctrl_c_at {
-                Some(at) if now.duration_since(at) < Duration::from_secs(1) => app.quit = true,
-                _ => {
-                    if app.running {
-                        let _ = cmd_tx.send(Command::Abort);
-                    }
-                    app.ctrl_c_at = Some(now);
-                }
-            }
-        }
-        Action::HistoryPrev => app.composer.history_prev(),
-        Action::HistoryNext => app.composer.history_next(),
-        Action::ToggleExpand => {
-            if let Some(cell) = app.last_finished_tool.clone() {
-                let lines = Cell::Tool(cell).lines(app.width, &app.theme, true, 0);
-                app.pending_commit.extend(lines);
-                app.scheduler.request();
-            }
-        }
-        Action::ToggleHud => app.hud_hidden = !app.hud_hidden,
-        Action::ExternalEditor => {}
-        Action::FocusChild => focus_move(app, FocusMove::Child),
-        Action::FocusParent => focus_move(app, FocusMove::Parent),
-        Action::FocusNextSibling => focus_move(app, FocusMove::Next),
-        Action::FocusPrevSibling => focus_move(app, FocusMove::Prev),
-    }
-}
-
-fn handle_slash(app: &mut App, command: &str) {
-    match command {
-        "quit" => app.quit = true,
-        "tree" => app.pending_open_tree = true,
-        "expand" => {
-            if let Some(cell) = app.last_finished_tool.clone() {
-                let lines = Cell::Tool(cell).lines(app.width, &app.theme, true, 0);
-                app.pending_commit.extend(lines);
-            }
-        }
-        _ => app.commit_cell(&Cell::Notice {
-            text: format!("unknown command: /{command}"),
-        }),
-    }
-    app.scheduler.request();
-}
-
-fn handle_escape(app: &mut App, cmd_tx: &tokio::sync::mpsc::UnboundedSender<Command>) {
-    let now = Instant::now();
-    if app.focused.is_some() {
-        set_focus(app, None);
-        return;
-    }
-    if app.running {
-        match app.esc_armed_at {
-            Some(at) if now.duration_since(at) < Duration::from_secs(1) => {
-                let _ = cmd_tx.send(Command::Abort);
-                app.esc_armed_at = None;
-            }
-            _ => app.esc_armed_at = Some(now),
-        }
-        return;
-    }
-    if !app.composer.is_empty() {
-        return;
-    }
-    match app.last_esc_at {
-        Some(at) if now.duration_since(at) < Duration::from_millis(500) => {
-            app.last_esc_at = None;
-            app.pending_open_tree = true;
-        }
-        _ => app.last_esc_at = Some(now),
-    }
-}
-
 pub fn draw<B>(app: &mut App, terminal: &mut ratatui::Terminal<B>, session: Option<&AgentSession>)
 where
     B: ratatui::backend::Backend + std::io::Write,
 {
+    if let Some(title) = app.take_title() {
+        let osc = format!("\x1b]2;{title}\x07");
+        let _ = terminal.backend_mut().write_all(osc.as_bytes());
+    }
     let commits = std::mem::take(&mut app.pending_commit);
     let _ = term::commit_lines(terminal, commits);
     if let Some(usage) = session.and_then(AgentSession::last_usage) {
@@ -1066,9 +927,12 @@ where
     let theme = app.theme;
     let width = app.width;
 
+    let content_width = width.saturating_sub(2);
     let mut live_lines: Vec<Line<'static>> = Vec::new();
     if !app.live_markdown.is_empty() {
-        let rendered = crate::markdown::render(&app.live_markdown, width, &theme);
+        let cut = crate::markdown::stable_cut(&app.live_markdown);
+        let tail = app.live_markdown.get(cut..).unwrap_or_default();
+        let rendered = crate::markdown::render(tail, content_width, &theme);
         let skip = rendered.len().saturating_sub(LIVE_TAIL_ROWS);
         live_lines.extend(rendered.into_iter().skip(skip));
     } else if !app.live_thought.is_empty() {
@@ -1077,12 +941,12 @@ where
         let cell = Cell::Thought {
             markdown: app.live_thought.clone(),
         };
-        let rendered = cell.lines(width, &theme, false, spinner);
+        let rendered = cell.lines(content_width, &theme, TranscriptMode::Thinking, spinner);
         let skip = rendered.len().saturating_sub(LIVE_TAIL_ROWS);
         live_lines.extend(rendered.into_iter().skip(skip));
     }
     for tool in &app.live_tools {
-        live_lines.extend(tool.lines(width, &theme, false, spinner));
+        live_lines.extend(tool.lines(content_width, &theme, app.mode, spinner));
     }
     for id in &app.task_order {
         if let Some(state) = app.tasks.get(id)
@@ -1171,7 +1035,7 @@ where
             None => {
                 if y < area.bottom() {
                     let height = composer_height.min(area.bottom() - y);
-                    let rect = Rect::new(area.left(), y, area.width, height);
+                    let rect = Rect::new(area.left() + 1, y, area.width.saturating_sub(2), height);
                     frame.render_widget(composer, rect);
                     y += height;
                 }

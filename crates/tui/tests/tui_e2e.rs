@@ -139,7 +139,10 @@ fn commit_lines_land_in_a_real_vt100_screen() -> TestResult {
     let cell = Cell::User {
         text: "hello vt100".to_owned(),
     };
-    yi_tui::term::commit_lines(&mut terminal, cell.lines(80, &theme, false, 0))?;
+    yi_tui::term::commit_lines(
+        &mut terminal,
+        cell.lines(80, &theme, yi_tui::cell::TranscriptMode::Normal, 0),
+    )?;
     let contents = terminal.backend().contents();
     assert!(
         contents.contains("hello vt100"),

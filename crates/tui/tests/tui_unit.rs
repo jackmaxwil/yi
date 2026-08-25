@@ -309,7 +309,7 @@ fn thought_cells_are_labeled_and_dim_while_prose_stays_bright() -> TestResult {
     let thought = yi_tui::cell::Cell::Thought {
         markdown: "weighing the options".to_owned(),
     };
-    let lines = thought.lines(80, &theme, false, 0);
+    let lines = thought.lines(80, &theme, yi_tui::cell::TranscriptMode::Thinking, 0);
     let text: Vec<String> = lines.iter().map(flat).collect();
     assert!(
         text.iter().any(|l| l.contains("∴ thinking")),
@@ -326,7 +326,7 @@ fn thought_cells_are_labeled_and_dim_while_prose_stays_bright() -> TestResult {
     let prose = yi_tui::cell::Cell::Assistant {
         markdown: "the answer".to_owned(),
     };
-    let lines = prose.lines(80, &theme, false, 0);
+    let lines = prose.lines(80, &theme, yi_tui::cell::TranscriptMode::Normal, 0);
     assert!(
         lines
             .iter()
@@ -335,6 +335,69 @@ fn thought_cells_are_labeled_and_dim_while_prose_stays_bright() -> TestResult {
             .all(|s| !s.style.add_modifier.contains(Modifier::ITALIC)
                 && s.style.fg == Some(ratatui::style::Color::Reset)),
         "prose stays bright terminal fg, never italic"
+    );
+    Ok(())
+}
+
+#[test]
+fn markdown_tables_render_as_grids_not_raw_pipes() -> TestResult {
+    let theme = theme();
+    let source = "| Tool | Status |\n|---|---|\n| bash | ok |\n| grep | ok |";
+    let lines = yi_tui::markdown::render(source, 60, &theme);
+    let text: Vec<String> = lines.iter().map(flat).collect();
+    assert!(
+        text.iter().any(|l| l.contains("Tool") && l.contains("│")),
+        "header row renders with column separators: {text:?}"
+    );
+    assert!(
+        text.iter().any(|l| l.contains("┼")),
+        "header rule renders: {text:?}"
+    );
+    assert!(
+        !text.iter().any(|l| l.contains("|---|")),
+        "raw markdown pipes never leak: {text:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn stable_cut_stops_at_blank_lines_outside_fences() -> TestResult {
+    use yi_tui::markdown::stable_cut;
+    let cut = stable_cut("para one\n\npara two streaming");
+    assert_eq!(cut, "para one\n\n".len());
+    let fenced = "```\ncode\n\nstill code\n";
+    assert_eq!(stable_cut(fenced), 0, "blank lines inside fences never cut");
+    assert_eq!(stable_cut("no boundary yet"), 0);
+    Ok(())
+}
+
+#[test]
+fn advisory_tags_are_stripped_for_display() -> TestResult {
+    let clean = yi_tui::cell::strip_tags(
+        "<advisory severity=\"note\" guidance=\"weigh\">pending bash call is irreversible.</advisory>",
+    );
+    assert_eq!(clean, "pending bash call is irreversible.");
+    Ok(())
+}
+
+#[test]
+fn status_path_truncates_from_the_left() -> TestResult {
+    let input = StatusInput {
+        model: "faux-1".to_owned(),
+        cwd: "/Users/someone/Development/some/deep/project".to_owned(),
+        session_name: "s".to_owned(),
+        context_window: 128_000,
+        ..StatusInput::default()
+    };
+    let row = yi_tui::status::render(&input, 60, &theme());
+    let text = flat(&row);
+    assert!(
+        text.contains("project"),
+        "the path tail (project dir) survives: {text}"
+    );
+    assert!(
+        !text.contains("/Users/someone"),
+        "the head is dropped: {text}"
     );
     Ok(())
 }

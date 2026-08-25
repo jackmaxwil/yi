@@ -9,6 +9,7 @@ pub mod drive;
 pub mod focus;
 pub mod frame;
 pub mod hud;
+pub mod input;
 pub mod keymap;
 pub mod markdown;
 pub mod popup;
