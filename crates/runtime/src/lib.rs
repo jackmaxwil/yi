@@ -12,7 +12,7 @@ pub mod session;
 pub mod subagent;
 pub mod tools;
 
-pub use checkpoint::{UndoOutcome, undo, wire_turn_checkpoints};
+pub use checkpoint::{RecordedCheckpoint, UndoOutcome, recorded, undo, wire_turn_checkpoints};
 pub use compaction::{CompactStatus, Compactor};
 pub use kernel::{
     HostRegistry, KernelService, KernelServiceOptions, ipython_tool, restore_notice_text,

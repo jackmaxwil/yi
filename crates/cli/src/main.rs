@@ -465,6 +465,9 @@ fn run_undo(args: &Args) -> i32 {
             return 1;
         }
     };
+    if args.prompt.trim() == "list" {
+        return list_checkpoints(&store, args.json);
+    }
     let home = std::env::var_os("HOME")
         .map(std::path::PathBuf::from)
         .unwrap_or_default();
@@ -482,6 +485,44 @@ fn run_undo(args: &Args) -> i32 {
             1
         }
     }
+}
+
+fn list_checkpoints(store: &yi_runtime::session_store::SharedSession, json: bool) -> i32 {
+    use yi_types::checkpoint::CheckpointAt;
+    let recorded = yi_runtime::recorded(store);
+    if json {
+        let rows: Vec<serde_json::Value> = recorded
+            .iter()
+            .map(|entry| {
+                serde_json::json!({
+                    "tree": entry.data.tree,
+                    "at": entry.data.at,
+                    "timestamp": entry.timestamp,
+                })
+            })
+            .collect();
+        if let Ok(line) = serde_json::to_string(&serde_json::json!({ "checkpoints": rows })) {
+            println!("{line}");
+        }
+        return 0;
+    }
+    if recorded.is_empty() {
+        println!("no checkpoints recorded");
+        return 0;
+    }
+    let now = yi_runtime::session_store::now_ms();
+    for entry in &recorded {
+        let at = match &entry.data.at {
+            CheckpointAt::TurnStart => "turn start",
+            CheckpointAt::TurnEnd => "turn end",
+            CheckpointAt::Undo => "undo",
+            CheckpointAt::Other(name) => name,
+        };
+        let age = sessions::age_label(now.saturating_sub(entry.timestamp));
+        let tree = entry.data.tree.get(..8).unwrap_or(&entry.data.tree);
+        println!("{tree}  {at:<10}  {age:>8}");
+    }
+    0
 }
 
 fn report_undo(changes: &[yi_runtime::Change], json: bool) {

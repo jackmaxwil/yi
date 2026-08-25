@@ -90,6 +90,13 @@ impl Checkpoints {
         Ok(changes)
     }
 
+    /// T14 `diff(a, b)`: what changed between two captures, as a patch the
+    /// permission display and ACP `diff.patch` can render.
+    pub fn diff(&self, from: &TreeId, to: &TreeId) -> Result<crate::GitPatch, CheckpointError> {
+        let text = self.git(&["diff", from.as_str(), to.as_str()])?;
+        Ok(crate::diff::GitPatch::from_text(text))
+    }
+
     fn git(&self, args: &[&str]) -> Result<String, CheckpointError> {
         let mut process = command("git");
         process

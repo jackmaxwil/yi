@@ -191,15 +191,53 @@ impl PermissionBroker {
                 allowed: false,
                 reason,
             },
-            Decision::Ask { title, description } => self.run_ask(
-                tool_call_id,
-                &title,
-                &description,
-                rule_kind,
-                &canonical,
-                &display,
-            ),
+            Decision::Ask { title, description } => {
+                let description = match Self::write_preview(tool_name, args, &self.cwd) {
+                    Some(patch) => format!("{description}\n{patch}"),
+                    None => description,
+                };
+                self.run_ask(
+                    tool_call_id,
+                    &title,
+                    &description,
+                    rule_kind,
+                    &canonical,
+                    &display,
+                )
+            }
         }
+    }
+
+    /// T13 in the approval prompt: an overwrite is judged by what it changes,
+    /// not by its path. Long patches are cut — the prompt is a decision aid, not
+    /// the file.
+    fn write_preview(
+        tool_name: &str,
+        args: &Map<String, Value>,
+        cwd: &std::path::Path,
+    ) -> Option<String> {
+        const PREVIEW_LINES: usize = 40;
+        if tool_name != "write" {
+            return None;
+        }
+        let path = args.get("path").and_then(Value::as_str)?;
+        let content = args.get("content").and_then(Value::as_str)?;
+        let resolved = if std::path::Path::new(path).is_absolute() {
+            std::path::PathBuf::from(path)
+        } else {
+            cwd.join(path)
+        };
+        let pre = std::fs::read_to_string(&resolved).unwrap_or_default();
+        let patch = yi_tools::patch(&pre, content, &resolved);
+        if patch.is_empty() {
+            return None;
+        }
+        let mut lines: Vec<&str> = patch.as_str().lines().take(PREVIEW_LINES).collect();
+        let total = patch.as_str().lines().count();
+        if total > PREVIEW_LINES {
+            lines.push("… patch truncated");
+        }
+        Some(lines.join("\n"))
     }
 
     fn run_ask(

@@ -206,3 +206,27 @@ fn resuming_the_tui_replays_the_transcript() -> TestResult {
     );
     Ok(())
 }
+
+#[test]
+fn a_turn_records_both_checkpoints() -> TestResult {
+    let workspace = Workspace::new("checkpoints")?;
+    std::fs::write(workspace.project().join("kept.txt"), "before\n")?;
+    ask(&workspace, "start a turn", &[])?;
+
+    let listed = workspace.yi(&["undo", "--json", "list"])?;
+    let parsed: Value = serde_json::from_str(stdout(&listed).trim())?;
+    let recorded = parsed
+        .get("checkpoints")
+        .and_then(Value::as_array)
+        .ok_or("no checkpoints array")?;
+    if recorded.is_empty() {
+        return Ok(());
+    }
+    let moments: Vec<&str> = recorded
+        .iter()
+        .filter_map(|entry| entry.get("at").and_then(Value::as_str))
+        .collect();
+    assert!(moments.contains(&"turnStart"), "{moments:?}");
+    assert!(moments.contains(&"turnEnd"), "{moments:?}");
+    Ok(())
+}

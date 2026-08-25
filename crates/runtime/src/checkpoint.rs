@@ -18,17 +18,29 @@ pub fn wire_turn_checkpoints(session: &AgentSession, home: &Path, cwd: &Path) {
         return;
     };
     let checkpoints = Arc::new(checkpoints);
+    session.set_turn_start_hook(capture_hook(
+        session,
+        Arc::clone(&checkpoints),
+        CheckpointAt::TurnStart,
+    ));
+    session.set_turn_end_hook(capture_hook(session, checkpoints, CheckpointAt::TurnEnd));
+}
+
+fn capture_hook(
+    session: &AgentSession,
+    checkpoints: Arc<Checkpoints>,
+    at: CheckpointAt,
+) -> Arc<crate::session::TurnHook> {
     let store = session.store_handle();
-    session.set_turn_start_hook(Arc::new(move || {
+    Arc::new(move || {
         let Some(store) = store() else {
             return;
         };
         let Ok(tree) = checkpoints.capture() else {
             return;
         };
-        let _capture_failure_never_fails_a_turn =
-            append_checkpoint(&store, &tree, CheckpointAt::TurnStart);
-    }));
+        let _capture_failure_never_fails_a_turn = append_checkpoint(&store, &tree, at.clone());
+    })
 }
 
 fn append_checkpoint(
@@ -50,7 +62,7 @@ fn append_checkpoint(
 /// Restores the tree the newest checkpoint holds, recording the replaced state
 /// as its own checkpoint first — that is what makes undo undoable (design 5.3).
 pub fn undo(store: &yi_session::SharedSession, project: &Path, home: &Path) -> UndoOutcome {
-    let Some(data) = newest_checkpoint(store) else {
+    let Some(data) = undo_target(store) else {
         return UndoOutcome::NoCheckpoint;
     };
     let checkpoints = match Checkpoints::open(&checkpoint_root(home), project) {
@@ -77,7 +89,13 @@ pub enum UndoOutcome {
     Failed(String),
 }
 
-fn newest_checkpoint(store: &yi_session::SharedSession) -> Option<CheckpointData> {
+/// One recorded checkpoint, newest first.
+pub struct RecordedCheckpoint {
+    pub data: CheckpointData,
+    pub timestamp: u64,
+}
+
+pub fn recorded(store: &yi_session::SharedSession) -> Vec<RecordedCheckpoint> {
     let session = yi_session::lock_session(store);
     let entries = session
         .find_entries_on_branch(
@@ -85,14 +103,38 @@ fn newest_checkpoint(store: &yi_session::SharedSession) -> Option<CheckpointData
             &yi_session::EntryQuery {
                 custom_type: Some(CHECKPOINT_ENTRY_TYPE.to_owned()),
                 order: yi_session::EntryOrder::NewestFirst,
-                limit: Some(1),
                 ..yi_session::EntryQuery::default()
             },
             &yi_session::BranchBounds::default(),
         )
-        .ok()?;
-    let Entry::Custom { data, .. } = entries.into_iter().next()? else {
-        return None;
-    };
-    serde_json::from_value(data?).ok()
+        .unwrap_or_default();
+    entries
+        .into_iter()
+        .filter_map(|entry| {
+            let Entry::Custom {
+                data, timestamp, ..
+            } = entry
+            else {
+                return None;
+            };
+            serde_json::from_value(data?)
+                .ok()
+                .map(|data| RecordedCheckpoint { data, timestamp })
+        })
+        .collect()
+}
+
+/// A turn-end capture is the state undo is standing in, so restoring it would
+/// be a no-op; undo walks back to the turn's start, or to the state a previous
+/// undo replaced (which is what makes the second undo a redo).
+fn undo_target(store: &yi_session::SharedSession) -> Option<CheckpointData> {
+    recorded(store)
+        .into_iter()
+        .find(|recorded| {
+            matches!(
+                recorded.data.at,
+                CheckpointAt::TurnStart | CheckpointAt::Undo
+            )
+        })
+        .map(|recorded| recorded.data)
 }

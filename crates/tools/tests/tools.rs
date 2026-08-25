@@ -242,3 +242,78 @@ fn checkpoint_restore_reverts_a_turn() -> TestResult {
     assert!(!project.0.join("created.txt").exists());
     Ok(())
 }
+
+#[test]
+fn diff_renders_a_unified_patch() -> TestResult {
+    let pre = "one\ntwo\nthree\nfour\nfive\nsix\nseven\n";
+    let post = "one\ntwo\nCHANGED\nfour\nfive\nsix\nseven\n";
+    let patch = yi_tools::patch(pre, post, std::path::Path::new("/tmp/sample.txt"));
+    assert_eq!(
+        patch.as_str(),
+        "--- a//tmp/sample.txt\n\
+         +++ b//tmp/sample.txt\n\
+         @@ -1,6 +1,6 @@\n\
+         \x20one\n\
+         \x20two\n\
+         -three\n\
+         +CHANGED\n\
+         \x20four\n\
+         \x20five\n\
+         \x20six\n"
+    );
+    Ok(())
+}
+
+#[test]
+fn diff_of_identical_files_is_empty() -> TestResult {
+    let patch = yi_tools::patch("same\n", "same\n", std::path::Path::new("/tmp/x"));
+    assert!(patch.is_empty());
+    Ok(())
+}
+
+#[test]
+fn diff_applies_with_git_apply() -> TestResult {
+    let dir = temp_dir("diff-apply")?;
+    let root = fs::canonicalize(&dir.0)?;
+    let file = root.join("sample.txt");
+    let pre = "alpha\nbravo\ncharlie\ndelta\n";
+    let post = "alpha\nBRAVO\ncharlie\ndelta\necho\n";
+    fs::write(&file, pre)?;
+    let patch = yi_tools::patch(pre, post, &file);
+    let patch_file = root.join("change.patch");
+    fs::write(&patch_file, patch.as_str())?;
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "git is the external ground truth for patch syntax"
+    )]
+    let applied = std::process::Command::new("git")
+        .args(["apply", "--unsafe-paths", "--directory", "/"])
+        .arg(&patch_file)
+        .current_dir(&root)
+        .output()?;
+    assert!(
+        applied.status.success(),
+        "git apply rejected the patch: {}",
+        String::from_utf8_lossy(&applied.stderr)
+    );
+    assert_eq!(fs::read_to_string(&file)?, post);
+    Ok(())
+}
+
+#[test]
+fn checkpoint_diff_reports_what_changed_between_captures() -> TestResult {
+    let project = temp_dir("checkpoint-diff")?;
+    let shadow = temp_dir("checkpoint-diff-shadow")?;
+    fs::write(project.0.join("notes.txt"), "alpha\n")?;
+    let checkpoints = yi_tools::Checkpoints::open(&shadow.0, &project.0)?;
+    let first = checkpoints.capture()?;
+    fs::write(project.0.join("notes.txt"), "beta\n")?;
+    let second = checkpoints.capture()?;
+
+    let patch = checkpoints.diff(&first, &second)?;
+    assert!(patch.as_str().contains("notes.txt"), "{}", patch.as_str());
+    assert!(patch.as_str().contains("-alpha"), "{}", patch.as_str());
+    assert!(patch.as_str().contains("+beta"), "{}", patch.as_str());
+    assert!(checkpoints.diff(&first, &first)?.is_empty());
+    Ok(())
+}

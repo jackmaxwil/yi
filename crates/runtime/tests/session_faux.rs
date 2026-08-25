@@ -263,3 +263,67 @@ async fn catastrophic_targets_are_denied_even_in_yolo() -> Result<(), Box<dyn Er
     assert!(text.contains("denied in every mode"), "{text}");
     Ok(())
 }
+
+#[tokio::test]
+async fn write_approval_carries_the_patch() -> Result<(), Box<dyn Error>> {
+    let dir = std::env::temp_dir().join(format!("yi-runtime-diff-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir)?;
+    let target = dir.join("notes.txt");
+    std::fs::write(&target, "alpha\nbravo\ncharlie\n")?;
+
+    let provider = Arc::new(ProviderStream::new(None, None));
+    let mut call_args = serde_json::Map::new();
+    call_args.insert("path".to_owned(), serde_json::json!("notes.txt"));
+    call_args.insert(
+        "content".to_owned(),
+        serde_json::json!("alpha\nBRAVO\ncharlie\n"),
+    );
+    provider.queue_faux(vec![
+        faux_assistant_message(
+            vec![faux_tool_call("call-1", "write", call_args)],
+            StopReason::ToolUse,
+        ),
+        faux_assistant_message(vec![faux_text("done")], StopReason::Stop),
+    ]);
+    let mut session = AgentSession::new(
+        SessionConfig {
+            system_prompt: "sys".to_owned(),
+            model: faux_model(),
+            thinking_level: None,
+            tool_execution: ExecutionMode::Sequential,
+        },
+        provider,
+    );
+    let broker = Arc::new(yi_runtime::PermissionBroker::new(
+        yi_runtime::PermissionMode::Ask,
+        dir.clone(),
+        Vec::new(),
+        None,
+        session.events_sender(),
+    ));
+    session.use_tools(yi_tools::builtin_tools(), dir.clone(), Some(broker));
+    let mut events = session.subscribe();
+    session.prompt("write it")?;
+    session.wait_idle().await;
+
+    let mut denial = String::new();
+    while let Ok(event) = events.try_recv() {
+        if let AgentEvent::ToolExecutionEnd { result, .. } = event {
+            denial = result
+                .content
+                .iter()
+                .map(|content| match content {
+                    yi_types::message::Content::Text { text, .. } => text.clone(),
+                    _ => String::new(),
+                })
+                .collect();
+        }
+    }
+    assert!(denial.contains("-bravo"), "{denial}");
+    assert!(denial.contains("+BRAVO"), "{denial}");
+    assert!(denial.contains(" alpha"), "{denial}");
+    assert_eq!(std::fs::read_to_string(&target)?, "alpha\nbravo\ncharlie\n");
+    let _ = std::fs::remove_dir_all(&dir);
+    Ok(())
+}

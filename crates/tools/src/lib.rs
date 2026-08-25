@@ -2,6 +2,7 @@
 
 mod builtins;
 pub mod checkpoint;
+pub mod diff;
 mod exec;
 pub mod hashline;
 mod ignore;
@@ -13,6 +14,7 @@ use std::sync::Arc;
 
 pub use builtins::{BashTool, GlobTool, GrepTool, WriteTool, list_files};
 pub use checkpoint::{Change, ChangeKind, CheckpointError, Checkpoints, TreeId};
+pub use diff::{GitPatch, patch};
 pub use exec::{ExecTool, discover_exec_tools};
 pub use ipython::{IpythonTool, KernelBridge, KernelCellOutcome};
 pub use process::{CommandCapture, OUTPUT_CAP, edit_file, run_captured};
