@@ -372,3 +372,100 @@ async fn follow_up_messages_restart_the_loop() {
     let _ = zero_usage();
     let _ = ExecutionMode::Parallel;
 }
+
+#[tokio::test]
+async fn a_misspelled_tool_name_is_repaired_once() {
+    let mut arguments = Map::new();
+    arguments.insert("word".to_owned(), json!("marco"));
+    let stream = Scripted::new(vec![
+        faux_assistant_message(
+            vec![faux_tool_call("call-1", "functions.Echo_tool", arguments)],
+            StopReason::ToolUse,
+        ),
+        faux_assistant_message(vec![faux_text("done")], StopReason::Stop),
+    ]);
+    let mut context = LoopContext {
+        system_prompt: "sys".to_owned(),
+        messages: Vec::new(),
+        tools: vec![Arc::new(EchoTool)],
+    };
+    let config = LoopConfig::new(faux_model());
+    let signal = InterruptSignal::default();
+    let (events, mut emit) = collector();
+    let _ = run_loop(
+        &mut context,
+        vec![user("hi")],
+        &config,
+        &signal,
+        &mut emit,
+        &stream,
+    )
+    .await;
+    let events = events.lock().unwrap_or_else(|error| error.into_inner());
+    let results: Vec<String> = events
+        .iter()
+        .filter_map(|event| match event {
+            AgentEvent::MessageEnd {
+                message: AgentMessage::ToolResult { content, .. },
+            } => Some(
+                content
+                    .iter()
+                    .map(|block| match block {
+                        yi_types::message::Content::Text { text, .. } => text.clone(),
+                        _ => String::new(),
+                    })
+                    .collect(),
+            ),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        results.iter().any(|text| text.contains("echo: ")),
+        "{results:?}"
+    );
+    assert!(
+        !results.iter().any(|text| text.contains("not found")),
+        "{results:?}"
+    );
+}
+
+#[tokio::test]
+async fn an_unrepairable_tool_name_still_fails() {
+    let stream = Scripted::new(vec![
+        faux_assistant_message(
+            vec![faux_tool_call("call-1", "teleport", Map::new())],
+            StopReason::ToolUse,
+        ),
+        faux_assistant_message(vec![faux_text("done")], StopReason::Stop),
+    ]);
+    let mut context = LoopContext {
+        system_prompt: "sys".to_owned(),
+        messages: Vec::new(),
+        tools: vec![Arc::new(EchoTool)],
+    };
+    let config = LoopConfig::new(faux_model());
+    let signal = InterruptSignal::default();
+    let (events, mut emit) = collector();
+    let _ = run_loop(
+        &mut context,
+        vec![user("hi")],
+        &config,
+        &signal,
+        &mut emit,
+        &stream,
+    )
+    .await;
+    let events = events.lock().unwrap_or_else(|error| error.into_inner());
+    assert!(
+        events.iter().any(|event| matches!(
+            event,
+            AgentEvent::MessageEnd {
+                message: AgentMessage::ToolResult { content, .. }
+            } if content.iter().any(|block| matches!(
+                block,
+                yi_types::message::Content::Text { text, .. } if text.contains("Tool teleport not found")
+            ))
+        )),
+        "an unknown tool must still fail with its own name"
+    );
+}

@@ -530,6 +530,8 @@ pub struct RuntimeWiring {
     pub depth: u8,
     pub max_depth: u8,
     pub rlm_dir: PathBuf,
+    /// §12 roles resolved to models; `None` keeps the session's own model.
+    pub summarizer: Option<Model>,
 }
 
 /// Wires kernel (ipython + host handlers) and subagents onto a session, and
@@ -630,7 +632,10 @@ fn wire_advisor(session: &AgentSession, wiring: &RuntimeWiring, tools: &[Arc<dyn
 
 pub fn attach_runtime(session: &mut AgentSession, wiring: RuntimeWiring) -> Arc<SubagentHost> {
     if session.compactor().is_none() {
-        session.enable_compaction();
+        session.enable_compaction_with_summarizer(
+            yi_context::Settings::default(),
+            wiring.summarizer.clone(),
+        );
     }
     crate::checkpoint::wire_turn_checkpoints(session, &wiring.home, &wiring.cwd);
     let mut registry = crate::kernel::HostRegistry::default();

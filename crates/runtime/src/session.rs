@@ -203,9 +203,18 @@ impl AgentSession {
     }
 
     pub fn enable_compaction_with(&mut self, settings: yi_context::Settings) {
+        self.enable_compaction_with_summarizer(settings, None);
+    }
+
+    pub fn enable_compaction_with_summarizer(
+        &mut self,
+        settings: yi_context::Settings,
+        summarizer: Option<Model>,
+    ) {
         let window_id = format!("win-{}", yi_session::now_ms());
         let mut compactor = crate::compaction::Compactor::new(window_id);
         compactor.settings = settings;
+        compactor.summarizer = summarizer;
         self.compactor = Some(Arc::new(compactor));
     }
 

@@ -154,16 +154,46 @@ fn render_text(event: &AgentEvent) -> Option<String> {
     }
 }
 
-/// Yi has no built-in default model; the user's config carries it.
+/// Yi has no built-in default model; the user's config carries it, either as
+/// `"model"` or as the §12 `"models"` role table.
 fn configured_model() -> Option<String> {
-    let home = std::env::var_os("HOME")?;
-    let path = std::path::Path::new(&home).join(".yi/config.json");
-    let content = std::fs::read_to_string(path).ok()?;
-    let config: serde_json::Value = serde_json::from_str(&content).ok()?;
-    config
+    let roles = configured_roles();
+    if let Some(primary) = roles.primary {
+        return Some(primary);
+    }
+    config_value()?
         .get("model")
         .and_then(serde_json::Value::as_str)
         .map(str::to_owned)
+}
+
+fn config_value() -> Option<serde_json::Value> {
+    let home = std::env::var_os("HOME")?;
+    let path = std::path::Path::new(&home).join(".yi/config.json");
+    let content = std::fs::read_to_string(path).ok()?;
+    serde_json::from_str(&content).ok()
+}
+
+fn configured_roles() -> yi_types::config::ModelRoles {
+    config_value()
+        .and_then(|config| config.get("models").cloned())
+        .and_then(|models| serde_json::from_value(models).ok())
+        .unwrap_or_default()
+}
+
+/// §12: an unset role falls back to the primary model.
+fn summarizer_model(args: &Args) -> Option<Model> {
+    let spec = configured_roles().summarizer?;
+    match resolve(&spec) {
+        Some(model) => Some(model),
+        None => {
+            eprintln!(
+                "warning: unknown summarizer model {spec}; using {}",
+                args.model
+            );
+            None
+        }
+    }
 }
 
 fn effective_cwd(args: &Args) -> std::path::PathBuf {
@@ -263,6 +293,7 @@ fn build_session(
             depth: 0,
             max_depth: 1,
             rlm_dir: default_session_dir(args).join(format!("rlm-{}", std::process::id())),
+            summarizer: summarizer_model(args),
         },
     );
     Ok((session, host))

@@ -133,10 +133,16 @@ async fn execute_one(
     call: ExtractedCall,
     signal: &InterruptSignal,
 ) -> Finalized {
-    let Some(tool) = tools
+    let names: Vec<String> = tools
         .iter()
-        .find(|tool| tool.definition().name == call.name)
-    else {
+        .map(|tool| tool.definition().name.clone())
+        .collect();
+    let borrowed: Vec<&str> = names.iter().map(String::as_str).collect();
+    // L13: one deterministic repair, then the call fails with the real error.
+    let resolved = crate::repair::repair_tool_name(&call.name, &borrowed)
+        .map(str::to_owned)
+        .unwrap_or_else(|| call.name.clone());
+    let Some(tool) = tools.iter().find(|tool| tool.definition().name == resolved) else {
         let text = format!("Tool {} not found", call.name);
         return Finalized {
             call,

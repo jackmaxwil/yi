@@ -24,6 +24,10 @@ pub struct CompactStatus {
 
 pub struct Compactor {
     pub settings: Settings,
+    /// §12 `summarizer` role. The window math stays on the turn's own model —
+    /// a cheaper summarizer with a smaller window must not make compaction
+    /// look overdue.
+    pub summarizer: Option<Model>,
     scope: Scope,
     window: Mutex<Window>,
     pending: AtomicBool,
@@ -119,6 +123,7 @@ impl Compactor {
     pub fn new(initial_window_id: String) -> Self {
         Self {
             settings: Settings::default(),
+            summarizer: None,
             scope: Scope::BodyAfterPrefix,
             window: Mutex::new(Window::new_initial(initial_window_id)),
             pending: AtomicBool::new(false),
@@ -234,11 +239,12 @@ impl Compactor {
             },
             tools: None,
         };
-        let summary = match complete_text(provider, model, &request(messages), signal).await {
+        let summarizer = self.summarizer.as_ref().unwrap_or(model);
+        let summary = match complete_text(provider, summarizer, &request(messages), signal).await {
             Ok(text) => Ok(text),
             Err(_) => {
                 let trimmed = &messages[messages.len() / 4..];
-                complete_text(provider, model, &request(trimmed), signal).await
+                complete_text(provider, summarizer, &request(trimmed), signal).await
             }
         };
         let summary_text = summary.unwrap_or_default();

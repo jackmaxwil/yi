@@ -4,6 +4,7 @@ pub mod acp;
 pub mod advisor;
 pub mod checkpoint;
 pub mod compaction;
+pub mod config;
 pub mod entry;
 pub mod event;
 pub mod goal;

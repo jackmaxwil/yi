@@ -230,3 +230,51 @@ fn a_turn_records_both_checkpoints() -> TestResult {
     assert!(moments.contains(&"turnEnd"), "{moments:?}");
     Ok(())
 }
+
+fn write_config(workspace: &Workspace, config: &str) -> TestResult {
+    let dir = workspace.0.join("home/.yi");
+    std::fs::create_dir_all(&dir)?;
+    std::fs::write(dir.join("config.json"), config)?;
+    Ok(())
+}
+
+#[test]
+fn the_primary_role_supplies_the_model() -> TestResult {
+    let workspace = Workspace::new("role-primary")?;
+    write_config(&workspace, r#"{"models":{"primary":"faux/faux-1"}}"#)?;
+    let answered = workspace.yi(&["ask", "role check"])?;
+    assert_eq!(
+        answered.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&answered.stderr)
+    );
+    assert!(
+        stdout(&answered).contains("faux: role check"),
+        "{}",
+        stdout(&answered)
+    );
+    Ok(())
+}
+
+#[test]
+fn an_unknown_summarizer_role_warns_and_keeps_the_primary() -> TestResult {
+    let workspace = Workspace::new("role-summarizer")?;
+    write_config(
+        &workspace,
+        r#"{"models":{"primary":"faux/faux-1","summarizer":"nope/nope-1"}}"#,
+    )?;
+    let answered = workspace.yi(&["ask", "role check"])?;
+    assert_eq!(answered.status.code(), Some(0));
+    let complaint = String::from_utf8_lossy(&answered.stderr);
+    assert!(
+        complaint.contains("unknown summarizer model nope/nope-1"),
+        "{complaint}"
+    );
+    assert!(
+        stdout(&answered).contains("faux: role check"),
+        "{}",
+        stdout(&answered)
+    );
+    Ok(())
+}
