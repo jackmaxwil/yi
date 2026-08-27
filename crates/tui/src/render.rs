@@ -10,34 +10,25 @@ use crate::popup::BottomView;
 use crate::status::{StatusInput, working_line};
 use crate::term;
 
-/// Floor for the live tail on a very short screen.
 const LIVE_TAIL_MIN: usize = 6;
 
-/// Rows of the streaming answer the live region shows. A markdown table has
-/// no blank line inside it, so nothing commits until the message ends and the
-/// whole table sits in the live region — a fixed six-row tail cut its head off
-/// mid-stream and read as clipped prose. Half the screen, the same share the
-/// tree panel takes, keeps the viewport off the `insert_before` whole-screen
-/// path.
+/// A markdown table holds no blank line, so nothing commits until the message
+/// ends and the whole table sits here — a fixed six-row tail cut its head off
+/// mid-stream. Half the screen keeps the viewport off `insert_before`'s path.
 pub fn live_tail_rows(rows: usize) -> usize {
     (rows / 2).max(LIVE_TAIL_MIN)
 }
 
-/// The last `rows` lines, which for a streaming block is the part still worth
-/// reading.
 pub fn keep_last(lines: Vec<Line<'static>>, rows: usize) -> Vec<Line<'static>> {
     let skip = lines.len().saturating_sub(rows);
     lines.into_iter().skip(skip).collect()
 }
 
-/// The rows of a streaming block the live region can show on a `rows`-tall
-/// screen, taken from the end.
 pub fn live_tail(lines: Vec<Line<'static>>, rows: usize) -> Vec<Line<'static>> {
     keep_last(lines, live_tail_rows(rows))
 }
 
-/// OMP sizes the tree list at half the terminal, floor 5, minus the panel's
-/// own chrome rows.
+/// OMP's sizing: half the terminal, floor 5, less the panel's chrome.
 fn tree_rows(rows: usize) -> usize {
     (rows / 2).max(5).min(rows.saturating_sub(9)).max(1)
 }
@@ -224,16 +215,12 @@ fn draw_frame<B>(
         u16::try_from(lines.len()).unwrap_or(composer_height)
     });
     let rows = |lines: &[Line<'static>]| u16::try_from(lines.len()).unwrap_or(u16::MAX);
-    // Incident: `resize_viewport` clamps the viewport to the screen and `put`
-    // silently drops whatever no longer fits, so an unbudgeted live tail evicts
-    // the rows drawn after it — the status line first, then the composer. The
-    // tail is the only elastic member of the stack; everything under it is a
-    // floor it has to fit above. `live_tail_rows` has a hard floor of 6 that
-    // knows nothing about what the rest of the stack needs, which is what let
-    // an 8-row screen lose its status line.
-    // ponytail: one elastic member. If the floor alone outgrows the screen (a
-    // tall approval plus a full HUD on a very short terminal) something still
-    // clips; give the HUD a budget too before building a priority order.
+    // Incident: `resize_viewport` clamps to the screen and `put` silently drops
+    // what no longer fits, so an unbudgeted live tail evicted the rows drawn
+    // after it — an 8-row screen lost its status line to the hard floor of 6.
+
+    // ponytail: one elastic member. If the floor alone outgrows the screen a
+    // tall approval still clips; budget the HUD before building a priority order.
     let floor = rows(&hud_lines)
         .saturating_add(if show_working || app.kitty {
             rows(&working)
@@ -249,11 +236,9 @@ fn draw_frame<B>(
         live_lines = keep_last(live_lines, usize::from(budget));
     }
     let desired = rows(&live_lines).saturating_add(floor);
-    // U36 (D47): the viewport resize deliberately touches nothing above itself.
-    // Rebuilding those rows here — one window of freshly wrapped lines painted
-    // over content the emulator has already reflowed — is what left the
-    // transcript showing fragments at two widths. The rebuild is the debounced
-    // whole-transcript pass below, from source, or it does not happen.
+    // U36 (D47): the viewport resize touches nothing above itself. Painting one
+    // window of freshly wrapped lines over content the emulator already reflowed
+    // is what left the transcript showing fragments at two widths.
     let resized = terminal.resize_viewport(desired).unwrap_or(false);
     if resized || mode_changed {
         terminal.invalidate_viewport();
@@ -274,15 +259,9 @@ fn draw_frame<B>(
             *y += height;
         };
         put(frame, &live_lines, &mut y);
-        // Incident (U34 + U13): the mark trails the live tail, it does not lead
-        // it. Leading was correct only while the live region held the whole
-        // answer; U13 commits each stable paragraph to scrollback mid-stream,
-        // so the viewport's top row is the commit boundary, not the top of the
-        // answer — the mark rendered there sat wedged between the committed
-        // half and the streaming half, moving down through the prose once per
-        // paragraph, and every move forced a kitty delete-and-replace. Below
-        // the tail it is always after all rendered prose, which is where the
-        // finished answer already puts it.
+        // Incident (D46): the mark trails the live tail. U13 makes the viewport's
+        // top row the commit boundary, so a leading mark sat wedged mid-answer and
+        // walked down one paragraph at a time, each move a kitty delete-and-replace.
         if show_working || app.kitty {
             if orb_active && y < area.bottom() {
                 orb_at.set(Some((area.left(), y)));
@@ -307,12 +286,9 @@ fn draw_frame<B>(
     app.logo_target = if orb_state.is_some() { 1.0 } else { 0.0 };
 }
 
-/// U35/U36 (codex `handle_draw_size_change`): a width change means every
-/// wrapped row in scrollback is now wrong, so arm the trailing debounce. A
-/// resize is a drag, and each event pushes the deadline out, so a rebuild runs
-/// once at the settled width rather than at every intermediate one. The first
-/// width observed initializes without scheduling — nothing has been emitted at
-/// an old width yet.
+/// U35/U36: a width change invalidates every wrapped row in scrollback. Each
+/// event pushes the deadline out, so a drag rebuilds once at the settled width;
+/// the first width observed initializes without scheduling.
 fn schedule_reflow(app: &mut App) {
     let width = u16::try_from(app.width).unwrap_or(u16::MAX);
     let change = app.reflow.note_width(width);

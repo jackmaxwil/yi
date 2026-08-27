@@ -39,10 +39,9 @@ pub fn process_pending_rewind<B: Backend + Write>(
     app.scheduler.request();
 }
 
-/// `/new` is the TUI's half of the `new_session` RPC (`cli::rpc`): a fresh
-/// store adopted by the running session, over the same screen reset a rewind
-/// uses. Swapping the store mid-turn would strand the running turn's messages
-/// in the file it no longer writes to, so a running turn refuses.
+/// A fresh store adopted by the running session, over the same screen reset a
+/// rewind uses. Swapping mid-turn would strand the running turn's messages in
+/// the file it no longer writes to, so a running turn refuses.
 pub fn process_pending_new<B: Backend + Write>(
     app: &mut App,
     terminal: &mut crate::terminal::Terminal<B>,
@@ -110,10 +109,9 @@ fn clear_screen<B: Backend + Write>(terminal: &mut crate::terminal::Terminal<B>)
     terminal.invalidate_viewport();
 }
 
-/// `/undo` is the TUI's half of `yi undo` (B2, over the T14 checkpoints): the
-/// files a turn wrote go back to the capture that turn started from. It stays
+/// The files a turn wrote go back to the capture it started from. This sits
 /// beside the transcript rewind because the pair is what "undo" means to a
-/// reader — one restores the conversation, the other the working tree.
+/// reader: one restores the conversation, the other the working tree.
 pub fn process_pending_undo(app: &mut App, session: &Arc<AgentSession>) {
     if !std::mem::take(&mut app.pending_undo) {
         return;

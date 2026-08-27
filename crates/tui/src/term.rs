@@ -85,8 +85,7 @@ pub fn build_terminal(
     Terminal::new(CrosstermBackend::new(writer), height)
 }
 
-/// U3: commit finished cells above the viewport, batched per draw. The
-/// synchronized bracket lives on the whole frame (`sync_frame`), not here —
+/// The synchronized bracket lives on the whole frame (`sync_frame`), not here:
 /// bracketing the commit alone presented a screen that had already scrolled
 /// with the previous frame's viewport still under it.
 pub fn commit_lines<B>(terminal: &mut Terminal<B>, lines: Vec<Line<'static>>) -> std::io::Result<()>
@@ -106,11 +105,9 @@ where
     Ok(())
 }
 
-/// U3 (codex `draw_with_resize_reflow`'s `stdout().sync_update`): one bracket
-/// around the whole frame — commit, viewport resize, reflow and the viewport
-/// draw. The terminal then presents the scroll and the new viewport together
-/// instead of showing the scrolled screen with a stale viewport under it, which
-/// is a visible flash at every paragraph boundary.
+/// One bracket around commit, viewport resize, reflow and draw, so the terminal
+/// presents the scroll and the new viewport together — showing the scrolled
+/// screen with a stale viewport under it flashes at every paragraph boundary.
 pub fn sync_frame<B, R>(terminal: &mut Terminal<B>, frame: impl FnOnce(&mut Terminal<B>) -> R) -> R
 where
     B: ratatui::backend::Backend + Write,

@@ -1,8 +1,5 @@
-// codex markdown table pipeline, port adapted (A.10 pass-3): styled span
-// cells, spillover filtering, column-count normalization, content-aware
-// width allocation with priority shrinking, aligned grid rendering with
-// in-cell wrapping, and the key/value record fallback when a grid no
-// longer scans. Hyperlink remapping and HTML-spillover heuristics dropped.
+// codex markdown table pipeline, port adapted (A.10 pass-3). Hyperlink
+// remapping and HTML-spillover heuristics dropped.
 
 use pulldown_cmark::Alignment;
 use ratatui::style::{Modifier, Style};
@@ -514,8 +511,6 @@ fn render_records(
     out
 }
 
-/// The full pipeline: spillover filtering, normalization, width allocation,
-/// grid-vs-records choice, spillover appended as plain text.
 pub fn render(
     header: Vec<TableCell>,
     body: Vec<Vec<TableCell>>,

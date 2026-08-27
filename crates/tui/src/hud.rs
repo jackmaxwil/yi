@@ -71,10 +71,8 @@ fn card_row(card: &BoardCard, theme: &Theme, spinner_phase: usize) -> Line<'stat
     Line::from(Span::styled(text, style))
 }
 
-/// U28: the pinned HUD. Content rows get tree-spine connectors lit accent
-/// top-down by done/total — the connector is the progress meter (OMP
-/// `interactive-mode.ts:2432-2456`): at least one cell lights on any
-/// progress, the spine never fully lights until everything is done.
+/// The tree-spine connector is the progress meter, lit accent top-down by
+/// done/total: at least one cell on any progress, never full until all done.
 pub fn render(input: &HudInput, theme: &Theme, spinner_phase: usize) -> Vec<Line<'static>> {
     let mut content: Vec<Line<'static>> = Vec::new();
     let header = match &input.goal {

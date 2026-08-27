@@ -24,8 +24,8 @@ impl FrameScheduler {
         self.dirty
     }
 
-    /// True when a draw should happen now: dirty, past the 60 fps ceiling,
-    /// and past the adaptive floor `last_start + min(2 × last_cost, 200 ms)`.
+    /// Dirty, past the 60 fps ceiling, and past the adaptive floor
+    /// `last_start + min(2 × last_cost, 200 ms)`.
     pub fn should_draw(&self, now: Instant) -> bool {
         if !self.dirty {
             return false;
@@ -51,7 +51,6 @@ impl FrameScheduler {
         self.last_cost = end.saturating_duration_since(start);
     }
 
-    /// The poll timeout to use: short while a draw is pending, long when idle.
     pub fn poll_timeout(&self, now: Instant) -> Duration {
         if !self.dirty {
             return Duration::from_millis(100);

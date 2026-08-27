@@ -2,11 +2,9 @@ use crate::app::App;
 use crate::cell::Cell;
 use crate::term;
 
-/// U18: `$EDITOR` on the composer draft. Raw mode and the keyboard flags come
-/// off before the child starts and go back on after it exits — the child owns
-/// the tty in between, and crossterm's unix reader has no background thread to
-/// steal bytes from it. `restore_tty` is false where there is no terminal to
-/// hand over (headless drive mode, tests).
+/// Raw mode and the keyboard flags come off before the child starts and go back
+/// on after it exits: the child owns the tty in between. `restore_tty` is false
+/// where there is no terminal to hand over (headless drive mode, tests).
 pub fn process_pending_editor<B: ratatui::backend::Backend>(
     app: &mut App,
     terminal: &mut crate::terminal::Terminal<B>,

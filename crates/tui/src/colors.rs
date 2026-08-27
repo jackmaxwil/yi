@@ -42,9 +42,8 @@ pub struct Theme {
     pub error: Color,
     pub warning: Color,
     pub success: Color,
-    /// codex `style.rs::user_message_bg`: the user block sits on the ground
-    /// lifted toward white. codex probes the terminal's background and falls
-    /// back to no tint when it cannot; Yi has no probe, so the tint is offered
+    /// The ground lifted toward white. codex probes the terminal's background
+    /// and drops the tint when it cannot; Yi has no probe, so the tint is offered
     /// only for the truecolor dark theme whose ground it already assumes.
     pub user_bg: Option<Color>,
 }
@@ -93,8 +92,7 @@ impl Theme {
         }
     }
 
-    /// The whole user block carries the tint, blank spacer rows included, so
-    /// the band reads as one object.
+    /// Blank spacer rows included, so the band reads as one object.
     pub fn user_style(&self) -> Style {
         match self.user_bg {
             Some(bg) => Style::default().bg(bg),
@@ -106,9 +104,8 @@ impl Theme {
         Style::default().fg(self.accent)
     }
 
-    /// Selection background for list surfaces (OMP `selectedBg`): the dark
-    /// theme lifts its own ground, every other tier borrows the terminal's
-    /// grey so the bar reads as filled without inventing a palette.
+    /// The dark theme lifts its own ground; every other tier borrows the
+    /// terminal's grey rather than inventing a palette.
     pub fn selection_bg(&self) -> Color {
         self.user_bg.unwrap_or(Color::DarkGray)
     }
@@ -130,8 +127,7 @@ const ACCENTS: [Color; 6] = [
     Color::Rgb(0xff, 0x96, 0x6c),
 ];
 
-/// Stable identity color from a name (OMP `getSessionAccentHex`): every
-/// session and subagent gets the same accent every time it renders.
+/// Stable, so a session or subagent keeps one accent across renders.
 pub fn name_accent(name: &str) -> Color {
     let mut hash = 0_u32;
     for byte in name.bytes() {

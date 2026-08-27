@@ -117,8 +117,7 @@ impl BottomView for ListPopup {
     }
 }
 
-/// U11: gitignore-aware file list for the `@` popup — one walk, shared with
-/// the `glob` and `grep` tools (yi-tools).
+/// One walk, shared with the `glob` and `grep` tools.
 pub fn walk_files(root: &std::path::Path, cap: usize) -> Vec<String> {
     yi_runtime::list_files(root, cap)
 }

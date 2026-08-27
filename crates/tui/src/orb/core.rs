@@ -24,8 +24,7 @@ pub struct OrbLine {
     pub w: f64,
 }
 
-/// One rendered instant: dots z-sorted into draw order, radius-clamped;
-/// lines draw first. Nothing needs further interpretation.
+/// Dots z-sorted into draw order and radius-clamped; lines draw first.
 #[derive(Debug, Clone, Default)]
 pub struct OrbFrame {
     pub dots: Vec<Dot>,
@@ -60,7 +59,6 @@ pub fn frac(x: f64) -> f64 {
     x - x.floor()
 }
 
-/// Deterministic hash in [0, 1).
 pub fn hash_d(a: f64, b: f64) -> f64 {
     let h = (a * 12.9898 + b * 78.233).sin() * 43758.5453;
     h - h.floor()
@@ -90,12 +88,10 @@ pub fn fib_dir(i: f64, n: f64) -> (f64, f64, f64) {
     (rad * a.cos(), y, rad * a.sin())
 }
 
-/// Shortest signed angular distance, wrapped to (-π, π].
 pub fn angle_delta(a: f64, b: f64) -> f64 {
     (a - b).sin().atan2((a - b).cos())
 }
 
-/// Shared spin + tilt + orthographic projection.
 pub fn make_proj(yaw: f64, tilt: f64, cx: f64, cy: f64, scale: f64) -> Proj {
     Proj {
         st: tilt.sin(),

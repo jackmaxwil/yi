@@ -1,22 +1,17 @@
 use crate::orb::core::Dot;
 use crate::orb::{OrbFrame, OrbState, evaluate};
 
-/// The mark and the activity indicator are one object (U34): the dots spell
-/// `Yi` at rest, rearrange into the thinking orb when a turn starts, and settle
-/// back. Only the dot positions interpolate — the orb engine owns every frame
-/// the working state renders, so the morph adds no second renderer.
+/// The mark and the activity indicator are one object (U34). Only the dot
+/// positions interpolate — the orb engine owns every frame the working state
+/// renders, so the morph adds no second renderer.
 pub const LOGO_COLS: u16 = 8;
 pub const LOGO_ROWS: u16 = 4;
 pub const MORPH_MS: u64 = 520;
 pub const FRAME_MS: u64 = 33;
 
-/// Advance the morph toward `target`.
-///
 /// Incident: a settled mark stops the frame timer, so the gap since the last
-/// paint can be arbitrarily long. Turning that gap straight into progress made
-/// the first animating frame consume the whole morph — the mark snapped to the
-/// orb with no animation at all. One frame is the most progress a frame can
-/// make, however long the program sat still before it.
+/// paint is unbounded. Turning it straight into progress let the first animating
+/// frame consume the whole morph; one frame is the most a frame can advance.
 pub fn advance(phase: f64, target: f64, elapsed: std::time::Duration) -> f64 {
     let max = FRAME_MS as f64 / MORPH_MS as f64;
     let elapsed_ms = elapsed.as_secs_f64() * 1000.0;
@@ -91,15 +86,13 @@ fn resample(dots: &[Dot], count: usize) -> Vec<Dot> {
         .collect()
 }
 
-/// `phase` 0 = the wordmark at rest, 1 = the working orb. Between them each
-/// dot travels to its partner in the orb's own live frame — the target is the
-/// working orb the whole way, never an intermediate preset, or the dots fly
+/// `phase` 0 = wordmark at rest, 1 = working orb. The target is the orb's own
+/// live frame the whole way, never an intermediate preset, or the dots fly
 /// toward one shape and snap to another at the end.
 ///
-/// Pairing decides whether this reads as a rearrangement or as noise: both
-/// clouds are ordered by angle about the centre and then the orb ordering is
-/// rotated to whichever offset minimises total travel, so dots take the
-/// shortest arcs available instead of crossing the figure.
+/// Pairing decides whether this reads as rearrangement or noise: both clouds are
+/// ordered by angle and the orb ordering rotated to the offset minimising total
+/// travel, so dots take the shortest arcs instead of crossing the figure.
 pub fn frame(phase: f64, clock: f64, size: u32) -> Option<OrbFrame> {
     let phase = phase.clamp(0.0, 1.0);
     let canvas = f64::from(size);

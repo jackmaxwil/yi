@@ -52,10 +52,9 @@ fn token_is_unbreakable(cells: &[Cell]) -> bool {
     text.contains("://")
 }
 
-/// Word wrap over spans, unicode-width aware (design U14). Breaks at spaces;
-/// an overlong plain token splits at a character boundary, but a token
-/// containing `://` is never split — the line overflows instead so terminal
-/// link detection keeps seeing one intact token (codex wrapping.rs, the idea).
+/// Breaks at spaces; an overlong plain token splits at a character boundary, but
+/// a token containing `://` never splits — the line overflows instead, so
+/// terminal link detection keeps seeing one intact token.
 pub fn wrap_line(line: &Line<'_>, width: usize, subsequent_indent: &str) -> Vec<Line<'static>> {
     let width = width.max(1);
     let indent_width: usize = subsequent_indent
@@ -110,8 +109,7 @@ pub fn wrap_line(line: &Line<'_>, width: usize, subsequent_indent: &str) -> Vec<
                 &mut word,
                 &mut word_width,
             );
-            // A space with nothing before it on the very first line is real
-            // indentation (a nested list marker, a padded cell), not a word
+            // A leading space on the first line is real indentation, not a word
             // separator — dropping it flattened every nested bullet.
             let leading_indent = current.is_empty() && out.is_empty();
             if (leading_indent || !current.is_empty()) && current_width < limit(&out) {

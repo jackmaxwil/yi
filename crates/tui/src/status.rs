@@ -109,11 +109,9 @@ fn right_segments(input: &StatusInput, name_max: usize) -> Vec<String> {
     segments
 }
 
-/// U16: one status row above the composer. Overflow runs OMP's named
-/// truncation cascade (`status-line/component.ts:1878-1943`): shrink the
-/// session name to a floor, pop right segments, shrink the path to a floor,
-/// then drop left segments from the end — skipping the path, so cwd
-/// survives longest (the naive version collapsed the bar to just the model).
+/// Overflow runs OMP's truncation cascade: shrink the session name to a floor,
+/// pop right segments, shrink the path to a floor, then drop left segments from
+/// the end, skipping the path — the naive version left only the model.
 pub fn render(input: &StatusInput, width: usize, theme: &Theme) -> Line<'static> {
     let accent = name_accent(&input.session_name);
     let accent_style = Style::default().fg(accent);
@@ -201,9 +199,7 @@ pub fn render(input: &StatusInput, width: usize, theme: &Theme) -> Line<'static>
     Line::from(spans)
 }
 
-/// The working line under the composer: spinner + the current tool's `i`
-/// intent (OMP: the model narrates what it thinks it is doing) + interrupt
-/// hint, `esc again to interrupt` after the first press.
+/// Spinner + the current tool's `i` intent + interrupt hint.
 pub fn working_line(
     intent: Option<&str>,
     spinner_phase: usize,

@@ -19,10 +19,9 @@ pub fn commit_complete_source(source: &str) -> (&str, &str) {
     }
 }
 
-/// The streaming commit point (U13): the longest prefix ending at a blank
-/// line outside any code fence. Prefix markdown re-renders identically as
-/// the source grows, so its lines can be committed to scrollback while the
-/// tail keeps streaming.
+/// U13: the longest prefix ending at a blank line outside any code fence.
+/// Prefix markdown re-renders identically as the source grows, so those lines
+/// can be committed to scrollback while the tail keeps streaming.
 pub fn stable_cut(source: &str) -> usize {
     let mut cut = 0;
     let mut offset = 0;
@@ -89,10 +88,8 @@ impl Builder<'_> {
             return;
         }
         let line = Line::from(std::mem::take(&mut self.spans));
-        // A wrapped list item hangs under the text after its marker; a wrapped
-        // paragraph does not. The hang is the width the markers actually
-        // occupy: a fixed two spaces left `10. ` and every nested glyph
-        // wrapping two columns short of their own text.
+        // The hang is the width the markers actually occupy: a fixed two spaces
+        // left `10. ` and every nested glyph wrapping two columns short.
         let hang: usize = self.list_stack.iter().map(|level| level.hang).sum();
         let indent = format!("{}{}", self.indent, " ".repeat(hang));
         self.out.extend(wrap_line(&line, self.width, &indent));

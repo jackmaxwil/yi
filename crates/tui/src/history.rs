@@ -5,11 +5,9 @@ use ratatui::text::Line;
 use crate::cell::{Cell, TranscriptMode};
 use crate::colors::Theme;
 
-/// Transcript cells kept as the source a resize rebuild renders from (U36).
-/// The bound is the reflow row cap, not a cell count: what matters is how many
-/// rows a rebuild is willing to write, and cells differ in height by two orders
-/// of magnitude. Cells are dropped from the front only once the rows they would
-/// render are already past that cap.
+/// The source a resize rebuild renders from (U36). The bound is the reflow row
+/// cap, not a cell count — cells differ in height by two orders of magnitude —
+/// so a cell drops only once the rows it would render are past that cap.
 #[derive(Default)]
 pub struct History {
     cells: VecDeque<Cell>,
@@ -24,10 +22,9 @@ impl History {
         self.cells.is_empty()
     }
 
-    /// Streaming commits one slice per stable blank line, and each slice
-    /// re-rendered on its own would take a fresh bullet gutter — a reflowed
-    /// repaint grew one bullet per paragraph where the live paint had one per
-    /// message. Consecutive slices merge back into the message they came from.
+    /// Consecutive slices merge back into the message they came from: each
+    /// re-rendered on its own takes a fresh bullet gutter, so a reflowed repaint
+    /// grew one bullet per paragraph where the live paint had one per message.
     pub fn retain(&mut self, cell: Cell) {
         if let Cell::Assistant { markdown } = &cell
             && let Some(Cell::Assistant { markdown: head }) = self.cells.back_mut()
@@ -38,9 +35,8 @@ impl History {
         self.cells.push_back(cell);
     }
 
-    /// Drop the cells a rebuild would never reach. Called with the same cap the
-    /// rebuild uses, after a commit, so the retained set tracks what is
-    /// actually replayable instead of growing without bound.
+    /// Called with the cap the rebuild uses, so the retained set tracks what is
+    /// replayable instead of growing without bound.
     pub fn trim_to_rows(&mut self, width: usize, theme: &Theme, mode: TranscriptMode, cap: usize) {
         let mut rows = 0usize;
         let mut keep = 0usize;
@@ -56,11 +52,9 @@ impl History {
         }
     }
 
-    /// Every retained cell re-rendered at `width`, newest-first until the row
-    /// cap is exceeded (codex `render_transcript_lines_for_reflow`). The cap is
-    /// enforced here, while rendering from source — never after writing to the
-    /// terminal, because rows the terminal will not retain are rows nobody can
-    /// scroll back to.
+    /// Newest-first until the row cap is exceeded. The cap is enforced here,
+    /// while rendering from source, never after writing to the terminal: rows the
+    /// terminal will not retain are rows nobody can scroll back to.
     pub fn replay(
         &self,
         width: usize,
@@ -81,7 +75,6 @@ impl History {
         blocks.into_iter().flatten().collect()
     }
 
-    /// The last `rows` lines of the transcript re-rendered at `width`.
     pub fn lines(
         &self,
         width: usize,

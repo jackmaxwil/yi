@@ -14,10 +14,9 @@ use crate::app::{App, AskRequest, TuiOptions, UiEvent};
 use crate::colors::Theme;
 use crate::keymap::{KeyCodeValue, SingleKey, default_keymap};
 
-/// Headless drive script (X1 `--keys`): one step per line, `#` comments.
-/// `key <spec>` uses the keymap grammar (`enter`, `ctrl-c`, `alt-down`);
-/// `type <text>` sends the characters; `wait <ms>`; `wait-idle <ms>` blocks
-/// until the turn ends (times out red); `quit` exits.
+/// One step per line, `#` comments. `key <spec>` uses the keymap grammar,
+/// `type <text>` sends characters, `wait <ms>`, `wait-idle <ms>` blocks until
+/// the turn ends (times out red), `quit` exits.
 #[derive(Debug, Clone)]
 pub enum Step {
     Key(SingleKey),
@@ -167,9 +166,8 @@ pub struct DriveOptions {
     pub height: u16,
 }
 
-/// Headless run of the real TUI loop: same App, same reduce, same draw path,
-/// terminal replaced by an in-memory screen; script steps replace the
-/// keyboard. Every draw is dumped to `frames_dir/NNNN.txt` when set.
+/// The real loop — same App, reduce and draw path — over an in-memory screen,
+/// with script steps for the keyboard. Draws dump to `frames_dir/NNNN.txt`.
 pub fn run_headless(
     runtime: tokio::runtime::Runtime,
     session: Arc<AgentSession>,

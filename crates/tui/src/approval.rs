@@ -52,10 +52,9 @@ impl BottomView for ApprovalView {
                 .fg(theme.warning)
                 .add_modifier(Modifier::BOLD),
         ))];
-        // T13: the description's first line is prose, everything after it is
-        // the tool's own diff. `wrap_line` has no newline handling, so the
-        // whole thing used to flatten into one span and get cut to three lines
-        // of mangled text — the diff was computed and then thrown away here.
+        // The first line is prose, the rest the tool's own diff. `wrap_line` has
+        // no newline handling, so the whole thing flattened into one span and cut
+        // to three mangled lines — the diff was computed and thrown away here.
         let mut prose = self
             .description
             .split('\n')

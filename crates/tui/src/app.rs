@@ -59,10 +59,9 @@ pub struct TuiOptions {
     pub initial_prompt: Option<String>,
 }
 
-// U2: the viewport starts at the height of an empty live region (composer
-// box + status row) anchored at the cursor, and grows upward from there —
-// codex's model. Starting tall would anchor the composer mid-screen until the
-// first history commit pushed it down.
+// U2: starting tall anchors the composer mid-screen until the first history
+// commit pushes it down, so the viewport opens at an empty live region's
+// height (composer box + status row) and grows upward from the cursor.
 const MIN_VIEWPORT_ROWS: u16 = 4;
 
 const SPINNER_PERIOD_MS: u128 = 80;
@@ -91,9 +90,8 @@ pub struct App {
     pub(crate) pending_new: bool,
     pub(crate) pending_editor: bool,
     pub(crate) pending_undo: bool,
-    /// A transcript-mode change rewrites cells already above the viewport, so
-    /// the rows there are rebuilt from the retained transcript — the same path
-    /// a resize reflow takes.
+    /// Rebuilds the rows above the viewport from the retained transcript, over
+    /// the resize-reflow path.
     pending_repaint: bool,
     pub(crate) pending_prompt_mark: bool,
     /// U34: 0 = the `Yi` wordmark at rest, 1 = the working orb. The dots
@@ -124,12 +122,9 @@ pub struct App {
     pub(crate) mode: TranscriptMode,
     pub(crate) kitty: bool,
     pub(crate) orb_placement: Option<(u16, u16)>,
-    /// Incident: a kitty placement scrolls with the text under it, and a resize
-    /// reflows that text — but `resize_viewport` only reports a change when the
-    /// viewport *rect* moves, which it does not when the window is neither
-    /// bottom-aligned nor overflowing. The app then computed the same cell,
-    /// skipped the re-emit, and the image sat wherever the emulator had left
-    /// it until the next turn re-armed the animation.
+    /// Incident: a resize reflows the text a kitty placement scrolls with, but
+    /// `resize_viewport` reports a change only when the viewport rect moves —
+    /// without this the image sat where the emulator left it until the next turn.
     orb_stale: bool,
     pub(crate) pending_title: Option<String>,
     pub(crate) started_at: Instant,
@@ -253,10 +248,8 @@ fn intent_of(args: &Value) -> Option<String> {
     args.get("i").and_then(Value::as_str).map(str::to_owned)
 }
 
-/// Time until the spinner glyph next changes. The glyph steps on
-/// `elapsed / SPINNER_PERIOD_MS`, so waking on a fixed interval beats against
-/// that period and the spinner advances unevenly; waking on the boundary makes
-/// each step land on time.
+/// The glyph steps on `elapsed / SPINNER_PERIOD_MS`, so a fixed wake interval
+/// beats against that period and the spinner advances unevenly.
 pub fn next_spinner_wake(elapsed_ms: u128) -> Duration {
     let into_step = elapsed_ms % SPINNER_PERIOD_MS;
     let remaining = SPINNER_PERIOD_MS.saturating_sub(into_step);
@@ -352,7 +345,6 @@ impl App {
         self.composer.text()
     }
 
-    /// U18 entry point for surfaces other than the keymap (`/editor`, tests).
     pub fn open_editor(&mut self) {
         self.pending_editor = true;
     }
@@ -389,10 +381,9 @@ impl App {
         self.width.saturating_sub(2)
     }
 
-    /// Ctrl+O. The mode decides how every cell renders, including the ones
-    /// already above the viewport, so the change asks for those rows to be
-    /// rebuilt from the retained transcript rather than only affecting cells
-    /// committed after it.
+    /// The mode decides how every cell renders, including those already above
+    /// the viewport, so the change repaints them rather than reaching only
+    /// cells committed after it.
     pub fn cycle_mode(&mut self) {
         self.mode = self.mode.next();
         self.pending_repaint = true;
@@ -431,15 +422,11 @@ impl App {
         self.history.retain(cell);
     }
 
-    /// The retained transcript re-rendered, as the resize repaint draws the
-    /// rows above the viewport.
     pub fn reflowed(&self, rows: usize) -> Vec<Line<'static>> {
         self.history
             .lines(self.content_width(), &self.theme, self.mode, rows)
     }
 
-    /// Drops everything the screen was showing so a rewound branch can be
-    /// replayed onto a clean transcript.
     pub(crate) fn reset_transcript(&mut self) {
         self.history.clear();
         self.pending_commit.clear();
@@ -460,7 +447,6 @@ impl App {
         self.pending_title.take()
     }
 
-    /// Activity → reference orb state (D41/A.13): the verb the agent is doing.
     pub fn orb_state(&self) -> Option<OrbState> {
         if matches!(self.bottom, Some(Bottom::Approval(..))) {
             return Some(OrbState::Listening);
@@ -493,11 +479,9 @@ impl App {
         Some(OrbState::Working)
     }
 
-    /// U13 streaming: each newly stable slice (blank-line boundary outside
-    /// code fences) renders standalone and commits; a byte cursor tracks what
-    /// has been committed. Slices never re-render, so trailing-blank trimming
-    /// in the renderer cannot misalign the committed count (the duplicated
-    /// list bug), and only the unstable tail repaints in the live region.
+    /// U13: each newly stable slice renders standalone against a byte cursor.
+    /// Re-rendering the whole prefix let the renderer's trailing-blank trimming
+    /// misalign the committed count and duplicate list items mid-stream.
     fn commit_stable_prefix(&mut self) {
         let cut = crate::markdown::stable_cut(&self.live_markdown);
         if cut <= self.live_cut {
@@ -842,9 +826,7 @@ type Bridge = (
     std::thread::JoinHandle<()>,
 );
 
-/// The runtime lives on its own thread: events flow out over std mpsc
-/// forwarders, user intents flow in over the command channel, and every
-/// session call happens inside the runtime context (spawn_run needs it).
+/// Every session call happens inside the runtime context; `spawn_run` needs it.
 pub(crate) fn spawn_runtime_bridge(
     runtime: tokio::runtime::Runtime,
     session: &Arc<AgentSession>,
@@ -881,9 +863,7 @@ pub(crate) fn spawn_runtime_bridge(
     (ui_tx, ui_rx, cmd_tx, handle, runtime_thread)
 }
 
-/// U7 drain-then-draw loop on a synchronous UI thread. The tokio runtime
-/// lives on its own thread; user intents go out over an unbounded command
-/// channel, runtime events come back over std mpsc from forwarder tasks.
+/// U7 drain-then-draw loop, synchronous: the tokio runtime is on its own thread.
 pub fn run_tui(
     runtime: tokio::runtime::Runtime,
     session: Arc<AgentSession>,
@@ -1003,11 +983,9 @@ pub fn run_tui(
             last_roster = Instant::now();
             sync_roster(&mut app, &host, &handle, &ui_tx);
         }
-        // A blanket request here made every turn draw at the 16 ms ceiling —
-        // five frames per visible spinner step, four of them byte-identical.
-        // Arriving tokens mark their own frame dirty (`reduce_agent`), so the
-        // only thing still needing a timer is the animation, and that moves at
-        // the spinner's period.
+        // A blanket request here drew every turn at the 16 ms ceiling: five
+        // frames per spinner step, four byte-identical. Tokens dirty their own
+        // frame in `reduce_agent`, leaving only the animation needing a timer.
         let phase = app.spinner_phase();
         if animating && phase != last_spinner_phase {
             last_spinner_phase = phase;
@@ -1080,9 +1058,8 @@ pub(crate) fn sync_roster(
     app.sync_children(&children);
 }
 
-/// The entries on the active branch only. `entries_of` returns the whole tree
-/// because the tree view draws every branch; a transcript must show the one
-/// the session is actually on, or a rewind leaves the abandoned turns on screen.
+/// The active branch only — `entries_of` returns the whole tree for the tree
+/// view, and a transcript built from that leaves rewound turns on screen.
 pub(crate) fn branch_of(session: &AgentSession) -> Vec<Entry> {
     let Some(store) = session.store() else {
         return Vec::new();
@@ -1137,8 +1114,7 @@ pub(crate) fn replay_child(app: &mut App, child_id: &str) {
     replay_session(app, &session);
 }
 
-/// A resumed session (`yi --session <id>`) opens on its own transcript; the
-/// model's context and the screen must agree about what was said.
+/// The model's context and the screen must agree about what was said.
 pub(crate) fn replay_session(app: &mut App, session: &AgentSession) {
     let entries = branch_of(session);
     let cells: Vec<Cell> = entries

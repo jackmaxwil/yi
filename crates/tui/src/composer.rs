@@ -27,11 +27,9 @@ impl Default for Composer {
     }
 }
 
-/// omp `#sanitizePastedText` (verbatim semantics): CRLF -> LF, tabs expanded
-/// (omp's code expands to three spaces despite its four-space comment — the
-/// code's behavior is the ported contract), control characters stripped
-/// except newline. NFC normalization is dropped: it needs a Unicode tables
-/// dep and macOS NFD drag-drops are the only known producer.
+/// omp `#sanitizePastedText`, verbatim semantics — its code expands tabs to
+/// three spaces despite its four-space comment, and the code is the contract.
+/// NFC normalization is dropped: it needs a Unicode tables dep.
 pub fn sanitize_paste(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     let mut chars = text.chars().peekable();
@@ -71,8 +69,7 @@ impl Composer {
         self.textarea.move_cursor(tui_textarea::CursorMove::End);
     }
 
-    /// The composer is a bordered box (codex/OMP shape); the block is
-    /// re-styled per draw so theme and running state stay current.
+    /// Re-styled per draw so theme and running state stay current.
     pub fn set_frame(&mut self, border: ratatui::style::Style, placeholder: ratatui::style::Style) {
         use ratatui::widgets::{Block, BorderType, Borders};
         self.textarea.set_placeholder_style(placeholder);

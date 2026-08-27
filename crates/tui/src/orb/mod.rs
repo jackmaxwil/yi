@@ -112,9 +112,7 @@ pub fn evaluate(state: OrbState, size: u32, clock: f64) -> Option<OrbFrame> {
     ))
 }
 
-/// U34 bookkeeping for the one kitty image: whether it is currently placed,
-/// where, and when its last animation step ran. The loop owns one of these for
-/// the session.
+/// The loop owns one of these for the session — there is one kitty image.
 pub struct Tick {
     pub shown: bool,
     at: Option<(u16, u16)>,
@@ -131,9 +129,8 @@ impl Default for Tick {
     }
 }
 
-/// U34: one image. The phase walks toward its target every frame, so the dots
-/// visibly travel between the `Yi` mark and the orb; a settled phase at rest
-/// needs no repaint at all.
+/// The phase walks toward its target every frame, so the dots visibly travel
+/// between the `Yi` mark and the orb; settled at rest, it needs no repaint.
 pub fn tick<B>(
     app: &mut crate::app::App,
     terminal: &mut crate::terminal::Terminal<B>,

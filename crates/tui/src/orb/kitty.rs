@@ -117,11 +117,9 @@ const IMAGE_ID: u32 = 7601;
 /// a further 12% for meaningfully more CPU at 30 fps.
 const ZLIB_LEVEL: u8 = 6;
 
-/// Transmit and place one RGBA frame at a cell rect: cursor saved, moved to
-/// (row, col) 0-based, image scaled into `cols` × `rows` cells, cursor
-/// restored. Same image id every frame, so kitty replaces rather than
-/// accumulates; payload is zlib-deflated (`o=z`) then chunked at 4096 as the
-/// protocol requires.
+/// Same image id every frame, so kitty replaces rather than accumulates; the
+/// payload is zlib-deflated (`o=z`) then chunked at 4096 as the protocol
+/// requires, with the cursor saved and restored around the placement.
 pub fn emit(
     out: &mut impl Write,
     rgba: &[u8],
@@ -159,7 +157,6 @@ pub fn emit(
     out.flush()
 }
 
-/// Remove the orb image (turn ended, or the fallback path takes over).
 pub fn delete(out: &mut impl Write) -> std::io::Result<()> {
     write!(out, "\x1b_Ga=d,d=i,i={IMAGE_ID},q=2\x1b\\")?;
     out.flush()

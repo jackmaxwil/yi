@@ -35,18 +35,14 @@ pub fn reflow_max_rows() -> usize {
     FALLBACK_MAX_ROWS
 }
 
-/// How the latest draw width relates to the previous observed one.
 pub struct WidthChange {
     pub changed: bool,
     pub initialized: bool,
 }
 
-/// U35: pending transcript-scrollback repair after a resize.
-///
-/// Observed width and rebuilt width are deliberately separate. A terminal can
+/// Observed width and rebuilt width are deliberately separate: a terminal can
 /// report an intermediate size during a drag and settle on the final one after
-/// the rebuild already ran, so the next draw has to be able to ask for one more
-/// rebuild even though the observed-width tracker has seen that value.
+/// the rebuild ran, so the next draw must be able to ask for one more.
 #[derive(Debug, Default)]
 pub struct ReflowState {
     last_observed_width: Option<u16>,
@@ -72,13 +68,11 @@ impl ReflowState {
         }
     }
 
-    /// Whether scrollback still needs rebuilding at `width`, compared against
-    /// the width that actually rebuilt it rather than the last one observed.
+    /// Against the width that rebuilt it, not the last one observed.
     pub fn reflow_needed_for_width(&self, width: u16) -> bool {
         self.last_reflow_width != Some(width) && self.pending_reflow_width != Some(width)
     }
 
-    /// Arm the trailing debounce. Later events push the deadline out.
     pub fn schedule_debounced(&mut self, target_width: Option<u16>, now: Instant) {
         if let Some(target_width) = target_width {
             self.pending_reflow_width = Some(target_width);
@@ -107,8 +101,7 @@ impl ReflowState {
         self.pending_reflow_width = None;
     }
 
-    /// Remember the width that actually rebuilt scrollback — "seen during a
-    /// draw" is not "repaired at this width".
+    /// "Seen during a draw" is not "repaired at this width".
     pub fn mark_reflowed_width(&mut self, width: u16) -> bool {
         self.last_reflow_width.replace(width) != Some(width)
     }
@@ -125,8 +118,7 @@ impl ReflowState {
         self.resize_requested_during_stream = true;
     }
 
-    /// Draining read: each resize-during-stream episode forces at most one
-    /// post-stream repair.
+    /// Draining: each episode forces at most one post-stream repair.
     pub fn take_stream_finish_needed(&mut self) -> bool {
         let needed = self.ran_during_stream || self.resize_requested_during_stream;
         self.ran_during_stream = false;

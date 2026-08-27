@@ -170,10 +170,9 @@ impl TreeView {
             .collect()
     }
 
-    /// OMP `TreeSelectorComponent`: a titled panel of
-    /// spacer / help / search / divider / spacer / rows / filter, and a row is
-    /// `cursor + gutter + active-path bullet + role: text` with the selection
-    /// carried by a full-width background.
+    /// OMP `TreeSelectorComponent`: a titled panel of spacer / help / search /
+    /// divider / spacer / rows / filter, each row `cursor + gutter + active-path
+    /// bullet + role: text`, selection carried by a full-width background.
     pub fn lines(&self, width: usize, theme: &Theme, max_rows: usize) -> Vec<Line<'static>> {
         let inner = width.saturating_sub(4);
         let mut out = vec![top_border(width, "Session Tree", theme)];
@@ -419,8 +418,7 @@ fn gutter_prefix(row: &Row) -> String {
     format!("{}{connector}", "│  ".repeat(row.depth.saturating_sub(1)))
 }
 
-/// Pad or cut a row to the content width so a selection background covers it
-/// end to end (OMP `fit`).
+/// So a selection background covers the row end to end (OMP `fit`).
 fn fit_spans(
     spans: Vec<Span<'static>>,
     width: usize,

@@ -214,16 +214,14 @@ fn strip_hashline(line: &str) -> &str {
     }
 }
 
-/// Splits `NN:text` into its anchor and its content. Returns `None` for a line
-/// that carries no line number, which is how the hashline header and every
+/// `None` for a line with no number, which is how the hashline header and every
 /// non-file tool fall through to a plain row.
 fn numbered(line: &str) -> Option<(&str, &str)> {
     let (number, text) = line.split_once(':')?;
     (!number.is_empty() && number.bytes().all(|b| b.is_ascii_digit())).then_some((number, text))
 }
 
-/// `path:N:text` split into its file and the rest, so consecutive hits in one
-/// file print the path once instead of once per row.
+/// Split so consecutive hits in one file print the path once, not once per row.
 fn grep_row(line: &str) -> Option<(&str, &str, &str)> {
     let (colon, _) = line.match_indices(':').find(|(colon, _)| {
         let rest = line.get(colon.saturating_add(1)..).unwrap_or_default();
@@ -309,10 +307,8 @@ impl ToolCell {
         lines
     }
 
-    /// A typed body, not a raw dump: a file read hangs off a dim line-number
-    /// gutter and a search groups its hits under each path, which is what all
-    /// three donors render and what makes ten lines readable instead of ten
-    /// repetitions of the same path.
+    /// Typed, not a raw dump: a read hangs off a line-number gutter and a search
+    /// groups hits under each path rather than repeating it ten times.
     fn body(&self, theme: &Theme) -> Vec<Line<'static>> {
         let dim = theme.dim_style();
         let text = Style::default().fg(theme.text);
@@ -353,10 +349,9 @@ impl ToolCell {
             .to_owned()
     }
 
-    /// One line saying what the call produced. Every donor shows result lines
-    /// by default — codex commits five under `  └ `, OMP four — and Yi showed
-    /// none, so a finished call left no trace of its outcome unless the reader
-    /// had already switched to verbose before it ran.
+    /// Yi showed no result lines at all, so a finished call left no trace of its
+    /// outcome unless the reader had switched to verbose before it ran (codex
+    /// commits five under `  └ `, OMP four).
     pub fn digest_of(name: &str, text: &str, failed: bool) -> Option<String> {
         let first = || {
             text.lines()
