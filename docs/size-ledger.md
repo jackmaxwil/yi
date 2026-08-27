@@ -15,3 +15,4 @@ the §13.3 table is the expected outcome, this ledger wins if they disagree.
 | 2026-08-24 | 2c batch 2 (D37): streamable-HTTP client feature of rmcp (sse-stream, futures-util, http as type-level directs) + OAuth over ureq | 4151984 | 2.4 | 13 / 111 |
 | 2026-08-24 | phase 4 (kernel): zeromq 0.6 pure-Rust (rand/regex/dashmap internals, deny-wrapped) + hmac; yi-kernel + ipython + subagent host in the binary | 4666400 | 3.8 | 15 / 132 |
 | 2026-08-24 | phase 7 (D41, §13.4 `tui`): ratatui 0.29 (crossterm, scrolling-regions) + tui-textarea + pulldown-cmark + unicode-width; `yi-tui` in the default build (yi-cli feature `tui`, default on per X1) — +0.87 MiB, inside the §8.14 ≤ 1 MiB budget | 5577424 | 2.3 | 19 / 165 |
+| 2026-08-27 | D48 kitty `o=z`: miniz_oxide 0.9 (`with-alloc`, default features off) + adler2, for compressed orb transmission. Measured against the same tree without it: 5759808 -> 5792880 | 5792880 | 2.36 | 20 / 167 |

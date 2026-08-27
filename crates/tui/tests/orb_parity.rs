@@ -129,3 +129,90 @@ fn engine_matches_reference_golden_vectors() -> TestResult {
 fn leak(name: &str) -> &'static str {
     Box::leak(name.to_owned().into_boxed_str())
 }
+
+/// U34 `o=z`: the terminal reads a zlib stream, not raw RGBA. A drift in the
+/// control keys, the chunk bound, or the compressed payload leaves the orb
+/// undrawn on every kitty-family terminal, and no non-kitty test path can see
+/// it. Ground truth is RFC 1950's own header rule plus the painted bytes —
+/// not this compressor's opinion of its own output.
+#[test]
+fn kitty_emit_transmits_an_inflatable_zlib_stream() -> TestResult {
+    const PX: usize = 192;
+    let frame = orb::evaluate(orb::OrbState::Composing, 64, 1.234).ok_or("no frame")?;
+    let rgba = orb::kitty::paint_rgba(&frame, 64.0, PX);
+
+    let mut wire = Vec::new();
+    orb::kitty::emit(&mut wire, &rgba, PX, 3, 7, 6, 3)?;
+    let wire = String::from_utf8(wire)?;
+
+    let (head, tail) = wire.split_once("\x1b_Gf=32,").ok_or("no transmit escape")?;
+    assert!(head.contains("a=d,d=i"), "placement not deleted first");
+    let (control, tail) = tail.split_once(';').ok_or("no payload separator")?;
+    assert!(
+        control.contains("o=z"),
+        "payload is compressed but not declared: {control}"
+    );
+    assert!(control.contains(&format!("s={PX},v={PX}")), "{control}");
+
+    let mut payload = String::new();
+    let (first, mut rest) = tail.split_once("\x1b\\").ok_or("unterminated chunk")?;
+    let mut chunk = first;
+    let mut more = control.ends_with("m=1");
+    loop {
+        assert!(chunk.len() <= 4096, "chunk over the protocol bound");
+        payload.push_str(chunk);
+        if !more {
+            break;
+        }
+        let (escape, next) = rest.split_once("\x1b\\").ok_or("unterminated chunk")?;
+        let (keys, body) = escape
+            .strip_prefix("\x1b_G")
+            .ok_or("chunk is not a graphics escape")?
+            .split_once(';')
+            .ok_or("no payload separator")?;
+        (more, chunk, rest) = (keys == "m=1", body, next);
+    }
+
+    let raw = decode_base64(&payload)?;
+    // RFC 1950 §2.2: low nibble of CMF is the compression method (8 = deflate)
+    // and the two header bytes read big-endian must be a multiple of 31.
+    let (cmf, flg) = (
+        *raw.first().ok_or("empty stream")?,
+        *raw.get(1).ok_or("truncated header")?,
+    );
+    assert_eq!(cmf & 0x0f, 8, "not a deflate stream");
+    assert_eq!((u16::from(cmf) << 8 | u16::from(flg)) % 31, 0, "bad FCHECK");
+
+    let inflated = miniz_oxide::inflate::decompress_to_vec_zlib(&raw)
+        .map_err(|error| format!("inflate failed: {error:?}"))?;
+    assert_eq!(inflated, rgba, "the terminal would paint different pixels");
+    assert!(
+        raw.len() * 4 < rgba.len(),
+        "compression under 4x — {} from {}",
+        raw.len(),
+        rgba.len()
+    );
+    Ok(())
+}
+
+fn decode_base64(text: &str) -> Result<Vec<u8>, Box<dyn Error>> {
+    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = Vec::with_capacity(text.len() / 4 * 3);
+    for quad in text.as_bytes().chunks(4) {
+        let mut bits = 0u32;
+        let mut keep = 0usize;
+        for (index, byte) in quad.iter().enumerate() {
+            if *byte == b'=' {
+                continue;
+            }
+            let slot = TABLE
+                .iter()
+                .position(|candidate| candidate == byte)
+                .ok_or("non-base64 byte in payload")?;
+            bits |= (slot as u32) << (18 - 6 * index);
+            keep = index;
+        }
+        out.extend_from_slice(&bits.to_be_bytes()[1..=keep]);
+    }
+    Ok(out)
+}

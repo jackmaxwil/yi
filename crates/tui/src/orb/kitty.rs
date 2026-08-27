@@ -112,10 +112,16 @@ fn base64(data: &[u8]) -> String {
 
 const IMAGE_ID: u32 = 7601;
 
+/// Deflate level for `o=z`. The 192px frame is 83% fully transparent, so the
+/// stream compresses 11x at its densest and 49x at the wordmark; level 9 buys
+/// a further 12% for meaningfully more CPU at 30 fps.
+const ZLIB_LEVEL: u8 = 6;
+
 /// Transmit and place one RGBA frame at a cell rect: cursor saved, moved to
 /// (row, col) 0-based, image scaled into `cols` × `rows` cells, cursor
 /// restored. Same image id every frame, so kitty replaces rather than
-/// accumulates; payload chunked at 4096 as the protocol requires.
+/// accumulates; payload is zlib-deflated (`o=z`) then chunked at 4096 as the
+/// protocol requires.
 pub fn emit(
     out: &mut impl Write,
     rgba: &[u8],
@@ -125,7 +131,9 @@ pub fn emit(
     cols: u16,
     rows: u16,
 ) -> std::io::Result<()> {
-    let payload = base64(rgba);
+    let payload = base64(&miniz_oxide::deflate::compress_to_vec_zlib(
+        rgba, ZLIB_LEVEL,
+    ));
     // Placements scroll with the text under them (insert_before pushes the
     // old one up into the transcript) — delete every placement of the id
     // before placing again, or each frame leaves a stamp behind.
@@ -141,7 +149,7 @@ pub fn emit(
         if index == 0 {
             write!(
                 out,
-                "\x1b_Gf=32,s={px},v={px},a=T,i={IMAGE_ID},p=1,q=2,C=1,c={cols},r={rows},m={more};{chunk}\x1b\\"
+                "\x1b_Gf=32,o=z,s={px},v={px},a=T,i={IMAGE_ID},p=1,q=2,C=1,c={cols},r={rows},m={more};{chunk}\x1b\\"
             )?;
         } else {
             write!(out, "\x1b_Gm={more};{chunk}\x1b\\")?;
