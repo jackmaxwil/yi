@@ -253,6 +253,16 @@ fn intent_of(args: &Value) -> Option<String> {
     args.get("i").and_then(Value::as_str).map(str::to_owned)
 }
 
+/// Time until the spinner glyph next changes. The glyph steps on
+/// `elapsed / SPINNER_PERIOD_MS`, so waking on a fixed interval beats against
+/// that period and the spinner advances unevenly; waking on the boundary makes
+/// each step land on time.
+pub fn next_spinner_wake(elapsed_ms: u128) -> Duration {
+    let into_step = elapsed_ms % SPINNER_PERIOD_MS;
+    let remaining = SPINNER_PERIOD_MS.saturating_sub(into_step);
+    Duration::from_millis(u64::try_from(remaining).unwrap_or(1).max(1))
+}
+
 pub(crate) fn elapsed_ms(since: Instant) -> u64 {
     u64::try_from(since.elapsed().as_millis()).unwrap_or(0)
 }
@@ -939,15 +949,21 @@ pub fn run_tui(
 
     let mut last_roster = Instant::now();
     let mut orb_tick = orb::Tick::default();
+    let mut last_spinner_phase = usize::MAX;
     while !app.quit {
         let timeout = app.scheduler.poll_timeout(Instant::now());
+        let animating = app.running
+            || app
+                .tasks
+                .values()
+                .any(|state| state.cell.status == TaskStatus::Running);
         let orb_moving = app.kitty
             && app.orb_placement.is_some()
             && (app.logo_target > 0.0 || app.logo_phase > 0.0);
         let mut timeout = if orb_moving {
             timeout.min(Duration::from_millis(33))
-        } else if app.running {
-            timeout.min(Duration::from_millis(90))
+        } else if animating {
+            timeout.min(next_spinner_wake(app.started_at.elapsed().as_millis()))
         } else {
             timeout
         };
@@ -987,12 +1003,14 @@ pub fn run_tui(
             last_roster = Instant::now();
             sync_roster(&mut app, &host, &handle, &ui_tx);
         }
-        if app.running
-            || app
-                .tasks
-                .values()
-                .any(|s| s.cell.status == TaskStatus::Running)
-        {
+        // A blanket request here made every turn draw at the 16 ms ceiling —
+        // five frames per visible spinner step, four of them byte-identical.
+        // Arriving tokens mark their own frame dirty (`reduce_agent`), so the
+        // only thing still needing a timer is the animation, and that moves at
+        // the spinner's period.
+        let phase = app.spinner_phase();
+        if animating && phase != last_spinner_phase {
+            last_spinner_phase = phase;
             app.scheduler.request();
         }
         if app.pending_open_tree {

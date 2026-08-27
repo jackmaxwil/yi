@@ -1297,3 +1297,36 @@ fn the_row_cap_is_enforced_while_rendering_from_source() -> TestResult {
     );
     Ok(())
 }
+
+/// The blanket per-iteration request made every turn draw at the 16 ms frame
+/// ceiling — five frames per visible spinner step, four of them byte-identical.
+/// Waking on the spinner's own boundary is what lets the request be dropped
+/// without the glyph stepping unevenly: a fixed interval beats against the
+/// 80 ms period and the step lands late by a drifting amount.
+#[test]
+fn the_turn_timer_wakes_on_the_spinner_boundary_not_a_fixed_interval() -> TestResult {
+    use std::time::Duration;
+    use yi_tui::app::next_spinner_wake;
+
+    // Just past a step: nearly a whole period left.
+    assert_eq!(next_spinner_wake(81), Duration::from_millis(79));
+    // Just before the next: a sliver.
+    assert_eq!(next_spinner_wake(159), Duration::from_millis(1));
+    // Exactly on a boundary: a full period, never zero — a zero wake would spin
+    // the loop instead of sleeping.
+    assert_eq!(next_spinner_wake(160), Duration::from_millis(80));
+    assert_eq!(next_spinner_wake(0), Duration::from_millis(80));
+
+    // Every wake lands inside one period and none is zero, at any offset.
+    for elapsed in 0u128..500 {
+        let wake = next_spinner_wake(elapsed);
+        assert!(
+            wake > Duration::ZERO && wake <= Duration::from_millis(80),
+            "elapsed {elapsed} produced {wake:?}"
+        );
+        // The wake must land exactly on a step boundary, or the glyph drifts.
+        let landed = elapsed + wake.as_millis();
+        assert_eq!(landed % 80, 0, "elapsed {elapsed} wakes off-boundary");
+    }
+    Ok(())
+}
