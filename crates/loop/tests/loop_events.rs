@@ -469,3 +469,98 @@ async fn an_unrepairable_tool_name_still_fails() {
         "an unknown tool must still fail with its own name"
     );
 }
+
+/// A stream still in flight: it emits a delta, fires the interrupt the way a
+/// user pressing Esc does, then goes quiet with the channel still open — which
+/// is what an uncancelled provider stream looks like from the loop's side.
+struct Trickle {
+    signal: Arc<InterruptSignal>,
+}
+
+impl yi_loop::run::StreamFn for Trickle {
+    fn stream(
+        &self,
+        _model: &Model,
+        _context: &LlmContext,
+        _signal: &InterruptSignal,
+    ) -> Receiver<AssistantMessageEvent> {
+        let (sender, receiver) = tokio::sync::mpsc::channel(8);
+        let signal = Arc::clone(&self.signal);
+        tokio::spawn(async move {
+            let partial =
+                |text: &str| faux_assistant_message(vec![faux_text(text)], StopReason::Stop);
+            let _ = sender
+                .send(AssistantMessageEvent::Start {
+                    partial: partial(""),
+                })
+                .await;
+            let _ = sender
+                .send(AssistantMessageEvent::TextDelta {
+                    content_index: 0,
+                    delta: "one ".to_owned(),
+                    partial: partial("one "),
+                })
+                .await;
+            signal.fire();
+            // The sender stays open and silent: nothing cancels a provider
+            // stream, so after the interrupt the HTTP body is still hanging and
+            // no further event is ever going to arrive. The turn has to end on
+            // the signal alone or it does not end at all.
+            tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+            drop(sender);
+        });
+        receiver
+    }
+}
+
+#[tokio::test]
+async fn an_interrupt_mid_stream_ends_the_turn_instead_of_riding_it_out() {
+    let signal = Arc::new(InterruptSignal::default());
+    let stream = Trickle {
+        signal: Arc::clone(&signal),
+    };
+    let mut context = LoopContext {
+        system_prompt: String::new(),
+        messages: Vec::new(),
+        tools: Vec::new(),
+    };
+    let config = LoopConfig::new(faux_model());
+    let (events, mut emit) = collector();
+    let collected = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        run_loop(
+            &mut context,
+            vec![user("stream something long")],
+            &config,
+            &signal,
+            &mut emit,
+            &stream,
+        ),
+    )
+    .await
+    .expect("a fired interrupt must end the turn; without a checkpoint in the stream consumer the loop waits on a stream that will never speak again");
+
+    let reasons: Vec<StopReason> = collected
+        .iter()
+        .filter_map(|message| match message {
+            AgentMessage::Assistant { stop_reason, .. } => Some(*stop_reason),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        reasons.contains(&StopReason::Aborted),
+        "a fired interrupt must end the turn as aborted, not error or run to \
+         completion: {reasons:?}"
+    );
+    // The turn is over: nothing kept streaming past the interrupt.
+    let ends = events
+        .lock()
+        .map(|events| {
+            events
+                .iter()
+                .filter(|event| matches!(event, AgentEvent::AgentEnd { .. }))
+                .count()
+        })
+        .unwrap_or_default();
+    assert_eq!(ends, 1, "the turn ends exactly once");
+}

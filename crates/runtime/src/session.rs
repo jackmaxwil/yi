@@ -556,6 +556,12 @@ impl AgentSession {
             }
             *status = Status::Running;
         }
+        // The interrupt signal lives on the session, and nothing ever cleared
+        // it: the first abort that landed made every later turn abort at its
+        // first checkpoint. The epoch is read here, at admission, and the
+        // compare-and-clear below runs in the spawned task — so an interrupt
+        // fired in the gap still stops this turn instead of being swallowed.
+        let admitted_epoch = parts.shared.signal.epoch();
         let RunParts {
             shared,
             provider,
@@ -662,6 +668,7 @@ impl AgentSession {
                 }
                 let _ = emit_shared.events.send(event);
             };
+            shared.signal.reset_if_epoch(admitted_epoch);
             run_loop(
                 &mut context,
                 vec![prompt],

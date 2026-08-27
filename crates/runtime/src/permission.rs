@@ -118,6 +118,7 @@ impl PermissionBroker {
         irreversible: bool,
         tool_call_id: &str,
         args: &Map<String, Value>,
+        preview: Option<&str>,
     ) -> CallOutcome {
         let command = if tool_name == "bash" {
             args.get("command").and_then(Value::as_str)
@@ -192,7 +193,7 @@ impl PermissionBroker {
                 reason,
             },
             Decision::Ask { title, description } => {
-                let description = match Self::write_preview(tool_name, args, &self.cwd) {
+                let description = match preview.map(Self::cut_preview) {
                     Some(patch) => format!("{description}\n{patch}"),
                     None => description,
                 };
@@ -208,36 +209,15 @@ impl PermissionBroker {
         }
     }
 
-    /// T13 in the approval prompt: an overwrite is judged by what it changes,
-    /// not by its path. Long patches are cut — the prompt is a decision aid, not
-    /// the file.
-    fn write_preview(
-        tool_name: &str,
-        args: &Map<String, Value>,
-        cwd: &std::path::Path,
-    ) -> Option<String> {
+    /// T13: the tool renders the diff, the prompt decides how much of it fits.
+    /// A long patch is cut — the prompt is a decision aid, not the file.
+    fn cut_preview(patch: &str) -> String {
         const PREVIEW_LINES: usize = 40;
-        if tool_name != "write" {
-            return None;
-        }
-        let path = args.get("path").and_then(Value::as_str)?;
-        let content = args.get("content").and_then(Value::as_str)?;
-        let resolved = if std::path::Path::new(path).is_absolute() {
-            std::path::PathBuf::from(path)
-        } else {
-            cwd.join(path)
-        };
-        let pre = std::fs::read_to_string(&resolved).unwrap_or_default();
-        let patch = yi_tools::patch(&pre, content, &resolved);
-        if patch.is_empty() {
-            return None;
-        }
-        let mut lines: Vec<&str> = patch.as_str().lines().take(PREVIEW_LINES).collect();
-        let total = patch.as_str().lines().count();
-        if total > PREVIEW_LINES {
+        let mut lines: Vec<&str> = patch.lines().take(PREVIEW_LINES).collect();
+        if patch.lines().count() > PREVIEW_LINES {
             lines.push("… patch truncated");
         }
-        Some(lines.join("\n"))
+        lines.join("\n")
     }
 
     fn run_ask(

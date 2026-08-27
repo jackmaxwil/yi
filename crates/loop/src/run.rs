@@ -44,6 +44,25 @@ fn synthesized_error_message(model: &Model, text: &str) -> AgentMessage {
     }
 }
 
+/// The interrupt lands mid-stream, so whatever has already been shown becomes
+/// the turn's message with an aborted stop reason — the user stopped the
+/// answer, they did not ask for what streamed to be thrown away.
+fn aborted_message(partial: Option<&AgentMessage>, model: &Model) -> AgentMessage {
+    let mut message = partial
+        .cloned()
+        .unwrap_or_else(|| synthesized_error_message(model, ""));
+    if let AgentMessage::Assistant {
+        stop_reason,
+        error_message,
+        ..
+    } = &mut message
+    {
+        *stop_reason = StopReason::Aborted;
+        *error_message = None;
+    }
+    message
+}
+
 fn stop_reason_of(message: &AgentMessage) -> StopReason {
     match message {
         AgentMessage::Assistant { stop_reason, .. } => *stop_reason,
@@ -273,7 +292,20 @@ async fn stream_assistant_response<S: StreamFn>(
     let mut receiver = stream.stream(model, &llm_context, signal);
     let mut added_partial = false;
     let mut final_message: Option<AgentMessage> = None;
-    while let Some(event) = receiver.recv().await {
+    loop {
+        // The provider's stream takes no cancellation input, so this is the
+        // only interrupt checkpoint a streaming answer has. Without it a turn
+        // with no tool call ran from first token to last with nothing able to
+        // stop it, and `abort` did not become observable until the turn had
+        // already finished. `biased` prefers the interrupt over one more token.
+        let event = tokio::select! {
+            biased;
+            () = signal.wait() => None,
+            event = receiver.recv() => event,
+        };
+        let Some(event) = event else {
+            break;
+        };
         match &event {
             AssistantMessageEvent::Start { partial } => {
                 context.messages.push(partial.clone());
@@ -318,7 +350,14 @@ async fn stream_assistant_response<S: StreamFn>(
         }
     }
     let final_message = final_message.unwrap_or_else(|| {
-        synthesized_error_message(model, "Provider stream ended without a terminal event")
+        if signal.is_fired() {
+            aborted_message(
+                added_partial.then(|| context.messages.last()).flatten(),
+                model,
+            )
+        } else {
+            synthesized_error_message(model, "Provider stream ended without a terminal event")
+        }
     });
     if added_partial {
         if let Some(last) = context.messages.last_mut() {

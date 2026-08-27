@@ -149,18 +149,25 @@ fn render_section_result(result: &PatchSectionResult, snapshots: &mut SnapshotSt
         (None, Some(line)) => out.push(format!("{op}; first change at line {line}")),
         (None, None) => out.push(op.to_owned()),
     }
-    if let Some(first) = result.first_changed_line
-        && result.op != SectionOp::Delete
-    {
+    if result.op != SectionOp::Delete {
         let lines: Vec<&str> = result.after.split('\n').collect();
-        let total = lines.len() as u64;
-        let lo = first.saturating_sub(EDIT_CONTEXT_LINES).max(1);
-        let hi = first.saturating_add(EDIT_CONTEXT_LINES).min(total);
+        let total = u64::try_from(lines.len()).unwrap_or(u64::MAX);
         let mut seen: Vec<u64> = Vec::new();
-        for line_num in lo..=hi {
-            if let Some(text) = lines.get((line_num - 1) as usize) {
-                out.push(format_numbered_line(line_num, text));
-                seen.push(line_num);
+        // Every hunk gets a window, not just the first. A window the model
+        // cannot see is a line it cannot anchor to, which forced a full
+        // re-read of the file after each multi-hunk edit.
+        for changed in crate::diff::changed_after_lines(&result.before, &result.after) {
+            let lo = changed.saturating_sub(EDIT_CONTEXT_LINES).max(1);
+            let hi = changed.saturating_add(EDIT_CONTEXT_LINES).min(total);
+            let start = seen
+                .last()
+                .map_or(lo, |last| lo.max(last.saturating_add(1)));
+            for line_num in start..=hi {
+                let index = usize::try_from(line_num.saturating_sub(1)).unwrap_or(usize::MAX);
+                if let Some(text) = lines.get(index) {
+                    out.push(format_numbered_line(line_num, text));
+                    seen.push(line_num);
+                }
             }
         }
         snapshots.record_seen_lines(&result.canonical_path, result.file_hash, &seen);
@@ -192,6 +199,40 @@ impl Tool for HashlineEditTool {
 
     fn kind(&self) -> ToolKind {
         ToolKind::Write
+    }
+
+    /// `prepare` is the dry-run half of the patcher's prepare/commit split: it
+    /// validates and materializes the new text without touching disk. The
+    /// clipboard is forked and the fork is dropped, so previewing a patch the
+    /// user then denies leaves no register behind.
+    fn preview(&self, input: &Map<String, Value>, cwd: &Path) -> Option<String> {
+        let patch_text = input.get("patch").and_then(Value::as_str)?;
+        let patch = Patch::parse(patch_text, Some(cwd)).ok()?;
+        let mut state = lock_state(&self.state);
+        let HashlineState {
+            snapshots,
+            clipboard,
+            ..
+        } = &mut *state;
+        let mut scratch = super::clipboard::fork_clipboard(clipboard);
+        let mut patcher = Patcher::new(snapshots, cwd.to_owned());
+        let mut out = String::new();
+        for section in &patch.sections {
+            let Ok(prepared) = patcher.prepare(section, &mut scratch) else {
+                continue;
+            };
+            if prepared.is_noop() {
+                continue;
+            }
+            let (before, after) = prepared.diff_inputs();
+            let resolved = resolve_path(&ToolContext::new(cwd.to_owned()), prepared.path());
+            let diff = crate::diff::patch(before, after, &resolved);
+            if diff.is_empty() {
+                continue;
+            }
+            out.push_str(diff.as_str());
+        }
+        (!out.is_empty()).then_some(out)
     }
 
     fn execute(&self, input: Map<String, Value>, context: &ToolContext) -> ToolOutput {

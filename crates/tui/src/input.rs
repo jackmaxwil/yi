@@ -4,13 +4,13 @@ use ratatui::crossterm::event::{Event as CtEvent, KeyEventKind};
 
 use crate::app::{App, Bottom, Command, SLASH_COMMANDS};
 use crate::approval::AskChoice;
-use crate::cell::{Cell, TranscriptMode};
+use crate::cell::Cell;
 use crate::focus::{FocusMove, focus_move, set_focus};
 use crate::keymap::{Action, EvalContext, KeyCodeValue, KeyInput, SingleKey};
 use crate::popup::{BottomView, ListPopup, PopupResult, walk_files};
 use crate::tree::TreeResult;
 
-pub(crate) fn handle_terminal_event(
+pub fn handle_terminal_event(
     app: &mut App,
     cmd_tx: &tokio::sync::mpsc::UnboundedSender<Command>,
     ct_event: CtEvent,
@@ -23,6 +23,7 @@ pub(crate) fn handle_terminal_event(
         CtEvent::Resize(cols, rows) => {
             app.width = usize::from(cols);
             app.set_rows(usize::from(rows));
+            app.mark_orb_stale();
             app.scheduler.request();
         }
         CtEvent::Key(key_event) if key_event.kind != KeyEventKind::Release => {
@@ -150,12 +151,7 @@ pub(crate) fn handle_action(
         }
         Action::HistoryPrev => app.composer.history_prev(),
         Action::HistoryNext => app.composer.history_next(),
-        Action::ToggleExpand => {
-            app.mode = app.mode.next();
-            app.commit_cell(&Cell::Notice {
-                text: format!("transcript mode: {}", app.mode.label()),
-            });
-        }
+        Action::ToggleExpand => app.cycle_mode(),
         Action::ToggleHud => app.hud_hidden = !app.hud_hidden,
         Action::ExternalEditor => app.pending_editor = true,
         Action::FocusChild => focus_move(app, FocusMove::Child),
@@ -168,16 +164,10 @@ pub(crate) fn handle_action(
 pub(crate) fn handle_slash(app: &mut App, command: &str) {
     match command {
         "new" => app.pending_new = true,
+        "undo" => app.pending_undo = true,
         "quit" => app.quit = true,
         "tree" => app.pending_open_tree = true,
         "editor" => app.pending_editor = true,
-        "expand" => {
-            if let Some(cell) = app.last_finished_tool.clone() {
-                let width = app.width.saturating_sub(2);
-                let lines = Cell::Tool(cell).lines(width, &app.theme, TranscriptMode::Verbose, 0);
-                app.pending_commit.extend(lines);
-            }
-        }
         _ => app.commit_cell(&Cell::Notice {
             text: format!("unknown command: /{command}"),
         }),

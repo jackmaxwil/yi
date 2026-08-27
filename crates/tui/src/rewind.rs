@@ -109,3 +109,65 @@ fn clear_screen<B: Backend + Write>(terminal: &mut crate::terminal::Terminal<B>)
     });
     terminal.invalidate_viewport();
 }
+
+/// `/undo` is the TUI's half of `yi undo` (B2, over the T14 checkpoints): the
+/// files a turn wrote go back to the capture that turn started from. It stays
+/// beside the transcript rewind because the pair is what "undo" means to a
+/// reader — one restores the conversation, the other the working tree.
+pub fn process_pending_undo(app: &mut App, session: &Arc<AgentSession>) {
+    if !std::mem::take(&mut app.pending_undo) {
+        return;
+    }
+    if app.running {
+        app.commit_cell(&Cell::Notice {
+            text: "/undo: the current turn is still running (Esc Esc to stop it)".to_owned(),
+        });
+        return;
+    }
+    let Some(store) = session.store() else {
+        app.commit_cell(&Cell::Notice {
+            text: "/undo: this session has no store to read checkpoints from".to_owned(),
+        });
+        return;
+    };
+    let home = std::env::var_os("HOME")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_default();
+    let cwd = std::path::PathBuf::from(&app.options.cwd);
+    let text = match yi_runtime::undo(&store, &cwd, &home) {
+        yi_runtime::UndoOutcome::Restored(changes) if changes.is_empty() => {
+            "/undo: nothing to restore — no file changed since the checkpoint".to_owned()
+        }
+        yi_runtime::UndoOutcome::Restored(changes) => {
+            let mut names: Vec<String> = changes
+                .iter()
+                .map(|change| change.path.display().to_string())
+                .collect();
+            names.sort();
+            names.dedup();
+            format!(
+                "/undo: restored {} — {}",
+                count_label(names.len()),
+                names.join(", ")
+            )
+        }
+        // Scoped to this session on purpose: undoing a turn the reader never
+        // saw is not what the word means here. An earlier session's turns are
+        // still reachable, just not from inside this one.
+        yi_runtime::UndoOutcome::NoCheckpoint => {
+            "/undo: this session has taken no turn yet — `yi undo` restores an earlier session"
+                .to_owned()
+        }
+        yi_runtime::UndoOutcome::Failed(error) => format!("/undo failed: {error}"),
+    };
+    app.commit_cell(&Cell::Notice { text });
+    app.scheduler.request();
+}
+
+fn count_label(count: usize) -> String {
+    if count == 1 {
+        "1 file".to_owned()
+    } else {
+        format!("{count} files")
+    }
+}

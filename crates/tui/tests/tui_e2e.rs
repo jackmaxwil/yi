@@ -362,12 +362,18 @@ fn resizing_the_window_leaves_one_composer_border() -> TestResult {
             yi_tui::render::draw(&mut app, &mut terminal, None);
         }
 
+        // D47: a drag leaves intermediate rows on screen on purpose — the
+        // rebuild is trailing-debounced so it runs once at the settled width.
+        // Wait it out, then draw: that is the state the user is left looking at.
+        std::thread::sleep(yi_tui::reflow::REFLOW_DEBOUNCE + Duration::from_millis(10));
+        yi_tui::render::draw(&mut app, &mut terminal, None);
+
         let contents = terminal.backend().contents();
         let borders = contents.matches('\u{256d}').count();
         assert_eq!(
             borders, 1,
-            "{label}: every resize must repaint one composer box, \
-             not stack a stale one per step:\n{contents}"
+            "{label}: once a resize settles, the rebuilt transcript carries one \
+             composer box, not a stale one per drag step:\n{contents}"
         );
     }
     Ok(())
@@ -401,6 +407,256 @@ fn a_running_turn_aims_the_mark_at_the_orb() -> TestResult {
         app.logo_target(),
         0.0,
         "the turn ending aims it back at the wordmark"
+    );
+    Ok(())
+}
+
+/// U13 commits each stable paragraph to scrollback mid-stream, so the row the
+/// mark used to occupy — the top of the viewport — is the commit boundary, not
+/// the top of the answer. Rendered there it sat between the committed prose and
+/// the streaming tail; a reader saw the agent's own mark spliced into the middle
+/// of its answer, once per paragraph.
+#[test]
+fn the_mark_trails_the_streaming_tail_instead_of_splitting_the_answer() -> TestResult {
+    let backend = VT100Backend::with_scrollback(80, 24, 200);
+    let mut terminal = yi_tui::terminal::Terminal::new(backend, 4)?;
+    let mut app = app();
+    app.reduce_agent(yi_types::event::AgentEvent::AgentStart);
+
+    // Two paragraphs: the first is stable and commits, the second is the tail
+    // still streaming under it.
+    let streaming = "Committed paragraph.\n\nTail paragraph still streaming";
+    let message = yi_types::message::AgentMessage::Assistant {
+        content: vec![yi_types::message::Content::Text {
+            text: streaming.to_owned(),
+            text_signature: None,
+        }],
+        api: String::new(),
+        provider: String::new(),
+        model: String::new(),
+        response_model: None,
+        response_id: None,
+        diagnostics: None,
+        usage: yi_types::message::Usage::zero(),
+        stop_reason: yi_types::message::StopReason::Stop,
+        deferred: None,
+        error_message: None,
+        raw_stop_reason: None,
+        end_turn: None,
+        timestamp: 0,
+    };
+    app.reduce_agent(yi_types::event::AgentEvent::MessageUpdate {
+        message: message.clone(),
+        assistant_message_event: yi_types::event::AssistantMessageEvent::TextDelta {
+            content_index: 0,
+            delta: String::new(),
+            partial: message,
+        },
+    });
+    yi_tui::render::draw(&mut app, &mut terminal, None);
+
+    let contents = terminal.backend().contents();
+    let row_of = |needle: &str| {
+        contents
+            .lines()
+            .position(|line| line.contains(needle))
+            .ok_or_else(|| format!("{needle:?} is not on screen:\n{contents}"))
+    };
+    let committed = row_of("Committed paragraph.")?;
+    let tail = row_of("Tail paragraph still streaming")?;
+    let mark = row_of("interrupt")?;
+
+    assert!(
+        committed < tail,
+        "the committed prefix stays above the tail:\n{contents}"
+    );
+    assert!(
+        tail < mark,
+        "the mark must sit after every rendered line of the answer, not between \
+         the committed half and the streaming half:\n{contents}"
+    );
+    Ok(())
+}
+
+/// `resize_viewport` clamps the viewport to the screen and `put` silently drops
+/// what no longer fits, so an unbudgeted live tail evicted the rows drawn after
+/// it. The status line went first, then the composer — the row the user types
+/// into, gone with no indication anything had been cut.
+#[test]
+fn a_short_screen_keeps_the_composer_and_status_under_a_long_tail() -> TestResult {
+    for height in [8u16, 10, 14, 24] {
+        let backend = VT100Backend::with_scrollback(80, height, 200);
+        let mut terminal = yi_tui::terminal::Terminal::new(backend, 4)?;
+        let mut app = app();
+        app.set_rows(usize::from(height));
+        app.reduce_agent(yi_types::event::AgentEvent::AgentStart);
+        let body = (1..=40)
+            .map(|n| format!("line {n}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let message = yi_types::message::AgentMessage::Assistant {
+            content: vec![yi_types::message::Content::Text {
+                text: body,
+                text_signature: None,
+            }],
+            api: String::new(),
+            provider: String::new(),
+            model: String::new(),
+            response_model: None,
+            response_id: None,
+            diagnostics: None,
+            usage: yi_types::message::Usage::zero(),
+            stop_reason: yi_types::message::StopReason::Stop,
+            deferred: None,
+            error_message: None,
+            raw_stop_reason: None,
+            end_turn: None,
+            timestamp: 0,
+        };
+        app.reduce_agent(yi_types::event::AgentEvent::MessageUpdate {
+            message: message.clone(),
+            assistant_message_event: yi_types::event::AssistantMessageEvent::TextDelta {
+                content_index: 0,
+                delta: String::new(),
+                partial: message,
+            },
+        });
+        yi_tui::render::draw(&mut app, &mut terminal, None);
+
+        let contents = terminal.backend().contents();
+        assert!(
+            contents.contains('╰'),
+            "the composer must survive a {height}-row screen:\n{contents}"
+        );
+        assert!(
+            contents.contains("0% of 128K"),
+            "the status line must survive a {height}-row screen:\n{contents}"
+        );
+    }
+    Ok(())
+}
+
+/// T13: the permission layer builds a diff for every mutating call, and the
+/// prompt is where the user reads it. The description arrives newline-joined
+/// and `wrap_line` has no newline handling, so the whole patch used to flatten
+/// into one span and get cut to three rows of mangled prose.
+#[test]
+fn the_approval_prompt_renders_its_diff_as_a_diff() -> TestResult {
+    use yi_tui::approval::ApprovalView;
+    use yi_tui::popup::BottomView;
+
+    let description = [
+        "edit crates/tui/src/cell.rs",
+        "--- a/crates/tui/src/cell.rs",
+        "+++ b/crates/tui/src/cell.rs",
+        "@@ -208,3 +208,4 @@",
+        " fn glyph(tool: &str) -> char {",
+        "-    match tool {",
+        "+    match tool.trim() {",
+    ]
+    .join("\n");
+    let view = ApprovalView::new("write".to_owned(), description);
+    let theme = Theme::new(ColorTier::TrueColor, true);
+    let rendered = flat_lines(&view.lines(80, &theme));
+    let joined = rendered.join("\n");
+
+    assert!(
+        rendered
+            .iter()
+            .any(|line| line.contains("-    match tool {")),
+        "the removed line is what the decision turns on:\n{joined}"
+    );
+    assert!(
+        rendered
+            .iter()
+            .any(|line| line.contains("+    match tool.trim() {")),
+        "the added line too:\n{joined}"
+    );
+    assert!(
+        rendered
+            .iter()
+            .any(|line| line.contains("@@ -208,3 +208,4 @@")),
+        "the hunk header locates the change:\n{joined}"
+    );
+    assert!(
+        !joined.contains("--- a/"),
+        "the git path headers repeat the title and cost two rows:\n{joined}"
+    );
+    Ok(())
+}
+
+/// A kitty placement scrolls with the text under it, and a resize reflows that
+/// text — but the viewport rect often does not move (the window is neither
+/// bottom-aligned nor overflowing), so the app computed the same cell, skipped
+/// the re-emit, and the mark sat wherever the emulator had left it. At rest the
+/// morph is settled, so nothing re-armed the redraw until the next turn.
+#[test]
+fn a_resize_forces_the_mark_to_be_placed_again() -> TestResult {
+    use ratatui::crossterm::event::Event as CtEvent;
+
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = app();
+    app.set_kitty(true);
+    assert!(
+        !app.take_orb_stale(),
+        "nothing is stale before a resize arrives"
+    );
+
+    yi_tui::input::handle_terminal_event(&mut app, &tx, CtEvent::Resize(100, 30));
+    assert!(
+        app.take_orb_stale(),
+        "a resize must force the next tick to place the image again — the app's \
+         own placement can be unchanged while the emulator has moved the image"
+    );
+    assert!(
+        !app.take_orb_stale(),
+        "the flag is consumed, so one resize costs exactly one re-place"
+    );
+    Ok(())
+}
+
+/// D47: a width change makes every wrapped row in scrollback wrong. The rebuild
+/// clears scrollback and the visible screen and re-emits the retained transcript
+/// at the new width — it does not repaint a window's worth of fresh wrapping
+/// over rows the emulator has already reflowed, which is what left the same
+/// prose on screen twice at two different widths.
+#[test]
+fn a_settled_resize_rebuilds_the_transcript_at_the_new_width() -> TestResult {
+    let backend = VT100Backend::with_scrollback(100, 20, 400);
+    let mut terminal = yi_tui::terminal::Terminal::new(backend, 4)?;
+    let mut app = app();
+    app.set_rows(20);
+    app.set_width(100);
+    app.commit_cell(&yi_tui::cell::Cell::Notice {
+        text: "a line long enough to wrap at sixty columns but not at one hundred columns"
+            .to_owned(),
+    });
+    yi_tui::render::draw(&mut app, &mut terminal, None);
+    let wide = terminal.backend().contents();
+    assert_eq!(
+        wide.matches("a line long enough").count(),
+        1,
+        "one copy at the original width:\n{wide}"
+    );
+
+    terminal.backend_mut().resize(60, 20);
+    app.set_width(60);
+    yi_tui::render::draw(&mut app, &mut terminal, None);
+    // Trailing debounce: the rebuild belongs to the settled width, not to any
+    // width the drag passed through.
+    std::thread::sleep(yi_tui::reflow::REFLOW_DEBOUNCE + std::time::Duration::from_millis(10));
+    yi_tui::render::draw(&mut app, &mut terminal, None);
+
+    let narrow = terminal.backend().contents();
+    assert_eq!(
+        narrow.matches("a line long enough").count(),
+        1,
+        "the rebuild clears before it re-emits, so the transcript appears once, \
+         not once per width it has been rendered at:\n{narrow}"
+    );
+    assert!(
+        narrow.contains("a line long enough to wrap at"),
+        "and the text survives the rebuild:\n{narrow}"
     );
     Ok(())
 }

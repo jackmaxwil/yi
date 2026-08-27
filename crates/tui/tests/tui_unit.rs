@@ -2,11 +2,12 @@ use std::error::Error;
 
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
+use yi_tui::cell::{Cell, ToolCell, ToolStatus, TranscriptMode};
 use yi_tui::colors::{ColorTier, Theme, detect_dark, detect_tier, name_accent};
 use yi_tui::composer::{Composer, sanitize_paste};
 use yi_tui::frame::FrameScheduler;
 use yi_tui::hud::{BoardCard, CardKind, CardStatus, HudInput};
-use yi_tui::keymap::{Action, EvalContext, KeyInput, default_keymap};
+use yi_tui::keymap::{Action, EvalContext, KeyCodeValue, KeyInput, SingleKey, default_keymap};
 use yi_tui::markdown::commit_complete_source;
 use yi_tui::status::StatusInput;
 use yi_tui::tree::{TreeFilter, TreeResult, TreeView};
@@ -247,7 +248,7 @@ fn a_streaming_table_keeps_its_header_on_a_normal_screen() -> TestResult {
     let source = "| crate | role |\n| --- | --- |\n| yi-types | shapes |\n| yi-loop | turns |\n| yi-ai | providers |\n| yi-session | transcripts |\n| yi-tools | tools |\n| yi-tui | screen |\n";
     let rendered = yi_tui::markdown::render(source, 60, &theme());
     assert!(rendered.len() > 6, "the table is taller than the old tail");
-    let shown: Vec<String> = yi_tui::app::live_tail(rendered.clone(), 48)
+    let shown: Vec<String> = yi_tui::render::live_tail(rendered.clone(), 48)
         .iter()
         .map(flat)
         .collect();
@@ -255,7 +256,7 @@ fn a_streaming_table_keeps_its_header_on_a_normal_screen() -> TestResult {
         shown.iter().any(|line| line.contains("crate")),
         "a table that fits the screen streams whole: {shown:?}"
     );
-    let cramped: Vec<String> = yi_tui::app::live_tail(rendered, 8)
+    let cramped: Vec<String> = yi_tui::render::live_tail(rendered, 8)
         .iter()
         .map(flat)
         .collect();
@@ -1012,6 +1013,287 @@ fn nested_items_hang_under_their_own_marker() -> TestResult {
     assert!(
         continuation.starts_with("    ") && !continuation.starts_with("     "),
         "a nested continuation clears both markers: {text:?}"
+    );
+    Ok(())
+}
+
+fn tool_cell(name: &str, result: &str, failed: bool) -> ToolCell {
+    ToolCell {
+        name: name.to_owned(),
+        intent: None,
+        status: if failed {
+            ToolStatus::Failed
+        } else {
+            ToolStatus::Done
+        },
+        summary: ToolCell::summary_of(name, ""),
+        digest: ToolCell::digest_of(name, result, failed),
+        preview: result.lines().map(str::to_owned).collect(),
+        elapsed_ms: 0,
+        calls: 1,
+    }
+}
+
+fn rendered(cell: &ToolCell, mode: TranscriptMode) -> Vec<String> {
+    Cell::Tool(cell.clone())
+        .lines(80, &theme(), mode, 0)
+        .iter()
+        .map(flat)
+        .collect()
+}
+
+#[test]
+fn a_finished_tool_states_its_outcome_without_switching_modes() -> TestResult {
+    let theme = theme();
+    let cases = [
+        ("read", "[a.rs#CF8C]\n1:one\n2:two\n3:three", "3 lines"),
+        (
+            "edit",
+            "[a.rs#77BC]\nupdated; first change at line 210\n210:new",
+            "updated; first change at line 210",
+        ),
+        (
+            "grep",
+            "src/a.rs:3:hit\nsrc/a.rs-4-ctx\nsrc/b.rs:9:hit",
+            "2 hits",
+        ),
+        ("glob", "src/a.rs\nsrc/b.rs", "2 files"),
+        (
+            "write",
+            "Wrote 36 bytes to /tmp/x",
+            "Wrote 36 bytes to /tmp/x",
+        ),
+    ];
+    for (name, result, expected) in cases {
+        let lines = rendered(&tool_cell(name, result, false), TranscriptMode::Normal);
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.contains(&format!("└ {expected}"))),
+            "{name} normal mode should state `{expected}`: {lines:?}"
+        );
+    }
+    // A single hit and a single line read as singular, not "1 hits".
+    let one = tool_cell("grep", "src/a.rs:3:hit", false);
+    assert_eq!(one.digest.as_deref(), Some("1 hit"));
+    let _ = theme;
+    Ok(())
+}
+
+#[test]
+fn a_failed_call_shows_why_in_every_mode() -> TestResult {
+    let cell = tool_cell("bash", "error[E0308]: mismatched types\n  --> a.rs:1", true);
+    for mode in [
+        TranscriptMode::Normal,
+        TranscriptMode::Thinking,
+        TranscriptMode::Verbose,
+    ] {
+        let lines = rendered(&cell, mode);
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.contains("error[E0308]: mismatched types")),
+            "a failure must be legible in {mode:?}: {lines:?}"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn verbose_reads_hang_off_a_line_number_gutter_and_drop_the_anchor_header() -> TestResult {
+    let cell = tool_cell(
+        "read",
+        "[a.rs#CF8C]\n9:fn main() {\n10:    body()\n11:}",
+        false,
+    );
+    let lines = rendered(&cell, TranscriptMode::Verbose);
+    let body = lines.join("\n");
+    assert!(
+        !body.contains("CF8C"),
+        "anchor header must not reach the reader: {body}"
+    );
+    assert!(body.contains("   9 fn main() {"), "{body}");
+    assert!(body.contains("  10     body()"), "{body}");
+    Ok(())
+}
+
+#[test]
+fn verbose_grep_prints_each_path_once() -> TestResult {
+    let cell = tool_cell(
+        "grep",
+        "src/a.rs:3:one\nsrc/a.rs:7:two\nsrc/b.rs:9:three",
+        false,
+    );
+    let lines = rendered(&cell, TranscriptMode::Verbose);
+    assert_eq!(
+        lines
+            .iter()
+            .filter(|line| line.trim() == "src/a.rs")
+            .count(),
+        1,
+        "{lines:?}"
+    );
+    assert!(
+        lines.iter().any(|line| line.contains("   3 one")),
+        "{lines:?}"
+    );
+    assert!(
+        lines.iter().any(|line| line.contains("   7 two")),
+        "{lines:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn cycling_the_transcript_mode_rewrites_what_is_already_on_screen() -> TestResult {
+    let mut app = streamed("A paragraph.\n");
+    let result = yi_types::event::ToolResult {
+        content: vec![yi_types::message::Content::Text {
+            text: "[a.rs#CF8C]\n1:one\n2:two".to_owned(),
+            text_signature: None,
+        }],
+        details: serde_json::Value::Null,
+        usage: None,
+        added_tool_names: None,
+        terminate: None,
+    };
+    app.reduce_agent(yi_types::event::AgentEvent::ToolExecutionEnd {
+        tool_call_id: "t1".to_owned(),
+        tool_name: "read".to_owned(),
+        result,
+        is_error: false,
+    });
+    let normal = app.reflowed(200).iter().map(flat).collect::<Vec<_>>();
+    assert!(
+        normal.iter().any(|line| line.contains("└ 2 lines")),
+        "{normal:?}"
+    );
+    assert!(
+        !normal.iter().any(|line| line.contains("one")),
+        "{normal:?}"
+    );
+
+    // Ctrl+O must both change the mode and ask for the rows above the viewport
+    // to be rebuilt; without the repaint request the cells already committed
+    // keep the body they were drawn with and the toggle looks inert.
+    let key = KeyInput::Single(SingleKey {
+        code: KeyCodeValue::Char('o'),
+        ctrl: true,
+        alt: false,
+        shift: false,
+    });
+    assert_eq!(
+        default_keymap().resolve(&key, &EvalContext::default()),
+        Some(Action::ToggleExpand),
+        "ctrl-o must still be the mode toggle"
+    );
+    app.cycle_mode();
+    app.cycle_mode();
+    assert_eq!(app.mode(), TranscriptMode::Verbose);
+    assert!(
+        app.take_pending_repaint(),
+        "the toggle must request a repaint"
+    );
+
+    let verbose = app.reflowed(200).iter().map(flat).collect::<Vec<_>>();
+    assert!(
+        verbose.iter().any(|line| line.contains("   1 one")),
+        "{verbose:?}"
+    );
+    assert!(
+        !verbose.iter().any(|line| line.contains("CF8C")),
+        "{verbose:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn the_reflow_debounce_rebuilds_once_at_the_settled_width() -> TestResult {
+    use std::time::Instant;
+    use yi_tui::reflow::{REFLOW_DEBOUNCE, ReflowState};
+
+    let mut state = ReflowState::default();
+    let now = Instant::now();
+
+    // The first width observed has no old-width transcript to repair.
+    let first = state.note_width(100);
+    assert!(first.initialized && !first.changed);
+    assert!(!state.pending_is_due(now));
+
+    // A drag: three widths in quick succession, each pushing the deadline out,
+    // so the rebuild runs once at the width the drag settled on.
+    for width in [90u16, 80, 72] {
+        assert!(state.note_width(width).changed);
+        state.schedule_debounced(Some(width), now);
+    }
+    assert!(!state.pending_is_due(now + REFLOW_DEBOUNCE / 2));
+    assert!(state.pending_is_due(now + REFLOW_DEBOUNCE));
+
+    // While the rebuild is pending, that width does not need scheduling again.
+    assert!(!state.reflow_needed_for_width(72));
+    // Once the pending work is taken but not yet done, it does.
+    state.clear_pending_reflow();
+    assert!(state.reflow_needed_for_width(72));
+    // Only the width that actually rebuilt counts as repaired.
+    state.mark_reflowed_width(72);
+    assert!(!state.reflow_needed_for_width(72));
+    // A terminal that settles on its real size after the rebuild still gets one.
+    assert!(state.reflow_needed_for_width(74));
+    Ok(())
+}
+
+#[test]
+fn a_resize_during_a_stream_forces_one_repair_after_it_settles() -> TestResult {
+    use std::time::Instant;
+    use yi_tui::reflow::ReflowState;
+
+    let mut state = ReflowState::default();
+    assert!(!state.take_stream_finish_needed());
+
+    // A rebuild that ran mid-stream could only render the partial that existed
+    // then, so the finished text has to be rebuilt once more.
+    state.note_width(100);
+    state.schedule_debounced(Some(80), Instant::now());
+    state.mark_ran_during_stream();
+    assert!(state.take_stream_finish_needed());
+    assert!(
+        !state.take_stream_finish_needed(),
+        "draining: one episode forces at most one repair"
+    );
+
+    // The other half: the width changed while streaming but the debounce never
+    // fired, so nothing rebuilt and the flag is the only record.
+    state.mark_resize_requested_during_stream();
+    assert!(state.take_stream_finish_needed());
+    Ok(())
+}
+
+#[test]
+fn the_row_cap_is_enforced_while_rendering_from_source() -> TestResult {
+    use yi_tui::cell::TranscriptMode;
+    use yi_tui::history::History;
+
+    let mut history = History::default();
+    for n in 1..=200 {
+        history.retain(Cell::Notice {
+            text: format!("notice {n}"),
+        });
+    }
+    let theme = theme();
+    let capped = History::replay(&history, 80, &theme, TranscriptMode::Normal, 20);
+    assert!(
+        capped.len() <= 21,
+        "the cap bounds what is rendered, not what is written afterwards: {}",
+        capped.len()
+    );
+    let text: Vec<String> = capped.iter().map(flat).collect();
+    assert!(
+        text.iter().any(|line| line.contains("notice 200")),
+        "the newest rows are the ones kept: {text:?}"
+    );
+    assert!(
+        !text.iter().any(|line| line.contains("notice 1 ")),
+        "the oldest rows fall outside the cap: {text:?}"
     );
     Ok(())
 }

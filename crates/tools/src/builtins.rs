@@ -9,6 +9,9 @@ use crate::tool::{
 
 const MATCH_CAP: usize = 1_000;
 const GREP_HIT_CAP: usize = 200;
+// A context window is multiplied by every hit, so an unclamped request turns
+// a 200-hit cap into an unbounded file dump.
+const GREP_CONTEXT_CAP: usize = 10;
 
 #[derive(Default)]
 pub struct WriteTool {
@@ -37,6 +40,19 @@ impl Tool for WriteTool {
 
     fn kind(&self) -> ToolKind {
         ToolKind::Write
+    }
+
+    fn preview(&self, input: &Map<String, Value>, cwd: &Path) -> Option<String> {
+        let path = input.get("path").and_then(Value::as_str)?;
+        let content = input.get("content").and_then(Value::as_str)?;
+        let resolved = if Path::new(path).is_absolute() {
+            std::path::PathBuf::from(path)
+        } else {
+            cwd.join(path)
+        };
+        let before = fs::read_to_string(&resolved).unwrap_or_default();
+        let patch = crate::diff::patch(&before, content, &resolved);
+        (!patch.is_empty()).then(|| patch.as_str().to_owned())
     }
 
     fn execute(&self, input: Map<String, Value>, context: &ToolContext) -> ToolOutput {
@@ -165,7 +181,7 @@ impl Tool for GrepTool {
     }
 
     fn description(&self) -> &str {
-        "Search file contents for a literal substring under path or the working directory. Returns path:line:text hits."
+        "Search file contents for a literal substring under path or the working directory. Returns path:line:text hits, and path-line-text for context rows. For regex or multiline searches, run rg through bash."
     }
 
     fn schema(&self) -> Value {
@@ -174,7 +190,8 @@ impl Tool for GrepTool {
             "properties": {
                 "pattern": {"type": "string", "description": "Literal substring to search for (not a regex)"},
                 "path": {"type": "string", "description": "Directory or file to search (default: the working directory)"},
-                "ignore_case": {"type": "boolean", "description": "Case-insensitive search"}
+                "ignore_case": {"type": "boolean", "description": "Case-insensitive search"},
+                "context": {"type": "integer", "description": "Lines of context to show on each side of a hit (default 0, capped at 10)"}
             },
             "required": ["pattern"]
         })
@@ -202,7 +219,13 @@ impl Tool for GrepTool {
             .get("path")
             .and_then(Value::as_str)
             .map_or_else(|| context.cwd.clone(), |path| resolve_path(context, path));
-        let mut hits: Vec<String> = Vec::new();
+        let context_lines = input
+            .get("context")
+            .and_then(Value::as_u64)
+            .map_or(0, |lines| usize::try_from(lines).unwrap_or(0))
+            .min(GREP_CONTEXT_CAP);
+        let mut rows: Vec<String> = Vec::new();
+        let mut hit_count: usize = 0;
         let mut search_file = |path: &Path| -> bool {
             let Ok(bytes) = fs::read(path) else {
                 return true;
@@ -211,35 +234,69 @@ impl Tool for GrepTool {
                 return true;
             }
             let content = String::from_utf8_lossy(&bytes);
-            for (index, line) in content.split('\n').enumerate() {
-                let haystack = if ignore_case {
-                    line.to_lowercase()
-                } else {
-                    line.to_owned()
-                };
-                if haystack.contains(&needle) {
-                    hits.push(format!("{}:{}:{}", path.display(), index + 1, line));
-                    if hits.len() >= GREP_HIT_CAP {
-                        return false;
+            let lines: Vec<&str> = content.split('\n').collect();
+            let mut matched: Vec<usize> = lines
+                .iter()
+                .enumerate()
+                .filter(|(_, line)| {
+                    if ignore_case {
+                        line.to_lowercase().contains(&needle)
+                    } else {
+                        line.contains(&needle)
                     }
-                }
+                })
+                .map(|(index, _)| index)
+                .collect();
+            if matched.is_empty() {
+                return true;
             }
-            true
+            matched.truncate(GREP_HIT_CAP.saturating_sub(hit_count));
+            hit_count = hit_count.saturating_add(matched.len());
+            let display = path.display().to_string();
+            let last = lines.len().saturating_sub(1);
+            // One past the last row already written for this file, so two hits
+            // whose context windows overlap never print a line twice.
+            let mut emitted: Option<usize> = None;
+            for index in &matched {
+                let lo = index.saturating_sub(context_lines);
+                let hi = index.saturating_add(context_lines).min(last);
+                let start = match emitted {
+                    Some(end) if lo <= end => end,
+                    Some(_) => {
+                        rows.push("--".to_owned());
+                        lo
+                    }
+                    None => lo,
+                };
+                for row in start..=hi {
+                    let Some(text) = lines.get(row) else {
+                        continue;
+                    };
+                    let line_number = row.saturating_add(1);
+                    rows.push(if matched.binary_search(&row).is_ok() {
+                        format!("{display}:{line_number}:{text}")
+                    } else {
+                        format!("{display}-{line_number}-{text}")
+                    });
+                }
+                emitted = Some(hi.saturating_add(1));
+            }
+            hit_count < GREP_HIT_CAP
         };
         if root.is_file() {
             search_file(&root);
         } else {
             walk_files(&root, &mut search_file);
         }
-        if hits.is_empty() {
+        if rows.is_empty() {
             text_output("No matches found")
-        } else if hits.len() >= GREP_HIT_CAP {
+        } else if hit_count >= GREP_HIT_CAP {
             text_output(format!(
                 "{}\n[result capped at {GREP_HIT_CAP} hits]",
-                hits.join("\n")
+                rows.join("\n")
             ))
         } else {
-            text_output(hits.join("\n"))
+            text_output(rows.join("\n"))
         }
     }
 }

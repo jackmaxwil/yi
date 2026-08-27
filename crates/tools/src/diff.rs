@@ -52,6 +52,29 @@ pub fn patch(pre: &str, post: &str, path: &Path) -> GitPatch {
     GitPatch(out)
 }
 
+/// Line numbers in `post` that `pre` does not already have, one per added or
+/// replaced line. A deletion reports the line that closed over it, so a hunk
+/// that only removes text still has somewhere to anchor.
+pub fn changed_after_lines(pre: &str, post: &str) -> Vec<u64> {
+    if pre == post {
+        return Vec::new();
+    }
+    let mut changed = Vec::new();
+    let mut after_line: u64 = 1;
+    for (op, _) in edit_script(&split_lines(pre), &split_lines(post)) {
+        match op {
+            Op::Keep => after_line = after_line.saturating_add(1),
+            Op::Add => {
+                changed.push(after_line);
+                after_line = after_line.saturating_add(1);
+            }
+            Op::Remove => changed.push(after_line),
+        }
+    }
+    changed.dedup();
+    changed
+}
+
 fn split_lines(text: &str) -> Vec<&str> {
     let mut lines: Vec<&str> = text.split('\n').collect();
     if lines.last() == Some(&"") {

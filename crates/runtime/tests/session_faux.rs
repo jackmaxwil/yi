@@ -327,3 +327,53 @@ async fn write_approval_carries_the_patch() -> Result<(), Box<dyn Error>> {
     let _ = std::fs::remove_dir_all(&dir);
     Ok(())
 }
+
+/// The interrupt signal lives on the session and nothing ever cleared it, so
+/// the first abort that landed left `fired` set — and every later turn aborted
+/// at its first checkpoint. A session the user interrupted once was finished.
+#[tokio::test]
+async fn a_session_still_runs_turns_after_an_abort() -> Result<(), Box<dyn Error>> {
+    let provider = Arc::new(ProviderStream::new(None, None));
+    provider.queue_faux(vec![
+        faux_assistant_message(vec![faux_text("first")], StopReason::Stop),
+        faux_assistant_message(vec![faux_text("second")], StopReason::Stop),
+    ]);
+    let session = AgentSession::new(
+        SessionConfig {
+            system_prompt: "sys".to_owned(),
+            model: faux_model(),
+            thinking_level: None,
+            tool_execution: ExecutionMode::Sequential,
+        },
+        provider,
+    );
+
+    session.prompt("one")?;
+    session.wait_idle().await;
+    // The user interrupts after that turn settled, the way a stray Esc lands.
+    session.abort();
+
+    let mut events = session.subscribe();
+    session.prompt("two")?;
+    session.wait_idle().await;
+
+    let mut reasons = Vec::new();
+    while let Ok(event) = events.try_recv() {
+        if let AgentEvent::MessageEnd {
+            message: yi_types::message::AgentMessage::Assistant { stop_reason, .. },
+        } = event
+        {
+            reasons.push(stop_reason);
+        }
+    }
+    assert!(
+        reasons.contains(&StopReason::Stop),
+        "the turn after an abort must run normally, not inherit the stale \
+         interrupt: {reasons:?}"
+    );
+    assert!(
+        !reasons.contains(&StopReason::Aborted),
+        "nothing was interrupted this turn: {reasons:?}"
+    );
+    Ok(())
+}

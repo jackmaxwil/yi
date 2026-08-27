@@ -330,3 +330,24 @@ impl<B: Backend> Terminal<B> {
         Ok(remainder)
     }
 }
+
+impl<B: Backend + std::io::Write> Terminal<B> {
+    /// U36, codex `custom_terminal.rs:528-545`: hard-reset scrollback and the
+    /// visible screen in one write. Some terminals only honour the purge when
+    /// it arrives together with the clear, which is why this is a single
+    /// `write!` and not a sequence of backend calls — reset scroll region,
+    /// reset style, home, clear screen, purge scrollback, home again.
+    pub fn clear_scrollback_and_visible_screen(&mut self) -> io::Result<()> {
+        if self.viewport_area.is_empty() {
+            return Ok(());
+        }
+        write!(self.backend, "\x1b[r\x1b[0m\x1b[H\x1b[2J\x1b[3J\x1b[H")?;
+        std::io::Write::flush(&mut self.backend)?;
+        self.last_cursor = Position { x: 0, y: 0 };
+        self.previous_buffer_mut().reset();
+        let mut area = self.viewport_area;
+        area.y = 0;
+        self.set_viewport_area(area);
+        Ok(())
+    }
+}

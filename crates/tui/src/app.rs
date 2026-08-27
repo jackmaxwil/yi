@@ -36,7 +36,7 @@ pub enum UiEvent {
     Child { child_id: String, event: AgentEvent },
 }
 
-pub(crate) enum Command {
+pub enum Command {
     Prompt(String),
     Steer(String),
     Abort,
@@ -65,31 +65,11 @@ pub struct TuiOptions {
 // first history commit pushed it down.
 const MIN_VIEWPORT_ROWS: u16 = 4;
 
-/// Floor for the live tail on a very short screen.
-const LIVE_TAIL_MIN: usize = 6;
-
-/// Rows of the streaming answer the live region shows. A markdown table has
-/// no blank line inside it, so nothing commits until the message ends and the
-/// whole table sits in the live region — a fixed six-row tail cut its head off
-/// mid-stream and read as clipped prose. Half the screen, the same share the
-/// tree panel takes, keeps the viewport off the `insert_before` whole-screen
-/// path.
-pub fn live_tail_rows(rows: usize) -> usize {
-    (rows / 2).max(LIVE_TAIL_MIN)
-}
-
-/// The rows of a streaming block the live region can show on a `rows`-tall
-/// screen, taken from the end.
-pub fn live_tail(lines: Vec<Line<'static>>, rows: usize) -> Vec<Line<'static>> {
-    let skip = lines.len().saturating_sub(live_tail_rows(rows));
-    lines.into_iter().skip(skip).collect()
-}
-
 const SPINNER_PERIOD_MS: u128 = 80;
 pub(crate) const ORB_COLS: u16 = 6;
 pub(crate) const ORB_ROWS: u16 = 3;
 pub(crate) const ORB_PX: usize = 192;
-pub(crate) const SLASH_COMMANDS: [&str; 5] = ["new", "quit", "expand", "tree", "editor"];
+pub(crate) const SLASH_COMMANDS: [&str; 5] = ["new", "undo", "quit", "tree", "editor"];
 
 pub struct TaskState {
     pub(crate) cell: TaskCell,
@@ -110,6 +90,11 @@ pub struct App {
     pub(crate) pending_rewind: Option<String>,
     pub(crate) pending_new: bool,
     pub(crate) pending_editor: bool,
+    pub(crate) pending_undo: bool,
+    /// A transcript-mode change rewrites cells already above the viewport, so
+    /// the rows there are rebuilt from the retained transcript — the same path
+    /// a resize reflow takes.
+    pending_repaint: bool,
     pub(crate) pending_prompt_mark: bool,
     /// U34: 0 = the `Yi` wordmark at rest, 1 = the working orb. The dots
     /// travel between the two; there is one orb, never a static one beside a
@@ -117,11 +102,11 @@ pub struct App {
     pub(crate) logo_phase: f64,
     pub(crate) logo_target: f64,
     pub(crate) history: crate::history::History,
+    pub(crate) reflow: crate::reflow::ReflowState,
     pub(crate) live_markdown: String,
     pub(crate) live_thought: String,
     pub(crate) live_cut: usize,
     pub(crate) live_tools: Vec<ToolCell>,
-    pub(crate) last_finished_tool: Option<ToolCell>,
     tool_started: HashMap<String, Instant>,
     pub(crate) tasks: HashMap<String, TaskState>,
     pub(crate) task_order: Vec<String>,
@@ -139,6 +124,13 @@ pub struct App {
     pub(crate) mode: TranscriptMode,
     pub(crate) kitty: bool,
     pub(crate) orb_placement: Option<(u16, u16)>,
+    /// Incident: a kitty placement scrolls with the text under it, and a resize
+    /// reflows that text — but `resize_viewport` only reports a change when the
+    /// viewport *rect* moves, which it does not when the window is neither
+    /// bottom-aligned nor overflowing. The app then computed the same cell,
+    /// skipped the re-emit, and the image sat wherever the emulator had left
+    /// it until the next turn re-armed the animation.
+    orb_stale: bool,
     pub(crate) pending_title: Option<String>,
     pub(crate) started_at: Instant,
     pub(crate) quit: bool,
@@ -161,6 +153,32 @@ pub(crate) fn text_of(content: &[Content]) -> String {
         .join("\n")
 }
 
+/// codex `exec_cell::output_lines`: the head says what ran and the tail says
+/// how it ended, and a command's error is almost always in the tail. Keeping
+/// only the first ten lines dropped exactly the half worth reading.
+fn preview_lines(text: &str) -> Vec<String> {
+    const HEAD: usize = 5;
+    const TAIL: usize = 5;
+    let lines: Vec<&str> = text.lines().collect();
+    if lines.len() <= HEAD.saturating_add(TAIL) {
+        return lines.into_iter().map(str::to_owned).collect();
+    }
+    let omitted = lines.len().saturating_sub(HEAD.saturating_add(TAIL));
+    let mut out: Vec<String> = lines
+        .iter()
+        .take(HEAD)
+        .map(|line| (*line).to_owned())
+        .collect();
+    out.push(format!("… {omitted} more lines"));
+    out.extend(
+        lines
+            .iter()
+            .skip(lines.len().saturating_sub(TAIL))
+            .map(|line| (*line).to_owned()),
+    );
+    out
+}
+
 fn thinking_of(content: &[Content]) -> String {
     content
         .iter()
@@ -179,7 +197,34 @@ pub(crate) fn user_text(content: &UserContent) -> String {
     }
 }
 
+/// The edit tool takes only a `patch`; its target lives in the patch's own
+/// `[path#TAG]` section headers. Without this the cell renders a bare `edit`
+/// with no indication of what it touched.
+fn patch_targets(patch: &str) -> String {
+    let mut paths: Vec<&str> = patch
+        .lines()
+        .filter_map(|line| line.strip_prefix('[')?.split_once('#'))
+        .map(|(path, _)| path)
+        .collect();
+    paths.dedup();
+    match paths.split_first() {
+        None => String::new(),
+        Some((first, [])) => (*first).to_owned(),
+        Some((first, rest)) => format!("{first} +{} more", rest.len()),
+    }
+}
+
 fn arg_summary(tool: &str, args: &Value) -> String {
+    if tool == "edit" {
+        let targets = args
+            .get("patch")
+            .and_then(Value::as_str)
+            .map(patch_targets)
+            .unwrap_or_default();
+        if !targets.is_empty() {
+            return targets;
+        }
+    }
     let arg = match tool {
         "bash" => args.get("cmd").or_else(|| args.get("command")),
         "read" | "edit" | "write" => args.get("path").or_else(|| args.get("file_path")),
@@ -226,15 +271,17 @@ impl App {
             pending_rewind: None,
             pending_new: false,
             pending_editor: false,
+            pending_undo: false,
+            pending_repaint: false,
             pending_prompt_mark: false,
             logo_phase: 0.0,
             logo_target: 0.0,
             history: crate::history::History::default(),
+            reflow: crate::reflow::ReflowState::default(),
             live_markdown: String::new(),
             live_thought: String::new(),
             live_cut: 0,
             live_tools: Vec::new(),
-            last_finished_tool: None,
             tool_started: HashMap::new(),
             tasks: HashMap::new(),
             task_order: Vec::new(),
@@ -252,6 +299,7 @@ impl App {
             mode: TranscriptMode::Normal,
             kitty: false,
             orb_placement: None,
+            orb_stale: false,
             pending_title: Some("Yi".to_owned()),
             started_at: Instant::now(),
             quit: false,
@@ -331,6 +379,32 @@ impl App {
         self.width.saturating_sub(2)
     }
 
+    /// Ctrl+O. The mode decides how every cell renders, including the ones
+    /// already above the viewport, so the change asks for those rows to be
+    /// rebuilt from the retained transcript rather than only affecting cells
+    /// committed after it.
+    pub fn cycle_mode(&mut self) {
+        self.mode = self.mode.next();
+        self.pending_repaint = true;
+        self.scheduler.request();
+    }
+
+    pub(crate) fn mark_orb_stale(&mut self) {
+        self.orb_stale = true;
+    }
+
+    pub fn take_orb_stale(&mut self) -> bool {
+        std::mem::take(&mut self.orb_stale)
+    }
+
+    pub fn mode(&self) -> TranscriptMode {
+        self.mode
+    }
+
+    pub fn take_pending_repaint(&mut self) -> bool {
+        std::mem::take(&mut self.pending_repaint)
+    }
+
     pub fn commit_cell(&mut self, cell: &Cell) {
         if matches!(cell, Cell::User { .. }) {
             self.pending_prompt_mark = true;
@@ -363,6 +437,13 @@ impl App {
         self.live_thought.clear();
         self.live_cut = 0;
         self.live_tools.clear();
+    }
+
+    pub fn is_running_probe(&self) -> bool {
+        self.running
+    }
+    pub fn esc_armed_probe(&self) -> bool {
+        self.esc_armed_at.is_some()
     }
 
     pub fn take_title(&mut self) -> Option<String> {
@@ -491,6 +572,7 @@ impl App {
                     intent: self.intent.clone(),
                     status: ToolStatus::Running,
                     summary: ToolCell::summary_of(&tool_name, &arg_summary(&tool_name, &args)),
+                    digest: None,
                     preview: Vec::new(),
                     elapsed_ms: 0,
                     calls: 1,
@@ -519,6 +601,7 @@ impl App {
                         intent: None,
                         status: ToolStatus::Running,
                         summary: ToolCell::summary_of(&tool_name, ""),
+                        digest: None,
                         preview: Vec::new(),
                         elapsed_ms: 0,
                         calls: 1,
@@ -530,13 +613,10 @@ impl App {
                     ToolStatus::Done
                 };
                 cell.elapsed_ms = elapsed;
-                cell.preview = text_of(&result.content)
-                    .lines()
-                    .take(10)
-                    .map(str::to_owned)
-                    .collect();
-                self.commit_cell(&Cell::Tool(cell.clone()));
-                self.last_finished_tool = Some(cell);
+                let text = text_of(&result.content);
+                cell.digest = ToolCell::digest_of(&tool_name, &text, is_error);
+                cell.preview = preview_lines(&text);
+                self.commit_cell(&Cell::Tool(cell));
                 self.intent = None;
             }
             _ => {}
@@ -632,18 +712,19 @@ impl App {
             }
             AgentEvent::MessageEnd { message } => self.reduce_message_end(&message),
             AgentEvent::ToolExecutionEnd {
-                tool_name, result, ..
+                tool_name,
+                result,
+                is_error,
+                ..
             } => {
+                let text = text_of(&result.content);
                 let cell = Cell::Tool(ToolCell {
                     name: tool_name.clone(),
                     intent: None,
                     status: ToolStatus::Done,
                     summary: ToolCell::summary_of(&tool_name, ""),
-                    preview: text_of(&result.content)
-                        .lines()
-                        .take(10)
-                        .map(str::to_owned)
-                        .collect(),
+                    digest: ToolCell::digest_of(&tool_name, &text, is_error),
+                    preview: preview_lines(&text),
                     elapsed_ms: 0,
                     calls: 1,
                 });
@@ -857,21 +938,30 @@ pub fn run_tui(
     }
 
     let mut last_roster = Instant::now();
-    let mut orb_shown = false;
-    let mut orb_at: Option<(u16, u16)> = None;
-    let mut last_orb = Instant::now() - Duration::from_secs(1);
+    let mut orb_tick = orb::Tick::default();
     while !app.quit {
         let timeout = app.scheduler.poll_timeout(Instant::now());
         let orb_moving = app.kitty
             && app.orb_placement.is_some()
             && (app.logo_target > 0.0 || app.logo_phase > 0.0);
-        let timeout = if orb_moving {
+        let mut timeout = if orb_moving {
             timeout.min(Duration::from_millis(33))
         } else if app.running {
             timeout.min(Duration::from_millis(90))
         } else {
             timeout
         };
+        // U36: the reflow deadline is the only thing that will fire after a
+        // drag stops, and a settled terminal sends no more events — without a
+        // wake here the rebuild waits for the next keypress.
+        if let Some(deadline) = app.reflow.pending_until() {
+            let now = Instant::now();
+            if now >= deadline {
+                app.scheduler.request();
+            } else {
+                timeout = timeout.min(deadline.saturating_duration_since(now));
+            }
+        }
         if event::poll(timeout).unwrap_or(false) {
             while event::poll(Duration::ZERO).unwrap_or(false) {
                 match event::read() {
@@ -911,58 +1001,17 @@ pub fn run_tui(
         }
         crate::rewind::process_pending_rewind(&mut app, &mut terminal, &session);
         crate::rewind::process_pending_new(&mut app, &mut terminal, &session);
+        crate::rewind::process_pending_undo(&mut app, &session);
         crate::editor::process_pending_editor(&mut app, &mut terminal, true);
         if app.scheduler.should_draw(Instant::now()) {
             let start = Instant::now();
             crate::render::draw(&mut app, &mut terminal, Some(&session));
             app.scheduler.mark_drawn(start, Instant::now());
         }
-        if app.kitty {
-            // U34: one image. The phase walks toward its target every frame, so
-            // the dots visibly travel between the `Yi` mark and the orb; a
-            // settled phase at rest needs no repaint at all.
-            let animating = app.logo_phase != app.logo_target || app.logo_target > 0.0;
-            let due =
-                animating && last_orb.elapsed() >= Duration::from_millis(crate::logo::FRAME_MS);
-            if !animating {
-                last_orb = Instant::now();
-            }
-            match app.orb_placement {
-                Some((col, row)) if due || !orb_shown || orb_at != Some((col, row)) => {
-                    if due {
-                        app.logo_phase = crate::logo::advance(
-                            app.logo_phase,
-                            app.logo_target,
-                            last_orb.elapsed(),
-                        );
-                        last_orb = Instant::now();
-                    }
-                    let clock = app.started_at.elapsed().as_secs_f64();
-                    if let Some(frame) = crate::logo::frame(app.logo_phase, clock, 64) {
-                        let rgba = orb::kitty::paint_rgba(&frame, 64.0, ORB_PX);
-                        let _ = orb::kitty::emit(
-                            terminal.backend_mut(),
-                            &rgba,
-                            ORB_PX,
-                            col,
-                            row,
-                            ORB_COLS,
-                            ORB_ROWS,
-                        );
-                        orb_shown = true;
-                        orb_at = Some((col, row));
-                    }
-                }
-                None if orb_shown => {
-                    orb_shown = false;
-                    let _ = orb::kitty::delete(terminal.backend_mut());
-                }
-                _ => {}
-            }
-        }
+        orb::tick(&mut app, &mut terminal, &mut orb_tick);
     }
 
-    if orb_shown {
+    if orb_tick.shown {
         let _ = orb::kitty::delete(terminal.backend_mut());
     }
     let _ = cmd_tx.send(Command::Shutdown);
@@ -1089,11 +1138,21 @@ pub(crate) fn replay_session(app: &mut App, session: &AgentSession) {
                         Some(Cell::Assistant { markdown: text })
                     }
                 }
-                AgentMessage::ToolResult { tool_name, .. } => Some(Cell::Tool(ToolCell {
+                AgentMessage::ToolResult {
+                    tool_name,
+                    content,
+                    is_error,
+                    ..
+                } => Some(Cell::Tool(ToolCell {
                     name: tool_name.clone(),
                     intent: None,
-                    status: ToolStatus::Done,
+                    status: if *is_error {
+                        ToolStatus::Failed
+                    } else {
+                        ToolStatus::Done
+                    },
                     summary: ToolCell::summary_of(tool_name, ""),
+                    digest: ToolCell::digest_of(tool_name, &text_of(content), *is_error),
                     preview: Vec::new(),
                     elapsed_ms: 0,
                     calls: 1,

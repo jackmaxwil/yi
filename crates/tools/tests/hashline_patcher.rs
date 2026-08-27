@@ -95,6 +95,50 @@ impl Fixture {
     fn content(&self, path: &str) -> Result<String, Box<dyn Error>> {
         Ok(fs::read_to_string(self.context.cwd.join(path))?)
     }
+
+    fn preview(&self, patch: &str) -> Option<String> {
+        HashlineEditTool {
+            state: std::sync::Arc::clone(&self.state),
+        }
+        .preview(&args(&[("patch", json!(patch))]), &self.context.cwd)
+    }
+}
+
+#[test]
+fn edit_preview_shows_the_diff_without_touching_disk_or_the_snapshot_store() -> TestResult {
+    let fixture = Fixture::new("preview")?;
+    fixture.write("a.txt", "one\ntwo\nthree\n")?;
+    let tag = fixture.tag_of("a.txt")?;
+    let patch = format!("[a.txt#{tag}]\nPUT 2.=2:\n+TWO\n");
+
+    let preview = fixture.preview(&patch).ok_or("no preview")?;
+    assert!(preview.contains("-two"), "{preview}");
+    assert!(preview.contains("+TWO"), "{preview}");
+
+    // The whole point: a previewed edit the user then denies changes nothing.
+    assert_eq!(fixture.content("a.txt")?, "one\ntwo\nthree\n");
+
+    // And the snapshot store is unspent, so the same tag still applies. If the
+    // preview had recorded or invalidated a snapshot, this would fail stale.
+    let edit = fixture.edit(&patch);
+    assert!(!edit.is_error, "{}", output_text(&edit));
+    assert_eq!(fixture.content("a.txt")?, "one\nTWO\nthree\n");
+    Ok(())
+}
+
+#[test]
+fn edit_preview_declines_a_noop_and_an_unparseable_patch() -> TestResult {
+    let fixture = Fixture::new("preview-noop")?;
+    fixture.write("a.txt", "one\ntwo\n")?;
+    let tag = fixture.tag_of("a.txt")?;
+
+    assert!(fixture.preview("not a patch at all").is_none());
+    assert!(
+        fixture
+            .preview(&format!("[a.txt#{tag}]\nPUT 2.=2:\n+two\n"))
+            .is_none()
+    );
+    Ok(())
 }
 
 #[test]
@@ -391,5 +435,38 @@ fn symlink_targets_are_refused_at_commit() -> TestResult {
         );
         assert_eq!(fixture.content("real.txt")?, "content\n");
     }
+    Ok(())
+}
+
+#[test]
+fn a_multi_hunk_edit_anchors_every_hunk_without_a_re_read() -> TestResult {
+    let fixture = Fixture::new("multi-hunk")?;
+    let body: String = (1..=12).map(|n| format!("line {n}\n")).collect();
+    fixture.write("a.txt", &body)?;
+    let tag = fixture.tag_of("a.txt")?;
+
+    let edit = fixture.edit(&format!(
+        "[a.txt#{tag}]\nPUT 2.=2:\n+SECOND\nPUT 10.=10:\n+TENTH\n"
+    ));
+    assert!(!edit.is_error, "{}", output_text(&edit));
+    let text = output_text(&edit);
+
+    // Both hunks get a window. Before this, only the first did.
+    assert!(text.contains("2:SECOND"), "{text}");
+    assert!(text.contains("10:TENTH"), "{text}");
+    assert!(text.contains("13:"), "{text}");
+
+    // The contract a consumer sees: the second hunk is anchorable straight
+    // away. Without its window the seen-lines guard rejects this and the model
+    // has to re-read the whole file.
+    let new_tag = text
+        .lines()
+        .next()
+        .and_then(|header| header.rsplit_once('#'))
+        .map(|(_, tail)| tail.trim_end_matches(']').to_owned())
+        .ok_or("no tag in edit header")?;
+    let follow_up = fixture.edit(&format!("[a.txt#{new_tag}]\nPUT 10.=10:\n+TENTH AGAIN\n"));
+    assert!(!follow_up.is_error, "{}", output_text(&follow_up));
+    assert!(fixture.content("a.txt")?.contains("TENTH AGAIN"));
     Ok(())
 }

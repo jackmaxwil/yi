@@ -53,6 +53,7 @@ pub struct ToolCell {
     pub intent: Option<String>,
     pub status: ToolStatus,
     pub summary: String,
+    pub digest: Option<String>,
     pub preview: Vec<String>,
     pub elapsed_ms: u64,
     pub calls: u32,
@@ -173,8 +174,66 @@ fn glyph(tool: &str) -> char {
         "edit" | "write" => '←',
         "grep" | "glob" | "find" => '✱',
         "fetch" | "web_search" => '%',
+        "ipython" => '⊙',
         _ => '⚙',
     }
+}
+
+/// grep prints `path:N:text` for a hit and `path-N-text` for a context row, so
+/// only a hit carries a `:N:` run. A path holding its own `:N:` would overcount
+/// by one; a context row losing the distinction entirely would not.
+fn is_grep_hit(line: &str) -> bool {
+    line.match_indices(':').any(|(colon, _)| {
+        let rest = line.get(colon.saturating_add(1)..).unwrap_or_default();
+        let digits = rest.chars().take_while(|c| c.is_ascii_digit()).count();
+        digits > 0 && rest.get(digits..).is_some_and(|tail| tail.starts_with(':'))
+    })
+}
+
+fn count_label(count: usize, noun: &str) -> String {
+    if count == 1 {
+        format!("{count} {noun}")
+    } else {
+        format!("{count} {noun}s")
+    }
+}
+
+/// The hashline `[path#TAG]` header and the `NN:` row prefixes are anchors the
+/// model edits against, not content the reader asked for.
+fn strip_hashline(line: &str) -> &str {
+    if line.starts_with('[') {
+        return line;
+    }
+    match line.split_once(':') {
+        Some((number, text))
+            if !number.is_empty() && number.bytes().all(|b| b.is_ascii_digit()) =>
+        {
+            text
+        }
+        _ => line,
+    }
+}
+
+/// Splits `NN:text` into its anchor and its content. Returns `None` for a line
+/// that carries no line number, which is how the hashline header and every
+/// non-file tool fall through to a plain row.
+fn numbered(line: &str) -> Option<(&str, &str)> {
+    let (number, text) = line.split_once(':')?;
+    (!number.is_empty() && number.bytes().all(|b| b.is_ascii_digit())).then_some((number, text))
+}
+
+/// `path:N:text` split into its file and the rest, so consecutive hits in one
+/// file print the path once instead of once per row.
+fn grep_row(line: &str) -> Option<(&str, &str, &str)> {
+    let (colon, _) = line.match_indices(':').find(|(colon, _)| {
+        let rest = line.get(colon.saturating_add(1)..).unwrap_or_default();
+        let digits = rest.chars().take_while(|c| c.is_ascii_digit()).count();
+        digits > 0 && rest.get(digits..).is_some_and(|tail| tail.starts_with(':'))
+    })?;
+    let path = line.get(..colon)?;
+    let rest = line.get(colon.saturating_add(1)..)?;
+    let (number, text) = rest.split_once(':')?;
+    Some((path, number, text))
 }
 
 fn elapsed_label(ms: u64) -> String {
@@ -227,23 +286,105 @@ impl ToolCell {
             head.push_str(&format!(" · {}", elapsed_label(self.elapsed_ms)));
         }
         let mut lines = wrap_line(&Line::from(Span::styled(head, style)), width, "    ");
+        // A failure's body is never mode-gated: a reader who cannot see why a
+        // call failed cannot act on it, whatever mode the cell rendered under.
+        let failed = matches!(self.status, ToolStatus::Failed | ToolStatus::Denied);
+        if let Some(digest) = &self.digest {
+            let detail = if failed {
+                Style::default().fg(theme.error)
+            } else {
+                theme.dim_style()
+            };
+            lines.extend(wrap_line(
+                &Line::from(Span::styled(format!("    └ {digest}"), detail)),
+                width,
+                "      ",
+            ));
+        }
         if expanded {
-            for raw in &self.preview {
-                let text = format!("    {raw}");
-                lines.extend(wrap_line(
-                    &Line::from(Span::styled(text, theme.dim_style())),
-                    width,
-                    "    ",
-                ));
+            for line in self.body(theme) {
+                lines.extend(wrap_line(&line, width, "        "));
             }
         }
         lines
+    }
+
+    /// A typed body, not a raw dump: a file read hangs off a dim line-number
+    /// gutter and a search groups its hits under each path, which is what all
+    /// three donors render and what makes ten lines readable instead of ten
+    /// repetitions of the same path.
+    fn body(&self, theme: &Theme) -> Vec<Line<'static>> {
+        let dim = theme.dim_style();
+        let text = Style::default().fg(theme.text);
+        let mut out = Vec::new();
+        let mut last_path: Option<String> = None;
+        let searchy = matches!(self.name.as_str(), "grep" | "glob" | "find");
+        let anchored = matches!(self.name.as_str(), "read" | "edit");
+        for raw in &self.preview {
+            let row = if searchy { grep_row(raw) } else { None };
+            if let Some((path, number, body)) = row {
+                if last_path.as_deref() != Some(path) {
+                    out.push(Line::from(Span::styled(format!("      {path}"), dim)));
+                    last_path = Some(path.to_owned());
+                }
+                out.push(Line::from(vec![
+                    Span::styled(format!("      {number:>4} "), dim),
+                    Span::styled(body.to_owned(), text),
+                ]));
+                continue;
+            }
+            match numbered(raw) {
+                Some((number, body)) => out.push(Line::from(vec![
+                    Span::styled(format!("      {number:>4} "), dim),
+                    Span::styled(body.to_owned(), text),
+                ])),
+                // The hashline header repeats the path the head line already
+                // names, and the verb line is the digest above it.
+                None if anchored => {}
+                None => out.push(Line::from(Span::styled(format!("      {raw}"), dim))),
+            }
+        }
+        out
     }
 
     pub fn summary_of(name: &str, argument: &str) -> String {
         format!("{} {} {}", glyph(name), name, argument)
             .trim_end()
             .to_owned()
+    }
+
+    /// One line saying what the call produced. Every donor shows result lines
+    /// by default — codex commits five under `  └ `, OMP four — and Yi showed
+    /// none, so a finished call left no trace of its outcome unless the reader
+    /// had already switched to verbose before it ran.
+    pub fn digest_of(name: &str, text: &str, failed: bool) -> Option<String> {
+        let first = || {
+            text.lines()
+                .map(str::trim_end)
+                .find(|line| !line.trim().is_empty())
+        };
+        if failed {
+            return first().map(strip_hashline).map(str::to_owned);
+        }
+        let numbered = || {
+            text.lines()
+                .filter(|line| !line.starts_with('[') && strip_hashline(line) != *line)
+                .count()
+        };
+        let digest = match name {
+            "read" => count_label(numbered(), "line"),
+            // `[path#TAG]` then `updated; first change at line N` — the verb
+            // and the anchor the model just earned, in the tool's own words.
+            "edit" => text.lines().nth(1)?.trim().to_owned(),
+            "grep" => count_label(text.lines().filter(|line| is_grep_hit(line)).count(), "hit"),
+            "glob" => count_label(
+                text.lines().filter(|line| !line.starts_with('[')).count(),
+                "file",
+            ),
+            _ => first()?.to_owned(),
+        };
+        let digest = digest.trim().to_owned();
+        (!digest.is_empty()).then_some(digest)
     }
 }
 

@@ -39,7 +39,7 @@ impl Tool for IpythonTool {
             "properties": {
                 "code": {
                     "type": "string",
-                    "description": "Python scratchpad code or `%%bash` shell cells to execute in the agent kernel. Use the target project's own environment for project imports, tests, scripts, CLIs, and dependency checks instead of direct kernel imports."
+                    "description": "Python scratchpad code or `%%bash` shell cells to execute in the agent kernel. The kernel runs in Yi's own virtualenv, not the target project's: reach the project's environment through a `%%bash` cell that invokes the project's own interpreter or runner (`uv run`, `.venv/bin/python`, `cargo`, `npm`), and keep direct kernel imports for scratch work that does not depend on project packages."
                 }
             },
             "required": ["code"]

@@ -464,3 +464,63 @@ fn text_of(content: &[Content]) -> String {
         })
         .collect()
 }
+
+#[test]
+fn grep_context_windows_merge_split_and_clip_at_file_edges() -> TestResult {
+    let dir = temp_dir("grep-context")?;
+    // Hits on the first and last lines force both clips, the pair at 4 and 5
+    // makes two windows overlap, and the run of x/y/z leaves a real gap.
+    fs::write(
+        dir.0.join("c.txt"),
+        "hit\nb\nc\nhit\nhit\nf\ng\nhit\nx\ny\nz\nhit",
+    )?;
+    let context = ToolContext::new(dir.0.clone());
+
+    let out = GrepTool.execute(
+        args(&[("pattern", json!("hit")), ("context", json!(1))]),
+        &context,
+    );
+    let text = output_text(&out);
+    // Lines 1-9 and 11-12 once each, plus one gap marker. A repeated line
+    // would push this over 12.
+    assert_eq!(text.lines().count(), 12, "{text}");
+    assert_eq!(
+        text.lines().filter(|line| *line == "--").count(),
+        1,
+        "{text}"
+    );
+    assert!(text.contains("c.txt:1:hit"), "{text}");
+    assert!(text.contains("c.txt-2-b"), "{text}");
+    assert!(text.contains("c.txt:4:hit"), "{text}");
+    assert!(text.contains("c.txt:5:hit"), "{text}");
+    assert!(text.contains("c.txt:12:hit"), "{text}");
+    assert!(text.contains("c.txt-9-x"), "{text}");
+    assert!(!text.contains("-10-"), "{text}");
+    Ok(())
+}
+
+#[test]
+fn grep_context_is_clamped_and_defaults_to_bare_hits() -> TestResult {
+    let dir = temp_dir("grep-clamp")?;
+    let body: String = (1..=200)
+        .map(|n| {
+            if n == 100 {
+                "hit\n".to_owned()
+            } else {
+                format!("line {n}\n")
+            }
+        })
+        .collect();
+    fs::write(dir.0.join("big.txt"), body)?;
+    let context = ToolContext::new(dir.0.clone());
+
+    let bare = GrepTool.execute(args(&[("pattern", json!("hit"))]), &context);
+    assert_eq!(output_text(&bare).lines().count(), 1);
+
+    let clamped = GrepTool.execute(
+        args(&[("pattern", json!("hit")), ("context", json!(9_999))]),
+        &context,
+    );
+    assert_eq!(output_text(&clamped).lines().count(), 21);
+    Ok(())
+}

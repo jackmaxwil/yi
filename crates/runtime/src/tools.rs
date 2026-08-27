@@ -81,13 +81,16 @@ impl AgentTool for ToolAdapter {
             if let Some(broker) = permission {
                 let gate_tool = Arc::clone(&tool);
                 let gate_args = args.clone();
+                let gate_cwd = context.cwd.clone();
                 let outcome = tokio::task::spawn_blocking(move || {
+                    let preview = gate_tool.preview(&gate_args, &gate_cwd);
                     broker.decide_call(
                         gate_tool.name(),
                         gate_tool.kind(),
                         gate_tool.irreversible(&gate_args),
                         &call_id,
                         &gate_args,
+                        preview.as_deref(),
                     )
                 })
                 .await;
