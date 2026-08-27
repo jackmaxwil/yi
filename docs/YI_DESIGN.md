@@ -1809,12 +1809,17 @@ trigger). Concretely, enforced by CI where a tool exists:
   a hand-rolled concurrency primitive ever appears (none planned — tokio primitives only).
 
 Style: **fight for every line.** Every file as small as its job allows; the §9 size ratchet is
-a ceiling, not a target. **No comments by default** — names and types carry the meaning.
-Granted exceptions, and only these: (1) incident comments on constants and guards (jcode rule —
-the comment names the failure that created the line), (2) invariant comments where the type
-system cannot express the constraint (e.g. "reply on control channel or `await rlm()`
-deadlocks"), (3) doc comments on `yi-types` public items, because they are the schema reference.
-No narrative comments, no section banners, no commented-out code. Multi-axis flows are
+a ceiling, not a target. **No comments by default** — names and types carry the meaning. A
+comment earns its line only by naming what the code cannot: (1) the incident that created a
+constant or guard (jcode rule — the comment names the failure), (2) an invariant the type
+system cannot express (e.g. "reply on control channel or `await rlm()` deadlocks"), (3) a schema
+fact on a `yi-types` public item, because those are the schema reference. Restating a signature,
+a name, or the next three statements is none of these. The test is the content, not the sigil:
+`///` is allowed wherever a comment is earned and banned where it is not (D49). **Three lines
+per comment, hard** — only a license or attribution header may exceed it, and it carries
+attribution alone, no explanation. No narrative comments, no section banners, no commented-out
+code. `scripts/guardrails/check_comments.py` enforces both halves: the length cap outright, the
+volume outside `yi-types` as a shrink-only ratchet. Multi-axis flows are
 state-space-as-data: the graph is a table the runtime reads, closed vocabulary, invariant
 checks — never a shadow model beside a hand-rolled flow (§9.1).
 
