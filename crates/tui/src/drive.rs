@@ -242,6 +242,7 @@ pub fn run_headless(
         crate::app::sync_roster(&mut app, &host, &handle, &ui_tx);
         crate::app::process_pending_tree(&mut app, &session);
         crate::rewind::process_pending_rewind(&mut app, &mut terminal, &session);
+        crate::rewind::process_pending_new(&mut app, &mut terminal, &session);
         crate::editor::process_pending_editor(&mut app, &mut terminal, false);
 
         let step = match current.take() {

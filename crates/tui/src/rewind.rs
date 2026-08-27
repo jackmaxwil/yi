@@ -39,6 +39,57 @@ pub fn process_pending_rewind<B: Backend + Write>(
     app.scheduler.request();
 }
 
+/// `/new` is the TUI's half of the `new_session` RPC (`cli::rpc`): a fresh
+/// store adopted by the running session, over the same screen reset a rewind
+/// uses. Swapping the store mid-turn would strand the running turn's messages
+/// in the file it no longer writes to, so a running turn refuses.
+pub fn process_pending_new<B: Backend + Write>(
+    app: &mut App,
+    terminal: &mut crate::terminal::Terminal<B>,
+    session: &Arc<AgentSession>,
+) {
+    if !std::mem::take(&mut app.pending_new) {
+        return;
+    }
+    if app.running {
+        app.commit_cell(&Cell::Notice {
+            text: "/new: the current turn is still running (Esc Esc to stop it)".to_owned(),
+        });
+        return;
+    }
+    match new_store(app) {
+        Ok((store, id)) => {
+            session.reset();
+            if let Err(error) = session.attach_store(store) {
+                app.commit_cell(&Cell::Notice {
+                    text: format!("/new failed: {error}"),
+                });
+                return;
+            }
+            app.options.session_name = id;
+            clear_screen(terminal);
+            app.reset_transcript();
+        }
+        Err(error) => app.commit_cell(&Cell::Notice {
+            text: format!("/new failed: {error}"),
+        }),
+    }
+    app.scheduler.request();
+}
+
+fn new_store(app: &App) -> Result<(yi_runtime::session_store::SharedSession, String), String> {
+    use yi_runtime::session_store::{CreateOptions, JsonlRepo, SessionRepo, lock_session};
+    let mut repo = JsonlRepo::new(
+        std::path::PathBuf::from(&app.options.session_dir),
+        app.options.cwd.clone(),
+    );
+    let store = repo
+        .create(CreateOptions::default())
+        .map_err(|error| error.to_string())?;
+    let id = lock_session(&store).metadata().id.clone();
+    Ok((store, id))
+}
+
 /// The transcript above the viewport belongs to a branch that no longer
 /// exists, and it lives in the emulator's scrollback where no repaint reaches
 /// it — so the scrollback goes too, and the viewport re-anchors at the top.

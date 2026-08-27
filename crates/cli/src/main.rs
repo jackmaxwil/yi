@@ -716,6 +716,7 @@ fn run_tui_command(args: &Args, initial_prompt: Option<String>) -> i32 {
         session_name: session_name.clone(),
         cwd: effective_cwd(args).display().to_string(),
         context_window: model.context_window,
+        session_dir: default_session_dir(args).display().to_string(),
         keys: configured_keys(),
         initial_prompt,
     };

@@ -54,6 +54,7 @@ pub struct TuiOptions {
     pub session_name: String,
     pub cwd: String,
     pub context_window: u64,
+    pub session_dir: String,
     pub keys: Vec<(String, String)>,
     pub initial_prompt: Option<String>,
 }
@@ -88,7 +89,7 @@ const SPINNER_PERIOD_MS: u128 = 80;
 pub(crate) const ORB_COLS: u16 = 6;
 pub(crate) const ORB_ROWS: u16 = 3;
 pub(crate) const ORB_PX: usize = 192;
-pub(crate) const SLASH_COMMANDS: [&str; 4] = ["quit", "expand", "tree", "editor"];
+pub(crate) const SLASH_COMMANDS: [&str; 5] = ["new", "quit", "expand", "tree", "editor"];
 
 pub struct TaskState {
     pub(crate) cell: TaskCell,
@@ -107,6 +108,7 @@ pub struct App {
     pub(crate) pending_commit: Vec<Line<'static>>,
     pub(crate) pending_open_tree: bool,
     pub(crate) pending_rewind: Option<String>,
+    pub(crate) pending_new: bool,
     pub(crate) pending_editor: bool,
     pub(crate) pending_prompt_mark: bool,
     /// U34: 0 = the `Yi` wordmark at rest, 1 = the working orb. The dots
@@ -222,6 +224,7 @@ impl App {
             pending_commit: Vec::new(),
             pending_open_tree: false,
             pending_rewind: None,
+            pending_new: false,
             pending_editor: false,
             pending_prompt_mark: false,
             logo_phase: 0.0,
@@ -907,6 +910,7 @@ pub fn run_tui(
             open_tree(&mut app, &session);
         }
         crate::rewind::process_pending_rewind(&mut app, &mut terminal, &session);
+        crate::rewind::process_pending_new(&mut app, &mut terminal, &session);
         crate::editor::process_pending_editor(&mut app, &mut terminal, true);
         if app.scheduler.should_draw(Instant::now()) {
             let start = Instant::now();

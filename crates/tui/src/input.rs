@@ -167,6 +167,7 @@ pub(crate) fn handle_action(
 
 pub(crate) fn handle_slash(app: &mut App, command: &str) {
     match command {
+        "new" => app.pending_new = true,
         "quit" => app.quit = true,
         "tree" => app.pending_open_tree = true,
         "editor" => app.pending_editor = true,

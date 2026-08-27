@@ -123,3 +123,75 @@ fn rewinding_removes_the_exchange_and_restores_the_message() -> TestResult {
     let _ = std::fs::remove_dir_all(&dir);
     Ok(())
 }
+
+#[test]
+fn slash_new_swaps_the_session_and_clears_the_transcript() -> TestResult {
+    let dir = std::env::temp_dir().join(format!("yi-tui-new-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir)?;
+    let keys = dir.join("script.keys");
+    std::fs::write(
+        &keys,
+        "wait-idle 10000\nkey /\ntype new\nkey enter\nwait 300\nquit\n",
+    )?;
+    let frames = dir.join("frames");
+    let sessions = dir.join("sessions");
+
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "the drive contract is the spawned binary's headless mode; tests must run the real process"
+    )]
+    let output = Command::new(env!("CARGO_BIN_EXE_yi"))
+        .args([
+            "tui",
+            "--headless",
+            "--model",
+            "faux/faux-1",
+            "--session-dir",
+            &sessions.display().to_string(),
+            "--keys",
+            &keys.display().to_string(),
+            "--frames",
+            &frames.display().to_string(),
+            "ping",
+        ])
+        .output()?;
+    assert!(
+        output.status.success(),
+        "drive run must exit 0: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let mut entries: Vec<_> = std::fs::read_dir(&frames)?.filter_map(Result::ok).collect();
+    entries.sort_by_key(std::fs::DirEntry::file_name);
+    let rendered: Vec<String> = entries
+        .iter()
+        .map(|entry| std::fs::read_to_string(entry.path()))
+        .collect::<Result<_, _>>()?;
+    assert!(
+        rendered.iter().any(|frame| frame.contains("faux: ping")),
+        "the first turn must reach the screen before /new"
+    );
+    let last = rendered
+        .last()
+        .ok_or("the drive dumps at least one frame")?;
+    assert!(
+        !last.contains("faux: ping") && !last.contains("› ping"),
+        "/new leaves the transcript empty: {last}"
+    );
+
+    let mut files = 0;
+    for project in std::fs::read_dir(&sessions)?.filter_map(Result::ok) {
+        for entry in std::fs::read_dir(project.path())?.filter_map(Result::ok) {
+            if entry.path().extension().is_some_and(|ext| ext == "jsonl") {
+                files += 1;
+            }
+        }
+    }
+    assert_eq!(
+        files, 2,
+        "/new writes a second session file beside the first"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+    Ok(())
+}
