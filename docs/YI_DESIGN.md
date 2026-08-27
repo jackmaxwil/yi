@@ -383,9 +383,11 @@ what everyone converges on; Yi gets it for zero bytes in the binary.
   bounds, but because hidden-reasoning narratives are refused by reviewer models and are
   unreliable evidence (§7.5). Framing stays "review the work log of an automated coding run
   against the task" — code review, not surveillance.
-- **Zero-token first.** Deterministic signals computed from the entry tree do most of the work
-  and gate the LLM. The LLM reviewer runs when a signal fires or on a sparse cadence, under a
-  token budget.
+- **A trigger is not a verdict (D50).** Deterministic checks over the entry tree are cheap and
+  high-recall, which makes them a fine way to *notice* something and a bad way to *say* something:
+  shipped as advice they interrupt on every edit turn that skipped a test. Yi has no deterministic
+  reviewer. A project that wants those checks writes a skill, which the model invokes when it
+  judges them relevant. The LLM reviewer runs on a sparse cadence under a token budget.
 - **Append-only advisor transcript.** The digest is derived from immutable entry ids. Each
   review appends one `user` message (the digest chunk) and one reply. The prefix never changes,
   so provider prompt caching hits on every review. Branch navigation starts a new advisor
@@ -393,23 +395,15 @@ what everyone converges on; Yi gets it for zero bytes in the binary.
 - **Two delivery mechanisms, no races.** Notes land at the next tool boundary as an entry.
   Holds go through the permission engine. Nothing aborts a running tool. Nothing wakes an idle
   primary.
-- **Model-independent.** `Reviewer` is a trait; the LLM is one implementation.
+- **One reviewer.** The LLM reviewer is the advisor; with no model role naming it, the advisor observes and says nothing.
 
 ### 7.3 Pipeline
 
 ```
-entry appended ─► Signals (pure, per entry, zero tokens)
-                    v1 (ship):  no_op_edit_repeat   same hashline no-op ≥ 2 on one path
-                                tool_failure_streak ≥ 3 consecutive failed tool calls
-                                pre_irreversible    next pending call has irreversible(input) == true
-                                unbacked_claim      assistant text claims an action with no matching tool call (§7.4)
-                                repeat_tool         identical (tool, canonical args) ≥ 3 in a row, search loops included; bookkeeping tools transparent (dsh, TraceProbe)
-                                verification_skip   edits landed, final answer emitted, no test/build command ran (TraceProbe)
-                    later, if the outcome ledger shows a gap:
-                                file_churn · test_fail_repeat · scope_drift · burn_rate · long_run
+entry appended ─► Work log (pure, per entry, zero tokens): the append-only ring the digest
+                    reads from. No deterministic reviewer sits here (D50).
                  ─► Trigger policy
-                    fire if any signal fired
-                    OR tool_calls_since_review ≥ cadence (default 25)
+                    fire if tool_calls_since_review ≥ cadence (unset by default)
                     AND budget.remaining(tokens/hour) > est_cost
                  ─► Digest (pure)  digest(entries[cursor..leaf]) -> Vec<LogLine>; every line
                     carries its entry id (the pull handle, §7.6)
@@ -418,10 +412,8 @@ entry appended ─► Signals (pure, per entry, zero tokens)
                     bash:   "e7f3 bash `cargo test` → exit 1 | tail: <3 lines>"
                     read:   "e7f4 read src/x.rs 1-120"
                     prose:  "e7f5 assistant: <sentences selected by the §7.4 verb table>"
-                 ─► Reviewers (trait; run in order, cheap first)
-                    RuleReviewer   signal → canned Advice, no tokens
-                    LlmReviewer    system: fixed prompt + ADVISOR.md; user: digest chunk;
-                                   tools: {advise, read, grep, glob, transcript}; one prompt() per review
+                 ─► LlmReviewer  system: fixed prompt + ADVISOR.md; user: digest chunk;
+                    tools: {advise, read, grep, glob, transcript}; one prompt() per review
                  ─► EmissionGuard (OMP, verbatim): NFKC key, blocklist, FIFO dedupe, 1 note/cycle
                  ─► Delivery
                     Note|Warn  → custom{advisory} entry at next tool boundary;
@@ -441,10 +433,9 @@ entry appended ─► Signals (pure, per entry, zero tokens)
 text}`. Injected content: `<advisory severity="warn" target="src/x.rs" guidance="weigh, don't
 blindly obey">…</advisory>`.
 
-Config: two-tier enable (D28) — `advisor.signals` (**true**: signals + RuleReviewer,
-deterministic, ~zero tokens; on in the scored default because AA benchmarks defaults) and
-`advisor.reviewer` (false: LlmReviewer, fires **signal-only**; `advisor.cadence` (25) applies
-only when explicitly set — a cadence review on a clean run is pure spend). `advisor.model`,
+Config: `advisor.reviewer` (false: LlmReviewer; `advisor.cadence` applies
+only when explicitly set — a cadence review on a clean run is pure spend, and with neither set
+the advisor keeps the work log and says nothing). `advisor.model`,
 `advisor.user_budget` (2,000 chars), `advisor.prose_budget` (1,200 chars),
 `advisor.budget_tokens_per_hour`, `advisor.signals.*` thresholds, `advisor.wake_idle_primary`
 (false). `ADVISOR.md` attention text.
@@ -453,7 +444,7 @@ Size target: `runtime::advisor` ≤ 1,500 lines including the signal set.
 
 ---
 
-### 7.4 Unbacked-claim signal (what "fabrication detection" means in Yi)
+### 7.4 Unbacked claims (what "fabrication detection" means in Yi)
 
 Scope correction from the OMP survey: OMP has **no** transcript-claim-vs-tool-result verifier.
 Its `abortOnFabricatedResult` (`packages/ai/src/dialect/owned-stream.ts`) is a stream-level scan
@@ -462,28 +453,23 @@ for the *tool-result opening token* of an in-band tool-calling dialect (`<tool_r
 exists for text-based tool calling. Yi uses native tool calling exclusively, so there is nothing
 to port; if an owned dialect is ever added, the 40-line token scan comes with it.
 
-What Yi builds instead — the thing the name suggests — is an advisor signal plus one targeted
-reviewer question:
+Yi shipped the deterministic half of the replacement and then deleted it (D50). The claim
+extractor was pure text matching — action verbs against a bag of tokens from the turn's tool
+arguments — so a summary sentence like "Fixed the offset bug." was unbacked by construction,
+and because each fire embedded its own sentence as evidence, `EmissionGuard`'s text-keyed dedupe
+never collapsed two of them. High recall with no verdict step is a machine for interrupting.
 
-- **Signal `unbacked_claim`** (pure, per `MessageEnd` of a final assistant message): extract
-  claim sentences — present/past-tense action verbs (`ran`, `tested`, `verified`, `edited`,
-  `created`, `fixed`, `passes`, `all green`) with a file path, command, or test name as object —
-  and check the turn's tool log: an `edit`/`write` claim needs a matching `edit`/`write` call on
-  that path; a `ran`/`tested` claim needs a `bash`/`ipython` call whose command mentions the
-  object; a `passes`/`green` claim needs the last matching command to have exited 0. Mismatch ⇒
-  `Fired{kind: UnbackedClaim, evidence: [claim, nearest_log_line]}`. Deliberately high-recall,
-  low-precision — it is a trigger, not a verdict.
-- **Reviewer question**: when it fires, the `LlmReviewer` gets the digest chunk plus the
-  extracted claims and a single instruction: *"For each claim, cite the log line that backs it
-  or say UNBACKED."* Output is `Advice{kind: Risk, target: entry_id, severity: Warn}` per
-  unbacked claim, delivered as an advisory at the next boundary (or follow-up if idle) — the
-  primary then sees `<advisory>Claim "tests pass" is unbacked: last `cargo test` exited 101
-  (entry e7f2)</advisory>` and must either run the test or correct the claim.
-- Outcome ledger (V9) records whether the next turn ran the missing action; that number is the
-  signal's precision and decides whether the regex set grows or shrinks.
+What survives is the **reviewer question**, which is the part that needed a model all along:
+the `LlmReviewer` gets the digest chunk and is asked to cite the log line backing each claim or
+say UNBACKED. Output is `Advice{kind: Risk, target: entry_id, severity: Warn}` per unbacked
+claim, delivered at the next boundary (or follow-up if idle) — the primary then sees
+`<advisory>Claim "tests pass" is unbacked: last `cargo test` exited 101 (entry e7f2)</advisory>`
+and must either run the test or correct the claim. The §7.4 verb table survives in
+`advisor::digest` for one job: choosing which assistant sentences survive the prose budget.
 
-This keeps the deterministic part tiny (~150 lines + a verb table) and spends tokens only on
-turns that already look wrong, which is the whole advisor thesis (§7.2).
+A project that wants a deterministic pre-check — "did edits land with no test run?" — writes it
+as a skill. The model invokes a skill when it judges the moment relevant, which is the judgment
+step the runtime could not supply.
 
 ### 7.5 Research grounding (Aug 2026 pass) and v2 revisions
 
@@ -516,14 +502,12 @@ survived, what changed:
   *weaker* model can help. Consequence: the advisor is one judge; a second opinion, if ever
   added, is a judge choosing between two candidate advices, never a synthesizer merging them.
   OMP's multi-advisor roster stays cut on evidence, not just taste.
-- **Two signals added from trajectory diagnostics** (TraceProbe, arXiv 2607.06184: search loops
-  are the most stable anti-pattern; verification skips localize failures): `search_loop`
-  (read/grep cycles with no intervening edit — folded into `repeat_tool` canonicalization) and
-  `verification_skip` (edits followed by a final answer with no test/build run — the
-  deterministic sibling of `unbacked_claim`). Launch set is six signals.
-- **Budget-aware wrap-up advice** (2606.21811's "recommend submission near budget"): a canned
-  `RuleReviewer` advice fires when the turn approaches `agent_step_limit` or the token budget:
-  "consolidate and finish; name what is unverified."
+- **Trajectory diagnostics are the right things to look for, not the right thing to ship**
+  (TraceProbe, arXiv 2607.06184: search loops are the most stable anti-pattern; verification
+  skips localize failures). Yi built `search_loop`, `verification_skip` and four siblings as
+  runtime signals and deleted them (D50) — the diagnostics describe what a reviewer should
+  notice, and Yi's mistake was letting the noticing layer speak. They are the natural content of
+  a project's own review skill, and of the LLM reviewer's prompt.
 - **The advisor crate is Yi's judgment layer, singular.** Slipstream (arXiv 2605.08580)
   validates compaction summaries with a cheap judge against the agent's continued reasoning
   (+8.8 pts on SWE-bench Verified); best-of-N selection over compact summaries (RTV, 2604.16529)
@@ -560,8 +544,8 @@ classes with one rule each — the innovation is the selection, not the volume:
   (`ran, fixed, passes, …`), commitments (`will, next, then, instead`), conclusions (`because,
   so, root cause`), plus each block's first and last sentence, capped by `advisor.prose_budget`.
   Tool lines already carry the declared `i` intent (T1), so intent-vs-action divergence is
-  visible to the reviewer at zero extra cost — no intent parser, no new deterministic signal
-  unless V9 shows the LLM reviewer keeps missing drift.
+  visible to the reviewer at zero extra cost — no intent parser, and no deterministic signal
+  at all (D50).
 - **Thinking is never sent** (§7.2, §7.5).
 
 Its context, in full:
@@ -907,11 +891,11 @@ flowchart LR
 
 | # | Primitive | Signature | Purity | Source |
 |---|---|---|---|---|
-| V1 | Signal | `trait { fn observe(&mut self, &Entry) -> Option<Fired{kind, evidence}> }`; six built-ins at launch (§7.3), more only when V9 data shows a gap | pure | new |
-| V2 | Trigger | `fn(fired: &[Fired], calls_since_review, cadence, budget) -> bool` | pure | new |
+| V1 | ~~Signal~~ | deleted (D50): a deterministic reviewer is a trigger shipped as a verdict. Project-specific checks belong in a skill, which the model invokes when it judges them relevant | — | cut |
+| V2 | Trigger | `fn(calls_since_review, cadence, budget) -> bool` | pure | new |
 | V3 | Budget | `{tokens_per_hour, spent: ring buffer}`; `remaining()` | data | new |
 | V4 | digest | `fn(&[Entry]) -> Vec<LogLine>`; every line entry-id'd; user lines verbatim (constraint-first truncation over `advisor.user_budget`), assistant lines sentence-selected by the §7.4 verb table (≤ `advisor.prose_budget`), tool lines carry `i`; never `thinking` | pure | new (§7.6) |
-| V5 | Reviewer | `trait { review(Job, ReviewContext) -> Vec<Advice> }` with `Job = Advise \| ClaimAudit` at launch; `CompactionCheck` deferred until compaction misbehaves in practice (D8); `SelectCandidate` is not a scheduled feature — it is the recorded **multi-agent pattern** (D10): parallel subagents' results are judge-*selected*, never synthesized (arXiv 2603.20324); impls `RuleReviewer`, `LlmReviewer` (own `AgentSession`, append-only; tools `{advise, transcript}` at launch, `read`/`grep`/`glob` join when V9 shows the digest is insufficient). The single judgment seam for the whole harness (§7.5) | pure / I/O | new · omp `advise-tool.ts` · Slipstream · RTV |
+| V5 | Reviewer | `LlmReviewer::review(&AdvisorRuntime, digest_chunk) -> Vec<Advice>` with `Job = Advise \| ClaimAudit` at launch; `CompactionCheck` deferred until compaction misbehaves in practice (D8); `SelectCandidate` is not a scheduled feature — it is the recorded **multi-agent pattern** (D10): parallel subagents' results are judge-*selected*, never synthesized (arXiv 2603.20324); one impl, `LlmReviewer` (own `AgentSession`, append-only; tools `{advise, transcript}` at launch, `read`/`grep`/`glob` join when V9 shows the digest is insufficient). The single judgment seam for the whole harness (§7.5) | pure / I/O | new · omp `advise-tool.ts` · Slipstream · RTV |
 | V6 | Advice | `{severity: Note\|Warn\|Hold, kind: Correction\|Risk\|Scope\|Stop, target: Option<EntryId\|Path>, text}` | data | new |
 | V7 | EmissionGuard | lowercase + non-alphanumeric-folded key (NFKC dropped — std has no normalizer and a unicode crate is not worth the dep; revisit if a real dupe slips the fold); phrase blocklist; 4,096-entry FIFO dedupe; one accepted note per cycle | pure | omp `emission-guard.ts` adapted |
 | V8 | deliver | `Note\|Warn` → `custom{advisory}` entry at next tool boundary (idle → follow-up queue); `Hold` → M5, degrading headless (§7.3, D28) | I/O | new |
@@ -1357,7 +1341,7 @@ are rejected with the reason.
 | OMP `SecretObfuscator` | Secret redaction on outbound text | not yet | — (revisit when logs/advisor leave the machine) |
 | OMP `read-format` elision · fx `read_tool_result` | token-efficient reads: structural elision + id-addressable re-read | adopt | T15, T16 |
 | jcode `ensure_intent_in_schema` · OMP intent tracing | required `i` intent on every tool schema (mechanics T1); prompt line: *"Most tools take `i`: capitalized 2–6-word present-participle intent; no period"*; `tools.intent_tracing` default on | adopt | T1, V4, C3 |
-| OMP `abortOnFabricatedResult` | In-band-dialect token scan, not claim verification — no analogue under native tool calling | skip (see §7.4 for what Yi does instead) | V1 `unbacked_claim` |
+| OMP `abortOnFabricatedResult` | In-band-dialect token scan, not claim verification — no analogue under native tool calling | skip (see §7.4 for what Yi does instead) | the LlmReviewer's claim audit (V1 cut, D50) |
 | OMP `bash.autoBackground` | foreground `bash` > 60 s returns `Backgrounded as job <id>`; completion delivered via follow-up queue (R3) as `custom{async_result}` | **adopt (phase 5), default off — settled over PTY exec (D30)** | T12 `auto_background_ms`; no `jobs` tool — polling is the same tool with empty input |
 | jcode · OMP `response_recovery` | one deterministic malformed-tool-call repair before failing | adopt | L13 |
 | jcode background-tool promotion (Alt+B) | A running `bash` can be promoted to background without cancelling; the turn continues with a handle | adopt | T12 `promote(handle)`; I1 epoch guards the hand-off |
@@ -1599,7 +1583,7 @@ subagents and heartbeats are in daily use. Plan, so no re-design is needed then:
 |---|---|---|
 | **Prefix-aligned compaction**: the summarizer request replays the last routed request byte-identically (system, tools, derived messages) and appends the directive as a trailing `user` message, so summarization is a prefix extension of the warm cache | adopt | P7 — the `Summarizer` contract changes to `summarize(last_request: &LlmContext, directive)`; head-anchored compaction only (the only case that hits cache anyway) |
 | **Log-is-the-context assertion**: anything in a model request must be reconstructable from the session log | adopt as a debug-build check | P11 `debug_assert!(rebuild(tree) == ctx)` |
-| **Repeat-tool reminder**: consecutive identical `(tool, canonicalized args)` calls → advisories at 3/5/8; bookkeeping tools transparent (neither count nor reset) | adopt | V1 `repeat_tool` signal (fifth launch signal) |
+| **Repeat-tool reminder**: consecutive identical `(tool, canonicalized args)` calls → advisories at 3/5/8; bookkeeping tools transparent (neither count nor reset) | ~~adopt~~ cut with V1 (D50): shipped as `repeat_tool`, deleted — loop-breaking is a review skill's job |
 | **Ralph loop**: fresh child per round, workspace is the memory, only a bounded report crosses rounds; only on explicit user request | adapt | B12 `fn ralph(objective, max_rounds)` ≈ 40 lines over B5/B6 |
 | Compaction directive text (eight fixed sections, "(none)" never dropped) | adopt | P6/P7 summary skeleton |
 | Code Mode, runtime self-extension (`cordis_*`), three-event compaction lock + surface algebra, Cordis DI, 234-package layout | ignore | — |
@@ -1672,7 +1656,7 @@ the priorities:
    result costs size × remaining-turns. Bash interceptor-class rules matter here (§12 sweep).
 4. **Verification-before-submit**: timeouts are generous (median 900 s) and non-fatal (E4), so
    running the task's own build/tests before declaring done is nearly free accuracy on the
-   all-or-nothing suites. `verification_skip` (V1) is the enforcement signal.
+   all-or-nothing suites. Enforcement is a review skill's job since D50 cut V1.
 5. **Hashline + checkpoints** (T5–T14): failed edits are the classic turn sink; cheap revert
    enables aggressive edits over cautious read-heavy exploration.
 6. **Compaction: rarely and late**, cheap `model_roles.summarizer`; compaction breaks the
@@ -1682,13 +1666,13 @@ the priorities:
    network allowlist to the provider host, saves ~1–2 min/trial vs npm agents.
 9. **Resume** (`--continue`, SUPPORTS_RESUME): multi-step tasks reuse the warm cache.
 10. **The trap**: early-stop to save cost is the wrong trade — the index is a binary average
-    and cost is a separate column. Kill *thrash* (repeat_tool, V1), never cap effort. On QnA
-    the trade even inverts: output tokens buy rubric coverage directly.
-11. **Advisor tiers in the scored config** (D28): the free tier (signals + RuleReviewer) runs —
-    thrash-breaking cuts the turns/tokens/time columns and `verification_skip` enforces
-    lever 4; on QnA an `unbacked_claim` variant checks `answer.txt` was written/updated (E4).
-    The LlmReviewer stays off until D17 differential runs (advisor on/off per benchmark, V9
-    outcomes) prove its delta — its tokens bill to the run. Holds degrade to Warn headless.
+    and cost is a separate column. Kill *thrash*, never cap effort. On QnA the trade even
+    inverts: output tokens buy rubric coverage directly.
+11. **Advisor in the scored config** (D28, revised D50): there is no free tier any more — the
+    deterministic reviewer that would have run for zero tokens is deleted, so a scored run
+    carries a review skill or nothing. The LlmReviewer stays off until D17 differential runs
+    (advisor on/off per benchmark, V9 outcomes) prove its delta — its tokens bill to the run.
+    Holds degrade to Warn headless.
 
 ### 15.4 Emission map (AA column → Yi source)
 

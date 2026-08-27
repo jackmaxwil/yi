@@ -5,7 +5,6 @@ use serde_json::{Map, Value};
 use yi_ai::faux::{faux_assistant_message, faux_text, faux_tool_call};
 use yi_loop::ExecutionMode;
 use yi_runtime::advisor::guard::EmissionGuard;
-use yi_runtime::advisor::signals::{SignalKind, Signals};
 use yi_runtime::advisor::{
     AdvisorConfig, AdvisorDeps, advisory_text, attach_advisor, digest, review::LlmReviewer,
 };
@@ -98,64 +97,6 @@ fn guard_dedupes_blocks_noise_and_rate_limits() {
 }
 
 #[test]
-fn signals_fire_on_failure_streak_repeat_and_verification_skip() {
-    let mut signals = Signals::new(None);
-    for index in 0..3 {
-        let fired = signals.observe(&tool_result("bash", true));
-        if index < 2 {
-            assert!(fired.is_empty(), "streak fires exactly at 3, not before");
-        } else {
-            assert!(
-                fired
-                    .iter()
-                    .any(|f| f.kind == SignalKind::ToolFailureStreak),
-                "3 consecutive failures must fire"
-            );
-        }
-    }
-
-    let mut signals = Signals::new(None);
-    let mut args = Map::new();
-    args.insert("pattern".to_owned(), Value::String("needle".to_owned()));
-    for index in 0..3 {
-        let call = faux_assistant_message(
-            vec![faux_tool_call("c", "grep", args.clone())],
-            StopReason::ToolUse,
-        );
-        let fired = signals.observe(&call);
-        if index == 2 {
-            assert!(
-                fired.iter().any(|f| f.kind == SignalKind::RepeatTool),
-                "identical (tool, args) x3 is a search loop"
-            );
-        }
-    }
-
-    let mut signals = Signals::new(None);
-    let mut edit_args = Map::new();
-    edit_args.insert("path".to_owned(), Value::String("src/lib.rs".to_owned()));
-    let edit = faux_assistant_message(
-        vec![faux_tool_call("c", "edit", edit_args)],
-        StopReason::ToolUse,
-    );
-    signals.observe(&edit);
-    signals.observe(&tool_result("edit", false));
-    let final_answer = faux_assistant_message(
-        vec![faux_text("I refactored the parser and everything passes.")],
-        StopReason::Stop,
-    );
-    let fired = signals.observe(&final_answer);
-    assert!(
-        fired.iter().any(|f| f.kind == SignalKind::VerificationSkip),
-        "edits + final answer with no test/build run must fire: {fired:?}"
-    );
-    assert!(
-        fired.iter().any(|f| f.kind == SignalKind::UnbackedClaim),
-        "a passes-claim with no matching command must fire: {fired:?}"
-    );
-}
-
-#[test]
 fn digest_keeps_constraints_first_and_extracts_directives() {
     let filler = "This sentence is ordinary filler about the weather. ".repeat(40);
     let text = format!("{filler}Never push to main without review. {filler}");
@@ -173,18 +114,21 @@ fn digest_keeps_constraints_first_and_extracts_directives() {
 }
 
 #[tokio::test]
-async fn failure_streak_lands_an_advisory_in_the_next_turn() -> TestResult {
+async fn a_failure_streak_reaches_the_primary_through_nothing() -> TestResult {
     let provider = Arc::new(ProviderStream::new(None, None));
     let session = session(Arc::clone(&provider));
     let advisor = attach_advisor(&session, AdvisorConfig::default(), AdvisorDeps::default());
 
     for _ in 0..3 {
-        advisor.observe(&tool_result("bash", true), 0);
+        assert!(
+            advisor.observe(&tool_result("bash", true), 0).is_none(),
+            "no cadence is set, so nothing may trigger a review"
+        );
     }
     let stats = advisor.stats();
     assert!(
-        stats.contains("1 reviews") && stats.contains("1 warn(s)"),
-        "the streak must produce one review and one warn: {stats}"
+        stats.contains("0 reviews"),
+        "a run with no reviewer must review nothing: {stats}"
     );
 
     provider.queue_faux(vec![faux_assistant_message(
@@ -193,10 +137,10 @@ async fn failure_streak_lands_an_advisory_in_the_next_turn() -> TestResult {
     )]);
     session.prompt("continue")?;
     session.wait_idle().await;
-    let advisory = session
+    let spoken: Vec<String> = session
         .messages()
         .iter()
-        .find_map(|message| match message {
+        .filter_map(|message| match message {
             AgentMessage::Custom {
                 custom_type,
                 content: UserContent::Text(text),
@@ -204,11 +148,10 @@ async fn failure_streak_lands_an_advisory_in_the_next_turn() -> TestResult {
             } if custom_type == "advisory" => Some(text.clone()),
             _ => None,
         })
-        .ok_or("advisory must drain from the follow-up queue into the next turn")?;
+        .collect();
     assert!(
-        advisory.contains("<advisory severity=\"warn\"")
-            && advisory.contains("weigh, don't blindly obey"),
-        "injection must use the omp advisory framing: {advisory}"
+        spoken.is_empty(),
+        "with the deterministic reviewer gone nothing may reach the primary: {spoken:?}"
     );
     Ok(())
 }
@@ -237,7 +180,6 @@ fn headless_hold_degrades_to_warn() -> TestResult {
                 queue.push(message);
             }
         }),
-        None,
         None,
     );
     runtime.deliver_reviewed(vec![advice], 0);
@@ -280,12 +222,9 @@ async fn llm_reviewer_advises_through_the_advise_tool() -> TestResult {
         AdvisorConfig::default(),
         Arc::new(|_message| {}),
         None,
-        None,
     ));
     let reviewer = LlmReviewer::new(Arc::clone(&provider), faux_model(), None);
-    let advices = reviewer
-        .review(&runtime, &[], "m1 user: fix the tests")
-        .await;
+    let advices = reviewer.review(&runtime, "m1 user: fix the tests").await;
     assert_eq!(advices.len(), 1, "the advise tool call must be captured");
     assert_eq!(advices[0].severity, AdvisorySeverity::Warn);
     assert_eq!(advices[0].kind, AdviceKind::Risk);

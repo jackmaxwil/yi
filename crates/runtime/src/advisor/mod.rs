@@ -1,17 +1,15 @@
 pub mod digest;
 pub mod guard;
 pub mod review;
-pub mod signals;
 
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
 use serde_json::{Value, json};
-use yi_types::advisor::{Advice, AdviceKind, AdvisorySeverity};
+use yi_types::advisor::{Advice, AdvisorySeverity};
 use yi_types::message::{AgentMessage, UserContent};
 
 use crate::session::AgentSession;
-use signals::{Fired, SignalKind, Signals};
 
 pub type HoldSink = Arc<dyn Fn(&Advice) -> bool + Send + Sync>;
 
@@ -19,11 +17,10 @@ pub const ADVISOR_GUIDANCE: &str = "weigh, don't blindly obey";
 pub const DEFAULT_CADENCE: u64 = 25;
 pub const OUTCOME_WINDOW: u64 = 5;
 
-/// Signals default on (deterministic, ~zero tokens), the LLM reviewer off.
-/// Cadence applies only when set: a cadence review on a clean run is pure spend.
+/// The LLM reviewer is off until a model role names it. Cadence applies only
+/// when set: a cadence review on a clean run is pure spend.
 #[derive(Clone)]
 pub struct AdvisorConfig {
-    pub signals: bool,
     pub reviewer: bool,
     pub cadence: Option<u64>,
     pub user_budget: usize,
@@ -35,7 +32,6 @@ pub struct AdvisorConfig {
 impl Default for AdvisorConfig {
     fn default() -> Self {
         Self {
-            signals: true,
             reviewer: false,
             cadence: None,
             user_budget: digest::DEFAULT_USER_BUDGET,
@@ -80,72 +76,14 @@ impl Budget {
     }
 }
 
-/// Any signal, or cadence when configured, gated by the budget.
+/// Cadence when configured, gated by the budget.
 pub fn should_review(
-    fired: &[Fired],
     calls_since_review: u64,
     cadence: Option<u64>,
     budget_remaining: Option<u64>,
 ) -> bool {
-    let due = !fired.is_empty() || cadence.is_some_and(|cadence| calls_since_review >= cadence);
+    let due = cadence.is_some_and(|cadence| calls_since_review >= cadence);
     due && budget_remaining.is_none_or(|remaining| remaining > 0)
-}
-
-/// The single judgment seam: `RuleReviewer` maps signals to canned advice at
-/// zero tokens, `LlmReviewer` is one prompt per review.
-pub trait Reviewer: Send + Sync {
-    fn review(&self, fired: &[Fired], digest_chunk: &str) -> Vec<Advice>;
-}
-
-pub struct RuleReviewer;
-
-impl Reviewer for RuleReviewer {
-    fn review(&self, fired: &[Fired], _digest_chunk: &str) -> Vec<Advice> {
-        fired
-            .iter()
-            .map(|signal| {
-                let evidence = signal.evidence.join("; ");
-                match signal.kind {
-                    SignalKind::UnbackedClaim => Advice {
-                        severity: AdvisorySeverity::Warn,
-                        kind: AdviceKind::Risk,
-                        target: None,
-                        text: format!(
-                            "Claim may be unbacked by the tool log: {evidence}. Run the missing action or correct the claim."
-                        ),
-                    },
-                    SignalKind::VerificationSkip => Advice {
-                        severity: AdvisorySeverity::Warn,
-                        kind: AdviceKind::Risk,
-                        target: None,
-                        text: format!(
-                            "{evidence}. Run the relevant test or build before declaring done; name what is unverified."
-                        ),
-                    },
-                    SignalKind::ToolFailureStreak => Advice {
-                        severity: AdvisorySeverity::Warn,
-                        kind: AdviceKind::Correction,
-                        target: None,
-                        text: format!(
-                            "{evidence}. Step back and re-read the error before retrying the same approach."
-                        ),
-                    },
-                    SignalKind::RepeatTool | SignalKind::NoOpEditRepeat => Advice {
-                        severity: AdvisorySeverity::Note,
-                        kind: AdviceKind::Correction,
-                        target: None,
-                        text: format!("{evidence}. This looks like a loop; change the approach."),
-                    },
-                    SignalKind::PreIrreversible => Advice {
-                        severity: AdvisorySeverity::Note,
-                        kind: AdviceKind::Risk,
-                        target: None,
-                        text: format!("{evidence}. Confirm the target before proceeding."),
-                    },
-                }
-            })
-            .collect()
-    }
 }
 
 /// One `<advisory>` element, severity and target as attributes.
@@ -169,7 +107,6 @@ pub fn advisory_text(advice: &Advice) -> String {
 #[derive(Default)]
 pub struct AdvisorStats {
     pub reviews: u64,
-    pub signals_fired: u64,
     pub notes: u64,
     pub warns: u64,
     pub holds: u64,
@@ -180,9 +117,8 @@ pub struct AdvisorStats {
 
 pub fn stats_text(stats: &AdvisorStats) -> String {
     format!(
-        "advisor: {} reviews, {} signals fired, delivered {} note(s) / {} warn(s) / {} hold(s), {} suppressed; outcomes: {}/{} targets touched within {OUTCOME_WINDOW} actions",
+        "advisor: {} reviews, delivered {} note(s) / {} warn(s) / {} hold(s), {} suppressed; outcomes: {}/{} targets touched within {OUTCOME_WINDOW} actions",
         stats.reviews,
-        stats.signals_fired,
         stats.notes,
         stats.warns,
         stats.holds,
@@ -200,7 +136,6 @@ struct PendingOutcome {
 }
 
 struct AdvisorState {
-    signals: Signals,
     guard: guard::EmissionGuard,
     budget: Budget,
     calls_since_review: u64,
@@ -213,14 +148,13 @@ struct AdvisorState {
     directives: Vec<String>,
 }
 
-/// signals → trigger → reviewers → guard → delivery → outcome ledger, over the
-/// session's event stream.
+/// work log → cadence trigger → reviewer → guard → delivery → outcome ledger,
+/// over the session's event stream.
 pub struct AdvisorRuntime {
     state: Mutex<AdvisorState>,
     config: AdvisorConfig,
     deliver: Arc<dyn Fn(AgentMessage) + Send + Sync>,
     hold_sink: Option<HoldSink>,
-    reviewer: Arc<dyn Reviewer>,
 }
 
 impl AdvisorRuntime {
@@ -228,11 +162,9 @@ impl AdvisorRuntime {
         config: AdvisorConfig,
         deliver: Arc<dyn Fn(AgentMessage) + Send + Sync>,
         hold_sink: Option<HoldSink>,
-        irreversible: Option<Arc<signals::IrreversibleProbe>>,
     ) -> Self {
         Self {
             state: Mutex::new(AdvisorState {
-                signals: Signals::new(irreversible),
                 guard: guard::EmissionGuard::default(),
                 budget: Budget::new(config.tokens_per_hour),
                 calls_since_review: 0,
@@ -247,12 +179,7 @@ impl AdvisorRuntime {
             config,
             deliver,
             hold_sink,
-            reviewer: Arc::new(RuleReviewer),
         }
-    }
-
-    pub fn set_reviewer(&mut self, reviewer: Arc<dyn Reviewer>) {
-        self.reviewer = reviewer;
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, AdvisorState> {
@@ -265,13 +192,10 @@ impl AdvisorRuntime {
         stats_text(&self.lock().stats)
     }
 
-    /// The fired signals and the digest chunk when a review is due, for an
-    /// optional async LLM pass layered by the caller.
-    pub fn observe(&self, message: &AgentMessage, now_ms: u64) -> Option<(Vec<Fired>, String)> {
-        if !self.config.signals {
-            return None;
-        }
-        let (advices, outcomes, review) = {
+    /// The digest chunk when a review is due, for the async LLM pass layered
+    /// by the caller. Advice reaches the primary only through `deliver_reviewed`.
+    pub fn observe(&self, message: &AgentMessage, now_ms: u64) -> Option<String> {
+        let (outcomes, chunk) = {
             let mut state = self.lock();
             state.log_counter = state.log_counter.saturating_add(1);
             let id = format!("m{}", state.log_counter);
@@ -289,19 +213,11 @@ impl AdvisorRuntime {
                 state.directives.extend(new_directives);
             }
             self.track_outcomes(&mut state, message);
-            let fired = state.signals.observe(message);
-            state.stats.signals_fired =
-                state.stats.signals_fired.saturating_add(fired.len() as u64);
             if matches!(message, AgentMessage::ToolResult { .. }) {
                 state.calls_since_review = state.calls_since_review.saturating_add(1);
             }
             let remaining = state.budget.remaining(now_ms);
-            if !should_review(
-                &fired,
-                state.calls_since_review,
-                self.config.cadence,
-                remaining,
-            ) {
+            if !should_review(state.calls_since_review, self.config.cadence, remaining) {
                 let outcomes = Self::drain_outcomes(&mut state);
                 drop(state);
                 for outcome in outcomes {
@@ -314,25 +230,12 @@ impl AdvisorRuntime {
             state.guard.begin_cycle();
             let chunk = self.digest_chunk(&state);
             state.cursor = state.log_counter;
-            let advices = self.reviewer.review(&fired, &chunk);
-            let mut accepted = Vec::new();
-            for advice in advices {
-                if state.guard.accept(&advice.text) {
-                    accepted.push(advice);
-                } else {
-                    state.stats.suppressed = state.stats.suppressed.saturating_add(1);
-                }
-            }
-            let outcomes = Self::drain_outcomes(&mut state);
-            (accepted, outcomes, Some((fired, chunk)))
+            (Self::drain_outcomes(&mut state), chunk)
         };
         for outcome in outcomes {
             self.emit_outcome(&outcome, now_ms);
         }
-        for advice in advices {
-            self.deliver_advice(advice, now_ms);
-        }
-        review
+        Some(chunk)
     }
 
     /// Since the cursor: a directives header plus one line per item.
@@ -369,7 +272,7 @@ impl AdvisorRuntime {
                     content: UserContent::Text(text),
                     ..
                 } => Some(text.clone()),
-                AgentMessage::Assistant { content, .. } => Some(signals::assistant_text(content)),
+                AgentMessage::Assistant { content, .. } => Some(digest::assistant_text(content)),
                 _ => None,
             }
         })
@@ -498,7 +401,6 @@ impl AdvisorRuntime {
 #[derive(Default)]
 pub struct AdvisorDeps {
     pub hold_sink: Option<HoldSink>,
-    pub irreversible: Option<Arc<signals::IrreversibleProbe>>,
     pub llm: Option<Arc<review::LlmReviewer>>,
 }
 
@@ -511,12 +413,7 @@ pub fn attach_advisor(
 ) -> Arc<AdvisorRuntime> {
     let reviewer_enabled = config.reviewer;
     let deliver = session.advisory_hook();
-    let runtime = Arc::new(AdvisorRuntime::new(
-        config,
-        deliver,
-        deps.hold_sink,
-        deps.irreversible,
-    ));
+    let runtime = Arc::new(AdvisorRuntime::new(config, deliver, deps.hold_sink));
     let mut events = session.subscribe();
     let observer = Arc::clone(&runtime);
     let llm = deps.llm.filter(|_| reviewer_enabled);
@@ -527,8 +424,8 @@ pub fn attach_advisor(
                     continue;
                 }
                 let review = observer.observe(&message, yi_session::now_ms());
-                if let (Some((fired, chunk)), Some(llm)) = (review, llm.as_ref()) {
-                    let advices = llm.review(&observer, &fired, &chunk).await;
+                if let (Some(chunk), Some(llm)) = (review, llm.as_ref()) {
+                    let advices = llm.review(&observer, &chunk).await;
                     observer.deliver_reviewed(advices, yi_session::now_ms());
                 }
             }

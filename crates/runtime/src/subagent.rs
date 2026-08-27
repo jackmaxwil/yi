@@ -582,7 +582,7 @@ fn wire_goal(session: &AgentSession, registry: &mut crate::kernel::HostRegistry)
     session.set_goal_service(service);
 }
 
-fn wire_advisor(session: &AgentSession, wiring: &RuntimeWiring, tools: &[Arc<dyn yi_tools::Tool>]) {
+fn wire_advisor(session: &AgentSession, wiring: &RuntimeWiring) {
     let hold_sink: Option<crate::advisor::HoldSink> = wiring.broker.as_ref().map(|broker| {
         let broker = Arc::clone(broker);
         Arc::new(move |advice: &yi_types::advisor::Advice| {
@@ -598,14 +598,6 @@ fn wire_advisor(session: &AgentSession, wiring: &RuntimeWiring, tools: &[Arc<dyn
             true
         }) as crate::advisor::HoldSink
     });
-    let probe_tools: Vec<Arc<dyn yi_tools::Tool>> = tools.to_vec();
-    let irreversible: Arc<crate::advisor::signals::IrreversibleProbe> =
-        Arc::new(move |name: &str, args: &Map<String, Value>| {
-            probe_tools
-                .iter()
-                .find(|tool| tool.name() == name)
-                .is_some_and(|tool| tool.irreversible(args))
-        });
     // V10: ADVISOR.md attention text, project-local, best-effort.
     let attention = std::fs::read_to_string(wiring.cwd.join("ADVISOR.md")).ok();
     let advisor = crate::advisor::attach_advisor(
@@ -616,7 +608,6 @@ fn wire_advisor(session: &AgentSession, wiring: &RuntimeWiring, tools: &[Arc<dyn
         },
         crate::advisor::AdvisorDeps {
             hold_sink,
-            irreversible: Some(irreversible),
             llm: None,
         },
     );
@@ -746,7 +737,7 @@ pub fn attach_runtime(session: &mut AgentSession, wiring: RuntimeWiring) -> Arc<
     }
     let mut tools = (wiring.tools)();
     tools.push(crate::kernel::ipython_tool(service));
-    wire_advisor(session, &wiring, &tools);
+    wire_advisor(session, &wiring);
     session.use_tools_with_background(
         tools,
         wiring.cwd.clone(),

@@ -1,9 +1,42 @@
 use yi_types::message::{AgentMessage, Content, UserContent};
 
-use super::signals::{CLAIM_VERBS, COMMITMENT_VERBS, CONCLUSION_VERBS, split_sentences};
-
 pub const DEFAULT_USER_BUDGET: usize = 2_000;
 pub const DEFAULT_PROSE_BUDGET: usize = 1_200;
+
+/// §7.4 verb tables: the sentences a reviewer needs to see survive the prose
+/// budget, the rest are dropped.
+pub const CLAIM_VERBS: [&str; 10] = [
+    "ran",
+    "tested",
+    "verified",
+    "edited",
+    "created",
+    "fixed",
+    "passes",
+    "passed",
+    "all green",
+    "green",
+];
+pub const COMMITMENT_VERBS: [&str; 4] = ["will", "next", "then", "instead"];
+pub const CONCLUSION_VERBS: [&str; 3] = ["because", "so", "root cause"];
+
+pub fn assistant_text(content: &[Content]) -> String {
+    content
+        .iter()
+        .filter_map(|block| match block {
+            Content::Text { text, .. } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+pub fn split_sentences(text: &str) -> Vec<&str> {
+    text.split_inclusive(['.', '!', '?', '\n'])
+        .map(str::trim)
+        .filter(|sentence| !sentence.is_empty())
+        .collect()
+}
 
 // §7.6 constraint markers: sentences carrying these survive truncation first.
 const CONSTRAINT_MARKERS: [&str; 10] = [

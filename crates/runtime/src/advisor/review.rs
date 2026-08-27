@@ -21,7 +21,6 @@ fn text_outcome(text: &str) -> yi_loop::ToolOutcome {
         is_error: false,
     }
 }
-use super::signals::Fired;
 use crate::provider::ProviderStream;
 use crate::session::{AgentSession, SessionConfig};
 use yi_types::model::ToolDef;
@@ -154,12 +153,7 @@ impl LlmReviewer {
         }
     }
 
-    pub async fn review(
-        &self,
-        runtime: &Arc<AdvisorRuntime>,
-        fired: &[Fired],
-        digest_chunk: &str,
-    ) -> Vec<Advice> {
+    pub async fn review(&self, runtime: &Arc<AdvisorRuntime>, digest_chunk: &str) -> Vec<Advice> {
         let sink: Arc<Mutex<Vec<Advice>>> = Arc::new(Mutex::new(Vec::new()));
         let mut system = ADVISOR_SYSTEM_PROMPT.to_owned();
         if let Some(attention) = &self.attention {
@@ -185,16 +179,6 @@ impl LlmReviewer {
         ]);
         let mut prompt = String::from("Work-log digest since the last review:\n");
         prompt.push_str(digest_chunk);
-        if !fired.is_empty() {
-            prompt.push_str("\n\nDeterministic signals fired:\n");
-            for signal in fired {
-                prompt.push_str(&format!(
-                    "- {}: {}\n",
-                    signal.kind.name(),
-                    signal.evidence.join("; ")
-                ));
-            }
-        }
         if session.prompt(&prompt).is_err() {
             return Vec::new();
         }
