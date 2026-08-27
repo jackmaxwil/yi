@@ -13,6 +13,7 @@ run "$PY" scripts/guardrails/check_boundaries.py
 run "$PY" scripts/guardrails/check_filenames.py
 run "$PY" scripts/guardrails/check_glob_reexport.py
 run "$PY" scripts/guardrails/check_panic.py
+run "$PY" scripts/guardrails/check_comments.py
 run "$PY" scripts/guardrails/check_file_size.py
 run "$PY" scripts/guardrails/check_fn_size.py
 run "$PY" scripts/guardrails/check_schemas_lock.py
