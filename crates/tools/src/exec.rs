@@ -89,10 +89,9 @@ impl Tool for ExecTool {
     }
 }
 
-/// Discovers executables under `dir` (the user-level tools directory) by
-/// running each with --schema. Project-level `.yi/tools` discovery is deferred
-/// until hash-pinned trust lands with the permission system (D30): without the
-/// grant store, a cloned repo's tools would be arbitrary code behind one prompt.
+/// User-level only. Project `.yi/tools` waits on hash-pinned trust (D30):
+/// without a grant store, a cloned repo's tools are arbitrary code behind one
+/// prompt.
 pub fn discover_exec_tools(dir: &Path) -> Vec<ExecTool> {
     let Ok(entries) = fs::read_dir(dir) else {
         return Vec::new();

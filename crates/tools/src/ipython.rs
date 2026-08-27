@@ -7,14 +7,12 @@ use crate::tool::{
     CancelFlag, Tool, ToolContext, ToolKind, ToolOutput, error_output, require_str, text_output,
 };
 
-/// One executed cell plus whether the busy-kernel path restarted the kernel.
 pub struct KernelCellOutcome {
     pub result: ExecuteResult,
     pub kernel_restarted: bool,
 }
 
-/// Capability seam to the kernel (design T2): yi-runtime implements this over
-/// yi-kernel; yi-tools never depends on the kernel crate.
+/// yi-runtime implements this over yi-kernel; yi-tools never depends on it.
 pub trait KernelBridge: Send + Sync {
     fn execute_cell(&self, code: &str, cancelled: &CancelFlag)
     -> Result<KernelCellOutcome, String>;

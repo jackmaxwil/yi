@@ -775,10 +775,9 @@ Use `PUT N.=M:`, `CUT N.=M`, or `PUT <N:`/`PUT >N:` above the body. Got {text:?}
         if !saw_bare {
             return;
         }
-        // A body where every stripped remainder is a lone quoted/numeric literal
-        // (optionally comma-terminated) is the shape of a numeric-keyed dict or
-        // YAML mapping (`1: "one",`), not read-output paste; stripping the "N:"
-        // keys would mangle every line.
+        // Every stripped remainder being a lone literal is the shape of a
+        // numeric-keyed dict or YAML mapping (`1: "one",`), not read-output
+        // paste — stripping the "N:" keys there mangles every line.
         if all_literal_values {
             return;
         }

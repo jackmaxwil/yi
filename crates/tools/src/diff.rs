@@ -4,7 +4,6 @@ use std::path::Path;
 pub struct GitPatch(String);
 
 impl GitPatch {
-    /// For patches git itself produced (T14 tree-to-tree diffs).
     pub fn from_text(text: String) -> Self {
         Self(text)
     }
@@ -31,8 +30,8 @@ enum Op {
     Add,
 }
 
-/// T13: a unified patch between two file states, with absolute paths in the
-/// headers — the permission display and ACP `diff.patch` both read it.
+/// Absolute paths in the headers: the permission display and ACP `diff.patch`
+/// both read them.
 pub fn patch(pre: &str, post: &str, path: &Path) -> GitPatch {
     if pre == post {
         return GitPatch(String::new());

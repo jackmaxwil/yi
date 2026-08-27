@@ -134,9 +134,7 @@ pub fn run_captured(
     })
 }
 
-/// U18: hand `path` to `$VISUAL`/`$EDITOR` (default `vi`) with the tty
-/// inherited, and report which editor ran. Spawning lives here because every
-/// process spawn does (design §9).
+/// `$VISUAL`/`$EDITOR`, default `vi`, with the tty inherited.
 pub fn edit_file(path: &std::path::Path) -> (String, std::io::Result<std::process::ExitStatus>) {
     let editor = std::env::var("VISUAL")
         .or_else(|_| std::env::var("EDITOR"))

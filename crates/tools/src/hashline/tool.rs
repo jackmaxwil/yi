@@ -201,9 +201,8 @@ impl Tool for HashlineEditTool {
         ToolKind::Write
     }
 
-    /// `prepare` is the dry-run half of the patcher's prepare/commit split: it
-    /// validates and materializes the new text without touching disk. The
-    /// clipboard is forked and the fork is dropped, so previewing a patch the
+    /// `prepare` validates and materializes the new text without touching disk.
+    /// The clipboard is forked and the fork dropped, so previewing a patch the
     /// user then denies leaves no register behind.
     fn preview(&self, input: &Map<String, Value>, cwd: &Path) -> Option<String> {
         let patch_text = input.get("patch").and_then(Value::as_str)?;

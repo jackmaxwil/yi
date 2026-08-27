@@ -16,13 +16,11 @@ const GREP_LINES: usize = 60;
 // costs the model a marker and a path to nowhere useful.
 const REDUCE_FLOOR: usize = 2_048;
 
-/// Flags that say the user wants the whole thing (T20). Reducing here would
-/// answer a different question than the one asked.
+/// The user asked for the whole thing; reducing answers a different question.
 const RAW_FLAGS: [&str; 6] = ["-v", "--verbose", "--nocapture", "--porcelain", "-la", "-C"];
 
-/// T17: shrink noisy command output before it reaches the model. Every path
-/// runs through `never_worse` (T18), and a lossy result is tee'd next to the
-/// project so the full text stays one `read` away (T19).
+/// Every path runs through `never_worse`, and a lossy result is tee'd beside
+/// the project so the full text stays one `read` away.
 pub fn reduce(
     command: &str,
     stdout: &str,
@@ -75,7 +73,7 @@ pub fn reduce(
     }
 }
 
-/// T18: a filter that made the output longer is not a filter.
+/// A filter that made the output longer is not a filter.
 fn never_worse(raw: &str, filtered: String) -> String {
     if filtered.len() < raw.len() {
         filtered
@@ -197,7 +195,7 @@ pub fn strip_ansi(text: &str) -> String {
     out
 }
 
-/// T19: the full text is tee'd so the model can open it with `read`.
+/// Tee'd so the model can open the full text with `read`.
 fn tee(dir: &Path, raw: &str) -> Option<PathBuf> {
     std::fs::create_dir_all(dir).ok()?;
     let id = xxhash_rust::xxh32::xxh32(raw.as_bytes(), 0);

@@ -17,11 +17,10 @@ pub type CancelFlag = Arc<dyn Fn() -> bool + Send + Sync>;
 pub struct ToolContext {
     pub cwd: PathBuf,
     pub cancelled: CancelFlag,
-    /// Where lossy tool output is tee'd so it stays recoverable (T19). None
-    /// means a reducer must hand back the raw text instead.
+    /// None means a reducer must hand back the raw text instead.
     pub recovery_dir: Option<PathBuf>,
-    /// D13: how long a foreground command may hold the turn before it keeps
-    /// running as a job. None (the default) never backgrounds anything.
+    /// How long a command may hold the turn before it keeps running as a job.
+    /// None, the default, never backgrounds anything.
     pub auto_background: Option<std::time::Duration>,
 }
 
@@ -56,10 +55,9 @@ pub trait Tool: Send + Sync {
         Ok(())
     }
 
-    /// T13: the approval prompt judges a mutation by what it changes, not by
-    /// its path, so a mutating tool renders its own diff before it runs. Only
-    /// the tool can — the patch language and the snapshot store it validates
-    /// against are the tool's, not the permission layer's.
+    /// The approval prompt judges a mutation by what it changes, and only the
+    /// tool can render that: the patch language and the snapshot store it
+    /// validates against are the tool's, not the permission layer's.
     fn preview(&self, _input: &Map<String, Value>, _cwd: &std::path::Path) -> Option<String> {
         None
     }

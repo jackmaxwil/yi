@@ -231,10 +231,9 @@ Example: \"{HL_FILE_PREFIX}src/foo.ts#1A2B{HL_FILE_SUFFIX}\" then edit ops."
     Ok(sections)
 }
 
-/// Consecutive or interleaved sections targeting the same path merge into one
-/// section with concatenated diffs: anchors authored against the same snapshot
-/// must apply as one batch or the first sub-edit shifts line numbers out from
-/// under the second's anchors. Path order is preserved by first occurrence.
+/// Same-path sections merge into one with concatenated diffs: anchors authored
+/// against one snapshot must apply as a batch, or the first sub-edit shifts line
+/// numbers out from under the second's. Order is by first occurrence.
 fn merge_same_path_sections(sections: Vec<RawSection>) -> Result<Vec<RawSection>, String> {
     let mut merged: Vec<RawSection> = Vec::new();
     let mut previous_path: Option<String> = None;

@@ -36,8 +36,8 @@ pub enum CheckpointError {
     Git { command: String, message: String },
 }
 
-/// Design 5.3: a shadow gitdir beside the project, never the project's own
-/// `.git` — checkpoints must not touch the user's branch, index, or stash.
+/// A shadow gitdir beside the project, never its own `.git`: checkpoints must
+/// not touch the user's branch, index or stash.
 pub struct Checkpoints {
     git_dir: PathBuf,
     work_tree: PathBuf,
@@ -61,8 +61,7 @@ impl Checkpoints {
         Ok(checkpoints)
     }
 
-    /// Best-effort snapshot of the whole work tree, honouring the project's
-    /// own ignore rules (the shadow index reads them from the work tree).
+    /// Honours the project's own ignore rules, read from the work tree.
     pub fn capture(&self) -> Result<TreeId, CheckpointError> {
         self.git(&["add", "--all"])?;
         let tree = self.git(&["write-tree"])?;
@@ -75,8 +74,7 @@ impl Checkpoints {
         Ok(parse_changes(&diff))
     }
 
-    /// Puts every file back the way `tree` had it: restores what changed or
-    /// vanished, removes what the turn created.
+    /// Restores what changed or vanished, removes what the turn created.
     pub fn restore(&self, tree: &TreeId) -> Result<Vec<Change>, CheckpointError> {
         let changes = self.changed(tree)?;
         for change in &changes {
@@ -94,8 +92,6 @@ impl Checkpoints {
         Ok(changes)
     }
 
-    /// T14 `diff(a, b)`: what changed between two captures, as a patch the
-    /// permission display and ACP `diff.patch` can render.
     pub fn diff(&self, from: &TreeId, to: &TreeId) -> Result<crate::GitPatch, CheckpointError> {
         let text = self.git(&["diff", from.as_str(), to.as_str()])?;
         Ok(crate::diff::GitPatch::from_text(text))
@@ -152,8 +148,7 @@ fn parse_changes(diff: &str) -> Vec<Change> {
     changes
 }
 
-/// One shadow gitdir per project, named by a hash so the directory name
-/// cannot collide with a path component.
+/// Hashed so the directory name cannot collide with a path component.
 fn project_key(project: &Path) -> String {
     let hash = xxhash_rust::xxh32::xxh32(project.to_string_lossy().as_bytes(), 0);
     format!("{hash:08x}")

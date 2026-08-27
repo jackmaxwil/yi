@@ -9,17 +9,16 @@ struct Rule {
     negate: bool,
 }
 
-/// `.gitignore` rules gathered as a walk descends. Rules are appended, never
-/// popped: a rule only applies under the directory whose file declared it, so
-/// the `base` prefix check keeps a sibling's rules from leaking across.
+/// Appended as a walk descends, never popped: a rule applies only under the
+/// directory that declared it, and the `base` prefix check is what keeps a
+/// sibling's rules from leaking across.
 #[derive(Default)]
 pub struct Ignore {
     rules: Vec<Rule>,
 }
 
 impl Ignore {
-    /// Reads `<dir>/.gitignore` if present; a missing or unreadable file
-    /// leaves the set unchanged.
+    /// A missing or unreadable file leaves the set unchanged.
     pub fn push_dir(&mut self, dir: &Path) {
         let Ok(text) = std::fs::read_to_string(dir.join(".gitignore")) else {
             return;

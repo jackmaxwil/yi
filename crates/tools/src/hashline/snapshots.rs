@@ -24,10 +24,9 @@ const MAX_PATHS: usize = 256;
 const MAX_VERSIONS_PER_PATH: usize = 4;
 const MAX_TOTAL_BYTES: usize = 64 * 1024 * 1024;
 
-/// In-memory snapshot store: per-path history is a short ring of full-file
-/// versions, path tracking is LRU-bounded (front = most recent). Two distinct
-/// texts colliding on the 16-bit tag are retained as separate versions — the
-/// tag is a fast index, never the identity.
+/// Per-path history is a short ring of full-file versions, path tracking
+/// LRU-bounded. Two texts colliding on the 16-bit tag stay separate versions:
+/// the tag is a fast index, never the identity.
 #[derive(Default)]
 pub struct SnapshotStore {
     paths: Vec<(String, Vec<Snapshot>)>,
@@ -108,10 +107,9 @@ impl SnapshotStore {
         let Some((_, history)) = self.paths.first_mut() else {
             return hash;
         };
-        // Dedup requires full-text equality, not just tag equality: two distinct
-        // texts sharing the 4-hex tag are DIFFERENT snapshots — fusing them
-        // would corrupt seen-lines and let the patcher misresolve which
-        // snapshot the section tag names (omp issue #4075).
+        // Dedup requires full-text equality, not tag equality: fusing two texts
+        // that share a 4-hex tag corrupts seen-lines and lets the patcher
+        // misresolve which snapshot a section tag names (omp issue #4075).
         if let Some(position) = history
             .iter()
             .position(|version| version.hash == hash && version.text == full_text)

@@ -44,8 +44,7 @@ pub struct Jobs {
     next: AtomicU64,
 }
 
-/// One registry per process: a backgrounded command outlives the tool call
-/// that started it, and the next call has to be able to find it.
+/// One per process: a backgrounded command outlives the call that started it.
 pub fn registry() -> &'static Jobs {
     static REGISTRY: OnceLock<Jobs> = OnceLock::new();
     REGISTRY.get_or_init(Jobs::default)
@@ -91,8 +90,7 @@ impl Jobs {
             .map(|(id, job)| render(*id, job))
     }
 
-    /// Finished jobs nobody has been told about yet; marking them keeps the
-    /// follow-up queue from repeating itself every poll.
+    /// Marking them keeps the follow-up queue from repeating every poll.
     pub fn take_finished(&self) -> Vec<JobReport> {
         let mut jobs = self.lock();
         let mut out = Vec::new();
@@ -148,9 +146,9 @@ pub enum Run {
     Backgrounded(JobId),
 }
 
-/// D13: a foreground command that outlives `auto_background` keeps running as
-/// a job instead of holding the turn. `None` disables it, which is the
-/// default — a command that silently detaches is its own kind of surprise.
+/// A command outliving `auto_background` keeps running as a job instead of
+/// holding the turn. `None`, the default, disables it: silently detaching is
+/// its own kind of surprise.
 pub fn run_or_background(
     shell_command: &str,
     cwd: &Path,
@@ -189,8 +187,7 @@ pub fn run_or_background(
     }
 }
 
-/// "Check on job N" is the same tool with no command, clamped so a poll can
-/// neither spin nor hang the turn.
+/// Clamped so a poll can neither spin nor hang the turn.
 pub fn clamp_wait(seconds: u64) -> Duration {
     Duration::from_secs(seconds.clamp(5, 300))
 }

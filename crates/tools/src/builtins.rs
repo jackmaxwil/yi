@@ -301,8 +301,8 @@ impl Tool for GrepTool {
     }
 }
 
-/// Shell verbs that only observe. Every other verb keeps the `Exec` default:
-/// the flag warns about blast radius, and this list is the set with none.
+/// Every other verb keeps the `Exec` default: the flag warns about blast
+/// radius, and this is the set with none.
 const READ_ONLY_VERBS: [&str; 24] = [
     "ls", "cat", "head", "tail", "wc", "pwd", "echo", "printf", "which", "type", "file", "stat",
     "du", "df", "date", "env", "printenv", "grep", "rg", "ag", "find", "fd", "diff", "true",
@@ -323,9 +323,8 @@ const READ_ONLY_GIT: [&str; 10] = [
 ];
 
 /// Incident: every bash call reported as irreversible, so the advisor flagged
-/// `ls -la && git log` as needing confirmation and the warning stopped meaning
-/// anything. Each `&&`/`||`/`|`/`;` segment is screened on its own and the
-/// whole command is read-only only when every segment is.
+/// `ls -la && git log` and the warning stopped meaning anything. Each segment is
+/// screened on its own; the command is read-only only when all of them are.
 fn read_only_command(command: &str) -> bool {
     command
         .split(['|', ';', '\n'])
@@ -453,8 +452,7 @@ impl Tool for BashTool {
     }
 }
 
-/// T12: checking on a job is the same tool with no command, never a second
-/// `jobs` tool the model has to discover.
+/// The same tool with no command, never a second tool to discover.
 fn poll_job(input: &Map<String, Value>) -> ToolOutput {
     let requested = input
         .get("job")
@@ -499,8 +497,7 @@ fn poll_job(input: &Map<String, Value>) -> ToolOutput {
     }
 }
 
-/// Relative paths under `root`, gitignore-filtered and sorted, for surfaces
-/// that offer a file picker (TUI `@`).
+/// Gitignore-filtered and sorted, for surfaces offering a file picker.
 pub fn list_files(root: &Path, cap: usize) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     walk_files(root, &mut |path| {

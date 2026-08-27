@@ -9,10 +9,9 @@ use super::types::{
     PasteTarget,
 };
 
-/// Brace-scanning block resolver (T9: no tree-sitter). The block opening at
-/// `line` spans to the line whose closing brace/bracket/paren returns the
-/// scanner to the depth it had before that opener. Returns None when the
-/// anchor line opens nothing or the delimiters never balance.
+/// The block opening at `line` spans to where the scanner returns to the depth
+/// it had before that opener. None when the anchor opens nothing, or when the
+/// delimiters never balance.
 pub fn brace_block_resolver(text: &str, line: u64) -> Option<BlockSpan> {
     let lines: Vec<&str> = text.split('\n').collect();
     let anchor_index = usize::try_from(line.checked_sub(1)?).ok()?;
