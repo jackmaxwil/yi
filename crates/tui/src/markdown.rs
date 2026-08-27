@@ -1,6 +1,7 @@
 use pulldown_cmark::{Alignment, CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
+use unicode_width::UnicodeWidthStr;
 
 use crate::colors::Theme;
 use crate::wrap::wrap_line;
@@ -48,10 +49,16 @@ struct Builder<'t> {
     spans: Vec<Span<'static>>,
     styles: Vec<Style>,
     indent: String,
-    list_stack: Vec<Option<u64>>,
+    list_stack: Vec<ListLevel>,
+    pending_marker: Option<Span<'static>>,
     in_code_block: bool,
     link_dest: Option<String>,
     table: Option<TableState>,
+}
+
+struct ListLevel {
+    next: Option<u64>,
+    hang: usize,
 }
 
 #[derive(Default)]
@@ -83,15 +90,27 @@ impl Builder<'_> {
         }
         let line = Line::from(std::mem::take(&mut self.spans));
         // A wrapped list item hangs under the text after its marker; a wrapped
-        // paragraph does not. The base indent was two spaces, which the wrapper
-        // strips from a line start, so only continuation lines ever showed it —
-        // every wrapped paragraph read as a nested block.
-        let indent = if self.list_stack.is_empty() {
-            self.indent.clone()
-        } else {
-            format!("{}  ", self.indent)
-        };
+        // paragraph does not. The hang is the width the markers actually
+        // occupy: a fixed two spaces left `10. ` and every nested glyph
+        // wrapping two columns short of their own text.
+        let hang: usize = self.list_stack.iter().map(|level| level.hang).sum();
+        let indent = format!("{}{}", self.indent, " ".repeat(hang));
         self.out.extend(wrap_line(&line, self.width, &indent));
+    }
+
+    // The marker is held rather than written so that whichever line opens the
+    // item claims it. Writing it eagerly let the paragraph a loose list wraps
+    // its items in flush the marker alone, one blank line above its own text.
+    fn line_prologue(&mut self) {
+        if !self.spans.is_empty() {
+            return;
+        }
+        if !self.indent.is_empty() {
+            self.spans.push(Span::raw(self.indent.clone()));
+        }
+        if let Some(marker) = self.pending_marker.take() {
+            self.spans.push(marker);
+        }
     }
 
     fn blank(&mut self) {
@@ -99,6 +118,38 @@ impl Builder<'_> {
         if !self.out.last().is_some_and(|l| l.spans.is_empty()) && !self.out.is_empty() {
             self.out.push(Line::default());
         }
+    }
+
+    fn start_item(&mut self) {
+        self.flush_line();
+        let depth = self.list_stack.len().saturating_sub(1);
+        let pad: usize = self
+            .list_stack
+            .iter()
+            .rev()
+            .skip(1)
+            .map(|level| level.hang)
+            .sum();
+        let marker = match self.list_stack.last_mut() {
+            Some(ListLevel {
+                next: Some(index), ..
+            }) => {
+                let marker = format!("{index}. ");
+                *index = index.saturating_add(1);
+                marker
+            }
+            // OMP `md.bullet`, with depth glyphs so nesting reads.
+            _ => match depth {
+                0 => "• ".to_owned(),
+                1 => "◦ ".to_owned(),
+                _ => "‣ ".to_owned(),
+            },
+        };
+        if let Some(level) = self.list_stack.last_mut() {
+            level.hang = UnicodeWidthStr::width(marker.as_str());
+        }
+        let style = self.style();
+        self.pending_marker = Some(Span::styled(format!("{}{marker}", " ".repeat(pad)), style));
     }
 
     fn text(&mut self, text: &str) {
@@ -127,9 +178,7 @@ impl Builder<'_> {
             }
             return;
         }
-        if self.spans.is_empty() && !self.indent.is_empty() {
-            self.spans.push(Span::raw(self.indent.clone()));
-        }
+        self.line_prologue();
         self.spans.push(Span::styled(text.to_owned(), self.style()));
     }
 }
@@ -172,10 +221,7 @@ fn reduce_inline<'e>(b: &mut Builder, event: Event<'e>) -> Option<Event<'e>> {
                 }
                 return None;
             }
-            if b.spans.is_empty() && !b.indent.is_empty() {
-                let indent = b.indent.clone();
-                b.spans.push(Span::raw(indent));
-            }
+            b.line_prologue();
             b.spans.push(Span::styled(code.into_string(), style));
         }
         other => return Some(other),
@@ -258,6 +304,7 @@ pub fn render(source: &str, width: usize, theme: &Theme) -> Vec<Line<'static>> {
         styles: vec![Style::default().fg(theme.text)],
         indent: String::new(),
         list_stack: Vec::new(),
+        pending_marker: None,
         in_code_block: false,
         link_dest: None,
         table: None,
@@ -303,6 +350,10 @@ pub fn render(source: &str, width: usize, theme: &Theme) -> Vec<Line<'static>> {
                 b.flush_line();
             }
             Event::Start(Tag::CodeBlock(kind)) => {
+                if b.pending_marker.is_some() {
+                    b.line_prologue();
+                    b.flush_line();
+                }
                 b.blank();
                 // OMP gives fenced code its own border hook rather than
                 // reprinting the author's backticks: a dim rail carries the
@@ -328,7 +379,10 @@ pub fn render(source: &str, width: usize, theme: &Theme) -> Vec<Line<'static>> {
                 if b.list_stack.is_empty() {
                     b.blank();
                 }
-                b.list_stack.push(start);
+                b.list_stack.push(ListLevel {
+                    next: start,
+                    hang: 0,
+                });
             }
             Event::End(TagEnd::List(_)) => {
                 b.list_stack.pop();
@@ -336,29 +390,13 @@ pub fn render(source: &str, width: usize, theme: &Theme) -> Vec<Line<'static>> {
                     b.flush_line();
                 }
             }
-            Event::Start(Tag::Item) => {
+            Event::Start(Tag::Item) => b.start_item(),
+            Event::End(TagEnd::Item) => {
+                if b.pending_marker.is_some() {
+                    b.line_prologue();
+                }
                 b.flush_line();
-                let depth = b.list_stack.len().saturating_sub(1);
-                let pad = "  ".repeat(depth);
-                let marker = match b.list_stack.last_mut() {
-                    Some(Some(n)) => {
-                        let marker = format!("{n}. ");
-                        *n = n.saturating_add(1);
-                        marker
-                    }
-                    // OMP `md.bullet`, with depth glyphs so nesting reads.
-                    _ => match depth {
-                        0 => "• ".to_owned(),
-                        1 => "◦ ".to_owned(),
-                        _ => "‣ ".to_owned(),
-                    },
-                };
-                b.spans.push(Span::styled(
-                    format!("{}{pad}{marker}", b.indent),
-                    b.style(),
-                ));
             }
-            Event::End(TagEnd::Item) => b.flush_line(),
             event if reduce_table(&mut b, &event) => {}
             Event::Text(text) => b.text(&text),
             Event::SoftBreak => b.text(" "),

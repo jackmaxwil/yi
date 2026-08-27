@@ -924,3 +924,92 @@ fn assistant_entry(id: &str, parent: Option<&str>, seq: u64, text: &str) -> yi_t
         timestamp: 0,
     }
 }
+
+#[test]
+fn loose_list_keeps_each_marker_on_its_item_line() -> TestResult {
+    let theme = theme();
+    let source = "1. **read** — Read a file.\n\n2. **edit** — Patch a file.\n";
+    let text: Vec<String> = yi_tui::markdown::render(source, 60, &theme)
+        .iter()
+        .map(flat)
+        .collect();
+    assert!(
+        text.iter()
+            .any(|l| l.starts_with("1. ") && l.contains("read")),
+        "the ordered marker leads its own text: {text:?}"
+    );
+    assert!(
+        text.iter()
+            .any(|l| l.starts_with("2. ") && l.contains("edit")),
+        "every item keeps its marker: {text:?}"
+    );
+    assert!(
+        !text.iter().any(|l| l.trim() == "1." || l.trim() == "2."),
+        "no marker is stranded on a line of its own: {text:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn loose_bullets_keep_their_glyph_and_tight_ones_stay_dense() -> TestResult {
+    let theme = theme();
+    let loose: Vec<String> = yi_tui::markdown::render("- alpha\n\n- beta\n", 60, &theme)
+        .iter()
+        .map(flat)
+        .collect();
+    assert_eq!(
+        loose,
+        vec!["• alpha".to_owned(), String::new(), "• beta".to_owned()],
+        "a loose list keeps its author's breathing room"
+    );
+    let tight: Vec<String> = yi_tui::markdown::render("- alpha\n- beta\n", 60, &theme)
+        .iter()
+        .map(flat)
+        .collect();
+    assert_eq!(
+        tight,
+        vec!["• alpha".to_owned(), "• beta".to_owned()],
+        "a tight list stays dense"
+    );
+    Ok(())
+}
+
+#[test]
+fn wrapped_items_hang_under_their_marker_text() -> TestResult {
+    let theme = theme();
+    let source = "10. a much longer item that must wrap across the line\n";
+    let text: Vec<String> = yi_tui::markdown::render(source, 40, &theme)
+        .iter()
+        .map(flat)
+        .collect();
+    let continuation = text
+        .get(1)
+        .ok_or("a 40-column render of this item wraps to two lines")?;
+    assert!(
+        continuation.starts_with("    ") && !continuation.starts_with("     "),
+        "continuation clears the four-column `10. ` marker: {text:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn nested_items_hang_under_their_own_marker() -> TestResult {
+    let theme = theme();
+    let source = "- outer\n  - nested bullet with enough text that it wraps onto another line\n";
+    let text: Vec<String> = yi_tui::markdown::render(source, 40, &theme)
+        .iter()
+        .map(flat)
+        .collect();
+    let nested = text
+        .iter()
+        .position(|l| l.contains("nested bullet"))
+        .ok_or("the nested item renders")?;
+    let continuation = text
+        .get(nested + 1)
+        .ok_or("the nested item wraps at 40 columns")?;
+    assert!(
+        continuation.starts_with("    ") && !continuation.starts_with("     "),
+        "a nested continuation clears both markers: {text:?}"
+    );
+    Ok(())
+}
