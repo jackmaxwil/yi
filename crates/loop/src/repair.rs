@@ -1,7 +1,6 @@
-/// L13: one deterministic repair of a malformed tool call before it fails.
 /// Models reach for a name they half-remember — `Bash`, `functions.bash`,
-/// `bash_tool` — and the call is otherwise well formed; a single unambiguous
-/// match costs nothing and saves the turn a wasted round trip.
+/// `bash_tool` — with the call otherwise well formed, so a single unambiguous
+/// match saves the turn a wasted round trip.
 pub fn repair_tool_name<'a>(requested: &str, available: &[&'a str]) -> Option<&'a str> {
     if available.contains(&requested) {
         return None;

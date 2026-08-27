@@ -8,10 +8,9 @@ fn add_component(target: &mut i64, delta: i64) {
     *target = target.saturating_add(delta);
 }
 
-/// Prime `attributeChildUsage`, ported verbatim in behavior: the child's
-/// billable usage folds into the parent's totals, but the parent's
-/// model-facing context size (total_tokens) is preserved — child work affects
-/// cost, never the parent's context accounting.
+/// The child's billable usage folds into the parent's totals, but the parent's
+/// `total_tokens` is preserved: child work affects cost, never the parent's
+/// context accounting.
 pub fn attribute_child_usage(parent: &mut Usage, child: &Usage) {
     let parent_context_tokens = if parent.total_tokens != 0 {
         parent.total_tokens

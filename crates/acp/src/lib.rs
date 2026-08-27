@@ -66,11 +66,9 @@ pub fn negotiate(protocol_version: u64) -> Result<u16, String> {
 
 type PendingAsks = Arc<Mutex<HashMap<String, std::sync::mpsc::Sender<Value>>>>;
 
-/// Design C5: the sync `Asker` seam bridged over `session/request_permission`.
-/// The request is written synchronously BEFORE blocking, and the response is
-/// routed by the stdin reader thread directly into the std channel — the
-/// blocked executor thread is never needed to receive it (no deadlock on the
-/// current-thread runtime).
+/// The request is written synchronously BEFORE blocking, and the stdin reader
+/// thread routes the response into the std channel: the blocked executor thread
+/// is never needed to receive it, so a current-thread runtime cannot deadlock.
 pub fn bridge_asker(session_id: String, sink: LineSink, pending: PendingAsks) -> Asker {
     let counter = Arc::new(Mutex::new(0_u64));
     Arc::new(move |title: &str, description: &str| {

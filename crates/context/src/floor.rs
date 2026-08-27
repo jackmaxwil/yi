@@ -36,10 +36,9 @@ fn middle_truncate(text: &str, budget: Tokens) -> String {
     )
 }
 
-/// Design P17: every real user message survives compaction verbatim, newest
-/// first within the budget; the oldest message that partially fits is
-/// middle-truncated. Returns the survivors in original order — the caller
-/// unions them ahead of the kept suffix.
+/// Every real user message survives compaction verbatim, newest first within
+/// the budget; the oldest that partially fits is middle-truncated. Survivors
+/// come back in original order, for the caller to union ahead of the suffix.
 pub fn retain_floor(summarized: &[AgentMessage], budget: Tokens) -> Vec<AgentMessage> {
     let mut remaining = budget;
     let mut survivors_reversed: Vec<AgentMessage> = Vec::new();

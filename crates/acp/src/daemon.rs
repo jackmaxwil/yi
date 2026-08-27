@@ -33,10 +33,9 @@ struct Worker {
     stdin: ChildStdin,
 }
 
-/// D4 supervisor: routes ACP v2 between clients (unix socket) and one
-/// worker process per root (`yi acp` over stdio). Workers outlive client
-/// connections, so schedulers keep firing while nobody is attached — the
-/// phase-6 exit gate.
+/// Routes ACP v2 between clients (unix socket) and one worker per root (`yi
+/// acp` over stdio). Workers outlive client connections, so schedulers keep
+/// firing while nobody is attached.
 struct Supervisor {
     options: DaemonOptions,
     workers: HashMap<String, Worker>,

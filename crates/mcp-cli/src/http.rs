@@ -26,10 +26,9 @@ pub enum HttpError {
     Status(u16),
 }
 
-/// ureq-based implementation of rmcp's client transport trait (D37): the one
-/// HTTP stack in the tree serves MCP too — reqwest stays banned. Blocking
-/// calls run in spawn_blocking; SSE bodies are pumped by a detached reader
-/// thread feeding a channel-backed stream.
+/// rmcp's client transport over the tree's one HTTP stack, so reqwest stays
+/// banned. Blocking calls run in spawn_blocking; SSE bodies are pumped by a
+/// detached reader thread feeding a channel-backed stream.
 #[derive(Clone)]
 pub struct UreqHttpClient {
     agent: ureq::Agent,

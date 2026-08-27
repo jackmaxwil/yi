@@ -9,10 +9,9 @@ pub(crate) mod pump;
 pub mod reduce;
 pub mod snapshot;
 
-// Generous backstop for a kernel that is alive but wedged: crashes are detected
-// within one 25ms poll via the exit handler, warm boots return in under a second,
-// and a cold first boot after a venv (re)provision may legitimately need tens of
-// seconds of imports before it binds ports and answers the ready probe.
+// Generous backstop for a kernel alive but wedged: crashes surface within one
+// 25ms poll and warm boots return in under a second, but a cold boot after a
+// venv provision may need tens of seconds of imports first.
 pub const PORTS_RESOLVE_TIMEOUT_MS: u64 = 30_000;
 pub const READY_TIMEOUT_MS: u64 = 30_000;
 // Loopback PUB/SUB subscription propagation is usually sub-ms, but keep a small guard before first execute.
@@ -34,10 +33,8 @@ pub const KERNEL_BUSY_INTERRUPT_INTERVAL_MS: u64 = 500;
 pub const MAX_LATE_SENT_AGENT_MESSAGE_HANDLERS: usize = 256;
 pub const KERNEL_BUSY_AFTER_INTERRUPT_MESSAGE: &str = "IPython kernel is still running the previously interrupted cell. Wait and try again, or kill the IPython kernel to start fresh.";
 
-// Hard ceiling on a single attachment's base64 payload, a defensive guard
-// against a runaway direct `display_data` emit. The `attach-image` skill caps
-// its own images well under this, so a skill-produced attachment is never
-// dropped here — only a non-skill emit can hit this.
+// Guards against a runaway direct `display_data` emit. `attach-image` caps its
+// own images well under this, so only a non-skill emit can reach the ceiling.
 pub const MAX_ATTACHMENT_DATA_CHARS: usize = 10_000_000;
 
 /// Comm target the kernel-side `rlm.host_request` shim opens for typed host requests.

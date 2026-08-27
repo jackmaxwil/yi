@@ -2,10 +2,8 @@ use std::collections::BTreeMap;
 
 use serde_json::Value;
 
-/// Design P18: a named, typed portion of model-visible state. A diff is
-/// rendered only when the snapshot changed; per-turn re-injection is a diff
-/// or it is nothing — the stable prefix is never disturbed by a changed
-/// value.
+/// A named, typed portion of model-visible state. Re-injection is a diff or it
+/// is nothing, so a changed value never disturbs the stable prefix.
 pub trait WorldStateSection: Send + Sync {
     fn name(&self) -> &'static str;
     fn snapshot(&self) -> Value;

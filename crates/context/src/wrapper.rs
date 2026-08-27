@@ -6,10 +6,9 @@ fn valid_source(source: &str) -> bool {
         && chars.all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '_')
 }
 
-/// Design L4: injected prompts ride a recognizable wrapper so they are data
-/// with provenance to the model and are dropped at compaction — injected
-/// context never accumulates across windows. Invalid source labels fall back
-/// to `internal`.
+/// The wrapper makes an injected prompt data-with-provenance to the model and
+/// droppable at compaction, so injected context never accumulates across
+/// windows. Invalid source labels fall back to `internal`.
 pub fn wrap_internal(source: &str, text: &str, timestamp: u64) -> AgentMessage {
     let source = if valid_source(source) {
         source

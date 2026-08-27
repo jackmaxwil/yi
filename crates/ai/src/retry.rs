@@ -1,9 +1,8 @@
 use std::time::Duration;
 
-/// Mirrors pi-ai provider-retry: 408/409/429/5xx retryable, x-should-retry
-/// header wins, retry-after honored with a hard cap, exponential backoff
-/// 0.5s * 2^attempt capped at 8s. Jitter dropped: rand is banned and
-/// deterministic backoff keeps cassette replays stable.
+/// 408/409/429/5xx retryable, x-should-retry wins, retry-after honored under a
+/// hard cap, backoff 0.5s * 2^attempt capped at 8s. Jitter dropped: rand is
+/// banned, and deterministic backoff keeps cassette replays stable.
 pub struct RetryPolicy {
     pub max_attempts: u32,
     pub max_delay: Duration,

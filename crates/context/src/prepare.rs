@@ -35,11 +35,9 @@ fn previous_compaction(branch: &[Entry]) -> (Option<String>, Option<CompactionDe
     (None, None)
 }
 
-/// Design P5/P8/P17 assembled: project the branch, pick the cut, split the
-/// history into summarize/prefix/kept regions, seed file ops from the prior
-/// compaction, and pull the retention-floor user messages out of the region
-/// being summarized. Returns None when there is nothing to summarize or the
-/// leaf is already a compaction entry.
+/// Projects the branch, picks the cut, splits into summarize/prefix/kept, seeds
+/// file ops from the prior compaction, and pulls the retention floor out of the
+/// summarized region. None when there is nothing to summarize.
 pub fn prepare_compaction(branch: &[Entry], settings: &Settings) -> Option<Preparation> {
     if matches!(branch.last(), Some(Entry::Compaction { .. })) {
         return None;

@@ -23,11 +23,9 @@ pub struct Cut {
     pub is_split_turn: bool,
 }
 
-/// Design P5: walk back from newest accumulating estimates until
-/// `keep_recent` is reached, then cut at the nearest valid cut point at or
-/// after that message — never at a tool result, so results stay with their
-/// call. A cut inside a non-user turn is a split turn and records the turn's
-/// starting user message for the prefix summary.
+/// Cuts at the nearest valid point at or after `keep_recent`, never at a tool
+/// result, so results stay with their call. A cut inside a non-user turn is a
+/// split turn and records the turn's starting user message.
 pub fn select_cut(messages: &[AgentMessage], keep_recent: Tokens) -> Cut {
     let Some(first_cut) = messages.iter().position(is_cut_point) else {
         return Cut {

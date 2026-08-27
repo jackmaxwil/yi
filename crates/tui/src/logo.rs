@@ -86,13 +86,9 @@ fn resample(dots: &[Dot], count: usize) -> Vec<Dot> {
         .collect()
 }
 
-/// `phase` 0 = wordmark at rest, 1 = working orb. The target is the orb's own
-/// live frame the whole way, never an intermediate preset, or the dots fly
-/// toward one shape and snap to another at the end.
-///
-/// Pairing decides whether this reads as rearrangement or noise: both clouds are
-/// ordered by angle and the orb ordering rotated to the offset minimising total
-/// travel, so dots take the shortest arcs instead of crossing the figure.
+/// The target is the orb's own live frame the whole way, never an intermediate
+/// preset. Pairing decides rearrangement or noise: both clouds order by angle,
+/// and the orb ordering rotates to whichever offset minimises total travel.
 pub fn frame(phase: f64, clock: f64, size: u32) -> Option<OrbFrame> {
     let phase = phase.clamp(0.0, 1.0);
     let canvas = f64::from(size);

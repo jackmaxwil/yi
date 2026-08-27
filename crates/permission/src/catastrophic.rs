@@ -63,12 +63,9 @@ impl CatastrophicContext {
     }
 }
 
-/// Lexically remove `.` and `..` so `/home/u/../..` is seen as `/`. Never
-/// touches the filesystem: canonicalize() fails on the file being created (the
-/// common case) and a hostile argument cannot slow a lexical pass down. Not
-/// symlink-aware by design — a `..` popped across a symlinked component
-/// resolves differently than the kernel would; the write-time symlink recheck
-/// (T10) is the compensating layer.
+/// Never touches the filesystem: canonicalize() fails on the file being created,
+/// and a hostile argument cannot slow a lexical pass down. Not symlink-aware —
+/// the write-time symlink recheck (T10) is the compensating layer.
 pub fn lexical_normalize(path: &Path) -> PathBuf {
     let mut out = PathBuf::new();
     for component in path.components() {
@@ -151,10 +148,8 @@ pub fn is_catastrophic(path: &Path, context: &CatastrophicContext) -> bool {
 
 const DESTRUCTIVE_COMMANDS: [&str; 4] = ["rm", "rmdir", "shred", "unlink"];
 
-/// Best-effort command screening: when a command's verb is destructive, every
-/// path-shaped token is checked against the denylist. Deliberately no shell
-/// parsing cleverness (D15) — this is a belt over path-based checks, and an
-/// unparseable command is its own decision input elsewhere (D26).
+/// A destructive verb sends every path-shaped token through the denylist. No
+/// shell-parsing cleverness (D15): this is a belt over the path-based checks.
 pub fn command_targets_catastrophic(
     command: &str,
     context: &CatastrophicContext,

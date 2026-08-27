@@ -293,11 +293,9 @@ async fn stream_assistant_response<S: StreamFn>(
     let mut added_partial = false;
     let mut final_message: Option<AgentMessage> = None;
     loop {
-        // The provider's stream takes no cancellation input, so this is the
-        // only interrupt checkpoint a streaming answer has. Without it a turn
-        // with no tool call ran from first token to last with nothing able to
-        // stop it, and `abort` did not become observable until the turn had
-        // already finished. `biased` prefers the interrupt over one more token.
+        // The provider's stream takes no cancellation input, so this is the only
+        // interrupt checkpoint a streaming answer has: without it a turn with no
+        // tool call ran to completion before `abort` became observable.
         let event = tokio::select! {
             biased;
             () = signal.wait() => None,

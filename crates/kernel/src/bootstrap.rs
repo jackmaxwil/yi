@@ -58,10 +58,8 @@ pub fn default_runtime_source_dir() -> PathBuf {
         .join("yi_runtime")
 }
 
-/// Bundled Python skills installed into the kernel venv (design §3):
 /// (import name, directory under python/skills). Install order is declared
-/// order — the dependency toposort is excised until a skill grows a sibling
-/// dep.
+/// order; the dependency toposort waits until a skill grows a sibling dep.
 pub const PYTHON_SKILLS: [(&str, &str); 3] = [
     ("compact", "compact"),
     ("attach_image", "attach-image"),
@@ -230,10 +228,9 @@ pub fn resolve_runtime_identity(source_dir: &Path) -> Result<String, String> {
     resolve_python_identity(source_dir, None)
 }
 
-/// Content hash of the runtime package plus (when present) the bundled skills
-/// tree: any Python change invalidates the venv. A failure here must surface
-/// rather than fall back to a static identity — recording one would
-/// permanently mask later source changes.
+/// Any Python change invalidates the venv. A failure here must surface rather
+/// than fall back to a static identity, which would permanently mask later
+/// source changes.
 pub fn resolve_python_identity(
     source_dir: &Path,
     skills_dir: Option<&Path>,

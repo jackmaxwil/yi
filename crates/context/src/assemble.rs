@@ -2,10 +2,9 @@ use yi_types::message::AgentMessage;
 
 use crate::wrapper::wrap_internal;
 
-/// Design P11 stable prefix: pieces whose bytes must not change within a
-/// window — the system prompt and the ledger fragment. The compaction summary
-/// rides the message list (it is itself a message), and world-state diffs are
-/// appended at the overlay tail so the prefix stays cache-warm.
+/// The pieces whose bytes must not change within a window. The compaction
+/// summary rides the message list, and world-state diffs append at the overlay
+/// tail, so the prefix stays cache-warm.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct StablePrefix {
     pub system_prompt: String,

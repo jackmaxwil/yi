@@ -85,11 +85,9 @@ pub struct ToolCall<'a> {
     pub command: Option<&'a str>,
 }
 
-/// Pure decision (design M6). Precedence: catastrophic denylist (every mode,
-/// yolo included) > configured deny > session rule > configured allow/ask >
-/// hold > mode fallback.
-// ponytail: no (mode, rules_hash) memoization yet; the inputs are tiny at
-// current scale — add the cache when decide() shows up in a profile.
+/// Precedence: catastrophic denylist (every mode, yolo included) > configured
+/// deny > session rule > configured allow/ask > hold > mode fallback.
+// ponytail: no (mode, rules_hash) memoization — add it when decide() profiles.
 pub fn decide(
     call: &ToolCall<'_>,
     mode: PermissionMode,
