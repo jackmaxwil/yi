@@ -10,9 +10,8 @@ pub struct Skill {
     pub path: PathBuf,
 }
 
-/// Design §5 / §14.1: project root, then global root. A skill in the project
-/// shadows a global one of the same name, and the bundled set is installed
-/// into the global root rather than compiled into the binary.
+/// Project root, then global. A project skill shadows a global one of the same
+/// name; the bundled set installs into the global root, never into the binary.
 pub fn roots(cwd: &Path, home: &Path) -> Vec<PathBuf> {
     vec![home.join(".yi/skills"), cwd.join(".yi/skills")]
 }
@@ -27,8 +26,8 @@ pub fn discover(cwd: &Path, home: &Path) -> Vec<Skill> {
     found.into_values().collect()
 }
 
-/// P16: `description` is the trigger surface, so the catalog carries it in
-/// full and the whole block is fitted to the `skills_meta` budget.
+/// `description` is the trigger surface, so it is carried in full and the block
+/// as a whole is fitted to the `skills_meta` budget.
 pub fn skills_catalog(cwd: &Path, home: &Path, budget: Bytes) -> Option<Truncated> {
     let skills = discover(cwd, home);
     if skills.is_empty() {

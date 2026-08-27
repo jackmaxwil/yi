@@ -30,8 +30,7 @@ pub use subagent::{
 pub use tools::ToolAdapter;
 pub use yi_ai::auth;
 
-/// The base identity fragment every Yi session leads with (operating
-/// doctrine is a later, separate fragment).
+/// Operating doctrine is a later, separate fragment.
 pub fn identity_fragment() -> &'static str {
     include_str!("prompts/identity.md")
 }

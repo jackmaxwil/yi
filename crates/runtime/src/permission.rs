@@ -94,8 +94,7 @@ impl PermissionBroker {
         self.asker.is_some()
     }
 
-    /// Design M5/V8: installs an advisor (or user) hold; matching calls
-    /// become Ask with the reason shown until cleared or expired.
+    /// Matching calls become Ask, reason shown, until cleared or expired.
     pub fn insert_hold(&self, hold: Hold) {
         if let Ok(mut holds) = self.holds.lock() {
             holds.push(hold);
@@ -108,9 +107,8 @@ impl PermissionBroker {
         }
     }
 
-    /// Decides one tool call, running the interactive ask flow when needed.
-    /// Headless (no asker), an Ask degrades to a denial that carries the
-    /// evidence (D26): never a silent terminal error.
+    /// Headless, an Ask degrades to a denial carrying the evidence, never a
+    /// silent terminal error.
     pub fn decide_call(
         &self,
         tool_name: &str,
@@ -209,8 +207,7 @@ impl PermissionBroker {
         }
     }
 
-    /// T13: the tool renders the diff, the prompt decides how much of it fits.
-    /// A long patch is cut — the prompt is a decision aid, not the file.
+    /// A long patch is cut: the prompt is a decision aid, not the file.
     fn cut_preview(patch: &str) -> String {
         const PREVIEW_LINES: usize = 40;
         let mut lines: Vec<&str> = patch.lines().take(PREVIEW_LINES).collect();

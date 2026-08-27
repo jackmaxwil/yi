@@ -52,8 +52,8 @@ struct Shared {
     on_turn_end: Mutex<Option<Arc<TurnHook>>>,
 }
 
-/// T14: runs once at each end of a turn — the start hook captures the tree the
-/// turn is about to change, the end hook what it left behind.
+/// The start hook captures the tree the turn is about to change, the end hook
+/// what it left behind.
 pub type TurnHook = dyn Fn() + Send + Sync;
 
 fn persist_message(shared: &Shared, message: &AgentMessage) {
@@ -154,8 +154,7 @@ impl AgentSession {
         self.advisor.lock().ok().and_then(|slot| slot.clone())
     }
 
-    /// Design H10: the scheduler and heartbeat surface live with the session;
-    /// dropping the session stops the timer.
+    /// Dropping the session stops the timer.
     pub fn set_schedule(
         &self,
         store: Arc<crate::schedule::JobStore>,
@@ -187,17 +186,15 @@ impl AgentSession {
             .and_then(|slot| slot.as_ref().map(|(_, service, _)| Arc::clone(service)))
     }
 
-    /// Fires after each applied compaction (design K10 post-compaction sync);
-    /// the hook must be non-blocking — spawn any kernel work.
+    /// The hook must be non-blocking — spawn any kernel work.
     pub fn set_on_compacted(&self, hook: Arc<dyn Fn() + Send + Sync>) {
         if let Ok(mut slot) = self.on_compacted.lock() {
             *slot = Some(hook);
         }
     }
 
-    /// Turns on auto-compaction (design P13): checked at every message
-    /// boundary inside the tool loop, so a tool-heavy turn compacts before it
-    /// blows the window.
+    /// Checked at every message boundary inside the tool loop, so a tool-heavy
+    /// turn compacts before it blows the window.
     pub fn enable_compaction(&mut self) {
         self.enable_compaction_with(yi_context::Settings::default());
     }
@@ -246,9 +243,8 @@ impl AgentSession {
         self.tools = tools;
     }
 
-    /// Wires yi-tools implementations through the loop adapter; aborting the
-    /// session cancels any tool subprocess still running. `permission` gates
-    /// every call (M6); None runs ungated (the yolo-equivalent internal path).
+    /// Aborting the session cancels any tool subprocess still running.
+    /// `permission` gates every call; None runs ungated.
     pub fn use_tools(
         &mut self,
         tools: Vec<Arc<dyn yi_tools::Tool>>,
@@ -288,8 +284,8 @@ impl AgentSession {
         self.shared.events.clone()
     }
 
-    /// Attaches a session store: loads the main branch's messages as the
-    /// in-memory history, then persists every subsequent MessageEnd to it.
+    /// Loads the main branch as the in-memory history, then persists every
+    /// subsequent MessageEnd to it.
     pub fn attach_store(
         &self,
         store: yi_session::SharedSession,
@@ -378,8 +374,7 @@ impl AgentSession {
         steer.saturating_add(follow)
     }
 
-    /// Clears the in-memory history and detaches any store; attach_store
-    /// afterwards to point the session at a fresh or different session file.
+    /// Detaches any store; `attach_store` afterwards points at a new file.
     pub fn reset(&self) {
         if let Ok(mut messages) = self.shared.messages.lock() {
             messages.clear();
@@ -422,8 +417,8 @@ impl AgentSession {
         self.prompt_message(user_message(text))
     }
 
-    /// Design H9: a heartbeat (or any prepared message) starts an idle
-    /// session's turn without being re-wrapped as plain user text.
+    /// Starts an idle session's turn without re-wrapping the message as plain
+    /// user text.
     pub fn prompt_message(&self, prompt: AgentMessage) -> Result<(), SessionError> {
         let parts = RunParts {
             shared: Arc::clone(&self.shared),
@@ -438,9 +433,8 @@ impl AgentSession {
         Self::spawn_run(parts, prompt)
     }
 
-    /// Detached run-starter for the scheduler (design H9): lets a heartbeat
-    /// wake an idle session without a `&self` borrow. Tools and model are
-    /// snapshotted at handle creation — re-wire after `set_model`/`use_tools`.
+    /// Lets a heartbeat wake an idle session without a `&self` borrow. Tools and
+    /// model are snapshotted here — re-wire after `set_model`/`use_tools`.
     pub fn run_handle(
         &self,
     ) -> Arc<dyn Fn(AgentMessage) -> Result<(), SessionError> + Send + Sync> {
@@ -457,9 +451,8 @@ impl AgentSession {
         Arc::new(move |prompt| Self::spawn_run(parts.clone(), prompt))
     }
 
-    /// Design H9 delivery seam: running session → queued (Steer drains at the
-    /// next message boundary, FollowUp at turn end); idle session → the
-    /// message starts a run.
+    /// Running session ⇒ queued (Steer drains at the next message boundary,
+    /// FollowUp at turn end); idle session ⇒ the message starts a run.
     pub fn heartbeat_hook(
         &self,
     ) -> Arc<dyn Fn(AgentMessage, yi_types::schedule::DeliveryMode) + Send + Sync> {
@@ -485,10 +478,9 @@ impl AgentSession {
         })
     }
 
-    /// Waits out any running turn, then starts a new one with the message
-    /// (design G3: goal continuation fires at idle, and AgentEnd is emitted
-    /// while the status is still Running — a status-gated hook would queue
-    /// into a follow-up that never drains).
+    /// Waits out any running turn rather than gating on status: AgentEnd is
+    /// emitted while the status is still Running, so a status-gated hook queued
+    /// into a follow-up that never drained.
     pub fn wake_idle_hook(&self) -> Arc<dyn Fn(AgentMessage) + Send + Sync> {
         let shared = Arc::clone(&self.shared);
         let run = self.run_handle();
@@ -512,9 +504,8 @@ impl AgentSession {
         })
     }
 
-    /// Design V8 delivery: running session → steer queue (next tool
-    /// boundary); idle → follow-up queue (drains on the next prompt or
-    /// heartbeat). The advisor never wakes an idle primary.
+    /// Running ⇒ steer queue (next tool boundary); idle ⇒ follow-up queue. The
+    /// advisor never wakes an idle primary.
     pub fn advisory_hook(&self) -> Arc<dyn Fn(AgentMessage) + Send + Sync> {
         let shared = Arc::clone(&self.shared);
         Arc::new(move |message| {
@@ -534,7 +525,6 @@ impl AgentSession {
         })
     }
 
-    /// Detached busy probe for the scheduler's defer table (design H8).
     pub fn activity_handle(&self) -> Arc<dyn Fn() -> bool + Send + Sync> {
         let shared = Arc::clone(&self.shared);
         Arc::new(move || {
@@ -556,11 +546,9 @@ impl AgentSession {
             }
             *status = Status::Running;
         }
-        // The interrupt signal lives on the session, and nothing ever cleared
-        // it: the first abort that landed made every later turn abort at its
-        // first checkpoint. The epoch is read here, at admission, and the
-        // compare-and-clear below runs in the spawned task — so an interrupt
-        // fired in the gap still stops this turn instead of being swallowed.
+        // Nothing ever cleared the session-wide signal, so the first abort made
+        // every later turn abort at its first checkpoint. Reading the epoch at
+        // admission still stops a turn interrupted in the gap before the spawn.
         let admitted_epoch = parts.shared.signal.epoch();
         let RunParts {
             shared,
@@ -697,9 +685,8 @@ impl AgentSession {
         Ok(())
     }
 
-    /// Schedules a compaction (design P13). Running sessions compact at the
-    /// next message boundary inside the tool loop; idle sessions compact
-    /// immediately. Returns true when a compaction was applied now.
+    /// Running sessions compact at the next message boundary inside the tool
+    /// loop, idle sessions immediately. True when one was applied now.
     pub async fn compact_now(&self) -> bool {
         let Some(compactor) = &self.compactor else {
             return false;
@@ -738,10 +725,8 @@ impl AgentSession {
         }
     }
 
-    /// Host-status delivery hook (design B6 role split): pushes a user-role
-    /// steering message, consumed at the next message boundary (or the next
-    /// turn when idle).
-    /// R3 delivery for work that finishes outside a turn (D13 background jobs).
+    /// A user-role steering message consumed at the next message boundary, or
+    /// the next turn when idle — R3 delivery for work finishing outside a turn.
     pub fn follow_up_hook(&self) -> Arc<dyn Fn(&str) + Send + Sync> {
         let shared = Arc::clone(&self.shared);
         Arc::new(move |text: &str| {
@@ -760,10 +745,8 @@ impl AgentSession {
         })
     }
 
-    /// Detached compact-status reader for host handlers (kernel
-    /// `compact.status`): captures shared state and a model snapshot taken
-    /// now — a later `set_model` leaves percent computed against the old
-    /// window until re-wired.
+    /// The model snapshot is taken now: a later `set_model` leaves percent
+    /// computed against the old window until re-wired.
     pub fn compact_status_handle(
         &self,
     ) -> Option<Arc<dyn Fn() -> crate::compaction::CompactStatus + Send + Sync>> {
@@ -780,16 +763,14 @@ impl AgentSession {
         }))
     }
 
-    /// Detached form of [`Self::attribute_child_usage`] usable after the
-    /// session moves: the hook holds only the shared state.
+    /// Usable after the session moves — the hook holds only shared state.
     pub fn attribution_handle(&self) -> Arc<dyn Fn(&Usage) + Send + Sync> {
         let shared = Arc::clone(&self.shared);
         Arc::new(move |child: &Usage| attribute_to_shared(&shared, child))
     }
 
-    /// Folds a child's billable usage onto this session's last assistant
-    /// message (design B9/P14): in-memory usage aggregates, and the store —
-    /// when attached — gains a `child_usage_attributed` usage record.
+    /// In-memory usage aggregates; an attached store gains a
+    /// `child_usage_attributed` record.
     pub fn attribute_child_usage(&self, child: &Usage) {
         attribute_to_shared(&self.shared, child);
     }

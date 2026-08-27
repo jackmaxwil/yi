@@ -19,9 +19,8 @@ pub const ADVISOR_GUIDANCE: &str = "weigh, don't blindly obey";
 pub const DEFAULT_CADENCE: u64 = 25;
 pub const OUTCOME_WINDOW: u64 = 5;
 
-/// Design D28 two-tier enable: signals on by default (deterministic, ~zero
-/// tokens), the LLM reviewer off; cadence applies only when explicitly set —
-/// a cadence review on a clean run is pure spend.
+/// Signals default on (deterministic, ~zero tokens), the LLM reviewer off.
+/// Cadence applies only when set: a cadence review on a clean run is pure spend.
 #[derive(Clone)]
 pub struct AdvisorConfig {
     pub signals: bool,
@@ -47,7 +46,7 @@ impl Default for AdvisorConfig {
     }
 }
 
-/// Design V3: an hourly token budget over a ring buffer of spends.
+/// An hourly token budget over a ring buffer of spends.
 pub struct Budget {
     tokens_per_hour: Option<u64>,
     spent: VecDeque<(u64, u64)>,
@@ -81,8 +80,7 @@ impl Budget {
     }
 }
 
-/// Design V2: fire on any signal, or on cadence when one is configured,
-/// gated by the budget.
+/// Any signal, or cadence when configured, gated by the budget.
 pub fn should_review(
     fired: &[Fired],
     calls_since_review: u64,
@@ -93,8 +91,8 @@ pub fn should_review(
     due && budget_remaining.is_none_or(|remaining| remaining > 0)
 }
 
-/// Design V5: the single judgment seam. `RuleReviewer` maps signals to
-/// canned advice at zero tokens; `LlmReviewer` is one prompt per review.
+/// The single judgment seam: `RuleReviewer` maps signals to canned advice at
+/// zero tokens, `LlmReviewer` is one prompt per review.
 pub trait Reviewer: Send + Sync {
     fn review(&self, fired: &[Fired], digest_chunk: &str) -> Vec<Advice>;
 }
@@ -150,8 +148,7 @@ impl Reviewer for RuleReviewer {
     }
 }
 
-/// omp advise-tool injection, verbatim shape: one `<advisory>` element,
-/// severity and target as attributes, guidance framing advice-not-orders.
+/// One `<advisory>` element, severity and target as attributes.
 pub fn advisory_text(advice: &Advice) -> String {
     let severity = match advice.severity {
         AdvisorySeverity::Note => "note",
@@ -216,8 +213,8 @@ struct AdvisorState {
     directives: Vec<String>,
 }
 
-/// Design §7.3 pipeline, in-process: observes the session's event stream,
-/// runs signals → trigger → reviewers → guard → delivery → outcome ledger.
+/// signals → trigger → reviewers → guard → delivery → outcome ledger, over the
+/// session's event stream.
 pub struct AdvisorRuntime {
     state: Mutex<AdvisorState>,
     config: AdvisorConfig,
@@ -268,9 +265,8 @@ impl AdvisorRuntime {
         stats_text(&self.lock().stats)
     }
 
-    /// Feed one finished message from the primary's stream. Returns the
-    /// fired signals and the digest chunk when a review is due, for an
-    /// (optional) async LLM pass layered by the caller.
+    /// The fired signals and the digest chunk when a review is due, for an
+    /// optional async LLM pass layered by the caller.
     pub fn observe(&self, message: &AgentMessage, now_ms: u64) -> Option<(Vec<Fired>, String)> {
         if !self.config.signals {
             return None;
@@ -339,8 +335,7 @@ impl AdvisorRuntime {
         review
     }
 
-    /// V4 digest of the log since the cursor: header (directives panel) plus
-    /// one entry-id'd line per item; never thinking.
+    /// Since the cursor: a directives header plus one line per item.
     fn digest_chunk(&self, state: &AdvisorState) -> String {
         let mut lines = Vec::new();
         if !state.directives.is_empty() {
@@ -362,8 +357,7 @@ impl AdvisorRuntime {
         lines.join("\n")
     }
 
-    /// V13: the full text of a digest-named entry — never thinking, never
-    /// another session.
+    /// Never thinking, never another session.
     pub fn transcript(&self, entry_id: &str) -> Option<String> {
         let state = self.lock();
         state.log.iter().find_map(|(id, message)| {
@@ -381,8 +375,7 @@ impl AdvisorRuntime {
         })
     }
 
-    /// Feed advices from an external (LLM) reviewer through the same guard,
-    /// stats, and delivery as the rule path.
+    /// Through the same guard, stats and delivery as the rule path.
     pub fn deliver_reviewed(&self, advices: Vec<Advice>, now_ms: u64) {
         let accepted: Vec<Advice> = {
             let mut state = self.lock();
@@ -509,10 +502,8 @@ pub struct AdvisorDeps {
     pub llm: Option<Arc<review::LlmReviewer>>,
 }
 
-/// Attaches the advisor to a session's event stream (design V8 delivery:
-/// running → steer at the next boundary, idle → follow-up queue; the advisor
-/// never wakes an idle primary). The LLM reviewer, when enabled, runs
-/// signal-gated in a spawned task and feeds the same guard and delivery.
+/// The LLM reviewer, when enabled, runs signal-gated in a spawned task and
+/// feeds the same guard and delivery as the rule path.
 pub fn attach_advisor(
     session: &AgentSession,
     config: AdvisorConfig,

@@ -60,15 +60,12 @@ pub struct SubagentHostOptions {
     pub parent_session_dir: PathBuf,
     pub default_model: Model,
     pub factory: Arc<ChildFactory>,
-    /// Delivers a host status notice into the parent's context as a
-    /// user-role message (design B6 role split).
+    /// A host status notice, delivered as a user-role message.
     pub notice: Arc<NoticeFn>,
-    /// Folds a child's billable usage onto the parent's last assistant
-    /// message (design B9 / P14).
+    /// Folds a child's billable usage onto the parent's last assistant message.
     pub attribute: Arc<AttributeFn>,
 }
 
-/// In-process subagent host (design B4; prime `_startRlmChildRun`, adapted).
 pub struct SubagentHost {
     options: SubagentHostOptions,
     children: Mutex<HashMap<String, ChildRecord>>,
@@ -189,8 +186,7 @@ impl SubagentHost {
         }
     }
 
-    /// Live child handles for surfaces that render subagents (TUI U27/U29):
-    /// the session handle is the event-stream + store access, not control.
+    /// The session handle is event-stream and store access, not control.
     pub fn children_view(&self) -> Vec<ChildView> {
         self.children
             .lock()
@@ -225,8 +221,7 @@ impl SubagentHost {
         Err("Unable to create unique RLM child session directory".to_owned())
     }
 
-    /// `rlm.run` (design B1/B2/B3/B5): validates, admits, spawns detached,
-    /// returns the handle at admission.
+    /// Validates, admits, spawns detached, returns the handle at admission.
     pub fn spawn(
         self: &Arc<Self>,
         prompt: String,
@@ -294,9 +289,8 @@ impl SubagentHost {
             let task_child_id = child_id.clone();
             let task_name = session_name.clone();
             let task_prompt = prompt.clone();
-            // Startup and the task run are deliberately detached: the spawn
-            // reply resolves at admission (design B5; blocking would abort the
-            // turn whose cell awaits it).
+            // Detached: the spawn reply resolves at admission, and blocking here
+            // would abort the turn whose cell awaits it.
             tokio::spawn(async move {
                 host.run_child(task_child_id, task_name, task_prompt, session)
                     .await;
@@ -449,7 +443,6 @@ impl SubagentHost {
         reply
     }
 
-    /// The `rlm.*` + `model.info` host vocabulary (design §6).
     pub fn register(self: &Arc<Self>, registry: &mut crate::kernel::HostRegistry) {
         let host = Arc::clone(self);
         registry.register("rlm.run", move |payload| {
@@ -516,8 +509,7 @@ impl SubagentHost {
     }
 }
 
-/// Everything a session needs to carry the kernel + subagent runtime, and for
-/// its children to carry it again one level deeper.
+/// Carried again by every child one level deeper.
 #[derive(Clone)]
 pub struct RuntimeWiring {
     pub provider: Arc<crate::provider::ProviderStream>,
@@ -536,9 +528,8 @@ pub struct RuntimeWiring {
     pub auto_background: Option<std::time::Duration>,
 }
 
-/// Wires kernel (ipython + host handlers) and subagents onto a session, and
-/// makes every spawned child wire itself the same way at depth+1 — the depth
-/// check in `spawn` is what terminates the recursion (design B2).
+/// Every spawned child wires itself the same way at depth+1; the depth check in
+/// `spawn` is what terminates the recursion.
 fn wire_schedule(
     session: &AgentSession,
     wiring: &RuntimeWiring,
@@ -632,8 +623,8 @@ fn wire_advisor(session: &AgentSession, wiring: &RuntimeWiring, tools: &[Arc<dyn
     session.set_advisor(advisor);
 }
 
-/// D13: a job that finishes between turns reports through the R3 follow-up
-/// queue, so the model hears about it without a turn being interrupted.
+/// A job finishing between turns reports through the R3 follow-up queue, so the
+/// model hears about it without a turn being interrupted.
 fn wire_job_completions(session: &AgentSession) {
     let follow_up = session.follow_up_hook();
     tokio::spawn(async move {

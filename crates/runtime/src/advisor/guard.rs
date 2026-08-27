@@ -1,9 +1,8 @@
 use std::collections::{HashSet, VecDeque};
 
 // omp issue #3520: one session recorded 309 advise calls covering 92 unique
-// notes ("Stop." ×114) — the rules must be load-bearing in code, not prose.
-// The gate is invisible to the advisor model: a suppressed call still reads
-// as recorded, or the model rephrases to bypass the dedupe.
+// notes ("Stop." ×114). The gate is invisible to the advisor model — told it
+// was suppressed, the model rephrases to bypass the dedupe.
 const DEFAULT_HISTORY_CAPACITY: usize = 4_096;
 
 // Conservative, normalized filler the omp reporter observed polluting the
@@ -45,8 +44,7 @@ const SUPPRESSED_NORMALIZED_PHRASES: [&str; 34] = [
     "carry on",
 ];
 
-/// Case-insensitive, punctuation-folded key: `"Stop."`, `"*Stop*"`, and
-/// `"  stop  "` all key to `stop` (design V7, omp `normalizeAdvisorNote`).
+/// `"Stop."`, `"*Stop*"` and `"  stop  "` all key to `stop`.
 pub fn normalize_note(note: &str) -> String {
     let mut key = String::with_capacity(note.len());
     let mut pending_space = false;
@@ -64,9 +62,8 @@ pub fn normalize_note(note: &str) -> String {
     key
 }
 
-/// Design V7 (omp `AdvisorEmissionGuard`, adapted): noise filter, then
-/// session-scoped dedupe (FIFO at capacity), then one accepted note per
-/// review cycle. Suppressed calls never consume the per-cycle budget.
+/// Noise filter, then session-scoped dedupe (FIFO at capacity), then one
+/// accepted note per review cycle. Suppressed calls never consume the budget.
 pub struct EmissionGuard {
     seen: HashSet<String>,
     seen_order: VecDeque<String>,

@@ -26,8 +26,7 @@ use crate::provider::ProviderStream;
 use crate::session::{AgentSession, SessionConfig};
 use yi_types::model::ToolDef;
 
-/// Fixed reviewer framing (§7.2): review the work log, not the mind — code
-/// review of an automated run, never surveillance of hidden reasoning.
+/// Reviews the work log, not the mind: never surveillance of hidden reasoning.
 pub const ADVISOR_SYSTEM_PROMPT: &str = "You are reviewing the work log of an automated coding run against the task. Judge only what was said and done: user messages, tool calls with their declared intents, tool results, and the agent's emitted prose. Use the advise tool at most once per review with one concrete, specific, actionable note; stay silent when the run is on track. Never repeat advice you already gave. For each claim you are asked to audit, cite the log line that backs it or say UNBACKED.";
 
 fn lock_sink(sink: &Mutex<Vec<Advice>>) -> std::sync::MutexGuard<'_, Vec<Advice>> {
@@ -35,8 +34,6 @@ fn lock_sink(sink: &Mutex<Vec<Advice>>) -> std::sync::MutexGuard<'_, Vec<Advice>
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
-/// The advisor-facing `advise` tool (design V5/V6; omp advise-tool schema,
-/// adapted to the V6 vocabulary).
 struct AdviseTool {
     sink: Arc<Mutex<Vec<Advice>>>,
 }
@@ -101,7 +98,6 @@ impl yi_loop::AgentTool for AdviseTool {
     }
 }
 
-/// V13 pull tool: full text of a digest-named entry.
 struct TranscriptTool {
     runtime: Arc<AdvisorRuntime>,
 }
@@ -141,10 +137,8 @@ impl yi_loop::AgentTool for TranscriptTool {
     }
 }
 
-/// Design V5 `LlmReviewer`: its own session, one prompt per review, tools
-/// `{advise, transcript}` (read/grep/glob join when the digest proves
-/// insufficient). Append-only by construction — each review is a fresh
-/// prompt over a stable system prefix.
+/// Its own session, one prompt per review. Append-only by construction: each
+/// review is a fresh prompt over a stable system prefix.
 pub struct LlmReviewer {
     provider: Arc<ProviderStream>,
     model: Model,

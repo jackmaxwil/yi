@@ -135,8 +135,7 @@ impl Compactor {
         self.pending.store(true, Ordering::Relaxed);
     }
 
-    /// Schedule with optional summary-focus instructions (the kernel
-    /// `compact.run` path); a later call replaces earlier instructions.
+    /// A later call replaces earlier instructions.
     pub fn schedule_with_instructions(&self, instructions: Option<String>) {
         if let Ok(mut slot) = self.instructions.lock()
             && instructions.is_some()
@@ -150,9 +149,7 @@ impl Compactor {
         self.pending.load(Ordering::Relaxed)
     }
 
-    /// Observes the window's prefill baseline from the first server usage row
-    /// of the window (design P3 BodyAfterPrefix): input-side tokens only —
-    /// the reply is body, not prefix.
+    /// Input-side tokens only: the reply is body, not prefix.
     pub fn on_usage(&self, usage: &Usage) {
         let mut window = lock_window(&self.window);
         if window.prefill_tokens().is_none() {
@@ -191,13 +188,9 @@ impl Compactor {
         should_compact(scoped, Tokens(model.context_window), &self.settings)
     }
 
-    /// Design P13/P7/P9: prefix-aligned summarization — the request replays
-    /// the current context and appends the directive as a trailing user
-    /// message, so summarization extends the warm cache. Overflow or error
-    /// retries once with the oldest quarter trimmed; a second failure rolls
-    /// the window without a summary (Compaction::Roll) so the context still
-    /// shrinks. Returns the replacement in-memory history, which by
-    /// construction equals re-projecting the branch after the append.
+    /// Prefix-aligned: the directive appends as a trailing user message, so
+    /// summarization extends the warm cache. Overflow retries once with the
+    /// oldest quarter trimmed; a second failure rolls the window unsummarized.
     pub async fn maybe_compact(
         &self,
         messages: &[AgentMessage],

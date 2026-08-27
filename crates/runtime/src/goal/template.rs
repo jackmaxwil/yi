@@ -1,7 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-/// Strict `{{name}}` interpolation, port adapted from codex `utils/template`
-/// (design G4). An unused supplied value is an error (`ExtraValue`): a
+/// Strict `{{name}}` interpolation: an unused supplied value is an error, so a
 /// renamed placeholder cannot silently drop content.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum TemplateError {

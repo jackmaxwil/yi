@@ -23,9 +23,9 @@ fn is_constraint(sentence: &str) -> bool {
         || lowered.contains("actually")
 }
 
-/// §7.6: user prose is ground truth — verbatim, and over budget the
-/// constraint-carrying sentences survive first, then recency; elided spans
-/// keep the entry id as the pull handle.
+/// User prose is ground truth, so it stays verbatim; over budget the
+/// constraint-carrying sentences survive first, then recency, and an elided
+/// span keeps the entry id as the pull handle.
 pub fn truncate_user_text(text: &str, budget: usize, id: &str) -> String {
     if text.len() <= budget {
         return text.to_owned();
@@ -65,8 +65,8 @@ pub fn truncate_user_text(text: &str, budget: usize, id: &str) -> String {
     out.trim().to_owned()
 }
 
-/// §7.6/§7.4: assistant prose is the intent trace — claims, commitments,
-/// conclusions, plus each block's first and last sentence, capped.
+/// The intent trace: claims, commitments, conclusions, plus each block's first
+/// and last sentence, capped.
 pub fn select_assistant_text(text: &str, budget: usize) -> String {
     let sentences = split_sentences(text);
     if sentences.is_empty() {
@@ -96,8 +96,7 @@ pub fn select_assistant_text(text: &str, budget: usize) -> String {
     out.trim().to_owned()
 }
 
-/// Design V12: standing constraint sentences from user messages, verbatim
-/// (the user's words, never a paraphrase), append-only.
+/// The user's words, never a paraphrase; append-only.
 pub fn directives(text: &str, id: &str) -> Vec<String> {
     split_sentences(text)
         .into_iter()
@@ -106,7 +105,7 @@ pub fn directives(text: &str, id: &str) -> Vec<String> {
         .collect()
 }
 
-/// Design V4: one entry-id'd line per work-log item; never thinking.
+/// One entry-id'd line per work-log item; never thinking.
 pub fn digest_line(item: &LogItem<'_>, user_budget: usize, prose_budget: usize) -> Option<String> {
     match item.message {
         AgentMessage::User { content, .. } => {

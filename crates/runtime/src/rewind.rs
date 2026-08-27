@@ -5,14 +5,12 @@ use crate::session::AgentSession;
 
 pub struct Rewound {
     pub leaf: Option<String>,
-    /// The message the rewind unsent, handed back for the composer — landing
-    /// on a user turn means editing it, not staring at it (OMP `navigateTree`).
+    /// Handed back for the composer: landing on a user turn means editing it.
     pub unsent: Option<String>,
 }
 
-/// U31: move the main lane to `entry_id` and reload the branch. Selecting a
-/// user message rewinds to its *parent*: the point of picking your own message
-/// is to be standing where you were before you sent it.
+/// Selecting a user message rewinds to its *parent*: the point of picking your
+/// own message is to stand where you were before you sent it.
 pub fn rewind_to(session: &AgentSession, entry_id: &str) -> Result<Rewound, String> {
     let store = session.store().ok_or("no session store")?;
     let entry = yi_session::lock_session(&store)

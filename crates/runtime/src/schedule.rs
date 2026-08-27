@@ -96,9 +96,8 @@ fn parse_every_clause(text: &str) -> Option<Result<u64, String>> {
     Some(Ok(interval_ms))
 }
 
-/// Design H1 (prime `parseAgentCronSchedule`): `"in 5m"`, `"every 10m"`,
-/// `"at <ISO>"`, `@hourly`-style aliases, or a five-field cron expression.
-/// Returns the schedule plus its first run, in epoch ms.
+/// `"in 5m"`, `"every 10m"`, `"at <ISO>"`, `@hourly`-style aliases, or a
+/// five-field cron expression, with its first run in epoch ms.
 pub fn parse_schedule(input: &str, now_ms: u64) -> Result<(CronSchedule, u64), String> {
     let text = strip_matching_quotes(input.trim()).trim();
     if text.is_empty() {
@@ -152,7 +151,7 @@ pub fn parse_schedule(input: &str, now_ms: u64) -> Result<(CronSchedule, u64), S
     ))
 }
 
-/// Design H3: the run after `after_ms`, or None for a spent one-shot.
+/// None for a spent one-shot.
 pub fn next_run_at_for_schedule(
     schedule: &CronSchedule,
     after_ms: u64,
@@ -250,9 +249,8 @@ fn parse_cron_expression(expression: &str) -> Result<CronFields, String> {
     })
 }
 
-// Civil breakdown of an epoch-ms instant, UTC. Prime evaluates cron in the
-// process's local time; Yi evaluates UTC — std has no tzdata and chrono is
-// banned (§13.5). Divergence documented in the H1 row.
+// UTC, where prime evaluates cron in local time: std has no tzdata and chrono
+// is banned (§13.5). The divergence is documented in the H1 row.
 struct Civil {
     minute: u64,
     hour: u64,

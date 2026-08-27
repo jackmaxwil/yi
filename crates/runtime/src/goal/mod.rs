@@ -80,24 +80,21 @@ fn goal_json(goal: &Goal) -> Value {
     value
 }
 
-/// Goal token delta for one assistant response (adapted codex
-/// `goal_token_delta_for_usage`): uncached input plus output.
+/// Uncached input plus output.
 fn usage_delta(usage: &yi_types::message::Usage) -> u64 {
     let uncached = usage.input.saturating_sub(usage.cache_read).max(0);
     let output = usage.output.max(0);
     u64::try_from(uncached.saturating_add(output)).unwrap_or(0)
 }
 
-/// Design §8.17: goal state machine over the session store fact, idle
-/// continuation, and budget accounting. One per session.
+/// State machine over the session store fact, idle continuation and budget
+/// accounting. One per session.
 pub struct GoalService {
     store: StoreHandle,
     deliver: DeliverFn,
-    /// User interrupted (abort) — auto-continuation stops until the next
-    /// real user input (G3's continuation-deferral latch).
+    /// Set by an abort: auto-continuation stops until the next real user input.
     deferred: Mutex<bool>,
-    /// A continuation is already queued for the next turn; cleared at
-    /// AgentStart so idle cannot double-fire.
+    /// Cleared at AgentStart so idle cannot double-fire.
     pending: Mutex<bool>,
     wall_mark: Mutex<Option<Instant>>,
 }
@@ -132,8 +129,7 @@ impl GoalService {
         }
     }
 
-    /// G2: create only when explicitly requested; fails while an unfinished
-    /// goal exists.
+    /// Fails while an unfinished goal exists.
     pub fn create(&self, objective: &str, token_budget: Option<u64>) -> Result<Value, String> {
         if objective.trim().is_empty() {
             return Err("objective must not be empty".to_owned());
@@ -161,8 +157,8 @@ impl GoalService {
         Ok(goal_json(&goal))
     }
 
-    /// G2 authority split: the model reports terminal state only; pause,
-    /// resume, and limits belong to the host.
+    /// The model reports terminal state only; pause, resume and limits belong
+    /// to the host.
     pub fn update(&self, status: &str) -> Result<Value, String> {
         let status = match status {
             "complete" => GoalStatus::Complete,
@@ -180,8 +176,7 @@ impl GoalService {
         Ok(goal_json(&goal))
     }
 
-    /// User-driven objective edit: supersedes the objective and steers the
-    /// objective_updated prompt into the running turn (G3).
+    /// Supersedes the objective and steers `objective_updated` into the turn.
     pub fn set_objective(&self, objective: &str) -> Result<Value, String> {
         if objective.trim().is_empty() {
             return Err("objective must not be empty".to_owned());
@@ -210,7 +205,6 @@ impl GoalService {
         flag.lock().map(|slot| *slot).unwrap_or(false)
     }
 
-    /// G5 accounting + budget crossing on each assistant response.
     fn account(&self, usage: &yi_types::message::Usage) {
         let Some(mut goal) = self.read_goal() else {
             return;
@@ -257,9 +251,8 @@ impl GoalService {
         let _best_effort = self.write_goal(goal);
     }
 
-    /// G3 continue: on idle with an Active goal and no deferral, queue the
-    /// continuation prompt (wakes the idle session through the same hook
-    /// heartbeats use).
+    /// Idle with an Active goal and no deferral queues the continuation prompt,
+    /// through the same hook heartbeats use.
     fn continue_if_idle(&self) {
         if Self::flag(&self.deferred) || Self::flag(&self.pending) {
             return;
@@ -300,7 +293,6 @@ impl GoalService {
         }
     }
 
-    /// §6 host requests: goal.get / goal.create / goal.update.
     pub fn register(self: &Arc<Self>, registry: &mut crate::kernel::HostRegistry) {
         let service = Arc::clone(self);
         registry.register("goal.get", move |_payload| {
@@ -338,8 +330,7 @@ fn as_object(value: Value) -> Result<Map<String, Value>, String> {
     }
 }
 
-/// Wires the goal service to a session: host-request surface registered by
-/// the caller, events observed in a spawned task (like the advisor).
+/// Events are observed in a spawned task; the caller registers the host surface.
 pub fn attach_goal(session: &crate::AgentSession) -> Arc<GoalService> {
     let steer = session.heartbeat_hook();
     let wake = session.wake_idle_hook();

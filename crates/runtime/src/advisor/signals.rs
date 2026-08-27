@@ -30,8 +30,7 @@ pub struct Fired {
     pub evidence: Vec<String>,
 }
 
-/// §7.4 verb table — one table, two uses: claim extraction here, sentence
-/// selection in the digest.
+/// One table, two uses: claim extraction here, sentence selection in the digest.
 pub const CLAIM_VERBS: [&str; 10] = [
     "ran",
     "tested",
@@ -69,7 +68,7 @@ struct TurnLog {
     verification_ran: bool,
 }
 
-/// The six launch signals (design §7.3), stateful over the message stream.
+/// Stateful over the message stream.
 pub struct Signals {
     consecutive_failures: u64,
     repeat: Option<(String, String, u64)>,
@@ -207,9 +206,8 @@ impl Signals {
         fired
     }
 
-    /// §7.4: claim sentences (action verb + file/command/test object) with no
-    /// matching tool call in the turn log. High recall, low precision — a
-    /// trigger, not a verdict.
+    /// Claim sentences with no matching tool call in the turn log. High recall,
+    /// low precision — a trigger, not a verdict.
     fn unbacked_claims(&self, text: &str) -> Vec<Fired> {
         let mut fired = Vec::new();
         for sentence in split_sentences(text) {

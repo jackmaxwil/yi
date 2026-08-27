@@ -8,9 +8,8 @@ use yi_kernel::client::{
 };
 use yi_tools::{CancelFlag, KernelBridge, KernelCellOutcome};
 
-/// Base bootstrap cell (prime `ipython.ts:23-143`): binds `rlm` and `mcp` in
-/// the namespace, or a loud placeholder when the runtime package is missing.
-/// Bundled Python skills are appended by [`rlm_bootstrap_code`].
+/// Binds `rlm` and `mcp` in the namespace, or a loud placeholder when the
+/// runtime package is missing. [`rlm_bootstrap_code`] appends bundled skills.
 pub const RLM_BOOTSTRAP_CODE: &str = r#"
 import asyncio
 import os as _prime_agent_os
@@ -122,8 +121,7 @@ for _prime_agent_skill_name in %IMPORTS%:
         )
 "#;
 
-/// Full bootstrap cell (prime `buildRlmBootstrapCode`): the base cell plus
-/// the skill-module wrapper for every bundled Python skill.
+/// The base cell plus a skill-module wrapper per bundled Python skill.
 pub fn rlm_bootstrap_code(import_names: &[&str]) -> String {
     if import_names.is_empty() {
         return RLM_BOOTSTRAP_CODE.trim().to_owned();
@@ -138,8 +136,7 @@ pub fn rlm_bootstrap_code(import_names: &[&str]) -> String {
 
 pub type HostHandlerFn = dyn Fn(Map<String, Value>) -> HostFuture + Send + Sync;
 
-/// Host handler table (design §6): vocabulary registered by the runtime,
-/// dispatched by yi-kernel. Unregistered types error prime's way.
+/// Registered by the runtime, dispatched by yi-kernel.
 #[derive(Default)]
 pub struct HostRegistry {
     handlers: HashMap<String, Arc<HostHandlerFn>>,
@@ -155,9 +152,9 @@ impl HostRegistry {
             .insert(request_type.to_owned(), Arc::new(handler));
     }
 
-    /// The design-mandated MCP vocabulary (§6): `mcp.config` returns `{}` (the
-    /// Python side raises its own KeyError), `mcp.refresh` throws,
-    /// `mcp.begin_login` is never registered — a 401 must not open a browser.
+    /// `mcp.config` returns `{}` (the Python side raises its own KeyError),
+    /// `mcp.refresh` throws, and `mcp.begin_login` is never registered: a 401
+    /// must not open a browser.
     pub fn register_mcp_stubs(&mut self) {
         self.register("mcp.config", |_payload| Box::pin(async { Ok(Map::new()) }));
         self.register("mcp.refresh", |_payload| {
@@ -188,9 +185,8 @@ pub struct KernelServiceOptions {
     pub on_restore: Option<Arc<RestoreNoticeFn>>,
 }
 
-/// Lazy kernel provisioner (prime `IpythonKernelProvisioner`, adapted): boots
-/// on first cell, memoizes the running manager, retries after a failed start,
-/// and owns the busy-kernel recovery path.
+/// Boots on first cell, memoizes the running manager, retries after a failed
+/// start, and owns the busy-kernel recovery path.
 pub struct KernelService {
     options: KernelServiceOptions,
     manager: tokio::sync::Mutex<Option<Arc<KernelManager>>>,
@@ -265,9 +261,8 @@ impl KernelService {
             snapshot,
         })?);
         manager.start().await?;
-        // Revive a prior namespace before the bootstrap cell, so the bootstrap
-        // then overwrites live handles (rlm, skills) on top of anything
-        // restored (design K10).
+        // Revive before the bootstrap cell, so the bootstrap overwrites live
+        // handles (rlm, skills) on top of anything restored.
         let pending_restore = if snapshot_existed {
             Some(manager.restore_state().await.unwrap_or_default())
         } else {
@@ -319,9 +314,8 @@ impl KernelService {
             .map(Arc::clone)
     }
 
-    /// Post-compaction kernel sync (prime `_syncKernelStateAfterCompaction`,
-    /// adapted): prune oversized variables, list what survives, and return the
-    /// model-facing notice — or None when no kernel is live to report on.
+    /// Prune oversized variables, list what survives, return the model-facing
+    /// notice — None when no kernel is live to report on.
     pub async fn sync_after_compaction(&self) -> Option<String> {
         let manager = self.manager_if_running().await?;
         let pruned = manager
@@ -410,8 +404,6 @@ pub fn ipython_tool(service: Arc<KernelService>) -> Arc<dyn yi_tools::Tool> {
     Arc::new(yi_tools::IpythonTool { bridge: service })
 }
 
-/// Model-facing notice for a completed restore (prime
-/// `_onIpythonStateRestored`, adapted).
 pub fn restore_notice_text(restore: &yi_types::kernel::KernelRestoreResult) -> String {
     let mut lines = vec!["<ipython_state_restored>".to_owned()];
     if restore.restored.is_empty() {

@@ -11,8 +11,8 @@ pub fn checkpoint_root(home: &Path) -> PathBuf {
     home.join(".yi/checkpoints")
 }
 
-/// Design 5.3: checkpoints are best-effort. Without git there is no shadow
-/// gitdir and no turn-start capture; every other surface is unaffected.
+/// Best-effort: without git there is no shadow gitdir and no turn-start
+/// capture, and every other surface is unaffected.
 pub fn wire_turn_checkpoints(session: &AgentSession, home: &Path, cwd: &Path) {
     let Ok(checkpoints) = Checkpoints::open(&checkpoint_root(home), cwd) else {
         return;
@@ -59,8 +59,8 @@ fn append_checkpoint(
         .map_err(|error| error.to_string())
 }
 
-/// Restores the tree the newest checkpoint holds, recording the replaced state
-/// as its own checkpoint first — that is what makes undo undoable (design 5.3).
+/// Records the replaced state as its own checkpoint first, which is what makes
+/// undo undoable.
 pub fn undo(store: &yi_session::SharedSession, project: &Path, home: &Path) -> UndoOutcome {
     let Some(data) = undo_target(store) else {
         return UndoOutcome::NoCheckpoint;
@@ -89,7 +89,6 @@ pub enum UndoOutcome {
     Failed(String),
 }
 
-/// One recorded checkpoint, newest first.
 pub struct RecordedCheckpoint {
     pub data: CheckpointData,
     pub timestamp: u64,
