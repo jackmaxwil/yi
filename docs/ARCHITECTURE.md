@@ -187,7 +187,7 @@ value/complexity: H/M/L. Status: **core** (launch), **gated** (cargo feature), *
 | ACP v2 server | 8.13 | live 0.9.7 | H | M | Afterlife integration point; C7 diff content waits on T13 (open H1); C8 covers model + thought_level, its other three options and `_yi/heartbeat_changed` open (H2, H3) |
 | ACP v1 adapter | D1 | **cut** | L | H | additive if a v1 client appears |
 | daemon (ACP-router supervisor + worker/root) | 7, D4 | live 0.10.0 | H | M | one protocol, isolation kept; H7 lanes + B8 ledger open (G1, F6); one writer per root today |
-| TUI | 8.14 | gated `tui` (ph 7) | M | M | resumable (`--session`/`--continue` replay the transcript, quit prints the resume command); esc-esc opens the OMP-shaped session tree and a rewind visibly unsends the turn |
+| TUI | 8.14 | gated `tui` (ph 7) | M | M | resumable (`--session`/`--continue` replay the transcript, quit prints the resume command); esc-esc opens the OMP-shaped session tree and a rewind visibly unsends the turn. 0.45.0-0.51.0 (D60-D66): edits and writes render their diff in Normal mode (U37), the kernel call has its own cell (U38), code is highlighted without a dependency (U39), read-only calls group and a waiting call goes amber (U40), `/agents` shows the family and what spawned it (U41), and every animated glyph runs off one clock (U42) |
 | board + GitHub issues via `gh` | 14.4, D5 | open (K1) | M | M | zero persistence; undeferred D42 |
 | MCP CLI | 5.2, D9 | gated `mcp` | M | M | subcommand; proxy cut |
 | docs conversion (anydoc) | 14.6 | open (M1) | M | L | `docs` feature; undeferred D42 |
