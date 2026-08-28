@@ -311,3 +311,102 @@ fn no_plan_is_a_named_error() -> TestResult {
     assert_eq!(error, NO_PLAN_ERROR);
     Ok(())
 }
+
+#[test]
+fn plan_transition_pokes_a_forced_review_with_the_summary_line() -> TestResult {
+    use yi_runtime::advisor::{AdvisorConfig, AdvisorRuntime};
+
+    let (service, _store, _delivered) = service_with_store();
+    let advisor = Arc::new(AdvisorRuntime::new(
+        AdvisorConfig::default(), // no cadence: only the poke can force a review
+        Arc::new(|_message| {}),
+        None,
+    ));
+    let observer = Arc::clone(&advisor);
+    service.set_on_change(Arc::new(move |plan| {
+        observer.request_review(Some(yi_runtime::plan::summary_line(plan)));
+    }));
+
+    service.create(&two_task_specs())?;
+    // create writes directly; only update/edit notify. Baseline: no review due.
+    assert!(
+        advisor
+            .observe(
+                &yi_types::message::AgentMessage::User {
+                    content: yi_types::message::UserContent::Text("hi".to_owned()),
+                    timestamp: 0,
+                },
+                0,
+            )
+            .is_none(),
+        "without a poke or cadence the advisor stays silent"
+    );
+
+    service.update("t1", "running", None, None)?;
+    let chunk = advisor
+        .observe(
+            &yi_types::message::AgentMessage::User {
+                content: yi_types::message::UserContent::Text("go on".to_owned()),
+                timestamp: 0,
+            },
+            0,
+        )
+        .ok_or("a plan transition must force the next review")?;
+    assert!(
+        chunk.contains("context: plan v2: 0 ready, 1 running, 0 blocked, 0 done of 2"),
+        "the digest carries the frontier summary: {chunk}"
+    );
+    assert!(
+        advisor
+            .observe(
+                &yi_types::message::AgentMessage::User {
+                    content: yi_types::message::UserContent::Text("more".to_owned()),
+                    timestamp: 0,
+                },
+                0,
+            )
+            .is_none(),
+        "the poke is consumed by one review"
+    );
+    Ok(())
+}
+
+#[test]
+fn stale_turns_knob_overrides_the_default() -> TestResult {
+    let (fast, _store2, delivered2) = {
+        let store = memory_store();
+        let handle = store.clone();
+        let delivered: Arc<Mutex<Vec<AgentMessage>>> = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&delivered);
+        let deliver: DeliverFn = Arc::new(move |message, _mode: DeliveryMode| {
+            if let Ok(mut queue) = sink.lock() {
+                queue.push(message);
+            }
+        });
+        (
+            Arc::new(
+                yi_runtime::plan::PlanService::new(Arc::new(move || Some(handle.clone())), deliver)
+                    .with_stale_turns(Some(2)),
+            ),
+            store,
+            delivered,
+        )
+    };
+    fast.create(&two_task_specs())?;
+    for _turn in 0..3 {
+        fast.observe(&assistant_turn_end());
+    }
+    let count = delivered2
+        .lock()
+        .map(|queue| {
+            queue
+                .iter()
+                .filter(|message| {
+                    matches!(message, AgentMessage::Custom { custom_type, .. } if custom_type == "reminder")
+                })
+                .count()
+        })
+        .map_err(|_| "lock")?;
+    assert_eq!(count, 1, "a 2-turn knob reminds by the third turn");
+    Ok(())
+}

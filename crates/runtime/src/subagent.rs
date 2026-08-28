@@ -524,6 +524,10 @@ pub struct RuntimeWiring {
     pub rlm_dir: PathBuf,
     /// §12 roles resolved to models; `None` keeps the session's own model.
     pub summarizer: Option<Model>,
+    /// Naming `models.advisor` in config enables the LLM reviewer (D28).
+    pub advisor: Option<Model>,
+    /// `plan.staleReminderTurns` config; None keeps the default.
+    pub plan_stale_turns: Option<u64>,
     /// D13 `bash.autoBackgroundMs`; None keeps every command in the turn.
     pub auto_background: Option<std::time::Duration>,
 }
@@ -576,11 +580,15 @@ fn wire_schedule(
     session.set_schedule(Arc::clone(&store), Arc::clone(&heartbeats), scheduler);
 }
 
-fn wire_goal(session: &AgentSession, registry: &mut crate::kernel::HostRegistry) {
+fn wire_goal(
+    session: &AgentSession,
+    registry: &mut crate::kernel::HostRegistry,
+    plan_stale_turns: Option<u64>,
+) {
     let service = crate::goal::attach_goal(session);
     service.register(registry);
     session.set_goal_service(service);
-    let plan = crate::plan::attach_plan(session);
+    let plan = crate::plan::attach_plan(session, plan_stale_turns);
     plan.register(registry);
     session.set_plan_service(plan);
 }
@@ -603,16 +611,21 @@ fn wire_advisor(session: &AgentSession, wiring: &RuntimeWiring) {
     });
     // V10: ADVISOR.md attention text, project-local, best-effort.
     let attention = std::fs::read_to_string(wiring.cwd.join("ADVISOR.md")).ok();
+    let llm = wiring.advisor.clone().map(|model| {
+        Arc::new(crate::advisor::review::LlmReviewer::new(
+            Arc::clone(&wiring.provider),
+            model,
+            attention.clone(),
+        ))
+    });
     let advisor = crate::advisor::attach_advisor(
         session,
         crate::advisor::AdvisorConfig {
             attention,
+            reviewer: llm.is_some(),
             ..crate::advisor::AdvisorConfig::default()
         },
-        crate::advisor::AdvisorDeps {
-            hold_sink,
-            llm: None,
-        },
+        crate::advisor::AdvisorDeps { hold_sink, llm },
     );
     session.set_advisor(advisor);
 }
@@ -712,7 +725,7 @@ pub fn attach_runtime(session: &mut AgentSession, wiring: RuntimeWiring) -> Arc<
     }));
     host.register(&mut registry);
     wire_schedule(session, &wiring, &mut registry);
-    wire_goal(session, &mut registry);
+    wire_goal(session, &mut registry, wiring.plan_stale_turns);
     let restore_notice = session.notice_hook();
     let service = Arc::new(crate::kernel::KernelService::new(
         crate::kernel::KernelServiceOptions {
@@ -741,6 +754,11 @@ pub fn attach_runtime(session: &mut AgentSession, wiring: RuntimeWiring) -> Arc<
     let mut tools = (wiring.tools)();
     tools.push(crate::kernel::ipython_tool(service));
     wire_advisor(session, &wiring);
+    if let (Some(plan), Some(advisor)) = (session.plan_service(), session.advisor()) {
+        plan.set_on_change(Arc::new(move |plan| {
+            advisor.request_review(Some(crate::plan::summary_line(plan)));
+        }));
+    }
     let rule_set = crate::rules::discover(&wiring.cwd, &wiring.home);
     if !rule_set.warnings.is_empty() {
         let notice = session.notice_hook();

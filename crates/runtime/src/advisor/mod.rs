@@ -146,6 +146,8 @@ struct AdvisorState {
     log_counter: u64,
     cursor: u64,
     directives: Vec<String>,
+    forced: bool,
+    context_note: Option<String>,
 }
 
 /// work log → cadence trigger → reviewer → guard → delivery → outcome ledger,
@@ -175,6 +177,8 @@ impl AdvisorRuntime {
                 log_counter: 0,
                 cursor: 0,
                 directives: Vec::new(),
+                forced: false,
+                context_note: None,
             }),
             config,
             deliver,
@@ -190,6 +194,16 @@ impl AdvisorRuntime {
 
     pub fn stats(&self) -> String {
         stats_text(&self.lock().stats)
+    }
+
+    /// A structural moment (a plan transition) requests the next boundary's
+    /// review; still budget-gated, so a poke can never overspend.
+    pub fn request_review(&self, context_note: Option<String>) {
+        let mut state = self.lock();
+        state.forced = true;
+        if context_note.is_some() {
+            state.context_note = context_note;
+        }
     }
 
     /// The digest chunk when a review is due, for the async LLM pass layered
@@ -217,7 +231,8 @@ impl AdvisorRuntime {
                 state.calls_since_review = state.calls_since_review.saturating_add(1);
             }
             let remaining = state.budget.remaining(now_ms);
-            if !should_review(state.calls_since_review, self.config.cadence, remaining) {
+            let forced = state.forced && remaining.is_none_or(|remaining| remaining > 0);
+            if !forced && !should_review(state.calls_since_review, self.config.cadence, remaining) {
                 let outcomes = Self::drain_outcomes(&mut state);
                 drop(state);
                 for outcome in outcomes {
@@ -225,6 +240,7 @@ impl AdvisorRuntime {
                 }
                 return None;
             }
+            state.forced = false;
             state.calls_since_review = 0;
             state.stats.reviews = state.stats.reviews.saturating_add(1);
             state.guard.begin_cycle();
@@ -241,6 +257,9 @@ impl AdvisorRuntime {
     /// Since the cursor: a directives header plus one line per item.
     fn digest_chunk(&self, state: &AdvisorState) -> String {
         let mut lines = Vec::new();
+        if let Some(note) = &state.context_note {
+            lines.push(format!("context: {note}"));
+        }
         if !state.directives.is_empty() {
             lines.push(format!("directives:\n{}", state.directives.join("\n")));
         }

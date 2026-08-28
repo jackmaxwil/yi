@@ -191,6 +191,17 @@ fn configured_auto_background() -> Option<std::time::Duration> {
 }
 
 /// §12: an unset role falls back to the primary model.
+/// Naming `models.advisor` is the switch that turns the LLM reviewer on
+/// (D28/D50); an unknown selector warns and leaves the advisor silent.
+fn advisor_model() -> Option<Model> {
+    let spec = configured_roles().advisor?;
+    let resolved = resolve(&spec);
+    if resolved.is_none() {
+        eprintln!("warning: unknown advisor model {spec}; the advisor stays silent");
+    }
+    resolved
+}
+
 fn summarizer_model(args: &Args) -> Option<Model> {
     let spec = configured_roles().summarizer?;
     match resolve(&spec) {
@@ -303,6 +314,10 @@ fn build_session(
             max_depth: 1,
             rlm_dir: default_session_dir(args).join(format!("rlm-{}", std::process::id())),
             summarizer: summarizer_model(args),
+            advisor: advisor_model(),
+            plan_stale_turns: config_value()
+                .and_then(|config| config.pointer("/plan/staleReminderTurns").cloned())
+                .and_then(|value| value.as_u64()),
             auto_background: configured_auto_background(),
         },
     );

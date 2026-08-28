@@ -9,6 +9,8 @@ use yi_types::schedule::DeliveryMode;
 
 use crate::goal::{DeliverFn, StoreHandle};
 
+pub type PlanChangeHook = Arc<dyn Fn(&Plan) + Send + Sync>;
+
 pub const NO_PLAN_ERROR: &str = "No plan exists for this session; create one with plan.create.";
 pub const PLAN_EXISTS_ERROR: &str = "An unfinished plan already exists; work its tasks with plan.update, or add tasks with plan.edit.";
 /// Weakening the standard is gated; growing it is free (expand-only).
@@ -28,12 +30,31 @@ const LEGAL_TRANSITIONS: &[(TaskState, TaskState)] = &[
 
 /// A plan untouched this many completed turns while work flows earns one
 /// staleness reminder; the latch clears when the plan version moves.
-const STALE_TURNS: u64 = 12;
+pub const DEFAULT_STALE_TURNS: u64 = 12;
 
 fn transition_legal(from: &TaskState, to: &TaskState) -> bool {
     LEGAL_TRANSITIONS
         .iter()
         .any(|(legal_from, legal_to)| legal_from == from && legal_to == to)
+}
+
+/// One line for the advisor digest header: states and counts only.
+pub fn summary_line(plan: &Plan) -> String {
+    let count = |state: &TaskState| {
+        plan.tasks
+            .iter()
+            .filter(|task| &task.state == state)
+            .count()
+    };
+    format!(
+        "plan v{}: {} ready, {} running, {} blocked, {} done of {}",
+        plan.version.0,
+        plan.frontier().len(),
+        count(&TaskState::Running),
+        count(&TaskState::Blocked),
+        count(&TaskState::Done),
+        plan.tasks.len()
+    )
 }
 
 pub fn frontier_text(plan: &Plan) -> String {
@@ -199,6 +220,8 @@ pub struct PlanService {
     store: StoreHandle,
     deliver: DeliverFn,
     stale: Mutex<StaleTracker>,
+    stale_turns: u64,
+    on_change: Mutex<Option<PlanChangeHook>>,
 }
 
 impl PlanService {
@@ -207,6 +230,32 @@ impl PlanService {
             store,
             deliver,
             stale: Mutex::new(StaleTracker::default()),
+            stale_turns: DEFAULT_STALE_TURNS,
+            on_change: Mutex::new(None),
+        }
+    }
+
+    pub fn with_stale_turns(mut self, turns: Option<u64>) -> Self {
+        if let Some(turns) = turns.filter(|turns| *turns > 0) {
+            self.stale_turns = turns;
+        }
+        self
+    }
+
+    pub fn set_on_change(&self, hook: PlanChangeHook) {
+        if let Ok(mut slot) = self.on_change.lock() {
+            *slot = Some(hook);
+        }
+    }
+
+    fn notify_change(&self, plan: &Plan) {
+        if let Some(hook) = self
+            .on_change
+            .lock()
+            .ok()
+            .and_then(|slot| slot.as_ref().map(Arc::clone))
+        {
+            hook(plan);
         }
     }
 
@@ -309,7 +358,8 @@ impl PlanService {
             task.blocked_reason = Some(rejection.clone());
             plan.version = plan.version.bump();
             plan.updated = yi_session::now_ms();
-            self.write_plan(plan)?;
+            self.write_plan(plan.clone())?;
+            self.notify_change(&plan);
             return Err(format!(
                 "done claim for {task_id} rejected; task is now blocked with the evidence: {rejection}"
             ));
@@ -323,6 +373,7 @@ impl PlanService {
         plan.version = plan.version.bump();
         plan.updated = yi_session::now_ms();
         self.write_plan(plan.clone())?;
+        self.notify_change(&plan);
         Ok(plan_json(&plan))
     }
 
@@ -384,6 +435,7 @@ impl PlanService {
         plan.version = plan.version.bump();
         plan.updated = yi_session::now_ms();
         self.write_plan(plan.clone())?;
+        self.notify_change(&plan);
         Ok(plan_json(&plan))
     }
 
@@ -396,7 +448,7 @@ impl PlanService {
             return None;
         }
         tracker.quiet_turns = tracker.quiet_turns.saturating_add(1);
-        if tracker.reminded || tracker.quiet_turns < STALE_TURNS {
+        if tracker.reminded || tracker.quiet_turns < self.stale_turns {
             return None;
         }
         tracker.reminded = true;
@@ -509,12 +561,13 @@ fn as_object(value: Value) -> Result<Map<String, Value>, String> {
 }
 
 /// Events are observed in a spawned task, mirroring [`crate::goal::attach_goal`].
-pub fn attach_plan(session: &crate::AgentSession) -> Arc<PlanService> {
+pub fn attach_plan(session: &crate::AgentSession, stale_turns: Option<u64>) -> Arc<PlanService> {
     let steer = session.heartbeat_hook();
     let deliver: DeliverFn = Arc::new(move |message, _mode| {
         steer(message, DeliveryMode::Steer);
     });
-    let service = Arc::new(PlanService::new(session.store_handle(), deliver));
+    let service =
+        Arc::new(PlanService::new(session.store_handle(), deliver).with_stale_turns(stale_turns));
     let mut events = session.subscribe();
     let observer = Arc::clone(&service);
     tokio::spawn(async move {
