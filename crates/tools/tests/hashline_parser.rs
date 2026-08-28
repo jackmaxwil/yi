@@ -360,3 +360,14 @@ fn numbered_lines_format_for_display() -> TestResult {
     assert_eq!(split_addressable_file_lines("a\nb\n"), vec!["a", "b"]);
     Ok(())
 }
+
+#[test]
+fn apply_patch_noise_with_multibyte_lowercase_does_not_panic() -> TestResult {
+    // 'İ' (U+0130) lowercases to "i\u{307}" (2 -> 3 bytes), so byte offsets
+    // scanned over the original header must never index the lowered copy.
+    let patch =
+        yi_tools::hashline::input::Patch::parse("[update\u{130}file: x]\nPUT 1:\n+hi\n", None)
+            .map_err(|e| e.to_string())?;
+    assert_eq!(patch.sections[0].path, "x");
+    Ok(())
+}

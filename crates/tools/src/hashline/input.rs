@@ -30,20 +30,25 @@ fn strip_apply_patch_path_noise(path_text: &str) -> &str {
         stars += 1;
     }
     rest = rest.trim_start();
-    let lowered = rest.to_lowercase();
+    // Keywords are ASCII, so match case-insensitively on the original bytes;
+    // a lowered copy can differ in byte length (e.g. 'İ' -> "i\u{307}") and
+    // offsets computed against one string would slice the other mid-char.
+    let bytes = rest.as_bytes();
     for keyword in ["update", "add", "delete", "move"] {
-        if !lowered.starts_with(keyword) {
+        if bytes.len() < keyword.len()
+            || !bytes[..keyword.len()].eq_ignore_ascii_case(keyword.as_bytes())
+        {
             continue;
         }
         let mut index = keyword.len();
-        let bytes = rest.as_bytes();
         while index < bytes.len() && !bytes[index].is_ascii_alphanumeric() && bytes[index] != b':' {
             index += 1;
         }
-        let tail_lower = lowered[index..].to_owned();
         for tail_keyword in ["file", "to"] {
-            if tail_lower.starts_with(tail_keyword) {
-                index += tail_keyword.len();
+            let end = index + tail_keyword.len();
+            if end <= bytes.len() && bytes[index..end].eq_ignore_ascii_case(tail_keyword.as_bytes())
+            {
+                index = end;
                 break;
             }
         }
