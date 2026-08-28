@@ -64,5 +64,6 @@ when it changes rather than editing them by hand.
 - [D66](adr/d66.md) - every animated glyph derives from one clock
 - [D68](adr/d68.md) - binary_size runs in CI, startup is local-only
 - [D69](adr/d69.md) - the dist profile optimises for size at every level
+- [D70](adr/d70.md) - binary_size is local-only too, because its baseline names a target
 
 D36-D51 have no ADR yet; ARCHITECTURE.md is the record for those rows.

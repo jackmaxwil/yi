@@ -24,9 +24,13 @@ run "$PY" scripts/guardrails/check_test_size.py
 run "$PY" scripts/guardrails/check_blob_size.py
 run "$PY" scripts/guardrails/check_deps_budget.py
 run "$PY" scripts/guardrails/check_request_budget.py
-run "$PY" scripts/guardrails/check_binary_size.py
-# D68: wall-clock on a shared runner is noise against a 5 ms budget, so this one
-# gate is local-only. Skipping is announced, never silent (design 9).
+if [ -z "${CI:-}" ]; then
+  run "$PY" scripts/guardrails/check_binary_size.py
+else
+  echo "skip binary_size (D70: baseline is macOS arm64; CI is another target)"
+fi
+# D68/D70: the two gates that read target/dist/yi are local-only — one measures
+# wall clock, the other a macOS arm64 byte count. Skips are announced (design 9).
 if [ -z "${CI:-}" ]; then
   run "$PY" scripts/guardrails/check_startup.py
 else

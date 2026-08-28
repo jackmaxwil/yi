@@ -20,8 +20,5 @@ jobs:
           tool: cargo-deny,cargo-machete
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
-      # binary_size reads target/dist/yi; without this the gate reported a
-      # missing binary as a failure on every run, including green ones.
-      - run: cargo build --profile dist -p yi-cli
       - run: bash scripts/guardrails/check_guardrails.sh
       - run: cargo test --workspace
