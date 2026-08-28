@@ -21,4 +21,5 @@
 - A landed decision gets its ADR under docs/solutions/adr/ (one file per decision-log row,
   regenerated from the row rather than hand-drifted) and a line in the docs/solutions index.
 - Never `git add -A` in a shared tree: it swallows the other session's uncommitted files. Stage
-  the paths the change touched, by name.
+  the paths the change touched, by name — and check `git commit`'s own file list afterwards: a
+  deletion another session staged rides along silently otherwise (a moved skill did exactly this).

@@ -39,7 +39,9 @@ never enter model context — only the cluster table comes out.
    tool affordance, or an upstream bug. Append the table and proposals to a
    pain-points ledger file when the user names one. Offer — behind explicit
    confirmation — `gh issue create` for items that belong in a tracker.
-   Never edit config, rules, or skills yourself; the user lands changes.
+   Never edit config, rules, or skills yourself; the user lands changes — a
+   triggered rule they accept becomes a file in `.yi/rules`, which is also
+   where `/advisor promote <advice-id>` lands one they agreed with live.
 
 ## Backtesting a proposed rule
 

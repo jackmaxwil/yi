@@ -25,3 +25,9 @@ not add the test.
   the fix had already made unreachable. A green test proves nothing until it
   has been seen red for the right reason.
 - Tests avoid unwrap/expect by returning `Result<(), Box<dyn Error>>`.
+- Attribute a red gate before editing anything: a test that fails inside the full suite and
+  passes standalone is a race, not your diff. Read the failing run's own evidence (frame dumps,
+  the session file it wrote) rather than the diff, and fix the race — `wait-idle` walking on
+  before a submitted turn had started was A10, and the frames said so.
+- A drive script waits on the state it depends on, never on a duration: a prompt reaches the
+  runtime thread over a channel, so `running` is still false the instant after Enter.

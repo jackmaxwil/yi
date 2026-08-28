@@ -7,7 +7,8 @@ necessary, not sufficient.
 2. `just check` is green — and every gate is judged by its exit code, never by
    piped output: `cargo test | grep ...` reports grep's exit, not the tests'.
    Chains that swallowed a failing gate have shipped broken commits in this
-   repo before.
+   repo before. `just check` runs fmt, clippy, the guardrails *and* the test
+   suite, so `guardrails: all green` in a grep is not the gate: read `$?`.
 3. For behavior changes, run the real binary. Offline:
    `./target/debug/yi ask --model faux/faux-1 "<prompt>"` (add `--json` for
    the event stream). Size or startup claims use the dist profile
@@ -15,6 +16,9 @@ necessary, not sufficient.
 4. Report failures verbatim; never paraphrase an error you have not fixed.
 
 Misdiagnosis defaults: a gate that turns red after your change was broken by
-your change — fix the code, never the baseline. If a stale-cache explanation
+your change — fix the code, never the baseline. The one exception is a gate
+that measures wall time (startup): under a concurrent build it reads several
+times its quiet value, so re-measure idle before believing it — and never
+re-measure to explain away a number that stays high. If a stale-cache explanation
 tempts you, `touch` the crate's lib.rs and rerun before believing it. Ratchet
 growth is intentional only as `--update` in its own commit.

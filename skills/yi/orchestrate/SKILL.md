@@ -68,11 +68,29 @@ continue — a fresh brief beats inherited context for independent work.
 Pass `deny_write=[<instrument paths>]` to an implementer child when a task's
 acceptance instrument lives in the tree: the standard is fixed for the run, and
 a child that cannot edit it reports the mismatch instead.
-While children run, keep working the tasks you
-kept. Collect results, then verify each child's work against its acceptance
+Tell the child how to report mid-run: `await rlm.send('parent', '<line>')`
+reaches you without ending its turn, so a blocker arrives when it is found
+rather than when the child finishes.
+
+While children run, keep working the tasks you kept.
+
+## 5. Collect in program space, not in the transcript
+
+`await rlm.wait(timeout=…)` blocks until a child reports or finishes and
+returns the names that moved — use it instead of polling `list_subagents` in a
+loop. Then take each result as data:
+
+    done = await rlm.wait(120)
+    results = [await h.result(schema=TASK_SCHEMA) for h in handles]
+    blockers = [r["json"] for r in results if r["json"].get("blocked")]
+
+`handle.result(schema=…)` validates host-side and raises on a mismatch, so a
+malformed answer is refused at the seam instead of becoming prose you have to
+re-read. Filter and aggregate N children in Python; let only the digest cross
+into your transcript. Then verify each child's work against its acceptance
 yourself — a child's "done" is a report, not a measurement.
 
-## 5. Verify before declaring done
+## 6. Verify before declaring done
 
 Run every task's check and the goal's check. A fresh look finds what the
 implementer cannot: when the stakes justify it, spawn one cold reviewer
