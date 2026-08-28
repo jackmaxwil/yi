@@ -151,6 +151,9 @@ async def run(prompt: str, **kwargs: Any) -> RLMSpawnHandle:
     ``model`` selects a child with an exact ``provider/model`` selector.
     ``thinking`` sets the child reasoning level (e.g. 'off', 'low', 'medium', 'high');
     defaults to the parent level; levels invalid for the resolved model fail the spawn.
+    ``fork`` seeds the child with this session's history: 'none' (default), 'all'
+    (inherits the parent model, so ``model``/``thinking`` are refused with it), or a
+    positive turn count for the last N turns.
     """
     if not isinstance(prompt, str):
         raise TypeError(f"prompt must be str, got {type(prompt).__name__}")
@@ -237,6 +240,31 @@ async def delete_subagent(target: str | RLMSubagent) -> RLMSubagent:
     return _subagent_from_payload(payload.get("subagent"), "rlm.delete_subagent")
 
 
+def _worktree_target(target: "str | RLMSubagent") -> str:
+    if isinstance(target, RLMSubagent):
+        return target.rlm_child_id
+    if isinstance(target, str):
+        selector = target.strip()
+        if not selector:
+            raise ValueError("target must not be empty")
+        return selector
+    raise TypeError(f"target must be str or RLMSubagent, got {type(target).__name__}")
+
+
+async def merge_worktree(target: "str | RLMSubagent") -> dict[str, Any]:
+    """Commit an isolated child's work on its branch and merge it into this checkout.
+
+    The child must have finished. The worktree is removed once merged, which is
+    also what releases the child for ``delete_subagent``.
+    """
+    return await host_request("rlm.merge_worktree", {"target": _worktree_target(target)})
+
+
+async def discard_worktree(target: "str | RLMSubagent") -> dict[str, Any]:
+    """Throw an isolated child's worktree and branch away without merging."""
+    return await host_request("rlm.discard_worktree", {"target": _worktree_target(target)})
+
+
 class _HarnessProxy:
     """Resolve the harness state against the current environment on every access.
 
@@ -304,6 +332,12 @@ class _RLMCallable:
     async def delete_subagent(self, target: str | RLMSubagent) -> RLMSubagent:
         return await delete_subagent(target)
 
+    async def merge_worktree(self, target: str | RLMSubagent) -> dict[str, Any]:
+        return await merge_worktree(target)
+
+    async def discard_worktree(self, target: str | RLMSubagent) -> dict[str, Any]:
+        return await discard_worktree(target)
+
     async def __call__(self, prompt: str, **kwargs: Any) -> RLMSpawnHandle:
         return await run(prompt, **kwargs)
 
@@ -331,11 +365,13 @@ __all__ = [
     "RLMSubagent",
     "RefinementEvent",
     "delete_subagent",
+    "discard_worktree",
     "find_models",
     "get_harness_state",
     "harness",
     "host_request",
     "list_subagents",
+    "merge_worktree",
     "rlm",
     "run",
 ]

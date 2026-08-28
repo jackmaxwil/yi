@@ -565,6 +565,24 @@ impl AgentSession {
         })
     }
 
+    pub fn history_handle(&self) -> Arc<dyn Fn() -> Vec<AgentMessage> + Send + Sync> {
+        let shared = Arc::clone(&self.shared);
+        Arc::new(move || {
+            shared
+                .messages
+                .lock()
+                .map(|messages| messages.clone())
+                .unwrap_or_default()
+        })
+    }
+
+    /// Invariant: pre-first-turn only (B5) — mid-run it races the appending turn.
+    pub fn seed_messages(&self, seed: Vec<AgentMessage>) {
+        if let Ok(mut messages) = self.shared.messages.lock() {
+            *messages = seed;
+        }
+    }
+
     pub fn activity_handle(&self) -> Arc<dyn Fn() -> bool + Send + Sync> {
         let shared = Arc::clone(&self.shared);
         Arc::new(move || {

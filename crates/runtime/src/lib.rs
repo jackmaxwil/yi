@@ -16,6 +16,7 @@ pub mod session;
 pub mod skills;
 pub mod subagent;
 pub mod tools;
+pub mod worktree;
 
 pub use checkpoint::{RecordedCheckpoint, UndoOutcome, recorded, undo, wire_turn_checkpoints};
 pub use compaction::{CompactStatus, Compactor};
@@ -28,8 +29,8 @@ pub use rewind::{Rewound, rewind_to};
 pub use session::{AgentSession, SessionConfig, SessionError, Status};
 pub use skills::{Skill, skills_catalog};
 pub use subagent::{
-    ChildStatus, ChildUpdate, ChildView, RuntimeWiring, SubagentHost, SubagentHostOptions,
-    attach_runtime,
+    ChildBuild, ChildStatus, ChildUpdate, ChildView, RuntimeWiring, SubagentHost,
+    SubagentHostOptions, attach_runtime,
 };
 pub use tools::ToolAdapter;
 pub use yi_ai::auth;

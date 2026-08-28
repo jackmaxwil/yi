@@ -58,6 +58,8 @@ struct Harness {
     attributed: Arc<AtomicU32>,
     root: PathBuf,
     events: tokio::sync::broadcast::Sender<AgentEvent>,
+    parent: Arc<Mutex<Vec<AgentMessage>>>,
+    child_cwd: Arc<Mutex<Option<PathBuf>>>,
 }
 
 struct HarnessOptions {
@@ -67,6 +69,8 @@ struct HarnessOptions {
     /// Some(command) makes the child call `bash` before answering, which is
     /// what moves the B7 tool counter and activity.
     tool_command: Option<&'static str>,
+    /// The repository worktree children branch from.
+    cwd: Option<PathBuf>,
 }
 
 fn harness(depth: u8, max_depth: u8, child_answer: &'static str) -> Harness {
@@ -75,6 +79,7 @@ fn harness(depth: u8, max_depth: u8, child_answer: &'static str) -> Harness {
         max_depth,
         child_answer,
         tool_command: None,
+        cwd: None,
     })
 }
 
@@ -84,6 +89,7 @@ fn harness_with(options: HarnessOptions) -> Harness {
         max_depth,
         child_answer,
         tool_command,
+        cwd,
     } = options;
     let root = std::env::temp_dir().join(format!(
         "yi-recursion-{}-{depth}-{}-{}",
@@ -92,18 +98,27 @@ fn harness_with(options: HarnessOptions) -> Harness {
         tool_command.unwrap_or("none")
     ));
     let _ = std::fs::remove_dir_all(&root);
+    let cwd = cwd.unwrap_or_else(std::env::temp_dir);
+    let child_cwd: Arc<Mutex<Option<PathBuf>>> = Arc::new(Mutex::new(None));
+    let cwd_sink = Arc::clone(&child_cwd);
     let notices = Arc::new(Mutex::new(Vec::new()));
     let attributed = Arc::new(AtomicU32::new(0));
     let notice_sink = Arc::clone(&notices);
     let attribute_sink = Arc::clone(&attributed);
     let (events, _keep) = tokio::sync::broadcast::channel(256);
+    let parent: Arc<Mutex<Vec<AgentMessage>>> = Arc::new(Mutex::new(Vec::new()));
+    let parent_source = Arc::clone(&parent);
     let host = Arc::new(SubagentHost::new(SubagentHostOptions {
         depth,
         max_depth,
         max_children: 8,
         parent_session_dir: root.clone(),
+        cwd: cwd.clone(),
         default_model: faux_model(),
-        factory: Arc::new(move |model, thinking, _child_dir| {
+        factory: Arc::new(move |build: yi_runtime::ChildBuild<'_>| {
+            if let Ok(mut slot) = cwd_sink.lock() {
+                *slot = build.cwd.map(std::path::Path::to_path_buf);
+            }
             let provider = Arc::new(ProviderStream::new(None, None));
             let mut script = Vec::new();
             if let Some(command) = tool_command {
@@ -119,8 +134,8 @@ fn harness_with(options: HarnessOptions) -> Harness {
             let mut child = AgentSession::new(
                 SessionConfig {
                     system_prompt: "child sys".to_owned(),
-                    model,
-                    thinking_level: thinking,
+                    model: build.model,
+                    thinking_level: build.thinking,
                     tool_execution: ExecutionMode::Sequential,
                 },
                 provider,
@@ -136,6 +151,12 @@ fn harness_with(options: HarnessOptions) -> Harness {
             }
         }),
         events: events.clone(),
+        parent_messages: Arc::new(move || {
+            parent_source
+                .lock()
+                .map(|messages| messages.clone())
+                .unwrap_or_default()
+        }),
         attribute: Arc::new(move |usage| {
             attribute_sink.fetch_add(u32::from(usage.total_tokens == 120), Ordering::SeqCst);
         }),
@@ -146,6 +167,8 @@ fn harness_with(options: HarnessOptions) -> Harness {
         attributed,
         root,
         events,
+        parent,
+        child_cwd,
     }
 }
 
@@ -239,6 +262,7 @@ async fn child_updates_ride_the_parent_bus_with_counts_and_activity() -> TestRes
         max_depth: 1,
         child_answer: "swept the logs",
         tool_command: Some("echo probing"),
+        cwd: None,
     });
     let mut events = harness.events.subscribe();
     harness
@@ -265,6 +289,270 @@ async fn child_updates_ride_the_parent_bus_with_counts_and_activity() -> TestRes
         Some("swept the logs"),
         "the answer preview crosses without the parent reading the child's stream"
     );
+    Ok(())
+}
+
+fn parent_turn(user: &str, answer: &str) -> [AgentMessage; 2] {
+    [
+        AgentMessage::User {
+            content: yi_types::message::UserContent::Text(user.to_owned()),
+            timestamp: 0,
+        },
+        child_reply(answer),
+    ]
+}
+
+async fn first_child_messages(harness: &Harness) -> Vec<AgentMessage> {
+    let Some(child) = harness.host.children_view().into_iter().next() else {
+        return Vec::new();
+    };
+    for _ in 0..100 {
+        child.session.wait_idle().await;
+        let messages = child.session.messages();
+        if user_texts(&messages)
+            .iter()
+            .any(|text| text.starts_with("[task from parent]"))
+        {
+            return messages;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+    }
+    Vec::new()
+}
+
+fn user_texts(messages: &[AgentMessage]) -> Vec<String> {
+    messages
+        .iter()
+        .filter_map(|message| match message {
+            AgentMessage::User {
+                content: yi_types::message::UserContent::Text(text),
+                ..
+            } => Some(text.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn fork_seeds_the_child_with_the_turns_it_asked_for() -> TestResult {
+    let cold = harness(0, 1, "cold");
+    {
+        let mut parent = cold.parent.lock().map_err(|_| "poisoned")?;
+        parent.extend(parent_turn("turn one", "a1"));
+        parent.extend(parent_turn("turn two", "a2"));
+        parent.extend(parent_turn("turn three", "a3"));
+    }
+    cold.host
+        .spawn("do the thing".to_owned(), kwargs(&[("name", "cold")]))
+        .map_err(|error| error.to_string())?;
+    assert_eq!(
+        user_texts(&first_child_messages(&cold).await),
+        vec!["[task from parent]\n\ndo the thing".to_owned()],
+        "no fork means a cold child: the parent's turns never cross"
+    );
+
+    let forked = harness(0, 1, "forked");
+    {
+        let mut parent = forked.parent.lock().map_err(|_| "poisoned")?;
+        parent.extend(parent_turn("turn one", "a1"));
+        parent.extend(parent_turn("turn two", "a2"));
+        parent.extend(parent_turn("turn three", "a3"));
+    }
+    forked
+        .host
+        .spawn(
+            "continue it".to_owned(),
+            kwargs(&[("name", "last-one"), ("fork", "1")]),
+        )
+        .map_err(|error| error.to_string())?;
+    assert_eq!(
+        user_texts(&first_child_messages(&forked).await),
+        vec![
+            "turn three".to_owned(),
+            "[task from parent]\n\ncontinue it".to_owned()
+        ],
+        "fork=1 seeds the last turn boundary onward, nothing older"
+    );
+
+    let whole = harness(0, 1, "whole");
+    {
+        let mut parent = whole.parent.lock().map_err(|_| "poisoned")?;
+        parent.extend(parent_turn("turn one", "a1"));
+        parent.extend(parent_turn("turn two", "a2"));
+    }
+    whole
+        .host
+        .spawn(
+            "carry on".to_owned(),
+            kwargs(&[("name", "all"), ("fork", "all")]),
+        )
+        .map_err(|error| error.to_string())?;
+    assert_eq!(
+        user_texts(&first_child_messages(&whole).await).len(),
+        3,
+        "fork=all seeds both parent turns plus the task"
+    );
+    let override_refused = whole.host.spawn(
+        "carry on".to_owned(),
+        kwargs(&[
+            ("name", "all-override"),
+            ("fork", "all"),
+            ("model", "faux/faux-1"),
+        ]),
+    );
+    assert_eq!(
+        override_refused.err().as_deref(),
+        Some("fork=all inherits the parent's model and thinking; drop the override"),
+        "an All fork rejects overrides rather than silently ignoring them"
+    );
+    let bad_fork = whole.host.spawn(
+        "nope".to_owned(),
+        kwargs(&[("name", "bad"), ("fork", "-2")]),
+    );
+    assert!(
+        bad_fork
+            .err()
+            .is_some_and(|error| error.contains("positive turn count")),
+        "a malformed fork names the vocabulary"
+    );
+    Ok(())
+}
+
+fn git_repo(label: &str) -> Result<PathBuf, Box<dyn Error>> {
+    let repo = std::env::temp_dir().join(format!("yi-wt-{}-{label}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&repo);
+    std::fs::create_dir_all(&repo)?;
+    let run = |args: &[&str]| -> Result<(), Box<dyn Error>> {
+        let status = yi_tools::command("git")
+            .current_dir(&repo)
+            .args(args)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()?;
+        if status.success() {
+            Ok(())
+        } else {
+            Err(format!("git {} failed", args.join(" ")).into())
+        }
+    };
+    run(&["init", "-q", "-b", "main"])?;
+    run(&["config", "user.email", "test@example.invalid"])?;
+    run(&["config", "user.name", "Yi Test"])?;
+    std::fs::write(repo.join("README.md"), "base\n")?;
+    run(&["add", "-A"])?;
+    run(&["commit", "-qm", "base"])?;
+    Ok(repo)
+}
+
+#[tokio::test]
+async fn a_worktree_child_gets_its_own_checkout_and_hands_it_back() -> TestResult {
+    let repo = git_repo("merge")?;
+    let harness = harness_with(HarnessOptions {
+        depth: 0,
+        max_depth: 1,
+        child_answer: "isolated",
+        tool_command: None,
+        cwd: Some(repo.clone()),
+    });
+    let reply = harness
+        .host
+        .spawn(
+            "edit in isolation".to_owned(),
+            kwargs(&[("name", "mutator"), ("isolation", "worktree")]),
+        )
+        .map_err(|error| error.to_string())?;
+    let child_id = reply["rlm_child_id"]
+        .as_str()
+        .ok_or("missing child id")?
+        .to_owned();
+    let tree = harness
+        .child_cwd
+        .lock()
+        .map_err(|_| "poisoned")?
+        .clone()
+        .ok_or("the child was built without its worktree as cwd")?;
+    assert!(
+        tree.join("README.md").is_file(),
+        "the child works in a real checkout of the parent's HEAD: {}",
+        tree.display()
+    );
+    assert!(
+        wait_for_status(&harness.host, &child_id, "completed").await,
+        "child must finish"
+    );
+
+    std::fs::write(tree.join("child.txt"), "written by the child\n")?;
+    assert!(
+        harness
+            .host
+            .delete("mutator")
+            .err()
+            .is_some_and(|error| error.contains("merge or discard it first")),
+        "reaping a child with unmerged work must refuse, not drop the tree"
+    );
+    let merged = harness
+        .host
+        .merge_worktree("mutator")
+        .map_err(|error| error.to_string())?;
+    assert_eq!(merged["merged"], true);
+    assert_eq!(
+        std::fs::read_to_string(repo.join("child.txt"))?,
+        "written by the child\n",
+        "the child's work lands in the parent's checkout"
+    );
+    assert!(!tree.exists(), "a merged worktree is removed");
+    assert!(
+        harness.host.delete("mutator").is_ok(),
+        "once merged, the slot is reapable"
+    );
+    let _ = std::fs::remove_dir_all(&repo);
+    Ok(())
+}
+
+#[tokio::test]
+async fn discarding_a_worktree_throws_the_branch_away() -> TestResult {
+    let repo = git_repo("discard")?;
+    let harness = harness_with(HarnessOptions {
+        depth: 0,
+        max_depth: 1,
+        child_answer: "discarded",
+        tool_command: None,
+        cwd: Some(repo.clone()),
+    });
+    let reply = harness
+        .host
+        .spawn(
+            "try something".to_owned(),
+            kwargs(&[("name", "spike"), ("isolation", "worktree")]),
+        )
+        .map_err(|error| error.to_string())?;
+    let child_id = reply["rlm_child_id"]
+        .as_str()
+        .ok_or("missing child id")?
+        .to_owned();
+    assert!(wait_for_status(&harness.host, &child_id, "completed").await);
+    let tree = harness
+        .child_cwd
+        .lock()
+        .map_err(|_| "poisoned")?
+        .clone()
+        .ok_or("no worktree")?;
+    std::fs::write(tree.join("spike.txt"), "throwaway\n")?;
+    harness
+        .host
+        .discard_worktree("spike")
+        .map_err(|error| error.to_string())?;
+    assert!(!repo.join("spike.txt").exists(), "nothing crosses back");
+    assert!(!tree.exists());
+    assert!(
+        harness
+            .host
+            .discard_worktree("spike")
+            .err()
+            .is_some_and(|error| error.contains("has no worktree")),
+        "a second hand-back names the reason rather than half-working"
+    );
+    let _ = std::fs::remove_dir_all(&repo);
     Ok(())
 }
 
@@ -325,13 +613,12 @@ async fn depth_limit_name_collision_slots_and_delete() -> TestResult {
 
     assert!(harness.host.delete("no-such-child").is_err());
 
-    let unknown_kwarg = harness.host.spawn(
-        "bad".to_owned(),
-        kwargs(&[("name", "bad"), ("fork", "all")]),
-    );
+    let unknown_kwarg = harness
+        .host
+        .spawn("bad".to_owned(), kwargs(&[("name", "bad"), ("junk", "1")]));
     assert_eq!(
         unknown_kwarg.err().as_deref(),
-        Some("Unsupported rlm.run kwargs: fork"),
+        Some("Unsupported rlm.run kwargs: junk"),
         "unknown kwargs are an error, never silently dropped"
     );
     Ok(())

@@ -19,6 +19,7 @@ pub const DEFAULT_MAX_CHILDREN: usize = 8;
 struct ChildRecord {
     session_name: String,
     session_dir: PathBuf,
+    worktree: Option<crate::worktree::Worktree>,
     status: ChildStatus,
     activity: ChildActivity,
     tool_use_count: u64,
@@ -50,8 +51,15 @@ pub struct ChildView {
     pub session: Arc<AgentSession>,
 }
 
-pub type ChildFactory =
-    dyn Fn(Model, Option<String>, &Path) -> Result<AgentSession, String> + Send + Sync;
+pub struct ChildBuild<'a> {
+    pub model: Model,
+    pub thinking: Option<String>,
+    pub session_dir: &'a Path,
+    /// `Some` only for a B11 worktree child; otherwise the parent's own cwd.
+    pub cwd: Option<&'a Path>,
+}
+
+pub type ChildFactory = dyn Fn(ChildBuild<'_>) -> Result<AgentSession, String> + Send + Sync;
 pub type NoticeFn = dyn Fn(&str) + Send + Sync;
 pub type AttributeFn = dyn Fn(&Usage) + Send + Sync;
 
@@ -66,6 +74,10 @@ pub struct SubagentHostOptions {
     pub notice: Arc<NoticeFn>,
     /// The parent's bus: a child's B7 updates ride it, never the child's own.
     pub events: tokio::sync::broadcast::Sender<AgentEvent>,
+    /// The parent's live history, read at spawn for a B5 fork seed.
+    pub parent_messages: Arc<dyn Fn() -> Vec<AgentMessage> + Send + Sync>,
+    /// The repository a B11 worktree child branches from.
+    pub cwd: PathBuf,
     /// Folds a child's billable usage onto the parent's last assistant message.
     pub attribute: Arc<AttributeFn>,
 }
@@ -113,11 +125,98 @@ fn default_session_name(prompt: &str, child_id: &str) -> String {
     }
 }
 
+/// B1 seeding; `LastN(n)` counts turn boundaries, not messages.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Fork {
+    None,
+    All,
+    LastN(u64),
+}
+
+/// B11: parallel mutators stop sharing one tree.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Isolation {
+    None,
+    Worktree,
+}
+
+fn parse_isolation(kwargs: &Map<String, Value>) -> Result<Isolation, String> {
+    match kwargs.get("isolation") {
+        None | Some(Value::Null) => Ok(Isolation::None),
+        Some(Value::String(value)) => match value.trim() {
+            "none" => Ok(Isolation::None),
+            "worktree" => Ok(Isolation::Worktree),
+            other => Err(format!(
+                "rlm.run isolation must be \"none\" or \"worktree\", got {other}"
+            )),
+        },
+        Some(other) => Err(format!("rlm.run isolation must be a string, got {other}")),
+    }
+}
+
+fn parse_fork(kwargs: &Map<String, Value>) -> Result<Fork, String> {
+    match kwargs.get("fork") {
+        None | Some(Value::Null) => Ok(Fork::None),
+        Some(Value::String(value)) => match value.trim() {
+            "none" => Ok(Fork::None),
+            "all" => Ok(Fork::All),
+            other => other
+                .parse::<u64>()
+                .ok()
+                .filter(|turns| *turns > 0)
+                .map(Fork::LastN)
+                .ok_or_else(|| {
+                    format!("rlm.run fork must be \"none\", \"all\", or a positive turn count, got {other}")
+                }),
+        },
+        Some(Value::Number(number)) => number
+            .as_u64()
+            .filter(|turns| *turns > 0)
+            .map(Fork::LastN)
+            .ok_or_else(|| format!("rlm.run fork turn count must be positive, got {number}")),
+        Some(other) => Err(format!("rlm.run fork must be a string or number, got {other}")),
+    }
+}
+
+/// The seed budget is the child's window less the reserve compaction needs.
+fn seed_for_fork(parent: &[AgentMessage], fork: Fork, window: u64) -> Vec<AgentMessage> {
+    let start = match fork {
+        Fork::None => return Vec::new(),
+        Fork::All => 0,
+        Fork::LastN(turns) => {
+            let boundaries: Vec<usize> = parent
+                .iter()
+                .enumerate()
+                .filter(|(_, message)| matches!(message, AgentMessage::User { .. }))
+                .map(|(index, _)| index)
+                .collect();
+            let wanted = usize::try_from(turns).unwrap_or(usize::MAX);
+            boundaries
+                .len()
+                .checked_sub(wanted)
+                .and_then(|index| boundaries.get(index).copied())
+                .unwrap_or(0)
+        }
+    };
+    let budget = window.saturating_sub(yi_context::Settings::default().reserve_tokens.0);
+    let mut kept: Vec<AgentMessage> = Vec::new();
+    let mut used = 0_u64;
+    for message in parent[start.min(parent.len())..].iter().rev() {
+        used = used.saturating_add(yi_context::estimate_message(message).0);
+        if used > budget {
+            break;
+        }
+        kept.push(message.clone());
+    }
+    kept.reverse();
+    kept
+}
+
 fn require_kwargs(kwargs: &Map<String, Value>) -> Result<(), String> {
     let mut unsupported: Vec<&str> = kwargs
         .keys()
         .map(String::as_str)
-        .filter(|key| !matches!(*key, "name" | "model" | "thinking"))
+        .filter(|key| !matches!(*key, "name" | "model" | "thinking" | "fork" | "isolation"))
         .collect();
     if unsupported.is_empty() {
         return Ok(());
@@ -311,6 +410,13 @@ impl SubagentHost {
         let requested_name = optional_string(&kwargs, "name")?;
         let requested_model = optional_string(&kwargs, "model")?;
         let thinking = optional_string(&kwargs, "thinking")?;
+        let fork = parse_fork(&kwargs)?;
+        let isolation = parse_isolation(&kwargs)?;
+        if fork == Fork::All && (requested_model.is_some() || thinking.is_some()) {
+            return Err(
+                "fork=all inherits the parent's model and thinking; drop the override".to_owned(),
+            );
+        }
         if self.options.depth >= self.options.max_depth {
             return Err(format!(
                 "RLM recursion depth limit reached (RLM_DEPTH={}, RLM_MAX_DEPTH={})",
@@ -353,13 +459,35 @@ impl SubagentHost {
                     self.options.depth.saturating_add(1)
                 ));
             }
-            let child = (self.options.factory)(model.clone(), thinking, &session_dir)?;
+            let worktree = match isolation {
+                Isolation::None => None,
+                Isolation::Worktree => Some(crate::worktree::create(
+                    &self.options.cwd,
+                    &session_dir,
+                    &child_id,
+                )?),
+            };
+            let child = (self.options.factory)(ChildBuild {
+                model: model.clone(),
+                thinking,
+                session_dir: &session_dir,
+                cwd: worktree.as_ref().map(|tree| tree.path.as_path()),
+            })?;
+            if fork != Fork::None {
+                let seed = seed_for_fork(
+                    &(self.options.parent_messages)(),
+                    fork,
+                    child.model().context_window,
+                );
+                child.seed_messages(seed);
+            }
             let session = Arc::new(child);
             children.insert(
                 child_id.clone(),
                 ChildRecord {
                     session_name: session_name.clone(),
                     session_dir: session_dir.clone(),
+                    worktree,
                     status: ChildStatus::Running,
                     activity: ChildActivity::Waiting,
                     tool_use_count: 0,
@@ -485,16 +613,74 @@ impl SubagentHost {
         reply
     }
 
+    fn key_of(children: &HashMap<String, ChildRecord>, target: &str) -> Result<String, String> {
+        children
+            .iter()
+            .find(|(id, record)| id.as_str() == target || record.session_name == target)
+            .map(|(id, _)| id.clone())
+            .ok_or_else(|| format!("No RLM child matches \"{target}\""))
+    }
+
+    /// B11 hand-back: the child's branch is committed, then merged.
+    pub fn merge_worktree(&self, target: &str) -> Result<Map<String, Value>, String> {
+        let (tree, name) = self.take_settled_worktree(target)?;
+        let output = crate::worktree::merge(&self.options.cwd, &tree, &name)?;
+        crate::worktree::discard(&self.options.cwd, &tree)?;
+        let mut reply = Map::new();
+        reply.insert("merged".to_owned(), Value::Bool(true));
+        reply.insert("branch".to_owned(), Value::String(tree.branch));
+        reply.insert("output".to_owned(), Value::String(output));
+        Ok(reply)
+    }
+
+    pub fn discard_worktree(&self, target: &str) -> Result<Map<String, Value>, String> {
+        let (tree, _) = self.take_settled_worktree(target)?;
+        crate::worktree::discard(&self.options.cwd, &tree)?;
+        let mut reply = Map::new();
+        reply.insert("discarded".to_owned(), Value::Bool(true));
+        reply.insert("branch".to_owned(), Value::String(tree.branch));
+        Ok(reply)
+    }
+
+    /// Invariant: taken off the record, so a tree is never handed back twice.
+    fn take_settled_worktree(
+        &self,
+        target: &str,
+    ) -> Result<(crate::worktree::Worktree, String), String> {
+        let mut children = self
+            .children
+            .lock()
+            .map_err(|_| "subagent state poisoned")?;
+        let key = Self::key_of(&children, target)?;
+        let record = children
+            .get_mut(&key)
+            .ok_or_else(|| format!("No RLM child matches \"{target}\""))?;
+        if record.status == ChildStatus::Running {
+            return Err(format!(
+                "child \"{target}\" is still running; wait for it before touching its worktree"
+            ));
+        }
+        let tree = record
+            .worktree
+            .take()
+            .ok_or_else(|| format!("child \"{target}\" has no worktree (isolation was none)"))?;
+        Ok((tree, record.session_name.clone()))
+    }
+
     pub fn delete(&self, target: &str) -> Result<Map<String, Value>, String> {
         let mut children = self
             .children
             .lock()
             .map_err(|_| "subagent state poisoned")?;
-        let key = children
-            .iter()
-            .find(|(id, record)| id.as_str() == target || record.session_name == target)
-            .map(|(id, _)| id.clone())
-            .ok_or_else(|| format!("No RLM child matches \"{target}\""))?;
+        let key = Self::key_of(&children, target)?;
+        if let Some(record) = children.get(&key)
+            && let Some(tree) = &record.worktree
+        {
+            return Err(format!(
+                "child \"{target}\" holds the worktree {}; merge or discard it first",
+                tree.path.display()
+            ));
+        }
         let Some(record) = children.remove(&key) else {
             return Err(format!("No RLM child matches \"{target}\""));
         };
@@ -566,6 +752,27 @@ impl SubagentHost {
                 host.delete(&target)
             })
         });
+        for (method, merges) in [
+            ("rlm.merge_worktree", true),
+            ("rlm.discard_worktree", false),
+        ] {
+            let host = Arc::clone(self);
+            registry.register(method, move |payload| {
+                let target = payload
+                    .get("target")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned);
+                let host = Arc::clone(&host);
+                Box::pin(async move {
+                    let target = target.ok_or_else(|| format!("{method} requires a target"))?;
+                    if merges {
+                        host.merge_worktree(&target)
+                    } else {
+                        host.discard_worktree(&target)
+                    }
+                })
+            });
+        }
         registry.register("rlm.find_models", move |payload| {
             let query = payload
                 .get("query")
@@ -781,12 +988,12 @@ pub fn attach_runtime(session: &mut AgentSession, wiring: RuntimeWiring) -> Arc<
         });
     }
     let factory_wiring = wiring.clone();
-    let factory: Arc<ChildFactory> = Arc::new(move |model: Model, thinking, child_dir: &Path| {
+    let factory: Arc<ChildFactory> = Arc::new(move |build: ChildBuild<'_>| {
         let mut child = AgentSession::new(
             crate::session::SessionConfig {
                 system_prompt: factory_wiring.system_prompt.clone(),
-                model,
-                thinking_level: thinking,
+                model: build.model,
+                thinking_level: build.thinking,
                 tool_execution: factory_wiring.tool_execution,
             },
             Arc::clone(&factory_wiring.provider),
@@ -795,7 +1002,10 @@ pub fn attach_runtime(session: &mut AgentSession, wiring: RuntimeWiring) -> Arc<
             &mut child,
             RuntimeWiring {
                 depth: factory_wiring.depth.saturating_add(1),
-                rlm_dir: child_dir.to_path_buf(),
+                rlm_dir: build.session_dir.to_path_buf(),
+                cwd: build
+                    .cwd
+                    .map_or_else(|| factory_wiring.cwd.clone(), Path::to_path_buf),
                 ..factory_wiring.clone()
             },
         );
@@ -810,6 +1020,8 @@ pub fn attach_runtime(session: &mut AgentSession, wiring: RuntimeWiring) -> Arc<
         factory,
         notice: session.notice_hook(),
         events: session.events_sender(),
+        parent_messages: session.history_handle(),
+        cwd: wiring.cwd.clone(),
         attribute: session.attribution_handle(),
     }));
     host.register(&mut registry);

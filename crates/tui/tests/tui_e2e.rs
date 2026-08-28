@@ -160,10 +160,12 @@ fn subagent_task_cell_focus_and_back() -> TestResult {
         max_depth: 1,
         max_children: 4,
         parent_session_dir: dir.clone(),
+        cwd: dir.clone(),
         default_model: faux_model(),
-        factory: Arc::new(|_model, _thinking, _dir| Ok(faux_session("child answer"))),
+        factory: Arc::new(|_build| Ok(faux_session("child answer"))),
         notice: Arc::new(|_notice| {}),
         events: tokio::sync::broadcast::channel(64).0,
+        parent_messages: Arc::new(Vec::new),
         attribute: Arc::new(|_usage| {}),
     }));
     let mut app = app();
