@@ -18,7 +18,7 @@ build-dist:
 guardrails:
     bash scripts/guardrails/check_guardrails.sh
 
-check: fmt-check clippy guardrails
+check: fmt-check clippy guardrails test
 
 # Bundled skills (14.1) are installed into the global root, not compiled in.
 install-skills:
