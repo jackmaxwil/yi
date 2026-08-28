@@ -26,7 +26,7 @@ pub struct CommandCapture {
 }
 
 /// Kill the shell, then its whole process group: a grandchild that outlives the
-/// shell holds the capture pipes, so `drain_capped` — and the interrupted turn —
+/// shell holds the capture pipes, so [`drain_capped`] — and the interrupted turn —
 /// waits out the very command it cancelled. `kill(1)`, not a `libc` dep (§13.1).
 fn kill_tree(child: &mut Child) {
     // Also the guard on the group kill below: `Child::kill` is the only thing
