@@ -287,6 +287,17 @@ pub fn to_updates(event: &AgentEvent, ids: &mut IdMap) -> Vec<AcpSessionUpdate> 
         AgentEvent::PermissionResolved { .. } => {
             vec![AcpSessionUpdate::StateUpdate(AcpState::Running)]
         }
+        AgentEvent::ChildUpdate { update } => {
+            let fields = serde_json::to_value(update)
+                .ok()
+                .and_then(|value| value.as_object().cloned())
+                .map(|map| map.into_iter().collect())
+                .unwrap_or_default();
+            vec![AcpSessionUpdate::Extension(AcpExtensionUpdate {
+                session_update: "_yi/subagent_update".to_owned(),
+                fields,
+            })]
+        }
     }
 }
 

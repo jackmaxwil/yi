@@ -3,8 +3,10 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use serde_json::{Map, Value, json};
-use yi_types::message::{AgentMessage, StopReason, Usage};
+use yi_types::event::AgentEvent;
+use yi_types::message::{AgentMessage, Content, StopReason, Usage};
 use yi_types::model::Model;
+pub use yi_types::subagent::{ChildActivity, ChildId, ChildStatus, ChildUpdate};
 
 use crate::provider::{available_models, resolve_model};
 use crate::session::AgentSession;
@@ -14,37 +16,37 @@ pub const DEFAULT_MAX_DEPTH: u8 = 1;
 // reap with rlm.delete_subagent instead of leaking children (design B2).
 pub const DEFAULT_MAX_CHILDREN: usize = 8;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ChildStatus {
-    Running,
-    Completed,
-    Error,
-}
-
-impl ChildStatus {
-    fn wire(self) -> &'static str {
-        match self {
-            Self::Running => "running",
-            Self::Completed => "completed",
-            Self::Error => "error",
-        }
-    }
-}
-
 struct ChildRecord {
     session_name: String,
     session_dir: PathBuf,
     status: ChildStatus,
+    activity: ChildActivity,
+    tool_use_count: u64,
+    token_count: u64,
+    answer_preview: Option<String>,
     error: Option<String>,
     session: Arc<AgentSession>,
 }
 
+impl ChildRecord {
+    fn update(&self, child_id: &str) -> ChildUpdate {
+        ChildUpdate {
+            id: ChildId(child_id.to_owned()),
+            name: self.session_name.clone(),
+            status: self.status,
+            activity: self.activity,
+            tool_use_count: self.tool_use_count,
+            token_count: self.token_count,
+            answer_preview: self.answer_preview.clone(),
+            error: self.error.clone(),
+        }
+    }
+}
+
+/// The session handle is event-stream and store access, not control.
 #[derive(Clone)]
 pub struct ChildView {
-    pub child_id: String,
-    pub session_name: String,
-    pub status: ChildStatus,
-    pub error: Option<String>,
+    pub update: ChildUpdate,
     pub session: Arc<AgentSession>,
 }
 
@@ -62,6 +64,8 @@ pub struct SubagentHostOptions {
     pub factory: Arc<ChildFactory>,
     /// A host status notice, delivered as a user-role message.
     pub notice: Arc<NoticeFn>,
+    /// The parent's bus: a child's B7 updates ride it, never the child's own.
+    pub events: tokio::sync::broadcast::Sender<AgentEvent>,
     /// Folds a child's billable usage onto the parent's last assistant message.
     pub attribute: Arc<AttributeFn>,
 }
@@ -147,7 +151,7 @@ fn child_entry(child_id: &str, record: &ChildRecord) -> Value {
         "session_id": Value::Null,
         "session_name": record.session_name,
         "session_dir": record.session_dir.to_string_lossy(),
-        "status": record.status.wire(),
+        "status": record.status.as_str(),
     })
 }
 
@@ -178,6 +182,47 @@ fn preview(text: &str) -> String {
     }
 }
 
+/// `false` means nothing a client can see moved, so nothing is published.
+fn fold_event(record: &mut ChildRecord, event: &AgentEvent) -> bool {
+    match event {
+        AgentEvent::ToolExecutionStart { .. } => {
+            record.tool_use_count = record.tool_use_count.saturating_add(1);
+            record.activity = ChildActivity::Executing;
+            true
+        }
+        AgentEvent::ToolExecutionEnd { .. } => {
+            record.activity = ChildActivity::Writing;
+            true
+        }
+        AgentEvent::MessageStart {
+            message: AgentMessage::Assistant { .. },
+        } => {
+            record.activity = ChildActivity::Writing;
+            true
+        }
+        AgentEvent::MessageEnd {
+            message: AgentMessage::Assistant { usage, content, .. },
+        } => {
+            let tokens = u64::try_from(usage.total_tokens).unwrap_or(0);
+            record.token_count = record.token_count.saturating_add(tokens);
+            record.activity = ChildActivity::Waiting;
+            let text: String = content
+                .iter()
+                .filter_map(|block| match block {
+                    Content::Text { text, .. } => Some(text.as_str()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            if !text.is_empty() {
+                record.answer_preview = Some(preview(&text));
+            }
+            true
+        }
+        _ => false,
+    }
+}
+
 impl SubagentHost {
     pub fn new(options: SubagentHostOptions) -> Self {
         Self {
@@ -186,7 +231,6 @@ impl SubagentHost {
         }
     }
 
-    /// The session handle is event-stream and store access, not control.
     pub fn children_view(&self) -> Vec<ChildView> {
         self.children
             .lock()
@@ -194,17 +238,53 @@ impl SubagentHost {
                 let mut view: Vec<ChildView> = children
                     .iter()
                     .map(|(id, record)| ChildView {
-                        child_id: id.clone(),
-                        session_name: record.session_name.clone(),
-                        status: record.status,
-                        error: record.error.clone(),
+                        update: record.update(id),
                         session: Arc::clone(&record.session),
                     })
                     .collect();
-                view.sort_by(|left, right| left.child_id.cmp(&right.child_id));
+                view.sort_by(|left, right| left.update.id.cmp(&right.update.id));
                 view
             })
             .unwrap_or_default()
+    }
+
+    fn publish(&self, child_id: &str) {
+        let update = self
+            .children
+            .lock()
+            .ok()
+            .and_then(|children| children.get(child_id).map(|record| record.update(child_id)));
+        if let Some(update) = update {
+            let _ = self.options.events.send(AgentEvent::ChildUpdate { update });
+        }
+    }
+
+    fn watch(self: &Arc<Self>, child_id: String, session: &Arc<AgentSession>) {
+        let host = Arc::clone(self);
+        let mut events = session.subscribe();
+        tokio::spawn(async move {
+            loop {
+                match events.recv().await {
+                    Ok(event) => {
+                        let moved = host
+                            .children
+                            .lock()
+                            .ok()
+                            .and_then(|mut children| {
+                                children
+                                    .get_mut(&child_id)
+                                    .map(|record| fold_event(record, &event))
+                            })
+                            .unwrap_or(false);
+                        if moved {
+                            host.publish(&child_id);
+                        }
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                }
+            }
+        });
     }
 
     fn create_child_dir(&self, parent_dir: &Path) -> Result<(PathBuf, String), String> {
@@ -281,10 +361,15 @@ impl SubagentHost {
                     session_name: session_name.clone(),
                     session_dir: session_dir.clone(),
                     status: ChildStatus::Running,
+                    activity: ChildActivity::Waiting,
+                    tool_use_count: 0,
+                    token_count: 0,
+                    answer_preview: None,
                     error: None,
                     session: Arc::clone(&session),
                 },
             );
+            self.watch(child_id.clone(), &session);
             let host = Arc::clone(self);
             let task_child_id = child_id.clone();
             let task_name = session_name.clone();
@@ -296,6 +381,7 @@ impl SubagentHost {
                     .await;
             });
         }
+        self.publish(&child_id);
         let mut reply = Map::new();
         reply.insert("rlm_child_id".to_owned(), Value::String(child_id));
         reply.insert("name".to_owned(), Value::String(session_name));
@@ -361,8 +447,10 @@ impl SubagentHost {
             && let Some(record) = children.get_mut(&child_id)
         {
             record.status = status;
+            record.activity = ChildActivity::Waiting;
             record.error = error.clone();
         }
+        self.publish(&child_id);
         // Terminal notices reach the parent as user-role host status, never as
         // something that can read as user instructions from the child.
         let notice = match &error {
@@ -721,6 +809,7 @@ pub fn attach_runtime(session: &mut AgentSession, wiring: RuntimeWiring) -> Arc<
         default_model: session.model(),
         factory,
         notice: session.notice_hook(),
+        events: session.events_sender(),
         attribute: session.attribution_handle(),
     }));
     host.register(&mut registry);

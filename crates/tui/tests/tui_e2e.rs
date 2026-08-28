@@ -163,6 +163,7 @@ fn subagent_task_cell_focus_and_back() -> TestResult {
         default_model: faux_model(),
         factory: Arc::new(|_model, _thinking, _dir| Ok(faux_session("child answer"))),
         notice: Arc::new(|_notice| {}),
+        events: tokio::sync::broadcast::channel(64).0,
         attribute: Arc::new(|_usage| {}),
     }));
     let mut app = app();
@@ -175,7 +176,7 @@ fn subagent_task_cell_focus_and_back() -> TestResult {
             app.sync_children(&children);
             if children
                 .iter()
-                .any(|c| c.status != yi_runtime::ChildStatus::Running)
+                .any(|c| c.update.status != yi_runtime::ChildStatus::Running)
             {
                 break;
             }
@@ -201,7 +202,7 @@ fn subagent_task_cell_focus_and_back() -> TestResult {
     let child_id = host
         .children_view()
         .first()
-        .map(|c| c.child_id.clone())
+        .map(|c| c.update.id.as_str().to_owned())
         .ok_or("child missing")?;
     app.set_focus(Some(child_id.clone()));
     let focus_commits = flat_lines(&app.take_commits());

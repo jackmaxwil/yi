@@ -204,6 +204,37 @@ fn custom_messages_become_yi_extension_updates() -> TestResult {
 }
 
 #[test]
+fn child_updates_become_a_subagent_update_notification() -> TestResult {
+    let mut ids = IdMap::new(1000);
+    let updates = to_updates(
+        &AgentEvent::ChildUpdate {
+            update: yi_types::subagent::ChildUpdate {
+                id: yi_types::subagent::ChildId("sub-abc".to_owned()),
+                name: "sweeper".to_owned(),
+                status: yi_types::subagent::ChildStatus::Running,
+                activity: yi_types::subagent::ChildActivity::Executing,
+                tool_use_count: 3,
+                token_count: 1200,
+                answer_preview: None,
+                error: None,
+            },
+        },
+        &mut ids,
+    );
+    let json = serde_json::to_value(&updates[0])?;
+    assert_eq!(json["sessionUpdate"], "_yi/subagent_update");
+    assert_eq!(json["id"], "sub-abc");
+    assert_eq!(json["activity"], "executing");
+    assert_eq!(json["toolUseCount"], 3);
+    assert_eq!(json["tokenCount"], 1200);
+    assert!(
+        json.get("answerPreview").is_none(),
+        "an absent preview stays absent on the wire: {json}"
+    );
+    Ok(())
+}
+
+#[test]
 fn base64_pads_correctly() {
     assert_eq!(base64(b""), "");
     assert_eq!(base64(b"f"), "Zg==");

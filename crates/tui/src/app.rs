@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 use ratatui::crossterm::event::{self, Event as CtEvent};
 use ratatui::text::Line;
 use serde_json::Value;
-use yi_runtime::{AgentSession, ChildStatus, SubagentHost};
+use yi_runtime::{AgentSession, ChildStatus, ChildUpdate, SubagentHost};
 use yi_types::entry::Entry;
 use yi_types::event::AgentEvent;
 use yi_types::message::{AgentMessage, Content, StopReason, UserContent};
@@ -553,6 +553,7 @@ impl App {
                 self.scheduler.request();
             }
             AgentEvent::MessageEnd { message } => self.reduce_message_end(&message),
+            AgentEvent::ChildUpdate { update } => self.reduce_child_update(&update),
             AgentEvent::ToolExecutionStart {
                 tool_call_id,
                 tool_name,
@@ -683,7 +684,6 @@ impl App {
         } = &event
             && let Some(state) = self.tasks.get_mut(child_id)
         {
-            state.cell.toolcalls += 1;
             let summary = arg_summary(tool_name, args);
             state.cell.last_tool = Some(if summary.is_empty() {
                 tool_name.clone()
@@ -730,15 +730,16 @@ impl App {
 
     pub fn sync_children(&mut self, children: &[yi_runtime::ChildView]) {
         for child in children {
-            if !self.tasks.contains_key(&child.child_id) {
-                self.task_order.push(child.child_id.clone());
+            let id = child.update.id.as_str().to_owned();
+            if !self.tasks.contains_key(&id) {
+                self.task_order.push(id.clone());
                 self.tasks.insert(
-                    child.child_id.clone(),
+                    id.clone(),
                     TaskState {
                         cell: TaskCell {
                             agent: "rlm".to_owned(),
-                            child_id: child.child_id.clone(),
-                            description: child.session_name.clone(),
+                            child_id: id.clone(),
+                            description: child.update.name.clone(),
                             status: TaskStatus::Running,
                             last_tool: None,
                             toolcalls: 0,
@@ -752,30 +753,40 @@ impl App {
                 );
                 self.scheduler.request();
             }
-            let Some(state) = self.tasks.get_mut(&child.child_id) else {
-                continue;
-            };
-            state.subscribed = true;
-            let status = match child.status {
-                ChildStatus::Running => TaskStatus::Running,
-                ChildStatus::Completed => TaskStatus::Done,
-                ChildStatus::Error => TaskStatus::Failed,
-            };
-            if state.cell.status != status {
-                state.cell.status = status;
-                state.cell.error = child.error.clone();
-                state.cell.elapsed_ms = elapsed_ms(state.started);
-                self.scheduler.request();
+            if let Some(state) = self.tasks.get_mut(&id) {
+                state.subscribed = true;
             }
-            if status != TaskStatus::Running && !self.committed_tasks.contains(&child.child_id) {
-                self.committed_tasks.insert(child.child_id.clone());
-                let cell = self
-                    .tasks
-                    .get(&child.child_id)
-                    .map(|state| Cell::Task(state.cell.clone()));
-                if let Some(cell) = cell {
-                    self.commit_cell(&cell);
-                }
+            self.reduce_child_update(&child.update);
+        }
+    }
+
+    /// Invariant: the sole source of a child's status and counters.
+    pub fn reduce_child_update(&mut self, update: &ChildUpdate) {
+        let id = update.id.as_str();
+        let Some(state) = self.tasks.get_mut(id) else {
+            return;
+        };
+        let status = match update.status {
+            ChildStatus::Running => TaskStatus::Running,
+            ChildStatus::Completed => TaskStatus::Done,
+            ChildStatus::Error => TaskStatus::Failed,
+        };
+        let toolcalls = u32::try_from(update.tool_use_count).unwrap_or(u32::MAX);
+        if state.cell.status != status || state.cell.toolcalls != toolcalls {
+            state.cell.status = status;
+            state.cell.error = update.error.clone();
+            state.cell.toolcalls = toolcalls;
+            state.cell.elapsed_ms = elapsed_ms(state.started);
+            self.scheduler.request();
+        }
+        if status != TaskStatus::Running && !self.committed_tasks.contains(id) {
+            self.committed_tasks.insert(id.to_owned());
+            let cell = self
+                .tasks
+                .get(id)
+                .map(|state| Cell::Task(state.cell.clone()));
+            if let Some(cell) = cell {
+                self.commit_cell(&cell);
             }
         }
     }
@@ -1034,11 +1045,11 @@ pub(crate) fn sync_roster(
     for child in &children {
         let subscribed = app
             .tasks
-            .get(&child.child_id)
+            .get(child.update.id.as_str())
             .is_some_and(|state| state.subscribed);
         if !subscribed {
             let mut events = child.session.subscribe();
-            let child_id = child.child_id.clone();
+            let child_id = child.update.id.as_str().to_owned();
             let ui_tx = ui_tx.clone();
             handle.spawn(async move {
                 while let Ok(event) = events.recv().await {

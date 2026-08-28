@@ -28,7 +28,8 @@ pub use rewind::{Rewound, rewind_to};
 pub use session::{AgentSession, SessionConfig, SessionError, Status};
 pub use skills::{Skill, skills_catalog};
 pub use subagent::{
-    ChildStatus, ChildView, RuntimeWiring, SubagentHost, SubagentHostOptions, attach_runtime,
+    ChildStatus, ChildUpdate, ChildView, RuntimeWiring, SubagentHost, SubagentHostOptions,
+    attach_runtime,
 };
 pub use tools::ToolAdapter;
 pub use yi_ai::auth;

@@ -17,4 +17,5 @@ pub mod permission;
 pub mod plan;
 pub mod record;
 pub mod schedule;
+pub mod subagent;
 pub mod wire;

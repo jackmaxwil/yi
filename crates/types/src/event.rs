@@ -152,4 +152,7 @@ pub enum AgentEvent {
         tool_call_id: String,
         allowed: bool,
     },
+    ChildUpdate {
+        update: crate::subagent::ChildUpdate,
+    },
 }
