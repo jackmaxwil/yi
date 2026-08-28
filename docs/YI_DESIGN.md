@@ -999,8 +999,9 @@ Decisions:
   box (`┌┬┐├┼┤└┴┘`) with one rule under the header — codex's edgeless grid with a rule between
   every body row was ported first and is most of the ink for none of the meaning. No LaTeX. Syntax
   highlighting landed as U39 — a hand-rolled five-language scanner, not `syntect` and not a
-  cargo feature (D63 revises this row: the dependency was measured at +0.38 MiB against
-  0.29 MiB of headroom, and a feature gating no dependency gates nothing).
+  cargo feature (D63 revises this row: syntect's code alone measured +1.06 MiB and its
+  bundled set +1.40 MiB against 0.25 MiB of headroom, so trimming the grammars cannot save
+  it, and a feature gating no dependency gates nothing).
 - **Tests** against a real VT parser (`vt100` dev-dep, codex `VT100Backend` ≈ 100 lines) plus
   `insta` snapshots of rendered cells. OMP's shadow-ledger fidelity test is the upgrade path if
   the inline mechanism ever diverges from ratatui's.
