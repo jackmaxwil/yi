@@ -33,6 +33,9 @@ const BAND: f64 = 5.0;
 const PAD: f64 = 10.0;
 
 const STRIKE_FRAMES: u64 = 12;
+/// The sweep runs at the tick, not the pulse: twelve frames is a beat, not
+/// three seconds.
+const STRIKE_STEP_MS: u64 = 62;
 
 pub fn pulse_frame(elapsed_ms: u128) -> char {
     let step = usize::try_from(elapsed_ms / PULSE_PERIOD_MS).unwrap_or(0);
@@ -127,11 +130,11 @@ pub fn shimmer(text: &str, elapsed_ms: u128, theme: &Theme) -> Vec<Span<'static>
 /// A completed row struck through left to right over 12 frames, then settled.
 /// `None` once the sweep is done, so the caller renders its normal done style.
 pub fn strike_sweep(label: &str, since_ms: u64) -> Option<(String, String)> {
-    let frame = since_ms / (PULSE_PERIOD_MS as u64 / 4).max(1);
+    let frame = since_ms / STRIKE_STEP_MS;
     if frame >= STRIKE_FRAMES {
         return None;
     }
-    let count = label.chars().count() as u64;
+    let count = u64::try_from(label.chars().count()).unwrap_or(0);
     let cut = usize::try_from(count.saturating_mul(frame) / STRIKE_FRAMES).unwrap_or(0);
     let struck: String = label.chars().take(cut).collect();
     let rest: String = label.chars().skip(cut).collect();

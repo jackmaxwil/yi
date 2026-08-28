@@ -55,5 +55,12 @@ when it changes rather than editing them by hand.
 - [D57](adr/d57.md) - Direct OpenAI is a real openai-responses adapter
 - [D58](adr/d58.md) - agent messages carry a provenance envelope, not the assistant role
 - [D59](adr/d59.md) - advisor promotion writes a rule file, not a permission pattern
+- [D60](adr/d60.md) - a tool result carries a typed record of what it did
+- [D61](adr/d61.md) - an edit renders its diff in Normal mode, and diff rows wrap
+- [D62](adr/d62.md) - the kernel cell renders from its own record
+- [D63](adr/d63.md) - syntax highlighting is a hand-rolled scanner, not syntect
+- [D64](adr/d64.md) - a finished read-only call is deferred, not committed
+- [D65](adr/d65.md) - the subagent family gets a popup, and spawn attribution is observed
+- [D66](adr/d66.md) - every animated glyph derives from one clock
 
 D36-D51 have no ADR yet; ARCHITECTURE.md is the record for those rows.
