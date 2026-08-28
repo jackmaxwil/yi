@@ -15,6 +15,9 @@ not add the test.
 - No static echoes, passthrough assertions, or "the code ran" tests.
 - Provider behavior tests need no keys: the faux provider replays scripted
   event streams; drive mappers with canned payloads.
+- A new gate is proven the same way a fix is: disable the gate (not the test) and watch the
+  test fail for the gate's own reason — the wall's deny was verified by neutering `Wall` in the
+  adapter and seeing the denied command's marker file appear.
 - A regression test is run against the unfixed code before the fix is claimed:
   temporarily revert the fix, watch it fail, restore. Two tests written this
   way passed against the broken code on the first try — one modelled a
