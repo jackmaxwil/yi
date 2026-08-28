@@ -71,6 +71,30 @@ fn card_row(card: &BoardCard, theme: &Theme, spinner_phase: usize) -> Line<'stat
     Line::from(Span::styled(text, style))
 }
 
+/// prime-agent `subagent-summary-line.ts:83-123`: the shape of the family
+/// before its members — how many are working, waiting, and finished. Zeroes are
+/// omitted, so the header shrinks as the family settles.
+fn counts_header(cards: &[BoardCard]) -> String {
+    let count = |status: CardStatus| cards.iter().filter(|c| c.status == status).count();
+    let parts: Vec<String> = [
+        ('●', count(CardStatus::Running), "running"),
+        (
+            '◐',
+            count(CardStatus::Blocked) + count(CardStatus::Todo),
+            "idle",
+        ),
+        ('○', count(CardStatus::Done), "done"),
+    ]
+    .into_iter()
+    .filter(|(_, n, _)| *n > 0)
+    .map(|(glyph, n, label)| format!("{glyph} {n} {label}"))
+    .collect();
+    if parts.is_empty() {
+        return "Subagents".to_owned();
+    }
+    parts.join(" · ")
+}
+
 /// The tree-spine connector is the progress meter, lit accent top-down by
 /// done/total: at least one cell on any progress, never full until all done.
 pub fn render(input: &HudInput, theme: &Theme, spinner_phase: usize) -> Vec<Line<'static>> {
@@ -88,7 +112,7 @@ pub fn render(input: &HudInput, theme: &Theme, spinner_phase: usize) -> Vec<Line
             }
             Some(header)
         }
-        None if !input.cards.is_empty() => Some("Subagents".to_owned()),
+        None if !input.cards.is_empty() => Some(counts_header(&input.cards)),
         None => None,
     };
     let visible = input.cards.iter().take(VISIBLE_LIMIT);

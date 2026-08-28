@@ -48,6 +48,7 @@ pub(crate) enum Bottom {
     Approval(ApprovalView, Sender<AskChoice>),
     Command(ListPopup),
     File(ListPopup),
+    Agents(crate::agents::AgentsPopup),
 }
 
 pub struct TuiOptions {
@@ -69,8 +70,8 @@ const SPINNER_PERIOD_MS: u128 = 80;
 pub(crate) const ORB_COLS: u16 = 6;
 pub(crate) const ORB_ROWS: u16 = 3;
 pub(crate) const ORB_PX: usize = 192;
-pub(crate) const SLASH_COMMANDS: [&str; 8] = [
-    "new", "undo", "quit", "tree", "editor", "advisor", "plan", "goal",
+pub(crate) const SLASH_COMMANDS: [&str; 9] = [
+    "new", "undo", "quit", "tree", "editor", "advisor", "plan", "goal", "agents",
 ];
 
 pub struct TaskState {
@@ -728,8 +729,10 @@ impl App {
                             status: TaskStatus::Running,
                             last_tool: None,
                             toolcalls: 0,
+                            tokens: 0,
                             elapsed_ms: 0,
                             error: None,
+                            spawn: self.spawning_cell(),
                         },
                         started: Instant::now(),
                         subscribed: false,
@@ -757,10 +760,14 @@ impl App {
             ChildStatus::Error => TaskStatus::Failed,
         };
         let toolcalls = u32::try_from(update.tool_use_count).unwrap_or(u32::MAX);
-        if state.cell.status != status || state.cell.toolcalls != toolcalls {
+        if state.cell.status != status
+            || state.cell.toolcalls != toolcalls
+            || state.cell.tokens != update.token_count
+        {
             state.cell.status = status;
             state.cell.error = update.error.clone();
             state.cell.toolcalls = toolcalls;
+            state.cell.tokens = update.token_count;
             state.cell.elapsed_ms = elapsed_ms(state.started);
             self.scheduler.request();
         }

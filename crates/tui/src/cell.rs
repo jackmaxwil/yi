@@ -102,8 +102,13 @@ pub struct TaskCell {
     pub status: TaskStatus,
     pub last_tool: Option<String>,
     pub toolcalls: u32,
+    pub tokens: u64,
     pub elapsed_ms: u64,
     pub error: Option<String>,
+    // ponytail: the spawning kernel cell's scored preview, observed rather than
+    // plumbed — the `ipython` call running when a child appears is the call that
+    // made it. A child born outside one carries None, never a wrong parent.
+    pub spawn: Option<String>,
 }
 
 #[derive(Debug, Clone)]

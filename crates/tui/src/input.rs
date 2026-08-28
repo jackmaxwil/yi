@@ -90,14 +90,24 @@ pub(crate) fn handle_bottom_key(app: &mut App, key: &SingleKey) {
     let result = match &mut bottom {
         Bottom::Approval(view, _) => view.handle_key(key),
         Bottom::Command(popup) | Bottom::File(popup) => popup.handle_key(key),
+        Bottom::Agents(popup) => popup.handle_key(key),
     };
     match result {
         PopupResult::Open => app.bottom = Some(bottom),
-        PopupResult::Close => {
-            if let Bottom::Approval(view, reply) = bottom {
+        PopupResult::Close => match bottom {
+            Bottom::Approval(view, reply) => {
                 let _ = reply.send(view.outcome.unwrap_or(AskChoice::Reject));
             }
-        }
+            // The host's `interrupt` ends the run by aborting the child's own
+            // session, which the App already holds — the record it keeps
+            // besides that is the host's, and untouched either way.
+            Bottom::Agents(popup) => {
+                if let Some(child) = popup.stop {
+                    app.stop_child(&child);
+                }
+            }
+            Bottom::Command(_) | Bottom::File(_) => {}
+        },
         PopupResult::Insert(text) => match bottom {
             Bottom::Command(_) => {
                 let command = text.trim_start_matches('/').to_owned();
@@ -111,6 +121,7 @@ pub(crate) fn handle_bottom_key(app: &mut App, key: &SingleKey) {
             Bottom::Approval(view, reply) => {
                 let _ = reply.send(view.outcome.unwrap_or(AskChoice::Reject));
             }
+            Bottom::Agents(_) => {}
         },
     }
 }
@@ -187,6 +198,7 @@ pub(crate) fn handle_slash(app: &mut App, line: &str) {
         "quit" => app.quit = true,
         "tree" => app.pending_open_tree = true,
         "editor" => app.pending_editor = true,
+        "agents" => app.open_agents(),
         "advisor" | "plan" | "goal" => {
             app.pending_command = Some(if args.is_empty() {
                 command.to_owned()

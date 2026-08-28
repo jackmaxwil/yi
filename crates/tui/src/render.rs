@@ -173,6 +173,7 @@ fn draw_frame<B>(
         match &app.bottom {
             Some(Bottom::Approval(view, _)) => Some(view.lines(width, &theme)),
             Some(Bottom::Command(popup) | Bottom::File(popup)) => Some(popup.lines(width, &theme)),
+            Some(Bottom::Agents(popup)) => Some(popup.lines(width, &theme)),
             None => None,
         }
     };

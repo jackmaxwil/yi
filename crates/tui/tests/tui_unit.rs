@@ -170,7 +170,10 @@ fn hud_spine_lights_progress_with_clamps() -> TestResult {
         follow_up: Vec::new(),
     };
     let lines = yi_tui::hud::render(&input, &theme, 0);
-    assert!(flat(&lines[0]).contains("Subagents"));
+    // The header counts the family rather than naming it: one of each here.
+    let header = flat(&lines[0]);
+    assert!(header.contains("● 1 running"), "{header}");
+    assert!(header.contains("○ 1 done"), "{header}");
     let accent = Style::default().fg(theme.accent);
     let first_spine = lines[1].spans.first().ok_or("spine span missing")?;
     assert_eq!(
