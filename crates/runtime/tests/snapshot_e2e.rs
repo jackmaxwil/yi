@@ -106,9 +106,16 @@ async fn post_compaction_sync_prunes_and_reports_names() -> TestResult {
     assert_eq!(outcome.result.status, yi_types::kernel::ExecuteStatus::Ok);
 
     let notice = service.sync_after_compaction().await.ok_or("sync notice")?;
+    // A listing that times out or errors says so in the kernel's stderr tail,
+    // which reaches a caller only through the next cell. Without it a failure
+    // here reports that the names are missing and never why.
+    let diagnostics = cell(&service, "pass")
+        .await
+        .map(|probe| probe.result.stderr)
+        .unwrap_or_default();
     assert!(
         notice.contains("<ipython_state>") && notice.contains("kept"),
-        "the notice must list surviving names: {notice}"
+        "the notice must list surviving names: {notice}\nkernel diagnostics: {diagnostics}"
     );
     service.dispose().await;
     let _ = std::fs::remove_dir_all(&dir);
