@@ -157,6 +157,7 @@ fn card(status: CardStatus) -> BoardCard {
         kind: CardKind::Subagent,
         status,
         detail: "work".to_owned(),
+        done_ms: None,
     }
 }
 

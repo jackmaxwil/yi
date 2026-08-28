@@ -213,9 +213,14 @@ pub fn working_line(
     } else {
         "[esc] interrupt"
     };
-    Line::from(vec![
-        Span::styled(format!(" {glyph} "), Style::default().fg(theme.accent)),
-        Span::styled(text.to_owned(), Style::default().fg(theme.text)),
-        Span::styled(format!("  {hint}"), theme.dim_style()),
-    ])
+    let elapsed = crate::motion::elapsed_of(spinner_phase);
+    let mut spans = vec![Span::styled(
+        format!(" {glyph} "),
+        Style::default().fg(theme.accent),
+    )];
+    // The narration is the one row that is always in flight, so it carries the
+    // sweep rather than a second animated glyph beside the spinner.
+    spans.extend(crate::motion::shimmer(text, elapsed, theme));
+    spans.push(Span::styled(format!("  {hint}"), theme.dim_style()));
+    Line::from(spans)
 }

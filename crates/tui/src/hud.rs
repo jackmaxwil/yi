@@ -1,7 +1,6 @@
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 
-use crate::cell::spinner_frame;
 use crate::colors::{Theme, name_accent};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -27,6 +26,9 @@ pub struct BoardCard {
     pub kind: CardKind,
     pub status: CardStatus,
     pub detail: String,
+    /// Milliseconds since this card finished, if it finished during this
+    /// session — the strike sweeps across the label over its first 12 frames.
+    pub done_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -51,7 +53,7 @@ const TAIL_LEN: usize = 4;
 fn card_row(card: &BoardCard, theme: &Theme, spinner_phase: usize) -> Line<'static> {
     let (glyph, style) = match card.status {
         CardStatus::Running => (
-            spinner_frame(spinner_phase),
+            crate::motion::pulse_frame(crate::motion::elapsed_of(spinner_phase)),
             Style::default().fg(name_accent(&card.title)),
         ),
         CardStatus::Todo => ('☐', theme.dim_style()),
@@ -68,6 +70,16 @@ fn card_row(card: &BoardCard, theme: &Theme, spinner_phase: usize) -> Line<'stat
     } else {
         format!("{glyph} {}: {}", card.title, card.detail)
     };
+    // OMP `tools/todo.ts:990-1015`: the strike sweeps in rather than appearing,
+    // so a completion is visible without a notice row announcing it.
+    if let Some(since) = card.done_ms.filter(|_| card.status == CardStatus::Done)
+        && let Some((struck, rest)) = crate::motion::strike_sweep(&text, since)
+    {
+        return Line::from(vec![
+            Span::styled(struck, style),
+            Span::styled(rest, Style::default().fg(theme.success)),
+        ]);
+    }
     Line::from(Span::styled(text, style))
 }
 

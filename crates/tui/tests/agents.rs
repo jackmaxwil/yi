@@ -54,6 +54,7 @@ fn the_hud_header_counts_the_family() -> TestResult {
         kind: CardKind::Subagent,
         status,
         detail: String::new(),
+        done_ms: None,
     };
     let input = HudInput {
         goal: None,

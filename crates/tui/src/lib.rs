@@ -19,6 +19,7 @@ pub mod input;
 pub mod keymap;
 pub mod logo;
 pub mod markdown;
+pub mod motion;
 pub mod orb;
 pub mod popup;
 pub mod pycell;

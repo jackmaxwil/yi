@@ -510,7 +510,12 @@ impl TaskCell {
     pub fn lines(&self, width: usize, theme: &Theme, spinner_phase: usize) -> Vec<Line<'static>> {
         let accent = name_accent(&self.agent);
         let (glyph, style) = match self.status {
-            TaskStatus::Running => (spinner_frame(spinner_phase), Style::default().fg(accent)),
+            // Agent-level work takes the slower diamond; the braille spinner is
+            // for a call in flight (motion's two cadences, one clock).
+            TaskStatus::Running => (
+                crate::motion::pulse_frame(crate::motion::elapsed_of(spinner_phase)),
+                Style::default().fg(accent),
+            ),
             TaskStatus::Done => ('✓', Style::default().fg(theme.success)),
             TaskStatus::Failed => ('✗', Style::default().fg(theme.error)),
         };

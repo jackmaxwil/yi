@@ -77,6 +77,9 @@ pub(crate) const SLASH_COMMANDS: [&str; 9] = [
 pub struct TaskState {
     pub(crate) cell: TaskCell,
     pub(crate) started: Instant,
+    /// When the child reached a terminal state, so a completion can be shown
+    /// happening rather than having happened.
+    pub(crate) finished: Option<Instant>,
     pub(crate) subscribed: bool,
     pub(crate) session: Arc<AgentSession>,
 }
@@ -735,6 +738,7 @@ impl App {
                             spawn: self.spawning_cell(),
                         },
                         started: Instant::now(),
+                        finished: None,
                         subscribed: false,
                         session: Arc::clone(&child.session),
                     },
@@ -769,6 +773,9 @@ impl App {
             state.cell.toolcalls = toolcalls;
             state.cell.tokens = update.token_count;
             state.cell.elapsed_ms = elapsed_ms(state.started);
+            if status != TaskStatus::Running && state.finished.is_none() {
+                state.finished = Some(Instant::now());
+            }
             self.scheduler.request();
         }
         if status != TaskStatus::Running && !self.committed_tasks.contains(id) {
@@ -810,6 +817,10 @@ impl App {
                 kind: CardKind::Subagent,
                 status,
                 detail: state.cell.description.clone(),
+                done_ms: state
+                    .finished
+                    .map(elapsed_ms)
+                    .filter(|_| status == CardStatus::Done),
             });
         }
         HudInput {

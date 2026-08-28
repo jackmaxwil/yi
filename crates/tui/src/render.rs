@@ -28,6 +28,20 @@ pub fn live_tail(lines: Vec<Line<'static>>, rows: usize) -> Vec<Line<'static>> {
     keep_last(lines, live_tail_rows(rows))
 }
 
+/// Swaps the static `∴` on a live thought's header for the breathing starburst.
+/// Every frame is one cell wide, so the row cannot reflow under it.
+fn pulse_thought_header(lines: &mut [Line<'static>], spinner_phase: usize) {
+    let glyph = crate::motion::thinking_glyph(crate::motion::elapsed_of(spinner_phase));
+    for line in lines.iter_mut() {
+        for span in &mut line.spans {
+            if span.content.contains('∴') {
+                span.content = span.content.replace('∴', &glyph.to_string()).into();
+                return;
+            }
+        }
+    }
+}
+
 /// OMP's sizing: half the terminal, floor 5, less the panel's chrome.
 fn tree_rows(rows: usize) -> usize {
     (rows / 2).max(5).min(rows.saturating_sub(9)).max(1)
@@ -113,7 +127,10 @@ fn draw_frame<B>(
         let cell = Cell::Thought {
             markdown: app.live_thought.clone(),
         };
-        let rendered = cell.lines(content_width, &theme, TranscriptMode::Thinking, spinner);
+        let mut rendered = cell.lines(content_width, &theme, TranscriptMode::Thinking, spinner);
+        // Only the live tail pulses; the same cell committed to scrollback keeps
+        // the static `∴`, which is the one frame it could ever show there.
+        pulse_thought_header(&mut rendered, spinner);
         live_lines.extend(live_tail(rendered, app.rows));
     }
     // The run is held back from scrollback until it closes, so the live region
