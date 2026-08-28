@@ -123,7 +123,7 @@ pub struct App {
     pub(crate) kitty: bool,
     pub(crate) orb_placement: Option<(u16, u16)>,
     /// Incident: a resize reflows the text a kitty placement scrolls with, but
-    /// `resize_viewport` reports a change only when the viewport rect moves —
+    /// [`crate::terminal::Terminal::resize_viewport`] reports a change only when the viewport rect moves —
     /// without this the image sat where the emulator left it until the next turn.
     orb_stale: bool,
     pub(crate) pending_title: Option<String>,
@@ -1058,7 +1058,7 @@ pub(crate) fn sync_roster(
     app.sync_children(&children);
 }
 
-/// The active branch only — `entries_of` returns the whole tree for the tree
+/// The active branch only — [`entries_of`] returns the whole tree for the tree
 /// view, and a transcript built from that leaves rewound turns on screen.
 pub(crate) fn branch_of(session: &AgentSession) -> Vec<Entry> {
     let Some(store) = session.store() else {

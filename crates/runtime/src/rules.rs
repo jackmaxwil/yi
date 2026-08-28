@@ -327,7 +327,7 @@ impl RuleEngine {
     }
 }
 
-/// Discovery + observer wiring; the tool gate half rides `ToolAdapter`.
+/// Discovery + observer wiring; the tool gate half rides [`crate::tools::ToolAdapter`].
 pub fn attach_rules(session: &crate::AgentSession, engine: Arc<RuleEngine>) {
     let steer = session.heartbeat_hook();
     engine.set_deliver(Arc::new(move |message, _mode| {

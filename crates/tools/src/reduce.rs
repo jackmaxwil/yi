@@ -19,7 +19,7 @@ const REDUCE_FLOOR: usize = 2_048;
 /// The user asked for the whole thing; reducing answers a different question.
 const RAW_FLAGS: [&str; 6] = ["-v", "--verbose", "--nocapture", "--porcelain", "-la", "-C"];
 
-/// Every path runs through `never_worse`, and a lossy result is tee'd beside
+/// Every path runs through [`never_worse`], and a lossy result is tee'd beside
 /// the project so the full text stays one `read` away.
 pub fn reduce(
     command: &str,

@@ -21,7 +21,7 @@ impl TaskId {
     }
 }
 
-/// Stored states only: Ready is derived from deps (`Plan::frontier`), never
+/// Stored states only: Ready is derived from deps ([`Plan::frontier`]), never
 /// persisted. The blocked reason lives beside the state on the task.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

@@ -414,7 +414,7 @@ impl AgentSession {
         steer.saturating_add(follow)
     }
 
-    /// Detaches any store; `attach_store` afterwards points at a new file.
+    /// Detaches any store; [`AgentSession::attach_store`] afterwards points at a new file.
     pub fn reset(&self) {
         if let Ok(mut messages) = self.shared.messages.lock() {
             messages.clear();
@@ -474,7 +474,7 @@ impl AgentSession {
     }
 
     /// Lets a heartbeat wake an idle session without a `&self` borrow. Tools and
-    /// model are snapshotted here — re-wire after `set_model`/`use_tools`.
+    /// model are snapshotted here — re-wire after [`AgentSession::set_model`]/[`AgentSession::use_tools`].
     pub fn run_handle(
         &self,
     ) -> Arc<dyn Fn(AgentMessage) -> Result<(), SessionError> + Send + Sync> {
@@ -785,7 +785,7 @@ impl AgentSession {
         })
     }
 
-    /// The model snapshot is taken now: a later `set_model` leaves percent
+    /// The model snapshot is taken now: a later [`AgentSession::set_model`] leaves percent
     /// computed against the old window until re-wired.
     pub fn compact_status_handle(
         &self,

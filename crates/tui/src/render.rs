@@ -14,7 +14,7 @@ const LIVE_TAIL_MIN: usize = 6;
 
 /// A markdown table holds no blank line, so nothing commits until the message
 /// ends and the whole table sits here — a fixed six-row tail cut its head off
-/// mid-stream. Half the screen keeps the viewport off `insert_before`'s path.
+/// mid-stream. Half the screen keeps the viewport off [`crate::terminal::Terminal::insert_before`]'s path.
 pub fn live_tail_rows(rows: usize) -> usize {
     (rows / 2).max(LIVE_TAIL_MIN)
 }

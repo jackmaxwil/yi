@@ -201,7 +201,7 @@ impl Tool for HashlineEditTool {
         ToolKind::Write
     }
 
-    /// `prepare` validates and materializes the new text without touching disk.
+    /// [`Patcher::prepare`] validates and materializes the new text without touching disk.
     /// The clipboard is forked and the fork dropped, so previewing a patch the
     /// user then denies leaves no register behind.
     fn preview(&self, input: &Map<String, Value>, cwd: &Path) -> Option<String> {

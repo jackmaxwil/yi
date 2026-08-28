@@ -27,7 +27,7 @@ pub fn terminal_writer() -> std::io::Result<Box<dyn Write + Send>> {
 
 /// U1: RAII terminal state. Every step `Drop` restores is applied here;
 /// failures on restore are logged, never panicked — the panic hook calls
-/// `restore_terminal` first so a panic message lands on a sane screen.
+/// [`restore_terminal`] first so a panic message lands on a sane screen.
 pub struct TerminalGuard;
 
 impl TerminalGuard {
@@ -77,7 +77,7 @@ impl Drop for TerminalGuard {
 pub type Backend = CrosstermBackend<Box<dyn Write + Send>>;
 
 /// U2: inline viewport anchored at the cursor; the height follows the live
-/// region from here on (`Terminal::set_viewport_height`).
+/// region from here on ([`crate::terminal::Terminal::resize_viewport`]).
 pub fn build_terminal(
     writer: Box<dyn Write + Send>,
     height: u16,
@@ -85,7 +85,7 @@ pub fn build_terminal(
     Terminal::new(CrosstermBackend::new(writer), height)
 }
 
-/// The synchronized bracket lives on the whole frame (`sync_frame`), not here:
+/// The synchronized bracket lives on the whole frame ([`sync_frame`]), not here:
 /// bracketing the commit alone presented a screen that had already scrolled
 /// with the previous frame's viewport still under it.
 pub fn commit_lines<B>(terminal: &mut Terminal<B>, lines: Vec<Line<'static>>) -> std::io::Result<()>

@@ -85,7 +85,7 @@ pub struct ToolCall<'a> {
     pub command: Option<&'a str>,
 }
 
-/// Precedence: catastrophic denylist (every mode, yolo included) > configured
+/// Invariant: catastrophic denylist (every mode, yolo included) > configured
 /// deny > session rule > configured allow/ask > hold > mode fallback.
 // ponytail: no (mode, rules_hash) memoization — add it when decide() profiles.
 pub fn decide(

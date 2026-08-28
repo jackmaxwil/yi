@@ -59,6 +59,12 @@ insta = { version = "1", default-features = false }
 sse-stream = { version = "0.2", default-features = false }
 http = { version = "1", default-features = false, features = ["std"] }
 
+[workspace.lints.rustdoc]
+broken_intra_doc_links = "deny"
+# Yi publishes no crate: `pub` means "visible to the next crate up", never docs.rs, so a
+# public doc naming a private item is normal here and the lint is a library concern (D55).
+private_intra_doc_links = "allow"
+
 [workspace.lints.clippy]
 unwrap_used = "deny"
 expect_used = "deny"

@@ -118,7 +118,7 @@ impl ReflowState {
         self.resize_requested_during_stream = true;
     }
 
-    /// Draining: each episode forces at most one post-stream repair.
+    /// Invariant: each episode forces at most one post-stream repair.
     pub fn take_stream_finish_needed(&mut self) -> bool {
         let needed = self.ran_during_stream || self.resize_requested_during_stream;
         self.ran_during_stream = false;

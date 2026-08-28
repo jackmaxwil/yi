@@ -1821,7 +1821,30 @@ a name, or the next three statements is none of these. The test is the content, 
 per comment, hard** — only a license or attribution header may exceed it, and it carries
 attribution alone, no explanation. No narrative comments, no section banners, no commented-out
 code. `scripts/guardrails/check_comments.py` enforces both halves: the length cap outright, the
-volume outside `yi-types` as a shrink-only ratchet. Multi-axis flows are
+volume outside `yi-types` as a shrink-only ratchet.
+
+**Referents are typed (D55).** A Rust item named in a doc comment is written as an intra-doc
+link — `` [`Session::resume`] ``, `` [`Plan::frontier`] `` — never bare backticks. rustdoc
+resolves it against the real path, so a rename that misses the comment is a build failure:
+`rustdoc::broken_intra_doc_links` and `private_intra_doc_links` are denied workspace-wide and
+`cargo doc --workspace --no-deps --document-private-items` runs in `check_guardrails.sh`
+(private items included because most of Yi's are `pub(crate)` or narrower, and rustdoc will not
+resolve a link into them otherwise). Bare backticks then mean exactly one thing: **not a Rust
+item.** The three legitimate uses are a parameter or local of the documented function
+(`keep_recent`, `pre`/`post`), a serialized name (`display_data`, `sessionUpdate`,
+`AgentCronJobStatus`), and a symbol in a reference codebase (`convertToLlm`, `TerminalWriter`).
+rustdoc resolves links only in `///` and `//!`, so a comment inside a function body cannot carry
+a checked one and leaves the item in bare backticks; that is the rule's honest ceiling, not an
+exemption — prefer the doc comment when the choice exists.
+
+**Grants are named.** A comment claiming grant (1) or (2) opens with which one, so the licence
+it invokes is greppable and reviewable rather than inferred: `Incident:` for the failure that
+created a constant or guard, `Invariant:` for what the type system cannot express. Grant (3)
+needs no tag — `crates/types/` is the tag. The vocabulary is closed and
+`check_comments.py` rejects any other `Word:` prefix, which is what stops a private dialect
+(`Precedence:`, `Draining:`, `Detached:` were three such one-offs) from accumulating. The tag
+rides the first line of an existing comment, so it costs no lines against the volume ratchet;
+untagged prose is unchanged and still earns its line on content alone. Multi-axis flows are
 state-space-as-data: the graph is a table the runtime reads, closed vocabulary, invariant
 checks — never a shadow model beside a hand-rolled flow (§9.1).
 

@@ -193,7 +193,7 @@ impl AdvisorRuntime {
     }
 
     /// The digest chunk when a review is due, for the async LLM pass layered
-    /// by the caller. Advice reaches the primary only through `deliver_reviewed`.
+    /// by the caller. Advice reaches the primary only through [`AdvisorRuntime::deliver_reviewed`].
     pub fn observe(&self, message: &AgentMessage, now_ms: u64) -> Option<String> {
         let (outcomes, chunk) = {
             let mut state = self.lock();

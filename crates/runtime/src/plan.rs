@@ -508,7 +508,7 @@ fn as_object(value: Value) -> Result<Map<String, Value>, String> {
     }
 }
 
-/// Events are observed in a spawned task, mirroring `attach_goal`.
+/// Events are observed in a spawned task, mirroring [`crate::goal::attach_goal`].
 pub fn attach_plan(session: &crate::AgentSession) -> Arc<PlanService> {
     let steer = session.heartbeat_hook();
     let deliver: DeliverFn = Arc::new(move |message, _mode| {

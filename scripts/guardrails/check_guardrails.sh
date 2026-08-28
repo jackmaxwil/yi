@@ -26,6 +26,8 @@ run "$PY" scripts/guardrails/check_request_budget.py
 run "$PY" scripts/guardrails/check_binary_size.py
 run "$PY" scripts/guardrails/check_startup.py
 
+run cargo doc --workspace --no-deps --document-private-items -q
+
 if command -v cargo-machete >/dev/null; then run cargo machete crates; else echo "FAIL machete (cargo install cargo-machete)"; FAILED=$((FAILED+1)); fi
 if command -v cargo-deny >/dev/null; then run cargo deny check -s; else echo "FAIL deny (cargo install cargo-deny)"; FAILED=$((FAILED+1)); fi
 

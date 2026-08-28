@@ -8,6 +8,8 @@ from _common import ROOT, BASE, src_files, prod_lines, fail
 
 CAP = 3
 LICENSE = re.compile(r"SPDX|Copyright|\bMIT\b|Apache-2\.0|BSD|licen[sc]e", re.I)
+GRANTS = {"Incident", "Invariant"}
+TAG = re.compile(r"^//[/!]?\s*([A-Z][a-z]+):")
 
 def comment_runs(path):
     runs, cur, in_block = [], None, False
@@ -36,7 +38,7 @@ def comment_runs(path):
         runs.append(cur)
     return runs
 
-over, volume = [], 0
+over, volume, tags = [], 0, []
 for f in src_files():
     rel = f.relative_to(ROOT)
     for start, end, body in comment_runs(f):
@@ -45,6 +47,9 @@ for f in src_files():
             volume += n
         if n > CAP and not (start == 1 and any(LICENSE.search(l) for l in body)):
             over.append(f"{rel}:{start}: comment run of {n} lines > {CAP}")
+        m = TAG.match(body[0])
+        if m and m.group(1) not in GRANTS:
+            tags.append(f"{rel}:{start}: '{m.group(1)}:' is not a §18 grant ({'|'.join(sorted(GRANTS))})")
 
 path = BASE / "comment_budget.json"
 base = json.loads(path.read_text())
@@ -52,7 +57,7 @@ if "--update" in sys.argv:
     path.write_text(json.dumps({"volume": volume, "over_cap": len(over)}, indent=2) + "\n")
     print(f"comments volume {base['volume']} -> {volume}, over_cap {base['over_cap']} -> {len(over)}")
     sys.exit(0)
-errs = []
+errs = list(tags)
 if len(over) > base["over_cap"]:
     errs = over + [f"{len(over)} comments over the {CAP}-line cap > budget {base['over_cap']}"]
 if volume > base["volume"]:

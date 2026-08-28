@@ -289,7 +289,7 @@ impl SubagentHost {
             let task_child_id = child_id.clone();
             let task_name = session_name.clone();
             let task_prompt = prompt.clone();
-            // Detached: the spawn reply resolves at admission, and blocking here
+            // Invariant: the spawn reply resolves at admission, and blocking here
             // would abort the turn whose cell awaits it.
             tokio::spawn(async move {
                 host.run_child(task_child_id, task_name, task_prompt, session)
@@ -529,7 +529,7 @@ pub struct RuntimeWiring {
 }
 
 /// Every spawned child wires itself the same way at depth+1; the depth check in
-/// `spawn` is what terminates the recursion.
+/// [`SubagentHost::spawn`] is what terminates the recursion.
 fn wire_schedule(
     session: &AgentSession,
     wiring: &RuntimeWiring,

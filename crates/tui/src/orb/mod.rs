@@ -48,7 +48,7 @@ pub fn frame(mode: Mode, size: f64, t: f64, opts: &Opts) -> OrbFrame {
     }
 }
 
-/// The nine reference states; TUI activity maps onto them in `app`.
+/// The nine reference states; TUI activity maps onto them in [`crate::app`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OrbState {
     Working,
