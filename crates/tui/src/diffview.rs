@@ -3,6 +3,7 @@ use ratatui::text::{Line, Span};
 use unicode_width::UnicodeWidthStr;
 
 use crate::colors::{DiffRowKind, DiffRowStyle, Theme};
+use crate::highlight::{self, Lang};
 
 /// Invariant: the gutter never narrows below three digits. Derived from the
 /// widest line number, a streaming diff crossing line 100 would re-pad rows
@@ -315,6 +316,7 @@ fn row_lines(
     emphasis: Option<(usize, usize)>,
     layout: &Layout,
     theme: &Theme,
+    lang: Option<&'static Lang>,
 ) -> Vec<Line<'static>> {
     let style = theme.diff_row(row.kind);
     let gutter = if blank_number {
@@ -348,9 +350,21 @@ fn row_lines(
             ),
             Span::styled(" │ ".to_owned(), style.gutter),
         ];
-        match emphasis.filter(|_| first) {
-            Some((start, end)) => spans.extend(emphasized(&row.text, &chunk, start, end, &style)),
-            None => spans.push(Span::styled(chunk, style.content)),
+        match (emphasis.filter(|_| first), lang) {
+            (Some((start, end)), _) => {
+                spans.extend(emphasized(&row.text, &chunk, start, end, &style));
+            }
+            // A deletion keeps its syntax colours dimmed, so the polarity still
+            // reads when both sides are highlighted (codex `:881-890`).
+            (None, Some(lang)) => {
+                let base = if row.kind == DiffRowKind::Removed {
+                    style.content.add_modifier(Modifier::DIM)
+                } else {
+                    style.content
+                };
+                spans.extend(highlight::spans(&chunk, lang, theme, base));
+            }
+            (None, None) => spans.push(Span::styled(chunk, style.content)),
         }
         pad(&mut spans, layout.width, &style);
         out.push(Line::from(spans));
@@ -456,6 +470,8 @@ pub fn render(patch: &str, width: usize, theme: &Theme, budget: DiffBudget) -> V
     let cut = budgeted(parsed, budget);
     let mut out = Vec::new();
     for file in &cut.files {
+        // The patch names its own file, so the language needs no parameter.
+        let lang = highlight::lang_for(&file.path);
         if named {
             out.push(Line::from(Span::styled(
                 format!("{INDENT}{}", file.path),
@@ -476,6 +492,7 @@ pub fn render(patch: &str, width: usize, theme: &Theme, budget: DiffBudget) -> V
                     emphasis_for(&hunk.rows, position),
                     &layout,
                     theme,
+                    lang,
                 ));
             }
         }

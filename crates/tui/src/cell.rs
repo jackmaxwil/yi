@@ -291,23 +291,25 @@ impl ToolCell {
             ToolStatus::Failed => Style::default().fg(theme.error),
             ToolStatus::Denied => theme.muted_style().add_modifier(Modifier::CROSSED_OUT),
         };
-        let mut head = format!(
-            "  {} {}",
-            status_glyph(self.status, spinner_phase),
-            self.summary
-        );
+        let mut tail = String::new();
         if self.calls > 1 {
-            head.push_str(&format!(" ×{}", self.calls));
+            tail.push_str(&format!(" ×{}", self.calls));
         }
         if let Some(intent) = &self.intent
             && self.status == ToolStatus::Running
         {
-            head.push_str(&format!(" · {intent}"));
+            tail.push_str(&format!(" · {intent}"));
         }
-        if self.elapsed_ms > 0 {
-            head.push_str(&format!(" · {}", elapsed_label(self.elapsed_ms)));
+        if self.elapsed_ms > 0 && !self.has_stats() {
+            tail.push_str(&format!(" · {}", elapsed_label(self.elapsed_ms)));
         }
-        let mut lines = wrap_line(&Line::from(Span::styled(head, style)), width, "    ");
+        let mut spans = vec![Span::styled(
+            format!("  {} ", status_glyph(self.status, spinner_phase)),
+            style,
+        )];
+        spans.extend(self.summary_spans(theme, style));
+        spans.push(Span::styled(tail, style));
+        let mut lines = wrap_line(&Line::from(spans), width, "    ");
         // A failure's body is never mode-gated: a reader who cannot see why a
         // call failed cannot act on it, whatever mode the cell rendered under.
         let failed = matches!(self.status, ToolStatus::Failed | ToolStatus::Denied);
@@ -319,6 +321,7 @@ impl ToolCell {
             };
             let mut spans = vec![Span::styled(format!("    └ {digest}"), detail)];
             spans.extend(self.stats_spans(theme));
+            spans.extend(self.stats_tail(theme));
             lines.extend(wrap_line(&Line::from(spans), width, "      "));
         }
         if let Some(patch) = self.patch() {
@@ -340,6 +343,46 @@ impl ToolCell {
 
     fn patch(&self) -> Option<&str> {
         self.details.get("patch")?.as_str()
+    }
+
+    fn has_stats(&self) -> bool {
+        self.name == "bash" && self.status != ToolStatus::Running
+    }
+
+    /// A shell command is code, and OMP renders it as such rather than echoing
+    /// it as a tool argument: a dim `$` then the command itself, highlighted.
+    fn summary_spans(&self, theme: &Theme, style: Style) -> Vec<Span<'static>> {
+        let command = self.summary.strip_prefix("$ ");
+        let Some((lang, command)) = crate::highlight::lang_for("bash").zip(command) else {
+            return vec![Span::styled(self.summary.clone(), style)];
+        };
+        let mut spans = vec![Span::styled("$ ".to_owned(), theme.dim_style())];
+        spans.extend(crate::highlight::spans(command, lang, theme, style));
+        spans
+    }
+
+    /// The stats a shell reader wants and the transcript otherwise hides: a
+    /// nonzero exit is the whole outcome of a command that printed nothing.
+    fn stats_tail(&self, theme: &Theme) -> Vec<Span<'static>> {
+        if !self.has_stats() {
+            return Vec::new();
+        }
+        let mut out = Vec::new();
+        if let Some(code) = self.details.get("exitCode").and_then(Value::as_i64) {
+            let style = if code == 0 {
+                theme.dim_style()
+            } else {
+                Style::default().fg(theme.error)
+            };
+            out.push(Span::styled(format!(" · exit {code}"), style));
+        }
+        if self.elapsed_ms > 0 {
+            out.push(Span::styled(
+                format!(" · {}", elapsed_label(self.elapsed_ms)),
+                theme.dim_style(),
+            ));
+        }
+        out
     }
 
     /// `+12 -3` in the diff's own colours, on the line that already names the
@@ -393,6 +436,11 @@ impl ToolCell {
     }
 
     pub fn summary_of(name: &str, argument: &str) -> String {
+        // A shell call names itself: `$ cargo test` reads, `$ bash cargo test`
+        // says the word "bash" where the command should be.
+        if name == "bash" && !argument.is_empty() {
+            return format!("$ {argument}");
+        }
         format!("{} {} {}", glyph(name), name, argument)
             .trim_end()
             .to_owned()

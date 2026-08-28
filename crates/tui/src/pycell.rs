@@ -5,6 +5,7 @@ use serde_json::Value;
 use crate::cell::{ToolCell, ToolStatus, TranscriptMode, spinner_frame};
 use crate::colors::Theme;
 use crate::diffview::{self, DiffBudget};
+use crate::highlight;
 use crate::wrap::wrap_line;
 
 const PREVIEW_CAP: usize = 64;
@@ -216,18 +217,21 @@ pub fn head(cell: &ToolCell, spinner_phase: usize) -> String {
 }
 
 fn gutter_lines(code: &str, width: usize, theme: &Theme) -> Vec<Line<'static>> {
+    let lang = highlight::lang_for(chip(code));
+    let base = Style::default().fg(theme.text);
     code.lines()
         .enumerate()
         .flat_map(|(index, source)| {
             let marker = if index == 0 { PROMPT } else { CONTINUATION };
-            wrap_line(
-                &Line::from(vec![
-                    Span::styled(format!("{BODY_INDENT}{marker}"), theme.dim_style()),
-                    Span::styled(source.to_owned(), Style::default().fg(theme.text)),
-                ]),
-                width,
-                "      ",
-            )
+            let mut spans = vec![Span::styled(
+                format!("{BODY_INDENT}{marker}"),
+                theme.dim_style(),
+            )];
+            match lang {
+                Some(lang) => spans.extend(highlight::spans(source, lang, theme, base)),
+                None => spans.push(Span::styled(source.to_owned(), base)),
+            }
+            wrap_line(&Line::from(spans), width, "      ")
         })
         .collect()
 }

@@ -51,6 +51,7 @@ struct Builder<'t> {
     list_stack: Vec<ListLevel>,
     pending_marker: Option<Span<'static>>,
     in_code_block: bool,
+    code_lang: Option<&'static crate::highlight::Lang>,
     link_dest: Option<String>,
     table: Option<TableState>,
 }
@@ -161,13 +162,18 @@ impl Builder<'_> {
             return;
         }
         if self.in_code_block {
+            let base = self.theme.dim_style();
             for raw in text.split_inclusive('\n') {
                 let chunk = raw.strip_suffix('\n');
                 let body = chunk.unwrap_or(raw);
-                self.spans.push(Span::styled(
-                    format!("{}{body}", self.indent),
-                    self.theme.dim_style(),
-                ));
+                self.spans
+                    .push(Span::styled(self.indent.clone(), self.theme.dim_style()));
+                match self.code_lang {
+                    Some(lang) => self
+                        .spans
+                        .extend(crate::highlight::spans(body, lang, self.theme, base)),
+                    None => self.spans.push(Span::styled(body.to_owned(), base)),
+                }
                 if chunk.is_some() {
                     let line = Line::from(std::mem::take(&mut self.spans));
                     self.out.push(line);
@@ -303,6 +309,7 @@ pub fn render(source: &str, width: usize, theme: &Theme) -> Vec<Line<'static>> {
         list_stack: Vec::new(),
         pending_marker: None,
         in_code_block: false,
+        code_lang: None,
         link_dest: None,
         table: None,
     };
@@ -358,6 +365,7 @@ pub fn render(source: &str, width: usize, theme: &Theme) -> Vec<Line<'static>> {
                 if let CodeBlockKind::Fenced(lang) = &kind
                     && !lang.is_empty()
                 {
+                    b.code_lang = crate::highlight::lang_for(lang);
                     b.out.push(Line::from(Span::styled(
                         format!("{}{CODE_RAIL} {lang}", b.indent),
                         b.theme.dim_style(),
@@ -371,6 +379,7 @@ pub fn render(source: &str, width: usize, theme: &Theme) -> Vec<Line<'static>> {
                 let len = b.indent.len().saturating_sub(CODE_RAIL_INDENT.len());
                 b.indent.truncate(len);
                 b.in_code_block = false;
+                b.code_lang = None;
             }
             Event::Start(Tag::List(start)) => {
                 if b.list_stack.is_empty() {

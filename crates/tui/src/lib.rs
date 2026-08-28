@@ -11,6 +11,7 @@ pub mod drive;
 pub mod editor;
 pub mod focus;
 pub mod frame;
+pub mod highlight;
 pub mod history;
 pub mod hud;
 pub mod input;
