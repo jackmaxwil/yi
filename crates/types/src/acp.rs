@@ -192,6 +192,12 @@ pub enum AcpToolContent {
     Terminal {
         terminal_id: String,
     },
+    /// Design C7: `changes` are the paths the call would touch, `patch` the
+    /// T13 unified diff, absolute-pathed so `git apply` accepts it verbatim.
+    Diff {
+        changes: Vec<String>,
+        patch: String,
+    },
 }
 
 /// ACP v2 tool-call status vocabulary.
@@ -267,6 +273,8 @@ pub struct AcpPermissionParams {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
     pub options: Vec<AcpPermissionOption>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub content: Option<Vec<AcpToolContent>>,
 }
 
 /// One selectable permission option.

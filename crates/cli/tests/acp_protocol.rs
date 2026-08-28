@@ -183,6 +183,89 @@ fn v2_client_drives_a_session_end_to_end() -> TestResult {
 }
 
 #[test]
+fn a_schedule_mutation_notifies_the_client() -> TestResult {
+    let dir = temp_dir("heartbeat")?;
+    let mut client = AcpClient::spawn(&dir)?;
+    client.request("1", "initialize", json!({"protocolVersion": 2}))?;
+    let new = client.request(
+        "2",
+        "session/new",
+        json!({"cwd": dir.display().to_string()}),
+    )?;
+    let session_id = new
+        .last()
+        .and_then(|frame| frame["result"]["sessionId"].as_str())
+        .ok_or("missing sessionId")?
+        .to_owned();
+
+    let frames = client.request(
+        "3",
+        "_yi/heartbeat",
+        json!({"sessionId": session_id, "command": "--every 10s check on the build"}),
+    )?;
+    let changed = updates_of(&frames, "_yi/heartbeat_changed");
+    assert!(
+        !changed.is_empty(),
+        "a schedule mutation must notify the client (C9): {frames:?}"
+    );
+    client.finish()
+}
+
+#[test]
+fn setting_the_permission_mode_takes_effect_and_echoes_back() -> TestResult {
+    let dir = temp_dir("mode")?;
+    let mut client = AcpClient::spawn(&dir)?;
+    client.request("1", "initialize", json!({"protocolVersion": 2}))?;
+    let new = client.request(
+        "2",
+        "session/new",
+        json!({"cwd": dir.display().to_string()}),
+    )?;
+    let new = new.last().ok_or("no session/new response")?;
+    let session_id = new["result"]["sessionId"]
+        .as_str()
+        .ok_or("missing sessionId")?
+        .to_owned();
+    let mode_of = |options: &Value| -> Option<String> {
+        options.as_array()?.iter().find_map(|option| {
+            (option["configId"] == "mode")
+                .then(|| option["kind"]["value"].as_str().map(str::to_owned))?
+        })
+    };
+    assert_eq!(
+        mode_of(&new["result"]["configOptions"]).as_deref(),
+        Some("yolo"),
+        "the session must advertise its permission mode (C8)"
+    );
+
+    let set = client.request(
+        "3",
+        "session/set_config_option",
+        json!({"sessionId": session_id, "configId": "mode", "value": "ask"}),
+    )?;
+    let set = set.last().ok_or("no set_config_option response")?;
+    assert_eq!(
+        mode_of(&set["result"]["configOptions"]).as_deref(),
+        Some("ask"),
+        "the applied mode must echo back in the options: {set}"
+    );
+
+    let rejected = client.request(
+        "4",
+        "session/set_config_option",
+        json!({"sessionId": session_id, "configId": "mode", "value": "reckless"}),
+    )?;
+    let rejected = rejected.last().ok_or("no response")?;
+    assert!(
+        rejected["error"]["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("ask|auto|yolo")),
+        "an unknown mode must name the legal set: {rejected}"
+    );
+    client.finish()
+}
+
+#[test]
 fn v1_client_gets_the_exact_mismatch_error() -> TestResult {
     let dir = temp_dir("v1")?;
     let mut client = AcpClient::spawn(&dir)?;

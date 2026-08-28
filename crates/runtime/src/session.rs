@@ -92,6 +92,7 @@ pub struct AgentSession {
     on_compacted: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
     schedule: Mutex<Option<ScheduleParts>>,
     advisor: Mutex<Option<Arc<crate::advisor::AdvisorRuntime>>>,
+    permission: Mutex<Option<Arc<crate::permission::PermissionBroker>>>,
     goal: Mutex<Option<Arc<crate::goal::GoalService>>>,
 }
 
@@ -128,6 +129,7 @@ impl AgentSession {
             on_compacted: Mutex::new(None),
             schedule: Mutex::new(None),
             advisor: Mutex::new(None),
+            permission: Mutex::new(None),
             goal: Mutex::new(None),
         }
     }
@@ -148,6 +150,11 @@ impl AgentSession {
         if let Ok(mut slot) = self.advisor.lock() {
             *slot = Some(advisor);
         }
+    }
+
+    /// C8 needs a live handle to switch permission mode mid-session.
+    pub fn permission_broker(&self) -> Option<Arc<crate::permission::PermissionBroker>> {
+        self.permission.lock().ok().and_then(|slot| slot.clone())
     }
 
     pub fn advisor(&self) -> Option<Arc<crate::advisor::AdvisorRuntime>> {
@@ -261,6 +268,9 @@ impl AgentSession {
         permission: Option<Arc<crate::permission::PermissionBroker>>,
         auto_background: Option<std::time::Duration>,
     ) {
+        if let Ok(mut slot) = self.permission.lock() {
+            slot.clone_from(&permission);
+        }
         let adapters = tools
             .into_iter()
             .map(|tool| {

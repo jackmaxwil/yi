@@ -71,7 +71,7 @@ type PendingAsks = Arc<Mutex<HashMap<String, std::sync::mpsc::Sender<Value>>>>;
 /// is never needed to receive it, so a current-thread runtime cannot deadlock.
 pub fn bridge_asker(session_id: String, sink: LineSink, pending: PendingAsks) -> Asker {
     let counter = Arc::new(Mutex::new(0_u64));
-    Arc::new(move |title: &str, description: &str| {
+    Arc::new(move |ask: &yi_runtime::PermissionAsk<'_>| {
         let id = {
             let mut counter = counter
                 .lock()
@@ -86,8 +86,8 @@ pub fn bridge_asker(session_id: String, sink: LineSink, pending: PendingAsks) ->
         }
         let params = yi_types::acp::AcpPermissionParams {
             session_id: session_id.clone(),
-            title: title.to_owned(),
-            description: Some(description.to_owned()),
+            title: ask.title.to_owned(),
+            description: Some(ask.description.to_owned()),
             options: vec![
                 AcpPermissionOption {
                     option_id: "allow_once".to_owned(),
@@ -105,6 +105,16 @@ pub fn bridge_asker(session_id: String, sink: LineSink, pending: PendingAsks) ->
                     kind: AcpPermissionOptionKind::RejectOnce,
                 },
             ],
+            content: ask.patch.map(|patch| {
+                vec![yi_types::acp::AcpToolContent::Diff {
+                    changes: ask
+                        .changes
+                        .iter()
+                        .map(|path| path.to_string_lossy().into_owned())
+                        .collect(),
+                    patch: patch.to_owned(),
+                }]
+            }),
         };
         let request = AcpFrame {
             jsonrpc: "2.0".to_owned(),
@@ -168,6 +178,14 @@ fn update_notification(session_id: &str, update: AcpSessionUpdate) -> Value {
     })
 }
 
+fn mode_value(session: &AgentSession) -> &'static str {
+    match session.permission_broker().map(|broker| broker.mode()) {
+        Some(yi_runtime::PermissionMode::Yolo) => "yolo",
+        Some(yi_runtime::PermissionMode::Auto) => "auto",
+        _ => "ask",
+    }
+}
+
 fn config_options(session: &AgentSession) -> Vec<AcpConfigOption> {
     let model = session.model();
     let models: Vec<Value> = available_models()
@@ -176,6 +194,10 @@ fn config_options(session: &AgentSession) -> Vec<AcpConfigOption> {
             let value = format!("{}/{}", candidate.provider, candidate.id);
             json!({"value": value, "name": candidate.name})
         })
+        .collect();
+    let modes: Vec<Value> = ["ask", "auto", "yolo"]
+        .iter()
+        .map(|mode| json!({"value": mode, "name": mode}))
         .collect();
     let levels: Vec<Value> = ["off", "minimal", "low", "medium", "high"]
         .iter()
@@ -195,6 +217,15 @@ fn config_options(session: &AgentSession) -> Vec<AcpConfigOption> {
             config_id: "thought_level".to_owned(),
             name: "Thinking level".to_owned(),
             kind: json!({"type": "select", "value": "off", "options": levels}),
+        },
+        AcpConfigOption {
+            config_id: "mode".to_owned(),
+            name: "Permission mode".to_owned(),
+            kind: json!({
+                "type": "select",
+                "value": mode_value(session),
+                "options": modes,
+            }),
         },
     ]
 }
@@ -388,6 +419,27 @@ impl AcpState {
                             Some(value.to_owned()).filter(|level| level != "off"),
                         );
                     }
+                    "mode" => {
+                        let mode = match value {
+                            "ask" => yi_runtime::PermissionMode::Ask,
+                            "auto" => yi_runtime::PermissionMode::Auto,
+                            "yolo" => yi_runtime::PermissionMode::Yolo,
+                            other => {
+                                return Err((
+                                    INVALID_PARAMS,
+                                    format!("unknown mode {other}; use ask|auto|yolo"),
+                                ));
+                            }
+                        };
+                        handle
+                            .session
+                            .permission_broker()
+                            .ok_or((
+                                INTERNAL_ERROR,
+                                "no permission broker is attached".to_owned(),
+                            ))?
+                            .set_mode(mode);
+                    }
                     other => {
                         return Err((
                             INVALID_PARAMS,
@@ -406,7 +458,7 @@ impl AcpState {
 
     /// `_yi/*` extension methods (C9): the heartbeat and goal surfaces.
     fn handle_extension(&mut self, method: &str, params: &Value) -> Result<Value, (i64, String)> {
-        let (handle, _) = self.session(params)?;
+        let (handle, session_id) = self.session(params)?;
         let text = |key: &str| params.get(key).and_then(Value::as_str).unwrap_or("");
         match method {
             "_yi/heartbeat" => {
@@ -417,7 +469,10 @@ impl AcpState {
                 let outcome = yi_runtime::schedule::parse_heartbeat_command(text("command"))
                     .and_then(|parsed| service.apply(&parsed, yi_runtime::session_store::now_ms()));
                 match outcome {
-                    Ok(reply) => Ok(json!({"text": reply})),
+                    Ok(reply) => {
+                        self.emit_heartbeat_changed(&session_id, &reply);
+                        Ok(json!({"text": reply}))
+                    }
                     Err(error) => Err((INVALID_PARAMS, error)),
                 }
             }
@@ -445,6 +500,18 @@ impl AcpState {
             }
             other => Err((METHOD_NOT_FOUND, format!("unknown method {other}"))),
         }
+    }
+
+    /// C9: a schedule mutation is a fact the client cannot infer from the
+    /// method reply alone, since a heartbeat also fires without one.
+    fn emit_heartbeat_changed(&self, session_id: &str, reply: &str) {
+        let mut fields = std::collections::BTreeMap::new();
+        fields.insert("text".to_owned(), Value::String(reply.to_owned()));
+        let update = AcpSessionUpdate::Extension(yi_types::acp::AcpExtensionUpdate {
+            session_update: "_yi/heartbeat_changed".to_owned(),
+            fields,
+        });
+        (self.sink)(&update_notification(session_id, update));
     }
 
     /// Design C6: the stored branch walked through the C3 vocabulary as

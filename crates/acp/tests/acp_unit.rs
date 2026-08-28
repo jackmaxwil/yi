@@ -274,7 +274,13 @@ fn permission_bridge_writes_the_request_and_maps_the_selected_outcome() -> TestR
         }
     });
     let asker = yi_acp::bridge_asker("s1".to_owned(), sink, Arc::clone(&pending));
-    let outcome = asker("bash requires permission", "rm -rf build");
+    let changes = [std::path::PathBuf::from("/repo/src/lib.rs")];
+    let outcome = asker(&yi_runtime::PermissionAsk {
+        title: "write requires permission",
+        description: "overwrite /repo/src/lib.rs",
+        patch: Some("--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -1 +1 @@\n-old\n+new\n"),
+        changes: &changes,
+    });
     assert!(
         matches!(outcome, yi_runtime::AskOutcome::AllowAlways),
         "a selected allow_always option must map onto AskOutcome::AllowAlways"
@@ -285,7 +291,17 @@ fn permission_bridge_writes_the_request_and_maps_the_selected_outcome() -> TestR
         .ok_or("the request must be written before blocking")?;
     assert_eq!(request["method"], "session/request_permission");
     assert_eq!(request["params"]["sessionId"], "s1");
-    assert_eq!(request["params"]["title"], "bash requires permission");
+    assert_eq!(request["params"]["title"], "write requires permission");
+    assert_eq!(
+        request["params"]["content"][0]["changes"][0], "/repo/src/lib.rs",
+        "C7: the paths the call would touch travel with the request"
+    );
+    assert!(
+        request["params"]["content"][0]["patch"]
+            .as_str()
+            .is_some_and(|patch| patch.contains("+new")),
+        "C7: the T13 patch is structured content, not prose in the description: {request}"
+    );
     assert_eq!(request["params"]["options"][0]["kind"], "allow_once");
     assert!(
         pending

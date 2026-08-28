@@ -19,7 +19,7 @@ pub use compaction::{CompactStatus, Compactor};
 pub use kernel::{
     HostRegistry, KernelService, KernelServiceOptions, ipython_tool, restore_notice_text,
 };
-pub use permission::{AskOutcome, Asker, PermissionBroker};
+pub use permission::{AskOutcome, Asker, PermissionAsk, PermissionBroker};
 pub use provider::{ProviderStream, available_models, resolve_model};
 pub use rewind::{Rewound, rewind_to};
 pub use session::{AgentSession, SessionConfig, SessionError, Status};

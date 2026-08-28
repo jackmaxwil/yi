@@ -213,9 +213,9 @@ fn effective_cwd(args: &Args) -> std::path::PathBuf {
     )
 }
 
-fn tty_ask(title: &str, description: &str) -> yi_runtime::AskOutcome {
+fn tty_ask(ask: &yi_runtime::PermissionAsk<'_>) -> yi_runtime::AskOutcome {
     use std::io::Write;
-    eprintln!("\n{title}\n{description}");
+    eprintln!("\n{}\n{}", ask.title, ask.text());
     eprint!("Allow? [y]es once / [a]lways / [N]o: ");
     let _ = std::io::stderr().flush();
     let mut line = String::new();
@@ -676,22 +676,23 @@ fn run_tui_command(args: &Args, initial_prompt: Option<String>) -> i32 {
         }
     };
     let (ask_tx, ask_rx) = std::sync::mpsc::channel::<yi_tui::AskRequest>();
-    let asker: yi_runtime::Asker = std::sync::Arc::new(move |title, description| {
-        let (reply_tx, reply_rx) = std::sync::mpsc::channel();
-        let request = yi_tui::AskRequest {
-            title: title.to_owned(),
-            description: description.to_owned(),
-            reply: reply_tx,
-        };
-        if ask_tx.send(request).is_err() {
-            return yi_runtime::AskOutcome::Reject;
-        }
-        match reply_rx.recv() {
-            Ok(yi_tui::AskChoice::AllowOnce) => yi_runtime::AskOutcome::AllowOnce,
-            Ok(yi_tui::AskChoice::AllowAlways) => yi_runtime::AskOutcome::AllowAlways,
-            _ => yi_runtime::AskOutcome::Reject,
-        }
-    });
+    let asker: yi_runtime::Asker =
+        std::sync::Arc::new(move |ask: &yi_runtime::PermissionAsk<'_>| {
+            let (reply_tx, reply_rx) = std::sync::mpsc::channel();
+            let request = yi_tui::AskRequest {
+                title: ask.title.to_owned(),
+                description: ask.text(),
+                reply: reply_tx,
+            };
+            if ask_tx.send(request).is_err() {
+                return yi_runtime::AskOutcome::Reject;
+            }
+            match reply_rx.recv() {
+                Ok(yi_tui::AskChoice::AllowOnce) => yi_runtime::AskOutcome::AllowOnce,
+                Ok(yi_tui::AskChoice::AllowAlways) => yi_runtime::AskOutcome::AllowAlways,
+                _ => yi_runtime::AskOutcome::Reject,
+            }
+        });
     let (session, host) = {
         let _guard = runtime.enter();
         match build_session(args, Some(asker)) {

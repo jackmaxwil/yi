@@ -18,10 +18,33 @@ pub enum AskOutcome {
     Reject,
 }
 
-pub type Asker = Arc<dyn Fn(&str, &str) -> AskOutcome + Send + Sync>;
+/// One approval request. `description` and `patch` are separate so a
+/// structured consumer (ACP C7) sends the patch as content while a text one
+/// renders `text()`, which folds the two the same way for everybody.
+pub struct PermissionAsk<'a> {
+    pub title: &'a str,
+    pub description: &'a str,
+    pub patch: Option<&'a str>,
+    pub changes: &'a [PathBuf],
+}
+
+impl PermissionAsk<'_> {
+    pub fn text(&self) -> String {
+        match self.patch {
+            Some(patch) => format!(
+                "{}\n{}",
+                self.description,
+                PermissionBroker::cut_preview(patch)
+            ),
+            None => self.description.to_owned(),
+        }
+    }
+}
+
+pub type Asker = Arc<dyn Fn(&PermissionAsk<'_>) -> AskOutcome + Send + Sync>;
 
 pub struct PermissionBroker {
-    pub mode: PermissionMode,
+    mode: Mutex<PermissionMode>,
     config_rules: Vec<ConfigRule>,
     session_rules: Mutex<SessionRules>,
     holds: Mutex<Vec<Hold>>,
@@ -77,7 +100,7 @@ impl PermissionBroker {
         events: broadcast::Sender<AgentEvent>,
     ) -> Self {
         Self {
-            mode,
+            mode: Mutex::new(mode),
             config_rules,
             session_rules: Mutex::new(SessionRules::new()),
             holds: Mutex::new(Vec::new()),
@@ -99,6 +122,21 @@ impl PermissionBroker {
         if let Ok(mut holds) = self.holds.lock() {
             holds.push(hold);
         }
+    }
+
+    pub fn mode(&self) -> PermissionMode {
+        *self
+            .mode
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// C8: a client may switch policy mid-session; the next decision reads it.
+    pub fn set_mode(&self, mode: PermissionMode) {
+        *self
+            .mode
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = mode;
     }
 
     pub fn clear_holds(&self) {
@@ -174,7 +212,7 @@ impl PermissionBroker {
             .unwrap_or_default();
         let decision = decide(
             &call,
-            self.mode,
+            self.mode(),
             &self.config_rules,
             &session_rules,
             &active_holds,
@@ -190,25 +228,23 @@ impl PermissionBroker {
                 allowed: false,
                 reason,
             },
-            Decision::Ask { title, description } => {
-                let description = match preview.map(Self::cut_preview) {
-                    Some(patch) => format!("{description}\n{patch}"),
-                    None => description,
-                };
-                self.run_ask(
-                    tool_call_id,
-                    &title,
-                    &description,
-                    rule_kind,
-                    &canonical,
-                    &display,
-                )
-            }
+            Decision::Ask { title, description } => self.run_ask(
+                &PermissionAsk {
+                    title: &title,
+                    description: &description,
+                    patch: preview,
+                    changes: &targets,
+                },
+                tool_call_id,
+                rule_kind,
+                &canonical,
+                &display,
+            ),
         }
     }
 
     /// A long patch is cut: the prompt is a decision aid, not the file.
-    fn cut_preview(patch: &str) -> String {
+    pub(crate) fn cut_preview(patch: &str) -> String {
         const PREVIEW_LINES: usize = 40;
         let mut lines: Vec<&str> = patch.lines().take(PREVIEW_LINES).collect();
         if patch.lines().count() > PREVIEW_LINES {
@@ -219,20 +255,20 @@ impl PermissionBroker {
 
     fn run_ask(
         &self,
+        ask: &PermissionAsk<'_>,
         tool_call_id: &str,
-        title: &str,
-        description: &str,
         rule_kind: RuleKind,
         canonical: &str,
         display: &str,
     ) -> CallOutcome {
+        let rendered = ask.text();
         let _ = self.events.send(AgentEvent::PermissionRequested {
             tool_call_id: tool_call_id.to_owned(),
-            title: title.to_owned(),
-            description: description.to_owned(),
+            title: ask.title.to_owned(),
+            description: rendered.clone(),
         });
         let outcome = match &self.asker {
-            Some(asker) => asker(title, description),
+            Some(asker) => asker(ask),
             None => {
                 let _ = self.events.send(AgentEvent::PermissionResolved {
                     tool_call_id: tool_call_id.to_owned(),
@@ -241,7 +277,7 @@ impl PermissionBroker {
                 return CallOutcome {
                     allowed: false,
                     reason: format!(
-                        "Permission required but no interactive surface is available. {description} Run with --yolo, or add an allow rule for this call."
+                        "Permission required but no interactive surface is available. {rendered} Run with --yolo, or add an allow rule for this call."
                     ),
                 };
             }
@@ -267,7 +303,7 @@ impl PermissionBroker {
         } else {
             CallOutcome {
                 allowed: false,
-                reason: format!("The user denied this call. {description}"),
+                reason: format!("The user denied this call. {rendered}"),
             }
         }
     }
