@@ -14,3 +14,7 @@ read-only study material, not this project. Check the category before concluding
 a reference is absent; opencode lives under ref/agents/, not ref/tui/. "The agent" means Yi, the
 code in this repo, never you (the assistant). Work only inside the current
 phase gate (ARCHITECTURE.md header + "Phase gates"); do not scaffold ahead.
+
+Mandatory skills: invoke `ponytail`, `har`, and `caveman` at session start, and
+in any case before writing or editing Yi code. Ponytail governs what gets built,
+har how the Rust is shaped, caveman how the reply reads.
