@@ -3,6 +3,7 @@ use std::error::Error;
 use serde_json::{Map, Value, json};
 use yi_ai::anthropic::{AnthropicOptions, Thinking, build_params};
 use yi_ai::faux::{faux_assistant_message, faux_tool_call};
+use yi_ai::openai::{self, OpenAiOptions};
 use yi_runtime::{PermissionMode, builtin_tools, identity_fragment, mode_fragment};
 use yi_types::message::{AgentMessage, Content, StopReason, UserContent};
 use yi_types::model::{LlmContext, Model, ModelCost, ToolDef};
@@ -33,6 +34,17 @@ fn model() -> Model {
         compat: None,
         thinking_level_map: None,
         headers: None,
+    }
+}
+
+fn openai_model() -> Model {
+    Model {
+        id: "gpt-5".to_owned(),
+        name: "GPT-5".to_owned(),
+        api: "openai-completions".to_owned(),
+        provider: "openai".to_owned(),
+        base_url: "https://api.openai.com/v1".to_owned(),
+        ..model()
     }
 }
 
@@ -143,16 +155,27 @@ fn strip_cache_control(value: &mut Value) {
     }
 }
 
-/// A provider caches on an exact byte prefix, so anything that rewrites the
-/// system block or the tool table between turns silently multiplies cost while
-/// producing identical output — invisible to every other gate.
-#[test]
-fn the_cached_prefix_is_byte_identical_across_turns() -> TestResult {
-    let model = model();
-    let options = options();
-    let first = build_params(&model, &context(first_turn()), &options);
-    let second = build_params(&model, &context(second_turn()), &options);
+/// Every message the second turn inherits, serialized as the first turn sent
+/// it. The breakpoint marker is dropped: it moves to the newest message every
+/// turn and the documented cache key excludes it.
+fn message_prefix(params: &Value) -> Result<Vec<String>, Box<dyn Error>> {
+    let mut messages = params
+        .get("messages")
+        .cloned()
+        .unwrap_or_else(|| Value::Array(Vec::new()));
+    strip_cache_control(&mut messages);
+    let items = messages.as_array().ok_or("messages is not an array")?;
+    items
+        .iter()
+        .map(|message| Ok(serde_json::to_string(message)?))
+        .collect()
+}
 
+/// A provider caches on an exact content prefix, so a request that re-renders
+/// anything the previous turn already sent silently re-bills the whole
+/// conversation while producing identical output — invisible to every other
+/// gate. This is what D51 was.
+fn assert_prefix_survives_a_turn(first: &Value, second: &Value) -> TestResult {
     assert_eq!(
         serde_json::to_string(first.get("system").unwrap_or(&Value::Null))?,
         serde_json::to_string(second.get("system").unwrap_or(&Value::Null))?,
@@ -163,22 +186,45 @@ fn the_cached_prefix_is_byte_identical_across_turns() -> TestResult {
         serde_json::to_string(second.get("tools").unwrap_or(&Value::Null))?,
         "the tool table must not change between turns"
     );
-    let opening = |params: &Value| -> Result<String, Box<dyn Error>> {
-        let mut message = params
-            .get("messages")
-            .and_then(|messages| messages.as_array())
-            .and_then(|messages| messages.first())
-            .cloned()
-            .unwrap_or(Value::Null);
-        strip_cache_control(&mut message);
-        Ok(serde_json::to_string(&message)?)
-    };
-    assert_eq!(
-        opening(&first)?,
-        opening(&second)?,
-        "the opening user message must not be rewritten by a later turn (D51)"
+    let (before, after) = (message_prefix(first)?, message_prefix(second)?);
+    assert!(
+        after.len() > before.len(),
+        "the second turn must carry the first turn's messages plus its own"
     );
+    for (index, sent) in before.iter().enumerate() {
+        assert_eq!(
+            Some(sent),
+            after.get(index),
+            "message {index} was re-rendered by a later turn (D51)"
+        );
+    }
     Ok(())
+}
+
+#[test]
+fn the_anthropic_cached_prefix_survives_a_turn() -> TestResult {
+    let model = model();
+    let options = options();
+    assert_prefix_survives_a_turn(
+        &build_params(&model, &context(first_turn()), &options),
+        &build_params(&model, &context(second_turn()), &options),
+    )
+}
+
+/// OpenAI caches automatically on the same content prefix, and carries the
+/// system prompt as the first message rather than its own field, so the same
+/// check covers one more block there.
+#[test]
+fn the_openai_cached_prefix_survives_a_turn() -> TestResult {
+    let model = openai_model();
+    let options = OpenAiOptions {
+        session_id: Some("session-1".to_owned()),
+        ..OpenAiOptions::default()
+    };
+    assert_prefix_survives_a_turn(
+        &openai::build_params(&model, &context(first_turn()), &options),
+        &openai::build_params(&model, &context(second_turn()), &options),
+    )
 }
 
 /// Read by scripts/guardrails/check_request_budget.py, which owns the ratchet.
