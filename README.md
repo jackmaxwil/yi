@@ -1,128 +1,179 @@
 # Yi
 
-A coding agent I built for myself, in Rust, because I wanted one that stays
-small enough to understand and still does the work.
+Personal coding agent. Native Rust. One binary, ~5.8 MB, starts in ~2.4 ms,
+20 direct dependencies. Built to stay small enough for one person to
+understand end to end.
 
-The premise is that a coding agent is not a chat window with a shell attached.
-It is a long-running program that has to hold a moving picture of a codebase in
-a fixed budget, act on it, and be honest about what it did. Most of what makes
-one good or bad happens in the parts nobody demos: what gets dropped when the
-window fills, what happens when a stream dies at 90%, whether a denied command
-comes back with evidence or just a refusal, whether the transcript you can
-scroll is the same transcript the model saw.
+## Philosophy
 
-So Yi is built around a few positions:
+An agent is a long-running program holding a moving picture of a codebase
+inside a fixed budget. What makes it good happens where nobody demos: what
+gets dropped when the window fills, what happens when a stream dies at 90%,
+whether a denied command comes back with evidence, whether the transcript you
+scroll is the transcript the model saw.
 
-**A small core that stays small.** The turn loop is under a thousand lines and
-its public API returns no `Result` — failure is a value in the event stream,
-not an exception climbing the stack. Everything above it is a client of that
-loop: the CLI, the editor protocol, the daemon, the terminal UI. Ceilings on
-size are enforced by the build, not by intention.
+So the rules are structural, not aspirational. Every budget is enforced by
+CI, not by intention. Ratchets only shrink: panics (zero), glob re-exports
+(zero), duplicated prose (zero), binary size, startup time, dependency count,
+test lines, comment volume, token spend. Growth is a deliberate commit of its
+own, never a side effect. A schema lock makes every wire-shape change a
+reviewed diff.
 
-**Context is a budget, not a buffer.** Every source that competes for the
-window — project instructions, skills, tool output, prior turns — has a byte
-budget and a truncation marker. Compaction is prefix-aligned so the stable head
-of the conversation stays byte-identical across turns and the provider's cache
-keeps hitting. Token spend is ratcheted in CI like any other resource.
+## Context efficiency
 
-**Durable, addressable sessions.** The transcript is an append-only entry tree
-on disk. You can branch it, rewind to any entry, resume after a crash, and read
-it with tools that are not this program. Unknown fields survive round-trips, so
-a session written by a newer version still loads in an older one.
+Context is a budget, not a buffer. Every source competing for the window —
+project instructions, skills, tool output, prior turns — has a byte budget
+and a truncation marker. Nothing gets to grow silently.
 
-**Editing by content, not coordinates.** Files are read and written through
-content-addressed lines, so an edit that no longer matches fails loudly instead
-of landing in the wrong place. Every file the agent touches is checkpointed
-into a shadow git directory, and `undo` puts it back.
+Compaction is prefix-aligned: the stable head of the conversation stays
+byte-identical across turns, so the provider's prompt cache keeps hitting
+instead of re-reading the whole session every turn.
 
-**A real Python runtime, not a sandbox toy.** Each session can own a persistent
-Jupyter kernel. State survives between calls, snapshots to disk, and revives
-across restarts. Subagents are spawned from inside that kernel as ordinary
-function calls, which makes recursion a language feature instead of a protocol.
+## Token efficiency
 
-**Permission as a decision, with evidence.** Tools declare their kind; modes
-and rules decide; holds turn a matching call into a question with a reason
-attached. A denial carries what it saw. One tier is absolute — the home
-directory, device nodes, the workspace's own `.git` — and no mode, including
-the reckless one, can talk its way past it.
+The fixed prefix every request pays — system block plus tool table — is
+measured by a test and ratcheted in CI. Today: 10,211 bytes total (system
+2,038, tools 8,173). Adding a tool or a system sentence fails the build until
+the growth is committed on purpose. No other agent budget I know of treats
+prompt bytes as a resource with a baseline file.
 
-**An advisor that reviews the work log.** A second, cheaper judgment pass reads
-what the turn actually emitted — your instructions verbatim, the agent's own
-prose, its stated intents — and flags unbacked claims and drift. Deterministic
-signals run always and cost nothing; the model reviewer is opt-in and triggered.
+## Speed
 
-**A terminal UI that respects the terminal.** An inline viewport on the normal
-screen, native scrollback, no alternate screen. Finished output is written once
-and never repainted, because you cannot observe where the user scrolled.
+- `yi --version`: ~2.4 ms measured, ≤ 5 ms budgeted. `--version`, `--help`,
+  and `sessions list` return before config parse or runtime construction.
+- The async runtime is a current-thread tokio, built per command. No thread
+  pool warms up to print a version string.
+- Dist binary ~5.8 MB, budget 6 MiB. Every dependency added logs its measured
+  size and startup delta in `docs/size-ledger.md` before it lands.
 
-## Layout
+## Memory
 
-Thirteen crates, all in the default build, in strict dependency order:
+Nothing heavy exists until used. The Jupyter kernel compiles into every
+build but boots lazily on the first `ipython` call — no Python process
+otherwise. MCP is compiled in but runtime-gated off by default. The TUI
+paints an inline viewport on the normal screen: finished output is written
+once to native scrollback and never repainted, so the UI holds a viewport,
+not a transcript.
+
+Sessions live on disk as an append-only entry tree, not in RAM: branch,
+rewind to any entry, resume after a crash, read with tools that are not this
+program. Unknown fields survive round-trips, so a newer session still loads
+in an older binary.
+
+## Subagents
+
+Subagents are function calls, not protocol. Each session can own a
+persistent Python kernel; from inside it, `rlm.run("prompt")` asks the host
+to spawn a child agent. State survives between calls, snapshots to disk,
+revives across restarts. Recursion is a language feature.
+
+Child authority only shrinks: a spawn spec can fork none, all, or the last N
+entries of the parent context, and overlays customize or reduce the child's
+tools and model — never exceed the parent. Depth is capped. The kernel never
+holds MCP sockets or tokens; kernel Python shells out to the one-shot
+`yi mcp --json` CLI.
+
+## Architecture
+
+Thirteen crates, all in the default build, strict dependency order:
 
 | crate | owns |
 |---|---|
 | `yi-types` | every serialized shape; the schema wall (serde only, no runtime) |
 | `yi-loop` | the turn loop and interrupts |
 | `yi-ai` | providers and the model catalog |
-| `yi-session` | the entry tree, its JSONL codec, tree operations |
+| `yi-session` | the entry tree, JSONL codec, tree operations |
 | `yi-context` | projection, accounting, compaction, assembly |
 | `yi-permission` | modes, rules, holds, the absolute denylist |
 | `yi-tools` | the tool contract; files, search, shell, checkpoints, skills |
 | `yi-kernel` | the Jupyter client: ZeroMQ, HMAC, the host bridge |
-| `yi-runtime` | the session actor, plus subagents, schedules, goals, advisor |
+| `yi-runtime` | the session actor; subagents, schedules, goals, advisor |
 | `yi-acp` | the editor protocol server |
 | `yi-tui` | the terminal UI |
-| `yi-mcp-cli` | one-shot MCP client, gated off by config |
+| `yi-mcp-cli` | one-shot MCP client, config-gated |
 | `yi-cli` | the composition root |
 
-Dependency direction is an allowlist checked in CI: an undeclared edge fails
-the build. Nothing below the composition root reaches sideways.
+The turn loop is under 1,000 lines and its public API returns no `Result` —
+failure is a value in the event stream, not an exception climbing the stack.
+Every surface (CLI, TUI, editor protocol, daemon, RPC) is a client of that
+loop rendering the same event stream; none is privileged.
 
-Around them: a Python package the kernel loads, bundled skills, a vendored
-output reducer for noisy commands, and the guardrail scripts that hold every
-budget.
+Dependency direction is an allowlist checked in CI; an undeclared edge fails
+the build. `unsafe_code` is forbidden in every crate. Newtypes cross every
+crate boundary — no bare `String` or `u64` where an id or a unit exists.
+
+Editing is by content, not coordinates: content-addressed lines make a stale
+edit fail loudly instead of landing in the wrong place. Every touched file is
+checkpointed into a shadow git directory; `undo` puts it back. Permission is
+a decision with evidence: modes and rules decide, holds turn a match into a
+question with a reason, a denial carries what it saw, and one tier — home
+directory, device nodes, the workspace's own `.git` — no mode can override.
 
 ## Build
 
 ```bash
-cargo build --profile dist -p yi-cli   # the shipping binary (target/dist/yi)
+cargo build --profile dist -p yi-cli   # shipping binary: target/dist/yi
 ```
 
 ```bash
-just check                             # fmt, clippy -D warnings, guardrails
+just check                             # fmt, clippy -D warnings, all guardrails
 ```
 
-## Use
+## Run
 
 ```bash
 yi                                     # the TUI, on a TTY
 ```
 
 ```bash
-yi ask --model anthropic/claude-opus-4-5 "prompt"
+yi ask --model openrouter/z-ai/glm-5.3-flash "prompt"
 ```
 
 ```bash
-yi ask --model faux/faux-1 --json "prompt"   # offline, scripted, no key
+yi ask --model faux/faux-1 --json "prompt"   # offline, scripted provider, no key
 ```
 
-`yi acp` speaks the editor protocol, `yi serve` runs the daemon, `yi rpc`
-streams framed JSON commands and events. Every surface renders the same event
-stream; none of them is privileged.
+## Use
 
-## Guardrails
+`yi acp` speaks the editor protocol. `yi serve` runs the daemon. `yi rpc`
+streams framed JSON commands and events. `yi sessions list`, `yi undo`,
+`yi mcp` (when enabled) round out the surface. `--json` on `ask` emits the
+raw event stream for scripting.
 
-Budgets start at zero and only shrink: panics, glob re-exports, duplicated
-production text, environment variables, dependency count, binary size, startup
-time, test lines, token spend. Growth is deliberate and lands in its own
-commit, never alongside the code that caused it. A schema lock file makes every
-wire-shape change a reviewed diff.
+## Configure
 
-## Docs
+One file: `~/.yi/config.json`. Current keys:
 
-- `docs/YI_DESIGN.md` — the design: primitive tables, per-module contracts
-- `docs/ARCHITECTURE.md` — version, changelog, feature ledger, decision log
-- `docs/TODOS.md` — the open queue
+```jsonc
+{
+  "model": "openrouter/z-ai/glm-5.3-flash",   // default model
+  "models": {                                  // per-role overrides
+    "primary": "...",
+    "summarizer": "...",                       // compaction, cheaper is fine
+    "advisor": "..."                           // naming this turns the reviewer on
+  },
+  "mcp": { "enabled": false },                 // MCP stays off until asked
+  "bash": { "autoBackgroundMs": 0 },           // long commands auto-background
+  "keys": { "ctrl+g": "some-action" }          // TUI keymap overrides
+}
+```
 
-Agent instructions live in `.ruler/`; `npx @intellectronica/ruler apply`
-regenerates the per-tool files. Study checkouts under `ref/` are gitignored.
+Unset roles fall back to the primary model. `YI_*` environment variables are
+a registered surface with a hard cap of 40.
+
+## Contribute
+
+Read `docs/YI_DESIGN.md` (the law) and `docs/ARCHITECTURE.md` (the map: version,
+changelog, feature ledger, decision log) first. Code follows the docs;
+revising a settled decision requires a decision-log row in the same change.
+
+- `just check` green before any claim of done — every gate judged by exit
+  code, never by piped output.
+- Baseline edits (`--update`) land in their own commit, never with code.
+- Every test defends one externally observable contract; fixtures come from
+  reference implementations, never from Yi's own output. A regression test
+  is watched failing against the unfixed code before the fix is claimed.
+- No `unwrap`/`expect`/`panic` outside tests. A comment earns its line by
+  naming what the code cannot; three lines, hard cap.
+- Agent instructions live in `.ruler/`; regenerate the per-tool files with
+  `npx @intellectronica/ruler apply`. Never edit the generated ones.
