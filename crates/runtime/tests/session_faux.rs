@@ -377,3 +377,45 @@ async fn a_session_still_runs_turns_after_an_abort() -> Result<(), Box<dyn Error
     );
     Ok(())
 }
+
+/// Cancelling killed the `sh -c` process alone, so a grandchild it had spawned
+/// kept the capture pipes open and the drain — with it, the whole turn — waited
+/// out the command anyway. The abort was safe but never prompt: Esc during a
+/// long build left the UI working until the build finished on its own.
+#[tokio::test]
+async fn an_abort_during_a_tool_call_kills_the_child() -> Result<(), Box<dyn Error>> {
+    let dir = std::env::temp_dir().join(format!("yi-runtime-abort-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir)?;
+    let marker = dir.join("marker");
+    let mut session = tool_call_session("sleep 2; echo late > marker");
+    let broker = Arc::new(yi_runtime::PermissionBroker::new(
+        yi_runtime::PermissionMode::Yolo,
+        dir.clone(),
+        Vec::new(),
+        None,
+        session.events_sender(),
+    ));
+    session.use_tools(yi_tools::builtin_tools(), dir.clone(), Some(broker));
+    session.prompt("run it")?;
+    // Long enough that the tool call is in flight, short enough that the sleep
+    // still has well over a second left to run.
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    let interrupted = std::time::Instant::now();
+    session.abort();
+    session.wait_idle().await;
+    let settled = interrupted.elapsed();
+    assert!(
+        settled < std::time::Duration::from_secs(1),
+        "an abort must end the turn, not wait out the command it interrupted: \
+         {settled:?}"
+    );
+    // Outlive the sleep: a shell that survived would run its next command here.
+    tokio::time::sleep(std::time::Duration::from_millis(2200)).await;
+    assert!(
+        !marker.exists(),
+        "the interrupted shell must not run its next command"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+    Ok(())
+}

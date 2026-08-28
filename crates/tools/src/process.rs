@@ -25,6 +25,26 @@ pub struct CommandCapture {
     pub truncated: bool,
 }
 
+/// SIGKILL the whole process group: killing the shell alone leaves grandchildren
+/// holding the capture pipes, so `drain_capped` — and the interrupted turn —
+/// waits out the very command it cancelled. `kill(1)`, not a `libc` dep (§13.1).
+fn kill_tree(child: &mut Child) {
+    #[cfg(unix)]
+    let group_killed = command("kill")
+        .arg("-KILL")
+        .arg(format!("-{}", child.id()))
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .is_ok_and(|status| status.success());
+    #[cfg(not(unix))]
+    let group_killed = false;
+    if !group_killed {
+        let _kill_best_effort = child.kill();
+    }
+}
+
 fn drain_capped(mut reader: impl Read, cap: usize) -> (String, bool) {
     let mut buffer = Vec::new();
     let mut chunk = [0u8; 8192];
@@ -62,6 +82,12 @@ pub fn run_captured(
         })
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    // The group `kill_tree` signals; without it the kill reaches only the shell.
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        command.process_group(0);
+    }
     let mut child = command
         .spawn()
         .map_err(|error| format!("failed to spawn: {error}"))?;
@@ -89,7 +115,7 @@ pub fn run_captured(
                 if cancelled() {
                     was_cancelled.store(true, Ordering::SeqCst);
                     if let Ok(mut child) = child.lock() {
-                        let _kill_best_effort = child.kill();
+                        kill_tree(&mut child);
                     }
                     return;
                 }
