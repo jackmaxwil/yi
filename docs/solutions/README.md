@@ -63,5 +63,6 @@ when it changes rather than editing them by hand.
 - [D65](adr/d65.md) - the subagent family gets a popup, and spawn attribution is observed
 - [D66](adr/d66.md) - every animated glyph derives from one clock
 - [D68](adr/d68.md) - binary_size runs in CI, startup is local-only
+- [D69](adr/d69.md) - the dist profile optimises for size at every level
 
 D36-D51 have no ADR yet; ARCHITECTURE.md is the record for those rows.

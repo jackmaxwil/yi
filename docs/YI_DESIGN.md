@@ -1452,7 +1452,7 @@ startup ratchet measure `dist`:
 ```toml
 [profile.dist]
 inherits = "release"
-opt-level = "s"        # "z" measured too; "s" usually wins on startup-heavy code
+opt-level = "z"        # D69: measured -23.2 % over "s", startup and turn latency unmoved
 lto = "fat"
 codegen-units = 1
 panic = "abort"        # tests never run under dist; zero-panic is lint-enforced regardless
@@ -1461,7 +1461,7 @@ debug = false
 incremental = false
 
 [profile.dist.package."*"]
-opt-level = "s"
+opt-level = "z"
 ```
 
 Plus `-C target-cpu` left default (portable), `RUSTFLAGS="-Zlocation-detail=none"` on nightly
@@ -1512,7 +1512,7 @@ size builds only as an experiment, never required.
 
 | Budget | Initial | File |
 |---|---|---|
-| dist binary, macOS arm64, default features | ≤ 6 MiB (target 4) | `guardrails/binary_size_budget.json` |
+| dist binary, macOS arm64, default features | ratcheted to the measured size (D69: 4,636,896; the §13.6 v1 ceiling was ≤ 6 MiB, target 4) | `guardrails/binary_size_budget.json` |
 | `yi --version` startup (hyperfine, warm) | ≤ 5 ms | `guardrails/startup_ms_budget.json` |
 | `yi ask --help` | ≤ 8 ms | same |
 | direct deps (default features) | ≤ 16 | `guardrails/deps_budget.json` |

@@ -77,7 +77,7 @@ disallowed_methods = "deny"
 
 [profile.dist]
 inherits = "release"
-opt-level = "s"
+opt-level = "z"
 lto = "fat"
 codegen-units = 1
 panic = "abort"
@@ -86,4 +86,4 @@ debug = false
 incremental = false
 
 [profile.dist.package."*"]
-opt-level = "s"
+opt-level = "z"
