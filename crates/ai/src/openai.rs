@@ -299,7 +299,7 @@ pub fn build_params(model: &Model, context: &LlmContext, options: &OpenAiOptions
 /// never to no thinking at all (mirrors `nearest()` in openrouter_reasoning.py).
 const EFFORT_LEVELS: [&str; 6] = ["minimal", "low", "medium", "high", "xhigh", "max"];
 
-/// A level mapped to `null` is one the model rejects; `None` = send no reasoning.
+/// A level mapped to `null` is one the model rejects; [`None`] = send no reasoning.
 fn nearest_effort<'a>(map: &'a Value, effort: &str) -> Option<&'a str> {
     let rank = EFFORT_LEVELS.iter().position(|level| *level == effort)?;
     EFFORT_LEVELS
