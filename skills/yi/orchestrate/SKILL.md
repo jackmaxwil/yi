@@ -65,6 +65,9 @@ its own checkout, and `rlm.merge_worktree(name)` / `rlm.discard_worktree(name)`
 hands it back (a child holding a worktree cannot be reaped until one of them
 runs). Use `fork='all'` or `fork=<n>` only to hand a child the thread it must
 continue — a fresh brief beats inherited context for independent work.
+Pass `deny_write=[<instrument paths>]` to an implementer child when a task's
+acceptance instrument lives in the tree: the standard is fixed for the run, and
+a child that cannot edit it reports the mismatch instead.
 While children run, keep working the tasks you
 kept. Collect results, then verify each child's work against its acceptance
 yourself — a child's "done" is a report, not a measurement.

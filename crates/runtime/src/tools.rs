@@ -18,6 +18,7 @@ pub struct ToolAdapter {
     recovery_dir: Option<PathBuf>,
     auto_background: Option<std::time::Duration>,
     rules: Option<Arc<crate::rules::RuleEngine>>,
+    wall: crate::wall::Wall,
 }
 
 /// T19 tee target: the home root, never the user's working tree.
@@ -40,6 +41,7 @@ impl ToolAdapter {
             recovery_dir: default_recovery_dir(),
             auto_background: None,
             rules: None,
+            wall: crate::wall::Wall::default(),
         }
     }
 
@@ -47,6 +49,11 @@ impl ToolAdapter {
     /// unless the user asked for it.
     pub fn with_auto_background(mut self, limit: Option<std::time::Duration>) -> Self {
         self.auto_background = limit;
+        self
+    }
+
+    pub fn with_wall(mut self, wall: crate::wall::Wall) -> Self {
+        self.wall = wall;
         self
     }
 
@@ -84,6 +91,7 @@ impl AgentTool for ToolAdapter {
         };
         let permission = self.permission.clone();
         let rules = self.rules.clone();
+        let wall = self.wall.clone();
         let call_id = tool_call_id.to_owned();
         Box::pin(async move {
             // User rules gate before permission: a matching eligible gate rule
@@ -96,6 +104,12 @@ impl AgentTool for ToolAdapter {
                         is_error: true,
                     };
                 }
+            }
+            if let Some(denial) = wall.check(tool.name(), tool.kind(), &args, &context.cwd) {
+                return ToolOutcome {
+                    result: error_tool_result(&denial),
+                    is_error: true,
+                };
             }
             if let Some(broker) = permission {
                 let gate_tool = Arc::clone(&tool);

@@ -59,7 +59,11 @@ pub struct CallOutcome {
     pub reason: String,
 }
 
-fn extract_targets(tool_name: &str, args: &Map<String, Value>, cwd: &Path) -> Vec<PathBuf> {
+pub(crate) fn extract_targets(
+    tool_name: &str,
+    args: &Map<String, Value>,
+    cwd: &Path,
+) -> Vec<PathBuf> {
     let mut targets = Vec::new();
     let mut push = |raw: &str| {
         let candidate = PathBuf::from(raw);

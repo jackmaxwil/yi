@@ -44,6 +44,11 @@ Match verification scope to claim scope: a narrow check never supports a
 broad claim. Never touch harness or verifier paths that belong to an
 evaluation — verify with the task's own gates only.
 
+Spawn implementer children with `deny_write` over the acceptance instrument so
+the standard cannot drift while the work is judged against it; the reviewer
+itself keeps read access unless the instrument is sampled, where `deny_read`
+hides it from the implementer as well.
+
 ## Report
 
 One line per acceptance item: `task-id · verdict · decisive evidence

@@ -62,6 +62,7 @@ pub struct ChildBuild<'a> {
     /// `Some` only for a B11 worktree child; otherwise the parent's own cwd.
     pub cwd: Option<&'a Path>,
     pub link: ParentLink,
+    pub wall: crate::wall::Wall,
 }
 
 pub type ChildFactory = dyn Fn(ChildBuild<'_>) -> Result<AgentSession, String> + Send + Sync;
@@ -223,7 +224,12 @@ fn require_kwargs(kwargs: &Map<String, Value>) -> Result<(), String> {
     let mut unsupported: Vec<&str> = kwargs
         .keys()
         .map(String::as_str)
-        .filter(|key| !matches!(*key, "name" | "model" | "thinking" | "fork" | "isolation"))
+        .filter(|key| {
+            !matches!(
+                *key,
+                "name" | "model" | "thinking" | "fork" | "isolation" | "deny_write" | "deny_read"
+            )
+        })
         .collect();
     if unsupported.is_empty() {
         return Ok(());
@@ -419,6 +425,7 @@ impl SubagentHost {
         let thinking = optional_string(&kwargs, "thinking")?;
         let fork = parse_fork(&kwargs)?;
         let isolation = parse_isolation(&kwargs)?;
+        let wall = crate::wall::Wall::from_kwargs(&kwargs, &self.options.cwd)?;
         if fork == Fork::All && (requested_model.is_some() || thinking.is_some()) {
             return Err(
                 "fork=all inherits the parent's model and thinking; drop the override".to_owned(),
@@ -483,6 +490,7 @@ impl SubagentHost {
                     child_name: session_name.clone(),
                     host: Arc::downgrade(self),
                 },
+                wall,
             })?;
             if fork != Fork::None {
                 let seed = seed_for_fork(
@@ -846,6 +854,8 @@ pub struct RuntimeWiring {
     pub plan_stale_turns: Option<u64>,
     /// Set for a child: its B6 route back into the family that spawned it.
     pub parent_link: Option<ParentLink>,
+    /// B1 reduction: paths this session may not touch (plan §3.4 wall).
+    pub wall: crate::wall::Wall,
     /// D13 `bash.autoBackgroundMs`; None keeps every command in the turn.
     pub auto_background: Option<std::time::Duration>,
 }
@@ -1030,6 +1040,7 @@ pub fn attach_runtime(session: &mut AgentSession, wiring: RuntimeWiring) -> Arc<
                     .cwd
                     .map_or_else(|| factory_wiring.cwd.clone(), Path::to_path_buf),
                 parent_link: Some(build.link),
+                wall: build.wall,
                 ..factory_wiring.clone()
             },
         );
@@ -1105,6 +1116,7 @@ pub fn attach_runtime(session: &mut AgentSession, wiring: RuntimeWiring) -> Arc<
         crate::rules::attach_rules(session, Arc::clone(&engine));
         session.set_rules_engine(engine);
     }
+    session.set_wall(wiring.wall.clone());
     session.use_tools_with_background(
         tools,
         wiring.cwd.clone(),

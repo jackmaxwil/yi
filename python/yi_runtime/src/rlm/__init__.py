@@ -179,6 +179,10 @@ async def run(prompt: str, **kwargs: Any) -> RLMSpawnHandle:
     ``fork`` seeds the child with this session's history: 'none' (default), 'all'
     (inherits the parent model, so ``model``/``thinking`` are refused with it), or a
     positive turn count for the last N turns.
+    ``isolation='worktree'`` gives the child its own checkout; hand it back with
+    ``merge_worktree`` or ``discard_worktree``.
+    ``deny_write`` (and ``deny_read``) are lists of paths the child may not touch —
+    the wall that keeps an implementer out of the standard it is measured against.
     """
     if not isinstance(prompt, str):
         raise TypeError(f"prompt must be str, got {type(prompt).__name__}")

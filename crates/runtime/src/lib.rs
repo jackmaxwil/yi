@@ -17,6 +17,7 @@ pub mod session;
 pub mod skills;
 pub mod subagent;
 pub mod tools;
+pub mod wall;
 pub mod worktree;
 
 pub use checkpoint::{RecordedCheckpoint, UndoOutcome, recorded, undo, wire_turn_checkpoints};
@@ -35,6 +36,7 @@ pub use subagent::{
     SubagentHostOptions, attach_runtime,
 };
 pub use tools::ToolAdapter;
+pub use wall::Wall;
 pub use yi_ai::auth;
 
 pub fn identity_fragment() -> &'static str {

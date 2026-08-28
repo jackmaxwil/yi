@@ -96,6 +96,7 @@ pub struct AgentSession {
     goal: Mutex<Option<Arc<crate::goal::GoalService>>>,
     plan: Mutex<Option<Arc<crate::plan::PlanService>>>,
     rules: Mutex<Option<Arc<crate::rules::RuleEngine>>>,
+    wall: Mutex<crate::wall::Wall>,
 }
 
 type ScheduleParts = (
@@ -135,6 +136,7 @@ impl AgentSession {
             goal: Mutex::new(None),
             plan: Mutex::new(None),
             rules: Mutex::new(None),
+            wall: Mutex::new(crate::wall::Wall::default()),
         }
     }
 
@@ -186,6 +188,19 @@ impl AgentSession {
         if let Ok(mut slot) = self.rules.lock() {
             *slot = Some(engine);
         }
+    }
+
+    pub fn set_wall(&self, wall: crate::wall::Wall) {
+        if let Ok(mut slot) = self.wall.lock() {
+            *slot = wall;
+        }
+    }
+
+    pub fn wall(&self) -> crate::wall::Wall {
+        self.wall
+            .lock()
+            .map(|wall| wall.clone())
+            .unwrap_or_default()
     }
 
     pub fn rules_engine(&self) -> Option<Arc<crate::rules::RuleEngine>> {
@@ -313,7 +328,8 @@ impl AgentSession {
                         permission.clone(),
                     )
                     .with_auto_background(auto_background)
-                    .with_rules(self.rules_engine()),
+                    .with_rules(self.rules_engine())
+                    .with_wall(self.wall()),
                 ) as Arc<dyn yi_loop::AgentTool>
             })
             .collect();

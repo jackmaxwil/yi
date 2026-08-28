@@ -316,6 +316,7 @@ fn build_session(
             summarizer: summarizer_model(args),
             advisor: advisor_model(),
             parent_link: None,
+            wall: yi_runtime::Wall::default(),
             plan_stale_turns: config_value()
                 .and_then(|config| config.pointer("/plan/staleReminderTurns").cloned())
                 .and_then(|value| value.as_u64()),
