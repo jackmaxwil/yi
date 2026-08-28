@@ -295,13 +295,40 @@ pub fn build_params(model: &Model, context: &LlmContext, options: &OpenAiOptions
     params
 }
 
-fn mapped_effort<'a>(model: &'a Model, effort: &'a str) -> &'a str {
-    model
-        .thinking_level_map
-        .as_ref()
-        .and_then(|map| map.get(effort))
-        .and_then(Value::as_str)
-        .unwrap_or(effort)
+/// Ordered low-to-high; `off` is excluded so an unsupported level never clamps
+/// thinking away entirely (mirrors `nearest()` in scripts/openrouter_reasoning.py).
+const EFFORT_LEVELS: [&str; 6] = ["minimal", "low", "medium", "high", "xhigh", "max"];
+
+fn effort_rank(effort: &str) -> Option<usize> {
+    EFFORT_LEVELS.iter().position(|level| *level == effort)
+}
+
+/// A level mapped to `null` is unsupported by the model: clamp to the nearest
+/// supported level rather than sending it verbatim. `None` means "send no
+/// reasoning field at all" — nothing is supported, or the level is unrankable.
+fn nearest_effort<'a>(map: &'a Value, effort: &str) -> Option<&'a str> {
+    let rank = effort_rank(effort)?;
+    EFFORT_LEVELS
+        .iter()
+        .enumerate()
+        .filter_map(|(candidate, level)| match map.get(level) {
+            Some(Value::Null) => None,
+            Some(value) => Some((candidate, value.as_str().unwrap_or(level))),
+            None => Some((candidate, *level)),
+        })
+        .min_by_key(|(candidate, _)| (candidate.abs_diff(rank), *candidate))
+        .map(|(_, mapped)| mapped)
+}
+
+pub(crate) fn mapped_effort<'a>(model: &'a Model, effort: &'a str) -> Option<&'a str> {
+    let Some(map) = model.thinking_level_map.as_ref() else {
+        return Some(effort);
+    };
+    match map.get(effort) {
+        Some(Value::Null) => nearest_effort(map, effort),
+        Some(value) => Some(value.as_str().unwrap_or(effort)),
+        None => Some(effort),
+    }
 }
 
 fn apply_reasoning_params(model: &Model, options: &OpenAiOptions, params: &mut Value) {
@@ -312,7 +339,9 @@ fn apply_reasoning_params(model: &Model, options: &OpenAiOptions, params: &mut V
             .and_then(|map| map.get("off"));
         match &options.reasoning_effort {
             Some(effort) => {
-                params["reasoning"] = json!({"effort": mapped_effort(model, effort)});
+                if let Some(mapped) = mapped_effort(model, effort) {
+                    params["reasoning"] = json!({"effort": mapped});
+                }
             }
             None if !matches!(off, Some(Value::Null)) => {
                 params["reasoning"] =
@@ -320,8 +349,10 @@ fn apply_reasoning_params(model: &Model, options: &OpenAiOptions, params: &mut V
             }
             None => {}
         }
-    } else if let Some(effort) = &options.reasoning_effort {
-        params["reasoning_effort"] = json!(mapped_effort(model, effort));
+    } else if let Some(effort) = &options.reasoning_effort
+        && let Some(mapped) = mapped_effort(model, effort)
+    {
+        params["reasoning_effort"] = json!(mapped);
     }
 }
 

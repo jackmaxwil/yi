@@ -373,3 +373,52 @@ fn id_less_argument_deltas_share_one_tool_call() -> TestResult {
         other => Err(format!("expected tool call: {other:?}").into()),
     }
 }
+
+#[test]
+fn an_unsupported_effort_clamps_to_the_nearest_supported_level() -> TestResult {
+    let mut luna = model(true);
+    luna.thinking_level_map = Some(json!({
+        "off": "none", "minimal": null, "low": "low", "medium": "medium",
+        "high": "high", "xhigh": null, "max": null,
+    }));
+    let params = build_params(
+        &luna,
+        &context(),
+        &OpenAiOptions {
+            reasoning_effort: Some("max".to_owned()),
+            ..OpenAiOptions::default()
+        },
+    );
+    assert_eq!(params["reasoning"]["effort"], "high");
+
+    let params = build_params(
+        &luna,
+        &context(),
+        &OpenAiOptions {
+            reasoning_effort: Some("minimal".to_owned()),
+            ..OpenAiOptions::default()
+        },
+    );
+    assert_eq!(params["reasoning"]["effort"], "low");
+    Ok(())
+}
+
+#[test]
+fn reasoning_is_omitted_when_the_model_supports_no_level() -> TestResult {
+    let mut luna = model(true);
+    luna.thinking_level_map = Some(json!({
+        "off": null, "minimal": null, "low": null, "medium": null,
+        "high": null, "xhigh": null, "max": null,
+    }));
+    let params = build_params(
+        &luna,
+        &context(),
+        &OpenAiOptions {
+            reasoning_effort: Some("high".to_owned()),
+            ..OpenAiOptions::default()
+        },
+    );
+    assert!(params.get("reasoning").is_none());
+    assert!(params.get("include").is_none());
+    Ok(())
+}

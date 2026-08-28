@@ -159,3 +159,22 @@ fn build_params_maps_efforts_the_model_does_not_support() -> TestResult {
     assert_eq!(params["reasoning"], json!({"effort": "low"}));
     Ok(())
 }
+
+#[test]
+fn a_null_non_off_level_clamps_instead_of_being_sent_verbatim() -> TestResult {
+    let mut model = model("z-ai/glm-5.3-flash")?;
+    model.thinking_level_map = Some(json!({
+        "off": null, "minimal": null, "low": "low", "medium": null,
+        "high": "high", "xhigh": null, "max": null,
+    }));
+    let params = build_params(
+        &model,
+        &history_context(),
+        &OpenAiOptions {
+            reasoning_effort: Some("xhigh".to_owned()),
+            ..OpenAiOptions::default()
+        },
+    );
+    assert_eq!(params["reasoning"], json!({"effort": "high"}));
+    Ok(())
+}

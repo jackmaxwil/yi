@@ -7,7 +7,7 @@ use yi_types::model::{LlmContext, Model, ToolDef};
 use crate::catalog::calculate_cost;
 use crate::compat::compat_bool;
 use crate::json_salvage::{parse_json_with_repair, parse_streaming_json};
-use crate::openai::OpenAiOptions;
+use crate::openai::{OpenAiOptions, mapped_effort};
 use crate::transform::transform_messages;
 
 pub fn normalize_responses_tool_call_id(id: &str) -> String {
@@ -40,15 +40,6 @@ fn combined_id(call_id: &str, item_id: &str) -> String {
     } else {
         format!("{call_id}|{item_id}")
     }
-}
-
-fn mapped_effort<'a>(model: &'a Model, effort: &'a str) -> &'a str {
-    model
-        .thinking_level_map
-        .as_ref()
-        .and_then(|map| map.get(effort))
-        .and_then(Value::as_str)
-        .unwrap_or(effort)
 }
 
 fn convert_user(content: &UserContent) -> Option<Value> {
@@ -235,8 +226,10 @@ fn apply_reasoning(model: &Model, options: &OpenAiOptions, params: &mut Value) {
         .and_then(|map| map.get("off"));
     match &options.reasoning_effort {
         Some(effort) => {
-            params["reasoning"] = json!({"effort": mapped_effort(model, effort)});
-            params["include"] = json!(["reasoning.encrypted_content"]);
+            if let Some(mapped) = mapped_effort(model, effort) {
+                params["reasoning"] = json!({"effort": mapped});
+                params["include"] = json!(["reasoning.encrypted_content"]);
+            }
         }
         None if model.reasoning && !matches!(off, Some(Value::Null)) => {
             params["reasoning"] = json!({
