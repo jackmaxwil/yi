@@ -123,6 +123,12 @@ pub(crate) fn handle_action(
     match action {
         Action::Submit => {
             if let Some(text) = app.composer.take_submission() {
+                // A typed line is a command only when its first word is one:
+                // a prompt that opens with a path (`/usr/...`) still prompts.
+                if let Some(command) = slash_line(&text) {
+                    handle_slash(app, &command);
+                    return;
+                }
                 if app.running {
                     app.steering.push(text.clone());
                     let _ = cmd_tx.send(Command::Steer(text));
@@ -161,13 +167,26 @@ pub(crate) fn handle_action(
     }
 }
 
-pub(crate) fn handle_slash(app: &mut App, command: &str) {
+fn slash_line(text: &str) -> Option<String> {
+    let line = text.trim();
+    let rest = line.strip_prefix('/')?;
+    let head = rest.split_whitespace().next()?;
+    SLASH_COMMANDS
+        .contains(&head)
+        .then(|| rest.trim().to_owned())
+}
+
+pub(crate) fn handle_slash(app: &mut App, line: &str) {
+    let (command, args) = line
+        .split_once(char::is_whitespace)
+        .map_or((line, ""), |(head, rest)| (head, rest.trim()));
     match command {
         "new" => app.pending_new = true,
         "undo" => app.pending_undo = true,
         "quit" => app.quit = true,
         "tree" => app.pending_open_tree = true,
         "editor" => app.pending_editor = true,
+        "advisor" => app.pending_advisor = Some(args.to_owned()),
         _ => app.commit_cell(&Cell::Notice {
             text: format!("unknown command: /{command}"),
         }),

@@ -951,6 +951,7 @@ fn wire_advisor(session: &AgentSession, wiring: &RuntimeWiring) {
         crate::advisor::AdvisorConfig {
             attention,
             reviewer: llm.is_some(),
+            rules_dir: Some(wiring.cwd.join(".yi/rules")),
             ..crate::advisor::AdvisorConfig::default()
         },
         crate::advisor::AdvisorDeps { hold_sink, llm },
@@ -1111,11 +1112,11 @@ pub fn attach_runtime(session: &mut AgentSession, wiring: RuntimeWiring) -> Arc<
             notice(warning);
         }
     }
-    if !rule_set.rules.is_empty() {
-        let engine = Arc::new(crate::rules::RuleEngine::new(rule_set.rules));
-        crate::rules::attach_rules(session, Arc::clone(&engine));
-        session.set_rules_engine(engine);
-    }
+    // Attached even with zero rules: the adapters capture this Arc when tools
+    // are installed, so a rule promoted mid-session (V11) arms immediately.
+    let engine = Arc::new(crate::rules::RuleEngine::new(rule_set.rules));
+    crate::rules::attach_rules(session, Arc::clone(&engine));
+    session.set_rules_engine(engine);
     session.set_wall(wiring.wall.clone());
     session.use_tools_with_background(
         tools,

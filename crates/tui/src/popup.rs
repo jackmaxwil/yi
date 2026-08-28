@@ -4,6 +4,7 @@ use ratatui::text::{Line, Span};
 use crate::colors::Theme;
 use crate::keymap::{KeyCodeValue, SingleKey};
 
+#[derive(Debug)]
 pub enum PopupResult {
     Open,
     Close,
@@ -92,10 +93,16 @@ impl BottomView for ListPopup {
                 }
                 PopupResult::Open
             }
-            KeyCodeValue::Enter | KeyCodeValue::Tab => match self.filtered().get(self.selected) {
-                Some(item) => PopupResult::Insert(format!("{}{}", self.prefix, item)),
-                None => PopupResult::Close,
-            },
+            KeyCodeValue::Enter | KeyCodeValue::Tab => {
+                // Completing to the selected item would drop the arguments.
+                if self.prefix == '/' && self.query.contains(' ') {
+                    return PopupResult::Insert(format!("{}{}", self.prefix, self.query));
+                }
+                match self.filtered().get(self.selected) {
+                    Some(item) => PopupResult::Insert(format!("{}{}", self.prefix, item)),
+                    None => PopupResult::Close,
+                }
+            }
             KeyCodeValue::Backspace => {
                 if self.query.pop().is_none() {
                     return PopupResult::Close;

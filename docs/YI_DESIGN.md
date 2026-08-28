@@ -925,7 +925,7 @@ flowchart LR
 | V8 | deliver | `Note\|Warn` → `custom{advisory}` entry at next tool boundary (idle → follow-up queue); `Hold` → M5, degrading headless (§7.3, D28) | I/O | new |
 | V9 | outcome | `custom{advisory_outcome{advice_id, target_touched_within: n, hold_result}}`; `/advisor stats` | I/O | new |
 | V10 | config | `ADVISOR.md` attention text (project or global) + `advisor.model`. One advisor — judge-selection over synthesis is now evidence-backed (arXiv 2603.20324), not taste. | data | omp `config.ts` (trimmed) |
-| V11 | promote | `/advisor promote <advice-id>` compiles a Hold or standing constraint into a permission rule (M4/M5); the only cross-session persistence the advisor has | I/O | TRACE arXiv 2606.13174 |
+| V11 | promote | `/advisor promote <advice-id>` compiles a Hold or standing constraint into a rule; the only cross-session persistence the advisor has. **D59 revises the target**: a D54 rule file under `<cwd>/.yi/rules` (gate for Hold, remind otherwise, advice text verbatim + provenance), armed live, not an M4 pattern or an M5 hold | I/O | TRACE arXiv 2606.13174 |
 | V12 | directives | `fn(&UserEntry) -> Vec<Directive{entry_id, text}>` — constraint-sentence extraction (negation/scope markers), verbatim, append-only header panel | pure | new (§7.6) · mempalace |
 | V13 | transcript | advisor tool `transcript{entry_id, range?}` → full text of a digest-named user/assistant entry; never thinking, never cross-session | I/O | new (§7.6) · ARC |
 

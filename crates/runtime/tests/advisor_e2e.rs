@@ -231,3 +231,101 @@ async fn llm_reviewer_advises_through_the_advise_tool() -> TestResult {
     assert!(advices[0].text.contains("failing test"));
     Ok(())
 }
+
+#[test]
+fn promotion_writes_a_rule_the_discovery_parser_accepts() -> TestResult {
+    let root = std::env::temp_dir().join(format!("yi-promote-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let rules_dir = root.join(".yi/rules");
+    let runtime = yi_runtime::advisor::AdvisorRuntime::new(
+        AdvisorConfig {
+            rules_dir: Some(rules_dir.clone()),
+            ..AdvisorConfig::default()
+        },
+        Arc::new(|_message| {}),
+        None,
+    );
+    runtime.deliver_reviewed(
+        vec![Advice {
+            severity: AdvisorySeverity::Hold,
+            kind: AdviceKind::Stop,
+            target: Some("CLAUDE.md".to_owned()),
+            text: "CLAUDE.md is generated; edit .ruler and run ruler apply".to_owned(),
+        }],
+        0,
+    );
+    let promotable = runtime.promotable();
+    let (id, text) = promotable.last().ok_or("nothing was retained to promote")?;
+    assert!(text.contains("generated"));
+
+    let (path, body) = runtime.promote(id).map_err(|error| error.to_string())?;
+    assert!(body.contains("trigger: CLAUDE.md") && body.contains("mode: gate"));
+    assert!(
+        body.contains("promoted from advisor") && body.contains(id),
+        "the file says whose sentence it was: {body}"
+    );
+
+    // The file must satisfy the same reader discovery uses, or promotion has
+    // written a rule that silently never fires.
+    let set = yi_runtime::rules::discover(&root, &root.join("nonexistent-home"));
+    assert!(set.warnings.is_empty(), "{:?}", set.warnings);
+    let rule = set
+        .rules
+        .iter()
+        .find(|rule| rule.needles.iter().any(|needle| needle == "CLAUDE.md"))
+        .ok_or("the promoted rule was not discovered")?;
+    assert_eq!(rule.mode, yi_runtime::rules::RuleMode::Gate);
+
+    let engine = yi_runtime::rules::RuleEngine::new(Vec::new());
+    engine.insert(rule.clone());
+    let denial = engine
+        .check_tool("edit", r#"{"patch":"[CLAUDE.md#a1]"}"#)
+        .ok_or("an armed promoted rule must gate the call it names")?;
+    assert!(denial.contains("edit .ruler"));
+    engine.insert(rule.clone());
+    assert!(
+        engine
+            .check_tool("edit", r#"{"patch":"[CLAUDE.md#a1]"}"#)
+            .is_none(),
+        "re-inserting the same rule must not re-arm it or stack a duplicate"
+    );
+
+    assert!(
+        runtime.promote("adv-does-not-exist").is_err(),
+        "an unknown advice id is an error, not a blank rule"
+    );
+    // A fresh runtime: the guard accepts one note per review cycle, so the
+    // targetless case cannot ride the same cycle as the one above.
+    let targetless = yi_runtime::advisor::AdvisorRuntime::new(
+        AdvisorConfig {
+            rules_dir: Some(rules_dir),
+            ..AdvisorConfig::default()
+        },
+        Arc::new(|_message| {}),
+        None,
+    );
+    targetless.deliver_reviewed(
+        vec![Advice {
+            severity: AdvisorySeverity::Note,
+            kind: AdviceKind::Scope,
+            target: None,
+            text: "targetless musing".to_owned(),
+        }],
+        0,
+    );
+    let last = targetless
+        .promotable()
+        .last()
+        .map(|(id, _)| id.clone())
+        .ok_or("no advice")?;
+    assert!(
+        targetless
+            .promote(&last)
+            .err()
+            .is_some_and(|error| error.contains("names no target")),
+        "advice with nothing to trigger on is refused, not guessed at"
+    );
+    assert!(path.exists());
+    let _ = std::fs::remove_dir_all(&root);
+    Ok(())
+}

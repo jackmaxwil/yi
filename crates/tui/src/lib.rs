@@ -1,5 +1,6 @@
 #![forbid(unsafe_code)]
 
+pub mod advisor;
 pub mod app;
 pub mod approval;
 pub mod cell;

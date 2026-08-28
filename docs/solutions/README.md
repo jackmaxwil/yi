@@ -54,5 +54,6 @@ when it changes rather than editing them by hand.
 - [D56](adr/d56.md) - plan transitions are the advisor's review moments
 - [D57](adr/d57.md) - Direct OpenAI is a real openai-responses adapter
 - [D58](adr/d58.md) - agent messages carry a provenance envelope, not the assistant role
+- [D59](adr/d59.md) - advisor promotion writes a rule file, not a permission pattern
 
 D36-D51 have no ADR yet; ARCHITECTURE.md is the record for those rows.

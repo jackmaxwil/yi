@@ -82,7 +82,7 @@ pub fn discover(cwd: &Path, home: &Path) -> RuleSet {
     }
 }
 
-fn read_rule(path: &Path) -> Result<RuleDoc, String> {
+pub(crate) fn read_rule(path: &Path) -> Result<RuleDoc, String> {
     let source = std::fs::read_to_string(path).map_err(|error| format!("unreadable: {error}"))?;
     let fields = crate::skills::frontmatter(&source);
     let name = path
@@ -183,7 +183,7 @@ impl FireState {
 /// The match layer: literal substrings over tool arguments at the gate and
 /// assistant prose at the boundary. Regex waits on the C2 decision.
 pub struct RuleEngine {
-    rules: Vec<RuleDoc>,
+    rules: std::sync::RwLock<Vec<RuleDoc>>,
     state: Mutex<FireState>,
     deliver: Mutex<Option<DeliverFn>>,
 }
@@ -203,14 +203,30 @@ fn tool_in_scope(rule: &RuleDoc, tool: &str) -> bool {
 impl RuleEngine {
     pub fn new(rules: Vec<RuleDoc>) -> Self {
         Self {
-            rules,
+            rules: std::sync::RwLock::new(rules),
             state: Mutex::new(FireState::default()),
             deliver: Mutex::new(None),
         }
     }
 
     pub fn is_empty(&self) -> bool {
-        self.rules.is_empty()
+        self.snapshot().is_empty()
+    }
+
+    fn snapshot(&self) -> Vec<RuleDoc> {
+        self.rules
+            .read()
+            .map(|rules| rules.clone())
+            .unwrap_or_default()
+    }
+
+    /// A rule armed mid-session (V11 promotion): it replaces one of the same
+    /// name so a re-promotion does not stack duplicates.
+    pub fn insert(&self, rule: RuleDoc) {
+        if let Ok(mut rules) = self.rules.write() {
+            rules.retain(|existing| existing.name != rule.name);
+            rules.push(rule);
+        }
     }
 
     pub fn set_deliver(&self, deliver: DeliverFn) {
@@ -227,7 +243,8 @@ impl RuleEngine {
         };
         let mut denial = None;
         let mut reminders = Vec::new();
-        for rule in &self.rules {
+        let rules = self.snapshot();
+        for rule in &rules {
             if !tool_in_scope(rule, tool) || !matches(rule, args_json) || !state.eligible(rule) {
                 continue;
             }
@@ -308,9 +325,10 @@ impl RuleEngine {
             .collect::<Vec<_>>()
             .join("\n");
         let mut reminders = Vec::new();
+        let rules = self.snapshot();
         if let Ok(mut state) = self.state.lock() {
             if !text.is_empty() {
-                for rule in &self.rules {
+                for rule in &rules {
                     if rule.mode == RuleMode::Remind
                         && rule.scope == RuleScope::Text
                         && matches(rule, &text)

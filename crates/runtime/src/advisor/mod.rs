@@ -27,6 +27,8 @@ pub struct AdvisorConfig {
     pub prose_budget: usize,
     pub tokens_per_hour: Option<u64>,
     pub attention: Option<String>,
+    /// Where V11 promotion writes; `None` refuses to promote.
+    pub rules_dir: Option<std::path::PathBuf>,
 }
 
 impl Default for AdvisorConfig {
@@ -38,6 +40,7 @@ impl Default for AdvisorConfig {
             prose_budget: digest::DEFAULT_PROSE_BUDGET,
             tokens_per_hour: None,
             attention: None,
+            rules_dir: None,
         }
     }
 }
@@ -87,6 +90,47 @@ pub fn should_review(
 }
 
 /// One `<advisory>` element, severity and target as attributes.
+/// How many delivered advices stay promotable; older ones scroll out.
+pub const PROMOTABLE: usize = 32;
+
+fn rule_name(advice_id: &str, target: &str) -> String {
+    let slug: String = target
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() {
+                character.to_ascii_lowercase()
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    let slug = slug
+        .split('-')
+        .filter(|part| !part.is_empty())
+        .take(4)
+        .collect::<Vec<_>>()
+        .join("-");
+    if slug.is_empty() {
+        advice_id.to_owned()
+    } else {
+        format!("{slug}-{advice_id}")
+    }
+}
+
+/// A Hold becomes a gate, anything softer a reminder; the provenance line is
+/// what keeps D54 honest about whose sentence the rule was.
+fn rule_markdown(advice_id: &str, advice: &Advice, target: &str) -> String {
+    let (mode, scope) = if advice.severity == AdvisorySeverity::Hold {
+        ("gate", "tool")
+    } else {
+        ("remind", "tool")
+    };
+    format!(
+        "---\ntrigger: {target}\nscope: {scope}\nmode: {mode}\ngap: 5\n---\n{}\n\n(promoted from advisor {advice_id}; edit or delete this file to change it)\n",
+        advice.text.trim()
+    )
+}
+
 pub fn advisory_text(advice: &Advice) -> String {
     let severity = match advice.severity {
         AdvisorySeverity::Note => "note",
@@ -148,6 +192,8 @@ struct AdvisorState {
     directives: Vec<String>,
     forced: bool,
     context_note: Option<String>,
+    /// Delivered advice the user can still promote, newest last (V11).
+    delivered: std::collections::VecDeque<(String, Advice)>,
 }
 
 /// work log → cadence trigger → reviewer → guard → delivery → outcome ledger,
@@ -179,6 +225,7 @@ impl AdvisorRuntime {
                 directives: Vec::new(),
                 forced: false,
                 context_note: None,
+                delivered: std::collections::VecDeque::new(),
             }),
             config,
             deliver,
@@ -359,6 +406,49 @@ impl AdvisorRuntime {
         done
     }
 
+    /// The advice a user can still make standing, newest last.
+    pub fn promotable(&self) -> Vec<(String, String)> {
+        self.lock()
+            .delivered
+            .iter()
+            .map(|(id, advice)| (id.clone(), advice.text.clone()))
+            .collect()
+    }
+
+    /// V11 (D59): the user adopts one advice as a standing D54 rule file —
+    /// never a rule the runtime writes for itself.
+    pub fn promote(&self, advice_id: &str) -> Result<(std::path::PathBuf, String), String> {
+        let rules_dir = self
+            .config
+            .rules_dir
+            .clone()
+            .ok_or_else(|| "no rules directory is configured for this session".to_owned())?;
+        let advice = {
+            let state = self.lock();
+            let wanted = advice_id.trim();
+            state
+                .delivered
+                .iter()
+                .rev()
+                .find(|(id, _)| id == wanted)
+                .map(|(_, advice)| advice.clone())
+                .ok_or_else(|| {
+                    format!(
+                        "no delivered advice with id \"{wanted}\"; the last {PROMOTABLE} are promotable"
+                    )
+                })?
+        };
+        let target = advice.target.clone().filter(|target| !target.trim().is_empty()).ok_or_else(|| {
+            "this advice names no target, so it cannot become a trigger; write the rule by hand in .yi/rules".to_owned()
+        })?;
+        let body = rule_markdown(advice_id, &advice, &target);
+        std::fs::create_dir_all(&rules_dir)
+            .map_err(|error| format!("{}: {error}", rules_dir.display()))?;
+        let path = rules_dir.join(format!("{}.md", rule_name(advice_id, &target)));
+        std::fs::write(&path, &body).map_err(|error| format!("{}: {error}", path.display()))?;
+        Ok((path, body))
+    }
+
     fn emit_outcome(&self, outcome: &PendingOutcome, now_ms: u64) {
         let details = json!({
             "adviceId": outcome.advice_id,
@@ -377,6 +467,14 @@ impl AdvisorRuntime {
         let mut state = self.lock();
         state.counter = state.counter.saturating_add(1);
         let advice_id = format!("adv-{}", state.counter);
+        // Retained before the D28 degrade: promotion adopts what the reviewer
+        // judged, not the softer form headless delivery had to fall back to.
+        state
+            .delivered
+            .push_back((advice_id.clone(), advice.clone()));
+        if state.delivered.len() > PROMOTABLE {
+            state.delivered.pop_front();
+        }
         if advice.severity == AdvisorySeverity::Hold {
             let held = self.hold_sink.as_ref().is_some_and(|sink| sink(&advice));
             if held {
@@ -451,4 +549,25 @@ pub fn attach_advisor(
         }
     });
     runtime
+}
+
+/// Parsed with the same reader discovery uses (an unparseable rule is removed,
+/// not left to fail silently), then armed without waiting for a restart.
+pub fn promote_advice(
+    session: &AgentSession,
+    advice_id: &str,
+) -> Result<std::path::PathBuf, String> {
+    let advisor = session
+        .advisor()
+        .ok_or_else(|| "no advisor is attached to this session".to_owned())?;
+    let (path, _body) = advisor.promote(advice_id)?;
+    let rule = crate::rules::read_rule(&path).map_err(|error| {
+        let _ = std::fs::remove_file(&path);
+        format!("promoted rule was not loadable and has been removed: {error}")
+    })?;
+    session
+        .rules_engine()
+        .ok_or_else(|| "no rules engine is attached to this session".to_owned())?
+        .insert(rule);
+    Ok(path)
 }

@@ -664,3 +664,48 @@ fn a_settled_resize_rebuilds_the_transcript_at_the_new_width() -> TestResult {
     );
     Ok(())
 }
+
+/// A slash command with arguments must reach the dispatcher intact: completing
+/// to the highlighted item would silently drop everything after the name, which
+/// is the whole payload of `/advisor promote <id>`.
+#[test]
+fn a_slash_query_with_arguments_runs_verbatim() -> TestResult {
+    use yi_tui::keymap::{KeyCodeValue, SingleKey};
+    use yi_tui::popup::{BottomView, ListPopup, PopupResult};
+
+    let key = |code: KeyCodeValue| SingleKey {
+        code,
+        ctrl: false,
+        alt: false,
+        shift: false,
+    };
+    let mut popup = ListPopup::new('/', vec!["advisor".to_owned(), "undo".to_owned()]);
+    for character in "advisor promote adv-3".chars() {
+        popup.handle_key(&key(KeyCodeValue::Char(character)));
+    }
+    match popup.handle_key(&key(KeyCodeValue::Enter)) {
+        PopupResult::Insert(line) => assert_eq!(line, "/advisor promote adv-3"),
+        other => return Err(format!("expected the typed line, got {other:?}").into()),
+    }
+
+    let mut plain = ListPopup::new('/', vec!["advisor".to_owned(), "undo".to_owned()]);
+    for character in "und".chars() {
+        plain.handle_key(&key(KeyCodeValue::Char(character)));
+    }
+    match plain.handle_key(&key(KeyCodeValue::Enter)) {
+        PopupResult::Insert(line) => assert_eq!(line, "/undo", "a bare query still completes"),
+        other => return Err(format!("expected completion, got {other:?}").into()),
+    }
+
+    let mut files = ListPopup::new('@', vec!["src/main.rs".to_owned()]);
+    for character in "src ".chars() {
+        files.handle_key(&key(KeyCodeValue::Char(character)));
+    }
+    match files.handle_key(&key(KeyCodeValue::Enter)) {
+        PopupResult::Close => {}
+        other => {
+            return Err(format!("the @ popup must not run text as a command: {other:?}").into());
+        }
+    }
+    Ok(())
+}
