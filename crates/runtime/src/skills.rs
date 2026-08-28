@@ -98,7 +98,7 @@ fn read_skill(dir: &Path, manifest: &Path) -> Option<Skill> {
 
 /// The `key: value` subset of YAML that skill frontmatter actually uses;
 /// anything else in the block is ignored rather than guessed at.
-fn frontmatter(source: &str) -> BTreeMap<String, String> {
+pub(crate) fn frontmatter(source: &str) -> BTreeMap<String, String> {
     let mut fields = BTreeMap::new();
     let mut lines = source.lines();
     if lines.next().map(str::trim) != Some("---") {

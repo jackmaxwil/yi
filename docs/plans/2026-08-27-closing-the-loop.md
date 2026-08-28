@@ -1,10 +1,12 @@
 # Closing the Loop — completion, plan, and reminder architecture
 
 ```
-status:  APPROVED 2026-08-27; steps 1–4 LANDED at ARCHITECTURE 0.33.0 (D52/D53 —
-         goal.check, Fact::Plan + PlanService, doctrine fragment, orchestrate +
-         session-mining skills, validator hoist). Open remainder tracked as
-         docs/TODOS.md section N and the pre-existing F rows.
+status:  APPROVED 2026-08-27; steps 1–4 LANDED at 0.33.0 (D52/D53), step 6 trigger
+         rules LANDED at 0.34.0 (D54 — gate + remind, literal-only, zero builtins;
+         §3.6's "one throat through the V7 guard" is revised: a test proved guard
+         dedupe overrides user-chosen gaps, so the per-rule gap latch is the noise
+         budget and the guard stays advisor-only). Open remainder: docs/TODOS.md
+         N7 reviewer+wall, N8 advisor jobs, N9 surfaces, and the F rows.
 date:    2026-08-27
 sources: Factory.ai "What it Takes for Coding Agents to Complete Large Software Tasks"
          (2026-08-27) · opencode packages/codemode @ 15537a4 · omp TTSR

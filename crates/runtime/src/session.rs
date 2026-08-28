@@ -95,6 +95,7 @@ pub struct AgentSession {
     permission: Mutex<Option<Arc<crate::permission::PermissionBroker>>>,
     goal: Mutex<Option<Arc<crate::goal::GoalService>>>,
     plan: Mutex<Option<Arc<crate::plan::PlanService>>>,
+    rules: Mutex<Option<Arc<crate::rules::RuleEngine>>>,
 }
 
 type ScheduleParts = (
@@ -133,6 +134,7 @@ impl AgentSession {
             permission: Mutex::new(None),
             goal: Mutex::new(None),
             plan: Mutex::new(None),
+            rules: Mutex::new(None),
         }
     }
 
@@ -178,6 +180,19 @@ impl AgentSession {
         if let Ok(mut slot) = self.goal.lock() {
             *slot = Some(service);
         }
+    }
+
+    pub fn set_rules_engine(&self, engine: Arc<crate::rules::RuleEngine>) {
+        if let Ok(mut slot) = self.rules.lock() {
+            *slot = Some(engine);
+        }
+    }
+
+    pub fn rules_engine(&self) -> Option<Arc<crate::rules::RuleEngine>> {
+        self.rules
+            .lock()
+            .ok()
+            .and_then(|slot| slot.as_ref().map(Arc::clone))
     }
 
     pub fn set_plan_service(&self, service: Arc<crate::plan::PlanService>) {
@@ -297,7 +312,8 @@ impl AgentSession {
                         cancelled,
                         permission.clone(),
                     )
-                    .with_auto_background(auto_background),
+                    .with_auto_background(auto_background)
+                    .with_rules(self.rules_engine()),
                 ) as Arc<dyn yi_loop::AgentTool>
             })
             .collect();

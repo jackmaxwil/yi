@@ -1740,6 +1740,7 @@ owner, one write path, and one read path — and the write paths are the design:
 | MM4 | Workspace + checkpoints (T14) | the real long-term memory | tools | tools; `/undo`, `/diff` | forever |
 | MM5 | Advisor transcript + outcome ledger (V9) | episodic (advisor's own) | advisor runtime | advisor prefix; `/advisor stats` | per session |
 | MM6 | Permission rules + holds (M2–M5) | **procedural, enforced** | user (`allow_always`, `/advisor promote`) | M6 `decide()` at the tool gate | session rules in session header; config rules in config |
+| MM7 | Trigger rules (D54, 0.34.0) | procedural, delivered verbatim | **user only** (`.yi/rules/*.md`, project shadows global, zero builtins) | `rules::RuleEngine` — gate rules deny-with-evidence before `decide()`; remind rules land as `custom{reminder}` at the boundary, per-rule gap as the noise budget | rule files on disk; fire state is session-local |
 
 Principles, each with its evidence:
 

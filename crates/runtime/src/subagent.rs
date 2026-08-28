@@ -741,6 +741,18 @@ pub fn attach_runtime(session: &mut AgentSession, wiring: RuntimeWiring) -> Arc<
     let mut tools = (wiring.tools)();
     tools.push(crate::kernel::ipython_tool(service));
     wire_advisor(session, &wiring);
+    let rule_set = crate::rules::discover(&wiring.cwd, &wiring.home);
+    if !rule_set.warnings.is_empty() {
+        let notice = session.notice_hook();
+        for warning in &rule_set.warnings {
+            notice(warning);
+        }
+    }
+    if !rule_set.rules.is_empty() {
+        let engine = Arc::new(crate::rules::RuleEngine::new(rule_set.rules));
+        crate::rules::attach_rules(session, Arc::clone(&engine));
+        session.set_rules_engine(engine);
+    }
     session.use_tools_with_background(
         tools,
         wiring.cwd.clone(),
