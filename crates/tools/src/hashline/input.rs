@@ -30,13 +30,13 @@ fn strip_apply_patch_path_noise(path_text: &str) -> &str {
         stars += 1;
     }
     rest = rest.trim_start();
-    // Keywords are ASCII, so match case-insensitively on the original bytes;
-    // a lowered copy can differ in byte length (e.g. 'İ' -> "i\u{307}") and
-    // offsets computed against one string would slice the other mid-char.
+    // Keywords are ASCII: match the original bytes. A lowered copy can change
+    // byte length ('İ' -> "i\u{307}"), desyncing offsets into a mid-char slice.
     let bytes = rest.as_bytes();
     for keyword in ["update", "add", "delete", "move"] {
-        if bytes.len() < keyword.len()
-            || !bytes[..keyword.len()].eq_ignore_ascii_case(keyword.as_bytes())
+        if !bytes
+            .get(..keyword.len())
+            .is_some_and(|head| head.eq_ignore_ascii_case(keyword.as_bytes()))
         {
             continue;
         }
@@ -46,7 +46,9 @@ fn strip_apply_patch_path_noise(path_text: &str) -> &str {
         }
         for tail_keyword in ["file", "to"] {
             let end = index + tail_keyword.len();
-            if end <= bytes.len() && bytes[index..end].eq_ignore_ascii_case(tail_keyword.as_bytes())
+            if bytes
+                .get(index..end)
+                .is_some_and(|tail| tail.eq_ignore_ascii_case(tail_keyword.as_bytes()))
             {
                 index = end;
                 break;
@@ -364,5 +366,16 @@ impl Patch {
                 })
                 .collect(),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn keyword_scan_survives_multibyte_lowercase() {
+        // 'İ' (U+0130) lowercases to "i\u{307}", 2 bytes to 3.
+        assert_eq!(strip_apply_patch_path_noise("update\u{130}file: x"), "x");
     }
 }
