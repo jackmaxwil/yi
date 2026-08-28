@@ -315,6 +315,7 @@ fn build_session(
             rlm_dir: default_session_dir(args).join(format!("rlm-{}", std::process::id())),
             summarizer: summarizer_model(args),
             advisor: advisor_model(),
+            parent_link: None,
             plan_stale_turns: config_value()
                 .and_then(|config| config.pointer("/plan/staleReminderTurns").cloned())
                 .and_then(|value| value.as_u64()),

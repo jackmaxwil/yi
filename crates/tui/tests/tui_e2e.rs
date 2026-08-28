@@ -166,6 +166,7 @@ fn subagent_task_cell_focus_and_back() -> TestResult {
         notice: Arc::new(|_notice| {}),
         events: tokio::sync::broadcast::channel(64).0,
         parent_messages: Arc::new(Vec::new),
+        report: Arc::new(|_message| {}),
         attribute: Arc::new(|_usage| {}),
     }));
     let mut app = app();

@@ -434,9 +434,20 @@ impl AgentSession {
     }
 
     pub fn follow_up(&self, text: &str) {
+        self.follow_up_message(user_message(text));
+    }
+
+    /// B13 `send`: queued for the next turn, never starting one.
+    pub fn follow_up_message(&self, message: AgentMessage) {
         if let Ok(mut queue) = self.shared.follow_up.lock() {
-            queue.push(user_message(text));
+            queue.push(message);
         }
+    }
+
+    /// B13 `followup`: delivered into a running turn at its next boundary, or
+    /// starting one when the session is idle.
+    pub fn deliver(&self, message: AgentMessage) {
+        (self.heartbeat_hook())(message, yi_types::schedule::DeliveryMode::Steer);
     }
 
     pub fn abort(&self) {

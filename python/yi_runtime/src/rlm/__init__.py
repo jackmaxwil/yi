@@ -31,6 +31,31 @@ class RLMSpawnHandle:
     session_dir: Path
     model: str
 
+    async def result(
+        self,
+        schema: dict[str, Any] | None = None,
+        timeout: float = 900.0,
+        poll: float = 0.5,
+    ) -> dict[str, Any]:
+        """Wait for this child to finish and return its answer as data.
+
+        The reply carries ``text`` and, when the child answered with JSON,
+        ``json``. A ``schema`` is checked host-side and a mismatch raises,
+        so a malformed result never reaches the parent's transcript as if
+        it had passed.
+        """
+        deadline = 0.0
+        while deadline < timeout:
+            for entry in await list_subagents():
+                if entry.rlm_child_id == self.rlm_child_id and entry.status != "running":
+                    return await result(self.rlm_child_id, schema)
+            await asyncio.sleep(poll)
+            deadline += poll
+        raise TimeoutError(f"child {self.name} did not finish within {timeout}s")
+
+    async def send(self, message: str, followup: bool = False) -> dict[str, Any]:
+        return await send(self.name, message, followup)
+
 
 @dataclass(frozen=True)
 class RLMModel:
@@ -240,6 +265,57 @@ async def delete_subagent(target: str | RLMSubagent) -> RLMSubagent:
     return _subagent_from_payload(payload.get("subagent"), "rlm.delete_subagent")
 
 
+async def send(target: "str | RLMSubagent", message: str, followup: bool = False) -> dict[str, Any]:
+    """Send one agent message; ``followup=True`` also starts the target's turn.
+
+    ``target`` is an agent name, ``"parent"``, or ``"all"``. A broadcast returns
+    one receipt per target rather than failing whole on the first bad one.
+    """
+    if not isinstance(message, str) or not message:
+        raise ValueError("message must be a non-empty str")
+    selector = target if isinstance(target, str) else target.session_name
+    return await host_request(
+        "agent_message.send",
+        {"target": selector, "message": message, "followup": bool(followup)},
+    )
+
+
+async def followup(target: "str | RLMSubagent", message: str) -> dict[str, Any]:
+    """Send and start the target's turn if it is idle (delivered at a boundary if not)."""
+    return await send(target, message, followup=True)
+
+
+async def list_agents() -> list[dict[str, Any]]:
+    """The family this agent can address by name."""
+    payload = await host_request("agent_message.list_agents", {})
+    agents = payload.get("agents")
+    if not isinstance(agents, list):
+        raise RuntimeError("agent_message.list_agents returned an invalid roster")
+    return agents
+
+
+async def wait(timeout: float = 300.0) -> dict[str, Any]:
+    """Block until a child reports or finishes; returns the names that moved.
+
+    The host clamps the timeout and says so in the reply (``clamped``), so a
+    caller is never silently given a different one.
+    """
+    return await host_request("rlm.wait", {"timeout_ms": int(timeout * 1000)})
+
+
+async def interrupt(target: "str | RLMSubagent") -> dict[str, Any]:
+    """End a child's run and keep its record (``delete_subagent`` reaps instead)."""
+    return await host_request("rlm.interrupt", {"target": _worktree_target(target)})
+
+
+async def result(target: "str | RLMSubagent", schema: dict[str, Any] | None = None) -> dict[str, Any]:
+    """A finished child's answer as data, checked against ``schema`` host-side."""
+    payload: dict[str, Any] = {"target": _worktree_target(target)}
+    if schema is not None:
+        payload["schema"] = schema
+    return await host_request("rlm.result", payload)
+
+
 def _worktree_target(target: "str | RLMSubagent") -> str:
     if isinstance(target, RLMSubagent):
         return target.rlm_child_id
@@ -332,6 +408,26 @@ class _RLMCallable:
     async def delete_subagent(self, target: str | RLMSubagent) -> RLMSubagent:
         return await delete_subagent(target)
 
+    async def send(self, target: str | RLMSubagent, message: str, followup: bool = False) -> dict[str, Any]:
+        return await send(target, message, followup)
+
+    async def followup(self, target: str | RLMSubagent, message: str) -> dict[str, Any]:
+        return await followup(target, message)
+
+    async def list_agents(self) -> list[dict[str, Any]]:
+        return await list_agents()
+
+    async def wait(self, timeout: float = 300.0) -> dict[str, Any]:
+        return await wait(timeout)
+
+    async def interrupt(self, target: str | RLMSubagent) -> dict[str, Any]:
+        return await interrupt(target)
+
+    async def result(
+        self, target: str | RLMSubagent, schema: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
+        return await result(target, schema)
+
     async def merge_worktree(self, target: str | RLMSubagent) -> dict[str, Any]:
         return await merge_worktree(target)
 
@@ -368,12 +464,18 @@ __all__ = [
     "discard_worktree",
     "find_models",
     "get_harness_state",
+    "followup",
     "harness",
     "host_request",
+    "interrupt",
+    "list_agents",
     "list_subagents",
     "merge_worktree",
+    "result",
     "rlm",
     "run",
+    "send",
+    "wait",
 ]
 
 # Lazily re-export the MCP base class. Kept lazy so `import rlm` never requires

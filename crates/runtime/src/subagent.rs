@@ -8,6 +8,7 @@ use yi_types::message::{AgentMessage, Content, StopReason, Usage};
 use yi_types::model::Model;
 pub use yi_types::subagent::{ChildActivity, ChildId, ChildStatus, ChildUpdate};
 
+use crate::mailbox::{ParentLink, WAIT_MAX_MS, message_params, register_child_messaging};
 use crate::provider::{available_models, resolve_model};
 use crate::session::AgentSession;
 
@@ -15,18 +16,21 @@ pub const DEFAULT_MAX_DEPTH: u8 = 1;
 // A completed child holds its slot until closed: the cap forces the parent to
 // reap with rlm.delete_subagent instead of leaking children (design B2).
 pub const DEFAULT_MAX_CHILDREN: usize = 8;
+pub const PARENT_NAME: &str = "parent";
 
-struct ChildRecord {
-    session_name: String,
+pub(crate) struct ChildRecord {
+    pub(crate) session_name: String,
     session_dir: PathBuf,
-    worktree: Option<crate::worktree::Worktree>,
-    status: ChildStatus,
+    pub(crate) worktree: Option<crate::worktree::Worktree>,
+    pub(crate) status: ChildStatus,
     activity: ChildActivity,
     tool_use_count: u64,
     token_count: u64,
     answer_preview: Option<String>,
-    error: Option<String>,
-    session: Arc<AgentSession>,
+    pub(crate) error: Option<String>,
+    /// B13 wait: reports and terminal transitions the parent has not collected.
+    pub(crate) pending: u64,
+    pub(crate) session: Arc<AgentSession>,
 }
 
 impl ChildRecord {
@@ -57,6 +61,7 @@ pub struct ChildBuild<'a> {
     pub session_dir: &'a Path,
     /// `Some` only for a B11 worktree child; otherwise the parent's own cwd.
     pub cwd: Option<&'a Path>,
+    pub link: ParentLink,
 }
 
 pub type ChildFactory = dyn Fn(ChildBuild<'_>) -> Result<AgentSession, String> + Send + Sync;
@@ -78,13 +83,15 @@ pub struct SubagentHostOptions {
     pub parent_messages: Arc<dyn Fn() -> Vec<AgentMessage> + Send + Sync>,
     /// The repository a B11 worktree child branches from.
     pub cwd: PathBuf,
+    /// A child's B6 report, injected into the parent's own transcript.
+    pub report: Arc<dyn Fn(AgentMessage) + Send + Sync>,
     /// Folds a child's billable usage onto the parent's last assistant message.
     pub attribute: Arc<AttributeFn>,
 }
 
 pub struct SubagentHost {
-    options: SubagentHostOptions,
-    children: Mutex<HashMap<String, ChildRecord>>,
+    pub(crate) options: SubagentHostOptions,
+    pub(crate) children: Mutex<HashMap<String, ChildRecord>>,
 }
 
 pub(crate) fn random_suffix() -> Result<String, String> {
@@ -254,7 +261,7 @@ fn child_entry(child_id: &str, record: &ChildRecord) -> Value {
     })
 }
 
-fn last_assistant_text(messages: &[AgentMessage]) -> Option<String> {
+pub(crate) fn last_assistant_text(messages: &[AgentMessage]) -> Option<String> {
     messages.iter().rev().find_map(|message| match message {
         AgentMessage::Assistant { content, .. } => {
             let text = content
@@ -472,6 +479,10 @@ impl SubagentHost {
                 thinking,
                 session_dir: &session_dir,
                 cwd: worktree.as_ref().map(|tree| tree.path.as_path()),
+                link: ParentLink {
+                    child_name: session_name.clone(),
+                    host: Arc::downgrade(self),
+                },
             })?;
             if fork != Fork::None {
                 let seed = seed_for_fork(
@@ -494,6 +505,7 @@ impl SubagentHost {
                     token_count: 0,
                     answer_preview: None,
                     error: None,
+                    pending: 0,
                     session: Arc::clone(&session),
                 },
             );
@@ -577,6 +589,7 @@ impl SubagentHost {
             record.status = status;
             record.activity = ChildActivity::Waiting;
             record.error = error.clone();
+            record.pending = record.pending.saturating_add(1);
         }
         self.publish(&child_id);
         // Terminal notices reach the parent as user-role host status, never as
@@ -613,58 +626,15 @@ impl SubagentHost {
         reply
     }
 
-    fn key_of(children: &HashMap<String, ChildRecord>, target: &str) -> Result<String, String> {
+    pub(crate) fn key_of(
+        children: &HashMap<String, ChildRecord>,
+        target: &str,
+    ) -> Result<String, String> {
         children
             .iter()
             .find(|(id, record)| id.as_str() == target || record.session_name == target)
             .map(|(id, _)| id.clone())
             .ok_or_else(|| format!("No RLM child matches \"{target}\""))
-    }
-
-    /// B11 hand-back: the child's branch is committed, then merged.
-    pub fn merge_worktree(&self, target: &str) -> Result<Map<String, Value>, String> {
-        let (tree, name) = self.take_settled_worktree(target)?;
-        let output = crate::worktree::merge(&self.options.cwd, &tree, &name)?;
-        crate::worktree::discard(&self.options.cwd, &tree)?;
-        let mut reply = Map::new();
-        reply.insert("merged".to_owned(), Value::Bool(true));
-        reply.insert("branch".to_owned(), Value::String(tree.branch));
-        reply.insert("output".to_owned(), Value::String(output));
-        Ok(reply)
-    }
-
-    pub fn discard_worktree(&self, target: &str) -> Result<Map<String, Value>, String> {
-        let (tree, _) = self.take_settled_worktree(target)?;
-        crate::worktree::discard(&self.options.cwd, &tree)?;
-        let mut reply = Map::new();
-        reply.insert("discarded".to_owned(), Value::Bool(true));
-        reply.insert("branch".to_owned(), Value::String(tree.branch));
-        Ok(reply)
-    }
-
-    /// Invariant: taken off the record, so a tree is never handed back twice.
-    fn take_settled_worktree(
-        &self,
-        target: &str,
-    ) -> Result<(crate::worktree::Worktree, String), String> {
-        let mut children = self
-            .children
-            .lock()
-            .map_err(|_| "subagent state poisoned")?;
-        let key = Self::key_of(&children, target)?;
-        let record = children
-            .get_mut(&key)
-            .ok_or_else(|| format!("No RLM child matches \"{target}\""))?;
-        if record.status == ChildStatus::Running {
-            return Err(format!(
-                "child \"{target}\" is still running; wait for it before touching its worktree"
-            ));
-        }
-        let tree = record
-            .worktree
-            .take()
-            .ok_or_else(|| format!("child \"{target}\" has no worktree (isolation was none)"))?;
-        Ok((tree, record.session_name.clone()))
     }
 
     pub fn delete(&self, target: &str) -> Result<Map<String, Value>, String> {
@@ -718,6 +688,57 @@ impl SubagentHost {
     }
 
     pub fn register(self: &Arc<Self>, registry: &mut crate::kernel::HostRegistry) {
+        let host = Arc::clone(self);
+        registry.register("agent_message.send", move |payload| {
+            let (target, text, followup) = message_params(&payload);
+            let host = Arc::clone(&host);
+            Box::pin(async move {
+                let text = text.ok_or("agent_message.send requires a message")?;
+                host.route(PARENT_NAME, &target, &text, followup)
+            })
+        });
+        let host = Arc::clone(self);
+        registry.register("agent_message.list_agents", move |_payload| {
+            let reply = host.roster();
+            Box::pin(async move { Ok(reply) })
+        });
+        let host = Arc::clone(self);
+        registry.register("rlm.wait", move |payload| {
+            let timeout = payload
+                .get("timeout_ms")
+                .and_then(Value::as_u64)
+                .unwrap_or(WAIT_MAX_MS);
+            let host = Arc::clone(&host);
+            Box::pin(async move { Ok(host.wait(timeout).await) })
+        });
+        let host = Arc::clone(self);
+        registry.register("rlm.interrupt", move |payload| {
+            let target = payload
+                .get("target")
+                .and_then(Value::as_str)
+                .map(str::to_owned);
+            let host = Arc::clone(&host);
+            Box::pin(async move {
+                let target = target.ok_or("rlm.interrupt requires a target")?;
+                host.interrupt(&target)
+            })
+        });
+        let host = Arc::clone(self);
+        registry.register("rlm.result", move |payload| {
+            let target = payload
+                .get("target")
+                .and_then(Value::as_str)
+                .map(str::to_owned);
+            let schema = payload
+                .get("schema")
+                .cloned()
+                .filter(|value| !value.is_null());
+            let host = Arc::clone(&host);
+            Box::pin(async move {
+                let target = target.ok_or("rlm.result requires a target")?;
+                host.result(&target, schema.as_ref())
+            })
+        });
         let host = Arc::clone(self);
         registry.register("rlm.run", move |payload| {
             let prompt = payload
@@ -823,6 +844,8 @@ pub struct RuntimeWiring {
     pub advisor: Option<Model>,
     /// `plan.staleReminderTurns` config; None keeps the default.
     pub plan_stale_turns: Option<u64>,
+    /// Set for a child: its B6 route back into the family that spawned it.
+    pub parent_link: Option<ParentLink>,
     /// D13 `bash.autoBackgroundMs`; None keeps every command in the turn.
     pub auto_background: Option<std::time::Duration>,
 }
@@ -1006,6 +1029,7 @@ pub fn attach_runtime(session: &mut AgentSession, wiring: RuntimeWiring) -> Arc<
                 cwd: build
                     .cwd
                     .map_or_else(|| factory_wiring.cwd.clone(), Path::to_path_buf),
+                parent_link: Some(build.link),
                 ..factory_wiring.clone()
             },
         );
@@ -1022,9 +1046,18 @@ pub fn attach_runtime(session: &mut AgentSession, wiring: RuntimeWiring) -> Arc<
         events: session.events_sender(),
         parent_messages: session.history_handle(),
         cwd: wiring.cwd.clone(),
+        report: {
+            let deliver = session.heartbeat_hook();
+            Arc::new(move |message| {
+                deliver(message, yi_types::schedule::DeliveryMode::Steer);
+            })
+        },
         attribute: session.attribution_handle(),
     }));
     host.register(&mut registry);
+    if let Some(link) = wiring.parent_link.clone() {
+        register_child_messaging(link, &host, &mut registry);
+    }
     wire_schedule(session, &wiring, &mut registry);
     wire_goal(session, &mut registry, wiring.plan_stale_turns);
     let restore_notice = session.notice_hook();

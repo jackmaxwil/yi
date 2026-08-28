@@ -5,6 +5,7 @@ pub mod checkpoint;
 pub mod compaction;
 pub mod goal;
 pub mod kernel;
+pub mod mailbox;
 pub mod permission;
 pub mod plan;
 pub mod provider;
@@ -23,6 +24,7 @@ pub use compaction::{CompactStatus, Compactor};
 pub use kernel::{
     HostRegistry, KernelService, KernelServiceOptions, ipython_tool, restore_notice_text,
 };
+pub use mailbox::ParentLink;
 pub use permission::{AskOutcome, Asker, PermissionAsk, PermissionBroker};
 pub use provider::{ProviderStream, available_models, resolve_model};
 pub use rewind::{Rewound, rewind_to};

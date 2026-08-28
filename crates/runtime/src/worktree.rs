@@ -1,6 +1,10 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use serde_json::{Map, Value};
+
+use crate::subagent::{ChildStatus, SubagentHost};
+
 const GIT_TIMEOUT_MS: u64 = 120_000;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -60,4 +64,52 @@ pub fn discard(repo: &Path, tree: &Worktree) -> Result<(), String> {
     git(repo, &["worktree", "remove", "--force", &path_text])?;
     git(repo, &["branch", "-D", &tree.branch])?;
     Ok(())
+}
+
+impl SubagentHost {
+    /// B11 hand-back: the child's branch is committed, then merged.
+    pub fn merge_worktree(&self, target: &str) -> Result<Map<String, Value>, String> {
+        let (tree, name) = self.take_settled_worktree(target)?;
+        let output = crate::worktree::merge(&self.options.cwd, &tree, &name)?;
+        crate::worktree::discard(&self.options.cwd, &tree)?;
+        let mut reply = Map::new();
+        reply.insert("merged".to_owned(), Value::Bool(true));
+        reply.insert("branch".to_owned(), Value::String(tree.branch));
+        reply.insert("output".to_owned(), Value::String(output));
+        Ok(reply)
+    }
+
+    pub fn discard_worktree(&self, target: &str) -> Result<Map<String, Value>, String> {
+        let (tree, _) = self.take_settled_worktree(target)?;
+        crate::worktree::discard(&self.options.cwd, &tree)?;
+        let mut reply = Map::new();
+        reply.insert("discarded".to_owned(), Value::Bool(true));
+        reply.insert("branch".to_owned(), Value::String(tree.branch));
+        Ok(reply)
+    }
+
+    /// Invariant: taken off the record, so a tree is never handed back twice.
+    fn take_settled_worktree(
+        &self,
+        target: &str,
+    ) -> Result<(crate::worktree::Worktree, String), String> {
+        let mut children = self
+            .children
+            .lock()
+            .map_err(|_| "subagent state poisoned")?;
+        let key = Self::key_of(&children, target)?;
+        let record = children
+            .get_mut(&key)
+            .ok_or_else(|| format!("No RLM child matches \"{target}\""))?;
+        if record.status == ChildStatus::Running {
+            return Err(format!(
+                "child \"{target}\" is still running; wait for it before touching its worktree"
+            ));
+        }
+        let tree = record
+            .worktree
+            .take()
+            .ok_or_else(|| format!("child \"{target}\" has no worktree (isolation was none)"))?;
+        Ok((tree, record.session_name.clone()))
+    }
 }

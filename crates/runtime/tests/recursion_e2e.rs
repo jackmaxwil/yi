@@ -60,6 +60,7 @@ struct Harness {
     events: tokio::sync::broadcast::Sender<AgentEvent>,
     parent: Arc<Mutex<Vec<AgentMessage>>>,
     child_cwd: Arc<Mutex<Option<PathBuf>>>,
+    inbox: Arc<Mutex<Vec<String>>>,
 }
 
 struct HarnessOptions {
@@ -106,6 +107,8 @@ fn harness_with(options: HarnessOptions) -> Harness {
     let notice_sink = Arc::clone(&notices);
     let attribute_sink = Arc::clone(&attributed);
     let (events, _keep) = tokio::sync::broadcast::channel(256);
+    let inbox: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let inbox_sink = Arc::clone(&inbox);
     let parent: Arc<Mutex<Vec<AgentMessage>>> = Arc::new(Mutex::new(Vec::new()));
     let parent_source = Arc::clone(&parent);
     let host = Arc::new(SubagentHost::new(SubagentHostOptions {
@@ -130,6 +133,8 @@ fn harness_with(options: HarnessOptions) -> Harness {
                 ));
             }
             script.push(child_reply(child_answer));
+            // A second scripted reply so a B13 followup has a turn to run.
+            script.push(child_reply(child_answer));
             provider.queue_faux(script);
             let mut child = AgentSession::new(
                 SessionConfig {
@@ -151,6 +156,16 @@ fn harness_with(options: HarnessOptions) -> Harness {
             }
         }),
         events: events.clone(),
+        report: Arc::new(move |message| {
+            if let AgentMessage::Custom {
+                content: yi_types::message::UserContent::Text(text),
+                ..
+            } = message
+                && let Ok(mut sink) = inbox_sink.lock()
+            {
+                sink.push(text);
+            }
+        }),
         parent_messages: Arc::new(move || {
             parent_source
                 .lock()
@@ -169,6 +184,7 @@ fn harness_with(options: HarnessOptions) -> Harness {
         events,
         parent,
         child_cwd,
+        inbox,
     }
 }
 
@@ -320,6 +336,24 @@ async fn first_child_messages(harness: &Harness) -> Vec<AgentMessage> {
     Vec::new()
 }
 
+/// Everything the child was handed: its task, and any agent message since.
+fn inbound_texts(messages: &[AgentMessage]) -> Vec<String> {
+    messages
+        .iter()
+        .filter_map(|message| match message {
+            AgentMessage::User {
+                content: yi_types::message::UserContent::Text(text),
+                ..
+            }
+            | AgentMessage::Custom {
+                content: yi_types::message::UserContent::Text(text),
+                ..
+            } => Some(text.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
 fn user_texts(messages: &[AgentMessage]) -> Vec<String> {
     messages
         .iter()
@@ -416,6 +450,186 @@ async fn fork_seeds_the_child_with_the_turns_it_asked_for() -> TestResult {
         "a malformed fork names the vocabulary"
     );
     Ok(())
+}
+
+async fn child_sees(harness: &Harness, name: &str, needle: &str) -> bool {
+    for _ in 0..100 {
+        let seen = harness
+            .host
+            .children_view()
+            .into_iter()
+            .filter(|child| child.update.name == name)
+            .any(|child| {
+                inbound_texts(&child.session.messages())
+                    .iter()
+                    .any(|text| text.contains(needle))
+            });
+        if seen {
+            return true;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+    }
+    false
+}
+
+#[tokio::test]
+async fn agent_messages_route_by_name_and_broadcast_with_receipts() -> TestResult {
+    let harness = harness(0, 1, "ok");
+    for name in ["alpha", "beta"] {
+        harness
+            .host
+            .spawn(format!("work {name}"), kwargs(&[("name", name)]))
+            .map_err(|error| error.to_string())?;
+        assert!(child_sees(&harness, name, "[task from parent]").await);
+    }
+
+    let queued = harness
+        .host
+        .route("parent", "beta", "no rush", false)
+        .map_err(|error| error.to_string())?;
+    assert_eq!(queued["receipts"][0]["state"], "queued");
+    assert!(
+        !child_sees(&harness, "beta", "no rush").await,
+        "a plain send never starts a turn: it waits for the next one"
+    );
+
+    harness
+        .host
+        .route("parent", "alpha", "look at this now", true)
+        .map_err(|error| error.to_string())?;
+    assert!(
+        child_sees(&harness, "alpha", "<agent_message from=\"parent\">").await,
+        "a followup reaches the child inside the provenance envelope"
+    );
+
+    let broadcast = harness
+        .host
+        .route("alpha", "all", "siblings, status?", false)
+        .map_err(|error| error.to_string())?;
+    let receipts = broadcast["receipts"]
+        .as_array()
+        .ok_or("no receipts")?
+        .clone();
+    assert_eq!(receipts.len(), 1, "the sender is not its own audience");
+    assert_eq!(receipts[0]["target"], "beta");
+
+    let unknown = harness.host.route("parent", "gamma", "hello", false);
+    assert!(
+        unknown.err().is_some_and(
+            |error| error.contains("no agent named \"gamma\"") && error.contains("alpha")
+        ),
+        "an unknown target names the children that do exist"
+    );
+    assert!(
+        harness
+            .host
+            .route("parent", "parent", "hi", false)
+            .err()
+            .is_some_and(|error| error.contains("cannot send to itself"))
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_child_reports_upward_and_the_parent_waits_for_it() -> TestResult {
+    let harness = harness(0, 1, "ok");
+    harness
+        .host
+        .spawn("do it".to_owned(), kwargs(&[("name", "scout")]))
+        .map_err(|error| error.to_string())?;
+    assert!(child_sees(&harness, "scout", "[task from parent]").await);
+    // Drains the terminal transition so the wait below observes the report only.
+    harness.host.wait(0).await;
+
+    let link = yi_runtime::ParentLink {
+        child_name: "scout".to_owned(),
+        host: Arc::downgrade(&harness.host),
+    };
+    link.send("parent", "found the leak in run.rs", false)
+        .map_err(|error| error.to_string())?;
+    let inbox = harness.inbox.lock().map_err(|_| "poisoned")?.clone();
+    assert!(
+        inbox
+            .iter()
+            .any(|text| text.contains("<agent_message from=\"scout\">")
+                && text.contains("found the leak in run.rs")),
+        "a child's report reaches the parent as provenanced data: {inbox:?}"
+    );
+
+    let woken = harness.host.wait(60_000).await;
+    assert_eq!(woken["updated"], serde_json::json!(["scout"]));
+    let quiet = harness.host.wait(0).await;
+    assert_eq!(
+        quiet["updated"],
+        serde_json::json!([]),
+        "an update is collected once, not reported forever"
+    );
+    assert_eq!(quiet["timeout_ms"], 1000, "the clamp is applied");
+    assert_eq!(quiet["clamped"], true, "and reported");
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_finished_child_hands_back_a_schema_checked_result() -> TestResult {
+    let harness = harness(0, 1, "{\"files\": 3}");
+    harness
+        .host
+        .spawn("count files".to_owned(), kwargs(&[("name", "counter")]))
+        .map_err(|error| error.to_string())?;
+    assert!(wait_for_status_named(&harness, "counter").await);
+
+    let schema = serde_json::json!({
+        "type": "object",
+        "properties": {"files": {"type": "number"}},
+        "required": ["files"]
+    });
+    let result = harness
+        .host
+        .result("counter", Some(&schema))
+        .map_err(|error| error.to_string())?;
+    assert_eq!(result["json"]["files"], 3);
+
+    let wrong = serde_json::json!({
+        "type": "object",
+        "properties": {"paths": {"type": "array"}},
+        "required": ["paths"]
+    });
+    assert!(
+        harness
+            .host
+            .result("counter", Some(&wrong))
+            .err()
+            .is_some_and(|error| error.contains("result rejected")),
+        "a result that misses its schema is refused at the seam, not passed on"
+    );
+    assert!(
+        harness
+            .host
+            .interrupt("counter")
+            .is_ok_and(|reply| reply.contains_key("interrupted")),
+        "interrupt keeps the record where delete reaps it"
+    );
+    assert_eq!(
+        harness.host.children_view().len(),
+        1,
+        "an interrupted child is still on the roster"
+    );
+    Ok(())
+}
+
+async fn wait_for_status_named(harness: &Harness, name: &str) -> bool {
+    for _ in 0..100 {
+        if harness
+            .host
+            .children_view()
+            .iter()
+            .any(|child| child.update.name == name && child.update.status != ChildStatus::Running)
+        {
+            return true;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+    }
+    false
 }
 
 fn git_repo(label: &str) -> Result<PathBuf, Box<dyn Error>> {
@@ -677,6 +891,28 @@ async fn rlm_run_round_trips_through_a_real_kernel() -> TestResult {
         "rlm.list_subagents must expose the completed child: {} {}",
         list_cell.result.stdout,
         list_cell.result.stderr
+    );
+
+    let roster_cell = tokio::task::spawn_blocking({
+        let service = Arc::clone(&service);
+        let cancelled = Arc::clone(&cancelled);
+        move || {
+            yi_tools::KernelBridge::execute_cell(
+                service.as_ref(),
+                "agents = await rlm.list_agents()\nreceipt = await rlm.send('helper', 'status?')\nprint([a['name'] for a in agents], receipt['receipts'][0]['state'])",
+                &cancelled,
+            )
+        }
+    })
+    .await??;
+    assert!(
+        roster_cell
+            .result
+            .stdout
+            .contains("['parent', 'helper'] queued"),
+        "the family and the send path are reachable from the kernel: {} {}",
+        roster_cell.result.stdout,
+        roster_cell.result.stderr
     );
 
     let delete_cell = tokio::task::spawn_blocking({
