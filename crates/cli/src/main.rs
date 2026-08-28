@@ -162,31 +162,54 @@ fn configured_model() -> Option<String> {
     if let Some(primary) = roles.primary {
         return Some(primary);
     }
-    config_value()?
-        .get("model")
-        .and_then(serde_json::Value::as_str)
-        .map(str::to_owned)
+    config().model.clone()
 }
 
-fn config_value() -> Option<serde_json::Value> {
-    let home = std::env::var_os("HOME")?;
-    let path = std::path::Path::new(&home).join(".yi/config.json");
-    let content = std::fs::read_to_string(path).ok()?;
-    serde_json::from_str(&content).ok()
+static CONFIG: std::sync::OnceLock<yi_types::config::UserConfig> = std::sync::OnceLock::new();
+
+/// X7: the one config load, strict, before dispatch — a typo that reads as an
+/// unset default is the failure nobody sees. It lives here, not beside the
+/// shape: yi-types is the DTO wall (§2), so no fs and no `$HOME` reach it.
+fn load_config() -> Result<(), String> {
+    let Some(home) = std::env::var_os("HOME") else {
+        return set_config(yi_types::config::UserConfig::default());
+    };
+    set_config(read_config(std::path::Path::new(&home))?)
+}
+
+/// A relative home would read `<cwd>/.yi/config.json`, which is X7's project
+/// layer, not this one; [`load_config`] is the only caller for that reason.
+fn read_config(home: &std::path::Path) -> Result<yi_types::config::UserConfig, String> {
+    let path = home.join(".yi/config.json");
+    let raw = match std::fs::read_to_string(&path) {
+        Ok(raw) => raw,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(yi_types::config::UserConfig::default());
+        }
+        Err(error) => return Err(format!("{}: {error}", path.display())),
+    };
+    serde_json::from_str(&raw).map_err(|error| format!("{}: {error}", path.display()))
+}
+
+/// Invariant: nothing may read the config before this lands it, or the strict
+/// load would be a no-op behind a default somebody else already installed.
+fn set_config(loaded: yi_types::config::UserConfig) -> Result<(), String> {
+    match CONFIG.set(loaded) {
+        Ok(()) => Ok(()),
+        Err(_) => Err("config was already read before it was loaded".to_owned()),
+    }
+}
+
+fn config() -> &'static yi_types::config::UserConfig {
+    CONFIG.get_or_init(yi_types::config::UserConfig::default)
 }
 
 fn configured_roles() -> yi_types::config::ModelRoles {
-    config_value()
-        .and_then(|config| config.get("models").cloned())
-        .and_then(|models| serde_json::from_value(models).ok())
-        .unwrap_or_default()
+    config().models.clone().unwrap_or_default()
 }
 
-/// D13: `bash.autoBackgroundMs` in the config, off unless the user sets it.
 fn configured_auto_background() -> Option<std::time::Duration> {
-    let millis = config_value()?
-        .pointer("/bash/autoBackgroundMs")?
-        .as_u64()?;
+    let millis = config().bash.as_ref()?.auto_background_ms?;
     (millis > 0).then(|| std::time::Duration::from_millis(millis))
 }
 
@@ -317,9 +340,10 @@ fn build_session(
             advisor: advisor_model(),
             parent_link: None,
             wall: yi_runtime::Wall::default(),
-            plan_stale_turns: config_value()
-                .and_then(|config| config.pointer("/plan/staleReminderTurns").cloned())
-                .and_then(|value| value.as_u64()),
+            plan_stale_turns: config()
+                .plan
+                .as_ref()
+                .and_then(|plan| plan.stale_reminder_turns),
             auto_background: configured_auto_background(),
         },
     );
@@ -663,20 +687,8 @@ fn yi_loop_default() -> yi_runtime::ExecutionMode {
     yi_runtime::ExecutionMode::Sequential
 }
 
-/// D36: MCP is compiled in but runtime-gated; `mcp.enabled = true` in
-/// ~/.yi/config.json is the only switch.
 fn mcp_enabled() -> bool {
-    let Some(home) = std::env::var_os("HOME") else {
-        return false;
-    };
-    let path = std::path::Path::new(&home).join(".yi/config.json");
-    let Ok(content) = std::fs::read_to_string(path) else {
-        return false;
-    };
-    serde_json::from_str::<serde_json::Value>(&content)
-        .ok()
-        .and_then(|config| config.pointer("/mcp/enabled").and_then(|v| v.as_bool()))
-        .unwrap_or(false)
+    config().mcp.as_ref().and_then(|mcp| mcp.enabled) == Some(true)
 }
 
 #[cfg(feature = "tui")]
@@ -791,29 +803,12 @@ fn run_tui_command(args: &Args, initial_prompt: Option<String>) -> i32 {
 
 #[cfg(feature = "tui")]
 fn configured_keys() -> Vec<(String, String)> {
-    let Some(home) = std::env::var_os("HOME") else {
-        return Vec::new();
-    };
-    let path = std::path::Path::new(&home).join(".yi/config.json");
-    let Ok(raw) = std::fs::read_to_string(path) else {
-        return Vec::new();
-    };
-    let Ok(value) = serde_json::from_str::<serde_json::Value>(&raw) else {
-        return Vec::new();
-    };
-    value
-        .get("keys")
-        .and_then(|keys| keys.as_object())
-        .map(|keys| {
-            keys.iter()
-                .filter_map(|(key, action)| {
-                    action
-                        .as_str()
-                        .map(|action| (key.clone(), action.to_owned()))
-                })
-                .collect()
-        })
+    config()
+        .keys
+        .clone()
         .unwrap_or_default()
+        .into_iter()
+        .collect()
 }
 
 #[cfg(not(feature = "tui"))]
@@ -867,6 +862,10 @@ fn run_serve_command(args: &Args, version: &str) -> i32 {
 }
 
 fn main() {
+    if let Err(error) = load_config() {
+        eprintln!("error: {error}");
+        std::process::exit(2);
+    }
     if std::env::args().nth(1).as_deref() == Some("mcp") {
         if !mcp_enabled() {
             eprintln!(
@@ -875,7 +874,11 @@ fn main() {
             std::process::exit(2);
         }
         let raw: Vec<String> = std::env::args().skip(2).collect();
-        std::process::exit(yi_mcp_cli::run(&raw));
+        let token_store = config()
+            .mcp
+            .as_ref()
+            .and_then(|mcp| mcp.token_store.as_deref());
+        std::process::exit(yi_mcp_cli::run(&raw, token_store));
     }
     let args = match parse_args() {
         Ok(args) => args,

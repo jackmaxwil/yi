@@ -278,3 +278,29 @@ fn an_unknown_summarizer_role_warns_and_keeps_the_primary() -> TestResult {
     );
     Ok(())
 }
+
+#[test]
+fn a_misspelled_config_key_fails_naming_it() -> TestResult {
+    let workspace = Workspace::new("config-strict")?;
+    write_config(
+        &workspace,
+        r#"{"models":{"primary":"faux/faux-1"},"modle":"x"}"#,
+    )?;
+    let answered = workspace.yi(&["ask", "strict check"])?;
+    assert_eq!(answered.status.code(), Some(2));
+    let complaint = String::from_utf8_lossy(&answered.stderr);
+    assert!(complaint.contains("config.json"), "{complaint}");
+    assert!(complaint.contains("modle"), "{complaint}");
+    Ok(())
+}
+
+#[test]
+fn a_broken_config_file_fails_instead_of_reading_as_absent() -> TestResult {
+    let workspace = Workspace::new("config-broken")?;
+    write_config(&workspace, r#"{"models":{"primary":"faux/faux-1",}"#)?;
+    let answered = workspace.yi(&["ask", "broken check"])?;
+    assert_eq!(answered.status.code(), Some(2));
+    let complaint = String::from_utf8_lossy(&answered.stderr);
+    assert!(complaint.contains("config.json"), "{complaint}");
+    Ok(())
+}

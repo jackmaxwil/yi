@@ -57,20 +57,16 @@ fn home_dir() -> PathBuf {
     std::env::var_os("HOME").map_or_else(|| PathBuf::from("."), PathBuf::from)
 }
 
+/// Invariant: `run` fills this before dispatch. yi-cli owns the one strict
+/// config read (X7), so this crate never opens the file — a second reader
+/// could disagree with the load that already decided whether to start.
+static TOKEN_STORE: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+
 fn token_store() -> Tokens {
-    let home = home_dir();
-    let configured = std::fs::read_to_string(home.join(".yi/config.json"))
-        .ok()
-        .and_then(|text| serde_json::from_str::<Value>(&text).ok())
-        .and_then(|config| {
-            config
-                .pointer("/mcp/tokenStore")
-                .and_then(Value::as_str)
-                .map(str::to_owned)
-        });
+    let configured = TOKEN_STORE.get().and_then(Option::as_deref);
     Tokens::new(
-        TokenStore::from_config(configured.as_deref()),
-        sessions::mcp_root(&home),
+        TokenStore::from_config(configured),
+        sessions::mcp_root(&home_dir()),
     )
 }
 
@@ -305,7 +301,8 @@ fn do_grep(
 
 /// Entry point for the `yi mcp` subcommand. The `mcp.enabled` gate lives in
 /// the caller (yi-cli) — this crate assumes it was consulted.
-pub fn run(raw_args: &[String]) -> i32 {
+pub fn run(raw_args: &[String], configured_token_store: Option<&str>) -> i32 {
+    let _already_set = TOKEN_STORE.set(configured_token_store.map(str::to_owned));
     let parsed = match args::parse(raw_args) {
         Ok(parsed) => parsed,
         Err(error) => return fail(&format!("{error}\n\n{HELP}"), 2),
