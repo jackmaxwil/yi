@@ -4,7 +4,7 @@ use ratatui::text::Span;
 use crate::colors::Theme;
 
 /// A line longer than this is generated, not written, and colouring it costs
-/// more than reading it is worth (codex `highlight.rs:585-591`, same intent).
+/// more than reading it is worth (codex `highlight.rs`, same intent).
 const LINE_CAP: usize = 4_096;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -129,7 +129,7 @@ pub fn lang_for(name: &str) -> Option<&'static Lang> {
 }
 
 impl Theme {
-    /// codex `highlight.rs:514-539`: foreground and bold only. A background
+    /// codex `highlight.rs`: foreground and bold only. A background
     /// would fight the diff tint it renders inside, and italic and underline are
     /// the two attributes terminals render least consistently.
     pub fn syntax_style(&self, token: Token) -> Style {
@@ -198,7 +198,9 @@ pub fn tokens(line: &str, lang: &Lang) -> Vec<(usize, usize, Token)> {
                 Token::Keyword
             } else if after.starts_with('(') {
                 Token::Function
-            } else if word.starts_with(char::is_uppercase) {
+            // An uppercase initial with a lowercase in it is a type name;
+            // all-caps is a constant, which is not one.
+            } else if word.starts_with(char::is_uppercase) && word.contains(char::is_lowercase) {
                 Token::Type
             } else {
                 Token::Plain

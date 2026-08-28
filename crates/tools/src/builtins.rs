@@ -4,7 +4,8 @@ use std::path::Path;
 use serde_json::{Map, Value, json};
 
 use crate::tool::{
-    Tool, ToolContext, ToolKind, ToolOutput, error_output, require_str, resolve_path, text_output,
+    DETAIL_CAP, Tool, ToolContext, ToolKind, ToolOutput, error_output, require_str, resolve_path,
+    text_output,
 };
 
 const MATCH_CAP: usize = 1_000;
@@ -69,9 +70,15 @@ impl Tool for WriteTool {
         {
             return error_output(format!("failed to create {}: {error}", parent.display()));
         }
-        // Read before the write, not after: the transcript's diff body needs
-        // the ground the write replaced, and nothing else reconstructs it.
-        let before = fs::read_to_string(&path).unwrap_or_default();
+        // Read before the write: nothing else reconstructs the ground it
+        // replaced. Past the cap, no base is read and no patch is claimed —
+        // a missing base would report as a whole-file addition.
+        let cap = u64::try_from(DETAIL_CAP).unwrap_or(u64::MAX);
+        let before = match fs::metadata(&path) {
+            Ok(meta) if meta.len() > cap => None,
+            Ok(_) => Some(fs::read_to_string(&path).unwrap_or_default()),
+            Err(_) => Some(String::new()),
+        };
         match fs::write(&path, content) {
             Ok(()) => {
                 if let Some(state) = &self.hashline {
@@ -82,9 +89,11 @@ impl Tool for WriteTool {
                     content.len(),
                     path.display()
                 ));
-                let patch = crate::diff::patch(&before, content, &path);
-                if !patch.is_empty() {
-                    output.result.details = crate::diff::patch_details(&patch);
+                if let Some(before) = &before {
+                    let patch = crate::diff::patch(before, content, &path);
+                    if !patch.is_empty() {
+                        output.result.details = crate::diff::patch_details(&patch);
+                    }
                 }
                 output
             }

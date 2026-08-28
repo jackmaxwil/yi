@@ -12,8 +12,7 @@ const PREVIEW_CAP: usize = 64;
 const PROMPT: &str = "› ";
 const CONTINUATION: &str = "  ";
 const BODY_INDENT: &str = "    ";
-/// A base64 payload pasted into a cell is never the line that says what the
-/// cell did, and printing it costs the whole preview.
+/// A base64 payload is never the line that says what a cell did.
 const BLOB_RUN: usize = 32;
 
 const EFFECTS: [&str; 10] = [
@@ -78,8 +77,8 @@ fn holds_api_key(token: &str) -> bool {
 }
 
 /// A cell's source reaches the screen and every frame dump taken of it. Both
-/// halves are load-bearing: the name catches `api_key = "…"`, the shape catches
-/// a bare literal that names nothing.
+/// halves are load-bearing: the name catches `api_key = "…"`, the shape a bare
+/// literal that names nothing.
 pub fn redact(line: &str) -> String {
     let lower = line.to_ascii_lowercase();
     let named = SECRETS.iter().any(|needle| lower.contains(needle));
@@ -124,9 +123,8 @@ pub fn preview(code: &str) -> String {
     redacted
 }
 
-/// The kernel reports a structured error, so the heuristic exists only for the
-/// mixed case: a cell that printed before it raised, whose stdout would
-/// otherwise be read as part of the traceback.
+/// The kernel reports a structured error, so this is only for the mixed case: a
+/// cell that printed before it raised, whose stdout would read as traceback.
 pub fn split_traceback(text: &str) -> (&str, &str) {
     let marker = text
         .find("Traceback (most recent call last):")
@@ -175,9 +173,9 @@ fn chip(code: &str) -> &'static str {
     }
 }
 
-/// Invariant: this line is byte-identical in every transcript mode. prime-agent
-/// `ipython-cell.ts:368-373` — a head that changes width when the body opens
-/// moves every row under it, and the reader loses their place.
+/// Invariant: byte-identical in every transcript mode (prime-agent
+/// `ipython-cell.ts`). A head that changes width when the body opens moves
+/// every row under it.
 pub fn head(cell: &ToolCell, spinner_phase: usize) -> String {
     let code = string(&cell.details, "code");
     let glyph = match cell.status {
@@ -287,7 +285,8 @@ fn traceback_of(details: &Value) -> String {
 }
 
 /// The kernel's own file edits: a cell that wrote three files has three diffs
-/// worth the same rows an `edit` call would earn.
+/// worth the same rows an `edit` call would earn. The patch is computed where
+/// every other patch is, in `yi-tools`; this only renders it.
 fn diff_lines(
     details: &Value,
     width: usize,
@@ -299,21 +298,15 @@ fn diff_lines(
     };
     let mut out = Vec::new();
     for diff in diffs {
+        let Some(patch) = diff.get("patch").and_then(Value::as_str) else {
+            continue;
+        };
         let path = diff.get("path").and_then(Value::as_str).unwrap_or("(cell)");
-        let old = diff.get("old_str").and_then(Value::as_str).unwrap_or("");
-        let new = diff.get("new_str").and_then(Value::as_str).unwrap_or("");
-        let patch = format!(
-            "--- a/{path}\n+++ b/{path}\n@@ -1,{} +1,{} @@\n{}{}",
-            line_count(old).max(1),
-            line_count(new).max(1),
-            old.lines().map(|l| format!("-{l}\n")).collect::<String>(),
-            new.lines().map(|l| format!("+{l}\n")).collect::<String>(),
-        );
         out.push(Line::from(Span::styled(
             format!("{BODY_INDENT}╰─ {path}"),
             theme.muted_style(),
         )));
-        out.extend(diffview::render(&patch, width, theme, budget));
+        out.extend(diffview::render(patch, width, theme, budget));
     }
     out
 }

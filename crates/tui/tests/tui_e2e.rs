@@ -162,15 +162,19 @@ fn a_diff_body_lands_on_a_real_screen_below_a_viewport_offset() -> TestResult {
     let theme = Theme::new(ColorTier::TrueColor, true);
     let cell = Cell::Tool(yi_tui::cell::ToolCell {
         name: "edit".to_owned(),
+        call_id: String::new(),
+        intent: None,
         status: yi_tui::cell::ToolStatus::Done,
         summary: yi_tui::cell::ToolCell::summary_of("edit", "src/lib.rs"),
         digest: Some("updated; first change at line 2".to_owned()),
+        preview: Vec::new(),
+        elapsed_ms: 0,
+        calls: 1,
         details: serde_json::json!({
             "patch": "--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -1,3 +1,3 @@\n one\n-let total = a + b;\n+let total = a - b;\n three\n",
             "added": 1,
             "removed": 1,
         }),
-        ..yi_tui::cell::ToolCell::default()
     });
     yi_tui::term::commit_lines(
         &mut terminal,

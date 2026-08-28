@@ -130,12 +130,15 @@ fn a_diff_body_is_highlighted_from_the_path_in_its_header() -> TestResult {
 fn a_bash_cell_shows_the_command_and_its_exit() -> TestResult {
     let cell = ToolCell {
         name: "bash".to_owned(),
+        call_id: String::new(),
+        intent: None,
         status: ToolStatus::Done,
         summary: ToolCell::summary_of("bash", "cargo test --workspace"),
         digest: Some("running 12 tests".to_owned()),
+        preview: Vec::new(),
         elapsed_ms: 1_200,
+        calls: 1,
         details: json!({ "exitCode": 1 }),
-        ..ToolCell::default()
     };
     let rendered: Vec<String> = Cell::Tool(cell)
         .lines(100, &theme(), TranscriptMode::Normal, 0)
@@ -152,5 +155,27 @@ fn a_bash_cell_shows_the_command_and_its_exit() -> TestResult {
     assert!(!joined.contains("bash cargo"), "{joined}");
     assert!(joined.contains("· exit 1"), "{joined}");
     assert!(joined.contains("· 1s"), "{joined}");
+    Ok(())
+}
+
+/// `Type` is claimed off an uppercase initial, which a SCREAMING_CASE constant
+/// also has. Colouring `MAX_ROWS` as a type is a claim the scanner cannot make.
+#[test]
+fn an_all_caps_constant_is_not_a_type() -> TestResult {
+    let lang = lang_for("rs").ok_or("no rust lang")?;
+    let kinds = |line: &str| -> Vec<Token> {
+        tokens(line, lang)
+            .into_iter()
+            .map(|(_, _, kind)| kind)
+            .collect()
+    };
+    assert!(
+        !kinds("let n = MAX_ROWS;").contains(&Token::Type),
+        "a constant is not a type"
+    );
+    assert!(
+        kinds("let s: String = x;").contains(&Token::Type),
+        "a mixed-case name still is"
+    );
     Ok(())
 }

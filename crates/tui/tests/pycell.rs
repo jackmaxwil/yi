@@ -29,10 +29,15 @@ fn text(lines: &[Line<'static>]) -> Vec<String> {
 fn cell(details: serde_json::Value, status: ToolStatus) -> ToolCell {
     ToolCell {
         name: "ipython".to_owned(),
+        call_id: String::new(),
+        intent: None,
         status,
         summary: ToolCell::summary_of("ipython", ""),
+        digest: None,
+        preview: Vec::new(),
+        elapsed_ms: 0,
+        calls: 1,
         details,
-        ..ToolCell::default()
     }
 }
 
@@ -183,13 +188,17 @@ fn stdout_before_a_traceback_stays_stdout() -> TestResult {
     Ok(())
 }
 
-/// A cell that wrote three files earns the same rows an `edit` call would.
+/// A cell that wrote three files earns the same rows an `edit` call would. The
+/// patch arrives already computed, so this renders it rather than building one.
 #[test]
 fn kernel_side_file_edits_render_as_diffs() -> TestResult {
     let cell = cell(
         json!({
             "code": "patch()",
-            "diffs": [{ "path": "notes.txt", "old_str": "one", "new_str": "two" }],
+            "diffs": [{
+                "path": "notes.txt",
+                "patch": "--- a/notes.txt\n+++ b/notes.txt\n@@ -1,1 +1,1 @@\n-one\n+two\n",
+            }],
         }),
         ToolStatus::Done,
     );

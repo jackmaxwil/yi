@@ -70,7 +70,7 @@ fn card_row(card: &BoardCard, theme: &Theme, spinner_phase: usize) -> Line<'stat
     } else {
         format!("{glyph} {}: {}", card.title, card.detail)
     };
-    // OMP `tools/todo.ts:990-1015`: the strike sweeps in rather than appearing,
+    // OMP `tools/todo.ts`: the strike sweeps in rather than appearing,
     // so a completion is visible without a notice row announcing it.
     if let Some(since) = card.done_ms.filter(|_| card.status == CardStatus::Done)
         && let Some((struck, rest)) = crate::motion::strike_sweep(&text, since)
@@ -83,16 +83,16 @@ fn card_row(card: &BoardCard, theme: &Theme, spinner_phase: usize) -> Line<'stat
     Line::from(Span::styled(text, style))
 }
 
-/// prime-agent `subagent-summary-line.ts:83-123`: the shape of the family
-/// before its members — how many are working, waiting, and finished. Zeroes are
-/// omitted, so the header shrinks as the family settles.
+/// prime-agent `subagent-summary-line.ts`: the shape of the family before its
+/// members — how many are working, waiting, and finished. Zeroes are omitted,
+/// so the header shrinks as the family settles.
 fn counts_header(cards: &[BoardCard]) -> String {
     let count = |status: CardStatus| cards.iter().filter(|c| c.status == status).count();
     let parts: Vec<String> = [
         ('●', count(CardStatus::Running), "running"),
         (
             '◐',
-            count(CardStatus::Blocked) + count(CardStatus::Todo),
+            count(CardStatus::Blocked).saturating_add(count(CardStatus::Todo)),
             "idle",
         ),
         ('○', count(CardStatus::Done), "done"),

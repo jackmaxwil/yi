@@ -1,10 +1,12 @@
+use std::path::Path;
 use std::sync::Arc;
 
 use serde_json::{Map, Value, json};
 use yi_types::kernel::{ExecuteResult, ExecuteStatus};
 
 use crate::tool::{
-    CancelFlag, Tool, ToolContext, ToolKind, ToolOutput, error_output, require_str, text_output,
+    CancelFlag, Tool, ToolContext, ToolKind, ToolOutput, detail_text, error_output, require_str,
+    text_output,
 };
 
 pub struct KernelCellOutcome {
@@ -87,20 +89,30 @@ impl Tool for IpythonTool {
             sections.join("\n")
         };
         let mut output = text_output(text);
+        // A kernel edit becomes a real patch here, where every other patch is
+        // computed, rather than being reassembled by whoever renders it.
+        let diffs: Vec<Value> = result
+            .diffs
+            .iter()
+            .map(|diff| {
+                let patch = crate::diff::patch(&diff.old_str, &diff.new_str, Path::new(&diff.path));
+                json!({ "path": diff.path, "patch": detail_text(patch.as_str()) })
+            })
+            .collect();
         // The streams are carried apart from the joined text so a renderer can
         // style stderr and a traceback differently; the joined form stays the
         // model's view.
         output.result.details = json!({
             "status": result.status,
             "durationMs": result.duration_ms,
-            "diffs": result.diffs,
+            "diffs": diffs,
             "attachments": result.attachments.len(),
             "sentAgentMessages": result.sent_agent_messages,
             "kernelRestarted": outcome.kernel_restarted,
-            "code": code,
-            "stdout": result.stdout,
-            "stderr": result.stderr,
-            "result": result.result,
+            "code": detail_text(code),
+            "stdout": detail_text(&result.stdout),
+            "stderr": detail_text(&result.stderr),
+            "result": detail_text(result.result.as_deref().unwrap_or_default()),
             "error": result.error,
         });
         output.is_error =

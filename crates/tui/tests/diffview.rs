@@ -196,11 +196,15 @@ fn an_edit_cell_renders_its_diff_in_normal_mode() -> TestResult {
     let theme = Theme::new(ColorTier::TrueColor, true);
     let cell = ToolCell {
         name: "edit".to_owned(),
+        call_id: String::new(),
+        intent: None,
         status: ToolStatus::Done,
         summary: ToolCell::summary_of("edit", "src/lib.rs"),
         digest: Some("updated; first change at line 2".to_owned()),
+        preview: Vec::new(),
+        elapsed_ms: 0,
+        calls: 1,
         details: json!({ "patch": REPLACEMENT, "added": 1, "removed": 1 }),
-        ..ToolCell::default()
     };
     let rendered = text(&Cell::Tool(cell).lines(80, &theme, TranscriptMode::Normal, 0));
     assert!(

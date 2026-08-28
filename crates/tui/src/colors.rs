@@ -136,7 +136,7 @@ pub enum DiffRowKind {
 }
 
 impl Theme {
-    /// codex `diff_render.rs:63-78,1234-1310`, values verbatim: light needs a
+    /// codex `diff_render.rs`, values verbatim: light needs a
     /// more saturated gutter to hold a number on the pastel, and at 16 colours a
     /// background would land on a ground the terminal owns.
     pub fn diff_row(&self, kind: DiffRowKind) -> DiffRowStyle {

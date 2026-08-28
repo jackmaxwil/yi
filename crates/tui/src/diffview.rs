@@ -5,13 +5,12 @@ use unicode_width::UnicodeWidthStr;
 use crate::colors::{DiffRowKind, DiffRowStyle, Theme};
 use crate::highlight::{self, Lang};
 
-/// Invariant: the gutter never narrows below three digits. Derived from the
-/// widest line number, a streaming diff crossing line 100 would re-pad rows
-/// already committed to native scrollback, which cannot be rewritten.
+/// Invariant: the gutter never narrows below three digits. Sized from the
+/// widest number alone, crossing line 100 would re-pad rows already committed
+/// to native scrollback, which cannot be rewritten.
 const GUTTER_MIN: usize = 3;
 const INDENT: &str = "    ";
 const SEPARATOR: &str = "⋮";
-/// A patch this long is a machine's mistake, not a change to read.
 const SAFETY_ROWS: usize = 10_000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -112,25 +111,6 @@ fn parse(patch: &str) -> Vec<FileDiff> {
     files
 }
 
-fn is_change(kind: DiffRowKind) -> bool {
-    kind != DiffRowKind::Context
-}
-
-/// Leading and trailing context are the cheapest rows to give up: the change
-/// they frame is still readable with one line of ground on each side.
-fn trim_edge_context(hunk: &mut Hunk) {
-    let first_change = hunk.rows.iter().position(|row| is_change(row.kind));
-    let Some(first) = first_change else { return };
-    let last = hunk
-        .rows
-        .iter()
-        .rposition(|row| is_change(row.kind))
-        .unwrap_or(first);
-    let head = first.saturating_sub(1);
-    let tail = (last.saturating_add(2)).min(hunk.rows.len());
-    hunk.rows = hunk.rows.drain(head..tail).collect();
-}
-
 struct Budgeted {
     files: Vec<FileDiff>,
     dropped_hunks: usize,
@@ -149,52 +129,39 @@ fn hunk_count(files: &[FileDiff]) -> usize {
     files.iter().map(|file| file.hunks.len()).sum()
 }
 
-/// Change rows outrank context, and whole hunks are dropped from the tail
-/// rather than any hunk being shown half-formed.
-fn budgeted(mut files: Vec<FileDiff>, budget: DiffBudget) -> Budgeted {
-    let total_hunks = hunk_count(&files);
-    let total_rows = row_count(&files);
-    if total_hunks <= budget.hunks && total_rows <= budget.rows {
-        return Budgeted {
-            files,
-            dropped_hunks: 0,
-            dropped_rows: 0,
-        };
-    }
-    let mut kept = 0_usize;
-    for file in &mut files {
-        let room = budget.hunks.saturating_sub(kept);
-        file.hunks.truncate(room);
-        kept = kept.saturating_add(file.hunks.len());
-    }
-    if row_count(&files) > budget.rows {
-        for hunk in files.iter_mut().flat_map(|file| file.hunks.iter_mut()) {
-            trim_edge_context(hunk);
-        }
-    }
-    let mut used = 0_usize;
-    for file in &mut files {
+/// Whole hunks are kept or dropped, never shown half-formed; the tail goes
+/// first, and the footer names what went. The first hunk is always kept, so a
+/// change wider than the whole budget still shows its opening.
+fn budgeted(files: Vec<FileDiff>, budget: DiffBudget) -> Budgeted {
+    let (total_hunks, total_rows) = (hunk_count(&files), row_count(&files));
+    let (mut hunks, mut rows) = (0_usize, 0_usize);
+    let mut kept: Vec<FileDiff> = Vec::new();
+    for file in files {
         let mut room = Vec::new();
-        for hunk in file.hunks.drain(..) {
-            let next = used.saturating_add(hunk.rows.len());
-            if next > budget.rows && !room.is_empty() {
+        for hunk in file.hunks {
+            let next = rows.saturating_add(hunk.rows.len());
+            if hunks >= budget.hunks || (next > budget.rows && hunks > 0) {
                 break;
             }
-            used = next;
+            hunks = hunks.saturating_add(1);
+            rows = next;
             room.push(hunk);
         }
-        file.hunks = room;
+        if !room.is_empty() {
+            kept.push(FileDiff {
+                path: file.path,
+                hunks: room,
+            });
+        }
     }
-    files.retain(|file| !file.hunks.is_empty());
     Budgeted {
-        dropped_hunks: total_hunks.saturating_sub(hunk_count(&files)),
-        dropped_rows: total_rows.saturating_sub(row_count(&files)),
-        files,
+        dropped_hunks: total_hunks.saturating_sub(hunks),
+        dropped_rows: total_rows.saturating_sub(rows),
+        files: kept,
     }
 }
 
-/// Tokens keep their trailing run of spaces so a rebuilt line is byte-identical
-/// to the one that was split.
+/// Tokens keep their trailing spaces, so a rebuilt line is byte-identical.
 fn tokens(text: &str) -> Vec<&str> {
     let mut out = Vec::new();
     let bytes = text.as_bytes();
@@ -293,43 +260,42 @@ fn sign_of(kind: DiffRowKind) -> char {
     }
 }
 
-struct Layout {
-    gutter: usize,
-    width: usize,
+/// The row less its chrome: indent + sign + number + `" │ "`.
+fn content_width(gutter: usize, width: usize) -> usize {
+    let chrome = INDENT
+        .len()
+        .saturating_add(1)
+        .saturating_add(gutter)
+        .saturating_add(3);
+    width.saturating_sub(chrome).max(8)
 }
 
-impl Layout {
-    fn content_width(&self) -> usize {
-        // indent + sign + number + " │ "
-        let chrome = INDENT
-            .len()
-            .saturating_add(1)
-            .saturating_add(self.gutter)
-            .saturating_add(3);
-        self.width.saturating_sub(chrome).max(8)
-    }
-}
-
+/// `rows` and `index` rather than the two decisions they imply: both the blank
+/// number and the word emphasis are read off the neighbouring rows.
 fn row_lines(
-    row: &Row,
-    blank_number: bool,
-    emphasis: Option<(usize, usize)>,
-    layout: &Layout,
+    rows: &[Row],
+    index: usize,
+    gutter_width: usize,
+    width: usize,
     theme: &Theme,
     lang: Option<&'static Lang>,
 ) -> Vec<Line<'static>> {
+    let Some(row) = rows.get(index) else {
+        return Vec::new();
+    };
+    let emphasis = emphasis_for(rows, index);
     let style = theme.diff_row(row.kind);
-    let gutter = if blank_number {
-        " ".repeat(layout.gutter)
+    let gutter = if repeats_previous(rows, index) {
+        " ".repeat(gutter_width)
     } else {
-        format!("{:>width$}", row.number, width = layout.gutter)
+        format!("{:>width$}", row.number, width = gutter_width)
     };
     let mut out = Vec::new();
-    for (index, chunk) in split_width(&row.text, layout.content_width())
+    for (chunk_no, chunk) in split_width(&row.text, content_width(gutter_width, width))
         .into_iter()
         .enumerate()
     {
-        let first = index == 0;
+        let first = chunk_no == 0;
         let mut spans = vec![
             Span::raw(INDENT.to_owned()),
             Span::styled(
@@ -344,7 +310,7 @@ fn row_lines(
                 if first {
                     gutter.clone()
                 } else {
-                    " ".repeat(layout.gutter)
+                    " ".repeat(gutter_width)
                 },
                 style.gutter,
             ),
@@ -355,7 +321,7 @@ fn row_lines(
                 spans.extend(emphasized(&row.text, &chunk, start, end, &style));
             }
             // A deletion keeps its syntax colours dimmed, so the polarity still
-            // reads when both sides are highlighted (codex `:881-890`).
+            // reads when both sides are highlighted (codex `diff_render.rs`).
             (None, Some(lang)) => {
                 let base = if row.kind == DiffRowKind::Removed {
                     style.content.add_modifier(Modifier::DIM)
@@ -366,14 +332,14 @@ fn row_lines(
             }
             (None, None) => spans.push(Span::styled(chunk, style.content)),
         }
-        pad(&mut spans, layout.width, &style);
+        pad(&mut spans, width, &style);
         out.push(Line::from(spans));
     }
     out
 }
 
-/// The emphasis range is over the whole row, so a wrapped row only carries it on
-/// the first chunk — which is where a one-for-one replacement's difference is.
+/// The range is over the whole row, so a wrapped row carries it on the first
+/// chunk — where a one-for-one replacement's difference is.
 fn emphasized(
     text: &str,
     chunk: &str,
@@ -419,9 +385,9 @@ fn repeats_previous(rows: &[Row], index: usize) -> bool {
     )
 }
 
-/// OMP `diff.ts:55-95`: a removal run and an addition run of exactly one line
-/// each is a replacement, and the tokens that actually changed are worth
-/// marking. Longer runs are a rewrite, where per-token marking is noise.
+/// OMP `diff.ts`: a removal run and an addition run of exactly one line each is
+/// a replacement, and the tokens that actually changed are worth marking.
+/// Longer runs are a rewrite, where per-token marking is noise.
 fn emphasis_for(rows: &[Row], index: usize) -> Option<(usize, usize)> {
     let row = rows.get(index)?;
     if row.kind != DiffRowKind::Added {
@@ -463,14 +429,10 @@ pub fn render(patch: &str, width: usize, theme: &Theme, budget: DiffBudget) -> V
         return Vec::new();
     }
     let named = parsed.len() > 1;
-    let layout = Layout {
-        gutter: widest(&parsed),
-        width,
-    };
+    let gutter_width = widest(&parsed);
     let cut = budgeted(parsed, budget);
     let mut out = Vec::new();
     for file in &cut.files {
-        // The patch names its own file, so the language needs no parameter.
         let lang = highlight::lang_for(&file.path);
         if named {
             out.push(Line::from(Span::styled(
@@ -481,16 +443,16 @@ pub fn render(patch: &str, width: usize, theme: &Theme, budget: DiffBudget) -> V
         for (index, hunk) in file.hunks.iter().enumerate() {
             if index > 0 {
                 out.push(Line::from(Span::styled(
-                    format!("{INDENT} {:>width$} {SEPARATOR}", "", width = layout.gutter),
+                    format!("{INDENT} {:>width$} {SEPARATOR}", "", width = gutter_width),
                     theme.dim_style(),
                 )));
             }
-            for (position, row) in hunk.rows.iter().enumerate() {
+            for position in 0..hunk.rows.len() {
                 out.extend(row_lines(
-                    row,
-                    repeats_previous(&hunk.rows, position),
-                    emphasis_for(&hunk.rows, position),
-                    &layout,
+                    &hunk.rows,
+                    position,
+                    gutter_width,
+                    width,
                     theme,
                     lang,
                 ));

@@ -553,3 +553,86 @@ fn a_write_carries_its_patch_and_line_counts() -> TestResult {
     assert_eq!(edited.result.details["removed"], json!(1));
     Ok(())
 }
+
+/// `details` is stored in the session file and replayed from it, so the base
+/// read is skipped past the cap rather than growing the record without bound.
+/// No base means no patch — a whole-file addition would be a false report.
+#[test]
+fn a_write_over_a_file_past_the_cap_claims_no_patch() -> TestResult {
+    let dir = temp_dir("write-cap")?;
+    let context = ToolContext::new(dir.0.clone());
+    let tool = WriteTool::default();
+    let big = "x".repeat(yi_tools::DETAIL_CAP + 1);
+
+    let first = tool.execute(
+        args(&[("path", json!("big.txt")), ("content", json!(big))]),
+        &context,
+    );
+    assert!(!first.is_error, "{}", output_text(&first));
+
+    let second = tool.execute(
+        args(&[("path", json!("big.txt")), ("content", json!("small\n"))]),
+        &context,
+    );
+    assert!(!second.is_error, "{}", output_text(&second));
+    assert!(
+        second.result.details.get("patch").is_none(),
+        "{:?}",
+        second.result.details
+    );
+    Ok(())
+}
+
+struct OneCell(yi_types::kernel::ExecuteResult);
+
+impl yi_tools::KernelBridge for OneCell {
+    fn execute_cell(
+        &self,
+        _code: &str,
+        _cancelled: &yi_tools::CancelFlag,
+    ) -> Result<yi_tools::KernelCellOutcome, String> {
+        Ok(yi_tools::KernelCellOutcome {
+            result: self.0.clone(),
+            kernel_restarted: false,
+        })
+    }
+}
+
+/// A kernel edit becomes a patch here, where every other patch is computed. The
+/// point is the LCS: a whole-file dump would mark all four lines changed.
+#[test]
+fn a_kernel_edit_arrives_as_a_real_patch() -> TestResult {
+    let dir = temp_dir("kernel-diff")?;
+    let context = ToolContext::new(dir.0.clone());
+    let tool = yi_tools::IpythonTool {
+        bridge: Arc::new(OneCell(yi_types::kernel::ExecuteResult {
+            stdout: String::new(),
+            stderr: String::new(),
+            result: None,
+            diffs: vec![yi_types::kernel::KernelDiffDisplay {
+                path: "notes.txt".to_owned(),
+                old_str: "one\ntwo\nthree\nfour\n".to_owned(),
+                new_str: "one\ntwo\nTHREE\nfour\n".to_owned(),
+                start_line: None,
+            }],
+            attachments: Vec::new(),
+            sent_agent_messages: Vec::new(),
+            status: yi_types::kernel::ExecuteStatus::Ok,
+            error: None,
+            duration_ms: 12,
+        })),
+    };
+
+    let output = tool.execute(args(&[("code", json!("edit()"))]), &context);
+    let patch = output.result.details["diffs"][0]["patch"]
+        .as_str()
+        .ok_or("kernel diff carried no patch")?;
+    assert!(patch.contains("--- a/notes.txt"), "{patch}");
+    assert!(
+        patch.contains("-three") && patch.contains("+THREE"),
+        "{patch}"
+    );
+    let removed = patch.lines().filter(|l| l.starts_with("-o")).count();
+    assert_eq!(removed, 0, "unchanged lines are not marked: {patch}");
+    Ok(())
+}

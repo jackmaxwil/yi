@@ -16,7 +16,6 @@ const BAR_CELLS: u64 = 10;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AgentState {
     Running,
-    Idle,
     Done,
     Failed,
 }
@@ -45,7 +44,6 @@ pub struct AgentsPopup {
 fn glyph(state: AgentState) -> char {
     match state {
         AgentState::Running => '◆',
-        AgentState::Idle => '◇',
         AgentState::Done => '✓',
         AgentState::Failed => '✗',
     }
@@ -53,7 +51,7 @@ fn glyph(state: AgentState) -> char {
 
 fn tokens_label(tokens: u64) -> String {
     if tokens >= 1_000_000 {
-        format!("{:.1}M", tokens as f64 / 1_000_000.0)
+        format!("{}.{}M", tokens / 1_000_000, (tokens % 1_000_000) / 100_000)
     } else if tokens >= 1_000 {
         format!("{}k", tokens / 1_000)
     } else {
@@ -211,11 +209,10 @@ impl BottomView for AgentsPopup {
 }
 
 /// The view's own half of the `App`: how the family becomes rows, and what a
-/// stop does. Beside the view it serves rather than in `app`, which is at its
-/// file ceiling.
+/// stop does.
 impl crate::app::App {
     /// Every child's own token use, so the column sums (prime-agent
-    /// `context-tree-format.ts:112-200`).
+    /// `context-tree-format.ts`).
     pub fn open_agents(&mut self) {
         let rows = self
             .task_order

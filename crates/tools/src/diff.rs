@@ -39,9 +39,14 @@ impl GitPatch {
 
 /// The `patch` / `added` / `removed` keys an edit or write result carries so
 /// the transcript can render a diff body instead of a one-line digest (T13).
+/// The counts are of the whole change even when the patch text is capped.
 pub fn patch_details(patch: &GitPatch) -> Value {
     let (added, removed) = patch.stats();
-    json!({ "patch": patch.as_str(), "added": added, "removed": removed })
+    json!({
+        "patch": crate::tool::detail_text(patch.as_str()),
+        "added": added,
+        "removed": removed,
+    })
 }
 
 const CONTEXT: usize = 3;

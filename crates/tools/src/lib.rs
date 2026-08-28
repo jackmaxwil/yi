@@ -22,7 +22,9 @@ pub use ipython::{IpythonTool, KernelBridge, KernelCellOutcome};
 pub use jobs::{JobId, JobReport, Run, run_or_background};
 pub use process::{CommandCapture, OUTPUT_CAP, command, edit_file, run_captured};
 pub use reduce::{Reduced, reduce};
-pub use tool::{CancelFlag, Tool, ToolContext, ToolKind, ToolOutput, error_output, text_output};
+pub use tool::{
+    CancelFlag, DETAIL_CAP, Tool, ToolContext, ToolKind, ToolOutput, error_output, text_output,
+};
 
 pub fn builtin_tools() -> Vec<Arc<dyn Tool>> {
     let state = hashline::tool::shared_hashline_state();

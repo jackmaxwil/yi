@@ -160,9 +160,16 @@ fn a_call_held_at_the_permission_gate_says_so() -> TestResult {
     );
     let rendered = flat(
         &Cell::Tool(ToolCell {
+            name: String::new(),
+            call_id: String::new(),
+            intent: None,
             status: ToolStatus::Awaiting,
             summary: ToolCell::summary_of("bash", "rm -rf build"),
-            ..ToolCell::default()
+            digest: None,
+            preview: Vec::new(),
+            elapsed_ms: 0,
+            calls: 1,
+            details: json!({}),
         })
         .lines(80, &theme(), TranscriptMode::Normal, 0),
     );
@@ -174,6 +181,25 @@ fn a_call_held_at_the_permission_gate_says_so() -> TestResult {
     });
     assert_eq!(app.live_tool_status("t0"), Some(ToolStatus::Running));
     Ok(())
+}
+
+fn edit_cell(path: &str) -> ToolCell {
+    ToolCell {
+        name: "edit".to_owned(),
+        call_id: String::new(),
+        intent: None,
+        status: ToolStatus::Done,
+        summary: ToolCell::summary_of("edit", path),
+        digest: Some("updated".to_owned()),
+        preview: Vec::new(),
+        elapsed_ms: 0,
+        calls: 1,
+        details: json!({
+            "patch": format!("--- a/{path}\n+++ b/{path}\n@@ -1,1 +1,1 @@\n-one\n+two\n"),
+            "added": 1,
+            "removed": 1,
+        }),
+    }
 }
 
 /// opencode's rule: a blank separates blocks, and a run of one-line calls packs
@@ -192,30 +218,8 @@ fn spacing_separates_blocks_but_not_one_line_rows() -> TestResult {
     );
 
     let mut blocks = app();
-    blocks.commit_cell(&Cell::Tool(ToolCell {
-        name: "edit".to_owned(),
-        status: ToolStatus::Done,
-        summary: ToolCell::summary_of("edit", "a.rs"),
-        digest: Some("updated".to_owned()),
-        details: json!({
-            "patch": "--- a/a.rs\n+++ b/a.rs\n@@ -1,1 +1,1 @@\n-one\n+two\n",
-            "added": 1,
-            "removed": 1,
-        }),
-        ..ToolCell::default()
-    }));
-    blocks.commit_cell(&Cell::Tool(ToolCell {
-        name: "edit".to_owned(),
-        status: ToolStatus::Done,
-        summary: ToolCell::summary_of("edit", "b.rs"),
-        digest: Some("updated".to_owned()),
-        details: json!({
-            "patch": "--- a/b.rs\n+++ b/b.rs\n@@ -1,1 +1,1 @@\n-one\n+two\n",
-            "added": 1,
-            "removed": 1,
-        }),
-        ..ToolCell::default()
-    }));
+    blocks.commit_cell(&Cell::Tool(edit_cell("a.rs")));
+    blocks.commit_cell(&Cell::Tool(edit_cell("b.rs")));
     let spaced = flat(&blocks.take_commits());
     assert!(
         spaced.iter().any(|row| row.is_empty()),

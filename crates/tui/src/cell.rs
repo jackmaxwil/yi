@@ -70,23 +70,6 @@ pub struct ToolCell {
     pub details: Value,
 }
 
-impl Default for ToolCell {
-    fn default() -> Self {
-        Self {
-            name: String::new(),
-            call_id: String::new(),
-            intent: None,
-            status: ToolStatus::Running,
-            summary: String::new(),
-            digest: None,
-            preview: Vec::new(),
-            elapsed_ms: 0,
-            calls: 1,
-            details: Value::Null,
-        }
-    }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TaskStatus {
     Running,
@@ -326,7 +309,7 @@ impl ToolCell {
         {
             tail.push_str(&format!(" · {intent}"));
         }
-        if self.elapsed_ms > 0 && !self.has_stats() {
+        if self.elapsed_ms > 0 {
             tail.push_str(&format!(" · {}", elapsed_label(self.elapsed_ms)));
         }
         let mut spans = vec![Span::styled(
@@ -347,7 +330,7 @@ impl ToolCell {
             };
             let mut spans = vec![Span::styled(format!("    └ {digest}"), detail)];
             spans.extend(self.stats_spans(theme));
-            spans.extend(self.stats_tail(theme));
+            spans.extend(self.exit_span(theme));
             lines.extend(wrap_line(&Line::from(spans), width, "      "));
         }
         if let Some(patch) = self.patch() {
@@ -371,10 +354,6 @@ impl ToolCell {
         self.details.get("patch")?.as_str()
     }
 
-    fn has_stats(&self) -> bool {
-        self.name == "bash" && self.status != ToolStatus::Running
-    }
-
     /// A shell command is code, and OMP renders it as such rather than echoing
     /// it as a tool argument: a dim `$` then the command itself, highlighted.
     fn summary_spans(&self, theme: &Theme, style: Style) -> Vec<Span<'static>> {
@@ -387,28 +366,21 @@ impl ToolCell {
         spans
     }
 
-    /// The stats a shell reader wants and the transcript otherwise hides: a
-    /// nonzero exit is the whole outcome of a command that printed nothing.
-    fn stats_tail(&self, theme: &Theme) -> Vec<Span<'static>> {
-        if !self.has_stats() {
+    /// A nonzero exit is the whole outcome of a command that printed nothing,
+    /// and the transcript otherwise hides it.
+    fn exit_span(&self, theme: &Theme) -> Vec<Span<'static>> {
+        if self.status == ToolStatus::Running {
             return Vec::new();
         }
-        let mut out = Vec::new();
-        if let Some(code) = self.details.get("exitCode").and_then(Value::as_i64) {
-            let style = if code == 0 {
-                theme.dim_style()
-            } else {
-                Style::default().fg(theme.error)
-            };
-            out.push(Span::styled(format!(" · exit {code}"), style));
-        }
-        if self.elapsed_ms > 0 {
-            out.push(Span::styled(
-                format!(" · {}", elapsed_label(self.elapsed_ms)),
-                theme.dim_style(),
-            ));
-        }
-        out
+        let Some(code) = self.details.get("exitCode").and_then(Value::as_i64) else {
+            return Vec::new();
+        };
+        let style = if code == 0 {
+            theme.dim_style()
+        } else {
+            Style::default().fg(theme.error)
+        };
+        vec![Span::styled(format!(" · exit {code}"), style)]
     }
 
     /// `+12 -3` in the diff's own colours, on the line that already names the
@@ -680,18 +652,14 @@ impl Cell {
     }
 }
 
-/// A run of read-only calls, one row each under a single bullet: the verb in
-/// accent, its subject, and the digest the call earned (codex
-/// `exec_cell/render.rs:293-385`).
-pub const EXPLORED_CAP: usize = 32;
+const EXPLORED_CAP: usize = 32;
+/// Fixed, not measured: a width read off one run would leave two adjacent
+/// Explored blocks with their subjects in different columns.
+const VERB_WIDTH: usize = 6;
 
+/// A run of read-only calls, one row each under a single bullet: the verb in
+/// accent, its subject, and the digest the call earned (codex `exec_cell`).
 fn explored_lines(rows: &[ToolCell], width: usize, theme: &Theme) -> Vec<Line<'static>> {
-    let verb_width = rows
-        .iter()
-        .filter_map(|row| explore_verb(&row.name))
-        .map(str::len)
-        .max()
-        .unwrap_or(4);
     let mut out = vec![Line::from(Span::styled(
         format!("  ✱ Explored ×{}", rows.len()),
         theme.muted_style(),
@@ -710,7 +678,7 @@ fn explored_lines(rows: &[ToolCell], width: usize, theme: &Theme) -> Vec<Line<'s
         let mut spans = vec![
             Span::styled(lead.to_owned(), theme.dim_style()),
             Span::styled(
-                format!("{verb:<verb_width$} "),
+                format!("{verb:<VERB_WIDTH$} "),
                 Style::default().fg(theme.accent),
             ),
             Span::styled(subject, theme.muted_style()),

@@ -87,6 +87,28 @@ pub fn error_output(message: impl Into<String>) -> ToolOutput {
     output
 }
 
+/// A `details` string is stored in the session file and replayed from it, so it
+/// is bounded where the text the model reads is not. Past this, a renderer has
+/// long since hit its own row budget.
+pub const DETAIL_CAP: usize = 64 * 1024;
+
+/// `text` for JSON `details`, truncated on a char boundary and marked when it
+/// was. Returns `Value::Null` for empty, so the key can be skipped.
+pub fn detail_text(text: &str) -> Value {
+    if text.is_empty() {
+        return Value::Null;
+    }
+    if text.len() <= DETAIL_CAP {
+        return Value::String(text.to_owned());
+    }
+    let mut end = DETAIL_CAP;
+    while end > 0 && !text.is_char_boundary(end) {
+        end = end.saturating_sub(1);
+    }
+    let head = text.get(..end).unwrap_or_default();
+    Value::String(format!("{head}\n… truncated at {DETAIL_CAP} bytes"))
+}
+
 pub fn require_str<'a>(input: &'a Map<String, Value>, key: &str) -> Result<&'a str, String> {
     input
         .get(key)

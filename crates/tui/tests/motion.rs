@@ -5,7 +5,8 @@ use ratatui::style::Modifier;
 use unicode_width::UnicodeWidthChar;
 use yi_tui::colors::{ColorTier, Theme};
 use yi_tui::motion::{
-    PULSE_FRAMES, THINKING_FRAMES, elapsed_of, pulse_frame, shimmer, strike_sweep, thinking_glyph,
+    BREATH_CYCLE_MS, PULSE_FRAMES, THINKING_FRAMES, elapsed_of, pulse_frame, shimmer, strike_sweep,
+    thinking_glyph,
 };
 
 type TestResult = Result<(), Box<dyn Error>>;
@@ -135,6 +136,25 @@ fn the_strike_sweeps_then_settles() -> TestResult {
     assert!(
         strike_sweep(label, 60_000).is_none(),
         "a finished sweep hands the row back to its normal style"
+    );
+    Ok(())
+}
+
+/// The dwell table and the cycle length are two constants that have to agree:
+/// a cycle longer than the table's sum parks on the last glyph, and a shorter
+/// one clips frames off the end. Both read as a stutter, not a breath.
+#[test]
+fn the_breath_cycle_closes_on_its_own_table() -> TestResult {
+    assert_eq!(
+        thinking_glyph(0),
+        thinking_glyph(BREATH_CYCLE_MS),
+        "the cycle wraps to its first frame"
+    );
+    let seen: HashSet<char> = (0..BREATH_CYCLE_MS).map(thinking_glyph).collect();
+    assert_eq!(
+        seen.len(),
+        THINKING_FRAMES.len(),
+        "every frame is reached inside one cycle: {seen:?}"
     );
     Ok(())
 }

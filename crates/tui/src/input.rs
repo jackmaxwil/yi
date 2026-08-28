@@ -98,9 +98,6 @@ pub(crate) fn handle_bottom_key(app: &mut App, key: &SingleKey) {
             Bottom::Approval(view, reply) => {
                 let _ = reply.send(view.outcome.unwrap_or(AskChoice::Reject));
             }
-            // The host's `interrupt` ends the run by aborting the child's own
-            // session, which the App already holds — the record it keeps
-            // besides that is the host's, and untouched either way.
             Bottom::Agents(popup) => {
                 if let Some(child) = popup.stop {
                     app.stop_child(&child);

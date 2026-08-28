@@ -77,8 +77,7 @@ pub(crate) const SLASH_COMMANDS: [&str; 9] = [
 pub struct TaskState {
     pub(crate) cell: TaskCell,
     pub(crate) started: Instant,
-    /// When the child reached a terminal state, so a completion can be shown
-    /// happening rather than having happened.
+    /// When the child reached a terminal state, so the strike can sweep.
     pub(crate) finished: Option<Instant>,
     pub(crate) subscribed: bool,
     pub(crate) session: Arc<AgentSession>,
@@ -114,8 +113,7 @@ pub struct App {
     pub(crate) live_thought: String,
     pub(crate) live_cut: usize,
     pub(crate) live_tools: Vec<ToolCell>,
-    /// Finished read-only calls waiting to commit as one `Explored` cell; any
-    /// other commit closes the run.
+    /// Finished read-only calls waiting to commit as one `Explored` cell.
     pub(crate) explored: Vec<ToolCell>,
     last_commit_rows: usize,
     tool_started: HashMap<String, Instant>,
@@ -340,8 +338,7 @@ impl App {
         self.write_cell(cell);
     }
 
-    /// How a running call is being shown right now — `Awaiting` while the
-    /// permission gate holds it.
+    /// `Awaiting` while the permission gate holds the call.
     pub fn live_tool_status(&self, tool_call_id: &str) -> Option<ToolStatus> {
         self.live_tools
             .iter()
@@ -349,8 +346,7 @@ impl App {
             .map(|tool| tool.status)
     }
 
-    /// The call id is the only handle a permission event carries, so the live
-    /// cell it belongs to is found by the id the start recorded.
+    /// The call id is the only handle a permission event carries.
     fn set_awaiting(&mut self, tool_call_id: &str, status: ToolStatus) {
         if let Some(cell) = self
             .live_tools
@@ -382,7 +378,7 @@ impl App {
         let spinner = self.spinner_phase();
         let width = self.content_width();
         let lines = cell.lines(width, &self.theme, self.mode, spinner);
-        // opencode `util/layout.ts:8-25`: a blank separates blocks, never a run
+        // opencode `util/layout.ts`: a blank separates blocks, never a run
         // of one-line calls. Measured against what the previous cell actually
         // rendered, which is the only thing an append-only commit path knows.
         let leads_blank = lines
@@ -547,11 +543,15 @@ impl App {
                     name: tool_name.clone(),
                     call_id: tool_call_id.clone(),
                     intent: self.intent.clone(),
+                    status: ToolStatus::Running,
                     summary: ToolCell::summary_of(&tool_name, &arg_summary(&tool_name, &args)),
+                    digest: None,
+                    preview: Vec::new(),
+                    elapsed_ms: 0,
+                    calls: 1,
                     // The result carries the source too, but a running cell has
                     // no result yet and its head is built from the same record.
                     details: json!({ "code": args.get("code").unwrap_or(&Value::Null) }),
-                    ..ToolCell::default()
                 });
                 self.scheduler.request();
             }
@@ -577,10 +577,19 @@ impl App {
                     });
                 let mut cell = match index {
                     Some(i) => self.live_tools.remove(i),
+                    // No start was seen, so nothing is known but the name; the
+                    // result below fills in the rest.
                     None => ToolCell {
                         name: tool_name.clone(),
+                        call_id: tool_call_id.clone(),
+                        intent: None,
+                        status: ToolStatus::Running,
                         summary: ToolCell::summary_of(&tool_name, ""),
-                        ..ToolCell::default()
+                        digest: None,
+                        preview: Vec::new(),
+                        elapsed_ms: 0,
+                        calls: 1,
+                        details: Value::Null,
                     },
                 };
                 cell.status = if is_error {
@@ -704,12 +713,15 @@ impl App {
                 let text = text_of(&result.content);
                 let cell = Cell::Tool(ToolCell {
                     name: tool_name.clone(),
+                    call_id: String::new(),
+                    intent: None,
                     status: ToolStatus::Done,
                     summary: ToolCell::summary_of(&tool_name, ""),
                     digest: ToolCell::digest_of(&tool_name, &text, is_error),
                     preview: preview_lines(&text),
+                    elapsed_ms: 0,
+                    calls: 1,
                     details: result.details.clone(),
-                    ..ToolCell::default()
                 });
                 self.commit_cell(&cell);
             }
@@ -1156,6 +1168,10 @@ pub(crate) fn replay_session(app: &mut App, session: &AgentSession) {
                     ..
                 } => Some(Cell::Tool(ToolCell {
                     name: tool_name.clone(),
+                    // A replayed entry has no live call to pair with, and the
+                    // session never recorded how long the call took.
+                    call_id: String::new(),
+                    intent: None,
                     status: if *is_error {
                         ToolStatus::Failed
                     } else {
@@ -1163,8 +1179,10 @@ pub(crate) fn replay_session(app: &mut App, session: &AgentSession) {
                     },
                     summary: ToolCell::summary_of(tool_name, ""),
                     digest: ToolCell::digest_of(tool_name, &text_of(content), *is_error),
+                    preview: Vec::new(),
+                    elapsed_ms: 0,
+                    calls: 1,
                     details: details.clone().unwrap_or(Value::Null),
-                    ..ToolCell::default()
                 })),
                 _ => None,
             },
