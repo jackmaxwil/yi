@@ -129,3 +129,33 @@ fn chunk_mapper_captures_openrouter_reasoning_deltas_and_cached_usage() -> TestR
     assert_eq!(usage.output, 20);
     Ok(())
 }
+
+fn model(id: &str) -> Result<Model, Box<dyn Error>> {
+    Catalog::bundled()
+        .get("openrouter", id)
+        .cloned()
+        .ok_or_else(|| format!("bundled catalog is missing openrouter/{id}").into())
+}
+
+#[test]
+fn build_params_omits_reasoning_for_a_mandatory_reasoning_model() -> TestResult {
+    let model = model("z-ai/glm-5.3-flash")?;
+    let params = build_params(&model, &history_context(), &OpenAiOptions::default());
+    assert!(params.get("reasoning").is_none());
+    Ok(())
+}
+
+#[test]
+fn build_params_maps_efforts_the_model_does_not_support() -> TestResult {
+    let model = model("z-ai/glm-5.3-flash")?;
+    let params = build_params(
+        &model,
+        &history_context(),
+        &OpenAiOptions {
+            reasoning_effort: Some("medium".to_owned()),
+            ..OpenAiOptions::default()
+        },
+    );
+    assert_eq!(params["reasoning"], json!({"effort": "low"}));
+    Ok(())
+}
