@@ -6,8 +6,14 @@ The .ruler/ rules are the enforced source; this is the narrative version.
 
 - Zero panic budget from day one: clippy denies unwrap/expect/panic/todo/
   unimplemented; check_panic.py backs it; #![forbid(unsafe_code)] everywhere.
-- No comments except: incident comments on constants/guards, invariant comments
-  the type system cannot express, doc comments on yi-types public items.
+- A comment earns its line by naming an incident, an invariant, or a yi-types
+  schema fact, in three lines or fewer, whatever sigil carries it (D49 - the
+  test is content, not sigil). check_comments.py caps the length outright and
+  ratchets volume outside yi-types shrink-only.
+- Comment referents are typed (D55). A Rust item in a doc comment is an
+  intra-doc link; bare backticks mean not-an-item. A comment claiming the
+  incident or invariant grant opens `Incident:` or `Invariant:`. See
+  [comment-style.md](comment-style.md) for the conversion recipe.
 - Newtypes for ids and units; typed thiserror errors at crate boundaries;
   wire enums carry Other(String); checked/saturating arithmetic on budget math.
 - Every serialized shape lives in yi-types. Byte-compat is fixture-locked:

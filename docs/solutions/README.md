@@ -7,6 +7,7 @@ when it changes rather than editing them by hand.
 
 - [architecture.md](architecture.md) - the system in one page
 - [coding-practices.md](coding-practices.md) - how code is written and gated here
+- [comment-style.md](comment-style.md) - typed comment referents and named grants (D55)
 - [adr/](adr/) - one architecture decision record per decision-log row
 
 ## ADR index
@@ -46,3 +47,6 @@ when it changes rather than editing them by hand.
 - [D33](adr/d33.md) - yi rpc writes v4 only; phase-2 exit narrows to RPC protocol tests
 - [D34](adr/d34.md) - OpenRouter as the third native provider; no built-in default model
 - [D35](adr/d35.md) - Phase 2b scope trims (registers, per-segment decisions, minimal holds)
+- [D55](adr/d55.md) - comment referents are typed, comment grants are named
+
+D36-D54 have no ADR yet; ARCHITECTURE.md is the record for those rows.

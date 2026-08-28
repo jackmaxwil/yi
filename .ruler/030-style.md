@@ -16,6 +16,20 @@ har-supply, har-verify always; the rest by their stated triggers. Enforced highl
   where it is not. Three lines per comment, hard — only a license/attribution header may exceed
   it. No narrative comments, no section banners, no commented-out code. check_comments.py backs
   it: the length cap outright, comment volume outside yi-types as a shrink-only ratchet.
+- Comment referents are typed (D55). A Rust item named in a doc comment is an intra-doc link —
+  [`AgentSession::attach_store`], [`crate::tools::ToolAdapter`] — never bare backticks;
+  rustdoc::broken_intra_doc_links is denied and `cargo doc --document-private-items` runs in
+  check_guardrails.sh, so a rename that misses the comment fails the build. Qualify the path:
+  rustdoc resolves relative to the documented item's own module, so a bare method name usually
+  will not resolve. Bare backticks then mean not-an-item, which is the common case and stays
+  bare — a parameter (keep_recent), a wire name (display_data, sessionUpdate), a symbol in a
+  reference codebase (convertToLlm). rustdoc resolves links only in /// and //!, so a comment
+  inside a function body leaves the item bare; that is the ceiling, not an exemption.
+- A comment claiming the incident or invariant grant says which: the first line opens
+  `Incident:` or `Invariant:`. Closed vocabulary — check_comments.py rejects any other
+  capitalized `Word:` prefix, which is what stopped Precedence:/Draining:/Detached: becoming a
+  private dialect. Schema facts need no tag; crates/types/ is the tag. The prefix rides an
+  existing line, so it costs no comment volume.
 - Fight for every line: the size ratchet is a ceiling, not a target.
 - Multi-axis flows are state-space-as-data: a table the runtime reads, closed vocabulary,
   invariant checks — never a shadow model maintained beside a hand-rolled flow.
