@@ -1,10 +1,10 @@
 #![forbid(unsafe_code)]
 
-pub mod advisor;
 pub mod app;
 pub mod approval;
 pub mod cell;
 pub mod colors;
+pub mod commands;
 pub mod composer;
 pub mod drive;
 pub mod editor;

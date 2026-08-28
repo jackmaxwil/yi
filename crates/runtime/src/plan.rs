@@ -259,7 +259,9 @@ impl PlanService {
         }
     }
 
-    fn read_plan(&self) -> Option<Plan> {
+    /// The stored plan, for a surface that renders it rather than a caller
+    /// that mutates it.
+    pub fn read_plan(&self) -> Option<Plan> {
         let store = (self.store)()?;
         yi_session::lock_session(&store).plan()
     }

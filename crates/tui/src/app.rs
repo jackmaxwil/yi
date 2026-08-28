@@ -68,7 +68,9 @@ const SPINNER_PERIOD_MS: u128 = 80;
 pub(crate) const ORB_COLS: u16 = 6;
 pub(crate) const ORB_ROWS: u16 = 3;
 pub(crate) const ORB_PX: usize = 192;
-pub(crate) const SLASH_COMMANDS: [&str; 6] = ["new", "undo", "quit", "tree", "editor", "advisor"];
+pub(crate) const SLASH_COMMANDS: [&str; 8] = [
+    "new", "undo", "quit", "tree", "editor", "advisor", "plan", "goal",
+];
 
 pub struct TaskState {
     pub(crate) cell: TaskCell,
@@ -90,8 +92,8 @@ pub struct App {
     pub(crate) pending_new: bool,
     pub(crate) pending_editor: bool,
     pub(crate) pending_undo: bool,
-    /// `/advisor [promote <id>]`, run against the session in the event loop.
-    pub(crate) pending_advisor: Option<String>,
+    /// A slash line the event loop runs against the session (A5 dispatch).
+    pub(crate) pending_command: Option<String>,
     /// Rebuilds the rows above the viewport from the retained transcript, over
     /// the resize-reflow path.
     pending_repaint: bool,
@@ -277,7 +279,7 @@ impl App {
             pending_new: false,
             pending_editor: false,
             pending_undo: false,
-            pending_advisor: None,
+            pending_command: None,
             pending_repaint: false,
             pending_prompt_mark: false,
             logo_phase: 0.0,
@@ -1012,7 +1014,7 @@ pub fn run_tui(
         crate::rewind::process_pending_rewind(&mut app, &mut terminal, &session);
         crate::rewind::process_pending_new(&mut app, &mut terminal, &session);
         crate::rewind::process_pending_undo(&mut app, &session);
-        crate::advisor::process_pending_advisor(&mut app, &session);
+        crate::commands::process_pending_command(&mut app, &session);
         crate::editor::process_pending_editor(&mut app, &mut terminal, true);
         if app.scheduler.should_draw(Instant::now()) {
             let start = Instant::now();

@@ -186,7 +186,13 @@ pub(crate) fn handle_slash(app: &mut App, line: &str) {
         "quit" => app.quit = true,
         "tree" => app.pending_open_tree = true,
         "editor" => app.pending_editor = true,
-        "advisor" => app.pending_advisor = Some(args.to_owned()),
+        "advisor" | "plan" | "goal" => {
+            app.pending_command = Some(if args.is_empty() {
+                command.to_owned()
+            } else {
+                format!("{command} {args}")
+            });
+        }
         _ => app.commit_cell(&Cell::Notice {
             text: format!("unknown command: /{command}"),
         }),
