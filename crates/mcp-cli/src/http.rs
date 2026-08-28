@@ -1,22 +1,17 @@
-use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read};
-use std::sync::Arc;
 
-use futures_util::StreamExt;
-use futures_util::stream::BoxStream;
-use rmcp::model::{ClientJsonRpcMessage, ServerJsonRpcMessage};
-use rmcp::transport::streamable_http_client::{
-    AuthRequiredError, InsufficientScopeError, SseError, StreamableHttpClient, StreamableHttpError,
-    StreamableHttpPostResponse,
-};
-use sse_stream::Sse;
+use serde_json::Value;
 
 const HEADER_SESSION_ID: &str = "Mcp-Session-Id";
-// rmcp's DEFAULT_MAX_SSE_EVENT_SIZE (private): 16 MiB cap on one raw SSE event.
+// Incident: rmcp's DEFAULT_MAX_SSE_EVENT_SIZE, carried across D71 — an
+// unbounded SSE event is a server-controlled allocation.
 const MAX_SSE_EVENT_SIZE: usize = 16 * 1024 * 1024;
-const HEADER_LAST_EVENT_ID: &str = "Last-Event-Id";
 const EVENT_STREAM_MIME: &str = "text/event-stream";
 const JSON_MIME: &str = "application/json";
+
+// Invariant: [`crate::run`] matches this substring to turn a 401 into the
+// login hint, so [`HttpError::AuthRequired`] must render it. A test pins both.
+pub const UNAUTHORIZED_MARKER: &str = "unauthorized (status 401)";
 
 #[derive(Debug, thiserror::Error)]
 pub enum HttpError {
@@ -24,315 +19,199 @@ pub enum HttpError {
     Transport(String),
     #[error("unexpected status {0}")]
     Status(u16),
+    #[error("unauthorized (status 401)")]
+    AuthRequired,
+    #[error("unexpected content type {0}")]
+    ContentType(String),
+    #[error("stream ended before the reply arrived")]
+    UnexpectedEnd,
 }
 
-/// rmcp's client transport over the tree's one HTTP stack, so reqwest stays
-/// banned. Blocking calls run in spawn_blocking; SSE bodies are pumped by a
-/// detached reader thread feeding a channel-backed stream.
-#[derive(Clone)]
-pub struct UreqHttpClient {
+/// Whether a POST expects a reply. A notification is answered with 202 and no
+/// body, so waiting for a matching id would hang.
+pub enum PostBody {
+    Request(u64),
+    Notification,
+}
+
+/// MCP streamable HTTP over the tree's one HTTP stack, so reqwest stays banned.
+pub struct HttpTransport {
     agent: ureq::Agent,
+    url: String,
+    auth_token: Option<String>,
+    session_id: Option<String>,
 }
 
-impl Default for UreqHttpClient {
-    fn default() -> Self {
+impl HttpTransport {
+    pub fn new(url: &str, auth_token: Option<String>) -> Self {
         Self {
             agent: ureq::AgentBuilder::new().build(),
-        }
-    }
-}
-
-struct SseFields {
-    event: Option<String>,
-    data: Vec<String>,
-    id: Option<String>,
-    retry: Option<u64>,
-    bytes: usize,
-}
-
-impl SseFields {
-    fn new() -> Self {
-        Self {
-            event: None,
-            data: Vec::new(),
-            id: None,
-            retry: None,
-            bytes: 0,
+            url: url.to_owned(),
+            auth_token,
+            session_id: None,
         }
     }
 
-    fn is_empty(&self) -> bool {
-        self.event.is_none() && self.data.is_empty() && self.id.is_none() && self.retry.is_none()
-    }
-
-    fn into_sse(self) -> Sse {
-        Sse {
-            event: self.event,
-            data: if self.data.is_empty() {
-                None
-            } else {
-                Some(self.data.join("\n"))
-            },
-            id: self.id,
-            retry: self.retry,
+    fn post(&self, body: &str) -> Result<ureq::Response, HttpError> {
+        let mut request = self
+            .agent
+            .post(&self.url)
+            .set("content-type", JSON_MIME)
+            .set("accept", &format!("{EVENT_STREAM_MIME}, {JSON_MIME}"));
+        if let Some(token) = &self.auth_token {
+            request = request.set("authorization", &format!("Bearer {token}"));
+        }
+        if let Some(session) = &self.session_id {
+            request = request.set(HEADER_SESSION_ID, session);
+        }
+        match request.send_string(body) {
+            Ok(response) => Ok(response),
+            Err(ureq::Error::Status(401, _)) => Err(HttpError::AuthRequired),
+            Err(ureq::Error::Status(code, _)) => Err(HttpError::Status(code)),
+            Err(error) => Err(HttpError::Transport(error.to_string())),
         }
     }
-}
 
-fn parse_sse_line(fields: &mut SseFields, line: &str) {
-    let (name, value) = line
-        .split_once(':')
-        .map_or((line, ""), |(name, value)| (name, value));
-    let value = value.strip_prefix(' ').unwrap_or(value);
-    match name {
-        "event" => fields.event = Some(value.to_owned()),
-        "data" => fields.data.push(value.to_owned()),
-        "id" => fields.id = Some(value.to_owned()),
-        "retry" => fields.retry = value.parse().ok(),
-        _ => {}
-    }
-}
-
-/// Reads an SSE body on a detached thread, emitting one `Sse` per blank-line
-/// boundary. Events over `max_event_size` raw bytes fail the stream closed.
-fn sse_stream_from(reader: impl Read + Send + 'static, max_event_size: usize) -> BoxedSse {
-    let (sender, receiver) = tokio::sync::mpsc::unbounded_channel::<Result<Sse, SseError>>();
-    std::thread::spawn(move || {
-        let mut lines = BufReader::new(reader).lines();
-        let mut fields = SseFields::new();
-        loop {
-            match lines.next() {
-                Some(Ok(line)) => {
-                    if line.is_empty() {
-                        if !fields.is_empty() {
-                            let done = sender
-                                .send(Ok(
-                                    std::mem::replace(&mut fields, SseFields::new()).into_sse()
-                                ))
-                                .is_err();
-                            if done {
-                                return;
-                            }
-                        }
-                        continue;
-                    }
-                    if line.starts_with(':') {
-                        continue;
-                    }
-                    fields.bytes = fields.bytes.saturating_add(line.len());
-                    if fields.bytes > max_event_size {
-                        let _ =
-                            sender.send(Err(SseError::Body("SSE event exceeds max size".into())));
-                        return;
-                    }
-                    parse_sse_line(&mut fields, &line);
-                }
-                Some(Err(_)) | None => {
-                    if !fields.is_empty() {
-                        let _ = sender.send(Ok(fields.into_sse()));
-                    }
-                    return;
-                }
-            }
+    pub fn round_trip(&mut self, message: &Value, body: PostBody) -> Result<Value, String> {
+        let payload = serde_json::to_string(message).map_err(|error| error.to_string())?;
+        let response = self.post(&payload).map_err(|error| error.to_string())?;
+        if self.session_id.is_none() {
+            self.session_id = response.header(HEADER_SESSION_ID).map(str::to_owned);
         }
-    });
-    futures_util::stream::unfold(receiver, |mut receiver| async move {
-        receiver.recv().await.map(|item| (item, receiver))
-    })
-    .boxed()
-}
-
-type BoxedSse = BoxStream<'static, Result<Sse, SseError>>;
-type HttpResult<T> = Result<T, StreamableHttpError<HttpError>>;
-
-struct BlockingResponse {
-    status: u16,
-    content_type: Option<String>,
-    session_id: Option<String>,
-    www_authenticate: Option<String>,
-    response: Option<ureq::Response>,
-}
-
-fn run_blocking(request: ureq::Request, body: Option<String>) -> HttpResult<BlockingResponse> {
-    let outcome = match body {
-        Some(body) => request.send_string(&body),
-        None => request.call(),
-    };
-    let response = match outcome {
-        Ok(response) => response,
-        Err(ureq::Error::Status(status, response)) => {
-            return Ok(BlockingResponse {
-                status,
-                content_type: Some(response.content_type().to_owned()),
-                session_id: response.header(HEADER_SESSION_ID).map(str::to_owned),
-                www_authenticate: response.header("www-authenticate").map(str::to_owned),
-                response: None,
-            });
-        }
-        Err(error) => {
-            return Err(StreamableHttpError::Client(HttpError::Transport(
-                error.to_string(),
-            )));
-        }
-    };
-    Ok(BlockingResponse {
-        status: response.status(),
-        content_type: Some(response.content_type().to_owned()),
-        session_id: response.header(HEADER_SESSION_ID).map(str::to_owned),
-        www_authenticate: None,
-        response: Some(response),
-    })
-}
-
-fn error_for_status(reply: &BlockingResponse) -> Option<StreamableHttpError<HttpError>> {
-    match reply.status {
-        401 => Some(StreamableHttpError::AuthRequired(AuthRequiredError::new(
-            reply.www_authenticate.clone().unwrap_or_default(),
-        ))),
-        403 => Some(StreamableHttpError::InsufficientScope(
-            InsufficientScopeError::new(reply.www_authenticate.clone().unwrap_or_default(), None),
-        )),
-        404 => Some(StreamableHttpError::SessionExpired),
-        code if code >= 400 => Some(StreamableHttpError::Client(HttpError::Status(code))),
-        _ => None,
-    }
-}
-
-fn apply_headers(
-    mut request: ureq::Request,
-    auth_header: Option<&str>,
-    session_id: Option<&str>,
-    custom_headers: &HashMap<http::HeaderName, http::HeaderValue>,
-) -> ureq::Request {
-    if let Some(token) = auth_header {
-        request = request.set("authorization", &format!("Bearer {token}"));
-    }
-    if let Some(session) = session_id {
-        request = request.set(HEADER_SESSION_ID, session);
-    }
-    for (name, value) in custom_headers {
-        if let Ok(text) = value.to_str() {
-            request = request.set(name.as_str(), text);
-        }
-    }
-    request
-}
-
-impl StreamableHttpClient for UreqHttpClient {
-    type Error = HttpError;
-
-    async fn post_message(
-        &self,
-        uri: Arc<str>,
-        message: ClientJsonRpcMessage,
-        session_id: Option<Arc<str>>,
-        auth_header: Option<String>,
-        custom_headers: HashMap<http::HeaderName, http::HeaderValue>,
-    ) -> HttpResult<StreamableHttpPostResponse> {
-        let agent = self.agent.clone();
-        let body = serde_json::to_string(&message)?;
-        let reply = tokio::task::spawn_blocking(move || {
-            let request = agent
-                .post(uri.as_ref())
-                .set("content-type", JSON_MIME)
-                .set("accept", &format!("{EVENT_STREAM_MIME}, {JSON_MIME}"));
-            let request = apply_headers(
-                request,
-                auth_header.as_deref(),
-                session_id.as_deref(),
-                &custom_headers,
-            );
-            run_blocking(request, Some(body))
-        })
-        .await??;
-        if let Some(error) = error_for_status(&reply) {
-            return Err(error);
-        }
-        if reply.status == 202 {
-            return Ok(StreamableHttpPostResponse::Accepted);
-        }
-        let session_id = reply.session_id.clone();
-        let content_type = reply.content_type.clone().unwrap_or_default();
-        let Some(response) = reply.response else {
-            return Err(StreamableHttpError::UnexpectedEndOfStream);
+        let content_type = response.content_type().to_owned();
+        let status = response.status();
+        let PostBody::Request(id) = body else {
+            return Ok(Value::Null);
         };
+        if status == 202 {
+            return Err("server accepted the request without replying".to_owned());
+        }
         if content_type.starts_with(EVENT_STREAM_MIME) {
-            let stream = sse_stream_from(response.into_reader(), MAX_SSE_EVENT_SIZE);
-            return Ok(StreamableHttpPostResponse::Sse(stream, session_id));
+            return read_sse_reply(response.into_reader(), id).map_err(|error| error.to_string());
         }
         if content_type.starts_with(JSON_MIME) {
-            let text = tokio::task::spawn_blocking(move || response.into_string()).await?;
-            let text = text.map_err(|error| {
-                StreamableHttpError::Client(HttpError::Transport(error.to_string()))
-            })?;
-            let parsed: ServerJsonRpcMessage = serde_json::from_str(&text)?;
-            return Ok(StreamableHttpPostResponse::Json(parsed, session_id));
+            let text = response
+                .into_string()
+                .map_err(|error| HttpError::Transport(error.to_string()).to_string())?;
+            return serde_json::from_str::<Value>(&text).map_err(|error| error.to_string());
         }
-        Err(StreamableHttpError::UnexpectedContentType(Some(
-            content_type,
-        )))
+        Err(HttpError::ContentType(content_type).to_string())
     }
 
-    async fn delete_session(
-        &self,
-        uri: Arc<str>,
-        session_id: Arc<str>,
-        auth_header: Option<String>,
-        custom_headers: HashMap<http::HeaderName, http::HeaderValue>,
-    ) -> HttpResult<()> {
-        let agent = self.agent.clone();
-        let reply = tokio::task::spawn_blocking(move || {
-            let request = agent.delete(uri.as_ref());
-            let request = apply_headers(
-                request,
-                auth_header.as_deref(),
-                Some(session_id.as_ref()),
-                &custom_headers,
-            );
-            run_blocking(request, None)
-        })
-        .await??;
-        if reply.status == 405 {
-            return Err(StreamableHttpError::ServerDoesNotSupportDeleteSession);
+    /// Best-effort session teardown, matching what rmcp's `cancel` did: a server
+    /// that answers 405 never had a session to release.
+    pub fn close(self) {
+        let Some(session) = self.session_id else {
+            return;
+        };
+        let mut request = self
+            .agent
+            .delete(&self.url)
+            .set(HEADER_SESSION_ID, &session);
+        if let Some(token) = self.auth_token {
+            request = request.set("authorization", &format!("Bearer {token}"));
         }
-        if let Some(error) = error_for_status(&reply) {
-            return Err(error);
+        let _ = request.call();
+    }
+}
+
+/// Reads SSE frames until one carries the JSON-RPC reply for `id`, discarding
+/// the server-initiated notifications that may precede it.
+fn read_sse_reply(reader: impl Read, id: u64) -> Result<Value, HttpError> {
+    let mut lines = BufReader::new(reader).lines();
+    let mut data: Vec<String> = Vec::new();
+    let mut bytes: usize = 0;
+    loop {
+        match lines.next() {
+            Some(Ok(line)) => {
+                if line.is_empty() {
+                    if let Some(reply) = frame_reply(&mut data, id) {
+                        return Ok(reply);
+                    }
+                    bytes = 0;
+                    continue;
+                }
+                if line.starts_with(':') {
+                    continue;
+                }
+                bytes = bytes.saturating_add(line.len());
+                if bytes > MAX_SSE_EVENT_SIZE {
+                    return Err(HttpError::Transport(
+                        "SSE event exceeds max size".to_owned(),
+                    ));
+                }
+                if let Some(value) = field_value(&line, "data") {
+                    data.push(value.to_owned());
+                }
+            }
+            Some(Err(error)) => return Err(HttpError::Transport(error.to_string())),
+            None => {
+                if let Some(reply) = frame_reply(&mut data, id) {
+                    return Ok(reply);
+                }
+                return Err(HttpError::UnexpectedEnd);
+            }
         }
+    }
+}
+
+fn field_value<'line>(line: &'line str, name: &str) -> Option<&'line str> {
+    let (field, value) = line.split_once(':').unwrap_or((line, ""));
+    (field == name).then(|| value.strip_prefix(' ').unwrap_or(value))
+}
+
+fn frame_reply(data: &mut Vec<String>, id: u64) -> Option<Value> {
+    if data.is_empty() {
+        return None;
+    }
+    let body = std::mem::take(data).join("\n");
+    let parsed = serde_json::from_str::<Value>(&body).ok()?;
+    (parsed.get("id").and_then(Value::as_u64) == Some(id)).then_some(parsed)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_unauthorized_marker_is_what_auth_required_renders() {
+        assert_eq!(HttpError::AuthRequired.to_string(), UNAUTHORIZED_MARKER);
+    }
+
+    #[test]
+    fn a_notification_frame_before_the_reply_is_skipped() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let body = concat!(
+            "event: message\n",
+            "data: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/message\"}\n",
+            "\n",
+            "event: message\n",
+            "data: {\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"tools\":[]}}\n",
+            "\n",
+        );
+        let reply = read_sse_reply(body.as_bytes(), 2)?;
+        assert_eq!(reply.get("id").and_then(Value::as_u64), Some(2));
         Ok(())
     }
 
-    async fn get_stream(
-        &self,
-        uri: Arc<str>,
-        session_id: Option<Arc<str>>,
-        last_event_id: Option<String>,
-        auth_header: Option<String>,
-        custom_headers: HashMap<http::HeaderName, http::HeaderValue>,
-    ) -> HttpResult<BoxedSse> {
-        let agent = self.agent.clone();
-        let reply = tokio::task::spawn_blocking(move || {
-            let mut request = agent.get(uri.as_ref()).set("accept", EVENT_STREAM_MIME);
-            if let Some(last) = &last_event_id {
-                request = request.set(HEADER_LAST_EVENT_ID, last);
-            }
-            let request = apply_headers(
-                request,
-                auth_header.as_deref(),
-                session_id.as_deref(),
-                &custom_headers,
-            );
-            run_blocking(request, None)
-        })
-        .await??;
-        if reply.status == 405 {
-            return Err(StreamableHttpError::ServerDoesNotSupportSse);
-        }
-        if let Some(error) = error_for_status(&reply) {
-            return Err(error);
-        }
-        let Some(response) = reply.response else {
-            return Err(StreamableHttpError::UnexpectedEndOfStream);
-        };
-        Ok(sse_stream_from(response.into_reader(), MAX_SSE_EVENT_SIZE))
+    #[test]
+    fn a_reply_split_across_data_lines_is_rejoined() -> Result<(), Box<dyn std::error::Error>> {
+        let body = concat!(
+            "data: {\"jsonrpc\":\"2.0\",\"id\":7,\n",
+            "data: \"result\":{\"ok\":true}}\n",
+            "\n",
+        );
+        let reply = read_sse_reply(body.as_bytes(), 7)?;
+        assert_eq!(
+            reply.pointer("/result/ok").and_then(Value::as_bool),
+            Some(true)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_stream_that_ends_without_the_reply_is_an_error() {
+        let body = "data: {\"jsonrpc\":\"2.0\",\"id\":99,\"result\":{}}\n\n";
+        assert!(read_sse_reply(body.as_bytes(), 2).is_err());
     }
 }

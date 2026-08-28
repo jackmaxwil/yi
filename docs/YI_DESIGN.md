@@ -14,7 +14,7 @@ skill creation.
 
 | Topic | Decision |
 |---|---|
-| Language | Rust. Deliberately small dependency tree (§13): `tokio` (subset), `serde`, `ureq`+`rustls` (platform verifier), `zeromq`, `jiff`, `globset`, `lexopt`; `ratatui` feature-gated; `rmcp` (minimal features, no reqwest) config-gated at runtime (D36). Binary-size, startup and dep-count budgets ratcheted in CI. |
+| Language | Rust. Deliberately small dependency tree (§13): `tokio` (subset), `serde`, `ureq`+`rustls` (platform verifier), `zeromq`, `jiff`, `globset`, `lexopt`; `ratatui` feature-gated; MCP hand-rolled over JSON-RPC (D70), config-gated at runtime (D36). Binary-size, startup and dep-count budgets ratcheted in CI. |
 | Core shape | Pi: pure `run_loop` + callback struct, 13-variant event enum, two queues (steer / follow-up), entry tree session store, compaction as an appended entry. |
 | Pi compatibility | **Wire-level, not type-level.** Byte-compatible session JSONL (v3 + harness entries), Pi RPC JSONL protocol, Pi `AgentEvent` JSON. Pi's own tests for those boundaries run against the yi binary (§3). |
 | pi-ai | Rust mirror of pi-ai's *types* (`Message`, `AssistantMessageEvent`, `StopReason`, `Usage`, `Model`) with identical serde shapes; provider implementations ported for Anthropic + OpenAI-compatible (+ responses API). Model catalog = pi-ai's generated data as JSON. No Node sidecar. |
@@ -57,7 +57,7 @@ crates/
   yi-context    token accounting, compaction policy + cut-point, summarizer, ledger, assembly. deps: yi-types (store access stays in yi-runtime).
   yi-permission modes, rules, session rule state, holds (advisor), approval request/response. deps: yi-types.
   yi-tools      Tool trait + builtins: read/hashline-edit/write/glob/grep/bash/exec-tools/ipython/subagent/ask. deps: yi-types, yi-permission.
-  yi-mcp-cli    mcpc-shaped MCP subcommand (§5.2), compiled into every build, runtime-gated by `mcp.enabled` config, default false (D36, supersedes D9 feature flag). deps: rmcp (minimal, no reqwest), yi-types.
+  yi-mcp-cli    mcpc-shaped MCP subcommand (§5.2), compiled into every build, runtime-gated by `mcp.enabled` config, default false (D36, supersedes D9 feature flag). deps: ureq, yi-types (D70: no rmcp).
   yi-kernel     Jupyter client: connection file, ZMQ shell/iopub/control, HMAC, comm host.request dispatch. deps: yi-types.
   yi-runtime    AgentSession: composes everything above; the ONLY constructor of LoopConfig.
                 Contains `subagent`, `schedule`, `advisor` as MODULES (single-impl, single-consumer:
@@ -248,9 +248,9 @@ What is changed, because of the no-resident-process preference:
 - Config sources: `~/.<bin>/mcp.json` and standard files (`.vscode/mcp.json`, `.mcp.json`)
   by explicit path. Stdio entries spawn a process for the duration of one command only.
 
-Crate: `yi-mcp-cli`, depends on `rmcp` (default-features off: client + child-process transport;
-streamable HTTP through a ureq-based transport impl, never reqwest — D36) for protocol types
-and transports. Compiled into every build; `mcp.enabled = false` is the only gate. It is a
+Crate: `yi-mcp-cli`, which speaks JSON-RPC 2.0 itself (D71): line-delimited over a child's
+stdio, or POSTed over the tree's one ureq stack for streamable HTTP, never reqwest. rmcp is a
+dev-dependency only, serving the reference server the client is tested against. Compiled into every build; `mcp.enabled = false` is the only gate. It is a
 dependency of `yi-cli` only; no runtime crate may import it (boundary check).
 
 Skills: discovery roots (workspace `.yi/skills`, `skills/`, `.pi/skills`, `.claude/skills`, `.agents/skills`;
@@ -1474,8 +1474,8 @@ size builds only as an experiment, never required.
 | `serde`, `serde_json` | pi-ai wire compat, session JSONL, RPC, ACP | `derive`; json `std` + `preserve_order` (pulls `indexmap` — required: byte-identical round-trip of Pi files means arbitrary JSON objects must keep key order) | medium (unavoidable) | hand-rolled JSON rejected — compat correctness matters more |
 | `tokio` | async runtime for provider streams, kernel sockets, scheduler timer | `rt`, `sync`, `time`, `io-util`, `net`, `process`, `macros`; **no** `rt-multi-thread` unless measured | medium | `smol` smaller but `zeromq` is tokio-shaped |
 | `ureq` + `rustls` + `rustls-platform-verifier` | HTTP + SSE streaming to providers; blocking client driven from `spawn_blocking`, body read incrementally | `rustls`, no `json`, no `brotli`; platform verifier ⇒ **no bundled root store** | small | `reqwest` rejected: hyper + tower + h2 stack ≈ +1.5–2.5 MiB; `native-tls` rejected: openssl on Linux |
-| `rmcp` | MCP protocol types + client + stdio child-process transport for `yi mcp` (§5.2, D36) | default-features off; `client`, `transport-child-process`, `transport-streamable-http-client` (trait only — HTTP impl is ureq-based, no reqwest) | measured (size-ledger) | hand-rolled MCP client rejected: protocol churn outpaces a private impl; official SDK tracks spec |
-| `sse-stream` | the `Sse` event type named by rmcp's `StreamableHttpClient` trait (D37) | type-only: Yi parses SSE bytes itself over ureq | ~0 (already transitive via rmcp) | re-export absent from rmcp; naming the type requires the direct dep |
+| ~~`rmcp`~~ | **Moved to dev-only at D71.** The hand-rolled client is the shipped path; rmcp stays a `yi-mcp-cli` dev-dependency, serving `examples/reference_server.rs` so the client is tested against an implementation Yi does not own | dev-only: `server`, `transport-io`, `macros` | -700,272 bytes measured (size-ledger) | the reverse of this row's old entry — see D70 for why protocol churn argues *for* the hand-roll here |
+| ~~`sse-stream`~~ | **Dropped at D71** with `futures-util` and `http`: all three existed only to name types in rmcp's `StreamableHttpClient` trait, which Yi no longer implements | — | -0 direct, -12 transitive | — |
 | `zeromq` (pure Rust) | Jupyter channels (DEALER/SUB) | `tokio-runtime`, no `tcp-transport` extras beyond TCP | medium | `zmq` (libzmq FFI) rejected by rule 4; custom wire shim rejected — standard Jupyter keeps ipykernel stock |
 | `hmac`, `sha2` | Jupyter message signing; permission rule digests | — | small | — |
 | ~~`agent-client-protocol`~~ | **Rejected at phase 5b (D40).** Measured 2.0.0: +55 workspace transitive (cap 135), `schemars` non-optional via the pinned `-schema` crate (the "schemars off" condition this row assumed no longer exists), a second async stack (async-io/async-process/blocking) beside tokio, and v2 still feature-gated `unstable_protocol_v2` | — | Yi hand-rolls the v2 wire subset it emits: serde shapes in `yi-types::acp`, JSON-RPC 2.0 codec in `yi-acp`; C9's unknown-field tolerance is the forward-compat story |

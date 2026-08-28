@@ -18,14 +18,11 @@ deny = [
   "reqwest", "hyper", "openssl-sys", "native-tls",
   "git2", "libgit2-sys", "gix", "clap", "anyhow",
   { crate = "regex", wrappers = ["zeromq"] },
-  { crate = "chrono", wrappers = ["rmcp"] },
-  { crate = "once_cell", wrappers = ["rustls", "ureq", "tracing-core", "zeromq"] },
+  { crate = "once_cell", wrappers = ["rustls", "ureq", "zeromq"] },
   { crate = "rand", wrappers = ["zeromq"] },
   "lazy_static", "syntect", "textwrap", "toml",
   "tracing-subscriber",
 ]
-# base64 0.22/0.23 duplicate: ureq 2 pins 0.22, rmcp pins 0.23; collapses when
-# ureq 3 migration lands (advisories note above).
 # thiserror 1+2 and getrandom 0.2/0.3 duplicates ride the zeromq pin; both
 # collapse when zeromq updates its error/rand stack.
 # hashbrown 0.14/0.15 and unicode-width 0.1/0.2 duplicates ride the ratatui
@@ -34,7 +31,6 @@ deny = [
 skip = [
   { crate = "syn" },
   { crate = "windows-sys" },
-  { crate = "base64" },
   { crate = "thiserror" },
   { crate = "thiserror-impl" },
   { crate = "getrandom" },

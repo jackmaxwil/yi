@@ -11,6 +11,7 @@ pub mod output;
 pub mod pkce;
 pub mod profiles;
 pub mod sessions;
+pub mod stdio;
 pub mod tokens;
 
 use std::path::PathBuf;
@@ -154,7 +155,7 @@ fn do_connect(
             0
         }
         Err(error) => {
-            let state = if error.contains("Auth required") || error.contains("status 401") {
+            let state = if error.contains(http::UNAUTHORIZED_MARKER) {
                 McpSessionState::Unauthorized
             } else {
                 McpSessionState::Disconnected
@@ -231,7 +232,7 @@ fn do_session_op(store: &mut SessionsStore, session: &str, op: SessionOp, flags:
         let result = client::one_shot_with_auth(&spec, client_op, auth.clone());
         let state = match &result {
             Ok(_) => McpSessionState::Live,
-            Err(error) if error.contains("Auth required") || error.contains("status 401") => {
+            Err(error) if error.contains(http::UNAUTHORIZED_MARKER) => {
                 McpSessionState::Unauthorized
             }
             Err(_) => McpSessionState::Disconnected,
