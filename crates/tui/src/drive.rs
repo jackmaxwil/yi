@@ -212,6 +212,7 @@ pub fn run_headless(
         crate::app::spawn_runtime_bridge(runtime, &session);
     crate::app::replay_session(&mut app, &session);
     if let Some(prompt) = initial_prompt {
+        app.note_submission();
         let _ = cmd_tx.send(crate::app::Command::Prompt(prompt));
     }
 
@@ -274,7 +275,7 @@ pub fn run_headless(
                 }
             }
             (Step::WaitIdle(ms), started) => {
-                if app.is_running() || !app.has_run() {
+                if app.is_running() || app.awaiting_turn() || !app.has_run() {
                     if started.elapsed() > Duration::from_millis(ms) {
                         eprintln!("error: wait-idle timed out after {ms} ms");
                         exit_code = 1;

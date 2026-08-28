@@ -122,6 +122,11 @@ pub struct App {
     pub(crate) focused: Option<String>,
     pub(crate) hud_hidden: bool,
     seen_turn: bool,
+    /// Incident: a submitted prompt reaches the runtime thread over a channel,
+    /// so the UI can still look idle after Enter; a drive script that only
+    /// checked `running` opened the session tree mid-write (A10).
+    submitted_turns: u64,
+    started_turns: u64,
     user_turns: usize,
     pub(crate) mode: TranscriptMode,
     pub(crate) kitty: bool,
@@ -303,6 +308,8 @@ impl App {
             focused: None,
             hud_hidden: false,
             seen_turn: false,
+            submitted_turns: 0,
+            started_turns: 0,
             user_turns: 0,
             mode: TranscriptMode::Normal,
             kitty: false,
@@ -364,6 +371,15 @@ impl App {
 
     pub fn has_run(&self) -> bool {
         self.seen_turn
+    }
+
+    /// A prompt has been submitted whose turn has not started yet.
+    pub fn awaiting_turn(&self) -> bool {
+        self.submitted_turns > self.started_turns
+    }
+
+    pub(crate) fn note_submission(&mut self) {
+        self.submitted_turns = self.submitted_turns.saturating_add(1);
     }
 
     pub(crate) fn open_approval(&mut self, ask: AskRequest) {
@@ -522,6 +538,7 @@ impl App {
             AgentEvent::AgentStart => {
                 self.running = true;
                 self.seen_turn = true;
+                self.started_turns = self.started_turns.saturating_add(1);
                 self.esc_armed_at = None;
             }
             AgentEvent::AgentEnd { .. } => {
@@ -940,6 +957,7 @@ pub fn run_tui(
 
     replay_session(&mut app, &session);
     if let Some(prompt) = app.options.initial_prompt.clone() {
+        app.note_submission();
         let _ = cmd_tx.send(Command::Prompt(prompt));
     }
 

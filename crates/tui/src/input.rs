@@ -133,6 +133,7 @@ pub(crate) fn handle_action(
                     app.steering.push(text.clone());
                     let _ = cmd_tx.send(Command::Steer(text));
                 } else {
+                    app.note_submission();
                     let _ = cmd_tx.send(Command::Prompt(text));
                 }
             }
