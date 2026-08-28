@@ -87,6 +87,9 @@ impl Tool for IpythonTool {
             sections.join("\n")
         };
         let mut output = text_output(text);
+        // The streams are carried apart from the joined text so a renderer can
+        // style stderr and a traceback differently; the joined form stays the
+        // model's view.
         output.result.details = json!({
             "status": result.status,
             "durationMs": result.duration_ms,
@@ -94,6 +97,11 @@ impl Tool for IpythonTool {
             "attachments": result.attachments.len(),
             "sentAgentMessages": result.sent_agent_messages,
             "kernelRestarted": outcome.kernel_restarted,
+            "code": code,
+            "stdout": result.stdout,
+            "stderr": result.stderr,
+            "result": result.result,
+            "error": result.error,
         });
         output.is_error =
             result.status == ExecuteStatus::Error || result.status == ExecuteStatus::Aborted;

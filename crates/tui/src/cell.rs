@@ -1,5 +1,6 @@
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
+use serde_json::Value;
 
 use crate::colors::{Theme, name_accent};
 use crate::markdown;
@@ -57,6 +58,25 @@ pub struct ToolCell {
     pub preview: Vec<String>,
     pub elapsed_ms: u64,
     pub calls: u32,
+    /// The tool's own typed record — an edit's patch, a kernel cell's streams —
+    /// merged from the call's arguments and its result.
+    pub details: Value,
+}
+
+impl Default for ToolCell {
+    fn default() -> Self {
+        Self {
+            name: String::new(),
+            intent: None,
+            status: ToolStatus::Running,
+            summary: String::new(),
+            digest: None,
+            preview: Vec::new(),
+            elapsed_ms: 0,
+            calls: 1,
+            details: Value::Null,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

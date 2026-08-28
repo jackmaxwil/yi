@@ -524,3 +524,32 @@ fn grep_context_is_clamped_and_defaults_to_bare_hits() -> TestResult {
     assert_eq!(output_text(&clamped).lines().count(), 21);
     Ok(())
 }
+
+/// Without the patch on the result, the transcript and every ACP client fall
+/// back to the one-line digest: an edit renders with no diff body at all.
+#[test]
+fn a_write_carries_its_patch_and_line_counts() -> TestResult {
+    let dir = temp_dir("write-patch")?;
+    let context = ToolContext::new(dir.0.clone());
+    let tool = WriteTool::default();
+
+    let created = tool.execute(
+        args(&[("path", json!("a.txt")), ("content", json!("one\ntwo\n"))]),
+        &context,
+    );
+    assert_eq!(created.result.details["added"], json!(2));
+    assert_eq!(created.result.details["removed"], json!(0));
+
+    let edited = tool.execute(
+        args(&[("path", json!("a.txt")), ("content", json!("one\nTWO\n"))]),
+        &context,
+    );
+    let patch = edited.result.details["patch"]
+        .as_str()
+        .ok_or("write result carried no patch")?;
+    assert!(patch.contains("-two"), "{patch}");
+    assert!(patch.contains("+TWO"), "{patch}");
+    assert_eq!(edited.result.details["added"], json!(1));
+    assert_eq!(edited.result.details["removed"], json!(1));
+    Ok(())
+}

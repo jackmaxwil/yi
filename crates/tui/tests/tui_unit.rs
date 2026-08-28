@@ -1020,7 +1020,6 @@ fn nested_items_hang_under_their_own_marker() -> TestResult {
 fn tool_cell(name: &str, result: &str, failed: bool) -> ToolCell {
     ToolCell {
         name: name.to_owned(),
-        intent: None,
         status: if failed {
             ToolStatus::Failed
         } else {
@@ -1029,8 +1028,7 @@ fn tool_cell(name: &str, result: &str, failed: bool) -> ToolCell {
         summary: ToolCell::summary_of(name, ""),
         digest: ToolCell::digest_of(name, result, failed),
         preview: result.lines().map(str::to_owned).collect(),
-        elapsed_ms: 0,
-        calls: 1,
+        ..ToolCell::default()
     }
 }
 

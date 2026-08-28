@@ -1,5 +1,7 @@
 use std::path::Path;
 
+use serde_json::{Value, json};
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GitPatch(String);
 
@@ -15,6 +17,31 @@ impl GitPatch {
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()
     }
+
+    /// Counts exclude the `--- a/` and `+++ b/` header pair, which shares the
+    /// sign column with change rows but is not one.
+    pub fn stats(&self) -> (u64, u64) {
+        let mut added: u64 = 0;
+        let mut removed: u64 = 0;
+        for line in self.0.lines() {
+            if line.starts_with("+++ ") || line.starts_with("--- ") {
+                continue;
+            }
+            match line.as_bytes().first() {
+                Some(b'+') => added = added.saturating_add(1),
+                Some(b'-') => removed = removed.saturating_add(1),
+                _ => {}
+            }
+        }
+        (added, removed)
+    }
+}
+
+/// The `patch` / `added` / `removed` keys an edit or write result carries so
+/// the transcript can render a diff body instead of a one-line digest (T13).
+pub fn patch_details(patch: &GitPatch) -> Value {
+    let (added, removed) = patch.stats();
+    json!({ "patch": patch.as_str(), "added": added, "removed": removed })
 }
 
 const CONTEXT: usize = 3;

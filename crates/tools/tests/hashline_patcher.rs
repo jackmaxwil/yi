@@ -126,6 +126,31 @@ fn edit_preview_shows_the_diff_without_touching_disk_or_the_snapshot_store() -> 
     Ok(())
 }
 
+/// The preview's patch reaches the permission ask; only the *result's* patch
+/// reaches the transcript, so an applied edit with no `details.patch` renders
+/// as a bare digest with no diff body.
+#[test]
+fn an_applied_edit_carries_its_patch_on_the_result() -> TestResult {
+    let fixture = Fixture::new("result-patch")?;
+    fixture.write("a.txt", "one\ntwo\nthree\n")?;
+    let tag = fixture.tag_of("a.txt")?;
+    let edit = fixture.edit(&format!("[a.txt#{tag}]\nPUT 2.=2:\n+TWO\n"));
+
+    let patch = edit.result.details["patch"]
+        .as_str()
+        .ok_or("edit result carried no patch")?;
+    assert!(patch.contains("-two"), "{patch}");
+    assert!(patch.contains("+TWO"), "{patch}");
+    assert_eq!(edit.result.details["added"], json!(1));
+    assert_eq!(edit.result.details["removed"], json!(1));
+
+    // A no-op edit has nothing to draw, so it must not claim a patch.
+    let tag = fixture.tag_of("a.txt")?;
+    let noop = fixture.edit(&format!("[a.txt#{tag}]\nPUT 2.=2:\n+TWO\n"));
+    assert!(noop.result.details["patch"].is_null());
+    Ok(())
+}
+
 #[test]
 fn edit_preview_declines_a_noop_and_an_unparseable_patch() -> TestResult {
     let fixture = Fixture::new("preview-noop")?;

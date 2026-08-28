@@ -69,16 +69,24 @@ impl Tool for WriteTool {
         {
             return error_output(format!("failed to create {}: {error}", parent.display()));
         }
+        // Read before the write, not after: the transcript's diff body needs
+        // the ground the write replaced, and nothing else reconstructs it.
+        let before = fs::read_to_string(&path).unwrap_or_default();
         match fs::write(&path, content) {
             Ok(()) => {
                 if let Some(state) = &self.hashline {
                     crate::hashline::tool::record_write_snapshot(state, &path, content);
                 }
-                text_output(format!(
+                let mut output = text_output(format!(
                     "Wrote {} bytes to {}",
                     content.len(),
                     path.display()
-                ))
+                ));
+                let patch = crate::diff::patch(&before, content, &path);
+                if !patch.is_empty() {
+                    output.result.details = crate::diff::patch_details(&patch);
+                }
+                output
             }
             Err(error) => error_output(format!("failed to write {}: {error}", path.display())),
         }

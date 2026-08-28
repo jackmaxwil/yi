@@ -944,7 +944,7 @@ flowchart LR
 | C9 | extensions | `_yi/advisory`, `_yi/subagent_update`, `_yi/kernel_state`, `_yi/heartbeat_changed`, `_yi/compaction` updates + `_yi/heartbeat`, `_yi/goal` methods; unknown fields ignored, unknown kinds skipped | data | ACP v2 · jcode harness-api rule |
 
 
-### 8.14 TUI (`yi-tui`, feature `tui`; from codex, OMP, opencode, atuin, mdfried, rainfrog)
+### 8.14 TUI (`yi-tui`, feature `tui`; from codex, OMP, opencode, prime-agent, atuin, mdfried, rainfrog)
 
 Six references agree on the mechanics and disagree on the size. codex `tui` is 272k lines, OMP
 `packages/tui` + `modes` is 150k, opencode `packages/tui` 31.8k, atuin's search TUI is 7.8k,
@@ -2025,9 +2025,26 @@ contract, and it is interop with a format, not parity with code.
 | `createHeartbeatPromptMessage` | `ref/agents/prime-agent/packages/coding-agent/src/core/messages.ts:458-477` | 20 | port verbatim (+ `<heartbeat>` framing, H9) |
 | goals types + `goalHostResponse` | `ref/agents/prime-agent/packages/coding-agent/src/core/goals.ts:4-53,125-153` | 79 | read-only reference (phase 6) |
 
+prime-agent TUI (§8.14, D60 — the kernel-cell and subagent presentation; the pi-tui
+differential-render chassis and the fullscreen agents dashboard are not ported):
+
+| item | source span | lines | action |
+|---|---|---|---|
+| ipython cell: collapsed head contract (byte-identical first line expanded), language chip, `↑ in ↓ out lines` counts, traceback split | `ref/agents/prime-agent/packages/coding-agent/src/modes/interactive/components/ipython-cell.ts:277-332,368-484,499-525` | ~190 | port adapted (U37) |
+| scored one-line code preview + secret/blob redaction | `ref/agents/prime-agent/packages/coding-agent/src/core/tools/code-preview.ts` | ~120 | port adapted (U37) |
+| subagent tray counts line (`● running ◐ idle ○ inactive`, hidden at zero) | `ref/agents/prime-agent/packages/coding-agent/src/modes/interactive/components/subagent-summary-line.ts:13-36,83-123` | ~70 | port adapted (U28) |
+| agents row model: status classification, heartbeat aggregation up the parent chain, spawn-code grouping | `ref/agents/prime-agent/packages/coding-agent/src/modes/agents-view/agents-view-state.ts:472-528,627-819` | — | read-only reference (U38/U39) |
+| `/context` token tree: connectors, own-usage columns, 10-cell context bar | `ref/agents/prime-agent/packages/coding-agent/src/modes/interactive/components/context-tree-format.ts:18-49,73-79,112-200` | ~120 | port adapted (U38) |
+| working-icon pulse cadence (250 ms diamond, one process-wide frame) | `ref/agents/prime-agent/packages/coding-agent/src/modes/theme/working-icon.ts:1-40` | ~40 | port adapted (U6) |
+| rich diff: truecolor-background / 256-colour-foreground fork, word-level inverse on a 1-for-1 replacement, indent glyphs | `ref/agents/prime-agent/packages/coding-agent/src/modes/components/diff.ts:16-95,155-294` | — | read-only reference (U36b) |
+
 **excise (prime-agent — do not read):** `packages/coding-agent/test/` (134,872 lines — the
-largest sink in any ref), `packages/coding-agent/src/modes/` (58,065), `packages/tui/` (30,346),
-`packages/ai/test/` (17,457), `packages/coding-agent/examples/` (15,405).
+largest sink in any ref), `packages/ai/test/` (17,457),
+`packages/coding-agent/examples/` (15,405); `packages/tui/` (30,346) and
+`packages/coding-agent/src/modes/` (58,065) were opened 2026-08-28 for the D60 study —
+only the spans above are implementation reads, the rest of both trees stays a token sink
+(`modes/agents-view/agents-view-mode.ts` at 2,916 lines and the `armin.ts`/`daxnuts.ts`
+animations in particular).
 **do not port (kernel):** `kernel/fork-server.ts:1-432` + `fork-server-script.ts:1-243` +
 forked branches `index.ts:598-603,700-739,825-868,1545-1558,1580-1584` (Linux-only cold-boot
 optimization, degrades to direct spawn); `bootstrap-cli.ts:1-13`; `bootstrap.ts:545-558`

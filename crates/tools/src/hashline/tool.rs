@@ -9,6 +9,7 @@ use super::normalize::{normalize_to_lf, strip_bom};
 use super::patcher::{PatchSectionResult, Patcher, SectionOp};
 use super::snapshots::SnapshotStore;
 use super::types::Clipboard;
+use crate::diff::GitPatch;
 use crate::tool::{
     Tool, ToolContext, ToolKind, ToolOutput, error_output, require_str, resolve_path, text_output,
 };
@@ -263,6 +264,7 @@ impl Tool for HashlineEditTool {
 
         let hash = input_hash(&patch_text);
         let mut rendered: Vec<String> = Vec::new();
+        let mut diff = String::new();
         for result in &results {
             if result.op == SectionOp::Noop {
                 let entry = noop
@@ -286,9 +288,21 @@ impl Tool for HashlineEditTool {
                 continue;
             }
             noop.remove(&result.canonical_path);
+            diff.push_str(
+                crate::diff::patch(
+                    &result.before,
+                    &result.after,
+                    Path::new(&result.canonical_path),
+                )
+                .as_str(),
+            );
             rendered.push(render_section_result(result, snapshots));
         }
-        text_output(rendered.join("\n\n"))
+        let mut output = text_output(rendered.join("\n\n"));
+        if !diff.is_empty() {
+            output.result.details = crate::diff::patch_details(&GitPatch::from_text(diff));
+        }
+        output
     }
 }
 

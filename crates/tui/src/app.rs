@@ -587,12 +587,8 @@ impl App {
                 self.live_tools.push(ToolCell {
                     name: tool_name.clone(),
                     intent: self.intent.clone(),
-                    status: ToolStatus::Running,
                     summary: ToolCell::summary_of(&tool_name, &arg_summary(&tool_name, &args)),
-                    digest: None,
-                    preview: Vec::new(),
-                    elapsed_ms: 0,
-                    calls: 1,
+                    ..ToolCell::default()
                 });
                 self.scheduler.request();
             }
@@ -615,13 +611,8 @@ impl App {
                     Some(i) => self.live_tools.remove(i),
                     None => ToolCell {
                         name: tool_name.clone(),
-                        intent: None,
-                        status: ToolStatus::Running,
                         summary: ToolCell::summary_of(&tool_name, ""),
-                        digest: None,
-                        preview: Vec::new(),
-                        elapsed_ms: 0,
-                        calls: 1,
+                        ..ToolCell::default()
                     },
                 };
                 cell.status = if is_error {
@@ -633,6 +624,7 @@ impl App {
                 let text = text_of(&result.content);
                 cell.digest = ToolCell::digest_of(&tool_name, &text, is_error);
                 cell.preview = preview_lines(&text);
+                cell.details = result.details.clone();
                 self.commit_cell(&Cell::Tool(cell));
                 self.intent = None;
             }
@@ -736,13 +728,12 @@ impl App {
                 let text = text_of(&result.content);
                 let cell = Cell::Tool(ToolCell {
                     name: tool_name.clone(),
-                    intent: None,
                     status: ToolStatus::Done,
                     summary: ToolCell::summary_of(&tool_name, ""),
                     digest: ToolCell::digest_of(&tool_name, &text, is_error),
                     preview: preview_lines(&text),
-                    elapsed_ms: 0,
-                    calls: 1,
+                    details: result.details.clone(),
+                    ..ToolCell::default()
                 });
                 self.commit_cell(&cell);
             }
@@ -1171,10 +1162,10 @@ pub(crate) fn replay_session(app: &mut App, session: &AgentSession) {
                     tool_name,
                     content,
                     is_error,
+                    details,
                     ..
                 } => Some(Cell::Tool(ToolCell {
                     name: tool_name.clone(),
-                    intent: None,
                     status: if *is_error {
                         ToolStatus::Failed
                     } else {
@@ -1182,9 +1173,8 @@ pub(crate) fn replay_session(app: &mut App, session: &AgentSession) {
                     },
                     summary: ToolCell::summary_of(tool_name, ""),
                     digest: ToolCell::digest_of(tool_name, &text_of(content), *is_error),
-                    preview: Vec::new(),
-                    elapsed_ms: 0,
-                    calls: 1,
+                    details: details.clone().unwrap_or(Value::Null),
+                    ..ToolCell::default()
                 })),
                 _ => None,
             },
