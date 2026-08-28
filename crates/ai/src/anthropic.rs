@@ -730,14 +730,14 @@ fn run_request(
             return Err(sse.data);
         }
         if !ANTHROPIC_MESSAGE_EVENTS.contains(&kind) {
-            return Ok(());
+            return Ok(true);
         }
         let payload = parse_json_with_repair(&sse.data)
             .map_err(|error| format!("Could not parse Anthropic SSE event {kind}: {error}"))?;
         for event in mapper.push(&payload) {
             let _ = sender.blocking_send(event);
         }
-        Ok(())
+        Ok(true)
     })?;
     let _ = sender.blocking_send(mapper.finish());
     Ok(())

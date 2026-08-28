@@ -5,6 +5,7 @@ use yi_ai::anthropic::{self, AnthropicOptions, Thinking};
 use yi_ai::catalog::Catalog;
 use yi_ai::faux::FauxProvider;
 use yi_ai::openai::{self, OpenAiOptions};
+use yi_ai::openai_responses;
 use yi_loop::interrupt::InterruptSignal;
 use yi_loop::run::StreamFn;
 use yi_types::event::AssistantMessageEvent;
@@ -17,6 +18,23 @@ pub fn resolve_model(provider: &str, id: &str) -> Option<Model> {
 
 pub fn available_models() -> Vec<Model> {
     Catalog::bundled().models()
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ProviderApi {
+    AnthropicMessages,
+    OpenAiCompletions,
+    OpenAiResponses,
+    Faux,
+}
+
+fn provider_api(api: &str) -> ProviderApi {
+    match api {
+        "anthropic-messages" => ProviderApi::AnthropicMessages,
+        "openai-completions" => ProviderApi::OpenAiCompletions,
+        "openai-responses" => ProviderApi::OpenAiResponses,
+        _ => ProviderApi::Faux,
+    }
 }
 
 fn adaptive(model: &Model) -> bool {
@@ -93,8 +111,8 @@ impl StreamFn for ProviderStream {
             .lock()
             .ok()
             .and_then(|level| level.clone());
-        match model.api.as_str() {
-            "anthropic-messages" => {
+        match provider_api(&model.api) {
+            ProviderApi::AnthropicMessages => {
                 let options = AnthropicOptions {
                     thinking: anthropic_thinking(model, level.as_deref()),
                     cache: true,
@@ -102,7 +120,7 @@ impl StreamFn for ProviderStream {
                 };
                 anthropic::stream(model, context, &options, self.key())
             }
-            "openai-completions" => {
+            ProviderApi::OpenAiCompletions => {
                 let options = OpenAiOptions {
                     reasoning_effort: level.filter(|value| value != "off"),
                     session_id: self.session_id.clone(),
@@ -110,7 +128,15 @@ impl StreamFn for ProviderStream {
                 };
                 openai::stream(model, context, &options, self.key())
             }
-            _ => {
+            ProviderApi::OpenAiResponses => {
+                let options = OpenAiOptions {
+                    reasoning_effort: level.filter(|value| value != "off"),
+                    session_id: self.session_id.clone(),
+                    ..OpenAiOptions::default()
+                };
+                openai_responses::stream(model, context, &options, self.key())
+            }
+            ProviderApi::Faux => {
                 let (sender, receiver) = tokio::sync::mpsc::channel(64);
                 let events = self
                     .faux
@@ -123,5 +149,18 @@ impl StreamFn for ProviderStream {
                 receiver
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn luna_routes_to_responses_not_faux() -> Result<(), Box<dyn std::error::Error>> {
+        let model = resolve_model("openai", "gpt-5.6-luna")
+            .ok_or("bundled catalog missing gpt-5.6-luna")?;
+        assert_eq!(provider_api(&model.api), ProviderApi::OpenAiResponses);
+        Ok(())
     }
 }

@@ -1,4 +1,5 @@
 use serde_json::Value;
+use tokio::sync::mpsc::{Receiver, Sender};
 use yi_types::message::{AgentMessage, StopReason, Usage};
 use yi_types::model::Model;
 
@@ -81,7 +82,7 @@ pub fn send_with_retry(
 
 pub fn pump_sse(
     response: ureq::Response,
-    mut on_event: impl FnMut(SseEvent) -> Result<(), String>,
+    mut on_event: impl FnMut(SseEvent) -> Result<bool, String>,
 ) -> Result<(), String> {
     let mut reader = response.into_reader();
     let mut decoder = crate::sse::SseDecoder::default();
@@ -100,11 +101,15 @@ pub fn pump_sse(
         let chunk = chunk.to_owned();
         pending.clear();
         for event in decoder.feed(&chunk) {
-            on_event(event)?;
+            if !on_event(event)? {
+                return Ok(());
+            }
         }
     }
     for event in decoder.finish() {
-        on_event(event)?;
+        if !on_event(event)? {
+            return Ok(());
+        }
     }
     Ok(())
 }
@@ -140,4 +145,20 @@ pub fn terminal_event(output: AgentMessage) -> crate::EventOut {
         reason: stop_reason,
         message: output,
     }
+}
+
+pub fn openai_bearer_post(
+    url: &str,
+    api_key: &str,
+    body: &Value,
+) -> Result<ureq::Response, String> {
+    send_with_retry(url, &[("authorization", format!("Bearer {api_key}"))], body)
+}
+
+pub fn spawn_provider_stream(
+    run: impl FnOnce(&Sender<crate::EventOut>) + Send + 'static,
+) -> Receiver<crate::EventOut> {
+    let (sender, receiver) = tokio::sync::mpsc::channel(256);
+    tokio::task::spawn_blocking(move || run(&sender));
+    receiver
 }

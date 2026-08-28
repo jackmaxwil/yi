@@ -48,5 +48,6 @@ when it changes rather than editing them by hand.
 - [D34](adr/d34.md) - OpenRouter as the third native provider; no built-in default model
 - [D35](adr/d35.md) - Phase 2b scope trims (registers, per-segment decisions, minimal holds)
 - [D55](adr/d55.md) - comment referents are typed, comment grants are named
+- [D57](adr/d57.md) - Direct OpenAI is a real openai-responses adapter
 
 D36-D54 have no ADR yet; ARCHITECTURE.md is the record for those rows.

@@ -674,21 +674,23 @@ fn run_request(
     api_key: &str,
     sender: &Sender<AssistantMessageEvent>,
 ) -> Result<(), String> {
-    let url = format!("{}/chat/completions", model.base_url);
-    let headers = [("authorization", format!("Bearer {api_key}"))];
-    let response = crate::request::send_with_retry(&url, &headers, body)?;
+    let response = crate::request::openai_bearer_post(
+        &format!("{}/chat/completions", model.base_url),
+        api_key,
+        body,
+    )?;
     let mut mapper = ChunkMapper::new(model);
     let _ = sender.blocking_send(mapper.start_event());
     crate::request::pump_sse(response, |sse| {
         if sse.data == "[DONE]" {
-            return Ok(());
+            return Ok(true);
         }
         if let Ok(payload) = parse_json_with_repair(&sse.data) {
             for event in mapper.push_chunk(&payload) {
                 let _ = sender.blocking_send(event);
             }
         }
-        Ok(())
+        Ok(true)
     })?;
     for event in mapper.finish() {
         let _ = sender.blocking_send(event);
@@ -702,16 +704,14 @@ pub fn stream(
     options: &OpenAiOptions,
     api_key: &str,
 ) -> Receiver<AssistantMessageEvent> {
-    let (sender, receiver) = tokio::sync::mpsc::channel(256);
     let body = build_params(model, context, options);
     let model = model.clone();
     let api_key = api_key.to_owned();
-    tokio::task::spawn_blocking(move || {
-        if let Err(message) = run_request(&model, &body, &api_key, &sender) {
+    crate::request::spawn_provider_stream(move |sender| {
+        if let Err(message) = run_request(&model, &body, &api_key, sender) {
             let mut mapper = ChunkMapper::new(&model);
             let event = mapper.fail(&message);
             let _ = sender.blocking_send(event);
         }
-    });
-    receiver
+    })
 }

@@ -15,7 +15,7 @@ allowlist in scripts/guardrails/boundaries.toml.
 |---|---|
 | yi-types | every serde shape: messages, entries, events, model/tool wire. The schema authority; deps = serde only |
 | yi-loop | pure run_loop + interrupt module; no Result in its public API; <= 1,000 lines |
-| yi-ai | provider adapters (anthropic-messages, openai-completions incl. OpenRouter, faux), SSE decoder, JSON salvage, message transform, retry policy, bundled model catalog |
+| yi-ai | provider adapters (anthropic-messages, openai-completions incl. OpenRouter, openai-responses, faux), SSE decoder, JSON salvage, message transform, retry policy, bundled model catalog |
 | yi-session | Pi v4 entry-tree store: mutation-log replay, JSONL + memory repos, torn-tail repair, fork/branch, conformance-tested against Pi fixtures |
 | yi-context | context primitives P2-P18: projection, chars/4 accounting, compaction policy/cut/prompts, retention floor, window chain, ledger reader, source budgets, world-state diffs, convertToLlm |
 | yi-permission | pure decide() with fixed precedence, catastrophic denylist (all modes incl. yolo), sha256-sealed session rules, holds, mode prompt fragments |

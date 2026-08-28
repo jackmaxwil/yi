@@ -107,5 +107,11 @@ mod tests {
         let catalog = Catalog::bundled();
         assert!(!catalog.is_empty());
         assert!(catalog.get("anthropic", "claude-opus-4-5").is_some() || catalog.len() > 3);
+        assert_eq!(
+            catalog
+                .get("openai", "gpt-5.6-luna")
+                .map(|model| model.api.as_str()),
+            Some("openai-responses")
+        );
     }
 }
