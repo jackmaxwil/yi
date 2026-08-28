@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 
 use ratatui::crossterm::event::{self, Event as CtEvent};
 use ratatui::text::Line;
-use serde_json::Value;
+use serde_json::{Value, json};
 use yi_runtime::{AgentSession, ChildStatus, ChildUpdate, SubagentHost};
 use yi_types::entry::Entry;
 use yi_types::event::AgentEvent;
@@ -588,6 +588,9 @@ impl App {
                     name: tool_name.clone(),
                     intent: self.intent.clone(),
                     summary: ToolCell::summary_of(&tool_name, &arg_summary(&tool_name, &args)),
+                    // The result carries the source too, but a running cell has
+                    // no result yet and its head is built from the same record.
+                    details: json!({ "code": args.get("code").unwrap_or(&Value::Null) }),
                     ..ToolCell::default()
                 });
                 self.scheduler.request();

@@ -281,6 +281,9 @@ impl ToolCell {
         mode: TranscriptMode,
         spinner_phase: usize,
     ) -> Vec<Line<'static>> {
+        if self.name == "ipython" {
+            return crate::pycell::lines(self, width, theme, mode, spinner_phase);
+        }
         let expanded = mode == TranscriptMode::Verbose;
         let style = match self.status {
             ToolStatus::Running => Style::default().fg(theme.text),

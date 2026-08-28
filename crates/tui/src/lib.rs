@@ -19,6 +19,7 @@ pub mod logo;
 pub mod markdown;
 pub mod orb;
 pub mod popup;
+pub mod pycell;
 pub mod reflow;
 pub mod render;
 pub mod rewind;
