@@ -44,6 +44,9 @@ pub fn spinner_frame(phase: usize) -> char {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ToolStatus {
     Running,
+    /// Held at the permission gate. opencode colours the call itself rather
+    /// than only the prompt, so the row that is waiting says so.
+    Awaiting,
     Done,
     Failed,
     Denied,
@@ -52,6 +55,9 @@ pub enum ToolStatus {
 #[derive(Debug, Clone)]
 pub struct ToolCell {
     pub name: String,
+    /// The runtime's handle for this call: what a permission event names, and
+    /// the only exact way to pair a result with the cell that started it.
+    pub call_id: String,
     pub intent: Option<String>,
     pub status: ToolStatus,
     pub summary: String,
@@ -68,6 +74,7 @@ impl Default for ToolCell {
     fn default() -> Self {
         Self {
             name: String::new(),
+            call_id: String::new(),
             intent: None,
             status: ToolStatus::Running,
             summary: String::new(),
@@ -105,6 +112,7 @@ pub enum Cell {
     Assistant { markdown: String },
     Thought { markdown: String },
     Tool(ToolCell),
+    Explored(Vec<ToolCell>),
     Task(TaskCell),
     Advisory { source: String, text: String },
     Notice { text: String },
@@ -268,8 +276,20 @@ fn elapsed_label(ms: u64) -> String {
 fn status_glyph(status: ToolStatus, spinner_phase: usize) -> char {
     match status {
         ToolStatus::Running => spinner_frame(spinner_phase),
+        ToolStatus::Awaiting => '△',
         ToolStatus::Done => '✓',
         ToolStatus::Failed | ToolStatus::Denied => '✗',
+    }
+}
+
+/// codex groups read-only calls under one bullet: a run of eight of them is one
+/// act of looking, and eight rows of it crowds out the answer.
+pub fn explore_verb(tool: &str) -> Option<&'static str> {
+    match tool {
+        "read" => Some("Read"),
+        "grep" => Some("Search"),
+        "glob" | "find" => Some("List"),
+        _ => None,
     }
 }
 
@@ -287,6 +307,7 @@ impl ToolCell {
         let expanded = mode == TranscriptMode::Verbose;
         let style = match self.status {
             ToolStatus::Running => Style::default().fg(theme.text),
+            ToolStatus::Awaiting => Style::default().fg(theme.warning),
             ToolStatus::Done => theme.muted_style(),
             ToolStatus::Failed => Style::default().fg(theme.error),
             ToolStatus::Denied => theme.muted_style().add_modifier(Modifier::CROSSED_OUT),
@@ -595,6 +616,7 @@ impl Cell {
                 out
             }
             Cell::Tool(tool) => tool.lines(width, theme, mode, spinner_phase),
+            Cell::Explored(rows) => explored_lines(rows, width, theme),
             Cell::Task(task) => task.lines(width, theme, spinner_phase),
             Cell::Advisory { source, text } => {
                 // The advisor speaks over the agent's own output, so it takes
@@ -646,6 +668,55 @@ impl Cell {
             }
         }
     }
+}
+
+/// A run of read-only calls, one row each under a single bullet: the verb in
+/// accent, its subject, and the digest the call earned (codex
+/// `exec_cell/render.rs:293-385`).
+pub const EXPLORED_CAP: usize = 32;
+
+fn explored_lines(rows: &[ToolCell], width: usize, theme: &Theme) -> Vec<Line<'static>> {
+    let verb_width = rows
+        .iter()
+        .filter_map(|row| explore_verb(&row.name))
+        .map(str::len)
+        .max()
+        .unwrap_or(4);
+    let mut out = vec![Line::from(Span::styled(
+        format!("  ✱ Explored ×{}", rows.len()),
+        theme.muted_style(),
+    ))];
+    for (index, row) in rows.iter().take(EXPLORED_CAP).enumerate() {
+        let lead = if index == 0 { "    └ " } else { "      " };
+        let verb = explore_verb(&row.name).unwrap_or("Ran");
+        // The summary opens with the tool's own glyph and name, which the verb
+        // column now says; what is left is the subject.
+        let subject = row
+            .summary
+            .split_once(&row.name)
+            .map(|(_, rest)| rest.trim())
+            .unwrap_or(row.summary.as_str())
+            .to_owned();
+        let mut spans = vec![
+            Span::styled(lead.to_owned(), theme.dim_style()),
+            Span::styled(
+                format!("{verb:<verb_width$} "),
+                Style::default().fg(theme.accent),
+            ),
+            Span::styled(subject, theme.muted_style()),
+        ];
+        if let Some(digest) = &row.digest {
+            spans.push(Span::styled(format!(" · {digest}"), theme.dim_style()));
+        }
+        out.extend(wrap_line(&Line::from(spans), width, "        "));
+    }
+    if let Some(extra) = rows.len().checked_sub(EXPLORED_CAP).filter(|n| *n > 0) {
+        out.push(Line::from(Span::styled(
+            format!("      … {extra} more"),
+            theme.dim_style(),
+        )));
+    }
+    out
 }
 
 /// Advisories arrive as `<advisory …>text</advisory>` markup; the tags are

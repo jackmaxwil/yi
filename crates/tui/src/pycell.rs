@@ -178,6 +178,7 @@ pub fn head(cell: &ToolCell, spinner_phase: usize) -> String {
     let code = string(&cell.details, "code");
     let glyph = match cell.status {
         ToolStatus::Running => spinner_frame(spinner_phase),
+        ToolStatus::Awaiting => '△',
         ToolStatus::Done => '✓',
         ToolStatus::Failed | ToolStatus::Denied => '✗',
     };
@@ -325,6 +326,7 @@ pub fn lines(
             head(cell, spinner_phase),
             match cell.status {
                 ToolStatus::Running => Style::default().fg(theme.text),
+                ToolStatus::Awaiting => Style::default().fg(theme.warning),
                 ToolStatus::Done => theme.muted_style(),
                 ToolStatus::Failed => Style::default().fg(theme.error),
                 ToolStatus::Denied => theme.muted_style().add_modifier(Modifier::CROSSED_OUT),

@@ -116,6 +116,16 @@ fn draw_frame<B>(
         let rendered = cell.lines(content_width, &theme, TranscriptMode::Thinking, spinner);
         live_lines.extend(live_tail(rendered, app.rows));
     }
+    // The run is held back from scrollback until it closes, so the live region
+    // is the only place it can be seen while it is still growing.
+    if !app.explored.is_empty() {
+        live_lines.extend(Cell::Explored(app.explored.clone()).lines(
+            content_width,
+            &theme,
+            app.mode,
+            spinner,
+        ));
+    }
     for tool in &app.live_tools {
         live_lines.extend(tool.lines(content_width, &theme, app.mode, spinner));
     }

@@ -1161,6 +1161,11 @@ fn cycling_the_transcript_mode_rewrites_what_is_already_on_screen() -> TestResul
         result,
         is_error: false,
     });
+    // A read-only call is held until its run closes, so the turn has to end
+    // before the cell is in the committed history this test reads.
+    app.reduce_agent(yi_types::event::AgentEvent::AgentEnd {
+        messages: Vec::new(),
+    });
     let normal = app.reflowed(200).iter().map(flat).collect::<Vec<_>>();
     assert!(
         normal.iter().any(|line| line.contains("└ 2 lines")),

@@ -9,7 +9,7 @@ use serde_json::{Value, json};
 use yi_runtime::{AgentSession, ChildStatus, ChildUpdate, SubagentHost};
 use yi_types::entry::Entry;
 use yi_types::event::AgentEvent;
-use yi_types::message::{AgentMessage, Content, StopReason, UserContent};
+use yi_types::message::{AgentMessage, StopReason};
 
 use crate::approval::{ApprovalView, AskChoice};
 use crate::cell::{Cell, TaskCell, TaskStatus, ToolCell, ToolStatus, TranscriptMode};
@@ -23,6 +23,7 @@ use crate::keymap::{Keymap, default_keymap};
 use crate::orb::{self, OrbState};
 use crate::popup::ListPopup;
 use crate::term;
+use crate::transcript::{arg_summary, intent_of, preview_lines, text_of, thinking_of, user_text};
 use crate::tree::{TreeFilter, TreeView};
 
 pub struct AskRequest {
@@ -109,6 +110,10 @@ pub struct App {
     pub(crate) live_thought: String,
     pub(crate) live_cut: usize,
     pub(crate) live_tools: Vec<ToolCell>,
+    /// Finished read-only calls waiting to commit as one `Explored` cell; any
+    /// other commit closes the run.
+    pub(crate) explored: Vec<ToolCell>,
+    last_commit_rows: usize,
     tool_started: HashMap<String, Instant>,
     pub(crate) tasks: HashMap<String, TaskState>,
     pub(crate) task_order: Vec<String>,
@@ -144,117 +149,6 @@ pub struct App {
     pub(crate) cost_total: f64,
     pub(crate) width: usize,
     pub(crate) rows: usize,
-}
-
-pub(crate) fn text_of(content: &[Content]) -> String {
-    content
-        .iter()
-        .filter_map(|c| match c {
-            Content::Text { text, .. } => Some(text.as_str()),
-            _ => None,
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
-/// codex `exec_cell::output_lines`: the head says what ran and the tail says
-/// how it ended, and a command's error is almost always in the tail. Keeping
-/// only the first ten lines dropped exactly the half worth reading.
-fn preview_lines(text: &str) -> Vec<String> {
-    const HEAD: usize = 5;
-    const TAIL: usize = 5;
-    let lines: Vec<&str> = text.lines().collect();
-    if lines.len() <= HEAD.saturating_add(TAIL) {
-        return lines.into_iter().map(str::to_owned).collect();
-    }
-    let omitted = lines.len().saturating_sub(HEAD.saturating_add(TAIL));
-    let mut out: Vec<String> = lines
-        .iter()
-        .take(HEAD)
-        .map(|line| (*line).to_owned())
-        .collect();
-    out.push(format!("… {omitted} more lines"));
-    out.extend(
-        lines
-            .iter()
-            .skip(lines.len().saturating_sub(TAIL))
-            .map(|line| (*line).to_owned()),
-    );
-    out
-}
-
-fn thinking_of(content: &[Content]) -> String {
-    content
-        .iter()
-        .filter_map(|c| match c {
-            Content::Thinking { thinking, .. } => Some(thinking.as_str()),
-            _ => None,
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
-pub(crate) fn user_text(content: &UserContent) -> String {
-    match content {
-        UserContent::Text(text) => text.clone(),
-        UserContent::Blocks(blocks) => text_of(blocks),
-    }
-}
-
-/// The edit tool takes only a `patch`; its target lives in the patch's own
-/// `[path#TAG]` section headers. Without this the cell renders a bare `edit`
-/// with no indication of what it touched.
-fn patch_targets(patch: &str) -> String {
-    let mut paths: Vec<&str> = patch
-        .lines()
-        .filter_map(|line| line.strip_prefix('[')?.split_once('#'))
-        .map(|(path, _)| path)
-        .collect();
-    paths.dedup();
-    match paths.split_first() {
-        None => String::new(),
-        Some((first, [])) => (*first).to_owned(),
-        Some((first, rest)) => format!("{first} +{} more", rest.len()),
-    }
-}
-
-fn arg_summary(tool: &str, args: &Value) -> String {
-    if tool == "edit" {
-        let targets = args
-            .get("patch")
-            .and_then(Value::as_str)
-            .map(patch_targets)
-            .unwrap_or_default();
-        if !targets.is_empty() {
-            return targets;
-        }
-    }
-    let arg = match tool {
-        "bash" => args.get("cmd").or_else(|| args.get("command")),
-        "read" | "edit" | "write" => args.get("path").or_else(|| args.get("file_path")),
-        "grep" | "glob" | "find" => args
-            .get("pattern")
-            .or_else(|| args.get("query"))
-            .or_else(|| args.get("glob")),
-        "ipython" => args.get("code"),
-        "fetch" | "web_search" => args.get("url").or_else(|| args.get("query")),
-        _ => None,
-    };
-    match arg.and_then(Value::as_str) {
-        Some(text) => {
-            let first = text.lines().next().unwrap_or("");
-            let mut text = first.split_whitespace().collect::<Vec<_>>().join(" ");
-            if text.chars().count() > 60 {
-                text = text.chars().take(60).collect::<String>() + "…";
-            }
-            text
-        }
-        None => String::new(),
-    }
-}
-
-fn intent_of(args: &Value) -> Option<String> {
-    args.get("i").and_then(Value::as_str).map(str::to_owned)
 }
 
 /// The glyph steps on `elapsed / SPINNER_PERIOD_MS`, so a fixed wake interval
@@ -295,6 +189,8 @@ impl App {
             live_thought: String::new(),
             live_cut: 0,
             live_tools: Vec::new(),
+            explored: Vec::new(),
+            last_commit_rows: 0,
             tool_started: HashMap::new(),
             tasks: HashMap::new(),
             task_order: Vec::new(),
@@ -428,13 +324,71 @@ impl App {
     }
 
     pub fn commit_cell(&mut self, cell: &Cell) {
+        if let Cell::Tool(tool) = cell
+            && tool.status == ToolStatus::Done
+            && crate::cell::explore_verb(&tool.name).is_some()
+        {
+            self.explored.push(tool.clone());
+            self.scheduler.request();
+            return;
+        }
+        self.flush_explored();
+        self.write_cell(cell);
+    }
+
+    /// How a running call is being shown right now — `Awaiting` while the
+    /// permission gate holds it.
+    pub fn live_tool_status(&self, tool_call_id: &str) -> Option<ToolStatus> {
+        self.live_tools
+            .iter()
+            .find(|tool| tool.call_id == tool_call_id)
+            .map(|tool| tool.status)
+    }
+
+    /// The call id is the only handle a permission event carries, so the live
+    /// cell it belongs to is found by the id the start recorded.
+    fn set_awaiting(&mut self, tool_call_id: &str, status: ToolStatus) {
+        if let Some(cell) = self
+            .live_tools
+            .iter_mut()
+            .find(|tool| tool.call_id == tool_call_id)
+        {
+            cell.status = status;
+            self.scheduler.request();
+        }
+    }
+
+    /// A run of read-only calls closes when anything else is said.
+    pub(crate) fn flush_explored(&mut self) {
+        if self.explored.is_empty() {
+            return;
+        }
+        let rows = std::mem::take(&mut self.explored);
+        let cell = match <[ToolCell; 1]>::try_from(rows) {
+            Ok([single]) => Cell::Tool(single),
+            Err(rows) => Cell::Explored(rows),
+        };
+        self.write_cell(&cell);
+    }
+
+    fn write_cell(&mut self, cell: &Cell) {
         if matches!(cell, Cell::User { .. }) {
             self.pending_prompt_mark = true;
         }
         let spinner = self.spinner_phase();
         let width = self.content_width();
-        self.pending_commit
-            .extend(cell.lines(width, &self.theme, self.mode, spinner));
+        let lines = cell.lines(width, &self.theme, self.mode, spinner);
+        // opencode `util/layout.ts:8-25`: a blank separates blocks, never a run
+        // of one-line calls. Measured against what the previous cell actually
+        // rendered, which is the only thing an append-only commit path knows.
+        let leads_blank = lines
+            .first()
+            .is_some_and(|line| line.spans.iter().all(|s| s.content.trim().is_empty()));
+        if self.last_commit_rows > 1 && lines.len() > 1 && !leads_blank {
+            self.pending_commit.push(Line::default());
+        }
+        self.last_commit_rows = lines.len();
+        self.pending_commit.extend(lines);
         self.retain(cell.clone());
         self.scheduler.request();
     }
@@ -547,6 +501,7 @@ impl App {
                 self.esc_armed_at = None;
                 self.steering.clear();
                 self.live_tools.clear();
+                self.flush_explored();
                 self.scheduler.request();
             }
             AgentEvent::MessageStart {
@@ -586,6 +541,7 @@ impl App {
                     .insert(tool_call_id.clone(), Instant::now());
                 self.live_tools.push(ToolCell {
                     name: tool_name.clone(),
+                    call_id: tool_call_id.clone(),
                     intent: self.intent.clone(),
                     summary: ToolCell::summary_of(&tool_name, &arg_summary(&tool_name, &args)),
                     // The result carries the source too, but a running cell has
@@ -609,7 +565,12 @@ impl App {
                 let index = self
                     .live_tools
                     .iter()
-                    .position(|tool| tool.status == ToolStatus::Running && tool.name == tool_name);
+                    .position(|tool| tool.call_id == tool_call_id)
+                    .or_else(|| {
+                        self.live_tools.iter().position(|tool| {
+                            tool.status != ToolStatus::Done && tool.name == tool_name
+                        })
+                    });
                 let mut cell = match index {
                     Some(i) => self.live_tools.remove(i),
                     None => ToolCell {
@@ -630,6 +591,14 @@ impl App {
                 cell.details = result.details.clone();
                 self.commit_cell(&Cell::Tool(cell));
                 self.intent = None;
+            }
+            // opencode colours the waiting call itself, not only the prompt:
+            // the row the user is being asked about says so in place.
+            AgentEvent::PermissionRequested { tool_call_id, .. } => {
+                self.set_awaiting(&tool_call_id, ToolStatus::Awaiting);
+            }
+            AgentEvent::PermissionResolved { tool_call_id, .. } => {
+                self.set_awaiting(&tool_call_id, ToolStatus::Running);
             }
             _ => {}
         }
