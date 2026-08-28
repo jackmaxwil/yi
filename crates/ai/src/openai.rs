@@ -295,19 +295,13 @@ pub fn build_params(model: &Model, context: &LlmContext, options: &OpenAiOptions
     params
 }
 
-/// Ordered low-to-high; `off` is excluded so an unsupported level never clamps
-/// thinking away entirely (mirrors `nearest()` in scripts/openrouter_reasoning.py).
+/// `off` is deliberately absent: an unsupported level clamps to a weaker one,
+/// never to no thinking at all (mirrors `nearest()` in openrouter_reasoning.py).
 const EFFORT_LEVELS: [&str; 6] = ["minimal", "low", "medium", "high", "xhigh", "max"];
 
-fn effort_rank(effort: &str) -> Option<usize> {
-    EFFORT_LEVELS.iter().position(|level| *level == effort)
-}
-
-/// A level mapped to `null` is unsupported by the model: clamp to the nearest
-/// supported level rather than sending it verbatim. `None` means "send no
-/// reasoning field at all" — nothing is supported, or the level is unrankable.
+/// A level mapped to `null` is one the model rejects; `None` = send no reasoning.
 fn nearest_effort<'a>(map: &'a Value, effort: &str) -> Option<&'a str> {
-    let rank = effort_rank(effort)?;
+    let rank = EFFORT_LEVELS.iter().position(|level| *level == effort)?;
     EFFORT_LEVELS
         .iter()
         .enumerate()
