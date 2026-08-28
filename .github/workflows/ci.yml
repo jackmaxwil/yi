@@ -10,6 +10,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          # check_trailers.py compares HEAD against origin/main; the default
+          # depth-1 checkout has no such ref and the gate would pass blind.
+          fetch-depth: 0
       - uses: Swatinem/rust-cache@v2
       - uses: taiki-e/install-action@v2
         with:
