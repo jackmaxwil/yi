@@ -47,7 +47,12 @@ when it changes rather than editing them by hand.
 - [D33](adr/d33.md) - yi rpc writes v4 only; phase-2 exit narrows to RPC protocol tests
 - [D34](adr/d34.md) - OpenRouter as the third native provider; no built-in default model
 - [D35](adr/d35.md) - Phase 2b scope trims (registers, per-segment decisions, minimal holds)
+- [D52](adr/d52.md) - completion claims are host-verified
+- [D53](adr/d53.md) - the plan is a session-store fact
+- [D54](adr/d54.md) - triggered rules are a deterministic layer that speaks
 - [D55](adr/d55.md) - comment referents are typed, comment grants are named
+- [D56](adr/d56.md) - plan transitions are the advisor's review moments
 - [D57](adr/d57.md) - Direct OpenAI is a real openai-responses adapter
+- [D58](adr/d58.md) - agent messages carry a provenance envelope, not the assistant role
 
-D36-D54 have no ADR yet; ARCHITECTURE.md is the record for those rows.
+D36-D51 have no ADR yet; ARCHITECTURE.md is the record for those rows.

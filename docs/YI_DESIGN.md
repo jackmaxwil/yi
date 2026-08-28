@@ -859,6 +859,28 @@ sequenceDiagram
 | B10 | permission inheritance | child `PermissionMode` = parent's; child `Ask` surfaces on the parent with the child name in `title`; MCP/exec-tool view is the parent's filtered view | pure | new (fx/omp/prime all force yolo) |
 | B13 | mailbox | `send(msg)` (no turn), `followup(task)` (send **and** trigger a turn if idle; delivered at message boundaries if running), `wait(timeout clamped, clamp reported) -> which agents have updates` (payloads arrive as B6 messages), `close(id)` (releases the B2 slot), `interrupt(id)` — children as addressable peers, not fire-and-forget calls | I/O | codex `multi_agents_spec.rs:186-355` |
 
+#### 8.10.1 Addendum (0.37.0-0.41.0, as built)
+
+- **B14 result** | `rlm.result{target, schema?} -> {name, text, json?}` — a finished
+  child's answer as data in the parent's kernel namespace, JSON-parsed when it is
+  JSON and checked against the caller's schema by the B4 validator *at this seam*,
+  so a malformed result is refused rather than passed on. Plan §3.3's upstream
+  half: N children's results are filtered and aggregated in Python and only the
+  digest reaches the parent's transcript. Python: `handle.result(schema=…)`.
+- **B15 wall** | `Wall{deny_write, deny_read}` — the B1 overlay's reduction arm,
+  spawned as `rlm.run(deny_write=[…])`. Refuses any call whose extracted targets
+  fall under a denied prefix (lexically normalized) and any `bash` naming one,
+  at the `ToolAdapter` seam before permission and before the spawn. Write-deny
+  keeps reads open (expand-only needs the standard readable); `deny_read` is the
+  sampled-instrument opt-in and implies write-deny. Not a sandbox: a command that
+  names no denied path runs.
+- B5's fork budget is the child's context window less compaction's own reserve;
+  `fork: All` refuses `model`/`thinking` overrides rather than ignoring them.
+- B11 hand-back commits the child's uncommitted work on its branch before merging
+  (an unmerged branch would otherwise carry nothing), and a child still holding a
+  worktree cannot be reaped by B2's `close`.
+- B6's role split is revised by D58 — see the row.
+
 ### 8.11 Schedule / heartbeat (`yi-runtime::schedule`, from prime-agent `cron-jobs.ts`)
 
 | # | Primitive | Signature | Purity | Source |

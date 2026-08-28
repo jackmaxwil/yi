@@ -22,7 +22,7 @@ allowlist in scripts/guardrails/boundaries.toml.
 | yi-tools | Tool trait + builtins: bash, glob, grep, write, hashline read/edit (line+tag addressing, brace block resolver, snapshots, prepare/commit patcher), ipython over a KernelBridge seam |
 | yi-mcp-cli | one-shot `yi mcp` CLI: stdio + streamable-HTTP (ureq) transports, OAuth login/logout, session/snapshot stores, grep discovery |
 | yi-kernel | Jupyter client over pure-Rust zeromq: HMAC framing, uv venv bootstrap, execute queue + iopub reducer, host.request comm bridge, interrupt/lifecycle, boot gate |
-| yi-runtime | AgentSession composition; subagent (rlm.run depth 1, admission/attribution/notices), KernelService provisioner + HostRegistry, schedule/advisor as modules; the only LoopConfig constructor |
+| yi-runtime | AgentSession composition; subagent (rlm.run depth 1, admission/attribution/notices, fork seeding, worktree isolation) with mailbox as its B6/B13 messaging half, goal + plan facts with host-verified completion, triggered rules, the wall (per-child capability reduction), KernelService provisioner + HostRegistry, schedule/advisor as modules; the only LoopConfig constructor |
 | yi-acp | ACP v2 server (phase 5b) |
 | yi-tui | inline-viewport TUI, feature-gated (phase 7) |
 | yi-cli | the yi binary: ask and rpc today; acp/serve/sessions later |
@@ -51,3 +51,9 @@ store -> AgentEvent broadcast -> renderer (text deltas or JSON lines).
 - The kernel process holds no MCP sockets or SDK: kernel Python shells out
   to the one-shot `yi mcp --json` CLI (design 5.2).
 - Wire schemas evolve additively only; fixtures never get deleted (design 19).
+- A terminal claim is measured, never accepted: goal and task completion run
+  their own check host-side (D52), and a child's structured result is validated
+  at the seam that hands it back.
+- A subagent overlay only ever *reduces* the child (deny lists, wall paths);
+  parent authority is never replaced, and nothing a child says arrives as
+  user-role text (D58).
