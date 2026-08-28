@@ -6,9 +6,11 @@ pub mod compaction;
 pub mod goal;
 pub mod kernel;
 pub mod permission;
+pub mod plan;
 pub mod provider;
 pub mod rewind;
 pub mod schedule;
+pub mod schema;
 pub mod session;
 pub mod skills;
 pub mod subagent;
@@ -30,9 +32,13 @@ pub use subagent::{
 pub use tools::ToolAdapter;
 pub use yi_ai::auth;
 
-/// Operating doctrine is a later, separate fragment.
 pub fn identity_fragment() -> &'static str {
     include_str!("prompts/identity.md")
+}
+
+/// Stable text: it rides the cached prefix, so every byte is paid per turn.
+pub fn doctrine_fragment() -> &'static str {
+    include_str!("prompts/doctrine.md")
 }
 pub use yi_ai::faux;
 pub use yi_context::{Bytes, SourceBudgets, Truncated};

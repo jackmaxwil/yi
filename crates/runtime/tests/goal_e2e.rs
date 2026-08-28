@@ -96,11 +96,14 @@ fn template_rejects_extra_and_missing_values() {
 #[test]
 fn create_fails_while_unfinished_and_survives_the_store_fact() -> TestResult {
     let (service, store, _delivered) = service_with_store();
-    service.create("ship phase 6", Some(1000))?;
-    let error = service.create("another", None).err().ok_or("must fail")?;
+    service.create("ship phase 6", Some(1000), None, None)?;
+    let error = service
+        .create("another", None, None, None)
+        .err()
+        .ok_or("must fail")?;
     assert_eq!(error, GOAL_EXISTS_ERROR);
     service.update("complete")?;
-    service.create("next objective", None)?;
+    service.create("next objective", None, None, None)?;
     let stored = yi_session::lock_session(&store)
         .goal()
         .ok_or("goal fact must persist in the store")?;
@@ -112,7 +115,7 @@ fn create_fails_while_unfinished_and_survives_the_store_fact() -> TestResult {
 #[test]
 fn budget_crossing_limits_the_goal_and_delivers_one_reminder() -> TestResult {
     let (service, store, delivered) = service_with_store();
-    service.create("bounded work", Some(100))?;
+    service.create("bounded work", Some(100), None, None)?;
     let zero = || Number::from(0u64);
     let usage = Usage {
         input: 80,
@@ -197,7 +200,7 @@ async fn active_goal_continues_past_idle_until_a_failing_turn_blocks_it() -> Tes
     let store = memory_store();
     session.attach_store(store.clone())?;
     let service = attach_goal(&session);
-    service.create("keep going until proven done", None)?;
+    service.create("keep going until proven done", None, None, None)?;
 
     session.prompt("start")?;
     let mut blocked = false;
@@ -240,9 +243,12 @@ fn continuation_prompt_interpolates_budgets() -> TestResult {
         time_used_seconds: 60,
         created: 0,
         updated: 0,
+        check: None,
+        check_timeout_ms: None,
+        check_failure: None,
         extra: serde_json::Map::new(),
     };
-    let text = continuation_text(&goal)?;
+    let text = continuation_text(&goal, None)?;
     assert!(text.contains("<untrusted_objective>\nfinish the port\n</untrusted_objective>"));
     assert!(text.contains("Tokens remaining: 750"));
     assert!(
@@ -253,5 +259,91 @@ fn continuation_prompt_interpolates_budgets() -> TestResult {
         !text.contains("update_plan"),
         "the update_plan paragraph is adapted out (D26)"
     );
+    Ok(())
+}
+
+#[test]
+fn check_gate_rejects_completion_and_persists_the_evidence() -> TestResult {
+    let (service, store, _delivered) = service_with_store();
+    service.create(
+        "provably done work",
+        None,
+        Some("echo unit A missing; exit 3".to_owned()),
+        None,
+    )?;
+    let error = service.update("complete").err().ok_or("must reject")?;
+    assert!(
+        error.contains("completion rejected") && error.contains("exited 3"),
+        "rejection must carry the exit evidence: {error}"
+    );
+    assert!(
+        error.contains("unit A missing"),
+        "tail must survive: {error}"
+    );
+    let stored = yi_session::lock_session(&store)
+        .goal()
+        .ok_or("goal fact must persist")?;
+    assert_eq!(
+        stored.status,
+        GoalStatus::Active,
+        "a rejected claim stays active"
+    );
+    let failure = stored
+        .check_failure
+        .ok_or("audit must persist on rejection")?;
+    assert!(failure.contains("unit A missing"));
+    let text = continuation_text(
+        &yi_session::lock_session(&store).goal().ok_or("goal")?,
+        None,
+    )?;
+    assert!(
+        text.contains("rejected by the goal check") && text.contains("unit A missing"),
+        "continuation must carry the failure: {text}"
+    );
+    Ok(())
+}
+
+#[test]
+fn check_gate_passes_and_clears_the_failure() -> TestResult {
+    let (service, store, _delivered) = service_with_store();
+    service.create("done when true", None, Some("false".to_owned()), None)?;
+    assert!(service.update("complete").is_err());
+    let store_goal = yi_session::lock_session(&store).goal().ok_or("goal")?;
+    assert!(store_goal.check_failure.is_some());
+    // The check itself changed state (here: the command), so the same claim now verifies.
+    let mut goal = store_goal;
+    goal.check = Some("true".to_owned());
+    yi_session::lock_session(&store).set_goal(goal)?;
+    service.update("complete")?;
+    let stored = yi_session::lock_session(&store).goal().ok_or("goal")?;
+    assert_eq!(stored.status, GoalStatus::Complete);
+    assert!(
+        stored.check_failure.is_none(),
+        "a verified claim clears the audit"
+    );
+    Ok(())
+}
+
+#[test]
+fn check_gate_timeout_rejects_with_the_timeout_named() -> TestResult {
+    let (service, _store, _delivered) = service_with_store();
+    service.create("slow check", None, Some("sleep 5".to_owned()), Some(100))?;
+    let error = service.update("complete").err().ok_or("must time out")?;
+    assert!(
+        error.contains("timed out after 100 ms"),
+        "timeout must be named: {error}"
+    );
+    Ok(())
+}
+
+#[test]
+fn check_gate_ignores_blocked_and_checkless_goals() -> TestResult {
+    let (service, _store, _delivered) = service_with_store();
+    service.create("blocked path", None, Some("exit 1".to_owned()), None)?;
+    // blocked is a report, not a completion claim: no check runs.
+    service.update("blocked")?;
+    let (service, _store, _delivered) = service_with_store();
+    service.create("no check", None, None, None)?;
+    service.update("complete")?;
     Ok(())
 }

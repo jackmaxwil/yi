@@ -177,8 +177,21 @@ impl RpcState {
                         "create" => service.create(
                             text_arg("objective"),
                             payload.get("tokenBudget").and_then(Value::as_u64),
+                            payload
+                                .get("check")
+                                .and_then(Value::as_str)
+                                .map(str::to_owned),
+                            payload.get("checkTimeoutMs").and_then(Value::as_u64),
                         ),
-                        "update" => service.update(text_arg("status")),
+                        "update" => {
+                            let service = std::sync::Arc::clone(&service);
+                            let status = text_arg("status").to_owned();
+                            match tokio::task::spawn_blocking(move || service.update(&status)).await
+                            {
+                                Ok(outcome) => outcome,
+                                Err(error) => Err(format!("goal.update task failed: {error}")),
+                            }
+                        }
                         "objective" => service.set_objective(text_arg("objective")),
                         other => Err(format!(
                             "unknown goal action {other}; use get|create|update|objective"
@@ -190,6 +203,49 @@ impl RpcState {
                     }
                 }
                 None => error_frame(id, "goal", "no goal service is attached"),
+            },
+            "plan" => match self.session.plan_service() {
+                Some(service) => {
+                    let outcome =
+                        match text_arg("action") {
+                            "get" => service.get(),
+                            "create" => service
+                                .create(payload.get("tasks").unwrap_or(&serde_json::Value::Null)),
+                            "update" => {
+                                let service = std::sync::Arc::clone(&service);
+                                let task_id = text_arg("taskId").to_owned();
+                                let state = text_arg("state").to_owned();
+                                let evidence = payload.get("evidence").cloned();
+                                let reason = payload
+                                    .get("reason")
+                                    .and_then(Value::as_str)
+                                    .map(str::to_owned);
+                                match tokio::task::spawn_blocking(move || {
+                                    service.update(
+                                        &task_id,
+                                        &state,
+                                        evidence.as_ref(),
+                                        reason.as_deref(),
+                                    )
+                                })
+                                .await
+                                {
+                                    Ok(outcome) => outcome,
+                                    Err(error) => Err(format!("plan.update task failed: {error}")),
+                                }
+                            }
+                            "edit" => service
+                                .edit(text_arg("editAction"), &Value::Object(payload.clone())),
+                            other => Err(format!(
+                                "unknown plan action {other}; use get|create|update|edit"
+                            )),
+                        };
+                    match outcome {
+                        Ok(plan) => data_frame(id, "plan", json!({"plan": plan})),
+                        Err(error) => error_frame(id, "plan", &error),
+                    }
+                }
+                None => error_frame(id, "plan", "no plan service is attached"),
             },
             "advisor_stats" => match self.session.advisor() {
                 Some(advisor) => data_frame(id, "advisor_stats", json!({"text": advisor.stats()})),

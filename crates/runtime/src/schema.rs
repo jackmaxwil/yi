@@ -7,19 +7,23 @@ pub struct Schema(Value);
 const MAX_DEPTH: u32 = 32;
 
 impl Schema {
+    pub fn from_value(value: Value) -> Self {
+        Self(value)
+    }
+
     /// Accepts either inline JSON or a path to a JSON file.
     pub fn load(spec: &str) -> Result<Self, String> {
         let trimmed = spec.trim();
         if trimmed.starts_with('{') {
             return serde_json::from_str(trimmed)
                 .map(Self)
-                .map_err(|error| format!("--schema is not valid JSON: {error}"));
+                .map_err(|error| format!("schema is not valid JSON: {error}"));
         }
         let source = std::fs::read_to_string(trimmed)
-            .map_err(|error| format!("--schema {trimmed}: {error}"))?;
+            .map_err(|error| format!("schema {trimmed}: {error}"))?;
         serde_json::from_str(&source)
             .map(Self)
-            .map_err(|error| format!("--schema {trimmed} is not valid JSON: {error}"))
+            .map_err(|error| format!("schema {trimmed} is not valid JSON: {error}"))
     }
 
     pub fn instruction(&self) -> String {

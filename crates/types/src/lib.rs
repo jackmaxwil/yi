@@ -14,6 +14,7 @@ pub mod mcp;
 pub mod message;
 pub mod model;
 pub mod permission;
+pub mod plan;
 pub mod record;
 pub mod schedule;
 pub mod wire;

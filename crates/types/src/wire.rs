@@ -42,6 +42,8 @@ pub enum Fact {
     /// Design G1: the session goal lives beside the header as a fact line,
     /// outside the entry tree, so compaction cannot lose it.
     Goal { goal: crate::goal::Goal },
+    /// The task DAG shares the goal's compaction-immunity by construction.
+    Plan { plan: crate::plan::Plan },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

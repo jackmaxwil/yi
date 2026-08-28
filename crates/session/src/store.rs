@@ -216,6 +216,17 @@ impl SessionStore {
         self.state.goal().cloned()
     }
 
+    pub fn set_plan(&mut self, plan: yi_types::plan::Plan) -> Result<(), SessionError> {
+        self.commit(Mutation::Fact {
+            seq: self.state.next_sequence(),
+            fact: Fact::Plan { plan },
+        })
+    }
+
+    pub fn plan(&self) -> Option<yi_types::plan::Plan> {
+        self.state.plan().cloned()
+    }
+
     pub fn set_label(
         &mut self,
         target_id: &str,

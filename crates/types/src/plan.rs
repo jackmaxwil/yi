@@ -1,0 +1,97 @@
+use serde::{Deserialize, Serialize};
+use serde_json::{Map, Value};
+
+/// Monotonic plan revision. Reviewer findings and audits cite it, so a
+/// verdict is never adjudicated against a standard that has since grown.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default, Serialize, Deserialize)]
+pub struct PlanVersion(pub u64);
+
+impl PlanVersion {
+    pub fn bump(self) -> Self {
+        Self(self.0.saturating_add(1))
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct TaskId(pub String);
+
+impl TaskId {
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+/// Stored states only: Ready is derived from deps (`Plan::frontier`), never
+/// persisted. The blocked reason lives beside the state on the task.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TaskState {
+    Pending,
+    Running,
+    Done,
+    Blocked,
+    #[serde(untagged)]
+    Other(String),
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Task {
+    pub id: TaskId,
+    pub title: String,
+    /// What must be true when this task is done — the completion standard's
+    /// inventory line; weakening it mid-run is gated, adding is free.
+    pub acceptance: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub schema: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub check: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub deps: Vec<TaskId>,
+    pub state: TaskState,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub blocked_reason: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub assignee: Option<String>,
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+/// One per session, stored as a fact beside the header like the goal, so
+/// compaction cannot lose it. A plan without an Active goal is inert
+/// structure; the goal is what arms unattended continuation.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Plan {
+    pub version: PlanVersion,
+    pub tasks: Vec<Task>,
+    pub created: u64,
+    pub updated: u64,
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+impl Plan {
+    pub fn task(&self, id: &TaskId) -> Option<&Task> {
+        self.tasks.iter().find(|task| &task.id == id)
+    }
+
+    /// Ready = Pending with every dep Done. Unknown dep ids never make a
+    /// task ready (validation rejects them at write time anyway).
+    pub fn frontier(&self) -> Vec<&Task> {
+        self.tasks
+            .iter()
+            .filter(|task| {
+                task.state == TaskState::Pending
+                    && task.deps.iter().all(|dep| {
+                        self.task(dep)
+                            .is_some_and(|dep_task| dep_task.state == TaskState::Done)
+                    })
+            })
+            .collect()
+    }
+
+    pub fn is_finished(&self) -> bool {
+        !self.tasks.is_empty() && self.tasks.iter().all(|task| task.state == TaskState::Done)
+    }
+}

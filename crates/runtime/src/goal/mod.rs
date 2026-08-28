@@ -16,6 +16,55 @@ pub const OBJECTIVE_UPDATED_TEMPLATE: &str = include_str!("prompts/objective_upd
 pub const GOAL_EXISTS_ERROR: &str = "A goal already exists and is not finished; use goal.update(status=\"complete\"|\"blocked\") to finish it first.";
 pub const NO_GOAL_ERROR: &str = "No goal exists for this session; create one with goal.create.";
 
+/// Checks are integration gates (`just check`-class), not unit runs; 10 min
+/// covers a cold cargo build without letting a hang eat the session.
+pub const DEFAULT_CHECK_TIMEOUT_MS: u64 = 600_000;
+const CHECK_TAIL_CHARS: usize = 2_000;
+
+fn output_tail(capture: &yi_tools::CommandCapture) -> String {
+    let mut combined = String::new();
+    if !capture.stdout.trim().is_empty() {
+        combined.push_str(capture.stdout.trim_end());
+    }
+    if !capture.stderr.trim().is_empty() {
+        if !combined.is_empty() {
+            combined.push('\n');
+        }
+        combined.push_str(capture.stderr.trim_end());
+    }
+    let start = combined
+        .char_indices()
+        .rev()
+        .nth(CHECK_TAIL_CHARS.saturating_sub(1))
+        .map_or(0, |(index, _)| index);
+    combined.get(start..).unwrap_or(&combined).to_owned()
+}
+
+/// Exit 0 is the only pass; the Err carries the model-facing evidence.
+pub(crate) fn run_check(check: &str, timeout_ms: u64) -> Result<(), String> {
+    let mut command = yi_tools::command("sh");
+    command.arg("-c").arg(check);
+    let deadline = Instant::now()
+        .checked_add(std::time::Duration::from_millis(timeout_ms))
+        .unwrap_or_else(Instant::now);
+    let cancelled: yi_tools::CancelFlag = Arc::new(move || Instant::now() >= deadline);
+    let capture = yi_tools::run_captured(command, None, &cancelled, 30_000)
+        .map_err(|error| format!("goal check failed to run: {error}"))?;
+    if capture.cancelled {
+        return Err(format!("goal check timed out after {timeout_ms} ms"));
+    }
+    match capture.exit_code {
+        Some(0) => Ok(()),
+        code => {
+            let exit = code.map_or_else(|| "signal".to_owned(), |code| code.to_string());
+            Err(format!(
+                "goal check `{check}` exited {exit}:\n{}",
+                output_tail(&capture)
+            ))
+        }
+    }
+}
+
 pub type StoreHandle = Arc<dyn Fn() -> Option<yi_session::SharedSession> + Send + Sync>;
 pub type DeliverFn = Arc<dyn Fn(AgentMessage, DeliveryMode) + Send + Sync>;
 
@@ -34,8 +83,29 @@ fn budget_values(goal: &Goal) -> [(&'static str, String); 3] {
     ]
 }
 
-pub fn continuation_text(goal: &Goal) -> Result<String, template::TemplateError> {
-    let mut values = vec![("objective", goal.objective.clone())];
+pub fn continuation_text(
+    goal: &Goal,
+    plan: Option<&yi_types::plan::Plan>,
+) -> Result<String, template::TemplateError> {
+    let check_status = goal
+        .check_failure
+        .as_ref()
+        .map_or_else(String::new, |failure| {
+            format!("The last completion claim was rejected by the goal check:\n{failure}\n")
+        });
+    let plan_frontier = plan.map_or_else(String::new, |plan| {
+        let text = crate::plan::frontier_text(plan);
+        if text.is_empty() {
+            String::new()
+        } else {
+            format!("Plan state:\n{text}\n")
+        }
+    });
+    let mut values = vec![
+        ("objective", goal.objective.clone()),
+        ("check_status", check_status),
+        ("plan_frontier", plan_frontier),
+    ];
     values.extend(budget_values(goal));
     template::render(CONTINUATION_TEMPLATE, values)
 }
@@ -115,6 +185,11 @@ impl GoalService {
         yi_session::lock_session(&store).goal()
     }
 
+    fn read_plan(&self) -> Option<yi_types::plan::Plan> {
+        let store = (self.store)()?;
+        yi_session::lock_session(&store).plan()
+    }
+
     fn write_goal(&self, goal: Goal) -> Result<(), String> {
         let store = (self.store)().ok_or("no session store is attached")?;
         yi_session::lock_session(&store)
@@ -130,7 +205,13 @@ impl GoalService {
     }
 
     /// Fails while an unfinished goal exists.
-    pub fn create(&self, objective: &str, token_budget: Option<u64>) -> Result<Value, String> {
+    pub fn create(
+        &self,
+        objective: &str,
+        token_budget: Option<u64>,
+        check: Option<String>,
+        check_timeout_ms: Option<u64>,
+    ) -> Result<Value, String> {
         if objective.trim().is_empty() {
             return Err("objective must not be empty".to_owned());
         }
@@ -148,6 +229,9 @@ impl GoalService {
             time_used_seconds: 0,
             created: now,
             updated: now,
+            check: check.filter(|command| !command.trim().is_empty()),
+            check_timeout_ms,
+            check_failure: None,
             extra: Map::new(),
         };
         self.write_goal(goal.clone())?;
@@ -157,8 +241,9 @@ impl GoalService {
         Ok(goal_json(&goal))
     }
 
-    /// The model reports terminal state only; pause, resume and limits belong
-    /// to the host.
+    /// The model reports terminal state only; the host verifies a `complete`
+    /// report by running the goal check before accepting it. Blocking,
+    /// bounded by the check timeout — async callers wrap in spawn_blocking.
     pub fn update(&self, status: &str) -> Result<Value, String> {
         let status = match status {
             "complete" => GoalStatus::Complete,
@@ -170,6 +255,20 @@ impl GoalService {
             }
         };
         let mut goal = self.read_goal().ok_or(NO_GOAL_ERROR)?;
+        if status == GoalStatus::Complete
+            && let Some(check) = goal.check.clone()
+        {
+            let timeout = goal.check_timeout_ms.unwrap_or(DEFAULT_CHECK_TIMEOUT_MS);
+            if let Err(evidence) = run_check(&check, timeout) {
+                goal.check_failure = Some(evidence.clone());
+                goal.updated = yi_session::now_ms();
+                self.write_goal(goal)?;
+                return Err(format!(
+                    "completion rejected: {evidence}\nFix the failure (or correct the claim), then call goal.update again."
+                ));
+            }
+            goal.check_failure = None;
+        }
         goal.status = status;
         goal.updated = yi_session::now_ms();
         self.write_goal(goal.clone())?;
@@ -184,6 +283,7 @@ impl GoalService {
         let mut goal = self.read_goal().ok_or(NO_GOAL_ERROR)?;
         goal.objective = objective.to_owned();
         goal.status = GoalStatus::Active;
+        goal.check_failure = None;
         goal.updated = yi_session::now_ms();
         self.write_goal(goal.clone())?;
         if let Ok(text) = objective_updated_text(&goal) {
@@ -263,7 +363,7 @@ impl GoalService {
         if !goal.status.is_active() {
             return;
         }
-        let Ok(text) = continuation_text(&goal) else {
+        let Ok(text) = continuation_text(&goal, self.read_plan().as_ref()) else {
             return;
         };
         Self::set_flag(&self.pending, true);
@@ -307,7 +407,12 @@ impl GoalService {
                 .unwrap_or("")
                 .to_owned();
             let budget = payload.get("token_budget").and_then(Value::as_u64);
-            let outcome = service.create(&objective, budget);
+            let check = payload
+                .get("check")
+                .and_then(Value::as_str)
+                .map(str::to_owned);
+            let check_timeout = payload.get("check_timeout_ms").and_then(Value::as_u64);
+            let outcome = service.create(&objective, budget, check, check_timeout);
             Box::pin(async move { outcome.and_then(as_object) })
         });
         let service = Arc::clone(self);
@@ -317,8 +422,15 @@ impl GoalService {
                 .and_then(Value::as_str)
                 .unwrap_or("")
                 .to_owned();
-            let outcome = service.update(&status);
-            Box::pin(async move { outcome.and_then(as_object) })
+            let service = Arc::clone(&service);
+            Box::pin(async move {
+                // The check run blocks up to its timeout; keep it off the
+                // executor so kernel pumps stay live.
+                tokio::task::spawn_blocking(move || service.update(&status))
+                    .await
+                    .map_err(|error| format!("goal.update task failed: {error}"))?
+                    .and_then(as_object)
+            })
         });
     }
 }

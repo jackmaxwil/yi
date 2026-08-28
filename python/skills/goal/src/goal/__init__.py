@@ -17,11 +17,18 @@ async def get() -> dict[str, Any]:
     return await host_request("goal.get")
 
 
-async def create(objective: str, token_budget: int | None = None) -> dict[str, Any]:
+async def create(
+    objective: str,
+    token_budget: int | None = None,
+    check: str | None = None,
+    check_timeout_ms: int | None = None,
+) -> dict[str, Any]:
     """Create a goal only when explicitly requested; never infer one.
 
     Fails while an unfinished goal exists — use `update` to finish it first.
     Set `token_budget` only when an explicit token budget was requested.
+    `check` is an executable completion gate: update(status="complete") is
+    rejected by the host unless this shell command exits 0.
     """
     if not isinstance(objective, str) or not objective.strip():
         raise ValueError("objective must be a non-empty string")
@@ -30,6 +37,14 @@ async def create(objective: str, token_budget: int | None = None) -> dict[str, A
         if not isinstance(token_budget, int) or token_budget <= 0:
             raise ValueError("token_budget must be a positive int")
         payload["token_budget"] = token_budget
+    if check is not None:
+        if not isinstance(check, str) or not check.strip():
+            raise ValueError("check must be a non-empty shell command string")
+        payload["check"] = check
+    if check_timeout_ms is not None:
+        if not isinstance(check_timeout_ms, int) or check_timeout_ms <= 0:
+            raise ValueError("check_timeout_ms must be a positive int")
+        payload["check_timeout_ms"] = check_timeout_ms
     return await host_request("goal.create", payload)
 
 

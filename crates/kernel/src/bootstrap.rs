@@ -60,10 +60,11 @@ pub fn default_runtime_source_dir() -> PathBuf {
 
 /// (import name, directory under python/skills). Install order is declared
 /// order; the dependency toposort waits until a skill grows a sibling dep.
-pub const PYTHON_SKILLS: [(&str, &str); 3] = [
+pub const PYTHON_SKILLS: [(&str, &str); 4] = [
     ("compact", "compact"),
     ("attach_image", "attach-image"),
     ("goal", "goal"),
+    ("plan", "plan"),
 ];
 
 pub fn default_skills_source_dir() -> PathBuf {

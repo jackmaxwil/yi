@@ -72,8 +72,9 @@ fn tool_defs() -> Vec<ToolDef> {
 /// depend on what the runner has installed.
 fn system_prompt() -> String {
     format!(
-        "{}\n{}",
+        "{}\n{}\n{}",
         identity_fragment(),
+        yi_runtime::doctrine_fragment(),
         mode_fragment(PermissionMode::Ask)
     )
 }

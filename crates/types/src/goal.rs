@@ -53,6 +53,16 @@ pub struct Goal {
     pub time_used_seconds: u64,
     pub created: u64,
     pub updated: u64,
+    /// Executable completion gate: `goal.update(complete)` is rejected unless
+    /// this command exits 0 (host-run; the model cannot mutate it via update).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub check: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub check_timeout_ms: Option<u64>,
+    /// Output tail of the last failing check run — the persisted audit of a
+    /// rejected completion claim, carried into the continuation prompt.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub check_failure: Option<String>,
     #[serde(flatten)]
     pub extra: Map<String, Value>,
 }

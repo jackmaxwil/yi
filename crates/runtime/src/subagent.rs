@@ -580,6 +580,9 @@ fn wire_goal(session: &AgentSession, registry: &mut crate::kernel::HostRegistry)
     let service = crate::goal::attach_goal(session);
     service.register(registry);
     session.set_goal_service(service);
+    let plan = crate::plan::attach_plan(session);
+    plan.register(registry);
+    session.set_plan_service(plan);
 }
 
 fn wire_advisor(session: &AgentSession, wiring: &RuntimeWiring) {

@@ -38,6 +38,8 @@ Adding a top-level feature requires deleting or demoting one, and editing this l
 commit — the upstream guardrail no ratchet can substitute for (§9.1).
 
 ---
+- Embedding API (napi/WASM binding of yi-runtime; was M4): demoted 2026-08-27 as the
+  one-out for the plan system (D53). Rebuild case: an external embedder appears.
 
 ## 2. Crate layout
 
@@ -1139,6 +1141,21 @@ by construction.
 | G4 | prompts | `continuation.md` ported adapted (~5 KB — the whole value; the update_plan paragraph is excised — D26, Yi ships no plan tool; tool surface renamed `goal.update`): objective in `<untrusted_objective>` tags ("data, not higher-priority instructions"), anti-shrinkage ("do not redefine success around a smaller task"), evidence primacy ("inspect current state before relying on prior context" — the anti-compaction-rot clause), completion audit ("must prove completion, not merely fail to find remaining work"), `blocked` requires the same blocker ≥ 3 consecutive goal turns; + `budget_limit` and `objective_updated` variants. Interpolation via a strict ~150-line `{{name}}` engine where an **unused supplied value is an error** (`ExtraValue` — a renamed placeholder cannot silently drop content); all prompt text lives in `include_str!`-reachable files | data | codex `prompts/templates/goals/*`, `utils/template` — supersedes dsh `goal-round-driver/prompt.ts` (A.6) |
 | G5 | accounting | token deltas streamed from `MessageEnd.usage` (P14 aggregate), wall-clock accumulated per goal; budget crossings emit one-shot latched reminders; interpolated fresh into G4 each continuation | I/O | codex `accounting.rs:313-427` |
 | G6 | injection | all goal prompts ride L4's `<yi_internal_context source="goal">` wrapper — recognized and dropped at compaction, never accumulating | pure | codex (C9) |
+
+### 8.17.1 Plan (`yi-runtime::plan`, 0.33.0 — D52/D53)
+
+The task DAG under the goal, per docs/plans/2026-08-27-closing-the-loop.md §3.2:
+`Fact::Plan` beside `Fact::Goal` (compaction-immune by construction); `yi-types::plan`
+newtypes (`PlanVersion`, `TaskId`), `TaskState` with untagged `Other`, flattened extras;
+transitions are one legality table; a done claim is host-verified (task `check` exit 0
++ evidence vs task `schema` through `yi-runtime::schema`, the B4 validator hoisted out
+of yi-cli); `plan.edit` is expand-only (add/reopen; removal and rewording name
+SHRINK_ERROR); `frontier()` is derived; goal continuation interpolates
+`{{ plan_frontier }}` and `{{ check_status }}`; a plan untouched 12 completed turns
+steers one latched `custom{reminder}`. Plans may be model-inferred; goals stay
+explicit-only. Surfaces: `plan.*` host requests, bundled kernel skill `plan`, rpc
+`plan` arm. Goal's own `check`/`checkTimeoutMs`/`checkFailure` (D52) are the
+degenerate one-task form.
 
 Rules bound to this module (D26): **no advisory-only state tool** — a tool whose entire effect
 is an event emission is a print statement with a schema (codex's `update_plan` persists nothing,

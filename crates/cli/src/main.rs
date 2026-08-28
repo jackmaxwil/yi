@@ -1,7 +1,6 @@
 #![forbid(unsafe_code)]
 
 mod rpc;
-mod schema;
 mod sessions;
 
 use std::sync::Arc;
@@ -317,11 +316,16 @@ fn session_system_prompt(args: &Args) -> String {
         yi_runtime::PermissionMode::Ask
     });
     let mut prompt = if args.system.is_empty() {
-        format!("{}\n{mode_fragment}", yi_runtime::identity_fragment())
+        format!(
+            "{}\n{}\n{mode_fragment}",
+            yi_runtime::identity_fragment(),
+            yi_runtime::doctrine_fragment()
+        )
     } else {
         format!(
-            "{}\n{}\n\n{mode_fragment}",
+            "{}\n{}\n{}\n\n{mode_fragment}",
             yi_runtime::identity_fragment(),
+            yi_runtime::doctrine_fragment(),
             args.system
         )
     };
@@ -335,7 +339,7 @@ fn session_system_prompt(args: &Args) -> String {
         prompt.push_str(&catalog.text);
     }
     if let Some(spec) = &args.schema
-        && let Ok(schema) = schema::Schema::load(spec)
+        && let Ok(schema) = yi_runtime::schema::Schema::load(spec)
     {
         prompt.push_str("\n\n");
         prompt.push_str(&schema.instruction());
@@ -397,7 +401,7 @@ fn run(args: &Args) -> i32 {
     }
     let json = args.json;
     let prompt = args.prompt.clone();
-    let schema = match args.schema.as_deref().map(schema::Schema::load) {
+    let schema = match args.schema.as_deref().map(yi_runtime::schema::Schema::load) {
         Some(Ok(schema)) => Some(schema),
         Some(Err(error)) => {
             eprintln!("error: {error}");
@@ -609,8 +613,8 @@ fn report_undo(changes: &[yi_runtime::Change], json: bool) {
 }
 
 /// D10: `--schema` answers are JSON or a non-zero exit, never prose.
-fn emit_structured(schema: &schema::Schema, answer: &str, json: bool) -> i32 {
-    let value = match schema::extract(answer) {
+fn emit_structured(schema: &yi_runtime::schema::Schema, answer: &str, json: bool) -> i32 {
+    let value = match yi_runtime::schema::extract(answer) {
         Ok(value) => value,
         Err(error) => {
             eprintln!("error: {error}");

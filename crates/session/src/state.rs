@@ -32,6 +32,7 @@ pub struct SessionState {
     name: Option<String>,
     labels: HashMap<String, String>,
     goal: Option<yi_types::goal::Goal>,
+    plan: Option<yi_types::plan::Plan>,
 }
 
 impl Default for SessionState {
@@ -54,6 +55,7 @@ impl SessionState {
             stats: SessionStats::zero(),
             name: None,
             goal: None,
+            plan: None,
             labels: HashMap::new(),
         }
     }
@@ -229,6 +231,10 @@ impl SessionState {
                     self.sequence = seq;
                     self.goal = Some(goal.clone());
                 }
+                Fact::Plan { plan } => {
+                    self.sequence = seq;
+                    self.plan = Some(plan.clone());
+                }
                 Fact::Label { target_id, label } => {
                     if !self.entries_by_id.contains_key(target_id) {
                         return Err(invalid(format!(
@@ -379,6 +385,10 @@ impl SessionState {
             }
         }
         Ok(results)
+    }
+
+    pub fn plan(&self) -> Option<&yi_types::plan::Plan> {
+        self.plan.as_ref()
     }
 
     pub fn goal(&self) -> Option<&yi_types::goal::Goal> {

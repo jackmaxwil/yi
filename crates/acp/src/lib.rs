@@ -486,7 +486,14 @@ impl AcpState {
                     "create" => service.create(
                         text("objective"),
                         params.get("tokenBudget").and_then(Value::as_u64),
+                        params
+                            .get("check")
+                            .and_then(Value::as_str)
+                            .map(str::to_owned),
+                        params.get("checkTimeoutMs").and_then(Value::as_u64),
                     ),
+                    // Blocks dispatch up to the check timeout — same class as
+                    // the C5 permission bridge's synchronous wait.
                     "update" => service.update(text("status")),
                     "objective" => service.set_objective(text("objective")),
                     other => Err(format!(

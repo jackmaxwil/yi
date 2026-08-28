@@ -94,6 +94,7 @@ pub struct AgentSession {
     advisor: Mutex<Option<Arc<crate::advisor::AdvisorRuntime>>>,
     permission: Mutex<Option<Arc<crate::permission::PermissionBroker>>>,
     goal: Mutex<Option<Arc<crate::goal::GoalService>>>,
+    plan: Mutex<Option<Arc<crate::plan::PlanService>>>,
 }
 
 type ScheduleParts = (
@@ -131,6 +132,7 @@ impl AgentSession {
             advisor: Mutex::new(None),
             permission: Mutex::new(None),
             goal: Mutex::new(None),
+            plan: Mutex::new(None),
         }
     }
 
@@ -176,6 +178,19 @@ impl AgentSession {
         if let Ok(mut slot) = self.goal.lock() {
             *slot = Some(service);
         }
+    }
+
+    pub fn set_plan_service(&self, service: Arc<crate::plan::PlanService>) {
+        if let Ok(mut slot) = self.plan.lock() {
+            *slot = Some(service);
+        }
+    }
+
+    pub fn plan_service(&self) -> Option<Arc<crate::plan::PlanService>> {
+        self.plan
+            .lock()
+            .ok()
+            .and_then(|slot| slot.as_ref().map(Arc::clone))
     }
 
     pub fn goal_service(&self) -> Option<Arc<crate::goal::GoalService>> {

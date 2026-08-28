@@ -1,0 +1,73 @@
+---
+name: orchestrate
+description: >
+  Decompose a large software task into a verified plan and, where it pays,
+  parallel subagent work. Use when a task spans several files or subsystems,
+  when the user asks for a plan, when independent workstreams could run in
+  parallel via rlm subagents, or when a long run keeps growing without a
+  written task list. Not for small single-file changes — just do those.
+---
+
+# Orchestrate
+
+The goal of decomposition is a **decision-complete** plan: each task is
+specified well enough that its implementer — you, or a subagent — makes no
+operational decisions, only coding ones.
+
+## 1. Ground before you plan
+
+Explore first, ask second. Resolve every question the repository or the
+environment can answer (entry points, existing helpers, current behavior,
+build and test commands) with non-mutating reads before planning. Ask the
+user only what exploration cannot settle: intent, scope boundaries,
+tradeoff preferences.
+
+## 2. Write the plan
+
+Write the task list down before editing. Every task carries:
+
+- **title** — one line, imperative.
+- **acceptance** — terse prose criteria: what must be true when it is done.
+- **check** — an executable command that exits 0 only when the acceptance
+  holds, whenever one can be written (a test filter, a build, a grep that
+  must be empty). Prefer the repository's own gates.
+- **deps** — which tasks must complete first. Independent tasks carry none.
+
+Sizing: a task should be one coherent change an implementer can verify in
+isolation. Do not pad the list — three real tasks beat nine ceremonial ones.
+Adding tasks later is free; never quietly weaken or delete acceptance
+criteria to fit what got built — say so and ask.
+
+If the work should continue unattended, ask the user before creating a goal
+(`goal.create`, optionally with a whole-goal `check` such as `just check`).
+Never create a goal uninvited: a plan is structure, a goal is autonomy.
+
+## 3. Decide what to delegate
+
+Do simple and sequential tasks yourself — delegation has real overhead.
+Delegate when tasks are independent (no shared files, no dep edges between
+them) and each is big enough to justify a child session. Parallel mutators
+need separate worktrees; do not fan out file-writers into one tree.
+
+## 4. Brief each subagent
+
+A child prompt is a decision-complete brief:
+
+- the task's title, acceptance, and check, verbatim;
+- the exact files and directories in scope, and what is out of scope;
+- constraints that bind (style rules, banned dependencies, gates to keep
+  green);
+- how to report: terse outcome first, blockers as concrete facts, no
+  narration.
+
+Spawn with `rlm.run(brief)`. While children run, keep working the tasks you
+kept. Collect results, then verify each child's work against its acceptance
+yourself — a child's "done" is a report, not a measurement.
+
+## 5. Verify before declaring done
+
+Run every task's check and the goal's check. A fresh look finds what the
+implementer cannot: when the stakes justify it, spawn one cold reviewer
+subagent whose brief is only the acceptance list and the checks — not your
+implementation history — and have it verify each item. Report failures
+verbatim; fix or reopen tasks rather than narrowing the claim.
