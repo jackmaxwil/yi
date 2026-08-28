@@ -388,7 +388,10 @@ async fn an_abort_during_a_tool_call_kills_the_child() -> Result<(), Box<dyn Err
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir)?;
     let marker = dir.join("marker");
-    let mut session = tool_call_session("sleep 2; echo late > marker");
+    let started = dir.join("started");
+    // `sleep` is forked before `started` appears, so the grandchild holding the
+    // capture pipes — the whole point of the test — is live when we interrupt.
+    let mut session = tool_call_session("sleep 2 & echo up > started; wait; echo late > marker");
     let broker = Arc::new(yi_runtime::PermissionBroker::new(
         yi_runtime::PermissionMode::Yolo,
         dir.clone(),
@@ -398,9 +401,13 @@ async fn an_abort_during_a_tool_call_kills_the_child() -> Result<(), Box<dyn Err
     ));
     session.use_tools(yi_tools::builtin_tools(), dir.clone(), Some(broker));
     session.prompt("run it")?;
-    // Long enough that the tool call is in flight, short enough that the sleep
-    // still has well over a second left to run.
-    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    for _ in 0..200 {
+        if started.exists() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    assert!(started.exists(), "the shell never got as far as forking");
     let interrupted = std::time::Instant::now();
     session.abort();
     session.wait_idle().await;

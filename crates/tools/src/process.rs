@@ -25,23 +25,25 @@ pub struct CommandCapture {
     pub truncated: bool,
 }
 
-/// SIGKILL the whole process group: killing the shell alone leaves grandchildren
-/// holding the capture pipes, so `drain_capped` — and the interrupted turn —
+/// Kill the shell, then its whole process group: a grandchild that outlives the
+/// shell holds the capture pipes, so `drain_capped` — and the interrupted turn —
 /// waits out the very command it cancelled. `kill(1)`, not a `libc` dep (§13.1).
 fn kill_tree(child: &mut Child) {
+    // Also the guard on the group kill below: `Child::kill` is the only thing
+    // that knows whether the child was reaped, and a reaped pid can already
+    // name somebody else's group.
+    if child.kill().is_err() {
+        return;
+    }
     #[cfg(unix)]
-    let group_killed = command("kill")
-        .arg("-KILL")
-        .arg(format!("-{}", child.id()))
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .is_ok_and(|status| status.success());
-    #[cfg(not(unix))]
-    let group_killed = false;
-    if !group_killed {
-        let _kill_best_effort = child.kill();
+    {
+        let _group_kill_best_effort = command("kill")
+            .arg("-KILL")
+            .arg(format!("-{}", child.id()))
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
     }
 }
 
@@ -82,7 +84,8 @@ pub fn run_captured(
         })
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    // The group `kill_tree` signals; without it the kill reaches only the shell.
+    // The group `kill_tree` signals: descendants inherit it, and killing the
+    // pid alone would leave them holding the pipes drained below.
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
