@@ -13,11 +13,11 @@ use yi_types::message::AgentMessage;
 use yi_types::model::{LlmContext, Model};
 
 pub fn resolve_model(provider: &str, id: &str) -> Option<Model> {
-    Catalog::bundled().get(provider, id).cloned()
+    Catalog::shared().get(provider, id).cloned()
 }
 
 pub fn available_models() -> Vec<Model> {
-    Catalog::bundled().models()
+    Catalog::shared().models()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

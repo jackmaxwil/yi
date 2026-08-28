@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::sync::OnceLock;
 
 use serde_json::Value;
 use yi_types::model::Model;
@@ -27,7 +28,15 @@ pub struct Catalog {
     models: HashMap<(String, String), Model>,
 }
 
+static SHARED: OnceLock<Catalog> = OnceLock::new();
+
 impl Catalog {
+    /// The bundled catalog, parsed once per process. [`Catalog::bundled`] parses
+    /// 170 KB of JSON, and model lookup runs per turn and per subagent spawn.
+    pub fn shared() -> &'static Self {
+        SHARED.get_or_init(Self::bundled)
+    }
+
     pub fn bundled() -> Self {
         let mut models = HashMap::new();
         parse_catalog(ANTHROPIC_DATA, &mut models);
@@ -101,6 +110,12 @@ pub fn calculate_cost(model: &Model, usage: &mut yi_types::message::Usage) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_shared_catalog_is_parsed_once_and_matches_a_fresh_parse() {
+        assert!(std::ptr::eq(Catalog::shared(), Catalog::shared()));
+        assert_eq!(Catalog::shared().len(), Catalog::bundled().len());
+    }
 
     #[test]
     fn bundled_catalog_loads_models() {
