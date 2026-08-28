@@ -131,7 +131,6 @@ impl PermissionBroker {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
-    /// C8: a client may switch policy mid-session; the next decision reads it.
     pub fn set_mode(&self, mode: PermissionMode) {
         *self
             .mode

@@ -152,7 +152,6 @@ impl AgentSession {
         }
     }
 
-    /// C8 needs a live handle to switch permission mode mid-session.
     pub fn permission_broker(&self) -> Option<Arc<crate::permission::PermissionBroker>> {
         self.permission.lock().ok().and_then(|slot| slot.clone())
     }
