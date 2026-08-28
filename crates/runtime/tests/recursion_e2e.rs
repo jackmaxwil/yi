@@ -92,9 +92,14 @@ fn harness_with(options: HarnessOptions) -> Harness {
         tool_command,
         cwd,
     } = options;
+    // The name was the scenario's parameters, so two tests with the same depth,
+    // answer length and no command shared a root — and this remove_dir_all then
+    // deleted the other one's live session while it ran.
+    static SCENARIO: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
     let root = std::env::temp_dir().join(format!(
-        "yi-recursion-{}-{depth}-{}-{}",
+        "yi-recursion-{}-{}-{depth}-{}-{}",
         std::process::id(),
+        SCENARIO.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
         child_answer.len(),
         tool_command.unwrap_or("none")
     ));
