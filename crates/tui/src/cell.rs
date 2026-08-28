@@ -3,6 +3,7 @@ use ratatui::text::{Line, Span};
 use serde_json::Value;
 
 use crate::colors::{Theme, name_accent};
+use crate::diffview::{self, DiffBudget};
 use crate::markdown;
 use crate::wrap::wrap_line;
 
@@ -313,11 +314,18 @@ impl ToolCell {
             } else {
                 theme.dim_style()
             };
-            lines.extend(wrap_line(
-                &Line::from(Span::styled(format!("    └ {digest}"), detail)),
-                width,
-                "      ",
-            ));
+            let mut spans = vec![Span::styled(format!("    └ {digest}"), detail)];
+            spans.extend(self.stats_spans(theme));
+            lines.extend(wrap_line(&Line::from(spans), width, "      "));
+        }
+        if let Some(patch) = self.patch() {
+            let budget = if expanded {
+                DiffBudget::FULL
+            } else {
+                DiffBudget::NORMAL
+            };
+            lines.extend(diffview::render(patch, width, theme, budget));
+            return lines;
         }
         if expanded {
             for line in self.body(theme) {
@@ -325,6 +333,24 @@ impl ToolCell {
             }
         }
         lines
+    }
+
+    fn patch(&self) -> Option<&str> {
+        self.details.get("patch")?.as_str()
+    }
+
+    /// `+12 -3` in the diff's own colours, on the line that already names the
+    /// target — the counts a reader wants before deciding to read the body.
+    fn stats_spans(&self, theme: &Theme) -> Vec<Span<'static>> {
+        let count = |key: &str| self.details.get(key).and_then(Value::as_u64).unwrap_or(0);
+        let (added, removed) = (count("added"), count("removed"));
+        if added == 0 && removed == 0 {
+            return Vec::new();
+        }
+        vec![
+            Span::styled(format!(" +{added}"), Style::default().fg(theme.success)),
+            Span::styled(format!(" -{removed}"), Style::default().fg(theme.error)),
+        ]
     }
 
     /// Typed, not a raw dump: a read hangs off a line-number gutter and a search

@@ -6,6 +6,7 @@ pub mod cell;
 pub mod colors;
 pub mod commands;
 pub mod composer;
+pub mod diffview;
 pub mod drive;
 pub mod editor;
 pub mod focus;

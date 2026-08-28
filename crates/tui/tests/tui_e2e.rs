@@ -147,6 +147,47 @@ fn commit_lines_land_in_a_real_vt100_screen() -> TestResult {
     Ok(())
 }
 
+/// The tinted rows are built from styles, not text, so a diff that reads
+/// correctly in a `Vec<Line>` can still land as nothing on a real screen —
+/// especially below a nonzero viewport offset, where a rect anchored at y=0
+/// paints off-screen.
+#[test]
+fn a_diff_body_lands_on_a_real_screen_below_a_viewport_offset() -> TestResult {
+    let mut backend = VT100Backend::with_scrollback(80, 24, 200);
+    {
+        use std::io::Write;
+        backend.write_all(b"\n\n\n\n\n\n\n\n")?;
+    }
+    let mut terminal = yi_tui::terminal::Terminal::new(backend, 6)?;
+    let theme = Theme::new(ColorTier::TrueColor, true);
+    let cell = Cell::Tool(yi_tui::cell::ToolCell {
+        name: "edit".to_owned(),
+        status: yi_tui::cell::ToolStatus::Done,
+        summary: yi_tui::cell::ToolCell::summary_of("edit", "src/lib.rs"),
+        digest: Some("updated; first change at line 2".to_owned()),
+        details: serde_json::json!({
+            "patch": "--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -1,3 +1,3 @@\n one\n-let total = a + b;\n+let total = a - b;\n three\n",
+            "added": 1,
+            "removed": 1,
+        }),
+        ..yi_tui::cell::ToolCell::default()
+    });
+    yi_tui::term::commit_lines(
+        &mut terminal,
+        cell.lines(80, &theme, yi_tui::cell::TranscriptMode::Normal, 0),
+    )?;
+    let contents = terminal.backend().contents();
+    assert!(
+        contents.contains("let total = a - b;") && contents.contains("let total = a + b;"),
+        "both sides of the change must reach the screen: {contents}"
+    );
+    assert!(
+        contents.contains("+1 -1"),
+        "the stats ride the digest row: {contents}"
+    );
+    Ok(())
+}
+
 #[test]
 fn subagent_task_cell_focus_and_back() -> TestResult {
     let runtime = tokio::runtime::Builder::new_current_thread()

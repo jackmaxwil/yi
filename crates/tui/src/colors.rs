@@ -118,6 +118,99 @@ impl Theme {
     }
 }
 
+/// The four layers a diff row paints: the line-number gutter, the sign column,
+/// the content, and the tint carried across the rest of the row.
+#[derive(Debug, Clone, Copy)]
+pub struct DiffRowStyle {
+    pub gutter: Style,
+    pub sign: Style,
+    pub content: Style,
+    pub fill: Option<Color>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DiffRowKind {
+    Context,
+    Added,
+    Removed,
+}
+
+impl Theme {
+    /// codex `diff_render.rs:63-78,1234-1310`, values verbatim: light needs a
+    /// more saturated gutter to hold a number on the pastel, and at 16 colours a
+    /// background would land on a ground the terminal owns.
+    pub fn diff_row(&self, kind: DiffRowKind) -> DiffRowStyle {
+        let added = kind == DiffRowKind::Added;
+        if kind == DiffRowKind::Context {
+            return DiffRowStyle {
+                gutter: self.dim_style(),
+                sign: Style::default(),
+                content: Style::default().fg(self.text),
+                fill: None,
+            };
+        }
+        let polarity = if added { self.success } else { self.error };
+        match (self.tier, self.dark) {
+            (ColorTier::Ansi16, _) => DiffRowStyle {
+                gutter: Style::default().add_modifier(Modifier::DIM),
+                sign: Style::default().fg(polarity),
+                content: Style::default().fg(polarity),
+                fill: None,
+            },
+            (ColorTier::TrueColor, true) => {
+                let bg = if added {
+                    Color::Rgb(0x21, 0x3A, 0x2B)
+                } else {
+                    Color::Rgb(0x4A, 0x22, 0x1D)
+                };
+                DiffRowStyle {
+                    gutter: self.dim_style().bg(bg),
+                    sign: Style::default().fg(polarity).bg(bg),
+                    content: Style::default().fg(polarity).bg(bg),
+                    fill: Some(bg),
+                }
+            }
+            (ColorTier::TrueColor, false) => {
+                let (bg, gutter_bg) = if added {
+                    (Color::Rgb(0xda, 0xfb, 0xe1), Color::Rgb(0xac, 0xee, 0xbb))
+                } else {
+                    (Color::Rgb(0xff, 0xeb, 0xe9), Color::Rgb(0xff, 0xce, 0xcb))
+                };
+                DiffRowStyle {
+                    gutter: Style::default()
+                        .fg(Color::Rgb(0x1f, 0x23, 0x28))
+                        .bg(gutter_bg),
+                    sign: Style::default().fg(polarity).bg(bg),
+                    content: Style::default().bg(bg),
+                    fill: Some(bg),
+                }
+            }
+            (ColorTier::Ansi256, true) => {
+                let bg = Color::Indexed(if added { 22 } else { 52 });
+                DiffRowStyle {
+                    gutter: self.dim_style().bg(bg),
+                    sign: Style::default().fg(polarity).bg(bg),
+                    content: Style::default().fg(polarity).bg(bg),
+                    fill: Some(bg),
+                }
+            }
+            (ColorTier::Ansi256, false) => {
+                let (bg, gutter_bg) = if added {
+                    (Color::Indexed(194), Color::Indexed(157))
+                } else {
+                    (Color::Indexed(224), Color::Indexed(217))
+                };
+                DiffRowStyle {
+                    gutter: Style::default().fg(Color::Indexed(236)).bg(gutter_bg),
+                    sign: Style::default().fg(polarity).bg(bg),
+                    content: Style::default().bg(bg),
+                    fill: Some(bg),
+                }
+            }
+        }
+    }
+}
+
 const ACCENTS: [Color; 6] = [
     Color::Rgb(0x82, 0xaa, 0xff),
     Color::Rgb(0xc0, 0x99, 0xff),
