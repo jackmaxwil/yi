@@ -93,15 +93,20 @@ impl AgentsPopup {
         let share = tokens.saturating_mul(BAR_CELLS) / self.context_window.max(1);
         let filled = usize::try_from(share.min(BAR_CELLS)).unwrap_or(0);
         let percent = tokens.saturating_mul(100) / self.context_window.max(1);
-        let style = if percent >= 80 {
-            Style::default().fg(theme.warning)
-        } else {
-            Style::default().fg(theme.accent)
+        // U16's rule for the context gauge: over the window is an error, not a
+        // warning, and the bar clamps while the number keeps telling the truth.
+        let style = match percent {
+            0..=79 => Style::default().fg(theme.accent),
+            80..=100 => Style::default().fg(theme.warning),
+            _ => Style::default().fg(theme.error),
         };
+        let empty = usize::try_from(BAR_CELLS)
+            .unwrap_or(0)
+            .saturating_sub(filled);
         vec![
             Span::styled("▓".repeat(filled), style),
-            Span::styled("░".repeat(BAR_CELLS as usize - filled), theme.dim_style()),
-            Span::styled(format!(" {percent}%"), theme.muted_style()),
+            Span::styled("░".repeat(empty), theme.dim_style()),
+            Span::styled(format!(" {percent}%"), style),
         ]
     }
 }

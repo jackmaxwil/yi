@@ -83,6 +83,29 @@ fn the_preview_redacts_credentials_and_blobs() -> TestResult {
     Ok(())
 }
 
+/// Found by rendering a real frame: the head was redacted and the expanded
+/// source was not, so one keystroke put the key back on screen. The whole
+/// transcript is what gets shared, so both are redacted on the same terms.
+#[test]
+fn the_expanded_source_is_redacted_too() -> TestResult {
+    let cell = cell(
+        json!({ "code": "train(df, api_key=\"sk-live1234567890abcd\")" }),
+        ToolStatus::Done,
+    );
+    for mode in [TranscriptMode::Normal, TranscriptMode::Verbose] {
+        let joined = text(&Cell::Tool(cell.clone()).lines(120, &theme(), mode, 0)).join("\n");
+        assert!(
+            !joined.contains("sk-live1234567890abcd"),
+            "the key reached the screen in {mode:?}: {joined}"
+        );
+        assert!(joined.contains("<redacted>"), "{joined}");
+    }
+    // The caller's own syntax survives redaction: an argument still reads as one.
+    let head = head(&cell, 0);
+    assert!(head.contains("train(df, <redacted>)"), "{head}");
+    Ok(())
+}
+
 /// Invariant: a head that changes width when the body opens moves every row
 /// under it, and the reader loses their place (prime-agent `ipython-cell.ts`).
 #[test]

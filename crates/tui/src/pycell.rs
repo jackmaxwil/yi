@@ -80,17 +80,21 @@ fn holds_api_key(token: &str) -> bool {
 /// A cell's source reaches the screen and every frame dump taken of it. Both
 /// halves are load-bearing: the name catches `api_key = "…"`, the shape catches
 /// a bare literal that names nothing.
-fn redact(line: &str) -> String {
+pub fn redact(line: &str) -> String {
     let lower = line.to_ascii_lowercase();
     let named = SECRETS.iter().any(|needle| lower.contains(needle));
     let mut out: Vec<String> = Vec::new();
     for token in line.split(' ') {
-        let quoted = token.starts_with('"') || token.starts_with('\'');
-        let trimmed = token.trim_matches(['"', '\'']);
+        // Trailing punctuation is the caller's syntax, not the secret's: kept,
+        // so a redacted argument still reads as an argument.
+        let tail_at = token.trim_end_matches([')', ',', ';', ']', '}']).len();
+        let (body, tail) = token.split_at(tail_at.min(token.len()));
+        let quoted = body.starts_with('"') || body.starts_with('\'');
+        let trimmed = body.trim_matches(['"', '\'']);
         if holds_api_key(trimmed) || (named && quoted) {
-            out.push("<redacted>".to_owned());
+            out.push(format!("<redacted>{tail}"));
         } else if looks_like_blob(trimmed) {
-            out.push("<blob>".to_owned());
+            out.push(format!("<blob>{tail}"));
         } else {
             out.push(token.to_owned());
         }
@@ -224,13 +228,17 @@ fn gutter_lines(code: &str, width: usize, theme: &Theme) -> Vec<Line<'static>> {
         .enumerate()
         .flat_map(|(index, source)| {
             let marker = if index == 0 { PROMPT } else { CONTINUATION };
+            // The body is redacted on the same terms as the head: the whole
+            // transcript is what gets shared, and a key is no safer one mode
+            // deeper than it was on the row above.
+            let source = redact(source);
             let mut spans = vec![Span::styled(
                 format!("{BODY_INDENT}{marker}"),
                 theme.dim_style(),
             )];
             match lang {
-                Some(lang) => spans.extend(highlight::spans(source, lang, theme, base)),
-                None => spans.push(Span::styled(source.to_owned(), base)),
+                Some(lang) => spans.extend(highlight::spans(&source, lang, theme, base)),
+                None => spans.push(Span::styled(source, base)),
             }
             wrap_line(&Line::from(spans), width, "      ")
         })
