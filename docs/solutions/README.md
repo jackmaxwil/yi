@@ -62,5 +62,6 @@ when it changes rather than editing them by hand.
 - [D64](adr/d64.md) - a finished read-only call is deferred, not committed
 - [D65](adr/d65.md) - the subagent family gets a popup, and spawn attribution is observed
 - [D66](adr/d66.md) - every animated glyph derives from one clock
+- [D68](adr/d68.md) - binary_size runs in CI, startup is local-only
 
 D36-D51 have no ADR yet; ARCHITECTURE.md is the record for those rows.

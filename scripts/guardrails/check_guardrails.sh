@@ -25,7 +25,13 @@ run "$PY" scripts/guardrails/check_blob_size.py
 run "$PY" scripts/guardrails/check_deps_budget.py
 run "$PY" scripts/guardrails/check_request_budget.py
 run "$PY" scripts/guardrails/check_binary_size.py
-run "$PY" scripts/guardrails/check_startup.py
+# D68: wall-clock on a shared runner is noise against a 5 ms budget, so this one
+# gate is local-only. Skipping is announced, never silent (design 9).
+if [ -z "${CI:-}" ]; then
+  run "$PY" scripts/guardrails/check_startup.py
+else
+  echo "skip startup (D68: local-only; CI cannot measure a 5 ms budget)"
+fi
 
 run cargo doc --workspace --no-deps --document-private-items -q
 
