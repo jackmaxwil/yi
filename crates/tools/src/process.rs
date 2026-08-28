@@ -37,8 +37,12 @@ fn kill_tree(child: &mut Child) {
     }
     #[cfg(unix)]
     {
+        // Incident: `--` is load-bearing. BSD kill(1) reads a bare `-<pgid>` as a
+        // negative pid; procps reads it as another signal option and refuses, so
+        // on Linux the group survived and the status here swallowed the error.
         let _group_kill_best_effort = command("kill")
             .arg("-KILL")
+            .arg("--")
             .arg(format!("-{}", child.id()))
             .stdin(Stdio::null())
             .stdout(Stdio::null())
