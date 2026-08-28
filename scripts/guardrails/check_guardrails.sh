@@ -22,6 +22,7 @@ run "$PY" scripts/guardrails/check_duplication.py
 run "$PY" scripts/guardrails/check_test_size.py
 run "$PY" scripts/guardrails/check_blob_size.py
 run "$PY" scripts/guardrails/check_deps_budget.py
+run "$PY" scripts/guardrails/check_request_budget.py
 run "$PY" scripts/guardrails/check_binary_size.py
 run "$PY" scripts/guardrails/check_startup.py
 

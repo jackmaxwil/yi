@@ -80,7 +80,10 @@ fn convert_messages(messages: &[AgentMessage], cache: bool) -> Vec<Value> {
                             index += 1;
                             continue;
                         }
-                        Value::String(text.clone())
+                        // D51: one shape every turn. A bare string reshapes
+                        // when it carries the breakpoint, moving the prefix
+                        // hash and re-billing the whole history.
+                        Value::Array(vec![text_block(text)])
                     }
                     UserContent::Blocks(blocks) => {
                         let converted: Vec<Value> = blocks
@@ -190,23 +193,10 @@ fn convert_messages(messages: &[AgentMessage], cache: bool) -> Vec<Value> {
     if cache
         && let Some(last) = params.last_mut()
         && last["role"] == "user"
+        && let Value::Array(blocks) = &mut last["content"]
+        && let Some(block) = blocks.last_mut()
     {
-        match &mut last["content"] {
-            Value::Array(blocks) => {
-                if let Some(block) = blocks.last_mut() {
-                    block["cache_control"] = json!({"type": "ephemeral"});
-                }
-            }
-            Value::String(text) => {
-                let text = text.clone();
-                last["content"] = json!([{
-                    "type": "text",
-                    "text": text,
-                    "cache_control": {"type": "ephemeral"},
-                }]);
-            }
-            _ => {}
-        }
+        block["cache_control"] = json!({"type": "ephemeral"});
     }
     params
 }
