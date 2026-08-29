@@ -54,7 +54,7 @@ def _add_tokens(totals, usage):
             totals[key] += value
 
 
-def _json_lines(path):
+def json_lines(path):
     """Yield parsed objects and a malformed count; a bad line never aborts."""
     malformed = 0
     try:
@@ -88,7 +88,7 @@ def parse_events(path):
     totals = {key: 0 for key in TOKEN_KEYS}
     cost = 0.0
     assistant = 0
-    events, malformed = _json_lines(path)
+    events, malformed = json_lines(path)
     for event in events:
         if event.get("type") != "message_end":
             continue
@@ -125,7 +125,7 @@ def session_extras(sessions_dir):
     root = Path(sessions_dir)
     files = sorted(root.rglob("*.jsonl")) if root.is_dir() else []
     for path in files:
-        entries, _ = _json_lines(path)
+        entries, _ = json_lines(path)
         for entry in entries:
             if entry.get("kind") != "entry":
                 continue

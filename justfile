@@ -85,6 +85,12 @@ prerelease version:
 postmerge:
     CARGO_PROFILE_DIST_PANIC=unwind cargo test --workspace --profile dist
 
+# Tier 4 sibling: the task-eval runner over its fixtures, faux only. Offline and
+# keyless, but it wants a built binary, so it stays out of `just check`.
+postmerge-evals:
+    cargo build -p yi-cli
+    python3 evals/run.py --dry --binary target/debug/yi --model faux/faux-1
+
 # Upload an already-built, signed release to Forgejo (release-scoped token).
 publish version:
     #!/usr/bin/env bash
