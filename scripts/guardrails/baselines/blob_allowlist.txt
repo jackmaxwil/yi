@@ -1,1 +1,1 @@
-crates/tui/tests/fixtures/orbs-golden.json
+crates/orb/tests/fixtures/orbs-golden.json
