@@ -11,10 +11,10 @@ fn headless_drive_renders_a_turn_and_dumps_frames() -> TestResult {
     let keys = dir.join("script.keys");
     std::fs::write(
         &keys,
-        // `wait-idle` only blocks once the turn is actually running, and the
-        // prompt reaches the runtime over a channel, so the short wait is what
-        // makes the second wait-idle wait for the turn instead of skipping it.
-        "wait-idle 10000\ntype follow-up\nkey enter\nwait 200\nwait-idle 10000\nquit\n",
+        // No sleep between Enter and the second `wait-idle`: 0.43.2 made
+        // `wait-idle` count submissions against `AgentStart`, so the gap the
+        // sleep covered is closed by the barrier itself.
+        "wait-idle 10000\ntype follow-up\nkey enter\nwait-idle 10000\nquit\n",
     )?;
     let frames = dir.join("frames");
 
@@ -70,8 +70,12 @@ fn rewinding_removes_the_exchange_and_restores_the_message() -> TestResult {
     let keys = dir.join("script.keys");
     std::fs::write(
         &keys,
-        "wait-idle 10000\ntype second question\nkey enter\nwait 200\nwait-idle 10000\n\
-         key esc\nkey esc\nwait 200\nkey up\nkey enter\nwait 500\nquit\n",
+        // The two remaining barriers are rendered facts — the tree overlay is
+        // open, the rewound text is back in the composer. As fixed sleeps they
+        // rewound the wrong exchange whenever the runner was loaded.
+        "wait-idle 10000\ntype second question\nkey enter\nwait-idle 10000\n\
+         key esc\nkey esc\nwait-frame 10000 Session Tree\n\
+         key up\nkey enter\nwait-frame 10000 \u{2502}second question\nquit\n",
     )?;
     let frames = dir.join("frames");
 
@@ -132,7 +136,10 @@ fn slash_new_swaps_the_session_and_clears_the_transcript() -> TestResult {
     let keys = dir.join("script.keys");
     std::fs::write(
         &keys,
-        "wait-idle 10000\nkey /\ntype new\nkey enter\nwait 300\nquit\n",
+        // `!` waits for the text to leave: /new is done exactly when the first
+        // turn is off the screen, which is also what the assertion checks.
+        "wait-idle 10000\nkey /\ntype new\nkey enter\n\
+         wait-frame 10000 !faux: ping\nquit\n",
     )?;
     let frames = dir.join("frames");
     let sessions = dir.join("sessions");

@@ -23,6 +23,10 @@ pub enum Step {
     Type(String),
     Wait(u64),
     WaitIdle(u64),
+    /// `wait-frame <ms> <text>` blocks until the frame shows `text`, or until
+    /// it stops showing it when written `!text`. Timeout first so the text may
+    /// hold spaces; the bool is the polarity.
+    WaitFrame(u64, bool, String),
     Quit,
 }
 
@@ -40,6 +44,20 @@ pub fn parse_script(source: &str) -> Result<Vec<Step>, String> {
             "type" => Step::Type(rest.to_owned()),
             "wait" => Step::Wait(rest.parse().map_err(|e| error(format!("{e}")))?),
             "wait-idle" => Step::WaitIdle(rest.parse().map_err(|e| error(format!("{e}")))?),
+            "wait-frame" => {
+                let (ms, text) = rest
+                    .split_once(' ')
+                    .ok_or_else(|| error("wait-frame needs <ms> <text>".to_owned()))?;
+                let (present, text) = match text.strip_prefix('!') {
+                    Some(negated) => (false, negated),
+                    None => (true, text),
+                };
+                Step::WaitFrame(
+                    ms.parse().map_err(|e| error(format!("{e}")))?,
+                    present,
+                    text.to_owned(),
+                )
+            }
             "quit" => Step::Quit,
             other => return Err(error(format!("unknown step: {other}"))),
         };
@@ -281,6 +299,17 @@ pub fn run_headless(
                         exit_code = 1;
                     } else {
                         current = Some((Step::WaitIdle(ms), started));
+                        std::thread::sleep(Duration::from_millis(2));
+                    }
+                }
+            }
+            (Step::WaitFrame(ms, present, text), started) => {
+                if terminal.backend().0.to_string().contains(&text) != present {
+                    if started.elapsed() > Duration::from_millis(ms) {
+                        eprintln!("error: wait-frame timed out after {ms} ms waiting for {text:?}");
+                        exit_code = 1;
+                    } else {
+                        current = Some((Step::WaitFrame(ms, present, text), started));
                         std::thread::sleep(Duration::from_millis(2));
                     }
                 }
