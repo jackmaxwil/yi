@@ -110,33 +110,21 @@ fn base64(data: &[u8]) -> String {
     out
 }
 
-const IMAGE_ID: u32 = 7601;
+/// Incident: delete-then-retransmit showed the terminal's ground mid-frame,
+/// so two ids ping-pong and a placement exists at every instant.
+pub const IMAGE_IDS: [u32; 2] = [7601, 7602];
 
 /// Deflate level for `o=z`. The 192px frame is 83% fully transparent, so the
 /// stream compresses 11x at its densest and 49x at the wordmark; level 9 buys
 /// a further 12% for meaningfully more CPU at 30 fps.
 const ZLIB_LEVEL: u8 = 6;
 
-/// Same image id every frame, so kitty replaces rather than accumulates; the
-/// payload is zlib-deflated (`o=z`) then chunked at 4096 as the protocol
-/// requires, with the cursor saved and restored around the placement.
-pub fn emit(
-    out: &mut impl Write,
-    rgba: &[u8],
-    px: usize,
-    col: u16,
-    row: u16,
-    cols: u16,
-    rows: u16,
-) -> std::io::Result<()> {
+/// Transmit frame data only (`a=t`, no display). Chunked at 4096 as the
+/// protocol requires.
+pub fn transmit(out: &mut impl Write, id: u32, rgba: &[u8], px: usize) -> std::io::Result<()> {
     let payload = base64(&miniz_oxide::deflate::compress_to_vec_zlib(
         rgba, ZLIB_LEVEL,
     ));
-    // Placements scroll with the text under them (insert_before pushes the
-    // old one up into the transcript) — delete every placement of the id
-    // before placing again, or each frame leaves a stamp behind.
-    write!(out, "\x1b_Ga=d,d=i,i={IMAGE_ID},q=2\x1b\\")?;
-    write!(out, "\x1b7\x1b[{};{}H", row + 1, col + 1)?;
     let chunks: Vec<&str> = payload
         .as_bytes()
         .chunks(4096)
@@ -147,17 +135,41 @@ pub fn emit(
         if index == 0 {
             write!(
                 out,
-                "\x1b_Gf=32,o=z,s={px},v={px},a=T,i={IMAGE_ID},p=1,q=2,C=1,c={cols},r={rows},m={more};{chunk}\x1b\\"
+                "\x1b_Gf=32,o=z,s={px},v={px},a=t,i={id},q=2,m={more};{chunk}\x1b\\"
             )?;
         } else {
             write!(out, "\x1b_Gm={more};{chunk}\x1b\\")?;
         }
     }
-    write!(out, "\x1b8")?;
+    Ok(())
+}
+
+/// Place (or move) the id's one placement: the same (image, placement) pair
+/// replaces atomically, so a pure scroll re-places ~40 bytes, bracketed in a
+/// synchronized update with the cursor saved and restored around the move.
+pub fn place(
+    out: &mut impl Write,
+    id: u32,
+    col: u16,
+    row: u16,
+    cols: u16,
+    rows: u16,
+) -> std::io::Result<()> {
+    write!(out, "\x1b[?2026h\x1b7\x1b[{};{}H", row + 1, col + 1)?;
+    write!(out, "\x1b_Ga=p,i={id},p=1,q=2,C=1,c={cols},r={rows}\x1b\\")?;
+    write!(out, "\x1b8\x1b[?2026l")?;
+    out.flush()
+}
+
+/// Delete one id's placements and data.
+pub fn delete_id(out: &mut impl Write, id: u32) -> std::io::Result<()> {
+    write!(out, "\x1b_Ga=d,d=I,i={id},q=2\x1b\\")?;
     out.flush()
 }
 
 pub fn delete(out: &mut impl Write) -> std::io::Result<()> {
-    write!(out, "\x1b_Ga=d,d=i,i={IMAGE_ID},q=2\x1b\\")?;
-    out.flush()
+    for id in IMAGE_IDS {
+        delete_id(out, id)?;
+    }
+    Ok(())
 }

@@ -2173,6 +2173,7 @@ name = "yi-tools"
 version = "0.2.0"
 dependencies = [
  "globset",
+ "regex",
  "serde_json",
  "thiserror 2.0.20",
  "xxhash-rust",

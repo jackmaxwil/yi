@@ -131,15 +131,8 @@ fn draw_frame<B>(
     }
     if !app.live_markdown.is_empty() {
         let tail = app.live_markdown.get(app.live_cut..).unwrap_or_default();
-        let rendered = crate::cell::gutter(
-            crate::markdown::render(
-                tail,
-                content_width.saturating_sub(crate::cell::GUTTER.len()),
-                &theme,
-            ),
-            app.live_cut == 0,
-            &theme,
-        );
+        let painted = crate::transcript::paint_slice(app, tail);
+        let rendered = crate::cell::gutter(painted, app.live_cut == 0, &theme);
         live_lines.extend(live_tail(rendered, app.rows));
     }
     // The run is held back from scrollback until it closes, so the live region

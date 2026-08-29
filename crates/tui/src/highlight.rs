@@ -23,12 +23,19 @@ pub struct Lang {
     block: Option<(&'static str, &'static str)>,
     quotes: &'static [char],
     keywords: &'static [&'static str],
+    /// In shell `#` comments only off an identifier byte (`x#y` is literal).
+    comment_at_word_start: bool,
+    /// `'` opens a char literal only when it closes nearby — a lifetime
+    /// (`'a`) never closes and must not open a string.
+    char_literal: bool,
 }
 
 const RUST: Lang = Lang {
     line_comment: &["//"],
     block: Some(("/*", "*/")),
-    quotes: &['"', '\''],
+    quotes: &['"'],
+    comment_at_word_start: false,
+    char_literal: true,
     keywords: &[
         "as", "async", "await", "break", "const", "continue", "crate", "dyn", "else", "enum",
         "extern", "false", "fn", "for", "if", "impl", "in", "let", "loop", "match", "mod", "move",
@@ -41,6 +48,8 @@ const PYTHON: Lang = Lang {
     line_comment: &["#"],
     block: None,
     quotes: &['"', '\''],
+    comment_at_word_start: false,
+    char_literal: false,
     keywords: &[
         "and", "as", "assert", "async", "await", "break", "class", "continue", "def", "del",
         "elif", "else", "except", "False", "finally", "for", "from", "global", "if", "import",
@@ -53,6 +62,8 @@ const SHELL: Lang = Lang {
     line_comment: &["#"],
     block: None,
     quotes: &['"', '\''],
+    comment_at_word_start: true,
+    char_literal: false,
     keywords: &[
         "case", "do", "done", "elif", "else", "esac", "export", "fi", "for", "function", "if",
         "in", "local", "return", "set", "then", "until", "while",
@@ -63,6 +74,8 @@ const JSON: Lang = Lang {
     line_comment: &[],
     block: None,
     quotes: &['"'],
+    comment_at_word_start: false,
+    char_literal: false,
     keywords: &["true", "false", "null"],
 };
 
@@ -70,6 +83,8 @@ const TS: Lang = Lang {
     line_comment: &["//"],
     block: Some(("/*", "*/")),
     quotes: &['"', '\'', '`'],
+    comment_at_word_start: false,
+    char_literal: false,
     keywords: &[
         "as",
         "async",
@@ -151,9 +166,9 @@ fn is_ident(ch: char) -> bool {
     ch.is_alphanumeric() || ch == '_'
 }
 
-/// A single line's tokens as `(byte range, kind)`. Scanning is per line, so a
-/// string or block comment spanning lines is not tracked — the cost of that
-/// state is a whole parser, and the failure it buys is one mis-coloured row.
+/// A single line's tokens as `(byte range, kind)`. Per-line scanning: the
+/// audited limits (2026-08-29) are multi-line `/* */`, triple-quoted, raw and
+/// template strings colouring only their opening line; regex literals plain.
 pub fn tokens(line: &str, lang: &Lang) -> Vec<(usize, usize, Token)> {
     if line.len() > LINE_CAP {
         return Vec::new();
@@ -163,13 +178,52 @@ pub fn tokens(line: &str, lang: &Lang) -> Vec<(usize, usize, Token)> {
     let mut index = 0_usize;
     while index < bytes.len() {
         let rest = line.get(index..).unwrap_or_default();
+        let at_word_start = index
+            .checked_sub(1)
+            .and_then(|previous| bytes.get(previous))
+            .is_none_or(|byte| !is_ident(char::from(*byte)));
         if lang.line_comment.iter().any(|c| rest.starts_with(c))
-            || lang.block.is_some_and(|(open, _)| rest.starts_with(open))
+            && (!lang.comment_at_word_start || at_word_start)
         {
             out.push((index, line.len(), Token::Comment));
             break;
         }
+        if let Some((open, close)) = lang.block
+            && rest.starts_with(open)
+        {
+            // A block comment closing on the same line ends there; the code
+            // after it scans normally.
+            match rest.get(open.len()..).and_then(|tail| tail.find(close)) {
+                Some(offset) => {
+                    let end = index + open.len() + offset + close.len();
+                    out.push((index, end, Token::Comment));
+                    index = end;
+                    continue;
+                }
+                None => {
+                    out.push((index, line.len(), Token::Comment));
+                    break;
+                }
+            }
+        }
         let ch = rest.chars().next().unwrap_or(' ');
+        if ch == '\'' && lang.char_literal {
+            // A char literal holds one char or an escape (`'x'`, `'\n'`,
+            // `'\u{1F600}'`). A lifetime (`'a`) fails that shape — including
+            // the `'a, '` span two lifetimes would fake — and stays plain.
+            let literal = string_end(rest, '\'').filter(|end| {
+                rest.get(1..end.saturating_sub(1))
+                    .is_some_and(|body| body.starts_with('\\') || body.chars().count() == 1)
+            });
+            match literal {
+                Some(end) => {
+                    out.push((index, index.saturating_add(end), Token::Str));
+                    index = index.saturating_add(end);
+                }
+                None => index = index.saturating_add(1),
+            }
+            continue;
+        }
         if lang.quotes.contains(&ch) {
             let end = string_end(rest, ch).unwrap_or(rest.len());
             out.push((index, index.saturating_add(end), Token::Str));

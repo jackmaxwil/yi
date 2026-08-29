@@ -2,6 +2,7 @@
 
 mod rpc;
 mod sessions;
+mod stats;
 
 use std::sync::Arc;
 
@@ -336,6 +337,11 @@ fn build_session(
     let tools_home = home.clone();
     session.install_extensions(session_extensions(args));
     let provider = std::sync::Arc::clone(session_provider(&session));
+    let freeform_grammar = config()
+        .edit
+        .as_ref()
+        .and_then(|edit| edit.freeform_grammar)
+        .unwrap_or(false);
     let host = yi_runtime::attach_runtime(
         &mut session,
         yi_runtime::RuntimeWiring {
@@ -346,7 +352,7 @@ fn build_session(
             home: home.clone(),
             broker: Some(broker),
             tools: std::sync::Arc::new(move || {
-                let mut tools = yi_runtime::builtin_tools();
+                let mut tools = yi_runtime::builtin_tools_with(freeform_grammar);
                 for tool in yi_runtime::discover_exec_tools(&tools_home.join(".yi/tools")) {
                     tools.push(std::sync::Arc::new(tool));
                 }
@@ -364,6 +370,11 @@ fn build_session(
                 .as_ref()
                 .and_then(|plan| plan.stale_reminder_turns),
             auto_background: configured_auto_background(),
+            kernel_prewarm: config()
+                .kernel
+                .as_ref()
+                .and_then(|kernel| kernel.prewarm)
+                .unwrap_or(true),
         },
     );
     Ok((session, host))
@@ -1050,6 +1061,14 @@ fn main() {
             };
             std::process::exit(sessions::run(&args.prompt, &options));
         }
+        "stats" => {
+            let options = stats::Options {
+                session_dir: default_session_dir(&args),
+                cwd: effective_cwd(&args).display().to_string(),
+                json: args.json,
+            };
+            std::process::exit(stats::run(&args.prompt, &options));
+        }
         "serve" => std::process::exit(run_serve_command(&args, version)),
         "tui" => {
             let prompt = (!args.prompt.is_empty()).then(|| args.prompt.clone());
@@ -1061,7 +1080,7 @@ fn main() {
                 std::process::exit(run_tui_command(&args, None));
             }
             println!(
-                "yi {version} (yi [prompt], yi ask, yi sessions, yi trust, yi gate, yi rpc, yi acp, yi serve; more surfaces land in later phases)"
+                "yi {version} (yi [prompt], yi ask, yi sessions, yi stats, yi trust, yi gate, yi rpc, yi acp, yi serve; more surfaces land in later phases)"
             );
         }
         other => {

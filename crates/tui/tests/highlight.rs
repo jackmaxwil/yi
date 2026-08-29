@@ -158,6 +158,70 @@ fn a_bash_cell_shows_the_command_and_its_exit() -> TestResult {
     Ok(())
 }
 
+/// A lifetime never closes its quote; before the audit `<'a>` opened a
+/// "string" that swallowed the rest of the row, which on generic-heavy Rust
+/// was most rows. A real char literal still colours.
+#[test]
+fn a_lifetime_is_not_a_string_but_a_char_literal_is() -> TestResult {
+    let generic = kinds("fn f<'a, 'b>(x: &'a str) -> &'b str {", "rust");
+    assert!(
+        generic.iter().all(|(_, token)| *token != Token::Str),
+        "{generic:?}"
+    );
+    let ch = kinds("let c = 'x'; let nl = '\\n';", "rust");
+    assert!(ch.contains(&("'x'".to_owned(), Token::Str)), "{ch:?}");
+    assert!(ch.contains(&("'\\n'".to_owned(), Token::Str)), "{ch:?}");
+    Ok(())
+}
+
+/// A block comment that closes on its own line owns only its span; the code
+/// after it used to be swallowed to end of line.
+#[test]
+fn a_closed_block_comment_releases_the_rest_of_the_line() -> TestResult {
+    let found = kinds("let a = 1; /* note */ let b = 2;", "rust");
+    assert!(
+        found.contains(&("/* note */".to_owned(), Token::Comment)),
+        "{found:?}"
+    );
+    assert_eq!(
+        found
+            .iter()
+            .filter(|(text, token)| text == "let" && *token == Token::Keyword)
+            .count(),
+        2,
+        "{found:?}"
+    );
+    Ok(())
+}
+
+/// In shell `x#y` is a literal word; a `#` off any non-identifier byte
+/// comments, punctuation included. Python keeps the anywhere rule.
+#[test]
+fn a_shell_hash_mid_word_is_not_a_comment() -> TestResult {
+    let shell = kinds("curl http://host/a#frag # note", "sh");
+    assert!(
+        shell
+            .iter()
+            .all(|(text, token)| *token != Token::Comment || text.starts_with("# note")),
+        "{shell:?}"
+    );
+    let punctuated = kinds("echo hi;#note", "sh");
+    assert!(
+        punctuated
+            .iter()
+            .any(|(text, token)| *token == Token::Comment && text.starts_with("#note")),
+        "{punctuated:?}"
+    );
+    let python = kinds("x=1#tight comment", "python");
+    assert!(
+        python
+            .iter()
+            .any(|(text, token)| *token == Token::Comment && text.starts_with("#tight")),
+        "{python:?}"
+    );
+    Ok(())
+}
+
 /// `Type` is claimed off an uppercase initial, which a SCREAMING_CASE constant
 /// also has. Colouring `MAX_ROWS` as a type is a claim the scanner cannot make.
 #[test]

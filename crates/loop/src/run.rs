@@ -166,21 +166,30 @@ async fn execute_one(
         let text = format!("Tool {} not found", call.name);
         return Finalized {
             call,
-            result: error_tool_result(&text),
+            result: crate::tool::error_tool_result_kind(
+                &text,
+                yi_types::event::ToolErrorKind::NotFound,
+            ),
             is_error: true,
         };
     };
     if let Err(reason) = tool.validate(&call.arguments) {
         return Finalized {
             call,
-            result: error_tool_result(&reason),
+            result: crate::tool::error_tool_result_kind(
+                &reason,
+                yi_types::event::ToolErrorKind::InvalidArgs,
+            ),
             is_error: true,
         };
     }
     if signal.is_fired() {
         return Finalized {
             call,
-            result: error_tool_result("Operation aborted"),
+            result: crate::tool::error_tool_result_kind(
+                "Operation aborted",
+                yi_types::event::ToolErrorKind::Aborted,
+            ),
             is_error: true,
         };
     }
@@ -193,6 +202,68 @@ async fn execute_one(
     }
 }
 
+/// Timing and size are stamped where every tool result funnels through, so
+/// the session JSONL can answer per-tool latency without an events pipeline.
+fn stamp_details(item: &mut Finalized, duration_ms: u64) {
+    let out_bytes: usize = item
+        .result
+        .content
+        .iter()
+        .map(|block| match block {
+            yi_types::message::Content::Text { text, .. } => text.len(),
+            _ => 0,
+        })
+        .sum();
+    if let Value::Object(details) = &mut item.result.details {
+        details.insert("durationMs".to_owned(), Value::from(duration_ms));
+        details
+            .entry("outBytes".to_owned())
+            .or_insert(Value::from(out_bytes));
+    }
+}
+
+async fn execute_timed(
+    tools: &[Arc<dyn AgentTool>],
+    call: ExtractedCall,
+    signal: &InterruptSignal,
+) -> Finalized {
+    let started = std::time::Instant::now();
+    let mut item = execute_one(tools, call, signal).await;
+    let duration = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+    stamp_details(&mut item, duration);
+    item
+}
+
+/// Completed slots are never polled again, and the blocking work underneath
+/// runs on tokio's blocking pool, so read-kind batches genuinely overlap.
+async fn join_all<F: std::future::Future<Output = Finalized>>(
+    mut futures: Vec<std::pin::Pin<Box<F>>>,
+) -> Vec<Finalized> {
+    use std::task::Poll;
+    let mut results: Vec<Option<Finalized>> = futures.iter().map(|_| None).collect();
+    let mut filled = 0_usize;
+    std::future::poll_fn(|waker_context| {
+        for (index, future) in futures.iter_mut().enumerate() {
+            if results.get(index).is_some_and(std::option::Option::is_none)
+                && let Poll::Ready(value) = future.as_mut().poll(waker_context)
+                && let Some(slot) = results.get_mut(index)
+            {
+                *slot = Some(value);
+                filled = filled.saturating_add(1);
+            }
+        }
+        // Invariant: every slot filled is the exit condition, which is what
+        // makes the flatten below total rather than a silent drop.
+        if filled == futures.len() {
+            Poll::Ready(())
+        } else {
+            Poll::Pending
+        }
+    })
+    .await;
+    results.into_iter().flatten().collect()
+}
+
 async fn execute_tool_calls(
     context: &LoopContext,
     calls: Vec<ExtractedCall>,
@@ -200,34 +271,51 @@ async fn execute_tool_calls(
     signal: &InterruptSignal,
     emit: &mut (dyn FnMut(AgentEvent) + Send),
 ) -> (Vec<Finalized>, bool) {
-    let sequential = mode == ExecutionMode::Sequential
-        || calls.iter().any(|call| {
-            context.tools.iter().any(|tool| {
+    let parallel_ok = |call: &ExtractedCall| {
+        mode == ExecutionMode::Parallel
+            && context.tools.iter().any(|tool| {
                 tool.definition().name == call.name
-                    && tool.execution_mode() == ExecutionMode::Sequential
+                    && tool.execution_mode() == ExecutionMode::Parallel
             })
-        });
+    };
     let mut finalized = Vec::new();
-    for call in calls {
-        emit(AgentEvent::ToolExecutionStart {
-            tool_call_id: call.id.clone(),
-            tool_name: call.name.clone(),
-            args: Value::Object(call.arguments.clone()),
-        });
-        let item = execute_one(&context.tools, call, signal).await;
-        emit(AgentEvent::ToolExecutionEnd {
-            tool_call_id: item.call.id.clone(),
-            tool_name: item.call.name.clone(),
-            result: item.result.clone(),
-            is_error: item.is_error,
-        });
-        let aborted = signal.is_fired();
-        finalized.push(item);
-        if aborted {
+    let mut queue = calls.into_iter().peekable();
+    while queue.peek().is_some() {
+        // A maximal run of parallel-safe calls overlaps; the first mutating
+        // call closes the run, so writes keep today's strict ordering.
+        let mut batch: Vec<ExtractedCall> = queue.next().into_iter().collect();
+        if batch.first().is_some_and(&parallel_ok) {
+            while queue.peek().is_some_and(&parallel_ok) {
+                batch.extend(queue.next());
+            }
+        }
+        for call in &batch {
+            emit(AgentEvent::ToolExecutionStart {
+                tool_call_id: call.id.clone(),
+                tool_name: call.name.clone(),
+                args: Value::Object(call.arguments.clone()),
+            });
+        }
+        let items = join_all(
+            batch
+                .into_iter()
+                .map(|call| Box::pin(execute_timed(&context.tools, call, signal)))
+                .collect(),
+        )
+        .await;
+        for item in items {
+            emit(AgentEvent::ToolExecutionEnd {
+                tool_call_id: item.call.id.clone(),
+                tool_name: item.call.name.clone(),
+                result: item.result.clone(),
+                is_error: item.is_error,
+            });
+            finalized.push(item);
+        }
+        if signal.is_fired() {
             break;
         }
     }
-    let _ = sequential;
     let terminate = should_terminate(&finalized);
     (finalized, terminate)
 }

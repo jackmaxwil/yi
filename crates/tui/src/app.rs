@@ -113,6 +113,9 @@ pub struct App {
     pub(crate) history: crate::history::History,
     pub(crate) reflow: crate::reflow::ReflowState,
     pub(crate) live_markdown: String,
+    /// Fence-open line active at `live_cut`: any slice rendered from there
+    /// reopens the fence so its rows still render as code.
+    pub(crate) live_reopen: Option<String>,
     pub(crate) live_thought: String,
     pub(crate) live_cut: usize,
     /// The byte of `live_thought` already committed to scrollback, the mirror of
@@ -197,6 +200,7 @@ impl App {
             history: crate::history::History::default(),
             reflow: crate::reflow::ReflowState::default(),
             live_markdown: String::new(),
+            live_reopen: None,
             live_thought: String::new(),
             live_cut: 0,
             live_thought_cut: 0,
@@ -306,7 +310,7 @@ impl App {
         handle_terminal_event(self, cmd_tx, ct_event);
     }
 
-    fn content_width(&self) -> usize {
+    pub(crate) fn content_width(&self) -> usize {
         self.width.saturating_sub(2)
     }
 
@@ -403,7 +407,7 @@ impl App {
         self.scheduler.request();
     }
 
-    fn retain(&mut self, cell: Cell) {
+    pub(crate) fn retain(&mut self, cell: Cell) {
         self.history.retain(cell);
     }
 
@@ -416,6 +420,7 @@ impl App {
         self.history.clear();
         self.pending_commit.clear();
         self.live_markdown.clear();
+        self.live_reopen = None;
         self.live_thought.clear();
         self.live_cut = 0;
         self.live_thought_cut = 0;
@@ -610,15 +615,12 @@ impl App {
                 let text = text_of(content);
                 if !text.is_empty() {
                     let remainder = text.get(self.live_cut..).unwrap_or_default().to_owned();
-                    let width = self.content_width();
                     let first = self.live_cut == 0;
-                    let rendered = crate::markdown::render(
-                        &remainder,
-                        width.saturating_sub(crate::cell::GUTTER.len()),
-                        &self.theme,
-                    );
+                    let rendered = crate::transcript::paint_slice(self, &remainder);
                     if !rendered.is_empty() {
-                        self.pending_commit.push(Line::default());
+                        if self.live_reopen.is_none() {
+                            self.pending_commit.push(Line::default());
+                        }
                         self.pending_commit.extend(crate::cell::gutter(
                             rendered,
                             first,
@@ -633,6 +635,7 @@ impl App {
                 self.live_markdown.clear();
                 self.live_thought.clear();
                 self.live_cut = 0;
+                self.live_reopen = None;
                 self.live_thought_cut = 0;
                 if *stop_reason == StopReason::Error {
                     let text = error_message

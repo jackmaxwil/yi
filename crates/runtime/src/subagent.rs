@@ -878,6 +878,7 @@ fn child_factory(wiring: RuntimeWiring) -> Arc<ChildFactory> {
                 cwd: child_cwd,
                 parent_link: Some(build.link),
                 wall: build.wall,
+                kernel_prewarm: false,
                 ..wiring.clone()
             },
         );
@@ -910,6 +911,9 @@ pub struct RuntimeWiring {
     pub wall: crate::wall::Wall,
     /// D13 `bash.autoBackgroundMs`; None keeps every command in the turn.
     pub auto_background: Option<std::time::Duration>,
+    /// `kernel.prewarm` (default true): boot the kernel in the background at
+    /// session open. Children never prewarm — they spawn to run a cell now.
+    pub kernel_prewarm: bool,
 }
 
 /// Every spawned child wires itself the same way at depth+1; the depth check in
@@ -1127,6 +1131,10 @@ pub fn attach_runtime(session: &mut AgentSession, wiring: RuntimeWiring) -> Arc<
                 }
             });
         }));
+    }
+    if wiring.kernel_prewarm {
+        let warm = Arc::clone(&service);
+        tokio::spawn(async move { warm.prewarm().await });
     }
     let mut tools = (wiring.tools)();
     tools.push(crate::kernel::ipython_tool(service));
