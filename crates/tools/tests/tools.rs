@@ -766,6 +766,95 @@ fn read_ranges_and_line_clip() -> TestResult {
     Ok(())
 }
 
+/// P1/P2: a multi-window read that stops short names its next offset, and the
+/// byte budget stops on bytes rather than lines, naming the line to resume at.
+#[test]
+fn read_footers_name_the_next_offset() -> TestResult {
+    let dir = temp_dir("read-footers")?;
+    let body: String = (1..=200).map(|n| format!("line {n}\n")).collect();
+    fs::write(dir.0.join("r.txt"), &body)?;
+    let read = yi_tools::hashline::tool::HashlineReadTool {
+        state: yi_tools::hashline::tool::shared_hashline_state(),
+    };
+    let context = ToolContext::new(dir.0.clone());
+    let windows = read.execute(
+        args(&[
+            ("path", json!("r.txt")),
+            ("ranges", json!([[2, 4], [50, 52]])),
+        ]),
+        &context,
+    );
+    let text = output_text(&windows);
+    assert!(text.contains("continue with offset=53"), "{text}");
+
+    let wide: String = (1..=400)
+        .map(|n| format!("{n} {}\n", "x".repeat(400)))
+        .collect();
+    fs::write(dir.0.join("wide.txt"), &wide)?;
+    let capped = read.execute(args(&[("path", json!("wide.txt"))]), &context);
+    let text = output_text(&capped);
+    assert!(text.contains("byte budget"), "{text}");
+    let stopped: u64 = text
+        .rsplit_once("continue with offset=")
+        .and_then(|(_, tail)| tail.trim_end_matches(']').parse().ok())
+        .ok_or("no resume offset")?;
+    assert!(stopped > 1 && stopped < 400, "stopped mid-file: {text}");
+    assert!(
+        capped.result.details.get("byteCapped") == Some(&json!(true)),
+        "{:?}",
+        capped.result.details
+    );
+
+    // An explicit limit scales the budget, so the same file gets further in.
+    let bigger = read.execute(
+        args(&[("path", json!("wide.txt")), ("limit", json!(400))]),
+        &context,
+    );
+    let text = output_text(&bigger);
+    let further: u64 = text
+        .rsplit_once("continue with offset=")
+        .and_then(|(_, tail)| tail.trim_end_matches(']').parse().ok())
+        .unwrap_or(u64::MAX);
+    assert!(further > stopped, "explicit limit read further: {text}");
+    Ok(())
+}
+
+/// P3: hits that exactly fill the collection cap are not a truncation, and an
+/// offset past the end names what it ran off — matches, or files in
+/// `files_with_matches` mode.
+#[test]
+fn grep_cap_and_offset_footers_are_honest() -> TestResult {
+    let dir = temp_dir("grep-caps")?;
+    let body: String = (1..=2_000).map(|n| format!("needle {n}\n")).collect();
+    fs::write(dir.0.join("full.txt"), &body)?;
+    let grep = yi_tools::GrepTool::default();
+    let context = ToolContext::new(dir.0.clone());
+    let exact = grep.execute(args(&[("pattern", json!("needle"))]), &context);
+    let text = output_text(&exact);
+    assert!(!text.contains("match collection stopped"), "{text}");
+    assert!(!text.contains("at least"), "{text}");
+    assert_eq!(exact.result.details.get("hits"), Some(&json!(2_000)));
+
+    let past = grep.execute(
+        args(&[("pattern", json!("needle")), ("offset", json!(5_000))]),
+        &context,
+    );
+    let text = output_text(&past);
+    assert!(text.contains("collected matches"), "{text}");
+
+    let past_files = grep.execute(
+        args(&[
+            ("pattern", json!("needle")),
+            ("offset", json!(9)),
+            ("files_with_matches", json!(true)),
+        ]),
+        &context,
+    );
+    let text = output_text(&past_files);
+    assert!(text.contains("beyond the 1 matching files"), "{text}");
+    Ok(())
+}
+
 /// Bash results carry a command category for `yi stats`.
 #[test]
 fn bash_details_carry_a_command_category() -> TestResult {

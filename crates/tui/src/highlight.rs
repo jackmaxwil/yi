@@ -23,7 +23,7 @@ pub struct Lang {
     block: Option<(&'static str, &'static str)>,
     quotes: &'static [char],
     keywords: &'static [&'static str],
-    /// In shell `#` comments only at a word boundary (`x#y` is literal).
+    /// In shell `#` comments only off an identifier byte (`x#y` is literal).
     comment_at_word_start: bool,
     /// `'` opens a char literal only when it closes nearby — a lifetime
     /// (`'a`) never closes and must not open a string.
@@ -178,10 +178,10 @@ pub fn tokens(line: &str, lang: &Lang) -> Vec<(usize, usize, Token)> {
     let mut index = 0_usize;
     while index < bytes.len() {
         let rest = line.get(index..).unwrap_or_default();
-        let at_word_start = index == 0
-            || bytes
-                .get(index.wrapping_sub(1))
-                .is_some_and(|byte| byte.is_ascii_whitespace());
+        let at_word_start = index
+            .checked_sub(1)
+            .and_then(|previous| bytes.get(previous))
+            .is_none_or(|byte| !is_ident(char::from(*byte)));
         if lang.line_comment.iter().any(|c| rest.starts_with(c))
             && (!lang.comment_at_word_start || at_word_start)
         {

@@ -47,12 +47,14 @@ pub fn error_tool_result(message: &str) -> ToolResult {
     }
 }
 
-/// `kind` is the failure taxonomy `yi stats` aggregates (`denied`,
-/// `not_found`, `invalid_args`, `aborted`, `tool_error`, ...).
-pub fn error_tool_result_kind(message: &str, kind: &str) -> ToolResult {
+/// The machine-readable half of a failure; the prose stays the model's view.
+pub fn error_tool_result_kind(message: &str, kind: yi_types::event::ToolErrorKind) -> ToolResult {
     let mut result = error_tool_result(message);
     if let Value::Object(details) = &mut result.details {
-        details.insert("errorKind".to_owned(), Value::String(kind.to_owned()));
+        details.insert(
+            "errorKind".to_owned(),
+            Value::String(kind.as_str().to_owned()),
+        );
     }
     result
 }

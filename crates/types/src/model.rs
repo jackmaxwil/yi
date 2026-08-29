@@ -175,10 +175,10 @@ pub struct ToolDef {
     pub freeform: Option<FreeformFormat>,
 }
 
-/// A freeform tool's wire grammar (`syntax` names the dialect, e.g. "lark").
+/// A freeform tool's wire grammar. The dialect is Lark, the one syntax the
+/// adapters emit, so the definition travels alone.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FreeformFormat {
-    pub syntax: String,
     pub definition: String,
 }
 

@@ -278,7 +278,7 @@ fn convert_tools(tools: &[ToolDef]) -> Vec<Value> {
                 "description": tool.description,
                 "format": {
                     "type": "grammar",
-                    "syntax": format.syntax,
+                    "syntax": "lark",
                     "definition": format.definition,
                 },
             }),

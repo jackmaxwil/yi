@@ -166,21 +166,30 @@ async fn execute_one(
         let text = format!("Tool {} not found", call.name);
         return Finalized {
             call,
-            result: crate::tool::error_tool_result_kind(&text, "not_found"),
+            result: crate::tool::error_tool_result_kind(
+                &text,
+                yi_types::event::ToolErrorKind::NotFound,
+            ),
             is_error: true,
         };
     };
     if let Err(reason) = tool.validate(&call.arguments) {
         return Finalized {
             call,
-            result: crate::tool::error_tool_result_kind(&reason, "invalid_args"),
+            result: crate::tool::error_tool_result_kind(
+                &reason,
+                yi_types::event::ToolErrorKind::InvalidArgs,
+            ),
             is_error: true,
         };
     }
     if signal.is_fired() {
         return Finalized {
             call,
-            result: crate::tool::error_tool_result_kind("Operation aborted", "aborted"),
+            result: crate::tool::error_tool_result_kind(
+                "Operation aborted",
+                yi_types::event::ToolErrorKind::Aborted,
+            ),
             is_error: true,
         };
     }
@@ -225,32 +234,30 @@ async fn execute_timed(
     item
 }
 
-/// Poll every future to completion on this task; completed slots are never
-/// polled again. The blocking work underneath runs on tokio's blocking pool,
-/// so read-kind batches genuinely overlap.
-async fn join_all<T>(
-    mut futures: Vec<std::pin::Pin<Box<dyn std::future::Future<Output = T> + Send + '_>>>,
-) -> Vec<T> {
+/// Completed slots are never polled again, and the blocking work underneath
+/// runs on tokio's blocking pool, so read-kind batches genuinely overlap.
+async fn join_all<F: std::future::Future<Output = Finalized>>(
+    mut futures: Vec<std::pin::Pin<Box<F>>>,
+) -> Vec<Finalized> {
     use std::task::Poll;
-    let mut results: Vec<Option<T>> = futures.iter().map(|_| None).collect();
+    let mut results: Vec<Option<Finalized>> = futures.iter().map(|_| None).collect();
+    let mut filled = 0_usize;
     std::future::poll_fn(|waker_context| {
-        let mut pending = false;
         for (index, future) in futures.iter_mut().enumerate() {
-            if results.get(index).is_some_and(std::option::Option::is_none) {
-                match future.as_mut().poll(waker_context) {
-                    Poll::Ready(value) => {
-                        if let Some(slot) = results.get_mut(index) {
-                            *slot = Some(value);
-                        }
-                    }
-                    Poll::Pending => pending = true,
-                }
+            if results.get(index).is_some_and(std::option::Option::is_none)
+                && let Poll::Ready(value) = future.as_mut().poll(waker_context)
+                && let Some(slot) = results.get_mut(index)
+            {
+                *slot = Some(value);
+                filled = filled.saturating_add(1);
             }
         }
-        if pending {
-            Poll::Pending
-        } else {
+        // Invariant: every slot filled is the exit condition, which is what
+        // makes the flatten below total rather than a silent drop.
+        if filled == futures.len() {
             Poll::Ready(())
+        } else {
+            Poll::Pending
         }
     })
     .await;
@@ -276,13 +283,11 @@ async fn execute_tool_calls(
     while queue.peek().is_some() {
         // A maximal run of parallel-safe calls overlaps; the first mutating
         // call closes the run, so writes keep today's strict ordering.
-        let mut batch: Vec<ExtractedCall> = Vec::new();
-        if queue.peek().is_some_and(&parallel_ok) {
+        let mut batch: Vec<ExtractedCall> = queue.next().into_iter().collect();
+        if batch.first().is_some_and(&parallel_ok) {
             while queue.peek().is_some_and(&parallel_ok) {
                 batch.extend(queue.next());
             }
-        } else {
-            batch.extend(queue.next());
         }
         for call in &batch {
             emit(AgentEvent::ToolExecutionStart {
@@ -291,24 +296,13 @@ async fn execute_tool_calls(
                 args: Value::Object(call.arguments.clone()),
             });
         }
-        let items = if batch.len() == 1 {
-            let mut single = Vec::new();
-            for call in batch {
-                single.push(execute_timed(&context.tools, call, signal).await);
-            }
-            single
-        } else {
-            let futures: Vec<
-                std::pin::Pin<Box<dyn std::future::Future<Output = Finalized> + Send + '_>>,
-            > = batch
+        let items = join_all(
+            batch
                 .into_iter()
-                .map(|call| {
-                    Box::pin(execute_timed(&context.tools, call, signal))
-                        as std::pin::Pin<Box<dyn std::future::Future<Output = Finalized> + Send>>
-                })
-                .collect();
-            join_all(futures).await
-        };
+                .map(|call| Box::pin(execute_timed(&context.tools, call, signal)))
+                .collect(),
+        )
+        .await;
         for item in items {
             emit(AgentEvent::ToolExecutionEnd {
                 tool_call_id: item.call.id.clone(),

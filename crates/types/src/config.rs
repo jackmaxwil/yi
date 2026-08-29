@@ -29,6 +29,7 @@ pub struct UserConfig {
     pub plan: Option<PlanConfig>,
     pub mcp: Option<McpConfig>,
     pub kernel: Option<KernelConfig>,
+    pub edit: Option<EditConfig>,
     pub keys: Option<std::collections::BTreeMap<String, String>>,
 }
 
@@ -39,6 +40,14 @@ pub struct UserConfig {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct KernelConfig {
     pub prewarm: Option<bool>,
+}
+
+/// `edit.freeformGrammar`: send the patch language as a provider grammar
+/// rather than a JSON argument. Off until a live round trip confirms it.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct EditConfig {
+    pub freeform_grammar: Option<bool>,
 }
 
 /// D13: `bash.autoBackgroundMs`, off unless the user sets it.

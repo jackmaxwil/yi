@@ -598,7 +598,13 @@ impl AgentTool for SleepTool {
     ) -> ToolFuture<'a> {
         let delay = self.delay_ms;
         Box::pin(async move {
-            tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
+            // The shipped path is `ToolAdapter`'s `spawn_blocking`, so the
+            // sleep blocks a pool thread rather than yielding: an overlap here
+            // is the overlap a real read-kind batch gets.
+            let _ = tokio::task::spawn_blocking(move || {
+                std::thread::sleep(std::time::Duration::from_millis(delay));
+            })
+            .await;
             ToolOutcome {
                 result: error_tool_result("slept"),
                 is_error: false,
@@ -607,9 +613,9 @@ impl AgentTool for SleepTool {
     }
 }
 
-/// P4: a batch of parallel-mode (read-kind) calls overlaps — four 80ms
-/// sleeps finish in far less than 320ms — while results and events keep
-/// call order, and every result carries `durationMs`.
+/// P4: a batch of parallel-mode (read-kind) calls overlaps — the wall clock
+/// comes in under half the summed per-call durations, which scales with load
+/// where a fixed millisecond bound does not — and results keep call order.
 #[tokio::test]
 async fn parallel_read_batch_overlaps_and_stamps_duration() {
     let calls: Vec<yi_types::message::Content> = (0..4)
@@ -641,13 +647,10 @@ async fn parallel_read_batch_overlaps_and_stamps_duration() {
         &stream,
     )
     .await;
-    let elapsed = started.elapsed();
-    assert!(
-        elapsed < std::time::Duration::from_millis(240),
-        "batch was serial: {elapsed:?}"
-    );
+    let elapsed = started.elapsed().as_millis();
     let events = events.lock().unwrap_or_else(|error| error.into_inner());
     let mut end_order = Vec::new();
+    let mut summed = 0_u128;
     for event in events.iter() {
         if let AgentEvent::ToolExecutionEnd {
             tool_call_id,
@@ -656,12 +659,19 @@ async fn parallel_read_batch_overlaps_and_stamps_duration() {
         } = event
         {
             end_order.push(tool_call_id.clone());
-            assert!(
-                result.details.get("durationMs").is_some(),
-                "durationMs stamped"
-            );
+            let stamped = result
+                .details
+                .get("durationMs")
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or_default();
+            assert!(stamped > 0, "durationMs stamped: {result:?}");
+            summed += u128::from(stamped);
         }
     }
+    assert!(
+        elapsed * 2 < summed,
+        "batch was serial: {elapsed}ms wall against {summed}ms summed"
+    );
     assert_eq!(end_order, ["call-0", "call-1", "call-2", "call-3"]);
 }
 
@@ -707,7 +717,8 @@ async fn sequential_tool_splits_the_batch() {
         &stream,
     )
     .await;
-    // Three serial 40ms stretches (each single-item batch) stay ordered.
+    // Three serial 40ms stretches (each single-item batch) stay ordered; a
+    // lower bound only tightens under load, so it cannot flake high.
     assert!(started.elapsed() >= std::time::Duration::from_millis(110));
     let events = events.lock().unwrap_or_else(|error| error.into_inner());
     let ends: Vec<String> = events

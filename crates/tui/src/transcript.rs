@@ -112,9 +112,22 @@ pub(crate) fn intent_of(args: &Value) -> Option<String> {
     args.get("i").and_then(Value::as_str).map(str::to_owned)
 }
 
-/// U13: each stable slice renders standalone against a byte cursor
-/// (re-rendering the prefix duplicated list items mid-stream); a slice
-/// starting inside a fence reopens it and joins flush, no separator.
+/// A slice starting inside a fence renders under it reopened; the rail header
+/// stays with the slice that opened the block, one block not one per line.
+pub(crate) fn paint_slice(app: &crate::app::App, slice: &str) -> Vec<ratatui::text::Line<'static>> {
+    let width = app
+        .content_width()
+        .saturating_sub(crate::cell::GUTTER.len());
+    match app.live_reopen.as_ref().filter(|_| !slice.is_empty()) {
+        Some(open) => {
+            crate::markdown::render_continuation(&format!("{open}\n{slice}"), width, &app.theme)
+        }
+        None => crate::markdown::render(slice, width, &app.theme),
+    }
+}
+
+/// U13: each stable slice renders standalone against a byte cursor, because
+/// re-rendering the prefix duplicated list items mid-stream.
 pub(crate) fn commit_stable_prefix(app: &mut crate::app::App) {
     let stream = crate::markdown::stable_stream(&app.live_markdown);
     if stream.cut <= app.live_cut {
@@ -123,29 +136,20 @@ pub(crate) fn commit_stable_prefix(app: &mut crate::app::App) {
     let slice = app
         .live_markdown
         .get(app.live_cut..stream.cut)
-        .unwrap_or_default();
-    let continuing = app.live_reopen.is_some();
-    let source = match &app.live_reopen {
-        Some(open) => format!(
-            "{open}
-{slice}"
-        ),
-        None => slice.to_owned(),
-    };
-    let width = app.content_width();
+        .unwrap_or_default()
+        .to_owned();
     let first = app.live_cut == 0;
-    let rendered = crate::markdown::render(
-        &source,
-        width.saturating_sub(crate::cell::GUTTER.len()),
-        &app.theme,
-    );
+    // Invariant: history concatenates consecutive assistant slices back into
+    // the original source, so only the paint may carry the reopened fence —
+    // retaining it would reopen a fence mid-message on every reflow.
+    let rendered = paint_slice(app, &slice);
     if !rendered.is_empty() {
-        if !continuing {
+        if app.live_reopen.is_none() {
             app.pending_commit.push(ratatui::text::Line::default());
         }
         app.pending_commit
             .extend(crate::cell::gutter(rendered, first, &app.theme));
-        app.retain(crate::cell::Cell::Assistant { markdown: source });
+        app.retain(crate::cell::Cell::Assistant { markdown: slice });
     }
     (app.live_cut, app.live_reopen) = (stream.cut, stream.reopen);
 }

@@ -87,6 +87,7 @@ struct Builder<'t> {
     list_stack: Vec<ListLevel>,
     pending_marker: Option<Span<'static>>,
     in_code_block: bool,
+    continued: bool,
     code_lang: Option<&'static crate::highlight::Lang>,
     link_dest: Option<String>,
     table: Option<TableState>,
@@ -334,6 +335,14 @@ fn reduce_table(b: &mut Builder, event: &Event) -> bool {
 }
 
 pub fn render(source: &str, width: usize, theme: &Theme) -> Vec<Line<'static>> {
+    render_inner(source, width, theme, false)
+}
+/// A slice whose first fence reopens a block already on screen: the rail
+/// header is drawn once per block, not once per streamed line.
+pub fn render_continuation(source: &str, width: usize, theme: &Theme) -> Vec<Line<'static>> {
+    render_inner(source, width, theme, true)
+}
+fn render_inner(source: &str, width: usize, theme: &Theme, continued: bool) -> Vec<Line<'static>> {
     let width = width.max(4);
     let mut b = Builder {
         theme,
@@ -345,6 +354,7 @@ pub fn render(source: &str, width: usize, theme: &Theme) -> Vec<Line<'static>> {
         list_stack: Vec::new(),
         pending_marker: None,
         in_code_block: false,
+        continued,
         code_lang: None,
         link_dest: None,
         table: None,
@@ -390,22 +400,24 @@ pub fn render(source: &str, width: usize, theme: &Theme) -> Vec<Line<'static>> {
                 b.flush_line();
             }
             Event::Start(Tag::CodeBlock(kind)) => {
+                let continued = std::mem::take(&mut b.continued);
                 if b.pending_marker.is_some() {
                     b.line_prologue();
                     b.flush_line();
                 }
                 b.blank();
-                // OMP gives fenced code its own border hook rather than
-                // reprinting the author's backticks: a dim rail carries the
-                // block, and the language rides the opening rail.
+                // OMP gives fenced code a border hook rather than the
+                // author's backticks; the language rides the opening rail.
                 if let CodeBlockKind::Fenced(lang) = &kind
                     && !lang.is_empty()
                 {
                     b.code_lang = crate::highlight::lang_for(lang);
-                    b.out.push(Line::from(Span::styled(
-                        format!("{}{CODE_RAIL} {lang}", b.indent),
-                        b.theme.dim_style(),
-                    )));
+                    if !continued {
+                        b.out.push(Line::from(Span::styled(
+                            format!("{}{CODE_RAIL} {lang}", b.indent),
+                            b.theme.dim_style(),
+                        )));
+                    }
                 }
                 b.indent.push_str(CODE_RAIL_INDENT);
                 b.in_code_block = true;

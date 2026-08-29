@@ -19,9 +19,9 @@ const READ_LINE_CAP: usize = 2_000;
 /// explicit one, ceilinged so a deliberate big read stays bounded.
 const READ_BYTE_FLOOR: usize = 50 * 1024;
 const READ_BYTE_CEIL: usize = 512 * 1024;
-/// Matches the patcher's reveal clip rule: a clipped row never joins the
-/// seen set, so an edit cannot anchor on text the model saw truncated.
-const READ_LINE_CLIP: usize = 2_000;
+/// The patcher's reveal clip, shared: a row read wider than a rejection can
+/// re-show would anchor blind. A clipped row never joins the seen set.
+const READ_LINE_CLIP: usize = super::patcher::SEEN_LINE_REVEAL_MAX_COLUMNS;
 /// Consecutive byte-identical no-op edits on one path before the soft hint
 /// escalates to a tool error (omp issue #2081: 182 identical repeats in 205
 /// calls before the user aborted).
@@ -109,8 +109,6 @@ impl Tool for HashlineReadTool {
             Ok(windows) => windows,
             Err(output) => return *output,
         };
-        // An explicit limit may exceed the default line cap; the byte budget
-        // scales with it so a deliberate big read is allowed, a runaway not.
         let budget = explicit_limit.map_or(READ_BYTE_FLOOR, |limit| {
             READ_BYTE_FLOOR
                 .max(limit.saturating_mul(256))
@@ -178,7 +176,7 @@ impl Tool for HashlineReadTool {
             rendered.push(format!(
                 "[byte budget {budget} reached at line {line} of {line_count} — continue with offset={line}]"
             ));
-        } else if shown_end < line_count && windows.len() == 1 {
+        } else if shown_end < line_count {
             rendered.push(format!(
                 "[showing lines {first_shown}-{shown_end} of {line_count} — continue with offset={}]",
                 shown_end + 1
@@ -218,7 +216,7 @@ fn read_windows(
     let invalid = |message: String| {
         Err(Box::new(crate::tool::error_output_kind(
             message,
-            "invalid_args",
+            yi_types::event::ToolErrorKind::InvalidArgs,
         )))
     };
     if let Some(ranges) = input.get("ranges") {
@@ -284,6 +282,8 @@ fn read_windows(
 
 pub struct HashlineEditTool {
     pub state: SharedHashline,
+    /// `edit.freeformGrammar`; the JSON argument is the default.
+    pub freeform_grammar: bool,
 }
 
 fn render_section_result(result: &PatchSectionResult, snapshots: &mut SnapshotStore) -> String {
@@ -354,10 +354,10 @@ impl Tool for HashlineEditTool {
     /// The patch language as a Lark grammar (ported from the omp donor); on
     /// providers with custom tools the body rows stop paying JSON escaping.
     fn freeform(&self) -> Option<yi_types::model::FreeformFormat> {
-        Some(yi_types::model::FreeformFormat {
-            syntax: "lark".to_owned(),
-            definition: include_str!("grammar.lark").to_owned(),
-        })
+        self.freeform_grammar
+            .then(|| yi_types::model::FreeformFormat {
+                definition: include_str!("grammar.lark").to_owned(),
+            })
     }
 
     /// [`Patcher::prepare`] validates and materializes the new text without touching disk.
@@ -400,7 +400,12 @@ impl Tool for HashlineEditTool {
         };
         let patch = match Patch::parse(&patch_text, Some(&context.cwd)) {
             Ok(patch) => patch,
-            Err(message) => return crate::tool::error_output_kind(message, "invalid_args"),
+            Err(message) => {
+                return crate::tool::error_output_kind(
+                    message,
+                    yi_types::event::ToolErrorKind::InvalidArgs,
+                );
+            }
         };
         if patch.sections.is_empty() {
             return error_output("Patch input did not produce any sections.");
@@ -419,9 +424,9 @@ impl Tool for HashlineEditTool {
             Ok(results) => results,
             Err(message) => {
                 let kind = if message.starts_with(super::mismatch::EDIT_REJECTED_PREFIX) {
-                    "stale_tag"
+                    yi_types::event::ToolErrorKind::StaleTag
                 } else {
-                    "tool_error"
+                    yi_types::event::ToolErrorKind::ToolError
                 };
                 return crate::tool::error_output_kind(message, kind);
             }
@@ -446,7 +451,7 @@ impl Tool for HashlineEditTool {
                             "Edit to {} was a byte-identical no-op {} times in a row. The file already contains this content — re-read it ({}) and issue a different edit, or stop editing.",
                             result.path, entry.1, result.header
                         ),
-                        "noop_loop",
+                        yi_types::event::ToolErrorKind::NoopLoop,
                     );
                 }
                 rendered.push(format!(

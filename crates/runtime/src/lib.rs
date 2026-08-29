@@ -69,4 +69,7 @@ pub use yi_permission::{
     Class, ConfigRule, ConfigRuleAction, Decision, PermissionMode, Verdict, mode_fragment,
 };
 pub use yi_session as session_store;
-pub use yi_tools::{Change, ChangeKind, builtin_tools, discover_exec_tools, edit_file, list_files};
+pub use yi_tools::{
+    Change, ChangeKind, builtin_tools, builtin_tools_with, discover_exec_tools, edit_file,
+    list_files,
+};

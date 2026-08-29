@@ -605,15 +605,12 @@ impl App {
                 let text = text_of(content);
                 if !text.is_empty() {
                     let remainder = text.get(self.live_cut..).unwrap_or_default().to_owned();
-                    let width = self.content_width();
                     let first = self.live_cut == 0;
-                    let rendered = crate::markdown::render(
-                        &remainder,
-                        width.saturating_sub(crate::cell::GUTTER.len()),
-                        &self.theme,
-                    );
+                    let rendered = crate::transcript::paint_slice(self, &remainder);
                     if !rendered.is_empty() {
-                        self.pending_commit.push(Line::default());
+                        if self.live_reopen.is_none() {
+                            self.pending_commit.push(Line::default());
+                        }
                         self.pending_commit.extend(crate::cell::gutter(
                             rendered,
                             first,

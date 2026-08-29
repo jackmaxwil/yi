@@ -162,7 +162,8 @@ fn cap_lines(text: &str, cap: usize) -> String {
     if lines.len() <= cap {
         return text.to_owned();
     }
-    // The 2:1 head/tail split HEAD_LINES/TAIL_LINES fixed, kept under any cap.
+    // Incident: the split was the fixed HEAD_LINES/TAIL_LINES, so a smaller
+    // cap emitted more than it named (GREP_LINES 60 emitted 120).
     let head = (cap.saturating_mul(2) / 3).max(1).min(lines.len());
     let tail = cap
         .saturating_sub(head)

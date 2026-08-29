@@ -110,9 +110,8 @@ fn base64(data: &[u8]) -> String {
     out
 }
 
-/// Two ids ping-pong: a frame transmits under the back id, places it, then
-/// deletes the front — never a moment with nothing placed, which was the
-/// flicker (delete-then-retransmit showed the terminal's ground mid-frame).
+/// Incident: delete-then-retransmit showed the terminal's ground mid-frame,
+/// so two ids ping-pong and a placement exists at every instant.
 pub const IMAGE_IDS: [u32; 2] = [7601, 7602];
 
 /// Deflate level for `o=z`. The 192px frame is 83% fully transparent, so the
@@ -121,8 +120,8 @@ pub const IMAGE_IDS: [u32; 2] = [7601, 7602];
 const ZLIB_LEVEL: u8 = 6;
 
 /// Transmit frame data only (`a=t`, no display). Chunked at 4096 as the
-/// protocol requires. Returns the bytes written, for the drive-mode counter.
-pub fn transmit(out: &mut impl Write, id: u32, rgba: &[u8], px: usize) -> std::io::Result<usize> {
+/// protocol requires.
+pub fn transmit(out: &mut impl Write, id: u32, rgba: &[u8], px: usize) -> std::io::Result<()> {
     let payload = base64(&miniz_oxide::deflate::compress_to_vec_zlib(
         rgba, ZLIB_LEVEL,
     ));
@@ -142,7 +141,7 @@ pub fn transmit(out: &mut impl Write, id: u32, rgba: &[u8], px: usize) -> std::i
             write!(out, "\x1b_Gm={more};{chunk}\x1b\\")?;
         }
     }
-    Ok(payload.len())
+    Ok(())
 }
 
 /// Place (or move) the id's one placement: the same (image, placement) pair

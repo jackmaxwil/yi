@@ -8,9 +8,6 @@ use yi_orb::kitty;
 /// buffered across [`kitty::IMAGE_IDS`].
 pub struct Tick {
     pub shown: bool,
-    /// Payload bytes written this session, read by drive mode to prove a
-    /// pure scroll costs a re-place, not a retransmit.
-    pub bytes: u64,
     at: Option<(u16, u16)>,
     last: std::time::Instant,
     front: usize,
@@ -20,7 +17,6 @@ impl Default for Tick {
     fn default() -> Self {
         Self {
             shown: false,
-            bytes: 0,
             at: None,
             last: std::time::Instant::now() - std::time::Duration::from_secs(1),
             front: 0,
@@ -60,9 +56,7 @@ pub fn tick<B>(
                 let rgba = kitty::paint_rgba(&frame, 64.0, crate::app::ORB_PX);
                 let back = 1 - state.front;
                 let out = terminal.backend_mut();
-                let sent = kitty::transmit(out, kitty::IMAGE_IDS[back], &rgba, crate::app::ORB_PX)
-                    .unwrap_or(0);
-                state.bytes = state.bytes.saturating_add(sent as u64);
+                let _ = kitty::transmit(out, kitty::IMAGE_IDS[back], &rgba, crate::app::ORB_PX);
                 let placed = kitty::place(
                     out,
                     kitty::IMAGE_IDS[back],

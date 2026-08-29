@@ -136,8 +136,7 @@ impl AgentTool for ToolAdapter {
         }
     }
 
-    /// Only read-kind tools may overlap inside a batch; anything that can
-    /// mutate keeps the strict order the transcript shows.
+    /// Only read-kind tools overlap; a mutation keeps the transcript's order.
     fn execution_mode(&self) -> yi_loop::config::ExecutionMode {
         match self.tool.kind() {
             yi_tools::ToolKind::Read => yi_loop::config::ExecutionMode::Parallel,
@@ -202,14 +201,20 @@ impl AgentTool for ToolAdapter {
                 let args_json = serde_json::to_string(&args).unwrap_or_default();
                 if let Some(denial) = rules.check_tool(tool.name(), &args_json) {
                     return ToolOutcome {
-                        result: yi_loop::tool::error_tool_result_kind(&denial, "denied"),
+                        result: yi_loop::tool::error_tool_result_kind(
+                            &denial,
+                            yi_types::event::ToolErrorKind::Denied,
+                        ),
                         is_error: true,
                     };
                 }
             }
             if let Some(denial) = wall.check(tool.name(), tool.kind(), &args, &context.cwd) {
                 return ToolOutcome {
-                    result: yi_loop::tool::error_tool_result_kind(&denial, "denied"),
+                    result: yi_loop::tool::error_tool_result_kind(
+                        &denial,
+                        yi_types::event::ToolErrorKind::Denied,
+                    ),
                     is_error: true,
                 };
             }
@@ -243,7 +248,7 @@ impl AgentTool for ToolAdapter {
                         return ToolOutcome {
                             result: yi_loop::tool::error_tool_result_kind(
                                 &format!("Permission denied: {}", outcome.reason),
-                                "denied",
+                                yi_types::event::ToolErrorKind::Denied,
                             ),
                             is_error: true,
                         };

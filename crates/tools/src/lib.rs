@@ -32,6 +32,12 @@ pub use tool::{
 };
 
 pub fn builtin_tools() -> Vec<Arc<dyn Tool>> {
+    builtin_tools_with(false)
+}
+
+/// `freeform_grammar` opts the edit tool into [`Tool::freeform`]: a grammar
+/// the provider rejects fails every request carrying the tool, not just edits.
+pub fn builtin_tools_with(freeform_grammar: bool) -> Vec<Arc<dyn Tool>> {
     let state = hashline::tool::shared_hashline_state();
     vec![
         Arc::new(hashline::tool::HashlineReadTool {
@@ -39,6 +45,7 @@ pub fn builtin_tools() -> Vec<Arc<dyn Tool>> {
         }),
         Arc::new(hashline::tool::HashlineEditTool {
             state: Arc::clone(&state),
+            freeform_grammar,
         }),
         Arc::new(WriteTool {
             hashline: Some(Arc::clone(&state)),

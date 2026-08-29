@@ -194,8 +194,8 @@ fn a_closed_block_comment_releases_the_rest_of_the_line() -> TestResult {
     Ok(())
 }
 
-/// In shell `x#y` is a literal word; only a `#` at a word boundary comments.
-/// Python keeps the anywhere rule.
+/// In shell `x#y` is a literal word; a `#` off any non-identifier byte
+/// comments, punctuation included. Python keeps the anywhere rule.
 #[test]
 fn a_shell_hash_mid_word_is_not_a_comment() -> TestResult {
     let shell = kinds("curl http://host/a#frag # note", "sh");
@@ -204,6 +204,13 @@ fn a_shell_hash_mid_word_is_not_a_comment() -> TestResult {
             .iter()
             .all(|(text, token)| *token != Token::Comment || text.starts_with("# note")),
         "{shell:?}"
+    );
+    let punctuated = kinds("echo hi;#note", "sh");
+    assert!(
+        punctuated
+            .iter()
+            .any(|(text, token)| *token == Token::Comment && text.starts_with("#note")),
+        "{punctuated:?}"
     );
     let python = kinds("x=1#tight comment", "python");
     assert!(

@@ -243,9 +243,8 @@ fn read_only_segment(segment: &str) -> bool {
     READ_ONLY_VERBS.contains(&verb)
 }
 
-/// codex's `command_category`: what the model reached for the shell to do,
-/// persisted per call so a stats pass can see e.g. shell searches that the
-/// grep tool should have served.
+/// codex's `command_category`: persisted per call so a stats pass can see
+/// shell searches the grep tool should have served.
 pub(crate) fn command_category(command: &str) -> &'static str {
     let mut categories = command
         .split(['|', ';', '\n'])
@@ -278,7 +277,15 @@ fn segment_category(segment: &str) -> Option<&'static str> {
         },
         "make" | "npm" | "pnpm" | "yarn" | "go" | "rustc" | "cc" | "gcc" | "tsc" => "build",
         "pytest" => "test",
-        "mkdir" | "touch" | "rm" | "mv" | "cp" | "chmod" | "ln" | "tee" | "sed" => "write",
+        "mkdir" | "touch" | "rm" | "mv" | "cp" | "chmod" | "ln" | "tee" => "write",
+        // `sed -n 'Np'` is the read tool's clip escape hatch; only `-i` writes.
+        "sed" => {
+            if words.any(|word| word.starts_with("-i")) {
+                "write"
+            } else {
+                "read"
+            }
+        }
         _ => "unknown",
     })
 }

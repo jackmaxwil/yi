@@ -563,6 +563,52 @@ fn stable_stream_commits_fence_interiors_line_by_line() -> TestResult {
     Ok(())
 }
 
+/// P10: streaming a fenced block one line at a time must paint what the
+/// whole message paints. The rail header belongs to the slice that opened the
+/// block; a continuation slice reopens the fence without redrawing it.
+#[test]
+fn streamed_fence_paints_the_language_rail_once() -> TestResult {
+    use yi_tui::markdown::{render, render_continuation, stable_stream};
+    let whole = "intro\n\n```rust\nlet a = 1;\nlet b = 2;\n```\n";
+    let mut cut = 0;
+    let mut reopen: Option<String> = None;
+    let mut painted: Vec<String> = Vec::new();
+    for end in 1..=whole.len() {
+        let Some(source) = whole.get(..end) else {
+            continue;
+        };
+        let stream = stable_stream(source);
+        if stream.cut <= cut {
+            continue;
+        }
+        let slice = source.get(cut..stream.cut).unwrap_or_default();
+        let lines = match &reopen {
+            Some(open) => render_continuation(&format!("{open}\n{slice}"), 60, &theme()),
+            None => render(slice, 60, &theme()),
+        };
+        painted.extend(lines.iter().map(flat));
+        (cut, reopen) = (stream.cut, stream.reopen);
+    }
+    // Blank separators are the caller's (commit_stable_prefix pushes one per
+    // non-continuing slice), so the comparison is over the content rows.
+    let batch: Vec<String> = render(whole, 60, &theme())
+        .iter()
+        .map(flat)
+        .filter(|line| !line.is_empty())
+        .collect();
+    painted.retain(|line| !line.is_empty());
+    assert_eq!(
+        painted, batch,
+        "streamed paint diverged from the batch paint"
+    );
+    assert_eq!(
+        painted.iter().filter(|line| line.contains("rust")).count(),
+        1,
+        "the language rail is drawn once: {painted:?}"
+    );
+    Ok(())
+}
+
 /// Fences are tracked by marker and run length: `~~~` closes only on `~~~`,
 /// and a four-backtick fence swallows the ``` example inside it.
 #[test]

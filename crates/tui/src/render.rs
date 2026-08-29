@@ -111,21 +111,8 @@ fn draw_frame<B>(
     let mut live_lines: Vec<Line<'static>> = Vec::new();
     if !app.live_markdown.is_empty() {
         let tail = app.live_markdown.get(app.live_cut..).unwrap_or_default();
-        // A tail starting inside a fence renders under the fence's reopened
-        // header, or its code rows would draw as prose.
-        let source = match &app.live_reopen {
-            Some(open) if !tail.is_empty() => format!("{open}\n{tail}"),
-            _ => tail.to_owned(),
-        };
-        let rendered = crate::cell::gutter(
-            crate::markdown::render(
-                &source,
-                content_width.saturating_sub(crate::cell::GUTTER.len()),
-                &theme,
-            ),
-            app.live_cut == 0,
-            &theme,
-        );
+        let painted = crate::transcript::paint_slice(app, tail);
+        let rendered = crate::cell::gutter(painted, app.live_cut == 0, &theme);
         live_lines.extend(live_tail(rendered, app.rows));
     } else if !app.live_thought.is_empty() {
         // Reasoning-heavy models stream thought long before prose; show its

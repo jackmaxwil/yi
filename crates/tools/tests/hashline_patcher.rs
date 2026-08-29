@@ -77,6 +77,7 @@ impl Fixture {
     fn edit(&self, patch: &str) -> ToolOutput {
         HashlineEditTool {
             state: std::sync::Arc::clone(&self.state),
+            freeform_grammar: false,
         }
         .execute(args(&[("patch", json!(patch))]), &self.context)
     }
@@ -99,6 +100,7 @@ impl Fixture {
     fn preview(&self, patch: &str) -> Option<String> {
         HashlineEditTool {
             state: std::sync::Arc::clone(&self.state),
+            freeform_grammar: false,
         }
         .preview(&args(&[("patch", json!(patch))]), &self.context.cwd)
     }

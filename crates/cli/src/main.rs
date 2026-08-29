@@ -337,6 +337,11 @@ fn build_session(
     let tools_home = home.clone();
     session.install_extensions(session_extensions(args));
     let provider = std::sync::Arc::clone(session_provider(&session));
+    let freeform_grammar = config()
+        .edit
+        .as_ref()
+        .and_then(|edit| edit.freeform_grammar)
+        .unwrap_or(false);
     let host = yi_runtime::attach_runtime(
         &mut session,
         yi_runtime::RuntimeWiring {
@@ -347,7 +352,7 @@ fn build_session(
             home: home.clone(),
             broker: Some(broker),
             tools: std::sync::Arc::new(move || {
-                let mut tools = yi_runtime::builtin_tools();
+                let mut tools = yi_runtime::builtin_tools_with(freeform_grammar);
                 for tool in yi_runtime::discover_exec_tools(&tools_home.join(".yi/tools")) {
                     tools.push(std::sync::Arc::new(tool));
                 }

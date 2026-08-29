@@ -144,8 +144,7 @@ fn kitty_emit_transmits_an_inflatable_zlib_stream() -> TestResult {
     let rgba = orb::kitty::paint_rgba(&frame, 64.0, PX);
 
     let mut wire = Vec::new();
-    let sent = orb::kitty::transmit(&mut wire, orb::kitty::IMAGE_IDS[0], &rgba, PX)?;
-    assert!(sent > 0, "transmit reports payload bytes");
+    orb::kitty::transmit(&mut wire, orb::kitty::IMAGE_IDS[0], &rgba, PX)?;
     orb::kitty::place(&mut wire, orb::kitty::IMAGE_IDS[0], 3, 7, 6, 3)?;
     let wire = String::from_utf8(wire)?;
 

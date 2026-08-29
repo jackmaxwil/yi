@@ -11,10 +11,15 @@ use crate::tool::{
 
 const PAGE_CAP: usize = 200;
 const COLLECTION_CAP: usize = 2_000;
+/// The hit cap bounds rows, not bytes: one minified file with a single hit
+/// still retains its whole text, so the walk also stops on retained bytes.
+const COLLECTION_BYTE_CAP: usize = 8 * 1024 * 1024;
 const CONTEXT_CAP: usize = 10;
 const FILES_PAGE_CAP: usize = 200;
-/// Matches the patcher's reveal clip: a clipped row never joins the seen set.
-const LINE_CLIP: usize = 512;
+const LINE_CLIP: usize = crate::hashline::patcher::SEEN_LINE_REVEAL_MAX_COLUMNS;
+/// Invariant: a grep must not flush the snapshot store's LRU and strand the
+/// tag a read just minted, so only the page's first files mint.
+const TAG_FILES_CAP: usize = 20;
 
 /// `type` shorthand for an include glob; a name outside the map fails loudly.
 const TYPES: [(&str, &str); 12] = [
@@ -41,7 +46,12 @@ fn build_matchers(
     input: &Map<String, Value>,
     pattern: &str,
 ) -> Result<(regex::Regex, Option<globset::GlobMatcher>), Box<ToolOutput>> {
-    let invalid = |message: String| Box::new(error_output_kind(message, "invalid_args"));
+    let invalid = |message: String| {
+        Box::new(error_output_kind(
+            message,
+            yi_types::event::ToolErrorKind::InvalidArgs,
+        ))
+    };
     let use_regex = input.get("regex").and_then(Value::as_bool).unwrap_or(false);
     let ignore_case = input
         .get("ignore_case")
@@ -123,6 +133,7 @@ fn collect(
 ) -> Collected {
     let mut files: Vec<FileHits> = Vec::new();
     let mut total = 0_usize;
+    let mut retained = 0_usize;
     let mut collection_capped = false;
     let mut search_file = |path: &Path| -> bool {
         if let Some(include) = include {
@@ -151,11 +162,19 @@ fn collect(
             return true;
         }
         let room = COLLECTION_CAP.saturating_sub(total);
-        if hits.len() >= room {
+        if room == 0 {
+            collection_capped = true;
+            return false;
+        }
+        if hits.len() > room {
             hits.truncate(room);
             collection_capped = true;
         }
         total = total.saturating_add(hits.len());
+        retained = retained.saturating_add(normalized.len());
+        if retained >= COLLECTION_BYTE_CAP {
+            collection_capped = true;
+        }
         files.push(FileHits {
             display: path.display().to_string(),
             canonical: path
@@ -182,9 +201,14 @@ fn collect(
 
 impl GrepTool {
     /// Windows around each page hit, deduped forward like `rg` output. Rows
-    /// shown in full width join the snapshot's seen set so a hit can anchor an
-    /// edit without an intervening read; clipped rows never do.
-    fn render_file(&self, file: &FileHits, page_hits: &[usize], context: usize) -> Vec<String> {
+    /// shown in full width join the seen set so a hit anchors an edit.
+    fn render_file(
+        &self,
+        file: &FileHits,
+        page_hits: &[usize],
+        context: usize,
+        mint: bool,
+    ) -> Vec<String> {
         enum Row {
             Gap,
             Line {
@@ -226,9 +250,9 @@ impl GrepTool {
             }
             emitted = Some(hi.saturating_add(1));
         }
-        match &self.hashline {
-            // Tagged mode: a `[path#TAG]` header then `N:text` rows the edit
-            // tool can anchor on directly.
+        match self.hashline.as_ref().filter(|_| mint) {
+            // A tagged file anchors an edit directly; a bare one names itself
+            // on every row and anchors nothing.
             Some(state) => {
                 let tag = crate::hashline::tool::lock_state(state).snapshots.record(
                     &file.canonical,
@@ -245,8 +269,6 @@ impl GrepTool {
                 }));
                 rows
             }
-            // Bare mode keeps the classic grep shape: `path:N:text` hits,
-            // `path-N-text` context.
             None => collected
                 .iter()
                 .map(|row| match row {
@@ -351,6 +373,7 @@ impl Tool for GrepTool {
             // each file renders only the hits that fall inside it.
             let mut skipped = 0_usize;
             let mut taken = 0_usize;
+            let mut tagged = 0_usize;
             for file in &collected.files {
                 if taken >= PAGE_CAP {
                     break;
@@ -368,7 +391,9 @@ impl Tool for GrepTool {
                     continue;
                 }
                 taken = taken.saturating_add(page_hits.len());
-                rows.extend(self.render_file(file, &page_hits, context_lines));
+                let mint = tagged < TAG_FILES_CAP;
+                tagged = tagged.saturating_add(1);
+                rows.extend(self.render_file(file, &page_hits, context_lines, mint));
             }
             shown = taken;
             if shown > 0 && offset.saturating_add(shown) < collected.total {
@@ -388,9 +413,12 @@ impl Tool for GrepTool {
         if collected.total == 0 {
             rows.push("No matches found".to_owned());
         } else if shown == 0 {
-            rows.push(format!(
-                "[offset {offset} is beyond the {total_label} collected matches]"
-            ));
+            let (count, noun) = if files_only {
+                (collected.files.len().to_string(), "matching files")
+            } else {
+                (total_label, "collected matches")
+            };
+            rows.push(format!("[offset {offset} is beyond the {count} {noun}]"));
         }
         let mut output = text_output(rows.join("\n"));
         output.result.details = json!({

@@ -53,11 +53,11 @@ fn reduce_entry(entry: &Entry, tools: &mut BTreeMap<String, ToolRow>, totals: &m
     };
     match message {
         AgentMessage::Assistant { usage, .. } => {
-            totals.turns += 1;
-            totals.input += usage.input;
-            totals.output += usage.output;
-            totals.cache_read += usage.cache_read;
-            totals.cache_write += usage.cache_write;
+            totals.turns = totals.turns.saturating_add(1);
+            totals.input = totals.input.saturating_add(usage.input);
+            totals.output = totals.output.saturating_add(usage.output);
+            totals.cache_read = totals.cache_read.saturating_add(usage.cache_read);
+            totals.cache_write = totals.cache_write.saturating_add(usage.cache_write);
             totals.cost += usage.cost.total.as_f64().unwrap_or(0.0);
         }
         AgentMessage::ToolResult {
@@ -67,29 +67,34 @@ fn reduce_entry(entry: &Entry, tools: &mut BTreeMap<String, ToolRow>, totals: &m
             ..
         } => {
             let row = tools.entry(tool_name.clone()).or_default();
-            row.calls += 1;
+            row.calls = row.calls.saturating_add(1);
             let details = details.clone().unwrap_or(Value::Null);
             if *is_error {
-                row.errors += 1;
+                row.errors = row.errors.saturating_add(1);
                 let kind = details
                     .get("errorKind")
                     .and_then(Value::as_str)
                     .unwrap_or("tool_error");
-                *row.error_kinds.entry(kind.to_owned()).or_default() += 1;
+                let seen = row.error_kinds.entry(kind.to_owned()).or_default();
+                *seen = seen.saturating_add(1);
             }
             if let Some(duration) = details.get("durationMs").and_then(Value::as_u64) {
                 row.durations_ms.push(duration);
             }
-            row.out_bytes += details.get("outBytes").and_then(Value::as_u64).unwrap_or(0);
+            row.out_bytes = row
+                .out_bytes
+                .saturating_add(details.get("outBytes").and_then(Value::as_u64).unwrap_or(0));
             if truncated_in(&details) {
-                row.truncated += 1;
+                row.truncated = row.truncated.saturating_add(1);
             }
             if let Some(category) = details.get("category").and_then(Value::as_str) {
-                *totals.categories.entry(category.to_owned()).or_default() += 1;
+                let seen = totals.categories.entry(category.to_owned()).or_default();
+                *seen = seen.saturating_add(1);
             }
             if let Some(ops) = details.get("ops").and_then(Value::as_object) {
                 for (op, count) in ops {
-                    *totals.edit_ops.entry(op.clone()).or_default() += count.as_u64().unwrap_or(0);
+                    let seen = totals.edit_ops.entry(op.clone()).or_default();
+                    *seen = seen.saturating_add(count.as_u64().unwrap_or(0));
                 }
             }
         }

@@ -95,13 +95,17 @@ pub fn error_output(message: impl Into<String>) -> ToolOutput {
     output
 }
 
-/// `kind` is the machine-readable failure taxonomy (`denied`, `not_found`,
-/// `invalid_args`, `aborted`, `stale_tag`, `noop_loop`, `tool_error`) that
-/// `yi stats` aggregates; the prose stays the model's view.
-pub fn error_output_kind(message: impl Into<String>, kind: &str) -> ToolOutput {
+/// The machine-readable half of a failure; the prose stays the model's view.
+pub fn error_output_kind(
+    message: impl Into<String>,
+    kind: yi_types::event::ToolErrorKind,
+) -> ToolOutput {
     let mut output = error_output(message);
     if let Value::Object(details) = &mut output.result.details {
-        details.insert("errorKind".to_owned(), Value::String(kind.to_owned()));
+        details.insert(
+            "errorKind".to_owned(),
+            Value::String(kind.as_str().to_owned()),
+        );
     }
     output
 }

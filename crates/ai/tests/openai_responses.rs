@@ -448,7 +448,6 @@ fn freeform_tool_serializes_as_custom_with_grammar() -> TestResult {
             description: "patch".to_owned(),
             parameters: json!({"type":"object"}),
             freeform: Some(yi_types::model::FreeformFormat {
-                syntax: "lark".to_owned(),
                 definition: "start: body".to_owned(),
             }),
         });
