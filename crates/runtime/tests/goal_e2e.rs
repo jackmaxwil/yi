@@ -358,6 +358,8 @@ fn seed_plan_of(store: &yi_session::SharedSession, id: &str, check: &str) -> Tes
             state: yi_types::plan::TaskState::Done,
             blocked_reason: None,
             assignee: None,
+            red_count: None,
+            red_fingerprint: None,
             extra: serde_json::Map::new(),
         }],
         created: 0,

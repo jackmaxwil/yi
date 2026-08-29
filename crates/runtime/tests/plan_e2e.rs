@@ -22,12 +22,11 @@ fn memory_store() -> yi_session::SharedSession {
     )))
 }
 
-fn service_with_store() -> (
-    Arc<PlanService>,
-    yi_session::SharedSession,
-    Arc<Mutex<Vec<AgentMessage>>>,
-) {
-    let store = memory_store();
+/// A second service over one store is what a resume is: the process is gone,
+/// the store is what came back.
+fn service_over(
+    store: &yi_session::SharedSession,
+) -> (Arc<PlanService>, Arc<Mutex<Vec<AgentMessage>>>) {
     let handle = store.clone();
     let delivered: Arc<Mutex<Vec<AgentMessage>>> = Arc::new(Mutex::new(Vec::new()));
     let sink = Arc::clone(&delivered);
@@ -40,6 +39,16 @@ fn service_with_store() -> (
         Arc::new(move || Some(handle.clone())),
         deliver,
     ));
+    (service, delivered)
+}
+
+fn service_with_store() -> (
+    Arc<PlanService>,
+    yi_session::SharedSession,
+    Arc<Mutex<Vec<AgentMessage>>>,
+) {
+    let store = memory_store();
+    let (service, delivered) = service_over(&store);
     (service, store, delivered)
 }
 
@@ -913,6 +922,46 @@ fn a_done_task_is_not_split_behind_its_own_back() -> TestResult {
     assert!(
         parent.deps.is_empty(),
         "a done task never gains unfinished deps"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_resumed_session_cannot_launder_an_escalation_streak() -> TestResult {
+    let (service, store, _delivered) = service_with_store();
+    service.create(&json!([
+        {"title": "impossible", "acceptance": "never true", "check": "echo case 7 diverges; exit 2"},
+    ]))?;
+    claim_again(&service, "t1")?;
+    claim_again(&service, "t1")?;
+    drop(service);
+
+    let (resumed, _delivered) = service_over(&store);
+    let third = claim_again(&resumed, "t1")?;
+    assert!(
+        third.contains("stayed red through 3 attempts") && third.contains("ask the user"),
+        "a resume must not reset the ladder to rung one, or a looping task retries forever: {third}"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_streak_earned_split_survives_resume() -> TestResult {
+    let (service, store, _delivered) = service_with_store();
+    service.create(&red_task_specs())?;
+    earn_a_split(&service, "t1")?;
+    drop(service);
+
+    let (resumed, _delivered) = service_over(&store);
+    resumed.split(&split_payload(
+        "t1",
+        json!([{"title": "narrow it", "acceptance": "one case green", "check": "true"}]),
+    ))?;
+    let stored = yi_session::lock_session(&store).plan().ok_or("plan")?;
+    assert_eq!(
+        stored.tasks.len(),
+        3,
+        "a split the streak already earned must not be re-earned after a resume"
     );
     Ok(())
 }
