@@ -68,6 +68,11 @@ fn grid_note(tool: &str, command: &str, result: &yi_types::event::ToolResult) ->
         .flatten()
 }
 
+fn coroutine_note(tool: &str, result: &yi_types::event::ToolResult) -> Option<String> {
+    (tool == "ipython" && result_text(result).contains("<coroutine object "))
+        .then(crate::affordance::coroutine_leak)
+}
+
 fn absolute(cwd: &std::path::Path, path: &str) -> PathBuf {
     let candidate = PathBuf::from(path);
     if candidate.is_absolute() {
@@ -269,6 +274,9 @@ impl AgentTool for ToolAdapter {
                         broker.note_containment_failure(identity);
                     }
                     if let Some(line) = grid_note(&name, &command, &output.result) {
+                        crate::affordance::append(&mut output.result, &line);
+                    }
+                    if let Some(line) = coroutine_note(&name, &output.result) {
                         crate::affordance::append(&mut output.result, &line);
                     }
                     if let Some(ext) = &ext {
