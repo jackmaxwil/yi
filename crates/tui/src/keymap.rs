@@ -234,6 +234,11 @@ pub enum Action {
     FocusParent,
     FocusNextSibling,
     FocusPrevSibling,
+    RaiseEffort,
+    LowerEffort,
+    CycleModel,
+    CycleModelBack,
+    OpenModelPicker,
 }
 
 impl Action {
@@ -252,6 +257,11 @@ impl Action {
             "focus-parent" => Ok(Self::FocusParent),
             "focus-next-sibling" => Ok(Self::FocusNextSibling),
             "focus-prev-sibling" => Ok(Self::FocusPrevSibling),
+            "raise-effort" => Ok(Self::RaiseEffort),
+            "lower-effort" => Ok(Self::LowerEffort),
+            "cycle-model" => Ok(Self::CycleModel),
+            "cycle-model-back" => Ok(Self::CycleModelBack),
+            "open-model-picker" => Ok(Self::OpenModelPicker),
             _ => Err(format!("unknown action: {s}")),
         }
     }
@@ -366,6 +376,39 @@ pub fn default_keymap() -> Keymap {
     map.bind(
         single(KeyCodeValue::Right, false, true),
         Action::FocusNextSibling,
+    );
+    map.map.insert(
+        KeyInput::Single(SingleKey {
+            code: KeyCodeValue::Tab,
+            ctrl: false,
+            alt: false,
+            shift: true,
+        }),
+        vec![Rule {
+            when: None,
+            action: Action::RaiseEffort,
+        }],
+    );
+    map.bind(single(KeyCodeValue::Tab, false, true), Action::LowerEffort);
+    map.bind(
+        single(KeyCodeValue::Char('p'), true, false),
+        Action::CycleModel,
+    );
+    map.map.insert(
+        KeyInput::Single(SingleKey {
+            code: KeyCodeValue::Char('P'),
+            ctrl: true,
+            alt: false,
+            shift: false,
+        }),
+        vec![Rule {
+            when: None,
+            action: Action::CycleModelBack,
+        }],
+    );
+    map.bind(
+        single(KeyCodeValue::Char('m'), false, true),
+        Action::OpenModelPicker,
     );
     map.bind(
         single(KeyCodeValue::Left, false, true),

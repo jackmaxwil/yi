@@ -9,14 +9,14 @@ use yi_runtime::{AgentSession, ProviderStream, SessionConfig, resolve_model};
 use yi_types::event::AgentEvent;
 use yi_types::event::AssistantMessageEvent;
 use yi_types::message::{AgentMessage, StopReason};
-use yi_types::model::{Model, ModelCost};
+use yi_types::model::{Effort, Model, ModelCost, UnknownEffort};
 
 #[derive(Clone)]
 struct Args {
     command: String,
     model: String,
     system: String,
-    thinking: Option<String>,
+    thinking: Option<Effort>,
     json: bool,
     yolo: bool,
     session_dir: Option<String>,
@@ -65,7 +65,12 @@ fn parse_args() -> Result<Args, lexopt::Error> {
             }
             Long("model") => model = Some(parser.value()?.string()?),
             Long("system") => system = parser.value()?.string()?,
-            Long("thinking") => thinking = Some(parser.value()?.string()?),
+            Long("thinking") => {
+                let raw = parser.value()?.string()?;
+                thinking = Some(raw.parse().map_err(|error: UnknownEffort| {
+                    lexopt::Error::Custom(Box::new(error))
+                })?);
+            }
             Long("json") => json = true,
             Long("yolo") => yolo = true,
             Long("confirm") => yolo = false,
@@ -93,7 +98,7 @@ fn parse_args() -> Result<Args, lexopt::Error> {
         command,
         model: model.or_else(configured_model).unwrap_or_default(),
         system,
-        thinking,
+        thinking: thinking.or_else(configured_thinking),
         json,
         yolo,
         session_dir,
@@ -204,6 +209,11 @@ fn config() -> &'static yi_types::config::UserConfig {
     CONFIG.get_or_init(yi_types::config::UserConfig::default)
 }
 
+/// X7: `thinking` in the user config, overridden by `--thinking`.
+fn configured_thinking() -> Option<Effort> {
+    config().thinking
+}
+
 fn configured_roles() -> yi_types::config::ModelRoles {
     config().models.clone().unwrap_or_default()
 }
@@ -293,7 +303,7 @@ fn build_session(
         SessionConfig {
             system_prompt,
             model,
-            thinking_level: args.thinking.clone(),
+            thinking_level: args.thinking,
             tool_execution: yi_loop_default(),
         },
         provider,
@@ -746,7 +756,7 @@ fn run_tui_command(args: &Args, initial_prompt: Option<String>) -> i32 {
     };
     let model = session.model();
     let options = yi_tui::TuiOptions {
-        model_label: model.id.clone(),
+        model: model.clone(),
         session_name: session_name.clone(),
         cwd: effective_cwd(args).display().to_string(),
         context_window: model.context_window,

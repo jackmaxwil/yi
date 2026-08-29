@@ -1,3 +1,5 @@
+mod common;
+
 use std::error::Error;
 
 use ratatui::text::Line;
@@ -18,7 +20,7 @@ fn theme() -> Theme {
 fn app() -> App {
     App::new(
         TuiOptions {
-            model_label: "faux-1".to_owned(),
+            model: common::test_model("faux-1"),
             session_name: "cells".to_owned(),
             cwd: "/tmp".to_owned(),
             context_window: 128_000,

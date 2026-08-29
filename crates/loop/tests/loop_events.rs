@@ -62,6 +62,7 @@ impl yi_loop::run::StreamFn for Scripted {
         &self,
         _model: &Model,
         _context: &LlmContext,
+        _effort: yi_types::model::Effort,
         _signal: &InterruptSignal,
     ) -> Receiver<AssistantMessageEvent> {
         let (sender, receiver) = tokio::sync::mpsc::channel(64);
@@ -483,6 +484,7 @@ impl yi_loop::run::StreamFn for Trickle {
         &self,
         _model: &Model,
         _context: &LlmContext,
+        _effort: yi_types::model::Effort,
         _signal: &InterruptSignal,
     ) -> Receiver<AssistantMessageEvent> {
         let (sender, receiver) = tokio::sync::mpsc::channel(8);

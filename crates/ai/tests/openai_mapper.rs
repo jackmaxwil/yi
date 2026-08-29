@@ -3,7 +3,7 @@ use std::error::Error;
 use yi_ai::openai::{ChunkMapper, OpenAiOptions, build_params, normalize_openai_tool_call_id};
 use yi_types::event::AssistantMessageEvent;
 use yi_types::message::{AgentMessage, Content, StopReason, UserContent};
-use yi_types::model::{LlmContext, Model, ModelCost, ToolDef};
+use yi_types::model::{Effort, LlmContext, Model, ModelCost, ToolDef};
 
 fn model(reasoning: bool) -> Model {
     let n =
@@ -50,7 +50,7 @@ fn context() -> LlmContext {
 fn build_params_openai_shape() -> Result<(), Box<dyn Error>> {
     let options = OpenAiOptions {
         max_tokens: Some(4096),
-        reasoning_effort: Some("high".to_owned()),
+        reasoning_effort: Some(Effort::High),
         session_id: Some("session-1".to_owned()),
         ..OpenAiOptions::default()
     };

@@ -4,7 +4,7 @@ use serde_json::{Map, Value};
 use tokio::sync::mpsc::Receiver;
 use yi_types::event::{AgentEvent, AssistantMessageEvent, ToolResult};
 use yi_types::message::{AgentMessage, Content, StopReason, Usage};
-use yi_types::model::{LlmContext, Model, ToolDef};
+use yi_types::model::{Effort, LlmContext, Model, ToolDef};
 
 use crate::config::{ExecutionMode, LoopConfig, TurnSnapshot};
 use crate::interrupt::InterruptSignal;
@@ -21,6 +21,7 @@ pub trait StreamFn: Send + Sync {
         &self,
         model: &Model,
         context: &LlmContext,
+        effort: Effort,
         signal: &InterruptSignal,
     ) -> Receiver<AssistantMessageEvent>;
 }
@@ -267,6 +268,7 @@ async fn stream_assistant_response<S: StreamFn>(
     context: &mut LoopContext,
     config: &LoopConfig,
     model: &Model,
+    effort: Effort,
     signal: &InterruptSignal,
     emit: &mut (dyn FnMut(AgentEvent) + Send),
     stream: &S,
@@ -289,7 +291,7 @@ async fn stream_assistant_response<S: StreamFn>(
         },
     };
 
-    let mut receiver = stream.stream(model, &llm_context, signal);
+    let mut receiver = stream.stream(model, &llm_context, effort, signal);
     let mut added_partial = false;
     let mut final_message: Option<AgentMessage> = None;
     loop {
@@ -396,6 +398,7 @@ pub async fn run_loop<S: StreamFn>(
     }
 
     let mut current_model = config.model.clone();
+    let mut current_effort = config.effort;
     let mut first_turn = true;
     let mut pending: Vec<AgentMessage> = config
         .get_steering_messages
@@ -427,7 +430,15 @@ pub async fn run_loop<S: StreamFn>(
                 context.messages = compacted;
             }
             let message =
-                stream_assistant_response(context, config, &current_model, signal, emit, stream)
+                stream_assistant_response(
+                    context,
+                    config,
+                    &current_model,
+                    current_effort,
+                    signal,
+                    emit,
+                    stream,
+                )
                     .await;
             collected.push(message.clone());
 
@@ -474,9 +485,12 @@ pub async fn run_loop<S: StreamFn>(
             };
             if let Some(prepare) = &config.prepare_next_turn
                 && let Some(next) = prepare(&snapshot)
-                && let Some(model) = next.model
             {
-                current_model = model;
+                if let Some(model) = next.model {
+                    current_model = model;
+                }
+                current_effort =
+                    current_model.clamp_effort(next.thinking.unwrap_or(current_effort));
             }
             if let Some(should_stop) = &config.should_stop_after_turn
                 && should_stop(&snapshot)

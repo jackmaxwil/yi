@@ -168,6 +168,55 @@ fn rejects_unknown_commands_and_answers_queries() -> TestResult {
 }
 
 #[test]
+fn the_level_list_follows_the_model_and_a_set_reports_the_clamp() -> TestResult {
+    let dir = temp_dir("levels")?;
+    let frames = run_rpc(
+        &dir,
+        &[
+            serde_json::json!({"id": "before", "type": "get_available_thinking_levels"}),
+            serde_json::json!({
+                "id": "switch", "type": "set_model",
+                "provider": "anthropic", "modelId": "claude-fable-5"
+            }),
+            serde_json::json!({"id": "after", "type": "get_available_thinking_levels"}),
+            serde_json::json!({"id": "set", "type": "set_thinking_level", "level": "max"}),
+            serde_json::json!({"id": "state", "type": "get_state"}),
+            serde_json::json!({"id": "bad", "type": "set_thinking_level", "level": "extreme"}),
+        ],
+    )?;
+    let responses = responses(&frames);
+    let by_id = |id: &str| {
+        responses
+            .iter()
+            .find(|frame| frame["id"] == id)
+            .copied()
+            .ok_or_else(|| format!("missing response {id}"))
+    };
+
+    assert_eq!(by_id("before")?["data"]["levels"], serde_json::json!(["off"]));
+    assert_eq!(by_id("switch")?["success"], true);
+    let after = by_id("after")?["data"]["levels"].clone();
+    assert_eq!(
+        after,
+        serde_json::json!(["minimal", "low", "medium", "high", "xhigh", "max"]),
+        "fable cannot disable thinking and advertises both advanced tiers"
+    );
+    assert_eq!(by_id("set")?["data"]["level"], "max");
+    assert_eq!(by_id("state")?["data"]["thinkingLevel"], "max");
+    let bad = by_id("bad")?;
+    assert_eq!(bad["success"], false);
+    assert!(
+        bad["error"]
+            .as_str()
+            .is_some_and(|error| error.contains("extreme")),
+        "the rejection names the value: {bad}"
+    );
+
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
+#[test]
 fn heartbeat_and_advisor_surfaces_respond() -> TestResult {
     let dir = temp_dir("surfaces")?;
     let frames = run_rpc(

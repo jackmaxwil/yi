@@ -1,3 +1,5 @@
+mod common;
+
 use std::error::Error;
 
 use ratatui::style::{Modifier, Style};
@@ -278,7 +280,7 @@ fn streamed(full: &str) -> yi_tui::app::App {
     use yi_tui::keymap::default_keymap;
     let mut app = App::new(
         TuiOptions {
-            model_label: "faux-1".to_owned(),
+            model: common::test_model("faux-1"),
             session_name: "s".to_owned(),
             cwd: "/tmp".to_owned(),
             context_window: 128_000,
@@ -631,7 +633,7 @@ fn streaming_commits_each_list_item_exactly_once() -> TestResult {
     use yi_tui::keymap::default_keymap;
     let mut app = App::new(
         TuiOptions {
-            model_label: "faux-1".to_owned(),
+            model: common::test_model("faux-1"),
             session_name: "s".to_owned(),
             cwd: "/tmp".to_owned(),
             context_window: 128_000,

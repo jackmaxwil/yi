@@ -23,6 +23,7 @@ pub struct ModelRoles {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct UserConfig {
     pub model: Option<String>,
+    pub thinking: Option<crate::model::Effort>,
     pub models: Option<ModelRoles>,
     pub bash: Option<BashConfig>,
     pub plan: Option<PlanConfig>,

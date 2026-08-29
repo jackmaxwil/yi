@@ -9,9 +9,17 @@ use yi_runtime::session_store::{
 };
 use yi_runtime::{AgentSession, Status, available_models, resolve_model};
 use yi_types::entry::Entry;
+use yi_types::model::Model;
 use yi_types::message::{AgentMessage, Content, UserContent};
 
-const THINKING_LEVELS: [&str; 5] = ["off", "minimal", "low", "medium", "high"];
+fn levels_of(model: &Model) -> Vec<String> {
+    model
+        .supported_efforts()
+        .into_iter()
+        .map(|effort| effort.to_string())
+        .collect()
+}
+
 
 pub struct RpcOptions {
     pub session_dir: PathBuf,
@@ -292,7 +300,7 @@ impl RpcState {
                     "get_state",
                     json!({
                         "model": model,
-                        "thinkingLevel": "off",
+                        "thinkingLevel": self.session.effort().to_string(),
                         "isStreaming": self.session.status() == Status::Running,
                         "isCompacting": false,
                         "steeringMode": self.steering_mode,
@@ -326,23 +334,21 @@ impl RpcState {
                 "get_available_models",
                 json!({"models": available_models()}),
             ),
-            "set_thinking_level" => {
-                let level = text_arg("level");
-                if THINKING_LEVELS.contains(&level) {
-                    self.session.set_thinking_level(if level == "off" {
-                        None
-                    } else {
-                        Some(level.to_owned())
-                    });
-                    ok_frame(id, "set_thinking_level")
-                } else {
-                    error_frame(id, "set_thinking_level", &format!("unknown level {level}"))
+            "set_thinking_level" => match text_arg("level").parse() {
+                Ok(effort) => {
+                    let effective = self.session.set_effort(effort);
+                    data_frame(
+                        id,
+                        "set_thinking_level",
+                        json!({"level": effective.to_string()}),
+                    )
                 }
-            }
+                Err(error) => error_frame(id, "set_thinking_level", &format!("{error}")),
+            },
             "get_available_thinking_levels" => data_frame(
                 id,
                 "get_available_thinking_levels",
-                json!({"levels": THINKING_LEVELS}),
+                json!({"levels": levels_of(&self.session.model())}),
             ),
             "set_steering_mode" => {
                 self.steering_mode = text_arg("mode").to_owned();

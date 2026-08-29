@@ -1,5 +1,5 @@
 use yi_types::message::AgentMessage;
-use yi_types::model::Model;
+use yi_types::model::{Effort, Model};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ExecutionMode {
@@ -16,7 +16,7 @@ pub struct TurnSnapshot<'a> {
 #[derive(Debug, Clone, Default)]
 pub struct NextTurn {
     pub model: Option<Model>,
-    pub thinking: Option<String>,
+    pub thinking: Option<Effort>,
 }
 
 type ConvertFn = dyn Fn(&[AgentMessage]) -> Vec<AgentMessage> + Send + Sync;
@@ -30,6 +30,7 @@ type CompactFn = dyn Fn(&[AgentMessage]) -> CompactFuture + Send + Sync;
 
 pub struct LoopConfig {
     pub model: Model,
+    pub effort: Effort,
     pub tool_execution: ExecutionMode,
     pub convert_to_llm: Box<ConvertFn>,
     pub transform_context: Option<Box<TransformFn>>,
@@ -46,6 +47,7 @@ pub struct LoopConfig {
 impl LoopConfig {
     pub fn new(model: Model) -> Self {
         Self {
+            effort: model.clamp_effort(Effort::default()),
             model,
             tool_execution: ExecutionMode::default(),
             convert_to_llm: Box::new(|messages| messages.to_vec()),

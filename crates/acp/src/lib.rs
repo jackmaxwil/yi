@@ -199,9 +199,10 @@ fn config_options(session: &AgentSession) -> Vec<AcpConfigOption> {
         .iter()
         .map(|mode| json!({"value": mode, "name": mode}))
         .collect();
-    let levels: Vec<Value> = ["off", "minimal", "low", "medium", "high"]
+    let levels: Vec<Value> = model
+        .supported_efforts()
         .iter()
-        .map(|level| json!({"value": level, "name": level}))
+        .map(|level| json!({"value": level.to_string(), "name": level.to_string()}))
         .collect();
     vec![
         AcpConfigOption {
@@ -216,7 +217,11 @@ fn config_options(session: &AgentSession) -> Vec<AcpConfigOption> {
         AcpConfigOption {
             config_id: "thought_level".to_owned(),
             name: "Thinking level".to_owned(),
-            kind: json!({"type": "select", "value": "off", "options": levels}),
+            kind: json!({
+                "type": "select",
+                "value": session.effort().to_string(),
+                "options": levels,
+            }),
         },
         AcpConfigOption {
             config_id: "mode".to_owned(),
@@ -303,6 +308,61 @@ impl AcpState {
             session_id: session_id.to_owned(),
             config_options: options,
         })
+    }
+
+    fn set_config_option(&mut self, params: &Value) -> Result<Value, (i64, String)> {
+
+        let (handle, id) = self.session(params)?;
+        let config_id = params.get("configId").and_then(Value::as_str).unwrap_or("");
+        let value = params.get("value").and_then(Value::as_str).unwrap_or("");
+        match config_id {
+            "model" => {
+                let (provider, model_id) = value
+                    .split_once('/')
+                    .ok_or((INVALID_PARAMS, format!("unknown model {value}")))?;
+                let model = resolve_model(provider, model_id)
+                    .ok_or((INVALID_PARAMS, format!("unknown model {value}")))?;
+                handle.session.set_model(model);
+            }
+            "thought_level" => {
+                let effort = value
+                    .parse()
+                    .map_err(|error: yi_types::model::UnknownEffort| {
+                        (INVALID_PARAMS, error.to_string())
+                    })?;
+                handle.session.set_effort(effort);
+            }
+            "mode" => {
+                let mode = match value {
+                    "ask" => yi_runtime::PermissionMode::Ask,
+                    "auto" => yi_runtime::PermissionMode::Auto,
+                    "yolo" => yi_runtime::PermissionMode::Yolo,
+                    other => {
+                        return Err((
+                            INVALID_PARAMS,
+                            format!("unknown mode {other}; use ask|auto|yolo"),
+                        ));
+                    }
+                };
+                handle
+                    .session
+                    .permission_broker()
+                    .ok_or((
+                        INTERNAL_ERROR,
+                        "no permission broker is attached".to_owned(),
+                    ))?
+                    .set_mode(mode);
+            }
+            other => {
+                return Err((
+                    INVALID_PARAMS,
+                    format!("unsupported config option in this build: {other}"),
+                ));
+            }
+        }
+        let result = self.session_result(&id);
+        let options = result.get("configOptions").cloned().unwrap_or(Value::Null);
+        Ok(json!({"configOptions": options}))
     }
 
     fn handle(&mut self, method: &str, params: &Value) -> Result<Value, (i64, String)> {
@@ -401,56 +461,7 @@ impl AcpState {
                     .map_err(|error| (INVALID_PARAMS, error.to_string()))?;
                 Ok(json!({}))
             }
-            "session/set_config_option" => {
-                let (handle, id) = self.session(params)?;
-                let config_id = params.get("configId").and_then(Value::as_str).unwrap_or("");
-                let value = params.get("value").and_then(Value::as_str).unwrap_or("");
-                match config_id {
-                    "model" => {
-                        let (provider, model_id) = value
-                            .split_once('/')
-                            .ok_or((INVALID_PARAMS, format!("unknown model {value}")))?;
-                        let model = resolve_model(provider, model_id)
-                            .ok_or((INVALID_PARAMS, format!("unknown model {value}")))?;
-                        handle.session.set_model(model);
-                    }
-                    "thought_level" => {
-                        handle.session.set_thinking_level(
-                            Some(value.to_owned()).filter(|level| level != "off"),
-                        );
-                    }
-                    "mode" => {
-                        let mode = match value {
-                            "ask" => yi_runtime::PermissionMode::Ask,
-                            "auto" => yi_runtime::PermissionMode::Auto,
-                            "yolo" => yi_runtime::PermissionMode::Yolo,
-                            other => {
-                                return Err((
-                                    INVALID_PARAMS,
-                                    format!("unknown mode {other}; use ask|auto|yolo"),
-                                ));
-                            }
-                        };
-                        handle
-                            .session
-                            .permission_broker()
-                            .ok_or((
-                                INTERNAL_ERROR,
-                                "no permission broker is attached".to_owned(),
-                            ))?
-                            .set_mode(mode);
-                    }
-                    other => {
-                        return Err((
-                            INVALID_PARAMS,
-                            format!("unsupported config option in this build: {other}"),
-                        ));
-                    }
-                }
-                let result = self.session_result(&id);
-                let options = result.get("configOptions").cloned().unwrap_or(Value::Null);
-                Ok(json!({"configOptions": options}))
-            }
+            "session/set_config_option" => self.set_config_option(params),
             "_yi/heartbeat" | "_yi/goal" => self.handle_extension(method, params),
             other => Err((METHOD_NOT_FOUND, format!("unknown method {other}"))),
         }

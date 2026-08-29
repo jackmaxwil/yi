@@ -49,10 +49,11 @@ pub(crate) enum Bottom {
     Command(ListPopup),
     File(ListPopup),
     Agents(crate::agents::AgentsPopup),
+    Model(Box<crate::model::ModelPopup>),
 }
 
 pub struct TuiOptions {
-    pub model_label: String,
+    pub model: yi_types::model::Model,
     pub session_name: String,
     pub cwd: String,
     pub context_window: u64,
@@ -70,8 +71,8 @@ const SPINNER_PERIOD_MS: u128 = 80;
 pub(crate) const ORB_COLS: u16 = 6;
 pub(crate) const ORB_ROWS: u16 = 3;
 pub(crate) const ORB_PX: usize = 192;
-pub(crate) const SLASH_COMMANDS: [&str; 9] = [
-    "new", "undo", "quit", "tree", "editor", "advisor", "plan", "goal", "agents",
+pub(crate) const SLASH_COMMANDS: [&str; 10] = [
+    "new", "undo", "quit", "tree", "editor", "advisor", "plan", "goal", "agents", "model",
 ];
 
 pub struct TaskState {
@@ -98,6 +99,7 @@ pub struct App {
     pub(crate) pending_undo: bool,
     /// A slash line the event loop runs against the session (A5 dispatch).
     pub(crate) pending_command: Option<String>,
+    pub selection: crate::model::Selection,
     /// Rebuilds the rows above the viewport from the retained transcript, over
     /// the resize-reflow path.
     pending_repaint: bool,
@@ -181,6 +183,7 @@ impl App {
             pending_editor: false,
             pending_undo: false,
             pending_command: None,
+            selection: crate::model::Selection::new(options.model.clone()),
             pending_repaint: false,
             pending_prompt_mark: false,
             logo_phase: 0.0,
@@ -1025,6 +1028,7 @@ pub fn run_tui(
         crate::rewind::process_pending_rewind(&mut app, &mut terminal, &session);
         crate::rewind::process_pending_new(&mut app, &mut terminal, &session);
         crate::rewind::process_pending_undo(&mut app, &session);
+        crate::commands::process_pending_selection(&mut app, &session);
         crate::commands::process_pending_command(&mut app, &session);
         crate::editor::process_pending_editor(&mut app, &mut terminal, true);
         if app.scheduler.should_draw(Instant::now()) {

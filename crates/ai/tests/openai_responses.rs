@@ -4,7 +4,7 @@ use yi_ai::openai::OpenAiOptions;
 use yi_ai::openai_responses::{EventMapper, build_params};
 use yi_types::event::AssistantMessageEvent;
 use yi_types::message::{AgentMessage, Content, StopReason, UserContent};
-use yi_types::model::{LlmContext, Model, ModelCost, ToolDef};
+use yi_types::model::{Effort, LlmContext, Model, ModelCost, ToolDef};
 
 type TestResult = Result<(), Box<dyn Error>>;
 
@@ -69,7 +69,7 @@ fn canned() -> Vec<Value> {
 fn responses_params_are_not_chat_completions() -> TestResult {
     let options = OpenAiOptions {
         max_tokens: Some(4096),
-        reasoning_effort: Some("high".to_owned()),
+        reasoning_effort: Some(Effort::High),
         session_id: Some("session-1".to_owned()),
         ..OpenAiOptions::default()
     };
@@ -375,31 +375,39 @@ fn id_less_argument_deltas_share_one_tool_call() -> TestResult {
 }
 
 #[test]
-fn an_unsupported_effort_clamps_to_the_nearest_supported_level() -> TestResult {
+fn the_clamp_picks_the_level_and_the_map_names_it() -> TestResult {
     let mut luna = model(true);
     luna.thinking_level_map = Some(json!({
         "off": "none", "minimal": null, "low": "low", "medium": "medium",
         "high": "high", "xhigh": null, "max": null,
     }));
-    let params = build_params(
-        &luna,
-        &context(),
-        &OpenAiOptions {
-            reasoning_effort: Some("max".to_owned()),
-            ..OpenAiOptions::default()
-        },
-    );
-    assert_eq!(params["reasoning"]["effort"], "high");
+    for (requested, expected) in [(Effort::Max, "high"), (Effort::Minimal, "low")] {
+        let params = build_params(
+            &luna,
+            &context(),
+            &OpenAiOptions {
+                reasoning_effort: Some(luna.clamp_effort(requested)),
+                ..OpenAiOptions::default()
+            },
+        );
+        assert_eq!(params["reasoning"]["effort"], expected);
+    }
+    Ok(())
+}
 
+#[test]
+fn a_rejected_level_reaching_the_wire_sends_no_reasoning() -> TestResult {
+    let mut luna = model(true);
+    luna.thinking_level_map = Some(json!({"max": null}));
     let params = build_params(
         &luna,
         &context(),
         &OpenAiOptions {
-            reasoning_effort: Some("minimal".to_owned()),
+            reasoning_effort: Some(Effort::Max),
             ..OpenAiOptions::default()
         },
     );
-    assert_eq!(params["reasoning"]["effort"], "low");
+    assert!(params.get("reasoning").is_none());
     Ok(())
 }
 
@@ -414,7 +422,7 @@ fn reasoning_is_omitted_when_the_model_supports_no_level() -> TestResult {
         &luna,
         &context(),
         &OpenAiOptions {
-            reasoning_effort: Some("high".to_owned()),
+            reasoning_effort: Some(Effort::High),
             ..OpenAiOptions::default()
         },
     );

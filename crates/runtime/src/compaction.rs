@@ -10,7 +10,7 @@ use yi_loop::run::StreamFn;
 use yi_types::entry::Entry;
 use yi_types::event::AssistantMessageEvent;
 use yi_types::message::{AgentMessage, Content, StopReason, Usage, UserContent};
-use yi_types::model::{LlmContext, Model};
+use yi_types::model::{Effort, LlmContext, Model};
 
 use crate::provider::ProviderStream;
 
@@ -61,7 +61,7 @@ async fn complete_text(
     context: &LlmContext,
     signal: &InterruptSignal,
 ) -> Result<String, String> {
-    let mut receiver = provider.stream(model, context, signal);
+    let mut receiver = provider.stream(model, context, model.clamp_effort(Effort::Off), signal);
     while let Some(event) = receiver.recv().await {
         match event {
             AssistantMessageEvent::Done { message, .. } => {

@@ -61,7 +61,7 @@ fn faux_session(reply: &str) -> AgentSession {
 
 fn options() -> TuiOptions {
     TuiOptions {
-        model_label: "faux-1".to_owned(),
+        model: faux_model(),
         session_name: "e2e".to_owned(),
         cwd: "/tmp".to_owned(),
         context_window: 128_000,
@@ -206,7 +206,7 @@ fn subagent_task_cell_focus_and_back() -> TestResult {
         max_children: 4,
         parent_session_dir: dir.clone(),
         cwd: dir.clone(),
-        default_model: faux_model(),
+        defaults: Arc::new(|| (faux_model(), yi_types::model::Effort::Medium)),
         factory: Arc::new(|_build| Ok(faux_session("child answer"))),
         notice: Arc::new(|_notice| {}),
         events: tokio::sync::broadcast::channel(64).0,
@@ -752,5 +752,57 @@ fn a_slash_query_with_arguments_runs_verbatim() -> TestResult {
             return Err(format!("the @ popup must not run text as a command: {other:?}").into());
         }
     }
+    Ok(())
+}
+
+#[test]
+fn a_picked_model_and_effort_reach_the_session_and_the_status_line() -> TestResult {
+    let mut app = app();
+    let session = Arc::new(faux_session("ok"));
+    let fable = yi_runtime::resolve_model("anthropic", "claude-fable-5")
+        .ok_or("bundled catalog missing claude-fable-5")?;
+
+    app.selection.select(fable.clone(), yi_types::model::Effort::Max);
+    yi_tui::commands::process_pending_selection(&mut app, &session);
+
+    assert_eq!(session.model().id, "claude-fable-5");
+    assert_eq!(session.effort(), yi_types::model::Effort::Max);
+    assert_eq!(app.selection.effort, yi_types::model::Effort::Max);
+
+    let status = yi_tui::status::render(
+        &yi_tui::status::StatusInput {
+            model: app.selection.model.id.clone(),
+            thinking: Some(app.selection.effort.to_string()),
+            cwd: "/tmp".to_owned(),
+            session_name: "e2e".to_owned(),
+            ..Default::default()
+        },
+        80,
+        &Theme::new(ColorTier::TrueColor, true),
+    );
+    let text: String = status
+        .spans
+        .iter()
+        .map(|span| span.content.as_ref())
+        .collect();
+    assert!(text.contains("claude-fable-5"), "{text}");
+    assert!(text.contains("max"), "{text}");
+    Ok(())
+}
+
+/// A level the target model rejects is clamped on the way in, and the session
+/// is the authority for what it ended up as.
+#[test]
+fn the_session_clamp_wins_over_the_requested_level() -> TestResult {
+    let mut app = app();
+    let session = Arc::new(faux_session("ok"));
+    let haiku = yi_runtime::resolve_model("anthropic", "claude-haiku-4-5")
+        .ok_or("bundled catalog missing claude-haiku-4-5")?;
+
+    app.selection.select(haiku, yi_types::model::Effort::Max);
+    yi_tui::commands::process_pending_selection(&mut app, &session);
+
+    assert_eq!(session.effort(), yi_types::model::Effort::High);
+    assert_eq!(app.selection.effort, yi_types::model::Effort::High);
     Ok(())
 }
