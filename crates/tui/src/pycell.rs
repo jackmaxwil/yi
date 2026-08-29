@@ -220,7 +220,7 @@ pub fn head(cell: &ToolCell, spinner_phase: usize) -> String {
 }
 
 fn gutter_lines(code: &str, width: usize, theme: &Theme) -> Vec<Line<'static>> {
-    let lang = highlight::lang_for(chip(code));
+    let mut lang = highlight::lang_for(chip(code));
     let base = Style::default().fg(theme.text);
     code.lines()
         .enumerate()
@@ -234,7 +234,7 @@ fn gutter_lines(code: &str, width: usize, theme: &Theme) -> Vec<Line<'static>> {
                 format!("{BODY_INDENT}{marker}"),
                 theme.dim_style(),
             )];
-            match lang {
+            match lang.as_mut() {
                 Some(lang) => spans.extend(highlight::spans(&source, lang, theme, base)),
                 None => spans.push(Span::styled(source, base)),
             }
