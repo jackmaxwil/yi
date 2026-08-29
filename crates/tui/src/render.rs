@@ -109,6 +109,26 @@ fn draw_frame<B>(
 
     let content_width = width.saturating_sub(2);
     let mut live_lines: Vec<Line<'static>> = Vec::new();
+    if !app.live_thought.is_empty() {
+        // Reasoning-heavy models stream thought long before prose; show its
+        // dim tail so the screen is never silently blank mid-turn. It holds
+        // that place once prose starts, rather than being displaced by it.
+        let tail = app
+            .live_thought
+            .get(app.live_thought_cut..)
+            .unwrap_or_default();
+        let mut rendered = crate::cell::thought_lines(
+            tail,
+            content_width,
+            &theme,
+            app.mode,
+            app.live_thought_cut == 0,
+        );
+        // Only the live tail pulses; the same cell committed to scrollback keeps
+        // the static `∴`, which is the one frame it could ever show there.
+        pulse_thought_header(&mut rendered, spinner);
+        live_lines.extend(live_tail(rendered, app.rows));
+    }
     if !app.live_markdown.is_empty() {
         let tail = app.live_markdown.get(app.live_cut..).unwrap_or_default();
         let rendered = crate::cell::gutter(
@@ -120,17 +140,6 @@ fn draw_frame<B>(
             app.live_cut == 0,
             &theme,
         );
-        live_lines.extend(live_tail(rendered, app.rows));
-    } else if !app.live_thought.is_empty() {
-        // Reasoning-heavy models stream thought long before prose; show its
-        // dim tail so the screen is never silently blank mid-turn.
-        let cell = Cell::Thought {
-            markdown: app.live_thought.clone(),
-        };
-        let mut rendered = cell.lines(content_width, &theme, TranscriptMode::Thinking, spinner);
-        // Only the live tail pulses; the same cell committed to scrollback keeps
-        // the static `∴`, which is the one frame it could ever show there.
-        pulse_thought_header(&mut rendered, spinner);
         live_lines.extend(live_tail(rendered, app.rows));
     }
     // The run is held back from scrollback until it closes, so the live region
@@ -165,7 +174,7 @@ fn draw_frame<B>(
         model: app.selection.model.id.clone(),
         thinking: (app.selection.effort != yi_types::model::Effort::Off)
             .then(|| app.selection.effort.to_string()),
-        mode: (app.mode != TranscriptMode::Normal).then(|| app.mode.label().to_owned()),
+        mode: (app.mode != TranscriptMode::default()).then(|| app.mode.label().to_owned()),
         cwd: app.options.cwd.clone(),
         branch: None,
         cost: if app.cost_total > 0.0 {
