@@ -28,6 +28,9 @@ pub(crate) struct ChildRecord {
     token_count: u64,
     answer_preview: Option<String>,
     pub(crate) error: Option<String>,
+    /// L3: set makes this a protocol child — its answer must decode as a
+    /// [`yi_types::subagent::ChildResult`] and this check must be green.
+    pub(crate) check: Option<String>,
     /// B13 wait: reports and terminal transitions the parent has not collected.
     pub(crate) pending: u64,
     pub(crate) session: Arc<AgentSession>,
@@ -88,6 +91,8 @@ pub struct SubagentHostOptions {
     pub report: Arc<dyn Fn(AgentMessage) + Send + Sync>,
     /// Folds a child's billable usage onto the parent's last assistant message.
     pub attribute: Arc<AttributeFn>,
+    /// The plan a discovery's named ancestor task is resolved against.
+    pub store: crate::goal::StoreHandle,
 }
 
 pub struct SubagentHost {
@@ -227,7 +232,15 @@ fn require_kwargs(kwargs: &Map<String, Value>) -> Result<(), String> {
         .filter(|key| {
             !matches!(
                 *key,
-                "name" | "model" | "thinking" | "fork" | "isolation" | "deny_write" | "deny_read"
+                "name"
+                    | "model"
+                    | "thinking"
+                    | "fork"
+                    | "isolation"
+                    | "deny_write"
+                    | "deny_read"
+                    | "context"
+                    | "check"
             )
         })
         .collect();
@@ -428,6 +441,8 @@ impl SubagentHost {
             .map_err(|error| error.to_string())?;
         let fork = parse_fork(&kwargs)?;
         let isolation = parse_isolation(&kwargs)?;
+        let check = optional_string(&kwargs, "check")?;
+        let context = crate::mailbox::context_block(&kwargs)?;
         let wall = crate::wall::Wall::from_kwargs(&kwargs, &self.options.cwd)?;
         if fork == Fork::All && (requested_model.is_some() || thinking.is_some()) {
             return Err(
@@ -517,6 +532,7 @@ impl SubagentHost {
                     token_count: 0,
                     answer_preview: None,
                     error: None,
+                    check,
                     pending: 0,
                     session: Arc::clone(&session),
                 },
@@ -529,7 +545,7 @@ impl SubagentHost {
             // Invariant: the spawn reply resolves at admission, and blocking here
             // would abort the turn whose cell awaits it.
             tokio::spawn(async move {
-                host.run_child(task_child_id, task_name, task_prompt, session)
+                host.run_child(task_child_id, task_name, task_prompt, context, session)
                     .await;
             });
         }
@@ -557,9 +573,14 @@ impl SubagentHost {
         child_id: String,
         session_name: String,
         prompt: String,
+        context: Option<String>,
         session: Arc<AgentSession>,
     ) {
-        let content = format!("[task from parent]\n\n{prompt}");
+        // Invariant: scope rides the first user message, never a trusted block.
+        let content = match context {
+            Some(block) => format!("[task from parent]\n\n{block}\n\n{prompt}"),
+            None => format!("[task from parent]\n\n{prompt}"),
+        };
         let outcome = session.prompt(&content);
         let mut error = outcome.err().map(|error| error.to_string());
         if error.is_none() {
@@ -753,7 +774,10 @@ impl SubagentHost {
             let host = Arc::clone(&host);
             Box::pin(async move {
                 let target = target.ok_or("rlm.result requires a target")?;
-                host.result(&target, schema.as_ref())
+                // A protocol child's result runs checks; keep them off the executor.
+                tokio::task::spawn_blocking(move || host.result(&target, schema.as_ref()))
+                    .await
+                    .map_err(|error| format!("rlm.result task failed: {error}"))?
             })
         });
         let host = Arc::clone(self);
@@ -1092,6 +1116,7 @@ pub fn attach_runtime(session: &mut AgentSession, wiring: RuntimeWiring) -> Arc<
             })
         },
         attribute: session.attribution_handle(),
+        store: session.store_handle(),
     }));
     host.register(&mut registry);
     if let Some(link) = wiring.parent_link.clone() {

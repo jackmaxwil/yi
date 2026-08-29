@@ -75,6 +75,33 @@ fn goal_check_fields_round_trip() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 #[test]
+fn goal_discovery_ledger_round_trips_with_unknown_fields() -> Result<(), Box<dyn std::error::Error>>
+{
+    // The drain gate re-reads this ledger after a resume, so a row an older
+    // writer produced must come back byte-identical (§19).
+    let stored = r#"{"objective":"ship","status":"active","tokensUsed":0,"timeUsedSeconds":0,"created":1,"updated":1,"discoveries":[{"text":"the wall config is stale","violatesCheckOf":"t2","fingerprint":"abc","source":"finder"}]}"#;
+    let goal: yi_types::goal::Goal = serde_json::from_str(stored)?;
+    assert_eq!(goal.discoveries.len(), 1);
+    assert_eq!(serde_json::to_string(&goal)?, stored);
+    Ok(())
+}
+
+#[test]
+fn task_without_a_check_still_deserializes_and_reserializes_clean()
+-> Result<(), Box<dyn std::error::Error>> {
+    // A pre-check-gate plan fact must parse forever (§19), and an absent check
+    // must not appear on re-serialize.
+    let stored = r#"{"fact":"plan","plan":{"version":1,"tasks":[{"id":"t1","title":"x","acceptance":"y","state":"done"}],"created":1,"updated":2}}"#;
+    let fact: yi_types::wire::Fact = serde_json::from_str(stored)?;
+    let yi_types::wire::Fact::Plan { plan } = &fact else {
+        return Err("expected a plan fact".into());
+    };
+    assert!(plan.tasks[0].check.is_none());
+    assert_eq!(serde_json::to_string(&fact)?, stored);
+    Ok(())
+}
+
+#[test]
 fn plan_fact_round_trips_with_unknown_fields_and_states() -> Result<(), Box<dyn std::error::Error>>
 {
     // Durable §19 rules: unknown fields survive the flatten map; an unknown

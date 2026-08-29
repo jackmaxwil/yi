@@ -17,6 +17,11 @@ await plan.update("t1", "done")                       # host runs the check
 await plan.update("t2", "blocked", reason="...")       # reason required
 await plan.edit_add([{ "title": "...", "acceptance": "..." }])
 await plan.edit_reopen("t1")
+await plan.split("t1", [                              # only after t1's check stays red
+    {"title": "Parse the header", "acceptance": "header cases pass",
+     "check": "cargo test -p app header", "writes": ["header"]},
+    {"title": "Ask which dialect", "acceptance": "dialect named by the user"},
+])
 ```
 
 Adding tasks is free; removing a task or weakening acceptance is refused —

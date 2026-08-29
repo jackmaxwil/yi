@@ -8,6 +8,7 @@ use yi_types::event::AgentEvent;
 use yi_types::goal::{Goal, GoalStatus};
 use yi_types::message::{AgentMessage, StopReason, UserContent};
 use yi_types::schedule::DeliveryMode;
+use yi_types::subagent::Discovery;
 
 pub const CONTINUATION_TEMPLATE: &str = include_str!("prompts/continuation.md");
 pub const BUDGET_LIMIT_TEMPLATE: &str = include_str!("prompts/budget_limit.md");
@@ -67,6 +68,47 @@ pub(crate) fn run_check(check: &str, timeout_ms: u64) -> Result<(), String> {
 
 pub type StoreHandle = Arc<dyn Fn() -> Option<yi_session::SharedSession> + Send + Sync>;
 pub type DeliverFn = Arc<dyn Fn(AgentMessage, DeliveryMode) + Send + Sync>;
+
+pub fn task_check(plan: &yi_types::plan::Plan, id: &str) -> Option<String> {
+    plan.tasks
+        .iter()
+        .find(|task| task.id.as_str() == id)
+        .and_then(|task| task.check.clone())
+}
+
+/// L5 ledger writer: a derived-HIGH discovery becomes a goal fact, so it
+/// survives compaction and resume and is still there to block completion.
+pub fn record_discovery(store: &StoreHandle, row: &Discovery) -> Result<(), String> {
+    let handle = store().ok_or("no session store is attached")?;
+    let mut session = yi_session::lock_session(&handle);
+    let mut goal = session.goal().ok_or(NO_GOAL_ERROR)?;
+    if goal
+        .discoveries
+        .iter()
+        .any(|kept| kept.fingerprint == row.fingerprint)
+    {
+        return Ok(());
+    }
+    goal.discoveries.push(row.clone());
+    goal.updated = yi_session::now_ms();
+    session.set_goal(goal).map_err(|error| error.to_string())
+}
+
+fn drained_message(row: &Discovery, mut details: Value) -> AgentMessage {
+    if let Some(map) = details.as_object_mut() {
+        map.insert("discovery".to_owned(), json!(row));
+    }
+    AgentMessage::Custom {
+        custom_type: "discovery".to_owned(),
+        content: UserContent::Text(format!(
+            "drained discovery {}: {}",
+            row.fingerprint, row.text
+        )),
+        display: true,
+        details: Some(details),
+        timestamp: yi_session::now_ms(),
+    }
+}
 
 fn budget_values(goal: &Goal) -> [(&'static str, String); 3] {
     let budget = goal
@@ -232,6 +274,7 @@ impl GoalService {
             check: check.filter(|command| !command.trim().is_empty()),
             check_timeout_ms,
             check_failure: None,
+            discoveries: Vec::new(),
             extra: Map::new(),
         };
         self.write_goal(goal.clone())?;
@@ -256,6 +299,15 @@ impl GoalService {
         };
         let mut goal = self.read_goal().ok_or(NO_GOAL_ERROR)?;
         if status == GoalStatus::Complete
+            && let Some(undrained) = self.drain(&mut goal)
+        {
+            goal.updated = yi_session::now_ms();
+            self.write_goal(goal)?;
+            return Err(format!(
+                "completion rejected: {undrained}\nDrain each row by making the check it names pass, then call goal.update again."
+            ));
+        }
+        if status == GoalStatus::Complete
             && let Some(check) = goal.check.clone()
         {
             let timeout = goal.check_timeout_ms.unwrap_or(DEFAULT_CHECK_TIMEOUT_MS);
@@ -273,6 +325,45 @@ impl GoalService {
         goal.updated = yi_session::now_ms();
         self.write_goal(goal.clone())?;
         Ok(goal_json(&goal))
+    }
+
+    /// L5 drain gate: every recorded row is re-adjudicated by re-running the
+    /// check it names. Green — or a check the plan no longer carries — drains
+    /// the row; red keeps it and returns the refusal naming every blocker.
+    fn drain(&self, goal: &mut Goal) -> Option<String> {
+        if goal.discoveries.is_empty() {
+            return None;
+        }
+        let plan = self.read_plan();
+        let mut kept = Vec::new();
+        let mut blockers = Vec::new();
+        for row in std::mem::take(&mut goal.discoveries) {
+            let named = row.violates_check_of.clone().and_then(|id| {
+                plan.as_ref()
+                    .and_then(|plan| task_check(plan, &id))
+                    .map(|check| (id, check))
+            });
+            let message = match named {
+                Some((id, check)) => match run_check(&check, DEFAULT_CHECK_TIMEOUT_MS) {
+                    Ok(()) => drained_message(&row, json!({ "drained": true, "task": id })),
+                    Err(evidence) => {
+                        blockers.push(format!(
+                            "undrained HIGH discovery {}: {}\nThe check of task {id} is still red:\n{evidence}",
+                            row.fingerprint, row.text
+                        ));
+                        kept.push(row);
+                        continue;
+                    }
+                },
+                None => drained_message(
+                    &row,
+                    json!({ "drained": true, "reason": "the check it named is no longer in the plan" }),
+                ),
+            };
+            (self.deliver)(message, DeliveryMode::Steer);
+        }
+        goal.discoveries = kept;
+        (!blockers.is_empty()).then(|| blockers.join("\n\n"))
     }
 
     /// Supersedes the objective and steers `objective_updated` into the turn.

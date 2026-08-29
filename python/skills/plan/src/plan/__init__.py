@@ -60,3 +60,15 @@ async def edit_add(tasks: list[dict[str, Any]]) -> dict[str, Any]:
 async def edit_reopen(task_id: str) -> dict[str, Any]:
     """Reopen a done task to pending."""
     return await host_request("plan.edit", {"action": "reopen", "task_id": task_id})
+
+
+async def split(task_id: str, subtasks: list[dict[str, Any]]) -> dict[str, Any]:
+    """Split a task into subtasks it then depends on.
+
+    Each subtask: {title, acceptance, check?, reads?, writes?}. The host
+    writes the topology (ids, deps, state); a proposal that no execution
+    order can satisfy is refused with every problem named at once.
+    """
+    if not isinstance(subtasks, list) or not subtasks:
+        raise ValueError("subtasks must be a non-empty list of subtask dicts")
+    return await host_request("plan.split", {"task_id": task_id, "subtasks": subtasks})
