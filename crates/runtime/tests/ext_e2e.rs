@@ -226,6 +226,21 @@ fn the_prefilter_separates_a_question_from_a_program() {
     );
 }
 
+const BULLETED: &str = "Notes from the session, before the next step:\n\
+    - the loader reads the manifest twice on startup\n\
+    - the second read happens inside the retry helper\n\
+    - both reads share one cache entry, so the miss is silent\n\
+    - the timing only shows up under a cold cache\n";
+
+#[test]
+fn every_commonmark_bullet_marker_counts_as_an_enumeration() {
+    let marked = |marker: &str| BULLETED.replace("- ", marker);
+    assert_eq!(prefilter(BULLETED, false, 0), Route::Complex);
+    assert_eq!(prefilter(&marked("* "), false, 0), Route::Complex);
+    assert_eq!(prefilter(&marked("+ "), false, 0), Route::Complex);
+    assert_eq!(prefilter(&marked("*"), false, 0), Route::Undecided);
+}
+
 #[test]
 fn a_quiet_prompt_escalates_on_the_trajectory() -> TestResult {
     let dir = temp_dir("escalate")?;
