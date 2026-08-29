@@ -43,6 +43,17 @@ pub use tools::ToolAdapter;
 pub use wall::Wall;
 pub use yi_ai::auth;
 
+/// None where the platform has no sandbox: a contained decision then degrades
+/// to a question rather than to an unenforced allowance.
+pub fn workspace_sandbox(
+    cwd: &std::path::Path,
+    home: &std::path::Path,
+    session_dir: &std::path::Path,
+) -> Option<yi_tools::Sandbox> {
+    yi_tools::Sandbox::available()
+        .then(|| yi_tools::Sandbox::for_workspace(cwd, home, Some(session_dir)))
+}
+
 pub fn identity_fragment() -> &'static str {
     include_str!("prompts/identity.md")
 }

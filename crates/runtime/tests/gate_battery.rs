@@ -30,7 +30,7 @@ const BATTERY: [(&str, &str); 118] = [
     ("sed -n '1,10p' file.txt", "allow"),
     ("rg 'fn $x' crates", "allow"),
     ("grep -n 'TODO' src/lib.rs", "allow"),
-    ("sed -i '' 's/a/b/' file.txt", "ask"),
+    ("sed -i '' 's/a/b/' file.txt", "contain"),
     // git, the reporting half.
     ("git status", "allow"),
     ("git diff --stat", "allow"),
@@ -46,15 +46,15 @@ const BATTERY: [(&str, &str); 118] = [
     ("git ls-files crates", "allow"),
     ("git shortlog -sn", "allow"),
     // git, everything that changes something.
-    ("git add -A", "ask"),
-    ("git commit -m wip", "ask"),
-    ("git push origin main", "ask"),
-    ("git fetch origin", "ask"),
-    ("git pull --rebase", "ask"),
-    ("git switch main", "ask"),
-    ("git checkout -b feature", "ask"),
-    ("git worktree add ../wt br", "ask"),
-    ("git config user.email me@example.com", "ask"),
+    ("git add -A", "contain"),
+    ("git commit -m wip", "contain"),
+    ("git push origin main", "contain"),
+    ("git fetch origin", "contain"),
+    ("git pull --rebase", "contain"),
+    ("git switch main", "contain"),
+    ("git checkout -b feature", "contain"),
+    ("git worktree add ../wt br", "contain"),
+    ("git config user.email me@example.com", "contain"),
     ("git reset --hard HEAD~1", "ask"),
     ("git clean -fdx", "ask"),
     ("git checkout -- crates/", "ask"),
@@ -77,7 +77,7 @@ const BATTERY: [(&str, &str); 118] = [
     ("cargo build --release", "allow"),
     ("cargo tree -d", "allow"),
     ("cargo doc --no-deps", "allow"),
-    ("cargo run --bin yi", "ask"),
+    ("cargo run --bin yi", "contain"),
     ("cargo install ripgrep", "ask"),
     ("cargo publish", "ask"),
     // Pipes and chains where every segment is provable.
@@ -93,30 +93,33 @@ const BATTERY: [(&str, &str); 118] = [
     // Chains that mix. One unproven segment decides the whole command.
     ("cargo test && rm -rf target", "ask"),
     ("rm -rf target && cargo test", "ask"),
-    ("cargo build && ./target/debug/yi --version", "ask"),
-    ("git add -A && git commit -m wip", "ask"),
-    ("cargo check && git commit -am wip && git push", "ask"),
+    ("cargo build && ./target/debug/yi --version", "contain"),
+    ("git add -A && git commit -m wip", "contain"),
+    ("cargo check && git commit -am wip && git push", "contain"),
     ("rg TODO crates && rm -rf tmp", "ask"),
-    ("cargo fmt && cargo clippy && git commit -am style", "ask"),
+    (
+        "cargo fmt && cargo clippy && git commit -am style",
+        "contain",
+    ),
     (
         "cargo build --release && cp target/release/yi /usr/local/bin/yi",
-        "ask",
+        "contain",
     ),
-    ("git checkout main && git pull && cargo test", "ask"),
+    ("git checkout main && git pull && cargo test", "contain"),
     // Runners and unknown verbs: the repository authors what they execute.
-    ("just check", "ask"),
-    ("make test", "ask"),
-    ("npm test", "ask"),
-    ("npm run build", "ask"),
-    ("python3 script.py", "ask"),
-    ("./scripts/build.sh", "ask"),
-    ("docker build .", "ask"),
-    ("gh pr create --fill", "ask"),
-    ("kubectl get pods", "ask"),
-    ("mkdir -p target/tmp", "ask"),
-    ("touch NOTES.md", "ask"),
-    ("cp a.txt b.txt", "ask"),
-    ("mv a.txt b.txt", "ask"),
+    ("just check", "contain"),
+    ("make test", "contain"),
+    ("npm test", "contain"),
+    ("npm run build", "contain"),
+    ("python3 script.py", "contain"),
+    ("./scripts/build.sh", "contain"),
+    ("docker build .", "contain"),
+    ("gh pr create --fill", "contain"),
+    ("kubectl get pods", "contain"),
+    ("mkdir -p target/tmp", "contain"),
+    ("touch NOTES.md", "contain"),
+    ("cp a.txt b.txt", "contain"),
+    ("mv a.txt b.txt", "contain"),
     // Recognized destruction.
     ("rm -rf node_modules", "ask"),
     ("rm -rf target", "ask"),
@@ -137,8 +140,8 @@ const BATTERY: [(&str, &str); 118] = [
     // Wrappers: a passthrough is read through, a launderer is not.
     ("time cargo test", "allow"),
     ("timeout 30 cargo check", "allow"),
-    ("timeout 30 just check", "ask"),
-    ("nice -n 10 cargo build", "ask"),
+    ("timeout 30 just check", "contain"),
+    ("nice -n 10 cargo build", "contain"),
     ("env RUST_LOG=debug cargo test", "ask"),
     ("watch -n 5 cargo check", "ask"),
 ];
@@ -178,12 +181,22 @@ fn outcome(command: &str, mode: PermissionMode, dir: &Path) -> String {
     explain(command, mode, dir).outcome().to_owned()
 }
 
+/// The table records the policy. A platform with no sandbox has nothing to
+/// contain with, so containment is a question there instead.
+fn expected_here(expected: &str) -> &str {
+    match expected {
+        "contain" if !yi_tools::Sandbox::available() => "ask",
+        other => other,
+    }
+}
+
 #[test]
 fn the_battery_lands_where_the_table_says() -> TestResult {
     let dir = cwd();
     let mut wrong: Vec<String> = Vec::new();
     for (command, expected) in BATTERY {
         let got = outcome(command, PermissionMode::Auto, &dir);
+        let expected = expected_here(expected);
         if got != expected {
             wrong.push(format!("{command:?}: expected {expected}, got {got}"));
         }
@@ -192,14 +205,17 @@ fn the_battery_lands_where_the_table_says() -> TestResult {
     Ok(())
 }
 
+/// Unreadable never means free: it is contained where a sandbox can enforce
+/// that, and asked where one cannot. Never a bare allow.
 #[test]
-fn nothing_unreadable_is_allowed() -> TestResult {
+fn nothing_unreadable_runs_uncontained() -> TestResult {
     let dir = cwd();
     for command in UNREADABLE {
         let report = explain(command, PermissionMode::Auto, &dir);
-        assert!(
-            !report.allowed(),
-            "{command:?} was allowed: {}",
+        assert_ne!(
+            report.outcome(),
+            "allow",
+            "{command:?} ran uncontained: {}",
             report.reason()
         );
     }

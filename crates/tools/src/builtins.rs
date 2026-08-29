@@ -418,6 +418,7 @@ impl Tool for BashTool {
             &context.cwd,
             &context.cancelled,
             context.auto_background,
+            context.sandbox.as_ref(),
         ) {
             Ok(crate::jobs::Run::Finished(capture)) => *capture,
             Ok(crate::jobs::Run::Backgrounded(id)) => {
@@ -450,6 +451,14 @@ impl Tool for BashTool {
         let exit_code = capture.exit_code.unwrap_or(-1);
         if exit_code != 0 {
             sections.push(format!("exit code: {exit_code}"));
+        }
+        if context.sandbox.is_some()
+            && let Some(hint) = crate::sandbox::denial_hint(
+                capture.exit_code,
+                &format!("{}{}", capture.stdout, capture.stderr),
+            )
+        {
+            sections.push(hint);
         }
         let text = if sections.is_empty() {
             "(no output)".to_owned()

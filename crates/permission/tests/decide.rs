@@ -382,7 +382,11 @@ fn auto_reads_a_command_segment_by_segment() -> TestResult {
         other => return Err(format!("expected an ask, got {other:?}").into()),
     }
 
+    // Unreadable is contained, not refused: the broker turns that into a
+    // question only where no sandbox can enforce it.
     let unreadable = bash_call("cargo test > log.txt", "canonical");
-    assert!(matches!(auto(&unreadable), Decision::Ask { .. }));
+    assert!(matches!(auto(&unreadable), Decision::Contain { .. }));
+    let unknown = bash_call("just check", "canonical");
+    assert!(matches!(auto(&unknown), Decision::Contain { .. }));
     Ok(())
 }

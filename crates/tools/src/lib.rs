@@ -10,6 +10,7 @@ mod ipython;
 pub mod jobs;
 mod process;
 pub mod reduce;
+pub mod sandbox;
 mod tool;
 
 use std::sync::Arc;
@@ -22,6 +23,7 @@ pub use ipython::{IpythonTool, KernelBridge, KernelCellOutcome};
 pub use jobs::{JobId, JobReport, Run, run_or_background};
 pub use process::{CommandCapture, OUTPUT_CAP, command, edit_file, run_captured};
 pub use reduce::{Reduced, reduce};
+pub use sandbox::{Sandbox, denial_hint};
 pub use tool::{
     CancelFlag, DETAIL_CAP, Tool, ToolContext, ToolKind, ToolOutput, error_output, text_output,
 };

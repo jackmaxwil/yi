@@ -22,6 +22,8 @@ pub struct ToolContext {
     /// How long a command may hold the turn before it keeps running as a job.
     /// None, the default, never backgrounds anything.
     pub auto_background: Option<std::time::Duration>,
+    /// Set when the permission layer contained this call rather than asking.
+    pub sandbox: Option<crate::sandbox::Sandbox>,
 }
 
 impl ToolContext {
@@ -31,6 +33,7 @@ impl ToolContext {
             cancelled: Arc::new(|| false),
             recovery_dir: None,
             auto_background: None,
+            sandbox: None,
         }
     }
 }

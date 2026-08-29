@@ -782,6 +782,28 @@ fn run_request(
     Ok(())
 }
 
+/// An hour of cache retention is a beta on some accounts and models. If the
+/// API refuses it, the request is retried once at the default five minutes:
+/// a shorter cache is a cost, a failed turn is an outage.
+pub fn is_cache_retention_rejection(message: &str) -> bool {
+    let lower = message.to_lowercase();
+    lower.starts_with("http 400") && (lower.contains("ttl") || lower.contains("beta"))
+}
+
+pub fn drop_cache_retention(body: &mut Value) {
+    let Some(blocks) = body.get_mut("system").and_then(Value::as_array_mut) else {
+        return;
+    };
+    for block in blocks {
+        if let Some(control) = block
+            .get_mut("cache_control")
+            .and_then(Value::as_object_mut)
+        {
+            control.remove("ttl");
+        }
+    }
+}
+
 pub fn stream(
     model: &Model,
     context: &LlmContext,
@@ -789,16 +811,23 @@ pub fn stream(
     api_key: &str,
 ) -> Receiver<AssistantMessageEvent> {
     let (sender, receiver) = tokio::sync::mpsc::channel(256);
-    let body = build_params(model, context, options);
+    let mut body = build_params(model, context, options);
     let model = model.clone();
     let api_key = api_key.to_owned();
     let long_cache = options.cache && options.cache_1h;
     tokio::task::spawn_blocking(move || {
-        if let Err(message) = run_request(&model, &body, &api_key, long_cache, &sender) {
-            let mut mapper = Mapper::new(&model);
-            let event = mapper.fail(&message);
-            let _ = sender.blocking_send(event);
+        let Err(message) = run_request(&model, &body, &api_key, long_cache, &sender) else {
+            return;
+        };
+        if long_cache && is_cache_retention_rejection(&message) {
+            drop_cache_retention(&mut body);
+            if run_request(&model, &body, &api_key, false, &sender).is_ok() {
+                return;
+            }
         }
+        let mut mapper = Mapper::new(&model);
+        let event = mapper.fail(&message);
+        let _ = sender.blocking_send(event);
     });
     receiver
 }

@@ -54,9 +54,22 @@ impl Hold {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Decision {
-    Allow { reason: String },
-    Deny { reason: String },
-    Ask { title: String, description: String },
+    Allow {
+        reason: String,
+    },
+    /// Run it, but inside the platform sandbox. The broker downgrades this to
+    /// Ask where no sandbox exists, so policy stays here and capability stays
+    /// with the caller that knows the platform.
+    Contain {
+        reason: String,
+    },
+    Deny {
+        reason: String,
+    },
+    Ask {
+        title: String,
+        description: String,
+    },
 }
 
 /// Bash commands are decided whole in v1 (D35): an unparseable command is a
@@ -230,7 +243,7 @@ fn auto(call: &ToolCall<'_>, context: &CatastrophicContext) -> Decision {
         crate::safety::Verdict::Allow => Decision::Allow {
             reason: "every part of the command is read-only".to_owned(),
         },
-        crate::safety::Verdict::Contain { reason } => ask(call, &reason),
+        crate::safety::Verdict::Contain { reason } => Decision::Contain { reason },
         crate::safety::Verdict::Ask { reason } => ask(call, &reason),
     }
 }

@@ -305,16 +305,20 @@ fn build_session(
         provider,
     );
     let cwd = effective_cwd(args);
-    let broker = std::sync::Arc::new(yi_runtime::PermissionBroker::new(
-        args.mode,
-        cwd.clone(),
-        Vec::new(),
-        asker,
-        session.events_sender(),
-    ));
     let home = std::env::var_os("HOME")
         .map(std::path::PathBuf::from)
         .unwrap_or_default();
+    let session_dir = default_session_dir(args);
+    let broker = std::sync::Arc::new(
+        yi_runtime::PermissionBroker::new(
+            args.mode,
+            cwd.clone(),
+            Vec::new(),
+            asker,
+            session.events_sender(),
+        )
+        .with_sandbox(yi_runtime::workspace_sandbox(&cwd, &home, &session_dir)),
+    );
     let tools_home = home.clone();
     session.install_extensions(session_extensions(args));
     let provider = std::sync::Arc::clone(session_provider(&session));

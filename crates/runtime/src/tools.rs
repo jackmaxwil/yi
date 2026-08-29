@@ -37,6 +37,14 @@ fn files_matched(name: &str, text: &str) -> u32 {
     u32::try_from(files.len()).unwrap_or(u32::MAX)
 }
 
+fn exit_of(result: &yi_types::event::ToolResult) -> Option<i32> {
+    result
+        .details
+        .get("exitCode")
+        .and_then(Value::as_i64)
+        .and_then(|code| i32::try_from(code).ok())
+}
+
 fn result_text(result: &yi_types::event::ToolResult) -> String {
     result
         .content
@@ -156,11 +164,12 @@ impl AgentTool for ToolAdapter {
         _signal: &'a InterruptSignal,
     ) -> ToolFuture<'a> {
         let tool = Arc::clone(&self.tool);
-        let context = ToolContext {
+        let mut context = ToolContext {
             cwd: self.cwd.clone(),
             cancelled: Arc::clone(&self.cancelled),
             recovery_dir: self.recovery_dir.clone(),
             auto_background: self.auto_background,
+            sandbox: None,
         };
         let permission = self.permission.clone();
         let rules = self.rules.clone();
@@ -194,7 +203,10 @@ impl AgentTool for ToolAdapter {
                     is_error: true,
                 };
             }
+            let mut contained: Option<(Arc<PermissionBroker>, String)> = None;
             if let Some(broker) = permission {
+                let sandbox = broker.sandbox().cloned();
+                let reporter = Arc::clone(&broker);
                 let gate_tool = Arc::clone(&tool);
                 let gate_args = args.clone();
                 let gate_cwd = context.cwd.clone();
@@ -211,7 +223,12 @@ impl AgentTool for ToolAdapter {
                 })
                 .await;
                 match outcome {
-                    Ok(outcome) if outcome.allowed => {}
+                    Ok(outcome) if outcome.allowed => {
+                        if outcome.contained {
+                            context.sandbox = sandbox;
+                            contained = Some((reporter, outcome.identity));
+                        }
+                    }
                     Ok(outcome) => {
                         return ToolOutcome {
                             result: error_tool_result(&format!(
@@ -240,6 +257,17 @@ impl AgentTool for ToolAdapter {
             let output = tokio::task::spawn_blocking(move || tool.execute(args, &context)).await;
             match output {
                 Ok(mut output) => {
+                    // A contained command the sandbox refused asks the next
+                    // time, rather than failing the same way forever.
+                    if let Some((broker, identity)) = &contained
+                        && yi_tools::denial_hint(
+                            exit_of(&output.result),
+                            &result_text(&output.result),
+                        )
+                        .is_some()
+                    {
+                        broker.note_containment_failure(identity);
+                    }
                     if let Some(line) = grid_note(&name, &command, &output.result) {
                         crate::affordance::append(&mut output.result, &line);
                     }

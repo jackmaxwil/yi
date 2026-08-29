@@ -208,3 +208,35 @@ fn stream_without_stop_reason_fails() {
         }
     ));
 }
+
+/// The 1h retention request is the one thing in the cache layout that no test
+/// can confirm without the live API, so its failure has to be survivable.
+#[test]
+fn refusing_the_hour_long_cache_falls_back_to_the_default() -> Result<(), Box<dyn Error>> {
+    use yi_ai::anthropic::{drop_cache_retention, is_cache_retention_rejection};
+    assert!(is_cache_retention_rejection(
+        "HTTP 400: {\"error\":{\"message\":\"unexpected value for cache_control.ttl\"}}"
+    ));
+    assert!(is_cache_retention_rejection(
+        "HTTP 400: {\"error\":{\"message\":\"unsupported beta: extended-cache-ttl-2025-04-11\"}}"
+    ));
+    assert!(!is_cache_retention_rejection("HTTP 429: rate limited"));
+    assert!(!is_cache_retention_rejection(
+        "HTTP 400: max_tokens is too large"
+    ));
+
+    let options = AnthropicOptions {
+        cache: true,
+        cache_1h: true,
+        ..AnthropicOptions::default()
+    };
+    let mut params = build_params(&model(), &context(), &options);
+    assert_eq!(params["system"][0]["cache_control"]["ttl"], "1h");
+    drop_cache_retention(&mut params);
+    assert!(params["system"][0]["cache_control"]["ttl"].is_null());
+    assert_eq!(
+        params["system"][0]["cache_control"]["type"], "ephemeral",
+        "the breakpoint survives; only its retention changes"
+    );
+    Ok(())
+}

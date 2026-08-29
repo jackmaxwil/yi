@@ -25,18 +25,26 @@ impl Report {
     pub fn outcome(&self) -> &'static str {
         match self.decision {
             Decision::Allow { .. } => "allow",
+            Decision::Contain { .. } => "contain",
             Decision::Deny { .. } => "deny",
             Decision::Ask { .. } => "ask",
         }
     }
 
+    /// Contained counts as running: the sandbox is what stands in for the
+    /// question, and `explain` has already downgraded it where none exists.
     pub fn allowed(&self) -> bool {
-        matches!(self.decision, Decision::Allow { .. })
+        matches!(
+            self.decision,
+            Decision::Allow { .. } | Decision::Contain { .. }
+        )
     }
 
     pub fn reason(&self) -> String {
         match &self.decision {
-            Decision::Allow { reason } | Decision::Deny { reason } => reason.clone(),
+            Decision::Allow { reason }
+            | Decision::Contain { reason }
+            | Decision::Deny { reason } => reason.clone(),
             Decision::Ask { description, .. } => description.clone(),
         }
     }
@@ -47,6 +55,7 @@ impl Report {
             "mode": mode_label(self.mode),
             "decision": self.outcome(),
             "reason": self.reason(),
+            "sandboxed": matches!(self.decision, Decision::Contain { .. }),
             "unparsed": self.unparsed,
             "segments": self.segments.iter().map(|segment| json!({
                 "argv": segment.argv,
@@ -101,14 +110,20 @@ pub fn explain(command: &str, mode: PermissionMode, cwd: &Path) -> Report {
         targets: &[],
         command: Some(command),
     };
-    let decision = decide(
+    let decision = match decide(
         &call,
         mode,
         &[],
         &SessionRules::new(),
         &[],
         &CatastrophicContext::detect(cwd),
-    );
+    ) {
+        Decision::Contain { reason } if !yi_tools::Sandbox::available() => Decision::Ask {
+            title: format!("{} requires permission", call.tool_name),
+            description: format!("{reason}: {command}"),
+        },
+        other => other,
+    };
     Report {
         command: command.to_owned(),
         mode,
