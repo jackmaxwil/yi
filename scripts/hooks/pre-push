@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+# Full tier, plus the release gate when the push carries a version tag. git
+# feeds the refs being pushed on stdin as "<local ref> <sha> <remote ref> <sha>".
+set -euo pipefail
+cd "$(git rev-parse --show-toplevel)"
+
+tag=""
+while read -r local_ref _ _ _; do
+  case "$local_ref" in
+    refs/tags/v*) tag="${local_ref#refs/tags/}" ;;
+  esac
+done
+
+just prepush
+if [ -n "$tag" ]; then
+  echo "pre-push: $tag is a release tag"
+  just prerelease "${tag#v}"
+fi
