@@ -38,7 +38,7 @@
     {
       "kind": "toolResultContains",
       "callId": "ipython-spawn",
-      "needle": "next: an un-awaited coroutine ran nothing; rlm.run and handle.result are async, so write h = await rlm.run(...) then await h.result()"
+      "needle": "next: an un-awaited spawn runs once after the cell; do not retry it. Next time, write h = await rlm.run(...) then await h.result()"
     },
     {
       "kind": "toolCallCount",

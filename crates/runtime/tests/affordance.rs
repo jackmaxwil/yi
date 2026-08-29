@@ -102,7 +102,7 @@ fn an_affordance_is_appended_to_the_last_text_block() -> TestResult {
 }
 
 const SPAWNED: &str = "next: await rlm.wait(120) blocks until this child reports; rlm.send('porter', 'line') steers it";
-const COROUTINE_LEAK: &str = "next: an un-awaited coroutine ran nothing; rlm.run and handle.result are async, so write h = await rlm.run(...) then await h.result()";
+const COROUTINE_LEAK: &str = "next: an un-awaited spawn runs once after the cell; do not retry it. Next time, write h = await rlm.run(...) then await h.result()";
 const METHOD_AWAITED: &str = "next: rlm.run is a method, not a coroutine — call it: h = await rlm.run('…'), then r = await h.result()";
 const LISTING_NAME: &str =
     "next: list_subagents() entries expose session_name; RLMSpawnHandle.name is the spawn handle";

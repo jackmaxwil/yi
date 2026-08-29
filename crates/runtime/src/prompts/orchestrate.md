@@ -95,6 +95,11 @@ and the findings shape. `scatter` binds each reader to a partition and
 hands your `lead` only answers whose quoted lines it found there; open a
 cited line yourself before building on it.
 
+    h = await rlm.run(brief, isolation='worktree')
+    await rlm.wait(120)
+    r = await h.result()
+    await rlm.merge_worktree(h.name)
+
     from yi import Plan, Reader, contract, schema, scatter, shapes
     areas = {"auth": "local://crates/auth", "storage": "local://crates/store", "cli": "local://crates/cli"}
     plan = await Plan.create("map the session token")
@@ -151,7 +156,7 @@ its partition, no kernel. Every pattern here but map-reduce spawns
   answers with pandas in your kernel.
 - Hypothesis tournament: N children with `check=`; `result()` is withheld
   while red; take the first green and `interrupt` the rest.
-- Best-of-N: `f = await rlm.tree().fork()` per writer, `rlm.run(brief,
+- Best-of-N: `f = await rlm.tree().fork()` per writer, `await rlm.run(brief,
   tree=f)`, `await f.check(cmd)` each; `rlm.tree().merge(winner)`,
   `discard` the rest.
 - Persistent specialist: one child kept all session as the test runner or

@@ -11,6 +11,12 @@ would build with unlimited time and full knowledge, at the size the purpose need
 gaps with the choice they would most likely make and name each assumption in one line. If
 they reject your reading, ask, one plain question at a time.
 
+For a kernel child:
+
+      h = await rlm.run("Port crates/foo to the new API. Report the files changed.")
+      await rlm.wait(120)
+      r = await h.result()
+
 Never deliver less than was asked without saying so. A sample in place of the whole set, a
 stub, a skipped step, a weaker model, a narrower scope: each one is a Problem line with its
 reason.

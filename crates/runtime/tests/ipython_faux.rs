@@ -203,6 +203,11 @@ async fn an_unawaited_spawn_runs_once_after_the_cell_and_says_so() -> Result<(),
         "{cell}"
     );
     assert!(!cell.contains("never awaited"), "{cell}");
+    assert!(
+        cell.contains("an un-awaited spawn runs once after the cell; do not retry it")
+            && cell.contains("h = await rlm.run(...)"),
+        "the cell must warn against a duplicate spawn and show the awaited call: {cell}"
+    );
     Ok(())
 }
 

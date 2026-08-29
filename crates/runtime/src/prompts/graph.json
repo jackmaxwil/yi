@@ -21,7 +21,7 @@
  "edges": [
   {"from": "rlm.run", "relation": "then", "to": "rlm.wait", "condition": "child_state(running)", "guidance": "await rlm.wait(120) blocks until this child reports; rlm.send('{name}', 'line') steers it", "weight": 50},
   {"from": "rlm.run", "relation": "then", "to": "rlm.result", "condition": "child_state(finished)", "guidance": "await rlm.result('{name}', schema=…) validates the answer host-side; the child stays addressable for follow-ups", "weight": 50},
-  {"from": "ipython", "relation": "after_error", "to": "rlm.run", "condition": "coroutine_unawaited", "guidance": "an un-awaited coroutine ran nothing; rlm.run and handle.result are async, so write h = await rlm.run(...) then await h.result()", "weight": 50},
+  {"from": "ipython", "relation": "after_error", "to": "rlm.run", "condition": "coroutine_unawaited", "guidance": "an un-awaited spawn runs once after the cell; do not retry it. Next time, write h = await rlm.run(...) then await h.result()", "weight": 50},
   {"from": "ipython", "relation": "after_error", "to": "rlm.run", "condition": "method_awaited", "guidance": "rlm.run is a method, not a coroutine — call it: h = await rlm.run('…'), then r = await h.result()", "weight": 50},
   {"from": "ipython", "relation": "after_error", "to": "rlm.list_subagents", "condition": "listing_name_missed", "guidance": "list_subagents() entries expose session_name; RLMSpawnHandle.name is the spawn handle", "weight": 50},
   {"from": "ipython", "relation": "after_error", "to": "rlm.wait", "condition": "result_error(aborted)", "guidance": "a cell dies at 600 s; keep one rlm.wait under that per cell, or overlap the wait with h = await rlm.bash(...)", "weight": 50},
