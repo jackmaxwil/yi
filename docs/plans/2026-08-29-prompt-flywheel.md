@@ -1,461 +1,540 @@
-# Prompt flywheel — architecture and implementation plan, v3
+# Yi self-optimization — plan v4 (prompt-flywheel lineage)
 
 ```
-status:  PLAN v3 2026-08-29. v1 was cut down by an adversarial self-review
-         (§0); v2 was cut down again by the OMP autopsy (§1) — field report:
-         OMP's TTSR, auto-memories and auto-skills "work initially but very
-         quickly devolve, become noisy and context wasting". v3's law: every
-         loop is driven by deterministic signals; the LLM writes prose inside
-         a human gate and controls nothing. Row ids and D-row numbers are
-         placeholders — ARCHITECTURE.md held D73 at 0.66.0 when written;
-         re-read the header and last D-row immediately before landing.
+status:  PLAN v4 2026-08-29. v1 (naive optimizer) died to self-review; v2
+         (lean flywheel) died to the OMP autopsy; v3 (deterministic rules)
+         survived but measured with a diary instead of an instrument. v4 is
+         the inversion: build the instrument, put Yi's BEHAVIOR under the
+         same gate law as Yi's code, and make every improvement — prompt,
+         tool, routing, doctrine — a measured commit. Row/D-row numbers are
+         placeholders (D73 @ 0.66.0 when written; shared tree — re-read the
+         header and last D-row immediately before landing anything).
 date:    2026-08-29
 sources: research (ref/research/): 2601.04055v1 MPO · 2603.21520v1 MemAPO ·
          2606.04465v1 SePO · 2507.19457v2 GEPA (ICLR 2026) · Factory.ai
-         large-tasks PDF · pattern donors (ref/optimizers/ dsrs, gepars —
-         NOT in Appendix A; ports need an A-entry first)
-         · omp autopsy (ref/agents/omp, excise list respected):
-         export/ttsr.ts, ttsr-coordinator.ts, prompts/system/{ttsr-interrupt,
-         ttsr-tool-reminder,autolearn-guidance,system-prompt}.md,
-         memories/index.ts, autolearn/{controller,managed-skills}.ts,
-         tools/{learn,manage-skill}.ts, hindsight/state.ts, mnemopi/state.ts,
-         sdk.ts, mental-models.ts, docs/ttsr-injection-lifecycle.md
-         · Yi: crates/runtime/src/ext/{mod,assemble,install,orchestrate,
-         telemetry,project}.rs, advisor/{mod,review,digest}.rs,
-         {rules,plan}.rs, goal/mod.rs, crates/session/src/jsonl.rs,
-         crates/types/src/{entry,advisor,config,plan}.rs,
-         crates/permission/src/catastrophic.rs, tests/request_budget.rs,
-         skills/yi/session-mining/SKILL.md, docs/YI_DESIGN.md §2/§7/§13/§19,
-         docs/TODOS.md, docs/plans/2026-08-29-praxist-lessons.md
+         large-tasks PDF · dsrs + gepars (ref/optimizers/, pattern donors,
+         NOT Appendix A)
+         · omp autopsy (§0; ref/agents/omp, excise respected)
+         · Prime Agent: "Prime Agent: A Self-Improving RLM Harness",
+         arXiv 2608.23552 (Aug 2026, Prime Intellect + Princeton + MIT);
+         primeintellect.ai/blog/prime-agent; docs.arcprize.org/methodology
+         (RHAE); arcprize.org/leaderboard + benchlm.ai snapshot (Opus 5
+         native 30.2%); github.com/PrimeIntellect-ai/prime-agent
+         · benchmarks (ref/benchmarks/, A.12 spans verified 2026-08-22):
+         harbor, pier, terminal-bench-2-1, SWE-Atlas, ARC-AGI-3-Agents
+         · Yi: ext/{mod,assemble,install,orchestrate,telemetry,project,
+         grid}.rs, advisor/{mod,review,digest}.rs, {rules,plan}.rs,
+         goal/mod.rs, session/jsonl.rs, types/{entry,advisor,config,plan}.rs,
+         permission/catastrophic.rs, tests/request_budget.rs,
+         skills/yi/session-mining/SKILL.md, python/yi_runtime (rlm),
+         YI_DESIGN §2/§7/§13/§15/§19/A.12, TODOS §E/§F/§I/§J/§N/§P,
+         docs/plans/2026-08-29-praxist-lessons.md
 ```
 
-**Invariant zero.** The user's prompt is never rewritten, paraphrased, or
-reordered; it reaches the model byte-verbatim (§7.6 mempalace rule, P17
-retention floor). The flywheel appends only through mechanisms that already
-exist and only improves Yi's *own* prompt assets, offline. Research evidence
-(v1/v2, unchanged): zero-feedback rewrites are negative-EV (SePO, MPO/
-TextGrad, GEPA greedy ablation); MemAPO appends and never paraphrases; GEPA
-is a category error per-prompt and literal over a corpus; Factory's gains
-came from an independent executable standard, not better prose.
+## Laws (carried through every revision; violations are bugs)
 
-**Division-of-labor law (v3).** Deterministic signals drive every loop:
-triggers are exact substrings and counters; admission and eviction are
-thresholds over measured numbers; caps are enforced at the render site. The
-LLM appears in exactly three places, each inside a human gate: writing the
-prose body of a proposed rule/lesson during a *user-run* mining pass, the
-existing advisor reviewer (already model-role-gated, D28), and the parked v4
-search. The LLM never decides when anything fires, persists, or dies.
+1. **Invariant zero.** The user's prompt is never rewritten, paraphrased, or
+   reordered (§7.6 mempalace, P17 retention floor). Optimization touches
+   Yi's own assets only.
+2. **Deterministic control.** Triggers, admission, eviction, selection, and
+   scheduling are exact strings, counters, and thresholds. The LLM writes
+   gated prose and generates candidates; it never decides when anything
+   fires, persists, ships, or dies.
+3. **No unbounded loops.** Nothing is scheduled. Mining and campaigns are
+   user-run. CI runs only the zero-API deterministic tier. Real-model
+   rollouts are budgeted, deliberate, and ledgered — like dist-binary
+   measurements, never like OMP's capture loop.
+4. **Cache discipline.** Nothing per-prompt touches trusted blocks (J4/J5,
+   0.62.0 breakpoints). Reminders ride the transcript; project text rides
+   the yard; no background job rebuilds a prompt mid-session.
+5. **Nothing ships unmeasured.** A behavior change is a commit; a commit
+   answers to the instrument (§3) and the ratchet (§6).
 
-## 0. What the self-review changed (v1 → v2, kept for the record)
+## 0. Lineage (compressed; the negative space is most of the value)
 
-| v1 design | tree fact | consequence |
+- **v1 → v2 (self-review):** per-prompt trusted retrieval died to cache
+  economics; store/journal DTOs died to `.yi/rules` + D59 promote; the
+  recon spec-compiler died to `Task.acceptance` + expand-only `plan.edit`
+  (`SHRINK_ERROR`) + `goal::run_check`; GEPA acceptance was unexecutable
+  from stored traces — **acceptance requires execution**; sessions already
+  partition per cwd; lessons already have a home (project files → yard).
+- **v2 → v3 (OMP autopsy, field + code):** OMP ships TTSR, auto-memories,
+  auto-skills, and they devolve for mechanical reasons — capture clones the
+  whole conversation into an uncached side-agent per firing
+  (sdk.ts:1145-1166, fresh cache key each time); write-only stores with no
+  outcome ledger, no decay, no retrieval in the local backend
+  (memories/index.ts:1332-1414); uncapped per-turn renders — one
+  model-written skill description ≈ 16k tokens of every request
+  (managed-skills.ts:62-69, system-prompt.md:27-34); buffer-regex fires on
+  the *mention*, not the act (export/ttsr.ts:362); model-gated persistence
+  with no human gate (manage-skill.ts:40). What does NOT devolve in OMP is
+  exactly its deterministic subset — exact-regex triggers, turn counters,
+  once-latches, render budgets with clamp (their own mental-models.ts:190
+  states the principle: an unbounded block crowds out real context, and a
+  curated source cannot be trusted to stay small without enforcement). v3
+  rebuilt on that subset: verbatim needles, act-scope, caps, prune-first
+  reports, user-run mining from disk.
+- **v3 → v4 (benchmark pressure test):** v3's unit of learning (a rule)
+  needs repetition to justify itself, goes stale in a fast-moving repo, and
+  was to be measured by an unpowered two-week diary A/B. Its harvest is
+  project residue that cannot ship to a fresh benchmark environment. The
+  fix is not better rules — it is an instrument, and a different unit of
+  learning.
+
+## 1. The inversion
+
+Yi's code cannot ship unmeasured: `just check`, shrink-only ratchets,
+golden fixtures, red-first regression tests. Yi's *behavior* — the prompt
+files sitting modified in this working tree right now, tool descriptions,
+routing thresholds, subagent briefs — is the last unmeasured surface in the
+repository. v4 closes it.
+
+**The unit of learning is an eval case, not a rule.** A real failure
+becomes a deterministic, replayable scenario with a pass condition — seen
+red, fixed, kept green forever. One occurrence suffices (rules needed ≥5).
+Cases don't rot (a fixed bug's case becomes its regression guard —
+nonstationarity becomes the point). Pass/fail is external (no Goodhart on
+"user complained less"). Cases are committed to the repo (the per-cwd
+session split stops mattering). Every downstream ambition — checks,
+campaigns, GEPA, `get_context` — becomes an ordinary tested change riding
+an ordinary gate.
+
+## 2. What the tree provides (verified; the instrument is mostly mapped)
+
+| need | mechanism | where |
 |---|---|---|
-| per-prompt retrieval attaching trusted fragments | four-breakpoint cache layout, 1h retention (0.62.0); J4 byte-identical prefix; only the yard varies | anything always-on must be session-stable; per-prompt trusted mutation is cache-hostile and dead |
-| TemplateStore + journal + undo + augmenter extension | `RuleScope::Text`/`Tool` rules with literal `trigger:` substrings, `gap: once`, project-shadows-global, malformed-skipped-with-reason; `/advisor promote` (D59) writes provenance-lined rule files and arms them live | the store IS `.yi/rules`; journal/fold/undo/extension dead |
-| GEPA acceptance "scored from stored μ only" | a candidate's effect on a session that ran without it is unmeasurable; GEPA/gepars/dsrs execute the minibatch | reflection reads traces; **acceptance requires execution** — search parks behind the J1 evals workspace (v5) |
-| TaskSpec entry + recon compiler | `Task.acceptance` exists; `plan.edit` expand-only, weakening user-gated (`SHRINK_ERROR`); `summary_line` already feeds the advisor digest; `goal::run_check` runs checks exit-0-only with evidence tails | lane 2 collapses to one additive `Task.check` field + a gate at `plan.update(done)` (v4) |
-| project scoping open | sessions already partition per cwd (`jsonl.rs::session_directory_name`) | corpus is `~/.yi/sessions/<cwd-slug>/` |
-| new fragment slot for lessons | AGENTS.md/CLAUDE.md already load into the trust-gated yard (`ext/project.rs`) | lessons are a project-file section; zero code |
+| adapters, span-exact | harbor `BaseInstalledAgent` subclass (~110-line `yi_harbor` per the Pi template), pier subclass + `AgentInstallSpec` one-step musl install, out-of-tree `--agent module:Class`, reward + error-classification contracts | YI_DESIGN A.12 |
+| ancillary metrics *already demanded by the harness* | pier `AgentContext` extras: `n_agent_steps`, `peak_context_tokens`, `summarization_count`; TB2.1 leaderboard pass@k schema | A.12 (pier context.py:8-46; leaderboard.yaml:123-141) |
+| official ARC scaffold, local | ref/benchmarks/ARC-AGI-3-Agents (agents/, swarm, recorder, templates) | A.12 |
+| offline replay substrate | faux provider (scripted streams); J3 cassettes row (record real session → replay with tools stubbed) | §15 / TODOS J3 |
+| the ARC-class engine | kernel + `python/yi_runtime` module `rlm`: persistent IPython, context-as-variable, `rlm.run` → host_request → spawn handle (mirrors prime-agent-runtime/src/rlm/__init__.py:148) | crates/kernel · runtime::subagent |
+| act-keyed + prompt-keyed delivery, fatigue, promote | D54 rules (`trigger:` literal substrings, `scope: text\|tool:<name>`, `gap: once`), D59 promote with provenance line | rules.rs · advisor/mod.rs:420 |
+| spec + executable acceptance | `Task.acceptance`; expand-only `plan.edit` (weakening user-gated); `goal::run_check` exit-0-only with 2,000-char evidence tail; `summary_line` in the advisor digest | plan.rs:17,41 · goal/mod.rs:44 |
+| routing + effort levers | `Route` prefilter (weights, thresholds −3/+4, consts 4/5 — hardcoded today, fittable tomorrow); D72 per-model effort ladder carried per turn | ext/orchestrate.rs:70 · D72 |
+| orientation chassis | grid ext (fragment today); P3: native `grid_resolve`/`grid_uses`/`grid_scope` + in-process SessionStart survey via `Effect::RegisterTool` | ext/grid.rs · TODOS P3 |
+| corpus, immutable raw truth | `~/.yi/sessions/<cwd-slug>/*.jsonl`; `ext_record` rows (route, turn, cache read_ratio) | session/jsonl.rs:25 · ext/telemetry.rs |
+| mining skeleton | session-mining skill: kernel-side sweep, defensive parse with skip-count, cluster, coverage line, backtest | skills/yi/session-mining |
+| fitted-constants precedent | P4: telemetry → offline fit → `const` baked in | TODOS P4 |
+| redaction lexicon | `command_reads_credentials` | permission/catastrophic.rs:154 |
 
-## 1. OMP autopsy — why the naive version devolves (verified in code)
+## 3. The instrument
 
-OMP ships all three halves of this feature and the user has watched them
-decay in real use. The code says why, and none of the reasons is "the idea
-is wrong" — every one is a missing deterministic bound:
+Two tiers, one contract: every tier emits the same metric row (§4).
 
-| OMP subsystem | what devolves | code evidence |
-|---|---|---|
-| TTSR (Time-Traveling Stream Rules: regex over the model's own stream, abort + retry with the full rule body injected) | the *trigger substrate*: regex runs over a monotonically growing buffer, so a rule fires on the **mention** of a pattern, not the act; scope defaults to text + all tools; injected body is the whole rule markdown, uncapped (~300–700 tokens per fire); no per-session injection budget; a failed delivery is still marked delivered | export/ttsr.ts:362 (append, never window), :65-70 (default scope), ttsr-coordinator.ts:163-176 (uncapped body), docs/ttsr-injection-lifecycle.md:169 |
-| auto-memories (`learn` tool + session-start pipeline) | write-only store: no verification before storing, no outcome ledger, no decay, dedup is exact-string only, and the `local` backend has **no retrieval at all** — the whole file dumps into the system prompt every session (clamped at 5k tokens, so at scale it is 5k tokens of mostly-stale bullets every turn) | memories/index.ts:1332-1358, :1380, :1400-1414, :219-221 |
-| auto-skills | model-judged creation with no human gate, no count cap in the prompt listing, no length cap on the per-turn description (one model-written skill can put ~16k tokens into every request), no versioning, no pruning, no usage counter | tools/manage-skill.ts:40, prompts/system/system-prompt.md:27-34, autolearn/managed-skills.ts:62-69 |
-| scheduling (auto-learn capture, TTL refresh) | **the token drain, precisely**: capture clones the *entire conversation* into a fresh side-agent with a *new cache key per capture*, re-billing the full context uncached, triggered by a bare counter (≥5 tool calls at agent_end) with no cooldown, cap, or budget; a background TTL job rebuilds the system prompt mid-session, invalidating the provider cache prefix | sdk.ts:1136-1203 (:1145,1166 fresh cache key), autolearn/controller.ts:113-136, hindsight/state.ts:498-511 |
+**Micro-evals (deterministic, zero API, in the gate).** Faux-provider
+cassette replays (J3) of pinned scenarios: distilled session failures (§8
+pipeline), plus harness behaviors the benchmarks stress — compaction
+survival of a mid-task constraint, edit-loop recovery, claim-vs-evidence at
+"done", repeated-call rejection, orientation-packet sufficiency. Driven via
+`yi ask --json` / headless drive; fast; deterministic; CI-safe (FORGEJO
+local-gate law: no API key in any gate).
 
-What in OMP does *not* devolve, and what it has in common: exact-regex and
-turn-counter triggers, the once-per-session recall latch, `minToolCalls`,
-render budgets with clamp-to-zero, SQLite leases (export/ttsr.ts:94-99,
-hindsight/state.ts:419, memories/index.ts:219-221). All deterministic. OMP's
-own mental-models.ts:190-197 states the principle: an unbounded block crowds
-out real context, and a curated source cannot be trusted to stay small
-without enforcement.
+**Task evals (real rollouts, budgeted, ledgered).** `yi_harbor` + `yi_pier`
+adapters (A.12 contracts) over chosen subsets of TB 2.1, SWE-Atlas, and
+ARC-AGI-3 (§10). Run deliberately with an explicit USD/token budget; every
+run gets a run-id, a config fingerprint (model, effort, prompt-asset
+revision), the pier `AgentContext` extras, and a row in the eval ledger
+(§6). Timeouts are never retried (pier contract). A failed run is a result,
+not a retry-until-green.
 
-Countermeasures now load-bearing in this plan: (1) mine from **disk**, never
-by cloning live context into an uncached side-turn; (2) no scheduled
-reflection at all — mining is user-run; (3) every store has a cap, an
-outcome ledger, and an evidence-driven prune path; (4) triggers match the
-**act** (tool arguments) not the mention, with text-scope reserved for
-prompt-time strategy hints; (5) per-item rendered-size caps at the render
-site; (6) nothing persists or dies by model judgment.
+**Single-task campaigns (the Factory/GEPA mode).** A campaign pins ONE task
+and iterates levers against it — GEPA's inference-time search variant is
+the published precedent (NPUEval 4.25% → 30.52% with no held-out set).
+Overfit is expected mid-campaign and quarantined at the exit: a campaign
+learning ships only as a general asset (prompt diff, tool change, fitted
+constant) that holds suite-wide — the regression gate refuses
+leaderboard-hack commits. Task-specific tricks stay in the campaign log as
+evidence, not product.
 
-## 2. What the tree provides (verified)
+## 4. Metrics, levers, targets
 
-| need | mechanism | file |
-|---|---|---|
-| act-keyed delivery | `RuleScope::Tool(name)`/`AnyTool` rules match tool use; `Gate` denies first attempt, informed retry passes | crates/runtime/src/rules.rs:12 |
-| prompt-keyed delivery | `RuleScope::Text`, literal `trigger:` substrings | rules.rs:107 |
-| per-rule fatigue | `RuleGap::Once` (one fire per session) / `AfterTurns(n)` — OMP's proven `repeatMode`/gap counters, already here | rules.rs:19 |
-| promote precedent | advisor promote writes `.yi/rules/<slug>.md` with provenance, re-parses, arms live (D59/I1) | advisor/mod.rs:420,556 |
-| always-on lessons | AGENTS.md/CLAUDE.md → yard, nonce-fenced, hash-pinned trust | ext/project.rs:8 |
-| spec with acceptance | `Task { title, acceptance, deps, state }`; expand-only; weakening user-gated | plan.rs:17 |
-| executable check + evidence | `goal::run_check`: exit 0 only; Err carries check + exit + 2,000-char tail | goal/mod.rs:44 |
-| advisor sees the plan | `summary_line(plan)` built for the digest header | plan.rs:41 |
-| corpus, per project, on disk | `~/.yi/sessions/<cwd-slug>/*.jsonl` | session/jsonl.rs:25 |
-| sweep skeleton | session-mining skill: kernel-side sweep (bulk never enters context), defensive parse, cluster, coverage line, backtest | skills/yi/session-mining/SKILL.md |
-| outcome telemetry | `Effect::Record` → `ext_record` rows (`route`, `turn`, `cache` incl. read_ratio); rule fires are visible in the transcript as delivered reminder text | ext/telemetry.rs |
-| credential lexicon | `command_reads_credentials` patterns | permission/catastrophic.rs:154 |
+**Metric taxonomy** — one row per session and per eval run; names frozen
+once in the μ schema (§8). Sources: session JSONL, `ext_record`,
+pier/harbor channels.
 
-## 3. Architecture
+- **A. Outcome:** task pass; pass@k; first-attempt pass; best-of-n
+  selection rate (check-chosen candidate passed); partial credit where
+  graded; completion-claim precision (claimed done ∧ grader pass);
+  regression count vs baseline; unforced errors (previously-green cases
+  now red).
+- **B. Spend:** input/output tokens; uncached-input share; cache
+  read_ratio; USD; wall-clock; time-to-first-token; provider retries.
+- **C. Orientation (the `get_context` axis):** tool calls / tokens / turns
+  before the first productive action; orientation sufficiency =
+  post-packet new searches for information the packet should have served;
+  wasted-read ratio (files read, never used); re-read-after-compaction
+  tokens.
+- **D. Action economy (the RHAE axis):** total tool calls; per-class mix
+  (read/grep/bash/edit/ipython); repeated identical calls; failed-command
+  streaks; edit-revert churn; hashline mismatch + noop rates; permission
+  asks; **action efficiency = (best-known actions ÷ this-run actions)²,
+  capped 1.15** — RHAE's own formula generalized: the per-task best-known
+  run is the denominator and the personal leaderboard.
+- **E. Delegation:** parent brief bytes vs child-consumed need; child
+  result bytes vs parent-used; child tokens per delegated unit; child pass
+  rate; fan-out/depth utilization; parent idle-wait.
+- **F. Context:** peak context tokens; compaction count; retention-floor
+  hits; post-compaction failure correlation; **L2 spill utilization** —
+  bulk state parked as kernel variables instead of context (Prime Agent's
+  L0 weights / L1 context / L2 REPL / L3 disk hierarchy names the axis;
+  P5's context-sentinel gets its metric).
+- **G. Long-horizon:** turns; plan coverage (tasks with checks); checks
+  run before done; stall/loop detections; steer/interrupt count (the user
+  grabbing the wheel — the strongest free negative label).
+
+**Levers** (each names the metrics it moves; every tuned value lands as
+data — a prompt-asset commit or a fitted constant with provenance, P4
+pattern):
+
+1. Prompt assets — doctrine sections, tool descriptions, orchestrate
+   fragment, subagent briefs, the autonomy prompt (§10) → A.
+2. Routing — route→effort/model map over the D72 ladder → the A×B
+   tradeoff.
+3. Retry/selection — N retries on red check only; best-of-n adjudicated by
+   the check (**a check is a free judge**: selection without an LLM judge)
+   → A up, B bounded.
+4. Orientation — `get_context()` composition (§5); grep/read caps (C9)
+   → C, then B.
+5. Delegation contract — structured brief template + structured result
+   schema (F-rows); `rlm.run` depth/fan-out policy → E.
+6. Context policy — keep_recent, retention floor, compaction cadence,
+   cut-point; kernel-spill policy → F, B.
+7. Affordance thresholds — repeated-call N; orchestrate consts
+   (TOOL_CALLS_PER_TURN=4, FILES_MATCHED=5, prefilter weights −3/+4) → D.
+8. Kernel utilization — when work routes to ipython vs bash vs native
+   tools → B, D.
+9. The v3 tail — rules/lessons store under the v3 laws → D, marginal.
+
+**Targets (the extreme-ends doctrine).** Hardest tasks expose capability
+gaps (missing tools, context strategy); easiest tasks expose pure waste
+(every token above minimal is legible); the middle confounds both. So the
+campaigns chase the ends:
+
+- **T1 frontier:** pinned hardest TB2.1/SWE-Atlas tasks, currently failing
+  → pass at any cost, then ratchet cost down at fixed pass (Factory's own
+  sequence: 14× spend to reach 90%, then optimize).
+- **T2 efficiency:** pinned easiest tasks, already passing → minimize
+  B+C+D at pass = 100%; shrink-only per-task cost ratchet.
+- **T3 orientation:** packet sufficiency ≥ target fraction; pre-edit
+  orientation cost −X% (X set from T2 baselines).
+- **T4 delegation:** brief/result bytes down at equal child pass.
+- **T5 ARC (§10):** RHAE on the official scaffold; levers 5/6/8 + the
+  autonomy prompt.
+- **Universal exit gate:** suite regressions 0, or the campaign's diff
+  does not ship.
+
+## 5. `get_context()` — one call, oriented
+
+Intent: today a task's first minutes are a hand-rolled grep/read walk (the
+C metrics price it); the target is ONE tool call returning an orientation
+packet that makes the walk unnecessary.
+
+- **Input:** the task brief (user prompt or subagent brief), optional
+  focus paths.
+- **Packet** (layered, budgeted, each layer clamped with named
+  truncation):
+  1. grid survey slice — module map around the focus (P3 in-process
+     survey);
+  2. symbol neighborhood — `grid_uses`/`grid_scope`/`grid_resolve` for
+     brief-named identifiers;
+  3. file skeletons — headers/signatures of the top-k implicated files
+     (the hashline read format already renders these);
+  4. change heat — git log frequency + recency over the slice;
+  5. gates — the repo's own check commands (justfile detection);
+  6. prior-issue hits — mining fingerprints (§8) matching the brief:
+     "this repo breaks like this, here."
+- **Chassis:** P3's `Effect::RegisterTool` at SessionStart (tools freeze
+  after SessionStart — the registration window already exists). Layers
+  4–6 are cheap adjuncts to P3's planned 1–3.
+- **Law compliance:** §1.1 bans embeddings "until grep measurably fails."
+  v4 finally makes that condition measurable: the packet is deterministic
+  (grid + git + fingerprints); a semantic layer is admissible only when C
+  metrics show orientation failing on deterministic retrieval — the eval,
+  not taste, relitigates the ban.
+- **Tuning:** orientation mining (§8) records which packet layers later
+  steps actually used; layer inclusion and budgets become fitted
+  constants.
+
+## 6. The behavior ratchet and the eval ledger
+
+- `guardrails/behavior_baseline.json`: the micro-eval case list + pass
+  states. Shrink-only failure count, same law as every ratchet; `--update`
+  in its own commit, code-first-red order preserved. Runs inside
+  `just check` via the faux tier — zero API, deterministic, fast. A new
+  gate ⇒ D-row (D76), proven the wall way: neuter the gate, watch a
+  known-red case pass, restore.
+- `docs/eval-ledger.md` (size-ledger's sibling): one row per task-eval run
+  — run-id, suite@rev, config fingerprint, pass, spend, §4 extras. Claims
+  about Yi's effectiveness cite ledger rows or they are vibes — a value
+  unknown must not be recorded as known (the Praxist thesis, applied to
+  ourselves).
+
+## 7. Candidates are commits
+
+The optimizer's and the miner's output is a diff. Git is the store, review
+is the gate, the ratchet is the regression net, `git log` is the
+provenance chain. For long-horizon consistency, optimization commits carry
+a **closed trailer vocabulary** — four trailers, closed the way
+check_comments closes comment prefixes (the private-dialect lesson):
 
 ```
-~/.yi/sessions/<project>/*.jsonl            (disk — the only mining input)
-      │  USER RUNS mining (session-mining skill; sweep in kernel python;
-      │  no context clone, no side-agent, no fresh cache key — the OMP
-      │  drain is structurally impossible from disk)
-      ▼
-mining report (redacted, §6): μ census · failure clusters · novelty check
-      · PRUNE LIST FIRST (outcome-ledger-driven) · then proposals, each
-      with derived trigger + backtest numbers
-      │
-      ▼
-USER lands artifacts (nothing persists or dies without this):
-  error rules  → .yi/rules/<name>.md  scope tool:<name> (match the act),
-                 gap: once, body ≤ 400 bytes, provenance line
-  strategy     → scope:text rule (prompt-keyed hint) or AGENTS.md
-  lessons        "## Lessons" ≤ 1,500 bytes total (yard, session-stable)
-      │
-      ▼
-sessions run · rules fire as one-line transcript reminders (prefix never
-moves) · fires and outcomes accrue in the JSONL for the next mining pass
-      │
-      └───────────── next USER-RUN pass measures and prunes ──────────────┘
+Tune orchestrate route weights from run 0142
 
-v4: Task.check — executable acceptance at plan.update(done)   (first Rust)
-v5: GEPA search over the J1 evals workspace                    (parked)
+Middle-band prompts misrouted to Complex; T2 campaign, easy suite.
+
+Opt-Run: 0142 suite=tb21-easy@a3f model=opus-5 effort=high
+Opt-Delta: pass 48/48=; tokens -21%; wall -18%; regressions 0
+Opt-Lever: crates/runtime/src/ext/orchestrate.rs route weights
+Opt-Cases: +mined-0093
 ```
 
-Cache law (v2, now with the OMP contrast): nothing per-prompt touches
-trusted blocks (J4/J5, 0.62.0 breakpoints). Rules deliver in-transcript;
-lessons ride the yard; there are no mid-session prompt rebuilds — the OMP
-TTL-refresh bug class (hindsight/state.ts:498-511) cannot occur because no
-background job here ever touches the prompt.
+Rules: imperative subject; the why in the body; trailers machine-parseable
+so the ledger is reconstructible from `git log` alone; `Opt-Cases` names
+eval cases added/retired; baseline and ledger updates ride the follow-up
+`--update` commit (baseline-never-with-code law); no assistant co-author
+trailers (repo law). Optional later: a guardrail lint for `Opt-*` commits
+(closed vocab, unknown trailer rejected) — a row once the template has
+survived ~10 real commits.
 
-The wall, stated honestly (unchanged): checks are "not pushed into primary
-context by default", enforced by the v4 gate and the reviewer's evidence
-demand — Factory's hard wall does not exist in one process with a `read`
-tool.
+## 8. Session mining, architected
 
-## 4. The rule lifecycle, fully specified (the v2 gap)
+**Inspirations, one pattern each:**
 
-Everything below is a number or an exact string; the LLM appears once,
-marked.
+- **Sentry-class crash pipelines** — fingerprint → issue → lifecycle. A
+  failure normalizes to a fingerprint (tool + decisive error line); issues
+  carry counts, first/last-seen, linked artifacts; a fingerprint
+  reappearing after FIXED auto-flags REGRESSED. Deterministic grouping and
+  lifecycle: the anti-write-only-store.
+- **ELT / trace analytics** — raw is immutable truth (session JSONL);
+  extraction is a *versioned* pure pass (extractor id stamped in every
+  derived row; version bump ⇒ re-derive); derived stores are disposable
+  caches, never truth.
+- **Aviation safety (ASRS/blameless)** — human-gated reports, fixed
+  taxonomy, the mandatory coverage line (`N scanned, M skipped (reason),
+  DATE..DATE`), uncertainty labeled rather than dropped.
+- **Prime Agent's Continual Harness** — versioned cross-trajectory state
+  (notes, memories, skills, subagent specs): direction validated at scale,
+  adopted with one inversion — their auto-persist becomes our human gate
+  (their paper itself declines to attribute wins to it; OMP shows the auto
+  version's failure mode).
+- **TRACE** — corrections compiled into checks beat corrections stored as
+  prose; the reason cases and checks outrank rules.
+- **GEPA/MemAPO/SePO** — reflection record shape `{Inputs, Generated
+  Outputs, Feedback}`, 1:1 failure/success balance, verify-before-update.
 
-**Birth (mining pass, user-run).**
-- Cluster key: `(tool name, normalized error line)` — the skill's existing
-  key. A cluster is *actionable* at ≥ 5 occurrences across ≥ 3 sessions
-  (tunable; recurrence across sessions is what distinguishes a lesson from
-  an incident).
-- Trigger needles are **derived verbatim from the cluster's data**: the
-  exact failing command prefix or error substring (e.g. `git commit -m`
-  with a backtick in the argument), never LLM-invented keywords. The report
-  prints needle + provenance sessions.
-- Scope defaults to `tool:<name>` — the rule matches the *act* (tool
-  arguments), the OMP mention/act fix. `scope: text` is reserved for
-  strategy hints where prompt wording *is* the signal.
-- Backtest, deterministic: replay the needle over the corpus. Admission
-  thresholds: fires in ≥ 3 failure-cluster sessions AND in ≤ 1 session
-  without the failure (precision ≥ 0.75 on history). Both numbers print in
-  the report; below threshold, the proposal is not emitted.
-- [LLM, human-gated] The rule's prose body is drafted by the model from the
-  cluster evidence, ≤ 400 bytes rendered (the OMP uncapped-body fix),
-  redacted (§6). The user lands the file or doesn't.
+**What we mine (extraction schema v1; one pass per session file; kernel
+python; defensive parse with skip-count):**
 
-**Life.**
-- Caps, enforced by the mining report refusing to propose past them:
-  ≤ 12 active rules per project (tunable), body ≤ 400 bytes, lessons block
-  ≤ 1,500 bytes. Worst-case injection per session is bounded by
-  `gap: once` × 12 rules ≈ 12 one-liners — legible, and an order of
-  magnitude under OMP's single-skill worst case.
-- Outcome ledger, deterministic, computed at the next mining pass from the
-  transcripts (a fired rule is its delivered reminder text in the session
-  JSONL): per rule — `fires`, `post_fire_failure_rate` (the cluster's error
-  signature still occurred after the fire, same session), `zero_fire_streak`
-  (sessions since last fire). If body-text matching proves ambiguous in
-  practice, the one code concession is a `Record{key:"rule_fired"}` row at
-  delivery (~10 lines) — deferred until ambiguity is demonstrated.
+1. μ row — the §4 metrics computable from the trace (A minus grader
+   fields, B, C, D, E, F, G).
+2. Failure events — `{tool, fingerprint, args_hash, resolved_in_session,
+   resolution_action}`.
+3. Friction events — permission asks, retries, repeated-call rejections,
+   reverts/`/undo`, steer/interrupts, correction turns (verbatim; the §7.6
+   lexicon via `advisor::digest::directives` — reuse, don't fork).
+4. Orientation trace — pre-first-edit reads/searches, and which were later
+   used (feeds §5 layer tuning).
+5. Delegation exchanges — brief/result sizes, child spend, child outcome.
+6. Wins — clean completions (reflection balance; positive exemplars).
 
-**Death (the OMP write-only-store fix; shrink-biased like every Yi ratchet).**
-- `post_fire_failure_rate ≥ 0.6` over ≥ 5 fires → propose delete or rewrite
-  (the rule fires and doesn't help).
-- `zero_fire_streak ≥ 30` sessions → propose delete (dead trigger).
-- Store at cap → the report must propose ≥ 1 deletion per addition.
-- The **prune list is the report's first section**, before proposals. The
-  user lands deletions the same way as additions. Nothing is auto-deleted.
+**Derived stores** (`.yi/mining/`, gitignored, re-derivable): `mu.jsonl` ·
+`issues.jsonl` (fingerprint ledger, lifecycle NEW → CASED → FIXED(commit)
+→ REGRESSED → RETIRED; transitions are data events, never model judgment)
+· `orientation.jsonl` · `delegation.jsonl`. Redaction (§9) runs at
+extraction, so secrets never reach a derived store.
 
-**Mining trigger.** User-run, full stop. No heartbeat, no schedule, no
-session-end counter nudging — OMP's capture-on-counter is the drain
-(§1 row 4), and even a zero-token nudge is a standing surface that earns
-nothing a user noticing their own friction doesn't. Cost shape of one pass:
-kernel-side sweep over disk files (no model tokens for the bulk), one
-in-session drafting step over cluster tables only.
+**Outcomes driven, ranked (the v3 inversion made explicit):**
 
-## 5. Stages, gates, kill criteria
+1. **Eval case** — the failure distilled to a committed fixture (CASED);
+   drives the ratchet.
+2. **Tool/affordance change** — a TODOS row with the issue's numbers
+   attached (the mining skill always listed this output; it is the
+   highest-value one).
+3. **Doctrine/prompt edit** — ratchet-gated commit.
+4. **Fitted constant** — thresholds/weights from data (P4 pattern).
+5. **Trigger rule / lesson** — the zero-code tail, v3 laws intact
+   (verbatim needles, act-scope, ≤400-byte bodies, ≤12 rules,
+   prune-first reports, ≥1 deletion per addition at cap).
 
-**v0 — measure (skill edit only).** Extend skills/yi/session-mining with:
-signal census (advisory-derived μ fields are absent unless a model role
-named the reviewer — count before trusting), the μ table (§below) as one
-JSON row per session, the novelty check (proposals diffed against
-doctrine.md, har-core.md, identity.md, orchestrate.md, existing `.yi/rules`
-— a rule the system prompt already states is spend, not learning), the §4
-backtest with its confound stated (fired sessions are the harder sessions;
-deltas are direction, not proof), §6 redaction applied to the report itself,
-and the §4 lifecycle numbers (admission thresholds, prune rules) as the
-report's fixed skeleton.
-Kill: correction-classifier precision < 0.8 on hand-labeled n ≥ 50, or no
-*novel* actionable cluster. Then the flywheel dies here, documented.
+User outcome: one report — coverage line, issue board with lifecycle,
+prune list first, proposals ranked by the list above with numbers
+attached. Harness outcomes: cases, constants, rows. Nothing lands without
+the user.
 
-μ row (python emits; v5's Rust, if ever, freezes the same shape in
-yi-types then): `muTestsGreen: bool|null` (last build/test bash result:
-error flag + `exit N` tail; field shapes settled against a real fixture),
-`muCorrectionTurns: u32` (§7.6 constraint lexicon, the
-`advisor::digest::directives` table — reuse, don't fork; classifier
-validated by hand-label first), `muRevertOps` (checkpoint/rewind entries +
-re-edit-after-failing-bash), `muTurnsToFirstGreenEdit`, `muAbandoned`,
-`muClaimUnbacked` (census decides if the column is real), `muTokens`,
-`muCacheReadRatio` (the cost half of every comparison).
+## 9. Redaction (unchanged law, wider duty)
 
-**v1 — land and measure prospectively (no code).** User lands the best v0
-artifacts. Two-week toggle (`.yi/rules` renamed aside + lessons block
-in/out, alternating weekly). Compare `muCorrectionTurns`,
-turns-to-completion, **and the cost pair** (`muTokens`, cache read_ratio) —
-metrics lie in pairs. Dozens of heterogeneous sessions cannot reach
-significance; the pre-declared bar is directional benefit with no cost
-regression.
-Kill: flat or cost-negative → artifacts stay (they are the user's words),
-v2+ stops.
+Applied at extraction and to every artifact, case, ledger row, and
+reflection prompt: credential-store path lines dropped
+(`command_reads_credentials` lexicon — one vocabulary, second use);
+`authorization|bearer|api[-_]?key|token|secret|password` lines masked;
+`NAME=value` with ≥16-char mixed values and bare ≥32-char high-entropy
+tokens masked (SHAs/ulids get caught — acceptable, noted in the report);
+absolute `$HOME` → `~`. A planted-fake-secret fixture rides the mining
+skill as a self-check; plants must never appear in any output.
 
-**v2 — the prune loop (no code).** Second and later user-run passes: the
-outcome ledger drives the prune list; the store provably shrinks when
-evidence says shrink. This stage exists to demonstrate the property OMP
-lacks — a store that gets *smaller* on data.
+## 10. ARC-AGI and the kernel (researched 2026-08-29)
 
-**v3 — (retired; was scheduling).** Killed by §1 row 4. Recorded here so it
-stays dead.
+Findings, confidence marked. Prime Agent reports **95.5% ARC-AGI-3 RHAE
+Best@1** (runs 95.0/95.2/95.5; 99.97% Best@3, 183/183 levels) with Claude
+Opus 5 — *self-reported with a published action replay, not an
+ARC-Prize-verified leaderboard entry*; the official leaderboard's top base
+model is Opus 5 native at 30.2%, and other heavy harnesses cluster high
+(NVIDIA AVO claims 100%, Schema ~99%). RHAE = (human actions ÷ agent
+actions)², capped 1.15 — squared action efficiency (verified,
+docs.arcprize.org). Mechanism per the paper: **no ARC-specific workflow**
+— a persistent IPython REPL holding game state as variables, exploration
+and verification run as code, `rlm.run` recursive subagents returning
+handles, a PRO-LONG-style autonomous prompt. The local prime-agent clone
+contains zero ARC code (verified) — the mechanism is the harness itself.
 
-**v4 — checks on plan tasks (~100 lines + tests; needs a D-row).** One
-additive field and one deterministic gate:
+**Implication: Yi inherited the capability class.** The kernel +
+`python/yi_runtime` `rlm` package mirror prime-agent-runtime's
+`rlm.run` → host_request → spawn-handle loop by construction (the phase-4
+port). ARC therefore moves from "out of scope" (my v3 error) to
+"measurable, with named levers": the official ARC-AGI-3-Agents scaffold is
+already cloned; the levers are §4's 5/6/8 (delegation policy, kernel-spill
+policy, kernel utilization) plus the autonomy prompt as an optimizable
+asset. RHAE's formula is adopted repo-wide as the D-axis efficiency
+metric — the benchmark's own math rewards exactly the extreme-ends
+efficiency campaign.
 
-```rust
-// yi-types/src/plan.rs — additive (§19 rule 3), schemas.lock + fixture.
-pub struct Task {
-    // ...existing fields...
-    /// One command whose exit code establishes the acceptance; None is an
-    /// honest hole the advisor may name at a done-claim.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub check: Option<String>,
-}
-```
+Honesty rails: nothing is claimed until run on the official scaffold; Yi
+publishes replays (the recorder ships in the scaffold) or claims nothing;
+the 95.5% also rode Opus 5 plus a prompt, neither of which is architecture
+— expect the gap between "inherits the class" and "reproduces the number"
+to be real work, and let the first runs turn missing kernel-manager pieces
+(fork server, state snapshot, watchdog) into K-rows with numbers.
 
-`plan.update(state=done)` on a task with a check runs it through
-[`goal::run_check`] (same crate; exit-0-only, 2,000-char evidence tail). A
-red check refuses the transition and returns the evidence — the goal
-module's existing completion contract, now per task. The advisor digest
-header adds the count of done-claims on check-less tasks plus one sentence
-in `ADVISOR_SYSTEM_PROMPT`. No `Reviewer` job enum (one reviewer, one
-prompt). Freeze semantics already exist (`plan.edit` expand-only). D50
-permits all of it: this is completion *enforcement* the model opted into,
-not deterministic advice.
-Kill: users route around checks (tasks systematically declared without
-them) → keep the field, drop the advisor sentence.
+## 11. Online deterministic layer
 
-**v5 — real search (needs J1/J2/J3; own D-row; parked).** GEPA over the
-evals workspace, where acceptance can execute: two-phase (minibatch strict
-`σ' > σ`, ε = 0 until noise data argues; SePO's ε is admission *leniency*
-`σ' ≥ σ − ε`, not a higher bar), frequency-weighted Pareto draw (dominance
-pruning skipped under 20 candidates), rollout budget as a value the loop
-breaks on, `{Inputs, Generated Outputs, Feedback}` reflection records with
-1:1 failure/success balance, GEPA App. C meta-prompt adapted once, seeded
-xorshift64* for the banned-`rand` draw (seed forced nonzero — zero is a
-fixed point — via the `session_nonce` idiom, logged for replay), keyword
-matching tokenized like `orchestrate::word_hits` (substring `contains`
-matches "port" in "important"), MemAPO's UPDATE gate made real (a revised
-asset must still win its stored eval cases). Reflection ceiling per run: 92
-calls (GEPA Table 4; tunable). Human promote still gates persistence.
+`Task.check: Option<String>` (additive, §19 rule 3; schemas.lock + golden
+fixture): `plan.update(done)` runs it via [`goal::run_check`]; red refuses
+the transition and returns the evidence tail. The advisor digest gains the
+count of done-claims on check-less tasks plus one sentence in
+`ADVISOR_SYSTEM_PROMPT` (no Reviewer enum — one reviewer, one prompt).
+D50-clean: completion enforcement the model opted into — the goal module's
+existing contract, per task. On top, the two check-adjudicated test-time
+policies (§4 lever 3): bounded retry-on-red and best-of-n-selected-by-
+check — each measured on the instrument before it default-enables.
 
-## 6. Redaction
+## 12. Stages, gates, kill criteria (instrument first)
 
-Applied to every string that leaves a session file — report, rule text,
-lessons, any reflection prompt. v0–v2 enforce as numbered skill steps
-(human-gated landing is the backstop); v5's automation moves it into code.
+- **S0 — mining foundation (skill + kernel python; no Rust).** Extraction
+  schema v1, signal census (advisory-derived fields are usually absent —
+  count first), derived stores, issue board, redaction plants, coverage
+  line, first distilled failure scenarios. Kill: the corpus yields no
+  distillable failures — then Yi's problem is not learnable from its
+  history and only S2 benchmarks can steer.
+- **S1 — micro tier + ratchet (J3 + D76).** Cassette record/replay over
+  faux; `behavior_baseline.json` wired into `just check`; the
+  neutered-gate proof. First cases: S0's scenarios + §3's harness
+  behaviors. Kill: cassettes prove nondeterministic across two runs — fix
+  that before scaling anything.
+- **S2 — adapters + ledger (J1/J2, shaped by this plan).** `yi_harbor`,
+  `yi_pier`, metric emission incl. pier extras, `docs/eval-ledger.md`,
+  first baseline rows on TB2.1 + SWE-Atlas subsets + one ARC-AGI-3 run.
+  No kill — this stage only reveals; its numbers steer everything after.
+- **S3 — online layer (N11).** Task.check, retry-on-red, best-of-by-check,
+  route→effort map — each landed only with an S2 delta and zero suite
+  regressions.
+- **S4 — campaigns + get_context.** T1/T2 extreme-ends campaigns; the §5
+  packet on the P3 chassis; orientation metrics close the loop; the
+  embeddings ban relitigated by C metrics only.
+- **S5 — GEPA proper (D75).** Round-robin module optimization over the
+  instrument; candidates-as-commits under §7; reflection budget ≤ 92
+  calls/run (GEPA Table 4; tunable). Kill: the frontier-headroom test —
+  if one budgeted pass moves nothing on S2 baselines, record that in the
+  ledger and stop.
 
-1. Drop lines naming a credential-store path (`command_reads_credentials`
-   lexicon — one vocabulary, second use; the N10 argument).
-2. Mask lines matching `authorization|bearer|api[-_]?key|token|secret|password`
-   (case-insensitive).
-3. Mask `NAME=value` with value ≥ 16 chars mixed alpha/digit no spaces;
-   bare ≥ 32-char high-entropy tokens. Git SHAs/ulids get caught —
-   acceptable, noted in the report when it happens.
-4. Absolute `$HOME` prefixes → `~`.
+## 13. Guardrail and ratchet impact
 
-A planted-fake-secret fixture (never a real key) rides the v0 skill as a
-self-check; the report must not contain the plants.
+| dimension | S0 | S1 | S2 | S3+ | note |
+|---|---|---|---|---|---|
+| deps (direct/transitive) | 0 | 0 | 0 | 0 | adapters are python under evals/ (J2's stated shape); dsrs/gepars stay pattern donors (banned crates welded in; 483/229 locks) |
+| YI_* vars / config keys / CLI verbs | 0 | 0 | 0 | 0 until a run needs a knob — then the row first | env cap 40 untouched |
+| src LOC | 0 | cassette + gate glue | 0 (evals/ workspace has its own test-LOC budget) | ≈ +100 (N11) + P3 adjuncts | ratchet `--update` own-commit law |
+| prompts/.md | 0 | 0 | 0 | +1 sentence (advisor) · reflect.md at S5 | duplication budget 0 |
+| new gates | — | behavior_baseline (D76) | — | — | proven by neutering |
+| request-prefix bytes | 0 | 0 | 0 | 0 | law 4 |
+| API spend in CI | 0 | 0 | 0 | 0 | task evals user-run, budgeted, ledgered |
 
-## 7. Artifact formats (no new schemas before v4)
+## 14. Rows and D-rows (renumbered 2026-08-29 against the live file:
+`P8`-`P11` and `A12`/`F7`/`O10` were taken by the session-01a04c94 batch)
 
-Rule file — exactly the D54 shape `read_rule` parses, provenance-lined like
-`rule_markdown` output, act-scoped per §4:
+- `P12` mining foundation · M · skills/yi/session-mining + kernel python —
+  S0 as §8. done: report over the real corpus; coverage line; plants
+  absent; ≥1 failure distilled to a replayable scenario spec.
+- `J3'` (shape the existing J3 row): cassettes serve the micro tier; case
+  format = cassette + pass condition. done: one mined case replays twice
+  with byte-identical verdicts.
+- `J11` behavior ratchet · S · scripts/guardrails + baselines (needs
+  D-row D76). done: a red case blocks `just check`; neutered-gate proof;
+  baseline `--update` in its own commit.
+- `J1'/J2'` (shape the existing J1/J2 rows): adapters emit §4 metrics
+  incl. pier extras; eval-ledger.md; first TB2.1 / SWE-Atlas / ARC rows.
+  done: a ledger row per suite with config fingerprint.
+- `N11` task checks · M · types/plan.rs + runtime/{plan,advisor} (needs
+  D-row D74) — §11. done: red-check refusal, neutered proof, golden
+  fixture, older-reader passthrough.
+- `P13` get_context · M · rides P3 (grid SDK) + orientation mining — §5.
+  done: packet tool registered at SessionStart; orientation-cost delta
+  measured on T2 tasks.
+- Campaign and GEPA rows land at S4/S5 with D75.
 
-```markdown
----
-trigger: git commit -m, git commit --message
-scope: tool:bash
-mode: remind
-gap: once
----
-Commit messages containing backticks or $( go through `git commit -F -`
-with a quoted heredoc; zsh command-substitutes inside double quotes.
+D-row drafts (texts only; claim numbers at land after re-reading the
+header — 0.35.0/D55 and 0.38.0/D57 were both lost to this):
 
-(mined from sessions 01a04c94, 3f2201aa; backtest 4/4 failure sessions,
-0 benign; edit or delete this file to change it)
-```
+- **D74 — executable acceptance on plan tasks.** `Task.check` additive;
+  `plan.update(done)` runs it via the goal check runner; red refuses with
+  the evidence tail; the advisor digest counts check-less done-claims.
+  Why: Factory's 36→90% result that self-authored completion criteria
+  collapse; deterministic enforcement the model opted into (D50-clean);
+  the plan module's expand-only law supplies the freeze. Reversible-via:
+  drop the field read + header count; the field survives as unknown data.
+- **D75 — instrument-driven optimization (campaigns + GEPA), parked until
+  S2 baselines exist.** Candidates are commits under the §7 template; exit
+  gate = suite regressions 0; extreme-ends campaign doctrine.
+  Reversible-via: additive tooling; no data stranded.
+- **D76 — behavior baseline gate.** A shrink-only micro-eval ratchet in
+  `just check`, faux tier only. Why: prompts and behavior are the last
+  unmeasured surface; the code-gate law extends to them. Reversible-via:
+  remove the gate call + baseline file; cases remain ordinary tests.
 
-Lessons — `## Lessons` in AGENTS.md (this repo: via .ruler/ + apply), one
-sentence per lesson, ≤ 1,500 bytes total, provenance in a trailing comment.
-
-Mining report skeleton, in order: coverage line (`N scanned, M skipped
-(reason), DATE..DATE` — never skipped) → μ census → **prune list with
-ledger numbers** → proposals (artifact verbatim + needle provenance +
-backtest numbers + novelty verdict) → the thresholds used.
-
-yi-types additions: none until v4 (`Task.check`), then schemas.lock +
-golden fixture in the same commit.
-
-## 8. Tests
-
-v0 (the measurement must be trustworthy first): hand-label ≥ 50 turns for
-the correction classifier, report precision/recall (< 0.8 kills);
-determinism (sweep twice, reports diff empty); time-split honesty (mine
-older 80%, hold out newest 20%, drift confound noted); redaction plants
-absent; coverage line present; **lifecycle dry-run** — the report's prune
-and admission sections compute from a synthetic corpus fixture with known
-counts, so the thresholds are exercised before they ever judge real rules.
-
-v4 (doctrine-compliant; each test names the consumer-visible failure):
-`Task.check` round-trips through a real session file and an older reader
-passes it through (§19 rules 3/6; golden fixture, never edited);
-`plan.update(done)` on a red check refuses and the model sees the evidence
-tail — proven by neutering the gate and watching the wrongly-green
-transition; a done-claim on a check-less task surfaces in the digest header
-count (faux provider scripting the reviewer); any fix-shaped test runs red
-against unfixed code first.
-
-v5 tests ride its own D-row.
-
-## 9. Guardrail and ratchet impact
-
-| dimension | v0–v2 | v4 | note |
-|---|---|---|---|
-| direct/transitive deps | 0 | 0 | dsrs/gepars pattern donors only — both dependency-disqualified (banned crates welded in; 483/229-package locks) |
-| new crates / modules / config keys / YI_* vars / CLI verbs | 0 | 0 | |
-| src LOC | 0 | ≈ +100 | plus the deferred ~10-line `rule_fired` Record only if body-match attribution proves ambiguous |
-| prompts/.md | 0 | +1 sentence in an existing const | reflect.md deferred to v5 |
-| request-prefix bytes | 0 | 0 | rules deliver in-transcript; lessons ride the yard; J5 measures a fixed test scenario |
-| schemas.lock | 0 | +1 type touched | fixture same commit |
-| per-session injection (not a CI gate; a design bound) | ≤ 12 one-line reminders + ≤ 1,500-byte yard block | — | vs OMP: 5k-token memory dump every turn, 16k-token skill descriptions, 300–700-token stream interrupts |
-
-## 10. Draft rows and D-rows
-
-Rows (renumbered 2026-08-29 against the live file: the `P8`/`P9` this draft
-held were taken by the session-01a04c94 batch, exactly the collision the
-header warns about. TODOS is worked in file order, so placement is
-sequencing):
-
-- `P12` flywheel v0 sweep · S · skills/yi/session-mining — census, μ rows,
-  novelty check, §4 lifecycle skeleton (admission/prune thresholds),
-  redaction steps, artifact formats.
-  done: report over the real per-project corpus; coverage line; classifier
-  precision/recall stated; plants absent; lifecycle dry-run fixture green;
-  the kill question answered either way.
-- `P13` flywheel v1/v2 measurement · S · no code — land chosen artifacts;
-  two-week toggle; benefit + cost pairs; second pass exercises the prune
-  list on real ledger numbers.
-  done: a written keep/kill verdict with the numbers, and at least one
-  evidence-driven prune executed or explicitly declined.
-- `N11` task checks · M · crates/types/src/plan.rs +
-  crates/runtime/src/{plan.rs, advisor/} (needs D-row; N owns the plan
-  system, D52/D53) — `Task.check`, red-check refusal at done,
-  check-less-claim count in the digest header.
-  done: §8 v4 tests green incl. the neutered-gate proof.
-- v5 gets its row only when J1–J3 exist; until then it is a parked
-  dependency note, not a row.
-
-D-rows (texts only; claim numbers at land after re-reading the header —
-0.35.0/D55 and 0.38.0/D57 were both lost to this):
-
-- **D74 (placeholder) — executable acceptance on plan tasks.** Decision:
-  `Task.check: Option<String>` (additive); `plan.update(done)` runs it via
-  the goal check runner; red refuses with the evidence tail; the advisor
-  digest counts check-less done-claims. Why: Factory's 36→90% result that
-  self-authored completion criteria collapse; deterministic enforcement the
-  model opted into, which D50 permits; the plan module's expand-only law
-  supplies the freeze. Reversible-via: drop the field read and the header
-  count; the field survives as unknown data (§19 rule 4).
-- **D75 (placeholder, parked until J1) — offline search over evals.**
-  Decision: GEPA-style reflective search over the evals workspace,
-  optimizing Yi's own prompt assets as round-robin modules, human-promoted,
-  deterministic μ. Why: acceptance requires execution (§0); the corpus
-  supplies reflection material, the evals supply μ. Reversible-via:
-  additive tooling; deleting it strands no data.
-
-## 11. What we are NOT building
-
-OMP-killed (each with its §1 evidence):
-
-- **Scheduled/heartbeat mining, and any reflection loop on a counter
-  trigger** — OMP's capture re-bills the whole conversation uncached per
-  firing (sdk.ts:1145-1166); even the zero-token nudge is cut: a standing
-  surface that earns nothing over the user noticing their own friction.
-- **Stream-watching rules (TTSR-style interrupt/retry)** — mention/act
-  confusion is structural to buffer-regex (export/ttsr.ts:362); Yi's
-  act-scoped tool rules + the wall/permission engine already own this
-  space.
-- **LLM-judged creation, retention, retrieval, or deletion** — the
-  division-of-labor law; OMP's model-gated skills with no human gate and no
-  ledger are the counterexample (manage-skill.ts:40).
-- **Uncapped per-item render text; whole-store prompt dumps** — the 16k
-  single-skill and 5k memory-dump failure (managed-skills.ts:62-69,
-  memories/index.ts:1400-1414); every Yi artifact carries a render cap and
-  fires by trigger.
-- **Write-only stores** — no artifact without an outcome ledger and a
-  prune threshold; the report leads with deletions.
-
-Self-review-killed (v1/v2, kept dead):
+## 15. Not building (accumulated; each with its killer)
 
 - Live prompt rewriting/paraphrase; per-prompt GEPA (invariant zero;
-  negative-EV).
-- Per-prompt retrieval into trusted blocks; augmenter extension; journal +
-  undo; Template/Candidate/TaskSpec DTOs; recon compiler +
-  spec-compiler.md; `flywheel.enabled` / `yi flywheel` / `models.miner`;
-  Reviewer job enum; two-phase/Pareto/budget/xorshift before v5.
-- Embeddings/vector store (linear scan over ≤ a few dozen strings is
-  free); merge/crossover (no-op at this module count; hurt the smaller
-  model in GEPA); multi-agent validator (the advisor is singular, §7.5);
-  dsrs/gepars as dependencies; a second μ summarizer model;
-  auto-persistence of anything (TRACE; the user landing every artifact is
-  the feature).
+  negative-EV: SePO baselines, MPO/TextGrad, GEPA's greedy ablation).
+- Scheduled/heartbeat anything (OMP capture: full-context clone, fresh
+  cache key per firing, no budget); LLM-judged firing / persistence /
+  eviction (law 2); TTSR-style stream interrupts (mention/act confusion is
+  structural to buffer-regex); uncapped per-item renders and whole-store
+  prompt dumps (OMP's 16k-token skill, 5k memory dump); write-only stores
+  (no ledger, no prune).
+- Prime-style auto-persisted continual state (their own paper won't claim
+  the credit; the human gate stays).
+- Per-prompt trusted-block retrieval (cache law); journal/undo/store DTOs;
+  recon spec-compiler + TaskSpec entry (plan/goal own it); a Reviewer job
+  enum; diary A/B as evidence (the instrument replaced it).
+- Embeddings/semantic search until C metrics prove deterministic
+  orientation fails (§1.1's own condition, finally measurable);
+  merge/crossover (no-op at this module count; hurt the smaller model in
+  GEPA); a second μ summarizer; a multi-agent validator (the advisor is
+  singular, §7.5); dsrs/gepars as dependencies; shipping any campaign
+  artifact that fails the suite-regression gate (leaderboard hacks stay in
+  the log).
 
-## 12. Open questions
+## 16. Open questions
 
-- **One-in-one-out ruling**: v0–v2 are skill text and process; v4 is the
-  plan system's own acceptance law built out; v5 is where the §1.1 ruling
-  genuinely bites. The plan assumes only v5 triggers it; the ruling is the
-  user's.
-- **Thresholds**: cluster ≥ 5 across ≥ 3 sessions; backtest ≥ 3 failure /
-  ≤ 1 benign; prune at post-fire failure ≥ 0.6 over ≥ 5 fires or 30-session
-  zero-fire streak; ≤ 12 rules; ≤ 400-byte bodies; ≤ 1,500-byte lessons —
-  all proposed, set finally at P8 time with the corpus in view.
-- **Lessons home**: AGENTS.md `## Lessons` (this repo: .ruler/ + apply) vs
-  a dedicated project file loaded the same way. Default AGENTS.md; decide
-  at first landing.
-- **Rule-fire attribution**: body-text match first; the ~10-line
-  `rule_fired` Record row only if real reports show ambiguity.
-- **v5 shape**: revisit against whatever J1 actually builds; D75 stays a
-  draft until then.
+- Task subsets: which TB2.1/SWE-Atlas tasks pin T1 (hardest) and T2
+  (easiest); which ARC level slice pins T5. Pick from the first S2
+  baseline rows, not a priori.
+- Budgets: USD/token cap per task-eval run and per campaign; set at the
+  first S2 run, recorded in the ledger header.
+- Case format: cassette granularity (full session vs turn-slice) — settle
+  in J3' against a real mined failure.
+- One-in-one-out: S0–S3 build the repo's own gates, not §1.1 features;
+  S4/S5 is where the ruling bites — user's call at D75 time.
+- Commit-lint guardrail for `Opt-*` trailers: only after the template
+  survives ~10 real commits.
+- Replay publication for ARC claims: where replays live (repo? ledger
+  artifact?) — decide at the first ARC run.
