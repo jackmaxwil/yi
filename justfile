@@ -120,6 +120,37 @@ package version target=`rustc -vV | sed -n 's|host: ||p'`:
     scripts/package.sh {{version}} {{target}}
     scripts/smoke.sh target/package/yi-{{version}}-{{target}}.tar.gz
 
+# Cross-build + package a musl target via zig (no musl-gcc/cross needed).
+# Fails closed by name when the rustup target or zig is missing (O1): a
+# missing toolchain must never be reported as a packaged artifact. Cannot
+# smoke-test the result -- the cross binary does not run on this host -- so
+# that step is named skipped rather than silently omitted; the container's
+# `yi --version` preflight (evals/README) is the real smoke.
+package-musl version target='x86_64-unknown-linux-musl':
+    #!/usr/bin/env bash
+    set -euo pipefail
+    target='{{target}}'
+    rustup target list --installed | grep -qx "$target" || {
+      echo "package-musl: rustup target '$target' not installed -- run: rustup target add $target"
+      exit 1
+    }
+    command -v zig >/dev/null || {
+      echo "package-musl: zig not found -- install zig, or use musl-cross gcc / cargo-zigbuild instead"
+      exit 1
+    }
+    cargo_var=CARGO_TARGET_$(echo "$target" | tr 'a-z-' 'A-Z_')_LINKER
+    cc_var=CC_$(echo "$target" | tr '-' '_')
+    ar_var=AR_$(echo "$target" | tr '-' '_')
+    export "$cargo_var=$(pwd)/scripts/zigcc.sh"
+    export "$cc_var=$(pwd)/scripts/zigcc.sh"
+    export "$ar_var=$(pwd)/scripts/zigar.sh"
+    export ZIG_TARGET="${target%-unknown*}-${target##*-unknown-}"
+    cargo build --profile dist -p yi-cli --target "$target"
+    python3 scripts/check_elf.py "target/$target/dist/yi" "$target"
+    scripts/package.sh {{version}} "$target"
+    echo "package-musl: smoke.sh NOT run on this host (cross binary can't execute on darwin);"
+    echo "package-musl: the container's 'yi --version' preflight (evals/README) is the real smoke."
+
 # Catalog skills (§14.1) install into the global root; the fragments an
 # extension attaches are compiled in.
 install-skills:
