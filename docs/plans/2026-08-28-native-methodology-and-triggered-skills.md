@@ -509,7 +509,7 @@ Initial affordance inventory:
 
 | Moment | Affordance appended to the result |
 |---|---|
-| `rlm.run` returns a handle | `next: await rlm.wait(120) collects; rlm.send('<name>', msg) steers; transcript: <session_dir>/*.jsonl` |
+| `rlm.run` returns a handle | `next: await rlm.wait(120) collects; rlm.send('<name>', msg) steers` — the `transcript: <session_dir>/*.jsonl` clause shipped and was removed at 0.68.0 (TODOS `P9`): nothing attaches a store to a child, so it named an empty directory and a real session spent two turns listing it |
 | child finishes or reports | `next: h.result(schema=...) validates host-side; child stays addressable for follow-ups` |
 | tool call malformed twice with the same mistake | the corrected call template with the caller's own arguments substituted in |
 | truncated or reduced output | existing T19 pointer, unchanged |
@@ -708,10 +708,10 @@ how to report (terse outcome first, blockers as facts). A child is a
 persistent session, not a stateless call: it can send you a line
 mid-run, and you can message it again after it reports.
 
-    h = rlm.run(brief, isolation='worktree')   # mutators get a worktree
-    done = await rlm.wait(120)                  # blocks until report/finish
-    r = await h.result(schema=TASK_SCHEMA)      # validates at the seam
-    rlm.merge_worktree(h.name)                  # or discard_worktree
+    h = await rlm.run(brief, isolation='worktree')  # returns at admission
+    await rlm.wait(120)                             # blocks until report/finish
+    r = await h.result(schema=TASK_SCHEMA)          # validates at the seam
+    await rlm.merge_worktree(h.name)                # or discard_worktree
 
 fork only to hand a child a thread it must continue; a fresh brief beats
 inherited context for independent work. Pass deny_write on the
