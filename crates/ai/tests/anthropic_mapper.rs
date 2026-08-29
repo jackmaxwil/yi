@@ -59,7 +59,9 @@ fn build_params_places_cache_control_and_tools() -> Result<(), Box<dyn Error>> {
     assert_eq!(params["stream"], true);
     assert_eq!(params["system"][0]["cache_control"]["type"], "ephemeral");
     assert_eq!(params["tools"][0]["input_schema"]["type"], "object");
-    assert_eq!(params["tools"][0]["cache_control"]["type"], "ephemeral");
+    // Tools precede system, so the system breakpoint already caches them; the
+    // freed slot pays for a second system block instead.
+    assert!(params["tools"][0]["cache_control"].is_null());
     let last_user = params["messages"]
         .as_array()
         .ok_or("messages")?
@@ -71,6 +73,31 @@ fn build_params_places_cache_control_and_tools() -> Result<(), Box<dyn Error>> {
         .last()
         .ok_or("block")?;
     assert_eq!(last_block["cache_control"]["type"], "ephemeral");
+    Ok(())
+}
+
+/// The assembled prompt carries its own block separators, and each block takes
+/// a breakpoint: the universal prefix stays cached when the yard changes.
+#[test]
+fn system_blocks_split_on_the_separator() -> Result<(), Box<dyn Error>> {
+    use yi_types::model::SYSTEM_BLOCK_SEPARATOR;
+    let options = AnthropicOptions {
+        cache: true,
+        cache_1h: true,
+        ..AnthropicOptions::default()
+    };
+    let mut context = context();
+    context.system_prompt = ["identity", "mode", "yard", "extra"].join(SYSTEM_BLOCK_SEPARATOR);
+    let params = build_params(&model(), &context, &options);
+    let blocks = params["system"].as_array().ok_or("system")?;
+    assert_eq!(
+        blocks.len(),
+        3,
+        "four blocks fold into the three breakpoints"
+    );
+    assert_eq!(blocks[0]["text"], "identity");
+    assert_eq!(blocks[2]["text"], "yard\n\nextra");
+    assert_eq!(blocks[0]["cache_control"]["ttl"], "1h");
     Ok(())
 }
 

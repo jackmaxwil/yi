@@ -2,7 +2,7 @@ use serde_json::{Map, Value, json};
 use tokio::sync::mpsc::{Receiver, Sender};
 use yi_types::event::AssistantMessageEvent;
 use yi_types::message::{AgentMessage, Content, StopReason, Usage, UserContent};
-use yi_types::model::{LlmContext, Model, ToolDef};
+use yi_types::model::{LlmContext, Model, SYSTEM_BLOCK_SEPARATOR, ToolDef};
 
 use crate::catalog::calculate_cost;
 use crate::compat::compat_bool;
@@ -29,6 +29,43 @@ pub struct AnthropicOptions {
     pub temperature: Option<f64>,
     pub thinking: Thinking,
     pub cache: bool,
+    /// Interactive sessions hold the stable prefix for an hour.
+    pub cache_1h: bool,
+}
+
+const CACHE_TTL_BETA: &str = "extended-cache-ttl-2025-04-11";
+
+fn ephemeral(long: bool) -> Value {
+    if long {
+        json!({"type": "ephemeral", "ttl": "1h"})
+    } else {
+        json!({"type": "ephemeral"})
+    }
+}
+
+/// Three of the four breakpoints: universal prefix, trusted prompt, yard. The
+/// fourth is the newest message.
+fn system_blocks(system: &str, options: &AnthropicOptions) -> Vec<Value> {
+    let parts: Vec<&str> = system.split(SYSTEM_BLOCK_SEPARATOR).collect();
+    let mut texts: Vec<String> = Vec::new();
+    for (index, part) in parts.iter().enumerate() {
+        if index < 3 {
+            texts.push((*part).to_owned());
+        } else if let Some(last) = texts.last_mut() {
+            last.push_str("\n\n");
+            last.push_str(part);
+        }
+    }
+    texts
+        .iter()
+        .map(|text| {
+            let mut block = json!({"type": "text", "text": text});
+            if options.cache {
+                block["cache_control"] = ephemeral(options.cache_1h);
+            }
+            block
+        })
+        .collect()
 }
 
 fn text_block(text: &str) -> Value {
@@ -237,11 +274,7 @@ pub fn build_params(model: &Model, context: &LlmContext, options: &AnthropicOpti
         "stream": true,
     });
     if !context.system_prompt.is_empty() {
-        let mut system = json!({"type": "text", "text": context.system_prompt});
-        if options.cache {
-            system["cache_control"] = json!({"type": "ephemeral"});
-        }
-        params["system"] = json!([system]);
+        params["system"] = Value::Array(system_blocks(&context.system_prompt, options));
     }
     let supports_temperature = compat_bool(model, "supportsTemperature", true);
     if let Some(temperature) = options.temperature
@@ -253,7 +286,9 @@ pub fn build_params(model: &Model, context: &LlmContext, options: &AnthropicOpti
     if let Some(tools) = &context.tools
         && !tools.is_empty()
     {
-        params["tools"] = Value::Array(convert_tools(tools, options.cache));
+        // Tools precede system, so a system breakpoint already caches them.
+        let cache_tools = options.cache && context.system_prompt.is_empty();
+        params["tools"] = Value::Array(convert_tools(tools, cache_tools));
     }
     if model.reasoning {
         match &options.thinking {
@@ -714,13 +749,17 @@ fn run_request(
     model: &Model,
     body: &Value,
     api_key: &str,
+    long_cache: bool,
     sender: &Sender<AssistantMessageEvent>,
 ) -> Result<(), String> {
     let url = format!("{}/v1/messages", model.base_url);
-    let headers = [
+    let mut headers = vec![
         ("x-api-key", api_key.to_owned()),
         ("anthropic-version", ANTHROPIC_VERSION.to_owned()),
     ];
+    if long_cache {
+        headers.push(("anthropic-beta", CACHE_TTL_BETA.to_owned()));
+    }
     let response = crate::request::send_with_retry(&url, &headers, body)?;
     let mut mapper = Mapper::new(model);
     let _ = sender.blocking_send(mapper.start_event());
@@ -753,8 +792,9 @@ pub fn stream(
     let body = build_params(model, context, options);
     let model = model.clone();
     let api_key = api_key.to_owned();
+    let long_cache = options.cache && options.cache_1h;
     tokio::task::spawn_blocking(move || {
-        if let Err(message) = run_request(&model, &body, &api_key, &sender) {
+        if let Err(message) = run_request(&model, &body, &api_key, long_cache, &sender) {
             let mut mapper = Mapper::new(&model);
             let event = mapper.fail(&message);
             let _ = sender.blocking_send(event);

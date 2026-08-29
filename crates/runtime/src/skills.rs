@@ -10,33 +10,62 @@ pub struct Skill {
     pub path: PathBuf,
 }
 
-/// Project root, then global. A project skill shadows a global one of the same
-/// name; the bundled set installs into the global root, never into the binary.
+/// Project roots, then global, own format before the conventions Yi reads for
+/// compatibility. First root wins a name, so a project skill shadows a global
+/// one and `.yi` shadows `.agents`, `.pi`, `.claude`.
 pub fn roots(cwd: &Path, home: &Path) -> Vec<PathBuf> {
-    vec![home.join(".yi/skills"), cwd.join(".yi/skills")]
+    crate::ext::resource_roots(cwd, home, "skills")
 }
 
 pub fn discover(cwd: &Path, home: &Path) -> Vec<Skill> {
+    let (mut global, project) = discover_split(cwd, home);
+    global.extend(project);
     let mut found: BTreeMap<String, Skill> = BTreeMap::new();
-    for root in roots(cwd, home) {
-        for skill in scan(&root) {
-            found.insert(skill.name.clone(), skill);
-        }
+    for skill in global {
+        found.entry(skill.name.clone()).or_insert(skill);
     }
     found.into_values().collect()
+}
+
+/// The user's own roots and the repository's, kept apart: a repository author
+/// writes the descriptions in the second set, so those render in the yard
+/// instead of the trusted prefix.
+pub fn discover_split(cwd: &Path, home: &Path) -> (Vec<Skill>, Vec<Skill>) {
+    let mut global: BTreeMap<String, Skill> = BTreeMap::new();
+    let mut project: BTreeMap<String, Skill> = BTreeMap::new();
+    for root in roots(cwd, home) {
+        let target = if crate::ext::is_project_root(&root, cwd, home) {
+            &mut project
+        } else {
+            &mut global
+        };
+        for skill in scan(&root) {
+            target.entry(skill.name.clone()).or_insert(skill);
+        }
+    }
+    for name in project.keys() {
+        global.remove(name);
+    }
+    (
+        global.into_values().collect(),
+        project.into_values().collect(),
+    )
 }
 
 /// `description` is the trigger surface, so it is carried in full and the block
 /// as a whole is fitted to the `skills_meta` budget.
 pub fn skills_catalog(cwd: &Path, home: &Path, budget: Bytes) -> Option<Truncated> {
-    let skills = discover(cwd, home);
+    catalog_text(&discover(cwd, home), budget)
+}
+
+pub fn catalog_text(skills: &[Skill], budget: Bytes) -> Option<Truncated> {
     if skills.is_empty() {
         return None;
     }
     let mut body = String::from(
         "<skills>\nSkills you can follow. Read the file with `read` before acting on one.\n",
     );
-    for skill in &skills {
+    for skill in skills {
         body.push_str("- ");
         body.push_str(&skill.name);
         body.push_str(": ");

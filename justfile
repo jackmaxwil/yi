@@ -114,7 +114,8 @@ package version target=`rustc -vV | sed -n 's|host: ||p'`:
     scripts/package.sh {{version}} {{target}}
     scripts/smoke.sh target/package/yi-{{version}}-{{target}}.tar.gz
 
-# Bundled skills (14.1) are installed into the global root, not compiled in.
+# Catalog skills (§14.1) install into the global root; the fragments an
+# extension attaches are compiled in.
 install-skills:
     mkdir -p ~/.yi/skills
     cp -R skills/. ~/.yi/skills/

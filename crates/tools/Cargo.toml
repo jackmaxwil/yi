@@ -10,6 +10,7 @@ serde_json.workspace = true
 globset.workspace = true
 thiserror.workspace = true
 xxhash-rust.workspace = true
+yi-permission.workspace = true
 yi-types.workspace = true
 
 [lints]

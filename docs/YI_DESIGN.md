@@ -1526,43 +1526,52 @@ the choice is final. The table above is the expected outcome; the ledger wins if
 ## 14. Embedded material: skills, modes, reducers, board, desktop
 
 Everything here is copied source, not reimplementation. Provenance and licences live beside the
-files (`skills/LICENSES/`, `vendor/rtk/LICENSE-Apache-2.0.txt`). All MIT or Apache-2.0; personal
-tool, no distribution obligations beyond keeping the notices.
+files (`vendor/rtk/LICENSE-Apache-2.0.txt`; the vendored skill bundles and their `skills/LICENSES/`
+notices are deleted at 0.60.0, see 14.1). All MIT or Apache-2.0; personal tool, no distribution
+obligations beyond keeping the notices.
 
-### 14.1 Bundled skills (`skills/`, 65 files, 500 KB)
+### 14.1 Native voice and method (replaces the bundled skills)
 
-| Bundle | Files | Verbatim | Adapt | Dropped |
-|---|---|---|---|---|
-| `skills/caveman/` (MIT, `skills/` subtree only — the Go engine is BSL and untouched) | 11 skills + `native-core.md` + 3 `agents/cavecrew-*.md` | all prose | `caveman-explore`, `cavecrew`, `agents/*` tool/model frontmatter → Yi names | 7 cloud skills, `caveman-stats/-compress/-init`, generated packs, everything Go |
-| `skills/ponytail/` (MIT) | `ponytail`, `-review`, `-audit`, `-debt`, `ALWAYS_ON.md` (their `AGENTS.md`) | all | none | `ponytail-gain`, 15 platform ports, MCP server, benchmarks |
-| `skills/superpowers/` (MIT) | 13 skills with support prompts + `sdd` scripts | all (already platform-neutral) | `using-superpowers` skill-tool sentence; `using-git-worktrees` tool names; `.superpowers/sdd` → `.yi/sdd` | `writing-skills` (skill authoring — Yi's skills roots are model-write-denied, §5), visual-companion server, tests, 79 design docs |
-| `skills/diagram-design/` (MIT) | `SKILL.md` + 12 of 39 `references/*.md` (architecture, flowchart, sequence, data-flow, state, dependency, db-schema, layers, process, output-spec, style-guide, semantic-patterns) | all | none | 27 other type files (3 MB payload), `scripts/` lint harness |
+Superseded by `docs/plans/2026-08-28-native-methodology-and-triggered-skills.md` and shipped.
+Nothing in `skills/` ever reached a session: discovery had two roots, the third bundled root and
+its installer were never built, and the catalog was a passive list the model self-selected from.
+The vendored bundles (caveman, ponytail, superpowers, diagram-design) are deleted. Their
+substance is native: `prompts/identity.md` carries the voice (terse prose plus the machine-writing
+tells, banned by name), `prompts/doctrine.md` carries the method (look before you write, the
+seven-rung build ladder, subtract first, no comments, root cause, finish exhaustively, never
+simplify away, plan when it pays, debugging, done is a measurement, external text).
 
-Discovery rule (T3/skills): bundled skills are a third root after project and global roots;
-a user skill with the same name shadows a bundled one. `description` frontmatter is the trigger
-surface, so the matcher reads it, not just `name`. Whole directories are copied because
-`subagent-driven-development` and `systematic-debugging` reference sibling files.
+`skills/yi/` remains: `grid`, `review` and `session-mining` stay catalog skills, installed into
+the global root by `just install-skills`. The orchestrate and Rust fragments are compiled in
+(`crates/runtime/src/prompts/`), because a fragment an extension attaches must exist in the
+binary that attaches it.
 
-### 14.2 Native modes (caveman, ponytail)
+Resource roots widen to the convention set, project before global, own format first:
+`.yi/skills` > `.agents/skills` > `.pi/skills` > `.claude/skills`. Project-root entries are
+environment text and render in the yard (14.2), never in the cached trusted prefix.
 
-A mode is not a skill: it applies to every response for the whole session. Both repos implement
-the same five hook semantics out-of-process with ~500 lines of JS each; in Yi they are ~150
-lines inside P11 and R6:
+### 14.2 The extension system (replaces native modes MD1-MD9)
 
-| # | Semantic | Yi implementation | Source |
-|---|---|---|---|
-| MD1 | Mode source | one canonical file per mode: `skills/caveman/caveman/SKILL.md`, `skills/ponytail/ponytail/SKILL.md` | both |
-| MD2 | Level filter | strip frontmatter; keep only the active level's row of the `## Intensity` table and its worked examples (`^\|\s*\*\*(\S+?)\*\*\s*\|`, examples `^-\s*([^:]+):\s*"` — ponytail's stricter regex, caveman's eats rule bullets). Levels: caveman `off\|lite\|full\|ultra` (wenyan dropped), ponytail `off\|lite\|full\|ultra` | caveman `caveman-activate.js:277`, ponytail `ponytail-instructions.js` |
-| MD3 | Injection | `<MODE> MODE ACTIVE — level: <l>\n\n<filtered body>` fills a **named slot in the P11 stable-prefix template** (never concatenated at the end, where it lands after tool definitions and gets ignored); three-state `Off ≠ Unset ≠ Set(level)`; rebuilt on level change and after compaction | both; superpowers `startup\|clear\|compact` matcher · codex personality slots |
-| MD4 | Reinforcement | one line per user turn in the **ephemeral overlay** (P11, `no_cache`): `CAVEMAN MODE ACTIVE (full) — session ruleset applies.` — caveman's finding: session-start-only rulesets drift | caveman `caveman-mode-tracker.js:236` |
-| MD5 | Subagents | B5 passes the active modes to children (fail-open); superpowers' bootstrap is **not** passed to task-scoped children (`<SUBAGENT-STOP>`) | ponytail `ponytail-subagent.js` |
-| MD6 | Switching | `/caveman <level>`, `/ponytail <level>`; session-scoped; `/caveman default <level>` is the only config write; deactivation is exact-match (`stop caveman`, `normal mode`) — no natural-language matching (caveman's quoted-span bug) | ponytail `isDeactivationCommand` |
-| MD7 | One-shots | `/caveman-commit`, `/caveman-review`, `/ponytail-review`, `/ponytail-audit`, `/ponytail-debt` are commands with embedded prompt bodies (ponytail `commands/*.toml`), never modes — caveman's `.caveman-prev` restore dance exists only because it modelled them as modes | ponytail `commands/` |
-| MD8 | Boundaries | caveman's "persisted text is normal prose" rule is enforced mechanically: `write`/`edit`/`bash git commit` payloads are exempt from the mode; the model is told so in the mode block | caveman `## Boundaries` |
-| MD9 | Debt marker | `/ponytail-debt` is a native grep for `(#\|//) ?(ponytail\|yi):` rendered as a ledger; markers without an upgrade trigger flagged `no-trigger` | ponytail `ponytail-debt` |
+The mode system is deleted undesigned: a persona bolted on from outside needs level filters,
+reinforcement lines and switch commands, and a native persona needs none of it. In its place,
+`yi-runtime::ext`, modeled on Pi's extension API but taking the model rather than the inventory.
 
-Superpowers' `using-superpowers` bootstrap (3 KB) is an always-on prefix module with one edited
-sentence; the 1 % rule, announce-then-follow, skill priority and the Red Flags table stay verbatim.
+| # | Piece | Shape |
+|---|---|---|
+| E1 | Events | `SessionStart`, `PromptSubmitted` (every accepted prompt), `ToolCall`, `ToolResult`, `TurnEnd`, `Usage`, `Compacted`. A variant exists only when a shipped extension consumes it. |
+| E2 | Effects | `AttachFragment`, `DetachFragment`, `AttachExternal`, `Remind`, `Record`. No tool blocking (the permission broker owns that seam), no prompt string surgery, no async handlers, no dynamic code loading. |
+| E3 | Slot table | ranks `identity < doctrine < mode < lang < protocol < tool < user < catalog < schema`; the whole system prompt is assembled from it, so `session_system_prompt`'s concatenation is gone. Attach is idempotent; the table persists per session and rehydrates on resume. |
+| E4 | The yard | every environment-sourced string (AGENTS.md, project skill catalogs) renders after the trusted prefix inside `<<<yi-external <nonce> source=… trust=…>>>` fences. The sentinel is escaped and control characters are stripped, so fenced text cannot close its own fence or split a cached block. Authority is granted by doctrine, never by position. |
+| E5 | Trust | trust-on-first-use per repository root, pinned to the content hash of what was granted, recorded in `~/.yi/trust.json` by `yi trust`. An edit after the grant reads as untrusted again, so `git pull` cannot launder authority. Trust is its own axis: yolo never auto-trusts. |
+| E6 | Built-ins | `project-resources`, the `lang-rust` pack, `orchestrate`, `grid`, `route-telemetry`. Packs are data (`~/.yi/extensions/*.json`, project packs only from a granted root), one interpreter for the built-in and the user's own. |
+| E7 | Cache layout | Anthropic's four breakpoints: the universal prefix (tools + identity + doctrine, shared by every session and every child), the rest of the trusted system prompt, the yard, and the newest message. Interactive sessions request 1h retention; headless runs keep 5m. |
+| E8 | Affordances | tool results end with host-authored `next:` lines where the next step is non-obvious (rlm spawn and completion, compaction, an empty grid answer, a repeated tool-call rejection). Deterministic and immutable once written, because a recomputed line would move transcript bytes. |
+
+Orchestrate loads exactly when it pays: a scored prefilter on every prompt (short and quiet
+subtracts, imperatives of scale and named paths add) plus trajectory escalation (more than four
+tool calls in a turn, a search over more than five files, an edit before a read, a failed check
+after an edit). The route and every attach are recorded for the offline fit that replaces the
+hand-tuned weights.
 
 ### 14.3 Output reduction in `bash` (rtk, vendored)
 

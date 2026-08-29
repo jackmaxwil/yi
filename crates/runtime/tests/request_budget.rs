@@ -228,6 +228,61 @@ fn the_openai_cached_prefix_survives_a_turn() -> TestResult {
     )
 }
 
+/// The invariant the whole cache layout rests on: with no attach between two
+/// requests, every cached block is byte-identical, and an attach rebuilds only
+/// the block it landed in. The universal prefix (block 0) never moves, which is
+/// what a fan-out of children reads.
+#[test]
+fn the_assembled_prefix_is_stable_across_a_turn_and_a_yard_change() -> TestResult {
+    use yi_runtime::ext::{PromptState, Rank, Slot, Trust};
+    use yi_types::model::SYSTEM_BLOCK_SEPARATOR;
+
+    let mut state = PromptState::new("cafe1234".to_owned());
+    state.attach(
+        Slot::new(Rank::Identity, "identity"),
+        identity_fragment().to_owned(),
+    );
+    state.attach(
+        Slot::new(Rank::Doctrine, "doctrine"),
+        yi_runtime::doctrine_fragment().to_owned(),
+    );
+    state.attach(
+        Slot::new(Rank::Mode, "permission"),
+        mode_fragment(PermissionMode::Auto).to_owned(),
+    );
+    state.attach_external("AGENTS.md", Trust::Untrusted, "run the repo's own gate");
+
+    let blocks = |state: &PromptState| -> Vec<String> {
+        state
+            .assemble()
+            .split(SYSTEM_BLOCK_SEPARATOR)
+            .map(str::to_owned)
+            .collect()
+    };
+    let before = blocks(&state);
+    assert_eq!(before.len(), 3, "universal, trusted, yard");
+    assert_eq!(
+        before,
+        blocks(&state),
+        "assembling the same state twice must produce the same bytes"
+    );
+
+    state.attach_external("AGENTS.md", Trust::Untrusted, "the repository changed");
+    let after_yard = blocks(&state);
+    assert_eq!(before[0], after_yard[0], "block 0 survives a yard change");
+    assert_eq!(before[1], after_yard[1], "block 1 survives a yard change");
+    assert_ne!(before[2], after_yard[2]);
+
+    state.attach(Slot::new(Rank::Protocol, "orchestrate"), "PLAN".to_owned());
+    let after_attach = blocks(&state);
+    assert_eq!(
+        before[0], after_attach[0],
+        "a mid-session attach never rebuilds the universal prefix"
+    );
+    assert_ne!(before[1], after_attach[1]);
+    Ok(())
+}
+
 /// Read by scripts/guardrails/check_request_budget.py, which owns the ratchet.
 #[test]
 fn report_the_prefix_size() -> TestResult {

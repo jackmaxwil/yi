@@ -438,7 +438,7 @@ impl AcpState {
                                 INTERNAL_ERROR,
                                 "no permission broker is attached".to_owned(),
                             ))?
-                            .set_mode(mode);
+                            .set_mode_and_fragment(mode, &handle.session);
                     }
                     other => {
                         return Err((

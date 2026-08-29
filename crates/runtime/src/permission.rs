@@ -135,6 +135,19 @@ impl PermissionBroker {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
+    /// A switch re-attaches the mode slot: the model is told the new policy.
+    pub fn set_mode_and_fragment(&self, mode: PermissionMode, session: &crate::AgentSession) {
+        self.set_mode(mode);
+        if let Some(host) = session.extensions()
+            && let Ok(mut host) = host.lock()
+        {
+            host.attach(
+                crate::ext::Slot::new(crate::ext::Rank::Mode, "permission"),
+                yi_permission::mode_fragment(mode).to_owned(),
+            );
+        }
+    }
+
     pub fn set_mode(&self, mode: PermissionMode) {
         *self
             .mode
@@ -187,10 +200,15 @@ impl PermissionBroker {
             }
         };
         let targets = extract_targets(tool_name, args, &self.cwd);
+        let workspace = yi_permission::lexical_normalize(&self.cwd);
         let call = ToolCall {
             tool_name,
             reads_only: matches!(kind, ToolKind::Read),
             irreversible,
+            in_workspace: !targets.is_empty()
+                && targets
+                    .iter()
+                    .all(|target| yi_permission::lexical_normalize(target).starts_with(&workspace)),
             rule_kind,
             canonical: &canonical,
             display: &display,
