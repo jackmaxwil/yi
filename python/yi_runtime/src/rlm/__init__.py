@@ -30,6 +30,14 @@ class RLMSpawnHandle:
     name: str
     session_dir: Path
     model: str
+    next: str = ""
+
+    def __repr__(self) -> str:
+        head = (
+            f"RLMSpawnHandle(name={self.name!r}, model={self.model!r}, "
+            f"session_dir={str(self.session_dir)!r})"
+        )
+        return f"{head}\n{self.next}" if self.next else head
 
     async def result(
         self,
@@ -98,11 +106,13 @@ def _spawn_handle_from_payload(payload: Any) -> RLMSpawnHandle:
     model = payload.get("model")
     if not all(isinstance(value, str) and value for value in (child_id, name, session_dir, model)):
         raise RuntimeError("rlm.run returned an invalid spawn handle")
+    following = payload.get("next")
     return RLMSpawnHandle(
         rlm_child_id=child_id,
         name=name,
         session_dir=Path(session_dir),
         model=model,
+        next=following if isinstance(following, str) else "",
     )
 
 

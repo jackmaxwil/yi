@@ -44,6 +44,8 @@ impl PermissionAsk<'_> {
 pub type Asker = Arc<dyn Fn(&PermissionAsk<'_>) -> AskOutcome + Send + Sync>;
 
 pub struct PermissionBroker {
+    sandbox: Option<yi_tools::Sandbox>,
+    contained_failures: Mutex<std::collections::BTreeSet<String>>,
     mode: Mutex<PermissionMode>,
     config_rules: Vec<ConfigRule>,
     session_rules: Mutex<SessionRules>,
@@ -57,6 +59,11 @@ pub struct PermissionBroker {
 pub struct CallOutcome {
     pub allowed: bool,
     pub reason: String,
+    /// The call runs inside the platform sandbox rather than freely.
+    pub contained: bool,
+    /// The identity the broker keyed this decision on, so a caller can report
+    /// back what happened to it.
+    pub identity: String,
 }
 
 pub(crate) fn extract_targets(
@@ -104,6 +111,8 @@ impl PermissionBroker {
         events: broadcast::Sender<AgentEvent>,
     ) -> Self {
         Self {
+            sandbox: None,
+            contained_failures: Mutex::new(std::collections::BTreeSet::new()),
             mode: Mutex::new(mode),
             config_rules,
             session_rules: Mutex::new(SessionRules::new()),
@@ -113,6 +122,33 @@ impl PermissionBroker {
             asker,
             events,
         }
+    }
+
+    /// The sandbox that makes containment real. Without one, a contained
+    /// decision degrades to a question.
+    #[must_use]
+    pub fn with_sandbox(mut self, sandbox: Option<yi_tools::Sandbox>) -> Self {
+        self.sandbox = sandbox;
+        self
+    }
+
+    pub fn sandbox(&self) -> Option<&yi_tools::Sandbox> {
+        self.sandbox.as_ref()
+    }
+
+    /// The sandbox is the first attempt, the question is the second: a command
+    /// the sandbox refused is asked about the next time it is run, rather than
+    /// failing the same way forever.
+    pub fn note_containment_failure(&self, identity: &str) {
+        if let Ok(mut failures) = self.contained_failures.lock() {
+            failures.insert(identity.to_owned());
+        }
+    }
+
+    fn contained_and_failed(&self, identity: &str) -> bool {
+        self.contained_failures
+            .lock()
+            .is_ok_and(|failures| failures.contains(identity))
     }
 
     /// Whether an interactive asker exists — without one, an advisor Hold
@@ -133,6 +169,19 @@ impl PermissionBroker {
             .mode
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// A switch re-attaches the mode slot: the model is told the new policy.
+    pub fn set_mode_and_fragment(&self, mode: PermissionMode, session: &crate::AgentSession) {
+        self.set_mode(mode);
+        if let Some(host) = session.extensions()
+            && let Ok(mut host) = host.lock()
+        {
+            host.attach(
+                crate::ext::Slot::new(crate::ext::Rank::Mode, "permission"),
+                yi_permission::mode_fragment(mode).to_owned(),
+            );
+        }
     }
 
     pub fn set_mode(&self, mode: PermissionMode) {
@@ -187,10 +236,15 @@ impl PermissionBroker {
             }
         };
         let targets = extract_targets(tool_name, args, &self.cwd);
+        let workspace = yi_permission::lexical_normalize(&self.cwd);
         let call = ToolCall {
             tool_name,
             reads_only: matches!(kind, ToolKind::Read),
             irreversible,
+            in_workspace: !targets.is_empty()
+                && targets
+                    .iter()
+                    .all(|target| yi_permission::lexical_normalize(target).starts_with(&workspace)),
             rule_kind,
             canonical: &canonical,
             display: &display,
@@ -226,10 +280,36 @@ impl PermissionBroker {
             Decision::Allow { reason } => CallOutcome {
                 allowed: true,
                 reason,
+                contained: false,
+                identity: canonical.clone(),
+            },
+            // Containment is an allowance the sandbox enforces; without one
+            // there is nothing to enforce it, so the question stands.
+            Decision::Contain { reason } => match &self.sandbox {
+                Some(_) if !self.contained_and_failed(&canonical) => CallOutcome {
+                    allowed: true,
+                    reason,
+                    contained: true,
+                    identity: canonical.clone(),
+                },
+                _ => self.run_ask(
+                    &PermissionAsk {
+                        title: &format!("{tool_name} requires permission"),
+                        description: &format!("{reason}: {display}"),
+                        patch: preview,
+                        changes: &targets,
+                    },
+                    tool_call_id,
+                    rule_kind,
+                    &canonical,
+                    &display,
+                ),
             },
             Decision::Deny { reason } => CallOutcome {
                 allowed: false,
                 reason,
+                contained: false,
+                identity: canonical.clone(),
             },
             Decision::Ask { title, description } => self.run_ask(
                 &PermissionAsk {
@@ -279,6 +359,8 @@ impl PermissionBroker {
                 });
                 return CallOutcome {
                     allowed: false,
+                    contained: false,
+                    identity: canonical.to_owned(),
                     reason: format!(
                         "Permission required but no interactive surface is available. {rendered} Run with --yolo, or add an allow rule for this call."
                     ),
@@ -302,11 +384,15 @@ impl PermissionBroker {
             CallOutcome {
                 allowed: true,
                 reason: "allowed by user".to_owned(),
+                contained: false,
+                identity: canonical.to_owned(),
             }
         } else {
             CallOutcome {
                 allowed: false,
                 reason: format!("The user denied this call. {rendered}"),
+                contained: false,
+                identity: canonical.to_owned(),
             }
         }
     }

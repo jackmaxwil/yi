@@ -67,6 +67,7 @@ pub struct ProviderStream {
     pub thinking_level: Mutex<Option<String>>,
     pub session_id: Option<String>,
     pub faux: Mutex<FauxProvider>,
+    long_cache: bool,
 }
 
 impl ProviderStream {
@@ -76,7 +77,16 @@ impl ProviderStream {
             thinking_level: Mutex::new(None),
             session_id,
             faux: Mutex::new(FauxProvider::default()),
+            long_cache: false,
         }
+    }
+
+    /// An interactive session keeps its stable prefix for an hour; a headless
+    /// run keeps the default five minutes.
+    #[must_use]
+    pub fn with_long_cache(mut self, long_cache: bool) -> Self {
+        self.long_cache = long_cache;
+        self
     }
 
     pub fn set_thinking_level(&self, level: Option<String>) {
@@ -116,6 +126,7 @@ impl StreamFn for ProviderStream {
                 let options = AnthropicOptions {
                     thinking: anthropic_thinking(model, level.as_deref()),
                     cache: true,
+                    cache_1h: self.long_cache,
                     ..AnthropicOptions::default()
                 };
                 anthropic::stream(model, context, &options, self.key())

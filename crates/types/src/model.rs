@@ -50,6 +50,10 @@ pub struct ToolDef {
     pub parameters: serde_json::Value,
 }
 
+/// Splits [`LlmContext::system_prompt`] into independently cacheable blocks.
+/// A control character: prompt assembly strips it from environment text.
+pub const SYSTEM_BLOCK_SEPARATOR: &str = "\u{1d}";
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LlmContext {

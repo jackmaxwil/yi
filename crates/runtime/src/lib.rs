@@ -1,8 +1,11 @@
 #![forbid(unsafe_code)]
 
 pub mod advisor;
+pub mod affordance;
 pub mod checkpoint;
 pub mod compaction;
+pub mod ext;
+pub mod gate;
 pub mod goal;
 pub mod kernel;
 pub mod mailbox;
@@ -22,6 +25,7 @@ pub mod worktree;
 
 pub use checkpoint::{RecordedCheckpoint, UndoOutcome, recorded, undo, wire_turn_checkpoints};
 pub use compaction::{CompactStatus, Compactor};
+pub use ext::{ExtOptions, Host as ExtensionHost, Trust, TrustGate};
 pub use kernel::{
     HostRegistry, KernelService, KernelServiceOptions, ipython_tool, restore_notice_text,
 };
@@ -39,6 +43,17 @@ pub use tools::ToolAdapter;
 pub use wall::Wall;
 pub use yi_ai::auth;
 
+/// None where the platform has no sandbox: a contained decision then degrades
+/// to a question rather than to an unenforced allowance.
+pub fn workspace_sandbox(
+    cwd: &std::path::Path,
+    home: &std::path::Path,
+    session_dir: &std::path::Path,
+) -> Option<yi_tools::Sandbox> {
+    yi_tools::Sandbox::available()
+        .then(|| yi_tools::Sandbox::for_workspace(cwd, home, Some(session_dir)))
+}
+
 pub fn identity_fragment() -> &'static str {
     include_str!("prompts/identity.md")
 }
@@ -50,6 +65,8 @@ pub fn doctrine_fragment() -> &'static str {
 pub use yi_ai::faux;
 pub use yi_context::{Bytes, SourceBudgets, Truncated};
 pub use yi_loop::ExecutionMode;
-pub use yi_permission::{ConfigRule, ConfigRuleAction, PermissionMode, mode_fragment};
+pub use yi_permission::{
+    Class, ConfigRule, ConfigRuleAction, Decision, PermissionMode, Verdict, mode_fragment,
+};
 pub use yi_session as session_store;
 pub use yi_tools::{Change, ChangeKind, builtin_tools, discover_exec_tools, edit_file, list_files};

@@ -2,7 +2,9 @@ use std::path::PathBuf;
 
 use yi_types::permission::{RuleDecision, RuleKind};
 
-use crate::catastrophic::{CatastrophicContext, command_targets_catastrophic, is_catastrophic};
+use crate::catastrophic::{
+    CatastrophicContext, command_reads_credentials, command_targets_catastrophic, is_catastrophic,
+};
 use crate::rules::{ConfigRule, ConfigRuleAction, SessionRules};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -20,7 +22,7 @@ pub fn mode_fragment(mode: PermissionMode) -> &'static str {
             "Permission mode: ask. Read-only tools run freely; every write or command asks the user first. A denied call will not succeed on retry — change approach or ask the user."
         }
         PermissionMode::Auto => {
-            "Permission mode: auto. Read-only tools run freely; writes and commands run when a rule allows them and ask otherwise. A denied call will not succeed on retry."
+            "Permission mode: auto. Reads, writes inside the working tree, and commands Yi can prove are read-only run without asking. A destructive command (rm, git reset --hard, git clean -f, force push, chmod -R, package installs, ssh/scp/rsync) always asks, and so does anything Yi cannot parse statically: shell expansion, redirection, `sh -c`, `xargs`. When a call asks, say in one line why the destructive form is the right one, or pick the reversible form instead (git stash over checkout --, git revert over reset --hard, a trash directory over rm). A denied call will not succeed on retry."
         }
         PermissionMode::Yolo => {
             "Permission mode: yolo. Tools run without prompts, except catastrophic targets (system paths, home directory, the workspace .git), which are always denied."
@@ -52,9 +54,22 @@ impl Hold {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Decision {
-    Allow { reason: String },
-    Deny { reason: String },
-    Ask { title: String, description: String },
+    Allow {
+        reason: String,
+    },
+    /// Run it, but inside the platform sandbox. The broker downgrades this to
+    /// Ask where no sandbox exists, so policy stays here and capability stays
+    /// with the caller that knows the platform.
+    Contain {
+        reason: String,
+    },
+    Deny {
+        reason: String,
+    },
+    Ask {
+        title: String,
+        description: String,
+    },
 }
 
 /// Bash commands are decided whole in v1 (D35): an unparseable command is a
@@ -78,6 +93,9 @@ pub struct ToolCall<'a> {
     pub tool_name: &'a str,
     pub reads_only: bool,
     pub irreversible: bool,
+    /// Every path this call touches resolves inside the working tree, where a
+    /// turn checkpoint can undo it.
+    pub in_workspace: bool,
     pub rule_kind: RuleKind,
     pub canonical: &'a str,
     pub display: &'a str,
@@ -174,7 +192,8 @@ pub fn decide(
         PermissionMode::Yolo => Decision::Allow {
             reason: "allowed by yolo mode".to_owned(),
         },
-        PermissionMode::Ask | PermissionMode::Auto => {
+        PermissionMode::Auto => auto(call, catastrophic_context),
+        PermissionMode::Ask => {
             if call.reads_only && !call.irreversible {
                 Decision::Allow {
                     reason: "read-only invocation allowed".to_owned(),
@@ -183,6 +202,49 @@ pub fn decide(
                 ask(call, "tool invocation is not read-only")
             }
         }
+    }
+}
+
+/// Allow needs proof: a read, a checkpointed write, or a provably safe command.
+fn auto(call: &ToolCall<'_>, context: &CatastrophicContext) -> Decision {
+    if call.reads_only && !call.irreversible {
+        return Decision::Allow {
+            reason: "read-only invocation allowed".to_owned(),
+        };
+    }
+    let Some(command) = call.command else {
+        if !call.targets.is_empty() {
+            return match call.in_workspace {
+                true => Decision::Allow {
+                    reason: "write inside the working tree; the turn checkpoint can undo it"
+                        .to_owned(),
+                },
+                false => ask(call, "the target is outside the working tree"),
+            };
+        }
+        // A call that names no path is judged by the tool that made it: the
+        // kernel screens its own shell cells, and nothing else claims to be
+        // reversible without a path.
+        return if call.irreversible {
+            ask(call, "the call names no path Yi can check")
+        } else {
+            Decision::Allow {
+                reason: "the tool reports this call as reversible".to_owned(),
+            }
+        };
+    };
+    if let Some(hit) = command_reads_credentials(command, context) {
+        return ask(
+            call,
+            &format!("the command reads a credential store ({hit})"),
+        );
+    }
+    match crate::safety::verdict(command) {
+        crate::safety::Verdict::Allow => Decision::Allow {
+            reason: "every part of the command is read-only".to_owned(),
+        },
+        crate::safety::Verdict::Contain { reason } => Decision::Contain { reason },
+        crate::safety::Verdict::Ask { reason } => ask(call, &reason),
     }
 }
 

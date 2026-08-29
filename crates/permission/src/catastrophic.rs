@@ -148,6 +148,24 @@ pub fn is_catastrophic(path: &Path, context: &CatastrophicContext) -> bool {
 
 const DESTRUCTIVE_COMMANDS: [&str; 4] = ["rm", "rmdir", "shred", "unlink"];
 
+/// A key read into the transcript has already left the machine, so the
+/// credential stores are read-gated as well as destruction-denied. Path-shaped
+/// arguments only: this reads a command, it does not run one.
+pub fn command_reads_credentials(command: &str, context: &CatastrophicContext) -> Option<String> {
+    let home = context.home_dir.as_ref()?;
+    let protected: Vec<PathBuf> = PROTECTED_CREDENTIAL_SUBPATHS
+        .iter()
+        .map(|sub| lexical_normalize(&home.join(sub)))
+        .collect();
+    command
+        .split_whitespace()
+        .skip(1)
+        .filter(|token| !token.starts_with('-'))
+        .map(|token| expand(token, context))
+        .find(|path| protected.iter().any(|root| path.starts_with(root)))
+        .map(|path| path.to_string_lossy().into_owned())
+}
+
 /// A destructive verb sends every path-shaped token through the denylist. No
 /// shell-parsing cleverness (D15): this is a belt over the path-based checks.
 pub fn command_targets_catastrophic(
@@ -170,16 +188,15 @@ pub fn command_targets_catastrophic(
         if token.starts_with('-') {
             continue;
         }
-        let bare = token.trim_end_matches(['*', '/']);
-        let looks_pathish = bare.starts_with('/')
-            || bare.starts_with('~')
-            || bare.starts_with("$HOME")
-            || bare.starts_with("${HOME}")
-            || bare == "."
-            || bare == "..";
-        if !looks_pathish && !token.contains('/') {
-            continue;
-        }
+        // Incident: `rm -rf /` trimmed to an empty path that expanded to the
+        // working directory, and `rm -rf .git` was skipped for having no
+        // slash. Every non-flag argument is a candidate path now.
+        let trimmed = token.trim_end_matches(['*', '/']);
+        let bare = match (trimmed.is_empty(), token.starts_with('/')) {
+            (false, _) => trimmed,
+            (true, true) => "/",
+            (true, false) => ".",
+        };
         let expanded = expand(bare, context);
         if is_catastrophic(&expanded, context) {
             return Some(expanded.to_string_lossy().into_owned());

@@ -3,8 +3,8 @@ use std::path::PathBuf;
 
 use yi_permission::{
     CatastrophicContext, ConfigRule, ConfigRuleAction, Decision, Hold, HoldSource, ParseOutcome,
-    PermissionMode, SessionRules, ToolCall, canonical_command_identity, decide, is_catastrophic,
-    lexical_normalize, parse_command,
+    PermissionMode, SessionRules, ToolCall, canonical_command_identity, command_reads_credentials,
+    decide, is_catastrophic, lexical_normalize, parse_command,
 };
 use yi_types::permission::{RuleDecision, RuleKind, SessionPermissionState};
 
@@ -23,6 +23,7 @@ fn bash_call<'a>(command: &'a str, canonical: &'a str) -> ToolCall<'a> {
         tool_name: "bash",
         reads_only: false,
         irreversible: true,
+        in_workspace: false,
         rule_kind: RuleKind::Command,
         canonical,
         display: command,
@@ -36,6 +37,7 @@ fn read_call<'a>(targets: &'a [PathBuf]) -> ToolCall<'a> {
         tool_name: "read",
         reads_only: true,
         irreversible: false,
+        in_workspace: true,
         rule_kind: RuleKind::StructuredTool,
         canonical: "read-canonical",
         display: "read file",
@@ -258,5 +260,133 @@ fn session_state_round_trips_and_rejects_tampering() -> TestResult {
         ..SessionPermissionState::default()
     };
     assert!(SessionRules::load(bad_version).is_err());
+    Ok(())
+}
+
+fn auto(call: &ToolCall<'_>) -> Decision {
+    decide(
+        call,
+        PermissionMode::Auto,
+        &[],
+        &SessionRules::new(),
+        &[],
+        &context(),
+    )
+}
+
+fn write_call<'a>(targets: &'a [PathBuf], in_workspace: bool) -> ToolCall<'a> {
+    ToolCall {
+        tool_name: "write",
+        reads_only: false,
+        irreversible: true,
+        in_workspace,
+        rule_kind: RuleKind::StructuredTool,
+        canonical: "write-canonical",
+        display: "write file",
+        targets,
+        command: None,
+    }
+}
+
+/// Incident: `rm -rf /` and `rm -rf .git` both walked past the denylist, the
+/// first because trimming the trailing slash left an empty path that expanded
+/// to the working directory, the second because a token without a slash was
+/// never treated as a path at all. Yolo is the mode that made it visible: it
+/// has nothing else between the model and the command.
+#[test]
+fn the_denylist_reads_a_bare_root_and_a_bare_dotfile() -> TestResult {
+    for command in [
+        "rm -rf /",
+        "rm -rf /*",
+        "rm -rf .git",
+        "rm -rf .git/objects",
+        "rm -rf /etc",
+        "sudo rm -rf /usr",
+    ] {
+        for mode in [
+            PermissionMode::Ask,
+            PermissionMode::Auto,
+            PermissionMode::Yolo,
+        ] {
+            let call = bash_call(command, "canonical");
+            let decision = decide(&call, mode, &[], &SessionRules::new(), &[], &context());
+            assert!(
+                matches!(decision, Decision::Deny { .. }),
+                "{command:?} in {mode:?} must be denied, got {decision:?}"
+            );
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn a_credential_read_is_named_before_it_happens() -> TestResult {
+    let context = context();
+    assert!(command_reads_credentials("cat /home/user/.ssh/id_rsa", &context).is_some());
+    assert!(command_reads_credentials("rg secret ~/.aws/credentials", &context).is_some());
+    assert!(command_reads_credentials("cat $HOME/.gnupg/secring.gpg", &context).is_some());
+    assert!(command_reads_credentials("cat /etc/hosts", &context).is_none());
+    assert!(command_reads_credentials("cat notes.md", &context).is_none());
+    // The flag is not a path, and the verb is not an argument.
+    assert!(command_reads_credentials("ssh -i x host", &context).is_none());
+
+    let call = bash_call("cat ~/.ssh/id_rsa", "canonical");
+    match auto(&call) {
+        Decision::Ask { description, .. } => {
+            assert!(description.contains("credential store"), "{description}")
+        }
+        other => return Err(format!("expected an ask, got {other:?}").into()),
+    }
+    Ok(())
+}
+
+/// Auto's own arm: a write the turn checkpoint can undo runs, a write outside
+/// the tree asks, and a tool that reports itself reversible runs.
+#[test]
+fn auto_allows_what_a_checkpoint_can_undo() -> TestResult {
+    let inside = vec![PathBuf::from("/home/user/project/src/lib.rs")];
+    assert!(matches!(
+        auto(&write_call(&inside, true)),
+        Decision::Allow { .. }
+    ));
+    let outside = vec![PathBuf::from("/home/user/elsewhere/notes.md")];
+    assert!(matches!(
+        auto(&write_call(&outside, false)),
+        Decision::Ask { .. }
+    ));
+
+    let mut reversible = write_call(&[], false);
+    reversible.irreversible = false;
+    reversible.tool_name = "ipython";
+    let decision = auto(&reversible);
+    assert!(
+        matches!(decision, Decision::Allow { .. }),
+        "a tool that screens its own call keeps that answer: {decision:?}"
+    );
+    let mut opaque = write_call(&[], false);
+    opaque.tool_name = "ipython";
+    assert!(matches!(auto(&opaque), Decision::Ask { .. }));
+    Ok(())
+}
+
+#[test]
+fn auto_reads_a_command_segment_by_segment() -> TestResult {
+    let allowed = bash_call("cargo test && git status", "canonical");
+    assert!(matches!(auto(&allowed), Decision::Allow { .. }));
+
+    let mixed = bash_call("cargo test && rm -rf target", "canonical");
+    match auto(&mixed) {
+        Decision::Ask { description, .. } => {
+            assert!(description.contains("destructive"), "{description}");
+        }
+        other => return Err(format!("expected an ask, got {other:?}").into()),
+    }
+
+    // Unreadable is contained, not refused: the broker turns that into a
+    // question only where no sandbox can enforce it.
+    let unreadable = bash_call("cargo test > log.txt", "canonical");
+    assert!(matches!(auto(&unreadable), Decision::Contain { .. }));
+    let unknown = bash_call("just check", "canonical");
+    assert!(matches!(auto(&unknown), Decision::Contain { .. }));
     Ok(())
 }

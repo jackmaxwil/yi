@@ -304,3 +304,91 @@ fn a_broken_config_file_fails_instead_of_reading_as_absent() -> TestResult {
     assert!(complaint.contains("config.json"), "{complaint}");
     Ok(())
 }
+
+/// `yi gate` is the dry run: the same decision the tool seam would make, with
+/// the exit code carrying it for a script and `--json` for a reader.
+#[test]
+fn gate_answers_with_the_decision_and_the_exit_code() -> TestResult {
+    let workspace = Workspace::new("gate")?;
+    let allowed = workspace.yi(&["gate", "cargo check && git status"])?;
+    assert_eq!(allowed.status.code(), Some(0));
+    assert!(
+        stdout(&allowed).starts_with("auto: allow"),
+        "{}",
+        stdout(&allowed)
+    );
+
+    let asked = workspace.yi(&["gate", "rm -rf target"])?;
+    assert_eq!(asked.status.code(), Some(1));
+    assert!(
+        stdout(&asked).starts_with("auto: ask"),
+        "{}",
+        stdout(&asked)
+    );
+
+    let denied = workspace.yi(&["gate", "rm -rf /"])?;
+    assert_eq!(denied.status.code(), Some(1));
+    assert!(
+        stdout(&denied).starts_with("auto: deny"),
+        "{}",
+        stdout(&denied)
+    );
+
+    let usage = workspace.yi(&["gate"])?;
+    assert_eq!(usage.status.code(), Some(2));
+    Ok(())
+}
+
+#[test]
+fn gate_json_names_every_segment_and_its_class() -> TestResult {
+    let workspace = Workspace::new("gate-json")?;
+    let out = workspace.yi(&["gate", "--json", "cargo test && rm -rf target"])?;
+    let report: Value = serde_json::from_str(&stdout(&out))?;
+    assert_eq!(report["decision"], "ask");
+    assert_eq!(report["mode"], "auto");
+    assert_eq!(report["unparsed"], false);
+    let segments = report["segments"].as_array().ok_or("segments")?;
+    assert_eq!(segments.len(), 2);
+    assert_eq!(segments[0]["class"], "safe");
+    assert_eq!(segments[1]["class"], "destructive");
+    assert_eq!(segments[1]["argv"][0], "rm");
+    Ok(())
+}
+
+#[test]
+fn gate_reads_the_mode_it_is_asked_about() -> TestResult {
+    let workspace = Workspace::new("gate-mode")?;
+    let yolo = workspace.yi(&["gate", "--yolo", "--json", "rm -rf node_modules"])?;
+    let report: Value = serde_json::from_str(&stdout(&yolo))?;
+    assert_eq!(report["decision"], "allow");
+    assert_eq!(report["mode"], "yolo");
+
+    let confirm = workspace.yi(&["gate", "--confirm", "--json", "ls -la"])?;
+    let report: Value = serde_json::from_str(&stdout(&confirm))?;
+    assert_eq!(report["decision"], "ask", "ask mode asks for every command");
+
+    let yolo_catastrophic = workspace.yi(&["gate", "--yolo", "--json", "rm -rf /"])?;
+    let report: Value = serde_json::from_str(&stdout(&yolo_catastrophic))?;
+    assert_eq!(report["decision"], "deny", "yolo is not above the denylist");
+    Ok(())
+}
+
+/// A key read into the transcript has already left the machine, so reading one
+/// asks even though `cat` is otherwise a proven-safe verb.
+#[test]
+fn gate_asks_before_a_credential_is_read() -> TestResult {
+    let workspace = Workspace::new("gate-credentials")?;
+    let key = workspace.0.join("home/.ssh/id_rsa");
+    let ordinary = workspace.0.join("home/notes.md");
+    let asked = workspace.yi(&["gate", &format!("cat {}", key.display())])?;
+    assert_eq!(asked.status.code(), Some(1), "{}", stdout(&asked));
+    assert!(
+        stdout(&asked).contains("credential store"),
+        "{}",
+        stdout(&asked)
+    );
+
+    let allowed = workspace.yi(&["gate", &format!("cat {}", ordinary.display())])?;
+    assert_eq!(allowed.status.code(), Some(0), "{}", stdout(&allowed));
+    Ok(())
+}

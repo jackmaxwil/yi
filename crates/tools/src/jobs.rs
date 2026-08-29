@@ -154,15 +154,28 @@ pub fn run_or_background(
     cwd: &Path,
     cancelled: &CancelFlag,
     auto_background: Option<Duration>,
+    sandbox: Option<&crate::sandbox::Sandbox>,
 ) -> Result<Run, String> {
     let (sender, receiver) = std::sync::mpsc::channel();
     let id = registry().insert(shell_command);
     let text = shell_command.to_owned();
     let dir = cwd.to_path_buf();
     let flag = Arc::clone(cancelled);
+    let wrapped = sandbox.map(|sandbox| sandbox.wrap("sh", &["-c", shell_command]));
     std::thread::spawn(move || {
-        let mut process = command("sh");
-        process.arg("-c").arg(&text).current_dir(&dir);
+        let mut process = match &wrapped {
+            Some((program, args)) => {
+                let mut process = command(program);
+                process.args(args);
+                process
+            }
+            None => {
+                let mut process = command("sh");
+                process.arg("-c").arg(&text);
+                process
+            }
+        };
+        process.current_dir(&dir);
         let capture = run_captured(process, None, &flag, OUTPUT_CAP);
         if let Ok(capture) = &capture {
             registry().finish(id, capture.clone());

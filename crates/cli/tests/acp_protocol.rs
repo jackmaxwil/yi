@@ -234,7 +234,7 @@ fn setting_the_permission_mode_takes_effect_and_echoes_back() -> TestResult {
     };
     assert_eq!(
         mode_of(&new["result"]["configOptions"]).as_deref(),
-        Some("yolo"),
+        Some("auto"),
         "the session must advertise its permission mode (C8)"
     );
 

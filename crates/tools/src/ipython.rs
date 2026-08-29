@@ -24,6 +24,18 @@ pub struct IpythonTool {
     pub bridge: Arc<dyn KernelBridge>,
 }
 
+fn shell_cell(code: &str) -> Option<String> {
+    let trimmed = code.trim_start();
+    if let Some(body) = trimmed.strip_prefix("%%bash") {
+        return Some(body.trim_start_matches(['\r', '\n']).to_owned());
+    }
+    let escaped: Vec<&str> = code
+        .lines()
+        .filter_map(|line| line.trim_start().strip_prefix('!'))
+        .collect();
+    (!escaped.is_empty()).then(|| escaped.join("\n"))
+}
+
 impl Tool for IpythonTool {
     fn name(&self) -> &str {
         "ipython"
@@ -48,6 +60,18 @@ impl Tool for IpythonTool {
 
     fn kind(&self) -> ToolKind {
         ToolKind::Exec
+    }
+
+    /// A shell cell reads through the same classifier as `bash`; Python is not
+    /// statically readable, and the sandbox is what closes that residual.
+    fn irreversible(&self, input: &Map<String, Value>) -> bool {
+        let Some(code) = input.get("code").and_then(Value::as_str) else {
+            return true;
+        };
+        match shell_cell(code) {
+            Some(command) => yi_permission::verdict(&command) != yi_permission::Verdict::Allow,
+            None => false,
+        }
     }
 
     fn execute(&self, input: Map<String, Value>, context: &ToolContext) -> ToolOutput {

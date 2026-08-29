@@ -38,6 +38,7 @@ pub struct SessionConfig {
 }
 
 struct Shared {
+    ext: Mutex<Option<Arc<Mutex<crate::ext::Host>>>>,
     messages: Mutex<Vec<AgentMessage>>,
     steer: Mutex<Vec<AgentMessage>>,
     follow_up: Mutex<Vec<AgentMessage>>,
@@ -70,11 +71,15 @@ fn persist_message(shared: &Shared, message: &AgentMessage) {
     }
 }
 
+pub type PromptSource = Arc<dyn Fn() -> String + Send + Sync>;
+
+pub type ExtHook = Arc<dyn Fn(crate::ext::Event) + Send + Sync>;
+
 #[derive(Clone)]
 struct RunParts {
     shared: Arc<Shared>,
     provider: Arc<ProviderStream>,
-    system_prompt: String,
+    system_prompt: PromptSource,
     model: Model,
     tool_execution: ExecutionMode,
     tools: Vec<Arc<dyn yi_loop::AgentTool>>,
@@ -114,6 +119,7 @@ impl AgentSession {
             config,
             provider,
             shared: Arc::new(Shared {
+                ext: Mutex::new(None),
                 messages: Mutex::new(Vec::new()),
                 steer: Mutex::new(Vec::new()),
                 follow_up: Mutex::new(Vec::new()),
@@ -138,6 +144,41 @@ impl AgentSession {
             rules: Mutex::new(None),
             wall: Mutex::new(crate::wall::Wall::default()),
         }
+    }
+
+    pub fn install_extensions(&self, host: crate::ext::Host) {
+        if let Ok(mut slot) = self.shared.ext.lock() {
+            *slot = Some(Arc::new(Mutex::new(host)));
+        }
+        let notice = self.notice_hook();
+        if let Some(host) = self.extensions()
+            && let Ok(mut host) = host.lock()
+        {
+            host.set_notice(notice);
+        }
+    }
+
+    pub fn extensions(&self) -> Option<Arc<Mutex<crate::ext::Host>>> {
+        self.shared
+            .ext
+            .lock()
+            .ok()
+            .and_then(|slot| slot.as_ref().map(Arc::clone))
+    }
+
+    pub fn system_prompt(&self) -> String {
+        assembled_prompt(&self.shared, &self.config.system_prompt)
+    }
+
+    fn prompt_source(&self) -> PromptSource {
+        let shared = Arc::clone(&self.shared);
+        let fallback = self.config.system_prompt.clone();
+        Arc::new(move || assembled_prompt(&shared, &fallback))
+    }
+
+    pub fn ext_hook(&self) -> ExtHook {
+        let shared = Arc::clone(&self.shared);
+        Arc::new(move |event| dispatch_ext(&shared, &event))
     }
 
     pub fn set_turn_start_hook(&self, hook: Arc<TurnHook>) {
@@ -329,7 +370,8 @@ impl AgentSession {
                     )
                     .with_auto_background(auto_background)
                     .with_rules(self.rules_engine())
-                    .with_wall(self.wall()),
+                    .with_wall(self.wall())
+                    .with_extensions(Some(self.ext_hook())),
                 ) as Arc<dyn yi_loop::AgentTool>
             })
             .collect();
@@ -487,10 +529,13 @@ impl AgentSession {
     /// Starts an idle session's turn without re-wrapping the message as plain
     /// user text.
     pub fn prompt_message(&self, prompt: AgentMessage) -> Result<(), SessionError> {
+        if self.status() == Status::Idle {
+            start_ext(&self.shared, &prompt_text(&prompt));
+        }
         let parts = RunParts {
             shared: Arc::clone(&self.shared),
             provider: Arc::clone(&self.provider),
-            system_prompt: self.config.system_prompt.clone(),
+            system_prompt: self.prompt_source(),
             model: self.model(),
             tool_execution: self.config.tool_execution,
             tools: self.tools.clone(),
@@ -508,7 +553,7 @@ impl AgentSession {
         let parts = RunParts {
             shared: Arc::clone(&self.shared),
             provider: Arc::clone(&self.provider),
-            system_prompt: self.config.system_prompt.clone(),
+            system_prompt: self.prompt_source(),
             model: self.model(),
             tool_execution: self.config.tool_execution,
             tools: self.tools.clone(),
@@ -658,7 +703,7 @@ impl AgentSession {
                     tokio::task::spawn_blocking(move || hook()).await;
             }
             let mut context = LoopContext {
-                system_prompt: system_prompt.clone(),
+                system_prompt: system_prompt(),
                 messages: shared
                     .messages
                     .lock()
@@ -672,44 +717,14 @@ impl AgentSession {
             config.tool_execution = tool_execution;
             config.convert_to_llm = Box::new(yi_context::convert_to_llm);
             if let Some(compactor) = compactor.clone() {
-                let compact_shared = Arc::clone(&shared);
-                let compact_provider = Arc::clone(&provider);
-                let compact_model = model.clone();
-                let compact_system = system_prompt.clone();
-                let compact_hook = on_compacted.clone();
-                config.maybe_compact = Some(Box::new(move |messages: &[AgentMessage]| {
-                    let compactor = Arc::clone(&compactor);
-                    let shared = Arc::clone(&compact_shared);
-                    let provider = Arc::clone(&compact_provider);
-                    let model = compact_model.clone();
-                    let system_prompt = compact_system.clone();
-                    let hook = compact_hook.clone();
-                    let messages = messages.to_vec();
-                    Box::pin(async move {
-                        let store = shared
-                            .store
-                            .lock()
-                            .map(|handle| handle.clone())
-                            .unwrap_or_default();
-                        let signal = yi_loop::interrupt::InterruptSignal::default();
-                        let replaced = compactor
-                            .maybe_compact(
-                                &messages,
-                                &model,
-                                &system_prompt,
-                                provider.as_ref(),
-                                store.as_ref(),
-                                &signal,
-                            )
-                            .await;
-                        if replaced.is_some()
-                            && let Some(hook) = &hook
-                        {
-                            hook();
-                        }
-                        replaced
-                    })
-                }));
+                config.maybe_compact = Some(compaction_hook(
+                    compactor,
+                    Arc::clone(&shared),
+                    Arc::clone(&provider),
+                    model.clone(),
+                    Arc::clone(&system_prompt),
+                    on_compacted.clone(),
+                ));
             }
             config.get_steering_messages = Some(Box::new(move || {
                 steer
@@ -736,6 +751,14 @@ impl AgentSession {
                         if let Some(compactor) = &emit_compactor {
                             compactor.on_usage(usage);
                         }
+                        dispatch_ext(
+                            &emit_shared,
+                            &crate::ext::Event::Usage {
+                                input: usage.input,
+                                cache_read: usage.cache_read,
+                                cache_write: usage.cache_write,
+                            },
+                        );
                     }
                     persist_message(&emit_shared, message);
                 }
@@ -753,6 +776,12 @@ impl AgentSession {
             .await;
             if let Ok(mut messages) = shared.messages.lock() {
                 *messages = context.messages;
+            }
+            if let Some(host) = extensions_of(&shared) {
+                let event = host.lock().ok().map(|host| host.turn_end_event());
+                if let Some(event) = event {
+                    dispatch_ext(&shared, &event);
+                }
             }
             if let Ok(mut status) = shared.status.lock() {
                 *status = Status::Idle;
@@ -788,7 +817,7 @@ impl AgentSession {
             .maybe_compact(
                 &messages,
                 &model,
-                &self.config.system_prompt,
+                &self.system_prompt(),
                 self.provider.as_ref(),
                 store.as_ref(),
                 &signal,
@@ -799,6 +828,7 @@ impl AgentSession {
                 if let Ok(mut slot) = self.shared.messages.lock() {
                     *slot = new_messages;
                 }
+                dispatch_ext(&self.shared, &crate::ext::Event::Compacted);
                 if let Ok(slot) = self.on_compacted.lock()
                     && let Some(hook) = slot.as_ref()
                 {
@@ -875,6 +905,132 @@ impl AgentSession {
     pub fn provider_arc(&self) -> &Arc<ProviderStream> {
         &self.provider
     }
+}
+
+type CompactFuture =
+    std::pin::Pin<Box<dyn std::future::Future<Output = Option<Vec<AgentMessage>>> + Send>>;
+type CompactHook = Box<dyn Fn(&[AgentMessage]) -> CompactFuture + Send + Sync>;
+
+fn compaction_hook(
+    compactor: Arc<crate::compaction::Compactor>,
+    shared: Arc<Shared>,
+    provider: Arc<ProviderStream>,
+    model: Model,
+    system_prompt: PromptSource,
+    on_compacted: Option<Arc<dyn Fn() + Send + Sync>>,
+) -> CompactHook {
+    Box::new(move |messages: &[AgentMessage]| {
+        let compactor = Arc::clone(&compactor);
+        let shared = Arc::clone(&shared);
+        let provider = Arc::clone(&provider);
+        let model = model.clone();
+        let assembled = system_prompt();
+        let hook = on_compacted.clone();
+        let messages = messages.to_vec();
+        Box::pin(async move {
+            let store = store_of(&shared);
+            let signal = yi_loop::interrupt::InterruptSignal::default();
+            let replaced = compactor
+                .maybe_compact(
+                    &messages,
+                    &model,
+                    &assembled,
+                    provider.as_ref(),
+                    store.as_ref(),
+                    &signal,
+                )
+                .await;
+            if replaced.is_some() {
+                dispatch_ext(&shared, &crate::ext::Event::Compacted);
+                if let Some(hook) = &hook {
+                    hook();
+                }
+            }
+            replaced
+        })
+    })
+}
+
+fn prompt_text(prompt: &AgentMessage) -> String {
+    match prompt {
+        AgentMessage::User {
+            content: UserContent::Text(text),
+            ..
+        } => text.clone(),
+        AgentMessage::User {
+            content: UserContent::Blocks(blocks),
+            ..
+        } => blocks
+            .iter()
+            .filter_map(|block| match block {
+                yi_types::message::Content::Text { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("\n"),
+        _ => String::new(),
+    }
+}
+
+fn extensions_of(shared: &Arc<Shared>) -> Option<Arc<Mutex<crate::ext::Host>>> {
+    shared
+        .ext
+        .lock()
+        .ok()
+        .and_then(|slot| slot.as_ref().map(Arc::clone))
+}
+
+fn store_of(shared: &Arc<Shared>) -> Option<yi_session::SharedSession> {
+    shared
+        .store
+        .lock()
+        .map(|handle| handle.clone())
+        .unwrap_or_default()
+}
+
+fn assembled_prompt(shared: &Arc<Shared>, fallback: &str) -> String {
+    let Some(host) = extensions_of(shared) else {
+        return fallback.to_owned();
+    };
+    let assembled = host
+        .lock()
+        .map(|host| host.system_prompt())
+        .unwrap_or_default();
+    if assembled.is_empty() {
+        fallback.to_owned()
+    } else {
+        assembled
+    }
+}
+
+fn dispatch_ext(shared: &Arc<Shared>, event: &crate::ext::Event) {
+    let Some(host) = extensions_of(shared) else {
+        return;
+    };
+    let store = store_of(shared);
+    if let Ok(mut host) = host.lock() {
+        host.dispatch(event, store.as_ref());
+    }
+}
+
+fn start_ext(shared: &Arc<Shared>, prompt: &str) {
+    let Some(host) = extensions_of(shared) else {
+        return;
+    };
+    let store = store_of(shared);
+    let resumed = shared
+        .messages
+        .lock()
+        .map(|messages| !messages.is_empty())
+        .unwrap_or(false);
+    let event = {
+        let Ok(mut host) = host.lock() else {
+            return;
+        };
+        host.start(store.as_ref(), resumed);
+        host.prompt_event(prompt)
+    };
+    dispatch_ext(shared, &event);
 }
 
 fn user_message(text: &str) -> AgentMessage {

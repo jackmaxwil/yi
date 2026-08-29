@@ -532,6 +532,10 @@ impl SubagentHost {
         self.publish(&child_id);
         let mut reply = Map::new();
         reply.insert("rlm_child_id".to_owned(), Value::String(child_id));
+        reply.insert(
+            "next".to_owned(),
+            Value::String(crate::affordance::spawned(&session_name, &session_dir)),
+        );
         reply.insert("name".to_owned(), Value::String(session_name));
         reply.insert(
             "session_dir".to_owned(),
@@ -609,7 +613,8 @@ impl SubagentHost {
                     .map(|text| preview(&text))
                     .unwrap_or_else(|| "(no final answer text)".to_owned());
                 format!(
-                    "[subagent {session_name} ({child_id}) completed without replying]\nLast answer: {answer}"
+                    "[subagent {session_name} ({child_id}) completed without replying]\nLast answer: {answer}\n{}",
+                    crate::affordance::child_finished(&session_name)
                 )
             }
         };
@@ -833,6 +838,47 @@ impl SubagentHost {
     }
 }
 
+/// A child is a fresh session: it runs its own extensions against its own cwd
+/// and shares the universal cached prefix with its parent.
+fn child_factory(wiring: RuntimeWiring) -> Arc<ChildFactory> {
+    Arc::new(move |build: ChildBuild<'_>| {
+        let mut child = AgentSession::new(
+            crate::session::SessionConfig {
+                system_prompt: wiring.system_prompt.clone(),
+                model: build.model,
+                thinking_level: build.thinking,
+                tool_execution: wiring.tool_execution,
+            },
+            Arc::clone(&wiring.provider),
+        );
+        let child_cwd = build
+            .cwd
+            .map_or_else(|| wiring.cwd.clone(), Path::to_path_buf);
+        child.install_extensions(crate::ext::install(crate::ext::ExtOptions {
+            cwd: child_cwd.clone(),
+            home: wiring.home.clone(),
+            mode: wiring
+                .broker
+                .as_ref()
+                .map_or(yi_permission::PermissionMode::Auto, |broker| broker.mode()),
+            user_system: String::new(),
+            schema_instruction: None,
+        }));
+        attach_runtime(
+            &mut child,
+            RuntimeWiring {
+                depth: wiring.depth.saturating_add(1),
+                rlm_dir: build.session_dir.to_path_buf(),
+                cwd: child_cwd,
+                parent_link: Some(build.link),
+                wall: build.wall,
+                ..wiring.clone()
+            },
+        );
+        Ok(child)
+    })
+}
+
 /// Carried again by every child one level deeper.
 #[derive(Clone)]
 pub struct RuntimeWiring {
@@ -1021,32 +1067,7 @@ pub fn attach_runtime(session: &mut AgentSession, wiring: RuntimeWiring) -> Arc<
             })
         });
     }
-    let factory_wiring = wiring.clone();
-    let factory: Arc<ChildFactory> = Arc::new(move |build: ChildBuild<'_>| {
-        let mut child = AgentSession::new(
-            crate::session::SessionConfig {
-                system_prompt: factory_wiring.system_prompt.clone(),
-                model: build.model,
-                thinking_level: build.thinking,
-                tool_execution: factory_wiring.tool_execution,
-            },
-            Arc::clone(&factory_wiring.provider),
-        );
-        attach_runtime(
-            &mut child,
-            RuntimeWiring {
-                depth: factory_wiring.depth.saturating_add(1),
-                rlm_dir: build.session_dir.to_path_buf(),
-                cwd: build
-                    .cwd
-                    .map_or_else(|| factory_wiring.cwd.clone(), Path::to_path_buf),
-                parent_link: Some(build.link),
-                wall: build.wall,
-                ..factory_wiring.clone()
-            },
-        );
-        Ok(child)
-    });
+    let factory = child_factory(wiring.clone());
     let host = Arc::new(SubagentHost::new(SubagentHostOptions {
         depth: wiring.depth,
         max_depth: wiring.max_depth,
@@ -1087,9 +1108,13 @@ pub fn attach_runtime(session: &mut AgentSession, wiring: RuntimeWiring) -> Arc<
     {
         let service = Arc::clone(&service);
         let notice = session.notice_hook();
+        let store = session.store_handle();
         session.set_on_compacted(Arc::new(move || {
             let service = Arc::clone(&service);
             let notice = Arc::clone(&notice);
+            let file =
+                store().and_then(|store| yi_session::lock_session(&store).file_path().cloned());
+            notice(&crate::affordance::compacted(file.as_deref()));
             tokio::spawn(async move {
                 if let Some(text) = service.sync_after_compaction().await {
                     notice(&text);

@@ -18,7 +18,7 @@ struct Args {
     system: String,
     thinking: Option<String>,
     json: bool,
-    yolo: bool,
+    mode: yi_runtime::PermissionMode,
     session_dir: Option<String>,
     cwd: Option<String>,
     socket: Option<String>,
@@ -45,8 +45,10 @@ fn parse_args() -> Result<Args, lexopt::Error> {
     let mut system = String::new();
     let mut thinking = None;
     let mut json = false;
-    // D48: yolo is the default; `--confirm` puts the ask gate back.
-    let mut yolo = true;
+    // Auto is the default (auto-mode design): reads and known-safe commands
+    // run, destructive ones ask. `--yolo` removes the gate, `--confirm` asks
+    // for everything.
+    let mut mode = yi_runtime::PermissionMode::Auto;
     let mut session_dir = None;
     let mut cwd = None;
     let mut socket = None;
@@ -67,8 +69,9 @@ fn parse_args() -> Result<Args, lexopt::Error> {
             Long("system") => system = parser.value()?.string()?,
             Long("thinking") => thinking = Some(parser.value()?.string()?),
             Long("json") => json = true,
-            Long("yolo") => yolo = true,
-            Long("confirm") => yolo = false,
+            Long("yolo") => mode = yi_runtime::PermissionMode::Yolo,
+            Long("auto") => mode = yi_runtime::PermissionMode::Auto,
+            Long("confirm") => mode = yi_runtime::PermissionMode::Ask,
             Long("session-dir") => session_dir = Some(parser.value()?.string()?),
             Long("cwd") => cwd = Some(parser.value()?.string()?),
             Long("socket") => socket = Some(parser.value()?.string()?),
@@ -95,7 +98,7 @@ fn parse_args() -> Result<Args, lexopt::Error> {
         system,
         thinking,
         json,
-        yolo,
+        mode,
         session_dir,
         cwd,
         socket,
@@ -284,14 +287,17 @@ fn build_session(
         );
         return Err(4);
     }
-    let provider = Arc::new(ProviderStream::new(api_key, None));
+    let interactive = {
+        use std::io::IsTerminal;
+        std::io::stdin().is_terminal()
+    };
+    let provider = Arc::new(ProviderStream::new(api_key, None).with_long_cache(interactive));
     if model.provider == "faux" {
         provider.queue_faux(vec![yi_ai_faux_reply(&args.prompt)]);
     }
-    let system_prompt = session_system_prompt(args);
     let mut session = AgentSession::new(
         SessionConfig {
-            system_prompt,
+            system_prompt: String::new(),
             model,
             thinking_level: args.thinking.clone(),
             tool_execution: yi_loop_default(),
@@ -299,29 +305,28 @@ fn build_session(
         provider,
     );
     let cwd = effective_cwd(args);
-    let mode = if args.yolo {
-        yi_runtime::PermissionMode::Yolo
-    } else {
-        yi_runtime::PermissionMode::Ask
-    };
-    let broker = std::sync::Arc::new(yi_runtime::PermissionBroker::new(
-        mode,
-        cwd.clone(),
-        Vec::new(),
-        asker,
-        session.events_sender(),
-    ));
     let home = std::env::var_os("HOME")
         .map(std::path::PathBuf::from)
         .unwrap_or_default();
+    let session_dir = default_session_dir(args);
+    let broker = std::sync::Arc::new(
+        yi_runtime::PermissionBroker::new(
+            args.mode,
+            cwd.clone(),
+            Vec::new(),
+            asker,
+            session.events_sender(),
+        )
+        .with_sandbox(yi_runtime::workspace_sandbox(&cwd, &home, &session_dir)),
+    );
     let tools_home = home.clone();
-    let system_prompt = session_system_prompt(args);
+    session.install_extensions(session_extensions(args));
     let provider = std::sync::Arc::clone(session_provider(&session));
     let host = yi_runtime::attach_runtime(
         &mut session,
         yi_runtime::RuntimeWiring {
             provider,
-            system_prompt,
+            system_prompt: String::new(),
             tool_execution: yi_loop_default(),
             cwd,
             home: home.clone(),
@@ -350,42 +355,94 @@ fn build_session(
     Ok((session, host))
 }
 
-fn session_system_prompt(args: &Args) -> String {
-    let mode_fragment = yi_runtime::mode_fragment(if args.yolo {
-        yi_runtime::PermissionMode::Yolo
-    } else {
-        yi_runtime::PermissionMode::Ask
-    });
-    let mut prompt = if args.system.is_empty() {
-        format!(
-            "{}\n{}\n{mode_fragment}",
-            yi_runtime::identity_fragment(),
-            yi_runtime::doctrine_fragment()
-        )
-    } else {
-        format!(
-            "{}\n{}\n{}\n\n{mode_fragment}",
-            yi_runtime::identity_fragment(),
-            yi_runtime::doctrine_fragment(),
-            args.system
-        )
-    };
+fn session_extensions(args: &Args) -> yi_runtime::ExtensionHost {
+    yi_runtime::ext::install(yi_runtime::ExtOptions {
+        cwd: effective_cwd(args),
+        home: std::env::var_os("HOME")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_default(),
+        mode: args.mode,
+        user_system: args.system.clone(),
+        schema_instruction: args
+            .schema
+            .as_deref()
+            .and_then(|spec| yi_runtime::schema::Schema::load(spec).ok())
+            .map(|schema| schema.instruction()),
+    })
+}
+
+fn run_trust(args: &Args) -> i32 {
     let cwd = effective_cwd(args);
     let home = std::env::var_os("HOME")
         .map(std::path::PathBuf::from)
         .unwrap_or_default();
-    let budgets = yi_runtime::SourceBudgets::default();
-    if let Some(catalog) = yi_runtime::skills_catalog(&cwd, &home, budgets.skills_meta) {
-        prompt.push_str("\n\n");
-        prompt.push_str(&catalog.text);
+    let root = yi_runtime::ext::git_root(&cwd).unwrap_or(cwd.clone());
+    let gate = yi_runtime::TrustGate::new(&home);
+    match args.prompt.trim() {
+        "list" => {
+            for (root, count) in gate.grants() {
+                println!("{root}  ({count} sources)");
+            }
+            0
+        }
+        "revoke" => match gate.revoke(&root) {
+            Ok(()) => {
+                println!("revoked trust for {}", root.display());
+                0
+            }
+            Err(error) => {
+                eprintln!("error: {error}");
+                1
+            }
+        },
+        "" => {
+            let sources = yi_runtime::ext::contributions(&root, &home);
+            if sources.is_empty() {
+                println!("{} contributes no instructions or packs", root.display());
+                return 0;
+            }
+            for (source, _) in &sources {
+                println!("grant {source}");
+            }
+            match gate.grant(&root, &sources) {
+                Ok(()) => {
+                    println!(
+                        "{} is trusted; its text reads as configuration until it changes",
+                        root.display()
+                    );
+                    0
+                }
+                Err(error) => {
+                    eprintln!("error: {error}");
+                    1
+                }
+            }
+        }
+        other => {
+            eprintln!("usage: yi trust [list|revoke] (no argument grants the current repository)");
+            eprintln!("error: unknown argument {other}");
+            2
+        }
     }
-    if let Some(spec) = &args.schema
-        && let Ok(schema) = yi_runtime::schema::Schema::load(spec)
-    {
-        prompt.push_str("\n\n");
-        prompt.push_str(&schema.instruction());
+}
+
+/// Would this run, and why. The same `decide()` the tool seam calls, so the
+/// answer is the decision itself.
+fn run_gate(args: &Args) -> i32 {
+    let command = args.prompt.trim();
+    if command.is_empty() {
+        eprintln!("usage: yi gate [--auto|--confirm|--yolo] [--json] <command>");
+        return 2;
     }
-    prompt
+    let report = yi_runtime::gate::explain(command, args.mode, &effective_cwd(args));
+    if args.json {
+        if let Ok(line) = serde_json::to_string(&report.to_json()) {
+            println!("{line}");
+        }
+    } else {
+        print!("{}", yi_runtime::gate::render(&report));
+    }
+    i32::from(!report.allowed())
 }
 
 fn session_provider(session: &AgentSession) -> &std::sync::Arc<ProviderStream> {
@@ -846,11 +903,14 @@ fn run_serve_command(args: &Args, version: &str) -> i32 {
         worker_args.push("--session-dir".to_owned());
         worker_args.push(dir.clone());
     }
-    if args.yolo {
-        worker_args.push("--yolo".to_owned());
-    } else {
-        worker_args.push("--confirm".to_owned());
-    }
+    worker_args.push(
+        match args.mode {
+            yi_runtime::PermissionMode::Yolo => "--yolo",
+            yi_runtime::PermissionMode::Auto => "--auto",
+            yi_runtime::PermissionMode::Ask => "--confirm",
+        }
+        .to_owned(),
+    );
     yi_acp::daemon::run_daemon(
         yi_acp::daemon::DaemonOptions {
             socket,
@@ -951,6 +1011,8 @@ fn main() {
             std::process::exit(yi_acp::run_acp(options, runtime));
         }
         "undo" => std::process::exit(run_undo(&args)),
+        "trust" => std::process::exit(run_trust(&args)),
+        "gate" => std::process::exit(run_gate(&args)),
         "sessions" => {
             let options = sessions::Options {
                 session_dir: default_session_dir(&args),
@@ -970,7 +1032,7 @@ fn main() {
                 std::process::exit(run_tui_command(&args, None));
             }
             println!(
-                "yi {version} (yi [prompt], yi ask, yi sessions, yi rpc, yi acp, yi serve; more surfaces land in later phases)"
+                "yi {version} (yi [prompt], yi ask, yi sessions, yi trust, yi gate, yi rpc, yi acp, yi serve; more surfaces land in later phases)"
             );
         }
         other => {
