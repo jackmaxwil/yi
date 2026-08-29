@@ -23,6 +23,32 @@ fn a_malformed_proxy_value_is_refused_by_name() -> Res {
     Ok(())
 }
 
+/// The refusal is printed to stderr, where CI logs and scrollback keep it: a
+/// credentialed proxy url must be named back by host, never by password.
+#[test]
+fn a_refused_proxy_url_names_the_host_without_its_credentials() -> Res {
+    for (value, host) in [
+        ("https://bob:hunter2@proxy.corp:3128", "proxy.corp:3128"),
+        (
+            "https://bob:hunter2@proxy.corp:3128/route",
+            "proxy.corp:3128",
+        ),
+        ("socks5://bob:hunter2@proxy.corp:1080", "proxy.corp:1080"),
+        ("socks5:bob:hunter2@proxy.corp:1080", "proxy.corp:1080"),
+    ] {
+        let error = ProxyConfig::from_values(Some(value), None, None)
+            .err()
+            .ok_or("a proxy value that cannot be dialed was accepted")?;
+        assert!(!error.contains("hunter2"), "password named back: {error}");
+        assert!(!error.contains("bob:"), "username named back: {error}");
+        assert!(
+            error.contains(host),
+            "the operator cannot recognise {value}: {error}"
+        );
+    }
+    Ok(())
+}
+
 /// An empty variable is how a container turns the proxy off; treating "" as a
 /// proxy url would fail startup for every unproxied run.
 #[test]

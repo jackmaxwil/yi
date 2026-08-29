@@ -298,20 +298,34 @@ fn iso_date(epoch_secs: i64) -> String {
     format!("{year:04}-{month:02}-{day:02}")
 }
 
-/// A short marker (a pid, a 7-char sha) can coincide with prompt text, so a
-/// bounded one only counts when no alphanumeric sits on either side of it.
-fn residue(block: &str, needle: &str, bounded: bool) -> bool {
+/// How much company a marker needs before a hit counts as residue.
+#[derive(Clone, Copy)]
+enum Bound {
+    /// A path or a date is distinctive enough that any occurrence is residue.
+    Anywhere,
+    /// A pid or a 7-char sha can coincide with prompt text, so no alphanumeric
+    /// may sit on either side of the hit.
+    Word,
+    /// Incident: a username or hostname is often an ordinary English word
+    /// (agent, root, build) and block 0 says "coding agent", so a hit counts
+    /// only beside a path separator or an @ — the shapes residue takes.
+    Neighboured,
+}
+
+fn residue(block: &str, needle: &str, bound: Bound) -> bool {
+    let alnum = |ch: Option<char>| ch.is_some_and(|c: char| c.is_ascii_alphanumeric());
+    let joins = |ch: Option<char>| ch.is_some_and(|c| c == '/' || c == '\\' || c == '@');
     !needle.is_empty()
         && block.match_indices(needle).any(|(at, hit)| {
-            !bounded
-                || (!block[..at]
-                    .chars()
-                    .next_back()
-                    .is_some_and(|ch| ch.is_ascii_alphanumeric())
-                    && !block[at.saturating_add(hit.len())..]
-                        .chars()
-                        .next()
-                        .is_some_and(|ch| ch.is_ascii_alphanumeric()))
+            let before = block[..at].chars().next_back();
+            let after = block[at.saturating_add(hit.len())..].chars().next();
+            match bound {
+                Bound::Anywhere => true,
+                Bound::Word => !alnum(before) && !alnum(after),
+                Bound::Neighboured => {
+                    !alnum(before) && !alnum(after) && (joins(before) || joins(after))
+                }
+            }
         })
 }
 
@@ -380,32 +394,40 @@ fn the_frozen_prefix_is_location_invariant_and_residue_free() -> TestResult {
 
     let now = i64::try_from(yi_session::now_ms() / 1_000)?;
     let shown = |path: &std::path::Path| path.display().to_string();
-    let mut markers: Vec<(String, String, bool)> = vec![
-        ("cwd (pair a)".to_owned(), shown(&cwd_a), false),
-        ("home (pair a)".to_owned(), shown(&home_a), false),
-        ("cwd (pair b)".to_owned(), shown(&cwd_b), false),
-        ("home (pair b)".to_owned(), shown(&home_b), false),
-        ("pid".to_owned(), std::process::id().to_string(), true),
-        ("date (utc)".to_owned(), iso_date(now), false),
+    let mut markers: Vec<(String, String, Bound)> = vec![
+        ("cwd (pair a)".to_owned(), shown(&cwd_a), Bound::Anywhere),
+        ("home (pair a)".to_owned(), shown(&home_a), Bound::Anywhere),
+        ("cwd (pair b)".to_owned(), shown(&cwd_b), Bound::Anywhere),
+        ("home (pair b)".to_owned(), shown(&home_b), Bound::Anywhere),
+        (
+            "pid".to_owned(),
+            std::process::id().to_string(),
+            Bound::Word,
+        ),
+        ("date (utc)".to_owned(), iso_date(now), Bound::Anywhere),
         (
             "date (utc-1d)".to_owned(),
             iso_date(now.saturating_sub(86_400)),
-            false,
+            Bound::Anywhere,
         ),
         (
             "date (utc+1d)".to_owned(),
             iso_date(now.saturating_add(86_400)),
-            false,
+            Bound::Anywhere,
         ),
     ];
-    for var in ["HOME", "USER", "LOGNAME"] {
+    for (var, bound) in [
+        ("HOME", Bound::Word),
+        ("USER", Bound::Neighboured),
+        ("LOGNAME", Bound::Neighboured),
+    ] {
         match std::env::var(var) {
-            Ok(value) if value.len() >= 3 => markers.push((format!("${var}"), value, true)),
+            Ok(value) if value.len() >= 3 => markers.push((format!("${var}"), value, bound)),
             _ => println!("SKIP ${var} marker: unset or too short to bound"),
         }
     }
     match command_output("hostname", &[]) {
-        Some(name) => markers.push(("hostname".to_owned(), name, true)),
+        Some(name) => markers.push(("hostname".to_owned(), name, Bound::Neighboured)),
         None => println!("SKIP hostname marker: the `hostname` command is unavailable"),
     }
     match command_output(
@@ -414,14 +436,14 @@ fn the_frozen_prefix_is_location_invariant_and_residue_free() -> TestResult {
     ) {
         Some(sha) => {
             let short: String = sha.chars().take(7).collect();
-            markers.push(("git HEAD (short)".to_owned(), short, true));
-            markers.push(("git HEAD".to_owned(), sha, true));
+            markers.push(("git HEAD (short)".to_owned(), short, Bound::Word));
+            markers.push(("git HEAD".to_owned(), sha, Bound::Word));
         }
         None => println!("SKIP git-ref marker: `git rev-parse HEAD` is unavailable"),
     }
 
-    for (label, needle, bounded) in &markers {
-        if residue(&a, needle, *bounded) {
+    for (label, needle, bound) in &markers {
+        if residue(&a, needle, *bound) {
             violations.push(format!(
                 "block 0 carries ambient residue: {label} = {needle:?}"
             ));

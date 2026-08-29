@@ -48,10 +48,13 @@ impl ProxyConfig {
             return Ok(None);
         };
         if url.starts_with("socks") {
-            return Err(format!("SOCKS proxies are not supported: {url}"));
+            return Err(format!(
+                "SOCKS proxies are not supported: {}",
+                redacted(url)
+            ));
         }
-        let proxy =
-            ureq::Proxy::new(url).map_err(|error| format!("invalid proxy {url}: {error}"))?;
+        let proxy = ureq::Proxy::new(url)
+            .map_err(|error| format!("invalid proxy {}: {error}", redacted(url)))?;
         Ok(Some(Self {
             proxy,
             no_proxy: no_proxy
@@ -72,6 +75,20 @@ impl ProxyConfig {
             .any(|entry| entry == "*" || host == *entry || host.ends_with(&format!(".{entry}")));
         (!bypass).then_some(&self.proxy)
     }
+}
+
+/// Incident: a proxy url carries inline basic-auth and every refusal above is
+/// printed to stderr, so the userinfo is dropped before the value is named back.
+fn redacted(url: &str) -> String {
+    let start = url.find("://").map_or(0, |at| at.saturating_add(3));
+    let rest = url.get(start..).unwrap_or_default();
+    let authority = rest.split_once('/').map_or(rest, |(head, _)| head);
+    let Some(at) = authority.rfind('@') else {
+        return url.to_owned();
+    };
+    let scheme = url.get(..start).unwrap_or_default();
+    let host = rest.get(at.saturating_add(1)..).unwrap_or_default();
+    format!("{scheme}***@{host}")
 }
 
 fn host_of(url: &str) -> &str {

@@ -41,11 +41,14 @@ python3 evals/run.py --dry --binary target/debug/yi --model faux/faux-1
 A task is a directory under `fixtures/tasks/<id>/`: `task.json`
 (`id`, `dryReward`, `timeoutSec`), `prompt.txt`, `repo/` copied verbatim into a
 throwaway workspace, and `reward.sh` run there with the workspace as its cwd.
-The runner asks once with `--json --yolo --cwd <ws> --session-dir <ws>/.yi-sessions`,
-writes the last assistant text to `<ws>/answer.txt` (SWE-Atlas QnA grades the
-answer file, so a real run's answer must exist), and scores the task binary:
-`reward.sh` exits 0 or the task scored nothing. A timeout is a result, never a
-retry.
+The workspace is `<tmp>/repo`, and the runner's own files sit beside it as
+`<tmp>/events.jsonl` and `<tmp>/.yi-sessions` — never inside the graded tree,
+where a `git diff` or clean-tree reward would score them as part of the
+solution and the agent could read back its own transcript. The runner asks once
+with `--json --yolo --cwd <ws> --session-dir <tmp>/.yi-sessions`, writes the
+last assistant text to `<ws>/answer.txt` (SWE-Atlas QnA grades the answer file,
+so a real run's answer must exist), and scores the task binary: `reward.sh`
+exits 0 or the task scored nothing. A timeout is a result, never a retry.
 
 `--dry` runs faux only — it refuses any other provider, because a gate spends no
 API budget — and compares each reward to the task's `dryReward`, which is what
@@ -53,8 +56,10 @@ the exit code reports. Faux echoes the prompt and never calls a tool, so the dry
 tier pins runner mechanics, not task solving: `answer-echo` scores 1 off the
 echo (a runner that skips the answer file would score every real QnA rollout 0)
 and `edit-file` scores 0 because the workspace is untouched (a runner that
-scores an untouched workspace 1 flatters every real rollout). It is a
-`just postmerge` sibling, not part of `just check`: it needs a built binary.
+scores an untouched workspace 1 flatters every real rollout). The third,
+`clean-workspace`, is the only one a needle-grep reward cannot express: it lists
+the graded tree and requires exactly the task's own files plus `answer.txt`. It
+is a `just postmerge` sibling, not part of `just check`: it needs a built binary.
 
 Drop `--dry` and the runner prints one JSON row per task plus a ready-to-paste
 `docs/eval-ledger.md` row with its config fingerprint. Pasting it stays a human
@@ -168,9 +173,11 @@ feature is off). `yi` reads it instead, once at startup, in the binary:
 
 Empty or unset means direct. A value that is **not** empty and not usable —
 a typo, a scheme with no dialer, `socks5://` — fails startup with exit 2 and
-names the value. It is never downgraded to a direct connection: in an
-air-gapped container a silently dropped proxy is an unattributable hang, and
-the whole point of the sidecar is that nothing else gets out.
+names the value back as `scheme://***@host:port`, since the refusal goes to
+stderr and inline credentials must not. It is never downgraded to a direct
+connection: in an air-gapped container a silently dropped proxy is an
+unattributable hang, and the whole point of the sidecar is that nothing else
+gets out.
 
 These are the harness's own names, like `EVAL_BINARY` above: no `YI_*`
 variable and no `baselines/env_vars.json` row.

@@ -231,7 +231,7 @@ value/complexity: H/M/L. Status: **core** (launch), **gated** (cargo feature), *
 | Pi-differential testing (Pi as eval baseline) | 3.1, D17 | core (ph 3, test infra) | H | M | token ratchet reports Yi-vs-Pi |
 | bidirectional session handoff (`yi adopt`) | 3.1, D18 | open (L5) | M | L | reversible migration per session |
 | Pi templates as commands + skills roots + theme import | 3.1 | core | M | L | folded into X1/§5/U17 |
-| AA benchmark adapters (harbor + pier) + E1–E9 gates | 15 | open (J1, J2) | H | L | ~250 lines Python; TB2.1/QnA free via harbor datasets; E2 proxy-aware transport live 0.71.0 (`HTTPS_PROXY`/`HTTP_PROXY`/`NO_PROXY`, fail-closed at startup); `evals/run.py` + the faux dry tier and `just package-musl` live 0.73.0; only the ledger row is left, and it needs a real model |
+| AA benchmark adapters (harbor + pier) + E1–E9 gates | 15 | open (J1, J2) | H | L | ~250 lines Python; TB2.1/QnA free via harbor datasets; E2 proxy-aware transport live 0.71.0 (`HTTPS_PROXY`/`HTTP_PROXY`/`NO_PROXY`, fail-closed at startup for a provider run — a faux run never dials one and is spared, and the refusal names the host with any inline credentials redacted); `evals/run.py` + the faux dry tier and `just package-musl` live 0.73.0; only the ledger row is left, and it needs a real model |
 | ARC-AGI-3 client | 15.5 | open (J7) | — | — | not in the AA index |
 | PTY interactive exec | 12, D30 | **cut** | M | H | auto-background + `ipython` cover it; per-session approval hole; ~3.7k lines |
 | freeform/grammar tool format (hashline) | 8.8 T1, D29 | open (C8) | M | L | openai-responses only; 0.37.0 still sends JSON function tools |

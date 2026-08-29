@@ -305,8 +305,9 @@ fn build_session(
         eprintln!("error: unknown model {} (use provider/id)", args.model);
         return Err(2);
     };
+    let faux = model.provider == "faux";
     let api_key = yi_ai_key(&model.provider);
-    if api_key.is_none() && model.provider != "faux" {
+    if api_key.is_none() && !faux {
         eprintln!(
             "error: no API key for provider {} (set the provider env var)",
             model.provider
@@ -317,11 +318,18 @@ fn build_session(
         use std::io::IsTerminal;
         std::io::stdin().is_terminal()
     };
-    let proxy = match proxy_from_env() {
-        Ok(proxy) => proxy,
-        Err(message) => {
-            eprintln!("error: {message}");
-            return Err(2);
+    // Incident: an inherited proxy value ureq cannot dial refused every faux run
+    // too, so an operator's shell broke `just check` and the repo's own offline
+    // behavior check. E2 guards provider egress; faux never leaves the process.
+    let proxy = if faux {
+        None
+    } else {
+        match proxy_from_env() {
+            Ok(proxy) => proxy,
+            Err(message) => {
+                eprintln!("error: {message}");
+                return Err(2);
+            }
         }
     };
     let provider = Arc::new(
@@ -329,7 +337,7 @@ fn build_session(
             .with_long_cache(interactive)
             .with_proxy(proxy),
     );
-    if model.provider == "faux" {
+    if faux {
         provider.queue_faux(vec![yi_ai_faux_reply(&args.prompt)]);
     }
     let mut session = AgentSession::new(
