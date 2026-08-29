@@ -123,6 +123,33 @@ fn setting_the_same_model_records_nothing() -> TestResult {
     Ok(())
 }
 
+/// `main.rs` re-applies an explicit `--model` / `--thinking` after attaching,
+/// so a flag outranks what the resumed session recorded. That only works if a
+/// set after `attach_store` wins.
+#[test]
+fn a_set_after_attach_outranks_the_restored_level() -> TestResult {
+    let dir = std::env::temp_dir().join(format!("yi-effort-pin-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let mut repo = JsonlRepo::new(dir.clone(), "/tmp/yi-effort-test");
+    let store = repo.create(CreateOptions::default())?;
+    let id = yi_session::lock_session(&store).metadata().id.clone();
+
+    let provider = Arc::new(ProviderStream::new(None, None));
+    let first = session(model("m", true, None), None, Arc::clone(&provider));
+    first.attach_store(store)?;
+    first.set_effort(Effort::Low);
+    drop(first);
+
+    let second = session(model("m", true, None), Some(Effort::High), provider);
+    second.attach_store(repo.open(&id)?)?;
+    assert_eq!(second.effort(), Effort::Low, "the store wins on its own");
+    second.set_effort(Effort::High);
+    assert_eq!(second.effort(), Effort::High);
+
+    let _ = std::fs::remove_dir_all(&dir);
+    Ok(())
+}
+
 fn entry_kinds(store: &yi_session::SharedSession) -> Result<Vec<String>, Box<dyn Error>> {
     Ok(yi_session::lock_session(store)
         .find_entries_on_branch(

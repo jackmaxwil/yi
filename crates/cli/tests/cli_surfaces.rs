@@ -341,3 +341,4 @@ fn a_valid_thinking_level_is_accepted() -> TestResult {
     );
     Ok(())
 }
+

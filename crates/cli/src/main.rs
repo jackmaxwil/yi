@@ -17,6 +17,8 @@ struct Args {
     model: String,
     system: String,
     thinking: Option<Effort>,
+    /// `--model` was named on the command line, so it outranks a resumed one.
+    model_pinned: bool,
     json: bool,
     yolo: bool,
     session_dir: Option<String>,
@@ -96,6 +98,7 @@ fn parse_args() -> Result<Args, lexopt::Error> {
     }
     Ok(Args {
         command,
+        model_pinned: model.is_some(),
         model: model.or_else(configured_model).unwrap_or_default(),
         system,
         thinking: thinking.or_else(configured_thinking),
@@ -516,6 +519,20 @@ fn run(args: &Args) -> i32 {
     })
 }
 
+/// A flag names what the user wants now; a resumed session names what they
+/// wanted last time. `attach_store` replays the session, so the flags go on
+/// after it or `--continue --model X` silently keeps the old model.
+fn repin(args: &Args, session: &AgentSession) {
+    if args.model_pinned
+        && let Some(model) = resolve(&args.model)
+    {
+        session.set_model(model);
+    }
+    if let Some(effort) = args.thinking {
+        session.set_effort(effort);
+    }
+}
+
 /// X1: every `yi ask` turn is recorded, so `--continue` has a leaf to resume.
 fn attach_store(args: &Args, session: &AgentSession) -> Result<String, String> {
     use yi_runtime::session_store::{CreateOptions, JsonlRepo, SessionRepo, lock_session};
@@ -538,6 +555,7 @@ fn attach_store(args: &Args, session: &AgentSession) -> Result<String, String> {
     session
         .attach_store(store)
         .map_err(|error| error.to_string())?;
+    repin(args, session);
     Ok(id)
 }
 
