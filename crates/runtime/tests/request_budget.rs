@@ -283,6 +283,157 @@ fn the_assembled_prefix_is_stable_across_a_turn_and_a_yard_change() -> TestResul
     Ok(())
 }
 
+/// chrono is banned, so the civil date is derived from the epoch by hand
+/// (Howard Hinnant's civil_from_days).
+fn iso_date(epoch_secs: i64) -> String {
+    let days = epoch_secs.div_euclid(86_400).saturating_add(719_468);
+    let era = days.div_euclid(146_097);
+    let doe = days.rem_euclid(146_097);
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = yoe + era * 400 + i64::from(month <= 2);
+    format!("{year:04}-{month:02}-{day:02}")
+}
+
+/// A short marker (a pid, a 7-char sha) can coincide with prompt text, so a
+/// bounded one only counts when no alphanumeric sits on either side of it.
+fn residue(block: &str, needle: &str, bounded: bool) -> bool {
+    !needle.is_empty()
+        && block.match_indices(needle).any(|(at, hit)| {
+            !bounded
+                || (!block[..at]
+                    .chars()
+                    .next_back()
+                    .is_some_and(|ch| ch.is_ascii_alphanumeric())
+                    && !block[at.saturating_add(hit.len())..]
+                        .chars()
+                        .next()
+                        .is_some_and(|ch| ch.is_ascii_alphanumeric()))
+        })
+}
+
+#[expect(
+    clippy::disallowed_methods,
+    reason = "the hostname and git-ref markers only exist outside the process; nothing in-tree reports them"
+)]
+fn command_output(program: &str, args: &[&str]) -> Option<String> {
+    let out = std::process::Command::new(program)
+        .args(args)
+        .output()
+        .ok()?;
+    let text = String::from_utf8(out.stdout).ok()?.trim().to_owned();
+    (out.status.success() && !text.is_empty()).then_some(text)
+}
+
+/// Block 0 of a fully installed host: the universal prefix a fan-out of
+/// children reads, assembled after the session-start effects have fired.
+fn frozen_block(cwd: &std::path::Path, home: &std::path::Path) -> Result<String, Box<dyn Error>> {
+    use yi_runtime::ext::{ExtOptions, install};
+    use yi_types::model::SYSTEM_BLOCK_SEPARATOR;
+
+    std::fs::create_dir_all(cwd)?;
+    std::fs::create_dir_all(home)?;
+    let mut host = install(ExtOptions {
+        cwd: cwd.to_path_buf(),
+        home: home.to_path_buf(),
+        mode: PermissionMode::Ask,
+        user_system: String::new(),
+        schema_instruction: None,
+    });
+    host.start(None, false);
+    Ok(host
+        .system_prompt()
+        .split(SYSTEM_BLOCK_SEPARATOR)
+        .next()
+        .unwrap_or_default()
+        .to_owned())
+}
+
+/// Block 0 only: block 1 is machine-dependent by design (the skills catalog)
+/// and block 2 carries a per-session nonce. Two renders in one process share
+/// every ambient value, so invariance and a residue scan both have to run.
+#[test]
+fn the_frozen_prefix_is_location_invariant_and_residue_free() -> TestResult {
+    let root = std::env::temp_dir().join(format!("yi-frozen-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let (cwd_a, home_a) = (root.join("alpha/work"), root.join("alpha/dwelling"));
+    let (cwd_b, home_b) = (root.join("beta/elsewhere"), root.join("beta/abode"));
+    let a = frozen_block(&cwd_a, &home_a)?;
+    let b = frozen_block(&cwd_b, &home_b)?;
+
+    let mut violations: Vec<String> = Vec::new();
+    if a != b {
+        let at = a.bytes().zip(b.bytes()).take_while(|(x, y)| x == y).count();
+        let window = |text: &str| {
+            let end = text.len().min(at.saturating_add(60));
+            text.get(at..end).unwrap_or(text).to_owned()
+        };
+        violations.push(format!(
+            "block 0 is not location-invariant: first difference at byte {at}\n  a: {:?}\n  b: {:?}",
+            window(&a),
+            window(&b)
+        ));
+    }
+
+    let now = i64::try_from(yi_session::now_ms() / 1_000)?;
+    let shown = |path: &std::path::Path| path.display().to_string();
+    let mut markers: Vec<(String, String, bool)> = vec![
+        ("cwd (pair a)".to_owned(), shown(&cwd_a), false),
+        ("home (pair a)".to_owned(), shown(&home_a), false),
+        ("cwd (pair b)".to_owned(), shown(&cwd_b), false),
+        ("home (pair b)".to_owned(), shown(&home_b), false),
+        ("pid".to_owned(), std::process::id().to_string(), true),
+        ("date (utc)".to_owned(), iso_date(now), false),
+        (
+            "date (utc-1d)".to_owned(),
+            iso_date(now.saturating_sub(86_400)),
+            false,
+        ),
+        (
+            "date (utc+1d)".to_owned(),
+            iso_date(now.saturating_add(86_400)),
+            false,
+        ),
+    ];
+    for var in ["HOME", "USER", "LOGNAME"] {
+        match std::env::var(var) {
+            Ok(value) if value.len() >= 3 => markers.push((format!("${var}"), value, true)),
+            _ => println!("SKIP ${var} marker: unset or too short to bound"),
+        }
+    }
+    match command_output("hostname", &[]) {
+        Some(name) => markers.push(("hostname".to_owned(), name, true)),
+        None => println!("SKIP hostname marker: the `hostname` command is unavailable"),
+    }
+    match command_output(
+        "git",
+        &["-C", env!("CARGO_MANIFEST_DIR"), "rev-parse", "HEAD"],
+    ) {
+        Some(sha) => {
+            let short: String = sha.chars().take(7).collect();
+            markers.push(("git HEAD (short)".to_owned(), short, true));
+            markers.push(("git HEAD".to_owned(), sha, true));
+        }
+        None => println!("SKIP git-ref marker: `git rev-parse HEAD` is unavailable"),
+    }
+
+    for (label, needle, bounded) in &markers {
+        if residue(&a, needle, *bounded) {
+            violations.push(format!(
+                "block 0 carries ambient residue: {label} = {needle:?}"
+            ));
+        }
+    }
+    let _ = std::fs::remove_dir_all(&root);
+    if violations.is_empty() {
+        return Ok(());
+    }
+    Err(violations.join("\n").into())
+}
+
 /// Read by scripts/guardrails/check_request_budget.py, which owns the ratchet.
 #[test]
 fn report_the_prefix_size() -> TestResult {
