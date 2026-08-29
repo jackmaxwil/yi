@@ -193,7 +193,9 @@ caps: Capabilities}` — `Capabilities` is a small struct of `Option<Arc<dyn …
 background, terminal). No 70-field bag.
 
 Builtins: `read` (hashline header), `edit` (hashline), `write`, `glob`, `grep`, `bash`,
-`ipython`, `subagent`, `agent_message`, `ask_user`.
+`ipython`, `subagent`, `agent_message`, `ask_user`, `get_context` — one layered, clamped
+orientation packet (grid roots, symbol neighborhood, skeletons, change heat, gate commands,
+prior mining issues) behind an honest completeness header.
 
 The registry is **closed**: one `const` list; adding a tool edits this section in the same
 commit. Tool parameters are typed — never `action: String`, never a synonym-alias table
