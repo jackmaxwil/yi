@@ -224,7 +224,7 @@ fn apply_reasoning(model: &Model, options: &OpenAiOptions, params: &mut Value) {
         .thinking_level_map
         .as_ref()
         .and_then(|map| map.get("off"));
-    match &options.reasoning_effort {
+    match options.reasoning_effort {
         Some(effort) => {
             if let Some(mapped) = mapped_effort(model, effort) {
                 params["reasoning"] = json!({"effort": mapped});

@@ -119,3 +119,23 @@ fn goal_command(session: &Arc<AgentSession>) -> String {
         }
     }
 }
+
+/// Mirrors back what the session set, which the clamp may have moved.
+pub fn process_pending_selection(app: &mut App, session: &Arc<AgentSession>) {
+    let Some((model, effort)) = app.selection.pending.take() else {
+        return;
+    };
+    let label = format!("{}/{}", model.provider, model.id);
+    session.set_model(model);
+    let effective = session.set_effort(effort);
+    app.selection.model = session.model();
+    app.selection.effort = effective;
+    app.commit_cell(&Cell::Notice {
+        text: if effective == yi_types::model::Effort::Off {
+            format!("model {label}")
+        } else {
+            format!("model {label} · reasoning {effective}")
+        },
+    });
+    app.scheduler.request();
+}

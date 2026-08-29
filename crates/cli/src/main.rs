@@ -9,14 +9,16 @@ use yi_runtime::{AgentSession, ProviderStream, SessionConfig, resolve_model};
 use yi_types::event::AgentEvent;
 use yi_types::event::AssistantMessageEvent;
 use yi_types::message::{AgentMessage, StopReason};
-use yi_types::model::{Model, ModelCost};
+use yi_types::model::{Effort, Model, ModelCost, UnknownEffort};
 
 #[derive(Clone)]
 struct Args {
     command: String,
     model: String,
     system: String,
-    thinking: Option<String>,
+    thinking: Option<Effort>,
+    /// `--model` was named on the command line, so it outranks a resumed one.
+    model_pinned: bool,
     json: bool,
     mode: yi_runtime::PermissionMode,
     session_dir: Option<String>,
@@ -67,7 +69,13 @@ fn parse_args() -> Result<Args, lexopt::Error> {
             }
             Long("model") => model = Some(parser.value()?.string()?),
             Long("system") => system = parser.value()?.string()?,
-            Long("thinking") => thinking = Some(parser.value()?.string()?),
+            Long("thinking") => {
+                let raw = parser.value()?.string()?;
+                thinking = Some(
+                    raw.parse()
+                        .map_err(|error: UnknownEffort| lexopt::Error::Custom(Box::new(error)))?,
+                );
+            }
             Long("json") => json = true,
             Long("yolo") => mode = yi_runtime::PermissionMode::Yolo,
             Long("auto") => mode = yi_runtime::PermissionMode::Auto,
@@ -94,9 +102,10 @@ fn parse_args() -> Result<Args, lexopt::Error> {
     }
     Ok(Args {
         command,
+        model_pinned: model.is_some(),
         model: model.or_else(configured_model).unwrap_or_default(),
         system,
-        thinking,
+        thinking: thinking.or_else(configured_thinking),
         json,
         mode,
         session_dir,
@@ -207,6 +216,11 @@ fn config() -> &'static yi_types::config::UserConfig {
     CONFIG.get_or_init(yi_types::config::UserConfig::default)
 }
 
+/// X7: `thinking` in the user config, overridden by `--thinking`.
+fn configured_thinking() -> Option<Effort> {
+    config().thinking
+}
+
 fn configured_roles() -> yi_types::config::ModelRoles {
     config().models.clone().unwrap_or_default()
 }
@@ -299,7 +313,7 @@ fn build_session(
         SessionConfig {
             system_prompt: String::new(),
             model,
-            thinking_level: args.thinking.clone(),
+            thinking_level: args.thinking,
             tool_execution: yi_loop_default(),
         },
         provider,
@@ -563,6 +577,20 @@ fn run(args: &Args) -> i32 {
     })
 }
 
+/// A flag names what the user wants now; a resumed session names what they
+/// wanted last time. `attach_store` replays the session, so the flags go on
+/// after it or `--continue --model X` silently keeps the old model.
+fn repin(args: &Args, session: &AgentSession) {
+    if args.model_pinned
+        && let Some(model) = resolve(&args.model)
+    {
+        session.set_model(model);
+    }
+    if let Some(effort) = args.thinking {
+        session.set_effort(effort);
+    }
+}
+
 /// X1: every `yi ask` turn is recorded, so `--continue` has a leaf to resume.
 fn attach_store(args: &Args, session: &AgentSession) -> Result<String, String> {
     use yi_runtime::session_store::{CreateOptions, JsonlRepo, SessionRepo, lock_session};
@@ -585,6 +613,7 @@ fn attach_store(args: &Args, session: &AgentSession) -> Result<String, String> {
     session
         .attach_store(store)
         .map_err(|error| error.to_string())?;
+    repin(args, session);
     Ok(id)
 }
 
@@ -803,7 +832,7 @@ fn run_tui_command(args: &Args, initial_prompt: Option<String>) -> i32 {
     };
     let model = session.model();
     let options = yi_tui::TuiOptions {
-        model_label: model.id.clone(),
+        model: model.clone(),
         session_name: session_name.clone(),
         cwd: effective_cwd(args).display().to_string(),
         context_window: model.context_window,

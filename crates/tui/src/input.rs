@@ -91,6 +91,7 @@ pub(crate) fn handle_bottom_key(app: &mut App, key: &SingleKey) {
         Bottom::Approval(view, _) => view.handle_key(key),
         Bottom::Command(popup) | Bottom::File(popup) => popup.handle_key(key),
         Bottom::Agents(popup) => popup.handle_key(key),
+        Bottom::Model(popup) => popup.handle_key(key),
     };
     match result {
         PopupResult::Open => app.bottom = Some(bottom),
@@ -101,6 +102,11 @@ pub(crate) fn handle_bottom_key(app: &mut App, key: &SingleKey) {
             Bottom::Agents(popup) => {
                 if let Some(child) = popup.stop {
                     app.stop_child(&child);
+                }
+            }
+            Bottom::Model(popup) => {
+                if let Some((model, effort)) = popup.chosen {
+                    app.select(model, effort);
                 }
             }
             Bottom::Command(_) | Bottom::File(_) => {}
@@ -118,7 +124,7 @@ pub(crate) fn handle_bottom_key(app: &mut App, key: &SingleKey) {
             Bottom::Approval(view, reply) => {
                 let _ = reply.send(view.outcome.unwrap_or(AskChoice::Reject));
             }
-            Bottom::Agents(_) => {}
+            Bottom::Agents(_) | Bottom::Model(_) => {}
         },
     }
 }
@@ -173,6 +179,11 @@ pub(crate) fn handle_action(
         Action::FocusParent => focus_move(app, FocusMove::Parent),
         Action::FocusNextSibling => focus_move(app, FocusMove::Next),
         Action::FocusPrevSibling => focus_move(app, FocusMove::Prev),
+        Action::RaiseEffort => app.step_effort(true),
+        Action::LowerEffort => app.step_effort(false),
+        Action::CycleModel => app.cycle_model(true),
+        Action::CycleModelBack => app.cycle_model(false),
+        Action::OpenModelPicker => app.open_model_picker(),
     }
 }
 
@@ -196,6 +207,7 @@ pub(crate) fn handle_slash(app: &mut App, line: &str) {
         "tree" => app.pending_open_tree = true,
         "editor" => app.pending_editor = true,
         "agents" => app.open_agents(),
+        "model" => app.open_model_picker(),
         "advisor" | "plan" | "goal" => {
             app.pending_command = Some(if args.is_empty() {
                 command.to_owned()

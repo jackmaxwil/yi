@@ -4,8 +4,8 @@
 
 use std::f64::consts::PI;
 
-use super::Opts;
-use super::core::{
+use crate::Opts;
+use crate::core::{
     Dot, OrbFrame, OrbLine, angle_delta, fib_dir, finalize_frame, frac, hash_d, lerp, make_proj,
     radius_scale, vnoise,
 };
@@ -410,7 +410,7 @@ pub fn frame_web(size: f64, t: f64, o: &Opts) -> OrbFrame {
     finalize_frame(dots, lines, o.get("rMin", 0.3))
 }
 
-fn ghost_sphere(dots: &mut Vec<Dot>, pt: &super::core::Proj, big_r: f64, ghost_n: usize, rs: f64) {
+fn ghost_sphere(dots: &mut Vec<Dot>, pt: &crate::core::Proj, big_r: f64, ghost_n: usize, rs: f64) {
     for i in 0..ghost_n {
         let d = fib_dir(i as f64, ghost_n as f64);
         let (px, py, z) = pt.point(d.0 * big_r, d.1 * big_r, d.2 * big_r);

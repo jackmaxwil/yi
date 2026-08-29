@@ -1,7 +1,7 @@
 use std::error::Error;
 
 use serde_json::Value;
-use yi_tui::orb::{self, Mode, Opts};
+use yi_orb::{self as orb, Mode, Opts};
 
 type TestResult = Result<(), Box<dyn Error>>;
 
@@ -215,4 +215,24 @@ fn decode_base64(text: &str) -> Result<Vec<u8>, Box<dyn Error>> {
         out.extend_from_slice(&bits.to_be_bytes()[1..=keep]);
     }
     Ok(out)
+}
+
+#[test]
+fn orb_engine_feeds_the_kitty_painter() -> TestResult {
+    use yi_orb::{OrbState, evaluate, kitty};
+    let frame = evaluate(OrbState::Working, 64, 1.3).ok_or("preset missing")?;
+    assert!(!frame.dots.is_empty());
+    let rgba = kitty::paint_rgba(&frame, 64.0, 96);
+    assert_eq!(rgba.len(), 96 * 96 * 4);
+    let lit = rgba.chunks(4).filter(|px| px[3] > 0).count();
+    assert!(
+        lit > 200,
+        "a working orb must light pixels with alpha depth: {lit}"
+    );
+    let background = rgba.chunks(4).filter(|px| px[3] == 0).count();
+    assert!(
+        background > 1000,
+        "the background stays transparent for the terminal ground: {background}"
+    );
+    Ok(())
 }

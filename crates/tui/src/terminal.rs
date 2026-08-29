@@ -136,31 +136,6 @@ impl<B: Backend> Terminal<B> {
         }
     }
 
-    /// codex resize reflow: after the emulator re-wraps the screen, the rows
-    /// above the viewport hold mangled copies of earlier frames. Rebuild them
-    /// from transcript source instead of trusting what the re-wrap left there.
-    pub fn repaint_history<F: FnOnce(&mut Buffer)>(&mut self, draw_fn: F) -> io::Result<()> {
-        let rows = self.viewport_area.top();
-        if rows == 0 || self.screen_size.width == 0 {
-            return Ok(());
-        }
-        for y in 0..rows {
-            self.backend.set_cursor_position(Position { x: 0, y })?;
-            self.backend.clear_region(ClearType::CurrentLine)?;
-        }
-        let area = Rect {
-            x: 0,
-            y: 0,
-            width: self.screen_size.width,
-            height: rows,
-        };
-        let mut buffer = Buffer::empty(area);
-        draw_fn(&mut buffer);
-        let cells = buffer.content.clone();
-        self.draw_lines(0, rows, &cells)?;
-        self.backend.set_cursor_position(self.last_cursor)
-    }
-
     pub fn draw<F: FnOnce(&mut Frame)>(&mut self, render: F) -> io::Result<()> {
         let viewport_area = self.viewport_area;
         let mut frame = Frame {

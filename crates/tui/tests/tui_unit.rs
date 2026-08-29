@@ -1,3 +1,5 @@
+mod common;
+
 use std::error::Error;
 
 use ratatui::style::{Modifier, Style};
@@ -278,7 +280,7 @@ fn streamed(full: &str) -> yi_tui::app::App {
     use yi_tui::keymap::default_keymap;
     let mut app = App::new(
         TuiOptions {
-            model_label: "faux-1".to_owned(),
+            model: common::test_model("faux-1"),
             session_name: "s".to_owned(),
             cwd: "/tmp".to_owned(),
             context_window: 128_000,
@@ -584,27 +586,6 @@ fn status_path_truncates_from_the_left() -> TestResult {
     );
     Ok(())
 }
-
-#[test]
-fn orb_engine_feeds_the_kitty_painter() -> TestResult {
-    use yi_tui::orb::{OrbState, evaluate, kitty};
-    let frame = evaluate(OrbState::Working, 64, 1.3).ok_or("preset missing")?;
-    assert!(!frame.dots.is_empty());
-    let rgba = kitty::paint_rgba(&frame, 64.0, 96);
-    assert_eq!(rgba.len(), 96 * 96 * 4);
-    let lit = rgba.chunks(4).filter(|px| px[3] > 0).count();
-    assert!(
-        lit > 200,
-        "a working orb must light pixels with alpha depth: {lit}"
-    );
-    let background = rgba.chunks(4).filter(|px| px[3] == 0).count();
-    assert!(
-        background > 1000,
-        "the background stays transparent for the terminal ground: {background}"
-    );
-    Ok(())
-}
-
 #[test]
 fn table_cells_keep_inline_code_and_leak_nothing() -> TestResult {
     let theme = theme();
@@ -631,7 +612,7 @@ fn streaming_commits_each_list_item_exactly_once() -> TestResult {
     use yi_tui::keymap::default_keymap;
     let mut app = App::new(
         TuiOptions {
-            model_label: "faux-1".to_owned(),
+            model: common::test_model("faux-1"),
             session_name: "s".to_owned(),
             cwd: "/tmp".to_owned(),
             context_window: 128_000,

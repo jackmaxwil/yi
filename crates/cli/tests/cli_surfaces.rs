@@ -392,3 +392,47 @@ fn gate_asks_before_a_credential_is_read() -> TestResult {
     assert_eq!(allowed.status.code(), Some(0), "{}", stdout(&allowed));
     Ok(())
 }
+
+#[test]
+fn an_unknown_thinking_level_is_named_and_refused() -> TestResult {
+    let workspace = Workspace::new("thinking-flag")?;
+    let output = workspace.yi(&[
+        "ask",
+        "--model",
+        "faux/faux-1",
+        "--thinking",
+        "extreme",
+        "hi",
+    ])?;
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("extreme"), "{stderr}");
+    Ok(())
+}
+
+#[test]
+fn an_unknown_thinking_level_in_the_config_is_named_and_refused() -> TestResult {
+    let workspace = Workspace::new("thinking-config")?;
+    std::fs::create_dir_all(workspace.0.join("home/.yi"))?;
+    std::fs::write(
+        workspace.0.join("home/.yi/config.json"),
+        r#"{"model": "faux/faux-1", "thinking": "extreme"}"#,
+    )?;
+    let output = workspace.yi(&["ask", "hi"])?;
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("config.json"), "{stderr}");
+    Ok(())
+}
+
+#[test]
+fn a_valid_thinking_level_is_accepted() -> TestResult {
+    let workspace = Workspace::new("thinking-ok")?;
+    let output = workspace.yi(&["ask", "--model", "faux/faux-1", "--thinking", "low", "hi"])?;
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    Ok(())
+}

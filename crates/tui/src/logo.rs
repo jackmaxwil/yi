@@ -1,5 +1,5 @@
-use crate::orb::core::Dot;
-use crate::orb::{OrbFrame, OrbState, evaluate};
+use yi_orb::core::Dot;
+use yi_orb::{OrbFrame, OrbState, evaluate};
 
 /// The mark and the activity indicator are one object (U34). Only the dot
 /// positions interpolate — the orb engine owns every frame the working state

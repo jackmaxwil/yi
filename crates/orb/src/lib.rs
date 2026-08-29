@@ -1,6 +1,7 @@
-// thinking-orbs port (A.13, D41): geometry-exact engine — verified against
-// the library's own golden vectors — rendered through the kitty graphics
-// protocol (plain spinner everywhere else).
+//! thinking-orbs port (A.13, D41): geometry-exact engine — verified against
+//! the library's own golden vectors — and the kitty painter that puts it on
+//! screen. No terminal framework and no Yi crate: the host owns placement.
+#![forbid(unsafe_code)]
 
 pub mod core;
 pub mod kitty;
@@ -48,7 +49,7 @@ pub fn frame(mode: Mode, size: f64, t: f64, opts: &Opts) -> OrbFrame {
     }
 }
 
-/// The nine reference states; TUI activity maps onto them in [`crate::app`].
+/// The nine reference states; the host maps its own activity onto them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OrbState {
     Working,
@@ -110,71 +111,4 @@ pub fn evaluate(state: OrbState, size: u32, clock: f64) -> Option<OrbFrame> {
         clock * resolved.speed,
         &opts,
     ))
-}
-
-/// The loop owns one of these for the session — there is one kitty image.
-pub struct Tick {
-    pub shown: bool,
-    at: Option<(u16, u16)>,
-    last: std::time::Instant,
-}
-
-impl Default for Tick {
-    fn default() -> Self {
-        Self {
-            shown: false,
-            at: None,
-            last: std::time::Instant::now() - std::time::Duration::from_secs(1),
-        }
-    }
-}
-
-/// The phase walks toward its target every frame, so the dots visibly travel
-/// between the `Yi` mark and the orb; settled at rest, it needs no repaint.
-pub fn tick<B>(
-    app: &mut crate::app::App,
-    terminal: &mut crate::terminal::Terminal<B>,
-    state: &mut Tick,
-) where
-    B: ratatui::backend::Backend + std::io::Write,
-{
-    if !app.kitty {
-        return;
-    }
-    let animating = app.logo_phase != app.logo_target || app.logo_target > 0.0;
-    let due = animating
-        && state.last.elapsed() >= std::time::Duration::from_millis(crate::logo::FRAME_MS);
-    if !animating {
-        state.last = std::time::Instant::now();
-    }
-    let stale = app.take_orb_stale();
-    match app.orb_placement {
-        Some((col, row)) if due || stale || !state.shown || state.at != Some((col, row)) => {
-            if due {
-                app.logo_phase =
-                    crate::logo::advance(app.logo_phase, app.logo_target, state.last.elapsed());
-                state.last = std::time::Instant::now();
-            }
-            let clock = app.started_at.elapsed().as_secs_f64();
-            if let Some(frame) = crate::logo::frame(app.logo_phase, clock, 64) {
-                let rgba = kitty::paint_rgba(&frame, 64.0, crate::app::ORB_PX);
-                let _ = kitty::emit(
-                    terminal.backend_mut(),
-                    &rgba,
-                    crate::app::ORB_PX,
-                    col,
-                    row,
-                    crate::app::ORB_COLS,
-                    crate::app::ORB_ROWS,
-                );
-                state.shown = true;
-                state.at = Some((col, row));
-            }
-        }
-        None if state.shown => {
-            state.shown = false;
-            let _ = kitty::delete(terminal.backend_mut());
-        }
-        _ => {}
-    }
 }

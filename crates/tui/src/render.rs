@@ -162,8 +162,9 @@ fn draw_frame<B>(
     };
 
     let status_input = StatusInput {
-        model: app.options.model_label.clone(),
-        thinking: None,
+        model: app.selection.model.id.clone(),
+        thinking: (app.selection.effort != yi_types::model::Effort::Off)
+            .then(|| app.selection.effort.to_string()),
         mode: (app.mode != TranscriptMode::Normal).then(|| app.mode.label().to_owned()),
         cwd: app.options.cwd.clone(),
         branch: None,
@@ -191,6 +192,7 @@ fn draw_frame<B>(
             Some(Bottom::Approval(view, _)) => Some(view.lines(width, &theme)),
             Some(Bottom::Command(popup) | Bottom::File(popup)) => Some(popup.lines(width, &theme)),
             Some(Bottom::Agents(popup)) => Some(popup.lines(width, &theme)),
+            Some(Bottom::Model(popup)) => Some(popup.lines(width, &theme)),
             None => None,
         }
     };

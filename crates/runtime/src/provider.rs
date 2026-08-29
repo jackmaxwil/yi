@@ -10,7 +10,7 @@ use yi_loop::interrupt::InterruptSignal;
 use yi_loop::run::StreamFn;
 use yi_types::event::AssistantMessageEvent;
 use yi_types::message::AgentMessage;
-use yi_types::model::{LlmContext, Model};
+use yi_types::model::{Effort, LlmContext, Model};
 
 pub fn resolve_model(provider: &str, id: &str) -> Option<Model> {
     Catalog::shared().get(provider, id).cloned()
@@ -46,25 +46,20 @@ fn adaptive(model: &Model) -> bool {
         .unwrap_or(false)
 }
 
-fn anthropic_thinking(model: &Model, level: Option<&str>) -> Thinking {
-    match level {
-        None | Some("off") => Thinking::Off,
-        Some(level) if adaptive(model) => Thinking::Adaptive {
-            effort: Some(level.to_owned()),
+fn anthropic_thinking(model: &Model, effort: Effort) -> Thinking {
+    match effort {
+        Effort::Off => Thinking::Off,
+        effort if adaptive(model) => Thinking::Adaptive {
+            effort: Some(effort.to_string()),
         },
-        Some(level) => Thinking::Budget {
-            tokens: match level {
-                "minimal" | "low" => 1024,
-                "medium" => 4096,
-                _ => 16384,
-            },
-        },
+        Effort::Minimal | Effort::Low => Thinking::Budget { tokens: 1024 },
+        Effort::Medium => Thinking::Budget { tokens: 4096 },
+        Effort::High | Effort::XHigh | Effort::Max => Thinking::Budget { tokens: 16384 },
     }
 }
 
 pub struct ProviderStream {
     pub api_key: Option<yi_ai::auth::Secret>,
-    pub thinking_level: Mutex<Option<String>>,
     pub session_id: Option<String>,
     pub faux: Mutex<FauxProvider>,
     long_cache: bool,
@@ -74,7 +69,6 @@ impl ProviderStream {
     pub fn new(api_key: Option<yi_ai::auth::Secret>, session_id: Option<String>) -> Self {
         Self {
             api_key,
-            thinking_level: Mutex::new(None),
             session_id,
             faux: Mutex::new(FauxProvider::default()),
             long_cache: false,
@@ -87,12 +81,6 @@ impl ProviderStream {
     pub fn with_long_cache(mut self, long_cache: bool) -> Self {
         self.long_cache = long_cache;
         self
-    }
-
-    pub fn set_thinking_level(&self, level: Option<String>) {
-        if let Ok(mut current) = self.thinking_level.lock() {
-            *current = level;
-        }
     }
 
     pub fn queue_faux(&self, responses: Vec<AgentMessage>) {
@@ -114,17 +102,13 @@ impl StreamFn for ProviderStream {
         &self,
         model: &Model,
         context: &LlmContext,
+        effort: Effort,
         _signal: &InterruptSignal,
     ) -> Receiver<AssistantMessageEvent> {
-        let level = self
-            .thinking_level
-            .lock()
-            .ok()
-            .and_then(|level| level.clone());
         match provider_api(&model.api) {
             ProviderApi::AnthropicMessages => {
                 let options = AnthropicOptions {
-                    thinking: anthropic_thinking(model, level.as_deref()),
+                    thinking: anthropic_thinking(model, effort),
                     cache: true,
                     cache_1h: self.long_cache,
                     ..AnthropicOptions::default()
@@ -133,7 +117,7 @@ impl StreamFn for ProviderStream {
             }
             ProviderApi::OpenAiCompletions => {
                 let options = OpenAiOptions {
-                    reasoning_effort: level.filter(|value| value != "off"),
+                    reasoning_effort: (effort != Effort::Off).then_some(effort),
                     session_id: self.session_id.clone(),
                     ..OpenAiOptions::default()
                 };
@@ -141,7 +125,7 @@ impl StreamFn for ProviderStream {
             }
             ProviderApi::OpenAiResponses => {
                 let options = OpenAiOptions {
-                    reasoning_effort: level.filter(|value| value != "off"),
+                    reasoning_effort: (effort != Effort::Off).then_some(effort),
                     session_id: self.session_id.clone(),
                     ..OpenAiOptions::default()
                 };

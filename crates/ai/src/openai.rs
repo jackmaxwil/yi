@@ -2,7 +2,7 @@ use serde_json::{Value, json};
 use tokio::sync::mpsc::{Receiver, Sender};
 use yi_types::event::AssistantMessageEvent;
 use yi_types::message::{AgentMessage, Content, StopReason, Usage, UserContent};
-use yi_types::model::{LlmContext, Model, ToolDef};
+use yi_types::model::{Effort, LlmContext, Model, ToolDef};
 
 use crate::catalog::calculate_cost;
 use crate::compat::{compat_bool, compat_str};
@@ -15,7 +15,7 @@ const REASONING_FIELDS: [&str; 3] = ["reasoning_content", "reasoning", "reasonin
 pub struct OpenAiOptions {
     pub max_tokens: Option<u64>,
     pub temperature: Option<f64>,
-    pub reasoning_effort: Option<String>,
+    pub reasoning_effort: Option<Effort>,
     pub session_id: Option<String>,
 }
 
@@ -295,33 +295,17 @@ pub fn build_params(model: &Model, context: &LlmContext, options: &OpenAiOptions
     params
 }
 
-/// `off` is deliberately absent: an unsupported level clamps to a weaker one,
-/// never to no thinking at all (mirrors `nearest()` in openrouter_reasoning.py).
-const EFFORT_LEVELS: [&str; 6] = ["minimal", "low", "medium", "high", "xhigh", "max"];
-
-/// A level mapped to `null` is one the model rejects; [`None`] = send no reasoning.
-fn nearest_effort<'a>(map: &'a Value, effort: &str) -> Option<&'a str> {
-    let rank = EFFORT_LEVELS.iter().position(|level| *level == effort)?;
-    EFFORT_LEVELS
-        .iter()
-        .enumerate()
-        .filter_map(|(candidate, level)| match map.get(level) {
-            Some(Value::Null) => None,
-            Some(value) => Some((candidate, value.as_str().unwrap_or(level))),
-            None => Some((candidate, *level)),
-        })
-        .min_by_key(|(candidate, _)| (candidate.abs_diff(rank), *candidate))
-        .map(|(_, mapped)| mapped)
-}
-
-pub(crate) fn mapped_effort<'a>(model: &'a Model, effort: &'a str) -> Option<&'a str> {
+/// Invariant: callers clamp through [`Model::clamp_effort`] first, so the
+/// `null` arm is unreachable; it stays as the safe answer ([`None`] sends no
+/// reasoning) rather than a rejected level going out on the wire.
+pub(crate) fn mapped_effort(model: &Model, effort: Effort) -> Option<&str> {
     let Some(map) = model.thinking_level_map.as_ref() else {
-        return Some(effort);
+        return Some(effort.as_str());
     };
-    match map.get(effort) {
-        Some(Value::Null) => nearest_effort(map, effort),
-        Some(value) => Some(value.as_str().unwrap_or(effort)),
-        None => Some(effort),
+    match map.get(effort.as_str()) {
+        Some(Value::Null) => None,
+        Some(value) => Some(value.as_str().unwrap_or(effort.as_str())),
+        None => Some(effort.as_str()),
     }
 }
 
@@ -331,7 +315,7 @@ fn apply_reasoning_params(model: &Model, options: &OpenAiOptions, params: &mut V
             .thinking_level_map
             .as_ref()
             .and_then(|map| map.get("off"));
-        match &options.reasoning_effort {
+        match options.reasoning_effort {
             Some(effort) => {
                 if let Some(mapped) = mapped_effort(model, effort) {
                     params["reasoning"] = json!({"effort": mapped});
@@ -343,7 +327,7 @@ fn apply_reasoning_params(model: &Model, options: &OpenAiOptions, params: &mut V
             }
             None => {}
         }
-    } else if let Some(effort) = &options.reasoning_effort
+    } else if let Some(effort) = options.reasoning_effort
         && let Some(mapped) = mapped_effort(model, effort)
     {
         params["reasoning_effort"] = json!(mapped);

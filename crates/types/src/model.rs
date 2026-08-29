@@ -1,6 +1,126 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{Number, Value};
 
+/// Invariant: variant order is the ladder — [`Ord`], [`Effort::ALL`] and every
+/// clamp read it, and no second ordered list of levels exists anywhere.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Effort {
+    Off,
+    Minimal,
+    Low,
+    #[default]
+    Medium,
+    High,
+    XHigh,
+    Max,
+}
+
+/// A `--thinking`, config, or wire value that names no [`Effort`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnknownEffort(pub String);
+
+impl std::fmt::Display for UnknownEffort {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "unknown thinking level {}", self.0)
+    }
+}
+
+impl std::error::Error for UnknownEffort {}
+
+impl Effort {
+    pub const ALL: [Self; 7] = [
+        Self::Off,
+        Self::Minimal,
+        Self::Low,
+        Self::Medium,
+        Self::High,
+        Self::XHigh,
+        Self::Max,
+    ];
+
+    /// Tiers a cycle shortcut refuses to enter; the picker gates them.
+    pub fn is_advanced(self) -> bool {
+        matches!(self, Self::XHigh | Self::Max)
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::Minimal => "minimal",
+            Self::Low => "low",
+            Self::Medium => "medium",
+            Self::High => "high",
+            Self::XHigh => "xhigh",
+            Self::Max => "max",
+        }
+    }
+}
+
+impl std::fmt::Display for Effort {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
+
+impl std::str::FromStr for Effort {
+    type Err = UnknownEffort;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        Self::ALL
+            .into_iter()
+            .find(|effort| effort.as_str() == value)
+            .ok_or_else(|| UnknownEffort(value.to_owned()))
+    }
+}
+
+impl Model {
+    /// Invariant: the advertised levels, low to high, never empty — a model
+    /// whose every level is `null`-mapped falls back to [`Effort::Off`], so
+    /// callers may take `.first()` / `.last()` with no empty case to invent.
+    pub fn supported_efforts(&self) -> Vec<Effort> {
+        if !self.reasoning {
+            return vec![Effort::Off];
+        }
+        let map = self.thinking_level_map.as_ref();
+        let supported: Vec<Effort> = Effort::ALL
+            .into_iter()
+            .filter(
+                |effort| match map.and_then(|map| map.get(effort.as_str())) {
+                    Some(Value::Null) => false,
+                    None => !effort.is_advanced(),
+                    Some(_) => true,
+                },
+            )
+            .collect();
+        if supported.is_empty() {
+            vec![Effort::Off]
+        } else {
+            supported
+        }
+    }
+
+    /// Snaps up before down, so an unsupported request is never quietly
+    /// answered with less thinking while a higher rung exists.
+    pub fn clamp_effort(&self, effort: Effort) -> Effort {
+        let supported = self.supported_efforts();
+        if supported.contains(&effort) {
+            return effort;
+        }
+        supported
+            .iter()
+            .find(|candidate| **candidate > effort)
+            .or_else(|| {
+                supported
+                    .iter()
+                    .rev()
+                    .find(|candidate| **candidate < effort)
+            })
+            .copied()
+            .unwrap_or(Effort::Off)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CostTier {

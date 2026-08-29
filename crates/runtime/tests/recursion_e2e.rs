@@ -122,7 +122,7 @@ fn harness_with(options: HarnessOptions) -> Harness {
         max_children: 8,
         parent_session_dir: root.clone(),
         cwd: cwd.clone(),
-        default_model: faux_model(),
+        defaults: Arc::new(|| (faux_model(), yi_types::model::Effort::Medium)),
         factory: Arc::new(move |build: yi_runtime::ChildBuild<'_>| {
             if let Ok(mut slot) = cwd_sink.lock() {
                 *slot = build.cwd.map(std::path::Path::to_path_buf);

@@ -2,7 +2,7 @@
 // `spec/orbs-golden.json` `resolved` — the post-scaling numbers the golden
 // vectors were generated with, so no scaling machinery can drift.
 
-use super::{Mode, Opts};
+use crate::{Mode, Opts};
 
 pub struct Resolved {
     pub mode: Mode,

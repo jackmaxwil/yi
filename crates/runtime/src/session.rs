@@ -3,9 +3,10 @@ use std::sync::{Arc, Mutex};
 use tokio::sync::broadcast;
 use yi_loop::interrupt::InterruptSignal;
 use yi_loop::{ExecutionMode, LoopConfig, LoopContext, run_loop};
+use yi_types::entry::Entry;
 use yi_types::event::AgentEvent;
 use yi_types::message::{AgentMessage, Usage, UserContent};
-use yi_types::model::Model;
+use yi_types::model::{Effort, Model};
 
 use crate::provider::ProviderStream;
 
@@ -33,12 +34,14 @@ impl std::error::Error for SessionError {}
 pub struct SessionConfig {
     pub system_prompt: String,
     pub model: Model,
-    pub thinking_level: Option<String>,
+    pub thinking_level: Option<Effort>,
     pub tool_execution: ExecutionMode,
 }
 
 struct Shared {
     ext: Mutex<Option<Arc<Mutex<crate::ext::Host>>>>,
+    model: Mutex<Model>,
+    effort: Mutex<Effort>,
     messages: Mutex<Vec<AgentMessage>>,
     steer: Mutex<Vec<AgentMessage>>,
     follow_up: Mutex<Vec<AgentMessage>>,
@@ -81,6 +84,7 @@ struct RunParts {
     provider: Arc<ProviderStream>,
     system_prompt: PromptSource,
     model: Model,
+    effort: Effort,
     tool_execution: ExecutionMode,
     tools: Vec<Arc<dyn yi_loop::AgentTool>>,
     compactor: Option<Arc<crate::compaction::Compactor>>,
@@ -89,7 +93,6 @@ struct RunParts {
 
 pub struct AgentSession {
     config: SessionConfig,
-    model: Mutex<Model>,
     provider: Arc<ProviderStream>,
     shared: Arc<Shared>,
     tools: Vec<Arc<dyn yi_loop::AgentTool>>,
@@ -112,14 +115,16 @@ type ScheduleParts = (
 
 impl AgentSession {
     pub fn new(config: SessionConfig, provider: Arc<ProviderStream>) -> Self {
-        provider.set_thinking_level(config.thinking_level.clone());
         let (events, _) = broadcast::channel(1024);
         Self {
-            model: Mutex::new(config.model.clone()),
-            config,
-            provider,
             shared: Arc::new(Shared {
                 ext: Mutex::new(None),
+                model: Mutex::new(config.model.clone()),
+                effort: Mutex::new(
+                    config
+                        .model
+                        .clamp_effort(config.thinking_level.unwrap_or_default()),
+                ),
                 messages: Mutex::new(Vec::new()),
                 steer: Mutex::new(Vec::new()),
                 follow_up: Mutex::new(Vec::new()),
@@ -133,6 +138,8 @@ impl AgentSession {
                 on_turn_start: Mutex::new(None),
                 on_turn_end: Mutex::new(None),
             }),
+            config,
+            provider,
             tools: Vec::new(),
             compactor: None,
             on_compacted: Mutex::new(None),
@@ -388,18 +395,18 @@ impl AgentSession {
         &self,
         store: yi_session::SharedSession,
     ) -> Result<usize, yi_session::SessionError> {
-        let loaded: Vec<AgentMessage> = {
+        let entries = {
             let session = yi_session::lock_session(&store);
-            let entries = session.find_entries_on_branch(
+            session.find_entries_on_branch(
                 "main",
                 &yi_session::EntryQuery {
                     order: yi_session::EntryOrder::OldestFirst,
                     ..yi_session::EntryQuery::default()
                 },
                 &yi_session::BranchBounds::default(),
-            )?;
-            yi_context::project(&entries)
+            )?
         };
+        let loaded = yi_context::project(&entries);
         let count = loaded.len();
         if let Ok(mut messages) = self.shared.messages.lock() {
             *messages = loaded;
@@ -407,7 +414,33 @@ impl AgentSession {
         if let Ok(mut slot) = self.shared.store.lock() {
             *slot = Some(store);
         }
+        self.restore_settings(&entries);
         Ok(count)
+    }
+
+    fn restore_settings(&self, entries: &[Entry]) {
+        let mut effort = None;
+        for entry in entries {
+            match entry {
+                Entry::ModelChange {
+                    provider, model_id, ..
+                } => {
+                    if let Some(model) = crate::provider::resolve_model(provider, model_id)
+                        && let Ok(mut slot) = self.shared.model.lock()
+                    {
+                        *slot = model;
+                    }
+                }
+                Entry::ThinkingLevelChange { thinking_level, .. } => {
+                    effort = thinking_level.parse().ok();
+                }
+                _ => {}
+            }
+        }
+        let restored = self.model().clamp_effort(effort.unwrap_or(self.effort()));
+        if let Ok(mut slot) = self.shared.effort.lock() {
+            *slot = restored;
+        }
     }
 
     pub fn store_handle(
@@ -440,20 +473,105 @@ impl AgentSession {
     }
 
     pub fn model(&self) -> Model {
-        self.model
+        self.shared
+            .model
             .lock()
             .map(|model| model.clone())
             .unwrap_or_else(|poisoned| poisoned.into_inner().clone())
     }
 
-    pub fn set_model(&self, model: Model) {
-        if let Ok(mut slot) = self.model.lock() {
-            *slot = model;
-        }
+    /// Incident: snapshotting these left `rlm.run` and `model.info` on the
+    /// startup model once the TUI could switch.
+    pub fn settings_handle(&self) -> Arc<dyn Fn() -> (Model, Effort) + Send + Sync> {
+        let shared = Arc::clone(&self.shared);
+        Arc::new(move || {
+            let model = shared
+                .model
+                .lock()
+                .map(|model| model.clone())
+                .unwrap_or_else(|poisoned| poisoned.into_inner().clone());
+            let effort = shared
+                .effort
+                .lock()
+                .map(|effort| *effort)
+                .unwrap_or_else(|poisoned| *poisoned.into_inner());
+            (model, effort)
+        })
     }
 
-    pub fn set_thinking_level(&self, level: Option<String>) {
-        self.provider.set_thinking_level(level);
+    /// Re-clamps the effort onto the new ladder without recording a level
+    /// change of its own; a caller wanting a specific level calls
+    /// [`AgentSession::set_effort`] after.
+    pub fn set_model(&self, model: Model) {
+        let current = self.model();
+        if current.provider == model.provider && current.id == model.id {
+            return;
+        }
+        let effort = model.clamp_effort(self.effort());
+        if let Ok(mut slot) = self.shared.model.lock() {
+            *slot = model.clone();
+        }
+        if let Ok(mut slot) = self.shared.effort.lock() {
+            *slot = effort;
+        }
+        self.append_state_entry(Entry::ModelChange {
+            id: String::new(),
+            provider: model.provider,
+            model_id: model.id,
+            parent_id: None,
+            seq: 0,
+            timestamp: 0,
+        });
+    }
+
+    pub fn effort(&self) -> Effort {
+        self.shared
+            .effort
+            .lock()
+            .map(|effort| *effort)
+            .unwrap_or_else(|poisoned| *poisoned.into_inner())
+    }
+
+    /// Returns what was actually set, which the clamp may have moved.
+    pub fn set_effort(&self, effort: Effort) -> Effort {
+        let effective = self.model().clamp_effort(effort);
+        let changed = match self.shared.effort.lock() {
+            Ok(mut slot) => {
+                let changed = *slot != effective;
+                *slot = effective;
+                changed
+            }
+            Err(_) => false,
+        };
+        if changed {
+            self.append_state_entry(Entry::ThinkingLevelChange {
+                id: String::new(),
+                thinking_level: effective.to_string(),
+                parent_id: None,
+                seq: 0,
+                timestamp: 0,
+            });
+        }
+        effective
+    }
+
+    fn append_state_entry(&self, mut entry: Entry) {
+        let Some(store) = self.store() else {
+            return;
+        };
+        let mut session = yi_session::lock_session(&store);
+        let id = session.next_id();
+        match &mut entry {
+            Entry::ModelChange { id: slot, .. } | Entry::ThinkingLevelChange { id: slot, .. } => {
+                *slot = id;
+            }
+            _ => return,
+        }
+        if let Err(error) = session.append_entry(entry, "main")
+            && let Ok(mut slot) = self.shared.store_error.lock()
+        {
+            *slot = Some(error.to_string());
+        }
     }
 
     pub fn pending_count(&self) -> usize {
@@ -537,6 +655,7 @@ impl AgentSession {
             provider: Arc::clone(&self.provider),
             system_prompt: self.prompt_source(),
             model: self.model(),
+            effort: self.effort(),
             tool_execution: self.config.tool_execution,
             tools: self.tools.clone(),
             compactor: self.compactor.clone(),
@@ -555,6 +674,7 @@ impl AgentSession {
             provider: Arc::clone(&self.provider),
             system_prompt: self.prompt_source(),
             model: self.model(),
+            effort: self.effort(),
             tool_execution: self.config.tool_execution,
             tools: self.tools.clone(),
             compactor: self.compactor.clone(),
@@ -685,6 +805,7 @@ impl AgentSession {
             provider,
             system_prompt,
             model,
+            effort,
             tool_execution,
             tools,
             compactor,
@@ -714,6 +835,7 @@ impl AgentSession {
             let steer = Arc::clone(&shared);
             let follow = Arc::clone(&shared);
             let mut config = LoopConfig::new(model.clone());
+            config.effort = effort;
             config.tool_execution = tool_execution;
             config.convert_to_llm = Box::new(yi_context::convert_to_llm);
             if let Some(compactor) = compactor.clone() {

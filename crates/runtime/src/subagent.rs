@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex};
 use serde_json::{Map, Value, json};
 use yi_types::event::AgentEvent;
 use yi_types::message::{AgentMessage, Content, StopReason, Usage};
-use yi_types::model::Model;
+use yi_types::model::{Effort, Model};
 pub use yi_types::subagent::{ChildActivity, ChildId, ChildStatus, ChildUpdate};
 
 use crate::mailbox::{ParentLink, WAIT_MAX_MS, message_params, register_child_messaging};
@@ -57,7 +57,7 @@ pub struct ChildView {
 
 pub struct ChildBuild<'a> {
     pub model: Model,
-    pub thinking: Option<String>,
+    pub thinking: Option<Effort>,
     pub session_dir: &'a Path,
     /// `Some` only for a B11 worktree child; otherwise the parent's own cwd.
     pub cwd: Option<&'a Path>,
@@ -74,7 +74,7 @@ pub struct SubagentHostOptions {
     pub max_depth: u8,
     pub max_children: usize,
     pub parent_session_dir: PathBuf,
-    pub default_model: Model,
+    pub defaults: Arc<dyn Fn() -> (Model, Effort) + Send + Sync>,
     pub factory: Arc<ChildFactory>,
     /// A host status notice, delivered as a user-role message.
     pub notice: Arc<NoticeFn>,
@@ -422,7 +422,10 @@ impl SubagentHost {
         require_kwargs(&kwargs)?;
         let requested_name = optional_string(&kwargs, "name")?;
         let requested_model = optional_string(&kwargs, "model")?;
-        let thinking = optional_string(&kwargs, "thinking")?;
+        let thinking = optional_string(&kwargs, "thinking")?
+            .map(|level| level.parse::<Effort>())
+            .transpose()
+            .map_err(|error| error.to_string())?;
         let fork = parse_fork(&kwargs)?;
         let isolation = parse_isolation(&kwargs)?;
         let wall = crate::wall::Wall::from_kwargs(&kwargs, &self.options.cwd)?;
@@ -437,8 +440,9 @@ impl SubagentHost {
                 self.options.depth, self.options.max_depth
             ));
         }
+        let (parent_model, parent_effort) = (self.options.defaults)();
         let model = match &requested_model {
-            None => self.options.default_model.clone(),
+            None => parent_model,
             Some(selector) => {
                 let (provider, id) = selector.split_once('/').ok_or_else(|| {
                     format!("model selector must be provider/model, got {selector}")
@@ -483,7 +487,7 @@ impl SubagentHost {
             };
             let child = (self.options.factory)(ChildBuild {
                 model: model.clone(),
-                thinking,
+                thinking: Some(thinking.unwrap_or(parent_effort)),
                 session_dir: &session_dir,
                 cwd: worktree.as_ref().map(|tree| tree.path.as_path()),
                 link: ParentLink {
@@ -821,14 +825,16 @@ impl SubagentHost {
             let reply = Self::find_models(&query, limit);
             Box::pin(async move { Ok(reply) })
         });
-        let model = self.options.default_model.clone();
+        let defaults = Arc::clone(&self.options.defaults);
         registry.register("model.info", move |_payload| {
+            let (model, effort) = defaults();
             let reply = json!({
                 "provider": model.provider,
                 "id": model.id,
                 "name": model.name,
                 "selector": format!("{}/{}", model.provider, model.id),
                 "input": model.input,
+                "thinking": effort.to_string(),
             })
             .as_object()
             .cloned()
@@ -1073,7 +1079,7 @@ pub fn attach_runtime(session: &mut AgentSession, wiring: RuntimeWiring) -> Arc<
         max_depth: wiring.max_depth,
         max_children: DEFAULT_MAX_CHILDREN,
         parent_session_dir: wiring.rlm_dir.clone(),
-        default_model: session.model(),
+        defaults: session.settings_handle(),
         factory,
         notice: session.notice_hook(),
         events: session.events_sender(),

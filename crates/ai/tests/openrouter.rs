@@ -3,7 +3,7 @@ use std::error::Error;
 use yi_ai::catalog::Catalog;
 use yi_ai::openai::{ChunkMapper, OpenAiOptions, build_params};
 use yi_types::message::{AgentMessage, Content, StopReason, Usage, UserContent};
-use yi_types::model::{LlmContext, Model};
+use yi_types::model::{Effort, LlmContext, Model};
 
 type TestResult = Result<(), Box<dyn Error>>;
 
@@ -68,7 +68,7 @@ fn build_params_honors_the_openrouter_compat_flags() -> TestResult {
         &model,
         &history_context(),
         &OpenAiOptions {
-            reasoning_effort: Some("high".to_owned()),
+            reasoning_effort: Some(Effort::High),
             session_id: Some("session-1".to_owned()),
             ..OpenAiOptions::default()
         },
@@ -152,7 +152,7 @@ fn build_params_maps_efforts_the_model_does_not_support() -> TestResult {
         &model,
         &history_context(),
         &OpenAiOptions {
-            reasoning_effort: Some("medium".to_owned()),
+            reasoning_effort: Some(Effort::Medium),
             ..OpenAiOptions::default()
         },
     );
@@ -167,11 +167,12 @@ fn a_null_non_off_level_clamps_instead_of_being_sent_verbatim() -> TestResult {
         "off": null, "minimal": null, "low": "low", "medium": null,
         "high": "high", "xhigh": null, "max": null,
     }));
+    assert_eq!(model.supported_efforts(), vec![Effort::Low, Effort::High]);
     let params = build_params(
         &model,
         &history_context(),
         &OpenAiOptions {
-            reasoning_effort: Some("xhigh".to_owned()),
+            reasoning_effort: Some(model.clamp_effort(Effort::XHigh)),
             ..OpenAiOptions::default()
         },
     );
