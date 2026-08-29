@@ -599,8 +599,10 @@ impl App {
                 content,
                 stop_reason,
                 error_message,
+                usage,
                 ..
             } => {
+                self.cost_total += usage.cost.total.as_f64().unwrap_or(0.0);
                 let thought = thinking_of(content);
                 let rest = thought
                     .get(self.live_thought_cut..)
@@ -671,6 +673,11 @@ impl App {
             self.scheduler.request();
         }
         if self.focused.as_deref() != Some(child_id) {
+            if let AgentEvent::MessageEnd { message } = &event
+                && let AgentMessage::Assistant { usage, .. } = message
+            {
+                self.cost_total += usage.cost.total.as_f64().unwrap_or(0.0);
+            }
             return;
         }
         match event {
