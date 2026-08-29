@@ -31,4 +31,5 @@ chmod +x "$stage/install.sh"
 mkdir -p target/package
 tar -C target/package -czf "target/package/${name}.tar.gz" "$name"
 ( cd target/package && shasum -a 256 "${name}.tar.gz" > "${name}.tar.gz.sha256" )
+scripts/sign.sh "target/package/${name}.tar.gz"
 echo "target/package/${name}.tar.gz"
