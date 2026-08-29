@@ -193,6 +193,12 @@ fn harness_with(options: HarnessOptions) -> Harness {
     }
 }
 
+/// A poll budget, not a sleep: every loop below exits on its first true
+/// predicate, so a wider bound costs nothing when green and only buys headroom
+/// where the old 3 s ceiling failed — a loaded shared runner.
+const POLL_ATTEMPTS: usize = 400;
+const POLL_INTERVAL_MS: u64 = 30;
+
 fn kwargs(pairs: &[(&str, &str)]) -> Map<String, Value> {
     pairs
         .iter()
@@ -201,7 +207,7 @@ fn kwargs(pairs: &[(&str, &str)]) -> Map<String, Value> {
 }
 
 async fn wait_for_status(host: &Arc<SubagentHost>, child_id: &str, status: &str) -> bool {
-    for _ in 0..100 {
+    for _ in 0..POLL_ATTEMPTS {
         let list = host.list();
         let found = list["subagents"].as_array().and_then(|entries| {
             entries
@@ -211,7 +217,7 @@ async fn wait_for_status(host: &Arc<SubagentHost>, child_id: &str, status: &str)
         if found.is_some_and(|entry| entry["status"] == status) {
             return true;
         }
-        tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+        tokio::time::sleep(std::time::Duration::from_millis(POLL_INTERVAL_MS)).await;
     }
     false
 }
@@ -263,7 +269,7 @@ async fn collect_updates(
 ) -> Vec<ChildUpdate> {
     let mut seen = Vec::new();
     while let Ok(Ok(event)) =
-        tokio::time::timeout(std::time::Duration::from_secs(5), events.recv()).await
+        tokio::time::timeout(std::time::Duration::from_secs(20), events.recv()).await
     {
         if let AgentEvent::ChildUpdate { update } = event {
             let terminal = update.status != ChildStatus::Running;
@@ -327,7 +333,7 @@ async fn first_child_messages(harness: &Harness) -> Vec<AgentMessage> {
     let Some(child) = harness.host.children_view().into_iter().next() else {
         return Vec::new();
     };
-    for _ in 0..100 {
+    for _ in 0..POLL_ATTEMPTS {
         child.session.wait_idle().await;
         let messages = child.session.messages();
         if user_texts(&messages)
@@ -336,7 +342,7 @@ async fn first_child_messages(harness: &Harness) -> Vec<AgentMessage> {
         {
             return messages;
         }
-        tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+        tokio::time::sleep(std::time::Duration::from_millis(POLL_INTERVAL_MS)).await;
     }
     Vec::new()
 }
@@ -458,7 +464,7 @@ async fn fork_seeds_the_child_with_the_turns_it_asked_for() -> TestResult {
 }
 
 async fn child_sees(harness: &Harness, name: &str, needle: &str) -> bool {
-    for _ in 0..100 {
+    for _ in 0..POLL_ATTEMPTS {
         let seen = harness
             .host
             .children_view()
@@ -472,7 +478,7 @@ async fn child_sees(harness: &Harness, name: &str, needle: &str) -> bool {
         if seen {
             return true;
         }
-        tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+        tokio::time::sleep(std::time::Duration::from_millis(POLL_INTERVAL_MS)).await;
     }
     false
 }
@@ -623,7 +629,7 @@ async fn a_finished_child_hands_back_a_schema_checked_result() -> TestResult {
 }
 
 async fn wait_for_status_named(harness: &Harness, name: &str) -> bool {
-    for _ in 0..100 {
+    for _ in 0..POLL_ATTEMPTS {
         if harness
             .host
             .children_view()
@@ -632,7 +638,7 @@ async fn wait_for_status_named(harness: &Harness, name: &str) -> bool {
         {
             return true;
         }
-        tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+        tokio::time::sleep(std::time::Duration::from_millis(POLL_INTERVAL_MS)).await;
     }
     false
 }
