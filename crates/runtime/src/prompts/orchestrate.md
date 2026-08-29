@@ -60,10 +60,10 @@ verbatim; exact files in and out of scope; binding constraints; how to report
 not a stateless call: it can send you a line mid-run, and you can message it
 again after it reports.
 
-    h = rlm.run(brief, isolation='worktree')
-    done = await rlm.wait(120)
+    h = await rlm.run(brief, isolation='worktree')
+    await rlm.wait(120)
     r = await h.result(schema=TASK_SCHEMA)
-    rlm.merge_worktree(h.name)
+    await rlm.merge_worktree(h.name)
 
 `fork` only hands a child a thread it must continue; a fresh brief beats
 inherited context for independent work. Pass `deny_write` on the acceptance

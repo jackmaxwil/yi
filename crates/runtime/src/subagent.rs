@@ -538,7 +538,7 @@ impl SubagentHost {
         reply.insert("rlm_child_id".to_owned(), Value::String(child_id));
         reply.insert(
             "next".to_owned(),
-            Value::String(crate::affordance::spawned(&session_name, &session_dir)),
+            Value::String(crate::affordance::spawned(&session_name)),
         );
         reply.insert("name".to_owned(), Value::String(session_name));
         reply.insert(
