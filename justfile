@@ -96,10 +96,15 @@ publish version:
     auth="Authorization: token $FORGEJO_TOKEN"
     assets=(target/package/yi-{{version}}-*.tar.gz*)
     [ -e "${assets[0]}" ] || { echo "nothing built for {{version}} -- run: just prerelease {{version}}"; exit 1; }
-    id=$(curl -fsS -X POST "$api" -H "$auth" -H 'Content-Type: application/json'       -d "{"tag_name":"v{{version}}","name":"v{{version}}"}" | sed -n 's/.*"id":\([0-9]*\).*//p' | head -1)
-    [ -n "$id" ] || { echo "no release id came back"; exit 1; }
+    body=$(printf '{"tag_name":"v%s","name":"v%s"}' '{{version}}' '{{version}}')
+    # python3, not sed: the response carries several "id" keys -- the author's
+    # among them -- and a greedy match takes the last one rather than the
+    # release's. python3 is already a hard requirement for the guardrails.
+    id=$(curl -fsS -X POST "$api" -H "$auth" -H 'Content-Type: application/json' -d "$body" \
+      | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])')
     for asset in "${assets[@]}"; do
-      curl -fsS -X POST "$api/$id/assets?name=$(basename "$asset")" -H "$auth"         -F "attachment=@$asset" > /dev/null
+      curl -fsS -X POST "$api/$id/assets?name=$(basename "$asset")" -H "$auth" \
+        -F "attachment=@$asset" > /dev/null
       echo "uploaded $(basename "$asset")"
     done
 
