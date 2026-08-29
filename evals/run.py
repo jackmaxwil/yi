@@ -97,10 +97,13 @@ def run_task(task_dir, binary, model):
     prompt = (task_dir / "prompt.txt").read_text().strip()
     started = time.monotonic()
     with tempfile.TemporaryDirectory(prefix="yi-eval-") as directory:
-        workspace = Path(directory)
-        shutil.copytree(task_dir / "repo", workspace, dirs_exist_ok=True)
-        sessions = workspace / ".yi-sessions"
-        events = workspace / "events.jsonl"
+        # Invariant: the graded tree holds the task's own files plus answer.txt.
+        # The stream and the session dir are siblings, never inside it: a diff or
+        # clean-tree reward scores them, and the agent can read its own events.
+        workspace = Path(directory) / "repo"
+        shutil.copytree(task_dir / "repo", workspace)
+        sessions = Path(directory) / ".yi-sessions"
+        events = Path(directory) / "events.jsonl"
         command = [
             binary,
             "ask",

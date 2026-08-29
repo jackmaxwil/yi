@@ -1,0 +1,6 @@
+{
+  "id": "clean-workspace",
+  "dryReward": 1,
+  "timeoutSec": 120,
+  "note": "the graded tree holds the task's own files plus answer.txt and nothing else: a needle-grep reward cannot see the runner's own artifacts landing in it"
+}
