@@ -84,10 +84,10 @@ fn packet(symbol: Option<&str>, context: &ToolContext) -> String {
         // so the packet takes a slice of an existing chart instead.
         ("grid roots", grid(context, &["roots"])),
         ("symbol neighborhood", neighborhood(symbol, context)),
-        ("file skeletons", skeletons(root)),
+        ("file skeletons", skeletons(root, context)),
         ("git change heat", git_heat(context)),
         ("gate commands", gates(root)),
-        ("prior issues", issues(root)),
+        ("prior issues", issues(root, context)),
     ];
     let present = layers.iter().filter(|(_, body)| body.is_ok()).count();
     let total = layers.len();
@@ -146,13 +146,25 @@ fn neighborhood(symbol: Option<&str>, context: &ToolContext) -> LayerBody {
     grid(context, &["scope", symbol, "--depth", "1"])
 }
 
-fn skeletons(root: &Path) -> LayerBody {
+fn hidden(context: &ToolContext, path: &Path) -> bool {
+    if context.deny_read.is_empty() {
+        return false;
+    }
+    let normalized = yi_permission::lexical_normalize(path);
+    context
+        .deny_read
+        .iter()
+        .any(|denied| normalized.starts_with(yi_permission::lexical_normalize(denied)))
+}
+
+fn skeletons(root: &Path, context: &ToolContext) -> LayerBody {
     let mut files: Vec<PathBuf> = Vec::new();
     crate::builtins::walk_files(root, &mut |path| {
         let interesting = path
             .extension()
             .and_then(|ext| ext.to_str())
-            .is_some_and(|ext| SKELETON_EXTS.contains(&ext));
+            .is_some_and(|ext| SKELETON_EXTS.contains(&ext))
+            && !hidden(context, path);
         if interesting {
             files.push(path.to_path_buf());
         }
@@ -258,8 +270,12 @@ fn gates(root: &Path) -> LayerBody {
     Ok(lines.join("\n"))
 }
 
-fn issues(root: &Path) -> LayerBody {
-    let text = std::fs::read_to_string(root.join(ISSUES_PATH))
+fn issues(root: &Path, context: &ToolContext) -> LayerBody {
+    let path = root.join(ISSUES_PATH);
+    if hidden(context, &path) {
+        return Err(format!("{ISSUES_PATH} is denied to this agent"));
+    }
+    let text = std::fs::read_to_string(path)
         .map_err(|error| format!("{ISSUES_PATH} unreadable: {error}"))?;
     let lines: Vec<&str> = text
         .lines()

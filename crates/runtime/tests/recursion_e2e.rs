@@ -1182,6 +1182,116 @@ const TWO_DISCOVERIES: &str = r#"{"value": "patched", "discoveries": [
     {"text": "the README example is stale", "violatesCheckOf": "t2", "fingerprint": "bbb"}
 ]}"#;
 
+const ONE_DISCOVERY: &str = r#"{"value": "patched", "discoveries": [
+    {"text": "the retry loop double-counts", "violatesCheckOf": "t1", "fingerprint": "aaa"}
+]}"#;
+
+fn discovery_rows(count: usize) -> &'static str {
+    let rows: Vec<String> = (0..count)
+        .map(|index| format!(r#"{{"text": "row {index}", "fingerprint": "f{index}"}}"#))
+        .collect();
+    Box::leak(format!("{{\"value\": 1, \"discoveries\": [{}]}}", rows.join(", ")).into_boxed_str())
+}
+
+fn discovery_texts(harness: &Harness) -> Vec<String> {
+    harness
+        .inbox
+        .lock()
+        .map(|inbox| {
+            inbox
+                .iter()
+                .filter(|text| text.contains("discovery"))
+                .cloned()
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+#[tokio::test]
+async fn a_discovery_the_runtime_cannot_adjudicate_holds_the_result_back() -> TestResult {
+    let harness = harness(0, 1, ONE_DISCOVERY);
+    harness
+        .host
+        .spawn(
+            "patch the retry loop".to_owned(),
+            protocol_kwargs("finder", &[("check", json!("true"))]),
+        )
+        .map_err(|error| error.to_string())?;
+    assert!(wait_for_status_named(&harness, "finder").await);
+    let error =
+        harness.host.result("finder", None).err().ok_or(
+            "a row naming an ancestor check must not pass while nothing can adjudicate it",
+        )?;
+    assert!(
+        error.contains("result held back") && error.contains("carries no plan"),
+        "the refusal names the adjudication failure rather than downgrading the row: {error}"
+    );
+    assert!(
+        discovery_texts(&harness).is_empty(),
+        "no row is reported as deferred when criticality could not be derived: {:?}",
+        discovery_texts(&harness)
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_high_row_that_cannot_reach_the_ledger_holds_the_result_back() -> TestResult {
+    let harness = harness(0, 1, ONE_DISCOVERY);
+    yi_session::lock_session(&harness.store).set_plan(yi_types::plan::Plan {
+        version: yi_types::plan::PlanVersion(1),
+        tasks: vec![task("t1", "exit 4")],
+        created: 0,
+        updated: 0,
+        extra: Map::new(),
+    })?;
+    harness
+        .host
+        .spawn(
+            "patch the retry loop".to_owned(),
+            protocol_kwargs("finder", &[("check", json!("true"))]),
+        )
+        .map_err(|error| error.to_string())?;
+    assert!(wait_for_status_named(&harness, "finder").await);
+    let error = harness
+        .host
+        .result("finder", None)
+        .err()
+        .ok_or("a HIGH row the ledger never took must not pass as a delivered result")?;
+    assert!(
+        error.contains("could not be recorded") && error.contains("No goal exists"),
+        "the refusal names the ledger failure, so the completion gate is never armed silently: {error}"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn an_oversized_discovery_list_is_refused_before_any_check_runs() -> TestResult {
+    let harness = harness(0, 1, discovery_rows(17));
+    harness
+        .host
+        .spawn(
+            "patch the retry loop".to_owned(),
+            protocol_kwargs("flooder", &[("check", json!("true"))]),
+        )
+        .map_err(|error| error.to_string())?;
+    assert!(wait_for_status_named(&harness, "flooder").await);
+    let error = harness
+        .host
+        .result("flooder", None)
+        .err()
+        .ok_or("an unbounded discovery list must be refused")?;
+    assert!(
+        error.contains("reported 17 discoveries") && error.contains("at most 16"),
+        "the refusal names the cap and what the child reported: {error}"
+    );
+    assert!(
+        discovery_texts(&harness).is_empty(),
+        "a refused list routes nothing: {:?}",
+        discovery_texts(&harness)
+    );
+    Ok(())
+}
+
 #[tokio::test]
 async fn criticality_is_derived_by_re_running_the_ancestors_check() -> TestResult {
     let harness = harness(0, 1, TWO_DISCOVERIES);

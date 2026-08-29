@@ -175,6 +175,7 @@ impl AgentTool for ToolAdapter {
             recovery_dir: self.recovery_dir.clone(),
             auto_background: self.auto_background,
             sandbox: None,
+            deny_read: self.wall.deny_read.clone(),
         };
         let permission = self.permission.clone();
         let rules = self.rules.clone();

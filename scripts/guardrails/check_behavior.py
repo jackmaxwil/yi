@@ -14,7 +14,14 @@ out = subprocess.run(
     cwd=ROOT, capture_output=True, text=True)
 if out.returncode != 0:
     fail([f"behavior harness failed:\n{out.stdout}{out.stderr}"], "behavior")
-found = dict(re.findall(r"BEHAVIOR case=(\S+) state=(pass|fail)", out.stdout))
+# Incident: an unanchored parse read a cassette's own assertion text as a verdict,
+# so a case printed `state=fail` and the gate scored it pass. Verdicts are whole
+# lines, one per case; anything else is the harness lying to its own ratchet.
+found = {}
+for case, state in re.findall(r"^BEHAVIOR case=(\S+) state=(pass|fail)", out.stdout, re.M):
+    if case in found:
+        fail([f"{case}: two verdict lines in one run"], "behavior")
+    found[case] = state
 if not found:
     fail(["behavior harness printed no BEHAVIOR lines"], "behavior")
 

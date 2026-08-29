@@ -112,19 +112,20 @@ CHECKS = (
 
 
 def main():
-    failed = 0
+    errors = []
     for check in CHECKS:
         try:
             check()
         except AssertionError as error:
-            failed += 1
-            print(f"FAIL {check.__name__}: {error}")
-        else:
-            print(f"ok   {check.__name__}")
-    if failed:
-        print(f"selftest: {failed} failing")
+            errors.append(f"{check.__name__}: {error}")
+    # One line per gate: check_guardrails.sh runs this beside the python gates
+    # and reads only the exit code, so the output matches _common.fail's shape.
+    if errors:
+        print("FAIL evals_selftest")
+        for error in errors:
+            print(f"  {error}")
         return 1
-    print("selftest: all green")
+    print(f"ok   evals_selftest ({len(CHECKS)} checks)")
     return 0
 
 

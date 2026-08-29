@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use serde_json::{Map, Value, json};
@@ -14,6 +15,10 @@ const CONTEXT_MAX_KEYS: usize = 8;
 const CONTEXT_VALUE_CAP: usize = 4_096;
 const CONTEXT_TOTAL_CAP: usize = 16_384;
 const RESULT_TAIL_CHARS: usize = 2_000;
+/// Invariant: every row can run an ancestor check inside the parent's own
+/// `rlm.result` call, so the list is capped like the context block is — a
+/// degenerate child buys one refusal, not an unbounded run of checks.
+const MAX_DISCOVERIES: usize = 16;
 
 fn clamp(text: &str, cap: usize) -> String {
     if text.chars().count() <= cap {
@@ -380,12 +385,19 @@ impl SubagentHost {
                     clamp(&text, RESULT_TAIL_CHARS)
                 )
             })?;
+            if result.discoveries.len() > MAX_DISCOVERIES {
+                return Err(format!(
+                    "child \"{target}\" reported {} discoveries; at most {MAX_DISCOVERIES} are adjudicated in one result — keep the rest in the value",
+                    result.discoveries.len()
+                ));
+            }
             crate::goal::run_check(&check, crate::goal::DEFAULT_CHECK_TIMEOUT_MS).map_err(
                 |evidence| {
                     format!("child \"{target}\" result held back; its check is red: {evidence}")
                 },
             )?;
-            self.route_discoveries(&name, &result.discoveries);
+            self.route_discoveries(&name, &result.discoveries)
+                .map_err(|error| format!("child \"{target}\" result held back; {error}"))?;
             reply.insert(
                 "discoveries".to_owned(),
                 serde_json::to_value(&result.discoveries)
@@ -396,20 +408,36 @@ impl SubagentHost {
         Ok(reply)
     }
 
-    /// L5 criticality is derived, never declared: the ancestor task a discovery
-    /// names is looked up in the plan and its own check re-run — only a red one
-    /// makes the row HIGH and steers the parent.
-    fn route_discoveries(&self, child: &str, discoveries: &[Discovery]) {
+    /// L5 criticality is derived, never declared: the ancestor task a row names is
+    /// looked up and its check re-run, and only a red one is HIGH. Fails closed — a
+    /// row that cannot be adjudicated or recorded holds the whole result back.
+    fn route_discoveries(&self, child: &str, discoveries: &[Discovery]) -> Result<(), String> {
+        let plan = if discoveries
+            .iter()
+            .any(|row| row.violates_check_of.is_some())
+        {
+            Some(self.ancestor_plan()?)
+        } else {
+            None
+        };
+        // One check run per named task, however many rows name it.
+        let mut adjudged: HashMap<&yi_types::plan::TaskId, Option<String>> = HashMap::new();
         for row in discoveries {
-            let red = row
-                .violates_check_of
-                .as_deref()
-                .and_then(|id| self.ancestor_check(id))
-                .and_then(|(id, check)| {
-                    crate::goal::run_check(&check, crate::goal::DEFAULT_CHECK_TIMEOUT_MS)
-                        .err()
-                        .map(|evidence| (id, evidence))
-                });
+            let named = row.violates_check_of.as_ref().and_then(|id| {
+                plan.as_ref()
+                    .and_then(|plan| crate::goal::task_check(plan, id))
+                    .map(|check| (id, check))
+            });
+            let red = named.and_then(|(id, check)| {
+                adjudged
+                    .entry(id)
+                    .or_insert_with(|| {
+                        crate::goal::run_check(&check, crate::goal::DISCOVERY_CHECK_TIMEOUT_MS)
+                            .err()
+                    })
+                    .clone()
+                    .map(|evidence| (id, evidence))
+            });
             let mut details = json!({
                 "criticality": if red.is_some() { "high" } else { "deferred" },
                 "child": child,
@@ -417,17 +445,20 @@ impl SubagentHost {
             });
             let text = match red {
                 Some((id, evidence)) => {
-                    let ledger = crate::goal::record_discovery(&self.options.store, row);
+                    crate::goal::record_discovery(&self.options.store, row).map_err(|error| {
+                        format!(
+                            "the HIGH discovery {} could not be recorded, so the completion gate would never see it: {error}",
+                            row.fingerprint
+                        )
+                    })?;
                     if let Some(map) = details.as_object_mut() {
-                        map.insert("task".to_owned(), Value::String(id.clone()));
+                        map.insert("task".to_owned(), Value::String(id.as_str().to_owned()));
                         map.insert("evidence".to_owned(), Value::String(evidence.clone()));
-                        if let Err(error) = ledger {
-                            map.insert("ledgerError".to_owned(), Value::String(error));
-                        }
                     }
                     format!(
-                        "HIGH discovery from {child}: {}\nThe check of task {id} is red — address it before continuing:\n{evidence}",
-                        row.text
+                        "HIGH discovery from {child}: {}\nThe check of task {} is red — address it before continuing:\n{evidence}",
+                        row.text,
+                        id.as_str()
                     )
                 }
                 None => format!("deferred discovery from {child}: {}", row.text),
@@ -440,11 +471,19 @@ impl SubagentHost {
                 timestamp: yi_session::now_ms(),
             });
         }
+        Ok(())
     }
 
-    fn ancestor_check(&self, id: &str) -> Option<(String, String)> {
-        let store = (self.options.store)()?;
-        let plan = yi_session::lock_session(&store).plan()?;
-        crate::goal::task_check(&plan, id).map(|check| (id.to_owned(), check))
+    /// Invariant: an absent store or plan is an adjudication failure, never a
+    /// deferred row — a check-violating discovery must not be downgraded by a
+    /// missing reader.
+    fn ancestor_plan(&self) -> Result<yi_types::plan::Plan, String> {
+        let store = (self.options.store)().ok_or(
+            "a discovery names an ancestor check but no session store is attached, so criticality cannot be derived",
+        )?;
+        yi_session::lock_session(&store).plan().ok_or_else(|| {
+            "a discovery names an ancestor check but the session carries no plan, so criticality cannot be derived; create the plan and read the result again"
+                .to_owned()
+        })
     }
 }

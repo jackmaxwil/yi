@@ -541,6 +541,14 @@ impl PlanService {
         if target == TaskState::Blocked && reason.map(str::trim).unwrap_or("").is_empty() {
             return Err(format!("blocking {task_id} requires a reason"));
         }
+        if target == TaskState::Running
+            && plan.tasks[position].check.is_none()
+            && reason.map(str::trim).unwrap_or("").is_empty()
+        {
+            return Err(format!(
+                "task {task_id} has no executable check, so it is not admitted to running; give a task a check when the plan is written, or pass reason to record this one as an ask or an explicitly unmeasured leaf"
+            ));
+        }
         if target == TaskState::Done
             && let Err(rejection) = self.verify_done(&plan.tasks[position], evidence)
         {
@@ -618,6 +626,14 @@ impl PlanService {
             DeliveryMode::Steer,
         );
         format!(" — {text}")
+    }
+
+    fn red_count(&self, id: &TaskId) -> u8 {
+        self.red
+            .lock()
+            .ok()
+            .and_then(|streaks| streaks.get(id).map(|streak| streak.count))
+            .unwrap_or(0)
     }
 
     fn clear_red(&self, id: &TaskId) {
@@ -723,6 +739,12 @@ impl PlanService {
             return Err(format!("split of {id} refused:\n{}", lines.join("\n")));
         }
         let parent_id = plan.tasks[position].id.clone();
+        let reds = self.red_count(&parent_id);
+        if escalation(reds) == Escalation::Retry {
+            return Err(format!(
+                "split of {id} refused: its check has come back red {reds} time(s), so the ladder still reads retry — attempt the whole task, and split when a red streak forces the change"
+            ));
+        }
         let children: Vec<Task> = subtasks
             .iter()
             .enumerate()

@@ -44,7 +44,7 @@ pub enum ChildActivity {
 pub struct Discovery {
     pub text: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub violates_check_of: Option<String>,
+    pub violates_check_of: Option<crate::plan::TaskId>,
     pub fingerprint: String,
     #[serde(flatten)]
     pub extra: serde_json::Map<String, serde_json::Value>,

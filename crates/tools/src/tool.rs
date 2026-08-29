@@ -24,6 +24,10 @@ pub struct ToolContext {
     pub auto_background: Option<std::time::Duration>,
     /// Set when the permission layer contained this call rather than asking.
     pub sandbox: Option<crate::sandbox::Sandbox>,
+    /// Invariant: paths the reviewer wall hides from this agent. A tool that
+    /// reads a tree instead of a named path shows the wall no target, so it
+    /// consults this set itself.
+    pub deny_read: Vec<PathBuf>,
 }
 
 impl ToolContext {
@@ -34,6 +38,7 @@ impl ToolContext {
             recovery_dir: None,
             auto_background: None,
             sandbox: None,
+            deny_read: Vec::new(),
         }
     }
 }

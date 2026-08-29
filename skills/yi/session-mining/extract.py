@@ -67,7 +67,8 @@ STOPWORDS = frozenset(
 
 CAVEAT = (
     "redaction caveat: the entropy rule masks any 32+ char high-entropy token, "
-    "so commit SHAs and ulids in examples read as [MASKED]."
+    "so commit SHAs and ulids in examples read as [MASKED]; a credential keyword "
+    "with no separator beside it masks the rest of its line."
 )
 
 
@@ -106,16 +107,21 @@ def redact_line(line):
         line = line.replace(home, "~")
     keyword = KEYWORD_RE.search(line)
     if keyword:
+        head, tail = line[: keyword.end()], line[keyword.end() :]
+        # A separator binds the secret to the keyword only when nothing but
+        # space or quotes stands between them: scanning on to a later URL colon
+        # masked the innocuous tail and left the secret itself standing.
         sep = None
-        for i in range(keyword.end(), len(line)):
-            if line[i] in ":=":
+        for i, char in enumerate(tail):
+            if char in ":=":
                 sep = i
                 break
+            if char not in " \t'\"":
+                break
         if sep is not None:
-            line = f"{line[: sep + 1]} {MASK}"
-        else:
-            head, tail = line[: keyword.end()], line[keyword.end() :]
-            line = head + re.sub(r"\S{12,}", MASK, tail)
+            line = f"{head}{tail[: sep + 1]} {MASK}"
+        elif tail.strip():
+            line = f"{head} {MASK}"
     line = ASSIGN_RE.sub(_mask_assign, line)
     return LONG_TOKEN_RE.sub(_mask_token, line)
 
@@ -599,6 +605,8 @@ PLANTS = [
     "Fak3Fak3Fak3Fak3F",
     "xR7pQ2mL9vB4nT6yH1kZ8sW3dF5gJ0aC",
     "a3f5c9d21b4e8f0a7c6d5e4b3a291807f6e5d4c3",
+    "Hunt3rFake2",
+    "T0pF4keTok",
 ]
 
 
