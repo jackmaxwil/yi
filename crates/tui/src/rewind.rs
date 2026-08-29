@@ -66,6 +66,7 @@ pub fn process_pending_new<B: Backend + Write>(
                 return;
             }
             app.options.session_name = id;
+            app.cost_total = 0.0;
             clear_screen(terminal);
             app.reset_transcript();
         }

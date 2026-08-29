@@ -75,17 +75,13 @@ fn left_segments(input: &StatusInput, path_max: usize) -> Vec<String> {
         model.push_str(&format!(" · ◉ {thinking}"));
     }
     segments.push(model);
-    if let Some(mode) = &input.mode {
-        segments.push(format!("◉ {mode}"));
-    }
+    segments.extend(input.mode.as_ref().map(|mode| format!("◉ {mode}")));
     let mut path = shrink_left(&input.cwd, path_max);
     if let Some(branch) = &input.branch {
         path.push_str(&format!("@{branch}"));
     }
     segments.push(path);
-    if let Some(cost) = &input.cost {
-        segments.push(cost.clone());
-    }
+    segments.extend(input.cost.clone());
     if input.context_window > 0 {
         let pct = input.context_used * 100 / input.context_window;
         segments.push(format!("{pct}% of {}", fmt_tokens(input.context_window)));
