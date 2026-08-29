@@ -9,7 +9,9 @@ adapters/yi_usage.py       run command + usage parse + fingerprint (shared, pure
 adapters/yi_harbor/agent.py  harbor BaseInstalledAgent subclass
 adapters/yi_pier/agent.py    pier BaseInstalledAgent subclass (+ install spec, allowlist, extras)
 selftest.py                dry run: no docker, no API, no keys, no harness
-fixtures/                  a recorded faux transcript and a v4 session file
+run.py                     task runner over `yi ask --json`, scored by each task's reward.sh
+record.py                  session JSONL -> behavior cassette (J3), redacted at record time
+fixtures/                  a recorded faux transcript, a v4 session file, and the runner's tasks
 ```
 
 Contracts: YI_DESIGN §15.2 (gates E1–E9), §15.4 (AA column → Yi source),
@@ -24,9 +26,85 @@ python3 evals/selftest.py
 Exit code is the gate, and `just check` runs it: `check_guardrails.sh` invokes
 it beside `check_behavior.py`, so a broken adapter fails the same lane Yi's
 code answers to. It pins the run command's E6/E7/E8 contract, the camelCase
-usage parse (E5), the all-or-none token rule (E9), corrupt-line tolerance, and
-pier's three extra columns. Stdlib only, no docker, no key — nothing about it
-needs the slow tier.
+usage parse (E5), the all-or-none token rule (E9), corrupt-line tolerance,
+pier's three extra columns, and the recorder's three: turn grouping with stub
+FIFO and argument key order, the §10 redaction plant, and the refusals. Stdlib
+only, no docker, no key — nothing about it needs the slow tier.
+
+## Task runner
+
+```
+just postmerge-evals          # cargo build -p yi-cli, then the dry tier
+python3 evals/run.py --dry --binary target/debug/yi --model faux/faux-1
+```
+
+A task is a directory under `fixtures/tasks/<id>/`: `task.json`
+(`id`, `dryReward`, `timeoutSec`), `prompt.txt`, `repo/` copied verbatim into a
+throwaway workspace, and `reward.sh` run there with the workspace as its cwd.
+The runner asks once with `--json --yolo --cwd <ws> --session-dir <ws>/.yi-sessions`,
+writes the last assistant text to `<ws>/answer.txt` (SWE-Atlas QnA grades the
+answer file, so a real run's answer must exist), and scores the task binary:
+`reward.sh` exits 0 or the task scored nothing. A timeout is a result, never a
+retry.
+
+`--dry` runs faux only — it refuses any other provider, because a gate spends no
+API budget — and compares each reward to the task's `dryReward`, which is what
+the exit code reports. Faux echoes the prompt and never calls a tool, so the dry
+tier pins runner mechanics, not task solving: `answer-echo` scores 1 off the
+echo (a runner that skips the answer file would score every real QnA rollout 0)
+and `edit-file` scores 0 because the workspace is untouched (a runner that
+scores an untouched workspace 1 flatters every real rollout). It is a
+`just postmerge` sibling, not part of `just check`: it needs a built binary.
+
+Drop `--dry` and the runner prints one JSON row per task plus a ready-to-paste
+`docs/eval-ledger.md` row with its config fingerprint. Pasting it stays a human
+act, and a real-model suite is user-run and budgeted (plan law 3).
+
+## Cassette recorder
+
+```
+python3 evals/record.py <session.jsonl> --id recorded-0002-<slug> \
+    --description "<what the case defends>" \
+    --out crates/runtime/tests/fixtures/behavior/recorded-0002-<slug>.json
+```
+
+The v4 session file already holds everything a cassette needs, so recording is a
+post-hoc read of a file Yi wrote on its own: the assistant entry **is** the
+provider response (text, tool calls with their argument key order, usage) and
+the toolResult entry **is** the tool result. No CLI flag, no env var, no capture
+layer in the binary.
+
+Main-lane message entries in `seq` order become the cassette: a `user` entry
+opens a turn, each `assistant` entry appends a response spec, and each
+`toolResult` appends to `stubs[toolName].results` in arrival order — per-tool
+FIFO, which is exactly the order `StubTool` replays them in. Thinking blocks are
+dropped with a printed note; `custom`, `model_change`, `thinking_level_change`
+and `active_tools_change` entries are skipped with a note, because the recorded
+responses already carry whatever they did. Everything else is **fatal at exit 2
+with the reason named** — a compaction or branch summary rewrites the context a
+linear cassette cannot reproduce, a non-main lane is not the conversation, a
+corrupt line means the session was read only in part. A silent skip would emit a
+cassette that replays a session that never happened.
+
+Redaction runs at record time, before the artifact exists: `record.py` imports
+`redact` from `skills/yi/session-mining/extract.py`, so cassettes and mining
+rows mask by one vocabulary (plan §10). `fixtures/session-record/faux-echo.jsonl`
+carries a planted fake `api_key=` that must come out `[MASKED]`, and
+`check_record_redacts` in the self-test fails if it ever does not.
+
+`assertions` comes out empty on purpose: the author adds the pass condition
+before committing, and the two committed cases show the shape —
+`recorded-0000-faux-echo` (a real offline faux run) and `recorded-0001-tool-turn`
+(text + parallel tool calls in one assistant message, two stub results, real
+usage). `crates/runtime/tests/behavior.rs` replays each twice and fails on any
+divergence; `check_behavior.py` then locks the verdict, `--update` in its own
+commit.
+
+Recording a **real provider** session is user-run and out of any gate's budget:
+run a normal session, point `record.py` at its file under
+`~/.yi/sessions/<encoded-cwd>/`, read the diff before committing (redaction is a
+pass, not a proof), then add the assertion. Nothing in `just check` needs a key
+or a network.
 
 ## Installing the binary
 
@@ -48,6 +126,20 @@ covers Python.
 
 Both paths verify with `yi --version` before the trial starts.
 
+Build the local musl binary with `just package-musl <version>` (target
+defaults to `x86_64-unknown-linux-musl`). It cross-compiles via `zig cc`/`zig
+ar` — no `musl-gcc` or `cross` install required — and fails closed, naming
+the exact fix, when either preflight is missing: `rustup target list
+--installed` must already contain the target (`rustup target add
+<target>`), and `zig` must be on `PATH` (or use musl-cross gcc /
+cargo-zigbuild instead). It then builds the `dist` profile, checks the
+result's ELF shape with `scripts/check_elf.py` (64-bit, right `e_machine`, no
+`PT_INTERP` — the "static" claim above), and packages it with
+`scripts/package.sh`. It cannot run `scripts/smoke.sh` — the cross binary
+does not execute on the build host — so that step prints as skipped rather
+than silently passing; the container's `yi --version` preflight above is the
+real smoke test for this binary.
+
 ## Running a suite
 
 ```
@@ -61,6 +153,27 @@ PYTHONPATH=evals/adapters harbor run \
 
 `-d scale-ai/swe-atlas-qna` is the same command with another dataset. pier is
 the same shape with `pier run --agent yi_pier.agent:Yi`.
+
+## Proxy egress (E2)
+
+pier's air-gapped tasks reach the provider through an authenticated Squid
+sidecar, and `ureq` does not read proxy env on its own (the `proxy-from-env`
+feature is off). `yi` reads it instead, once at startup, in the binary:
+
+- `HTTPS_PROXY`, else `HTTP_PROXY` — lowercase accepted for both, since
+  container images set either. Inline basic-auth is part of the url
+  (`http://user:pass@squid:3128`); `ureq` parses and sends it.
+- `NO_PROXY` — comma-separated hosts; `*` bypasses everything, an entry
+  matches its own host and any subdomain. No ports, no CIDR.
+
+Empty or unset means direct. A value that is **not** empty and not usable —
+a typo, a scheme with no dialer, `socks5://` — fails startup with exit 2 and
+names the value. It is never downgraded to a direct connection: in an
+air-gapped container a silently dropped proxy is an unattributable hang, and
+the whole point of the sidecar is that nothing else gets out.
+
+These are the harness's own names, like `EVAL_BINARY` above: no `YI_*`
+variable and no `baselines/env_vars.json` row.
 
 SWE-Atlas QnA is graded **only** from `/logs/agent/answer.txt` inside
 `<<FINAL_ANSWER>>` tags, and the verifier runs even after an agent timeout
@@ -98,3 +211,26 @@ Faux reports zero usage, so the camelCase usage contract is pinned instead by
 golden session (`crates/types/tests/fixtures/v4-golden.jsonl`) whose assistant
 entry carries real non-zero `input`/`cacheRead`/`cacheWrite` and whose
 compaction entry exercises `summarization_count`.
+
+`fixtures/session-record/` feeds the recorder.
+
+- `faux-echo.jsonl` is the session file from one real offline run, whose prompt
+  carried both a needle and a planted fake credential:
+
+  ```
+  ./target/debug/yi ask --model faux/faux-1 --json --yolo --cwd <tmp> \
+      --session-dir <tmp>/.yi-sessions \
+      "record this cassette needle CASSETTE-NEEDLE-7 and stop
+  api_key=sk-fake-3QpZr7Lm2Xv9Tb4Nc8Kd1Wq6"
+  ```
+
+  Every message entry is that run's own bytes. The one `ext_state` entry was
+  dropped before committing: it carries the recording machine's skills catalog
+  and its home paths, which are neither reproducible nor anyone else's business.
+  It is never regenerated — a re-run yields new ids and timestamps, so the
+  self-test asserts semantic content, never fixture bytes.
+- `tool-turn.jsonl` is hand-built beside the v4 golden (which is never edited),
+  reusing its assistant shapes: thinking + text + two `bash` calls with the
+  golden's exact argument key order (`zeta`, `alpha`, `nested`) and its real
+  `input` 1200 / `totalTokens` 10750, then both tool results and a closing
+  assistant. It pins the toolCall→`toolCalls` and toolResult→stub mapping.
