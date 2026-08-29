@@ -4,6 +4,11 @@
 set -euo pipefail
 cd "$(git rev-parse --show-toplevel)"
 
+# git exports its own repository context to a hook, and every child inherits it.
+# A test that shells out to git then operates on this repo instead of its own
+# fixture -- which is how the worktree tests failed only under `git push`.
+unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_PREFIX GIT_QUARANTINE_PATH GIT_EDITOR
+
 zero='0000000000000000000000000000000000000000'
 tag=""
 while read -r local_ref local_sha remote_ref remote_sha; do
