@@ -13,10 +13,10 @@ fn theme() -> Theme {
 }
 
 fn kinds(line: &str, lang: &str) -> Vec<(String, Token)> {
-    let Some(lang) = lang_for(lang) else {
+    let Some(mut lang) = lang_for(lang) else {
         return Vec::new();
     };
-    tokens(line, lang)
+    tokens(line, &mut lang)
         .into_iter()
         .filter_map(|(start, end, token)| line.get(start..end).map(|text| (text.to_owned(), token)))
         .collect()
@@ -84,9 +84,9 @@ fn an_unknown_language_is_declined_rather_than_guessed() -> TestResult {
 /// resets it would punch holes in the tint on every token.
 #[test]
 fn highlighting_keeps_the_background_the_caller_set() -> TestResult {
-    let lang = lang_for("rust").ok_or("rust missing")?;
+    let mut lang = lang_for("rust").ok_or("rust missing")?;
     let base = Style::default().bg(ratatui::style::Color::Rgb(0x21, 0x3A, 0x2B));
-    let rendered = spans("let x = 1;", lang, &theme(), base);
+    let rendered = spans("let x = 1;", &mut lang, &theme(), base);
     assert!(rendered.len() > 1, "the line was tokenised");
     assert!(
         rendered.iter().all(|span| span.style.bg == base.bg),
@@ -99,10 +99,10 @@ fn highlighting_keeps_the_background_the_caller_set() -> TestResult {
 /// is worth.
 #[test]
 fn an_absurdly_long_line_is_left_plain() -> TestResult {
-    let lang = lang_for("json").ok_or("json missing")?;
+    let mut lang = lang_for("json").ok_or("json missing")?;
     let long = format!("\"{}\"", "a".repeat(8_000));
-    assert!(tokens(&long, lang).is_empty());
-    let rendered = spans(&long, lang, &theme(), Style::default());
+    assert!(tokens(&long, &mut lang).is_empty());
+    let rendered = spans(&long, &mut lang, &theme(), Style::default());
     assert_eq!(rendered.len(), 1);
     Ok(())
 }
@@ -162,9 +162,9 @@ fn a_bash_cell_shows_the_command_and_its_exit() -> TestResult {
 /// also has. Colouring `MAX_ROWS` as a type is a claim the scanner cannot make.
 #[test]
 fn an_all_caps_constant_is_not_a_type() -> TestResult {
-    let lang = lang_for("rs").ok_or("no rust lang")?;
-    let kinds = |line: &str| -> Vec<Token> {
-        tokens(line, lang)
+    let mut lang = lang_for("rs").ok_or("no rust lang")?;
+    let mut kinds = |line: &str| -> Vec<Token> {
+        tokens(line, &mut lang)
             .into_iter()
             .map(|(_, _, kind)| kind)
             .collect()
@@ -177,5 +177,65 @@ fn an_all_caps_constant_is_not_a_type() -> TestResult {
         kinds("let s: String = x;").contains(&Token::Type),
         "a mixed-case name still is"
     );
+    Ok(())
+}
+
+/// The defect the hand-rolled scanner documented as "one mis-coloured row": a
+/// block comment's body rendered as live code, and its closing delimiter as
+/// nothing at all.
+#[test]
+fn a_block_comment_keeps_its_colour_past_the_row_that_opened_it() -> TestResult {
+    let mut lang = lang_for("rust").ok_or("rust")?;
+    let body = [
+        "/* a block comment",
+        "    let x = \"still comment\";",
+        "    done */",
+    ];
+    for line in body {
+        let found: Vec<Token> = tokens(line, &mut lang)
+            .into_iter()
+            .map(|(_, _, token)| token)
+            .collect();
+        assert!(
+            found.iter().all(|token| *token == Token::Comment),
+            "every row of a block comment is comment, got {found:?} for {line:?}"
+        );
+    }
+    Ok(())
+}
+
+/// Python's triple quote is the multi-line construct Yi's own kernel cells are
+/// written in, and the per-line scanner split it into a bogus empty string.
+#[test]
+fn a_triple_quoted_string_spans_its_rows() -> TestResult {
+    let mut lang = lang_for("python").ok_or("python")?;
+    let body = ["s = \"\"\"opening", "def not_a_def(): pass", "\"\"\""];
+    let mut kinds = Vec::new();
+    for line in body {
+        kinds.push(
+            tokens(line, &mut lang)
+                .into_iter()
+                .map(|(_, _, token)| token)
+                .collect::<Vec<_>>(),
+        );
+    }
+    let middle = kinds.get(1).ok_or("second row")?;
+    assert!(
+        middle.iter().all(|token| *token == Token::Str),
+        "a docstring body is string, not code: {middle:?}"
+    );
+    Ok(())
+}
+
+/// Resuming a parse must equal parsing the body whole, or a scrolled transcript
+/// and a fresh one disagree about the same text.
+#[test]
+fn resuming_a_parse_equals_parsing_it_whole() -> TestResult {
+    let body = ["/* head", "mid", "*/ let a = 1;"];
+    let mut split = lang_for("rust").ok_or("rust")?;
+    let stepwise: Vec<_> = body.iter().map(|line| tokens(line, &mut split)).collect();
+    let mut whole = lang_for("rust").ok_or("rust")?;
+    let together: Vec<_> = body.iter().map(|line| tokens(line, &mut whole)).collect();
+    assert_eq!(stepwise, together);
     Ok(())
 }

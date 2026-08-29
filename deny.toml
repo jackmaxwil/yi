@@ -18,9 +18,13 @@ deny = [
   "reqwest", "hyper", "openssl-sys", "native-tls",
   "git2", "libgit2-sys", "gix", "clap", "anyhow",
   { crate = "regex", wrappers = ["zeromq"] },
-  { crate = "once_cell", wrappers = ["rustls", "ureq", "zeromq"] },
+  { crate = "once_cell", wrappers = ["rustls", "ureq", "zeromq", "syntect"] },
   { crate = "rand", wrappers = ["zeromq"] },
-  "lazy_static", "syntect", "textwrap", "toml",
+  "lazy_static", "textwrap", "toml",
+  # D74 adopts syntect on `regex-fancy`, which rides the `regex-automata` already
+  # in the tree. onig is the C alternative and stays banned by name so no later
+  # feature unification can flip the backend to a C library.
+  "onig", "onig_sys",
   "tracing-subscriber",
 ]
 # thiserror 1+2 and getrandom 0.2/0.3 duplicates ride the zeromq pin; both
@@ -43,6 +47,7 @@ yanked = "deny"
 ignore = [
   { id = "RUSTSEC-2025-0134", reason = "rustls-pemfile archived; pulled only by ureq 2 native-certs. Remove on the planned ureq 3 + rustls-platform-verifier migration (size-ledger item)." },
   { id = "RUSTSEC-2024-0436", reason = "paste unmaintained; proc-macro build dep of ratatui 0.29, zero runtime bytes. Drops when ratatui replaces it (D41, §13.4 tui)." },
+  { id = "RUSTSEC-2025-0141", reason = "bincode 1.3.3 unmaintained by upstream decision, no successor. Pulled only by syntect's dump loader (D74); the only bytes it decodes are the grammar dump compiled into Yi's own binary, never attacker-supplied. Revisit if syntect 6 changes serializers." },
 ]
 
 [sources]

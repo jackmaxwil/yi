@@ -411,11 +411,11 @@ impl ToolCell {
     /// it as a tool argument: a dim `$` then the command itself, highlighted.
     fn summary_spans(&self, theme: &Theme, style: Style) -> Vec<Span<'static>> {
         let command = self.summary.strip_prefix("$ ");
-        let Some((lang, command)) = crate::highlight::lang_for("bash").zip(command) else {
+        let Some((mut lang, command)) = crate::highlight::lang_for("bash").zip(command) else {
             return vec![Span::styled(self.summary.clone(), style)];
         };
         let mut spans = vec![Span::styled("$ ".to_owned(), theme.dim_style())];
-        spans.extend(crate::highlight::spans(command, lang, theme, style));
+        spans.extend(crate::highlight::spans(command, &mut lang, theme, style));
         spans
     }
 

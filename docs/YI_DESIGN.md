@@ -1008,10 +1008,11 @@ Decisions:
   is codex's `———`, which cannot be confused with a full-width divider. Tables are OMP's sharp
   box (`┌┬┐├┼┤└┴┘`) with one rule under the header — codex's edgeless grid with a rule between
   every body row was ported first and is most of the ink for none of the meaning. No LaTeX. Syntax
-  highlighting landed as U39 — a hand-rolled five-language scanner, not `syntect` and not a
-  cargo feature (D63 revises this row: syntect's code alone measured +1.06 MiB and its
-  bundled set +1.40 MiB against 0.25 MiB of headroom, so trimming the grammars cannot save
-  it, and a feature gating no dependency gates nothing).
+  highlighting is `syntect` on `regex-fancy` with the bundled grammars, decompressed lazily
+  (D74 revises D63, which revised this row to a hand-rolled five-language scanner). The
+  scanner was per line and stateless, so a block comment or triple-quoted string coloured
+  only the row that opened it and rendered its body as live code; that is the defect D74
+  buys out. Still not a cargo feature.
 - **Tests** against a real VT parser (`vt100` dev-dep, codex `VT100Backend` ≈ 100 lines) plus
   `insta` snapshots of rendered cells. OMP's shadow-ledger fidelity test is the upgrade path if
   the inline mechanism ever diverges from ratatui's.
@@ -1506,14 +1507,14 @@ size builds only as an experiment, never required.
 
 | Feature | Crate | Adds | Note |
 |---|---|---|---|
-| `tui` | `ratatui` (features `crossterm`, `scrolling-regions`; no `all-widgets`), `crossterm` (`bracketed-paste`; **no** `event-stream` — the UI thread polls synchronously), `tui-textarea` (no features), `pulldown-cmark` (no default features), `unicode-width` (already a ratatui dep); dev: `vt100`, `insta` | ≈ 1 MiB budget | phase 7; `yi` without `tui` is the headless/ACP build |
+| `tui` | `ratatui` (features `crossterm`, `scrolling-regions`; no `all-widgets`), `crossterm` (`bracketed-paste`; **no** `event-stream` — the UI thread polls synchronously), `tui-textarea` (no features), `pulldown-cmark` (no default features), `syntect` (features `parsing`, `default-syntaxes`, `regex-fancy`; **no** `regex-onig` — the C engine; D74), `unicode-width` (already a ratatui dep); dev: `vt100`, `insta` | ≈ 1 MiB budget | phase 7; `yi` without `tui` is the headless/ACP build |
 | `docs` | `anydoc` (+ `pdf-inspector`, `zip`, `quick-xml`, `cfb`, `flate2`, `lopdf`…) | measured (§14.6) | off by default; `read` of office/PDF files |
 | `reduce` | none at runtime (`toml` build-dep only); possibly `regex` — measured | small | on by default (§14.3) |
 
 ### 13.5 Banned
 
 `reqwest` (unconditionally — D36 removed the mcp-feature tolerance; rmcp runs minimal features with a ureq-based streamable-HTTP transport), `hyper`, `openssl-sys`, `native-tls`, `git2`/`libgit2-sys`, `gix`
-(≈ 3 MiB), `regex` (use `globset`'s automata or hand-written matchers), `clap`, `anyhow`, `syntect` with onig / `two-face`, `arborium`, `ratatui-image`, `textwrap` (hand-rolled wrap, U14), `toml` (config is JSON, X7), `color-eyre`/`human-panic`/`better-panic`
+(≈ 3 MiB), `regex` (use `globset`'s automata or hand-written matchers), `clap`, `anyhow`, `syntect` with onig (D74 admits it on `regex-fancy` only; `onig`/`onig_sys` are banned by name) / `two-face`, `arborium`, `ratatui-image`, `textwrap` (hand-rolled wrap, U14), `toml` (config is JSON, X7), `color-eyre`/`human-panic`/`better-panic`
 (errors are typed at crate boundaries; `Box<dyn Error>` inside binaries is fine), `chrono`
 (`jiff` chosen), `once_cell`/`lazy_static` (std `OnceLock`), `rand` (ids from `getrandom` or
 `std::hash::RandomState` seed), `tokio` `full`, any `*-sys` crate, any proc-macro crate beyond
