@@ -42,6 +42,7 @@ pub use subagent::{
 pub use tools::ToolAdapter;
 pub use wall::Wall;
 pub use yi_ai::auth;
+pub use yi_ai::request::ProxyConfig;
 
 /// None where the platform has no sandbox: a contained decision then degrades
 /// to a question rather than to an unenforced allowance.
