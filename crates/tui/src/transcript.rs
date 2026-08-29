@@ -125,31 +125,3 @@ pub(crate) fn paint_slice(app: &crate::app::App, slice: &str) -> Vec<ratatui::te
         None => crate::markdown::render(slice, width, &app.theme),
     }
 }
-
-/// U13: each stable slice renders standalone against a byte cursor, because
-/// re-rendering the prefix duplicated list items mid-stream.
-pub(crate) fn commit_stable_prefix(app: &mut crate::app::App) {
-    let stream = crate::markdown::stable_stream(&app.live_markdown);
-    if stream.cut <= app.live_cut {
-        return;
-    }
-    let slice = app
-        .live_markdown
-        .get(app.live_cut..stream.cut)
-        .unwrap_or_default()
-        .to_owned();
-    let first = app.live_cut == 0;
-    // Invariant: history concatenates consecutive assistant slices back into
-    // the original source, so only the paint may carry the reopened fence —
-    // retaining it would reopen a fence mid-message on every reflow.
-    let rendered = paint_slice(app, &slice);
-    if !rendered.is_empty() {
-        if app.live_reopen.is_none() {
-            app.pending_commit.push(ratatui::text::Line::default());
-        }
-        app.pending_commit
-            .extend(crate::cell::gutter(rendered, first, &app.theme));
-        app.retain(crate::cell::Cell::Assistant { markdown: slice });
-    }
-    (app.live_cut, app.live_reopen) = (stream.cut, stream.reopen);
-}

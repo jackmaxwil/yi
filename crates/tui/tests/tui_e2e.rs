@@ -460,6 +460,56 @@ fn a_running_turn_aims_the_mark_at_the_orb() -> TestResult {
     Ok(())
 }
 
+/// The live region used to render thought only while `live_markdown` was
+/// empty, so the first token of prose swapped the reasoning off screen — and
+/// the thought had committed nothing, so there was no scrollback to fall back
+/// to either. Both halves hold their place now.
+#[test]
+fn reasoning_stays_on_screen_once_the_prose_starts() -> TestResult {
+    let backend = VT100Backend::with_scrollback(80, 24, 200);
+    let mut terminal = yi_tui::terminal::Terminal::new(backend, 4)?;
+    let mut app = app();
+    app.reduce_agent(yi_types::event::AgentEvent::AgentStart);
+
+    // The thought's first paragraph is stable and commits; the second is the
+    // tail still streaming, and the prose arrives under both.
+    let partial = |thinking: &str, text: &str| {
+        let mut content = vec![yi_runtime::faux::faux_thinking(thinking)];
+        if !text.is_empty() {
+            content.push(yi_runtime::faux::faux_text(text));
+        }
+        yi_runtime::faux::faux_assistant_message(content, StopReason::Stop)
+    };
+    let thought = "Weighed the first option.\n\nStill weighing the second";
+    for message in [partial(thought, ""), partial(thought, "The answer.")] {
+        app.reduce_agent(yi_types::event::AgentEvent::MessageUpdate {
+            message: message.clone(),
+            assistant_message_event: yi_types::event::AssistantMessageEvent::TextDelta {
+                content_index: 0,
+                delta: String::new(),
+                partial: message,
+            },
+        });
+        yi_tui::render::draw(&mut app, &mut terminal, None);
+    }
+
+    let contents = terminal.backend().contents();
+    let row_of = |needle: &str| {
+        contents
+            .lines()
+            .position(|line| line.contains(needle))
+            .ok_or_else(|| format!("{needle:?} is not on screen:\n{contents}"))
+    };
+    let committed = row_of("Weighed the first option.")?;
+    let tail = row_of("Still weighing the second")?;
+    let prose = row_of("The answer.")?;
+    assert!(
+        committed < tail && tail < prose,
+        "reasoning keeps its place and its order under the prose:\n{contents}"
+    );
+    Ok(())
+}
+
 /// U13 commits each stable paragraph to scrollback mid-stream, so the row the
 /// mark used to occupy — the top of the viewport — is the commit boundary, not
 /// the top of the answer. Rendered there it sat between the committed prose and

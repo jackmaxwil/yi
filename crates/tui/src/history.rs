@@ -32,6 +32,15 @@ impl History {
             head.push_str(markdown);
             return;
         }
+        // Thought merges for the same reason, plus one of its own: `normal`
+        // renders a thought as its line count, and a per-slice count would name
+        // the last paragraph rather than the thought.
+        if let Cell::Thought { markdown } = &cell
+            && let Some(Cell::Thought { markdown: head }) = self.cells.back_mut()
+        {
+            head.push_str(markdown);
+            return;
+        }
         self.cells.push_back(cell);
     }
 

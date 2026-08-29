@@ -280,24 +280,11 @@ fn streamed(full: &str) -> yi_tui::app::App {
         default_keymap(),
         80,
     );
-    let assistant = |text: &str| yi_types::message::AgentMessage::Assistant {
-        content: vec![yi_types::message::Content::Text {
-            text: text.to_owned(),
-            text_signature: None,
-        }],
-        api: String::new(),
-        provider: String::new(),
-        model: String::new(),
-        response_model: None,
-        response_id: None,
-        diagnostics: None,
-        usage: yi_types::message::Usage::zero(),
-        stop_reason: yi_types::message::StopReason::Stop,
-        deferred: None,
-        error_message: None,
-        raw_stop_reason: None,
-        end_turn: None,
-        timestamp: 0,
+    let assistant = |text: &str| {
+        yi_runtime::faux::faux_assistant_message(
+            vec![yi_runtime::faux::faux_text(text)],
+            yi_types::message::StopReason::Stop,
+        )
     };
     app.reduce_agent(yi_types::event::AgentEvent::AgentStart);
     let mut end = 8;
@@ -1199,6 +1186,162 @@ fn verbose_grep_prints_each_path_once() -> TestResult {
     Ok(())
 }
 
+/// Feed `thought` and then `prose` through the streaming path the way a
+/// reasoning model delivers them, and hand back the app that rendered them.
+/// `finish` false stops before `MessageEnd`, which is where a turn commits
+/// whatever it was still holding — the one place mid-stream loss is visible.
+fn streamed_thought(thought: &str, prose: &str, finish: bool) -> yi_tui::app::App {
+    use yi_tui::app::{App, TuiOptions};
+    use yi_tui::keymap::default_keymap;
+    let mut app = App::new(
+        TuiOptions {
+            model: common::test_model("faux-1"),
+            session_name: "s".to_owned(),
+            cwd: "/tmp".to_owned(),
+            context_window: 128_000,
+            session_dir: String::new(),
+            keys: Vec::new(),
+            initial_prompt: None,
+        },
+        theme(),
+        default_keymap(),
+        80,
+    );
+    let message = |thinking: &str, text: &str| {
+        let mut content = vec![yi_runtime::faux::faux_thinking(thinking)];
+        if !text.is_empty() {
+            content.push(yi_runtime::faux::faux_text(text));
+        }
+        yi_runtime::faux::faux_assistant_message(content, yi_types::message::StopReason::Stop)
+    };
+    let update =
+        |partial: yi_types::message::AgentMessage| yi_types::event::AgentEvent::MessageUpdate {
+            message: partial.clone(),
+            assistant_message_event: yi_types::event::AssistantMessageEvent::TextDelta {
+                content_index: 0,
+                delta: String::new(),
+                partial,
+            },
+        };
+    app.reduce_agent(yi_types::event::AgentEvent::AgentStart);
+    let mut cut = 8;
+    while cut < thought.len() {
+        while !thought.is_char_boundary(cut.min(thought.len())) {
+            cut += 1;
+        }
+        let partial = message(thought.get(..cut.min(thought.len())).unwrap_or(thought), "");
+        app.reduce_agent(update(partial));
+        cut += 17;
+    }
+    app.reduce_agent(update(message(thought, prose)));
+    if finish {
+        app.reduce_agent(yi_types::event::AgentEvent::MessageEnd {
+            message: message(thought, prose),
+        });
+    }
+    app
+}
+
+#[test]
+fn a_long_thought_reaches_scrollback_and_outlives_the_prose_that_follows() -> TestResult {
+    // Three paragraphs so the head is well past the live region's tail, which
+    // keeps only half a screen and drops everything above it.
+    let thought = "First step of it.\n\nSecond step of it.\n\nThird step of it.\n";
+    // Two paragraphs of prose so the answer's own stable prefix commits
+    // mid-stream: a thought that waits for the end of the turn lands under it.
+    let mut app = streamed_thought(thought, "The answer.\n\nAnd the rest of it.\n", true);
+    let committed: Vec<String> = app.take_commits().iter().map(flat).collect();
+    for step in ["First step", "Second step", "Third step"] {
+        assert!(
+            committed.iter().any(|line| line.contains(step)),
+            "every paragraph of the thought commits, not just the tail: {committed:?}"
+        );
+    }
+    assert_eq!(
+        committed
+            .iter()
+            .filter(|line| line.contains("\u{2234} thinking"))
+            .count(),
+        1,
+        "one label for the thought, not one per paragraph: {committed:?}"
+    );
+    let label = committed
+        .iter()
+        .position(|line| line.contains("\u{2234} thinking"))
+        .ok_or("no thinking label")?;
+    let answer = committed
+        .iter()
+        .position(|line| line.contains("The answer."))
+        .ok_or("no prose")?;
+    assert!(
+        label < answer,
+        "reasoning lands above the prose it preceded: {committed:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn one_unbroken_paragraph_still_reaches_scrollback() -> TestResult {
+    // No blank line anywhere, so `stable_cut` never fires and every row past
+    // the live tail used to be dropped with nothing scrollable behind it.
+    let thought = "one two three four five six seven eight nine ten ".repeat(40);
+    let prose = "alpha bravo charlie delta echo foxtrot golf hotel india ".repeat(40);
+    let mut app = streamed_thought(&thought, &prose, false);
+    let committed: Vec<String> = app.take_commits().iter().map(flat).collect();
+    let rows = committed.len();
+    assert!(
+        rows > yi_tui::render::live_tail_rows(24),
+        "more than the live region can hold reached scrollback: {rows} rows"
+    );
+    for line in &committed {
+        assert!(
+            !line.contains("onetwo") && !line.contains("alphabravo"),
+            "a forced cut lands on a word boundary: {line:?}"
+        );
+    }
+    // A body row that does not fill its width is a seam showing through: the
+    // forced cut snaps to the last word of the row it lands on for this reason.
+    let short: Vec<&String> = committed
+        .iter()
+        .filter(|line| line.trim_start().starts_with(char::is_alphabetic))
+        .filter(|line| line.chars().count() < 60)
+        .collect();
+    assert!(short.is_empty(), "the seams wrap flush: {short:?}");
+    // The forced cut suppresses the blank line between its own slices, but the
+    // one that opens the answer is a block break and keeps its air.
+    let opens = committed
+        .iter()
+        .position(|line| line.starts_with('\u{2022}'))
+        .ok_or("no prose block")?;
+    assert_eq!(
+        committed.get(opens.wrapping_sub(1)).map(String::as_str),
+        Some(""),
+        "the answer opens under a blank line: {:?}",
+        committed.get(opens.saturating_sub(2)..=opens)
+    );
+    Ok(())
+}
+
+#[test]
+fn normal_mode_still_collapses_a_thought_to_its_line_count() -> TestResult {
+    let mut app = streamed_thought("One.\n\nTwo.\n\nThree.\n", "The answer.\n", true);
+    app.cycle_mode();
+    app.cycle_mode();
+    assert_eq!(app.mode(), TranscriptMode::Normal);
+    let lines: Vec<String> = app.reflowed(200).iter().map(flat).collect();
+    assert!(
+        lines
+            .iter()
+            .any(|line| line.contains("\u{2234} thinking \u{b7} 5 lines")),
+        "the count covers the whole thought, not its last slice: {lines:?}"
+    );
+    assert!(
+        !lines.iter().any(|line| line.contains("Two.")),
+        "normal keeps the body folded away: {lines:?}"
+    );
+    Ok(())
+}
+
 #[test]
 fn cycling_the_transcript_mode_rewrites_what_is_already_on_screen() -> TestResult {
     let mut app = streamed("A paragraph.\n");
@@ -1247,7 +1390,11 @@ fn cycling_the_transcript_mode_rewrites_what_is_already_on_screen() -> TestResul
         Some(Action::ToggleExpand),
         "ctrl-o must still be the mode toggle"
     );
-    app.cycle_mode();
+    assert_eq!(
+        app.mode(),
+        TranscriptMode::Thinking,
+        "reasoning is on by default; normal is what a reader opts into"
+    );
     app.cycle_mode();
     assert_eq!(app.mode(), TranscriptMode::Verbose);
     assert!(

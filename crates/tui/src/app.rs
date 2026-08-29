@@ -118,6 +118,9 @@ pub struct App {
     pub(crate) live_reopen: Option<String>,
     pub(crate) live_thought: String,
     pub(crate) live_cut: usize,
+    /// The byte of `live_thought` already committed to scrollback, the mirror of
+    /// `live_cut` for reasoning.
+    pub(crate) live_thought_cut: usize,
     pub(crate) live_tools: Vec<ToolCell>,
     /// Finished read-only calls waiting to commit as one `Explored` cell.
     pub(crate) explored: Vec<ToolCell>,
@@ -171,6 +174,8 @@ pub(crate) fn elapsed_ms(since: Instant) -> u64 {
     u64::try_from(since.elapsed().as_millis()).unwrap_or(0)
 }
 
+mod stream;
+
 impl App {
     pub fn new(options: TuiOptions, theme: Theme, keymap: Keymap, width: usize) -> Self {
         let mut app = Self {
@@ -198,6 +203,7 @@ impl App {
             live_reopen: None,
             live_thought: String::new(),
             live_cut: 0,
+            live_thought_cut: 0,
             live_tools: Vec::new(),
             explored: Vec::new(),
             last_commit_rows: 0,
@@ -217,7 +223,7 @@ impl App {
             submitted_turns: 0,
             started_turns: 0,
             user_turns: 0,
-            mode: TranscriptMode::Normal,
+            mode: TranscriptMode::default(),
             kitty: false,
             orb_placement: None,
             orb_stale: false,
@@ -417,6 +423,7 @@ impl App {
         self.live_reopen = None;
         self.live_thought.clear();
         self.live_cut = 0;
+        self.live_thought_cut = 0;
         self.live_tools.clear();
     }
 
@@ -499,7 +506,8 @@ impl App {
             } => {
                 self.live_markdown = text_of(&content);
                 self.live_thought = thinking_of(&content);
-                crate::transcript::commit_stable_prefix(self);
+                self.commit_stable_thought();
+                self.commit_stable_prefix();
                 self.scheduler.request();
             }
             AgentEvent::MessageEnd { message } => self.reduce_message_end(&message),
@@ -599,9 +607,11 @@ impl App {
                 ..
             } => {
                 let thought = thinking_of(content);
-                if !thought.is_empty() {
-                    self.commit_cell(&Cell::Thought { markdown: thought });
-                }
+                let rest = thought
+                    .get(self.live_thought_cut..)
+                    .unwrap_or_default()
+                    .to_owned();
+                self.commit_thought_slice(&rest);
                 let text = text_of(content);
                 if !text.is_empty() {
                     let remainder = text.get(self.live_cut..).unwrap_or_default().to_owned();
@@ -626,6 +636,7 @@ impl App {
                 self.live_thought.clear();
                 self.live_cut = 0;
                 self.live_reopen = None;
+                self.live_thought_cut = 0;
                 if *stop_reason == StopReason::Error {
                     let text = error_message
                         .clone()

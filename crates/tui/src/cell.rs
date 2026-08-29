@@ -14,6 +14,14 @@ pub enum TranscriptMode {
     Verbose,
 }
 
+/// Reasoning is the default view (U32 revised): `normal` collapses a thought to
+/// a one-line count, which is only what a reader who asked for it should get.
+impl Default for TranscriptMode {
+    fn default() -> Self {
+        Self::Thinking
+    }
+}
+
 impl TranscriptMode {
     pub fn next(self) -> Self {
         match self {
@@ -111,6 +119,51 @@ pub enum Cell {
 pub const GUTTER: &str = "• ";
 pub const CALLOUT_RAIL: &str = "▌";
 const GUTTER_CONTINUATION: &str = "  ";
+const THOUGHT_INDENT: &str = "  ";
+
+/// Reasoning prose, dim and italic under a `∴ thinking` label. `header` is
+/// false past the first slice: a thought streams to scrollback a paragraph at a
+/// time (U13), and a label per paragraph reads as one thought each.
+pub fn thought_lines(
+    markdown: &str,
+    width: usize,
+    theme: &Theme,
+    mode: TranscriptMode,
+    header: bool,
+) -> Vec<Line<'static>> {
+    let style = theme.dim_style().add_modifier(Modifier::ITALIC);
+    if mode == TranscriptMode::Normal {
+        let lines = markdown.lines().count();
+        return vec![Line::from(Span::styled(
+            format!("  ∴ thinking · {lines} lines"),
+            style,
+        ))];
+    }
+    let mut out = Vec::new();
+    if header {
+        out.push(Line::default());
+        out.push(Line::from(Span::styled("  ∴ thinking".to_owned(), style)));
+    }
+    // Rendered two columns narrow, because the indent below is two columns
+    // wide: rendered at the full width every line that filled it wrapped again
+    // and shed its last word onto a line of its own.
+    for line in markdown::render(markdown, width.saturating_sub(THOUGHT_INDENT.len()), theme) {
+        let text: String = line
+            .spans
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect::<String>();
+        out.extend(wrap_line(
+            &Line::from(Span::styled(
+                format!("{THOUGHT_INDENT}{}", text.trim_start()),
+                style,
+            )),
+            width,
+            THOUGHT_INDENT,
+        ));
+    }
+    out
+}
 
 /// codex `history_cell/messages.rs:530`: assistant prose hangs off a dim `• `
 /// on its first line and a two-column gutter after it, so a block of prose is
@@ -564,39 +617,7 @@ impl Cell {
                 ));
                 out
             }
-            Cell::Thought { markdown } => {
-                if mode == TranscriptMode::Normal {
-                    let lines = markdown.lines().count();
-                    return vec![Line::from(Span::styled(
-                        format!("  ∴ thinking · {lines} lines"),
-                        theme.dim_style().add_modifier(Modifier::ITALIC),
-                    ))];
-                }
-                let rendered = markdown::render(markdown, width, theme);
-                let mut out = vec![
-                    Line::default(),
-                    Line::from(Span::styled(
-                        "  ∴ thinking".to_owned(),
-                        theme.dim_style().add_modifier(Modifier::ITALIC),
-                    )),
-                ];
-                for line in rendered {
-                    let text: String = line
-                        .spans
-                        .iter()
-                        .map(|s| s.content.as_ref())
-                        .collect::<String>();
-                    out.extend(wrap_line(
-                        &Line::from(Span::styled(
-                            format!("  {}", text.trim_start()),
-                            theme.dim_style().add_modifier(Modifier::ITALIC),
-                        )),
-                        width,
-                        "  ",
-                    ));
-                }
-                out
-            }
+            Cell::Thought { markdown } => thought_lines(markdown, width, theme, mode, true),
             Cell::Tool(tool) => tool.lines(width, theme, mode, spinner_phase),
             Cell::Explored(rows) => explored_lines(rows, width, theme),
             Cell::Task(task) => task.lines(width, theme, spinner_phase),
