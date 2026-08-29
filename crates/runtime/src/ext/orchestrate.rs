@@ -58,7 +58,9 @@ fn enumerations(prompt: &str) -> i32 {
         .lines()
         .filter(|line| {
             let line = line.trim_start();
-            line.starts_with("- ")
+            ["- ", "* ", "+ "]
+                .iter()
+                .any(|bullet| line.starts_with(*bullet))
                 || line
                     .split_once(['.', ')'])
                     .is_some_and(|(head, _)| !head.is_empty() && head.chars().all(char::is_numeric))
