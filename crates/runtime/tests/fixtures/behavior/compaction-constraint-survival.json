@@ -1,0 +1,51 @@
+{
+  "id": "compaction-constraint-survival",
+  "description": "a constraint stated in the first user message survives compaction; without the retention floor Yi violates it silently later in the session",
+  "provenance": {
+    "kind": "synthetic",
+    "session": null
+  },
+  "compaction": {
+    "contextWindow": 2000,
+    "reserveTokens": 1000,
+    "keepRecentTokens": 10
+  },
+  "turns": [
+    {
+      "user": "CONSTRAINT: never touch vendored/lock.json (SENTINEL-K7QX). Start the port.",
+      "responses": [
+        {
+          "text": "big reply xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+          "usageInput": 100,
+          "usageTotal": 5000
+        }
+      ]
+    },
+    {
+      "user": "second ask with enough characters to keep recent",
+      "responses": [
+        {
+          "text": "## Goal\nSummarized history for the test"
+        },
+        {
+          "text": "second answer",
+          "usageInput": 50,
+          "usageTotal": 300
+        }
+      ]
+    }
+  ],
+  "assertions": [
+    {
+      "kind": "projectionStartsWithSummary"
+    },
+    {
+      "kind": "projectionContains",
+      "needle": "SENTINEL-K7QX"
+    },
+    {
+      "kind": "finalTextContains",
+      "needle": "second answer"
+    }
+  ]
+}
