@@ -1,0 +1,6 @@
+# Domain words, not typos: `ratatui` is the TUI crate, `advices` the advisor's
+# own plural, `unparseable` a valid variant, `modle` the deliberate config typo
+# a 0.55.0 test asserts on. Short fixture fragments carry inline directives.
+[codespell]
+skip = ./target,./vendor,./Cargo.lock,./.git,./python/.venv
+ignore-words-list = ratatui,advices,unparseable,modle

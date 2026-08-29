@@ -28,6 +28,9 @@ run "$PY" scripts/guardrails/check_test_size.py
 run "$PY" scripts/guardrails/check_blob_size.py
 run "$PY" scripts/guardrails/check_deps_budget.py
 run "$PY" scripts/guardrails/check_request_budget.py
+# Prose is not exempt: 1,485 comment lines are under ratchet, and the design docs
+# are the reference. Config and the domain-word allowlist live in .codespellrc.
+if command -v codespell >/dev/null; then run codespell; else echo "FAIL codespell (uv tool install codespell)"; FAILED=$((FAILED+1)); fi
 # Both gates read target/dist/yi and both are skipped for two different reasons.
 # D70: the baseline is a macOS arm64 byte count, so any other target measures a
 # different binary against it. --fast skips it because it needs a dist build.

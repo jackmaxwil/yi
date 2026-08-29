@@ -55,7 +55,7 @@ fn text_deltas_become_message_chunks_with_a_stable_message_id() -> TestResult {
             partial: assistant_partial(),
         },
     };
-    let first = to_updates(&delta("hel"), &mut ids);
+    let first = to_updates(&delta("hel"), &mut ids); // codespell:ignore hel
     let second = to_updates(&delta("lo"), &mut ids);
     let id_of = |updates: &[AcpSessionUpdate]| match updates {
         [AcpSessionUpdate::AgentMessageChunk { message_id, .. }] => Ok(message_id.clone()),
@@ -69,7 +69,7 @@ fn text_deltas_become_message_chunks_with_a_stable_message_id() -> TestResult {
     let json = serde_json::to_value(&first[0])?;
     assert_eq!(json["sessionUpdate"], "agent_message_chunk");
     assert_eq!(json["content"]["type"], "text");
-    assert_eq!(json["content"]["text"], "hel");
+    assert_eq!(json["content"]["text"], "hel"); // codespell:ignore hel
     Ok(())
 }
 
@@ -238,7 +238,7 @@ fn child_updates_become_a_subagent_update_notification() -> TestResult {
 fn base64_pads_correctly() {
     assert_eq!(base64(b""), "");
     assert_eq!(base64(b"f"), "Zg==");
-    assert_eq!(base64(b"fo"), "Zm8=");
+    assert_eq!(base64(b"fo"), "Zm8="); // codespell:ignore fo
     assert_eq!(base64(b"foo"), "Zm9v");
     assert_eq!(base64(b"foob"), "Zm9vYg==");
 }

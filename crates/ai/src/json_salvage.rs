@@ -174,8 +174,8 @@ mod tests {
 
     #[test]
     fn truncated_string_closes() {
-        let parsed = parse_streaming_json(r#"{"cmd":"cargo te"#);
-        assert_eq!(parsed["cmd"], "cargo te");
+        let parsed = parse_streaming_json(r#"{"cmd":"cargo te"#); // codespell:ignore te
+        assert_eq!(parsed["cmd"], "cargo te"); // codespell:ignore te
     }
 
     #[test]
