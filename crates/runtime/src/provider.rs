@@ -63,6 +63,7 @@ pub struct ProviderStream {
     pub session_id: Option<String>,
     pub faux: Mutex<FauxProvider>,
     long_cache: bool,
+    proxy: Option<yi_ai::request::ProxyConfig>,
 }
 
 impl ProviderStream {
@@ -72,6 +73,7 @@ impl ProviderStream {
             session_id,
             faux: Mutex::new(FauxProvider::default()),
             long_cache: false,
+            proxy: None,
         }
     }
 
@@ -80,6 +82,12 @@ impl ProviderStream {
     #[must_use]
     pub fn with_long_cache(mut self, long_cache: bool) -> Self {
         self.long_cache = long_cache;
+        self
+    }
+
+    #[must_use]
+    pub fn with_proxy(mut self, proxy: Option<yi_ai::request::ProxyConfig>) -> Self {
+        self.proxy = proxy;
         self
     }
 
@@ -111,6 +119,7 @@ impl StreamFn for ProviderStream {
                     thinking: anthropic_thinking(model, effort),
                     cache: true,
                     cache_1h: self.long_cache,
+                    proxy: self.proxy.clone(),
                     ..AnthropicOptions::default()
                 };
                 anthropic::stream(model, context, &options, self.key())
@@ -119,6 +128,7 @@ impl StreamFn for ProviderStream {
                 let options = OpenAiOptions {
                     reasoning_effort: (effort != Effort::Off).then_some(effort),
                     session_id: self.session_id.clone(),
+                    proxy: self.proxy.clone(),
                     ..OpenAiOptions::default()
                 };
                 openai::stream(model, context, &options, self.key())
@@ -127,6 +137,7 @@ impl StreamFn for ProviderStream {
                 let options = OpenAiOptions {
                     reasoning_effort: (effort != Effort::Off).then_some(effort),
                     session_id: self.session_id.clone(),
+                    proxy: self.proxy.clone(),
                     ..OpenAiOptions::default()
                 };
                 openai_responses::stream(model, context, &options, self.key())

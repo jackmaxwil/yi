@@ -791,12 +791,14 @@ fn run_request(
     model: &Model,
     body: &Value,
     api_key: &str,
+    proxy: Option<&crate::request::ProxyConfig>,
     sender: &Sender<AssistantMessageEvent>,
 ) -> Result<(), String> {
     let response = crate::request::openai_bearer_post(
         &format!("{}/responses", model.base_url),
         api_key,
         body,
+        proxy,
     )?;
     let mut mapper = EventMapper::new(model);
     let _ = sender.blocking_send(mapper.start_event());
@@ -836,10 +838,10 @@ pub fn stream(
     api_key: &str,
 ) -> Receiver<AssistantMessageEvent> {
     let body = build_params(model, context, options);
-    let model = model.clone();
+    let (model, proxy) = (model.clone(), options.proxy.clone());
     let api_key = api_key.to_owned();
     crate::request::spawn_provider_stream(move |sender| {
-        if let Err(message) = run_request(&model, &body, &api_key, sender) {
+        if let Err(message) = run_request(&model, &body, &api_key, proxy.as_ref(), sender) {
             let mut mapper = EventMapper::new(&model);
             let event = mapper.fail(&message);
             let _ = sender.blocking_send(event);
