@@ -1,15 +1,23 @@
 # Yi self-optimization — plan v5 (prompt-flywheel lineage)
 
 ```
-status:  PLAN v5 2026-08-29. v1 naive optimizer → killed by self-review; v2
-         lean flywheel → killed by the OMP autopsy; v3 deterministic rules →
-         demoted by the benchmark pressure test; v4 built the instrument and
-         put behavior under the gate law; v5 adds the piece v4 hand-waved:
-         a deterministic decomposition protocol (§6), studied against two
-         new papers, seven codebases, and the planning/agents literature.
-         Row/D-row numbers are placeholders (D73 @ 0.66.0 when first
-         written; shared tree — re-read the header and last D-row
-         immediately before landing anything).
+status:  LANDED 2026-08-29 at ARCHITECTURE 0.70.0 — D75 task checks · D76
+         behavior gate · D77 decomposition protocol. v1 naive optimizer →
+         killed by self-review; v2 lean flywheel → killed by the OMP
+         autopsy; v3 deterministic rules → demoted by the benchmark
+         pressure test; v4 built the instrument and put behavior under the
+         gate law; v5 adds the piece v4 hand-waved: a deterministic
+         decomposition protocol (§6), studied against two new papers, seven
+         codebases, and the planning/agents literature.
+landed:  §15's placeholder ids map to what the tree took, since several were
+         already claimed when this landed: P8→P12 · J3'→J3 ·
+         J11→J10 (TODOS `J11` is now the campaigns/GEPA row) · J1'/J2'→J1
+         and J2 · F10→F8 · P10→P13; N11, N12 and N13 kept their ids.
+         D-rows: draft D74→D75, draft D76→D76, draft D77→D77, and draft
+         D75 (GEPA) was never claimed — campaigns stay open as TODOS `J11`
+         until S2 ledger rows exist. One design deviation: `get_context`
+         landed as a builtin rather than on P3's `Effect::RegisterTool`,
+         which P3 has not built.
 date:    2026-08-29
 sources: research (ref/research/): 2601.04055v1 MPO · 2603.21520v1 MemAPO ·
          2606.04465v1 SePO · 2507.19457v2 GEPA (ICLR 2026) · Factory.ai
@@ -474,7 +482,7 @@ validation, transport kwargs, and drain gate extend this layer.
 
 | dimension | S0–S2 | S3 | S4 | note |
 |---|---|---|---|---|
-| deps / crates / env vars / CLI verbs | 0 | 0 | 0 | adapters are python under evals/ |
+| deps / crates / `YI_*` env vars / CLI verbs | 0 | 0 | 0 | adapters are python under evals/ and read two harness variables, `EVAL_BINARY`/`EVAL_BINARY_URL` — outside the binary's env surface, and named without `YI_` so the surface gate cannot mistake them for one |
 | src LOC | 0 (+cassette/gate glue at S1) | ≈ +180 (check gate + ladder) | ≈ +400 (recipe validator ~150 · transport kwargs + ChildResult ~120 · drain gate ~60 · counters ~80) | ceilings per module; `--update` own-commit law |
 | yi-types | 0 | +1 field | +3 shapes (§6.3) | schemas.lock + fixtures same commit |
 | prompts/.md | 0 | +1 sentence | recipe surface rides the orchestrate/subagent fragments, byte-ratcheted (pi-dyn precedent: 800 B prompt budget test) | duplication 0 |
@@ -505,7 +513,10 @@ validation, transport kwargs, and drain gate extend this layer.
   entries the mining board reads.
 - `P10` get_context · M · rides P3 + orientation mining. done: packet
   registered at SessionStart; orientation delta measured on T2.
-- Campaign/GEPA rows at S4/S5 with D75.
+- Campaign/GEPA at S4/S5: landed as TODOS `J11`, open and gated on `J1`/`J2`
+  baselines. Its D-row (this draft's "instrument-driven optimization") stays
+  unclaimed until those rows exist; the flywheel landing consumed the numbers
+  this draft reserved, so claim one against the live header, never from here.
 
 D-row drafts (texts only; claim numbers at land after re-reading the
 header):

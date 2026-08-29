@@ -26,7 +26,7 @@ from yi_usage import (
 )
 
 REMOTE_BINARY = "/usr/local/bin/yi"
-BINARY_URL_ENV = "EVAL_YI_BINARY_URL"
+BINARY_URL_ENV = "EVAL_BINARY_URL"
 VERSION_CHECK = f"{REMOTE_BINARY} --version"
 PROVIDER_DOMAINS = {
     "anthropic": "api.anthropic.com",

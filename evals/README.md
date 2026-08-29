@@ -21,9 +21,12 @@ Contracts: YI_DESIGN §15.2 (gates E1–E9), §15.4 (AA column → Yi source),
 python3 evals/selftest.py
 ```
 
-Exit code is the gate. It pins the run command's E6/E7/E8 contract, the
-camelCase usage parse (E5), the all-or-none token rule (E9), corrupt-line
-tolerance, and pier's three extra columns.
+Exit code is the gate, and `just check` runs it: `check_guardrails.sh` invokes
+it beside `check_behavior.py`, so a broken adapter fails the same lane Yi's
+code answers to. It pins the run command's E6/E7/E8 contract, the camelCase
+usage parse (E5), the all-or-none token rule (E9), corrupt-line tolerance, and
+pier's three extra columns. Stdlib only, no docker, no key — nothing about it
+needs the slow tier.
 
 ## Installing the binary
 
@@ -31,9 +34,16 @@ Both adapters install one static `x86_64-unknown-linux-musl` binary at
 `/usr/local/bin/yi` — one step, so pier's 360 s agent-setup cap and harbor's
 install phase both stay cheap (§15.3 lever 8).
 
-- `EVAL_YI_BINARY_URL` — release URL to `curl`. The eventual default; no
+These two names are the whole environment surface of `evals/`. They are the
+harness's, not the binary's: no `YI_*` variable is involved, so
+`baselines/env_vars.json` and its cap of 40 are untouched. Keep `YI_` out of
+the names — `check_env_surface.py` matches the substring `YI_[A-Z_]+`, so an
+`EVAL_YI_BINARY` would read as an undeclared Yi variable the day that scan
+covers Python.
+
+- `EVAL_BINARY_URL` — release URL to `curl`. The eventual default; no
   release lane serves one yet.
-- `EVAL_YI_BINARY` — local musl build, uploaded into the container. harbor
+- `EVAL_BINARY` — local musl build, uploaded into the container. harbor
   only; pier's install spec is lowered into a Dockerfile and needs the URL.
 
 Both paths verify with `yi --version` before the trial starts.
@@ -42,7 +52,7 @@ Both paths verify with `yi --version` before the trial starts.
 
 ```
 export ANTHROPIC_API_KEY=...            # passed through under its own name
-export EVAL_YI_BINARY=target/x86_64-unknown-linux-musl/dist/yi
+export EVAL_BINARY=target/x86_64-unknown-linux-musl/dist/yi
 PYTHONPATH=evals/adapters harbor run \
   --agent yi_harbor.agent:Yi \
   -d terminal-bench/terminal-bench-2-1 \

@@ -31,6 +31,10 @@ run "$PY" scripts/guardrails/check_deps_budget.py
 run "$PY" scripts/guardrails/check_request_budget.py
 run "$PY" scripts/guardrails/check_behavior.py
 run "$PY" scripts/guardrails/check_prompt_examples.py
+run "$PY" evals/selftest.py
+# The mined artifacts carry session text, so §10's planted-fake redaction proof is a
+# gate, not a habit: its only executable check is this flag.
+run "$PY" skills/yi/session-mining/extract.py --selfcheck
 # Prose is not exempt: 1,485 comment lines are under ratchet, and the design docs
 # are the reference. Config and the domain-word allowlist live in .codespellrc.
 if command -v codespell >/dev/null; then run codespell; else echo "FAIL codespell (uv tool install codespell)"; FAILED=$((FAILED+1)); fi

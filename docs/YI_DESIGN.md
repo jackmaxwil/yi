@@ -876,11 +876,14 @@ sequenceDiagram
   keeps reads open (expand-only needs the standard readable); `deny_read` is the
   sampled-instrument opt-in and implies write-deny. Not a sandbox: a command that
   names no denied path runs.
-- **B16 scoped protocol child (0.69.0, D76)** | `rlm.run` takes two more additive kwargs:
+- **B16 scoped protocol child (0.70.0, D77)** | `rlm.run` takes two more additive kwargs:
   `context_keys` names the kernel variables that are the child's whole view of the parent
   namespace (serialized kernel-side — a host-side read would queue behind the cell awaiting
   the spawn), and `check` makes it a protocol child that owes a `ChildResult` whose
   `discoveries` field is mandatory, withheld while the check is red and fatal when malformed.
+  The list is capped at 16 rows per result and adjudicated fail-closed: a plan the host cannot
+  read, or a HIGH row the goal ledger will not take, withholds the result rather than
+  deferring or dropping the row.
 - B5's fork budget is the child's context window less compaction's own reserve;
   `fork: All` refuses `model`/`thinking` overrides rather than ignoring them.
 - B11 hand-back commits the child's uncommitted work on its branch before merging
@@ -1670,7 +1673,7 @@ Yi optimizes for the AA index and integrates natively with its harnesses. Clones
 the index; separate client).
 
 Below the index sits one zero-API tier that runs in the gate rather than on a budget: the
-behavior baseline (D75) replays pinned faux cassettes and locks their pass states shrink-only
+behavior baseline (D76) replays pinned faux cassettes and locks their pass states shrink-only
 in `just check`, so a behavior regression blocks a commit the way a code regression does,
 while every real-model run stays deliberate and ledgered in docs/eval-ledger.md.
 

@@ -1,5 +1,6 @@
 use std::error::Error;
 
+use yi_types::plan::TaskId;
 use yi_types::subagent::{ChildResult, Discovery};
 
 type TestResult = Result<(), Box<dyn Error>>;
@@ -25,13 +26,29 @@ fn a_result_round_trips_with_unknown_keys_intact() -> TestResult {
             .discoveries
             .first()
             .map(|row| row.violates_check_of.clone()),
-        Some(Some("t2".to_owned())),
+        Some(Some(TaskId("t2".to_owned()))),
         "the ancestor a discovery names is what the runtime re-checks"
     );
     assert_eq!(
         serde_json::to_string(&parsed)?,
         wire,
         "unknown keys and field order survive the seam a mining reader parses"
+    );
+    Ok(())
+}
+
+#[test]
+fn the_ancestor_id_is_a_bare_string_on_the_wire() -> TestResult {
+    let row = Discovery {
+        text: "the wall config is stale".to_owned(),
+        violates_check_of: Some(TaskId("t2".to_owned())),
+        fingerprint: "abc123".to_owned(),
+        extra: serde_json::Map::new(),
+    };
+    assert_eq!(
+        serde_json::to_string(&row)?,
+        r#"{"text":"the wall config is stale","violatesCheckOf":"t2","fingerprint":"abc123"}"#,
+        "typing the id must not wrap it: a mining reader parses violatesCheckOf as a string"
     );
     Ok(())
 }

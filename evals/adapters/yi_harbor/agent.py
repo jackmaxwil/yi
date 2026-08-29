@@ -23,8 +23,8 @@ from yi_usage import (
 REMOTE_BINARY = "/usr/local/bin/yi"
 # One static musl binary, one step: dodges pier's 360 s setup cap and keeps the
 # network allowlist at the provider host (15.3 lever 8).
-BINARY_URL_ENV = "EVAL_YI_BINARY_URL"
-BINARY_PATH_ENV = "EVAL_YI_BINARY"
+BINARY_URL_ENV = "EVAL_BINARY_URL"
+BINARY_PATH_ENV = "EVAL_BINARY"
 VERSION_CHECK = f"{REMOTE_BINARY} --version"
 
 

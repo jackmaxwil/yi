@@ -123,6 +123,44 @@ fn transitions_follow_the_table() -> TestResult {
 }
 
 #[test]
+fn a_checkless_task_is_not_admitted_to_running_unnamed() -> TestResult {
+    let (service, store, _delivered) = service_with_store();
+    service.create(&json!([{"title": "vibes", "acceptance": "looks right"}]))?;
+    let error = service
+        .update("t1", "running", None, None)
+        .err()
+        .ok_or("a task with no way to prove it done must not start silently")?;
+    assert!(
+        error.contains("no executable check"),
+        "the refusal must name what is missing: {error}"
+    );
+    let stored = yi_session::lock_session(&store).plan().ok_or("plan")?;
+    assert_eq!(
+        stored
+            .task(&yi_types::plan::TaskId("t1".to_owned()))
+            .map(|task| task.state.clone()),
+        Some(TaskState::Pending),
+        "a refused admission writes nothing"
+    );
+
+    service.update(
+        "t1",
+        "running",
+        None,
+        Some("ask: only the user can name the dialect"),
+    )?;
+    let stored = yi_session::lock_session(&store).plan().ok_or("plan")?;
+    assert_eq!(
+        stored
+            .task(&yi_types::plan::TaskId("t1".to_owned()))
+            .map(|task| task.state.clone()),
+        Some(TaskState::Running),
+        "an ask named as one is admitted"
+    );
+    Ok(())
+}
+
+#[test]
 fn failing_check_blocks_the_task_with_evidence() -> TestResult {
     let (service, store, _delivered) = service_with_store();
     service.create(&json!([
@@ -392,7 +430,9 @@ fn schema_gates_the_done_claim() -> TestResult {
     assert!(error.contains("evidence"), "{error}");
 
     // The rejection blocked the task; a fresh claim must come from a live state.
-    service.update("t1", "running", None, None)?;
+    // A schema is not an executable check, so admission is named, not skipped.
+    let named = Some("unmeasured leaf: the schema is the standard, no command runs");
+    service.update("t1", "running", None, named)?;
     let bad = json!({"count": 3});
     let error = service
         .update("t1", "done", Some(&bad), None)
@@ -400,7 +440,7 @@ fn schema_gates_the_done_claim() -> TestResult {
         .ok_or("mismatching evidence must fail")?;
     assert!(error.contains("missing required property rows"), "{error}");
 
-    service.update("t1", "running", None, None)?;
+    service.update("t1", "running", None, named)?;
     let good = json!({"rows": [1, 2]});
     let after = service.update("t1", "done", Some(&good), None)?;
     assert_eq!(after["finished"], json!(true));
@@ -644,6 +684,19 @@ fn split_payload(task_id: &str, subtasks: Value) -> Value {
     json!({"task_id": task_id, "subtasks": subtasks})
 }
 
+fn red_task_specs() -> Value {
+    json!([
+        {"title": "Parse config", "acceptance": "config tests pass", "check": "echo boom; exit 2"},
+        {"title": "Wire flag", "acceptance": "--dry-run accepted", "deps": ["t1"]},
+    ])
+}
+
+fn earn_a_split(service: &PlanService, task: &str) -> TestResult {
+    claim_again(service, task)?;
+    claim_again(service, task)?;
+    Ok(())
+}
+
 #[test]
 fn split_refusals_arrive_in_one_pass() -> TestResult {
     let (service, _store, _delivered) = service_with_store();
@@ -680,7 +733,8 @@ fn split_refusals_arrive_in_one_pass() -> TestResult {
 #[test]
 fn split_refuses_a_second_generation() -> TestResult {
     let (service, _store, _delivered) = service_with_store();
-    service.create(&two_task_specs())?;
+    service.create(&red_task_specs())?;
+    earn_a_split(&service, "t1")?;
     service.split(&split_payload(
         "t1",
         json!([{"title": "parse", "acceptance": "parses", "check": "true"}]),
@@ -702,7 +756,8 @@ fn split_refuses_a_second_generation() -> TestResult {
 #[test]
 fn a_valid_split_lowers_onto_the_dag() -> TestResult {
     let (service, store, _delivered) = service_with_store();
-    service.create(&two_task_specs())?;
+    service.create(&red_task_specs())?;
+    earn_a_split(&service, "t1")?;
     let before = yi_session::lock_session(&store).plan().ok_or("plan")?;
     let acceptance = before
         .task(&yi_types::plan::TaskId("t1".to_owned()))
@@ -755,6 +810,51 @@ fn a_valid_split_lowers_onto_the_dag() -> TestResult {
     assert!(
         checkless.deps.is_empty(),
         "the host writes the topology; siblings are unordered"
+    );
+    Ok(())
+}
+
+/// The inversion ADaPT and RSTD paid for: a plan that splits on turn one is
+/// upfront DAG compilation wearing a recipe, and its retry cost is the one the
+/// protocol exists to avoid.
+#[test]
+fn a_split_is_earned_by_a_red_streak_not_taken_on_turn_one() -> TestResult {
+    let (service, store, _delivered) = service_with_store();
+    service.create(&json!([
+        {"title": "impossible", "acceptance": "never true", "check": "echo boom; exit 2"},
+    ]))?;
+    let narrower = || {
+        split_payload(
+            "t1",
+            json!([{"title": "narrow it", "acceptance": "one case green", "check": "true"}]),
+        )
+    };
+
+    let error = service
+        .split(&narrower())
+        .err()
+        .ok_or("an unattempted task must not be split")?;
+    assert!(
+        error.contains("red 0 time") && error.contains("retry"),
+        "the refusal names the streak it read: {error}"
+    );
+    let stored = yi_session::lock_session(&store).plan().ok_or("plan")?;
+    assert_eq!(stored.tasks.len(), 1, "a refused split writes nothing");
+
+    claim_again(&service, "t1")?;
+    let error = service
+        .split(&narrower())
+        .err()
+        .ok_or("one red is a retry, not a restructure")?;
+    assert!(error.contains("red 1 time"), "{error}");
+
+    claim_again(&service, "t1")?;
+    service.split(&narrower())?;
+    let stored = yi_session::lock_session(&store).plan().ok_or("plan")?;
+    assert_eq!(
+        stored.tasks.len(),
+        2,
+        "the rung that demands a structural change admits the split"
     );
     Ok(())
 }

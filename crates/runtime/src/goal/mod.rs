@@ -1,5 +1,6 @@
 pub mod template;
 
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
@@ -69,12 +70,17 @@ pub(crate) fn run_check(check: &str, timeout_ms: u64) -> Result<(), String> {
 pub type StoreHandle = Arc<dyn Fn() -> Option<yi_session::SharedSession> + Send + Sync>;
 pub type DeliverFn = Arc<dyn Fn(AgentMessage, DeliveryMode) + Send + Sync>;
 
-pub fn task_check(plan: &yi_types::plan::Plan, id: &str) -> Option<String> {
+pub fn task_check(plan: &yi_types::plan::Plan, id: &yi_types::plan::TaskId) -> Option<String> {
     plan.tasks
         .iter()
-        .find(|task| task.id.as_str() == id)
+        .find(|task| &task.id == id)
         .and_then(|task| task.check.clone())
 }
+
+/// A discovery's check is one task's own gate, not the goal's integration gate:
+/// it is re-run per row and per completion attempt, so it gets a per-row budget
+/// rather than [`DEFAULT_CHECK_TIMEOUT_MS`].
+pub(crate) const DISCOVERY_CHECK_TIMEOUT_MS: u64 = 60_000;
 
 /// L5 ledger writer: a derived-HIGH discovery becomes a goal fact, so it
 /// survives compaction and resume and is still there to block completion.
@@ -327,34 +333,50 @@ impl GoalService {
         Ok(goal_json(&goal))
     }
 
-    /// L5 drain gate: every recorded row is re-adjudicated by re-running the
-    /// check it names. Green — or a check the plan no longer carries — drains
-    /// the row; red keeps it and returns the refusal naming every blocker.
+    /// L5 drain gate: every recorded row is re-adjudicated by re-running the check
+    /// it names. Green — or a check the plan no longer carries — drains the row; red
+    /// keeps it, and a plan that cannot be read refuses rather than draining.
     fn drain(&self, goal: &mut Goal) -> Option<String> {
         if goal.discoveries.is_empty() {
             return None;
         }
-        let plan = self.read_plan();
+        let Some(plan) = self.read_plan() else {
+            return Some(format!(
+                "cannot adjudicate {} recorded discovery row(s): no plan is readable, so a row that was confirmed red cannot be shown drained",
+                goal.discoveries.len()
+            ));
+        };
+        // One check run per named task, however many rows name it.
+        let mut adjudged: HashMap<yi_types::plan::TaskId, Option<String>> = HashMap::new();
         let mut kept = Vec::new();
         let mut blockers = Vec::new();
         for row in std::mem::take(&mut goal.discoveries) {
-            let named = row.violates_check_of.clone().and_then(|id| {
-                plan.as_ref()
-                    .and_then(|plan| task_check(plan, &id))
-                    .map(|check| (id, check))
-            });
+            let named = row
+                .violates_check_of
+                .clone()
+                .and_then(|id| task_check(&plan, &id).map(|check| (id, check)));
             let message = match named {
-                Some((id, check)) => match run_check(&check, DEFAULT_CHECK_TIMEOUT_MS) {
-                    Ok(()) => drained_message(&row, json!({ "drained": true, "task": id })),
-                    Err(evidence) => {
-                        blockers.push(format!(
-                            "undrained HIGH discovery {}: {}\nThe check of task {id} is still red:\n{evidence}",
-                            row.fingerprint, row.text
-                        ));
-                        kept.push(row);
-                        continue;
+                Some((id, check)) => {
+                    let evidence = adjudged
+                        .entry(id.clone())
+                        .or_insert_with(|| run_check(&check, DISCOVERY_CHECK_TIMEOUT_MS).err())
+                        .clone();
+                    match evidence {
+                        None => {
+                            drained_message(&row, json!({ "drained": true, "task": id.as_str() }))
+                        }
+                        Some(evidence) => {
+                            blockers.push(format!(
+                                "undrained HIGH discovery {}: {}\nThe check of task {} is still red:\n{evidence}",
+                                row.fingerprint,
+                                row.text,
+                                id.as_str()
+                            ));
+                            kept.push(row);
+                            continue;
+                        }
                     }
-                },
+                }
                 None => drained_message(
                     &row,
                     json!({ "drained": true, "reason": "the check it named is no longer in the plan" }),

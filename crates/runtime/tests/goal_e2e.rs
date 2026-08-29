@@ -342,10 +342,14 @@ fn check_gate_timeout_rejects_with_the_timeout_named() -> TestResult {
 }
 
 fn seed_plan(store: &yi_session::SharedSession, check: &str) -> TestResult {
+    seed_plan_of(store, "t1", check)
+}
+
+fn seed_plan_of(store: &yi_session::SharedSession, id: &str, check: &str) -> TestResult {
     yi_session::lock_session(store).set_plan(yi_types::plan::Plan {
         version: yi_types::plan::PlanVersion(1),
         tasks: vec![yi_types::plan::Task {
-            id: yi_types::plan::TaskId("t1".to_owned()),
+            id: yi_types::plan::TaskId(id.to_owned()),
             title: "hold the invariant".to_owned(),
             acceptance: "the check is green".to_owned(),
             schema: None,
@@ -363,12 +367,40 @@ fn seed_plan(store: &yi_session::SharedSession, check: &str) -> TestResult {
     Ok(())
 }
 
+/// Rows are written by a child, and the check they name is a shell command:
+/// adjudicating per row lets a ledger multiply one command by its row count.
+#[test]
+fn rows_naming_one_task_adjudicate_on_a_single_check_run() -> TestResult {
+    let dir = std::env::temp_dir().join(format!("yi-drain-once-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir)?;
+    let tally = dir.join("runs");
+    let (service, store, _delivered) = service_with_store();
+    service.create("ship the fix", None, None, None)?;
+    seed_plan(&store, &format!("echo run >> {}", tally.display()))?;
+    let handle = store_handle(&store);
+    for fingerprint in ["aaa", "bbb", "ccc"] {
+        let mut row = high_row();
+        row.fingerprint = fingerprint.to_owned();
+        record_discovery(&handle, &row)?;
+    }
+
+    service.update("complete")?;
+    assert_eq!(
+        std::fs::read_to_string(&tally)?.lines().count(),
+        1,
+        "three rows naming t1 must cost one check run, not one each"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+    Ok(())
+}
+
 fn high_row() -> Discovery {
     let mut extra = serde_json::Map::new();
     extra.insert("source".to_owned(), serde_json::json!("child finder"));
     Discovery {
         text: "the retry loop double-counts".to_owned(),
-        violates_check_of: Some("t1".to_owned()),
+        violates_check_of: Some(yi_types::plan::TaskId("t1".to_owned())),
         fingerprint: "aaa".to_owned(),
         extra,
     }
@@ -447,7 +479,10 @@ fn an_undrained_discovery_refuses_completion_until_its_check_goes_green() -> Tes
 fn a_row_whose_check_left_the_plan_drains_instead_of_wedging_the_goal() -> TestResult {
     let (service, store, delivered) = service_with_store();
     service.create("ship the fix", None, None, None)?;
+    seed_plan(&store, "exit 4")?;
     record_discovery(&store_handle(&store), &high_row())?;
+    // The plan the row named is replaced by one that no longer carries t1.
+    seed_plan_of(&store, "t9", "true")?;
     service.update("complete")?;
     let stored = yi_session::lock_session(&store).goal().ok_or("goal")?;
     assert_eq!(stored.status, GoalStatus::Complete);
@@ -470,6 +505,44 @@ fn a_row_whose_check_left_the_plan_drains_instead_of_wedging_the_goal() -> TestR
             "the check it named is no longer in the plan"
         )],
         "an unresolvable row is drained with its reason, never silently dropped: {reasons:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_recorded_row_survives_a_plan_the_gate_cannot_read() -> TestResult {
+    let (service, store, delivered) = service_with_store();
+    service.create("ship the fix", None, None, None)?;
+    record_discovery(&store_handle(&store), &high_row())?;
+
+    let error = service.update("complete").err().ok_or("must refuse")?;
+    assert!(
+        error.contains("cannot adjudicate 1 recorded discovery row"),
+        "an unreadable plan is named as an adjudication failure, not treated as a retired check: {error}"
+    );
+    let stored = yi_session::lock_session(&store).goal().ok_or("goal")?;
+    assert_eq!(
+        stored.status,
+        GoalStatus::Active,
+        "a refused claim stays open"
+    );
+    assert_eq!(
+        stored.discoveries.len(),
+        1,
+        "a row confirmed red at record time is never drained by a reader that cannot see the plan"
+    );
+    let drained: Vec<AgentMessage> = delivered
+        .lock()
+        .map_err(|error| error.to_string())?
+        .iter()
+        .filter(|message| {
+            matches!(message, AgentMessage::Custom { custom_type, .. } if custom_type == "discovery")
+        })
+        .cloned()
+        .collect();
+    assert!(
+        drained.is_empty(),
+        "nothing is reported as drained when nothing could be adjudicated: {drained:?}"
     );
     Ok(())
 }
