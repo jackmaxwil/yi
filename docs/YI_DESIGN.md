@@ -876,6 +876,11 @@ sequenceDiagram
   keeps reads open (expand-only needs the standard readable); `deny_read` is the
   sampled-instrument opt-in and implies write-deny. Not a sandbox: a command that
   names no denied path runs.
+- **B16 scoped protocol child (0.69.0, D76)** | `rlm.run` takes two more additive kwargs:
+  `context_keys` names the kernel variables that are the child's whole view of the parent
+  namespace (serialized kernel-side — a host-side read would queue behind the cell awaiting
+  the spawn), and `check` makes it a protocol child that owes a `ChildResult` whose
+  `discoveries` field is mandatory, withheld while the check is red and fatal when malformed.
 - B5's fork budget is the child's context window less compaction's own reserve;
   `fork: All` refuses `model`/`thinking` overrides rather than ignoring them.
 - B11 hand-back commits the child's uncommitted work on its branch before merging
@@ -1663,6 +1668,11 @@ Yi optimizes for the AA index and integrates natively with its harnesses. Clones
 `ref/benchmarks/`: `harbor` (the harness), `terminal-bench-2-1` (dataset), `SWE-Atlas`
 (dataset), `pier` (datacurve's harbor fork, runs DeepSWE), `ARC-AGI-3-Agents` (unrelated to
 the index; separate client).
+
+Below the index sits one zero-API tier that runs in the gate rather than on a budget: the
+behavior baseline (D75) replays pinned faux cassettes and locks their pass states shrink-only
+in `just check`, so a behavior regression blocks a commit the way a code regression does,
+while every real-model run stays deliberate and ledgered in docs/eval-ledger.md.
 
 ### 15.1 Shape of the target
 

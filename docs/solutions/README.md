@@ -66,5 +66,8 @@ when it changes rather than editing them by hand.
 - [D69](adr/d69.md) - the dist profile optimises for size at every level
 - [D70](adr/d70.md) - binary_size is local-only too, because its baseline names a target
 - [D71](adr/d71.md) - Yi speaks MCP itself
+- [D74](adr/d74.md) - plan tasks carry an executable acceptance check
+- [D75](adr/d75.md) - Yi's behavior answers to a shrink-only ratchet
+- [D76](adr/d76.md) - long-horizon decomposition is a deterministic protocol
 
-D36-D51 have no ADR yet; ARCHITECTURE.md is the record for those rows.
+D36-D51, D72 and D73 have no ADR yet; ARCHITECTURE.md is the record for those rows.
