@@ -1,11 +1,29 @@
 #!/usr/bin/env bash
-# Full tier, plus the release gate when the push carries a version tag. git
-# feeds the refs being pushed on stdin as "<local ref> <sha> <remote ref> <sha>".
+# Full tier, plus the release gate when the push carries a version tag. git feeds
+# the refs being pushed on stdin as "<local ref> <local sha> <remote ref> <remote sha>".
 set -euo pipefail
 cd "$(git rev-parse --show-toplevel)"
 
+zero='0000000000000000000000000000000000000000'
 tag=""
-while read -r local_ref _ _ _; do
+while read -r local_ref local_sha remote_ref remote_sha; do
+  case "$remote_ref" in
+    refs/heads/main)
+      if [ "$local_sha" = "$zero" ]; then
+        echo "pre-push: refusing to delete main"
+        exit 1
+      fi
+      # A rewrite of published history is the shape that eats other people's
+      # work. An ancestor check catches it without asking git whether --force
+      # was typed, which it does not tell a hook.
+      if [ "$remote_sha" != "$zero" ] && ! git merge-base --is-ancestor "$remote_sha" "$local_sha"; then
+        echo "pre-push: refusing a non-fast-forward push to main"
+        echo "  remote $remote_sha is not an ancestor of $local_sha"
+        echo "  reconcile first: git fetch && git rebase origin/main"
+        exit 1
+      fi
+      ;;
+  esac
   case "$local_ref" in
     refs/tags/v*) tag="${local_ref#refs/tags/}" ;;
   esac

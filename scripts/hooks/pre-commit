@@ -3,4 +3,13 @@
 # a hook slower than a couple of seconds is a hook people pass --no-verify to.
 set -euo pipefail
 cd "$(git rev-parse --show-toplevel)"
+
+# A merge lands on main by definition, so it is the one commit shape allowed.
+branch=$(git symbolic-ref --quiet --short HEAD || echo "")
+if [ "$branch" = main ] && [ ! -e "$(git rev-parse --git-dir)/MERGE_HEAD" ]; then
+  echo "pre-commit: refusing a direct commit on main"
+  echo "  branch first: git switch -c <name>"
+  exit 1
+fi
+
 exec just precommit
