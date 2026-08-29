@@ -1,0 +1,15 @@
+[package]
+name = "yi-orb"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+miniz_oxide = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }

@@ -4,6 +4,7 @@ members = [
   "crates/types",
   "crates/loop",
   "crates/ai",
+  "crates/orb",
   "crates/session",
   "crates/context",
   "crates/permission",
@@ -26,6 +27,7 @@ rust-version = "1.94"
 yi-types = { path = "crates/types" }
 yi-loop = { path = "crates/loop" }
 yi-ai = { path = "crates/ai" }
+yi-orb = { path = "crates/orb" }
 yi-session = { path = "crates/session" }
 yi-context = { path = "crates/context" }
 yi-permission = { path = "crates/permission" }

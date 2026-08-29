@@ -1,6 +1,6 @@
 use std::io::Write;
 
-use super::core::OrbFrame;
+use crate::core::OrbFrame;
 
 /// Kitty graphics protocol support: Ghostty and kitty advertise via TERM or
 /// KITTY_WINDOW_ID. Everything else falls back to the plain spinner line.

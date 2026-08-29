@@ -20,10 +20,6 @@ impl FrameScheduler {
         self.dirty = true;
     }
 
-    pub fn is_dirty(&self) -> bool {
-        self.dirty
-    }
-
     /// Dirty, past the 60 fps ceiling, and past the adaptive floor
     /// `last_start + min(2 × last_cost, 200 ms)`.
     pub fn should_draw(&self, now: Instant) -> bool {

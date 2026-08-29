@@ -313,13 +313,6 @@ impl Keymap {
         None
     }
 
-    pub fn has_sequence_starting_with(&self, prefix: &SingleKey) -> bool {
-        self.map.keys().any(|ki| match ki {
-            KeyInput::Sequence(keys) => keys.first() == Some(prefix),
-            KeyInput::Single(_) => false,
-        })
-    }
-
     pub fn apply_overrides<'a, I>(&mut self, overrides: I) -> Result<(), String>
     where
         I: IntoIterator<Item = (&'a str, &'a str)>,

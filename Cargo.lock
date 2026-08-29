@@ -2123,6 +2123,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "yi-orb"
+version = "0.1.0"
+dependencies = [
+ "miniz_oxide",
+ "serde_json",
+]
+
+[[package]]
 name = "yi-permission"
 version = "0.1.0"
 dependencies = [
@@ -2175,7 +2183,6 @@ name = "yi-tui"
 version = "0.1.0"
 dependencies = [
  "insta",
- "miniz_oxide",
  "pulldown-cmark",
  "ratatui",
  "serde_json",
@@ -2183,6 +2190,7 @@ dependencies = [
  "tui-textarea",
  "unicode-width 0.2.0",
  "vt100",
+ "yi-orb",
  "yi-runtime",
  "yi-types",
 ]

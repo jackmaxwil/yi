@@ -26,10 +26,6 @@ const FIELD_GAP: usize = 2;
 const MIN_VALUE_WIDTH: usize = 3;
 const MIN_ALIGNED_COMPACT_VALUE_WIDTH: usize = 12;
 const MIN_ALIGNED_EXPANSIVE_VALUE_WIDTH: usize = 24;
-const MIN_SCANNABLE_NARRATIVE_WIDTH: usize = 12;
-const MIN_SCANNABLE_TOKEN_HEAVY_WIDTH: usize = 12;
-const CRAMPED_EXPANSIVE_CELL_LINES: usize = 4;
-const CATASTROPHIC_NARRATIVE_CELL_LINES: usize = 7;
 const STACKED_VALUE_INDENT: usize = 2;
 
 #[derive(Debug, Clone, Default)]
@@ -373,71 +369,6 @@ fn render_row(
     out
 }
 
-fn expansive_cells_are_starved(
-    row: &[TableCell],
-    widths: &[usize],
-    metrics: &[ColumnMetrics],
-) -> bool {
-    let expansive: Vec<(ColumnKind, usize, usize)> = row
-        .iter()
-        .zip(widths)
-        .zip(metrics)
-        .filter(|&((_, _), m)| m.kind != ColumnKind::Compact)
-        .map(|((cell, width), m)| (m.kind, *width, wrap_cell(cell, *width).len()))
-        .collect();
-    expansive
-        .iter()
-        .filter(|(_, _, height)| *height >= CRAMPED_EXPANSIVE_CELL_LINES)
-        .count()
-        >= 2
-        || expansive.iter().any(|(kind, width, height)| {
-            *kind == ColumnKind::Narrative
-                && *width < MIN_SCANNABLE_NARRATIVE_WIDTH
-                && *height >= CATASTROPHIC_NARRATIVE_CELL_LINES
-        })
-}
-
-/// Switch to key/value records once enough rows hold values the grid can no
-/// longer present in useful chunks.
-fn should_render_records(
-    rows: &[Vec<TableCell>],
-    widths: &[usize],
-    metrics: &[ColumnMetrics],
-) -> bool {
-    if rows.is_empty() {
-        return false;
-    }
-    let affected = rows
-        .iter()
-        .filter(|row| {
-            let fragmented = row
-                .iter()
-                .zip(widths)
-                .zip(metrics)
-                .any(|((cell, width), m)| {
-                    let has_fragmented_token = cell
-                        .plain_text()
-                        .split_whitespace()
-                        .any(|token| token.width() > *width);
-                    match m.kind {
-                        ColumnKind::Compact => has_fragmented_token,
-                        ColumnKind::TokenHeavy => {
-                            *width < MIN_SCANNABLE_TOKEN_HEAVY_WIDTH && has_fragmented_token
-                        }
-                        ColumnKind::Narrative => false,
-                    }
-                });
-            fragmented || expansive_cells_are_starved(row, widths, metrics)
-        })
-        .count();
-    let threshold = if rows.len() == 1 {
-        1
-    } else {
-        2.max(rows.len().div_ceil(3))
-    };
-    affected >= threshold
-}
-
 fn render_records(
     header: &[TableCell],
     rows: &[Vec<TableCell>],
@@ -549,7 +480,7 @@ pub fn render(
 
     let mut out = Vec::new();
     match compute_column_widths(&metrics, content_budget) {
-        Some(widths) if !should_render_records(&rows, &widths, &metrics) => {
+        Some(widths) => {
             out.push(rule(&widths, BOX_TOP, separator_style));
             out.extend(render_row(
                 &header,

@@ -35,23 +35,6 @@ impl History {
         self.cells.push_back(cell);
     }
 
-    /// Called with the cap the rebuild uses, so the retained set tracks what is
-    /// replayable instead of growing without bound.
-    pub fn trim_to_rows(&mut self, width: usize, theme: &Theme, mode: TranscriptMode, cap: usize) {
-        let mut rows = 0usize;
-        let mut keep = 0usize;
-        for cell in self.cells.iter().rev() {
-            rows = rows.saturating_add(cell.lines(width, theme, mode, 0).len());
-            keep = keep.saturating_add(1);
-            if rows > cap {
-                break;
-            }
-        }
-        while self.cells.len() > keep {
-            self.cells.pop_front();
-        }
-    }
-
     /// Newest-first until the row cap is exceeded. The cap is enforced here,
     /// while rendering from source, never after writing to the terminal: rows the
     /// terminal will not retain are rows nobody can scroll back to.

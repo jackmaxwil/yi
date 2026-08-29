@@ -20,7 +20,8 @@ use crate::frame::FrameScheduler;
 use crate::hud::{BoardCard, CardKind, CardStatus, GoalView, HudInput};
 use crate::input::handle_terminal_event;
 use crate::keymap::{Keymap, default_keymap};
-use crate::orb::{self, OrbState};
+use crate::orb;
+use yi_orb::OrbState;
 use crate::popup::ListPopup;
 use crate::term;
 use crate::transcript::{arg_summary, intent_of, preview_lines, text_of, thinking_of, user_text};
@@ -412,13 +413,6 @@ impl App {
         self.live_thought.clear();
         self.live_cut = 0;
         self.live_tools.clear();
-    }
-
-    pub fn is_running_probe(&self) -> bool {
-        self.running
-    }
-    pub fn esc_armed_probe(&self) -> bool {
-        self.esc_armed_at.is_some()
     }
 
     pub fn take_title(&mut self) -> Option<String> {
@@ -949,7 +943,7 @@ pub fn run_tui(
 
     let mut app = App::new(options, Theme::new(tier, dark), keymap, usize::from(cols));
     app.set_rows(usize::from(rows));
-    app.kitty = orb::kitty::supported();
+    app.kitty = yi_orb::kitty::supported();
 
     replay_session(&mut app, &session);
     if let Some(prompt) = app.options.initial_prompt.clone() {
@@ -1040,7 +1034,7 @@ pub fn run_tui(
     }
 
     if orb_tick.shown {
-        let _ = orb::kitty::delete(terminal.backend_mut());
+        let _ = yi_orb::kitty::delete(terminal.backend_mut());
     }
     let _ = cmd_tx.send(Command::Shutdown);
     drop(terminal);

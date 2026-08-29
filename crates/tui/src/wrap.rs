@@ -144,10 +144,3 @@ pub fn wrap_line(line: &Line<'_>, width: usize, subsequent_indent: &str) -> Vec<
         })
         .collect()
 }
-
-pub fn wrap_lines(lines: &[Line<'_>], width: usize, subsequent_indent: &str) -> Vec<Line<'static>> {
-    lines
-        .iter()
-        .flat_map(|line| wrap_line(line, width, subsequent_indent))
-        .collect()
-}
