@@ -124,8 +124,8 @@ fn draw_frame<B>(
             app.mode,
             app.live_thought_cut == 0,
         );
-        // Only the live tail pulses; the same cell committed to scrollback keeps
-        // the static `∴`, which is the one frame it could ever show there.
+        // The label pulses only while it is still live and still here: past the
+        // first committed slice the tail has no header and this is a no-op.
         pulse_thought_header(&mut rendered, spinner);
         live_lines.extend(live_tail(rendered, app.rows));
     }

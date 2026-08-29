@@ -1239,6 +1239,18 @@ fn one_unbroken_paragraph_still_reaches_scrollback() -> TestResult {
         .filter(|line| line.chars().count() < 60)
         .collect();
     assert!(short.is_empty(), "the seams wrap flush: {short:?}");
+    // The forced cut suppresses the blank line between its own slices, but the
+    // one that opens the answer is a block break and keeps its air.
+    let opens = committed
+        .iter()
+        .position(|line| line.starts_with('\u{2022}'))
+        .ok_or("no prose block")?;
+    assert_eq!(
+        committed.get(opens.wrapping_sub(1)).map(String::as_str),
+        Some(""),
+        "the answer opens under a blank line: {:?}",
+        committed.get(opens.saturating_sub(2)..=opens)
+    );
     Ok(())
 }
 

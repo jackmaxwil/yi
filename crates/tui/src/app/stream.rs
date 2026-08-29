@@ -18,9 +18,9 @@ fn overflow_cut(
     width: usize,
     rows: impl Fn(&str) -> usize,
 ) -> Option<usize> {
-    // Two O(1) refusals before the render, because this runs on every delta
-    // while the live region renders once a frame: text that can fill neither
-    // the budget's rows nor its columns cannot overrun it.
+    // Two scans before the render, which is the expensive half and runs here on
+    // every delta rather than once a frame: text that can fill neither the
+    // budget's rows nor its columns cannot overrun it.
     if tail.lines().count().max(tail.len() / width.max(1)) <= budget {
         return None;
     }
@@ -125,7 +125,8 @@ impl App {
     }
 
     /// `spaced` is false for a forced cut: it lands inside a paragraph, where a
-    /// blank line would read as the break the text does not have.
+    /// blank line would read as the break the text does not have — except when
+    /// it opens the block, which is a break and needs the air.
     fn commit_prose(&mut self, cut: usize, spaced: bool) {
         if cut <= self.live_cut {
             return;
@@ -143,7 +144,7 @@ impl App {
             &self.theme,
         );
         if !rendered.is_empty() {
-            if spaced {
+            if spaced || first {
                 self.pending_commit.push(Line::default());
             }
             self.pending_commit
