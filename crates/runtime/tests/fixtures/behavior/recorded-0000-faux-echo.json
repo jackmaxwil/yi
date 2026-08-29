@@ -1,0 +1,28 @@
+{
+  "id": "recorded-0000-faux-echo",
+  "description": "a real offline faux run, recorded post hoc off its own session file and replayed: the cassette carries no credential because the planted api_key was masked at record time, before the artifact reached the repository",
+  "provenance": {
+    "kind": "recorded",
+    "session": "faux-echo.jsonl"
+  },
+  "turns": [
+    {
+      "user": "record this cassette needle CASSETTE-NEEDLE-7 and stop\napi_key= [MASKED]",
+      "responses": [
+        {
+          "text": "faux: record this cassette needle CASSETTE-NEEDLE-7 and stop\napi_key= [MASKED]"
+        }
+      ]
+    }
+  ],
+  "assertions": [
+    {
+      "kind": "finalTextContains",
+      "needle": "faux:"
+    },
+    {
+      "kind": "projectionLacks",
+      "needle": "sk-fake-3QpZr7Lm2Xv9Tb4Nc8Kd1Wq6"
+    }
+  ]
+}
