@@ -183,25 +183,45 @@ fn result_text(result: &ToolResult) -> String {
     blocks_text(&result.content)
 }
 
+fn tool_call_block(call: &Value) -> Result<Content, Fatal> {
+    let arguments = call
+        .get("arguments")
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+    Ok(faux_tool_call(
+        &need_str(call, "id")?,
+        &need_str(call, "name")?,
+        arguments,
+    ))
+}
+
+/// A recorded assistant entry interleaves commentary with parallel calls in one
+/// message, so `toolCalls` carries an array beside an optional `text`; the older
+/// singular `toolCall` spelling keeps the hand-written cassettes valid.
 fn response_message(spec: &Value) -> Result<AgentMessage, Fatal> {
-    let mut message = match spec.get("toolCall") {
-        Some(call) => {
-            let arguments = call
-                .get("arguments")
-                .and_then(Value::as_object)
-                .cloned()
-                .unwrap_or_default();
-            faux_assistant_message(
-                vec![faux_tool_call(
-                    &need_str(call, "id")?,
-                    &need_str(call, "name")?,
-                    arguments,
-                )],
-                StopReason::ToolUse,
-            )
-        }
-        None => faux_assistant_message(vec![faux_text(&need_str(spec, "text")?)], StopReason::Stop),
+    let mut calls = Vec::new();
+    if let Some(call) = spec.get("toolCall") {
+        calls.push(tool_call_block(call)?);
+    }
+    for call in items(spec, "toolCalls") {
+        calls.push(tool_call_block(call)?);
+    }
+    let text = match (spec.get("text"), calls.is_empty()) {
+        (Some(_), _) | (None, true) => need_str(spec, "text")?,
+        (None, false) => String::new(),
     };
+    let mut blocks = Vec::new();
+    if !text.is_empty() || calls.is_empty() {
+        blocks.push(faux_text(&text));
+    }
+    let stop = if calls.is_empty() {
+        StopReason::Stop
+    } else {
+        StopReason::ToolUse
+    };
+    blocks.extend(calls);
+    let mut message = faux_assistant_message(blocks, stop);
     if let AgentMessage::Assistant { usage, .. } = &mut message
         && let Some(total) = spec.get("usageTotal").and_then(Value::as_i64)
     {

@@ -15,12 +15,18 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT / "adapters"))
+sys.path.insert(0, str(ROOT))
 
+import record  # noqa: E402
 import yi_usage  # noqa: E402
 
 FIXTURES = ROOT / "fixtures"
 EVENTS = FIXTURES / "ask_events.jsonl"
 SESSIONS = FIXTURES / "session"
+RECORDED = FIXTURES / "session-record"
+
+# The fake credential planted in the faux-echo prompt before it was recorded.
+PLANT = "sk-fake-3QpZr7Lm2Xv9Tb4Nc8Kd1Wq6"
 
 # A prompt that would break naive quoting: quotes, a pipe, a variable, newlines,
 # and multi-KB length (E7).
@@ -102,12 +108,96 @@ def check_fingerprint():
     assert first != other, "a different model is a different config"
 
 
+def check_record():
+    """J3: a recorder that regroups turns, reorders tool-call arguments,
+    reorders stub results or invents zero usage writes a cassette that replays
+    a session which never happened."""
+    cassette, notes = record.record(RECORDED / "tool-turn.jsonl", "t", "d")
+    assert len(cassette["turns"]) == 1, cassette["turns"]
+    turn = cassette["turns"][0]
+    assert turn["user"].startswith("run the bash tool twice"), turn["user"]
+    assert len(turn["responses"]) == 2, turn["responses"]
+
+    call, closing = turn["responses"]
+    assert call["text"] == "running the tool", call
+    assert [c["id"] for c in call["toolCalls"]] == ["call-1", "call-2"], call
+    arguments = call["toolCalls"][0]["arguments"]
+    assert list(arguments) == ["zeta", "alpha", "nested"], list(arguments)
+    assert list(arguments["nested"]) == ["b", "a"], list(arguments["nested"])
+    assert arguments["nested"]["a"] == [1, None, True], arguments
+    assert (call["usageTotal"], call["usageInput"]) == (10750, 1200), call
+    assert (closing["usageTotal"], closing["usageInput"]) == (12112, 1400), closing
+    assert "toolCalls" not in closing, closing
+
+    results = cassette["stubs"][0]["results"]
+    assert cassette["stubs"][0]["name"] == "bash", cassette["stubs"]
+    assert [r["text"] for r in results] == ["exit 0", "exit 1: false"], results
+    assert [r["isError"] for r in results] == [False, True], results
+    assert any("thinking" in note for note in notes), notes
+
+
+def check_record_redacts():
+    """J3 §10: a credential that survives recording ships into a committed
+    cassette, and a $HOME path makes the artifact machine-specific."""
+    cassette, notes = record.record(RECORDED / "faux-echo.jsonl", "t", "d")
+    blob = json.dumps(cassette)
+    assert PLANT not in blob, "planted secret survived recording"
+    assert "[MASKED]" in blob, "the plant was not masked; the fixture proves nothing"
+    assert "CASSETTE-NEEDLE-7" in blob, "redaction swallowed the prompt's own content"
+    home = str(Path.home())
+    assert home not in blob, f"recorded cassette carries {home}"
+    assert any("custom" in note for note in notes), notes
+
+
+def check_record_refuses():
+    """J3: unrepresentable input is fatal, never a silent skip — a dropped
+    entry would emit a cassette that replays a session that never happened."""
+    header = '{"kind":"header","version":4,"id":"x","createdAt":1,"cwd":"/tmp"}'
+    user = (
+        '{"kind":"entry","lane":"main","type":"message","id":"e1","seq":1,'
+        '"message":{"role":"user","content":"hi","timestamp":1}}'
+    )
+    unrepresentable = {
+        "compaction rewrites the context": (
+            '{"kind":"entry","lane":"main","type":"compaction","id":"e2","seq":2,'
+            '"summary":"gone","tokensBefore":9}'
+        ),
+        "a lane the cassette cannot replay": (
+            '{"kind":"entry","lane":"thread","type":"message","id":"e2","seq":2,'
+            '"message":{"role":"user","content":"hi","timestamp":1}}'
+        ),
+        "a role the schema lacks": (
+            '{"kind":"entry","lane":"main","type":"message","id":"e2","seq":2,'
+            '"message":{"role":"compactionSummary","summary":"s","timestamp":1}}'
+        ),
+        "a corrupt line": "{not json",
+    }
+    with tempfile.TemporaryDirectory() as directory:
+        path = Path(directory) / "s.jsonl"
+        for reason, line in unrepresentable.items():
+            path.write_text("\n".join((header, user, line)) + "\n")
+            try:
+                record.record(path, "t", "d")
+            except record.Unrepresentable:
+                continue
+            raise AssertionError(f"{reason}: recorded instead of refusing")
+        path.write_text(header + "\n")
+        try:
+            record.record(path, "t", "d")
+        except record.Unrepresentable:
+            return
+        raise AssertionError("a session with no user message must refuse")
+
+
 CHECKS = (
     check_command,
     check_usage,
     check_no_assistant_rows,
     check_session_extras,
     check_fingerprint,
+    check_record,
+    check_record_redacts,
+    check_record_refuses,
 )
 
 
