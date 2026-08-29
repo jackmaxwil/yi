@@ -19,8 +19,8 @@ test-nextest:
 build-dist:
     cargo build --profile dist -p yi-cli
 
-# Depends on build-dist: binary_size and startup both read target/dist/yi, and
-# a gate that measures whatever stale binary happens to be there measures noise.
+# Depends on build-dist: binary_size and startup read target/dist/yi, and a
+# gate measuring whatever stale binary is lying around measures nothing.
 guardrails: build-dist
     bash scripts/guardrails/check_guardrails.sh
 
@@ -31,6 +31,20 @@ guardrails-fast:
 check: fmt-check clippy guardrails test
 
 # --- Local CI: three tiers, run by the hooks in scripts/hooks ----------------
+
+# Every worktree with its branch and dirt, and the stash they all share.
+worktrees:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    git worktree list --porcelain | sed -n 's/^worktree //p' | while read -r path; do
+      branch=$(git -C "$path" symbolic-ref --quiet --short HEAD || echo "(detached)")
+      count=$(git -C "$path" status --porcelain | wc -l | tr -d ' ')
+      [ "$count" = 0 ] && state=clean || state="$count dirty"
+      printf '%-34s %-12s %s\n' "$branch" "$state" "$path"
+    done
+    # The stash stack is one stack for every worktree, which is why `git stash
+    # pop` here can take a concurrent session's work.
+    echo "stash: $(git stash list | wc -l | tr -d ' ') entries, shared by all of the above"
 
 # Point git at the versioned hooks (per-repo, shared by every worktree).
 install-hooks:
@@ -67,7 +81,29 @@ prerelease version:
     just package "{{version}}"
     echo "prerelease {{version}}: ok"
 
-# One release tarball for the host, then the smoke test on it.
+# Tier 4, after a merge: the suite against the profile that ships, unwind forced.
+postmerge:
+    CARGO_PROFILE_DIST_PANIC=unwind cargo test --workspace --profile dist
+
+# Upload an already-built, signed release to Forgejo (release-scoped token).
+publish version:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    : "${FORGEJO_URL:?set FORGEJO_URL (e.g. https://code.example.org)}"
+    : "${FORGEJO_REPO:?set FORGEJO_REPO (e.g. jack/yi)}"
+    : "${FORGEJO_TOKEN:?set FORGEJO_TOKEN (a release-scoped token)}"
+    api="$FORGEJO_URL/api/v1/repos/$FORGEJO_REPO/releases"
+    auth="Authorization: token $FORGEJO_TOKEN"
+    assets=(target/package/yi-{{version}}-*.tar.gz*)
+    [ -e "${assets[0]}" ] || { echo "nothing built for {{version}} -- run: just prerelease {{version}}"; exit 1; }
+    id=$(curl -fsS -X POST "$api" -H "$auth" -H 'Content-Type: application/json'       -d "{"tag_name":"v{{version}}","name":"v{{version}}"}" | sed -n 's/.*"id":\([0-9]*\).*//p' | head -1)
+    [ -n "$id" ] || { echo "no release id came back"; exit 1; }
+    for asset in "${assets[@]}"; do
+      curl -fsS -X POST "$api/$id/assets?name=$(basename "$asset")" -H "$auth"         -F "attachment=@$asset" > /dev/null
+      echo "uploaded $(basename "$asset")"
+    done
+
+# One release tarball for the host, signed, then the smoke test on it.
 package version target=`rustc -vV | sed -n 's|host: ||p'`:
     cargo build --profile dist -p yi-cli --target {{target}}
     scripts/package.sh {{version}} {{target}}
