@@ -213,6 +213,7 @@ fn subagent_task_cell_focus_and_back() -> TestResult {
         parent_messages: Arc::new(Vec::new),
         report: Arc::new(|_message| {}),
         attribute: Arc::new(|_usage| {}),
+        store: Arc::new(|| None),
     }));
     let mut app = app();
     runtime.block_on(async {
@@ -904,6 +905,7 @@ fn the_status_cost_sums_the_session_not_the_last_turn() -> TestResult {
         parent_messages: Arc::new(Vec::new),
         report: Arc::new(|_message| {}),
         attribute: Arc::new(|_usage| {}),
+        store: Arc::new(|| None),
     }));
     let (_ask_tx, ask_rx) = std::sync::mpsc::channel();
     let script = yi_tui::parse_script(

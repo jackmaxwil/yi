@@ -57,6 +57,26 @@ pub struct Task {
     pub extra: Map<String, Value>,
 }
 
+/// One subtask of a split proposal — the only surface on which the model
+/// shapes topology; ids, deps, and state are written by the host.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SubtaskSpec {
+    pub title: String,
+    pub acceptance: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub check: Option<String>,
+    /// State keys this child reads; a key only a sibling writes is a
+    /// read-before-write hazard, since siblings carry no ordering.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub reads: Vec<String>,
+    /// Declared write set; disjointness across siblings gates parallelism.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub writes: Vec<String>,
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
 /// One per session, stored as a fact beside the header like the goal, so
 /// compaction cannot lose it. A plan without an Active goal is inert
 /// structure; the goal is what arms unattended continuation.

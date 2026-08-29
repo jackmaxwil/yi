@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import sys
 import types
 from dataclasses import dataclass
@@ -180,6 +181,35 @@ async def host_request(request_type: str, payload: dict[str, Any] | None = None)
         comm.close()
 
 
+CONTEXT_VALUE_CAP = 4096
+
+
+def _resolve_context(kwargs: dict[str, Any]) -> dict[str, Any]:
+    """Serialize the named kernel variables here; the host cannot read them.
+
+    A host-side read would be an execute_request queued behind the very cell
+    awaiting this spawn, so the scope is resolved in the namespace that owns
+    it. A name that is not bound raises before any host round trip.
+    """
+    keys = kwargs.pop("context_keys", None)
+    if keys is None:
+        return kwargs
+    if isinstance(keys, str) or not all(isinstance(key, str) for key in keys):
+        raise TypeError("context_keys must be a list of variable names")
+    namespace = get_ipython().user_ns if get_ipython is not None else {}
+    context: dict[str, str] = {}
+    for key in keys:
+        if key not in namespace:
+            raise KeyError(f"context_keys names {key!r}, which is not bound in this kernel")
+        try:
+            text = json.dumps(namespace[key], default=repr)
+        except Exception:
+            text = repr(namespace[key])
+        context[key] = text[:CONTEXT_VALUE_CAP]
+    kwargs["context"] = context
+    return kwargs
+
+
 async def run(prompt: str, **kwargs: Any) -> RLMSpawnHandle:
     """Spawn a recursive Yi child and return once its task is admitted.
 
@@ -193,9 +223,14 @@ async def run(prompt: str, **kwargs: Any) -> RLMSpawnHandle:
     ``merge_worktree`` or ``discard_worktree``.
     ``deny_write`` (and ``deny_read``) are lists of paths the child may not touch —
     the wall that keeps an implementer out of the standard it is measured against.
+    ``context_keys`` is the child's whole view of this kernel: those variables are
+    serialized into its brief and nothing else of this namespace reaches it.
+    ``check`` makes it a protocol child — it owes a ``{"value": …, "discoveries":
+    […]}`` answer, and ``result`` withholds that answer while the check is red.
     """
     if not isinstance(prompt, str):
         raise TypeError(f"prompt must be str, got {type(prompt).__name__}")
+    kwargs = _resolve_context(kwargs)
     payload = await host_request("rlm.run", {"prompt": prompt, "kwargs": kwargs})
     return _spawn_handle_from_payload(payload)
 

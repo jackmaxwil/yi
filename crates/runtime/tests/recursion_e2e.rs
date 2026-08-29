@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
-use serde_json::{Map, Value};
+use serde_json::{Map, Value, json};
 use yi_ai::faux::{faux_assistant_message, faux_text};
 use yi_loop::ExecutionMode;
 use yi_runtime::{
@@ -61,6 +61,8 @@ struct Harness {
     parent: Arc<Mutex<Vec<AgentMessage>>>,
     child_cwd: Arc<Mutex<Option<PathBuf>>>,
     inbox: Arc<Mutex<Vec<String>>>,
+    entries: Arc<Mutex<Vec<AgentMessage>>>,
+    store: yi_session::SharedSession,
 }
 
 struct HarnessOptions {
@@ -114,6 +116,16 @@ fn harness_with(options: HarnessOptions) -> Harness {
     let (events, _keep) = tokio::sync::broadcast::channel(256);
     let inbox: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
     let inbox_sink = Arc::clone(&inbox);
+    let entries: Arc<Mutex<Vec<AgentMessage>>> = Arc::new(Mutex::new(Vec::new()));
+    let entry_sink = Arc::clone(&entries);
+    let store: yi_session::SharedSession = Arc::new(Mutex::new(
+        yi_session::SessionStore::in_memory(yi_session::SessionMetadata {
+            id: "recursion-test".to_owned(),
+            created_at: 0,
+            parent_session_id: None,
+        }),
+    ));
+    let store_handle = store.clone();
     let parent: Arc<Mutex<Vec<AgentMessage>>> = Arc::new(Mutex::new(Vec::new()));
     let parent_source = Arc::clone(&parent);
     let host = Arc::new(SubagentHost::new(SubagentHostOptions {
@@ -162,6 +174,9 @@ fn harness_with(options: HarnessOptions) -> Harness {
         }),
         events: events.clone(),
         report: Arc::new(move |message| {
+            if let Ok(mut sink) = entry_sink.lock() {
+                sink.push(message.clone());
+            }
             if let AgentMessage::Custom {
                 content: yi_types::message::UserContent::Text(text),
                 ..
@@ -180,6 +195,7 @@ fn harness_with(options: HarnessOptions) -> Harness {
         attribute: Arc::new(move |usage| {
             attribute_sink.fetch_add(u32::from(usage.total_tokens == 120), Ordering::SeqCst);
         }),
+        store: Arc::new(move || Some(store_handle.clone())),
     }));
     Harness {
         host,
@@ -190,6 +206,8 @@ fn harness_with(options: HarnessOptions) -> Harness {
         parent,
         child_cwd,
         inbox,
+        entries,
+        store,
     }
 }
 
@@ -966,6 +984,311 @@ async fn rlm_run_round_trips_through_a_real_kernel() -> TestResult {
         refused_cell.result.stdout
     );
 
+    let scope_cell = tokio::task::spawn_blocking({
+        let service = Arc::clone(&service);
+        let cancelled = Arc::clone(&cancelled);
+        move || {
+            yi_tools::KernelBridge::execute_cell(
+                service.as_ref(),
+                "board = {'grid': [1, 2, 3]}\nsecret = 'never scoped'\nscoped = await rlm.run('use the board', name='scoped', context_keys=['board'])\ntry:\n    await rlm.run('and this', name='nope', context_keys=['absent'])\nexcept KeyError as e:\n    print(f'keyerror: {e}')\nprint([s.session_name for s in await rlm.list_subagents()])",
+                &cancelled,
+            )
+        }
+    })
+    .await??;
+    assert!(
+        scope_cell
+            .result
+            .stdout
+            .contains("not bound in this kernel"),
+        "an unbound context key raises in the cell that named it: {} {}",
+        scope_cell.result.stdout,
+        scope_cell.result.stderr
+    );
+    assert!(
+        scope_cell.result.stdout.contains("['scoped']"),
+        "the refused spawn never reached the host: {}",
+        scope_cell.result.stdout
+    );
+    let brief = child_brief(&harness).await;
+    assert!(
+        brief.contains("board = {\"grid\": [1, 2, 3]}"),
+        "the kernel serializes the named variable into the child's brief: {brief:?}"
+    );
+    assert!(
+        !brief.contains("never scoped") && !brief.contains("secret"),
+        "nothing of the parent's namespace beyond the named keys reaches the child: {brief:?}"
+    );
+
     service.dispose().await;
+    Ok(())
+}
+
+fn protocol_kwargs(name: &str, pairs: &[(&str, Value)]) -> Map<String, Value> {
+    let mut kwargs = kwargs(&[("name", name)]);
+    for (key, value) in pairs {
+        kwargs.insert((*key).to_owned(), value.clone());
+    }
+    kwargs
+}
+
+async fn child_brief(harness: &Harness) -> String {
+    user_texts(&first_child_messages(harness).await)
+        .into_iter()
+        .find(|text| text.contains("[task from parent]"))
+        .unwrap_or_default()
+}
+
+/// The names in the block, in the order the child reads them.
+fn scoped_names(brief: &str) -> Vec<String> {
+    brief
+        .lines()
+        .skip_while(|line| *line != "<parent_context>")
+        .skip(1)
+        .take_while(|line| *line != "</parent_context>")
+        .filter_map(|line| line.split_once(" = ").map(|(name, _)| name.to_owned()))
+        .collect()
+}
+
+#[tokio::test]
+async fn a_scoped_child_reads_the_named_keys_and_nothing_else() -> TestResult {
+    let harness = harness(0, 1, "solved");
+    let oversized = "g".repeat(5_000);
+    harness
+        .host
+        .spawn(
+            "solve the board".to_owned(),
+            protocol_kwargs(
+                "scoped",
+                &[(
+                    "context",
+                    json!({"board": "3x3 of colours", "trace": oversized}),
+                )],
+            ),
+        )
+        .map_err(|error| error.to_string())?;
+    let brief = child_brief(&harness).await;
+    assert_eq!(
+        scoped_names(&brief),
+        vec!["board".to_owned(), "trace".to_owned()],
+        "the child's whole view of the parent is the named keys: {brief:?}"
+    );
+    assert!(
+        brief.contains("board = 3x3 of colours"),
+        "a named key reaches the child with its value: {brief:?}"
+    );
+    assert!(
+        brief.contains("[truncated to 4096 chars]"),
+        "an oversized value is capped with a named marker, never silently cut: {brief:?}"
+    );
+    assert!(
+        brief.starts_with("[task from parent]") && brief.ends_with("solve the board"),
+        "scope rides the child's first user message ahead of its task, never a trusted block: {brief:?}"
+    );
+
+    let refused = harness.host.spawn(
+        "resolve them here".to_owned(),
+        protocol_kwargs("unresolved", &[("context_keys", json!(["board"]))]),
+    );
+    assert_eq!(
+        refused.err().as_deref(),
+        Some("Unsupported rlm.run kwargs: context_keys"),
+        "the wire surface stays closed: the kernel resolves names, the host takes values"
+    );
+
+    let too_many: Map<String, Value> = (0..9)
+        .map(|index| (format!("k{index}"), Value::String("v".to_owned())))
+        .collect();
+    let over_width = harness.host.spawn(
+        "carry everything".to_owned(),
+        protocol_kwargs("wide", &[("context", Value::Object(too_many))]),
+    );
+    assert!(
+        over_width
+            .err()
+            .is_some_and(|error| error.contains("at most 8 are scoped")),
+        "an unbounded brief is refused at admission"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_checked_childs_malformed_answer_is_fatal() -> TestResult {
+    let harness = harness(0, 1, "I fixed it, trust me");
+    harness
+        .host
+        .spawn(
+            "fix the parser".to_owned(),
+            protocol_kwargs("checked", &[("check", json!("true"))]),
+        )
+        .map_err(|error| error.to_string())?;
+    assert!(wait_for_status_named(&harness, "checked").await);
+    let error = harness
+        .host
+        .result("checked", None)
+        .err()
+        .ok_or("a checked child's prose must never pass as a result")?;
+    assert!(
+        error.contains("owes a result object"),
+        "the refusal names the contract the answer missed: {error}"
+    );
+    assert!(
+        error.contains("I fixed it, trust me"),
+        "the refusal carries the raw answer, so nothing arrives as a silent null: {error}"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_checked_childs_result_is_held_back_while_its_check_is_red() -> TestResult {
+    let harness = harness(0, 1, "{\"value\": 1, \"discoveries\": []}");
+    harness
+        .host
+        .spawn(
+            "land the fix".to_owned(),
+            protocol_kwargs("red", &[("check", json!("exit 3"))]),
+        )
+        .map_err(|error| error.to_string())?;
+    assert!(wait_for_status_named(&harness, "red").await);
+    let error = harness
+        .host
+        .result("red", None)
+        .err()
+        .ok_or("a red node must not hand its answer on")?;
+    assert!(
+        error.contains("check is red") && error.contains("exited 3"),
+        "the refusal carries the check's own evidence: {error}"
+    );
+    Ok(())
+}
+
+fn task(id: &str, check: &str) -> yi_types::plan::Task {
+    yi_types::plan::Task {
+        id: yi_types::plan::TaskId(id.to_owned()),
+        title: format!("task {id}"),
+        acceptance: "the check is green".to_owned(),
+        schema: None,
+        check: Some(check.to_owned()),
+        deps: Vec::new(),
+        state: yi_types::plan::TaskState::Pending,
+        blocked_reason: None,
+        assignee: None,
+        extra: Map::new(),
+    }
+}
+
+const TWO_DISCOVERIES: &str = r#"{"value": "patched", "discoveries": [
+    {"text": "the retry loop double-counts", "violatesCheckOf": "t1", "fingerprint": "aaa"},
+    {"text": "the README example is stale", "violatesCheckOf": "t2", "fingerprint": "bbb"}
+]}"#;
+
+#[tokio::test]
+async fn criticality_is_derived_by_re_running_the_ancestors_check() -> TestResult {
+    let harness = harness(0, 1, TWO_DISCOVERIES);
+    yi_session::lock_session(&harness.store).set_plan(yi_types::plan::Plan {
+        version: yi_types::plan::PlanVersion(1),
+        tasks: vec![task("t1", "exit 4"), task("t2", "true")],
+        created: 0,
+        updated: 0,
+        extra: Map::new(),
+    })?;
+    yi_session::lock_session(&harness.store).set_goal(yi_types::goal::Goal {
+        objective: "ship the retry fix".to_owned(),
+        status: yi_types::goal::GoalStatus::Active,
+        token_budget: None,
+        tokens_used: 0,
+        time_used_seconds: 0,
+        created: 0,
+        updated: 0,
+        check: None,
+        check_timeout_ms: None,
+        check_failure: None,
+        discoveries: Vec::new(),
+        extra: Map::new(),
+    })?;
+    harness
+        .host
+        .spawn(
+            "patch the retry loop".to_owned(),
+            protocol_kwargs("finder", &[("check", json!("true"))]),
+        )
+        .map_err(|error| error.to_string())?;
+    assert!(wait_for_status_named(&harness, "finder").await);
+    let reply = harness
+        .host
+        .result("finder", None)
+        .map_err(|error| error.to_string())?;
+    assert_eq!(
+        reply["value"], "patched",
+        "a green protocol child still hands back its value"
+    );
+    assert_eq!(
+        reply["discoveries"]
+            .as_array()
+            .map(std::vec::Vec::len)
+            .unwrap_or_default(),
+        2
+    );
+
+    let inbox = harness.inbox.lock().map_err(|_| "poisoned")?.clone();
+    assert!(
+        inbox
+            .iter()
+            .any(|text| text.starts_with("HIGH discovery from finder")
+                && text.contains("task t1 is red")
+                && text.contains("exited 4")),
+        "a discovery naming a task whose check is red pauses the parent with the evidence: {inbox:?}"
+    );
+    assert!(
+        inbox
+            .iter()
+            .any(|text| text.starts_with("deferred discovery from finder")
+                && text.contains("README example")),
+        "a discovery whose named check is green is deferred, never dropped: {inbox:?}"
+    );
+
+    let rows: Vec<(String, Value)> = harness
+        .entries
+        .lock()
+        .map_err(|_| "poisoned")?
+        .iter()
+        .filter_map(|message| match message {
+            AgentMessage::Custom {
+                custom_type,
+                details: Some(details),
+                ..
+            } => Some((custom_type.clone(), details.clone())),
+            _ => None,
+        })
+        .collect();
+    let criticalities: Vec<&Value> = rows
+        .iter()
+        .filter(|(custom_type, _)| custom_type == "discovery")
+        .map(|(_, details)| &details["criticality"])
+        .collect();
+    assert_eq!(
+        criticalities,
+        vec![&json!("high"), &json!("deferred")],
+        "both rows land in the session as typed discovery entries the mining board reads: {rows:?}"
+    );
+    assert_eq!(
+        rows.first()
+            .map(|(_, details)| details["discovery"]["fingerprint"].clone()),
+        Some(json!("aaa")),
+        "the row carries the child's fingerprint, so the board can key on it"
+    );
+
+    let ledger = yi_session::lock_session(&harness.store)
+        .goal()
+        .ok_or("goal")?
+        .discoveries;
+    assert_eq!(
+        ledger
+            .iter()
+            .map(|row| row.fingerprint.as_str())
+            .collect::<Vec<_>>(),
+        vec!["aaa"],
+        "only the HIGH row enters the goal ledger the completion gate drains: {ledger:?}"
+    );
     Ok(())
 }

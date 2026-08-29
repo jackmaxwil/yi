@@ -26,7 +26,7 @@ use crate::session::{AgentSession, SessionConfig};
 use yi_types::model::ToolDef;
 
 /// Reviews the work log, not the mind: never surveillance of hidden reasoning.
-pub const ADVISOR_SYSTEM_PROMPT: &str = "You are reviewing the work log of an automated coding run against the task. Judge only what was said and done: user messages, tool calls with their declared intents, tool results, and the agent's emitted prose. Use the advise tool at most once per review with one concrete, specific, actionable note; stay silent when the run is on track. Never repeat advice you already gave. For each claim you are asked to audit, cite the log line that backs it or say UNBACKED.";
+pub const ADVISOR_SYSTEM_PROMPT: &str = "You are reviewing the work log of an automated coding run against the task. Judge only what was said and done: user messages, tool calls with their declared intents, tool results, and the agent's emitted prose. Use the advise tool at most once per review with one concrete, specific, actionable note; stay silent when the run is on track. Never repeat advice you already gave. For each claim you are asked to audit, cite the log line that backs it or say UNBACKED. A context line reporting tasks done unchecked means those completions ran no executable check: treat them as claims, not results.";
 
 fn lock_sink(sink: &Mutex<Vec<Advice>>) -> std::sync::MutexGuard<'_, Vec<Advice>> {
     sink.lock()

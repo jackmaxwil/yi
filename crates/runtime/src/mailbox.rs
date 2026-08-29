@@ -1,13 +1,55 @@
 use std::sync::Arc;
 
 use serde_json::{Map, Value, json};
-use yi_types::message::AgentMessage;
+use yi_types::message::{AgentMessage, UserContent};
+use yi_types::subagent::{ChildResult, Discovery};
 
 use crate::subagent::{ChildStatus, PARENT_NAME, SubagentHost, last_assistant_text};
 
 pub(crate) const WAIT_MIN_MS: u64 = 1_000;
 pub(crate) const WAIT_MAX_MS: u64 = 300_000;
 const WAIT_POLL_MS: u64 = 100;
+
+const CONTEXT_MAX_KEYS: usize = 8;
+const CONTEXT_VALUE_CAP: usize = 4_096;
+const CONTEXT_TOTAL_CAP: usize = 16_384;
+const RESULT_TAIL_CHARS: usize = 2_000;
+
+fn clamp(text: &str, cap: usize) -> String {
+    if text.chars().count() <= cap {
+        return text.to_owned();
+    }
+    let kept: String = text.chars().take(cap).collect();
+    format!("{kept}… [truncated to {cap} chars]")
+}
+
+/// Incident: values arrive pre-serialized because a host-side kernel read here
+/// would queue behind the very cell awaiting this reply; the caps are re-applied
+/// because that kernel python is only semi-trusted.
+pub(crate) fn context_block(kwargs: &Map<String, Value>) -> Result<Option<String>, String> {
+    let Some(value) = kwargs.get("context").filter(|value| !value.is_null()) else {
+        return Ok(None);
+    };
+    let entries = value
+        .as_object()
+        .ok_or("rlm.run context must be an object of variable name to serialized value")?;
+    if entries.len() > CONTEXT_MAX_KEYS {
+        return Err(format!(
+            "rlm.run context names {} keys; at most {CONTEXT_MAX_KEYS} are scoped into a child",
+            entries.len()
+        ));
+    }
+    let mut block = String::from("<parent_context>\n");
+    for (name, value) in entries {
+        let text = value
+            .as_str()
+            .map_or_else(|| value.to_string(), str::to_owned);
+        block.push_str(&format!("{name} = {}\n", clamp(&text, CONTEXT_VALUE_CAP)));
+    }
+    block = clamp(&block, CONTEXT_TOTAL_CAP);
+    block.push_str("</parent_context>");
+    Ok(Some(block))
+}
 
 /// Invariant: an agent's words reach another agent inside this envelope and
 /// never as bare user text — provenance the model can see (B6 hardening).
@@ -288,27 +330,34 @@ impl SubagentHost {
     }
 
     /// The child's answer as data in the parent's kernel namespace: JSON when
-    /// it parses, checked against `schema` at this seam when one is given.
+    /// it parses, checked against `schema` when one is given, and a whole
+    /// [`yi_types::subagent::ChildResult`] when the child was spawned with a check.
     pub fn result(
         &self,
         target: &str,
         schema: Option<&Value>,
     ) -> Result<Map<String, Value>, String> {
-        let children = self
-            .children
-            .lock()
-            .map_err(|_| "subagent state poisoned")?;
-        let key = Self::key_of(&children, target)?;
-        let record = children
-            .get(&key)
-            .ok_or_else(|| format!("No RLM child matches \"{target}\""))?;
-        if record.status == ChildStatus::Running {
-            return Err(format!("child \"{target}\" is still running"));
-        }
-        if let Some(error) = &record.error {
-            return Err(format!("child \"{target}\" failed: {error}"));
-        }
-        let text = last_assistant_text(&record.session.messages()).unwrap_or_default();
+        let (name, check, text) = {
+            let children = self
+                .children
+                .lock()
+                .map_err(|_| "subagent state poisoned")?;
+            let key = Self::key_of(&children, target)?;
+            let record = children
+                .get(&key)
+                .ok_or_else(|| format!("No RLM child matches \"{target}\""))?;
+            if record.status == ChildStatus::Running {
+                return Err(format!("child \"{target}\" is still running"));
+            }
+            if let Some(error) = &record.error {
+                return Err(format!("child \"{target}\" failed: {error}"));
+            }
+            (
+                record.session_name.clone(),
+                record.check.clone(),
+                last_assistant_text(&record.session.messages()).unwrap_or_default(),
+            )
+        };
         let json = serde_json::from_str::<Value>(text.trim()).ok();
         if let Some(schema) = schema {
             let value = json
@@ -319,14 +368,83 @@ impl SubagentHost {
                 .map_err(|error| format!("child \"{target}\" result rejected: {error}"))?;
         }
         let mut reply = Map::new();
-        reply.insert(
-            "name".to_owned(),
-            Value::String(record.session_name.clone()),
-        );
-        reply.insert("text".to_owned(), Value::String(text));
+        reply.insert("name".to_owned(), Value::String(name.clone()));
+        reply.insert("text".to_owned(), Value::String(text.clone()));
         if let Some(json) = json {
             reply.insert("json".to_owned(), json);
         }
+        if let Some(check) = check {
+            let result = serde_json::from_str::<ChildResult>(text.trim()).map_err(|error| {
+                format!(
+                    "child \"{target}\" was spawned with a check, so it owes a result object {{\"value\": …, \"discoveries\": [ … ]}}: {error}\nIts answer was:\n{}",
+                    clamp(&text, RESULT_TAIL_CHARS)
+                )
+            })?;
+            crate::goal::run_check(&check, crate::goal::DEFAULT_CHECK_TIMEOUT_MS).map_err(
+                |evidence| {
+                    format!("child \"{target}\" result held back; its check is red: {evidence}")
+                },
+            )?;
+            self.route_discoveries(&name, &result.discoveries);
+            reply.insert(
+                "discoveries".to_owned(),
+                serde_json::to_value(&result.discoveries)
+                    .unwrap_or_else(|_| Value::Array(Vec::new())),
+            );
+            reply.insert("value".to_owned(), result.value);
+        }
         Ok(reply)
+    }
+
+    /// L5 criticality is derived, never declared: the ancestor task a discovery
+    /// names is looked up in the plan and its own check re-run — only a red one
+    /// makes the row HIGH and steers the parent.
+    fn route_discoveries(&self, child: &str, discoveries: &[Discovery]) {
+        for row in discoveries {
+            let red = row
+                .violates_check_of
+                .as_deref()
+                .and_then(|id| self.ancestor_check(id))
+                .and_then(|(id, check)| {
+                    crate::goal::run_check(&check, crate::goal::DEFAULT_CHECK_TIMEOUT_MS)
+                        .err()
+                        .map(|evidence| (id, evidence))
+                });
+            let mut details = json!({
+                "criticality": if red.is_some() { "high" } else { "deferred" },
+                "child": child,
+                "discovery": row,
+            });
+            let text = match red {
+                Some((id, evidence)) => {
+                    let ledger = crate::goal::record_discovery(&self.options.store, row);
+                    if let Some(map) = details.as_object_mut() {
+                        map.insert("task".to_owned(), Value::String(id.clone()));
+                        map.insert("evidence".to_owned(), Value::String(evidence.clone()));
+                        if let Err(error) = ledger {
+                            map.insert("ledgerError".to_owned(), Value::String(error));
+                        }
+                    }
+                    format!(
+                        "HIGH discovery from {child}: {}\nThe check of task {id} is red — address it before continuing:\n{evidence}",
+                        row.text
+                    )
+                }
+                None => format!("deferred discovery from {child}: {}", row.text),
+            };
+            (self.options.report)(AgentMessage::Custom {
+                custom_type: "discovery".to_owned(),
+                content: UserContent::Text(text),
+                display: true,
+                details: Some(details),
+                timestamp: yi_session::now_ms(),
+            });
+        }
+    }
+
+    fn ancestor_check(&self, id: &str) -> Option<(String, String)> {
+        let store = (self.options.store)()?;
+        let plan = yi_session::lock_session(&store).plan()?;
+        crate::goal::task_check(&plan, id).map(|check| (id.to_owned(), check))
     }
 }

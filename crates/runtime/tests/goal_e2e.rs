@@ -5,12 +5,16 @@ use serde_json::Number;
 use yi_ai::faux::{faux_assistant_message, faux_text};
 
 use yi_loop::ExecutionMode;
-use yi_runtime::goal::{GOAL_EXISTS_ERROR, GoalService, attach_goal, continuation_text, template};
+use yi_runtime::goal::{
+    GOAL_EXISTS_ERROR, GoalService, StoreHandle, attach_goal, continuation_text, record_discovery,
+    template,
+};
 use yi_runtime::{AgentSession, ProviderStream, SessionConfig};
 use yi_types::goal::{Goal, GoalStatus};
 use yi_types::message::{AgentMessage, Cost, StopReason, Usage, UserContent};
 use yi_types::model::{Model, ModelCost};
 use yi_types::schedule::DeliveryMode;
+use yi_types::subagent::Discovery;
 
 type TestResult = Result<(), Box<dyn Error>>;
 
@@ -246,6 +250,7 @@ fn continuation_prompt_interpolates_budgets() -> TestResult {
         check: None,
         check_timeout_ms: None,
         check_failure: None,
+        discoveries: Vec::new(),
         extra: serde_json::Map::new(),
     };
     let text = continuation_text(&goal, None)?;
@@ -332,6 +337,139 @@ fn check_gate_timeout_rejects_with_the_timeout_named() -> TestResult {
     assert!(
         error.contains("timed out after 100 ms"),
         "timeout must be named: {error}"
+    );
+    Ok(())
+}
+
+fn seed_plan(store: &yi_session::SharedSession, check: &str) -> TestResult {
+    yi_session::lock_session(store).set_plan(yi_types::plan::Plan {
+        version: yi_types::plan::PlanVersion(1),
+        tasks: vec![yi_types::plan::Task {
+            id: yi_types::plan::TaskId("t1".to_owned()),
+            title: "hold the invariant".to_owned(),
+            acceptance: "the check is green".to_owned(),
+            schema: None,
+            check: Some(check.to_owned()),
+            deps: Vec::new(),
+            state: yi_types::plan::TaskState::Done,
+            blocked_reason: None,
+            assignee: None,
+            extra: serde_json::Map::new(),
+        }],
+        created: 0,
+        updated: 0,
+        extra: serde_json::Map::new(),
+    })?;
+    Ok(())
+}
+
+fn high_row() -> Discovery {
+    let mut extra = serde_json::Map::new();
+    extra.insert("source".to_owned(), serde_json::json!("child finder"));
+    Discovery {
+        text: "the retry loop double-counts".to_owned(),
+        violates_check_of: Some("t1".to_owned()),
+        fingerprint: "aaa".to_owned(),
+        extra,
+    }
+}
+
+fn store_handle(store: &yi_session::SharedSession) -> StoreHandle {
+    let store = store.clone();
+    Arc::new(move || Some(store.clone()))
+}
+
+#[test]
+fn an_undrained_discovery_refuses_completion_until_its_check_goes_green() -> TestResult {
+    let (service, store, delivered) = service_with_store();
+    service.create("ship the fix", None, None, None)?;
+    seed_plan(&store, "echo t1 still broken; exit 4")?;
+    let handle = store_handle(&store);
+    record_discovery(&handle, &high_row())?;
+    record_discovery(&handle, &high_row())?;
+
+    let error = service.update("complete").err().ok_or("must refuse")?;
+    assert!(
+        error.contains("undrained HIGH discovery aaa")
+            && error.contains("retry loop double-counts")
+            && error.contains("task t1")
+            && error.contains("t1 still broken"),
+        "the refusal names the row and the evidence that keeps it open: {error}"
+    );
+    let stored = yi_session::lock_session(&store).goal().ok_or("goal")?;
+    assert_eq!(
+        stored.status,
+        GoalStatus::Active,
+        "a refused claim stays open"
+    );
+    assert_eq!(
+        stored.discoveries.len(),
+        1,
+        "the row survives the refusal (and a repeat record), so the gate keeps holding"
+    );
+
+    seed_plan(&store, "true")?;
+    service.update("complete")?;
+    let stored = yi_session::lock_session(&store).goal().ok_or("goal")?;
+    assert_eq!(stored.status, GoalStatus::Complete);
+    assert!(
+        stored.discoveries.is_empty(),
+        "a drained row leaves the ledger"
+    );
+    let details = delivered
+        .lock()
+        .map_err(|error| error.to_string())?
+        .iter()
+        .find_map(|message| match message {
+            AgentMessage::Custom {
+                custom_type,
+                details: Some(details),
+                ..
+            } if custom_type == "discovery" => Some(details.clone()),
+            _ => None,
+        })
+        .ok_or("a drained row must land as a discovery entry the mining board reads")?;
+    assert_eq!(details["drained"], serde_json::json!(true));
+    assert_eq!(details["task"], serde_json::json!("t1"));
+    assert_eq!(
+        details["discovery"]["fingerprint"],
+        serde_json::json!("aaa")
+    );
+    assert_eq!(
+        details["discovery"]["source"],
+        serde_json::json!("child finder"),
+        "unknown discovery fields ride through the ledger verbatim"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_row_whose_check_left_the_plan_drains_instead_of_wedging_the_goal() -> TestResult {
+    let (service, store, delivered) = service_with_store();
+    service.create("ship the fix", None, None, None)?;
+    record_discovery(&store_handle(&store), &high_row())?;
+    service.update("complete")?;
+    let stored = yi_session::lock_session(&store).goal().ok_or("goal")?;
+    assert_eq!(stored.status, GoalStatus::Complete);
+    assert!(stored.discoveries.is_empty());
+    let reasons = delivered
+        .lock()
+        .map_err(|error| error.to_string())?
+        .iter()
+        .filter_map(|message| match message {
+            AgentMessage::Custom {
+                details: Some(details),
+                ..
+            } => Some(details["reason"].clone()),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        reasons,
+        vec![serde_json::json!(
+            "the check it named is no longer in the plan"
+        )],
+        "an unresolvable row is drained with its reason, never silently dropped: {reasons:?}"
     );
     Ok(())
 }
