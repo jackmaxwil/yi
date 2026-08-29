@@ -353,47 +353,32 @@ impl AgentSession {
         &self,
         store: yi_session::SharedSession,
     ) -> Result<usize, yi_session::SessionError> {
-        let loaded: Vec<AgentMessage> = {
+        let entries = {
             let session = yi_session::lock_session(&store);
-            let entries = session.find_entries_on_branch(
+            session.find_entries_on_branch(
                 "main",
                 &yi_session::EntryQuery {
                     order: yi_session::EntryOrder::OldestFirst,
                     ..yi_session::EntryQuery::default()
                 },
                 &yi_session::BranchBounds::default(),
-            )?;
-            yi_context::project(&entries)
+            )?
         };
+        let loaded = yi_context::project(&entries);
         let count = loaded.len();
         if let Ok(mut messages) = self.shared.messages.lock() {
             *messages = loaded;
         }
         if let Ok(mut slot) = self.shared.store.lock() {
-            *slot = Some(store.clone());
+            *slot = Some(store);
         }
-        self.restore_settings(&store);
+        self.restore_settings(&entries);
         Ok(count)
     }
 
-    /// Replays the last recorded model and effort so `--continue` resumes on
-    /// what the session was left on rather than on the startup defaults.
-    fn restore_settings(&self, store: &yi_session::SharedSession) {
-        let entries = {
-            let session = yi_session::lock_session(store);
-            session
-                .find_entries_on_branch(
-                    "main",
-                    &yi_session::EntryQuery {
-                        order: yi_session::EntryOrder::OldestFirst,
-                        ..yi_session::EntryQuery::default()
-                    },
-                    &yi_session::BranchBounds::default(),
-                )
-                .unwrap_or_default()
-        };
+    fn restore_settings(&self, entries: &[Entry]) {
         let mut effort = None;
-        for entry in &entries {
+        for entry in entries {
             match entry {
                 Entry::ModelChange {
                     provider, model_id, ..
@@ -453,9 +438,8 @@ impl AgentSession {
             .unwrap_or_else(|poisoned| poisoned.into_inner().clone())
     }
 
-    /// A live read of the model and effort a child should inherit. Snapshotting
-    /// them instead left `rlm.run` and `model.info` on the startup model after
-    /// the user switched (`Incident:` reachable once the TUI could switch).
+    /// Incident: snapshotting these left `rlm.run` and `model.info` on the
+    /// startup model once the TUI could switch.
     pub fn settings_handle(&self) -> Arc<dyn Fn() -> (Model, Effort) + Send + Sync> {
         let shared = Arc::clone(&self.shared);
         Arc::new(move || {
@@ -473,21 +457,29 @@ impl AgentSession {
         })
     }
 
-    /// Records the change and re-clamps the effort onto the new model's ladder.
+    /// Re-clamps the effort onto the new ladder without recording a level
+    /// change of its own; a caller wanting a specific level calls
+    /// [`AgentSession::set_effort`] after.
     pub fn set_model(&self, model: Model) {
+        let current = self.model();
+        if current.provider == model.provider && current.id == model.id {
+            return;
+        }
         let effort = model.clamp_effort(self.effort());
         if let Ok(mut slot) = self.shared.model.lock() {
             *slot = model.clone();
         }
+        if let Ok(mut slot) = self.shared.effort.lock() {
+            *slot = effort;
+        }
         self.append_state_entry(Entry::ModelChange {
             id: String::new(),
-            provider: model.provider.clone(),
-            model_id: model.id.clone(),
+            provider: model.provider,
+            model_id: model.id,
             parent_id: None,
             seq: 0,
             timestamp: 0,
         });
-        self.set_effort(effort);
     }
 
     pub fn effort(&self) -> Effort {
@@ -498,8 +490,7 @@ impl AgentSession {
             .unwrap_or_else(|poisoned| *poisoned.into_inner())
     }
 
-    /// Clamps onto the active model's ladder and returns what was actually set,
-    /// which may be a weaker or stronger level than `effort`.
+    /// Returns what was actually set, which the clamp may have moved.
     pub fn set_effort(&self, effort: Effort) -> Effort {
         let effective = self.model().clamp_effort(effort);
         let changed = match self.shared.effort.lock() {

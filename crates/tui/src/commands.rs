@@ -120,8 +120,7 @@ fn goal_command(session: &Arc<AgentSession>) -> String {
     }
 }
 
-/// Applies a picker or cycle choice to the session, then mirrors back what the
-/// session actually set — the clamp may have moved it.
+/// Mirrors back what the session set, which the clamp may have moved.
 pub fn process_pending_selection(app: &mut App, session: &Arc<AgentSession>) {
     let Some((model, effort)) = app.selection.pending.take() else {
         return;

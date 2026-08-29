@@ -9,92 +9,89 @@ use crate::keymap::{KeyCodeValue, SingleKey};
 use crate::popup::{BottomView, PopupResult};
 
 const MAX_VISIBLE: usize = 8;
+const MORE: &str = "↑ More reasoning…";
 
-/// Levels a cycle shortcut walks. The advanced tiers are reachable only from
-/// the picker's `More reasoning…` row, so a keystroke cannot bill the top tier.
+/// The advanced tiers are reachable only from the picker's [`MORE`] row, so no
+/// keystroke can bill the top tier by accident.
 pub fn cycle_efforts(model: &Model) -> Vec<Effort> {
-    let supported: Vec<Effort> = model
+    model
         .supported_efforts()
         .into_iter()
         .filter(|effort| !effort.is_advanced())
-        .collect();
-    if supported.is_empty() {
-        model.supported_efforts()
-    } else {
-        supported
-    }
+        .collect()
 }
 
-/// The next level up or down within [`cycle_efforts`], or `None` at the bound.
-/// An effort the model does not advertise anchors to the model's own default
-/// rather than guessing a rung it never had.
+fn advanced_efforts(model: &Model) -> Vec<Effort> {
+    model
+        .supported_efforts()
+        .into_iter()
+        .filter(|effort| effort.is_advanced())
+        .collect()
+}
+
+/// An unadvertised `current` anchors to the clamp, never to a guessed rung.
 pub fn step_effort(model: &Model, current: Effort, up: bool) -> Option<Effort> {
     let choices = cycle_efforts(model);
-    let anchored = if choices.contains(&current) {
+    let anchor = if choices.contains(&current) {
         current
     } else {
         model.clamp_effort(current)
     };
-    let index = choices.iter().position(|effort| *effort == anchored)?;
+    let index = choices.iter().position(|effort| *effort == anchor)?;
     if up {
         choices.get(index.saturating_add(1)).copied()
     } else {
-        index.checked_sub(1).and_then(|prev| choices.get(prev)).copied()
+        index.checked_sub(1).and_then(|at| choices.get(at)).copied()
     }
 }
 
-/// Where the advanced tiers live, for the message a bounded cycle prints.
 pub fn advanced_hint(model: &Model) -> Option<String> {
-    let advanced: Vec<String> = model
-        .supported_efforts()
-        .into_iter()
-        .filter(|effort| effort.is_advanced())
-        .map(|effort| effort.to_string())
+    let names: Vec<String> = advanced_efforts(model)
+        .iter()
+        .map(Effort::to_string)
         .collect();
-    (!advanced.is_empty())
-        .then(|| format!("{} available under /model → More reasoning…", advanced.join(" and ")))
+    (!names.is_empty()).then(|| format!("{} under /model → {MORE}", names.join(" and ")))
 }
 
-enum Stage {
-    Models,
-    Efforts { model: Box<Model>, advanced: bool },
+fn selector(model: &Model) -> String {
+    format!("{}/{}", model.provider, model.id)
 }
+
+/// `Some` once a model is picked: it, and whether advanced tiers are showing.
+type Stage = Option<(Model, bool)>;
 
 pub struct ModelPopup {
     stage: Stage,
     query: String,
     models: Vec<Model>,
-    current: (String, String),
-    current_effort: Effort,
+    current: String,
+    effort: Effort,
     selected: usize,
-    /// Drained by the event loop and applied to the session.
+    /// Drained by the event loop, which owns the session.
     pub chosen: Option<(Model, Effort)>,
 }
 
 impl ModelPopup {
-    pub fn new(
-        models: Vec<Model>,
-        current: &Model,
-        current_effort: Effort,
-        mru: &[(String, String)],
-    ) -> Self {
+    pub fn new(models: Vec<Model>, current: &Model, effort: Effort, mru: &[String]) -> Self {
         let mut models = models;
         models.sort_by_cached_key(|model| {
-            let key = (model.provider.clone(), model.id.clone());
-            let rank = mru.iter().position(|entry| *entry == key);
-            (rank.unwrap_or(usize::MAX), key)
+            let key = selector(model);
+            (
+                mru.iter().position(|seen| *seen == key).unwrap_or(usize::MAX),
+                key,
+            )
         });
-        let current = (current.provider.clone(), current.id.clone());
+        let current = selector(current);
         let selected = models
             .iter()
-            .position(|model| (model.provider.clone(), model.id.clone()) == current)
+            .position(|model| selector(model) == current)
             .unwrap_or(0);
         Self {
-            stage: Stage::Models,
+            stage: None,
             query: String::new(),
             models,
             current,
-            current_effort,
+            effort,
             selected,
             chosen: None,
         }
@@ -104,195 +101,132 @@ impl ModelPopup {
         let needle = self.query.to_lowercase();
         self.models
             .iter()
-            .filter(|model| {
-                needle.is_empty() || selector(model).to_lowercase().contains(&needle)
-            })
+            .filter(|model| selector(model).to_lowercase().contains(&needle))
             .collect()
     }
 
-    fn effort_rows(model: &Model, advanced: bool) -> Vec<Effort> {
+    fn efforts(model: &Model, advanced: bool) -> (Vec<Effort>, bool) {
         if advanced {
-            model
-                .supported_efforts()
-                .into_iter()
-                .filter(|effort| effort.is_advanced())
-                .collect()
+            (advanced_efforts(model), false)
         } else {
-            cycle_efforts(model)
-        }
-    }
-
-    fn pick_model(&mut self) -> PopupResult {
-        let Some(model) = self.filtered().get(self.selected).map(|model| (*model).clone())
-        else {
-            return PopupResult::Close;
-        };
-        if model.supported_efforts().len() <= 1 {
-            let effort = model.clamp_effort(self.current_effort);
-            self.chosen = Some((model, effort));
-            return PopupResult::Close;
-        }
-        self.selected = Self::effort_rows(&model, false)
-            .iter()
-            .position(|effort| *effort == model.clamp_effort(self.current_effort))
-            .unwrap_or(0);
-        self.stage = Stage::Efforts {
-            model: Box::new(model),
-            advanced: false,
-        };
-        PopupResult::Open
-    }
-
-    fn pick_effort(&mut self) -> PopupResult {
-        let Stage::Efforts { model, advanced } = &self.stage else {
-            return PopupResult::Close;
-        };
-        let rows = Self::effort_rows(model, *advanced);
-        let more_row = !*advanced && rows.len() < model.supported_efforts().len();
-        if more_row && self.selected == rows.len() {
-            let model = model.clone();
-            self.selected = 0;
-            self.stage = Stage::Efforts {
-                model,
-                advanced: true,
-            };
-            return PopupResult::Open;
-        }
-        match rows.get(self.selected) {
-            Some(effort) => {
-                self.chosen = Some(((**model).clone(), *effort));
-                PopupResult::Close
-            }
-            None => PopupResult::Close,
+            (cycle_efforts(model), !advanced_efforts(model).is_empty())
         }
     }
 
     fn rows(&self) -> usize {
         match &self.stage {
-            Stage::Models => self.filtered().len(),
-            Stage::Efforts { model, advanced } => {
-                let rows = Self::effort_rows(model, *advanced).len();
-                if !*advanced && rows < model.supported_efforts().len() {
-                    rows.saturating_add(1)
-                } else {
-                    rows
+            None => self.filtered().len(),
+            Some((model, advanced)) => {
+                let (rows, more) = Self::efforts(model, *advanced);
+                rows.len().saturating_add(usize::from(more))
+            }
+        }
+    }
+
+    fn enter(&mut self) -> PopupResult {
+        match &self.stage {
+            None => {
+                let Some(model) = self.filtered().get(self.selected).map(|m| (*m).clone()) else {
+                    return PopupResult::Close;
+                };
+                let (rows, more) = Self::efforts(&model, false);
+                if rows.len() <= 1 && !more {
+                    let effort = model.clamp_effort(self.effort);
+                    self.chosen = Some((model, effort));
+                    return PopupResult::Close;
                 }
+                let want = model.clamp_effort(self.effort);
+                self.selected = rows.iter().position(|effort| *effort == want).unwrap_or(0);
+                self.stage = Some((model, false));
+                PopupResult::Open
+            }
+            Some((model, advanced)) => {
+                let (rows, more) = Self::efforts(model, *advanced);
+                if more && self.selected == rows.len() {
+                    self.stage = Some((model.clone(), true));
+                    self.selected = 0;
+                    return PopupResult::Open;
+                }
+                if let Some(effort) = rows.get(self.selected) {
+                    self.chosen = Some((model.clone(), *effort));
+                }
+                PopupResult::Close
             }
         }
     }
 }
 
-fn selector(model: &Model) -> String {
-    format!("{}/{}", model.provider, model.id)
-}
-
-fn glyph(effort: Effort) -> &'static str {
-    match effort {
-        Effort::Off => "·",
-        Effort::Minimal => "◔",
-        Effort::Low => "◑",
-        Effort::Medium => "◕",
-        Effort::High => "●",
-        Effort::XHigh | Effort::Max => "◉",
-    }
+fn row(label: String, selected: bool, theme: &Theme) -> Line<'static> {
+    let style = if selected {
+        Style::default()
+            .fg(theme.accent)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(theme.text)
+    };
+    Line::from(Span::styled(label, style))
 }
 
 impl BottomView for ModelPopup {
     fn lines(&self, width: usize, theme: &Theme) -> Vec<Line<'static>> {
-        let mut out = Vec::new();
-        let selected_style = Style::default()
-            .fg(theme.accent)
-            .add_modifier(Modifier::BOLD);
-        let plain = Style::default().fg(theme.text);
-        let dim = Style::default().fg(theme.dim);
         match &self.stage {
-            Stage::Models => {
-                out.push(Line::from(vec![
-                    Span::styled(format!(" model {}", self.query), plain),
-                    Span::styled("█", Style::default().fg(theme.accent)),
-                ]));
-                let filtered = self.filtered();
-                let start = self.selected.saturating_sub(MAX_VISIBLE.saturating_sub(1));
-                for (index, model) in filtered.iter().enumerate().skip(start).take(MAX_VISIBLE) {
-                    let is_current =
-                        (model.provider.clone(), model.id.clone()) == self.current;
-                    let mark = if is_current { "›" } else { " " };
-                    let label = selector(model);
-                    let label = if label.len() > width.saturating_sub(6) {
-                        label.chars().take(width.saturating_sub(6)).collect()
-                    } else {
-                        label
-                    };
-                    out.push(Line::from(vec![
-                        Span::styled(
-                            format!(" {mark} {label}"),
-                            if index == self.selected { selected_style } else { plain },
-                        ),
-                    ]));
-                }
-            }
-            Stage::Efforts { model, advanced } => {
-                out.push(Line::from(Span::styled(
-                    format!(
-                        " reasoning for {}{}",
-                        selector(model),
-                        if *advanced { " · higher usage" } else { "" }
+            None => {
+                let mut out = vec![Line::from(vec![
+                    Span::styled(
+                        format!(" model {}", self.query),
+                        Style::default().fg(theme.text),
                     ),
-                    plain,
-                )));
-                let rows = Self::effort_rows(model, *advanced);
-                for (index, effort) in rows.iter().enumerate() {
-                    out.push(Line::from(Span::styled(
-                        format!(" {} {effort}", glyph(*effort)),
-                        if index == self.selected { selected_style } else { plain },
-                    )));
+                    Span::styled("█", Style::default().fg(theme.accent)),
+                ])];
+                let cap = width.saturating_sub(4);
+                let visible = self.filtered();
+                let start = self.selected.saturating_sub(MAX_VISIBLE.saturating_sub(1));
+                for (at, model) in visible.iter().enumerate().skip(start).take(MAX_VISIBLE) {
+                    let label = selector(model);
+                    let mark = if label == self.current { '›' } else { ' ' };
+                    let label: String = label.chars().take(cap).collect();
+                    out.push(row(format!(" {mark} {label}"), at == self.selected, theme));
                 }
-                if !*advanced && rows.len() < model.supported_efforts().len() {
-                    out.push(Line::from(Span::styled(
-                        " ↑ More reasoning…".to_owned(),
-                        if self.selected == rows.len() { selected_style } else { dim },
-                    )));
+                out
+            }
+            Some((model, advanced)) => {
+                let (rows, more) = Self::efforts(model, *advanced);
+                let head = format!(
+                    " reasoning for {}{}",
+                    selector(model),
+                    if *advanced { " · higher usage" } else { "" }
+                );
+                let mut out = vec![row(head, false, theme)];
+                for (at, effort) in rows.iter().enumerate() {
+                    out.push(row(format!("   {effort}"), at == self.selected, theme));
                 }
+                if more {
+                    out.push(row(format!(" {MORE}"), self.selected == rows.len(), theme));
+                }
+                out
             }
         }
-        out
     }
 
     fn handle_key(&mut self, key: &SingleKey) -> PopupResult {
-        let rows = self.rows();
+        let last = self.rows().saturating_sub(1);
+        let typing = self.stage.is_none();
         match key.code {
-            KeyCodeValue::Esc => PopupResult::Close,
-            KeyCodeValue::Up => {
-                self.selected = self.selected.saturating_sub(1);
-                PopupResult::Open
+            KeyCodeValue::Esc => return PopupResult::Close,
+            KeyCodeValue::Enter => return self.enter(),
+            KeyCodeValue::Up => self.selected = self.selected.saturating_sub(1),
+            KeyCodeValue::Down => self.selected = self.selected.saturating_add(1).min(last),
+            KeyCodeValue::Backspace if typing => {
+                self.query.pop();
+                self.selected = 0;
             }
-            KeyCodeValue::Down => {
-                self.selected = self
-                    .selected
-                    .saturating_add(1)
-                    .min(rows.saturating_sub(1));
-                PopupResult::Open
+            KeyCodeValue::Char(character) if typing => {
+                self.query.push(character);
+                self.selected = 0;
             }
-            KeyCodeValue::Enter => match self.stage {
-                Stage::Models => self.pick_model(),
-                Stage::Efforts { .. } => self.pick_effort(),
-            },
-            KeyCodeValue::Backspace => {
-                if matches!(self.stage, Stage::Models) {
-                    self.query.pop();
-                    self.selected = 0;
-                }
-                PopupResult::Open
-            }
-            KeyCodeValue::Char(character) => {
-                if matches!(self.stage, Stage::Models) {
-                    self.query.push(character);
-                    self.selected = 0;
-                }
-                PopupResult::Open
-            }
-            _ => PopupResult::Open,
+            _ => {}
         }
+        PopupResult::Open
     }
 }
 
@@ -301,8 +235,7 @@ impl BottomView for ModelPopup {
 pub struct Selection {
     pub model: Model,
     pub effort: Effort,
-    /// Most-recently-used models, newest first — the `ctrl-p` cycle scope.
-    pub mru: Vec<(String, String)>,
+    pub mru: Vec<String>,
     pub pending: Option<(Model, Effort)>,
 }
 
@@ -310,16 +243,15 @@ impl Selection {
     pub fn new(model: Model) -> Self {
         Self {
             effort: model.clamp_effort(Effort::default()),
-            mru: vec![(model.provider.clone(), model.id.clone())],
+            mru: vec![selector(&model)],
             model,
             pending: None,
         }
     }
 
-    /// Records the choice for display and queues it for the event loop.
     pub fn select(&mut self, model: Model, effort: Effort) {
-        let key = (model.provider.clone(), model.id.clone());
-        self.mru.retain(|entry| *entry != key);
+        let key = selector(&model);
+        self.mru.retain(|seen| *seen != key);
         self.mru.insert(0, key);
         self.mru.truncate(8);
         self.model = model.clone();
@@ -327,27 +259,24 @@ impl Selection {
         self.pending = Some((model, effort));
     }
 
-    /// The next model in the session's own history, or `None` when only one
-    /// has been used — the whole catalog is the picker's job, not a cycle's.
-    pub fn next_model(&self, forward: bool) -> Option<Model> {
+    /// `None` on one model used: the whole catalog is the picker's job.
+    fn next_model(&self, forward: bool) -> Option<Model> {
         if self.mru.len() < 2 {
             return None;
         }
-        let key = (self.model.provider.clone(), self.model.id.clone());
-        let at = self.mru.iter().position(|entry| *entry == key).unwrap_or(0);
+        let key = selector(&self.model);
+        let at = self.mru.iter().position(|seen| *seen == key).unwrap_or(0);
         let len = self.mru.len();
-        let next = if forward {
-            at.saturating_add(1) % len
-        } else {
-            at.saturating_add(len.saturating_sub(1)) % len
-        };
-        let (provider, id) = self.mru.get(next)?;
+        let step = if forward { 1 } else { len.saturating_sub(1) };
+        let (provider, id) = self
+            .mru
+            .get(at.saturating_add(step) % len)?
+            .split_once('/')?;
         yi_runtime::resolve_model(provider, id)
     }
 }
 
 impl App {
-    /// Opens the picker over every catalog model, current selection first.
     pub(crate) fn open_model_picker(&mut self) {
         self.bottom = Some(Bottom::Model(Box::new(ModelPopup::new(
             yi_runtime::available_models(),
@@ -367,14 +296,13 @@ impl App {
                     .then(|| advanced_hint(&current.model))
                     .flatten()
                     .unwrap_or_else(|| {
+                        let bound = if up { "highest" } else { "lowest" };
                         format!(
-                            "reasoning is already at the {} level ({})",
-                            if up { "highest" } else { "lowest" },
+                            "reasoning is already at the {bound} level ({})",
                             current.effort
                         )
                     });
-                self.commit_cell(&Cell::Notice { text });
-                self.scheduler.request();
+                self.notice(text);
             }
         }
     }
@@ -385,17 +313,17 @@ impl App {
                 let effort = model.clamp_effort(self.selection.effort);
                 self.select(model, effort);
             }
-            None => {
-                self.commit_cell(&Cell::Notice {
-                    text: "only one model used this session - /model picks another".to_owned(),
-                });
-                self.scheduler.request();
-            }
+            None => self.notice("only one model used this session - /model picks another"),
         }
     }
 
     pub(crate) fn select(&mut self, model: Model, effort: Effort) {
         self.selection.select(model, effort);
+        self.scheduler.request();
+    }
+
+    fn notice(&mut self, text: impl Into<String>) {
+        self.commit_cell(&Cell::Notice { text: text.into() });
         self.scheduler.request();
     }
 }

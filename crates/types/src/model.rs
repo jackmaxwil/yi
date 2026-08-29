@@ -1,9 +1,8 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{Number, Value};
 
-/// Reasoning effort, low to high. The ordering of the variants is the ladder:
-/// [`Effort::ALL`] and every clamp read it, and nothing else in the workspace
-/// keeps a second ordered list of levels.
+/// Invariant: variant order is the ladder — [`Ord`], [`Effort::ALL`] and every
+/// clamp read it, and no second ordered list of levels exists anywhere.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Effort {
@@ -40,8 +39,7 @@ impl Effort {
         Self::Max,
     ];
 
-    /// Tiers a cycle shortcut refuses to enter; they are reachable only through
-    /// an explicit second step in the picker.
+    /// Tiers a cycle shortcut refuses to enter; the picker gates them.
     pub fn is_advanced(self) -> bool {
         matches!(self, Self::XHigh | Self::Max)
     }
@@ -100,9 +98,8 @@ impl Model {
         }
     }
 
-    /// Snap `effort` onto this model's ladder, preferring the next level up so
-    /// an unsupported request is never quietly answered with less thinking
-    /// while a higher supported rung exists.
+    /// Snaps up before down, so an unsupported request is never quietly
+    /// answered with less thinking while a higher rung exists.
     pub fn clamp_effort(&self, effort: Effort) -> Effort {
         let supported = self.supported_efforts();
         if supported.contains(&effort) {

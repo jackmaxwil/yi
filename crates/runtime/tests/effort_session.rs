@@ -103,6 +103,38 @@ fn switching_model_clamps_a_level_the_new_model_rejects() {
     assert_eq!(session.effort(), Effort::High);
 }
 
+/// Every effort keystroke calls through `set_model` with the model unchanged;
+/// recording that as a change filled the transcript with noise.
+#[test]
+fn setting_the_same_model_records_nothing() -> TestResult {
+    let dir = std::env::temp_dir().join(format!("yi-effort-noop-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let mut repo = JsonlRepo::new(dir.clone(), "/tmp/yi-effort-test");
+    let store = repo.create(CreateOptions::default())?;
+
+    let provider = Arc::new(ProviderStream::new(None, None));
+    let session = session(model("m", true, None), None, provider);
+    session.attach_store(store.clone())?;
+    let before = entry_kinds(&store)?;
+    session.set_model(model("m", true, None));
+    assert_eq!(entry_kinds(&store)?, before);
+
+    let _ = std::fs::remove_dir_all(&dir);
+    Ok(())
+}
+
+fn entry_kinds(store: &yi_session::SharedSession) -> Result<Vec<String>, Box<dyn Error>> {
+    Ok(yi_session::lock_session(store)
+        .find_entries_on_branch(
+            "main",
+            &yi_session::EntryQuery::default(),
+            &yi_session::BranchBounds::default(),
+        )?
+        .iter()
+        .map(|entry| entry.type_name().to_owned())
+        .collect())
+}
+
 #[test]
 fn resume_comes_back_on_the_model_and_effort_it_left_on() -> TestResult {
     let dir = std::env::temp_dir().join(format!("yi-effort-{}", std::process::id()));
@@ -112,8 +144,11 @@ fn resume_comes_back_on_the_model_and_effort_it_left_on() -> TestResult {
     let id = yi_session::lock_session(&store).metadata().id.clone();
 
     let provider = Arc::new(ProviderStream::new(None, None));
+    let haiku = yi_runtime::resolve_model("anthropic", "claude-haiku-4-5")
+        .ok_or("bundled catalog missing claude-haiku-4-5")?;
     let first = session(model("m", true, None), None, Arc::clone(&provider));
     first.attach_store(store)?;
+    first.set_model(haiku);
     first.set_effort(Effort::Low);
     assert_eq!(first.effort(), Effort::Low);
     drop(first);
@@ -122,6 +157,7 @@ fn resume_comes_back_on_the_model_and_effort_it_left_on() -> TestResult {
     let second = session(model("m", true, None), None, provider);
     second.attach_store(reopened)?;
     assert_eq!(second.effort(), Effort::Low);
+    assert_eq!(second.model().id, "claude-haiku-4-5");
 
     let _ = std::fs::remove_dir_all(&dir);
     Ok(())
