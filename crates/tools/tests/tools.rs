@@ -116,10 +116,10 @@ fn grep_returns_path_line_hits_and_respects_case_flag() -> TestResult {
     fs::write(dir.0.join("one.txt"), "alpha\nNEEDLE here\nomega")?;
     let context = ToolContext::new(dir.0.clone());
 
-    let missed = GrepTool.execute(args(&[("pattern", json!("needle"))]), &context);
+    let missed = GrepTool::default().execute(args(&[("pattern", json!("needle"))]), &context);
     assert_eq!(output_text(&missed), "No matches found");
 
-    let hit = GrepTool.execute(
+    let hit = GrepTool::default().execute(
         args(&[("pattern", json!("needle")), ("ignore_case", json!(true))]),
         &context,
     );
@@ -358,7 +358,7 @@ fn bash_output_is_reduced_and_recoverable() -> TestResult {
 #[test]
 fn a_lossy_reduction_without_a_tee_returns_raw() -> TestResult {
     let raw: String = (1..4_000).map(|n| format!("line-{n}\n")).collect();
-    let reduced = yi_tools::reduce("ls -R", &raw, "", 0, None);
+    let reduced = yi_tools::reduce("ls -R", &raw, "", 0, None, None);
     assert_eq!(reduced.text, raw);
     assert!(reduced.recovery.is_none());
     Ok(())
@@ -367,7 +367,7 @@ fn a_lossy_reduction_without_a_tee_returns_raw() -> TestResult {
 #[test]
 fn a_verbose_command_is_left_alone() -> TestResult {
     let raw: String = (1..4_000).map(|n| format!("line-{n}\n")).collect();
-    let reduced = yi_tools::reduce("cargo test -- --nocapture", &raw, "", 0, None);
+    let reduced = yi_tools::reduce("cargo test -- --nocapture", &raw, "", 0, None, None);
     assert_eq!(reduced.text, raw);
     assert!(reduced.recovery.is_none());
     Ok(())
@@ -382,7 +382,7 @@ fn a_failing_cargo_run_keeps_its_diagnostics() -> TestResult {
     raw.push_str("error[E0425]: cannot find value `nope` in this scope\n");
     raw.push_str("  --> src/lib.rs:3:5\n");
     let dir = temp_dir("reduce-cargo")?;
-    let reduced = yi_tools::reduce("cargo build", &raw, "", 101, Some(&dir.0));
+    let reduced = yi_tools::reduce("cargo build", &raw, "", 101, Some(&dir.0), None);
     assert!(reduced.text.contains("E0425"), "{}", reduced.text);
     assert!(reduced.out_bytes < reduced.raw_bytes);
     Ok(())
@@ -476,7 +476,7 @@ fn grep_context_windows_merge_split_and_clip_at_file_edges() -> TestResult {
     )?;
     let context = ToolContext::new(dir.0.clone());
 
-    let out = GrepTool.execute(
+    let out = GrepTool::default().execute(
         args(&[("pattern", json!("hit")), ("context", json!(1))]),
         &context,
     );
@@ -514,10 +514,10 @@ fn grep_context_is_clamped_and_defaults_to_bare_hits() -> TestResult {
     fs::write(dir.0.join("big.txt"), body)?;
     let context = ToolContext::new(dir.0.clone());
 
-    let bare = GrepTool.execute(args(&[("pattern", json!("hit"))]), &context);
+    let bare = GrepTool::default().execute(args(&[("pattern", json!("hit"))]), &context);
     assert_eq!(output_text(&bare).lines().count(), 1);
 
-    let clamped = GrepTool.execute(
+    let clamped = GrepTool::default().execute(
         args(&[("pattern", json!("hit")), ("context", json!(9_999))]),
         &context,
     );
@@ -634,5 +634,147 @@ fn a_kernel_edit_arrives_as_a_real_patch() -> TestResult {
     );
     let removed = patch.lines().filter(|l| l.starts_with("-o")).count();
     assert_eq!(removed, 0, "unchanged lines are not marked: {patch}");
+    Ok(())
+}
+
+/// Grep v2: regex opt-in, type filter, offset paging with an exact next
+/// call, and a distinguishable no-more state.
+#[test]
+fn grep_v2_regex_type_filter_and_offset_paging() -> TestResult {
+    let dir = temp_dir("grep-v2")?;
+    fs::write(dir.0.join("a.rs"), "fn alpha() {}\nfn beta() {}\n")?;
+    fs::write(dir.0.join("b.py"), "def alpha():\n    pass\n")?;
+    let context = ToolContext::new(dir.0.clone());
+    let grep = GrepTool::default();
+
+    let literal = grep.execute(args(&[("pattern", json!("fn a"))]), &context);
+    assert!(output_text(&literal).contains("a.rs:1:fn alpha"));
+
+    let rx = grep.execute(
+        args(&[
+            ("pattern", json!("fn (alpha|beta)")),
+            ("regex", json!(true)),
+        ]),
+        &context,
+    );
+    assert_eq!(output_text(&rx).lines().count(), 2, "{}", output_text(&rx));
+
+    let bad = grep.execute(
+        args(&[("pattern", json!("fn (")), ("regex", json!(true))]),
+        &context,
+    );
+    assert!(bad.is_error);
+    assert_eq!(
+        bad.result.details.get("errorKind").and_then(Value::as_str),
+        Some("invalid_args")
+    );
+
+    let typed = grep.execute(
+        args(&[("pattern", json!("alpha")), ("type", json!("py"))]),
+        &context,
+    );
+    let text = output_text(&typed);
+    assert!(text.contains("b.py"), "{text}");
+    assert!(!text.contains("a.rs"), "{text}");
+
+    let paged = grep.execute(
+        args(&[("pattern", json!("alpha")), ("offset", json!(50))]),
+        &context,
+    );
+    assert!(
+        output_text(&paged).contains("beyond the 2 collected matches"),
+        "{}",
+        output_text(&paged)
+    );
+    Ok(())
+}
+
+/// With a hashline store attached, grep mints a `[path#TAG]` header and
+/// records the shown rows as seen, so a hit can anchor an edit directly.
+#[test]
+fn grep_mints_snapshot_tags_when_hashline_attached() -> TestResult {
+    let dir = temp_dir("grep-tags")?;
+    fs::write(dir.0.join("x.rs"), "one\ntwo\nthree\n")?;
+    let context = ToolContext::new(dir.0.clone());
+    let state = yi_tools::hashline::tool::shared_hashline_state();
+    let grep = GrepTool {
+        hashline: Some(std::sync::Arc::clone(&state)),
+    };
+    let out = grep.execute(
+        args(&[("pattern", json!("two")), ("context", json!(1))]),
+        &context,
+    );
+    let text = output_text(&out);
+    assert!(text.contains("#"), "tag header missing: {text}");
+    assert!(text.contains("2:two"), "{text}");
+    let canonical = dir.0.join("x.rs").canonicalize()?.display().to_string();
+    let guard = state.lock().map_err(|_| "poisoned")?;
+    let snapshot = guard.snapshots.head(&canonical).ok_or("no snapshot")?;
+    let seen = snapshot.seen_lines.as_ref().ok_or("no seen lines")?;
+    assert!(seen.contains(&1) && seen.contains(&2) && seen.contains(&3));
+    Ok(())
+}
+
+/// Read v2: multi-range windows in one call, elision markers between them,
+/// and the long-line clip that never joins the seen set.
+#[test]
+fn read_ranges_and_line_clip() -> TestResult {
+    let dir = temp_dir("read-v2")?;
+    let body: String = (1..=60).map(|n| format!("line {n}\n")).collect();
+    fs::write(dir.0.join("r.txt"), &body)?;
+    let state = yi_tools::hashline::tool::shared_hashline_state();
+    let read = yi_tools::hashline::tool::HashlineReadTool {
+        state: std::sync::Arc::clone(&state),
+    };
+    let context = ToolContext::new(dir.0.clone());
+    let out = read.execute(
+        args(&[
+            ("path", json!("r.txt")),
+            ("ranges", json!([[2, 4], [50, 52]])),
+        ]),
+        &context,
+    );
+    let text = output_text(&out);
+    assert!(
+        text.contains("2:line 2") && text.contains("52:line 52"),
+        "{text}"
+    );
+    assert!(text.contains("[lines 5-49 not shown]"), "{text}");
+    assert!(!text.contains("line 30"), "{text}");
+
+    let both = read.execute(
+        args(&[
+            ("path", json!("r.txt")),
+            ("ranges", json!([[1, 2]])),
+            ("offset", json!(1)),
+        ]),
+        &context,
+    );
+    assert!(both.is_error);
+
+    let long = format!("short\n{}\n", "x".repeat(5_000));
+    fs::write(dir.0.join("wide.txt"), &long)?;
+    let out = read.execute(args(&[("path", json!("wide.txt"))]), &context);
+    let text = output_text(&out);
+    assert!(text.contains("were clipped"), "{text}");
+    assert!(text.contains("sed -n '2p'"), "{text}");
+    let canonical = dir.0.join("wide.txt").canonicalize()?.display().to_string();
+    let guard = state.lock().map_err(|_| "poisoned")?;
+    let snapshot = guard.snapshots.head(&canonical).ok_or("no snapshot")?;
+    let seen = snapshot.seen_lines.as_ref().ok_or("no seen lines")?;
+    assert!(seen.contains(&1) && !seen.contains(&2), "clipped row seen");
+    Ok(())
+}
+
+/// Bash results carry a command category for `yi stats`.
+#[test]
+fn bash_details_carry_a_command_category() -> TestResult {
+    let dir = temp_dir("bash-cat")?;
+    let context = ToolContext::new(dir.0.clone());
+    let out = BashTool.execute(args(&[("command", json!("ls"))]), &context);
+    assert_eq!(
+        out.result.details.get("category").and_then(Value::as_str),
+        Some("list_files")
+    );
     Ok(())
 }

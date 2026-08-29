@@ -28,7 +28,17 @@ pub struct UserConfig {
     pub bash: Option<BashConfig>,
     pub plan: Option<PlanConfig>,
     pub mcp: Option<McpConfig>,
+    pub kernel: Option<KernelConfig>,
     pub keys: Option<std::collections::BTreeMap<String, String>>,
+}
+
+/// `kernel.prewarm`: boot the IPython kernel in the background at session
+/// open so the first cell pays execution only. Default on; `false` keeps
+/// the boot lazy.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct KernelConfig {
+    pub prewarm: Option<bool>,
 }
 
 /// D13: `bash.autoBackgroundMs`, off unless the user sets it.

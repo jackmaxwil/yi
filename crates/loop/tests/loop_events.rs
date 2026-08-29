@@ -94,6 +94,7 @@ impl AgentTool for EchoTool {
             name: "echo".to_owned(),
             description: "echoes".to_owned(),
             parameters: json!({"type": "object"}),
+            freeform: None,
         }
     }
 
@@ -566,4 +567,155 @@ async fn an_interrupt_mid_stream_ends_the_turn_instead_of_riding_it_out() {
         })
         .unwrap_or_default();
     assert_eq!(ends, 1, "the turn ends exactly once");
+}
+
+/// A tool that sleeps, and reports Parallel or Sequential mode.
+struct SleepTool {
+    name: &'static str,
+    mode: ExecutionMode,
+    delay_ms: u64,
+}
+
+impl AgentTool for SleepTool {
+    fn definition(&self) -> ToolDef {
+        ToolDef {
+            name: self.name.to_owned(),
+            description: "sleeps".to_owned(),
+            parameters: json!({"type": "object"}),
+            freeform: None,
+        }
+    }
+
+    fn execution_mode(&self) -> ExecutionMode {
+        self.mode
+    }
+
+    fn execute<'a>(
+        &'a self,
+        _tool_call_id: &'a str,
+        _args: Map<String, Value>,
+        _signal: &'a InterruptSignal,
+    ) -> ToolFuture<'a> {
+        let delay = self.delay_ms;
+        Box::pin(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
+            ToolOutcome {
+                result: error_tool_result("slept"),
+                is_error: false,
+            }
+        })
+    }
+}
+
+/// P4: a batch of parallel-mode (read-kind) calls overlaps — four 80ms
+/// sleeps finish in far less than 320ms — while results and events keep
+/// call order, and every result carries `durationMs`.
+#[tokio::test]
+async fn parallel_read_batch_overlaps_and_stamps_duration() {
+    let calls: Vec<yi_types::message::Content> = (0..4)
+        .map(|i| faux_tool_call(&format!("call-{i}"), "sleeper", Map::new()))
+        .collect();
+    let stream = Scripted::new(vec![
+        faux_assistant_message(calls, StopReason::ToolUse),
+        faux_assistant_message(vec![faux_text("done")], StopReason::Stop),
+    ]);
+    let mut context = LoopContext {
+        system_prompt: String::new(),
+        messages: Vec::new(),
+        tools: vec![Arc::new(SleepTool {
+            name: "sleeper",
+            mode: ExecutionMode::Parallel,
+            delay_ms: 80,
+        })],
+    };
+    let config = LoopConfig::new(faux_model());
+    let signal = InterruptSignal::default();
+    let (events, mut emit) = collector();
+    let started = std::time::Instant::now();
+    let _ = run_loop(
+        &mut context,
+        vec![user("go")],
+        &config,
+        &signal,
+        &mut emit,
+        &stream,
+    )
+    .await;
+    let elapsed = started.elapsed();
+    assert!(
+        elapsed < std::time::Duration::from_millis(240),
+        "batch was serial: {elapsed:?}"
+    );
+    let events = events.lock().unwrap_or_else(|error| error.into_inner());
+    let mut end_order = Vec::new();
+    for event in events.iter() {
+        if let AgentEvent::ToolExecutionEnd {
+            tool_call_id,
+            result,
+            ..
+        } = event
+        {
+            end_order.push(tool_call_id.clone());
+            assert!(
+                result.details.get("durationMs").is_some(),
+                "durationMs stamped"
+            );
+        }
+    }
+    assert_eq!(end_order, ["call-0", "call-1", "call-2", "call-3"]);
+}
+
+/// A sequential-mode (mutating) call in the middle splits the batch: the
+/// writes never overlap with anything.
+#[tokio::test]
+async fn sequential_tool_splits_the_batch() {
+    let calls = vec![
+        faux_tool_call("call-a", "sleeper", Map::new()),
+        faux_tool_call("call-b", "writer", Map::new()),
+        faux_tool_call("call-c", "sleeper", Map::new()),
+    ];
+    let stream = Scripted::new(vec![
+        faux_assistant_message(calls, StopReason::ToolUse),
+        faux_assistant_message(vec![faux_text("done")], StopReason::Stop),
+    ]);
+    let mut context = LoopContext {
+        system_prompt: String::new(),
+        messages: Vec::new(),
+        tools: vec![
+            Arc::new(SleepTool {
+                name: "sleeper",
+                mode: ExecutionMode::Parallel,
+                delay_ms: 40,
+            }),
+            Arc::new(SleepTool {
+                name: "writer",
+                mode: ExecutionMode::Sequential,
+                delay_ms: 40,
+            }),
+        ],
+    };
+    let config = LoopConfig::new(faux_model());
+    let signal = InterruptSignal::default();
+    let (events, mut emit) = collector();
+    let started = std::time::Instant::now();
+    let _ = run_loop(
+        &mut context,
+        vec![user("go")],
+        &config,
+        &signal,
+        &mut emit,
+        &stream,
+    )
+    .await;
+    // Three serial 40ms stretches (each single-item batch) stay ordered.
+    assert!(started.elapsed() >= std::time::Duration::from_millis(110));
+    let events = events.lock().unwrap_or_else(|error| error.into_inner());
+    let ends: Vec<String> = events
+        .iter()
+        .filter_map(|event| match event {
+            AgentEvent::ToolExecutionEnd { tool_call_id, .. } => Some(tool_call_id.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(ends, ["call-a", "call-b", "call-c"]);
 }

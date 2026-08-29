@@ -66,7 +66,15 @@ fn convert_user(content: &UserContent) -> Option<Value> {
     }
 }
 
-fn convert_assistant(content: &[Content]) -> Vec<Value> {
+/// The one raw argument a freeform (custom) tool call carries. C8 scopes
+/// freeform to the hashline edit tool; thread a per-tool key when a second
+/// freeform tool exists.
+const FREEFORM_ARGUMENT: &str = "patch";
+
+fn convert_assistant(
+    content: &[Content],
+    freeform: &std::collections::BTreeSet<String>,
+) -> Vec<Value> {
     let mut items = Vec::new();
     for block in content {
         match block {
@@ -102,12 +110,28 @@ fn convert_assistant(content: &[Content]) -> Vec<Value> {
                 ..
             } => {
                 let (call_id, item_id) = call_and_item(id);
-                let mut item = json!({
-                    "type": "function_call",
-                    "call_id": call_id,
-                    "name": name,
-                    "arguments": Value::Object(arguments.clone()).to_string(),
-                });
+                let mut item = if freeform.contains(name) {
+                    let input = arguments
+                        .get(FREEFORM_ARGUMENT)
+                        .and_then(Value::as_str)
+                        .map_or_else(
+                            || Value::Object(arguments.clone()).to_string(),
+                            str::to_owned,
+                        );
+                    json!({
+                        "type": "custom_tool_call",
+                        "call_id": call_id,
+                        "name": name,
+                        "input": input,
+                    })
+                } else {
+                    json!({
+                        "type": "function_call",
+                        "call_id": call_id,
+                        "name": name,
+                        "arguments": Value::Object(arguments.clone()).to_string(),
+                    })
+                };
                 if let Some(item_id) = item_id {
                     item["id"] = json!(item_id);
                 }
@@ -119,7 +143,17 @@ fn convert_assistant(content: &[Content]) -> Vec<Value> {
     items
 }
 
-fn convert_tool_result(tool_call_id: &str, content: &[Content], vision: bool) -> Value {
+fn convert_tool_result(
+    tool_call_id: &str,
+    content: &[Content],
+    vision: bool,
+    is_freeform: bool,
+) -> Value {
+    let kind = if is_freeform {
+        "custom_tool_call_output"
+    } else {
+        "function_call_output"
+    };
     let (call_id, _) = call_and_item(tool_call_id);
     let text: String = content
         .iter()
@@ -151,7 +185,7 @@ fn convert_tool_result(tool_call_id: &str, content: &[Content], vision: bool) ->
             text.as_str()
         };
         json!({
-            "type": "function_call_output",
+            "type": kind,
             "call_id": call_id,
             "output": output,
         })
@@ -162,11 +196,21 @@ fn convert_tool_result(tool_call_id: &str, content: &[Content], vision: bool) ->
         }
         parts.extend(images);
         json!({
-            "type": "function_call_output",
+            "type": kind,
             "call_id": call_id,
             "output": parts,
         })
     }
+}
+
+fn freeform_names(context: &LlmContext) -> std::collections::BTreeSet<String> {
+    context
+        .tools
+        .iter()
+        .flatten()
+        .filter(|tool| tool.freeform.is_some())
+        .map(|tool| tool.name.clone())
+        .collect()
 }
 
 fn convert_input(model: &Model, context: &LlmContext) -> Vec<Value> {
@@ -185,6 +229,7 @@ fn convert_input(model: &Model, context: &LlmContext) -> Vec<Value> {
         input.push(json!({"role": role, "content": context.system_prompt}));
     }
     let vision = model.input.iter().any(|kind| kind == "image");
+    let freeform = freeform_names(context);
     for message in &transformed {
         match message {
             AgentMessage::User { content, .. } => {
@@ -192,29 +237,58 @@ fn convert_input(model: &Model, context: &LlmContext) -> Vec<Value> {
                     input.push(item);
                 }
             }
-            AgentMessage::Assistant { content, .. } => input.extend(convert_assistant(content)),
+            AgentMessage::Assistant { content, .. } => {
+                input.extend(convert_assistant(content, &freeform));
+            }
             AgentMessage::ToolResult {
                 tool_call_id,
+                tool_name,
                 content,
                 ..
-            } => input.push(convert_tool_result(tool_call_id, content, vision)),
+            } => input.push(convert_tool_result(
+                tool_call_id,
+                content,
+                vision,
+                freeform.contains(tool_name),
+            )),
             _ => {}
         }
     }
     input
 }
 
+/// A custom tool call's raw text becomes the one argument the tool schema
+/// names, so the tool layer never learns which wire shape delivered it.
+fn freeform_arguments(input: &str) -> Map<String, Value> {
+    let mut arguments = Map::new();
+    arguments.insert(
+        FREEFORM_ARGUMENT.to_owned(),
+        Value::String(input.to_owned()),
+    );
+    arguments
+}
+
 fn convert_tools(tools: &[ToolDef]) -> Vec<Value> {
     tools
         .iter()
-        .map(|tool| {
-            json!({
+        .map(|tool| match &tool.freeform {
+            Some(format) => json!({
+                "type": "custom",
+                "name": tool.name,
+                "description": tool.description,
+                "format": {
+                    "type": "grammar",
+                    "syntax": format.syntax,
+                    "definition": format.definition,
+                },
+            }),
+            None => json!({
                 "type": "function",
                 "name": tool.name,
                 "description": tool.description,
                 "parameters": tool.parameters,
                 "strict": false,
-            })
+            }),
         })
         .collect()
 }
@@ -296,6 +370,7 @@ struct ToolSlot {
     call_id: String,
     ended: bool,
     partial_args: String,
+    freeform: bool,
 }
 
 pub struct EventMapper {
@@ -407,6 +482,34 @@ impl EventMapper {
         Some(content_index)
     }
 
+    fn mark_freeform(&mut self, slot_index: usize) {
+        if let Some(slot) = self.tools.get_mut(slot_index) {
+            slot.freeform = true;
+        }
+    }
+
+    /// One handler for a `custom_tool_call` item, streamed open or done.
+    fn on_custom_tool_call(
+        &mut self,
+        item: &Value,
+        done: bool,
+        events: &mut Vec<AssistantMessageEvent>,
+    ) {
+        let item_id = item.get("id").and_then(Value::as_str).unwrap_or("");
+        let call_id = item.get("call_id").and_then(Value::as_str).unwrap_or("");
+        let name = item.get("name").and_then(Value::as_str).unwrap_or("");
+        let Some(slot) = self.ensure_tool(item_id, call_id, name, events) else {
+            return;
+        };
+        self.mark_freeform(slot);
+        let input = item.get("input").and_then(Value::as_str);
+        if done {
+            self.end_tool(slot, input, events);
+        } else if let Some(input) = input.filter(|input| !input.is_empty()) {
+            self.apply_tool_args(slot, input, events);
+        }
+    }
+
     fn find_tool(&mut self, item_id: &str, call_id: &str) -> Option<usize> {
         if item_id.is_empty() && call_id.is_empty() {
             return self.tools.iter().rposition(|slot| !slot.ended);
@@ -463,6 +566,7 @@ impl EventMapper {
             call_id: call_id.to_owned(),
             ended: false,
             partial_args: String::new(),
+            freeform: false,
         });
         events.push(AssistantMessageEvent::ToolCallStart {
             content_index,
@@ -511,6 +615,28 @@ impl EventMapper {
         });
     }
 
+    /// Parse the slot's accumulated arguments (raw text for a freeform slot)
+    /// into its tool-call content block; returns the block's index.
+    fn materialize_args(&mut self, slot_index: usize) -> Option<usize> {
+        let slot = self.tools.get(slot_index)?;
+        let parsed = if slot.freeform {
+            freeform_arguments(&slot.partial_args)
+        } else {
+            parse_streaming_json(&slot.partial_args)
+        };
+        let content_index = slot.content_index;
+        let call_id = slot.call_id.clone();
+        let item_id = slot.item_id.clone();
+        if let Some(Content::ToolCall { id, arguments, .. }) = self
+            .content_mut()
+            .and_then(|content| content.get_mut(content_index))
+        {
+            *id = combined_id(&call_id, &item_id);
+            *arguments = parsed;
+        }
+        Some(content_index)
+    }
+
     fn apply_tool_args(
         &mut self,
         slot_index: usize,
@@ -524,17 +650,9 @@ impl EventMapper {
             return;
         }
         slot.partial_args.push_str(chunk);
-        let parsed = parse_streaming_json(&slot.partial_args);
-        let content_index = slot.content_index;
-        let call_id = slot.call_id.clone();
-        let item_id = slot.item_id.clone();
-        if let Some(Content::ToolCall { id, arguments, .. }) = self
-            .content_mut()
-            .and_then(|content| content.get_mut(content_index))
-        {
-            *id = combined_id(&call_id, &item_id);
-            *arguments = parsed;
-        }
+        let Some(content_index) = self.materialize_args(slot_index) else {
+            return;
+        };
         events.push(AssistantMessageEvent::ToolCallDelta {
             content_index,
             delta: chunk.to_owned(),
@@ -556,17 +674,9 @@ impl EventMapper {
                 slot.partial_args = arguments.to_owned();
             }
             slot.ended = true;
-            let parsed = parse_streaming_json(&slot.partial_args);
-            let content_index = slot.content_index;
-            let call_id = slot.call_id.clone();
-            let item_id = slot.item_id.clone();
-            if let Some(Content::ToolCall { id, arguments, .. }) = self
-                .content_mut()
-                .and_then(|content| content.get_mut(content_index))
-            {
-                *id = combined_id(&call_id, &item_id);
-                *arguments = parsed;
-            }
+            let Some(content_index) = self.materialize_args(slot_index) else {
+                return;
+            };
             if let Some(tool_call) = self
                 .content_mut()
                 .and_then(|content| content.get(content_index))
@@ -589,6 +699,7 @@ impl EventMapper {
                 let name = item.get("name").and_then(Value::as_str).unwrap_or("");
                 let _ = self.ensure_tool(item_id, call_id, name, events);
             }
+            Some("custom_tool_call") => self.on_custom_tool_call(item, false, events),
             Some("message") => {
                 if let Some(id) = item.get("id").and_then(Value::as_str)
                     && let Some(content_index) = self.ensure_text(events)
@@ -604,6 +715,10 @@ impl EventMapper {
     }
 
     fn on_item_done(&mut self, item: &Value, events: &mut Vec<AssistantMessageEvent>) {
+        if item.get("type").and_then(Value::as_str) == Some("custom_tool_call") {
+            self.on_custom_tool_call(item, true, events);
+            return;
+        }
         if item.get("type").and_then(Value::as_str) != Some("reasoning") {
             return;
         }
@@ -689,6 +804,30 @@ impl EventMapper {
                 if let Some(item) = payload.get("item") {
                     self.on_item_done(item, &mut events);
                 }
+            }
+            "response.custom_tool_call_input.delta" => {
+                let item_id = payload.get("item_id").and_then(Value::as_str).unwrap_or("");
+                let call_id = payload.get("call_id").and_then(Value::as_str).unwrap_or("");
+                let Some(slot) = self.ensure_tool(item_id, call_id, "", &mut events) else {
+                    return events;
+                };
+                self.mark_freeform(slot);
+                if let Some(delta) = payload.get("delta").and_then(Value::as_str) {
+                    self.apply_tool_args(slot, delta, &mut events);
+                }
+            }
+            "response.custom_tool_call_input.done" => {
+                let item_id = payload.get("item_id").and_then(Value::as_str).unwrap_or("");
+                let call_id = payload.get("call_id").and_then(Value::as_str).unwrap_or("");
+                let Some(slot) = self.ensure_tool(item_id, call_id, "", &mut events) else {
+                    return events;
+                };
+                self.mark_freeform(slot);
+                self.end_tool(
+                    slot,
+                    payload.get("input").and_then(Value::as_str),
+                    &mut events,
+                );
             }
             "response.function_call_arguments.delta" => {
                 let item_id = payload.get("item_id").and_then(Value::as_str).unwrap_or("");

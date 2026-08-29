@@ -43,6 +43,9 @@ pub fn parse_line_ref(reference: &str) -> Result<Anchor, String> {
     Ok(Anchor { line })
 }
 
+/// Pinned prefix: the edit tool classifies a rejection as `stale_tag` by it.
+pub const EDIT_REJECTED_PREFIX: &str = "Edit rejected";
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct MismatchError {
     pub path: Option<String>,
@@ -63,7 +66,7 @@ impl MismatchError {
         if !self.hash_recognized {
             return vec![
                 format!(
-                    "Edit rejected{path_text}: hash {HL_FILE_HASH_SEP}{} is not from this session.",
+                    "{EDIT_REJECTED_PREFIX}{path_text}: hash {HL_FILE_HASH_SEP}{} is not from this session.",
                     self.expected_file_hash
                 ),
                 format!(
@@ -73,7 +76,7 @@ impl MismatchError {
             ];
         }
         vec![
-            format!("Edit rejected{path_text}: file changed between read and edit."),
+            format!("{EDIT_REJECTED_PREFIX}{path_text}: file changed between read and edit."),
             format!(
                 "Section is bound to {HL_FILE_HASH_SEP}{}, but the current file hashes to {HL_FILE_HASH_SEP}{}. If a prior edit in this session modified this file, copy the {HL_FILE_PREFIX}path{HL_FILE_HASH_SEP}newhash{HL_FILE_SUFFIX} header from that edit's response; otherwise re-read the file with `read` to refresh the tag before retrying.",
                 self.expected_file_hash, self.actual_file_hash

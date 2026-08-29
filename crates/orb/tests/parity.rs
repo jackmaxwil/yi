@@ -134,7 +134,9 @@ fn leak(name: &str) -> &'static str {
 /// control keys, the chunk bound, or the compressed payload leaves the orb
 /// undrawn on every kitty-family terminal, and no non-kitty test path can see
 /// it. Ground truth is RFC 1950's own header rule plus the painted bytes —
-/// not this compressor's opinion of its own output.
+/// not this compressor's opinion of its own output. P9: transmit (`a=t`)
+/// carries no delete and no placement — placement is its own escape, so a
+/// frame swap never shows an empty cell.
 #[test]
 fn kitty_emit_transmits_an_inflatable_zlib_stream() -> TestResult {
     const PX: usize = 192;
@@ -142,17 +144,37 @@ fn kitty_emit_transmits_an_inflatable_zlib_stream() -> TestResult {
     let rgba = orb::kitty::paint_rgba(&frame, 64.0, PX);
 
     let mut wire = Vec::new();
-    orb::kitty::emit(&mut wire, &rgba, PX, 3, 7, 6, 3)?;
+    let sent = orb::kitty::transmit(&mut wire, orb::kitty::IMAGE_IDS[0], &rgba, PX)?;
+    assert!(sent > 0, "transmit reports payload bytes");
+    orb::kitty::place(&mut wire, orb::kitty::IMAGE_IDS[0], 3, 7, 6, 3)?;
     let wire = String::from_utf8(wire)?;
 
     let (head, tail) = wire.split_once("\x1b_Gf=32,").ok_or("no transmit escape")?;
-    assert!(head.contains("a=d,d=i"), "placement not deleted first");
+    assert!(
+        !head.contains("a=d"),
+        "a frame swap must never delete first"
+    );
     let (control, tail) = tail.split_once(';').ok_or("no payload separator")?;
+    assert!(
+        control.contains("a=t"),
+        "transmit displays nothing: {control}"
+    );
     assert!(
         control.contains("o=z"),
         "payload is compressed but not declared: {control}"
     );
     assert!(control.contains(&format!("s={PX},v={PX}")), "{control}");
+    let place_at = wire.find("a=p,").ok_or("no placement escape")?;
+    let placement = wire.get(place_at..).unwrap_or_default();
+    assert!(placement.starts_with("a=p,i=7601,p=1"), "{placement}");
+    assert!(
+        wire.contains("\x1b[?2026h") && wire.contains("\x1b[?2026l"),
+        "placement is bracketed in a synchronized update"
+    );
+    assert!(
+        wire.contains("\x1b7") && wire.contains("\x1b8"),
+        "cursor saved and restored around the placement"
+    );
 
     let mut payload = String::new();
     let (first, mut rest) = tail.split_once("\x1b\\").ok_or("unterminated chunk")?;

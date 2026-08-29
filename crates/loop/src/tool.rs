@@ -46,3 +46,13 @@ pub fn error_tool_result(message: &str) -> ToolResult {
         terminate: None,
     }
 }
+
+/// `kind` is the failure taxonomy `yi stats` aggregates (`denied`,
+/// `not_found`, `invalid_args`, `aborted`, `tool_error`, ...).
+pub fn error_tool_result_kind(message: &str, kind: &str) -> ToolResult {
+    let mut result = error_tool_result(message);
+    if let Value::Object(details) = &mut result.details {
+        details.insert("errorKind".to_owned(), Value::String(kind.to_owned()));
+    }
+    result
+}

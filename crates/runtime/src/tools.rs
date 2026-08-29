@@ -132,6 +132,16 @@ impl AgentTool for ToolAdapter {
             name: self.tool.name().to_owned(),
             description: self.tool.description().to_owned(),
             parameters: self.tool.schema(),
+            freeform: self.tool.freeform(),
+        }
+    }
+
+    /// Only read-kind tools may overlap inside a batch; anything that can
+    /// mutate keeps the strict order the transcript shows.
+    fn execution_mode(&self) -> yi_loop::config::ExecutionMode {
+        match self.tool.kind() {
+            yi_tools::ToolKind::Read => yi_loop::config::ExecutionMode::Parallel,
+            _ => yi_loop::config::ExecutionMode::Sequential,
         }
     }
 
@@ -192,14 +202,14 @@ impl AgentTool for ToolAdapter {
                 let args_json = serde_json::to_string(&args).unwrap_or_default();
                 if let Some(denial) = rules.check_tool(tool.name(), &args_json) {
                     return ToolOutcome {
-                        result: error_tool_result(&denial),
+                        result: yi_loop::tool::error_tool_result_kind(&denial, "denied"),
                         is_error: true,
                     };
                 }
             }
             if let Some(denial) = wall.check(tool.name(), tool.kind(), &args, &context.cwd) {
                 return ToolOutcome {
-                    result: error_tool_result(&denial),
+                    result: yi_loop::tool::error_tool_result_kind(&denial, "denied"),
                     is_error: true,
                 };
             }
@@ -231,10 +241,10 @@ impl AgentTool for ToolAdapter {
                     }
                     Ok(outcome) => {
                         return ToolOutcome {
-                            result: error_tool_result(&format!(
-                                "Permission denied: {}",
-                                outcome.reason
-                            )),
+                            result: yi_loop::tool::error_tool_result_kind(
+                                &format!("Permission denied: {}", outcome.reason),
+                                "denied",
+                            ),
                             is_error: true,
                         };
                     }

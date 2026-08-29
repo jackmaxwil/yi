@@ -50,6 +50,11 @@ pub trait Tool: Send + Sync {
     fn schema(&self) -> Value;
     fn kind(&self) -> ToolKind;
 
+    /// C8: a grammar for adapters that can take the input as raw text.
+    fn freeform(&self) -> Option<yi_types::model::FreeformFormat> {
+        None
+    }
+
     fn irreversible(&self, _input: &Map<String, Value>) -> bool {
         !matches!(self.kind(), ToolKind::Read)
     }
@@ -87,6 +92,17 @@ pub fn text_output(text: impl Into<String>) -> ToolOutput {
 pub fn error_output(message: impl Into<String>) -> ToolOutput {
     let mut output = text_output(message);
     output.is_error = true;
+    output
+}
+
+/// `kind` is the machine-readable failure taxonomy (`denied`, `not_found`,
+/// `invalid_args`, `aborted`, `stale_tag`, `noop_loop`, `tool_error`) that
+/// `yi stats` aggregates; the prose stays the model's view.
+pub fn error_output_kind(message: impl Into<String>, kind: &str) -> ToolOutput {
+    let mut output = error_output(message);
+    if let Value::Object(details) = &mut output.result.details {
+        details.insert("errorKind".to_owned(), Value::String(kind.to_owned()));
+    }
     output
 }
 

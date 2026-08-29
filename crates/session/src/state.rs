@@ -122,6 +122,22 @@ impl SessionState {
             .map(LaneRecord::id)
     }
 
+    /// Main-lane tokens live on assistant entries; child lanes arrive as
+    /// Usage records. Counting only records reported ~zero for the main lane.
+    fn absorb_entry_usage(&mut self, entry: &Entry) {
+        if let Entry::Message { message, .. } = entry
+            && let yi_types::message::AgentMessage::Assistant { usage, .. } = message
+        {
+            self.stats.cached_tokens = self.stats.cached_tokens.saturating_add(usage.cache_read);
+            self.stats.uncached_tokens = self
+                .stats
+                .uncached_tokens
+                .saturating_add(usage.input.saturating_add(usage.cache_write));
+            self.stats.total_tokens = self.stats.total_tokens.saturating_add(usage.total_tokens);
+            self.stats.cost_total += usage.cost.total.as_f64().unwrap_or(0.0);
+        }
+    }
+
     pub fn apply_mutation(&mut self, mutation: Mutation) -> Result<(), SessionError> {
         let invalid = |message: String| {
             SessionError::InvalidEntry(format!("Invalid session mutation: {message}"))
@@ -165,6 +181,7 @@ impl SessionState {
                 if matches!(entry, Entry::Message { .. }) {
                     self.stats.message_count = self.stats.message_count.saturating_add(1);
                 }
+                self.absorb_entry_usage(entry);
             }
             Mutation::Record { record } => {
                 if self.lane_leaf(record.lane()).is_none() {
@@ -198,7 +215,14 @@ impl SessionState {
                     }
                     _ => {}
                 }
-                if let Some(usage) = record.usage() {
+                // A `cause: "assistant"` usage record mirrors an assistant
+                // entry that already carries the same usage (pi import
+                // convention); counting both doubles the main lane.
+                let mirrors_entry = matches!(
+                    record,
+                    LaneRecord::Usage { cause, .. } if cause == "assistant"
+                );
+                if let Some(usage) = record.usage().filter(|_| !mirrors_entry) {
                     self.stats.cached_tokens =
                         self.stats.cached_tokens.saturating_add(usage.cache_read);
                     self.stats.uncached_tokens = self

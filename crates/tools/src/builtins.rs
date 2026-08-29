@@ -9,10 +9,6 @@ use crate::tool::{
 };
 
 const MATCH_CAP: usize = 1_000;
-const GREP_HIT_CAP: usize = 200;
-// A context window is multiplied by every hit, so an unclamped request turns
-// a 200-hit cap into an unbounded file dump.
-const GREP_CONTEXT_CAP: usize = 10;
 
 #[derive(Default)]
 pub struct WriteTool {
@@ -177,144 +173,19 @@ impl Tool for GlobTool {
             matches.len() < MATCH_CAP
         });
         matches.sort();
-        if matches.is_empty() {
+        let capped = matches.len() >= MATCH_CAP;
+        let mut output = if matches.is_empty() {
             text_output("No files matched")
-        } else if matches.len() >= MATCH_CAP {
+        } else if capped {
             text_output(format!(
-                "{}\n[result capped at {MATCH_CAP} matches]",
+                "{}\n[result capped at {MATCH_CAP} matches — narrow the pattern or pass path]",
                 matches.join("\n")
             ))
         } else {
             text_output(matches.join("\n"))
-        }
-    }
-}
-
-pub struct GrepTool;
-
-impl Tool for GrepTool {
-    fn name(&self) -> &str {
-        "grep"
-    }
-
-    fn description(&self) -> &str {
-        "Search file contents for a literal substring under path or the working directory. Returns path:line:text hits, and path-line-text for context rows. For regex or multiline searches, run rg through bash."
-    }
-
-    fn schema(&self) -> Value {
-        json!({
-            "type": "object",
-            "properties": {
-                "pattern": {"type": "string", "description": "Literal substring to search for (not a regex)"},
-                "path": {"type": "string", "description": "Directory or file to search (default: the working directory)"},
-                "ignore_case": {"type": "boolean", "description": "Case-insensitive search"},
-                "context": {"type": "integer", "description": "Lines of context to show on each side of a hit (default 0, capped at 10)"}
-            },
-            "required": ["pattern"]
-        })
-    }
-
-    fn kind(&self) -> ToolKind {
-        ToolKind::Read
-    }
-
-    fn execute(&self, input: Map<String, Value>, context: &ToolContext) -> ToolOutput {
-        let pattern = match require_str(&input, "pattern") {
-            Ok(pattern) => pattern,
-            Err(message) => return error_output(message),
         };
-        let ignore_case = input
-            .get("ignore_case")
-            .and_then(Value::as_bool)
-            .unwrap_or(false);
-        let needle = if ignore_case {
-            pattern.to_lowercase()
-        } else {
-            pattern.to_owned()
-        };
-        let root = input
-            .get("path")
-            .and_then(Value::as_str)
-            .map_or_else(|| context.cwd.clone(), |path| resolve_path(context, path));
-        let context_lines = input
-            .get("context")
-            .and_then(Value::as_u64)
-            .map_or(0, |lines| usize::try_from(lines).unwrap_or(0))
-            .min(GREP_CONTEXT_CAP);
-        let mut rows: Vec<String> = Vec::new();
-        let mut hit_count: usize = 0;
-        let mut search_file = |path: &Path| -> bool {
-            let Ok(bytes) = fs::read(path) else {
-                return true;
-            };
-            if bytes.iter().take(4096).any(|byte| *byte == 0) {
-                return true;
-            }
-            let content = String::from_utf8_lossy(&bytes);
-            let lines: Vec<&str> = content.split('\n').collect();
-            let mut matched: Vec<usize> = lines
-                .iter()
-                .enumerate()
-                .filter(|(_, line)| {
-                    if ignore_case {
-                        line.to_lowercase().contains(&needle)
-                    } else {
-                        line.contains(&needle)
-                    }
-                })
-                .map(|(index, _)| index)
-                .collect();
-            if matched.is_empty() {
-                return true;
-            }
-            matched.truncate(GREP_HIT_CAP.saturating_sub(hit_count));
-            hit_count = hit_count.saturating_add(matched.len());
-            let display = path.display().to_string();
-            let last = lines.len().saturating_sub(1);
-            // One past the last row already written for this file, so two hits
-            // whose context windows overlap never print a line twice.
-            let mut emitted: Option<usize> = None;
-            for index in &matched {
-                let lo = index.saturating_sub(context_lines);
-                let hi = index.saturating_add(context_lines).min(last);
-                let start = match emitted {
-                    Some(end) if lo <= end => end,
-                    Some(_) => {
-                        rows.push("--".to_owned());
-                        lo
-                    }
-                    None => lo,
-                };
-                for row in start..=hi {
-                    let Some(text) = lines.get(row) else {
-                        continue;
-                    };
-                    let line_number = row.saturating_add(1);
-                    rows.push(if matched.binary_search(&row).is_ok() {
-                        format!("{display}:{line_number}:{text}")
-                    } else {
-                        format!("{display}-{line_number}-{text}")
-                    });
-                }
-                emitted = Some(hi.saturating_add(1));
-            }
-            hit_count < GREP_HIT_CAP
-        };
-        if root.is_file() {
-            search_file(&root);
-        } else {
-            walk_files(&root, &mut search_file);
-        }
-        if rows.is_empty() {
-            text_output("No matches found")
-        } else if hit_count >= GREP_HIT_CAP {
-            text_output(format!(
-                "{}\n[result capped at {GREP_HIT_CAP} hits]",
-                rows.join("\n")
-            ))
-        } else {
-            text_output(rows.join("\n"))
-        }
+        output.result.details = json!({ "matches": matches.len(), "capped": capped });
+        output
     }
 }
 
@@ -372,6 +243,46 @@ fn read_only_segment(segment: &str) -> bool {
     READ_ONLY_VERBS.contains(&verb)
 }
 
+/// codex's `command_category`: what the model reached for the shell to do,
+/// persisted per call so a stats pass can see e.g. shell searches that the
+/// grep tool should have served.
+pub(crate) fn command_category(command: &str) -> &'static str {
+    let mut categories = command
+        .split(['|', ';', '\n'])
+        .flat_map(|part| part.split("&&"))
+        .filter_map(segment_category);
+    let Some(first) = categories.next() else {
+        return "unknown";
+    };
+    if categories.all(|category| category == first) {
+        first
+    } else {
+        "mixed"
+    }
+}
+
+fn segment_category(segment: &str) -> Option<&'static str> {
+    let mut words = segment
+        .split_whitespace()
+        .skip_while(|word| word.contains('='));
+    let verb = words.next()?;
+    let verb = verb.rsplit('/').next().unwrap_or(verb);
+    Some(match verb {
+        "grep" | "rg" | "ag" => "search",
+        "cat" | "head" | "tail" | "less" | "more" | "wc" | "file" | "stat" => "read",
+        "ls" | "find" | "fd" | "tree" => "list_files",
+        "git" | "jj" => "vcs",
+        "cargo" | "just" => match words.next() {
+            Some("test" | "nextest") => "test",
+            _ => "build",
+        },
+        "make" | "npm" | "pnpm" | "yarn" | "go" | "rustc" | "cc" | "gcc" | "tsc" => "build",
+        "pytest" => "test",
+        "mkdir" | "touch" | "rm" | "mv" | "cp" | "chmod" | "ln" | "tee" | "sed" => "write",
+        _ => "unknown",
+    })
+}
+
 pub struct BashTool;
 
 impl Tool for BashTool {
@@ -389,7 +300,8 @@ impl Tool for BashTool {
             "properties": {
                 "command": {"type": "string", "description": "Shell command to run. Omit it to check on a background job instead."},
                 "job": {"type": "integer", "description": "Background job to check on; defaults to the most recent"},
-                "wait": {"type": "integer", "description": "Seconds to wait for that job, clamped to 5-300"}
+                "wait": {"type": "integer", "description": "Seconds to wait for that job, clamped to 5-300"},
+                "max_output_lines": {"type": "integer", "description": "Per-call reducer line budget, for when the full output matters"}
             }
         })
     }
@@ -431,12 +343,18 @@ impl Tool for BashTool {
             Err(message) => return error_output(message),
         };
         let exit_code_for_reduce = capture.exit_code.unwrap_or(-1);
+        let max_lines = input
+            .get("max_output_lines")
+            .and_then(Value::as_u64)
+            .and_then(|lines| usize::try_from(lines).ok())
+            .filter(|lines| *lines > 0);
         let reduced = crate::reduce::reduce(
             command,
             &capture.stdout,
             &capture.stderr,
             exit_code_for_reduce,
             context.recovery_dir.as_deref(),
+            max_lines,
         );
         let mut sections = Vec::new();
         if !reduced.text.is_empty() {
@@ -472,6 +390,7 @@ impl Tool for BashTool {
             "cancelled": capture.cancelled,
             "rawBytes": reduced.raw_bytes,
             "outBytes": reduced.out_bytes,
+            "category": command_category(command),
         });
         output.is_error = exit_code != 0 || capture.cancelled;
         output

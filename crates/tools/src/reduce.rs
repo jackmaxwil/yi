@@ -19,14 +19,16 @@ const REDUCE_FLOOR: usize = 2_048;
 /// The user asked for the whole thing; reducing answers a different question.
 const RAW_FLAGS: [&str; 6] = ["-v", "--verbose", "--nocapture", "--porcelain", "-la", "-C"];
 
-/// Every path runs through [`never_worse`], and a lossy result is tee'd beside
-/// the project so the full text stays one `read` away.
+/// Every path runs through [`never_worse`], and a lossy result is tee'd so
+/// the full text stays one `read` away. `max_lines` is the caller's per-call
+/// budget: it moves the line caps, never the byte capture ceiling upstream.
 pub fn reduce(
     command: &str,
     stdout: &str,
     stderr: &str,
     exit_code: i32,
     recovery_dir: Option<&Path>,
+    max_lines: Option<usize>,
 ) -> Reduced {
     let raw = join_streams(stdout, stderr);
     let raw_bytes = raw.len();
@@ -39,11 +41,12 @@ pub fn reduce(
         };
     }
     let stripped = strip_ansi(&raw);
+    let budget = max_lines.unwrap_or(HEAD_LINES + TAIL_LINES);
     let filtered = match program(command) {
-        Some("cargo") => cargo(&stripped, exit_code),
-        Some("git") => generic(&stripped),
-        Some("grep" | "rg" | "ag") => cap_lines(&stripped, GREP_LINES),
-        _ => generic(&stripped),
+        Some("cargo") => cargo(&stripped, exit_code, budget),
+        Some("git") => generic(&stripped, budget),
+        Some("grep" | "rg" | "ag") => cap_lines(&stripped, max_lines.unwrap_or(GREP_LINES)),
+        _ => generic(&stripped, budget),
     };
     let text = never_worse(&raw, filtered);
     let out_bytes = text.len();
@@ -106,9 +109,9 @@ fn program(command: &str) -> Option<&str> {
 
 /// A green cargo run is a progress log with one line that matters; a red one
 /// is diagnostics, and dropping those to save bytes is how a reducer lies.
-fn cargo(text: &str, exit_code: i32) -> String {
+fn cargo(text: &str, exit_code: i32, budget: usize) -> String {
     if exit_code != 0 {
-        return cap_lines(text, HEAD_LINES.saturating_add(TAIL_LINES));
+        return cap_lines(text, budget);
     }
     let kept: Vec<&str> = text
         .lines()
@@ -122,14 +125,14 @@ fn cargo(text: &str, exit_code: i32) -> String {
         })
         .collect();
     if kept.is_empty() {
-        return generic(text);
+        return generic(text, budget);
     }
     kept.join("\n")
 }
 
-fn generic(text: &str) -> String {
+fn generic(text: &str, budget: usize) -> String {
     let deduped = collapse_repeats(text);
-    cap_lines(&deduped, HEAD_LINES.saturating_add(TAIL_LINES))
+    cap_lines(&deduped, budget)
 }
 
 fn collapse_repeats(text: &str) -> String {
@@ -159,8 +162,11 @@ fn cap_lines(text: &str, cap: usize) -> String {
     if lines.len() <= cap {
         return text.to_owned();
     }
-    let head = HEAD_LINES.min(lines.len());
-    let tail = TAIL_LINES.min(lines.len().saturating_sub(head));
+    // The 2:1 head/tail split HEAD_LINES/TAIL_LINES fixed, kept under any cap.
+    let head = (cap.saturating_mul(2) / 3).max(1).min(lines.len());
+    let tail = cap
+        .saturating_sub(head)
+        .min(lines.len().saturating_sub(head));
     let dropped = lines.len().saturating_sub(head).saturating_sub(tail);
     let mut out: Vec<&str> = lines.get(..head).unwrap_or_default().to_vec();
     let marker = format!("[{dropped} lines omitted]");

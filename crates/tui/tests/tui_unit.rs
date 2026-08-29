@@ -10,7 +10,6 @@ use yi_tui::composer::{Composer, sanitize_paste};
 use yi_tui::frame::FrameScheduler;
 use yi_tui::hud::{BoardCard, CardKind, CardStatus, HudInput};
 use yi_tui::keymap::{Action, EvalContext, KeyCodeValue, KeyInput, SingleKey, default_keymap};
-use yi_tui::markdown::commit_complete_source;
 use yi_tui::status::StatusInput;
 use yi_tui::tree::{TreeFilter, TreeResult, TreeView};
 use yi_tui::wrap::wrap_line;
@@ -122,17 +121,6 @@ fn paste_expansion_is_single_pass_and_longest_label_first() -> TestResult {
 fn sanitize_paste_strips_control_keeps_newlines() -> TestResult {
     let out = sanitize_paste("a\r\nb\x1b[31mc\td");
     assert_eq!(out, "a\nb[31mc   d");
-    Ok(())
-}
-
-#[test]
-fn commit_complete_source_gates_on_newline() -> TestResult {
-    let (stable, tail) = commit_complete_source("done line\npartial");
-    assert_eq!(stable, "done line\n");
-    assert_eq!(tail, "partial");
-    let (stable, tail) = commit_complete_source("no newline yet");
-    assert_eq!(stable, "");
-    assert_eq!(tail, "no newline yet");
     Ok(())
 }
 
@@ -546,13 +534,47 @@ fn markdown_tables_render_as_grids_not_raw_pipes() -> TestResult {
 }
 
 #[test]
-fn stable_cut_stops_at_blank_lines_outside_fences() -> TestResult {
-    use yi_tui::markdown::stable_cut;
-    let cut = stable_cut("para one\n\npara two streaming");
-    assert_eq!(cut, "para one\n\n".len());
-    let fenced = "```\ncode\n\nstill code\n";
-    assert_eq!(stable_cut(fenced), 0, "blank lines inside fences never cut");
-    assert_eq!(stable_cut("no boundary yet"), 0);
+fn stable_stream_stops_at_blank_lines_outside_fences() -> TestResult {
+    use yi_tui::markdown::stable_stream;
+    let stream = stable_stream("para one\n\npara two streaming");
+    assert_eq!(stream.cut, "para one\n\n".len());
+    assert!(stream.reopen.is_none());
+    assert_eq!(stable_stream("no boundary yet").cut, 0);
+    Ok(())
+}
+
+/// P10: a top-level fence streams line by line — each completed code row is
+/// stable, carries the fence's opening line for standalone rendering, and
+/// the close releases the fence.
+#[test]
+fn stable_stream_commits_fence_interiors_line_by_line() -> TestResult {
+    use yi_tui::markdown::stable_stream;
+    let streaming = "```rust\nlet a = 1;\nlet b = ";
+    let stream = stable_stream(streaming);
+    assert_eq!(stream.cut, "```rust\nlet a = 1;\n".len());
+    assert_eq!(stream.reopen.as_deref(), Some("```rust"));
+    let closed = "```rust\nlet a = 1;\n```\n";
+    let stream = stable_stream(closed);
+    assert_eq!(stream.cut, closed.len());
+    assert!(stream.reopen.is_none());
+    // An indented fence (list item) stays opaque: no cut inside it.
+    let listed = "- item\n  ```\n  code\n";
+    assert_eq!(stable_stream(listed).cut, 0);
+    Ok(())
+}
+
+/// Fences are tracked by marker and run length: `~~~` closes only on `~~~`,
+/// and a four-backtick fence swallows the ``` example inside it.
+#[test]
+fn stable_stream_matches_fence_markers_exactly() -> TestResult {
+    use yi_tui::markdown::stable_stream;
+    let tilde = "~~~\ncode\n~~~\nafter\n\n";
+    let stream = stable_stream(tilde);
+    assert_eq!(stream.cut, tilde.len());
+    let nested = "````md\n```\ninner\n```\n";
+    let stream = stable_stream(nested);
+    assert_eq!(stream.cut, nested.len());
+    assert_eq!(stream.reopen.as_deref(), Some("````md"));
     Ok(())
 }
 

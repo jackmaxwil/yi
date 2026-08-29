@@ -4,6 +4,7 @@ mod builtins;
 pub mod checkpoint;
 pub mod diff;
 mod exec;
+mod grep;
 pub mod hashline;
 mod ignore;
 mod ipython;
@@ -15,17 +16,19 @@ mod tool;
 
 use std::sync::Arc;
 
-pub use builtins::{BashTool, GlobTool, GrepTool, WriteTool, list_files};
+pub use builtins::{BashTool, GlobTool, WriteTool, list_files};
 pub use checkpoint::{Change, ChangeKind, CheckpointError, Checkpoints, TreeId};
 pub use diff::{GitPatch, patch};
 pub use exec::{ExecTool, discover_exec_tools};
+pub use grep::GrepTool;
 pub use ipython::{IpythonTool, KernelBridge, KernelCellOutcome};
 pub use jobs::{JobId, JobReport, Run, run_or_background};
 pub use process::{CommandCapture, OUTPUT_CAP, command, edit_file, run_captured};
 pub use reduce::{Reduced, reduce};
 pub use sandbox::{Sandbox, denial_hint};
 pub use tool::{
-    CancelFlag, DETAIL_CAP, Tool, ToolContext, ToolKind, ToolOutput, error_output, text_output,
+    CancelFlag, DETAIL_CAP, Tool, ToolContext, ToolKind, ToolOutput, error_output,
+    error_output_kind, text_output,
 };
 
 pub fn builtin_tools() -> Vec<Arc<dyn Tool>> {
@@ -38,10 +41,12 @@ pub fn builtin_tools() -> Vec<Arc<dyn Tool>> {
             state: Arc::clone(&state),
         }),
         Arc::new(WriteTool {
-            hashline: Some(state),
+            hashline: Some(Arc::clone(&state)),
         }),
         Arc::new(GlobTool),
-        Arc::new(GrepTool),
+        Arc::new(GrepTool {
+            hashline: Some(state),
+        }),
         Arc::new(BashTool),
     ]
 }

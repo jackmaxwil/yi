@@ -9,36 +9,72 @@ use crate::wrap::wrap_line;
 const CODE_RAIL: &str = "│";
 const CODE_RAIL_INDENT: &str = "│ ";
 
-/// The newline gate (codex `markdown_stream.rs:82-96`, verbatim semantics):
-/// the longest prefix of `source` that ends at a newline is safe to commit;
-/// the remainder may still change while the model streams.
-pub fn commit_complete_source(source: &str) -> (&str, &str) {
-    match source.rfind('\n') {
-        Some(index) => source.split_at(index + 1),
-        None => ("", source),
-    }
+/// Where the streamed source is safe to commit, and how to render a slice
+/// that starts past the cut.
+pub struct StableStream {
+    /// Byte offset: everything before re-renders identically as the source
+    /// grows.
+    pub cut: usize,
+    /// Set when `cut` sits inside a top-level fence: the fence's opening
+    /// line, prepended when rendering a slice that starts at `cut` so its
+    /// rows still render as code.
+    pub reopen: Option<String>,
 }
 
-/// U13: the longest prefix ending at a blank line outside any code fence.
-/// Prefix markdown re-renders identically as the source grows, so those lines
-/// can be committed to scrollback while the tail keeps streaming.
-pub fn stable_cut(source: &str) -> usize {
+/// U13 commit gate. Outside a fence only a blank line is stable (paragraphs
+/// re-wrap, lists renumber); inside a top-level fence every completed line
+/// is — matched by marker char and run length; indented fences stay opaque.
+pub fn stable_stream(source: &str) -> StableStream {
     let mut cut = 0;
+    let mut reopen = None;
     let mut offset = 0;
-    let mut in_fence = false;
+    // (marker, open run length, top level, opening line)
+    let mut fence: Option<(char, usize, bool, String)> = None;
     let mut previous_blank = false;
     for line in source.split_inclusive('\n') {
+        let complete = line.ends_with('\n');
         let trimmed = line.trim();
-        if trimmed.starts_with("```") {
-            in_fence = !in_fence;
-        }
-        if !in_fence && trimmed.is_empty() && !previous_blank && offset > 0 {
-            cut = offset + line.len();
+        let run = |marker: char| trimmed.chars().take_while(|ch| *ch == marker).count();
+        match &fence {
+            Some((marker, open_len, top, open_line)) => {
+                let closes = run(*marker) >= *open_len && trimmed.chars().all(|ch| ch == *marker);
+                if closes && complete {
+                    if *top {
+                        cut = offset + line.len();
+                        reopen = None;
+                    }
+                    fence = None;
+                } else if *top && complete {
+                    cut = offset + line.len();
+                    reopen = Some(open_line.clone());
+                }
+            }
+            None => {
+                let backticks = run('`');
+                let tildes = run('~');
+                if backticks >= 3 || tildes >= 3 {
+                    let (marker, open_len) = if backticks >= 3 {
+                        ('`', backticks)
+                    } else {
+                        ('~', tildes)
+                    };
+                    let top = line.starts_with(marker);
+                    let open_line = line.trim_end_matches('\n').to_owned();
+                    if top && complete {
+                        cut = offset + line.len();
+                        reopen = Some(open_line.clone());
+                    }
+                    fence = Some((marker, open_len, top, open_line));
+                } else if trimmed.is_empty() && !previous_blank && offset > 0 && complete {
+                    cut = offset + line.len();
+                    reopen = None;
+                }
+            }
         }
         previous_blank = trimmed.is_empty();
         offset += line.len();
     }
-    cut
+    StableStream { cut, reopen }
 }
 
 struct Builder<'t> {

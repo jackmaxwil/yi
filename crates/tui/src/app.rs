@@ -113,6 +113,9 @@ pub struct App {
     pub(crate) history: crate::history::History,
     pub(crate) reflow: crate::reflow::ReflowState,
     pub(crate) live_markdown: String,
+    /// Fence-open line active at `live_cut`: any slice rendered from there
+    /// reopens the fence so its rows still render as code.
+    pub(crate) live_reopen: Option<String>,
     pub(crate) live_thought: String,
     pub(crate) live_cut: usize,
     pub(crate) live_tools: Vec<ToolCell>,
@@ -192,6 +195,7 @@ impl App {
             history: crate::history::History::default(),
             reflow: crate::reflow::ReflowState::default(),
             live_markdown: String::new(),
+            live_reopen: None,
             live_thought: String::new(),
             live_cut: 0,
             live_tools: Vec::new(),
@@ -300,7 +304,7 @@ impl App {
         handle_terminal_event(self, cmd_tx, ct_event);
     }
 
-    fn content_width(&self) -> usize {
+    pub(crate) fn content_width(&self) -> usize {
         self.width.saturating_sub(2)
     }
 
@@ -397,7 +401,7 @@ impl App {
         self.scheduler.request();
     }
 
-    fn retain(&mut self, cell: Cell) {
+    pub(crate) fn retain(&mut self, cell: Cell) {
         self.history.retain(cell);
     }
 
@@ -410,6 +414,7 @@ impl App {
         self.history.clear();
         self.pending_commit.clear();
         self.live_markdown.clear();
+        self.live_reopen = None;
         self.live_thought.clear();
         self.live_cut = 0;
         self.live_tools.clear();
@@ -449,35 +454,6 @@ impl App {
             return Some(OrbState::Composing);
         }
         Some(OrbState::Working)
-    }
-
-    /// U13: each newly stable slice renders standalone against a byte cursor.
-    /// Re-rendering the whole prefix let the renderer's trailing-blank trimming
-    /// misalign the committed count and duplicate list items mid-stream.
-    fn commit_stable_prefix(&mut self) {
-        let cut = crate::markdown::stable_cut(&self.live_markdown);
-        if cut <= self.live_cut {
-            return;
-        }
-        let slice = self
-            .live_markdown
-            .get(self.live_cut..cut)
-            .unwrap_or_default()
-            .to_owned();
-        let width = self.content_width();
-        let first = self.live_cut == 0;
-        let rendered = crate::markdown::render(
-            &slice,
-            width.saturating_sub(crate::cell::GUTTER.len()),
-            &self.theme,
-        );
-        if !rendered.is_empty() {
-            self.pending_commit.push(Line::default());
-            self.pending_commit
-                .extend(crate::cell::gutter(rendered, first, &self.theme));
-            self.retain(Cell::Assistant { markdown: slice });
-        }
-        self.live_cut = cut;
     }
 
     pub(crate) fn spinner_phase(&self) -> usize {
@@ -523,7 +499,7 @@ impl App {
             } => {
                 self.live_markdown = text_of(&content);
                 self.live_thought = thinking_of(&content);
-                self.commit_stable_prefix();
+                crate::transcript::commit_stable_prefix(self);
                 self.scheduler.request();
             }
             AgentEvent::MessageEnd { message } => self.reduce_message_end(&message),
@@ -652,6 +628,7 @@ impl App {
                 self.live_markdown.clear();
                 self.live_thought.clear();
                 self.live_cut = 0;
+                self.live_reopen = None;
                 if *stop_reason == StopReason::Error {
                     let text = error_message
                         .clone()

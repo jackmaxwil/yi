@@ -42,6 +42,7 @@ fn context() -> LlmContext {
             name: "bash".to_owned(),
             description: "run".to_owned(),
             parameters: json!({"type":"object","properties":{"cmd":{"type":"string"}}}),
+            freeform: None,
         }]),
     }
 }

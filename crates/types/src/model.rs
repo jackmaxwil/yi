@@ -168,6 +168,18 @@ pub struct ToolDef {
     pub name: String,
     pub description: String,
     pub parameters: serde_json::Value,
+    /// C8: set when the tool's input is one raw text argument under a
+    /// grammar. openai-responses sends it as a custom tool (no JSON escaping
+    /// tax); every other adapter ignores this and keeps the JSON schema.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub freeform: Option<FreeformFormat>,
+}
+
+/// A freeform tool's wire grammar (`syntax` names the dialect, e.g. "lark").
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FreeformFormat {
+    pub syntax: String,
+    pub definition: String,
 }
 
 /// Splits [`LlmContext::system_prompt`] into independently cacheable blocks.
