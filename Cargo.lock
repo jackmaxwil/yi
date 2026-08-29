@@ -2046,7 +2046,7 @@ checksum = "aee1b19627c7c60102ab80d3a9cbe18de90bfe03bfa6c3715447681f0e8c8af6"
 
 [[package]]
 name = "yi-acp"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "serde_json",
  "tokio",
@@ -2056,7 +2056,7 @@ dependencies = [
 
 [[package]]
 name = "yi-ai"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "serde_json",
  "tokio",
@@ -2066,7 +2066,7 @@ dependencies = [
 
 [[package]]
 name = "yi-cli"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "lexopt",
  "serde_json",
@@ -2080,7 +2080,7 @@ dependencies = [
 
 [[package]]
 name = "yi-context"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "serde_json",
  "yi-types",
@@ -2088,7 +2088,7 @@ dependencies = [
 
 [[package]]
 name = "yi-kernel"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "hmac",
  "serde_json",
@@ -2101,7 +2101,7 @@ dependencies = [
 
 [[package]]
 name = "yi-loop"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "serde_json",
  "tokio",
@@ -2111,7 +2111,7 @@ dependencies = [
 
 [[package]]
 name = "yi-mcp-cli"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "rmcp",
  "serde_json",
@@ -2124,7 +2124,7 @@ dependencies = [
 
 [[package]]
 name = "yi-permission"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "globset",
  "sha2",
@@ -2134,7 +2134,7 @@ dependencies = [
 
 [[package]]
 name = "yi-runtime"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "serde_json",
  "thiserror 2.0.20",
@@ -2151,7 +2151,7 @@ dependencies = [
 
 [[package]]
 name = "yi-session"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -2161,7 +2161,7 @@ dependencies = [
 
 [[package]]
 name = "yi-tools"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "globset",
  "serde_json",
@@ -2172,7 +2172,7 @@ dependencies = [
 
 [[package]]
 name = "yi-tui"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "insta",
  "miniz_oxide",
@@ -2189,7 +2189,7 @@ dependencies = [
 
 [[package]]
 name = "yi-types"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "serde",
  "serde_json",
