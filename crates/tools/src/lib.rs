@@ -8,6 +8,7 @@ pub mod hashline;
 mod ignore;
 mod ipython;
 pub mod jobs;
+mod orient;
 mod process;
 pub mod reduce;
 pub mod sandbox;
@@ -21,6 +22,7 @@ pub use diff::{GitPatch, patch};
 pub use exec::{ExecTool, discover_exec_tools};
 pub use ipython::{IpythonTool, KernelBridge, KernelCellOutcome};
 pub use jobs::{JobId, JobReport, Run, run_or_background};
+pub use orient::GetContextTool;
 pub use process::{CommandCapture, OUTPUT_CAP, command, edit_file, run_captured};
 pub use reduce::{Reduced, reduce};
 pub use sandbox::{Sandbox, denial_hint};
@@ -43,5 +45,6 @@ pub fn builtin_tools() -> Vec<Arc<dyn Tool>> {
         Arc::new(GlobTool),
         Arc::new(GrepTool),
         Arc::new(BashTool),
+        Arc::new(GetContextTool),
     ]
 }
