@@ -1173,6 +1173,8 @@ fn task(id: &str, check: &str) -> yi_types::plan::Task {
         state: yi_types::plan::TaskState::Pending,
         blocked_reason: None,
         assignee: None,
+        red_count: None,
+        red_fingerprint: None,
         extra: Map::new(),
     }
 }

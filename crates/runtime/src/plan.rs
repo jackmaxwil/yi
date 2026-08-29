@@ -1,5 +1,5 @@
+use std::collections::BTreeSet;
 use std::collections::hash_map::DefaultHasher;
-use std::collections::{BTreeSet, HashMap};
 use std::hash::{Hash, Hasher};
 use std::sync::{Arc, Mutex};
 
@@ -71,7 +71,7 @@ fn escalation_demand(rung: Escalation, count: u8) -> Option<String> {
     ))
 }
 
-fn failure_fingerprint(evidence: &str) -> u64 {
+fn failure_fingerprint(evidence: &str) -> String {
     let collapse = |line: &str| line.split_whitespace().collect::<Vec<_>>().join(" ");
     let mut lines = evidence.lines().filter(|line| !line.trim().is_empty());
     let exit = lines.next().map(collapse);
@@ -79,13 +79,13 @@ fn failure_fingerprint(evidence: &str) -> u64 {
     let mut hasher = DefaultHasher::new();
     exit.hash(&mut hasher);
     last.hash(&mut hasher);
-    hasher.finish()
+    format!("{:016x}", hasher.finish())
 }
 
-#[derive(Default)]
-struct RedStreak {
-    count: u8,
-    last_fingerprint: Option<u64>,
+/// A restructure or a green check starts the next streak at rung one.
+fn clear_red(task: &mut Task) {
+    task.red_count = None;
+    task.red_fingerprint = None;
 }
 
 /// Lowered child ids are `{parent}.{n}`, so a parent id already carrying a
@@ -206,6 +206,8 @@ fn lower_subtask(parent: &TaskId, index: usize, spec: &SubtaskSpec) -> Task {
         state: TaskState::Pending,
         blocked_reason: None,
         assignee: None,
+        red_count: None,
+        red_fingerprint: None,
         extra: Map::new(),
     }
 }
@@ -347,6 +349,8 @@ fn parse_task(spec: &Value, index: usize) -> Result<Task, String> {
             .get("assignee")
             .and_then(Value::as_str)
             .map(str::to_owned),
+        red_count: None,
+        red_fingerprint: None,
         extra: Map::new(),
     })
 }
@@ -409,7 +413,6 @@ pub struct PlanService {
     stale: Mutex<StaleTracker>,
     stale_turns: u64,
     on_change: Mutex<Option<PlanChangeHook>>,
-    red: Mutex<HashMap<TaskId, RedStreak>>,
 }
 
 impl PlanService {
@@ -420,7 +423,6 @@ impl PlanService {
             stale: Mutex::new(StaleTracker::default()),
             stale_turns: DEFAULT_STALE_TURNS,
             on_change: Mutex::new(None),
-            red: Mutex::new(HashMap::new()),
         }
     }
 
@@ -552,7 +554,7 @@ impl PlanService {
         if target == TaskState::Done
             && let Err(rejection) = self.verify_done(&plan.tasks[position], evidence)
         {
-            let escalation = self.record_red(&plan.tasks[position], &rejection);
+            let escalation = self.record_red(&mut plan.tasks[position], &rejection);
             let task = &mut plan.tasks[position];
             task.state = TaskState::Blocked;
             task.blocked_reason = Some(rejection.clone());
@@ -564,10 +566,10 @@ impl PlanService {
                 "done claim for {task_id} rejected; task is now blocked with the evidence: {rejection}{escalation}"
             ));
         }
-        if target == TaskState::Done {
-            self.clear_red(&plan.tasks[position].id);
-        }
         let task = &mut plan.tasks[position];
+        if target == TaskState::Done {
+            clear_red(task);
+        }
         task.state = target.clone();
         task.blocked_reason = match target {
             TaskState::Blocked => reason.map(str::trim).map(str::to_owned),
@@ -580,20 +582,14 @@ impl PlanService {
         Ok(plan_json(&plan))
     }
 
-    /// ponytail: streaks live in memory, so a session resume launders one;
-    /// persist the count as an additive [`Task`] field if the ledger shows
-    /// resume-laundering happens.
-    fn record_red(&self, task: &Task, evidence: &str) -> String {
+    /// The streak rides the task, so the plan write that records the rejection
+    /// is also what makes the rung survive a resume.
+    fn record_red(&self, task: &mut Task, evidence: &str) -> String {
         let fingerprint = failure_fingerprint(evidence);
-        let Ok(mut streaks) = self.red.lock() else {
-            return String::new();
-        };
-        let streak = streaks.entry(task.id.clone()).or_default();
-        let repeated = streak.last_fingerprint == Some(fingerprint);
-        streak.count = streak.count.saturating_add(1);
-        streak.last_fingerprint = Some(fingerprint);
-        let count = streak.count;
-        drop(streaks);
+        let repeated = task.red_fingerprint.as_deref() == Some(fingerprint.as_str());
+        let count = task.red_count.unwrap_or(0).saturating_add(1);
+        task.red_count = Some(count);
+        task.red_fingerprint = Some(fingerprint);
 
         let mut clauses = Vec::new();
         if let Some(demand) = escalation_demand(escalation(count), count) {
@@ -626,20 +622,6 @@ impl PlanService {
             DeliveryMode::Steer,
         );
         format!(" — {text}")
-    }
-
-    fn red_count(&self, id: &TaskId) -> u8 {
-        self.red
-            .lock()
-            .ok()
-            .and_then(|streaks| streaks.get(id).map(|streak| streak.count))
-            .unwrap_or(0)
-    }
-
-    fn clear_red(&self, id: &TaskId) {
-        if let Ok(mut streaks) = self.red.lock() {
-            streaks.remove(id);
-        }
     }
 
     fn verify_done(&self, task: &Task, evidence: Option<&Value>) -> Result<(), String> {
@@ -693,7 +675,7 @@ impl PlanService {
                 }
                 task.state = TaskState::Pending;
                 task.blocked_reason = None;
-                self.clear_red(&task.id);
+                clear_red(task);
             }
             "remove" | "reword" | "replace" => return Err(SHRINK_ERROR.to_owned()),
             other => return Err(format!("unknown plan.edit action {other}; use add|reopen")),
@@ -739,7 +721,7 @@ impl PlanService {
             return Err(format!("split of {id} refused:\n{}", lines.join("\n")));
         }
         let parent_id = plan.tasks[position].id.clone();
-        let reds = self.red_count(&parent_id);
+        let reds = plan.tasks[position].red_count.unwrap_or(0);
         if escalation(reds) == Escalation::Retry {
             return Err(format!(
                 "split of {id} refused: its check has come back red {reds} time(s), so the ladder still reads retry — attempt the whole task, and split when a red streak forces the change"
@@ -755,7 +737,7 @@ impl PlanService {
             .extend(children.iter().map(|child| child.id.clone()));
         plan.tasks.extend(children);
         validate(&plan.tasks)?;
-        self.clear_red(&parent_id);
+        clear_red(&mut plan.tasks[position]);
         plan.version = plan.version.bump();
         plan.updated = yi_session::now_ms();
         self.write_plan(plan.clone())?;
