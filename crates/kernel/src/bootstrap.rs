@@ -50,12 +50,42 @@ impl BootstrapOptions {
     }
 }
 
+fn has_python_sources(root: &Path) -> bool {
+    root.join("python").join("yi_runtime").is_dir()
+}
+
+/// Root holding `python/yi_runtime` and `python/skills`: walk up from the exe
+/// (cargo target dir, unpacked tarball), then `~/.yi` (install.sh), then the
+/// compile-time path, which alone baked in the *build machine's* checkout.
+fn resolve_python_root(exe: Option<&Path>, home: Option<&Path>, fallback: PathBuf) -> PathBuf {
+    let mut dir = exe.and_then(Path::parent);
+    // deps/ -> debug/ -> target/ -> root is three; the spare levels cost a
+    // stat each and keep nested target dirs (worktrees, `--target`) working.
+    for _ in 0..6 {
+        let Some(candidate) = dir else { break };
+        if has_python_sources(candidate) {
+            return candidate.to_path_buf();
+        }
+        dir = candidate.parent();
+    }
+    match home.map(|home| home.join(".yi")) {
+        Some(root) if has_python_sources(&root) => root,
+        _ => fallback,
+    }
+}
+
+fn python_root() -> PathBuf {
+    resolve_python_root(
+        std::env::current_exe().ok().as_deref(),
+        std::env::var_os("HOME").map(PathBuf::from).as_deref(),
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join(".."),
+    )
+}
+
 pub fn default_runtime_source_dir() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("..")
-        .join("..")
-        .join("python")
-        .join("yi_runtime")
+    python_root().join("python").join("yi_runtime")
 }
 
 /// (import name, directory under python/skills). Install order is declared
@@ -68,11 +98,7 @@ pub const PYTHON_SKILLS: [(&str, &str); 4] = [
 ];
 
 pub fn default_skills_source_dir() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("..")
-        .join("..")
-        .join("python")
-        .join("skills")
+    python_root().join("python").join("skills")
 }
 
 fn env_path(name: &str) -> Option<PathBuf> {
@@ -612,6 +638,58 @@ mod tests {
         );
         assert!(before.starts_with("sha256:"));
         let _ = std::fs::remove_dir_all(&root);
+        Ok(())
+    }
+
+    #[test]
+    fn python_sources_resolve_from_the_running_executable() {
+        // The test binary lives under target/, the same place a shipped `yi`
+        // sits relative to its own tree, so this fails if the walk-up ever
+        // stops finding the sources it is the only mechanism for locating.
+        assert!(
+            default_runtime_source_dir().is_dir(),
+            "runtime source not found from the executable: {}",
+            default_runtime_source_dir().display()
+        );
+        assert!(
+            default_skills_source_dir().is_dir(),
+            "python skills not found from the executable: {}",
+            default_skills_source_dir().display()
+        );
+    }
+
+    /// Both shipped layouts, neither of which an in-repo run can distinguish
+    /// from the build tree it was compiled in.
+    #[test]
+    fn python_root_prefers_the_unpacked_tree_then_the_installed_home() -> Result<(), String> {
+        let base = std::env::temp_dir().join(format!("yi-python-root-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let tree = base.join("yi-0.0.0-target");
+        let home = base.join("home");
+        let sources = |root: &Path| root.join("python").join("yi_runtime");
+        std::fs::create_dir_all(sources(&tree)).map_err(|error| error.to_string())?;
+        std::fs::create_dir_all(sources(&home.join(".yi"))).map_err(|error| error.to_string())?;
+        let fallback = base.join("build-tree");
+        let exe = tree.join("bin").join("yi");
+
+        assert_eq!(
+            resolve_python_root(Some(&exe), Some(&home), fallback.clone()),
+            tree,
+            "an unpacked tarball resolves through bin/yi, not through HOME"
+        );
+        // The installed binary sits on PATH with no tree above it.
+        let on_path = home.join("bin").join("yi");
+        assert_eq!(
+            resolve_python_root(Some(&on_path), Some(&home), fallback.clone()),
+            home.join(".yi"),
+            "an installed binary falls back to ~/.yi"
+        );
+        assert_eq!(
+            resolve_python_root(Some(&on_path), None, fallback.clone()),
+            fallback,
+            "with nothing to find, the compile-time path is the last resort"
+        );
+        let _ = std::fs::remove_dir_all(&base);
         Ok(())
     }
 }
