@@ -1,0 +1,9 @@
+{
+  "cases": {
+    "compaction-constraint-survival": "pass",
+    "done-claim-red-check-refused": "pass",
+    "edit-before-read-refused": "pass",
+    "mined-0000-grid-empty-affordance": "pass",
+    "repeated-noop-edit-rejected": "pass"
+  }
+}
