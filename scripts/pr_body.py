@@ -63,13 +63,40 @@ def is_src(path):
 
 
 def growth_verdict():
+    """The gate answers a different question from the headline: it measures the whole
+    tree against the last `--update`, so everything landed since that version counts,
+    not this branch alone. Two numbers under one heading needs both named."""
     if not GROWTH.exists():
         return f"growth gate: not present in this tree ({GROWTH.relative_to(ROOT)})"
     run = subprocess.run(
         [sys.executable, str(GROWTH)], cwd=ROOT, capture_output=True, text=True, check=False
     )
     text = (run.stdout + run.stderr).strip() or "(no output)"
-    return "growth gate:\n\n```\n" + text + "\n```"
+    return (
+        "growth gate — the whole tree against the growth baseline "
+        "(`baselines/src_loc.json`, the version its last `--update` measured), so it "
+        "counts every branch landed since, not this one alone:\n\n```\n" + text + "\n```"
+    )
+
+
+def tally(rows):
+    """Per-area file counts, the src-only slice, and the net the growth budget prices.
+    The table printed under a net must sum to it, or the PR argues one number and the
+    gate charges another."""
+    by_area = defaultdict(lambda: [0, 0, 0])
+    src_by_area = defaultdict(lambda: [0, 0])
+    src_net = 0
+    for path, added, removed in rows:
+        stat = by_area[area(path)]
+        stat[0] += 1
+        stat[1] += added
+        stat[2] += removed
+        if is_src(path):
+            src = src_by_area[area(path)]
+            src[0] += added
+            src[1] += removed
+            src_net += added - removed
+    return by_area, src_by_area, src_net
 
 
 def section(title, body):
@@ -91,6 +118,18 @@ def selfcheck():
     for path, want_area, want_src in cases:
         assert area(path) == want_area, f"{path}: area {area(path)} != {want_area}"
         assert is_src(path) is want_src, f"{path}: is_src {is_src(path)} != {want_src}"
+    rows = [
+        ("crates/runtime/src/wiring.rs", 40, 5),
+        ("crates/types/src/config.rs", 3, 1),
+        ("crates/runtime/tests/plan_e2e.rs", 200, 0),
+        ("docs/ARCHITECTURE.md", 900, 4),
+    ]
+    by_area, src_by_area, src_net = tally(rows)
+    assert src_net == 37, f"net src {src_net} != 37"
+    total = sum(added - removed for added, removed in src_by_area.values())
+    assert total == src_net, f"src table sums to {total}, printed under {src_net}"
+    assert set(src_by_area) == {"crates/runtime", "crates/types"}, sorted(src_by_area)
+    assert by_area["crates/runtime"] == [2, 240, 5], by_area["crates/runtime"]
     print("ok   pr_body selfcheck")
 
 
@@ -107,15 +146,7 @@ def main():
         print(f"pr-body: no changes against {ref}", file=sys.stderr)
         return 1
 
-    by_area = defaultdict(lambda: [0, 0, 0])
-    src_net = 0
-    for path, added, removed in rows:
-        stat = by_area[area(path)]
-        stat[0] += 1
-        stat[1] += added
-        stat[2] += removed
-        if is_src(path):
-            src_net += added - removed
+    by_area, src_by_area, src_net = tally(rows)
 
     ui = [
         p
@@ -133,9 +164,14 @@ def main():
         f"+{stat[1]}/-{stat[2]}) — <!-- why this area was touched -->"
         for name, stat in sorted(by_area.items())
     )
-    loc_table = "\n".join(
-        f"| `{name}` | +{stat[1]} | -{stat[2]} |"
-        for name, stat in sorted(by_area.items())
+    src_table = (
+        "| area | added | removed | net |\n|---|---|---|---|\n"
+        + "\n".join(
+            f"| `{name}` | +{s[0]} | -{s[1]} | {s[0] - s[1]:+d} |"
+            for name, s in sorted(src_by_area.items())
+        )
+        if src_by_area
+        else "No `crates/*/src` file changed."
     )
 
     out = [
@@ -157,8 +193,9 @@ def main():
         ),
         section(
             "LOC and justification",
-            f"Net src LOC (`crates/*/src/**/*.rs`, vs {ref}): **{src_net:+d}**\n\n"
-            "| area | added | removed |\n|---|---|---|\n" + loc_table + "\n\n"
+            f"Net src LOC (`crates/*/src/**/*.rs`) vs the merge base with {ref}: "
+            f"**{src_net:+d}** — this branch alone, and the table sums to it.\n\n"
+            + src_table + "\n\n"
             + growth_verdict()
             + "\n\n<!-- past the free band: what was weighed for deletion, and why these bytes earn their place -->",
         ),

@@ -36,6 +36,9 @@ run "$PY" evals/selftest.py
 # The mined artifacts carry session text, so §10's planted-fake redaction proof is a
 # gate, not a habit: its only executable check is this flag.
 run "$PY" skills/yi/session-mining/extract.py --selfcheck
+# The PR narrative's net-src number is what the growth budget is argued against, and
+# a path in the wrong bucket misprices it silently; only this flag exercises the split.
+run "$PY" scripts/pr_body.py --selfcheck
 # Prose is not exempt: 1,485 comment lines are under ratchet, and the design docs
 # are the reference. Config and the domain-word allowlist live in .codespellrc.
 if command -v codespell >/dev/null; then run codespell; else echo "FAIL codespell (uv tool install codespell)"; FAILED=$((FAILED+1)); fi
