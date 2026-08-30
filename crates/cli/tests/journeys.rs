@@ -18,14 +18,25 @@ struct Journey {
 }
 
 impl Journey {
-    /// Invariant: the tree outlives the run — a failed journey is read from the
-    /// files it left behind, and the next run clears it by name.
     fn new(tag: &str) -> Result<Self, Box<dyn Error>> {
         let root = std::env::temp_dir().join(format!("yi-journey-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(root.join("project"))?;
-        std::fs::create_dir_all(root.join("home"))?;
+        std::fs::create_dir_all(root.join("home/.yi"))?;
+        // Incident: HOME is fresh, so the default kernel prewarm built a 600 MB
+        // venv per run under a name no later run could guess; 26 abandoned
+        // trees reached 15 GB. Neither journey runs a cell.
+        std::fs::write(
+            root.join("home/.yi/config.json"),
+            r#"{"kernel":{"prewarm":false}}"#,
+        )?;
         Ok(Self { root })
+    }
+
+    /// Invariant: only a green journey reclaims its tree — a red one is read
+    /// from the files it left behind, which is why this is not a [`Drop`].
+    fn reclaim(self) {
+        let _ = std::fs::remove_dir_all(&self.root);
     }
 
     fn project(&self) -> PathBuf {
@@ -146,6 +157,7 @@ fn a_resumed_session_keeps_one_file_and_undo_restores_the_turns_start_tree() -> 
         "after\n",
         "undo restores the tree the last turn started from"
     );
+    journey.reclaim();
     Ok(())
 }
 
@@ -209,5 +221,6 @@ fn a_red_check_refuses_the_done_claim_and_the_completion_gate_holds() -> TestRes
         rejection.contains("goal check red"),
         "the completion refusal names the red check: {rejection}"
     );
+    journey.reclaim();
     Ok(())
 }
