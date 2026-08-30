@@ -1,4 +1,9 @@
+mod lanes;
+pub(crate) mod shared;
+
 use std::collections::HashSet;
+
+pub use lanes::Scheduler;
 
 use yi_types::schedule::{
     CronSchedule, DeliveryMode, DispatchRecord, Job, JobStatus, ScheduleKind, ScheduleState,
@@ -494,6 +499,7 @@ pub fn claim_due_in_state(
     due_ms: u64,
     claimed_ms: u64,
     mut new_id: impl FnMut() -> String,
+    skip_sessions: &HashSet<String>,
 ) -> Vec<ClaimedDispatch> {
     let mut dispatches = Vec::new();
     let claimed_job_ids: HashSet<String> = state
@@ -503,6 +509,9 @@ pub fn claim_due_in_state(
         .collect();
     for job in &mut state.jobs {
         if !is_due_job(job, due_ms) {
+            continue;
+        }
+        if skip_sessions.contains(&job.session_id) {
             continue;
         }
         let scheduled_for = job.next_run_at.unwrap_or(due_ms);
@@ -620,16 +629,6 @@ pub fn recover_interrupted_in_state(
     recovered
 }
 
-/// The earliest active `next_run_at`, the timer's arm target.
-pub fn next_active_run_at(state: &ScheduleState) -> Option<u64> {
-    state
-        .jobs
-        .iter()
-        .filter(|job| job.status == JobStatus::Active)
-        .filter_map(|job| job.next_run_at)
-        .min()
-}
-
 /// The exact text a scheduled job puts in front of the model; the element wrapper is what
 /// tells the model this turn was machine-triggered rather than typed by the user (H9).
 pub fn heartbeat_text(job: &Job) -> String {
@@ -745,72 +744,6 @@ pub fn new_job(spec: JobSpec) -> Job {
 
 pub type DeliverFn = dyn Fn(&Job) -> RunOutcome + Send + Sync;
 
-/// Design H-flow: the single in-process timer. One session ⇒ one serial
-/// queue; per-session lanes arrive with the daemon (H7, phase 6).
-pub struct Scheduler {
-    task: tokio::task::JoinHandle<()>,
-}
-
-impl Scheduler {
-    pub fn start(
-        store: std::sync::Arc<JobStore>,
-        deliver: std::sync::Arc<DeliverFn>,
-        mut new_id: impl FnMut() -> String + Send + 'static,
-    ) -> Self {
-        let now = yi_session::now_ms();
-        // Recovery only mutates when a claim was orphaned; an empty store must
-        // not materialize scheduled-jobs.json on every session start.
-        if !store.snapshot().dispatches.is_empty() {
-            store.mutate(|state| recover_interrupted_in_state(state, now, None));
-        }
-        let changed = store.changed();
-        let task = tokio::spawn(async move {
-            loop {
-                let next = next_active_run_at(&store.snapshot());
-                match next {
-                    None => changed.notified().await,
-                    Some(at) => {
-                        let now = yi_session::now_ms();
-                        if at > now {
-                            let wait = std::time::Duration::from_millis(at - now);
-                            tokio::select! {
-                                () = tokio::time::sleep(wait) => {}
-                                () = changed.notified() => {}
-                            }
-                            continue;
-                        }
-                        let claimed =
-                            store.mutate(|state| claim_due_in_state(state, now, now, &mut new_id));
-                        for dispatch in claimed {
-                            let outcome = deliver(&dispatch.job);
-                            store.mutate(|state| {
-                                record_dispatch_result_in_state(
-                                    state,
-                                    &dispatch.id,
-                                    outcome,
-                                    None,
-                                    yi_session::now_ms(),
-                                )
-                            });
-                        }
-                    }
-                }
-            }
-        });
-        Self { task }
-    }
-
-    pub fn stop(&self) {
-        self.task.abort();
-    }
-}
-
-impl Drop for Scheduler {
-    fn drop(&mut self) {
-        self.task.abort();
-    }
-}
-
 /// Design H9: the persisted heartbeat message — `custom{heartbeat_prompt}`
 /// with the job's identity in details.
 pub fn heartbeat_message(job: &Job, now_ms: u64) -> yi_types::message::AgentMessage {
@@ -833,8 +766,107 @@ pub fn heartbeat_message(job: &Job, now_ms: u64) -> yi_types::message::AgentMess
 /// `rlm_heartbeat.*` vocabulary over one store.
 pub struct HeartbeatService {
     pub store: std::sync::Arc<JobStore>,
-    pub session_id: String,
+    session_id: std::sync::Mutex<String>,
     pub cwd: String,
+    hub: Option<std::sync::Arc<shared::DeliveryHub>>,
+    deliver: Option<std::sync::Arc<DeliverFn>>,
+}
+
+impl HeartbeatService {
+    pub fn new(store: std::sync::Arc<JobStore>, cwd: impl Into<String>) -> Self {
+        Self {
+            store,
+            session_id: std::sync::Mutex::new(String::new()),
+            cwd: cwd.into(),
+            hub: None,
+            deliver: None,
+        }
+    }
+
+    pub(crate) fn with_lane(
+        mut self,
+        hub: std::sync::Arc<shared::DeliveryHub>,
+        deliver: std::sync::Arc<DeliverFn>,
+    ) -> Self {
+        self.hub = Some(hub);
+        self.deliver = Some(deliver);
+        self
+    }
+
+    fn session_id(&self) -> String {
+        self.session_id
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
+    /// Invariant: [`HeartbeatService::new`] starts unbound, and a job stamped
+    /// with the empty id belongs to no lane, matches every other unbound
+    /// session, and is skipped forever.
+    fn bound_session_id(&self) -> Result<String, String> {
+        let session_id = self.session_id();
+        if session_id.is_empty() {
+            return Err(
+                "Heartbeats need a session: attach the session store before scheduling one"
+                    .to_owned(),
+            );
+        }
+        Ok(session_id)
+    }
+
+    pub fn bind_session(&self, session_id: String) {
+        let mut bound = self
+            .session_id
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if *bound != session_id {
+            self.withdraw(bound.as_str());
+        }
+        if let (Some(hub), Some(deliver)) = (&self.hub, &self.deliver) {
+            hub.register(session_id.clone(), std::sync::Arc::clone(deliver));
+        }
+        *bound = session_id;
+    }
+
+    /// Invariant: the interned timer outlives every session on its ledger, so a
+    /// departing session loses its lane and has its still-Active jobs paused —
+    /// left claimable they are re-armed and re-fsynced for the whole process.
+    fn withdraw(&self, session_id: &str) {
+        let Some(hub) = &self.hub else { return };
+        if session_id.is_empty() {
+            return;
+        }
+        hub.unregister(session_id);
+        // Incident: an unconditional mutate persists, so every session that
+        // never armed a heartbeat still seeded `rlm-{pid}/scheduled-jobs.json`.
+        let claimable = |job: &Job| {
+            job.session_id == session_id && is_heartbeat_job(job) && job.status == JobStatus::Active
+        };
+        if !self.store.snapshot().jobs.iter().any(claimable) {
+            return;
+        }
+        let now = yi_session::now_ms();
+        self.store.mutate(|state| {
+            for job in state.jobs.iter_mut().filter(|job| claimable(job)) {
+                job.status = JobStatus::Paused;
+                job.next_run_at = None;
+                job.updated_at = now;
+            }
+        });
+    }
+
+    fn owns(&self, job: &Job) -> bool {
+        job.session_id == self.session_id()
+    }
+}
+
+/// Invariant: a lane is withdrawn by whichever comes first — the session
+/// dropping, or [`HeartbeatService::bind_session`] re-pointing this service at
+/// another id. Neither alone covers a rebind that never drops the service.
+impl Drop for HeartbeatService {
+    fn drop(&mut self) {
+        self.withdraw(&self.session_id());
+    }
 }
 
 fn render_job_line(job: &Job) -> String {
@@ -871,7 +903,10 @@ impl HeartbeatService {
         match command {
             HeartbeatCommand::Status => {
                 let state = self.store.snapshot();
-                let jobs = Self::heartbeat_jobs(&state);
+                let jobs: Vec<&Job> = Self::heartbeat_jobs(&state)
+                    .into_iter()
+                    .filter(|job| self.owns(job))
+                    .collect();
                 if jobs.is_empty() {
                     return Ok("No heartbeat is set.".to_owned());
                 }
@@ -887,10 +922,12 @@ impl HeartbeatService {
                 } else {
                     JobStatus::Active
                 };
+                let owner = self.session_id();
                 let changed = self.store.mutate(|state| {
                     let mut changed = 0_u64;
                     for job in &mut state.jobs {
-                        if !is_heartbeat_job(job)
+                        if job.session_id != owner
+                            || !is_heartbeat_job(job)
                             || matches!(job.status, JobStatus::Completed | JobStatus::Cancelled)
                         {
                             continue;
@@ -916,10 +953,14 @@ impl HeartbeatService {
                 ))
             }
             HeartbeatCommand::Clear => {
+                let owner = self.session_id();
                 let cleared = self.store.mutate(|state| {
                     let mut cleared = 0_u64;
                     for job in &mut state.jobs {
-                        if is_heartbeat_job(job) && job.status != JobStatus::Cancelled {
+                        if job.session_id == owner
+                            && is_heartbeat_job(job)
+                            && job.status != JobStatus::Cancelled
+                        {
                             job.status = JobStatus::Cancelled;
                             job.updated_at = now_ms;
                             cleared = cleared.saturating_add(1);
@@ -937,7 +978,7 @@ impl HeartbeatService {
                 let (parsed, next_run_at) = parse_schedule(schedule, now_ms)?;
                 let job = new_job(JobSpec {
                     id: format!("hb-{}", crate::subagent::random_suffix()?),
-                    session_id: self.session_id.clone(),
+                    session_id: self.bound_session_id()?,
                     cwd: self.cwd.clone(),
                     source: yi_types::schedule::JobSource::Heartbeat,
                     delivery_mode: *delivery_mode,
@@ -953,6 +994,7 @@ impl HeartbeatService {
                     for existing in &mut state.jobs {
                         if existing.source == Some(yi_types::schedule::JobSource::Heartbeat)
                             && existing.status == JobStatus::Active
+                            && existing.session_id == job.session_id
                         {
                             existing.status = JobStatus::Cancelled;
                             existing.updated_at = now_ms;
@@ -974,7 +1016,10 @@ impl HeartbeatService {
             let jobs: Vec<_> = state
                 .jobs
                 .iter()
-                .filter(|job| job.source == Some(yi_types::schedule::JobSource::RlmHeartbeat))
+                .filter(|job| {
+                    job.source == Some(yi_types::schedule::JobSource::RlmHeartbeat)
+                        && list.owns(job)
+                })
                 .collect();
             let reply = serde_json::json!({"jobs": jobs})
                 .as_object()
@@ -1015,7 +1060,7 @@ impl HeartbeatService {
                     parse_schedule(&normalize_heartbeat_schedule(Some(schedule_text)), now)?;
                 let job = new_job(JobSpec {
                     id: format!("rhb-{}", crate::subagent::random_suffix()?),
-                    session_id: create.session_id.clone(),
+                    session_id: create.bound_session_id()?,
                     cwd: create.cwd.clone(),
                     source: yi_types::schedule::JobSource::RlmHeartbeat,
                     delivery_mode: delivery,
@@ -1052,8 +1097,13 @@ impl HeartbeatService {
                     }
                 };
                 let now = yi_session::now_ms();
+                let owner = update.bound_session_id()?;
                 let updated = update.store.mutate(|state| {
-                    state.jobs.iter_mut().find(|job| job.id == id).map(|job| {
+                    let found = state
+                        .jobs
+                        .iter_mut()
+                        .find(|job| job.id == id && job.session_id == owner);
+                    found.map(|job| {
                         job.status = target;
                         if target == JobStatus::Active && job.next_run_at.is_none() {
                             job.next_run_at =
@@ -1080,8 +1130,13 @@ impl HeartbeatService {
                     .ok_or("rlm_heartbeat.delete requires an id")?
                     .to_owned();
                 let now = yi_session::now_ms();
+                let owner = delete.bound_session_id()?;
                 let found = delete.store.mutate(|state| {
-                    state.jobs.iter_mut().find(|job| job.id == id).map(|job| {
+                    let target = state
+                        .jobs
+                        .iter_mut()
+                        .find(|job| job.id == id && job.session_id == owner);
+                    target.map(|job| {
                         job.status = JobStatus::Cancelled;
                         job.next_run_at = None;
                         job.updated_at = now;

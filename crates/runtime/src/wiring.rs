@@ -8,7 +8,6 @@ use crate::mailbox::{ParentLink, register_child_messaging};
 use crate::session::AgentSession;
 use crate::subagent::{
     ChildBuild, ChildFactory, DEFAULT_MAX_CHILDREN, SubagentHost, SubagentHostOptions,
-    random_suffix,
 };
 
 /// A child is a fresh session: it runs its own extensions against its own cwd
@@ -93,19 +92,8 @@ fn wire_schedule(
     wiring: &RuntimeWiring,
     registry: &mut crate::kernel::HostRegistry,
 ) {
-    let store = Arc::new(crate::schedule::JobStore::open(
-        wiring.rlm_dir.join("scheduled-jobs.json"),
-    ));
-    let heartbeats = Arc::new(crate::schedule::HeartbeatService {
-        store: Arc::clone(&store),
-        session_id: wiring
-            .rlm_dir
-            .file_name()
-            .map(|name| name.to_string_lossy().into_owned())
-            .unwrap_or_else(|| "session".to_owned()),
-        cwd: wiring.cwd.to_string_lossy().into_owned(),
-    });
-    heartbeats.register(registry);
+    let shared = crate::schedule::shared::intern(wiring.rlm_dir.join("scheduled-jobs.json"));
+    let heartbeats_cwd = wiring.cwd.to_string_lossy().into_owned();
     let hook = session.heartbeat_hook();
     let busy = session.activity_handle();
     let deliver: Arc<crate::schedule::DeliverFn> = Arc::new(move |job| {
@@ -125,13 +113,12 @@ fn wire_schedule(
         );
         crate::schedule::RunOutcome::Ran
     });
-    let scheduler = crate::schedule::Scheduler::start(Arc::clone(&store), deliver, || {
-        format!(
-            "dsp-{}",
-            random_suffix().unwrap_or_else(|_| "00000000".to_owned())
-        )
-    });
-    session.set_schedule(Arc::clone(&store), Arc::clone(&heartbeats), scheduler);
+    let heartbeats = Arc::new(
+        crate::schedule::HeartbeatService::new(Arc::clone(&shared.store), heartbeats_cwd)
+            .with_lane(Arc::clone(&shared.hub), Arc::clone(&deliver)),
+    );
+    heartbeats.register(registry);
+    session.set_schedule(Arc::clone(&heartbeats));
 }
 
 fn wire_goal(
