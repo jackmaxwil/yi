@@ -72,5 +72,6 @@ when it changes rather than editing them by hand.
 - [D83](adr/d83.md) - net src growth is budgeted per version
 - [D84](adr/d84.md) - the forge is GitHub, and `.github/` returns as thin callers
 - [D85](adr/d85.md) - tests are tiered, and a ledger row names its journey
+- [D86](adr/d86.md) - heartbeat lanes are in-process, keyed by session_id
 
 D36-D51, D72, D73 and D74 have no ADR yet; ARCHITECTURE.md is the record for those rows.
