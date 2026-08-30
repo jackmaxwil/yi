@@ -110,7 +110,7 @@ pub struct AgentSession {
 type ScheduleParts = (
     Arc<crate::schedule::JobStore>,
     Arc<crate::schedule::HeartbeatService>,
-    crate::schedule::Scheduler,
+    Option<crate::schedule::Scheduler>,
 );
 
 impl AgentSession {
@@ -214,12 +214,11 @@ impl AgentSession {
         self.advisor.lock().ok().and_then(|slot| slot.clone())
     }
 
-    /// Dropping the session stops the timer.
     pub fn set_schedule(
         &self,
         store: Arc<crate::schedule::JobStore>,
         heartbeats: Arc<crate::schedule::HeartbeatService>,
-        scheduler: crate::schedule::Scheduler,
+        scheduler: Option<crate::schedule::Scheduler>,
     ) {
         if let Ok(mut slot) = self.schedule.lock() {
             *slot = Some((store, heartbeats, scheduler));
@@ -410,6 +409,10 @@ impl AgentSession {
         let count = loaded.len();
         if let Ok(mut messages) = self.shared.messages.lock() {
             *messages = loaded;
+        }
+        if let Some(service) = self.heartbeat_service() {
+            let id = yi_session::lock_session(&store).metadata().id.clone();
+            service.bind_session(id);
         }
         if let Ok(mut slot) = self.shared.store.lock() {
             *slot = Some(store);

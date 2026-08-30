@@ -328,10 +328,10 @@ fn two_roots_run_two_workers_that_keep_their_own_schedules() -> TestResult {
     outcome
 }
 
-/// Two roots spawn two workers. Two ACP sessions on a root share that
-/// worker's kernel process and its one `rlm-{pid}` ledger (a second
-/// `_yi/heartbeat` cancels the first). The failure is a sibling worker
-/// whose jobs never run, or a torn `scheduled-jobs.json`.
+/// Two roots spawn two workers. Two ACP sessions on a root share one
+/// `rlm-{pid}` ledger and one timer; each session keeps its own heartbeat.
+/// The failure is a sibling worker whose jobs never run, a torn
+/// `scheduled-jobs.json`, or the second session cancelling the first.
 #[test]
 #[ignore = "tier-2 journey: `just journeys`"]
 fn workers_do_not_lose_heartbeats_or_tear_the_job_ledger() -> TestResult {
@@ -349,7 +349,7 @@ fn workers_do_not_lose_heartbeats_or_tear_the_job_ledger() -> TestResult {
         for worker in 0..WORKERS {
             let cwd = dir.join(format!("root-{worker}"));
             std::fs::create_dir_all(&cwd)?;
-            for session in 0..SESSIONS_PER_WORKER {
+            for _ in 0..SESSIONS_PER_WORKER {
                 req = req.saturating_add(1);
                 let new = client.request(
                     &format!("new-{req}"),
@@ -357,10 +357,8 @@ fn workers_do_not_lose_heartbeats_or_tear_the_job_ledger() -> TestResult {
                     json!({"cwd": cwd.display().to_string()}),
                 )?;
                 let session_id = session_id_from(&new)?;
-                if session == 0 {
-                    req = req.saturating_add(1);
-                    arm_heartbeat(&mut client, &format!("hb-{req}"), &session_id)?;
-                }
+                req = req.saturating_add(1);
+                arm_heartbeat(&mut client, &format!("hb-{req}"), &session_id)?;
                 armed.push((session_id, cwd.display().to_string()));
             }
         }
@@ -434,7 +432,16 @@ fn ledgers_are_intact(sessions: &Path) -> Result<bool, Box<dyn Error>> {
         if !state.dispatches.is_empty() {
             return Ok(false);
         }
-        if state.jobs.iter().filter(|job| job.run_count >= 1).count() != 1 {
+        if state.jobs.iter().filter(|job| job.run_count >= 1).count() != SESSIONS_PER_WORKER {
+            return Ok(false);
+        }
+        let mut ids = std::collections::BTreeSet::new();
+        for job in &state.jobs {
+            if job.run_count >= 1 {
+                ids.insert(job.session_id.clone());
+            }
+        }
+        if ids.len() != SESSIONS_PER_WORKER {
             return Ok(false);
         }
     }

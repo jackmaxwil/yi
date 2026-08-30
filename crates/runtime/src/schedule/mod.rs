@@ -1,3 +1,5 @@
+pub(crate) mod shared;
+
 use std::collections::{BTreeMap, HashSet};
 
 use yi_types::schedule::{
@@ -777,7 +779,8 @@ async fn dispatch_claimed_lanes(
         }));
     }
     for handle in handles {
-        // Invariant: a panicked lane leaves remaining claims for [`recover_interrupted_in_state`].
+        // Invariant: a panicked DeliverFn leaves that lane's claims until the
+        // next Scheduler::start recovery.
         let _ = handle.await;
     }
 }
@@ -858,8 +861,62 @@ pub fn heartbeat_message(job: &Job, now_ms: u64) -> yi_types::message::AgentMess
 /// `rlm_heartbeat.*` vocabulary over one store.
 pub struct HeartbeatService {
     pub store: std::sync::Arc<JobStore>,
-    pub session_id: String,
+    session_id: std::sync::Mutex<String>,
     pub cwd: String,
+    hub: Option<std::sync::Arc<shared::DeliveryHub>>,
+    deliver: Option<std::sync::Arc<DeliverFn>>,
+}
+
+impl HeartbeatService {
+    pub fn new(
+        store: std::sync::Arc<JobStore>,
+        session_id: impl Into<String>,
+        cwd: impl Into<String>,
+    ) -> Self {
+        Self {
+            store,
+            session_id: std::sync::Mutex::new(session_id.into()),
+            cwd: cwd.into(),
+            hub: None,
+            deliver: None,
+        }
+    }
+
+    pub(crate) fn attached(
+        store: std::sync::Arc<JobStore>,
+        cwd: impl Into<String>,
+        hub: std::sync::Arc<shared::DeliveryHub>,
+        deliver: std::sync::Arc<DeliverFn>,
+    ) -> Self {
+        Self {
+            store,
+            session_id: std::sync::Mutex::new(String::new()),
+            cwd: cwd.into(),
+            hub: Some(hub),
+            deliver: Some(deliver),
+        }
+    }
+
+    fn session_id(&self) -> String {
+        self.session_id
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
+    pub fn bind_session(&self, session_id: String) {
+        if let (Some(hub), Some(deliver)) = (&self.hub, &self.deliver) {
+            hub.register(session_id.clone(), std::sync::Arc::clone(deliver));
+        }
+        *self
+            .session_id
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = session_id;
+    }
+
+    fn owns(&self, job: &Job) -> bool {
+        job.session_id == self.session_id()
+    }
 }
 
 fn render_job_line(job: &Job) -> String {
@@ -896,7 +953,10 @@ impl HeartbeatService {
         match command {
             HeartbeatCommand::Status => {
                 let state = self.store.snapshot();
-                let jobs = Self::heartbeat_jobs(&state);
+                let jobs: Vec<&Job> = Self::heartbeat_jobs(&state)
+                    .into_iter()
+                    .filter(|job| self.owns(job))
+                    .collect();
                 if jobs.is_empty() {
                     return Ok("No heartbeat is set.".to_owned());
                 }
@@ -915,7 +975,8 @@ impl HeartbeatService {
                 let changed = self.store.mutate(|state| {
                     let mut changed = 0_u64;
                     for job in &mut state.jobs {
-                        if !is_heartbeat_job(job)
+                        if !self.owns(job)
+                            || !is_heartbeat_job(job)
                             || matches!(job.status, JobStatus::Completed | JobStatus::Cancelled)
                         {
                             continue;
@@ -944,7 +1005,10 @@ impl HeartbeatService {
                 let cleared = self.store.mutate(|state| {
                     let mut cleared = 0_u64;
                     for job in &mut state.jobs {
-                        if is_heartbeat_job(job) && job.status != JobStatus::Cancelled {
+                        if self.owns(job)
+                            && is_heartbeat_job(job)
+                            && job.status != JobStatus::Cancelled
+                        {
                             job.status = JobStatus::Cancelled;
                             job.updated_at = now_ms;
                             cleared = cleared.saturating_add(1);
@@ -962,7 +1026,7 @@ impl HeartbeatService {
                 let (parsed, next_run_at) = parse_schedule(schedule, now_ms)?;
                 let job = new_job(JobSpec {
                     id: format!("hb-{}", crate::subagent::random_suffix()?),
-                    session_id: self.session_id.clone(),
+                    session_id: self.session_id(),
                     cwd: self.cwd.clone(),
                     source: yi_types::schedule::JobSource::Heartbeat,
                     delivery_mode: *delivery_mode,
@@ -978,6 +1042,7 @@ impl HeartbeatService {
                     for existing in &mut state.jobs {
                         if existing.source == Some(yi_types::schedule::JobSource::Heartbeat)
                             && existing.status == JobStatus::Active
+                            && existing.session_id == job.session_id
                         {
                             existing.status = JobStatus::Cancelled;
                             existing.updated_at = now_ms;
@@ -1040,7 +1105,7 @@ impl HeartbeatService {
                     parse_schedule(&normalize_heartbeat_schedule(Some(schedule_text)), now)?;
                 let job = new_job(JobSpec {
                     id: format!("rhb-{}", crate::subagent::random_suffix()?),
-                    session_id: create.session_id.clone(),
+                    session_id: create.session_id(),
                     cwd: create.cwd.clone(),
                     source: yi_types::schedule::JobSource::RlmHeartbeat,
                     delivery_mode: delivery,
