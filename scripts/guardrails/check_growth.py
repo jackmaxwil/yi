@@ -111,8 +111,17 @@ def unpaid(version, base_version, delta):
         if said <= FREE or abs(said - delta) > FREE:
             errs.append(f"the {version} row says `growth +{said}:` but the measurement is {delta:+d}")
             errs.append(f"  a memo may trail the measured number by the free band +{FREE}, not by more")
-    if delta > DROW and not CITE.search(row):
-        errs.append(f"{delta:+d} is past +{DROW}: the {version} row must also cite the D-row it claimed")
+    if delta > DROW:
+        clause = ""
+        if memo:
+            tail = row[memo.end() :]
+            stop = tail.find(". ")
+            clause = row[memo.start() : memo.end() + (stop if stop != -1 else len(tail))]
+        if not CITE.search(clause):
+            errs.append(
+                f"{delta:+d} is past +{DROW}: a D-number must ride inside the growth"
+                " clause itself; one elsewhere in the row proves nothing"
+            )
     return errs
 
 

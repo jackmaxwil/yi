@@ -122,13 +122,41 @@ if log.returncode != 0:
     print(f"  git log failed: {log.stderr.strip()}")
     sys.exit(1)
 
+BASELINES = "scripts/guardrails/baselines/"
+
+
+def code_path(path):
+    if path.startswith("crates/") and "/src/" in path:
+        return True
+    return path == "justfile" or (path.startswith("scripts/") and not path.startswith(BASELINES))
+
+
+def composition_errors(sha):
+    show = git("show", "--name-status", "--format=%P", sha)
+    if show.returncode != 0:
+        return [f"git show failed: {show.stderr.strip()}"]
+    lines = show.stdout.splitlines()
+    if lines and len(lines[0].split()) > 1:
+        return []
+    edits = []
+    for line in lines[1:]:
+        parts = line.split("\t")
+        if len(parts) >= 2:
+            edits.append((parts[0][:1], parts[-1]))
+    baselines = sum(1 for status, f in edits if f.startswith(BASELINES) and status in "MD")
+    code = sum(1 for _, f in edits if code_path(f))
+    if baselines and code:
+        return [f"{baselines} baseline edit(s) ride beside {code} code file(s); a baseline edit lands in its own commit (a new baseline may seed with its gate)"]
+    return []
+
+
 errs, seen = [], 0
 for record in log.stdout.split("\x1e"):
     if not record.strip():
         continue
     sha, subject, trailers = record.strip("\n").split("\x00", 2)
     seen += 1
-    for e in subject_errors(subject) + trailer_errors(trailers):
+    for e in subject_errors(subject) + trailer_errors(trailers) + composition_errors(sha):
         errs.append(f"{sha[:8]} {subject} — {e}")
 if errs:
     errs.append(f"rewrite the messages: git rebase -i {hint}")
