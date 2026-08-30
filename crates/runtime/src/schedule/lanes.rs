@@ -3,11 +3,23 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use tokio::task::JoinSet;
+use yi_types::schedule::{JobStatus, ScheduleState};
 
 use super::{
-    ClaimedDispatch, DeliverFn, JobStore, claim_due_in_state, next_active_run_at,
-    record_dispatch_result_in_state, recover_interrupted_in_state,
+    ClaimedDispatch, DeliverFn, JobStore, claim_due_in_state, record_dispatch_result_in_state,
+    recover_interrupted_in_state,
 };
+
+/// Invariant: a session with a lane in flight is unclaimable, so a blocked
+/// session's own re-armed interval must not pin the timer's next deadline.
+fn next_claimable_run_at(state: &ScheduleState, busy: &HashSet<String>) -> Option<u64> {
+    state
+        .jobs
+        .iter()
+        .filter(|job| job.status == JobStatus::Active && !busy.contains(&job.session_id))
+        .filter_map(|job| job.next_run_at)
+        .min()
+}
 
 fn reap_lane(res: Result<String, tokio::task::JoinError>, busy: &mut HashSet<String>) {
     if let Ok(session) = res {
@@ -78,43 +90,30 @@ impl Scheduler {
                 while let Some(res) = lanes.try_join_next() {
                     reap_lane(res, &mut busy);
                 }
-                let next = next_active_run_at(&store.snapshot());
-                match next {
-                    None if busy.is_empty() => changed.notified().await,
-                    None => {
-                        if let Some(res) = lanes.join_next().await {
-                            reap_lane(res, &mut busy);
-                        }
+                // Invariant: `JobStore::mutate` wakes with `notify_waiters`,
+                // which stores no permit, so the waiter registers before the
+                // snapshot it is about to act on is read.
+                let mut woken = std::pin::pin!(changed.notified());
+                let _ = woken.as_mut().enable();
+                let now = yi_session::now_ms();
+                let next = next_claimable_run_at(&store.snapshot(), &busy);
+                if next.is_some_and(|at| at <= now) {
+                    let claimed = store
+                        .mutate(|state| claim_due_in_state(state, now, now, &mut new_id, &busy));
+                    spawn_claimed(&store, &deliver, claimed, &mut lanes, &mut busy);
+                    continue;
+                }
+                let until_due = next.map(|at| Duration::from_millis(at.saturating_sub(now)));
+                let due = async move {
+                    match until_due {
+                        Some(wait) => tokio::time::sleep(wait).await,
+                        None => std::future::pending().await,
                     }
-                    Some(at) => {
-                        let now = yi_session::now_ms();
-                        if at > now {
-                            let wait = Duration::from_millis(at - now);
-                            if lanes.is_empty() {
-                                tokio::select! {
-                                    () = tokio::time::sleep(wait) => {}
-                                    () = changed.notified() => {}
-                                }
-                            } else {
-                                tokio::select! {
-                                    () = tokio::time::sleep(wait) => {}
-                                    () = changed.notified() => {}
-                                    Some(res) = lanes.join_next() => {
-                                        reap_lane(res, &mut busy);
-                                    }
-                                }
-                            }
-                            continue;
-                        }
-                        let claimed = store.mutate(|state| {
-                            claim_due_in_state(state, now, now, &mut new_id, &busy)
-                        });
-                        let skipped_due = claimed.is_empty() && !busy.is_empty();
-                        spawn_claimed(&store, &deliver, claimed, &mut lanes, &mut busy);
-                        if skipped_due && let Some(res) = lanes.join_next().await {
-                            reap_lane(res, &mut busy);
-                        }
-                    }
+                };
+                tokio::select! {
+                    () = due => {}
+                    () = woken => {}
+                    Some(res) = lanes.join_next() => reap_lane(res, &mut busy),
                 }
             }
         });
