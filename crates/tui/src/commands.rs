@@ -1,12 +1,11 @@
 use std::sync::Arc;
 
-use yi_runtime::AgentSession;
+use yi_runtime::session_store::{JsonlRepo, SessionRepo, age_label, now_ms};
+use yi_runtime::{AgentSession, PermissionMode};
 
 use crate::app::App;
 use crate::cell::Cell;
 
-/// A5's dispatch: every slash command that reads or changes runtime state runs
-/// here, against the session the event loop owns.
 pub fn process_pending_command(app: &mut App, session: &Arc<AgentSession>) {
     let Some(line) = app.pending_command.take() else {
         return;
@@ -18,13 +17,15 @@ pub fn process_pending_command(app: &mut App, session: &Arc<AgentSession>) {
         "advisor" => advisor_command(session, args),
         "plan" => plan_command(session),
         "goal" => goal_command(session),
+        "permissions" => permissions_command(session, args),
+        "compact" => compact_command(session, args),
+        "sessions" => sessions_command(app, args),
         other => format!("unknown command: /{other}"),
     };
     app.commit_cell(&Cell::Notice { text });
     app.scheduler.request();
 }
 
-/// V11 is a user act: no host request exists, so only this command promotes.
 fn advisor_command(session: &Arc<AgentSession>, args: &str) -> String {
     let Some(advisor) = session.advisor() else {
         return "/advisor: no advisor is attached to this session".to_owned();
@@ -59,9 +60,6 @@ fn advisor_command(session: &Arc<AgentSession>, args: &str) -> String {
     }
 }
 
-/// Read-only: a plan is grown through the model's own `plan.*` calls, whose
-/// transitions are host-verified (D52); a TUI shortcut past that would be a
-/// second, unchecked writer.
 fn plan_command(session: &Arc<AgentSession>) -> String {
     let Some(service) = session.plan_service() else {
         return "/plan: no plan service is attached to this session".to_owned();
@@ -80,8 +78,6 @@ fn plan_command(session: &Arc<AgentSession>) -> String {
     }
 }
 
-/// Read-only for the same reason plus G2: a goal is explicit-only and creating
-/// one from a keystroke is exactly the inference that rule forbids.
 fn goal_command(session: &Arc<AgentSession>) -> String {
     let Some(service) = session.goal_service() else {
         return "/goal: no goal service is attached to this session".to_owned();
@@ -120,7 +116,75 @@ fn goal_command(session: &Arc<AgentSession>) -> String {
     }
 }
 
-/// Mirrors back what the session set, which the clamp may have moved.
+fn parse_mode(text: &str) -> Result<PermissionMode, &'static str> {
+    match text {
+        "ask" => Ok(PermissionMode::Ask),
+        "auto" => Ok(PermissionMode::Auto),
+        "yolo" => Ok(PermissionMode::Yolo),
+        _ => Err("ask, auto, or yolo"),
+    }
+}
+
+fn permissions_command(session: &Arc<AgentSession>, args: &str) -> String {
+    let Some(broker) = session.permission_broker() else {
+        return "/permissions: no permission broker is attached to this session".to_owned();
+    };
+    if args.is_empty() {
+        return format!(
+            "permission mode: {}",
+            yi_runtime::gate::mode_label(broker.mode())
+        );
+    }
+    match parse_mode(args) {
+        Ok(mode) => {
+            broker.set_mode_and_fragment(mode, session);
+            format!("permission mode: {}", yi_runtime::gate::mode_label(mode))
+        }
+        Err(want) => format!("/permissions [{want}]"),
+    }
+}
+
+fn compact_command(session: &Arc<AgentSession>, args: &str) -> String {
+    let Some(compactor) = session.compactor() else {
+        return "/compact: compaction is not attached to this session".to_owned();
+    };
+    if args.is_empty() {
+        compactor.schedule();
+        "compaction scheduled".to_owned()
+    } else {
+        compactor.schedule_with_instructions(Some(args.to_owned()));
+        format!("compaction scheduled · {args}")
+    }
+}
+
+fn sessions_command(app: &App, args: &str) -> String {
+    if !args.is_empty() && args != "list" {
+        return "/sessions — listing only; show and rm stay on `yi sessions`".to_owned();
+    }
+    let mut repo = JsonlRepo::new(
+        app.options.session_dir.clone().into(),
+        app.options.cwd.clone(),
+    );
+    match repo.list() {
+        Err(error) => format!("/sessions: {error}"),
+        Ok(listed) if listed.is_empty() => "no sessions for this directory".to_owned(),
+        Ok(listed) => {
+            let now = now_ms();
+            listed
+                .iter()
+                .map(|m| {
+                    format!(
+                        "{}  {:>8}",
+                        m.id,
+                        age_label(now.saturating_sub(m.created_at))
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        }
+    }
+}
+
 pub fn process_pending_selection(app: &mut App, session: &Arc<AgentSession>) {
     let Some((model, effort)) = app.selection.pending.take() else {
         return;
@@ -138,4 +202,16 @@ pub fn process_pending_selection(app: &mut App, session: &Arc<AgentSession>) {
         },
     });
     app.scheduler.request();
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::app::SLASH_COMMANDS;
+
+    #[test]
+    fn slash_table_covers_every_runtime_verb() {
+        #[rustfmt::skip]
+        const NEED: [&str; 6] = ["advisor", "plan", "goal", "permissions", "compact", "sessions"];
+        assert!(NEED.iter().all(|v| SLASH_COMMANDS.contains(v)));
+    }
 }

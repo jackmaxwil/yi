@@ -2,8 +2,8 @@ use std::path::PathBuf;
 
 use serde_json::{Value, json};
 use yi_runtime::session_store::{
-    BranchBounds, EntryOrder, EntryQuery, JsonlRepo, SessionMetadata, SessionRepo, lock_session,
-    now_ms,
+    BranchBounds, EntryOrder, EntryQuery, JsonlRepo, SessionMetadata, SessionRepo, age_label,
+    lock_session, now_ms,
 };
 use yi_types::entry::Entry;
 use yi_types::message::{AgentMessage, Content, UserContent};
@@ -171,22 +171,6 @@ fn one_line(text: &str) -> String {
     match trimmed.char_indices().nth(PREVIEW_CHARS) {
         Some((cut, _)) => format!("{}…", trimmed.get(..cut).unwrap_or_default()),
         None => trimmed.to_owned(),
-    }
-}
-
-pub fn age_label(elapsed_ms: u64) -> String {
-    let seconds = elapsed_ms / 1_000;
-    let minutes = seconds / 60;
-    let hours = minutes / 60;
-    let days = hours / 24;
-    if days > 0 {
-        format!("{days}d ago")
-    } else if hours > 0 {
-        format!("{hours}h ago")
-    } else if minutes > 0 {
-        format!("{minutes}m ago")
-    } else {
-        format!("{seconds}s ago")
     }
 }
 

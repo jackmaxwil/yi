@@ -754,7 +754,7 @@ fn list_checkpoints(store: &yi_runtime::session_store::SharedSession, json: bool
             CheckpointAt::Undo => "undo",
             CheckpointAt::Other(name) => name,
         };
-        let age = sessions::age_label(now.saturating_sub(entry.timestamp));
+        let age = yi_runtime::session_store::age_label(now.saturating_sub(entry.timestamp));
         let tree = entry.data.tree.get(..8).unwrap_or(&entry.data.tree);
         println!("{tree}  {at:<10}  {age:>8}");
     }
