@@ -6,7 +6,10 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use serde_json::{Map, Value};
 use yi_ai::faux::{faux_assistant_message, faux_text};
 use yi_loop::ExecutionMode;
-use yi_runtime::{AgentSession, ProviderStream, SessionConfig, SubagentHost, SubagentHostOptions};
+use yi_runtime::{
+    AgentSession, HostRegistry, KernelService, KernelServiceOptions, ProviderStream, SessionConfig,
+    SubagentHost, SubagentHostOptions,
+};
 use yi_types::message::{AgentMessage, StopReason};
 use yi_types::model::{Effort, Model, ModelCost};
 
@@ -198,6 +201,56 @@ async fn an_errored_child_leaves_a_transcript_naming_the_error() -> TestResult {
         )
     });
     assert!(named, "the transcript must name the error: {messages:?}");
+    Ok(())
+}
+
+/// Invariant: a real run reaches a child only through a kernel cell, so the
+/// spawn, the typed answer and the file are one journey or none of them is
+/// proven. `just journeys` runs it; the ordinary suite skips the kernel boot.
+#[tokio::test]
+#[ignore = "tier-2 journey: `just journeys`"]
+async fn a_kernel_cell_spawns_a_child_whose_typed_answer_and_transcript_land() -> TestResult {
+    let (host, root) = host(Some(r#"{"answer": 42}"#));
+    let mut registry = HostRegistry::default();
+    registry.register_mcp_stubs();
+    host.register(&mut registry);
+    let service = KernelService::new(KernelServiceOptions {
+        cwd: std::env::temp_dir(),
+        home: std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .unwrap_or_default(),
+        session_dir: Some(root.clone()),
+        host: Arc::new(registry),
+        on_restore: None,
+    });
+    let cancelled: yi_tools::CancelFlag = Arc::new(|| false);
+    let cell = tokio::task::spawn_blocking(move || {
+        yi_tools::KernelBridge::execute_cell(
+            &service,
+            "h = await rlm.run('report the answer', name='helper')\nr = await h.result()\nprint('typed', r['json']['answer'], r['name'])\nprint(h.session_dir)",
+            &cancelled,
+        )
+    })
+    .await??;
+
+    let stdout = cell.result.stdout.clone();
+    assert!(
+        stdout.contains("typed 42 helper"),
+        "the cell must get the child's answer back as data: {stdout} {}",
+        cell.result.stderr
+    );
+    let dir = stdout
+        .lines()
+        .last()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .ok_or("the cell printed no child session dir")?;
+    let messages = messages_of(&transcript_in(Path::new(dir))?)?;
+    let rendered = format!("{messages:?}");
+    assert!(
+        rendered.contains("report the answer") && rendered.contains("42"),
+        "the child spawned from the cell must leave its own transcript: {rendered}"
+    );
     Ok(())
 }
 
