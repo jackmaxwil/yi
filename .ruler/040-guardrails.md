@@ -17,5 +17,8 @@ before claiming any task done; quote failures verbatim, do not paraphrase them.
   baselines/src_loc.json, and its `--update` obeys the own-commit law like every other baseline.
 - Growth is paid for before it is excused. The budget is a price, not a permission: a landing
   that cannot say why its bytes earn their place does not land, and deletion is weighed first.
+  `--update` charges the same price before it absorbs a delta, so the baseline update is not a
+  way around the memo; the memo's number is checked against the measurement, trailing it by at
+  most the free band.
 - A new YI_* env var is a row in scripts/guardrails/baselines/env_vars.json first (hard cap 40).
 - The dist profile is what binary-size and startup budgets measure — never release.
