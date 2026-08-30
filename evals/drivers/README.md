@@ -76,16 +76,26 @@ re-running the suite it is supposed to be picking from.
 3/3 on three trivial tasks is absent evidence of frontier headroom, never the
 negative result `J11`'s kill test asks for.
 
-## ARC-AGI-3 — blocked, no driver
+## ARC-AGI-3 — unblocked; the driver is `evals/arc/`
 
-`ARC_API_KEY` needs an arcprize.org platform account (a human signup). The
-scaffold smoke, once a key exists, is one command in the ref clone and spends
-no LLM budget:
+The key exists and the adapter is built, so this section is no longer a plan.
+See `evals/arc/README.md` for the mechanism and `docs/eval-ledger.md` rows
+`0010`/`0011` for the first two measured runs. Zero-budget connectivity smoke,
+unchanged and still worth running first — note that no `.env` is copied into the
+scaffold, the key is passed through the environment:
 
 ```sh
-cd ref/benchmarks/ARC-AGI-3-Agents && cp .env.example .env
+cd ref/benchmarks/ARC-AGI-3-Agents && uv sync
 ARC_API_KEY=... uv run main.py --agent=random --game=ls20
 ```
 
-The Yi attempt itself is not a measurement run: it needs a custom agent bridging
-the scaffold's `FrameData` loop to `yi ask`, which is build work.
+The paid run is `evals/arc/yi_arc.py`, which registers a `Yi` subclass of the
+scaffold's `Agent` and drives one `yi ask --continue` process per ARC action.
+`ARC_COST_CAP` stops the stream the way `tb21_cost.py` does, except that here
+the spend is summed from the same `yi_usage.parse_events` the harbor and pier
+adapters use, so a D79 `usage.unknown` turn cannot price at zero.
+
+Unlike TB2.1 there is no docker, no musl target and no harness install: the ARC
+service hosts the game environments, so the only spend is model tokens. The
+binding budget is wall clock, not USD — a Yi turn takes ~10s against a random
+agent's ~9 actions/second, and 150 actions is ~24 minutes for ~$0.52.
