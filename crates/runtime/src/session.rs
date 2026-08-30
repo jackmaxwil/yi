@@ -98,7 +98,7 @@ pub struct AgentSession {
     tools: Vec<Arc<dyn yi_loop::AgentTool>>,
     compactor: Option<Arc<crate::compaction::Compactor>>,
     on_compacted: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
-    schedule: Mutex<Option<ScheduleParts>>,
+    schedule: Mutex<Option<Arc<crate::schedule::HeartbeatService>>>,
     advisor: Mutex<Option<Arc<crate::advisor::AdvisorRuntime>>>,
     permission: Mutex<Option<Arc<crate::permission::PermissionBroker>>>,
     goal: Mutex<Option<Arc<crate::goal::GoalService>>>,
@@ -106,12 +106,6 @@ pub struct AgentSession {
     rules: Mutex<Option<Arc<crate::rules::RuleEngine>>>,
     wall: Mutex<crate::wall::Wall>,
 }
-
-type ScheduleParts = (
-    Arc<crate::schedule::JobStore>,
-    Arc<crate::schedule::HeartbeatService>,
-    Option<crate::schedule::Scheduler>,
-);
 
 impl AgentSession {
     pub fn new(config: SessionConfig, provider: Arc<ProviderStream>) -> Self {
@@ -214,14 +208,9 @@ impl AgentSession {
         self.advisor.lock().ok().and_then(|slot| slot.clone())
     }
 
-    pub fn set_schedule(
-        &self,
-        store: Arc<crate::schedule::JobStore>,
-        heartbeats: Arc<crate::schedule::HeartbeatService>,
-        scheduler: Option<crate::schedule::Scheduler>,
-    ) {
+    pub fn set_schedule(&self, heartbeats: Arc<crate::schedule::HeartbeatService>) {
         if let Ok(mut slot) = self.schedule.lock() {
-            *slot = Some((store, heartbeats, scheduler));
+            *slot = Some(heartbeats);
         }
     }
 
@@ -281,7 +270,7 @@ impl AgentSession {
         self.schedule
             .lock()
             .ok()
-            .and_then(|slot| slot.as_ref().map(|(_, service, _)| Arc::clone(service)))
+            .and_then(|slot| slot.as_ref().map(Arc::clone))
     }
 
     /// The hook must be non-blocking — spawn any kernel work.

@@ -773,33 +773,24 @@ pub struct HeartbeatService {
 }
 
 impl HeartbeatService {
-    pub fn new(
-        store: std::sync::Arc<JobStore>,
-        session_id: impl Into<String>,
-        cwd: impl Into<String>,
-    ) -> Self {
+    pub fn new(store: std::sync::Arc<JobStore>, cwd: impl Into<String>) -> Self {
         Self {
             store,
-            session_id: std::sync::Mutex::new(session_id.into()),
+            session_id: std::sync::Mutex::new(String::new()),
             cwd: cwd.into(),
             hub: None,
             deliver: None,
         }
     }
 
-    pub(crate) fn attached(
-        store: std::sync::Arc<JobStore>,
-        cwd: impl Into<String>,
+    pub(crate) fn with_lane(
+        mut self,
         hub: std::sync::Arc<shared::DeliveryHub>,
         deliver: std::sync::Arc<DeliverFn>,
     ) -> Self {
-        Self {
-            store,
-            session_id: std::sync::Mutex::new(String::new()),
-            cwd: cwd.into(),
-            hub: Some(hub),
-            deliver: Some(deliver),
-        }
+        self.hub = Some(hub);
+        self.deliver = Some(deliver);
+        self
     }
 
     fn session_id(&self) -> String {
@@ -809,9 +800,9 @@ impl HeartbeatService {
             .clone()
     }
 
-    /// Invariant: [`HeartbeatService::attached`] starts unbound, and a job
-    /// stamped with the empty id belongs to no lane, matches every other
-    /// unbound session, and is skipped forever.
+    /// Invariant: [`HeartbeatService::new`] starts unbound, and a job stamped
+    /// with the empty id belongs to no lane, matches every other unbound
+    /// session, and is skipped forever.
     fn bound_session_id(&self) -> Result<String, String> {
         let session_id = self.session_id();
         if session_id.is_empty() {
@@ -824,13 +815,44 @@ impl HeartbeatService {
     }
 
     pub fn bind_session(&self, session_id: String) {
+        let mut bound = self
+            .session_id
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if *bound != session_id {
+            self.withdraw(bound.as_str());
+        }
         if let (Some(hub), Some(deliver)) = (&self.hub, &self.deliver) {
             hub.register(session_id.clone(), std::sync::Arc::clone(deliver));
         }
-        *self
-            .session_id
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = session_id;
+        *bound = session_id;
+    }
+
+    /// Invariant: the interned timer outlives every session on its ledger, so a
+    /// departing session loses its lane and has its still-Active jobs paused —
+    /// left claimable they are re-armed and re-fsynced for the whole process.
+    fn withdraw(&self, session_id: &str) {
+        let Some(hub) = &self.hub else { return };
+        if session_id.is_empty() {
+            return;
+        }
+        hub.unregister(session_id);
+        // Incident: an unconditional mutate persists, so every session that
+        // never armed a heartbeat still seeded `rlm-{pid}/scheduled-jobs.json`.
+        let claimable = |job: &Job| {
+            job.session_id == session_id && is_heartbeat_job(job) && job.status == JobStatus::Active
+        };
+        if !self.store.snapshot().jobs.iter().any(claimable) {
+            return;
+        }
+        let now = yi_session::now_ms();
+        self.store.mutate(|state| {
+            for job in state.jobs.iter_mut().filter(|job| claimable(job)) {
+                job.status = JobStatus::Paused;
+                job.next_run_at = None;
+                job.updated_at = now;
+            }
+        });
     }
 
     fn owns(&self, job: &Job) -> bool {
@@ -838,14 +860,12 @@ impl HeartbeatService {
     }
 }
 
-/// The session owns this service, so dropping the session withdraws its lane —
-/// what used to be "dropping the session stops the timer" now that one interned
-/// timer outlives every session sharing its ledger.
+/// Invariant: a lane is withdrawn by whichever comes first — the session
+/// dropping, or [`HeartbeatService::bind_session`] re-pointing this service at
+/// another id. Neither alone covers a rebind that never drops the service.
 impl Drop for HeartbeatService {
     fn drop(&mut self) {
-        if let Some(hub) = &self.hub {
-            hub.unregister(&self.session_id());
-        }
+        self.withdraw(&self.session_id());
     }
 }
 
@@ -902,10 +922,11 @@ impl HeartbeatService {
                 } else {
                     JobStatus::Active
                 };
+                let owner = self.session_id();
                 let changed = self.store.mutate(|state| {
                     let mut changed = 0_u64;
                     for job in &mut state.jobs {
-                        if !self.owns(job)
+                        if job.session_id != owner
                             || !is_heartbeat_job(job)
                             || matches!(job.status, JobStatus::Completed | JobStatus::Cancelled)
                         {
@@ -932,10 +953,11 @@ impl HeartbeatService {
                 ))
             }
             HeartbeatCommand::Clear => {
+                let owner = self.session_id();
                 let cleared = self.store.mutate(|state| {
                     let mut cleared = 0_u64;
                     for job in &mut state.jobs {
-                        if self.owns(job)
+                        if job.session_id == owner
                             && is_heartbeat_job(job)
                             && job.status != JobStatus::Cancelled
                         {
@@ -994,7 +1016,10 @@ impl HeartbeatService {
             let jobs: Vec<_> = state
                 .jobs
                 .iter()
-                .filter(|job| job.source == Some(yi_types::schedule::JobSource::RlmHeartbeat))
+                .filter(|job| {
+                    job.source == Some(yi_types::schedule::JobSource::RlmHeartbeat)
+                        && list.owns(job)
+                })
                 .collect();
             let reply = serde_json::json!({"jobs": jobs})
                 .as_object()
@@ -1072,8 +1097,13 @@ impl HeartbeatService {
                     }
                 };
                 let now = yi_session::now_ms();
+                let owner = update.bound_session_id()?;
                 let updated = update.store.mutate(|state| {
-                    state.jobs.iter_mut().find(|job| job.id == id).map(|job| {
+                    let found = state
+                        .jobs
+                        .iter_mut()
+                        .find(|job| job.id == id && job.session_id == owner);
+                    found.map(|job| {
                         job.status = target;
                         if target == JobStatus::Active && job.next_run_at.is_none() {
                             job.next_run_at =
@@ -1100,8 +1130,13 @@ impl HeartbeatService {
                     .ok_or("rlm_heartbeat.delete requires an id")?
                     .to_owned();
                 let now = yi_session::now_ms();
+                let owner = delete.bound_session_id()?;
                 let found = delete.store.mutate(|state| {
-                    state.jobs.iter_mut().find(|job| job.id == id).map(|job| {
+                    let target = state
+                        .jobs
+                        .iter_mut()
+                        .find(|job| job.id == id && job.session_id == owner);
+                    target.map(|job| {
                         job.status = JobStatus::Cancelled;
                         job.next_run_at = None;
                         job.updated_at = now;

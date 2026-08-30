@@ -2,13 +2,14 @@ use std::error::Error;
 use std::sync::{Arc, Condvar, Mutex};
 
 use yi_ai::faux::{faux_assistant_message, faux_text};
+use yi_kernel::client::HostHandlers;
 use yi_loop::ExecutionMode;
 use yi_runtime::schedule::{
     DEFAULT_HEARTBEAT_DELIVERY_MODE, DeliverFn, HeartbeatCommand, HeartbeatService,
     INTERRUPTED_ERROR, JobSpec, JobStore, RunOutcome, Scheduler, SessionActivity,
     heartbeat_message, new_job, parse_heartbeat_command, parse_schedule, should_defer,
 };
-use yi_runtime::{AgentSession, ProviderStream, SessionConfig};
+use yi_runtime::{AgentSession, HostRegistry, ProviderStream, SessionConfig};
 use yi_types::message::{AgentMessage, StopReason, UserContent};
 use yi_types::model::{Model, ModelCost};
 use yi_types::schedule::{DispatchRecord, JobSource, JobStatus, ScheduleState};
@@ -198,7 +199,8 @@ async fn unresolved_claims_recover_as_interrupted_on_start() -> TestResult {
 #[tokio::test]
 async fn heartbeat_surface_set_status_pause_clear_round_trip() -> TestResult {
     let (dir, store) = temp_store("surface");
-    let service = HeartbeatService::new(Arc::clone(&store), "test", "/tmp");
+    let service = HeartbeatService::new(Arc::clone(&store), "/tmp");
+    service.bind_session("test".to_owned());
     let now = yi_session::now_ms();
 
     let set = parse_heartbeat_command("/heartbeat every 10m run the tests")?;
@@ -498,8 +500,10 @@ async fn a_job_scheduled_mid_block_dispatches_before_the_lane_ends() -> TestResu
 #[test]
 fn setting_a_heartbeat_does_not_cancel_a_sibling_session() -> TestResult {
     let (dir, store) = temp_store("sibling-hb");
-    let a = HeartbeatService::new(Arc::clone(&store), "sess-a", "/tmp");
-    let b = HeartbeatService::new(Arc::clone(&store), "sess-b", "/tmp");
+    let a = HeartbeatService::new(Arc::clone(&store), "/tmp");
+    a.bind_session("sess-a".to_owned());
+    let b = HeartbeatService::new(Arc::clone(&store), "/tmp");
+    b.bind_session("sess-b".to_owned());
     let now = yi_session::now_ms();
     a.apply(
         &parse_heartbeat_command("/heartbeat every 10m watch A")?,
@@ -519,6 +523,89 @@ fn setting_a_heartbeat_does_not_cancel_a_sibling_session() -> TestResult {
         active.len(),
         2,
         "two sessions on one store must keep both heartbeats: {active:?}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+    Ok(())
+}
+
+async fn host_call(
+    host: &HostRegistry,
+    request_type: &str,
+    payload: serde_json::Value,
+) -> Result<serde_json::Map<String, serde_json::Value>, String> {
+    let payload = payload.as_object().cloned().unwrap_or_default();
+    let call = HostHandlers::dispatch(host, request_type, payload)
+        .ok_or_else(|| format!("{request_type} is not registered"))?;
+    call.await
+}
+
+fn bound(store: &Arc<JobStore>, session_id: &str) -> Arc<HeartbeatService> {
+    let service = Arc::new(HeartbeatService::new(Arc::clone(store), "/tmp"));
+    service.bind_session(session_id.to_owned());
+    service
+}
+
+#[tokio::test]
+async fn the_kernel_vocabulary_cannot_reach_a_sibling_session() -> TestResult {
+    let (dir, store) = temp_store("rlm-scope");
+    let (a, b) = (bound(&store, "sess-a"), bound(&store, "sess-b"));
+    let (mut a_host, mut b_host) = (HostRegistry::default(), HostRegistry::default());
+    a.register(&mut a_host);
+    b.register(&mut b_host);
+
+    let created = host_call(
+        &b_host,
+        "rlm_heartbeat.create",
+        serde_json::json!({"schedule": "10m", "prompt": "watch B"}),
+    )
+    .await?;
+    let b_id = created
+        .get("job")
+        .and_then(|job| job.get("id"))
+        .and_then(serde_json::Value::as_str)
+        .ok_or("the created job carries no id")?
+        .to_owned();
+
+    let listed = host_call(&a_host, "rlm_heartbeat.list", serde_json::json!({})).await?;
+    let jobs = listed
+        .get("jobs")
+        .and_then(serde_json::Value::as_array)
+        .ok_or("the list reply carries no jobs")?;
+    assert!(
+        jobs.is_empty(),
+        "session a listed a sibling session's heartbeat: {jobs:?}"
+    );
+
+    let paused = host_call(
+        &a_host,
+        "rlm_heartbeat.update",
+        serde_json::json!({"id": &b_id, "status": "pause"}),
+    )
+    .await;
+    assert!(
+        paused.is_err(),
+        "session a paused a sibling session's heartbeat: {paused:?}"
+    );
+
+    let refused = host_call(
+        &a_host,
+        "rlm_heartbeat.delete",
+        serde_json::json!({"id": &b_id}),
+    )
+    .await;
+    assert!(
+        refused.is_err(),
+        "session a deleted a sibling session's heartbeat: {refused:?}"
+    );
+    assert_eq!(
+        store
+            .snapshot()
+            .jobs
+            .iter()
+            .find(|job| job.id == b_id)
+            .map(|job| job.status),
+        Some(JobStatus::Active),
+        "a sibling session's heartbeat was cancelled from another session"
     );
     let _ = std::fs::remove_dir_all(&dir);
     Ok(())
