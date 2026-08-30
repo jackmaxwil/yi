@@ -46,3 +46,15 @@ pub fn error_tool_result(message: &str) -> ToolResult {
         terminate: None,
     }
 }
+
+/// The machine-readable half of a failure; the prose stays the model's view.
+pub fn error_tool_result_kind(message: &str, kind: yi_types::event::ToolErrorKind) -> ToolResult {
+    let mut result = error_tool_result(message);
+    if let Value::Object(details) = &mut result.details {
+        details.insert(
+            "errorKind".to_owned(),
+            Value::String(kind.as_str().to_owned()),
+        );
+    }
+    result
+}

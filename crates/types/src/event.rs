@@ -75,6 +75,33 @@ pub enum AssistantMessageEvent {
     },
 }
 
+/// The closed failure taxonomy in a tool result's `details.errorKind`, which
+/// `yi stats` aggregates; the wire name is the variant in lower snake case.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToolErrorKind {
+    Denied,
+    NotFound,
+    InvalidArgs,
+    Aborted,
+    StaleTag,
+    NoopLoop,
+    ToolError,
+}
+
+impl ToolErrorKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Denied => "denied",
+            Self::NotFound => "not_found",
+            Self::InvalidArgs => "invalid_args",
+            Self::Aborted => "aborted",
+            Self::StaleTag => "stale_tag",
+            Self::NoopLoop => "noop_loop",
+            Self::ToolError => "tool_error",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ToolResult {

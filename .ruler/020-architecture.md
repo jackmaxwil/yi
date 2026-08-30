@@ -12,10 +12,11 @@ error, stale entry = error, undeclared internal dep = error. Standing rules (YI_
   API contains no `Result` — failure is encoded as values.
 - yi-tui / yi-acp / yi-cli never depend on yi-tools, yi-ai, or yi-permission directly; nothing
   below yi-cli may depend on yi-mcp-cli.
-- subagent / mailbox / worktree / goal / plan / rules / wall / schedule / advisor are modules
-  inside yi-runtime, never crates. A module that outgrows the 1,200-line file ceiling splits at
-  a seam (subagent -> mailbox for B6/B13, worktree for the B11 hand-back), never by line count;
-  an inherent `impl` may live in the module that owns the seam.
+- subagent / mailbox / worktree / wiring / goal / plan / rules / wall / schedule / advisor are
+  modules inside yi-runtime, never crates. A module that outgrows the 1,200-line file ceiling
+  splits at a seam (subagent -> mailbox for B6/B13, worktree for the B11 hand-back, wiring for
+  `attach_runtime` and the `wire_*` helpers), never by line count; an inherent `impl` may live
+  in the module that owns the seam.
 - Every dependency is declared once in [workspace.dependencies]; crate manifests add
   `{ workspace = true }` plus features only. Cargo features exist only where §13.4 declares
   them (check_manifests.py allowlist).

@@ -45,6 +45,7 @@ fn context() -> LlmContext {
             name: "bash".to_owned(),
             description: "run".to_owned(),
             parameters: json!({"type":"object","properties":{"cmd":{"type":"string"}}}),
+            freeform: None,
         }]),
     }
 }
@@ -428,5 +429,126 @@ fn reasoning_is_omitted_when_the_model_supports_no_level() -> TestResult {
     );
     assert!(params.get("reasoning").is_none());
     assert!(params.get("include").is_none());
+    Ok(())
+}
+
+/// C8: a freeform tool goes on the wire as a custom tool with its grammar;
+/// its history replays as custom_tool_call items and custom outputs, and
+/// plain function tools are untouched beside it.
+#[test]
+fn freeform_tool_serializes_as_custom_with_grammar() -> TestResult {
+    let options = OpenAiOptions {
+        max_tokens: Some(1024),
+        ..OpenAiOptions::default()
+    };
+    let mut context = context();
+    if let Some(tools) = &mut context.tools {
+        tools.push(ToolDef {
+            name: "edit".to_owned(),
+            description: "patch".to_owned(),
+            parameters: json!({"type":"object"}),
+            freeform: Some(yi_types::model::FreeformFormat {
+                definition: "start: body".to_owned(),
+            }),
+        });
+    }
+    let mut arguments = serde_json::Map::new();
+    arguments.insert("patch".to_owned(), json!("[a.rs#1A2B]\nPUT 1.=1:\n+x"));
+    context.messages.push(AgentMessage::Assistant {
+        content: vec![Content::ToolCall {
+            id: "call_9".to_owned(),
+            name: "edit".to_owned(),
+            arguments,
+            thought_signature: None,
+            namespace: None,
+        }],
+        api: String::new(),
+        provider: String::new(),
+        model: String::new(),
+        response_model: None,
+        response_id: None,
+        diagnostics: None,
+        usage: yi_types::message::Usage::zero(),
+        stop_reason: StopReason::ToolUse,
+        deferred: None,
+        error_message: None,
+        raw_stop_reason: None,
+        end_turn: None,
+        timestamp: 0,
+    });
+    context.messages.push(AgentMessage::ToolResult {
+        tool_call_id: "call_9".to_owned(),
+        tool_name: "edit".to_owned(),
+        content: vec![Content::Text {
+            text: "updated".to_owned(),
+            text_signature: None,
+        }],
+        details: None,
+        usage: None,
+        added_tool_names: None,
+        is_error: false,
+        timestamp: 0,
+    });
+    let params = build_params(&model(false), &context, &options);
+    assert_eq!(params["tools"][0]["type"], "function");
+    assert_eq!(params["tools"][1]["type"], "custom");
+    assert_eq!(params["tools"][1]["format"]["syntax"], "lark");
+    assert_eq!(params["tools"][1]["format"]["definition"], "start: body");
+    let input = params["input"].as_array().ok_or("input not array")?;
+    let call = input
+        .iter()
+        .find(|item| item["type"] == "custom_tool_call")
+        .ok_or("no custom_tool_call replay")?;
+    assert_eq!(call["input"], "[a.rs#1A2B]\nPUT 1.=1:\n+x");
+    assert!(
+        input
+            .iter()
+            .any(|item| item["type"] == "custom_tool_call_output"),
+        "freeform result replays as custom output"
+    );
+    Ok(())
+}
+
+/// A streamed custom tool call lands as one tool call whose raw input
+/// becomes the `patch` argument, no JSON parsing involved.
+#[test]
+fn custom_tool_call_stream_maps_to_patch_argument() -> TestResult {
+    let mut mapper = EventMapper::new(&model(false));
+    let mut events = Vec::new();
+    for payload in [
+        json!({"type":"response.created","response":{"id":"resp_9"}}),
+        json!({"type":"response.output_item.added","item":{"type":"custom_tool_call","call_id":"call_7","name":"edit","input":""}}),
+        json!({"type":"response.custom_tool_call_input.delta","call_id":"call_7","delta":"[a.rs#1A2B]\n"}),
+        json!({"type":"response.custom_tool_call_input.delta","call_id":"call_7","delta":"PUT 1.=1:\n+y"}),
+        json!({"type":"response.output_item.done","item":{"type":"custom_tool_call","call_id":"call_7","name":"edit","input":"[a.rs#1A2B]\nPUT 1.=1:\n+y"}}),
+        json!({"type":"response.completed","response":{"id":"resp_9","usage":{"input_tokens":1,"output_tokens":1}}}),
+    ] {
+        events.extend(mapper.push(&payload));
+    }
+    events.extend(mapper.finish());
+    let done = events
+        .iter()
+        .filter_map(|event| match event {
+            AssistantMessageEvent::Done { message, .. } => Some(message),
+            _ => None,
+        })
+        .next_back()
+        .ok_or("no done event")?;
+    let AgentMessage::Assistant { content, .. } = done else {
+        return Err("not assistant".into());
+    };
+    let Some(Content::ToolCall {
+        name, arguments, ..
+    }) = content
+        .iter()
+        .find(|block| matches!(block, Content::ToolCall { .. }))
+    else {
+        return Err("no tool call".into());
+    };
+    assert_eq!(name, "edit");
+    assert_eq!(
+        arguments.get("patch").and_then(Value::as_str),
+        Some("[a.rs#1A2B]\nPUT 1.=1:\n+y")
+    );
     Ok(())
 }

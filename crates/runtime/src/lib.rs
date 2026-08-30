@@ -22,6 +22,7 @@ pub mod skills;
 pub mod subagent;
 pub mod tools;
 pub mod wall;
+pub mod wiring;
 pub mod worktree;
 
 pub use checkpoint::{RecordedCheckpoint, UndoOutcome, recorded, undo, wire_turn_checkpoints};
@@ -37,11 +38,11 @@ pub use rewind::{BranchStub, Rewound, rewind_to, summarize_branch};
 pub use session::{AgentSession, SessionConfig, SessionError, Status};
 pub use skills::{Skill, skills_catalog};
 pub use subagent::{
-    ChildBuild, ChildStatus, ChildUpdate, ChildView, RuntimeWiring, SubagentHost,
-    SubagentHostOptions, attach_runtime,
+    ChildBuild, ChildStatus, ChildUpdate, ChildView, SubagentHost, SubagentHostOptions,
 };
 pub use tools::ToolAdapter;
 pub use wall::Wall;
+pub use wiring::{RuntimeWiring, attach_runtime};
 pub use yi_ai::auth;
 pub use yi_ai::request::ProxyConfig;
 
@@ -71,4 +72,7 @@ pub use yi_permission::{
     Class, ConfigRule, ConfigRuleAction, Decision, PermissionMode, Verdict, mode_fragment,
 };
 pub use yi_session as session_store;
-pub use yi_tools::{Change, ChangeKind, builtin_tools, discover_exec_tools, edit_file, list_files};
+pub use yi_tools::{
+    Change, ChangeKind, builtin_tools, builtin_tools_with, discover_exec_tools, edit_file,
+    list_files,
+};

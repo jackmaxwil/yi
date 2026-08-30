@@ -1,7 +1,7 @@
 Line-anchored patch language: name original lines/gaps to replace, insert, cut, or paste; then give new content. `:` headers take `+` body rows; colonless paste `PUT`, `CUT`, `REM`, `MV` take none.
 
 <headers>
-Section: `[PATH#TAG]`; `TAG`: 4-hex snapshot from latest `read`/`search`, REQUIRED each section. New files: `write`; hashline edits existing files only.
+Section: `[PATH#TAG]`; `TAG`: 4-hex snapshot from latest `read`/`grep`, REQUIRED each section. New files: `write`; hashline edits existing files only.
 </headers>
 
 <ops>
@@ -22,7 +22,7 @@ Only below `:` headers. Row: verbatim `+TEXT` (leading whitespace preserved); `+
 </body-rows>
 
 <rules>
-- Numbers and `#TAG`: latest `read`/`search` `LINE:TEXT`; numbers are original, never shifted by hunks.
+- Numbers and `#TAG`: latest `read`/`grep` `LINE:TEXT`; numbers are original, never shifted by hunks.
 - Each edit renumbers and changes `#TAG` → next numbers from edit response or fresh `read`.
 - Touch displayed lines only; undisplayed hunks REJECTED. Far from read window: re-`read`; confirm construct.
 - Elisions UNSEEN: `…`, `..`, collapsed `N-M:` rows. NEVER hunk in/across one; `read` first.
