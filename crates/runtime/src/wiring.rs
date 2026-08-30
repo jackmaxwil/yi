@@ -70,7 +70,8 @@ pub struct RuntimeWiring {
     pub summarizer: Option<Model>,
     /// Naming `models.advisor` in config enables the LLM reviewer (D28).
     pub advisor: Option<Model>,
-    /// Naming `models.autoReview` enables the M7 permission reviewer (D81).
+    /// Model consulted on a Write or Exec permission ask; `None` keeps admission fully
+    /// deterministic, so no permission decision costs a model call (M7, D81).
     pub auto_review: Option<Model>,
     /// `plan.staleReminderTurns` config; None keeps the default.
     pub plan_stale_turns: Option<u64>,
