@@ -39,6 +39,10 @@ jobs:
             command -v "$tool" >/dev/null || cargo install --locked "$tool"
           done
           command -v codespell >/dev/null || pipx install codespell
+          if ! command -v uv >/dev/null; then
+            curl -LsSf https://astral.sh/uv/install.sh | sh
+            echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          fi
       - run: just prepush
       # The title is judged by the same rule the subjects are, and only CI can
       # see it: it exists nowhere in the tree the local hook scans.
