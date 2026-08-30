@@ -19,7 +19,8 @@ pub enum CardStatus {
     Done,
 }
 
-/// U20: a view over live state, nothing persisted.
+/// One board row, rebuilt from live session state on every draw. Nothing here is persisted,
+/// so a card vanishes with the work behind it and never needs its own invalidation (U20).
 #[derive(Debug, Clone)]
 pub struct BoardCard {
     pub title: String,

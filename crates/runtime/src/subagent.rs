@@ -85,7 +85,8 @@ pub struct SubagentHostOptions {
     pub events: tokio::sync::broadcast::Sender<AgentEvent>,
     /// The parent's live history, read at spawn for a B5 fork seed.
     pub parent_messages: Arc<dyn Fn() -> Vec<AgentMessage> + Send + Sync>,
-    /// The repository a B11 worktree child branches from.
+    /// Repository an isolated child branches its worktree from, and the directory a
+    /// non-isolated child simply runs in — the wall is rooted here either way (B11).
     pub cwd: PathBuf,
     /// A child's B6 report, injected into the parent's own transcript.
     pub report: Arc<dyn Fn(AgentMessage) + Send + Sync>,
@@ -138,7 +139,8 @@ fn default_session_name(prompt: &str, child_id: &str) -> String {
     }
 }
 
-/// B1 seeding; `LastN(n)` counts turn boundaries, not messages.
+/// How much parent history seeds a child's transcript. `LastN(n)` counts turn boundaries
+/// rather than messages, so a child never opens on half of an exchange (B1).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Fork {
     None,
@@ -146,7 +148,8 @@ pub enum Fork {
     LastN(u64),
 }
 
-/// B11: parallel mutators stop sharing one tree.
+/// Whether a child edits the parent's checkout or gets a git worktree of its own, so
+/// children writing files in parallel cannot overwrite each other (B11).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Isolation {
     None,

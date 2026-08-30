@@ -27,7 +27,8 @@ pub struct AdvisorConfig {
     pub prose_budget: usize,
     pub tokens_per_hour: Option<u64>,
     pub attention: Option<String>,
-    /// Where V11 promotion writes; `None` refuses to promote.
+    /// Directory `/advisor promote` compiles a rule file into; `None` refuses to promote,
+    /// which leaves the advisor with no cross-session persistence at all (V11).
     pub rules_dir: Option<std::path::PathBuf>,
 }
 
@@ -296,7 +297,8 @@ impl AdvisorRuntime {
                 ..
             } = message
             {
-                // V12: standing constraints, verbatim, append-only.
+                // A constraint the user states once keeps binding later turns, so extraction is
+                // verbatim and append-only — never re-worded, never dropped on review (V12).
                 let new_directives = digest::directives(text, &id);
                 state.directives.extend(new_directives);
             }
