@@ -366,6 +366,85 @@ async fn blocked_session_does_not_stall_a_sibling_lane() -> TestResult {
     Ok(())
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn job_due_during_a_block_still_dispatches() -> TestResult {
+    let (dir, store) = temp_store("due-during");
+    let now = yi_session::now_ms();
+    store.mutate(|state| {
+        let mut a = heartbeat_job("hb-a", 10_000, now);
+        a.session_id = "a".to_owned();
+        let mut b = heartbeat_job("hb-b", 10_000, now.saturating_add(500));
+        b.session_id = "b".to_owned();
+        state.jobs.push(a);
+        state.jobs.push(b);
+    });
+
+    let gate = Arc::new((Mutex::new(false), Condvar::new()));
+    let deliver_gate = Arc::clone(&gate);
+    let deliver: Arc<DeliverFn> = Arc::new(move |job| {
+        if job.session_id == "a" {
+            let (lock, cvar) = &*deliver_gate;
+            let mut go = lock
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            while !*go {
+                go = cvar
+                    .wait(go)
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+            }
+        }
+        RunOutcome::Ran
+    });
+    let mut counter = 0_u64;
+    let scheduler = Scheduler::start(Arc::clone(&store), deliver, move || {
+        counter += 1;
+        format!("dsp-{counter}")
+    });
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    loop {
+        let b = store
+            .snapshot()
+            .jobs
+            .iter()
+            .find(|job| job.id == "hb-b")
+            .cloned()
+            .ok_or("job b missing")?;
+        if b.run_count == 1 {
+            break;
+        }
+        if std::time::Instant::now() > deadline {
+            scheduler.stop();
+            let _ = std::fs::remove_dir_all(&dir);
+            return Err(
+                "session B became due during A's block and never ran until the timer unblocked"
+                    .into(),
+            );
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    }
+    let a = store
+        .snapshot()
+        .jobs
+        .iter()
+        .find(|job| job.id == "hb-a")
+        .cloned()
+        .ok_or("job a missing")?;
+    assert_eq!(a.run_count, 0, "A must still be blocked when B has run");
+
+    {
+        let (lock, cvar) = &*gate;
+        let mut go = lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        *go = true;
+        cvar.notify_all();
+    }
+    scheduler.stop();
+    let _ = std::fs::remove_dir_all(&dir);
+    Ok(())
+}
+
 #[test]
 fn setting_a_heartbeat_does_not_cancel_a_sibling_session() -> TestResult {
     let (dir, store) = temp_store("sibling-hb");
