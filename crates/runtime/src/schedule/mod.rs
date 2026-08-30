@@ -1,6 +1,9 @@
+mod lanes;
 pub(crate) mod shared;
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::HashSet;
+
+pub use lanes::Scheduler;
 
 use yi_types::schedule::{
     CronSchedule, DeliveryMode, DispatchRecord, Job, JobStatus, ScheduleKind, ScheduleState,
@@ -496,6 +499,7 @@ pub fn claim_due_in_state(
     due_ms: u64,
     claimed_ms: u64,
     mut new_id: impl FnMut() -> String,
+    skip_sessions: &HashSet<String>,
 ) -> Vec<ClaimedDispatch> {
     let mut dispatches = Vec::new();
     let claimed_job_ids: HashSet<String> = state
@@ -505,6 +509,9 @@ pub fn claim_due_in_state(
         .collect();
     for job in &mut state.jobs {
         if !is_due_job(job, due_ms) {
+            continue;
+        }
+        if skip_sessions.contains(&job.session_id) {
             continue;
         }
         let scheduled_for = job.next_run_at.unwrap_or(due_ms);
@@ -746,98 +753,6 @@ pub fn new_job(spec: JobSpec) -> Job {
 }
 
 pub type DeliverFn = dyn Fn(&Job) -> RunOutcome + Send + Sync;
-
-async fn dispatch_claimed_lanes(
-    store: &std::sync::Arc<JobStore>,
-    deliver: &std::sync::Arc<DeliverFn>,
-    claimed: Vec<ClaimedDispatch>,
-) {
-    let mut lanes = BTreeMap::<String, Vec<ClaimedDispatch>>::new();
-    for dispatch in claimed {
-        lanes
-            .entry(dispatch.job.session_id.clone())
-            .or_default()
-            .push(dispatch);
-    }
-    let mut handles = Vec::new();
-    for (_session, lane) in lanes {
-        let store = std::sync::Arc::clone(store);
-        let deliver = std::sync::Arc::clone(deliver);
-        handles.push(tokio::task::spawn_blocking(move || {
-            for dispatch in lane {
-                let outcome = deliver(&dispatch.job);
-                store.mutate(|state| {
-                    record_dispatch_result_in_state(
-                        state,
-                        &dispatch.id,
-                        outcome,
-                        None,
-                        yi_session::now_ms(),
-                    )
-                });
-            }
-        }));
-    }
-    for handle in handles {
-        // Invariant: a panicked DeliverFn leaves that lane's claims until the
-        // next Scheduler::start recovery.
-        let _ = handle.await;
-    }
-}
-
-/// Design H-flow: one timer; after claim, each `session_id` is its own serial lane.
-pub struct Scheduler {
-    task: tokio::task::JoinHandle<()>,
-}
-
-impl Scheduler {
-    pub fn start(
-        store: std::sync::Arc<JobStore>,
-        deliver: std::sync::Arc<DeliverFn>,
-        mut new_id: impl FnMut() -> String + Send + 'static,
-    ) -> Self {
-        let now = yi_session::now_ms();
-        // Recovery only mutates when a claim was orphaned; an empty store must
-        // not materialize scheduled-jobs.json on every session start.
-        if !store.snapshot().dispatches.is_empty() {
-            store.mutate(|state| recover_interrupted_in_state(state, now, None));
-        }
-        let changed = store.changed();
-        let task = tokio::spawn(async move {
-            loop {
-                let next = next_active_run_at(&store.snapshot());
-                match next {
-                    None => changed.notified().await,
-                    Some(at) => {
-                        let now = yi_session::now_ms();
-                        if at > now {
-                            let wait = std::time::Duration::from_millis(at - now);
-                            tokio::select! {
-                                () = tokio::time::sleep(wait) => {}
-                                () = changed.notified() => {}
-                            }
-                            continue;
-                        }
-                        let claimed =
-                            store.mutate(|state| claim_due_in_state(state, now, now, &mut new_id));
-                        dispatch_claimed_lanes(&store, &deliver, claimed).await;
-                    }
-                }
-            }
-        });
-        Self { task }
-    }
-
-    pub fn stop(&self) {
-        self.task.abort();
-    }
-}
-
-impl Drop for Scheduler {
-    fn drop(&mut self) {
-        self.task.abort();
-    }
-}
 
 /// Design H9: the persisted heartbeat message — `custom{heartbeat_prompt}`
 /// with the job's identity in details.

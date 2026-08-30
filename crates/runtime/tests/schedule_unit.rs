@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use yi_runtime::schedule::{
     JobSpec, ONE_MINUTE_MS, RunOutcome, SessionActivity, claim_due_in_state, new_job, parse_iso_ms,
     parse_schedule, record_dispatch_result_in_state, should_defer,
@@ -134,7 +136,7 @@ fn claim_advances_and_skips_already_claimed_jobs() {
         counter += 1;
         format!("d{counter}")
     };
-    let claimed = claim_due_in_state(&mut state, 1_000, 1_000, &mut new_id);
+    let claimed = claim_due_in_state(&mut state, 1_000, 1_000, &mut new_id, &HashSet::new());
     assert_eq!(claimed.len(), 1);
     assert_eq!(state.dispatches.len(), 1);
     assert_eq!(
@@ -144,7 +146,7 @@ fn claim_advances_and_skips_already_claimed_jobs() {
     );
 
     state.jobs[0].next_run_at = Some(1_500);
-    let doubled = claim_due_in_state(&mut state, 2_000, 2_000, &mut new_id);
+    let doubled = claim_due_in_state(&mut state, 2_000, 2_000, &mut new_id, &HashSet::new());
     assert!(
         doubled.is_empty(),
         "a job with an unresolved claim must be skipped, not double-delivered"
@@ -168,7 +170,7 @@ fn once_jobs_complete_and_clean_skips_do_not_count_runs() {
     job.next_run_at = Some(1_000);
     state.jobs.push(job);
     let mut new_id = || "d1".to_owned();
-    let claimed = claim_due_in_state(&mut state, 1_000, 1_000, &mut new_id);
+    let claimed = claim_due_in_state(&mut state, 1_000, 1_000, &mut new_id, &HashSet::new());
     assert_eq!(claimed.len(), 1);
     let updated =
         record_dispatch_result_in_state(&mut state, "d1", RunOutcome::Skipped, None, 2_000);
@@ -177,6 +179,25 @@ fn once_jobs_complete_and_clean_skips_do_not_count_runs() {
         updated,
         Some((JobStatus::Completed, 0, Some(2_000))),
         "a clean skip re-arms without counting a run; a one-shot completes"
+    );
+}
+
+#[test]
+fn claim_leaves_a_busy_session_due() {
+    let mut state = ScheduleState::default();
+    let mut job = job_with(Some(yi_types::schedule::JobSource::Heartbeat), None);
+    job.session_id = "busy".to_owned();
+    job.next_run_at = Some(1_000);
+    state.jobs.push(job);
+    let mut new_id = || "d1".to_owned();
+    let skip = HashSet::from(["busy".to_owned()]);
+    let claimed = claim_due_in_state(&mut state, 1_000, 1_000, &mut new_id, &skip);
+    assert!(claimed.is_empty());
+    assert!(state.dispatches.is_empty());
+    assert_eq!(
+        state.jobs[0].next_run_at,
+        Some(1_000),
+        "a busy lane must stay due rather than skip the slot"
     );
 }
 
