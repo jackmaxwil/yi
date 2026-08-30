@@ -11,9 +11,20 @@
 - Instruction source of truth is .ruler/; generated AGENTS.md, CLAUDE.md, and propagated skill
   directories are untracked — edit .ruler and run `npx @intellectronica/ruler apply`, never the
   generated files.
-- Commits: imperative subject; body only when the why is not obvious from the diff.
-- Never include a "Co-Authored-By: Claude" trailer (or any assistant co-author trailer) in a
-  commit message.
+- A commit subject and a PR title are the same thing: one plain imperative sentence, at most 72
+  characters, first word capitalized, no terminal period, and self-evident to a cold reader —
+  "Refuse the next done-claim on a rung-refused task", never "Close N14" or "Address feedback".
+  Ids belong in the body; a title that is an id names nothing. The one prefix is `Ratchet: `,
+  always carrying its measured `X -> Y`, beside the `Merge`/`Revert` subjects git writes itself;
+  every other `word:` prefix fails, conventional-commit dialect included. Body only when the why
+  is not obvious from the diff. check_commit_style.py gates `HEAD --not origin/main`, and the
+  same script reads `PR_TITLE` so CI judges the title by the identical rule.
+- No trailers, with two carve-outs: the flywheel plan's §8 `Opt-*` set on optimizer commits, and
+  the trailers git writes itself. Assistant co-author trailers stay banned outright.
+- A PR body is the cold-reader narrative in .github/PULL_REQUEST_TEMPLATE.md — summary, user
+  outcomes, UI changes, files-edited map, schema changes, LOC and justification, architecture
+  notes, screenshots — with zero checkboxes: gate proof lives in the CI status checks alone,
+  where it cannot be ticked by hand.
 - Commit messages containing backticks or `$(` go through `git commit -F -` with a quoted
   heredoc, never `-m` — zsh command-substitutes inside double quotes and mangles the message.
 - A user-visible behavior change updates the ARCHITECTURE feature ledger and,

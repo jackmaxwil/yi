@@ -1,10 +1,12 @@
 use std::collections::BTreeSet;
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 use std::sync::{Arc, Mutex};
 
 use serde_json::{Map, Value, json};
 use yi_types::event::AgentEvent;
 use yi_types::message::{AgentMessage, StopReason, UserContent};
-use yi_types::plan::{Plan, PlanVersion, Task, TaskId, TaskState};
+use yi_types::plan::{Plan, PlanVersion, SubtaskSpec, Task, TaskId, TaskState};
 use yi_types::schedule::DeliveryMode;
 
 use crate::goal::{DeliverFn, StoreHandle};
@@ -32,6 +34,210 @@ const LEGAL_TRANSITIONS: &[(TaskState, TaskState)] = &[
 /// staleness reminder; the latch clears when the plan version moves.
 pub const DEFAULT_STALE_TURNS: u64 = 12;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Escalation {
+    Retry,
+    ForceChange,
+    Ask,
+}
+
+/// Invariant: the sole input to this table is a task's consecutive-red count —
+/// no path reaching it reads tokens, budget, or elapsed wall, so the abandon
+/// threshold is stationary and sunk cost cannot raise it.
+const LADDER: [(u8, Escalation); 3] = [
+    (1, Escalation::Retry),
+    (2, Escalation::ForceChange),
+    (3, Escalation::Ask),
+];
+
+fn escalation(count: u8) -> Escalation {
+    LADDER
+        .iter()
+        .rev()
+        .find(|(threshold, _)| count >= *threshold)
+        .map_or(Escalation::Retry, |(_, rung)| *rung)
+}
+
+fn escalation_demand(rung: Escalation, count: u8) -> Option<String> {
+    let tail = match rung {
+        Escalation::Retry => return None,
+        Escalation::ForceChange => {
+            "change the task's structure — split it into subtasks, backtrack a dep, or ask — do not retry the same approach"
+        }
+        Escalation::Ask => "stop and ask the user; do not spend another attempt on this approach",
+    };
+    Some(format!(
+        "this check has stayed red through {count} attempts; {tail}"
+    ))
+}
+
+/// Invariant: the refusal never runs the check, so an unearned attempt costs
+/// nothing; every escape it names is reachable at depth 1, which is what keeps
+/// a subtask `SPLIT_MAX_DEPTH` refuses from wedging.
+fn rung_refusal(rung: Escalation, id: &str, count: u8) -> Option<String> {
+    let head = match rung {
+        Escalation::Retry => return None,
+        Escalation::ForceChange => String::new(),
+        Escalation::Ask => " — stop and ask the user".to_owned(),
+    };
+    Some(format!(
+        "done claim for {id} refused without running its check: red through {count} attempts{head}. One structural move buys one more claim, and it has to name {id}: plan.split of {id}, plan.split of its parent, plan.edit add of an investigation task with for_task {id}, or plan.edit reopen of a task {id} assumes."
+    ))
+}
+
+/// Invariant: a grant buys one claim for the tasks the move actually reshaped
+/// and never clears a streak, so the rung a task sits on is monotone in its
+/// reds and the price of the next claim stays one move.
+fn grant_readmission(plan: &mut Plan, ids: &[TaskId]) {
+    for task in &mut plan.tasks {
+        if ids.contains(&task.id) && escalation(task.red_count.unwrap_or(0)) != Escalation::Retry {
+            task.readmit = Some(true);
+        }
+    }
+}
+
+fn failure_fingerprint(evidence: &str) -> String {
+    let collapse = |line: &str| line.split_whitespace().collect::<Vec<_>>().join(" ");
+    let mut lines = evidence.lines().filter(|line| !line.trim().is_empty());
+    let exit = lines.next().map(collapse);
+    let last = lines.next_back().map(collapse);
+    let mut hasher = DefaultHasher::new();
+    exit.hash(&mut hasher);
+    last.hash(&mut hasher);
+    format!("{:016x}", hasher.finish())
+}
+
+/// A restructure or a green check starts the next streak at rung one.
+fn clear_red(task: &mut Task) {
+    task.red_count = None;
+    task.red_fingerprint = None;
+}
+
+/// Lowered child ids are `{parent}.{n}`, so a parent id already carrying a
+/// '.' is a second generation: depth stays 1 until a campaign shows the class.
+const SPLIT_MAX_DEPTH: u8 = 1;
+const SPLIT_MAX_WIDTH: usize = 4;
+
+/// Invariant: only the guaranteed-wrong — every variant is decided by set
+/// arithmetic over the proposal, so no judgment of the plan's merit gates it.
+enum SplitRefusal {
+    UnknownReadKey { index: usize, key: String },
+    OverlappingWrites { a: usize, b: usize, key: String },
+    DepthExceeded { depth: u8, max: u8 },
+    WidthExceeded { width: usize, max: usize },
+    EmptyTitle { index: usize },
+    EmptyAcceptance { index: usize },
+}
+
+impl std::fmt::Display for SplitRefusal {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::UnknownReadKey { index, key } => write!(
+                formatter,
+                "subtask {index}: reads \"{key}\" that only a sibling writes; siblings carry no ordering, so add the key to this subtask's writes or keep the work in one subtask"
+            ),
+            Self::OverlappingWrites { a, b, key } => write!(
+                formatter,
+                "subtasks {a} and {b} both write \"{key}\"; sibling write sets must be disjoint"
+            ),
+            Self::DepthExceeded { depth, max } => write!(
+                formatter,
+                "split depth {depth} exceeds the maximum {max}; a subtask is not split again — reshape the parent instead"
+            ),
+            Self::WidthExceeded { width, max } => {
+                write!(formatter, "{width} subtasks exceeds the maximum {max}")
+            }
+            Self::EmptyTitle { index } => {
+                write!(formatter, "subtask {index}: title must be non-empty")
+            }
+            Self::EmptyAcceptance { index } => {
+                write!(formatter, "subtask {index}: acceptance must be non-empty")
+            }
+        }
+    }
+}
+
+/// Collect-all: one round trip names every reason the proposal cannot lower.
+fn validate_split(parent: &Task, subtasks: &[SubtaskSpec]) -> Vec<SplitRefusal> {
+    let mut refusals = Vec::new();
+    let generation = u8::try_from(parent.id.as_str().matches('.').count())
+        .unwrap_or(u8::MAX)
+        .saturating_add(1);
+    if generation > SPLIT_MAX_DEPTH {
+        refusals.push(SplitRefusal::DepthExceeded {
+            depth: generation,
+            max: SPLIT_MAX_DEPTH,
+        });
+    }
+    if subtasks.len() > SPLIT_MAX_WIDTH {
+        refusals.push(SplitRefusal::WidthExceeded {
+            width: subtasks.len(),
+            max: SPLIT_MAX_WIDTH,
+        });
+    }
+    for (index, spec) in subtasks.iter().enumerate() {
+        if spec.title.trim().is_empty() {
+            refusals.push(SplitRefusal::EmptyTitle { index });
+        }
+        if spec.acceptance.trim().is_empty() {
+            refusals.push(SplitRefusal::EmptyAcceptance { index });
+        }
+    }
+    for (a, first) in subtasks.iter().enumerate() {
+        for (b, second) in subtasks.iter().enumerate().skip(a.saturating_add(1)) {
+            for key in first
+                .writes
+                .iter()
+                .filter(|key| second.writes.contains(key))
+            {
+                refusals.push(SplitRefusal::OverlappingWrites {
+                    a,
+                    b,
+                    key: key.clone(),
+                });
+            }
+        }
+    }
+    for (index, spec) in subtasks.iter().enumerate() {
+        for key in &spec.reads {
+            let sibling_writes = subtasks
+                .iter()
+                .enumerate()
+                .any(|(other, sibling)| other != index && sibling.writes.contains(key));
+            if sibling_writes && !spec.writes.contains(key) {
+                refusals.push(SplitRefusal::UnknownReadKey {
+                    index,
+                    key: key.clone(),
+                });
+            }
+        }
+    }
+    refusals
+}
+
+fn lower_subtask(parent: &TaskId, index: usize, spec: &SubtaskSpec) -> Task {
+    Task {
+        id: TaskId(format!("{}.{}", parent.as_str(), index.saturating_add(1))),
+        title: spec.title.trim().to_owned(),
+        acceptance: spec.acceptance.trim().to_owned(),
+        schema: None,
+        check: spec
+            .check
+            .as_deref()
+            .map(str::trim)
+            .filter(|check| !check.is_empty())
+            .map(str::to_owned),
+        deps: Vec::new(),
+        state: TaskState::Pending,
+        blocked_reason: None,
+        assignee: None,
+        red_count: None,
+        red_fingerprint: None,
+        readmit: None,
+        extra: Map::new(),
+    }
+}
+
 fn transition_legal(from: &TaskState, to: &TaskState) -> bool {
     LEGAL_TRANSITIONS
         .iter()
@@ -46,7 +252,7 @@ pub fn summary_line(plan: &Plan) -> String {
             .filter(|task| &task.state == state)
             .count()
     };
-    format!(
+    let mut line = format!(
         "plan v{}: {} ready, {} running, {} blocked, {} done of {}",
         plan.version.0,
         plan.frontier().len(),
@@ -54,7 +260,26 @@ pub fn summary_line(plan: &Plan) -> String {
         count(&TaskState::Blocked),
         count(&TaskState::Done),
         plan.tasks.len()
-    )
+    );
+    let unchecked: Vec<&str> = plan
+        .tasks
+        .iter()
+        .filter(|task| task.state == TaskState::Done && task.check.is_none())
+        .map(|task| task.id.as_str())
+        .collect();
+    if !unchecked.is_empty() {
+        let named: Vec<&str> = unchecked.iter().take(4).copied().collect();
+        let mut text = named.join(", ");
+        if let Some(more) = unchecked
+            .len()
+            .checked_sub(named.len())
+            .filter(|more| *more > 0)
+        {
+            text.push_str(&format!(" +{more} more"));
+        }
+        line.push_str(&format!(", done unchecked: {text}"));
+    }
+    line
 }
 
 pub fn frontier_text(plan: &Plan) -> String {
@@ -160,6 +385,9 @@ fn parse_task(spec: &Value, index: usize) -> Result<Task, String> {
             .get("assignee")
             .and_then(Value::as_str)
             .map(str::to_owned),
+        red_count: None,
+        red_fingerprint: None,
+        readmit: None,
         extra: Map::new(),
     })
 }
@@ -352,9 +580,31 @@ impl PlanService {
         if target == TaskState::Blocked && reason.map(str::trim).unwrap_or("").is_empty() {
             return Err(format!("blocking {task_id} requires a reason"));
         }
+        // (Pending, Done) skips the Running admission entirely, so the same
+        // gate has to sit on it or a checkless leaf completes itself unnamed.
+        let unmeasured_admission = target == TaskState::Running
+            || (target == TaskState::Done && current == TaskState::Pending);
+        if unmeasured_admission
+            && plan.tasks[position].check.is_none()
+            && reason.map(str::trim).unwrap_or("").is_empty()
+        {
+            return Err(format!(
+                "task {task_id} has no executable check, so it is not admitted; give a task a check when the plan is written, or pass reason to record this one as an ask or an explicitly unmeasured leaf"
+            ));
+        }
+        if target == TaskState::Done {
+            let task = &mut plan.tasks[position];
+            let reds = task.red_count.unwrap_or(0);
+            if task.readmit.take() != Some(true)
+                && let Some(refusal) = rung_refusal(escalation(reds), task_id, reds)
+            {
+                return Err(refusal);
+            }
+        }
         if target == TaskState::Done
             && let Err(rejection) = self.verify_done(&plan.tasks[position], evidence)
         {
+            let escalation = self.record_red(&mut plan.tasks[position], &rejection);
             let task = &mut plan.tasks[position];
             task.state = TaskState::Blocked;
             task.blocked_reason = Some(rejection.clone());
@@ -363,10 +613,13 @@ impl PlanService {
             self.write_plan(plan.clone())?;
             self.notify_change(&plan);
             return Err(format!(
-                "done claim for {task_id} rejected; task is now blocked with the evidence: {rejection}"
+                "done claim for {task_id} rejected; task is now blocked with the evidence: {rejection}{escalation}"
             ));
         }
         let task = &mut plan.tasks[position];
+        if target == TaskState::Done {
+            clear_red(task);
+        }
         task.state = target.clone();
         task.blocked_reason = match target {
             TaskState::Blocked => reason.map(str::trim).map(str::to_owned),
@@ -377,6 +630,48 @@ impl PlanService {
         self.write_plan(plan.clone())?;
         self.notify_change(&plan);
         Ok(plan_json(&plan))
+    }
+
+    /// The streak rides the task, so the plan write that records the rejection
+    /// is also what makes the rung survive a resume.
+    fn record_red(&self, task: &mut Task, evidence: &str) -> String {
+        let fingerprint = failure_fingerprint(evidence);
+        let repeated = task.red_fingerprint.as_deref() == Some(fingerprint.as_str());
+        let count = task.red_count.unwrap_or(0).saturating_add(1);
+        task.red_count = Some(count);
+        task.red_fingerprint = Some(fingerprint);
+
+        let mut clauses = Vec::new();
+        if let Some(demand) = escalation_demand(escalation(count), count) {
+            clauses.push(demand);
+        }
+        if repeated {
+            let deps: Vec<&str> = task.deps.iter().map(TaskId::as_str).collect();
+            clauses.push(if deps.is_empty() {
+                "same failure twice; re-verify this task's own premise before spending more"
+                    .to_owned()
+            } else {
+                format!(
+                    "same failure twice; re-verify the assumption tasks this depends on ({}) before spending more",
+                    deps.join(", ")
+                )
+            });
+        }
+        if clauses.is_empty() {
+            return String::new();
+        }
+        let text = clauses.join(" — ");
+        (self.deliver)(
+            AgentMessage::Custom {
+                custom_type: "reminder".to_owned(),
+                content: UserContent::Text(format!("{}: {text}", task.id.as_str())),
+                display: true,
+                details: None,
+                timestamp: yi_session::now_ms(),
+            },
+            DeliveryMode::Steer,
+        );
+        format!(" — {text}")
     }
 
     fn verify_done(&self, task: &Task, evidence: Option<&Value>) -> Result<(), String> {
@@ -401,7 +696,7 @@ impl PlanService {
     /// acceptance edits are refused (SHRINK_ERROR); the user drives those.
     pub fn edit(&self, action: &str, payload: &Value) -> Result<Value, String> {
         let mut plan = self.read_plan().ok_or(NO_PLAN_ERROR)?;
-        match action {
+        let granted: Vec<TaskId> = match action {
             "add" => {
                 let specs = payload
                     .get("tasks")
@@ -413,6 +708,14 @@ impl PlanService {
                         .push(parse_task(spec, offset.saturating_add(index))?);
                 }
                 validate(&plan.tasks)?;
+                // An add reshapes no existing task, so it buys a claim only for
+                // the one it names; untargeted, it readmitted every stuck task.
+                payload
+                    .get("for_task")
+                    .or_else(|| payload.get("forTask"))
+                    .and_then(Value::as_str)
+                    .map(|id| vec![TaskId(id.to_owned())])
+                    .unwrap_or_default()
             }
             "reopen" => {
                 let id = payload
@@ -430,10 +733,99 @@ impl PlanService {
                 }
                 task.state = TaskState::Pending;
                 task.blocked_reason = None;
+                clear_red(task);
+                // Reopening a premise is the escape the refusal names for the
+                // tasks that assumed it, so the grant follows the dep edge.
+                plan.tasks
+                    .iter()
+                    .filter(|task| task.deps.iter().any(|dep| dep.as_str() == id))
+                    .map(|task| task.id.clone())
+                    .collect()
             }
             "remove" | "reword" | "replace" => return Err(SHRINK_ERROR.to_owned()),
             other => return Err(format!("unknown plan.edit action {other}; use add|reopen")),
+        };
+        grant_readmission(&mut plan, &granted);
+        plan.version = plan.version.bump();
+        plan.updated = yi_session::now_ms();
+        self.write_plan(plan.clone())?;
+        self.notify_change(&plan);
+        Ok(plan_json(&plan))
+    }
+
+    /// Invariant: the model proposes subtasks, never topology — ids, deps,
+    /// and state are written here, and a refused proposal writes nothing.
+    pub fn split(&self, payload: &Value) -> Result<Value, String> {
+        let shape =
+            "plan.split takes {task_id, subtasks: [{title, acceptance, check?, reads?, writes?}]}";
+        let id = payload
+            .get("task_id")
+            .or_else(|| payload.get("taskId"))
+            .and_then(Value::as_str)
+            .ok_or(shape)?
+            .to_owned();
+        let specs = payload.get("subtasks").cloned().ok_or(shape)?;
+        let subtasks: Vec<SubtaskSpec> =
+            serde_json::from_value(specs).map_err(|error| format!("{shape}: {error}"))?;
+        if subtasks.is_empty() {
+            return Err(format!("{shape}: a split needs at least one subtask"));
         }
+        let mut plan = self.read_plan().ok_or(NO_PLAN_ERROR)?;
+        let position = plan
+            .tasks
+            .iter()
+            .position(|task| task.id.as_str() == id)
+            .ok_or_else(|| format!("no task {id} in the plan"))?;
+        if plan.tasks[position].state == TaskState::Done {
+            return Err(format!(
+                "task {id} is done; reopen it with plan.edit before splitting it"
+            ));
+        }
+        let refusals = validate_split(&plan.tasks[position], &subtasks);
+        if !refusals.is_empty() {
+            let lines: Vec<String> = refusals.iter().map(ToString::to_string).collect();
+            return Err(format!("split of {id} refused:\n{}", lines.join("\n")));
+        }
+        let parent_id = plan.tasks[position].id.clone();
+        let reds = plan.tasks[position].red_count.unwrap_or(0);
+        // A depth-1 child has no dep to reopen and cannot be split, so its own
+        // streak is what earns the parent's reshape — the escape the
+        // DepthExceeded message promises, and the only one that node has.
+        let stuck_children: Vec<TaskId> = plan.tasks[position]
+            .deps
+            .iter()
+            .filter(|dep| {
+                plan.task(dep).is_some_and(|child| {
+                    escalation(child.red_count.unwrap_or(0)) != Escalation::Retry
+                })
+            })
+            .cloned()
+            .collect();
+        if escalation(reds) == Escalation::Retry && stuck_children.is_empty() {
+            return Err(format!(
+                "split of {id} refused: its check has come back red {reds} time(s) and no subtask of it has earned a rung, so the ladder still reads retry — attempt the whole task, and split when a red streak forces the change"
+            ));
+        }
+        // Incident: a second split of the same parent minted `t1.1` again and
+        // `validate` rejected the whole reshape; child ids continue the run.
+        let prefix = format!("{}.", parent_id.as_str());
+        let offset = plan
+            .tasks
+            .iter()
+            .filter(|task| task.id.as_str().starts_with(&prefix))
+            .count();
+        let children: Vec<Task> = subtasks
+            .iter()
+            .enumerate()
+            .map(|(index, spec)| lower_subtask(&parent_id, offset.saturating_add(index), spec))
+            .collect();
+        plan.tasks[position]
+            .deps
+            .extend(children.iter().map(|child| child.id.clone()));
+        plan.tasks.extend(children);
+        validate(&plan.tasks)?;
+        clear_red(&mut plan.tasks[position]);
+        grant_readmission(&mut plan, &stuck_children);
         plan.version = plan.version.bump();
         plan.updated = yi_session::now_ms();
         self.write_plan(plan.clone())?;
@@ -550,6 +942,11 @@ impl PlanService {
                 .unwrap_or("")
                 .to_owned();
             let outcome = service.edit(&action, &Value::Object(payload));
+            Box::pin(async move { outcome.and_then(as_object) })
+        });
+        let service = Arc::clone(self);
+        registry.register("plan.split", move |payload| {
+            let outcome = service.split(&Value::Object(payload));
             Box::pin(async move { outcome.and_then(as_object) })
         });
     }

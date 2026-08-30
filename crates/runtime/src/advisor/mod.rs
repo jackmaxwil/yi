@@ -27,7 +27,8 @@ pub struct AdvisorConfig {
     pub prose_budget: usize,
     pub tokens_per_hour: Option<u64>,
     pub attention: Option<String>,
-    /// Where V11 promotion writes; `None` refuses to promote.
+    /// Directory `/advisor promote` compiles a rule file into; `None` refuses to promote,
+    /// which leaves the advisor with no cross-session persistence at all (V11).
     pub rules_dir: Option<std::path::PathBuf>,
 }
 
@@ -172,6 +173,12 @@ pub fn stats_text(stats: &AdvisorStats) -> String {
     )
 }
 
+/// Why the review was asked for; the summary itself rides the digest as its own
+/// `compaction:` line, so this note stays one sentence and never wears that
+/// prefix.
+pub const COMPACTION_NOTE: &str =
+    "the primary's view was replaced by a compaction summary; audit it";
+
 struct PendingOutcome {
     advice_id: String,
     target: String,
@@ -194,6 +201,16 @@ struct AdvisorState {
     context_note: Option<String>,
     /// Delivered advice the user can still promote, newest last (V11).
     delivered: std::collections::VecDeque<(String, Advice)>,
+}
+
+fn push_log(state: &mut AdvisorState, message: AgentMessage) -> String {
+    state.log_counter = state.log_counter.saturating_add(1);
+    let id = format!("m{}", state.log_counter);
+    state.log.push_back((id.clone(), message));
+    while state.log.len() > 512 {
+        state.log.pop_front();
+    }
+    id
 }
 
 /// work log → cadence trigger → reviewer → guard → delivery → outcome ledger,
@@ -253,23 +270,35 @@ impl AdvisorRuntime {
         }
     }
 
+    /// V5 `CompactionCheck`: the replacement summary enters the advisor's own
+    /// log, so the next digest carries it beside the directives panel the judge
+    /// audits it against — a head plus an id [`AdvisorRuntime::transcript`] resolves.
+    pub fn note_compaction(&self, summary: String, now_ms: u64) {
+        {
+            let mut state = self.lock();
+            let message = AgentMessage::CompactionSummary {
+                summary,
+                tokens_before: 0,
+                timestamp: now_ms,
+            };
+            push_log(&mut state, message);
+        }
+        self.request_review(Some(COMPACTION_NOTE.to_owned()));
+    }
+
     /// The digest chunk when a review is due, for the async LLM pass layered
     /// by the caller. Advice reaches the primary only through [`AdvisorRuntime::deliver_reviewed`].
     pub fn observe(&self, message: &AgentMessage, now_ms: u64) -> Option<String> {
         let (outcomes, chunk) = {
             let mut state = self.lock();
-            state.log_counter = state.log_counter.saturating_add(1);
-            let id = format!("m{}", state.log_counter);
-            state.log.push_back((id.clone(), message.clone()));
-            while state.log.len() > 512 {
-                state.log.pop_front();
-            }
+            let id = push_log(&mut state, message.clone());
             if let AgentMessage::User {
                 content: UserContent::Text(text),
                 ..
             } = message
             {
-                // V12: standing constraints, verbatim, append-only.
+                // A constraint the user states once keeps binding later turns, so extraction is
+                // verbatim and append-only — never re-worded, never dropped on review (V12).
                 let new_directives = digest::directives(text, &id);
                 state.directives.extend(new_directives);
             }
@@ -339,6 +368,7 @@ impl AdvisorRuntime {
                     ..
                 } => Some(text.clone()),
                 AgentMessage::Assistant { content, .. } => Some(digest::assistant_text(content)),
+                AgentMessage::CompactionSummary { summary, .. } => Some(summary.clone()),
                 _ => None,
             }
         })
@@ -512,6 +542,32 @@ impl AdvisorRuntime {
             details,
             timestamp: now_ms,
         });
+    }
+}
+
+/// The post-compaction hook carries no summary, so the text comes back off the
+/// lane's newest compaction entry. A session with no store or no advisor gets
+/// no audit — silently, because neither is an error.
+pub fn note_last_compaction(
+    advisor: Option<&AdvisorRuntime>,
+    store: Option<&yi_session::SharedSession>,
+) {
+    let (Some(advisor), Some(store)) = (advisor, store) else {
+        return;
+    };
+    let newest = yi_session::lock_session(store).find_entries_on_branch(
+        "main",
+        &yi_session::EntryQuery {
+            entry_type: Some("compaction"),
+            limit: Some(1),
+            ..yi_session::EntryQuery::default()
+        },
+        &yi_session::BranchBounds::default(),
+    );
+    if let Ok(entries) = newest
+        && let Some(yi_types::entry::Entry::Compaction { summary, .. }) = entries.into_iter().next()
+    {
+        advisor.note_compaction(summary, yi_session::now_ms());
     }
 }
 

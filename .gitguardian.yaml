@@ -1,0 +1,8 @@
+version: 2
+# The redaction gate proves itself on deliberately key-shaped FAKE plants
+# (O8: fixtures never carry a real key). Scanners must skip the plants only.
+paths-ignore:
+  - "**/fixtures/planted*"
+  - "skills/yi/session-mining/fixtures/**"
+  - "crates/runtime/tests/fixtures/behavior/*planted*"
+  - "skills/yi/session-mining/extract.py"

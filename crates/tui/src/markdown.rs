@@ -88,7 +88,7 @@ struct Builder<'t> {
     pending_marker: Option<Span<'static>>,
     in_code_block: bool,
     continued: bool,
-    code_lang: Option<&'static crate::highlight::Lang>,
+    code_lang: Option<crate::highlight::Lang>,
     link_dest: Option<String>,
     table: Option<TableState>,
 }
@@ -205,7 +205,7 @@ impl Builder<'_> {
                 let body = chunk.unwrap_or(raw);
                 self.spans
                     .push(Span::styled(self.indent.clone(), self.theme.dim_style()));
-                match self.code_lang {
+                match self.code_lang.as_mut() {
                     Some(lang) => self
                         .spans
                         .extend(crate::highlight::spans(body, lang, self.theme, base)),

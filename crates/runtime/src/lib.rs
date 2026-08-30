@@ -2,6 +2,7 @@
 
 pub mod advisor;
 pub mod affordance;
+pub mod auto_review;
 pub mod checkpoint;
 pub mod compaction;
 pub mod ext;
@@ -21,6 +22,7 @@ pub mod skills;
 pub mod subagent;
 pub mod tools;
 pub mod wall;
+pub mod wiring;
 pub mod worktree;
 
 pub use checkpoint::{RecordedCheckpoint, UndoOutcome, recorded, undo, wire_turn_checkpoints};
@@ -32,16 +34,17 @@ pub use kernel::{
 pub use mailbox::ParentLink;
 pub use permission::{AskOutcome, Asker, PermissionAsk, PermissionBroker};
 pub use provider::{ProviderStream, available_models, resolve_model};
-pub use rewind::{Rewound, rewind_to};
+pub use rewind::{BranchStub, Rewound, rewind_to, summarize_branch};
 pub use session::{AgentSession, SessionConfig, SessionError, Status};
 pub use skills::{Skill, skills_catalog};
 pub use subagent::{
-    ChildBuild, ChildStatus, ChildUpdate, ChildView, RuntimeWiring, SubagentHost,
-    SubagentHostOptions, attach_runtime,
+    ChildBuild, ChildStatus, ChildUpdate, ChildView, SubagentHost, SubagentHostOptions,
 };
 pub use tools::ToolAdapter;
 pub use wall::Wall;
+pub use wiring::{RuntimeWiring, attach_runtime};
 pub use yi_ai::auth;
+pub use yi_ai::request::ProxyConfig;
 
 /// None where the platform has no sandbox: a contained decision then degrades
 /// to a question rather than to an unenforced allowance.

@@ -76,6 +76,11 @@ pub struct Usage {
     // would fail to load those session files.
     pub total_tokens: i64,
     pub cost: Cost,
+    // A provider that reported no usage object at all, as opposed to one that
+    // reported zeros. Absent means known, so files written before the field
+    // re-serialize byte-identically.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub unknown: bool,
 }
 
 impl Usage {
@@ -96,6 +101,14 @@ impl Usage {
                 cache_write: zero(),
                 total: zero(),
             },
+            unknown: false,
+        }
+    }
+
+    pub fn unknown() -> Self {
+        Self {
+            unknown: true,
+            ..Self::zero()
         }
     }
 }

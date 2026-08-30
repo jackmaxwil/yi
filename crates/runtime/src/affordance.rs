@@ -6,10 +6,15 @@ use serde_json::{Map, Value};
 /// once written, because a recomputed line would move transcript bytes.
 pub const NEXT: &str = "next: ";
 
-pub fn spawned(name: &str, session_dir: &Path) -> String {
+pub fn spawned(name: &str) -> String {
     format!(
-        "{NEXT}await rlm.wait(120) blocks until this child reports; rlm.send('{name}', 'line') steers it; its transcript is {}/*.jsonl",
-        session_dir.display()
+        "{NEXT}await rlm.wait(120) blocks until this child reports; rlm.send('{name}', 'line') steers it"
+    )
+}
+
+pub fn coroutine_leak() -> String {
+    format!(
+        "{NEXT}an un-awaited coroutine ran nothing; rlm.run and handle.result are async, so write h = await rlm.run(...) then await h.result()"
     )
 }
 

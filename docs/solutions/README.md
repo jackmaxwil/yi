@@ -66,5 +66,11 @@ when it changes rather than editing them by hand.
 - [D69](adr/d69.md) - the dist profile optimises for size at every level
 - [D70](adr/d70.md) - binary_size is local-only too, because its baseline names a target
 - [D71](adr/d71.md) - Yi speaks MCP itself
+- [D75](adr/d75.md) - plan tasks carry an executable acceptance check
+- [D76](adr/d76.md) - Yi's behavior answers to a shrink-only ratchet
+- [D77](adr/d77.md) - long-horizon decomposition is a deterministic protocol
+- [D83](adr/d83.md) - net src growth is budgeted per version
+- [D84](adr/d84.md) - the forge is GitHub, and `.github/` returns as thin callers
+- [D85](adr/d85.md) - tests are tiered, and a ledger row names its journey
 
-D36-D51 have no ADR yet; ARCHITECTURE.md is the record for those rows.
+D36-D51, D72, D73 and D74 have no ADR yet; ARCHITECTURE.md is the record for those rows.

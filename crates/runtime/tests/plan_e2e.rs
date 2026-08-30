@@ -22,12 +22,11 @@ fn memory_store() -> yi_session::SharedSession {
     )))
 }
 
-fn service_with_store() -> (
-    Arc<PlanService>,
-    yi_session::SharedSession,
-    Arc<Mutex<Vec<AgentMessage>>>,
-) {
-    let store = memory_store();
+/// A second service over one store is what a resume is: the process is gone,
+/// the store is what came back.
+fn service_over(
+    store: &yi_session::SharedSession,
+) -> (Arc<PlanService>, Arc<Mutex<Vec<AgentMessage>>>) {
     let handle = store.clone();
     let delivered: Arc<Mutex<Vec<AgentMessage>>> = Arc::new(Mutex::new(Vec::new()));
     let sink = Arc::clone(&delivered);
@@ -40,6 +39,16 @@ fn service_with_store() -> (
         Arc::new(move || Some(handle.clone())),
         deliver,
     ));
+    (service, delivered)
+}
+
+fn service_with_store() -> (
+    Arc<PlanService>,
+    yi_session::SharedSession,
+    Arc<Mutex<Vec<AgentMessage>>>,
+) {
+    let store = memory_store();
+    let (service, delivered) = service_over(&store);
     (service, store, delivered)
 }
 
@@ -123,6 +132,44 @@ fn transitions_follow_the_table() -> TestResult {
 }
 
 #[test]
+fn a_checkless_task_is_not_admitted_to_running_unnamed() -> TestResult {
+    let (service, store, _delivered) = service_with_store();
+    service.create(&json!([{"title": "vibes", "acceptance": "looks right"}]))?;
+    let error = service
+        .update("t1", "running", None, None)
+        .err()
+        .ok_or("a task with no way to prove it done must not start silently")?;
+    assert!(
+        error.contains("no executable check"),
+        "the refusal must name what is missing: {error}"
+    );
+    let stored = yi_session::lock_session(&store).plan().ok_or("plan")?;
+    assert_eq!(
+        stored
+            .task(&yi_types::plan::TaskId("t1".to_owned()))
+            .map(|task| task.state.clone()),
+        Some(TaskState::Pending),
+        "a refused admission writes nothing"
+    );
+
+    service.update(
+        "t1",
+        "running",
+        None,
+        Some("ask: only the user can name the dialect"),
+    )?;
+    let stored = yi_session::lock_session(&store).plan().ok_or("plan")?;
+    assert_eq!(
+        stored
+            .task(&yi_types::plan::TaskId("t1".to_owned()))
+            .map(|task| task.state.clone()),
+        Some(TaskState::Running),
+        "an ask named as one is admitted"
+    );
+    Ok(())
+}
+
+#[test]
 fn failing_check_blocks_the_task_with_evidence() -> TestResult {
     let (service, store, _delivered) = service_with_store();
     service.create(&json!([
@@ -150,6 +197,249 @@ fn failing_check_blocks_the_task_with_evidence() -> TestResult {
     Ok(())
 }
 
+fn scratch(name: &str) -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join(format!("yi-ladder-{}-{name}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).ok();
+    dir
+}
+
+/// A done claim on a blocked task is an illegal transition, so a streak is
+/// scripted as claim -> running -> claim, exactly as the model must drive it.
+fn claim_again(service: &PlanService, task: &str) -> Result<String, Box<dyn Error>> {
+    if let Some(plan) = service.read_plan()
+        && plan
+            .task(&yi_types::plan::TaskId(task.to_owned()))
+            .is_some_and(|task| task.state == TaskState::Blocked)
+    {
+        service.update(task, "running", None, None)?;
+    }
+    Ok(service
+        .update(task, "done", None, None)
+        .err()
+        .ok_or("a red check must refuse the done claim")?)
+}
+
+#[test]
+fn consecutive_reds_walk_the_escalation_ladder() -> TestResult {
+    let (service, _store, delivered) = service_with_store();
+    service.create(&json!([
+        {"title": "impossible", "acceptance": "never true", "check": "echo case 7 diverges; exit 2"},
+    ]))?;
+
+    let first = claim_again(&service, "t1")?;
+    assert!(
+        !first.contains("stayed red through"),
+        "one red is a retry, not an escalation: {first}"
+    );
+    let second = claim_again(&service, "t1")?;
+    assert!(
+        second.contains("stayed red through 2 attempts")
+            && second.contains("do not retry the same approach"),
+        "the second red must demand a structural change: {second}"
+    );
+    // Past rung one the next claim is refused outright, so walking to the top
+    // rung costs one structural move per attempt — that is the ladder's price,
+    // not a wedge.
+    service.edit(
+        "add",
+        &json!({"for_task": "t1",
+                "tasks": [{"title": "Investigate case 7", "acceptance": "cause named"}]}),
+    )?;
+    let third = claim_again(&service, "t1")?;
+    assert!(
+        third.contains("stayed red through 3 attempts") && third.contains("ask the user"),
+        "the third red must demand abstain-and-ask: {third}"
+    );
+
+    let reminders: Vec<String> = delivered
+        .lock()
+        .map(|queue| {
+            queue
+                .iter()
+                .filter_map(|message| match message {
+                    AgentMessage::Custom {
+                        custom_type,
+                        content: yi_types::message::UserContent::Text(text),
+                        ..
+                    } if custom_type == "reminder" => Some(text.clone()),
+                    _ => None,
+                })
+                .collect()
+        })
+        .map_err(|_| "lock")?;
+    assert_eq!(
+        reminders.len(),
+        2,
+        "the demand reaches the transcript once per escalated red: {reminders:?}"
+    );
+    assert!(
+        reminders
+            .first()
+            .is_some_and(|text| text.starts_with("t1:") && text.contains("split it")),
+        "the reminder names the task and the demand: {reminders:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_green_check_resets_the_streak() -> TestResult {
+    let dir = scratch("reset");
+    let flag = dir.join("ok");
+    let (service, _store, _delivered) = service_with_store();
+    service.create(&json!([
+        {"title": "gated", "acceptance": "flag exists",
+         "check": format!("test -f {} || {{ echo flag missing; exit 3; }}", flag.display())},
+    ]))?;
+
+    claim_again(&service, "t1")?;
+    let escalated = claim_again(&service, "t1")?;
+    assert!(
+        escalated.contains("stayed red through 2 attempts"),
+        "{escalated}"
+    );
+
+    // The refusal is not a wedge for a task that has actually gone green: one
+    // structural move buys the claim, and the check is still the arbiter.
+    std::fs::write(&flag, "ok")?;
+    service.edit(
+        "add",
+        &json!({"for_task": "t1",
+                "tasks": [{"title": "Check the flag path", "acceptance": "path named"}]}),
+    )?;
+    service.update("t1", "running", None, None)?;
+    service.update("t1", "done", None, None)?;
+    std::fs::remove_file(&flag)?;
+    service.edit("reopen", &json!({"task_id": "t1"}))?;
+
+    let after = claim_again(&service, "t1")?;
+    assert!(
+        !after.contains("stayed red through"),
+        "a task that went green starts its next streak at rung one: {after}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+    Ok(())
+}
+
+#[test]
+fn a_repeated_failure_demands_a_premise_recheck() -> TestResult {
+    let (service, _store, _delivered) = service_with_store();
+    service.create(&json!([
+        {"title": "assume", "acceptance": "the premise holds"},
+        {"title": "build", "acceptance": "suite green", "deps": ["t1"],
+         "check": "echo case 7 diverges; exit 2"},
+    ]))?;
+    let first = claim_again(&service, "t2")?;
+    assert!(
+        !first.contains("same failure twice"),
+        "one red says nothing about the premise: {first}"
+    );
+    let second = claim_again(&service, "t2")?;
+    assert!(
+        second.contains("same failure twice") && second.contains("(t1)"),
+        "an identical failure must name the assumption tasks to re-verify: {second}"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_changing_failure_does_not_demand_a_premise_recheck() -> TestResult {
+    let dir = scratch("drift");
+    let counter = dir.join("n");
+    let (service, _store, _delivered) = service_with_store();
+    let counter = counter.display();
+    service.create(&json!([
+        {"title": "drifting", "acceptance": "suite green",
+         "check": format!("n=$(cat {counter} 2>/dev/null || echo 0); n=$((n+1)); echo $n > {counter}; echo attempt $n failed; exit 2")},
+    ]))?;
+    claim_again(&service, "t1")?;
+    let second = claim_again(&service, "t1")?;
+    assert!(
+        second.contains("stayed red through 2 attempts"),
+        "the ladder still counts a drifting failure: {second}"
+    );
+    assert!(
+        !second.contains("same failure twice"),
+        "a different failure is not a false premise: {second}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+    Ok(())
+}
+
+#[test]
+fn the_ladder_is_stationary_under_spend() -> TestResult {
+    let spent = Goal {
+        objective: "ship it".to_owned(),
+        status: GoalStatus::Active,
+        token_budget: Some(10),
+        tokens_used: 4_000_000,
+        time_used_seconds: 90_000,
+        created: 0,
+        updated: 0,
+        check: None,
+        check_timeout_ms: None,
+        check_failure: None,
+        discoveries: Vec::new(),
+        extra: serde_json::Map::new(),
+    };
+    let streak = |goal: Option<Goal>| -> Result<Vec<String>, Box<dyn Error>> {
+        let (service, store, _delivered) = service_with_store();
+        if let Some(goal) = goal {
+            yi_session::lock_session(&store).set_goal(goal)?;
+        }
+        service.create(&json!([
+            {"title": "impossible", "acceptance": "never true",
+             "check": "echo case 7 diverges; exit 2"},
+        ]))?;
+        Ok(vec![
+            claim_again(&service, "t1")?,
+            claim_again(&service, "t1")?,
+            claim_again(&service, "t1")?,
+        ])
+    };
+    assert_eq!(
+        streak(None)?,
+        streak(Some(spent))?,
+        "a consumed budget must not move a rung: the ladder reads the streak only"
+    );
+    Ok(())
+}
+
+#[test]
+fn summary_line_counts_done_claims_that_ran_no_check() -> TestResult {
+    let (service, store, _delivered) = service_with_store();
+    service.create(&two_task_specs())?;
+    let read = || -> Result<String, Box<dyn Error>> {
+        let plan = yi_session::lock_session(&store).plan().ok_or("plan")?;
+        Ok(yi_runtime::plan::summary_line(&plan))
+    };
+    assert!(
+        !read()?.contains("unchecked"),
+        "nothing is done yet: {}",
+        read()?
+    );
+
+    service.update("t1", "done", None, None)?;
+    assert!(
+        !read()?.contains("unchecked"),
+        "t1 carries a check, so its completion was verified: {}",
+        read()?
+    );
+
+    service.edit(
+        "add",
+        &json!({"tasks": [{"title": "Docs", "acceptance": "README names the flag"}]}),
+    )?;
+    service.update("t2", "done", None, Some("unmeasured leaf: prose only"))?;
+    service.update("t3", "done", None, Some("unmeasured leaf: prose only"))?;
+    assert!(
+        read()?.contains("done unchecked: t2, t3"),
+        "the digest header must name the checkless done claims, and not the checked one: {}",
+        read()?
+    );
+    Ok(())
+}
+
 #[test]
 fn schema_gates_the_done_claim() -> TestResult {
     let (service, _store, _delivered) = service_with_store();
@@ -157,14 +447,17 @@ fn schema_gates_the_done_claim() -> TestResult {
         {"title": "extract", "acceptance": "returns rows",
          "schema": {"type": "object", "required": ["rows"]}},
     ]))?;
+    // A schema is not an executable check, so admission is named, not skipped —
+    // on the (Pending, Done) edge exactly as on the one into Running.
+    let named = Some("unmeasured leaf: the schema is the standard, no command runs");
     let error = service
-        .update("t1", "done", None, None)
+        .update("t1", "done", None, named)
         .err()
         .ok_or("schema without evidence must fail")?;
     assert!(error.contains("evidence"), "{error}");
 
     // The rejection blocked the task; a fresh claim must come from a live state.
-    service.update("t1", "running", None, None)?;
+    service.update("t1", "running", None, named)?;
     let bad = json!({"count": 3});
     let error = service
         .update("t1", "done", Some(&bad), None)
@@ -172,10 +465,24 @@ fn schema_gates_the_done_claim() -> TestResult {
         .ok_or("mismatching evidence must fail")?;
     assert!(error.contains("missing required property rows"), "{error}");
 
-    service.update("t1", "running", None, None)?;
+    // Two schema rejections are two reds, so the claim that finally matches is
+    // bought like any other — the arbiter still decides, one move later.
+    service.edit(
+        "add",
+        &json!({"for_task": "t1",
+                "tasks": [{"title": "Name the row shape", "acceptance": "shape written down"}]}),
+    )?;
+    service.update("t1", "running", None, named)?;
     let good = json!({"rows": [1, 2]});
-    let after = service.update("t1", "done", Some(&good), None)?;
-    assert_eq!(after["finished"], json!(true));
+    service.update("t1", "done", Some(&good), None)?;
+    let stored = yi_session::lock_session(&_store).plan().ok_or("plan")?;
+    assert_eq!(
+        stored
+            .task(&yi_types::plan::TaskId("t1".to_owned()))
+            .map(|task| task.state.clone()),
+        Some(TaskState::Done),
+        "matching evidence completes the task"
+    );
     Ok(())
 }
 
@@ -228,6 +535,7 @@ fn continuation_prompt_carries_the_frontier() -> TestResult {
         check: None,
         check_timeout_ms: None,
         check_failure: None,
+        discoveries: Vec::new(),
         extra: serde_json::Map::new(),
     };
     let plan = yi_session::lock_session(&store).plan().ok_or("plan")?;
@@ -408,5 +716,579 @@ fn stale_turns_knob_overrides_the_default() -> TestResult {
         })
         .map_err(|_| "lock")?;
     assert_eq!(count, 1, "a 2-turn knob reminds by the third turn");
+    Ok(())
+}
+
+fn split_payload(task_id: &str, subtasks: Value) -> Value {
+    json!({"task_id": task_id, "subtasks": subtasks})
+}
+
+fn red_task_specs() -> Value {
+    json!([
+        {"title": "Parse config", "acceptance": "config tests pass", "check": "echo boom; exit 2"},
+        {"title": "Wire flag", "acceptance": "--dry-run accepted", "deps": ["t1"]},
+    ])
+}
+
+fn earn_a_split(service: &PlanService, task: &str) -> TestResult {
+    claim_again(service, task)?;
+    claim_again(service, task)?;
+    Ok(())
+}
+
+#[test]
+fn split_refusals_arrive_in_one_pass() -> TestResult {
+    let (service, _store, _delivered) = service_with_store();
+    service.create(&two_task_specs())?;
+    let error = service
+        .split(&split_payload(
+            "t1",
+            json!([
+                {"title": "a", "acceptance": "ok", "writes": ["ast"]},
+                {"title": "b", "acceptance": "ok", "writes": ["ast"]},
+                {"title": "", "acceptance": "ok"},
+                {"title": "d", "acceptance": "ok", "reads": ["rows"]},
+                {"title": "e", "acceptance": "ok", "writes": ["rows"]},
+            ]),
+        ))
+        .err()
+        .ok_or("a guaranteed-wrong split must be refused")?;
+    for expected in [
+        "5 subtasks exceeds the maximum 4",
+        "subtasks 0 and 1 both write \"ast\"",
+        "subtask 2: title must be non-empty",
+        "subtask 3: reads \"rows\" that only a sibling writes",
+    ] {
+        assert!(
+            error.contains(expected),
+            "one round trip names every failure; missing {expected} in: {error}"
+        );
+    }
+    let stored = yi_session::lock_session(&_store).plan().ok_or("plan")?;
+    assert_eq!(stored.tasks.len(), 2, "a refused split writes nothing");
+    Ok(())
+}
+
+#[test]
+fn split_refuses_a_second_generation() -> TestResult {
+    let (service, _store, _delivered) = service_with_store();
+    service.create(&red_task_specs())?;
+    earn_a_split(&service, "t1")?;
+    service.split(&split_payload(
+        "t1",
+        json!([{"title": "parse", "acceptance": "parses", "check": "true"}]),
+    ))?;
+    let error = service
+        .split(&split_payload(
+            "t1.1",
+            json!([{"title": "deeper", "acceptance": "still parses"}]),
+        ))
+        .err()
+        .ok_or("depth 2 must be refused")?;
+    assert!(
+        error.contains("split depth 2 exceeds the maximum 1"),
+        "{error}"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_valid_split_lowers_onto_the_dag() -> TestResult {
+    let (service, store, _delivered) = service_with_store();
+    service.create(&red_task_specs())?;
+    earn_a_split(&service, "t1")?;
+    let before = yi_session::lock_session(&store).plan().ok_or("plan")?;
+    let acceptance = before
+        .task(&yi_types::plan::TaskId("t1".to_owned()))
+        .ok_or("t1")?
+        .acceptance
+        .clone();
+
+    let after = service.split(&split_payload(
+        "t1",
+        json!([
+            {"title": "read the file", "acceptance": "bytes in hand", "check": "true", "writes": ["raw"]},
+            {"title": "ask the user which dialect", "acceptance": "dialect named", "reads": ["cfg"], "writes": ["dialect"]},
+        ]),
+    ))?;
+    assert_eq!(
+        after["frontier"],
+        json!(["t1.1", "t1.2"]),
+        "children are the new frontier, not the parent"
+    );
+
+    let stored = yi_session::lock_session(&store).plan().ok_or("plan")?;
+    assert_eq!(
+        stored.version,
+        before.version.bump(),
+        "a split bumps the version"
+    );
+    let parent = stored
+        .task(&yi_types::plan::TaskId("t1".to_owned()))
+        .ok_or("t1")?;
+    assert_eq!(
+        parent.deps,
+        vec![
+            yi_types::plan::TaskId("t1.1".to_owned()),
+            yi_types::plan::TaskId("t1.2".to_owned())
+        ],
+        "the parent now waits on its children"
+    );
+    assert_eq!(
+        parent.acceptance, acceptance,
+        "a split never weakens the parent standard"
+    );
+    let checkless = stored
+        .task(&yi_types::plan::TaskId("t1.2".to_owned()))
+        .ok_or("t1.2")?;
+    assert_eq!(
+        checkless.check, None,
+        "a checkless ask leaf is admitted, not refused"
+    );
+    assert_eq!(checkless.state, TaskState::Pending);
+    assert!(
+        checkless.deps.is_empty(),
+        "the host writes the topology; siblings are unordered"
+    );
+    Ok(())
+}
+
+/// The inversion ADaPT and RSTD paid for: a plan that splits on turn one is
+/// upfront DAG compilation wearing a recipe, and its retry cost is the one the
+/// protocol exists to avoid.
+#[test]
+fn a_split_is_earned_by_a_red_streak_not_taken_on_turn_one() -> TestResult {
+    let (service, store, _delivered) = service_with_store();
+    service.create(&json!([
+        {"title": "impossible", "acceptance": "never true", "check": "echo boom; exit 2"},
+    ]))?;
+    let narrower = || {
+        split_payload(
+            "t1",
+            json!([{"title": "narrow it", "acceptance": "one case green", "check": "true"}]),
+        )
+    };
+
+    let error = service
+        .split(&narrower())
+        .err()
+        .ok_or("an unattempted task must not be split")?;
+    assert!(
+        error.contains("red 0 time") && error.contains("retry"),
+        "the refusal names the streak it read: {error}"
+    );
+    let stored = yi_session::lock_session(&store).plan().ok_or("plan")?;
+    assert_eq!(stored.tasks.len(), 1, "a refused split writes nothing");
+
+    claim_again(&service, "t1")?;
+    let error = service
+        .split(&narrower())
+        .err()
+        .ok_or("one red is a retry, not a restructure")?;
+    assert!(error.contains("red 1 time"), "{error}");
+
+    claim_again(&service, "t1")?;
+    service.split(&narrower())?;
+    let stored = yi_session::lock_session(&store).plan().ok_or("plan")?;
+    assert_eq!(
+        stored.tasks.len(),
+        2,
+        "the rung that demands a structural change admits the split"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_split_resets_the_red_streak() -> TestResult {
+    let (service, _store, _delivered) = service_with_store();
+    service.create(&json!([
+        {"title": "impossible", "acceptance": "never true", "check": "echo boom; exit 2"},
+    ]))?;
+    service
+        .update("t1", "done", None, None)
+        .err()
+        .ok_or("red 1")?;
+    service.update("t1", "running", None, None)?;
+    let escalated = service
+        .update("t1", "done", None, None)
+        .err()
+        .ok_or("red 2")?;
+    assert!(escalated.contains("2 attempts"), "{escalated}");
+
+    service.update("t1", "running", None, None)?;
+    service.split(&split_payload(
+        "t1",
+        json!([{"title": "narrow it", "acceptance": "one case green", "check": "true"}]),
+    ))?;
+    service.update("t1", "running", None, None)?;
+    let fresh = service
+        .update("t1", "done", None, None)
+        .err()
+        .ok_or("red 3")?;
+    assert!(
+        !fresh.contains("attempts") && !fresh.contains("same failure twice"),
+        "restructuring resets the ladder: {fresh}"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_done_task_is_not_split_behind_its_own_back() -> TestResult {
+    let (service, store, _delivered) = service_with_store();
+    service.create(&two_task_specs())?;
+    service.update("t1", "done", None, None)?;
+    let error = service
+        .split(&split_payload(
+            "t1",
+            json!([{"title": "late", "acceptance": "still true"}]),
+        ))
+        .err()
+        .ok_or("splitting a done task must be refused")?;
+    assert!(error.contains("reopen it with plan.edit"), "{error}");
+    let stored = yi_session::lock_session(&store).plan().ok_or("plan")?;
+    let parent = stored
+        .task(&yi_types::plan::TaskId("t1".to_owned()))
+        .ok_or("t1")?;
+    assert!(
+        parent.deps.is_empty(),
+        "a done task never gains unfinished deps"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_resumed_session_cannot_launder_an_escalation_streak() -> TestResult {
+    let (service, store, _delivered) = service_with_store();
+    service.create(&json!([
+        {"title": "impossible", "acceptance": "never true", "check": "echo case 7 diverges; exit 2"},
+    ]))?;
+    claim_again(&service, "t1")?;
+    claim_again(&service, "t1")?;
+    drop(service);
+
+    let (resumed, _delivered) = service_over(&store);
+    resumed.edit(
+        "add",
+        &json!({"for_task": "t1",
+                "tasks": [{"title": "Investigate case 7", "acceptance": "cause named"}]}),
+    )?;
+    let third = claim_again(&resumed, "t1")?;
+    assert!(
+        third.contains("stayed red through 3 attempts") && third.contains("ask the user"),
+        "a resume must not reset the ladder to rung one, or a looping task retries forever: {third}"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_streak_earned_split_survives_resume() -> TestResult {
+    let (service, store, _delivered) = service_with_store();
+    service.create(&red_task_specs())?;
+    earn_a_split(&service, "t1")?;
+    drop(service);
+
+    let (resumed, _delivered) = service_over(&store);
+    resumed.split(&split_payload(
+        "t1",
+        json!([{"title": "narrow it", "acceptance": "one case green", "check": "true"}]),
+    ))?;
+    let stored = yi_session::lock_session(&store).plan().ok_or("plan")?;
+    assert_eq!(
+        stored.tasks.len(),
+        3,
+        "a split the streak already earned must not be re-earned after a resume"
+    );
+    Ok(())
+}
+
+/// The check is the protocol's only arbiter, so a refusal that let it run
+/// first would still spend the attempt the rung exists to stop. The marker
+/// file is the proof it did not: the check appends to it on every run.
+#[test]
+fn a_forcechange_rung_claim_is_refused_before_its_check_runs() -> TestResult {
+    let dir = scratch("rung-refusal");
+    let marker = dir.join("ran");
+    let (service, store, _delivered) = service_with_store();
+    service.create(&json!([
+        {"title": "impossible", "acceptance": "never true",
+         "check": format!("echo tick >> {}; echo boom; exit 2", marker.display())},
+    ]))?;
+    claim_again(&service, "t1")?;
+    claim_again(&service, "t1")?;
+    assert!(marker.exists(), "the first two claims each ran the check");
+    std::fs::remove_file(&marker)?;
+
+    service.update("t1", "running", None, None)?;
+    let refusal = service
+        .update("t1", "done", None, None)
+        .err()
+        .ok_or("a ForceChange rung must refuse the next done claim")?;
+    assert!(
+        !marker.exists(),
+        "the refusal must land before the check spends anything: {refusal}"
+    );
+    for escape in [
+        "plan.split of t1",
+        "plan.split of its parent",
+        "plan.edit add",
+        "plan.edit reopen",
+    ] {
+        assert!(
+            refusal.contains(escape),
+            "the refusal must name a reachable escape; missing {escape} in: {refusal}"
+        );
+    }
+    let stored = yi_session::lock_session(&store).plan().ok_or("plan")?;
+    let task = stored
+        .task(&yi_types::plan::TaskId("t1".to_owned()))
+        .ok_or("t1")?;
+    assert_eq!(task.red_count, Some(2), "a refused claim is not a red");
+    assert_eq!(
+        task.state,
+        TaskState::Running,
+        "a refused claim writes no state"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+    Ok(())
+}
+
+/// Kawase: each further attempt is priced at exactly one structural move, so
+/// the grant is consumed by the claim it bought whether that claim goes green
+/// or red — never a standing licence to retry.
+#[test]
+fn a_structural_move_buys_exactly_one_more_claim() -> TestResult {
+    let dir = scratch("one-more");
+    let marker = dir.join("ran");
+    let (service, store, _delivered) = service_with_store();
+    service.create(&json!([
+        {"title": "impossible", "acceptance": "never true",
+         "check": format!("echo tick >> {}; echo boom; exit 2", marker.display())},
+    ]))?;
+    claim_again(&service, "t1")?;
+    claim_again(&service, "t1")?;
+    std::fs::remove_file(&marker)?;
+
+    service.edit(
+        "add",
+        &json!({"for_task": "t1",
+                "tasks": [{"title": "Investigate case 7", "acceptance": "cause named"}]}),
+    )?;
+    let stored = yi_session::lock_session(&store).plan().ok_or("plan")?;
+    assert_eq!(
+        stored
+            .task(&yi_types::plan::TaskId("t1".to_owned()))
+            .and_then(|task| task.readmit),
+        Some(true),
+        "a state change readmits the blocked task"
+    );
+
+    let third = claim_again(&service, "t1")?;
+    assert!(marker.exists(), "the bought claim runs the check: {third}");
+    assert!(
+        third.contains("stayed red through 3 attempts") && third.contains("ask the user"),
+        "the bought claim still walks the ladder: {third}"
+    );
+
+    service.update("t1", "running", None, None)?;
+    let refusal = service
+        .update("t1", "done", None, None)
+        .err()
+        .ok_or("the grant must be spent")?;
+    assert!(
+        refusal.contains("refused without running its check") && refusal.contains("ask the user"),
+        "one move buys one claim, and the Ask rung says so: {refusal}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+    Ok(())
+}
+
+/// The price is one move per claim, not one move for the whole plan: a grant
+/// that ignored which task the move was for let a model with N stuck tasks
+/// unblock all N with a single throwaway add.
+#[test]
+fn a_structural_move_readmits_only_the_task_it_names() -> TestResult {
+    let (service, store, _delivered) = service_with_store();
+    service.create(&json!([
+        {"title": "first", "acceptance": "never true", "check": "echo boom; exit 2"},
+        {"title": "second", "acceptance": "never true", "check": "echo boom; exit 2"},
+    ]))?;
+    for task in ["t1", "t2"] {
+        claim_again(&service, task)?;
+        claim_again(&service, task)?;
+    }
+
+    service.edit(
+        "add",
+        &json!({"for_task": "t1",
+                "tasks": [{"title": "Investigate case 7", "acceptance": "cause named"}]}),
+    )?;
+    let stored = yi_session::lock_session(&store).plan().ok_or("plan")?;
+    let readmit = |id: &str| {
+        stored
+            .task(&yi_types::plan::TaskId(id.to_owned()))
+            .and_then(|task| task.readmit)
+    };
+    assert_eq!(readmit("t1"), Some(true), "the named task is readmitted");
+    assert_eq!(
+        readmit("t2"),
+        None,
+        "a task the move did not name gets nothing"
+    );
+
+    let refused = service
+        .update("t2", "running", None, None)
+        .and_then(|_| service.update("t2", "done", None, None))
+        .err()
+        .ok_or("the unnamed task must still be refused")?;
+    assert!(
+        refused.contains("refused without running its check"),
+        "{refused}"
+    );
+    let bought = claim_again(&service, "t1")?;
+    assert!(
+        bought.contains("stayed red through 3 attempts"),
+        "the named task's bought claim runs its check: {bought}"
+    );
+    Ok(())
+}
+
+/// The deadlock the row names: a depth-1 subtask has no dep to reopen and
+/// `SPLIT_MAX_DEPTH` refuses its own split, so its earned rung has to buy the
+/// parent's reshape — otherwise the refusal wedges the exact node the ladder
+/// exists for.
+#[test]
+fn an_unsplittable_subtask_reaches_an_escape() -> TestResult {
+    let (service, store, _delivered) = service_with_store();
+    service.create(&json!([
+        {"title": "impossible", "acceptance": "never true", "check": "echo boom; exit 2"},
+    ]))?;
+    earn_a_split(&service, "t1")?;
+    service.split(&split_payload(
+        "t1",
+        json!([{"title": "narrow it", "acceptance": "one case green", "check": "echo boom; exit 2"}]),
+    ))?;
+    claim_again(&service, "t1.1")?;
+    claim_again(&service, "t1.1")?;
+
+    let error = service
+        .split(&split_payload(
+            "t1.1",
+            json!([{"title": "deeper", "acceptance": "still red"}]),
+        ))
+        .err()
+        .ok_or("a subtask cannot be split")?;
+    assert!(
+        error.contains("split depth 2 exceeds the maximum 1"),
+        "{error}"
+    );
+
+    service.split(&split_payload(
+        "t1",
+        json!([{"title": "try the other half", "acceptance": "other case green", "check": "true"}]),
+    ))?;
+    let stored = yi_session::lock_session(&store).plan().ok_or("plan")?;
+    assert!(
+        stored
+            .task(&yi_types::plan::TaskId("t1.2".to_owned()))
+            .is_some(),
+        "the reshape continues the child id run instead of colliding: {:?}",
+        stored
+            .tasks
+            .iter()
+            .map(|t| t.id.clone())
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(
+        stored
+            .task(&yi_types::plan::TaskId("t1.1".to_owned()))
+            .and_then(|task| task.readmit),
+        Some(true),
+        "the parent's reshape readmits the stuck child"
+    );
+    let after = claim_again(&service, "t1.1")?;
+    assert!(
+        after.contains("stayed red through 3 attempts"),
+        "the child's next claim runs its check again: {after}"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_checkless_pending_done_claim_is_named_not_merely_counted() -> TestResult {
+    let (service, store, _delivered) = service_with_store();
+    service.create(&json!([
+        {"title": "vibes", "acceptance": "looks right"},
+        {"title": "more vibes", "acceptance": "also looks right"},
+    ]))?;
+    let error = service
+        .update("t1", "done", None, None)
+        .err()
+        .ok_or("a checkless leaf must not complete itself unnamed")?;
+    assert!(
+        error.contains("no executable check"),
+        "the refusal must name what is missing: {error}"
+    );
+    let stored = yi_session::lock_session(&store).plan().ok_or("plan")?;
+    assert_eq!(
+        stored
+            .task(&yi_types::plan::TaskId("t1".to_owned()))
+            .map(|task| task.state.clone()),
+        Some(TaskState::Pending),
+        "a refused claim writes nothing"
+    );
+
+    service.update(
+        "t1",
+        "done",
+        None,
+        Some("ask: only the user can judge this"),
+    )?;
+    service.update("t2", "done", None, Some("unmeasured leaf: prose only"))?;
+    let plan = yi_session::lock_session(&store).plan().ok_or("plan")?;
+    let line = yi_runtime::plan::summary_line(&plan);
+    assert!(
+        line.contains("done unchecked: t1, t2"),
+        "the digest must name the unverified claims, not just count them: {line}"
+    );
+
+    // The digest header is one line; naming every id would let a wide plan
+    // push the states and counts off it.
+    let named = Some("unmeasured leaf: prose only");
+    for index in 3..=6 {
+        service.edit(
+            "add",
+            &json!({"tasks": [{"title": format!("vibes {index}"), "acceptance": "looks right"}]}),
+        )?;
+        service.update(&format!("t{index}"), "done", None, named)?;
+    }
+    let plan = yi_session::lock_session(&store).plan().ok_or("plan")?;
+    let line = yi_runtime::plan::summary_line(&plan);
+    assert!(
+        line.contains("done unchecked: t1, t2, t3, t4 +2 more"),
+        "the naming is capped so the header stays one line: {line}"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_resume_cannot_launder_a_refusal() -> TestResult {
+    let (service, store, _delivered) = service_with_store();
+    service.create(&json!([
+        {"title": "impossible", "acceptance": "never true", "check": "echo boom; exit 2"},
+    ]))?;
+    claim_again(&service, "t1")?;
+    claim_again(&service, "t1")?;
+    drop(service);
+
+    let (resumed, _delivered) = service_over(&store);
+    resumed.update("t1", "running", None, None)?;
+    let refusal = resumed
+        .update("t1", "done", None, None)
+        .err()
+        .ok_or("a resume must not mint an attempt the rung refused")?;
+    assert!(
+        refusal.contains("refused without running its check"),
+        "{refusal}"
+    );
     Ok(())
 }

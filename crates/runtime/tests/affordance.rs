@@ -8,11 +8,15 @@ type TestResult = Result<(), Box<dyn Error>>;
 
 #[test]
 fn a_spawn_hands_back_the_exact_collect_and_watch_calls() {
-    let line = affordance::spawned("porter", Path::new("/tmp/sessions/child-1"));
+    let line = affordance::spawned("porter");
     assert!(line.starts_with(affordance::NEXT));
     assert!(line.contains("rlm.wait(120)"));
     assert!(line.contains("rlm.send('porter'"));
-    assert!(line.contains("/tmp/sessions/child-1/*.jsonl"));
+    assert!(
+        !line.contains(".jsonl"),
+        "F7 writes the transcript, but the spawn reply names its dir as data — \
+         the hint stays the two calls the model makes during the run: {line}"
+    );
     assert_eq!(line.lines().count(), 1, "at most two lines, one is plenty");
 }
 

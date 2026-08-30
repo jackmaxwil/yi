@@ -2,6 +2,8 @@ use yi_types::message::{AgentMessage, Content, UserContent};
 
 pub const DEFAULT_USER_BUDGET: usize = 2_000;
 pub const DEFAULT_PROSE_BUDGET: usize = 1_200;
+/// The head a compaction line shows; the rest is pulled, never pushed (§7.6).
+pub const COMPACTION_HEAD: usize = 200;
 
 /// §7.4 verb tables: the sentences a reviewer needs to see survive the prose
 /// budget, the rest are dropped.
@@ -200,6 +202,17 @@ pub fn digest_line(item: &LogItem<'_>, user_budget: usize, prose_budget: usize) 
                 item.id,
                 if *is_error { "error" } else { "ok" },
                 tail.trim()
+            ))
+        }
+        AgentMessage::CompactionSummary { summary, .. } => {
+            // A summary is prose with its own newlines; one digest item is one
+            // line, or the pull handle strands on a line of its own.
+            let flat = summary.split_whitespace().collect::<Vec<_>>().join(" ");
+            let head: String = flat.chars().take(COMPACTION_HEAD).collect();
+            let elided = if head.len() < flat.len() { "…" } else { "" };
+            Some(format!(
+                "{} compaction: {head}{elided} [pull {}]",
+                item.id, item.id
             ))
         }
         _ => None,

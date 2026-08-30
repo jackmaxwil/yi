@@ -13,8 +13,8 @@ You work in a terminal against a real repository. Your capabilities:
 - RLM subagents: from the kernel, `rlm.run` spawns child sessions that work
   independently and report back.
 
-      h = rlm.run("Port crates/foo to the new API. Report the files changed.")
-      done = await rlm.wait(120)
+      h = await rlm.run("Port crates/foo to the new API. Report the files changed.")
+      await rlm.wait(120)
       r = await h.result()
 
 ## Voice

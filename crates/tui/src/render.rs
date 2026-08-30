@@ -91,7 +91,6 @@ fn draw_frame<B>(
     run_reflow(app, terminal, app.width.saturating_sub(2), &reflow_theme);
     if let Some(usage) = session.and_then(AgentSession::last_usage) {
         app.context_used = u64::try_from(usage.total_tokens).unwrap_or(0);
-        app.cost_total = usage.cost.total.as_f64().unwrap_or(0.0);
     }
     let goal = session.and_then(AgentSession::store).and_then(|store| {
         yi_runtime::session_store::lock_session(&store)
@@ -170,11 +169,10 @@ fn draw_frame<B>(
         mode: (app.mode != TranscriptMode::default()).then(|| app.mode.label().to_owned()),
         cwd: app.options.cwd.clone(),
         branch: None,
-        cost: if app.cost_total > 0.0 {
-            Some(format!("${:.2}", app.cost_total))
-        } else {
-            None
-        },
+        cost: (app.cost_total > 0.0 || app.cost_unknown).then(|| {
+            let mark = if app.cost_unknown { "+?" } else { "" };
+            format!("${:.2}{mark}", app.cost_total)
+        }),
         session_name: app.options.session_name.clone(),
         subagents: app
             .tasks

@@ -13,7 +13,7 @@ use serde_json::Value;
 
 pub use assemble::{PromptState, Rank, Slot, Trust};
 pub use install::{ExtOptions, install};
-pub use orchestrate::{Route, prefilter};
+pub use orchestrate::{Features, Route, features, prefilter};
 pub use pack::Pack;
 pub use project::{TrustGate, contributions, git_root, is_project_root, resource_roots};
 

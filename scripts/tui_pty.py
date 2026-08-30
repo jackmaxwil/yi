@@ -43,6 +43,9 @@ def main() -> int:
     parser.add_argument("--resize", metavar="COLSxROWS", action="append",
                         default=[],
                         help="resize the pty (and SIGWINCH) mid-run; repeatable")
+    parser.add_argument("--expect", action="append", default=[],
+                        help="fail unless the captured screen contains this "
+                             "text; repeatable")
     parser.add_argument("--binary", default="./target/debug/yi")
     parser.add_argument("--term", default="xterm-256color",
                         help="TERM for the child; use xterm-kitty to exercise "
@@ -130,6 +133,12 @@ def main() -> int:
     print(f"exit: {exit_status if exit_status is not None else 'killed'}")
     print(f"bytes: {len(out)}")
     print(plain)
+    # A killed child exits 0 here, so without --expect a run that rendered
+    # nothing still passes; the journey lane needs the screen asserted.
+    missing = [needle for needle in options.expect if needle not in plain]
+    if missing:
+        print(f"missing from the captured screen: {missing}")
+        return 1
     return 0 if exit_status in (0, None) else 1
 
 

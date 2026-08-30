@@ -118,3 +118,64 @@ async fn ipython_tool_runs_a_cell_through_the_full_agent_loop() -> Result<(), Bo
     );
     Ok(())
 }
+
+#[tokio::test]
+async fn an_unawaited_spawn_is_named_in_the_cell_result() -> Result<(), Box<dyn Error>> {
+    let provider = Arc::new(ProviderStream::new(None, None));
+    let mut call_args = serde_json::Map::new();
+    call_args.insert("code".to_owned(), serde_json::json!("print(rlm.run('x'))"));
+    provider.queue_faux(vec![
+        faux_assistant_message(
+            vec![faux_tool_call("call-1", "ipython", call_args)],
+            StopReason::ToolUse,
+        ),
+        faux_assistant_message(vec![faux_text("done")], StopReason::Stop),
+    ]);
+    let mut session = AgentSession::new(
+        SessionConfig {
+            system_prompt: "sys".to_owned(),
+            model: faux_model(),
+            thinking_level: None,
+            tool_execution: ExecutionMode::Sequential,
+        },
+        provider,
+    );
+    let mut registry = HostRegistry::default();
+    registry.register_mcp_stubs();
+    let service = Arc::new(KernelService::new(KernelServiceOptions {
+        cwd: std::env::temp_dir(),
+        home: home(),
+        session_dir: None,
+        host: Arc::new(registry),
+        on_restore: None,
+    }));
+    let mut tools = yi_tools::builtin_tools();
+    tools.push(ipython_tool(Arc::clone(&service)));
+    session.use_tools(tools, std::env::temp_dir(), None);
+
+    let mut events = session.subscribe();
+    session.prompt("spawn a child")?;
+    session.wait_idle().await;
+    service.dispose().await;
+
+    let mut texts = Vec::new();
+    while let Ok(event) = events.try_recv() {
+        if let AgentEvent::ToolExecutionEnd { result, .. } = event {
+            for content in result.content {
+                if let yi_types::message::Content::Text { text, .. } = content {
+                    texts.push(text);
+                }
+            }
+        }
+    }
+    let cell = texts.first().ok_or("the ipython call produced no result")?;
+    assert!(
+        cell.contains("<coroutine object ") && cell.contains("run at 0x"),
+        "the cell must print the un-awaited spawn coroutine: {cell}"
+    );
+    assert!(
+        cell.contains("await rlm.run"),
+        "an un-awaited spawn must carry the affordance: {cell}"
+    );
+    Ok(())
+}

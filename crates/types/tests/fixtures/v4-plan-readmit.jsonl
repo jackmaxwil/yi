@@ -1,0 +1,2 @@
+{"kind":"header","version":4,"id":"fixture-a","createdAt":1787544431479,"cwd":"/tmp/yi-fixture"}
+{"kind":"fact","seq":1,"fact":"plan","plan":{"version":6,"tasks":[{"id":"t1","title":"Parse config","acceptance":"config tests pass","check":"cargo test -p yi-config","state":"blocked","blockedReason":"goal check `cargo test -p yi-config` exited 101:\ncase 7 diverges","redCount":2,"redFingerprint":"3f6a1c0b9d2e4857","readmit":true},{"id":"t2","title":"Investigate case 7","acceptance":"cause named","state":"pending"}],"created":1787544431477,"updated":1787544431490}}

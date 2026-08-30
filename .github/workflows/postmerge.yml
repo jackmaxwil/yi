@@ -1,0 +1,33 @@
+# The T2 lane's away game: the suite under the profile that ships, with panic
+# forced back to unwind, which nothing else covers because the shipping profile
+# aborts. Too slow to block a PR, so it runs after the merge.
+name: postmerge
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  postmerge:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup show
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ matrix.os }}-cargo-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
+      - run: command -v just >/dev/null || cargo install --locked just
+      - run: just postmerge
+      - run: just postmerge-evals

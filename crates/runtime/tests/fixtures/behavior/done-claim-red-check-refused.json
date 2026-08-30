@@ -1,0 +1,38 @@
+{
+  "id": "done-claim-red-check-refused",
+  "description": "a completion claim is refused while the goal's own check exits nonzero; otherwise Yi reports done on a red gate and the user ships on its word",
+  "provenance": {
+    "kind": "synthetic",
+    "session": null
+  },
+  "goal": {
+    "objective": "land the port with the gate green",
+    "check": "false",
+    "checkTimeoutMs": 5000
+  },
+  "turns": [
+    {
+      "user": "wrap it up",
+      "responses": [
+        {
+          "text": "everything is done"
+        }
+      ],
+      "claimComplete": true
+    }
+  ],
+  "assertions": [
+    {
+      "kind": "goalRefusalContains",
+      "needle": "completion rejected"
+    },
+    {
+      "kind": "goalRefusalContains",
+      "needle": "goal check `false` exited 1"
+    },
+    {
+      "kind": "goalStatusNot",
+      "status": "complete"
+    }
+  ]
+}

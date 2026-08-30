@@ -1,0 +1,86 @@
+{
+  "id": "recorded-0001-tool-turn",
+  "description": "a recorded tool turn replays through the stub in arrival order with its argument key order intact; a recorder that reorders arguments or drops a result would lock in a session that never happened",
+  "provenance": {
+    "kind": "recorded",
+    "session": "tool-turn.jsonl"
+  },
+  "stubs": [
+    {
+      "name": "bash",
+      "results": [
+        {
+          "text": "exit 0",
+          "isError": false
+        },
+        {
+          "text": "exit 1: false",
+          "isError": true
+        }
+      ]
+    }
+  ],
+  "turns": [
+    {
+      "user": "run the bash tool twice and report both exit codes",
+      "responses": [
+        {
+          "text": "running the tool",
+          "toolCalls": [
+            {
+              "id": "call-1",
+              "name": "bash",
+              "arguments": {
+                "zeta": 1,
+                "alpha": "x",
+                "nested": {
+                  "b": 2,
+                  "a": [
+                    1,
+                    null,
+                    true
+                  ]
+                }
+              }
+            },
+            {
+              "id": "call-2",
+              "name": "bash",
+              "arguments": {
+                "command": "false"
+              }
+            }
+          ],
+          "usageTotal": 10750,
+          "usageInput": 1200
+        },
+        {
+          "text": "the first command exited 0, the second exited 1",
+          "usageTotal": 12112,
+          "usageInput": 1400
+        }
+      ]
+    }
+  ],
+  "assertions": [
+    {
+      "kind": "toolResultContains",
+      "callId": "call-1",
+      "needle": "exit 0"
+    },
+    {
+      "kind": "toolResultContains",
+      "callId": "call-2",
+      "needle": "exit 1: false"
+    },
+    {
+      "kind": "toolResultIsError",
+      "callId": "call-2",
+      "value": true
+    },
+    {
+      "kind": "finalTextContains",
+      "needle": "the first command exited 0"
+    }
+  ]
+}

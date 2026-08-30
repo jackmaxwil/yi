@@ -1,0 +1,81 @@
+# A thin caller of the justfile the git hooks already run — never a second copy
+# of the rules. CI=true makes the aggregator announce-skip binary_size and
+# startup: the baseline is a macOS arm64 byte count, and a shared runner cannot
+# resolve a 5 ms budget.
+name: pr
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  gate:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      # check_commit_style.py resolves origin/main and refuses to pass blind on
+      # a shallow clone, so the full history is the gate's precondition.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - run: rustup show
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ matrix.os }}-cargo-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
+      - name: install the tools the gate shells out to
+        run: |
+          set -euo pipefail
+          for tool in just cargo-deny cargo-machete; do
+            command -v "$tool" >/dev/null || cargo install --locked "$tool"
+          done
+          command -v codespell >/dev/null || pipx install codespell
+          if ! command -v uv >/dev/null; then
+            curl -LsSf https://astral.sh/uv/install.sh | sh
+            echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          fi
+      - run: just prepush
+      # The title is judged by the same rule the subjects are, and only CI can
+      # see it: it exists nowhere in the tree the local hook scans.
+      - name: check the PR title against the commit-subject standard
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+        run: python3 scripts/guardrails/check_commit_style.py
+
+  size-report:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: post the measured LOC map and growth verdict
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin main
+          python3 scripts/pr_body.py > body.md
+          # The narrative is the author's; only the counted sections are
+          # machine-truth, so the comment carries those and says so.
+          {
+            echo "Measured against \`origin/main\` by \`just pr-body\` — the sections below are counted, not written."
+            echo
+            sed -n '/^## Files edited/,$p' body.md | sed -n '/^## Architecture notes/q;p'
+          } > comment.md
+          # One comment per PR, edited in place: a fresh comment per push turns
+          # the thread into a changelog nobody reads.
+          gh pr comment "$PR" --body-file comment.md --edit-last \
+            || gh pr comment "$PR" --body-file comment.md
