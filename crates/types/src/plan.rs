@@ -61,6 +61,10 @@ pub struct Task {
     /// hasher change costs one missed repeat hint, never a wrong refusal.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub red_fingerprint: Option<String>,
+    /// One structural move buys one further done-claim at a rung that refuses
+    /// them. It rides the fact, or a resume mints an unearned attempt.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub readmit: Option<bool>,
     #[serde(flatten)]
     pub extra: Map<String, Value>,
 }

@@ -84,10 +84,16 @@ def parse_events(path):
     E9: all token fields land together or not at all -- with no assistant
     `message_end` row every field stays None, because AA drops missing values
     from averages and a partial zero flatters the run silently.
+
+    D79's `usage.unknown` is the same hazard one turn at a time: a stream that
+    died before its usage chunk reports zeros that are forged, not measured. A
+    run carrying any such turn has no total, so `costUsd` is None and
+    `costUnknownTurns` names how many turns the token columns under-count.
     """
     totals = {key: 0 for key in TOKEN_KEYS}
     cost = 0.0
     assistant = 0
+    unknown = 0
     events, malformed = json_lines(path)
     for event in events:
         if event.get("type") != "message_end":
@@ -98,17 +104,23 @@ def parse_events(path):
         assistant += 1
         usage = message.get("usage")
         _add_tokens(totals, usage)
+        if isinstance(usage, dict) and usage.get("unknown") is True:
+            unknown += 1
         if isinstance(usage, dict) and isinstance(usage.get("cost"), dict):
             total = usage["cost"].get("total")
             if isinstance(total, (int, float)) and not isinstance(total, bool):
                 cost += total
-    result = {"nAssistantMessages": assistant, "malformedLines": malformed}
+    result = {
+        "nAssistantMessages": assistant,
+        "malformedLines": malformed,
+        "costUnknownTurns": unknown,
+    }
     if assistant == 0:
         result.update({key: None for key in TOKEN_KEYS})
         result["costUsd"] = None
         return result
     result.update(totals)
-    result["costUsd"] = cost if cost > 0 else None
+    result["costUsd"] = None if unknown or cost <= 0 else cost
     return result
 
 

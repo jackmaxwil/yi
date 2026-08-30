@@ -240,3 +240,33 @@ fn refusing_the_hour_long_cache_falls_back_to_the_default() -> Result<(), Box<dy
     );
     Ok(())
 }
+
+#[test]
+fn a_message_start_without_a_usage_object_leaves_the_turn_unknown() -> Result<(), Box<dyn Error>> {
+    let model = model();
+    let mut without = Mapper::new(&model);
+    let _ = without.push(&json!({"type":"message_start","message":{"id":"m","model":"x"}}));
+    let _ = without.push(&json!({"type":"message_delta","delta":{"stop_reason":"end_turn"}}));
+    let _ = without.push(&json!({"type":"message_stop"}));
+    let mut with = Mapper::new(&model);
+    let _ = with.push(&json!({"type":"message_start","message":{"id":"m","model":"x","usage":{}}}));
+    let _ = with.push(&json!({"type":"message_delta","delta":{"stop_reason":"end_turn"}}));
+    let _ = with.push(&json!({"type":"message_stop"}));
+
+    let flag = |event: AssistantMessageEvent| match event {
+        AssistantMessageEvent::Done {
+            message: AgentMessage::Assistant { usage, .. },
+            ..
+        } => Ok(usage.unknown),
+        other => Err(format!("expected an assistant done: {other:?}")),
+    };
+    assert!(
+        flag(without.finish())?,
+        "no usage object is not a free turn"
+    );
+    assert!(
+        !flag(with.finish())?,
+        "an empty usage object is a reported zero, which is known"
+    );
+    Ok(())
+}

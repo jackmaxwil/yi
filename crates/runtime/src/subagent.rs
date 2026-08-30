@@ -511,6 +511,14 @@ impl SubagentHost {
                 },
                 wall,
             })?;
+            // Invariant: a child that runs unrecorded leaves nothing to read
+            // when it fails, so a transcript it cannot open refuses the spawn.
+            let cwd = worktree
+                .as_ref()
+                .map_or(&self.options.cwd, |tree| &tree.path);
+            yi_session::create_flat_session(session_dir.clone(), cwd.to_string_lossy())
+                .and_then(|store| child.attach_store(store))
+                .map_err(|error| error.to_string())?;
             if fork != Fork::None {
                 let seed = seed_for_fork(
                     &(self.options.parent_messages)(),
@@ -926,6 +934,8 @@ pub struct RuntimeWiring {
     pub summarizer: Option<Model>,
     /// Naming `models.advisor` in config enables the LLM reviewer (D28).
     pub advisor: Option<Model>,
+    /// Naming `models.autoReview` enables the M7 permission reviewer (D81).
+    pub auto_review: Option<Model>,
     /// `plan.staleReminderTurns` config; None keeps the default.
     pub plan_stale_turns: Option<u64>,
     /// Set for a child: its B6 route back into the family that spawned it.
@@ -1136,16 +1146,21 @@ pub fn attach_runtime(session: &mut AgentSession, wiring: RuntimeWiring) -> Arc<
             })),
         },
     ));
+    wire_advisor(session, &wiring);
     {
         let service = Arc::clone(&service);
         let notice = session.notice_hook();
         let store = session.store_handle();
+        let advisor = session.advisor();
         session.set_on_compacted(Arc::new(move || {
             let service = Arc::clone(&service);
             let notice = Arc::clone(&notice);
-            let file =
-                store().and_then(|store| yi_session::lock_session(&store).file_path().cloned());
+            let handle = store();
+            let file = handle
+                .as_ref()
+                .and_then(|store| yi_session::lock_session(store).file_path().cloned());
             notice(&crate::affordance::compacted(file.as_deref()));
+            crate::advisor::note_last_compaction(advisor.as_deref(), handle.as_ref());
             tokio::spawn(async move {
                 if let Some(text) = service.sync_after_compaction().await {
                     notice(&text);
@@ -1155,7 +1170,7 @@ pub fn attach_runtime(session: &mut AgentSession, wiring: RuntimeWiring) -> Arc<
     }
     let mut tools = (wiring.tools)();
     tools.push(crate::kernel::ipython_tool(service));
-    wire_advisor(session, &wiring);
+    crate::auto_review::wire(session, &wiring, &mut tools);
     if let (Some(plan), Some(advisor)) = (session.plan_service(), session.advisor()) {
         plan.set_on_change(Arc::new(move |plan| {
             advisor.request_review(Some(crate::plan::summary_line(plan)));

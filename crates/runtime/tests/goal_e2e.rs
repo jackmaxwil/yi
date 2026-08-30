@@ -136,6 +136,7 @@ fn budget_crossing_limits_the_goal_and_delivers_one_reminder() -> TestResult {
             cache_write: zero(),
             total: zero(),
         },
+        unknown: false,
     };
     let with_usage = AgentMessage::Assistant {
         content: vec![faux_text("work")],
@@ -360,6 +361,7 @@ fn seed_plan_of(store: &yi_session::SharedSession, id: &str, check: &str) -> Tes
             assignee: None,
             red_count: None,
             red_fingerprint: None,
+            readmit: None,
             extra: serde_json::Map::new(),
         }],
         created: 0,

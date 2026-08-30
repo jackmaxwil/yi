@@ -14,6 +14,10 @@ pub struct ModelRoles {
     /// advisor observes and says nothing until a model role names it).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub advisor: Option<String>,
+    /// Naming this role turns the M7 auto reviewer on. Unset, auto mode is the
+    /// deterministic ladder and nothing extra is ever constructed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub auto_review: Option<String>,
 }
 
 /// X7: `~/.yi/config.json`, the whole user surface. Config is not durable

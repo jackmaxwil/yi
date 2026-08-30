@@ -15,7 +15,9 @@ pub fn empty_assistant(model: &Model) -> AgentMessage {
         response_model: None,
         response_id: None,
         diagnostics: None,
-        usage: Usage::zero(),
+        // A stream that dies before its usage chunk must not read as a free
+        // turn; every mapper clears this when a usage object actually arrives.
+        usage: Usage::unknown(),
         stop_reason: StopReason::Pending,
         deferred: None,
         error_message: None,

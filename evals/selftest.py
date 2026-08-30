@@ -15,9 +15,12 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT / "adapters"))
+sys.path.insert(0, str(ROOT / "drivers"))
 sys.path.insert(0, str(ROOT))
 
+import orient_census  # noqa: E402
 import record  # noqa: E402
+import tb21_cost  # noqa: E402
 import yi_usage  # noqa: E402
 
 FIXTURES = ROOT / "fixtures"
@@ -85,6 +88,36 @@ def check_no_assistant_rows():
     for key in yi_usage.TOKEN_KEYS:
         assert usage[key] is None, (key, usage[key])
     assert usage["costUsd"] is None, usage
+
+
+def check_unknown_usage_is_not_a_free_turn():
+    """D79: a turn whose stream died before its usage chunk prices at zero. If
+    the cost path sums that zero, an unmeasurable run walks under the slice cap
+    forever, which is the one failure a cap on real money must not have."""
+    lines = EVENTS.read_text().splitlines()
+    for index, line in enumerate(lines):
+        event = json.loads(line)
+        message = event.get("message") or {}
+        if event.get("type") == "message_end" and message.get("role") == "assistant":
+            message["usage"]["unknown"] = True
+            lines[index] = json.dumps(event)
+    with tempfile.TemporaryDirectory() as directory:
+        runs = Path(directory) / "runs" / "trial"
+        runs.mkdir(parents=True)
+        path = runs / "yi.jsonl"
+        path.write_text("\n".join(lines) + "\n")
+        usage = yi_usage.parse_events(path)
+        assert usage["nAssistantMessages"] == 1, usage
+        assert usage["costUnknownTurns"] == 1, usage
+        assert usage["costUsd"] is None, "an unreported turn must not read as $0"
+        runs = Path(directory) / "runs"
+        try:
+            total = tb21_cost.spent(runs)
+        except tb21_cost.Unmeasurable:
+            total = None
+        assert total is None, f"unmeasurable spend answered {total} instead of refusing"
+        assert tb21_cost.main([str(runs), "--hard", "25"]) == 2, "the probe must stop"
+    assert yi_usage.parse_events(EVENTS)["costUnknownTurns"] == 0, "recorded turns are known"
 
 
 def check_session_extras():
@@ -189,10 +222,46 @@ def check_record_refuses():
         raise AssertionError("a session with no user message must refuse")
 
 
+def check_cost_cap():
+    """The campaign slice's only automated money gate: the probe's exit code
+    stops the driver, and a spend it cannot compute must never read as $0."""
+    priced = (
+        '{"type":"message_end","message":{"role":"assistant",'
+        '"usage":{"cost":{"total":26.0}}}}'
+    )
+    with tempfile.TemporaryDirectory() as directory:
+        runs = Path(directory)
+        assert tb21_cost.main([str(runs), "--soft", "20", "--hard", "25"]) == 0
+        (runs / "trial").mkdir()
+        (runs / "trial" / "yi.jsonl").write_text(priced + "\n")
+        assert tb21_cost.main([str(runs), "--hard", "25"]) == 2, "hard cap slept"
+        assert tb21_cost.main([str(runs), "--soft", "20"]) == 2, "soft cap slept"
+
+    def unreadable(_runs_dir):
+        raise OSError("the runs directory could not be read")
+
+    original, tb21_cost.spent = tb21_cost.spent, unreadable
+    try:
+        tb21_cost.main([".", "--hard", "25"])
+        raise AssertionError("a probe that cannot price the run must not exit 0")
+    except OSError:
+        pass
+    finally:
+        tb21_cost.spent = original
+
+
+def check_orient_census():
+    """P4/P13 census: row counts, escalation labels, the layer parse, no leak."""
+    orient_census.selftest()
+
+
 CHECKS = (
+    check_cost_cap,
+    check_orient_census,
     check_command,
     check_usage,
     check_no_assistant_rows,
+    check_unknown_usage_is_not_a_free_turn,
     check_session_extras,
     check_fingerprint,
     check_record,

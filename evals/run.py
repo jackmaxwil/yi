@@ -150,9 +150,10 @@ def _total(rows, key):
     return sum(row.get(key) or 0 for row in rows)
 
 
-def ledger_row(rows, model, fingerprint, suite):
+def ledger_row(rows, model, fingerprint, suite, note="evals/run.py"):
     """The docs/eval-ledger.md row a real run is pasted from, run-id blank."""
     cost = _total(rows, "costUsd")
+    unknown = _total(rows, "costUnknownTurns")
     return " | ".join(
         [
             "| NNNN",
@@ -163,12 +164,14 @@ def ledger_row(rows, model, fingerprint, suite):
             f"{_total(rows, 'reward')}/{len(rows)}",
             "k=1",
             f"{_total(rows, 'input')}/{_total(rows, 'cacheRead')}/{_total(rows, 'output')}",
-            f"{cost:.4f}" if cost else "-",
+            # `?` and `-` are different claims: unmeasurable, versus measured
+            # at zero. A run with a usage-less turn cannot report a total.
+            "?" if unknown else (f"{cost:.4f}" if cost else "-"),
             f"{_total(rows, 'wallSec'):.1f}s",
             str(_total(rows, "n_agent_steps")),
             str(max((row.get("peak_context_tokens") or 0) for row in rows)),
             str(_total(rows, "summarization_count")),
-            "evals/run.py |",
+            f"{note} |",
         ]
     )
 
@@ -178,6 +181,10 @@ def main(argv=None):
     parser.add_argument("--binary", default="target/debug/yi")
     parser.add_argument("--model", default="faux/faux-1")
     parser.add_argument("--dry", action="store_true")
+    parser.add_argument("--task", action="append", metavar="ID")
+    # A lever that leaves --binary and --model alone still has to read back as a
+    # different run, so the label rides the fingerprint's mode field.
+    parser.add_argument("--variant", default="")
     args = parser.parse_args(argv)
 
     errors = []
@@ -186,14 +193,21 @@ def main(argv=None):
     if not Path(args.binary).is_file():
         errors.append(f"no binary at {args.binary} (cargo build -p yi-cli)")
     tasks = sorted(path.parent for path in TASKS.glob("*/task.json"))
+    if args.task:
+        wanted = set(args.task)
+        missing = wanted - {task.name for task in tasks}
+        if missing:
+            errors.append(f"no such task: {', '.join(sorted(missing))}")
+        tasks = [task for task in tasks if task.name in wanted]
     if not tasks and not errors:
         errors.append(f"no tasks under {TASKS}")
     if errors:
         return report(errors, 0)
 
     suite = f"fixtures@{_capture(['git', '-C', str(ROOT), 'rev-parse', '--short', 'HEAD'])}"
+    mode = f"yolo+{args.variant}" if args.variant else "yolo"
     fingerprint = yi_usage.config_fingerprint(
-        _capture([args.binary, "--version"]), args.model, "yolo", suite
+        _capture([args.binary, "--version"]), args.model, mode, suite
     )
     rows = []
     for task in tasks:
@@ -207,7 +221,8 @@ def main(argv=None):
         return report(errors, len(rows))
     for row in rows:
         print(json.dumps(row, sort_keys=True))
-    print(ledger_row(rows, args.model, fingerprint, suite))
+    note = f"evals/run.py {mode}" + (f" tasks={','.join(sorted(args.task))}" if args.task else "")
+    print(ledger_row(rows, args.model, fingerprint, suite, note))
     return 0
 
 

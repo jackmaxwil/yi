@@ -176,6 +176,7 @@ impl AgentTool for ToolAdapter {
             auto_background: self.auto_background,
             sandbox: None,
             deny_read: self.wall.deny_read.clone(),
+            call_id: tool_call_id.to_owned(),
         };
         let permission = self.permission.clone();
         let rules = self.rules.clone();

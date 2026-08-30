@@ -71,6 +71,31 @@ fn escalation_demand(rung: Escalation, count: u8) -> Option<String> {
     ))
 }
 
+/// Invariant: the refusal never runs the check, so an unearned attempt costs
+/// nothing; every escape it names is reachable at depth 1, which is what keeps
+/// a subtask `SPLIT_MAX_DEPTH` refuses from wedging.
+fn rung_refusal(rung: Escalation, id: &str, count: u8) -> Option<String> {
+    let head = match rung {
+        Escalation::Retry => return None,
+        Escalation::ForceChange => String::new(),
+        Escalation::Ask => " — stop and ask the user".to_owned(),
+    };
+    Some(format!(
+        "done claim for {id} refused without running its check: red through {count} attempts{head}. One structural move buys one more claim, and it has to name {id}: plan.split of {id}, plan.split of its parent, plan.edit add of an investigation task with for_task {id}, or plan.edit reopen of a task {id} assumes."
+    ))
+}
+
+/// Invariant: a grant buys one claim for the tasks the move actually reshaped
+/// and never clears a streak, so the rung a task sits on is monotone in its
+/// reds and the price of the next claim stays one move.
+fn grant_readmission(plan: &mut Plan, ids: &[TaskId]) {
+    for task in &mut plan.tasks {
+        if ids.contains(&task.id) && escalation(task.red_count.unwrap_or(0)) != Escalation::Retry {
+            task.readmit = Some(true);
+        }
+    }
+}
+
 fn failure_fingerprint(evidence: &str) -> String {
     let collapse = |line: &str| line.split_whitespace().collect::<Vec<_>>().join(" ");
     let mut lines = evidence.lines().filter(|line| !line.trim().is_empty());
@@ -208,6 +233,7 @@ fn lower_subtask(parent: &TaskId, index: usize, spec: &SubtaskSpec) -> Task {
         assignee: None,
         red_count: None,
         red_fingerprint: None,
+        readmit: None,
         extra: Map::new(),
     }
 }
@@ -235,13 +261,23 @@ pub fn summary_line(plan: &Plan) -> String {
         count(&TaskState::Done),
         plan.tasks.len()
     );
-    let unchecked = plan
+    let unchecked: Vec<&str> = plan
         .tasks
         .iter()
         .filter(|task| task.state == TaskState::Done && task.check.is_none())
-        .count();
-    if unchecked > 0 {
-        line.push_str(&format!(", {unchecked} done unchecked"));
+        .map(|task| task.id.as_str())
+        .collect();
+    if !unchecked.is_empty() {
+        let named: Vec<&str> = unchecked.iter().take(4).copied().collect();
+        let mut text = named.join(", ");
+        if let Some(more) = unchecked
+            .len()
+            .checked_sub(named.len())
+            .filter(|more| *more > 0)
+        {
+            text.push_str(&format!(" +{more} more"));
+        }
+        line.push_str(&format!(", done unchecked: {text}"));
     }
     line
 }
@@ -351,6 +387,7 @@ fn parse_task(spec: &Value, index: usize) -> Result<Task, String> {
             .map(str::to_owned),
         red_count: None,
         red_fingerprint: None,
+        readmit: None,
         extra: Map::new(),
     })
 }
@@ -543,13 +580,26 @@ impl PlanService {
         if target == TaskState::Blocked && reason.map(str::trim).unwrap_or("").is_empty() {
             return Err(format!("blocking {task_id} requires a reason"));
         }
-        if target == TaskState::Running
+        // (Pending, Done) skips the Running admission entirely, so the same
+        // gate has to sit on it or a checkless leaf completes itself unnamed.
+        let unmeasured_admission = target == TaskState::Running
+            || (target == TaskState::Done && current == TaskState::Pending);
+        if unmeasured_admission
             && plan.tasks[position].check.is_none()
             && reason.map(str::trim).unwrap_or("").is_empty()
         {
             return Err(format!(
-                "task {task_id} has no executable check, so it is not admitted to running; give a task a check when the plan is written, or pass reason to record this one as an ask or an explicitly unmeasured leaf"
+                "task {task_id} has no executable check, so it is not admitted; give a task a check when the plan is written, or pass reason to record this one as an ask or an explicitly unmeasured leaf"
             ));
+        }
+        if target == TaskState::Done {
+            let task = &mut plan.tasks[position];
+            let reds = task.red_count.unwrap_or(0);
+            if task.readmit.take() != Some(true)
+                && let Some(refusal) = rung_refusal(escalation(reds), task_id, reds)
+            {
+                return Err(refusal);
+            }
         }
         if target == TaskState::Done
             && let Err(rejection) = self.verify_done(&plan.tasks[position], evidence)
@@ -646,7 +696,7 @@ impl PlanService {
     /// acceptance edits are refused (SHRINK_ERROR); the user drives those.
     pub fn edit(&self, action: &str, payload: &Value) -> Result<Value, String> {
         let mut plan = self.read_plan().ok_or(NO_PLAN_ERROR)?;
-        match action {
+        let granted: Vec<TaskId> = match action {
             "add" => {
                 let specs = payload
                     .get("tasks")
@@ -658,6 +708,14 @@ impl PlanService {
                         .push(parse_task(spec, offset.saturating_add(index))?);
                 }
                 validate(&plan.tasks)?;
+                // An add reshapes no existing task, so it buys a claim only for
+                // the one it names; untargeted, it readmitted every stuck task.
+                payload
+                    .get("for_task")
+                    .or_else(|| payload.get("forTask"))
+                    .and_then(Value::as_str)
+                    .map(|id| vec![TaskId(id.to_owned())])
+                    .unwrap_or_default()
             }
             "reopen" => {
                 let id = payload
@@ -676,10 +734,18 @@ impl PlanService {
                 task.state = TaskState::Pending;
                 task.blocked_reason = None;
                 clear_red(task);
+                // Reopening a premise is the escape the refusal names for the
+                // tasks that assumed it, so the grant follows the dep edge.
+                plan.tasks
+                    .iter()
+                    .filter(|task| task.deps.iter().any(|dep| dep.as_str() == id))
+                    .map(|task| task.id.clone())
+                    .collect()
             }
             "remove" | "reword" | "replace" => return Err(SHRINK_ERROR.to_owned()),
             other => return Err(format!("unknown plan.edit action {other}; use add|reopen")),
-        }
+        };
+        grant_readmission(&mut plan, &granted);
         plan.version = plan.version.bump();
         plan.updated = yi_session::now_ms();
         self.write_plan(plan.clone())?;
@@ -722,15 +788,36 @@ impl PlanService {
         }
         let parent_id = plan.tasks[position].id.clone();
         let reds = plan.tasks[position].red_count.unwrap_or(0);
-        if escalation(reds) == Escalation::Retry {
+        // A depth-1 child has no dep to reopen and cannot be split, so its own
+        // streak is what earns the parent's reshape — the escape the
+        // DepthExceeded message promises, and the only one that node has.
+        let stuck_children: Vec<TaskId> = plan.tasks[position]
+            .deps
+            .iter()
+            .filter(|dep| {
+                plan.task(dep).is_some_and(|child| {
+                    escalation(child.red_count.unwrap_or(0)) != Escalation::Retry
+                })
+            })
+            .cloned()
+            .collect();
+        if escalation(reds) == Escalation::Retry && stuck_children.is_empty() {
             return Err(format!(
-                "split of {id} refused: its check has come back red {reds} time(s), so the ladder still reads retry — attempt the whole task, and split when a red streak forces the change"
+                "split of {id} refused: its check has come back red {reds} time(s) and no subtask of it has earned a rung, so the ladder still reads retry — attempt the whole task, and split when a red streak forces the change"
             ));
         }
+        // Incident: a second split of the same parent minted `t1.1` again and
+        // `validate` rejected the whole reshape; child ids continue the run.
+        let prefix = format!("{}.", parent_id.as_str());
+        let offset = plan
+            .tasks
+            .iter()
+            .filter(|task| task.id.as_str().starts_with(&prefix))
+            .count();
         let children: Vec<Task> = subtasks
             .iter()
             .enumerate()
-            .map(|(index, spec)| lower_subtask(&parent_id, index, spec))
+            .map(|(index, spec)| lower_subtask(&parent_id, offset.saturating_add(index), spec))
             .collect();
         plan.tasks[position]
             .deps
@@ -738,6 +825,7 @@ impl PlanService {
         plan.tasks.extend(children);
         validate(&plan.tasks)?;
         clear_red(&mut plan.tasks[position]);
+        grant_readmission(&mut plan, &stuck_children);
         plan.version = plan.version.bump();
         plan.updated = yi_session::now_ms();
         self.write_plan(plan.clone())?;

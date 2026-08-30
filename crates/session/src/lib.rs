@@ -10,7 +10,7 @@ mod store;
 
 pub use error::SessionError;
 pub use id::{IdGenerator, now_ms, validate_session_id};
-pub use jsonl::{JsonlRepo, load_session};
+pub use jsonl::{JsonlRepo, create_flat_session, load_session};
 pub use query::{
     BranchBounds, CreateOptions, EntryOrder, EntryQuery, ForkPosition, ForkScope, LanePointer,
     LogOptions, RecordQuery, SessionMetadata, SessionStats,

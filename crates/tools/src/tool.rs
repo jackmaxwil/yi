@@ -28,6 +28,9 @@ pub struct ToolContext {
     /// reads a tree instead of a named path shows the wall no target, so it
     /// consults this set itself.
     pub deny_read: Vec<PathBuf>,
+    /// The id of the call being executed, so a tool that asks the user in its
+    /// own right can name the cell that is waiting. Empty when no id exists.
+    pub call_id: String,
 }
 
 impl ToolContext {
@@ -39,6 +42,7 @@ impl ToolContext {
             auto_background: None,
             sandbox: None,
             deny_read: Vec::new(),
+            call_id: String::new(),
         }
     }
 }

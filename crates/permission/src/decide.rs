@@ -69,6 +69,10 @@ pub enum Decision {
     Ask {
         title: String,
         description: String,
+        /// Invariant: jurisdiction of the M7 auto reviewer, set here and never
+        /// by the reviewer — true only for auto-mode fallback asks, false for
+        /// credential reads, holds, configured rules and catastrophic targets.
+        reviewable: bool,
     },
 }
 
@@ -219,14 +223,14 @@ fn auto(call: &ToolCall<'_>, context: &CatastrophicContext) -> Decision {
                     reason: "write inside the working tree; the turn checkpoint can undo it"
                         .to_owned(),
                 },
-                false => ask(call, "the target is outside the working tree"),
+                false => reviewable_ask(call, "the target is outside the working tree"),
             };
         }
         // A call that names no path is judged by the tool that made it: the
         // kernel screens its own shell cells, and nothing else claims to be
         // reversible without a path.
         return if call.irreversible {
-            ask(call, "the call names no path Yi can check")
+            reviewable_ask(call, "the call names no path Yi can check")
         } else {
             Decision::Allow {
                 reason: "the tool reports this call as reversible".to_owned(),
@@ -244,7 +248,7 @@ fn auto(call: &ToolCall<'_>, context: &CatastrophicContext) -> Decision {
             reason: "every part of the command is read-only".to_owned(),
         },
         crate::safety::Verdict::Contain { reason } => Decision::Contain { reason },
-        crate::safety::Verdict::Ask { reason } => ask(call, &reason),
+        crate::safety::Verdict::Ask { reason } => reviewable_ask(call, &reason),
     }
 }
 
@@ -252,5 +256,19 @@ fn ask(call: &ToolCall<'_>, reason: &str) -> Decision {
     Decision::Ask {
         title: format!("{} requires permission", call.tool_name),
         description: format!("{reason}: {}", call.display),
+        reviewable: false,
+    }
+}
+
+fn reviewable_ask(call: &ToolCall<'_>, reason: &str) -> Decision {
+    match ask(call, reason) {
+        Decision::Ask {
+            title, description, ..
+        } => Decision::Ask {
+            title,
+            description,
+            reviewable: true,
+        },
+        other => other,
     }
 }

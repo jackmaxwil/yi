@@ -159,3 +159,71 @@ fn plan_fact_round_trips_with_unknown_fields_and_states() -> Result<(), Box<dyn 
     assert_eq!(out["plan"]["tasks"][0]["state"], "paused_by_future_yi");
     Ok(())
 }
+
+// The byte round-trip alone cannot tell a typed field from a dropped one, so
+// the assertion is that the flag lands typed — proven red by misspelling the
+// wire key in the fixture.
+#[test]
+fn an_unreported_usage_lands_typed_and_a_reported_zero_stays_free()
+-> Result<(), Box<dyn std::error::Error>> {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/v4-usage-unknown.jsonl");
+    let content = fs::read_to_string(&path)?;
+    let mut flags = Vec::new();
+    for line in content.lines().skip(1) {
+        let mutation: Mutation = serde_json::from_str(line)?;
+        if let Mutation::Entry {
+            entry:
+                yi_types::entry::Entry::Message {
+                    message: yi_types::message::AgentMessage::Assistant { usage, .. },
+                    ..
+                },
+            ..
+        } = mutation
+        {
+            flags.push(usage.unknown);
+        }
+    }
+    assert_eq!(flags, vec![true, false]);
+    Ok(())
+}
+
+#[test]
+fn a_readmission_grant_lands_on_a_typed_field_not_the_extra_map()
+-> Result<(), Box<dyn std::error::Error>> {
+    // A misspelled wire key parks the grant in the flatten map and re-emits
+    // byte-identical, while the rung reads None and a resumed session mints an
+    // attempt its escalation had refused.
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/v4-plan-readmit.jsonl");
+    let content = fs::read_to_string(&path)?;
+    let line = content.lines().nth(1).ok_or("fixture needs a fact line")?;
+    let Mutation::Fact {
+        fact: yi_types::wire::Fact::Plan { plan },
+        ..
+    } = serde_json::from_str(line)?
+    else {
+        return Err("expected a plan fact".into());
+    };
+    let task = plan
+        .task(&yi_types::plan::TaskId("t1".to_owned()))
+        .ok_or("t1")?;
+    assert_eq!(task.readmit, Some(true));
+    assert_eq!(task.red_count, Some(2), "a grant never clears the streak");
+    assert!(
+        task.extra.is_empty(),
+        "the grant must not park in the flatten map: {:?}",
+        task.extra
+    );
+    let ungranted = plan
+        .task(&yi_types::plan::TaskId("t2".to_owned()))
+        .ok_or("t2")?;
+    assert_eq!(
+        ungranted.readmit, None,
+        "a task no rung refuses carries no grant"
+    );
+    assert_eq!(
+        serde_json::to_string(&serde_json::from_str::<Mutation>(line)?)?,
+        line,
+        "an absent grant emits nothing, so the shape is byte-stable"
+    );
+    Ok(())
+}

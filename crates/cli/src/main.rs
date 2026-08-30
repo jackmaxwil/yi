@@ -242,6 +242,17 @@ fn advisor_model() -> Option<Model> {
     resolved
 }
 
+/// Naming `models.autoReview` is the switch for the M7 permission reviewer
+/// (D81); an unknown selector warns and auto mode stays deterministic.
+fn auto_review_model() -> Option<Model> {
+    let spec = configured_roles().auto_review?;
+    let resolved = resolve(&spec);
+    if resolved.is_none() {
+        eprintln!("warning: unknown autoReview model {spec}; the auto reviewer stays off");
+    }
+    resolved
+}
+
 fn summarizer_model(args: &Args) -> Option<Model> {
     let spec = configured_roles().summarizer?;
     match resolve(&spec) {
@@ -388,6 +399,7 @@ fn build_session(
             rlm_dir: default_session_dir(args).join(format!("rlm-{}", std::process::id())),
             summarizer: summarizer_model(args),
             advisor: advisor_model(),
+            auto_review: auto_review_model(),
             parent_link: None,
             wall: yi_runtime::Wall::default(),
             plan_stale_turns: config()

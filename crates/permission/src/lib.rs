@@ -2,6 +2,7 @@
 
 mod catastrophic;
 mod decide;
+mod review;
 mod rules;
 mod safety;
 
@@ -11,6 +12,9 @@ pub use catastrophic::{
 pub use decide::{
     Decision, Hold, HoldSource, ParseOutcome, PermissionMode, ToolCall, decide, mode_fragment,
     parse_command,
+};
+pub use review::{
+    ActionId, ActionLedger, ActionState, LEDGER_CAP, RequestId, ReviewedAsk, UserVerdict,
 };
 pub use rules::{
     ConfigRule, ConfigRuleAction, RuleStateError, SessionRules, canonical_command_identity,
