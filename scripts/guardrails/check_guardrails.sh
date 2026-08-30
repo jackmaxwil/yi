@@ -26,6 +26,7 @@ run "$PY" scripts/guardrails/check_schemas_lock.py
 run "$PY" scripts/guardrails/check_env_surface.py
 run "$PY" scripts/guardrails/check_duplication.py
 run "$PY" scripts/guardrails/check_test_size.py
+run "$PY" scripts/guardrails/check_test_tiers.py
 run "$PY" scripts/guardrails/check_blob_size.py
 run "$PY" scripts/guardrails/check_deps_budget.py
 run "$PY" scripts/guardrails/check_request_budget.py

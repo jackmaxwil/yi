@@ -91,6 +91,7 @@ fn spawn_daemon(dir: &std::path::Path) -> Result<(Child, std::path::PathBuf), Bo
 }
 
 #[test]
+#[ignore = "tier-2 journey: `just journeys`"]
 fn reconnect_keeps_heartbeats() -> TestResult {
     let dir = std::env::temp_dir().join(format!("yi-serve-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
@@ -195,6 +196,7 @@ fn new_session(
 /// worker serving both collapses the two dispatch records into one, which is
 /// what a single-worker regression looks like from outside.
 #[test]
+#[ignore = "tier-2 journey: `just journeys`"]
 fn two_roots_run_two_workers_that_keep_their_own_schedules() -> TestResult {
     let dir = std::env::temp_dir().join(format!("yi-serve-roots-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
