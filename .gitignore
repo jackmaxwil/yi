@@ -1,5 +1,6 @@
 /target/
 /ref/
+/evals/arc/runs/
 .DS_Store
 __pycache__/
 *.pyc
