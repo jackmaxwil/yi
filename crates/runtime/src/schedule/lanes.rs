@@ -1,8 +1,8 @@
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 
-use tokio::task::JoinSet;
+use tokio::task::{Id, JoinSet};
 use yi_types::schedule::{JobStatus, ScheduleState};
 
 use super::{
@@ -21,17 +21,32 @@ fn next_claimable_run_at(state: &ScheduleState, busy: &HashSet<String>) -> Optio
         .min()
 }
 
-fn reap_lane(res: Result<String, tokio::task::JoinError>, busy: &mut HashSet<String>) {
-    if let Ok(session) = res {
-        busy.remove(&session);
+/// Invariant: `busy` is released by task id, never by the lane's return value —
+/// an aborted lane yields none, and would otherwise stay busy for good.
+fn reap_lane(
+    res: Result<(Id, ()), tokio::task::JoinError>,
+    owners: &mut HashMap<Id, String>,
+    busy: &mut HashSet<String>,
+) {
+    let (id, aborted) = match res {
+        Ok((id, ())) => (id, None),
+        Err(error) => (error.id(), Some(error)),
+    };
+    let Some(session) = owners.remove(&id) else {
+        return;
+    };
+    if let Some(error) = aborted {
+        eprintln!("heartbeat lane for session {session} did not finish: {error}");
     }
+    busy.remove(&session);
 }
 
 fn spawn_claimed(
     store: &Arc<JobStore>,
     deliver: &Arc<DeliverFn>,
     claimed: Vec<ClaimedDispatch>,
-    lanes: &mut JoinSet<String>,
+    lanes: &mut JoinSet<()>,
+    owners: &mut HashMap<Id, String>,
     busy: &mut HashSet<String>,
 ) {
     let mut groups = BTreeMap::<String, Vec<ClaimedDispatch>>::new();
@@ -47,7 +62,9 @@ fn spawn_claimed(
         }
         let store = Arc::clone(store);
         let deliver = Arc::clone(deliver);
-        lanes.spawn_blocking(move || {
+        let handle = lanes.spawn_blocking(move || {
+            // Invariant: a panicked DeliverFn leaves that lane's claims until
+            // the next Scheduler::start recovery.
             let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 for dispatch in &lane {
                     let outcome = deliver(&dispatch.job);
@@ -62,8 +79,8 @@ fn spawn_claimed(
                     });
                 }
             }));
-            session
         });
+        owners.insert(handle.id(), session);
     }
 }
 
@@ -85,10 +102,11 @@ impl Scheduler {
         let changed = store.changed();
         let task = tokio::spawn(async move {
             let mut lanes = JoinSet::new();
+            let mut owners = HashMap::new();
             let mut busy = HashSet::new();
             loop {
-                while let Some(res) = lanes.try_join_next() {
-                    reap_lane(res, &mut busy);
+                while let Some(res) = lanes.try_join_next_with_id() {
+                    reap_lane(res, &mut owners, &mut busy);
                 }
                 // Invariant: `JobStore::mutate` wakes with `notify_waiters`,
                 // which stores no permit, so the waiter registers before the
@@ -100,7 +118,14 @@ impl Scheduler {
                 if next.is_some_and(|at| at <= now) {
                     let claimed = store
                         .mutate(|state| claim_due_in_state(state, now, now, &mut new_id, &busy));
-                    spawn_claimed(&store, &deliver, claimed, &mut lanes, &mut busy);
+                    spawn_claimed(
+                        &store,
+                        &deliver,
+                        claimed,
+                        &mut lanes,
+                        &mut owners,
+                        &mut busy,
+                    );
                     continue;
                 }
                 let until_due = next.map(|at| Duration::from_millis(at.saturating_sub(now)));
@@ -113,7 +138,9 @@ impl Scheduler {
                 tokio::select! {
                     () = due => {}
                     () = woken => {}
-                    Some(res) = lanes.join_next() => reap_lane(res, &mut busy),
+                    Some(res) = lanes.join_next_with_id() => {
+                        reap_lane(res, &mut owners, &mut busy);
+                    }
                 }
             }
         });
@@ -128,5 +155,32 @@ impl Scheduler {
 impl Drop for Scheduler {
     fn drop(&mut self) {
         self.task.abort();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{HashMap, HashSet, JoinSet, reap_lane};
+
+    #[tokio::test]
+    async fn an_aborted_lane_frees_its_session() -> Result<(), Box<dyn std::error::Error>> {
+        let mut lanes: JoinSet<()> = JoinSet::new();
+        let mut owners = HashMap::new();
+        let mut busy = HashSet::new();
+        let handle = lanes.spawn(std::future::pending::<()>());
+        owners.insert(handle.id(), "a".to_owned());
+        busy.insert("a".to_owned());
+
+        handle.abort();
+        let res = lanes.join_next_with_id().await.ok_or("lane never joined")?;
+        assert!(res.is_err(), "an aborted lane must join as an error");
+        reap_lane(res, &mut owners, &mut busy);
+
+        assert!(
+            !busy.contains("a"),
+            "an aborted lane left its session busy for the process lifetime"
+        );
+        assert!(owners.is_empty(), "the task-id map must not leak the lane");
+        Ok(())
     }
 }
