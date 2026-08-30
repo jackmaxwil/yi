@@ -19,6 +19,18 @@ impl DeliveryHub {
         lock_lanes(&self.lanes).insert(session_id, deliver);
     }
 
+    /// Invariant: the interned hub outlives every session on its ledger, so an
+    /// ended session's lane has to be withdrawn or its still-Active heartbeat
+    /// fires into a stale closure for the rest of the process.
+    pub(crate) fn unregister(&self, session_id: &str) {
+        lock_lanes(&self.lanes).remove(session_id);
+    }
+
+    #[cfg(test)]
+    fn lane_count(&self) -> usize {
+        lock_lanes(&self.lanes).len()
+    }
+
     pub(crate) fn dispatch(&self, job: &yi_types::schedule::Job) -> RunOutcome {
         let lane = lock_lanes(&self.lanes).get(&job.session_id).map(Arc::clone);
         match lane {
@@ -144,5 +156,73 @@ mod tests {
             cvar.notify_all();
         }
         thread.join().expect("lane a");
+    }
+
+    #[test]
+    fn an_ended_session_stops_dispatching_and_leaves_no_lane() {
+        let hub = Arc::new(DeliveryHub::new());
+        hub.register("a".to_owned(), Arc::new(|_| RunOutcome::Ran));
+        hub.register("b".to_owned(), Arc::new(|_| RunOutcome::Ran));
+        assert_eq!(hub.dispatch(&job("a")), RunOutcome::Ran);
+
+        hub.unregister("a");
+
+        assert_eq!(
+            hub.dispatch(&job("a")),
+            RunOutcome::Skipped,
+            "an ended session's still-Active heartbeat fired into a stale lane"
+        );
+        assert_eq!(hub.dispatch(&job("b")), RunOutcome::Ran);
+        assert_eq!(hub.lane_count(), 1, "the ended session's lane leaked");
+    }
+
+    #[test]
+    fn dropping_an_attached_service_withdraws_its_lane() {
+        let dir = std::env::temp_dir().join(format!("yi-hub-drop-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let store = Arc::new(JobStore::open(dir.join("scheduled-jobs.json")));
+        let hub = Arc::new(DeliveryHub::new());
+        let service = crate::schedule::HeartbeatService::attached(
+            store,
+            "/tmp",
+            Arc::clone(&hub),
+            Arc::new(|_| RunOutcome::Ran),
+        );
+        service.bind_session("a".to_owned());
+        assert_eq!(hub.lane_count(), 1);
+
+        drop(service);
+
+        assert_eq!(hub.lane_count(), 0, "the session ended but kept its lane");
+        assert_eq!(hub.dispatch(&job("a")), RunOutcome::Skipped);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_heartbeat_before_attach_is_refused_not_stamped_empty()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dir = std::env::temp_dir().join(format!("yi-hub-unbound-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let store = Arc::new(JobStore::open(dir.join("scheduled-jobs.json")));
+        let service = crate::schedule::HeartbeatService::attached(
+            Arc::clone(&store),
+            "/tmp",
+            Arc::new(DeliveryHub::new()),
+            Arc::new(|_| RunOutcome::Ran),
+        );
+
+        let set = crate::schedule::parse_heartbeat_command("/heartbeat every 10m watch the build")?;
+        let refused = service.apply(&set, 0);
+
+        assert!(
+            refused.as_ref().is_err_and(|why| why.contains("attach")),
+            "an unbound heartbeat must name the attach order: {refused:?}"
+        );
+        assert!(
+            store.snapshot().jobs.is_empty(),
+            "a job stamped with the empty session id reached the ledger"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+        Ok(())
     }
 }

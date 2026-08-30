@@ -809,6 +809,20 @@ impl HeartbeatService {
             .clone()
     }
 
+    /// Invariant: [`HeartbeatService::attached`] starts unbound, and a job
+    /// stamped with the empty id belongs to no lane, matches every other
+    /// unbound session, and is skipped forever.
+    fn bound_session_id(&self) -> Result<String, String> {
+        let session_id = self.session_id();
+        if session_id.is_empty() {
+            return Err(
+                "Heartbeats need a session: attach the session store before scheduling one"
+                    .to_owned(),
+            );
+        }
+        Ok(session_id)
+    }
+
     pub fn bind_session(&self, session_id: String) {
         if let (Some(hub), Some(deliver)) = (&self.hub, &self.deliver) {
             hub.register(session_id.clone(), std::sync::Arc::clone(deliver));
@@ -821,6 +835,17 @@ impl HeartbeatService {
 
     fn owns(&self, job: &Job) -> bool {
         job.session_id == self.session_id()
+    }
+}
+
+/// The session owns this service, so dropping the session withdraws its lane —
+/// what used to be "dropping the session stops the timer" now that one interned
+/// timer outlives every session sharing its ledger.
+impl Drop for HeartbeatService {
+    fn drop(&mut self) {
+        if let Some(hub) = &self.hub {
+            hub.unregister(&self.session_id());
+        }
     }
 }
 
@@ -931,7 +956,7 @@ impl HeartbeatService {
                 let (parsed, next_run_at) = parse_schedule(schedule, now_ms)?;
                 let job = new_job(JobSpec {
                     id: format!("hb-{}", crate::subagent::random_suffix()?),
-                    session_id: self.session_id(),
+                    session_id: self.bound_session_id()?,
                     cwd: self.cwd.clone(),
                     source: yi_types::schedule::JobSource::Heartbeat,
                     delivery_mode: *delivery_mode,
@@ -1010,7 +1035,7 @@ impl HeartbeatService {
                     parse_schedule(&normalize_heartbeat_schedule(Some(schedule_text)), now)?;
                 let job = new_job(JobSpec {
                     id: format!("rhb-{}", crate::subagent::random_suffix()?),
-                    session_id: create.session_id(),
+                    session_id: create.bound_session_id()?,
                     cwd: create.cwd.clone(),
                     source: yi_types::schedule::JobSource::RlmHeartbeat,
                     delivery_mode: delivery,
