@@ -36,6 +36,9 @@ fn headless_drive_renders_a_turn_and_dumps_frames() -> TestResult {
             &frames.display().to_string(),
             "ping",
         ])
+        // Incident: the drive gate read the developer's own ~/.yi/config.json,
+        // so a `keys` entry there decided whether it passed.
+        .env("HOME", &dir)
         .output()?;
     assert!(
         output.status.success(),
@@ -162,6 +165,7 @@ fn slash_new_swaps_the_session_and_clears_the_transcript() -> TestResult {
             &frames.display().to_string(),
             "ping",
         ])
+        .env("HOME", &dir)
         .output()?;
     assert!(
         output.status.success(),
@@ -198,6 +202,75 @@ fn slash_new_swaps_the_session_and_clears_the_transcript() -> TestResult {
     assert_eq!(
         files, 2,
         "/new writes a second session file beside the first"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+    Ok(())
+}
+
+/// Both surfaces answer for *this* session: a plan service that never attached
+/// and a turn that wrote no checkpoint each say something else, and the
+/// difference is the whole contract a reader depends on after a turn.
+#[test]
+fn plan_and_undo_answer_for_the_session_the_turn_ran_in() -> TestResult {
+    let dir = std::env::temp_dir().join(format!("yi-tui-surfaces-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let work = dir.join("work");
+    std::fs::create_dir_all(&work)?;
+    // Incident: HOME is a fresh directory, so the default kernel prewarm builds
+    // a venv on every run and its "setting up python kernel (one-time, ~30s)…"
+    // frame outlasted the 10 s waits below. Neither surface here uses a kernel.
+    std::fs::create_dir_all(dir.join(".yi"))?;
+    std::fs::write(
+        dir.join(".yi/config.json"),
+        r#"{"kernel":{"prewarm":false}}"#,
+    )?;
+    let keys = dir.join("script.keys");
+    std::fs::write(
+        &keys,
+        "wait-idle 10000\nkey /\ntype plan\nkey enter\nwait-frame 10000 /plan: no plan\n\
+         key /\ntype undo\nkey enter\nwait-frame 10000 /undo: nothing to restore\nquit\n",
+    )?;
+    let frames = dir.join("frames");
+
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "the drive contract is the spawned binary's headless mode; tests must run the real process"
+    )]
+    let output = Command::new(env!("CARGO_BIN_EXE_yi"))
+        .args([
+            "tui",
+            "--headless",
+            "--model",
+            "faux/faux-1",
+            "--session-dir",
+            &dir.join("sessions").display().to_string(),
+            "--cwd",
+            &work.display().to_string(),
+            "--keys",
+            &keys.display().to_string(),
+            "--frames",
+            &frames.display().to_string(),
+            "ping",
+        ])
+        .env("HOME", &dir)
+        .output()?;
+    assert!(
+        output.status.success(),
+        "drive run must exit 0: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let mut entries: Vec<_> = std::fs::read_dir(&frames)?.filter_map(Result::ok).collect();
+    entries.sort_by_key(std::fs::DirEntry::file_name);
+    let last = entries.last().ok_or("no frames dumped")?;
+    let final_frame = std::fs::read_to_string(last.path())?;
+    assert!(
+        final_frame.contains("/plan: no plan in this session"),
+        "/plan must reach the session's own plan service: {final_frame}"
+    );
+    assert!(
+        final_frame.contains("/undo: nothing to restore"),
+        "/undo must restore from the checkpoint this turn wrote: {final_frame}"
     );
     let _ = std::fs::remove_dir_all(&dir);
     Ok(())

@@ -36,12 +36,21 @@ fn faux_model() -> Model {
 }
 
 async fn run_denied_command(wall: Wall, command: String) -> Result<(String, bool), Box<dyn Error>> {
-    let provider = Arc::new(ProviderStream::new(None, None));
     let mut args = serde_json::Map::new();
     args.insert("command".to_owned(), serde_json::json!(command));
+    run_walled_tool(wall, "bash", args, std::env::temp_dir()).await
+}
+
+async fn run_walled_tool(
+    wall: Wall,
+    tool: &str,
+    args: serde_json::Map<String, serde_json::Value>,
+    cwd: std::path::PathBuf,
+) -> Result<(String, bool), Box<dyn Error>> {
+    let provider = Arc::new(ProviderStream::new(None, None));
     provider.queue_faux(vec![
         faux_assistant_message(
-            vec![faux_tool_call("call-1", "bash", args)],
+            vec![faux_tool_call("call-1", tool, args)],
             StopReason::ToolUse,
         ),
         faux_assistant_message(vec![faux_text("done")], StopReason::Stop),
@@ -56,7 +65,7 @@ async fn run_denied_command(wall: Wall, command: String) -> Result<(String, bool
         provider,
     );
     session.set_wall(wall);
-    session.use_tools(yi_tools::builtin_tools(), std::env::temp_dir(), None);
+    session.use_tools(yi_tools::builtin_tools(), cwd, None);
     let mut events = session.subscribe();
     session.prompt("go")?;
     session.wait_idle().await;
@@ -110,6 +119,41 @@ async fn the_wall_denies_a_write_to_the_instrument_before_it_runs() -> TestResul
         "work outside the wall is untouched by it: {allowed}"
     );
     let _ = std::fs::remove_dir_all(&instrument);
+    Ok(())
+}
+
+/// The orientation packet names no path in its arguments, so the wall cannot
+/// refuse it from the call: the tool has to consult the deny set itself.
+#[tokio::test]
+async fn a_read_deny_keeps_the_orientation_packet_out_of_the_denied_tree() -> TestResult {
+    let root = std::env::temp_dir().join(format!("yi-wall-orient-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(root.join("secret"))?;
+    std::fs::write(root.join("open.rs"), "pub fn open_declaration() {}\n")?;
+    std::fs::write(
+        root.join("secret/hidden.rs"),
+        "pub fn hidden_declaration() {}\n",
+    )?;
+    let wall = Wall {
+        deny_write: Vec::new(),
+        deny_read: vec![root.join("secret")],
+    };
+
+    let (packet, is_error) =
+        run_walled_tool(wall, "get_context", serde_json::Map::new(), root.clone()).await?;
+    assert!(
+        !is_error,
+        "the packet still answers outside the deny: {packet}"
+    );
+    assert!(
+        packet.contains("open_declaration"),
+        "a deny narrows the packet, it does not empty it: {packet}"
+    );
+    assert!(
+        !packet.contains("hidden_declaration"),
+        "a deny_read child must not read declarations out of the denied tree: {packet}"
+    );
+    let _ = std::fs::remove_dir_all(&root);
     Ok(())
 }
 

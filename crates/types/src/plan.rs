@@ -53,6 +53,38 @@ pub struct Task {
     pub blocked_reason: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub assignee: Option<String>,
+    /// Consecutive red done-claims, the escalation ladder's only input. It
+    /// rides the task because the ladder must survive a resume unlaundered.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub red_count: Option<u8>,
+    /// Hex digest of the last rejection, compared for equality only — a
+    /// hasher change costs one missed repeat hint, never a wrong refusal.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub red_fingerprint: Option<String>,
+    /// One structural move buys one further done-claim at a rung that refuses
+    /// them. It rides the fact, or a resume mints an unearned attempt.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub readmit: Option<bool>,
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+/// One subtask of a split proposal — the only surface on which the model
+/// shapes topology; ids, deps, and state are written by the host.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SubtaskSpec {
+    pub title: String,
+    pub acceptance: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub check: Option<String>,
+    /// State keys this child reads; a key only a sibling writes is a
+    /// read-before-write hazard, since siblings carry no ordering.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub reads: Vec<String>,
+    /// Declared write set; disjointness across siblings gates parallelism.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub writes: Vec<String>,
     #[serde(flatten)]
     pub extra: Map<String, Value>,
 }

@@ -31,6 +31,7 @@ pub struct AnthropicOptions {
     pub cache: bool,
     /// Interactive sessions hold the stable prefix for an hour.
     pub cache_1h: bool,
+    pub proxy: Option<crate::request::ProxyConfig>,
 }
 
 const CACHE_TTL_BETA: &str = "extended-cache-ttl-2025-04-11";
@@ -442,6 +443,7 @@ impl Mapper {
                     .and_then(Value::as_i64)
                     .unwrap_or(0);
                 usage.cache_write1h = Some(write1h);
+                usage.unknown = usage_value.is_null();
             }
         }
         self.recompute_totals();
@@ -688,8 +690,9 @@ impl Mapper {
                     }
                 }
             }
-            if let Some(usage_value) = payload.get("usage") {
+            if let Some(usage_value) = payload.get("usage").filter(|value| !value.is_null()) {
                 let usage = self.usage_mut();
+                usage.unknown = false;
                 let update = |target: &mut i64, key: &str| {
                     if let Some(value) = usage_value.get(key).and_then(Value::as_i64) {
                         *target = value;
@@ -750,6 +753,7 @@ fn run_request(
     body: &Value,
     api_key: &str,
     long_cache: bool,
+    proxy: Option<&crate::request::ProxyConfig>,
     sender: &Sender<AssistantMessageEvent>,
 ) -> Result<(), String> {
     let url = format!("{}/v1/messages", model.base_url);
@@ -760,7 +764,7 @@ fn run_request(
     if long_cache {
         headers.push(("anthropic-beta", CACHE_TTL_BETA.to_owned()));
     }
-    let response = crate::request::send_with_retry(&url, &headers, body)?;
+    let response = crate::request::send_with_retry(&url, &headers, body, proxy)?;
     let mut mapper = Mapper::new(model);
     let _ = sender.blocking_send(mapper.start_event());
     crate::request::pump_sse(response, |sse| {
@@ -814,14 +818,17 @@ pub fn stream(
     let mut body = build_params(model, context, options);
     let model = model.clone();
     let api_key = api_key.to_owned();
+    let proxy = options.proxy.clone();
     let long_cache = options.cache && options.cache_1h;
     tokio::task::spawn_blocking(move || {
-        let Err(message) = run_request(&model, &body, &api_key, long_cache, &sender) else {
+        let Err(message) =
+            run_request(&model, &body, &api_key, long_cache, proxy.as_ref(), &sender)
+        else {
             return;
         };
         if long_cache && is_cache_retention_rejection(&message) {
             drop_cache_retention(&mut body);
-            if run_request(&model, &body, &api_key, false, &sender).is_ok() {
+            if run_request(&model, &body, &api_key, false, proxy.as_ref(), &sender).is_ok() {
                 return;
             }
         }

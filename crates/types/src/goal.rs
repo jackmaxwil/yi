@@ -63,6 +63,11 @@ pub struct Goal {
     /// rejected completion claim, carried into the continuation prompt.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub check_failure: Option<String>,
+    /// L5 ledger: HIGH discoveries recorded against this goal. A row blocks
+    /// `goal.update(complete)` until the check it names passes, so the durable
+    /// reminder is a gate rather than a timer.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub discoveries: Vec<crate::subagent::Discovery>,
     #[serde(flatten)]
     pub extra: Map<String, Value>,
 }

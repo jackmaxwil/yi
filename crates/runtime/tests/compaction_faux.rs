@@ -221,3 +221,52 @@ async fn compaction_below_threshold_is_a_no_op() -> Result<(), Box<dyn Error>> {
     );
     Ok(())
 }
+
+// A server-observed prefill latches for the whole window, so an unreported
+// usage recorded as zero pins the prefix at zero permanently and the first-only
+// guard drops every later real observation.
+#[tokio::test]
+async fn an_unknown_usage_never_pins_the_window_prefill() -> Result<(), Box<dyn Error>> {
+    async fn compacts_after(first: yi_types::message::Usage) -> bool {
+        let mut compactor = yi_runtime::Compactor::new("win-0".to_owned());
+        compactor.settings = tight_settings();
+        compactor.on_usage(&first);
+        let mut reported = yi_types::message::Usage::zero();
+        reported.input = 1_500;
+        compactor.on_usage(&reported);
+        let messages = vec![
+            AgentMessage::User {
+                content: UserContent::Text("ask ".repeat(30)),
+                timestamp: 0,
+            },
+            reply_with_usage(&"answer ".repeat(30), 1_500, 1_600),
+            AgentMessage::User {
+                content: UserContent::Text("follow up".to_owned()),
+                timestamp: 0,
+            },
+        ];
+        let provider = Arc::new(ProviderStream::new(None, None));
+        let signal = yi_loop::interrupt::InterruptSignal::default();
+        compactor
+            .maybe_compact(
+                &messages,
+                &faux_model(2_000),
+                "sys",
+                &provider,
+                None,
+                &signal,
+            )
+            .await
+            .is_some()
+    }
+
+    assert!(
+        compacts_after(yi_types::message::Usage::zero()).await,
+        "control: a reported zero prefix charges all 1600 tokens against the 1000 budget"
+    );
+    assert!(
+        !compacts_after(yi_types::message::Usage::unknown()).await,
+        "an unknown usage must not forge a zero prefix: the reported 1500 leaves 100 charged"
+    );
+    Ok(())
+}

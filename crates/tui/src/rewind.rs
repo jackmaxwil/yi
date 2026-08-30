@@ -15,6 +15,7 @@ pub fn process_pending_rewind<B: Backend + Write>(
     app: &mut App,
     terminal: &mut crate::terminal::Terminal<B>,
     session: &Arc<AgentSession>,
+    cmd_tx: &tokio::sync::mpsc::UnboundedSender<crate::app::Command>,
 ) {
     let Some(entry_id) = app.pending_rewind.take() else {
         return;
@@ -28,6 +29,9 @@ pub fn process_pending_rewind<B: Backend + Write>(
             return;
         }
     };
+    if let Some(stub) = rewound.abandoned {
+        let _ = cmd_tx.send(crate::app::Command::SummarizeBranch(stub));
+    }
     clear_screen(terminal);
     app.reset_transcript();
     crate::app::replay_session(app, session);
@@ -66,6 +70,8 @@ pub fn process_pending_new<B: Backend + Write>(
                 return;
             }
             app.options.session_name = id;
+            app.cost_total = 0.0;
+            app.cost_unknown = false;
             clear_screen(terminal);
             app.reset_transcript();
         }

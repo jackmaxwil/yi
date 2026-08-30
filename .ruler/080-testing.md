@@ -31,3 +31,21 @@ not add the test.
   before a submitted turn had started was A10, and the frames said so.
 - A drive script waits on the state it depends on, never on a duration: a prompt reaches the
   runtime thread over a channel, so `running` is still false the instant after Enter.
+
+Tests are tiered by where they run and what they may spend:
+
+- **T0** unit and contract tests — `just check`, zero spend.
+- **T1** faux cassettes: behavior baseline, plan/goal/permission e2e over `faux/faux-1` —
+  `just check`, zero spend.
+- **T2** real-binary journeys: the built `yi` driven end to end, offline. Zero spend. A cheap one
+  rides `just check` too; one that sleeps or boots a process tree per assertion is `#[ignore]`d
+  with a `tier-2 journey` reason and runs only in `just journeys`, which `just postmerge` and the
+  CI postmerge lane depend on — the attribute is the lane, so the test itself says where it runs,
+  and `check_test_tiers.py` holds that reason string exact so nothing that spends money can be
+  written into the lane a push to main runs.
+- **T3** paid smoke: one real-provider run per suite, ledgered in docs/eval-ledger.md with its
+  config fingerprint. Opt-in and user-run; money in a gate is what plan law 3 forbids, so T3
+  never sits in one.
+- Every feature-ledger row names its journey test in a `journey:` clause. A row that cannot name
+  the test a user-visible regression would trip is asserting "live" on vibes; a new or edited
+  row without the clause is not done.

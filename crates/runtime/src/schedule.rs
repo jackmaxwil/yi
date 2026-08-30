@@ -350,7 +350,8 @@ pub fn parse_iso_ms(text: &str) -> Option<u64> {
     Some((days * 86_400 + hour * 3_600 + minute * 60 + second) * 1_000)
 }
 
-/// Design H10: `/heartbeat` grammar (prime `parseHeartbeatCommand`, adapted).
+/// Parsed form of the `/heartbeat` slash command; the kernel's `rlm_heartbeat` calls and the
+/// ACP `_yi/heartbeat` method reach the same scheduler through this one grammar (H10).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HeartbeatCommand {
     Status,
@@ -452,7 +453,8 @@ pub fn is_heartbeat_job(job: &Job) -> bool {
     )
 }
 
-/// Design H8 (prime `shouldDeferHeartbeatCronJob`, verbatim rules).
+/// Holds a due heartbeat back whenever delivering it would stack redundant work or land
+/// mid-operation; steering tolerates plain streaming, a follow-up does not (H8).
 pub fn should_defer(job: &Job, activity: &SessionActivity) -> bool {
     if !is_heartbeat_job(job) {
         return false;
@@ -628,7 +630,8 @@ pub fn next_active_run_at(state: &ScheduleState) -> Option<u64> {
         .min()
 }
 
-/// Design H9: the heartbeat prompt's LLM text.
+/// The exact text a scheduled job puts in front of the model; the element wrapper is what
+/// tells the model this turn was machine-triggered rather than typed by the user (H9).
 pub fn heartbeat_text(job: &Job) -> String {
     format!(
         "<heartbeat job=\"{}\" run=\"{}\">{}</heartbeat>",

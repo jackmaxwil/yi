@@ -81,9 +81,37 @@ prerelease version:
     just package "{{version}}"
     echo "prerelease {{version}}: ok"
 
+# Real-binary journeys over the faux model: keyless, offline, and slow enough
+# (a process tree or a kernel boot per assertion) to stay out of `just check`,
+# where #[ignore] keeps them.
+journeys:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cargo test --workspace -- --ignored
+    # The true-terminal journey has no cargo home: no test can hand the binary
+    # a pty that answers its cursor-position query, so the harness runs here.
+    cargo build -p yi-cli
+    home="$PWD/target/journeys"
+    rm -rf "$home"
+    mkdir -p "$home"
+    # Incident: a drive run read the developer's own ~/.yi/config.json, so a
+    # `keys` entry there decided whether it passed.
+    HOME="$home" python3 scripts/tui_pty.py --send-quit --expect '› ping' \
+      --expect 'faux:' -- tui --model faux/faux-1 --session-dir "$home/sessions" ping
+
 # Tier 4, after a merge: the suite against the profile that ships, unwind forced.
-postmerge:
+postmerge: journeys
     CARGO_PROFILE_DIST_PANIC=unwind cargo test --workspace --profile dist
+
+# Tier 4 sibling: the task-eval runner over its fixtures, faux only. Offline and
+# keyless, but it wants a built binary, so it stays out of `just check`.
+postmerge-evals:
+    cargo build -p yi-cli
+    python3 evals/run.py --dry --binary target/debug/yi --model faux/faux-1
+
+# Prefill the PR narrative's counted sections from the diff against main.
+pr-body:
+    python3 scripts/pr_body.py
 
 # Upload an already-built, signed release to Forgejo (release-scoped token).
 publish version:
@@ -113,6 +141,37 @@ package version target=`rustc -vV | sed -n 's|host: ||p'`:
     cargo build --profile dist -p yi-cli --target {{target}}
     scripts/package.sh {{version}} {{target}}
     scripts/smoke.sh target/package/yi-{{version}}-{{target}}.tar.gz
+
+# Cross-build + package a musl target via zig (no musl-gcc/cross needed).
+# Fails closed by name when the rustup target or zig is missing (O1): a
+# missing toolchain must never be reported as a packaged artifact. Cannot
+# smoke-test the result -- the cross binary does not run on this host -- so
+# that step is named skipped rather than silently omitted; the container's
+# `yi --version` preflight (evals/README) is the real smoke.
+package-musl version target='x86_64-unknown-linux-musl':
+    #!/usr/bin/env bash
+    set -euo pipefail
+    target='{{target}}'
+    rustup target list --installed | grep -qx "$target" || {
+      echo "package-musl: rustup target '$target' not installed -- run: rustup target add $target"
+      exit 1
+    }
+    command -v zig >/dev/null || {
+      echo "package-musl: zig not found -- install zig, or use musl-cross gcc / cargo-zigbuild instead"
+      exit 1
+    }
+    cargo_var=CARGO_TARGET_$(echo "$target" | tr 'a-z-' 'A-Z_')_LINKER
+    cc_var=CC_$(echo "$target" | tr '-' '_')
+    ar_var=AR_$(echo "$target" | tr '-' '_')
+    export "$cargo_var=$(pwd)/scripts/zigcc.sh"
+    export "$cc_var=$(pwd)/scripts/zigcc.sh"
+    export "$ar_var=$(pwd)/scripts/zigar.sh"
+    export ZIG_TARGET="${target%-unknown*}-${target##*-unknown-}"
+    cargo build --profile dist -p yi-cli --target "$target"
+    python3 scripts/check_elf.py "target/$target/dist/yi" "$target"
+    scripts/package.sh {{version}} "$target"
+    echo "package-musl: smoke.sh NOT run on this host (cross binary can't execute on darwin);"
+    echo "package-musl: the container's 'yi --version' preflight (evals/README) is the real smoke."
 
 # Catalog skills (§14.1) install into the global root; the fragments an
 # extension attaches are compiled in.

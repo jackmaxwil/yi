@@ -28,6 +28,10 @@ impl Workspace {
     }
 
     fn yi(&self, args: &[&str]) -> Result<Output, Box<dyn Error>> {
+        self.yi_env(args, &[])
+    }
+
+    fn yi_env(&self, args: &[&str], env: &[(&str, &str)]) -> Result<Output, Box<dyn Error>> {
         #[expect(
             clippy::disallowed_methods,
             reason = "these surfaces are the spawned binary's argv, exit code, and stdout"
@@ -40,6 +44,7 @@ impl Workspace {
             .arg("--cwd")
             .arg(self.project())
             .env("HOME", self.0.join("home"))
+            .envs(env.iter().copied())
             .current_dir(self.project());
         Ok(command.output()?)
     }
@@ -434,5 +439,41 @@ fn a_valid_thinking_level_is_accepted() -> TestResult {
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
+    Ok(())
+}
+
+/// Invariant: the proxy guards provider egress (E2), so a value ureq cannot
+/// dial — `HTTPS_PROXY=https://…` is the spelling operators hit — fails a
+/// provider run and leaves the offline faux path every gate uses alone.
+#[test]
+fn an_undialable_proxy_fails_a_provider_run_and_spares_the_faux_path() -> TestResult {
+    let workspace = Workspace::new("proxy")?;
+    let bad = [("HTTPS_PROXY", "ftp://proxy.corp:3128")];
+
+    let offline = workspace.yi_env(&["ask", "--model", "faux/faux-1", "hi"], &bad)?;
+    assert!(
+        offline.status.success(),
+        "the offline faux path died on a proxy it never dials: {}",
+        String::from_utf8_lossy(&offline.stderr)
+    );
+    assert!(
+        stdout(&offline).contains("faux: hi"),
+        "{}",
+        stdout(&offline)
+    );
+
+    let mut keyed = bad.to_vec();
+    keyed.push(("ANTHROPIC_API_KEY", "unused-the-proxy-refusal-lands-first"));
+    let provider = workspace.yi_env(
+        &["ask", "--model", "anthropic/claude-haiku-4-5", "hi"],
+        &keyed,
+    )?;
+    assert_eq!(
+        provider.status.code(),
+        Some(2),
+        "a provider run must still fail closed on an undialable proxy"
+    );
+    let named = String::from_utf8_lossy(&provider.stderr).into_owned();
+    assert!(named.contains("proxy.corp:3128"), "{named}");
     Ok(())
 }

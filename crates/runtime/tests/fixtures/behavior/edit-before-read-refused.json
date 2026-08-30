@@ -1,0 +1,91 @@
+{
+  "id": "edit-before-read-refused",
+  "description": "an edit issued without a snapshot tag is refused and the file is untouched; blind patches would corrupt files the model never read",
+  "provenance": {
+    "kind": "synthetic",
+    "session": null
+  },
+  "workspace": {
+    "notes.txt": "alpha\nbravo\ncharlie\n"
+  },
+  "turns": [
+    {
+      "user": "uppercase the second line of notes.txt",
+      "responses": [
+        {
+          "toolCall": {
+            "id": "edit-blind",
+            "name": "edit",
+            "arguments": {
+              "patch": "[notes.txt]\nPUT 2.=2:\n+BRAVO"
+            }
+          }
+        },
+        {
+          "text": "the edit was refused"
+        }
+      ]
+    },
+    {
+      "user": "read the file first",
+      "responses": [
+        {
+          "toolCall": {
+            "id": "read-1",
+            "name": "read",
+            "arguments": {
+              "path": "notes.txt"
+            }
+          }
+        },
+        {
+          "text": "read it"
+        }
+      ]
+    },
+    {
+      "user": "now issue the anchored edit",
+      "responses": [
+        {
+          "toolCall": {
+            "id": "edit-anchored",
+            "name": "edit",
+            "arguments": {
+              "patch": "[notes.txt#DD92]\nPUT 2.=2:\n+BRAVO"
+            }
+          }
+        },
+        {
+          "text": "done"
+        }
+      ]
+    }
+  ],
+  "assertions": [
+    {
+      "kind": "toolResultIsError",
+      "callId": "edit-blind",
+      "value": true
+    },
+    {
+      "kind": "toolResultContains",
+      "callId": "edit-blind",
+      "needle": "Missing hashline snapshot tag"
+    },
+    {
+      "kind": "toolResultContains",
+      "callId": "read-1",
+      "needle": "2:bravo"
+    },
+    {
+      "kind": "toolResultIsError",
+      "callId": "edit-anchored",
+      "value": false
+    },
+    {
+      "kind": "fileEquals",
+      "path": "notes.txt",
+      "content": "alpha\nBRAVO\ncharlie\n"
+    }
+  ]
+}

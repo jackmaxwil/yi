@@ -9,6 +9,7 @@ pub mod hashline;
 mod ignore;
 mod ipython;
 pub mod jobs;
+mod orient;
 mod process;
 pub mod reduce;
 pub mod sandbox;
@@ -23,6 +24,7 @@ pub use exec::{ExecTool, discover_exec_tools};
 pub use grep::GrepTool;
 pub use ipython::{IpythonTool, KernelBridge, KernelCellOutcome};
 pub use jobs::{JobId, JobReport, Run, run_or_background};
+pub use orient::GetContextTool;
 pub use process::{CommandCapture, OUTPUT_CAP, command, edit_file, run_captured};
 pub use reduce::{Reduced, reduce};
 pub use sandbox::{Sandbox, denial_hint};
@@ -55,5 +57,6 @@ pub fn builtin_tools_with(freeform_grammar: bool) -> Vec<Arc<dyn Tool>> {
             hashline: Some(state),
         }),
         Arc::new(BashTool),
+        Arc::new(GetContextTool),
     ]
 }

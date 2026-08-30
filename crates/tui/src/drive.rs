@@ -201,7 +201,8 @@ pub fn run_headless(
         .iter()
         .map(|(k, v)| (k.as_str(), v.as_str()))
         .collect();
-    if keymap.apply_overrides(overrides).is_err() {
+    if let Err(error) = keymap.apply_overrides(overrides) {
+        eprintln!("error: keys config: {error}");
         return 2;
     }
     let width = drive.width.max(20);
@@ -258,7 +259,7 @@ pub fn run_headless(
         }
         crate::app::sync_roster(&mut app, &host, &handle, &ui_tx);
         crate::app::process_pending_tree(&mut app, &session);
-        crate::rewind::process_pending_rewind(&mut app, &mut terminal, &session);
+        crate::rewind::process_pending_rewind(&mut app, &mut terminal, &session, &cmd_tx);
         crate::rewind::process_pending_new(&mut app, &mut terminal, &session);
         crate::rewind::process_pending_undo(&mut app, &session);
         crate::commands::process_pending_selection(&mut app, &session);

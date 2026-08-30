@@ -1,0 +1,2 @@
+{"kind":"header","version":4,"id":"fixture-c","createdAt":1787544431479,"cwd":"/tmp/yi-fixture"}
+{"kind":"fact","seq":1,"fact":"plan","plan":{"version":2,"tasks":[{"id":"t1","title":"Parse config","acceptance":"config tests pass","check":"cargo test -p yi-config","state":"done"},{"id":"t2","title":"Wire flag","acceptance":"--dry-run accepted","deps":["t1"],"state":"pending"}],"created":1787544431477,"updated":1787544431478}}

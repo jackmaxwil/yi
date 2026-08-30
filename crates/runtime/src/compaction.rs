@@ -55,7 +55,7 @@ fn synthesize_entries(messages: &[AgentMessage]) -> Vec<Entry> {
         .collect()
 }
 
-async fn complete_text(
+pub(crate) async fn complete_text(
     provider: &ProviderStream,
     model: &Model,
     context: &LlmContext,
@@ -151,6 +151,12 @@ impl Compactor {
 
     /// Input-side tokens only: the reply is body, not prefix.
     pub fn on_usage(&self, usage: &Usage) {
+        // Invariant: a `ServerObserved` prefill latches for the whole window, so
+        // an unreported usage recorded as zero would pin the prefix at zero and
+        // the guard below would drop every later real observation.
+        if usage.unknown {
+            return;
+        }
         let mut window = lock_window(&self.window);
         if window.prefill_tokens().is_none() {
             let input_side = usage

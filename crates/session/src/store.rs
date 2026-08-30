@@ -159,6 +159,29 @@ impl SessionStore {
         Ok(id)
     }
 
+    /// `from_id` is the leaf the lane left, so a reader can tell which attempt
+    /// the summary stands in for.
+    pub fn append_branch_summary(
+        &mut self,
+        lane: &str,
+        from_id: String,
+        summary: String,
+    ) -> Result<String, SessionError> {
+        let id = self.ids.next_id();
+        let entry = Entry::BranchSummary {
+            id: id.clone(),
+            from_id,
+            summary,
+            details: None,
+            usage: None,
+            parent_id: None,
+            seq: 0,
+            timestamp: 0,
+        };
+        self.append_entry(entry, lane)?;
+        Ok(id)
+    }
+
     pub fn append_custom(
         &mut self,
         lane: &str,

@@ -30,6 +30,11 @@ har-supply, har-verify always; the rest by their stated triggers. Enforced highl
   capitalized `Word:` prefix, which is what stopped Precedence:/Draining:/Detached: becoming a
   private dialect. Schema facts need no tag; crates/types/ is the tag. The prefix rides an
   existing line, so it costs no comment volume.
+- A comment survives with no foreknowledge: strip every row and decision id from it and what
+  remains must still fully carry the fact. Ids are optional trailing pointers, never the
+  payload — "V12: standing constraints, append-only" tells a reader without the design doc open
+  nothing at all, and it rots the day the row is renumbered. check_comments.py rejects a comment
+  left with too little prose once its ids and pointer words are stripped.
 - Fight for every line: the size ratchet is a ceiling, not a target.
 - Multi-axis flows are state-space-as-data: a table the runtime reads, closed vocabulary,
   invariant checks — never a shadow model maintained beside a hand-rolled flow.

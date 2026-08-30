@@ -83,7 +83,6 @@ pub struct KernelSentAgentMessage {
     pub extra: Map<String, Value>,
 }
 
-/// Target of a sent agent message (design K6).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct KernelAgentMessageTarget {
@@ -101,7 +100,6 @@ pub struct KernelError {
     pub traceback: Vec<String>,
 }
 
-/// Terminal status of one executed cell (design K5).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ExecuteStatus {
@@ -110,7 +108,6 @@ pub enum ExecuteStatus {
     Aborted,
 }
 
-/// Result of one kernel cell (design K5/K6).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ExecuteResult {

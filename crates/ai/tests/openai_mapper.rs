@@ -162,3 +162,49 @@ fn missing_finish_reason_is_an_error() {
         })
     ));
 }
+
+#[test]
+fn an_absent_usage_object_is_unknown_not_free() -> Result<(), Box<dyn Error>> {
+    let model = model(false);
+    let mut mapper = ChunkMapper::new(&model);
+    for chunk in [
+        json!({"id":"chatcmpl-2","choices":[{"delta":{"content":"hi"}}]}),
+        json!({"id":"chatcmpl-2","choices":[{"delta":{},"finish_reason":"stop"}]}),
+    ] {
+        let _ = mapper.push_chunk(&chunk);
+    }
+    let events = mapper.finish();
+    let Some(AssistantMessageEvent::Done { message, .. }) = events.last() else {
+        return Err(format!("expected done: {events:?}").into());
+    };
+    let AgentMessage::Assistant { usage, .. } = message else {
+        return Err("not assistant".into());
+    };
+    assert!(
+        usage.unknown,
+        "a stream with no usage chunk is not a free turn"
+    );
+    assert_eq!(usage.total_tokens, 0);
+    Ok(())
+}
+
+#[test]
+fn a_present_usage_object_is_known() -> Result<(), Box<dyn Error>> {
+    let model = model(false);
+    let mut mapper = ChunkMapper::new(&model);
+    for chunk in [
+        json!({"id":"chatcmpl-3","choices":[{"delta":{},"finish_reason":"stop"}]}),
+        json!({"id":"chatcmpl-3","choices":[],"usage":{"prompt_tokens":0,"completion_tokens":0}}),
+    ] {
+        let _ = mapper.push_chunk(&chunk);
+    }
+    let events = mapper.finish();
+    let Some(AssistantMessageEvent::Done { message, .. }) = events.last() else {
+        return Err(format!("expected done: {events:?}").into());
+    };
+    let AgentMessage::Assistant { usage, .. } = message else {
+        return Err("not assistant".into());
+    };
+    assert!(!usage.unknown, "a reported zero is a known free turn");
+    Ok(())
+}

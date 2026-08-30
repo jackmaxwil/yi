@@ -1,5 +1,6 @@
 /target/
 /ref/
+/evals/arc/runs/
 .DS_Store
 __pycache__/
 *.pyc
@@ -16,3 +17,6 @@ __pycache__/
 /AGENTS.md
 /CLAUDE.md
 # END Ruler Generated Files
+
+# a root .env may hold real keys (ARC); never trackable
+.env

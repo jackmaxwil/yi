@@ -11,7 +11,6 @@ pub enum JobStatus {
     Cancelled,
 }
 
-/// Who created the job (design H2).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum JobSource {
@@ -93,7 +92,7 @@ pub struct DispatchRecord {
     pub extra: Map<String, Value>,
 }
 
-/// The `scheduled-jobs.json` disk shape (design H4).
+/// The `scheduled-jobs.json` disk shape.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ScheduleState {

@@ -35,7 +35,7 @@ fn synthesized_error_message(model: &Model, text: &str) -> AgentMessage {
         response_model: None,
         response_id: None,
         diagnostics: None,
-        usage: Usage::zero(),
+        usage: Usage::unknown(),
         stop_reason: StopReason::Error,
         deferred: None,
         error_message: Some(text.to_owned()),

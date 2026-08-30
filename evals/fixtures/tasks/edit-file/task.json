@@ -1,0 +1,6 @@
+{
+  "id": "edit-file",
+  "dryReward": 0,
+  "timeoutSec": 120,
+  "note": "faux never calls a tool, so the workspace stays untouched: a runner scoring this 1 flatters every real rollout"
+}

@@ -1,0 +1,113 @@
+{
+  "id": "repeated-noop-edit-rejected",
+  "description": "the third byte-identical no-op edit is rejected as an error; without the cap Yi re-issues the same edit forever and burns the session",
+  "provenance": {
+    "kind": "synthetic",
+    "session": null
+  },
+  "workspace": {
+    "notes.txt": "alpha\nbravo\ncharlie\n"
+  },
+  "turns": [
+    {
+      "user": "read notes.txt",
+      "responses": [
+        {
+          "toolCall": {
+            "id": "read-1",
+            "name": "read",
+            "arguments": {
+              "path": "notes.txt"
+            }
+          }
+        },
+        {
+          "text": "read it"
+        }
+      ]
+    },
+    {
+      "user": "set line two to bravo",
+      "responses": [
+        {
+          "toolCall": {
+            "id": "noop-1",
+            "name": "edit",
+            "arguments": {
+              "patch": "[notes.txt#DD92]\nPUT 2.=2:\n+bravo"
+            }
+          }
+        },
+        {
+          "text": "first attempt"
+        }
+      ]
+    },
+    {
+      "user": "try that again",
+      "responses": [
+        {
+          "toolCall": {
+            "id": "noop-2",
+            "name": "edit",
+            "arguments": {
+              "patch": "[notes.txt#DD92]\nPUT 2.=2:\n+bravo"
+            }
+          }
+        },
+        {
+          "text": "second attempt"
+        }
+      ]
+    },
+    {
+      "user": "try that again",
+      "responses": [
+        {
+          "toolCall": {
+            "id": "noop-3",
+            "name": "edit",
+            "arguments": {
+              "patch": "[notes.txt#DD92]\nPUT 2.=2:\n+bravo"
+            }
+          }
+        },
+        {
+          "text": "third attempt"
+        }
+      ]
+    }
+  ],
+  "assertions": [
+    {
+      "kind": "toolResultIsError",
+      "callId": "noop-1",
+      "value": false
+    },
+    {
+      "kind": "toolResultContains",
+      "callId": "noop-2",
+      "needle": "no changes"
+    },
+    {
+      "kind": "toolResultIsError",
+      "callId": "noop-3",
+      "value": true
+    },
+    {
+      "kind": "toolResultContains",
+      "callId": "noop-3",
+      "needle": "byte-identical no-op"
+    },
+    {
+      "kind": "toolResultContains",
+      "callId": "noop-3",
+      "needle": "stop editing"
+    },
+    {
+      "kind": "fileEquals",
+      "path": "notes.txt",
+      "content": "alpha\nbravo\ncharlie\n"
+    }
+  ]
+}

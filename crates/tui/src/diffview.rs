@@ -278,7 +278,7 @@ fn row_lines(
     gutter_width: usize,
     width: usize,
     theme: &Theme,
-    lang: Option<&'static Lang>,
+    mut lang: Option<&mut Lang>,
 ) -> Vec<Line<'static>> {
     let Some(row) = rows.get(index) else {
         return Vec::new();
@@ -316,7 +316,7 @@ fn row_lines(
             ),
             Span::styled(" │ ".to_owned(), style.gutter),
         ];
-        match (emphasis.filter(|_| first), lang) {
+        match (emphasis.filter(|_| first), lang.as_deref_mut()) {
             (Some((start, end)), _) => {
                 spans.extend(emphasized(&row.text, &chunk, start, end, &style));
             }
@@ -433,7 +433,7 @@ pub fn render(patch: &str, width: usize, theme: &Theme, budget: DiffBudget) -> V
     let cut = budgeted(parsed, budget);
     let mut out = Vec::new();
     for file in &cut.files {
-        let lang = highlight::lang_for(&file.path);
+        let mut lang = highlight::lang_for(&file.path);
         if named {
             out.push(Line::from(Span::styled(
                 format!("{INDENT}{}", file.path),
@@ -454,7 +454,7 @@ pub fn render(patch: &str, width: usize, theme: &Theme, budget: DiffBudget) -> V
                     gutter_width,
                     width,
                     theme,
-                    lang,
+                    lang.as_mut(),
                 ));
             }
         }

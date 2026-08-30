@@ -121,6 +121,7 @@ pub fn explain(command: &str, mode: PermissionMode, cwd: &Path) -> Report {
         Decision::Contain { reason } if !yi_tools::Sandbox::available() => Decision::Ask {
             title: format!("{} requires permission", call.tool_name),
             description: format!("{reason}: {command}"),
+            reviewable: true,
         },
         other => other,
     };

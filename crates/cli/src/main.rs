@@ -243,6 +243,17 @@ fn advisor_model() -> Option<Model> {
     resolved
 }
 
+/// Naming `models.autoReview` is the switch for the M7 permission reviewer
+/// (D81); an unknown selector warns and auto mode stays deterministic.
+fn auto_review_model() -> Option<Model> {
+    let spec = configured_roles().auto_review?;
+    let resolved = resolve(&spec);
+    if resolved.is_none() {
+        eprintln!("warning: unknown autoReview model {spec}; the auto reviewer stays off");
+    }
+    resolved
+}
+
 fn summarizer_model(args: &Args) -> Option<Model> {
     let spec = configured_roles().summarizer?;
     match resolve(&spec) {
@@ -280,6 +291,18 @@ fn tty_ask(ask: &yi_runtime::PermissionAsk<'_>) -> yi_runtime::AskOutcome {
     }
 }
 
+fn env_either(upper: &str, lower: &str) -> Option<String> {
+    std::env::var(upper).or_else(|_| std::env::var(lower)).ok()
+}
+
+fn proxy_from_env() -> Result<Option<yi_runtime::ProxyConfig>, String> {
+    yi_runtime::ProxyConfig::from_values(
+        env_either("HTTPS_PROXY", "https_proxy").as_deref(),
+        env_either("HTTP_PROXY", "http_proxy").as_deref(),
+        env_either("NO_PROXY", "no_proxy").as_deref(),
+    )
+}
+
 fn build_session(
     args: &Args,
     asker: Option<yi_runtime::Asker>,
@@ -294,8 +317,9 @@ fn build_session(
         eprintln!("error: unknown model {} (use provider/id)", args.model);
         return Err(2);
     };
+    let faux = model.provider == "faux";
     let api_key = yi_ai_key(&model.provider);
-    if api_key.is_none() && model.provider != "faux" {
+    if api_key.is_none() && !faux {
         eprintln!(
             "error: no API key for provider {} (set the provider env var)",
             model.provider
@@ -306,8 +330,26 @@ fn build_session(
         use std::io::IsTerminal;
         std::io::stdin().is_terminal()
     };
-    let provider = Arc::new(ProviderStream::new(api_key, None).with_long_cache(interactive));
-    if model.provider == "faux" {
+    // Incident: an inherited proxy value ureq cannot dial refused every faux run
+    // too, so an operator's shell broke `just check` and the repo's own offline
+    // behavior check. E2 guards provider egress; faux never leaves the process.
+    let proxy = if faux {
+        None
+    } else {
+        match proxy_from_env() {
+            Ok(proxy) => proxy,
+            Err(message) => {
+                eprintln!("error: {message}");
+                return Err(2);
+            }
+        }
+    };
+    let provider = Arc::new(
+        ProviderStream::new(api_key, None)
+            .with_long_cache(interactive)
+            .with_proxy(proxy),
+    );
+    if faux {
         provider.queue_faux(vec![yi_ai_faux_reply(&args.prompt)]);
     }
     let mut session = AgentSession::new(
@@ -363,6 +405,7 @@ fn build_session(
             rlm_dir: default_session_dir(args).join(format!("rlm-{}", std::process::id())),
             summarizer: summarizer_model(args),
             advisor: advisor_model(),
+            auto_review: auto_review_model(),
             parent_link: None,
             wall: yi_runtime::Wall::default(),
             plan_stale_turns: config()

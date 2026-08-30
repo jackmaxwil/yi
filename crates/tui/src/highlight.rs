@@ -1,5 +1,8 @@
+use std::sync::OnceLock;
+
 use ratatui::style::{Modifier, Style};
 use ratatui::text::Span;
+use syntect::parsing::{ParseState, Scope, ScopeStack, SyntaxSet};
 
 use crate::colors::Theme;
 
@@ -19,128 +22,85 @@ pub enum Token {
 }
 
 pub struct Lang {
-    line_comment: &'static [&'static str],
-    block: Option<(&'static str, &'static str)>,
-    quotes: &'static [char],
-    keywords: &'static [&'static str],
-    /// In shell `#` comments only off an identifier byte (`x#y` is literal).
-    comment_at_word_start: bool,
-    /// `'` opens a char literal only when it closes nearby — a lifetime
-    /// (`'a`) never closes and must not open a string.
-    char_literal: bool,
+    state: ParseState,
+    stack: ScopeStack,
+    poisoned: bool,
 }
 
-const RUST: Lang = Lang {
-    line_comment: &["//"],
-    block: Some(("/*", "*/")),
-    quotes: &['"'],
-    comment_at_word_start: false,
-    char_literal: true,
-    keywords: &[
-        "as", "async", "await", "break", "const", "continue", "crate", "dyn", "else", "enum",
-        "extern", "false", "fn", "for", "if", "impl", "in", "let", "loop", "match", "mod", "move",
-        "mut", "pub", "ref", "return", "self", "Self", "static", "struct", "super", "trait",
-        "true", "type", "unsafe", "use", "where", "while",
-    ],
-};
+/// Decompressed on first use, never on the startup path §13.6 holds to 5 ms.
+fn syntaxes() -> &'static SyntaxSet {
+    static SET: OnceLock<SyntaxSet> = OnceLock::new();
+    SET.get_or_init(SyntaxSet::load_defaults_newlines)
+}
 
-const PYTHON: Lang = Lang {
-    line_comment: &["#"],
-    block: None,
-    quotes: &['"', '\''],
-    comment_at_word_start: false,
-    char_literal: false,
-    keywords: &[
-        "and", "as", "assert", "async", "await", "break", "class", "continue", "def", "del",
-        "elif", "else", "except", "False", "finally", "for", "from", "global", "if", "import",
-        "in", "is", "lambda", "None", "nonlocal", "not", "or", "pass", "raise", "return", "True",
-        "try", "while", "with", "yield",
-    ],
-};
+/// Scope prefixes, most specific first. `storage.type.numeric` is a numeric
+/// literal's suffix, so it belongs to its number; every other `storage` is a
+/// keyword, because the Rust grammar scopes `let` and `usize` alike.
+fn scope_table() -> &'static [(Scope, Token)] {
+    static TABLE: OnceLock<Vec<(Scope, Token)>> = OnceLock::new();
+    TABLE.get_or_init(|| {
+        [
+            ("comment", Token::Comment),
+            ("string", Token::Str),
+            ("constant.character.escape", Token::Str),
+            ("constant.numeric", Token::Number),
+            ("storage.type.numeric", Token::Number),
+            ("constant", Token::Keyword),
+            ("keyword", Token::Keyword),
+            ("storage", Token::Keyword),
+            ("entity.name.function", Token::Function),
+            ("support.function", Token::Function),
+            ("variable.function", Token::Function),
+            ("entity.name", Token::Type),
+            ("support.type", Token::Type),
+            ("support.class", Token::Type),
+        ]
+        .iter()
+        .filter_map(|(text, token)| Scope::new(text).ok().map(|scope| (scope, *token)))
+        .collect()
+    })
+}
 
-const SHELL: Lang = Lang {
-    line_comment: &["#"],
-    block: None,
-    quotes: &['"', '\''],
-    comment_at_word_start: true,
-    char_literal: false,
-    keywords: &[
-        "case", "do", "done", "elif", "else", "esac", "export", "fi", "for", "function", "if",
-        "in", "local", "return", "set", "then", "until", "while",
-    ],
-};
-
-const JSON: Lang = Lang {
-    line_comment: &[],
-    block: None,
-    quotes: &['"'],
-    comment_at_word_start: false,
-    char_literal: false,
-    keywords: &["true", "false", "null"],
-};
-
-const TS: Lang = Lang {
-    line_comment: &["//"],
-    block: Some(("/*", "*/")),
-    quotes: &['"', '\'', '`'],
-    comment_at_word_start: false,
-    char_literal: false,
-    keywords: &[
-        "as",
-        "async",
-        "await",
-        "break",
-        "case",
-        "catch",
-        "class",
-        "const",
-        "continue",
-        "default",
-        "else",
-        "export",
-        "extends",
-        "false",
-        "finally",
-        "for",
-        "from",
-        "function",
-        "if",
-        "import",
-        "in",
-        "interface",
-        "let",
-        "new",
-        "null",
-        "of",
-        "return",
-        "static",
-        "switch",
-        "this",
-        "throw",
-        "true",
-        "try",
-        "type",
-        "typeof",
-        "undefined",
-        "var",
-        "while",
-        "yield",
-    ],
-};
-
-/// Yi's own surfaces name five languages: Rust and Python source, shell
-/// commands, JSON payloads and TypeScript in the reference codebases. An
-/// unknown name renders plain, which is what it did before.
-pub fn lang_for(name: &str) -> Option<&'static Lang> {
-    let name = name.rsplit('.').next().unwrap_or(name).to_ascii_lowercase();
-    match name.as_str() {
-        "rs" | "rust" => Some(&RUST),
-        "py" | "python" | "python3" | "ipython" => Some(&PYTHON),
-        "sh" | "bash" | "zsh" | "shell" => Some(&SHELL),
-        "json" => Some(&JSON),
-        "ts" | "tsx" | "js" | "jsx" | "typescript" | "javascript" => Some(&TS),
-        _ => None,
+fn token_for(stack: &ScopeStack) -> Token {
+    for scope in stack.as_slice().iter().rev() {
+        if let Some((_, token)) = scope_table()
+            .iter()
+            .find(|(prefix, _)| prefix.is_prefix_of(*scope))
+        {
+            return *token;
+        }
     }
+    Token::Plain
+}
+
+/// Fence names models write that no bundled grammar answers to. There is no
+/// TypeScript grammar in the default set at all; JavaScript is the closest one
+/// that colours its keywords and strings instead of leaving the block plain.
+fn alias(name: &str) -> &str {
+    match name {
+        "shell" => "sh",
+        "python3" | "ipython" => "py",
+        "ts" | "tsx" | "jsx" | "typescript" => "js",
+        other => other,
+    }
+}
+
+pub fn lang_for(name: &str) -> Option<Lang> {
+    let set = syntaxes();
+    let name = name
+        .rsplit(['.', '/'])
+        .next()
+        .unwrap_or(name)
+        .to_ascii_lowercase();
+    let name = alias(&name);
+    let syntax = set
+        .find_syntax_by_token(name)
+        .or_else(|| set.find_syntax_by_extension(name))?;
+    Some(Lang {
+        state: ParseState::new(syntax),
+        stack: ScopeStack::new(),
+        poisoned: false,
+    })
 }
 
 impl Theme {
@@ -162,137 +122,63 @@ impl Theme {
     }
 }
 
-fn is_ident(ch: char) -> bool {
-    ch.is_alphanumeric() || ch == '_'
-}
-
-/// A single line's tokens as `(byte range, kind)`. Per-line scanning: the
-/// audited limits (2026-08-29) are multi-line `/* */`, triple-quoted, raw and
-/// template strings colouring only their opening line; regex literals plain.
-pub fn tokens(line: &str, lang: &Lang) -> Vec<(usize, usize, Token)> {
+/// Advances the parse, so the next line resumes where this one left off. The
+/// cap drops a generated line's runs, never its parse: a later line would
+/// otherwise resume from a state that no longer describes the text.
+pub fn tokens(line: &str, lang: &mut Lang) -> Vec<(usize, usize, Token)> {
+    if lang.poisoned {
+        return Vec::new();
+    }
+    let owned = format!("{line}\n");
+    let Ok(ops) = lang.state.parse_line(&owned, syntaxes()) else {
+        lang.poisoned = true;
+        return Vec::new();
+    };
+    let mut out: Vec<(usize, usize, Token)> = Vec::new();
+    let mut cursor = 0_usize;
+    for (offset, op) in ops {
+        let end = offset.min(line.len());
+        if end > cursor {
+            let token = token_for(&lang.stack);
+            if token != Token::Plain {
+                out.push((cursor, end, token));
+            }
+        }
+        cursor = cursor.max(end);
+        if lang.stack.apply(&op).is_err() {
+            lang.poisoned = true;
+            return Vec::new();
+        }
+    }
+    if cursor < line.len() {
+        let token = token_for(&lang.stack);
+        if token != Token::Plain {
+            out.push((cursor, line.len(), token));
+        }
+    }
     if line.len() > LINE_CAP {
         return Vec::new();
     }
-    let mut out = Vec::new();
-    let bytes = line.as_bytes();
-    let mut index = 0_usize;
-    while index < bytes.len() {
-        let rest = line.get(index..).unwrap_or_default();
-        let at_word_start = index
-            .checked_sub(1)
-            .and_then(|previous| bytes.get(previous))
-            .is_none_or(|byte| !is_ident(char::from(*byte)));
-        if lang.line_comment.iter().any(|c| rest.starts_with(c))
-            && (!lang.comment_at_word_start || at_word_start)
-        {
-            out.push((index, line.len(), Token::Comment));
-            break;
-        }
-        if let Some((open, close)) = lang.block
-            && rest.starts_with(open)
-        {
-            // A block comment closing on the same line ends there; the code
-            // after it scans normally.
-            match rest.get(open.len()..).and_then(|tail| tail.find(close)) {
-                Some(offset) => {
-                    let end = index + open.len() + offset + close.len();
-                    out.push((index, end, Token::Comment));
-                    index = end;
-                    continue;
-                }
-                None => {
-                    out.push((index, line.len(), Token::Comment));
-                    break;
-                }
-            }
-        }
-        let ch = rest.chars().next().unwrap_or(' ');
-        if ch == '\'' && lang.char_literal {
-            // A char literal holds one char or an escape (`'x'`, `'\n'`,
-            // `'\u{1F600}'`). A lifetime (`'a`) fails that shape — including
-            // the `'a, '` span two lifetimes would fake — and stays plain.
-            let literal = string_end(rest, '\'').filter(|end| {
-                rest.get(1..end.saturating_sub(1))
-                    .is_some_and(|body| body.starts_with('\\') || body.chars().count() == 1)
-            });
-            match literal {
-                Some(end) => {
-                    out.push((index, index.saturating_add(end), Token::Str));
-                    index = index.saturating_add(end);
-                }
-                None => index = index.saturating_add(1),
-            }
-            continue;
-        }
-        if lang.quotes.contains(&ch) {
-            let end = string_end(rest, ch).unwrap_or(rest.len());
-            out.push((index, index.saturating_add(end), Token::Str));
-            index = index.saturating_add(end);
-            continue;
-        }
-        if ch.is_ascii_digit() {
-            let len = rest
-                .chars()
-                .take_while(|c| c.is_alphanumeric() || *c == '.' || *c == '_')
-                .map(char::len_utf8)
-                .sum::<usize>();
-            out.push((index, index.saturating_add(len), Token::Number));
-            index = index.saturating_add(len);
-            continue;
-        }
-        if is_ident(ch) {
-            let len = rest
-                .chars()
-                .take_while(|c| is_ident(*c))
-                .map(char::len_utf8)
-                .sum::<usize>();
-            let word = rest.get(..len).unwrap_or_default();
-            let after = rest.get(len..).unwrap_or_default();
-            let kind = if lang.keywords.contains(&word) {
-                Token::Keyword
-            } else if after.starts_with('(') {
-                Token::Function
-            // An uppercase initial with a lowercase in it is a type name;
-            // all-caps is a constant, which is not one.
-            } else if word.starts_with(char::is_uppercase) && word.contains(char::is_lowercase) {
-                Token::Type
-            } else {
-                Token::Plain
-            };
-            if kind != Token::Plain {
-                out.push((index, index.saturating_add(len), kind));
-            }
-            index = index.saturating_add(len);
-            continue;
-        }
-        index = index.saturating_add(ch.len_utf8());
-    }
-    out
+    merge(out)
 }
 
-/// The byte offset just past the closing quote, honouring a backslash escape.
-fn string_end(rest: &str, quote: char) -> Option<usize> {
-    let mut escaped = false;
-    for (offset, ch) in rest.char_indices().skip(1) {
-        if escaped {
-            escaped = false;
-            continue;
-        }
-        if ch == '\\' {
-            escaped = true;
-            continue;
-        }
-        if ch == quote {
-            return Some(offset.saturating_add(ch.len_utf8()));
+/// Adjacent runs of one kind are one span: the grammar splits an identifier
+/// from its scope operator, and the reader wants the word.
+fn merge(runs: Vec<(usize, usize, Token)>) -> Vec<(usize, usize, Token)> {
+    let mut out: Vec<(usize, usize, Token)> = Vec::with_capacity(runs.len());
+    for (start, end, token) in runs {
+        match out.last_mut() {
+            Some(last) if last.2 == token && last.1 == start => last.1 = end,
+            _ => out.push((start, end, token)),
         }
     }
-    None
+    out
 }
 
 /// One line as styled spans. `base` carries whatever the caller already decided
 /// about the row — the diff tint, a dim body — and each token adds only its
 /// foreground, so a highlighted row keeps its background.
-pub fn spans(line: &str, lang: &Lang, theme: &Theme, base: Style) -> Vec<Span<'static>> {
+pub fn spans(line: &str, lang: &mut Lang, theme: &Theme, base: Style) -> Vec<Span<'static>> {
     let mut out = Vec::new();
     let mut cursor = 0_usize;
     for (start, end, token) in tokens(line, lang) {

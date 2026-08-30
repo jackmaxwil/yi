@@ -1,0 +1,6 @@
+{
+  "id": "answer-echo",
+  "dryReward": 1,
+  "timeoutSec": 120,
+  "note": "faux echoes the prompt, so the needle reaches answer.txt without any tool call"
+}

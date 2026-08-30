@@ -213,6 +213,7 @@ fn subagent_task_cell_focus_and_back() -> TestResult {
         parent_messages: Arc::new(Vec::new),
         report: Arc::new(|_message| {}),
         attribute: Arc::new(|_usage| {}),
+        store: Arc::new(|| None),
     }));
     let mut app = app();
     runtime.block_on(async {
@@ -855,5 +856,110 @@ fn the_session_clamp_wins_over_the_requested_level() -> TestResult {
 
     assert_eq!(session.effort(), yi_types::model::Effort::High);
     assert_eq!(app.selection.effort, yi_types::model::Effort::High);
+    Ok(())
+}
+
+fn priced(text: &str, cost: f64) -> yi_types::message::AgentMessage {
+    let mut message = yi_runtime::faux::faux_assistant_message(
+        vec![yi_runtime::faux::faux_text(text)],
+        StopReason::Stop,
+    );
+    if let yi_types::message::AgentMessage::Assistant { usage, .. } = &mut message {
+        usage.total_tokens = 100;
+        usage.cost.total = Number::from_f64(cost).unwrap_or_else(|| Number::from(0u64));
+    }
+    message
+}
+
+/// The HUD's `$` is what the session has spent, not what the last turn cost:
+/// a two-turn run showed the second turn's price and called it the total.
+#[test]
+fn the_status_cost_sums_the_session_not_the_last_turn() -> TestResult {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    let dir = std::env::temp_dir().join(format!("yi-tui-cost-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir)?;
+    let provider = Arc::new(ProviderStream::new(None, None));
+    provider.queue_faux(vec![priced("one", 0.02), priced("two", 0.03)]);
+    let session = Arc::new(AgentSession::new(
+        SessionConfig {
+            system_prompt: String::new(),
+            model: faux_model(),
+            thinking_level: None,
+            tool_execution: yi_runtime::ExecutionMode::Sequential,
+        },
+        provider,
+    ));
+    let host = Arc::new(SubagentHost::new(SubagentHostOptions {
+        depth: 0,
+        max_depth: 1,
+        max_children: 4,
+        parent_session_dir: dir.clone(),
+        cwd: dir.clone(),
+        defaults: Arc::new(|| (faux_model(), yi_types::model::Effort::Medium)),
+        factory: Arc::new(|_build| Ok(faux_session("child answer"))),
+        notice: Arc::new(|_notice| {}),
+        events: tokio::sync::broadcast::channel(64).0,
+        parent_messages: Arc::new(Vec::new),
+        report: Arc::new(|_message| {}),
+        attribute: Arc::new(|_usage| {}),
+        store: Arc::new(|| None),
+    }));
+    let (_ask_tx, ask_rx) = std::sync::mpsc::channel();
+    let script = yi_tui::parse_script(
+        "type ping\nkey enter\nwait-idle 10000\ntype pong\nkey enter\nwait-idle 10000\nquit\n",
+    )?;
+    let code = yi_tui::run_headless(
+        runtime,
+        Arc::clone(&session),
+        host,
+        ask_rx,
+        options(),
+        yi_tui::DriveOptions {
+            script,
+            frames_dir: Some(dir.clone()),
+            width: 80,
+            height: 24,
+        },
+    );
+    assert_eq!(code, 0, "drive script must run clean");
+    let mut frames: Vec<_> = std::fs::read_dir(&dir)?
+        .filter_map(|entry| entry.ok().map(|e| e.path()))
+        .filter(|path| path.extension().is_some_and(|ext| ext == "txt"))
+        .collect();
+    frames.sort();
+    let last = std::fs::read_to_string(frames.last().ok_or("no frames dumped")?)?;
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(
+        last.contains("$0.05"),
+        "the status line must carry both turns ($0.02 + $0.03), not the last one:\n{last}"
+    );
+    Ok(())
+}
+
+/// A subagent's spend is the session's spend. Children run unfocused, so the
+/// cost has to land without anyone opening the child's transcript.
+#[test]
+fn an_unfocused_child_turn_reaches_the_status_cost() -> TestResult {
+    let backend = VT100Backend::with_scrollback(80, 24, 200);
+    let mut terminal = yi_tui::terminal::Terminal::new(backend, 6)?;
+    let mut app = app();
+    app.reduce_agent(yi_types::event::AgentEvent::MessageEnd {
+        message: priced("parent", 0.02),
+    });
+    app.reduce_child(
+        "child-1",
+        yi_types::event::AgentEvent::MessageEnd {
+            message: priced("child", 0.04),
+        },
+    );
+    yi_tui::render::draw(&mut app, &mut terminal, None);
+    let contents = terminal.backend().contents();
+    assert!(
+        contents.contains("$0.06"),
+        "the child's spend belongs to the session total: {contents}"
+    );
     Ok(())
 }
