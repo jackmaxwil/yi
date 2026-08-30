@@ -1,12 +1,17 @@
 use std::error::Error;
 use std::io::{BufRead, BufReader, Lines, Write};
 use std::os::unix::net::UnixStream;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
+use yi_types::schedule::ScheduleState;
 
 type TestResult = Result<(), Box<dyn Error>>;
+
+const WORKERS: usize = 2;
+const SESSIONS_PER_WORKER: usize = 2;
 
 struct DaemonClient {
     stream: UnixStream,
@@ -14,7 +19,7 @@ struct DaemonClient {
 }
 
 impl DaemonClient {
-    fn connect(socket: &std::path::Path) -> Result<Self, Box<dyn Error>> {
+    fn connect(socket: &Path) -> Result<Self, Box<dyn Error>> {
         let stream = UnixStream::connect(socket)?;
         let reader = stream.try_clone()?;
         // A frame that never arrives must fail the test, not hang the suite
@@ -60,7 +65,7 @@ impl DaemonClient {
     }
 }
 
-fn spawn_daemon(dir: &std::path::Path) -> Result<(Child, std::path::PathBuf), Box<dyn Error>> {
+fn spawn_daemon(dir: &Path) -> Result<(Child, PathBuf), Box<dyn Error>> {
     let socket = dir.join("yi.sock");
     #[expect(
         clippy::disallowed_methods,
@@ -90,6 +95,73 @@ fn spawn_daemon(dir: &std::path::Path) -> Result<(Child, std::path::PathBuf), Bo
     Ok((child, socket))
 }
 
+fn rlm_dirs(sessions: &Path) -> Result<Vec<PathBuf>, Box<dyn Error>> {
+    let mut dirs = Vec::new();
+    if !sessions.is_dir() {
+        return Ok(dirs);
+    }
+    for entry in std::fs::read_dir(sessions)? {
+        let entry = entry?;
+        if entry.file_name().to_string_lossy().starts_with("rlm-") {
+            dirs.push(entry.path());
+        }
+    }
+    Ok(dirs)
+}
+
+fn ledger_path(rlm: &Path) -> PathBuf {
+    rlm.join("scheduled-jobs.json")
+}
+
+fn any_heartbeat_dispatched(sessions: &Path) -> Result<bool, Box<dyn Error>> {
+    Ok(rlm_dirs(sessions)?.into_iter().any(|dir| {
+        std::fs::read_to_string(ledger_path(&dir)).is_ok_and(|contents| {
+            contents.contains("\"dispatches\":[{") || contents.contains("\"runCount\"")
+        })
+    }))
+}
+
+fn wait_until(
+    deadline: Instant,
+    mut check: impl FnMut() -> Result<bool, Box<dyn Error>>,
+) -> TestResult {
+    loop {
+        if check()? {
+            return Ok(());
+        }
+        if Instant::now() >= deadline {
+            return Err("deadline elapsed before the daemon reached the expected state".into());
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+fn session_id_from(new: &Value) -> Result<String, Box<dyn Error>> {
+    new["result"]["sessionId"]
+        .as_str()
+        .map(str::to_owned)
+        .ok_or_else(|| "missing sessionId".into())
+}
+
+fn arm_heartbeat(client: &mut DaemonClient, id: &str, session_id: &str) -> TestResult {
+    let heartbeat = client.request(
+        id,
+        "_yi/heartbeat",
+        json!({
+            "sessionId": session_id,
+            "command": "--every 10s check on the build",
+        }),
+    )?;
+    if heartbeat["result"]["text"]
+        .as_str()
+        .is_some_and(|text| !text.is_empty())
+    {
+        Ok(())
+    } else {
+        Err(format!("the heartbeat surface must acknowledge: {heartbeat}").into())
+    }
+}
+
 #[test]
 #[ignore = "tier-2 journey: `just journeys`"]
 fn reconnect_keeps_heartbeats() -> TestResult {
@@ -108,43 +180,13 @@ fn reconnect_keeps_heartbeats() -> TestResult {
             "session/new",
             json!({"cwd": dir.display().to_string()}),
         )?;
-        let session_id = new["result"]["sessionId"]
-            .as_str()
-            .ok_or("missing sessionId")?
-            .to_owned();
-
-        let heartbeat = client.request(
-            "3",
-            "_yi/heartbeat",
-            json!({
-                "sessionId": session_id,
-                "command": "--every 10s check on the build",
-            }),
-        )?;
-        assert!(
-            heartbeat["result"]["text"]
-                .as_str()
-                .is_some_and(|text| !text.is_empty()),
-            "the heartbeat surface must acknowledge: {heartbeat}"
-        );
+        let session_id = session_id_from(&new)?;
+        arm_heartbeat(&mut client, "3", &session_id)?;
         drop(client);
 
-        // The client is gone; the worker's scheduler must keep firing.
-        std::thread::sleep(Duration::from_secs(13));
-
-        let dispatched = std::fs::read_dir(dir.join("sessions"))?
-            .filter_map(Result::ok)
-            .filter(|entry| entry.file_name().to_string_lossy().starts_with("rlm-"))
-            .filter_map(|entry| {
-                std::fs::read_to_string(entry.path().join("scheduled-jobs.json")).ok()
-            })
-            .any(|contents| {
-                contents.contains("\"dispatches\":[{") || contents.contains("\"runCount\"")
-            });
-        assert!(
-            dispatched,
-            "the heartbeat must have dispatched while no client was attached"
-        );
+        wait_until(Instant::now() + Duration::from_secs(20), || {
+            any_heartbeat_dispatched(&dir.join("sessions"))
+        })?;
 
         let mut reconnected = DaemonClient::connect(&socket)?;
         reconnected.request("1", "initialize", json!({"protocolVersion": 2}))?;
@@ -186,10 +228,7 @@ fn new_session(
         "session/new",
         json!({"cwd": root.display().to_string()}),
     )?;
-    Ok(new["result"]["sessionId"]
-        .as_str()
-        .ok_or("missing sessionId")?
-        .to_owned())
+    session_id_from(&new)
 }
 
 /// Two roots must each end up with a scheduler that keeps firing detached: one
@@ -287,4 +326,117 @@ fn two_roots_run_two_workers_that_keep_their_own_schedules() -> TestResult {
     let _reaped = daemon.wait();
     let _ = std::fs::remove_dir_all(&dir);
     outcome
+}
+
+/// Two roots spawn two workers. Two ACP sessions on a root share that
+/// worker's kernel process and its one `rlm-{pid}` ledger (a second
+/// `_yi/heartbeat` cancels the first). The failure is a sibling worker
+/// whose jobs never run, or a torn `scheduled-jobs.json`.
+#[test]
+#[ignore = "tier-2 journey: `just journeys`"]
+fn workers_do_not_lose_heartbeats_or_tear_the_job_ledger() -> TestResult {
+    let dir = std::env::temp_dir().join(format!("yi-serve-g2-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir)?;
+    let (mut daemon, socket) = spawn_daemon(&dir)?;
+
+    let outcome = (|| -> TestResult {
+        let mut client = DaemonClient::connect(&socket)?;
+        client.request("init", "initialize", json!({"protocolVersion": 2}))?;
+
+        let mut armed = Vec::new();
+        let mut req = 0u32;
+        for worker in 0..WORKERS {
+            let cwd = dir.join(format!("root-{worker}"));
+            std::fs::create_dir_all(&cwd)?;
+            for session in 0..SESSIONS_PER_WORKER {
+                req = req.saturating_add(1);
+                let new = client.request(
+                    &format!("new-{req}"),
+                    "session/new",
+                    json!({"cwd": cwd.display().to_string()}),
+                )?;
+                let session_id = session_id_from(&new)?;
+                if session == 0 {
+                    req = req.saturating_add(1);
+                    arm_heartbeat(&mut client, &format!("hb-{req}"), &session_id)?;
+                }
+                armed.push((session_id, cwd.display().to_string()));
+            }
+        }
+        drop(client);
+
+        let sessions = dir.join("sessions");
+        if let Err(error) = wait_until(Instant::now() + Duration::from_secs(25), || {
+            ledgers_are_intact(&sessions)
+        }) {
+            return Err(format!("{error}\n{}", ledger_dump(&sessions)?).into());
+        }
+
+        let mut reconnected = DaemonClient::connect(&socket)?;
+        reconnected.request("1", "initialize", json!({"protocolVersion": 2}))?;
+        let list = reconnected.request("2", "session/list", json!({}))?;
+        let listed = list["result"]["sessions"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default();
+        for (session_id, cwd) in &armed {
+            assert!(
+                listed
+                    .iter()
+                    .any(|entry| entry["sessionId"] == session_id.as_str()),
+                "every armed session must survive reconnect: missing {session_id} in {list}"
+            );
+            let resume = reconnected.request(
+                session_id,
+                "session/resume",
+                json!({"sessionId": session_id, "cwd": cwd}),
+            )?;
+            assert_eq!(
+                resume["result"]["sessionId"],
+                session_id.as_str(),
+                "resume must route to the surviving worker: {resume}"
+            );
+        }
+        Ok(())
+    })();
+
+    let _cleanup = daemon.kill();
+    let _reaped = daemon.wait();
+    outcome
+}
+
+fn ledger_dump(sessions: &Path) -> Result<String, Box<dyn Error>> {
+    let dirs = rlm_dirs(sessions)?;
+    let mut out = format!("rlm dirs: {}\n", dirs.len());
+    for dir in dirs {
+        let path = ledger_path(&dir);
+        let body = std::fs::read_to_string(&path).unwrap_or_else(|error| format!("read: {error}"));
+        out.push_str(&format!("{}:\n{body}\n", path.display()));
+    }
+    Ok(out)
+}
+
+fn ledgers_are_intact(sessions: &Path) -> Result<bool, Box<dyn Error>> {
+    let dirs = rlm_dirs(sessions)?;
+    if dirs.len() != WORKERS {
+        return Ok(false);
+    }
+    for dir in dirs {
+        let text = match std::fs::read_to_string(ledger_path(&dir)) {
+            Ok(text) => text,
+            Err(_) => return Ok(false),
+        };
+        let state: ScheduleState = match serde_json::from_str(&text) {
+            Ok(state) => state,
+            Err(_) => return Ok(false),
+        };
+        if !state.dispatches.is_empty() {
+            return Ok(false);
+        }
+        if state.jobs.iter().filter(|job| job.run_count >= 1).count() != 1 {
+            return Ok(false);
+        }
+    }
+    Ok(true)
 }
