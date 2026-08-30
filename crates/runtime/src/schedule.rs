@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 
 use yi_types::schedule::{
     CronSchedule, DeliveryMode, DispatchRecord, Job, JobStatus, ScheduleKind, ScheduleState,
@@ -745,8 +745,44 @@ pub fn new_job(spec: JobSpec) -> Job {
 
 pub type DeliverFn = dyn Fn(&Job) -> RunOutcome + Send + Sync;
 
-/// Design H-flow: the single in-process timer. One session ⇒ one serial
-/// queue; per-session lanes arrive with the daemon (H7, phase 6).
+async fn dispatch_claimed_lanes(
+    store: &std::sync::Arc<JobStore>,
+    deliver: &std::sync::Arc<DeliverFn>,
+    claimed: Vec<ClaimedDispatch>,
+) {
+    let mut lanes = BTreeMap::<String, Vec<ClaimedDispatch>>::new();
+    for dispatch in claimed {
+        lanes
+            .entry(dispatch.job.session_id.clone())
+            .or_default()
+            .push(dispatch);
+    }
+    let mut handles = Vec::new();
+    for (_session, lane) in lanes {
+        let store = std::sync::Arc::clone(store);
+        let deliver = std::sync::Arc::clone(deliver);
+        handles.push(tokio::task::spawn_blocking(move || {
+            for dispatch in lane {
+                let outcome = deliver(&dispatch.job);
+                store.mutate(|state| {
+                    record_dispatch_result_in_state(
+                        state,
+                        &dispatch.id,
+                        outcome,
+                        None,
+                        yi_session::now_ms(),
+                    )
+                });
+            }
+        }));
+    }
+    for handle in handles {
+        // Invariant: a panicked lane leaves remaining claims for [`recover_interrupted_in_state`].
+        let _ = handle.await;
+    }
+}
+
+/// Design H-flow: one timer; after claim, each `session_id` is its own serial lane.
 pub struct Scheduler {
     task: tokio::task::JoinHandle<()>,
 }
@@ -781,18 +817,7 @@ impl Scheduler {
                         }
                         let claimed =
                             store.mutate(|state| claim_due_in_state(state, now, now, &mut new_id));
-                        for dispatch in claimed {
-                            let outcome = deliver(&dispatch.job);
-                            store.mutate(|state| {
-                                record_dispatch_result_in_state(
-                                    state,
-                                    &dispatch.id,
-                                    outcome,
-                                    None,
-                                    yi_session::now_ms(),
-                                )
-                            });
-                        }
+                        dispatch_claimed_lanes(&store, &deliver, claimed).await;
                     }
                 }
             }
