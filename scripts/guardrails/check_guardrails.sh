@@ -57,6 +57,14 @@ elif [ -n "${CI:-}" ]; then
 else
   run "$PY" scripts/guardrails/check_startup.py
 fi
+# Growth is priced once per version, in the changelog row a landing writes last,
+# so asking it of every commit inside that landing only teaches people to ignore
+# it; --fast is the pre-commit hook and the full run is the push.
+if [ "$FAST" -eq 1 ]; then
+  echo "skip growth (--fast: a version's growth is priced at the push, not per commit)"
+else
+  run "$PY" scripts/guardrails/check_growth.py
+fi
 
 if [ "$FAST" -eq 0 ]; then
   run cargo doc --workspace --no-deps --document-private-items -q
