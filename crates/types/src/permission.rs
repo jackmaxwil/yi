@@ -47,7 +47,7 @@ impl Default for SessionPermissionState {
     }
 }
 
-/// ACP-shaped permission request/response (design M9).
+/// ACP-shaped permission request/response.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PermissionRequest {

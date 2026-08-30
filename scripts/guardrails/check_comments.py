@@ -3,9 +3,10 @@
 Incident: the rule tested the sigil and nothing enforced it, so 82 blocks reached 4+ lines and
 1,017 doc-comment lines accumulated in crates the grant never covered (D49).
 
-Also rejects pointer-only comments: strip every row/decision id and the fact must still stand
-on its own. A reader without the design doc open gets nothing from "V12: verbatim,
-append-only"; ids are trailing pointers, never the payload."""
+Also rejects pointer-only comments, in every crate: strip every row/decision id and the fact
+must still stand on its own. A reader without the design doc open gets nothing from "V12:
+verbatim, append-only"; ids are trailing pointers, never the payload. Only the volume ratchet
+skips yi-types, where a schema fact earns its line."""
 import json, re, sys, pathlib
 sys.path.insert(0, str(pathlib.Path(__file__).parent))
 from _common import ROOT, BASE, src_files, prod_lines, fail
@@ -63,8 +64,8 @@ for f in src_files():
         n = end - start + 1
         if rel.parts[1] != "types":
             volume += n
-            if pointer_only(body):
-                pointers.append(f"{rel}:{start}: pointer-only comment; state the fact, keep the id a trailing pointer")
+        if pointer_only(body):
+            pointers.append(f"{rel}:{start}: pointer-only comment; state the fact, keep the id a trailing pointer")
         if n > CAP and not (start == 1 and any(LICENSE.search(l) for l in body)):
             over.append(f"{rel}:{start}: comment run of {n} lines > {CAP}")
         m = TAG.match(body[0])
