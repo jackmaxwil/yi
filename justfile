@@ -81,8 +81,26 @@ prerelease version:
     just package "{{version}}"
     echo "prerelease {{version}}: ok"
 
+# Real-binary journeys over the faux model: keyless, offline, and slow enough
+# (a process tree or a kernel boot per assertion) to stay out of `just check`,
+# where #[ignore] keeps them.
+journeys:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cargo test --workspace -- --ignored
+    # The true-terminal journey has no cargo home: no test can hand the binary
+    # a pty that answers its cursor-position query, so the harness runs here.
+    cargo build -p yi-cli
+    home="$PWD/target/journeys"
+    rm -rf "$home"
+    mkdir -p "$home"
+    # Incident: a drive run read the developer's own ~/.yi/config.json, so a
+    # `keys` entry there decided whether it passed.
+    HOME="$home" python3 scripts/tui_pty.py --send-quit --expect '› ping' \
+      --expect 'faux:' -- tui --model faux/faux-1 --session-dir "$home/sessions" ping
+
 # Tier 4, after a merge: the suite against the profile that ships, unwind forced.
-postmerge:
+postmerge: journeys
     CARGO_PROFILE_DIST_PANIC=unwind cargo test --workspace --profile dist
 
 # Tier 4 sibling: the task-eval runner over its fixtures, faux only. Offline and
@@ -90,6 +108,10 @@ postmerge:
 postmerge-evals:
     cargo build -p yi-cli
     python3 evals/run.py --dry --binary target/debug/yi --model faux/faux-1
+
+# Prefill the PR narrative's counted sections from the diff against main.
+pr-body:
+    python3 scripts/pr_body.py
 
 # Upload an already-built, signed release to Forgejo (release-scoped token).
 publish version:
