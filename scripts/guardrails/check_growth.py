@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Net src growth is budgeted: <= +150 lines rides free, past it the current
-version's changelog row must carry a `growth +N:` memo, past +2000 that row must
-also cite the decision row the landing claimed.
+version's changelog row must carry a `growth +N:` memo naming the measured
+number, past +2000 that row must also cite the decision row the landing claimed.
+--update pays the same price before it absorbs a delta.
 Both bands come from history, which --calibrate reprints: over 95 versions the
 free band lands almost exactly on the seam between the two regimes — 46 organic
 bumps under it, 49 landings over — and 7 of those landings clear +2000."""
@@ -86,6 +87,35 @@ def calibrate():
           f"{len([d for d in over if d > DROW])} over +{DROW}")
 
 
+def unpaid(version, base_version, delta):
+    """A landing writes its row before its last commits, so the memo's number may trail the
+    final measurement by whatever rides free — and a number that never reached the free band
+    was never a description of this growth."""
+    if delta <= FREE:
+        return []
+    row = changelog_row(version)
+    if version == base_version:
+        return [
+            f"{delta:+d} crosses the free band of +{FREE} with no version bump",
+            f"  a memo lives in a version's own changelog row: bump past {version} and write it",
+        ]
+    if row is None:
+        return [f"{delta:+d} is past +{FREE} and {version} has no changelog row to carry the memo"]
+    errs = []
+    memo = MEMO.search(row)
+    if memo is None:
+        errs.append(f"{delta:+d} is past +{FREE}: the {version} row needs a `growth +{delta}:` clause")
+        errs.append("  naming the measured number and what was weighed for deletion")
+    else:
+        said = int(memo.group(1))
+        if said <= FREE or abs(said - delta) > FREE:
+            errs.append(f"the {version} row says `growth +{said}:` but the measurement is {delta:+d}")
+            errs.append(f"  a memo may trail the measured number by the free band +{FREE}, not by more")
+    if delta > DROW and not CITE.search(row):
+        errs.append(f"{delta:+d} is past +{DROW}: the {version} row must also cite the D-row it claimed")
+    return errs
+
+
 if "--calibrate" in sys.argv:
     calibrate()
     sys.exit(0)
@@ -98,6 +128,11 @@ now = measured()
 base = json.loads(BASELINE.read_text()) if BASELINE.exists() else None
 
 if "--update" in sys.argv:
+    # Incident: the update absorbed an unpriced delta across a version bump, so running it
+    # instead of writing the memo bought a green gate and left no record. The update is when
+    # the price falls due, and the only moment the number is still known.
+    if base is not None:
+        fail(unpaid(version, base["version"], now - base["loc"]), "growth --update")
     BASELINE.write_text(json.dumps({"version": version, "loc": now}, indent=2) + "\n")
     was = f"{base['loc']} (version {base['version']})" if base else "unseeded"
     print(f"src LOC {was} -> {now} (version {version})")
@@ -108,18 +143,4 @@ if base is None:
 
 delta = now - base["loc"]
 report = f"{now} lines, {delta:+d} since {base['version']}"
-errs = []
-if delta > FREE:
-    row = changelog_row(version)
-    if version == base["version"]:
-        errs.append(f"{delta:+d} crosses the free band of +{FREE} with no version bump")
-        errs.append(f"  a memo lives in a version's own changelog row: bump past {version} and write it")
-    elif row is None:
-        errs.append(f"{delta:+d} is past +{FREE} and {version} has no changelog row to carry the memo")
-    else:
-        if not MEMO.search(row):
-            errs.append(f"{delta:+d} is past +{FREE}: the {version} row needs a `growth +{delta}:` clause")
-            errs.append("  naming the measured number and what was weighed for deletion")
-        if delta > DROW and not CITE.search(row):
-            errs.append(f"{delta:+d} is past +{DROW}: the {version} row must also cite the D-row it claimed")
-fail(errs, f"growth ({report}, free band +{FREE})")
+fail(unpaid(version, base["version"], delta), f"growth ({report}, free band +{FREE})")
