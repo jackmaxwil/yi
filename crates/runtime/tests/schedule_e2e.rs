@@ -198,11 +198,7 @@ async fn unresolved_claims_recover_as_interrupted_on_start() -> TestResult {
 #[tokio::test]
 async fn heartbeat_surface_set_status_pause_clear_round_trip() -> TestResult {
     let (dir, store) = temp_store("surface");
-    let service = HeartbeatService {
-        store: Arc::clone(&store),
-        session_id: "test".to_owned(),
-        cwd: "/tmp".to_owned(),
-    };
+    let service = HeartbeatService::new(Arc::clone(&store), "test", "/tmp");
     let now = yi_session::now_ms();
 
     let set = parse_heartbeat_command("/heartbeat every 10m run the tests")?;
@@ -366,6 +362,35 @@ async fn blocked_session_does_not_stall_a_sibling_lane() -> TestResult {
         tokio::time::sleep(std::time::Duration::from_millis(25)).await;
     }
     scheduler.stop();
+    let _ = std::fs::remove_dir_all(&dir);
+    Ok(())
+}
+
+#[test]
+fn setting_a_heartbeat_does_not_cancel_a_sibling_session() -> TestResult {
+    let (dir, store) = temp_store("sibling-hb");
+    let a = HeartbeatService::new(Arc::clone(&store), "sess-a", "/tmp");
+    let b = HeartbeatService::new(Arc::clone(&store), "sess-b", "/tmp");
+    let now = yi_session::now_ms();
+    a.apply(
+        &parse_heartbeat_command("/heartbeat every 10m watch A")?,
+        now,
+    )?;
+    b.apply(
+        &parse_heartbeat_command("/heartbeat every 10m watch B")?,
+        now,
+    )?;
+    let active: Vec<_> = store
+        .snapshot()
+        .jobs
+        .into_iter()
+        .filter(|job| job.status == JobStatus::Active)
+        .collect();
+    assert_eq!(
+        active.len(),
+        2,
+        "two sessions on one store must keep both heartbeats: {active:?}"
+    );
     let _ = std::fs::remove_dir_all(&dir);
     Ok(())
 }
