@@ -216,6 +216,14 @@ fn plan_and_undo_answer_for_the_session_the_turn_ran_in() -> TestResult {
     let _ = std::fs::remove_dir_all(&dir);
     let work = dir.join("work");
     std::fs::create_dir_all(&work)?;
+    // Incident: HOME is a fresh directory, so the default kernel prewarm builds
+    // a venv on every run and its "setting up python kernel (one-time, ~30s)…"
+    // frame outlasted the 10 s waits below. Neither surface here uses a kernel.
+    std::fs::create_dir_all(dir.join(".yi"))?;
+    std::fs::write(
+        dir.join(".yi/config.json"),
+        r#"{"kernel":{"prewarm":false}}"#,
+    )?;
     let keys = dir.join("script.keys");
     std::fs::write(
         &keys,
