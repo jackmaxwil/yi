@@ -207,18 +207,14 @@ fn slash_new_swaps_the_session_and_clears_the_transcript() -> TestResult {
     Ok(())
 }
 
-/// Both surfaces answer for *this* session: a plan service that never attached
-/// and a turn that wrote no checkpoint each say something else, and the
-/// difference is the whole contract a reader depends on after a turn.
+/// Plan, undo, permissions, compact and sessions all answer for this session.
 #[test]
 fn plan_and_undo_answer_for_the_session_the_turn_ran_in() -> TestResult {
     let dir = std::env::temp_dir().join(format!("yi-tui-surfaces-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     let work = dir.join("work");
     std::fs::create_dir_all(&work)?;
-    // Incident: HOME is a fresh directory, so the default kernel prewarm builds
-    // a venv on every run and its "setting up python kernel (one-time, ~30s)…"
-    // frame outlasted the 10 s waits below. Neither surface here uses a kernel.
+    // Empty HOME would prewarm a kernel and outlast the waits; none of these verbs need one.
     std::fs::create_dir_all(dir.join(".yi"))?;
     std::fs::write(
         dir.join(".yi/config.json"),
@@ -228,7 +224,10 @@ fn plan_and_undo_answer_for_the_session_the_turn_ran_in() -> TestResult {
     std::fs::write(
         &keys,
         "wait-idle 10000\nkey /\ntype plan\nkey enter\nwait-frame 10000 /plan: no plan\n\
-         key /\ntype undo\nkey enter\nwait-frame 10000 /undo: nothing to restore\nquit\n",
+         key /\ntype undo\nkey enter\nwait-frame 10000 /undo: nothing to restore\n\
+         key /\ntype permissions\nkey enter\nwait-frame 10000 permission mode:\nkey /\n\
+         type compact\nkey enter\nwait-frame 10000 compaction scheduled\nkey /\n\
+         type sessions\nkey enter\nwait-frame 10000 0s ago\nquit\n",
     )?;
     let frames = dir.join("frames");
 
@@ -264,14 +263,18 @@ fn plan_and_undo_answer_for_the_session_the_turn_ran_in() -> TestResult {
     entries.sort_by_key(std::fs::DirEntry::file_name);
     let last = entries.last().ok_or("no frames dumped")?;
     let final_frame = std::fs::read_to_string(last.path())?;
-    assert!(
-        final_frame.contains("/plan: no plan in this session"),
-        "/plan must reach the session's own plan service: {final_frame}"
-    );
-    assert!(
-        final_frame.contains("/undo: nothing to restore"),
-        "/undo must restore from the checkpoint this turn wrote: {final_frame}"
-    );
+    for needle in [
+        "/plan: no plan in this session",
+        "/undo: nothing to restore",
+        "permission mode:",
+        "compaction scheduled",
+        "0s ago",
+    ] {
+        assert!(
+            final_frame.contains(needle),
+            "{needle} must reach this session: {final_frame}"
+        );
+    }
     let _ = std::fs::remove_dir_all(&dir);
     Ok(())
 }

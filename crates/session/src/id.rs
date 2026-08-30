@@ -14,6 +14,36 @@ pub fn now_ms() -> u64 {
         .unwrap_or(0)
 }
 
+pub fn age_label(elapsed_ms: u64) -> String {
+    let seconds = elapsed_ms / 1_000;
+    let minutes = seconds / 60;
+    let hours = minutes / 60;
+    let days = hours / 24;
+    if days > 0 {
+        format!("{days}d ago")
+    } else if hours > 0 {
+        format!("{hours}h ago")
+    } else if minutes > 0 {
+        format!("{minutes}m ago")
+    } else {
+        format!("{seconds}s ago")
+    }
+}
+
+#[cfg(test)]
+mod age_tests {
+    use super::age_label;
+
+    #[test]
+    fn age_label_uses_the_largest_unit() {
+        assert_eq!(age_label(0), "0s ago");
+        assert_eq!(age_label(59_999), "59s ago");
+        assert_eq!(age_label(60_000), "1m ago");
+        assert_eq!(age_label(3_600_000), "1h ago");
+        assert_eq!(age_label(86_400_000), "1d ago");
+    }
+}
+
 pub struct IdGenerator {
     seed: RandomState,
     counter: u64,
