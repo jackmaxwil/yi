@@ -30,20 +30,6 @@ pub fn age_label(elapsed_ms: u64) -> String {
     }
 }
 
-#[cfg(test)]
-mod age_tests {
-    use super::age_label;
-
-    #[test]
-    fn age_label_uses_the_largest_unit() {
-        assert_eq!(age_label(0), "0s ago");
-        assert_eq!(age_label(59_999), "59s ago");
-        assert_eq!(age_label(60_000), "1m ago");
-        assert_eq!(age_label(3_600_000), "1h ago");
-        assert_eq!(age_label(86_400_000), "1d ago");
-    }
-}
-
 pub struct IdGenerator {
     seed: RandomState,
     counter: u64,
@@ -100,5 +86,19 @@ pub fn validate_session_id(id: &str) -> Result<(), SessionError> {
         Err(SessionError::InvalidPayload(
             "Session id must be non-empty, contain only alphanumeric characters, '-', '_', and '.', and start and end with an alphanumeric character".to_owned(),
         ))
+    }
+}
+
+#[cfg(test)]
+mod age_tests {
+    use super::age_label;
+
+    #[test]
+    fn age_label_uses_the_largest_unit() {
+        assert_eq!(age_label(0), "0s ago");
+        assert_eq!(age_label(59_999), "59s ago");
+        assert_eq!(age_label(60_000), "1m ago");
+        assert_eq!(age_label(3_600_000), "1h ago");
+        assert_eq!(age_label(86_400_000), "1d ago");
     }
 }
