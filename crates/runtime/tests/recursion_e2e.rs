@@ -1175,6 +1175,7 @@ fn task(id: &str, check: &str) -> yi_types::plan::Task {
         assignee: None,
         red_count: None,
         red_fingerprint: None,
+        readmit: None,
         extra: Map::new(),
     }
 }

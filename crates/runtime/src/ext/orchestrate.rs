@@ -69,9 +69,39 @@ fn enumerations(prompt: &str) -> i32 {
     i32::try_from(count).unwrap_or(i32::MAX).min(4)
 }
 
-pub fn prefilter(prompt: &str, repo_dirty: bool, named_paths: u32) -> Route {
+/// Invariant: the persisted route row reads these fields, so the scorer and
+/// the telemetry cannot disagree — a Python mirror of the scoring would be a
+/// shadow model that drifts from the constant it is fitting.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Features {
+    pub words: usize,
+    pub enums: i32,
+    pub imperatives: i32,
+    pub questions: i32,
+    pub and_count: i32,
+    pub fenced: bool,
+    pub score: i32,
+}
+
+impl Features {
+    pub fn route(self) -> Route {
+        match self.score {
+            s if s <= -3 => Route::OneShot,
+            s if s >= 4 => Route::Complex,
+            _ => Route::Undecided,
+        }
+    }
+}
+
+pub fn features(prompt: &str, repo_dirty: bool, named_paths: u32) -> Features {
     let words = prompt.split_whitespace().count();
     let imperatives = word_hits(prompt, &IMPERATIVES);
+    let questions = word_hits(prompt, &QUESTIONS);
+    let enums = enumerations(prompt);
+    let fenced = prompt.contains("```");
+    let and_count = i32::try_from(prompt.matches(" and ").count())
+        .unwrap_or(i32::MAX)
+        .min(3);
     let paths = i32::try_from(named_paths).unwrap_or(i32::MAX);
     let mut score = 0i32;
     // Short and quiet: no verb of scale, no path named, nothing changed yet.
@@ -79,21 +109,27 @@ pub fn prefilter(prompt: &str, repo_dirty: bool, named_paths: u32) -> Route {
     if words < 12 && !repo_dirty && imperatives == 0 && named_paths == 0 {
         score -= 3;
     }
-    if prompt.contains("```") {
+    if fenced {
         score -= 1;
     }
-    score += i32::try_from(prompt.matches(" and ").count())
-        .unwrap_or(i32::MAX)
-        .min(3);
-    score += enumerations(prompt);
+    score += and_count;
+    score += enums;
     score += imperatives;
-    score -= word_hits(prompt, &QUESTIONS);
+    score -= questions;
     score += paths.saturating_sub(1).max(0);
-    match score {
-        s if s <= -3 => Route::OneShot,
-        s if s >= 4 => Route::Complex,
-        _ => Route::Undecided,
+    Features {
+        words,
+        enums,
+        imperatives,
+        questions,
+        and_count,
+        fenced,
+        score,
     }
+}
+
+pub fn prefilter(prompt: &str, repo_dirty: bool, named_paths: u32) -> Route {
+    features(prompt, repo_dirty, named_paths).route()
 }
 
 const TOOL_CALLS_PER_TURN: u32 = 4;
@@ -143,18 +179,25 @@ impl Orchestrate {
         named_paths: u32,
         out: &mut Vec<Effect>,
     ) {
+        let features = features(prompt, repo_dirty, named_paths);
         let route = if mentions_orchestration(prompt) {
             Route::Complex
         } else {
-            prefilter(prompt, repo_dirty, named_paths)
+            features.route()
         };
         out.push(Effect::Record {
             key: "route",
             value: json!({
                 "route": route.label(),
-                "words": prompt.split_whitespace().count(),
+                "words": features.words,
                 "repo_dirty": repo_dirty,
                 "named_paths": named_paths,
+                "score": features.score,
+                "enums": features.enums,
+                "imperatives": features.imperatives,
+                "questions": features.questions,
+                "and_count": features.and_count,
+                "fenced": features.fenced,
             }),
         });
         if route == Route::Complex {

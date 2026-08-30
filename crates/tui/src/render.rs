@@ -176,7 +176,10 @@ fn draw_frame<B>(
         mode: (app.mode != TranscriptMode::default()).then(|| app.mode.label().to_owned()),
         cwd: app.options.cwd.clone(),
         branch: None,
-        cost: (app.cost_total > 0.0).then(|| format!("${:.2}", app.cost_total)),
+        cost: (app.cost_total > 0.0 || app.cost_unknown).then(|| {
+            let mark = if app.cost_unknown { "+?" } else { "" };
+            format!("${:.2}{mark}", app.cost_total)
+        }),
         session_name: app.options.session_name.clone(),
         subagents: app
             .tasks

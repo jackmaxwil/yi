@@ -2,6 +2,7 @@
 
 pub mod advisor;
 pub mod affordance;
+pub mod auto_review;
 pub mod checkpoint;
 pub mod compaction;
 pub mod ext;
@@ -32,7 +33,7 @@ pub use kernel::{
 pub use mailbox::ParentLink;
 pub use permission::{AskOutcome, Asker, PermissionAsk, PermissionBroker};
 pub use provider::{ProviderStream, available_models, resolve_model};
-pub use rewind::{Rewound, rewind_to};
+pub use rewind::{BranchStub, Rewound, rewind_to, summarize_branch};
 pub use session::{AgentSession, SessionConfig, SessionError, Status};
 pub use skills::{Skill, skills_catalog};
 pub use subagent::{

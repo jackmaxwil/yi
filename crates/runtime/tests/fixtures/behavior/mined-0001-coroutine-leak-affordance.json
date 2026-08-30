@@ -1,0 +1,49 @@
+{
+  "id": "mined-0001-coroutine-leak-affordance",
+  "description": "an un-awaited rlm.run coroutine carries the await-fix affordance instead of silence; without it the model reads a printed coroutine repr as an opaque object and burns turns on API archaeology (session 01a04c94: nine turns, 57s, seq 26-42)",
+  "provenance": {
+    "kind": "mined",
+    "session": "1787991167738_01a04c94-12f8-7240-81ce-a860534f459b.jsonl"
+  },
+  "stubs": [
+    {
+      "name": "ipython",
+      "results": [
+        {
+          "text": "spawned <coroutine object run at 0x1098f72e0> <coroutine object run at 0x1098f74c0>"
+        }
+      ]
+    }
+  ],
+  "turns": [
+    {
+      "user": "port crates/foo to the new api and report the files changed",
+      "responses": [
+        {
+          "toolCall": {
+            "id": "ipython-spawn",
+            "name": "ipython",
+            "arguments": {
+              "code": "h = rlm.run(\"Port crates/foo to the new API. Report the files changed.\")"
+            }
+          }
+        },
+        {
+          "text": "spawning a child to handle this"
+        }
+      ]
+    }
+  ],
+  "assertions": [
+    {
+      "kind": "toolResultContains",
+      "callId": "ipython-spawn",
+      "needle": "next: an un-awaited coroutine ran nothing; rlm.run and handle.result are async, so write h = await rlm.run(...) then await h.result()"
+    },
+    {
+      "kind": "toolCallCount",
+      "name": "ipython",
+      "max": 1
+    }
+  ]
+}

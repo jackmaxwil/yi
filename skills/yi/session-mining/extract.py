@@ -13,6 +13,7 @@ pins that, and pins that planted fake secrets never reach an output file.
 import argparse
 import collections
 import hashlib
+import itertools
 import json
 import math
 import os
@@ -22,16 +23,40 @@ import tempfile
 import time
 from pathlib import Path
 
-EXTRACTOR_VERSION = 1
+EXTRACTOR_VERSION = 2
 SCHEMA_VERSION = 1
 
 # Tool names from the crates/tools registry that cannot change the tree; the
 # first call outside this set is the session's first productive action.
 READ_ONLY_TOOLS = frozenset({"read", "glob", "grep"})
 
+# One vocabulary, third use: READ_ONLY_VERBS / READ_ONLY_GIT / read_only_segment
+# in crates/tools/src/builtins.rs, which the permission layer already reads. A
+# verb added there and not here silently ends orientation early.
+READ_ONLY_VERBS = frozenset(
+    "ls cat head tail wc pwd echo printf which type file stat du df date env"
+    " printenv grep rg ag find fd diff true".split()
+)
+READ_ONLY_GIT = frozenset(
+    "log status diff show blame branch describe rev-parse ls-files shortlog".split()
+)
+
 # One vocabulary, second use: PROTECTED_CREDENTIAL_SUBPATHS in
-# crates/permission/src/catastrophic.rs. The two lists move together.
+# crates/permission/src/catastrophic.rs. A store added there and not here stops
+# being redacted out of every mined artifact.
 CREDENTIAL_SUBPATHS = [".ssh", ".gnupg", ".aws", ".kube", ".docker"]
+
+# These three are hand-copied out of Rust, so --selfcheck reads the Rust back
+# and compares. An asserted invariant nobody runs is how a mirror drifts.
+RUST_MIRRORS = (
+    ("crates/tools/src/builtins.rs", "READ_ONLY_VERBS", READ_ONLY_VERBS),
+    ("crates/tools/src/builtins.rs", "READ_ONLY_GIT", READ_ONLY_GIT),
+    (
+        "crates/permission/src/catastrophic.rs",
+        "PROTECTED_CREDENTIAL_SUBPATHS",
+        frozenset(CREDENTIAL_SUBPATHS),
+    ),
+)
 
 CRED_PATH_RE = re.compile(
     r"[/~]\.(?:" + "|".join(s[1:] for s in CREDENTIAL_SUBPATHS) + r")(?:[/\s\"':]|$)"
@@ -186,6 +211,45 @@ def text_of(content):
     return ""
 
 
+def read_only_segment(segment):
+    tokens = [
+        t
+        for t in segment.split()
+        if not (">" in t and t.endswith("/dev/null"))
+    ]
+    if any(">" in t or "`" in t or "$(" in t for t in tokens):
+        return False
+    # Rust drops only the *leading* env assignments, so `git a=b log` keeps its
+    # argument and an all-assignment segment runs nothing. Filtering everywhere
+    # answered the opposite on both, which is a second vocabulary, not a port.
+    words = list(itertools.dropwhile(lambda word: "=" in word, tokens))
+    if not words:
+        return True
+    verb = words[0].rsplit("/", 1)[-1]
+    if verb == "git":
+        return len(words) > 1 and words[1] in READ_ONLY_GIT
+    return verb in READ_ONLY_VERBS
+
+
+def read_only_command(command):
+    """Port of read_only_segment in crates/tools/src/builtins.rs: every segment
+    of the command must be read-only, so `ls && rm -rf x` is not."""
+    parts = [p for chunk in re.split(r"[|;\n]", command) for p in chunk.split("&&")]
+    return bool(command.strip()) and all(read_only_segment(p) for p in parts)
+
+
+def call_is_read_only(name, arguments):
+    """Incident: `READ_ONLY_TOOLS` screened the tool name only, so `pwd && ls -la`
+    ended orientation and 6 of 9 mined sessions reported 0 read-only calls before
+    their first mutation. `ipython` stays a mutation: arbitrary code has no
+    deterministic screen, and guessing one is the shadow model this avoids."""
+    if name in READ_ONLY_TOOLS:
+        return True
+    if name == "bash":
+        return read_only_command(arguments.get("command") or "")
+    return False
+
+
 def extract_session(path, header, entries, census):
     sid = header.get("id", path.name)
     tokens = dict(input=0, output=0, cacheRead=0, cacheWrite=0, costUsd=0.0)
@@ -193,7 +257,7 @@ def extract_session(path, header, entries, census):
     calls, failures, denials, interrupts, compactions = [], 0, 0, 0, 0
     turns, peak, streak, streak_max = 0, 0, 0, 0
     seen_args, repeated = set(), 0
-    orientation_trace, first_mutation = [], None
+    orientation_trace, first_mutation, reads = [], None, 0
     pending, delegation, last_stop = {}, [], None
     ended_at = header.get("createdAt", 0)
 
@@ -240,8 +304,10 @@ def extract_session(path, header, entries, census):
                 index = len(calls)
                 calls.append({"tool": name, "key": key, "error": None})
                 pending[block.get("id")] = index
+                read_only = call_is_read_only(name, arguments)
+                reads += int(read_only)
                 if first_mutation is None:
-                    if name in READ_ONLY_TOOLS:
+                    if read_only:
                         orientation_trace.append(name)
                     else:
                         first_mutation = {
@@ -277,7 +343,6 @@ def extract_session(path, header, entries, census):
                 streak = 0
 
     issues = failure_events(sid, calls, ended_at)
-    reads = sum(by_tool[t] for t in READ_ONLY_TOOLS)
     total_calls = sum(by_tool.values())
     mu = {
         "v": SCHEMA_VERSION,
@@ -492,9 +557,14 @@ def report(result, sessions_dir, out_dir):
     )
     reasons = collections.Counter(r for _, r in result["skipped"])
     reason = ", ".join(f"{n} {r}" for r, n in sorted(reasons.items())) or "none"
+    # Incident: `wins` read 329/364 (90%) over a corpus whose 316 single-turn
+    # faux runs cannot win or lose anything; the slice that ran a tool read
+    # 4/10. Every behavioural rate quotes the substantive denominator.
+    worked = [r for r in mu if r["toolCalls"]["total"]]
     out.append(
         f"{len(mu)} sessions scanned, {len(result['skipped'])} skipped ({reason}), "
-        f"covering {span}; {result['corrupt']} corrupt lines skipped"
+        f"covering {span}; {result['corrupt']} corrupt lines skipped; "
+        f"{len(worked)} of {len(mu)} carried a tool call"
     )
     out.append(CAVEAT)
     out.append(f"corpus: {sessions_dir}  ->  {out_dir}")
@@ -516,12 +586,12 @@ def report(result, sessions_dir, out_dir):
     if not result["board"]:
         out.append("  (none)")
     out.append("")
-    oriented = [r for r in mu if r["orientation"]["callsBeforeFirstMutation"] is not None]
+    oriented = [r for r in worked if r["orientation"]["callsBeforeFirstMutation"] is not None]
     if oriented:
         avg = sum(r["orientation"]["callsBeforeFirstMutation"] for r in oriented) / len(oriented)
         out.append(
-            f"orientation: {len(oriented)}/{len(mu)} sessions reached a mutation, "
-            f"mean {avg:.1f} read-only calls before it"
+            f"orientation: {len(oriented)}/{len(worked)} working sessions reached a "
+            f"mutation, mean {avg:.1f} read-only calls before it"
         )
     else:
         out.append("orientation: no session reached a mutation")
@@ -532,7 +602,7 @@ def report(result, sessions_dir, out_dir):
         f"{sum(r['resultBytes'] for r in briefs)} result bytes"
     )
     out.append(
-        f"wins: {sum(1 for r in mu if r['wins'])}/{len(mu)}; "
+        f"wins: {sum(1 for r in worked if r['wins'])}/{len(worked)} working sessions; "
         f"repeated calls: {sum(r['repeatedCalls'] for r in mu)}; "
         f"compactions: {sum(r['compactions'] for r in mu)}"
     )
@@ -610,7 +680,73 @@ PLANTS = [
 ]
 
 
+def orientation_fixture(directory):
+    """A session that reads the repo with bash before it writes anything —
+    the shape 5 of the 10 working sessions in the 2026-08-29 corpus open with."""
+    def call(cid, tool, arguments):
+        return {
+            "kind": "entry",
+            "lane": "main",
+            "type": "message",
+            "message": {
+                "role": "assistant",
+                "usage": {"input": 100, "cacheRead": 0, "cacheWrite": 0, "output": 5},
+                "stopReason": "stop",
+                "content": [
+                    {"type": "toolCall", "id": cid, "name": tool, "arguments": arguments}
+                ],
+            },
+        }
+
+    rows = [
+        {"kind": "header", "version": 4, "id": "fixture-orient", "createdAt": 1780000000000},
+        call("o1", "bash", {"command": "pwd && ls -la"}),
+        call("o2", "bash", {"command": "git log --oneline -5"}),
+        call("o3", "write", {"path": "src/lib.rs", "content": "x"}),
+        call("o4", "bash", {"command": "rm -rf /tmp/scratch"}),
+    ]
+    idle = [
+        {"kind": "header", "version": 4, "id": "fixture-idle", "createdAt": 1780000000001},
+        {
+            "kind": "entry",
+            "lane": "main",
+            "type": "message",
+            "message": {"role": "assistant", "stopReason": "stop", "content": []},
+        },
+    ]
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / "orient.jsonl").write_text(
+        "\n".join(json.dumps(r) for r in rows) + "\n"
+    )
+    (directory / "idle.jsonl").write_text("\n".join(json.dumps(r) for r in idle) + "\n")
+    return directory
+
+
+def rust_string_array(root, relative, name):
+    """The literals of a Rust `const NAME: [&str; N] = [...]`. N is checked too,
+    so a regex that matched half an array cannot read as agreement."""
+    source = (root / relative).read_text()
+    match = re.search(
+        r"const %s: \[&str; (\d+)\] = \[(.*?)\];" % re.escape(name), source, re.S
+    )
+    assert match, f"{relative} no longer declares {name}"
+    values = re.findall(r'"([^"]*)"', match.group(2))
+    assert len(values) == int(match.group(1)), f"{name}: parsed {values}"
+    return frozenset(values)
+
+
+def check_rust_mirrors(root):
+    for relative, name, mirrored in RUST_MIRRORS:
+        declared = rust_string_array(root, relative, name)
+        assert declared == mirrored, (
+            f"{name} drifted from {relative}: rust only "
+            f"{sorted(declared - mirrored)}, python only {sorted(mirrored - declared)}"
+        )
+    return len(RUST_MIRRORS)
+
+
 def selfcheck():
+    check_rust_mirrors(Path(__file__).resolve().parents[3])
     fixtures = Path(__file__).resolve().parent / "fixtures"
     with tempfile.TemporaryDirectory() as tmp:
         first, second = Path(tmp) / "a", Path(tmp) / "b"
@@ -655,7 +791,31 @@ def selfcheck():
         assert missing, "absent dedupe sources must be named, not silently skipped"
         assert scored and scored[0][0] >= DEDUPE_THRESHOLD, f"echo scored {scored[:1]}"
         assert not novel or novel[0][0] < DEDUPE_THRESHOLD, f"novel scored {novel[:1]}"
-    print("ok   selfcheck: redaction, determinism, corrupt tolerance, lifecycle, dedupe")
+
+        assert read_only_command("pwd && ls -la")
+        assert read_only_command("git log --oneline -5")
+        assert not read_only_command("ls && rm -rf /tmp/scratch")
+        assert not read_only_command("echo hi > file")
+        assert not read_only_command("")
+        # The three the Rust and the port used to answer differently on.
+        assert read_only_command("TERM=dumb ls -la")
+        assert read_only_command("FOO=1 BAR=2")
+        assert not read_only_command("git a=b log")
+        oriented = sweep(
+            orientation_fixture(Path(tmp) / "orient-in"), Path(tmp) / "orient-out"
+        )
+        pick = lambda rows: next(r for r in rows if r["sessionId"] == "fixture-orient")
+        row, trace = pick(oriented["mu"]), pick(oriented["orientation"])
+        assert row["orientation"]["callsBeforeFirstMutation"] == 2, row["orientation"]
+        assert trace["trace"] == ["bash", "bash"], trace
+        assert row["readRatio"] == 0.5, row["readRatio"]
+        text = report(oriented, Path(tmp) / "orient-in", Path(tmp) / "orient-out")
+        assert "1 of 2 carried a tool call" in text, text
+        assert "wins: 1/1 working sessions" in text, text
+    print(
+        "ok   selfcheck: redaction, determinism, corrupt tolerance, lifecycle,"
+        " dedupe, orientation, rust mirrors"
+    )
     return 0
 
 

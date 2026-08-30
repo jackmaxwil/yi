@@ -36,6 +36,9 @@ fn headless_drive_renders_a_turn_and_dumps_frames() -> TestResult {
             &frames.display().to_string(),
             "ping",
         ])
+        // Incident: the drive gate read the developer's own ~/.yi/config.json,
+        // so a `keys` entry there decided whether it passed.
+        .env("HOME", &dir)
         .output()?;
     assert!(
         output.status.success(),
@@ -162,6 +165,7 @@ fn slash_new_swaps_the_session_and_clears_the_transcript() -> TestResult {
             &frames.display().to_string(),
             "ping",
         ])
+        .env("HOME", &dir)
         .output()?;
     assert!(
         output.status.success(),

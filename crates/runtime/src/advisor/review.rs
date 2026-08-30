@@ -26,7 +26,7 @@ use crate::session::{AgentSession, SessionConfig};
 use yi_types::model::ToolDef;
 
 /// Reviews the work log, not the mind: never surveillance of hidden reasoning.
-pub const ADVISOR_SYSTEM_PROMPT: &str = "You are reviewing the work log of an automated coding run against the task. Judge only what was said and done: user messages, tool calls with their declared intents, tool results, and the agent's emitted prose. Use the advise tool at most once per review with one concrete, specific, actionable note; stay silent when the run is on track. Never repeat advice you already gave. For each claim you are asked to audit, cite the log line that backs it or say UNBACKED. A context line reporting tasks done unchecked means those completions ran no executable check: treat them as claims, not results.";
+pub const ADVISOR_SYSTEM_PROMPT: &str = "You are reviewing the work log of an automated coding run against the task. Judge only what was said and done: user messages, tool calls with their declared intents, tool results, and the agent's emitted prose. Use the advise tool at most once per review with one concrete, specific, actionable note; stay silent when the run is on track. Never repeat advice you already gave. For each claim you are asked to audit, cite the log line that backs it or say UNBACKED. A context line reporting tasks done unchecked means those completions ran no executable check: treat them as claims, not results. A `compaction:` line means the primary's context was replaced by that summary: check it against the directives panel and recent work, and flag any load-bearing fact, constraint, or forward intent it dropped.";
 
 fn lock_sink(sink: &Mutex<Vec<Advice>>) -> std::sync::MutexGuard<'_, Vec<Advice>> {
     sink.lock()
@@ -183,7 +183,7 @@ impl LlmReviewer {
             return Vec::new();
         }
         session.wait_idle().await;
-        if let Some(usage) = session.last_usage() {
+        if let Some(usage) = session.last_usage().filter(|usage| !usage.unknown) {
             let total = u64::try_from(usage.total_tokens).unwrap_or(0);
             runtime.record_spend(yi_session::now_ms(), total);
         }

@@ -41,6 +41,9 @@ pub enum UiEvent {
 pub enum Command {
     Prompt(String),
     Steer(String),
+    /// E1: the rewind itself is synchronous on the render thread; the
+    /// summarizer call it earns is not.
+    SummarizeBranch(yi_runtime::BranchStub),
     Abort,
     Shutdown,
 }
@@ -155,6 +158,7 @@ pub struct App {
     pub(crate) options: TuiOptions,
     pub(crate) context_used: u64,
     pub(crate) cost_total: f64,
+    pub(crate) cost_unknown: bool,
     pub(crate) width: usize,
     pub(crate) rows: usize,
 }
@@ -230,6 +234,7 @@ impl App {
             options,
             context_used: 0,
             cost_total: 0.0,
+            cost_unknown: false,
             width,
             rows: 24,
         };
@@ -603,6 +608,7 @@ impl App {
                 ..
             } => {
                 self.cost_total += usage.cost.total.as_f64().unwrap_or(0.0);
+                self.cost_unknown |= usage.unknown;
                 let thought = thinking_of(content);
                 let rest = thought
                     .get(self.live_thought_cut..)
@@ -677,6 +683,7 @@ impl App {
                 && let AgentMessage::Assistant { usage, .. } = message
             {
                 self.cost_total += usage.cost.total.as_f64().unwrap_or(0.0);
+                self.cost_unknown |= usage.unknown;
             }
             return;
         }
@@ -866,6 +873,12 @@ pub(crate) fn spawn_runtime_bridge(
                         let _ = driver_session.prompt(&text);
                     }
                     Command::Steer(text) => driver_session.steer(&text),
+                    Command::SummarizeBranch(stub) => {
+                        let session = Arc::clone(&driver_session);
+                        tokio::spawn(
+                            async move { yi_runtime::summarize_branch(&session, stub).await },
+                        );
+                    }
                     Command::Abort => driver_session.abort(),
                     Command::Shutdown => break,
                 }
@@ -1008,7 +1021,7 @@ pub fn run_tui(
             app.pending_open_tree = false;
             open_tree(&mut app, &session);
         }
-        crate::rewind::process_pending_rewind(&mut app, &mut terminal, &session);
+        crate::rewind::process_pending_rewind(&mut app, &mut terminal, &session, &cmd_tx);
         crate::rewind::process_pending_new(&mut app, &mut terminal, &session);
         crate::rewind::process_pending_undo(&mut app, &session);
         crate::commands::process_pending_selection(&mut app, &session);

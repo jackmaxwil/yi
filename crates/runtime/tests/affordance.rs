@@ -14,7 +14,8 @@ fn a_spawn_hands_back_the_exact_collect_and_watch_calls() {
     assert!(line.contains("rlm.send('porter'"));
     assert!(
         !line.contains(".jsonl"),
-        "no child transcript is written, so the hint must not name one: {line}"
+        "F7 writes the transcript, but the spawn reply names its dir as data — \
+         the hint stays the two calls the model makes during the run: {line}"
     );
     assert_eq!(line.lines().count(), 1, "at most two lines, one is plenty");
 }

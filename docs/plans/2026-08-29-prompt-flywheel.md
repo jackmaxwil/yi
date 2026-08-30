@@ -60,7 +60,13 @@ sources: research (ref/research/): 2601.04055v1 MPO · 2603.21520v1 MemAPO ·
    scheduling, and control flow are exact strings, counters, and
    thresholds. The LLM writes gated prose and generates candidates and
    proposals; it never decides when anything fires, persists, ships, or
-   dies.
+   dies. Scope: this machinery. The single recorded exception elsewhere in
+   the tree is D81's permission reviewer — role-gated off by default,
+   reached only where the deterministic ladder has already stopped the
+   call, structurally barred from credential reads, holds, configured
+   rules and catastrophic targets, and denying on anything but the literal
+   `allow`. Any other LLM in a control path is still a bug; a second
+   exception needs its own D-row, not this sentence.
 3. **No unbounded loops.** Nothing is scheduled. Mining and campaigns are
    user-run. CI runs only the zero-API deterministic tier. Real-model
    rollouts are budgeted, deliberate, and ledgered.
@@ -541,7 +547,8 @@ header):
 
 - Live prompt rewriting; per-prompt GEPA (invariant zero; negative-EV).
 - Scheduled/heartbeat anything; LLM-judged firing/persistence/eviction/
-  control flow; TTSR-style stream interrupts; uncapped renders;
+  control flow (Law 2's scope, and D81's permission reviewer is its one
+  recorded exception); TTSR-style stream interrupts; uncapped renders;
   write-only stores (OMP autopsy).
 - **Upfront exhaustive DAG compilation** (ADaPT/RSTD/Planetarium — §6.1);
   **the F and Y formulas as written** (not computable; replaced §6.5);

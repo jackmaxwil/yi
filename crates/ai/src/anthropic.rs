@@ -443,6 +443,7 @@ impl Mapper {
                     .and_then(Value::as_i64)
                     .unwrap_or(0);
                 usage.cache_write1h = Some(write1h);
+                usage.unknown = usage_value.is_null();
             }
         }
         self.recompute_totals();
@@ -689,8 +690,9 @@ impl Mapper {
                     }
                 }
             }
-            if let Some(usage_value) = payload.get("usage") {
+            if let Some(usage_value) = payload.get("usage").filter(|value| !value.is_null()) {
                 let usage = self.usage_mut();
+                usage.unknown = false;
                 let update = |target: &mut i64, key: &str| {
                     if let Some(value) = usage_value.get(key).and_then(Value::as_i64) {
                         *target = value;

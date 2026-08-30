@@ -61,8 +61,10 @@ Only the printed report enters context; thousands of entries never do. It
 arrives in a fixed order:
 
 1. **coverage line** — `N sessions scanned, M skipped (reason), covering
-   DATE..DATE`, plus corrupt lines skipped. Mandatory in anything you paste
-   onward: a cluster count without its denominator is not evidence.
+   DATE..DATE`, plus corrupt lines skipped and `K of N carried a tool call`.
+   Mandatory in anything you paste onward: a cluster count without its
+   denominator is not evidence, and `K` is the denominator for every
+   behavioural rate — quoting `N` counts zero-tool faux runs as wins.
 2. **redaction caveat** — the entropy rule masks 32+ char high-entropy tokens,
    so SHAs and ulids read as `[MASKED]` in examples.
 3. **signal census** — counts by entry type, message role, tool, tool error,
@@ -72,6 +74,9 @@ arrives in a fixed order:
 4. **top issues** — fingerprint, tool, count, lifecycle state, first/last seen,
    redacted example.
 5. **orientation and delegation summaries**, wins, repeated calls, compactions.
+   Orientation ends at the first call that can change the tree; a `bash` call is
+   screened by its command through the `builtins.rs` read-only vocabulary, and
+   `ipython` counts as a mutation because arbitrary code cannot be screened.
 6. **extractor and schema version footer.**
 
 The derived stores hold the rest (`mu.jsonl`, `issues.jsonl`,

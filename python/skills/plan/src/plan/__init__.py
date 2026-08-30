@@ -50,11 +50,20 @@ async def update(
     return await host_request("plan.update", payload)
 
 
-async def edit_add(tasks: list[dict[str, Any]]) -> dict[str, Any]:
-    """Add tasks to the plan (expand-only; removal needs the user)."""
+async def edit_add(
+    tasks: list[dict[str, Any]], for_task: str | None = None
+) -> dict[str, Any]:
+    """Add tasks to the plan (expand-only; removal needs the user).
+
+    `for_task` names the refused task this add was written for; it buys that
+    one task exactly one more `done` claim, and nothing for any other.
+    """
     if not isinstance(tasks, list) or not tasks:
         raise ValueError("tasks must be a non-empty list of task dicts")
-    return await host_request("plan.edit", {"action": "add", "tasks": tasks})
+    payload: dict[str, Any] = {"action": "add", "tasks": tasks}
+    if for_task is not None:
+        payload["for_task"] = for_task
+    return await host_request("plan.edit", payload)
 
 
 async def edit_reopen(task_id: str) -> dict[str, Any]:

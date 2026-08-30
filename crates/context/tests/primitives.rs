@@ -37,6 +37,7 @@ fn usage(input: i64, output: i64, total: i64) -> Usage {
             cache_write: zero(),
             total: zero(),
         },
+        unknown: false,
     }
 }
 

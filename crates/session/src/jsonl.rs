@@ -133,7 +133,26 @@ fn publish_atomically(path: &Path, bytes: &[u8]) -> Result<(), SessionError> {
 pub struct JsonlRepo {
     root: PathBuf,
     cwd: String,
+    /// A shared root files sessions under an encoded cwd; a directory that
+    /// holds one session does not, so its file is where the caller looks.
+    nested: bool,
     ids: IdGenerator,
+}
+
+/// Creates the one session a private directory exists to hold, skipping the
+/// per-cwd segment [`JsonlRepo::new`] adds: it would name nothing there and
+/// hide the file behind a directory name the caller cannot predict (D78).
+pub fn create_flat_session(
+    dir: PathBuf,
+    cwd: impl Into<String>,
+) -> Result<SharedSession, SessionError> {
+    JsonlRepo {
+        root: dir,
+        cwd: cwd.into(),
+        nested: false,
+        ids: IdGenerator::new(),
+    }
+    .create(CreateOptions::default())
 }
 
 impl JsonlRepo {
@@ -141,12 +160,17 @@ impl JsonlRepo {
         Self {
             root,
             cwd: cwd.into(),
+            nested: true,
             ids: IdGenerator::new(),
         }
     }
 
     fn session_dir(&self) -> PathBuf {
-        self.root.join(session_directory_name(&self.cwd))
+        if self.nested {
+            self.root.join(session_directory_name(&self.cwd))
+        } else {
+            self.root.clone()
+        }
     }
 
     fn find_session_file(&self, id: &str) -> Result<Option<PathBuf>, SessionError> {
