@@ -629,16 +629,6 @@ pub fn recover_interrupted_in_state(
     recovered
 }
 
-/// The earliest active `next_run_at`, the timer's arm target.
-pub fn next_active_run_at(state: &ScheduleState) -> Option<u64> {
-    state
-        .jobs
-        .iter()
-        .filter(|job| job.status == JobStatus::Active)
-        .filter_map(|job| job.next_run_at)
-        .min()
-}
-
 /// The exact text a scheduled job puts in front of the model; the element wrapper is what
 /// tells the model this turn was machine-triggered rather than typed by the user (H9).
 pub fn heartbeat_text(job: &Job) -> String {

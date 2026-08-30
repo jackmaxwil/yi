@@ -267,28 +267,23 @@ async fn heartbeat_surface_set_status_pause_clear_round_trip() -> TestResult {
     Ok(())
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn blocked_session_does_not_stall_a_sibling_lane() -> TestResult {
-    // Session B's heartbeat never ran because session A's deliver slept.
-    let (dir, store) = temp_store("lanes");
-    let now = yi_session::now_ms();
-    store.mutate(|state| {
-        let mut a = heartbeat_job("hb-a", 10_000, now);
-        a.session_id = "a".to_owned();
-        let mut b = heartbeat_job("hb-b", 10_000, now);
-        b.session_id = "b".to_owned();
-        state.jobs.push(a);
-        state.jobs.push(b);
-    });
+type Gate = Arc<(Mutex<bool>, Condvar)>;
+type Entered = Arc<std::sync::atomic::AtomicBool>;
 
-    let gate = Arc::new((Mutex::new(false), Condvar::new()));
-    let deliver_gate = Arc::clone(&gate);
+/// A deliver that parks every job in `session` until [`open_gate`] releases it;
+/// the flag goes true once a lane is actually inside the callback.
+fn gated_deliver(session: &'static str) -> (Arc<DeliverFn>, Gate, Entered) {
+    let gate: Gate = Arc::new((Mutex::new(false), Condvar::new()));
+    let entered: Entered = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let held = Arc::clone(&gate);
+    let mark = Arc::clone(&entered);
     let deliver: Arc<DeliverFn> = Arc::new(move |job| {
-        if job.session_id == "a" {
-            let (lock, cvar) = &*deliver_gate;
+        if job.session_id == session {
+            let (lock, cvar) = &*held;
             let mut go = lock
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
+            mark.store(true, std::sync::atomic::Ordering::SeqCst);
             while !*go {
                 go = cvar
                     .wait(go)
@@ -297,72 +292,109 @@ async fn blocked_session_does_not_stall_a_sibling_lane() -> TestResult {
         }
         RunOutcome::Ran
     });
-    let mut counter = 0_u64;
-    let scheduler = Scheduler::start(Arc::clone(&store), deliver, move || {
-        counter += 1;
-        format!("dsp-{counter}")
-    });
+    (deliver, gate, entered)
+}
 
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+fn open_gate(gate: &Gate) {
+    let (lock, cvar) = &**gate;
+    *lock
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = true;
+    cvar.notify_all();
+}
+
+fn start_scheduler(store: &Arc<JobStore>, deliver: Arc<DeliverFn>) -> Scheduler {
+    let mut counter = 0_u64;
+    Scheduler::start(Arc::clone(store), deliver, move || {
+        counter = counter.saturating_add(1);
+        format!("dsp-{counter}")
+    })
+}
+
+/// A submitted job reaches the timer over a channel, so a fixed sleep is either
+/// flaky or slow; every wait here polls the state it actually depends on.
+async fn wait_until(within_ms: u64, mut ready: impl FnMut() -> bool) -> bool {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(within_ms);
     loop {
-        let b = store
-            .snapshot()
-            .jobs
-            .iter()
-            .find(|job| job.id == "hb-b")
-            .cloned()
-            .ok_or("job b missing")?;
-        if b.run_count == 1 {
-            break;
+        if ready() {
+            return true;
         }
         if std::time::Instant::now() > deadline {
-            scheduler.stop();
-            let _ = std::fs::remove_dir_all(&dir);
-            return Err("session B's heartbeat never ran because session A's deliver slept".into());
+            return false;
         }
         tokio::time::sleep(std::time::Duration::from_millis(25)).await;
     }
-    let a = store
+}
+
+fn run_count(store: &Arc<JobStore>, id: &str) -> u64 {
+    store
         .snapshot()
         .jobs
         .iter()
-        .find(|job| job.id == "hb-a")
-        .cloned()
-        .ok_or("job a missing")?;
-    assert_eq!(
-        a.run_count, 0,
-        "session A must still be blocked when B has already run"
-    );
+        .find(|job| job.id == id)
+        .map_or(0, |job| job.run_count)
+}
 
-    {
-        let (lock, cvar) = &*gate;
-        let mut go = lock
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        *go = true;
-        cvar.notify_all();
-    }
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
-    loop {
-        let a = store
-            .snapshot()
-            .jobs
-            .iter()
-            .find(|job| job.id == "hb-a")
-            .cloned()
-            .ok_or("job a missing")?;
-        if a.run_count == 1 {
-            break;
-        }
-        if std::time::Instant::now() > deadline {
-            scheduler.stop();
-            let _ = std::fs::remove_dir_all(&dir);
-            return Err("session A never ran after the block lifted".into());
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
-    }
+fn lane_job(
+    id: &str,
+    session: &str,
+    interval_ms: u64,
+    next_run_at: u64,
+) -> yi_types::schedule::Job {
+    let mut job = heartbeat_job(id, interval_ms, next_run_at);
+    job.session_id = session.to_owned();
+    job
+}
+
+fn once_job(id: &str, session: &str, next_run_at: u64) -> yi_types::schedule::Job {
+    let now = yi_session::now_ms();
+    let mut job = new_job(JobSpec {
+        id: id.to_owned(),
+        session_id: session.to_owned(),
+        cwd: "/tmp".to_owned(),
+        source: JobSource::Heartbeat,
+        delivery_mode: None,
+        label: None,
+        prompt: "check the build".to_owned(),
+        schedule: yi_types::schedule::CronSchedule {
+            kind: yi_types::schedule::ScheduleKind::Once,
+            expression: "in 1s".to_owned(),
+            interval_ms: None,
+        },
+        next_run_at: now,
+        now_ms: now,
+    });
+    job.next_run_at = Some(next_run_at);
+    job
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn blocked_session_does_not_stall_a_sibling_lane() -> TestResult {
+    let (dir, store) = temp_store("lanes");
+    let now = yi_session::now_ms();
+    store.mutate(|state| {
+        state.jobs.push(lane_job("hb-a", "a", 10_000, now));
+        state.jobs.push(lane_job("hb-b", "b", 10_000, now));
+    });
+    let (deliver, gate, _entered) = gated_deliver("a");
+    let scheduler = start_scheduler(&store, deliver);
+
+    let b_ran = wait_until(2_000, || run_count(&store, "hb-b") == 1).await;
+    let a_runs_while_blocked = run_count(&store, "hb-a");
+    open_gate(&gate);
+    let a_ran = wait_until(2_000, || run_count(&store, "hb-a") == 1).await;
     scheduler.stop();
     let _ = std::fs::remove_dir_all(&dir);
+
+    assert!(
+        b_ran,
+        "session B's heartbeat never ran because session A's deliver slept"
+    );
+    assert_eq!(
+        a_runs_while_blocked, 0,
+        "session A must still be blocked when B has already run"
+    );
+    assert!(a_ran, "session A never ran after the block lifted");
     Ok(())
 }
 
@@ -371,77 +403,95 @@ async fn job_due_during_a_block_still_dispatches() -> TestResult {
     let (dir, store) = temp_store("due-during");
     let now = yi_session::now_ms();
     store.mutate(|state| {
-        let mut a = heartbeat_job("hb-a", 10_000, now);
-        a.session_id = "a".to_owned();
-        let mut b = heartbeat_job("hb-b", 10_000, now.saturating_add(500));
-        b.session_id = "b".to_owned();
-        state.jobs.push(a);
-        state.jobs.push(b);
-    });
-
-    let gate = Arc::new((Mutex::new(false), Condvar::new()));
-    let deliver_gate = Arc::clone(&gate);
-    let deliver: Arc<DeliverFn> = Arc::new(move |job| {
-        if job.session_id == "a" {
-            let (lock, cvar) = &*deliver_gate;
-            let mut go = lock
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            while !*go {
-                go = cvar
-                    .wait(go)
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-            }
-        }
-        RunOutcome::Ran
-    });
-    let mut counter = 0_u64;
-    let scheduler = Scheduler::start(Arc::clone(&store), deliver, move || {
-        counter += 1;
-        format!("dsp-{counter}")
-    });
-
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
-    loop {
-        let b = store
-            .snapshot()
+        state.jobs.push(lane_job("hb-a", "a", 10_000, now));
+        state
             .jobs
-            .iter()
-            .find(|job| job.id == "hb-b")
-            .cloned()
-            .ok_or("job b missing")?;
-        if b.run_count == 1 {
-            break;
-        }
-        if std::time::Instant::now() > deadline {
-            scheduler.stop();
-            let _ = std::fs::remove_dir_all(&dir);
-            return Err(
-                "session B became due during A's block and never ran until the timer unblocked"
-                    .into(),
-            );
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
-    }
-    let a = store
-        .snapshot()
-        .jobs
-        .iter()
-        .find(|job| job.id == "hb-a")
-        .cloned()
-        .ok_or("job a missing")?;
-    assert_eq!(a.run_count, 0, "A must still be blocked when B has run");
+            .push(lane_job("hb-b", "b", 10_000, now.saturating_add(500)));
+    });
+    let (deliver, gate, _entered) = gated_deliver("a");
+    let scheduler = start_scheduler(&store, deliver);
 
-    {
-        let (lock, cvar) = &*gate;
-        let mut go = lock
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        *go = true;
-        cvar.notify_all();
-    }
+    let b_ran = wait_until(2_000, || run_count(&store, "hb-b") == 1).await;
+    let a_runs_while_blocked = run_count(&store, "hb-a");
+    open_gate(&gate);
     scheduler.stop();
     let _ = std::fs::remove_dir_all(&dir);
+
+    assert!(
+        b_ran,
+        "session B became due during A's block and never ran until the timer unblocked"
+    );
+    assert_eq!(
+        a_runs_while_blocked, 0,
+        "A must still be blocked when B has run"
+    );
+    Ok(())
+}
+
+/// A blocked session whose own interval re-arms mid-block makes every claim
+/// come back empty; the timer must still be watching the sibling's deadline.
+/// A 60s heartbeat parked behind a five-minute turn is this case.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_rearming_block_does_not_hide_a_sibling_coming_due() -> TestResult {
+    let (dir, store) = temp_store("lanes-rearm");
+    let now = yi_session::now_ms();
+    store.mutate(|state| {
+        state.jobs.push(lane_job("hb-a", "a", 200, now));
+        state
+            .jobs
+            .push(lane_job("hb-b", "b", 10_000, now.saturating_add(500)));
+    });
+    let (deliver, gate, _entered) = gated_deliver("a");
+    let scheduler = start_scheduler(&store, deliver);
+
+    let b_ran = wait_until(3_000, || run_count(&store, "hb-b") == 1).await;
+    let a_runs_while_blocked = run_count(&store, "hb-a");
+    open_gate(&gate);
+    scheduler.stop();
+    let _ = std::fs::remove_dir_all(&dir);
+
+    assert!(
+        b_ran,
+        "A's interval re-armed while it blocked, and B never dispatched at its own deadline"
+    );
+    assert_eq!(
+        a_runs_while_blocked, 0,
+        "A must still be blocked when B has run"
+    );
+    Ok(())
+}
+
+/// The blocked session's only job is `Once`, so nothing is scheduled at all
+/// while its lane runs. A job created mid-block must still dispatch rather
+/// than wait the lane out.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_job_scheduled_mid_block_dispatches_before_the_lane_ends() -> TestResult {
+    let (dir, store) = temp_store("lanes-midblock");
+    let now = yi_session::now_ms();
+    store.mutate(|state| state.jobs.push(once_job("hb-a", "a", now)));
+    let (deliver, gate, entered) = gated_deliver("a");
+    let scheduler = start_scheduler(&store, deliver);
+
+    let lane_running =
+        wait_until(2_000, || entered.load(std::sync::atomic::Ordering::SeqCst)).await;
+    // The park itself has no observable state: the timer reaches it a few
+    // instructions after the lane it just spawned enters `deliver`.
+    tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+    store.mutate(|state| {
+        state
+            .jobs
+            .push(lane_job("hb-b", "b", 10_000, yi_session::now_ms()));
+    });
+    let b_ran = wait_until(3_000, || run_count(&store, "hb-b") == 1).await;
+    open_gate(&gate);
+    scheduler.stop();
+    let _ = std::fs::remove_dir_all(&dir);
+
+    assert!(lane_running, "session A's lane never entered deliver");
+    assert!(
+        b_ran,
+        "a job scheduled while A's lane blocked never dispatched"
+    );
     Ok(())
 }
 
