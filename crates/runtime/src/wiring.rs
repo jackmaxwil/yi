@@ -113,14 +113,12 @@ fn wire_schedule(
         );
         crate::schedule::RunOutcome::Ran
     });
-    let heartbeats = Arc::new(crate::schedule::HeartbeatService::attached(
-        Arc::clone(&shared.store),
-        heartbeats_cwd,
-        Arc::clone(&shared.hub),
-        Arc::clone(&deliver),
-    ));
+    let heartbeats = Arc::new(
+        crate::schedule::HeartbeatService::new(Arc::clone(&shared.store), heartbeats_cwd)
+            .with_lane(Arc::clone(&shared.hub), Arc::clone(&deliver)),
+    );
     heartbeats.register(registry);
-    session.set_schedule(Arc::clone(&shared.store), Arc::clone(&heartbeats), None);
+    session.set_schedule(Arc::clone(&heartbeats));
 }
 
 fn wire_goal(

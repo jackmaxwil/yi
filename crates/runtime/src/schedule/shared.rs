@@ -19,9 +19,6 @@ impl DeliveryHub {
         lock_lanes(&self.lanes).insert(session_id, deliver);
     }
 
-    /// Invariant: the interned hub outlives every session on its ledger, so an
-    /// ended session's lane has to be withdrawn or its still-Active heartbeat
-    /// fires into a stale closure for the rest of the process.
     pub(crate) fn unregister(&self, session_id: &str) {
         lock_lanes(&self.lanes).remove(session_id);
     }
@@ -91,6 +88,7 @@ pub(crate) fn intern(path: PathBuf) -> Arc<SharedSchedule> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::schedule::HeartbeatService as Service;
     use crate::schedule::{JobSpec, RunOutcome, new_job};
     use std::sync::{Condvar, Mutex};
     use std::time::{Duration, Instant};
@@ -118,7 +116,7 @@ mod tests {
     }
 
     #[test]
-    fn dispatch_drops_the_lanes_lock_before_deliver() {
+    fn dispatch_drops_the_lanes_lock_before_deliver() -> Result<(), Box<dyn std::error::Error>> {
         let hub = Arc::new(DeliveryHub::new());
         let gate = Arc::new((Mutex::new(false), Condvar::new()));
         let a_gate = Arc::clone(&gate);
@@ -155,7 +153,8 @@ mod tests {
                 .unwrap_or_else(std::sync::PoisonError::into_inner) = true;
             cvar.notify_all();
         }
-        thread.join().expect("lane a");
+        thread.join().map_err(|_| "lane a panicked")?;
+        Ok(())
     }
 
     #[test]
@@ -176,18 +175,19 @@ mod tests {
         assert_eq!(hub.lane_count(), 1, "the ended session's lane leaked");
     }
 
+    fn lane_service(dir: &std::path::Path, hub: &Arc<DeliveryHub>) -> (Arc<JobStore>, Service) {
+        let _ = std::fs::remove_dir_all(dir);
+        let store = Arc::new(JobStore::open(dir.join("scheduled-jobs.json")));
+        let service = Service::new(Arc::clone(&store), "/tmp")
+            .with_lane(Arc::clone(hub), Arc::new(|_| RunOutcome::Ran));
+        (store, service)
+    }
+
     #[test]
     fn dropping_an_attached_service_withdraws_its_lane() {
         let dir = std::env::temp_dir().join(format!("yi-hub-drop-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        let store = Arc::new(JobStore::open(dir.join("scheduled-jobs.json")));
         let hub = Arc::new(DeliveryHub::new());
-        let service = crate::schedule::HeartbeatService::attached(
-            store,
-            "/tmp",
-            Arc::clone(&hub),
-            Arc::new(|_| RunOutcome::Ran),
-        );
+        let (_store, service) = lane_service(&dir, &hub);
         service.bind_session("a".to_owned());
         assert_eq!(hub.lane_count(), 1);
 
@@ -199,17 +199,84 @@ mod tests {
     }
 
     #[test]
+    fn rebinding_the_service_withdraws_the_previous_lane() {
+        let dir = std::env::temp_dir().join(format!("yi-hub-rebind-{}", std::process::id()));
+        let hub = Arc::new(DeliveryHub::new());
+        let (_store, service) = lane_service(&dir, &hub);
+        service.bind_session("a".to_owned());
+        service.bind_session("b".to_owned());
+
+        assert_eq!(
+            hub.dispatch(&job("a")),
+            RunOutcome::Skipped,
+            "the rebound session's predecessor still dispatched into a stale lane"
+        );
+        assert_eq!(
+            hub.lane_count(),
+            1,
+            "the rebind left session a's lane behind"
+        );
+        assert_eq!(hub.dispatch(&job("b")), RunOutcome::Ran);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn an_ended_session_leaves_the_timer_nothing_to_re_arm()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dir = std::env::temp_dir().join(format!("yi-hub-ended-{}", std::process::id()));
+        let path = dir.join("scheduled-jobs.json");
+        let hub = Arc::new(DeliveryHub::new());
+        let (store, service) = lane_service(&dir, &hub);
+        service.bind_session("a".to_owned());
+        let set = crate::schedule::parse_heartbeat_command("/heartbeat every 10s watch A")?;
+        service.apply(&set, yi_session::now_ms())?;
+        store.mutate(|state| {
+            for job in &mut state.jobs {
+                job.next_run_at = Some(1);
+            }
+        });
+
+        drop(service);
+
+        let settled = std::fs::read_to_string(&path)?;
+        let dispatch = Arc::clone(&hub);
+        let scheduler = Scheduler::start(
+            Arc::clone(&store),
+            Arc::new(move |job| dispatch.dispatch(job)),
+            || "dsp-1".to_owned(),
+        );
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        scheduler.stop();
+
+        assert_eq!(
+            std::fs::read_to_string(&path)?,
+            settled,
+            "the timer kept re-arming and re-fsyncing an ended session's job"
+        );
+        let state = store.snapshot();
+        let job = state.jobs.first().ok_or("the heartbeat left the ledger")?;
+        assert_eq!(
+            job.status,
+            yi_types::schedule::JobStatus::Paused,
+            "an ended session's job stayed claimable"
+        );
+        assert_eq!(job.run_count, 0, "a dead session's job ran");
+        assert!(
+            state.dispatches.is_empty(),
+            "a dead session's job was claimed"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+        Ok(())
+    }
+
+    #[test]
     fn a_heartbeat_before_attach_is_refused_not_stamped_empty()
     -> Result<(), Box<dyn std::error::Error>> {
         let dir = std::env::temp_dir().join(format!("yi-hub-unbound-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let store = Arc::new(JobStore::open(dir.join("scheduled-jobs.json")));
-        let service = crate::schedule::HeartbeatService::attached(
-            Arc::clone(&store),
-            "/tmp",
-            Arc::new(DeliveryHub::new()),
-            Arc::new(|_| RunOutcome::Ran),
-        );
+        let service = Service::new(Arc::clone(&store), "/tmp")
+            .with_lane(Arc::new(DeliveryHub::new()), Arc::new(|_| RunOutcome::Ran));
 
         let set = crate::schedule::parse_heartbeat_command("/heartbeat every 10m watch the build")?;
         let refused = service.apply(&set, 0);
