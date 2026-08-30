@@ -1,3 +1,5 @@
+#![cfg(target_os = "macos")]
+
 use std::error::Error;
 use std::sync::Arc;
 
