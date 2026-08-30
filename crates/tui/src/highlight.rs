@@ -73,6 +73,18 @@ fn token_for(stack: &ScopeStack) -> Token {
     Token::Plain
 }
 
+/// Fence names models write that no bundled grammar answers to. There is no
+/// TypeScript grammar in the default set at all; JavaScript is the closest one
+/// that colours its keywords and strings instead of leaving the block plain.
+fn alias(name: &str) -> &str {
+    match name {
+        "shell" => "sh",
+        "python3" | "ipython" => "py",
+        "ts" | "tsx" | "jsx" | "typescript" => "js",
+        other => other,
+    }
+}
+
 pub fn lang_for(name: &str) -> Option<Lang> {
     let set = syntaxes();
     let name = name
@@ -80,9 +92,10 @@ pub fn lang_for(name: &str) -> Option<Lang> {
         .next()
         .unwrap_or(name)
         .to_ascii_lowercase();
+    let name = alias(&name);
     let syntax = set
-        .find_syntax_by_token(&name)
-        .or_else(|| set.find_syntax_by_extension(&name))?;
+        .find_syntax_by_token(name)
+        .or_else(|| set.find_syntax_by_extension(name))?;
     Some(Lang {
         state: ParseState::new(syntax),
         stack: ScopeStack::new(),

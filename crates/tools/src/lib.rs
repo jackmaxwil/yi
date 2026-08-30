@@ -4,6 +4,7 @@ mod builtins;
 pub mod checkpoint;
 pub mod diff;
 mod exec;
+mod grep;
 pub mod hashline;
 mod ignore;
 mod ipython;
@@ -16,10 +17,11 @@ mod tool;
 
 use std::sync::Arc;
 
-pub use builtins::{BashTool, GlobTool, GrepTool, WriteTool, list_files};
+pub use builtins::{BashTool, GlobTool, WriteTool, list_files};
 pub use checkpoint::{Change, ChangeKind, CheckpointError, Checkpoints, TreeId};
 pub use diff::{GitPatch, patch};
 pub use exec::{ExecTool, discover_exec_tools};
+pub use grep::GrepTool;
 pub use ipython::{IpythonTool, KernelBridge, KernelCellOutcome};
 pub use jobs::{JobId, JobReport, Run, run_or_background};
 pub use orient::GetContextTool;
@@ -27,10 +29,17 @@ pub use process::{CommandCapture, OUTPUT_CAP, command, edit_file, run_captured};
 pub use reduce::{Reduced, reduce};
 pub use sandbox::{Sandbox, denial_hint};
 pub use tool::{
-    CancelFlag, DETAIL_CAP, Tool, ToolContext, ToolKind, ToolOutput, error_output, text_output,
+    CancelFlag, DETAIL_CAP, Tool, ToolContext, ToolKind, ToolOutput, error_output,
+    error_output_kind, text_output,
 };
 
 pub fn builtin_tools() -> Vec<Arc<dyn Tool>> {
+    builtin_tools_with(false)
+}
+
+/// `freeform_grammar` opts the edit tool into [`Tool::freeform`]: a grammar
+/// the provider rejects fails every request carrying the tool, not just edits.
+pub fn builtin_tools_with(freeform_grammar: bool) -> Vec<Arc<dyn Tool>> {
     let state = hashline::tool::shared_hashline_state();
     vec![
         Arc::new(hashline::tool::HashlineReadTool {
@@ -38,12 +47,15 @@ pub fn builtin_tools() -> Vec<Arc<dyn Tool>> {
         }),
         Arc::new(hashline::tool::HashlineEditTool {
             state: Arc::clone(&state),
+            freeform_grammar,
         }),
         Arc::new(WriteTool {
-            hashline: Some(state),
+            hashline: Some(Arc::clone(&state)),
         }),
         Arc::new(GlobTool),
-        Arc::new(GrepTool),
+        Arc::new(GrepTool {
+            hashline: Some(state),
+        }),
         Arc::new(BashTool),
         Arc::new(GetContextTool),
     ]

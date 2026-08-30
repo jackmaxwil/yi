@@ -203,7 +203,7 @@ pub fn resolution_text(display: &str, verdict: UserVerdict) -> String {
 /// is the deterministic ladder it was.
 pub fn wire(
     session: &AgentSession,
-    wiring: &crate::subagent::RuntimeWiring,
+    wiring: &crate::wiring::RuntimeWiring,
     tools: &mut Vec<Arc<dyn yi_tools::Tool>>,
 ) {
     wire_role(

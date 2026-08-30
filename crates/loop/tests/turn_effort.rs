@@ -72,6 +72,7 @@ impl AgentTool for Noop {
             name: "noop".to_owned(),
             description: "does nothing".to_owned(),
             parameters: serde_json::json!({"type": "object", "properties": {}}),
+            freeform: None,
         }
     }
 

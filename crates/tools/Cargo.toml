@@ -8,6 +8,7 @@ rust-version.workspace = true
 [dependencies]
 serde_json.workspace = true
 globset.workspace = true
+regex.workspace = true
 thiserror.workspace = true
 xxhash-rust.workspace = true
 yi-permission.workspace = true

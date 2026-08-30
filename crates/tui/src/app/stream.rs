@@ -63,7 +63,15 @@ impl App {
         if self.mode == TranscriptMode::Normal {
             return;
         }
-        let mut cut = crate::markdown::stable_cut(&self.live_thought).max(self.live_thought_cut);
+        // A cut inside a fence is prose's business: thought has no reopen to
+        // carry, so a fenced block commits whole or not at all.
+        let stream = crate::markdown::stable_stream(&self.live_thought);
+        let stable = if stream.reopen.is_some() {
+            0
+        } else {
+            stream.cut
+        };
+        let mut cut = stable.max(self.live_thought_cut);
         let (width, theme) = (self.content_width(), self.theme);
         let forced = overflow_cut(
             self.live_thought.get(cut..).unwrap_or_default(),
@@ -111,7 +119,11 @@ impl App {
     /// Re-rendering the whole prefix let the renderer's trailing-blank trimming
     /// misalign the committed count and duplicate list items mid-stream.
     pub(super) fn commit_stable_prefix(&mut self) {
-        self.commit_prose(crate::markdown::stable_cut(&self.live_markdown), true);
+        let stream = crate::markdown::stable_stream(&self.live_markdown);
+        if stream.cut > self.live_cut {
+            self.commit_prose(stream.cut, true);
+            self.live_reopen = stream.reopen;
+        }
         let (width, theme) = (self.content_width(), self.theme);
         let inner = width.saturating_sub(crate::cell::GUTTER.len());
         if let Some(forced) = overflow_cut(
@@ -137,14 +149,9 @@ impl App {
             .unwrap_or_default()
             .to_owned();
         let first = self.live_cut == 0;
-        let rendered = crate::markdown::render(
-            &slice,
-            self.content_width()
-                .saturating_sub(crate::cell::GUTTER.len()),
-            &self.theme,
-        );
+        let rendered = crate::transcript::paint_slice(self, &slice);
         if !rendered.is_empty() {
-            if spaced || first {
+            if (spaced || first) && self.live_reopen.is_none() {
                 self.pending_commit.push(Line::default());
             }
             self.pending_commit

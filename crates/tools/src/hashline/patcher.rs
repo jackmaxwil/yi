@@ -20,9 +20,9 @@ use super::types::{ApplyResult, BlockResolverRequest, Clipboard, Edit, FileOp};
 /// ranges keep the re-read guidance so the model cannot piecewise-reveal its
 /// way past the guard.
 const SEEN_LINE_REVEAL_CAP: usize = 40;
-/// Per-revealed-line cap matching the read column cap; an over-wide line
-/// truncates the reveal so no line joins the seen set.
-const SEEN_LINE_REVEAL_MAX_COLUMNS: usize = 512;
+/// The one clip width for revealed and read rows alike; an over-wide line
+/// truncates so no line joins the seen set.
+pub(crate) const SEEN_LINE_REVEAL_MAX_COLUMNS: usize = 512;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SectionOp {

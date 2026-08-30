@@ -11,13 +11,14 @@ allow = ["MIT", "Apache-2.0", "Apache-2.0 WITH LLVM-exception", "BSD-2-Clause", 
 multiple-versions = "deny"
 # once_cell: banned for direct use (std OnceLock); rustls/ureq pull it transitively.
 # syn 2+3 duplicate: proc-macro build deps only, zero runtime bytes.
-# zeromq wrappers: the pure-Rust zmq stack pins rand/regex/dashmap internals
+# zeromq wrappers: the pure-Rust zmq stack pins rand/dashmap internals
 # (design 13.3 — libzmq FFI rejected by rule 4; these stay wire-internal to
 # the kernel channels and never cross into Yi code).
+# regex: unbanned 2026-08-29 for grep v2 (std+perf, no Unicode tables); its
+# engine crates were already in the lock via globset.
 deny = [
   "reqwest", "hyper", "openssl-sys", "native-tls",
   "git2", "libgit2-sys", "gix", "clap", "anyhow",
-  { crate = "regex", wrappers = ["zeromq"] },
   { crate = "once_cell", wrappers = ["rustls", "ureq", "zeromq", "syntect"] },
   { crate = "rand", wrappers = ["zeromq"] },
   "lazy_static", "textwrap", "toml",

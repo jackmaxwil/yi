@@ -1492,7 +1492,7 @@ size builds only as an experiment, never required.
 | `hmac`, `sha2` | Jupyter message signing; permission rule digests | — | small | — |
 | ~~`agent-client-protocol`~~ | **Rejected at phase 5b (D40).** Measured 2.0.0: +55 workspace transitive (cap 135), `schemars` non-optional via the pinned `-schema` crate (the "schemars off" condition this row assumed no longer exists), a second async stack (async-io/async-process/blocking) beside tokio, and v2 still feature-gated `unstable_protocol_v2` | — | Yi hand-rolls the v2 wire subset it emits: serde shapes in `yi-types::acp`, JSON-RPC 2.0 codec in `yi-acp`; C9's unknown-field tolerance is the forward-compat story |
 | `xxhash-rust` | hashline tag (`xxh32`) | `xxh32` only | tiny | — |
-| `globset` | permission rule patterns, file tools | — | small (pulls `regex-automata`, `aho-corasick`) | `glob` crate smaller but no brace sets; accept `globset`, **ban separate `regex`** |
+| `globset` | permission rule patterns, file tools | — | small (pulls `regex-automata`, `aho-corasick`) | `glob` crate smaller but no brace sets; accept `globset`; separate `regex` unbanned 2026-08-29 for grep v2 (std+perf+unicode-case only) |
 | `lexopt` | CLI parsing | — | tiny | `clap` rejected: +300–600 KiB and slower startup for help text nobody reads |
 | `tracing` | spans (R10) | `std`, `attributes` | small | — |
 | `tracing-subscriber` | **not allowed**; a ~150-line JSON `Subscriber` in `yi-cli` writes spans when `YI_TRACE=1` | — | — | `tracing-subscriber` with `env-filter` + `json` ≈ +600 KiB |
@@ -1514,7 +1514,7 @@ size builds only as an experiment, never required.
 ### 13.5 Banned
 
 `reqwest` (unconditionally — D36 removed the mcp-feature tolerance; rmcp runs minimal features with a ureq-based streamable-HTTP transport), `hyper`, `openssl-sys`, `native-tls`, `git2`/`libgit2-sys`, `gix`
-(≈ 3 MiB), `regex` (use `globset`'s automata or hand-written matchers), `clap`, `anyhow`, `syntect` with onig (D74 admits it on `regex-fancy` only; `onig`/`onig_sys` are banned by name) / `two-face`, `arborium`, `ratatui-image`, `textwrap` (hand-rolled wrap, U14), `toml` (config is JSON, X7), `color-eyre`/`human-panic`/`better-panic`
+(≈ 3 MiB), `clap`, `anyhow`, `syntect` with onig (D74 admits it on `regex-fancy` only; `onig`/`onig_sys` are banned by name) / `two-face`, `arborium`, `ratatui-image`, `textwrap` (hand-rolled wrap, U14), `toml` (config is JSON, X7), `color-eyre`/`human-panic`/`better-panic`. `regex` left this list on 2026-08-29 for grep v2 (`std`+`perf`, no Unicode tables); its engine crates were already in the lock via `globset`
 (errors are typed at crate boundaries; `Box<dyn Error>` inside binaries is fine), `chrono`
 (`jiff` chosen), `once_cell`/`lazy_static` (std `OnceLock`), `rand` (ids from `getrandom` or
 `std::hash::RandomState` seed), `tokio` `full`, any `*-sys` crate, any proc-macro crate beyond

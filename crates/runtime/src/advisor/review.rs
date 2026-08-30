@@ -52,6 +52,7 @@ impl yi_loop::AgentTool for AdviseTool {
                 },
                 "required": ["note"]
             }),
+            freeform: None,
         }
     }
 
@@ -113,6 +114,7 @@ impl yi_loop::AgentTool for TranscriptTool {
                 "properties": {"entry_id": {"type": "string"}},
                 "required": ["entry_id"]
             }),
+            freeform: None,
         }
     }
 

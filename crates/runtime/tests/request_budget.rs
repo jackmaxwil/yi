@@ -63,6 +63,7 @@ fn tool_defs() -> Vec<ToolDef> {
             name: tool.name().to_owned(),
             description: tool.description().to_owned(),
             parameters: tool.schema(),
+            freeform: None,
         })
         .collect()
 }

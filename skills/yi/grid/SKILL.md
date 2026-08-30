@@ -43,7 +43,10 @@ result; porcelain columns on stdout are stable. Exit codes: 0 pass,
   trait".
 - "What surrounds this edit?" — `grid scope X --depth 2` is the context
   pack: the definition with its location, proven callers and callees, and
-  any standing rules that reach it. Read this before reading whole files.
+  any standing rules that reach it. Read this before reading whole files —
+  then pull the named spans in one call with the read tool's `ranges`
+  parameter (e.g. `ranges: [[120,180],[410,440]]`) instead of one read per
+  span.
 - "What should be refactored?" — `grid hotspots --under crates/` ranks by
   complexity × edit churn. A ranking, never a verdict.
 - "Is this dead?" — `grid orphans --under <path>` lists definitions with no

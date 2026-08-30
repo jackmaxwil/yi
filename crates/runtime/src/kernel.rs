@@ -227,6 +227,13 @@ impl KernelService {
         env
     }
 
+    /// Boot the kernel now so the first cell pays execution only. A failed
+    /// prewarm is deliberately quiet: the first real cell repeats [`Self::ensure`]
+    /// and surfaces the same error where the model can act on it.
+    pub async fn prewarm(&self) {
+        let _first_cell_will_report = self.ensure().await;
+    }
+
     async fn ensure(&self) -> Result<Arc<KernelManager>, String> {
         let mut slot = self.manager.lock().await;
         if let Some(manager) = slot.as_ref() {
