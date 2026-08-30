@@ -901,14 +901,14 @@ sequenceDiagram
 | H4 | Store | `scheduled-jobs.json` per session: `{jobs, dispatches}`; Yi-owned format (D39): camelCase, epoch-ms timestamps; write = lock + tmp + fsync + rename; `on_change` listener | I/O | prime `AgentCronJobStore` |
 | H5 | claim_due | `fn(now) -> Vec<Dispatch{id, job_id, claimed_at, scheduled_for}>` persisted **before** delivery; `record_result(dispatch, Ran\|Skipped\|Error)` | I/O | prime |
 | H6 | recover | on start: unresolved claims → interrupted; missed ticks coalesced; schedule advanced | I/O | prime `recoverInterruptedDispatches` |
-| H7 | lanes | in-process there is one session ⇒ one serial queue. Per-session lanes arrive with the daemon (phase 6) | data | prime `dispatchLanes` (later) |
+| H7 | lanes | after H5 claim, group by `Job.session_id` (ACP/session-store id, empty string is one lane); serial within a lane, concurrent across lanes via `spawn_blocking`. Lane tasks live in a `JoinSet` across timer ticks and are reaped by task id; the timer's deadline is the soonest job outside the busy set and it parks in one `select!` over {deadline, store change, lane finished}. One interned `JobStore`+timer per `scheduled-jobs.json` path; a `DeliveryHub` lane per bound session, withdrawn when the session drops. A second daemon process is not required (D86) | data | prime `dispatchLanes` |
 | H8 | defer | `fn(&Job, &AgentState) -> Deliver\|Defer`: always defer if compacting / retrying / bash running / pending work; `Steer` does not defer on plain streaming, `FollowUp` does | pure | prime `shouldDeferHeartbeatCronJob` |
 | H9 | deliver | `Steer` → `session.steer`; `FollowUp` → `session.follow_up(resume_if_idle)`; message = `custom{heartbeat_prompt, details{job_id, schedule, run_count, next_run_at}}` whose LLM text is `<heartbeat job="…" run="n">prompt</heartbeat>` | I/O | prime `promptHeartbeat` + new framing |
 | H10 | surfaces | `/heartbeat every 10m <instr> \| status \| pause \| resume \| clear`; `rlm_heartbeat.{list,create,update,delete}` from the kernel; ACP `_yi/heartbeat` method + `_yi/heartbeat_changed` | I/O | prime |
 
 ```mermaid
 flowchart LR
-  S[H4 store] -->|next_active_run_at| T[single timer]
+  S[H4 store] -->|next_claimable_run_at| T[single timer]
   T --> C[H5 claim_due → persist]
   C --> L[H7 lane for session]
   L --> D{H8 defer?}
@@ -1411,7 +1411,7 @@ are rejected with the reason.
 | Pi `evals` · fx `tests/evals` | Scenario eval suite (`yi ask --json` over fixture repos) run nightly, not per-PR | adopt | `evals/` workspace member, phase 3 |
 | **new** (extends jcode ratchets to the stated goal) | token ratchet (defined §9) | adopt | §9 `token_budget.json`; P3 |
 | prime `host-request-contract.test` | Conformance test pinning the `host.request` vocabulary (types, required fields) so the Python package and `yi-kernel` cannot drift | adopt | K12 contract fixtures shared with `python/yi_runtime/tests` |
-| prime nightly multi-worker stress | Nightly job boots N workers × M kernels, verifies leases, reconnect, ledger integrity | later (phase 6) | CI |
+| prime nightly multi-worker stress | Nightly job boots N workers × M kernels, verifies reconnect, ledger integrity | adopt (G2; D4 dropped leases) | `just journeys`, run by `just postmerge` and `.github/workflows/postmerge.yml` |
 | Pi telemetry spans · har-layout | `tracing` spans per turn / tool / provider attempt; JSON export; no vendor SDK | adopt | R10 `span!` discipline; `YI_TRACE=1` |
 | fx `SecretStore.store_interactive` | Host can collect a secret the core never sees (keychain prompt) | adopt | A6 trait method |
 | fx session-id charset / traversal validation | Session ids `[0-9a-z-]`, validated before any path join | adopt | S3 |
