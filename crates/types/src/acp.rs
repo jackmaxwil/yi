@@ -230,7 +230,7 @@ pub struct AcpTerminalExit {
     pub exit_code: Option<i64>,
 }
 
-/// `initialize` response body (C1); `protocolVersion` is always 2.
+/// `initialize` response body; `protocolVersion` is always 2.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AcpInitializeResult {
@@ -255,7 +255,6 @@ pub struct AcpSessionResult {
     pub config_options: Vec<AcpConfigOption>,
 }
 
-/// One session configuration option (C8).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AcpConfigOption {
@@ -264,7 +263,7 @@ pub struct AcpConfigOption {
     pub kind: Value,
 }
 
-/// `session/request_permission` request params (C5, M9 bridge).
+/// `session/request_permission` request params.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AcpPermissionParams {

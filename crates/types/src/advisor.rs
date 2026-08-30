@@ -20,7 +20,6 @@ pub enum AdviceKind {
     Stop,
 }
 
-/// One piece of advisor advice (design V6).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Advice {
