@@ -4,7 +4,7 @@ Run `just check` (fmt-check + clippy -D warnings + scripts/guardrails/check_guar
 before claiming any task done; quote failures verbatim, do not paraphrase them.
 
 - Ratchets only shrink. Intentional growth is `--update`, in its own commit; a baseline edit in
-  the same commit as a code edit fails the build. No aggregate fix, ever. Order is fixed: land
+  the same commit as a code edit fails the build (check_commit_style refuses the mix per commit at the PR range). No aggregate fix, ever. Order is fixed: land
   the code commit red on the baselines, then `--update` and commit the baselines alone.
 - A guardrail can fail on a file that is not yours: `blob_size` fires on any untracked blob in
   the tree. Report it, do not allowlist or delete another session's artifact.

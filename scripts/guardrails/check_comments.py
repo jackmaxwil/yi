@@ -80,7 +80,7 @@ if "--update" in sys.argv:
     sys.exit(0)
 errs = tags + pointers
 if len(over) > base["over_cap"]:
-    errs = over + [f"{len(over)} comments over the {CAP}-line cap > budget {base['over_cap']}"]
+    errs += over + [f"{len(over)} comments over the {CAP}-line cap > budget {base['over_cap']}"]
 if volume > base["volume"]:
     errs.append(f"comment volume outside yi-types {volume} > budget {base['volume']}")
 fail(errs, f"comments ({volume}/{base['volume']} lines, {len(over)}/{base['over_cap']} over cap)")
