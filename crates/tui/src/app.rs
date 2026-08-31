@@ -75,10 +75,6 @@ const SPINNER_PERIOD_MS: u128 = 80;
 pub(crate) const ORB_COLS: u16 = 6;
 pub(crate) const ORB_ROWS: u16 = 3;
 pub(crate) const ORB_PX: usize = 192;
-pub(crate) const SLASH_COMMANDS: [&str; 10] = [
-    "new", "undo", "quit", "tree", "editor", "advisor", "plan", "goal", "agents", "model",
-];
-
 pub struct TaskState {
     pub(crate) cell: TaskCell,
     pub(crate) started: Instant,

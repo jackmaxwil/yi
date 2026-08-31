@@ -2,9 +2,10 @@ use std::time::{Duration, Instant};
 
 use ratatui::crossterm::event::{Event as CtEvent, KeyEventKind};
 
-use crate::app::{App, Bottom, Command, SLASH_COMMANDS};
+use crate::app::{App, Bottom, Command};
 use crate::approval::AskChoice;
 use crate::cell::Cell;
+use crate::commands::SLASH_COMMANDS;
 use crate::focus::{FocusMove, focus_move, set_focus};
 use crate::keymap::{Action, EvalContext, KeyCodeValue, KeyInput, SingleKey};
 use crate::popup::{BottomView, ListPopup, PopupResult, walk_files};
@@ -208,7 +209,7 @@ pub(crate) fn handle_slash(app: &mut App, line: &str) {
         "editor" => app.pending_editor = true,
         "agents" => app.open_agents(),
         "model" => app.open_model_picker(),
-        "advisor" | "plan" | "goal" => {
+        "advisor" | "plan" | "goal" | "permissions" | "compact" | "sessions" => {
             app.pending_command = Some(if args.is_empty() {
                 command.to_owned()
             } else {
