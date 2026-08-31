@@ -2,9 +2,10 @@ use std::time::{Duration, Instant};
 
 use ratatui::crossterm::event::{Event as CtEvent, KeyEventKind};
 
-use crate::app::{App, Bottom, Command, SLASH_COMMANDS};
+use crate::app::{App, Bottom, Command};
 use crate::approval::AskChoice;
 use crate::cell::Cell;
+use crate::commands::SLASH_COMMANDS;
 use crate::focus::{FocusMove, focus_move, set_focus};
 use crate::keymap::{Action, EvalContext, KeyCodeValue, KeyInput, SingleKey};
 use crate::popup::{BottomView, ListPopup, PopupResult, walk_files};
