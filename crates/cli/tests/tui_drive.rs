@@ -214,7 +214,8 @@ fn plan_and_undo_answer_for_the_session_the_turn_ran_in() -> TestResult {
     let _ = std::fs::remove_dir_all(&dir);
     let work = dir.join("work");
     std::fs::create_dir_all(&work)?;
-    // Empty HOME would prewarm a kernel and outlast the waits; none of these verbs need one.
+    // Incident: an empty HOME prewarms a venv whose "one-time, ~30s" frame outlasted
+    // the waits below. None of these verbs need a kernel.
     std::fs::create_dir_all(dir.join(".yi"))?;
     std::fs::write(
         dir.join(".yi/config.json"),
@@ -226,6 +227,7 @@ fn plan_and_undo_answer_for_the_session_the_turn_ran_in() -> TestResult {
         "wait-idle 10000\nkey /\ntype plan\nkey enter\nwait-frame 10000 /plan: no plan\n\
          key /\ntype undo\nkey enter\nwait-frame 10000 /undo: nothing to restore\n\
          key /\ntype permissions\nkey enter\nwait-frame 10000 permission mode:\nkey /\n\
+         type permissions yolo\nkey enter\nwait-frame 10000 permission mode: yolo\nkey /\n\
          type compact\nkey enter\nwait-frame 10000 compaction scheduled\nkey /\n\
          type sessions\nkey enter\nwait-frame 10000 0s ago\nquit\n",
     )?;
@@ -266,7 +268,7 @@ fn plan_and_undo_answer_for_the_session_the_turn_ran_in() -> TestResult {
     for needle in [
         "/plan: no plan in this session",
         "/undo: nothing to restore",
-        "permission mode:",
+        "permission mode: yolo",
         "compaction scheduled",
         "0s ago",
     ] {

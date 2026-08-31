@@ -6,6 +6,14 @@ use yi_runtime::{AgentSession, PermissionMode};
 use crate::app::App;
 use crate::cell::Cell;
 
+/// Invariant: the popup offers exactly what [`process_pending_command`] and
+/// [`crate::input::handle_slash`] route, so the table lives beside them.
+#[rustfmt::skip]
+pub(crate) const SLASH_COMMANDS: [&str; 13] = [
+    "new", "undo", "quit", "tree", "editor", "advisor", "plan", "goal", "agents", "model",
+    "permissions", "compact", "sessions",
+];
+
 pub fn process_pending_command(app: &mut App, session: &Arc<AgentSession>) {
     let Some(line) = app.pending_command.take() else {
         return;
@@ -26,6 +34,8 @@ pub fn process_pending_command(app: &mut App, session: &Arc<AgentSession>) {
     app.scheduler.request();
 }
 
+/// Invariant: V11 promotion has no host request behind it, so this command is
+/// the only writer.
 fn advisor_command(session: &Arc<AgentSession>, args: &str) -> String {
     let Some(advisor) = session.advisor() else {
         return "/advisor: no advisor is attached to this session".to_owned();
@@ -60,6 +70,8 @@ fn advisor_command(session: &Arc<AgentSession>, args: &str) -> String {
     }
 }
 
+/// Invariant: plan transitions are host-verified (D52); a TUI write would be a
+/// second, unchecked writer.
 fn plan_command(session: &Arc<AgentSession>) -> String {
     let Some(service) = session.plan_service() else {
         return "/plan: no plan service is attached to this session".to_owned();
@@ -78,6 +90,8 @@ fn plan_command(session: &Arc<AgentSession>) -> String {
     }
 }
 
+/// Invariant: a goal is explicit-only (G2), so a keystroke may read one and
+/// never create one.
 fn goal_command(session: &Arc<AgentSession>) -> String {
     let Some(service) = session.goal_service() else {
         return "/goal: no goal service is attached to this session".to_owned();
@@ -206,7 +220,7 @@ pub fn process_pending_selection(app: &mut App, session: &Arc<AgentSession>) {
 
 #[cfg(test)]
 mod tests {
-    use crate::app::SLASH_COMMANDS;
+    use super::SLASH_COMMANDS;
 
     #[test]
     fn slash_table_covers_every_runtime_verb() {
