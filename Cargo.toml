@@ -80,6 +80,16 @@ await_holding_lock = "deny"
 await_holding_invalid_type = "deny"
 disallowed_methods = "deny"
 
+# Debug builds carry line tables only, and dependencies carry no debuginfo at
+# all: generating it and linking it into 101 test binaries was a fifth of the
+# PR gate's wall clock, and a backtrace through serde's frames is not what
+# anyone reads. `file:line` on Yi's own frames survives.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false
+
 [profile.dist]
 inherits = "release"
 opt-level = "z"

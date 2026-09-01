@@ -20,14 +20,26 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: rustup show
-      - uses: actions/cache@v4
+      # `test` is the PR gate's heaviest lane and the one whose profile this
+      # job also builds, so a cache saved here — on refs/heads/main, the one
+      # scope every pull request can read — is what makes a branch's first
+      # push warm rather than cold.
+      - uses: Swatinem/rust-cache@v2
         with:
-          path: |
-            ~/.cargo/bin
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ matrix.os }}-cargo-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
-      - run: command -v just >/dev/null || cargo install --locked just
+          shared-key: test
+          cache-on-failure: true
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: just
+      # `just journeys` boots the Python kernel, which refuses to install uv
+      # itself; without this every push to main failed there, which is also why
+      # main never saved a cache for a pull request to inherit.
+      - name: install uv for the kernel journey
+        run: |
+          set -euo pipefail
+          if ! command -v uv >/dev/null; then
+            curl -LsSf https://astral.sh/uv/install.sh | sh
+            echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          fi
       - run: just postmerge
       - run: just postmerge-evals

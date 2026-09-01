@@ -12,10 +12,17 @@ permissions:
 
 jobs:
   gate:
+    # `lint`, `guardrails` and `test` are the three lanes of `just check` and
+    # none depends on another, so the gate pays the longest rather than the
+    # sum. `just lane` is what runs them: it carries prepush's own invariant
+    # — that the gate regenerated nothing — into each lane, so splitting the
+    # run does not drop it. The rules stay in the justfile (D84); this file
+    # only says which lane on which runner.
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest]
+        lane: [lint, guardrails, test]
     runs-on: ${{ matrix.os }}
     steps:
       # check_commit_style.py resolves origin/main and refuses to pass blind on
@@ -24,30 +31,44 @@ jobs:
         with:
           fetch-depth: 0
       - run: rustup show
-      - uses: actions/cache@v4
+      # The hand-rolled cache had no restore-keys, tarred all of target/ (1.6 GB
+      # a copy, which overran the 10 GB repo limit and the Linux runner's disk),
+      # and only ever saved under refs/pull/N, a scope no other PR can read — so
+      # every job was cold. rust-cache prunes to the dependency artifacts, falls
+      # back on a stale key, and shares one key per lane with postmerge, which
+      # is what puts a warm cache on main for a first push to inherit.
+      - uses: Swatinem/rust-cache@v2
         with:
-          path: |
-            ~/.cargo/bin
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ matrix.os }}-cargo-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
+          shared-key: ${{ matrix.lane }}
+          cache-on-failure: true
+      # Prebuilt binaries: `cargo install --locked` compiled these from source
+      # on every cold cache, 3-6 min a job for tools the gate only shells out
+      # to. Installed for every lane rather than per-lane — the whole set costs
+      # seconds, and a matrix arm that has to say which tools it needs is the
+      # start of a second copy of the rules.
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: just,cargo-deny,cargo-machete,cargo-nextest
       - name: install the tools the gate shells out to
         run: |
           set -euo pipefail
-          for tool in just cargo-deny cargo-machete; do
-            command -v "$tool" >/dev/null || cargo install --locked "$tool"
-          done
           command -v codespell >/dev/null || pipx install codespell
           if ! command -v uv >/dev/null; then
             curl -LsSf https://astral.sh/uv/install.sh | sh
             echo "$HOME/.local/bin" >> "$GITHUB_PATH"
           fi
-      - run: just prepush
-      # The title is judged by the same rule the subjects are, and only CI can
-      # see it: it exists nowhere in the tree the local hook scans.
-      - name: check the PR title against the commit-subject standard
-        env:
+      - run: just lane ${{ matrix.lane }}
+
+  # The title is judged by the same rule the subjects are, and only CI can see
+  # it: it exists nowhere in the tree the local hook scans. Its own job, so the
+  # six gate lanes do not each re-run a one-second python script.
+  title:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - env:
           PR_TITLE: ${{ github.event.pull_request.title }}
         run: python3 scripts/guardrails/check_commit_style.py
 
