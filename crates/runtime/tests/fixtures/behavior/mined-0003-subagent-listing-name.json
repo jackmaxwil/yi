@@ -3,7 +3,7 @@
   "description": "list_subagents() entries expose session_name, not the spawn handle's name; a parent that indexes [0].name gets AttributeError and burns turns unless the result names the listing field (cluster 076dc628ba79)",
   "provenance": {
     "kind": "mined",
-    "session": "cluster-076dc628ba79"
+    "session": "01a04771"
   },
   "stubs": [
     {
