@@ -245,3 +245,58 @@ fn the_lint_reads_the_file_and_never_refuses_anything() -> TestResult {
     assert!(rules.contains(&"unknown-state"), "{rules:?}");
     Ok(())
 }
+
+#[test]
+fn the_directive_names_what_is_load_bearing_and_what_may_compress() -> TestResult {
+    let mut plan = plan_with(&[("cut the seam", &[]), ("wire it", &[]), ("ship it", &[])])?;
+    if let Some(todo) = plan.todos.get_mut(0) {
+        todo.state = TodoState::Done { output: None };
+    }
+    if let Some(todo) = plan.todos.get_mut(1) {
+        todo.state = TodoState::Running {
+            by: AgentId::new("coder")?,
+        };
+    }
+    let said = yi_runtime::plan::compaction_directive(&plan).ok_or("an active plan directs")?;
+    assert!(said.contains("wire it"), "{said}");
+    assert!(said.contains("ship it"), "{said}");
+    let live = said.split("finished").next().unwrap_or_default();
+    assert!(
+        !live.contains("cut the seam"),
+        "a finished todo is not named as load-bearing: {said}"
+    );
+    assert!(said.contains("compress it to its outcome"), "{said}");
+    Ok(())
+}
+
+#[test]
+fn a_finished_plan_directs_the_summarizer_at_nothing() -> TestResult {
+    let mut plan = plan_with(&[("cut the seam", &[])])?;
+    if let Some(todo) = plan.todos.get_mut(0) {
+        todo.state = TodoState::Done { output: None };
+    }
+    assert_eq!(yi_runtime::plan::compaction_directive(&plan), None);
+    Ok(())
+}
+
+/// Incident: this landing wrote "plan-aware compaction is not here, the
+/// compactor is never constructed" into a changelog row on one bad grep;
+/// `attach_runtime` enables it for every session. The claim is now a test.
+#[test]
+fn the_plan_directive_leads_whatever_slash_compact_asked_for() -> TestResult {
+    let compactor = yi_runtime::compaction::Compactor::new("win-0".to_owned());
+    assert_eq!(compactor.pending_directive(), None);
+    compactor.set_standing(Arc::new(|| Some("the ledger says X is live".to_owned())));
+    compactor.schedule_with_instructions(Some("keep the auth trace".to_owned()));
+    let merged = compactor
+        .pending_directive()
+        .ok_or("a standing directive plus a one-shot merges to something")?;
+    let ledger = merged
+        .find("the ledger says X is live")
+        .ok_or("the standing half survives")?;
+    let asked = merged
+        .find("keep the auth trace")
+        .ok_or("the one-shot half survives")?;
+    assert!(ledger < asked, "the caller's own words come last: {merged}");
+    Ok(())
+}

@@ -428,6 +428,7 @@ pub fn attach_runtime(session: &mut AgentSession, mut wiring: RuntimeWiring) -> 
         Arc::clone(&kernels),
     );
     wire_transcripts(&transcripts, &host, &wiring);
+    wire_plan_compaction(session, &plans_dir);
     let restore_notice = session.notice_hook();
     let service = Arc::new(crate::kernel::KernelService::new(
         crate::kernel::KernelServiceOptions {
@@ -486,6 +487,22 @@ pub fn attach_runtime(session: &mut AgentSession, mut wiring: RuntimeWiring) -> 
     );
     wire_job_completions(session);
     host
+}
+
+/// §12: the ledger names what is still load-bearing at every compaction, and
+/// the summarizer disposes. Read per compaction, never stored, so a directive
+/// cannot go stale between the schedule and the call.
+fn wire_plan_compaction(session: &AgentSession, plans_dir: &Path) {
+    let Some(compactor) = session.compactor() else {
+        return;
+    };
+    let store = session.store_handle();
+    let dir = plans_dir.to_path_buf();
+    compactor.set_standing(Arc::new(move || {
+        crate::plan::canonical_plan(&store, &dir)
+            .ok()
+            .and_then(|plan| crate::plan::compaction_directive(&plan))
+    }));
 }
 
 /// The affordance notice, the advisor note, the kernel peek, and the plan's

@@ -162,6 +162,45 @@ pub fn frontier_text(plan: &Plan) -> String {
     lines.join("\n")
 }
 
+/// §12's plan-aware compaction, as an instruction rather than a filter: the
+/// ledger names what is still load-bearing and the summarizer disposes. Entry
+/// attribution per todo does not exist, so nothing here pretends to have it.
+pub fn compaction_directive(plan: &Plan) -> Option<String> {
+    if plan.state != PlanState::Active || plan.finished() {
+        return None;
+    }
+    let mut live = Vec::new();
+    let mut settled = Vec::new();
+    for todo in &plan.todos {
+        match &todo.state {
+            TodoState::Pending | TodoState::Running { .. } | TodoState::Blocked { .. } => {
+                live.push(todo.label.as_str());
+            }
+            TodoState::Done { .. } | TodoState::Failed { .. } | TodoState::Abandoned => {
+                settled.push(todo.label.as_str());
+            }
+            TodoState::Other(_) => {}
+        }
+    }
+    if live.is_empty() {
+        return None;
+    }
+    let mut text = format!(
+        "This session is working plan {}. Material for these todos is still load-bearing and \
+         must survive in enough detail to act on: {}.",
+        plan.id,
+        live.join("; ")
+    );
+    if !settled.is_empty() {
+        text.push_str(&format!(
+            " Work on these is finished, so compress it to its outcome: {}.",
+            settled.join("; ")
+        ));
+    }
+    text.push_str(" The ledger itself rehydrates from its file; do not restate it.");
+    Some(text)
+}
+
 fn plan_json(plan: &Plan) -> Result<Value, String> {
     let ready: Vec<&str> = plan
         .ready()
