@@ -88,6 +88,7 @@ fn the_language_names_fences_actually_carry_all_resolve() -> TestResult {
         "zsh",
         "shell",
         "json",
+        "jsonc",
         "js",
         "jsx",
         "javascript",
@@ -105,6 +106,10 @@ fn the_language_names_fences_actually_carry_all_resolve() -> TestResult {
 fn an_unknown_language_is_declined_rather_than_guessed() -> TestResult {
     assert!(lang_for("brainfuck").is_none());
     assert!(lang_for("").is_none());
+    // A console fence is a session dump, mostly program output. Borrowing the
+    // sh grammar paints output words as commands, and one apostrophe in prose
+    // opens a string the parser carries to the end of the block.
+    assert!(lang_for("console").is_none());
     assert!(lang_for("crates/tui/src/cell.rs").is_some());
     Ok(())
 }

@@ -512,6 +512,26 @@ fn color_detection_defaults_dark_and_names_are_stable() -> TestResult {
     Ok(())
 }
 
+/// A4: a bare fence still opens the rail, so its body has a header to hang off
+/// instead of a rail starting mid-air. An indented block gets none: a stream
+/// cuts it at a blank line and cannot reopen it, so a header would repaint.
+#[test]
+fn a_bare_fence_opens_the_rail_and_an_indented_block_does_not() -> TestResult {
+    let theme = theme();
+    for (source, expected) in [
+        ("```\nplain body\n```", vec!["│", "│ plain body"]),
+        ("    indented body\n", vec!["│ indented body"]),
+    ] {
+        let text: Vec<String> = yi_tui::markdown::render(source, 60, &theme)
+            .iter()
+            .map(flat)
+            .filter(|line| !line.is_empty())
+            .collect();
+        assert_eq!(text, expected, "{source:?}");
+    }
+    Ok(())
+}
+
 #[test]
 fn markdown_renders_fences_dim_and_headings_bold() -> TestResult {
     let theme = theme();
