@@ -19,12 +19,16 @@ pub enum Token {
     Keyword,
     Type,
     Function,
+    Variable,
 }
 
 #[derive(Clone)]
 pub struct Lang {
     state: ParseState,
     stack: ScopeStack,
+    /// A parse error leaves the incremental state no longer describing the
+    /// text, so colour stops for the rest of the block rather than resuming
+    /// from a state that would paint the wrong words as keywords.
     poisoned: bool,
 }
 
@@ -52,6 +56,7 @@ fn scope_table() -> &'static [(Scope, Token)] {
             ("entity.name.function", Token::Function),
             ("support.function", Token::Function),
             ("variable.function", Token::Function),
+            ("variable", Token::Variable),
             ("entity.name", Token::Type),
             ("support.type", Token::Type),
             ("support.class", Token::Type),
@@ -120,6 +125,7 @@ impl Theme {
                 .add_modifier(Modifier::BOLD),
             Token::Type => Style::default().fg(self.muted).add_modifier(Modifier::BOLD),
             Token::Function => Style::default().fg(self.warning),
+            Token::Variable => Style::default().fg(self.accent),
         }
     }
 }
