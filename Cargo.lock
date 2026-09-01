@@ -2186,8 +2186,20 @@ dependencies = [
  "serde_json",
  "tokio",
  "yi-acp",
+ "yi-console",
  "yi-mcp-cli",
  "yi-runtime",
+ "yi-tui",
+ "yi-types",
+]
+
+[[package]]
+name = "yi-console"
+version = "0.2.0"
+dependencies = [
+ "ratatui",
+ "serde_json",
+ "tui-textarea",
  "yi-tui",
  "yi-types",
 ]

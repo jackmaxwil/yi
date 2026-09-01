@@ -14,6 +14,7 @@ members = [
   "crates/runtime",
   "crates/acp",
   "crates/tui",
+  "crates/console",
   "crates/cli",
 ]
 
@@ -37,6 +38,7 @@ yi-kernel = { path = "crates/kernel" }
 yi-runtime = { path = "crates/runtime" }
 yi-acp = { path = "crates/acp" }
 yi-tui = { path = "crates/tui" }
+yi-console = { path = "crates/console" }
 yi-cli = { path = "crates/cli" }
 serde = { version = "1", default-features = false, features = ["derive", "std"] }
 serde_json = { version = "1", default-features = false, features = ["std", "preserve_order"] }

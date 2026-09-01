@@ -25,6 +25,7 @@ skill creation.
 | Skills | Read-only discovery from disk + Python skills in the kernel venv. No creation, no learning, no refine. Skills roots are model-write-denied. |
 | ACP | **v2 only** (D1, revised from "v1 and v2"): native wire shapes are v2 (`state_update`, upsert-by-id, structured diffs, `title`/`subject` permissions). The v1 downgrade adapter is cut — no v1-only client exists in this setup (Afterlife and Zed speak v2); additive later if one appears. `protocolVersion: 1` gets a clean version-mismatch response. |
 | Daemon | Phase 6, prime-agent design, over ACP v2 (no private protocol). |
+| Console | `yi console` (crate `yi-console`, D89/D90): the multi-pane workspace shell, an ACP client over the `yi serve` daemon socket. Pane = session, workspace = repo root; the daemon stays the only session owner. Rendering is client-side from semantic `session/update` frames — no server-side frame streaming, no PTYs, no blit encoder. Pane content is an enum (`Session`/`Markdown`/`Diff`/`Notebook`), never a `dyn PaneView` trait. |
 
 ### 1.1 Not in scope (maintained list; one-in-one-out for top-level features)
 
@@ -33,13 +34,21 @@ blast-radius command classifier (M10's denylist is the whole ambition) · embedd
 search until grep measurably fails · resident LSP/DAP servers · JS runtime in the core (the
 bridge sidecar is external, fail-safe, optional) · WASM/N-API embedding (revisit after phase 7)
 · Windows · provider breadth (3 + faux; D16 pass-through covers the rest) · plugin runtime ·
-GUI (Afterlife owns it) · mail/browser/computer-use/any capability that is not a coding agent.
+GUI (Afterlife owns it) · mail/browser/computer-use/any capability that is not a coding agent ·
+server-side terminal-frame streaming for the console (herdr's model: protocol versioning, blit
+encoders, foreground-client size arbitration — Yi's panes are semantic event streams, D89).
 Adding a top-level feature requires deleting or demoting one, and editing this list in the same
 commit — the upstream guardrail no ratchet can substitute for (§9.1).
 
 ---
 - Embedding API (napi/WASM binding of yi-runtime; was M4): demoted 2026-08-27 as the
   one-out for the plan system (D53). Rebuild case: an external embedder appears.
+- Document conversion (`anydoc` behind a `docs` cargo feature; was M1, §14.6): demoted
+  2026-08-31 as the one-out for the console (D89). A format converter is not a coding
+  agent's own capability, the kernel venv already reaches every converter Python has, and
+  the feature would have carried `pdf-inspector`/`zip`/`quick-xml`/`cfb`/`lopdf` plus a
+  fourth cargo gate into a build D36 and D38 spent effort collapsing. Rebuild case: `read`
+  of office and PDF files is measured to be a real loop the kernel cannot close.
 
 ## 2. Crate layout
 
@@ -65,6 +74,8 @@ crates/
                 File-size guardrail keeps them honest. deps: all above.
   yi-acp        ACP v2 server, Event → session/update; hand-rolled v2 wire subset (D40). deps: yi-runtime, yi-types.
   yi-tui        ratatui shell (feature `tui`). Consumes Event + AgentSession methods only. deps: yi-runtime.
+  yi-console    alt-screen workspace shell (`yi console`, feature `tui`). ACP client over the
+                `yi serve` socket; renders from semantic updates. deps: yi-types, yi-tui.
   yi-cli        `yi` binary: composition root; `yi rpc` (Pi RPC JSONL, ~300-line adapter over the
                 Event stream — a mode, not a crate) and `yi ask` live here. deps: all.
 python/
@@ -1443,7 +1454,7 @@ startup are why we are here.
 1. Every dependency is listed below with its reason and the alternative considered. A crate not
    in the table cannot be added without editing the table (CI diff check on `Cargo.lock`).
 2. Default features off everywhere (`default-features = false`); enable the minimum.
-3. Optional surfaces are cargo features, not defaults: `tui` (ratatui), `docs` (anydoc). MCP is
+3. Optional surfaces are cargo features, not defaults: `tui` (ratatui). MCP is
    config-gated, not a feature (D36); the kernel is compiled unconditionally (D38) and boots
    lazily on first `ipython` call. `cargo build --release` with default features = headless
    agent with ACP + RPC + kernel.
@@ -1508,7 +1519,6 @@ size builds only as an experiment, never required.
 | Feature | Crate | Adds | Note |
 |---|---|---|---|
 | `tui` | `ratatui` (features `crossterm`, `scrolling-regions`; no `all-widgets`), `crossterm` (`bracketed-paste`; **no** `event-stream` — the UI thread polls synchronously), `tui-textarea` (no features), `pulldown-cmark` (no default features), `syntect` (features `parsing`, `default-syntaxes`, `regex-fancy`; **no** `regex-onig` — the C engine; D74), `unicode-width` (already a ratatui dep); dev: `vt100`, `insta` | ≈ 1 MiB budget | phase 7; `yi` without `tui` is the headless/ACP build |
-| `docs` | `anydoc` (+ `pdf-inspector`, `zip`, `quick-xml`, `cfb`, `flate2`, `lopdf`…) | measured (§14.6) | off by default; `read` of office/PDF files |
 | `reduce` | none at runtime (`toml` build-dep only); possibly `regex` — measured | small | on by default (§14.3) |
 
 ### 13.5 Banned
@@ -1660,7 +1670,7 @@ subagents and heartbeats are in daily use. Plan, so no re-design is needed then:
 
 | Library | Verdict | Surface |
 |---|---|---|
-| `anydoc` (+ `pdf-inspector` transitively; pure Rust, MIT) | use | cargo feature `docs` (off by default, size-ledger measured): `read` on `.docx/.pptx/.xlsx/.pdf/.epub/.rtf` returns markdown. Never the `ocr` feature |
+| `anydoc` (+ `pdf-inspector` transitively; pure Rust, MIT) | **demoted** (§1.1, 2026-08-31 — the console's one-out) | cargo feature `docs` (off by default, size-ledger measured): `read` on `.docx/.pptx/.xlsx/.pdf/.epub/.rtf` returns markdown. Never the `ocr` feature |
 | `cua-driver` | leverage | optional exec tool: `cua-driver call` if present on PATH; nothing vendored |
 | `turbovec` | inspire | revisit only if `grep` over sessions measurably fails; the embedder would be a C dep |
 | `mempalace` | inspire | verbatim (not summarized) memory text and project-scoped namespaces for ledger `memory` entries; its hook-driven auto-writes are the opposite of the ledger contract |

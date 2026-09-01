@@ -25,12 +25,63 @@ enum Input {
     ClientLine(ClientId, Value),
     ClientClosed(ClientId),
     WorkerLine(String, Value),
+    WorkerReply(String, Value),
     WorkerClosed(String),
 }
+
+/// Asks parked for a detached session; past this the worker is refused
+/// rather than left waiting.
+const PARKED_MAX: usize = 8;
 
 struct Worker {
     child: Child,
     stdin: ChildStdin,
+}
+
+/// Per-session routing plus the unseen ledger (in-memory, survives detach
+/// not restart). Attachment is a set: every attached client gets the
+/// fan-out, so one session can be watched from any number of terminals.
+struct SessionEntry {
+    root: String,
+    attached: std::collections::HashSet<ClientId>,
+    unseen: u64,
+    last_state: Option<String>,
+    last_event_ms: u64,
+    /// Invariant: true only for a row the pre-attach path invented so a
+    /// resume's replay could route; the worker's result confirms it, and an
+    /// unconfirmed row is never listed and dies with its client.
+    provisional: bool,
+}
+
+impl SessionEntry {
+    fn provisional(root: String) -> Self {
+        Self {
+            provisional: true,
+            ..Self::new(root, None)
+        }
+    }
+
+    fn new(root: String, attached: Option<ClientId>) -> Self {
+        Self {
+            root,
+            attached: attached.into_iter().collect(),
+            unseen: 0,
+            last_state: None,
+            last_event_ms: 0,
+            provisional: false,
+        }
+    }
+}
+
+#[expect(
+    clippy::disallowed_methods,
+    reason = "the ledger's timestamp is the job: when the last unattended update landed"
+)]
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX))
+        .unwrap_or(0)
 }
 
 /// Routes ACP v2 between clients (unix socket) and one worker per root (`yi
@@ -40,12 +91,16 @@ struct Supervisor {
     options: DaemonOptions,
     workers: HashMap<String, Worker>,
     clients: HashMap<ClientId, mpsc::UnboundedSender<String>>,
-    /// session_id → (root, last attached client).
-    sessions: HashMap<String, (String, Option<ClientId>)>,
+    /// session_id → routing and ledger state.
+    sessions: HashMap<String, SessionEntry>,
     /// rewritten request id → (client, original id, root).
     requests: HashMap<u64, (ClientId, Value, String)>,
     /// worker-originated request id → root (permission bridge round trip).
     worker_requests: HashMap<String, String>,
+    /// Worker-originated requests that arrived while the session had no
+    /// attached client, flushed on the next attach; without this the
+    /// worker's synchronous asker blocks on an answer nobody ever saw.
+    parked: HashMap<String, Vec<Value>>,
     next_request: u64,
     input: mpsc::UnboundedSender<Input>,
 }
@@ -191,22 +246,73 @@ impl Supervisor {
                     }
                     return;
                 }
+                // Attach BEFORE forwarding: a resume's replay notifications
+                // stream ahead of its response, and they must route to this
+                // client rather than land in the unseen ledger.
+                if let Some(session_id) = frame
+                    .pointer("/params/sessionId")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned)
+                {
+                    self.sessions
+                        .entry(session_id.clone())
+                        .or_insert_with(|| SessionEntry::provisional(root.clone()))
+                        .attached
+                        .insert(client);
+                    self.flush_parked(&session_id, client);
+                }
                 self.forward_to_worker(&root, client, id, frame).await;
             }
             "session/list" => {
+                // With a cwd the list is the worker's persisted repo; without
+                // one it is the daemon's live map plus the unseen ledger.
+                if let Some(root) = frame
+                    .pointer("/params/cwd")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned)
+                {
+                    if let Err(error) = self.worker_for(&root).await {
+                        if let Some(id) = id {
+                            self.send_client(client, error_frame(id, -32603, &error));
+                        }
+                        return;
+                    }
+                    self.forward_to_worker(&root, client, id, frame).await;
+                    return;
+                }
                 let Some(id) = id else { return };
                 let sessions: Vec<Value> = self
                     .sessions
                     .iter()
-                    .map(|(session_id, (root, attached))| {
+                    .filter(|(_, entry)| !entry.provisional)
+                    .map(|(session_id, entry)| {
                         json!({
                             "sessionId": session_id,
-                            "cwd": root,
-                            "attached": attached.is_some(),
+                            "cwd": entry.root,
+                            "attached": !entry.attached.is_empty(),
+                            "unseen": entry.unseen,
+                            "lastState": entry.last_state,
+                            "lastEventMs": entry.last_event_ms,
                         })
                     })
                     .collect();
                 self.send_client(client, result_frame(id, json!({"sessions": sessions})));
+            }
+            "_yi/seen" => {
+                let Some(id) = id else { return };
+                let session_id = frame
+                    .pointer("/params/sessionId")
+                    .and_then(Value::as_str)
+                    .unwrap_or("");
+                match self.sessions.get_mut(session_id) {
+                    Some(entry) => {
+                        entry.unseen = 0;
+                        self.send_client(client, result_frame(id, json!({})));
+                    }
+                    None => {
+                        self.send_client(client, error_frame(id, -32602, "unknown sessionId"));
+                    }
+                }
             }
             _ => {
                 let Some(root) = self.root_of(&frame) else {
@@ -215,10 +321,14 @@ impl Supervisor {
                     }
                     return;
                 };
-                if let Some(session_id) = frame.pointer("/params/sessionId").and_then(Value::as_str)
-                    && let Some(entry) = self.sessions.get_mut(session_id)
+                if let Some(session_id) = frame
+                    .pointer("/params/sessionId")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned)
+                    && let Some(entry) = self.sessions.get_mut(&session_id)
                 {
-                    entry.1 = Some(client);
+                    entry.attached.insert(client);
+                    self.flush_parked(&session_id, client);
                 }
                 self.forward_to_worker(&root, client, id, frame).await;
             }
@@ -227,7 +337,9 @@ impl Supervisor {
 
     fn root_of(&self, frame: &Value) -> Option<String> {
         let session_id = frame.pointer("/params/sessionId").and_then(Value::as_str)?;
-        self.sessions.get(session_id).map(|(root, _)| root.clone())
+        self.sessions
+            .get(session_id)
+            .map(|entry| entry.root.clone())
     }
 
     async fn forward_response_to_worker(&mut self, root: &str, frame: Value) {
@@ -269,8 +381,19 @@ impl Supervisor {
                 .and_then(Value::as_str)
                 .map(str::to_owned)
             {
-                self.sessions
-                    .insert(session_id, (request_root, Some(client)));
+                // Keep an existing ledger across re-resume; only the
+                // attachment and root refresh.
+                match self.sessions.get_mut(&session_id) {
+                    Some(entry) => {
+                        entry.root = request_root;
+                        entry.attached.insert(client);
+                        entry.provisional = false;
+                    }
+                    None => {
+                        self.sessions
+                            .insert(session_id, SessionEntry::new(request_root, Some(client)));
+                    }
+                }
             }
             if let Some(map) = frame.as_object_mut() {
                 map.insert("id".to_owned(), original);
@@ -284,15 +407,66 @@ impl Supervisor {
             self.worker_requests.insert(id.to_owned(), root.clone());
         }
         // Notifications route to the session's attached client; with no
-        // client attached the update is dropped and the worker keeps
-        // running — that is the reconnect contract.
-        let target = frame
+        // client attached the frame is dropped but the ledger records that
+        // something happened, so a reattaching console sees unseen work.
+        let session_id = frame
             .pointer("/params/sessionId")
             .and_then(Value::as_str)
-            .and_then(|session_id| self.sessions.get(session_id))
-            .and_then(|(_, attached)| *attached);
-        if let Some(client) = target {
-            self.send_client(client, frame.to_string());
+            .map(str::to_owned);
+        let Some(session_id) = session_id else { return };
+        let state = frame
+            .pointer("/params/update")
+            .filter(|update| {
+                update.get("sessionUpdate").and_then(Value::as_str) == Some("state_update")
+            })
+            .and_then(|update| update.get("state"))
+            .and_then(Value::as_str)
+            .map(str::to_owned);
+        let Some(entry) = self.sessions.get_mut(&session_id) else {
+            return;
+        };
+        entry.last_event_ms = now_ms();
+        if let Some(state) = state {
+            entry.last_state = Some(state);
+        }
+        if entry.attached.is_empty() {
+            entry.unseen = entry.unseen.saturating_add(1);
+            // Requests (frames with an id) park for the next attach; a
+            // capped queue bounds a worker that asks in a loop.
+            if let Some(request_id) = frame.get("id").cloned() {
+                let queue = self.parked.entry(session_id).or_default();
+                if queue.len() < PARKED_MAX {
+                    queue.push(frame);
+                } else {
+                    // Incident: past the cap the ask was dropped, leaving the
+                    // worker's synchronous asker on an answer nobody would send.
+                    let _ = self.input.send(Input::WorkerReply(
+                        root,
+                        json!({
+                            "jsonrpc": "2.0",
+                            "id": request_id,
+                            "error": {"code": -32603, "message": "no client attached; ask queue full"},
+                        }),
+                    ));
+                }
+            }
+            return;
+        }
+        // Fan out to every watcher; for a worker-originated request the
+        // first answer wins and the stale ids of the rest fall out of
+        // `worker_requests` with it.
+        let watchers: Vec<ClientId> = entry.attached.iter().copied().collect();
+        let line = frame.to_string();
+        for client in watchers {
+            self.send_client(client, line.clone());
+        }
+    }
+
+    fn flush_parked(&mut self, session_id: &str, client: ClientId) {
+        if let Some(queue) = self.parked.remove(session_id) {
+            for frame in queue {
+                self.send_client(client, frame.to_string());
+            }
         }
     }
 
@@ -311,17 +485,18 @@ impl Supervisor {
                 self.send_client(client, error_frame(original, -32603, "worker exited"));
             }
         }
-        self.sessions
-            .retain(|_, (session_root, _)| *session_root != root);
+        self.sessions.retain(|_, entry| entry.root != root);
+        self.parked
+            .retain(|session_id, _| self.sessions.contains_key(session_id));
     }
 
     fn handle_client_closed(&mut self, client: ClientId) {
         self.clients.remove(&client);
         for entry in self.sessions.values_mut() {
-            if entry.1 == Some(client) {
-                entry.1 = None;
-            }
+            entry.attached.remove(&client);
         }
+        self.sessions
+            .retain(|_, entry| !entry.provisional || !entry.attached.is_empty());
         self.requests
             .retain(|_, (request_client, _, _)| *request_client != client);
     }
@@ -384,6 +559,7 @@ pub fn run_daemon(options: DaemonOptions, runtime: tokio::runtime::Runtime) -> i
             sessions: HashMap::new(),
             requests: HashMap::new(),
             worker_requests: HashMap::new(),
+            parked: HashMap::new(),
             next_request: 0,
             input: input_tx.clone(),
         };
@@ -408,6 +584,9 @@ pub fn run_daemon(options: DaemonOptions, runtime: tokio::runtime::Runtime) -> i
                 }
                 Input::ClientClosed(client) => supervisor.handle_client_closed(client),
                 Input::WorkerLine(root, frame) => supervisor.handle_worker_line(root, frame),
+                Input::WorkerReply(root, frame) => {
+                    supervisor.forward_response_to_worker(&root, frame).await;
+                }
                 Input::WorkerClosed(root) => supervisor.handle_worker_closed(root),
             }
         }

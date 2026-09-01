@@ -11,4 +11,5 @@
 "yi-runtime" = ["yi-types", "yi-loop", "yi-ai", "yi-session", "yi-context", "yi-permission", "yi-tools", "yi-kernel"]
 "yi-acp" = ["yi-types", "yi-runtime"]
 "yi-tui" = ["yi-types", "yi-runtime", "yi-orb"]
-"yi-cli" = ["yi-types", "yi-runtime", "yi-acp", "yi-tui", "yi-mcp-cli"]
+"yi-console" = ["yi-types", "yi-tui"]
+"yi-cli" = ["yi-types", "yi-runtime", "yi-acp", "yi-tui", "yi-console", "yi-mcp-cli"]
