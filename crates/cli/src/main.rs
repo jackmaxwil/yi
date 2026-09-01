@@ -421,6 +421,7 @@ fn build_session(
             tool_execution: yi_loop_default(),
             cwd,
             home: home.clone(),
+            mcp_read: Some(std::sync::Arc::new(McpOneShot)),
             broker: Some(broker),
             tools: std::sync::Arc::new(move || {
                 let mut tools = yi_runtime::builtin_tools_with(freeform_grammar);
@@ -441,6 +442,7 @@ fn build_session(
                 .plan
                 .as_ref()
                 .and_then(|plan| plan.stale_reminder_turns),
+            plans_dir: configured_plans_dir(&effective_cwd(args)),
             auto_background: configured_auto_background(),
             kernel_prewarm: config()
                 .kernel
@@ -466,6 +468,84 @@ fn session_extensions(args: &Args) -> yi_runtime::ExtensionHost {
             .and_then(|spec| yi_runtime::schema::Schema::load(spec).ok())
             .map(|schema| schema.instruction()),
     })
+}
+
+/// `plans.dir`, relative to the workspace root unless absolute. Unset leaves
+/// the resolver's own `.yi/plans` default in place.
+fn configured_plans_dir(workspace: &std::path::Path) -> Option<std::path::PathBuf> {
+    let dir = config().plans.as_ref()?.dir.as_deref()?;
+    let path = std::path::PathBuf::from(dir);
+    Some(if path.is_absolute() {
+        path
+    } else {
+        workspace.join(path)
+    })
+}
+
+/// Invariant: an MCP read runs as a one-shot child of `yi mcp`, so no socket
+/// and no token ever lives in this process; the server segment of an
+/// `mcp://<server>/<uri>` address is a connected session name.
+struct McpOneShot;
+
+impl yi_runtime::fetch::McpResourceRead for McpOneShot {
+    fn read(&self, server: &str, resource: &str) -> Result<String, String> {
+        let exe = std::env::current_exe().map_err(|error| error.to_string())?;
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "every MCP call goes out through the one-shot CLI, never a held socket"
+        )]
+        let output = std::process::Command::new(exe)
+            .args(["mcp", "--json"])
+            .arg(format!("@{server}"))
+            .args(["resources-read", resource])
+            .output()
+            .map_err(|error| error.to_string())?;
+        if !output.status.success() {
+            let raw = String::from_utf8_lossy(&output.stderr);
+            let trimmed = raw.trim();
+            let message = trimmed.strip_prefix("error: ").unwrap_or(trimmed);
+            return Err(if message.is_empty() {
+                format!("yi mcp exited {:?}", output.status.code())
+            } else {
+                message.to_owned()
+            });
+        }
+        Ok(String::from_utf8_lossy(&output.stdout)
+            .trim_end()
+            .to_owned())
+    }
+}
+
+fn run_fetch(args: &Args) -> i32 {
+    let target = args.prompt.trim();
+    if target.is_empty() {
+        eprintln!("usage: yi fetch <url>");
+        return 2;
+    }
+    let url: yi_types::url::Url = match target.parse() {
+        Ok(url) => url,
+        Err(error) => {
+            eprintln!("error: {error}");
+            return 2;
+        }
+    };
+    let workspace = effective_cwd(args);
+    let mut resolver =
+        yi_runtime::fetch::Resolver::new(workspace.clone(), yi_runtime::Wall::default());
+    if let Some(dir) = configured_plans_dir(&workspace) {
+        resolver = resolver.with_plans_dir(dir);
+    }
+    resolver = resolver.with_mcp_read(Arc::new(McpOneShot));
+    match resolver.fetch(&url) {
+        Ok(fetched) => {
+            print!("{}", fetched.text);
+            0
+        }
+        Err(error) => {
+            eprintln!("error: {error}");
+            1
+        }
+    }
 }
 
 fn run_trust(args: &Args) -> i32 {
@@ -607,7 +687,10 @@ fn run(args: &Args) -> i32 {
     let mut answer = String::new();
     runtime.block_on(async move {
         let mut events = session.subscribe();
-        if session.prompt(&prompt).is_err() {
+        if session
+            .prompt_message(yi_runtime::session::user_input(&prompt))
+            .is_err()
+        {
             eprintln!("error: session busy");
             return 1;
         }
@@ -994,6 +1077,7 @@ fn main() {
         "undo" => std::process::exit(run_undo(&args)),
         "trust" => std::process::exit(run_trust(&args)),
         "gate" => std::process::exit(run_gate(&args)),
+        "fetch" => std::process::exit(run_fetch(&args)),
         "sessions" => {
             let options = sessions::Options {
                 session_dir: default_session_dir(&args),
@@ -1022,7 +1106,7 @@ fn main() {
                 std::process::exit(run_tui_command(&args, None));
             }
             println!(
-                "yi {version} (yi [prompt], yi ask, yi sessions, yi stats, yi trust, yi gate, yi rpc, yi acp, yi serve; more surfaces land in later phases)"
+                "yi {version} (yi [prompt], yi ask, yi sessions, yi stats, yi trust, yi gate, yi fetch, yi rpc, yi acp, yi serve; more surfaces land in later phases)"
             );
         }
         other => {

@@ -70,23 +70,19 @@ fn advisor_command(session: &Arc<AgentSession>, args: &str) -> String {
     }
 }
 
-/// Invariant: plan transitions are host-verified (D52); a TUI write would be a
-/// second, unchecked writer.
+/// Invariant: the canonical plan file has one writer; this command only renders.
 fn plan_command(session: &Arc<AgentSession>) -> String {
+    use yi_runtime::plan::{CanonicalPlanError, frontier_text, summary_line};
     let Some(service) = session.plan_service() else {
         return "/plan: no plan service is attached to this session".to_owned();
     };
     match service.read_plan() {
-        None => "/plan: no plan in this session".to_owned(),
-        Some(plan) => {
-            let frontier = yi_runtime::plan::frontier_text(&plan);
-            let summary = yi_runtime::plan::summary_line(&plan);
-            if frontier.is_empty() {
-                summary
-            } else {
-                format!("{summary}\n{frontier}")
-            }
-        }
+        Err(CanonicalPlanError::NoPlanOpen { .. }) => "/plan: no plan is open".to_owned(),
+        Err(error) => format!("/plan: {error}"),
+        Ok(plan) => match frontier_text(&plan) {
+            frontier if frontier.is_empty() => summary_line(&plan),
+            frontier => format!("{}\n{frontier}", summary_line(&plan)),
+        },
     }
 }
 

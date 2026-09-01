@@ -248,10 +248,7 @@ fn replay_walks_entries_into_full_message_updates() -> TestResult {
     let entries = vec![
         Entry::Message {
             id: "e1".to_owned(),
-            message: AgentMessage::User {
-                content: UserContent::Text("fix the bug".to_owned()),
-                timestamp: 0,
-            },
+            message: AgentMessage::host_user(UserContent::Text("fix the bug".to_owned()), 0),
             terminate: None,
             parent_id: None,
             seq: 1,

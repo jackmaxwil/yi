@@ -18,6 +18,9 @@ pub enum Op {
         arguments: Map<String, Value>,
     },
     ResourcesList,
+    ResourcesRead {
+        uri: String,
+    },
     PromptsList,
     Ping,
 }
@@ -28,6 +31,7 @@ impl Op {
             Self::Discover | Self::ToolsList => Some("tools/list"),
             Self::ToolsCall { .. } => Some("tools/call"),
             Self::ResourcesList => Some("resources/list"),
+            Self::ResourcesRead { .. } => Some("resources/read"),
             Self::PromptsList => Some("prompts/list"),
             Self::Ping => None,
         }
@@ -39,7 +43,12 @@ impl Op {
                 "name": name,
                 "arguments": Value::Object(arguments),
             }),
-            _ => json!({}),
+            Self::ResourcesRead { uri } => json!({ "uri": uri }),
+            Self::Discover
+            | Self::ToolsList
+            | Self::ResourcesList
+            | Self::PromptsList
+            | Self::Ping => json!({}),
         }
     }
 }
