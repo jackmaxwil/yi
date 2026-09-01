@@ -459,6 +459,16 @@ impl ToolCell {
         let mut last_path: Option<String> = None;
         let searchy = matches!(self.name.as_str(), "grep" | "glob" | "find");
         let anchored = matches!(self.name.as_str(), "read" | "edit");
+        // A patch routes to `diffview`, which colours from its own header; this
+        // is the plain numbered dump a read prints instead, and its path lives
+        // in the summary because neither tool puts it in `details`.
+        let subject = anchored
+            .then(|| self.summary.split_once(self.name.as_str()))
+            .flatten()
+            .map(|(_, rest)| rest.trim())
+            .filter(|subject| !subject.is_empty());
+        let mut lang = subject.and_then(crate::highlight::lang_for);
+        let mut expect = 1_u64;
         for raw in &self.preview {
             let row = if searchy { grep_row(raw) } else { None };
             if let Some((path, number, body)) = row {
@@ -473,10 +483,29 @@ impl ToolCell {
                 continue;
             }
             match numbered(raw) {
-                Some((number, body)) => out.push(Line::from(vec![
-                    Span::styled(format!("      {number:>4} "), dim),
-                    Span::styled(body.to_owned(), text),
-                ])),
+                Some((number, body)) => {
+                    let mut spans = vec![Span::styled(format!("      {number:>4} "), dim)];
+                    // The parse describes only the rows already fed to it, in
+                    // order from line 1; a preview that opens mid-file or drops
+                    // a row leaves it describing text the reader never saw.
+                    if number.parse::<u64>().ok() != Some(expect) {
+                        lang = None;
+                    }
+                    match lang.as_mut() {
+                        Some(lang) => {
+                            spans.extend(crate::highlight::spans(body, lang, theme, text));
+                        }
+                        None => spans.push(Span::styled(body.to_owned(), text)),
+                    }
+                    // An over-wide row arrives clipped, so its tail — and any
+                    // quote or block comment closing in it — never reached the
+                    // parse that the rows below it would resume from.
+                    if body.ends_with('\u{2026}') {
+                        lang = None;
+                    }
+                    expect = expect.saturating_add(1);
+                    out.push(Line::from(spans));
+                }
                 // The hashline header repeats the path the head line already
                 // names, and the verb line is the digest above it.
                 None if anchored => {}
