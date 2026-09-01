@@ -317,22 +317,25 @@ impl Transcript {
     }
 
     /// All lines at the current width, rendering only uncached slots.
+    /// Invariant: the retained count is re-totalled from the caches, since
+    /// an open block re-renders many times and a running sum would trim.
     pub fn lines(&mut self, theme: &Theme) -> Vec<Line<'static>> {
         let width = self.width;
         let mut out = Vec::new();
+        let mut total = 0_usize;
         for (index, slot) in self.slots.iter_mut().enumerate() {
             if slot.cache.is_none() {
-                let lines = render_block(&slot.block, width, theme);
-                self.line_total = self.line_total.saturating_add(lines.len());
-                slot.cache = Some(lines);
+                slot.cache = Some(render_block(&slot.block, width, theme));
             }
             if let Some(cache) = &slot.cache {
+                total = total.saturating_add(cache.len());
                 if index > 0 {
                     out.push(Line::default());
                 }
                 out.extend(cache.iter().cloned());
             }
         }
+        self.line_total = total;
         out
     }
 }
@@ -363,5 +366,42 @@ fn render_block(block: &Block, width: usize, theme: &Theme) -> Vec<Line<'static>
         }
         Block::Tool(cell) => cell.lines(width, theme, TranscriptMode::Thinking, 0),
         Block::Note { text } => vec![Line::styled(text.clone(), theme.dim_style())],
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use yi_tui::colors::ColorTier;
+
+    #[test]
+    fn streaming_rerenders_keep_the_retained_count_honest() {
+        let theme = Theme::new(ColorTier::Ansi16, true);
+        let mut transcript = Transcript::new();
+        transcript.apply(&AcpSessionUpdate::UserMessage {
+            message_id: "u1".to_owned(),
+            content: vec![AcpContentBlock::Text {
+                text: "first question".to_owned(),
+            }],
+        });
+        for _ in 0..500 {
+            transcript.apply(&AcpSessionUpdate::AgentMessageChunk {
+                message_id: "a1".to_owned(),
+                content: AcpContentBlock::Text {
+                    text: "answer line\n".to_owned(),
+                },
+            });
+            let _ = transcript.lines(&theme);
+        }
+        // The next push is where an inflated count would trim live blocks.
+        transcript.apply(&AcpSessionUpdate::UserMessage {
+            message_id: "u2".to_owned(),
+            content: vec![AcpContentBlock::Text {
+                text: "second question".to_owned(),
+            }],
+        });
+        let lines = transcript.lines(&theme);
+        assert_eq!(transcript.slots.len(), 3, "no block may be trimmed here");
+        assert!(transcript.line_total <= lines.len());
     }
 }

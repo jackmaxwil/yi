@@ -297,7 +297,7 @@ pub fn run_headless(
             }
             (Step::WaitFrame(ms, present, text), started) => {
                 let shown = terminal.backend().screen().contains(&text) == present;
-                match poll_condition(shown, started, ms, "wait-frame") {
+                match poll_condition(shown, started, ms, &format!("wait-frame {text:?}")) {
                     WaitPoll::Done => {}
                     WaitPoll::Retry => {
                         current = Some((Step::WaitFrame(ms, present, text), started))
