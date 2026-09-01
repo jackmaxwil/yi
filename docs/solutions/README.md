@@ -82,5 +82,10 @@ when it changes rather than editing them by hand.
 - [D97](adr/d97.md) - the plan is a git-tracked document and `Fact::Plan` is a pointer at it
 - [D98](adr/d98.md) - every reference is a URL behind one read path
 - [D99](adr/d99.md) - a plan-attributed commit carries one `Plan:` trailer
+- [D100](adr/d100.md) - `Blocked{on: External}` is a scheduled question, not a dead end
+- [D101](adr/d101.md) - the corpus is one address space behind one seam
+- [D102](adr/d102.md) - a declared output schema is checked at `done`, not merely resolved
+- [D103](adr/d103.md) - an applied plan op is a durable record on the owning session
+- [D104](adr/d104.md) - the plan DAG is a panel, not an inline checkbox list
 
 D36-D51, D72, D73 and D74 have no ADR yet; ARCHITECTURE.md is the record for those rows.
