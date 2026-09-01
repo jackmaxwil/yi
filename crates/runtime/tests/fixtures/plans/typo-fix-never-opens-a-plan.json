@@ -1,0 +1,26 @@
+{
+  "id": "typo-fix-never-opens-a-plan",
+  "description": "A one-edit request opens no plan at all. The ledger is slow thinking; a single observable unit of work has nothing to decompose, and a plan opened for it is pure overhead the model then has to maintain.",
+  "decisions": [
+    "The eager-init gate is a pure host-side predicate over task-shape features of the prompt alone -- enumerated items, distinct deliverables, conjunction count, length. It reads no benchmark identity and no config profile. The proposal (section 6) says only 'multi-step work' and 'skipped when the prompt is a question'; this fixture fixes the gate as data-driven and names its constants in one place (yi_runtime::plan::gate).",
+    "The gate's verdict is advisory to the loop, never to the model: a false verdict suppresses the forced tool_choice, it does not forbid the plan tool. A model that decides mid-run that it does want a plan calls init like any other op.",
+    "With no plan open, every non-init op is refused rather than auto-creating one. Auto-creation would make 'view' a mutation and hide the gate's verdict from the transcript."
+  ],
+  "prompt": "fix the typo in README.md: 'recieve' should be 'receive'",
+  "eagerInit": false,
+  "steps": [
+    {
+      "op": "view",
+      "actor": "agent://main",
+      "args": {},
+      "expect": {
+        "ok": false,
+        "error": "no plan"
+      }
+    }
+  ],
+  "final": {
+    "planCount": 0,
+    "stopInterception": false
+  }
+}
