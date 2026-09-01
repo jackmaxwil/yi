@@ -54,6 +54,21 @@ struct Shared {
     signal: InterruptSignal,
     on_turn_start: Mutex<Option<Arc<TurnHook>>>,
     on_turn_end: Mutex<Option<Arc<TurnHook>>>,
+    coupling: Mutex<Option<TurnCoupling>>,
+}
+
+pub type PromptChoiceFn =
+    dyn Fn(&AgentMessage) -> Option<yi_types::model::ToolChoice> + Send + Sync;
+pub type TurnObserveFn = dyn Fn(&yi_loop::TurnSnapshot) + Send + Sync;
+pub type InterceptStopFn = dyn Fn(&yi_loop::TurnSnapshot) -> Option<AgentMessage> + Send + Sync;
+
+/// Loop hooks the runtime fills; read live at run start, so late installation
+/// still binds handles minted earlier.
+#[derive(Clone)]
+pub struct TurnCoupling {
+    pub on_prompt: Arc<PromptChoiceFn>,
+    pub on_turn: Arc<TurnObserveFn>,
+    pub intercept_stop: Arc<InterceptStopFn>,
 }
 
 /// The start hook captures the tree the turn is about to change, the end hook
@@ -105,6 +120,7 @@ pub struct AgentSession {
     plan: Mutex<Option<Arc<crate::plan::PlanService>>>,
     rules: Mutex<Option<Arc<crate::rules::RuleEngine>>>,
     wall: Mutex<crate::wall::Wall>,
+    kernel: Mutex<Option<Arc<crate::kernel::KernelService>>>,
 }
 
 impl AgentSession {
@@ -131,6 +147,7 @@ impl AgentSession {
                 signal: InterruptSignal::default(),
                 on_turn_start: Mutex::new(None),
                 on_turn_end: Mutex::new(None),
+                coupling: Mutex::new(None),
             }),
             config,
             provider,
@@ -144,7 +161,21 @@ impl AgentSession {
             plan: Mutex::new(None),
             rules: Mutex::new(None),
             wall: Mutex::new(crate::wall::Wall::default()),
+            kernel: Mutex::new(None),
         }
+    }
+
+    pub fn set_kernel_service(&self, service: Arc<crate::kernel::KernelService>) {
+        if let Ok(mut slot) = self.kernel.lock() {
+            *slot = Some(service);
+        }
+    }
+
+    pub fn kernel_service(&self) -> Option<Arc<crate::kernel::KernelService>> {
+        self.kernel
+            .lock()
+            .ok()
+            .and_then(|slot| slot.as_ref().map(Arc::clone))
     }
 
     pub fn install_extensions(&self, host: crate::ext::Host) {
@@ -160,11 +191,7 @@ impl AgentSession {
     }
 
     pub fn extensions(&self) -> Option<Arc<Mutex<crate::ext::Host>>> {
-        self.shared
-            .ext
-            .lock()
-            .ok()
-            .and_then(|slot| slot.as_ref().map(Arc::clone))
+        extensions_of(&self.shared)
     }
 
     pub fn system_prompt(&self) -> String {
@@ -274,6 +301,12 @@ impl AgentSession {
     }
 
     /// The hook must be non-blocking — spawn any kernel work.
+    pub fn set_turn_coupling(&self, coupling: TurnCoupling) {
+        if let Ok(mut slot) = self.shared.coupling.lock() {
+            *slot = Some(coupling);
+        }
+    }
+
     pub fn set_on_compacted(&self, hook: Arc<dyn Fn() + Send + Sync>) {
         if let Ok(mut slot) = self.on_compacted.lock() {
             *slot = Some(hook);
@@ -439,21 +472,11 @@ impl AgentSession {
         &self,
     ) -> std::sync::Arc<dyn Fn() -> Option<yi_session::SharedSession> + Send + Sync> {
         let shared = Arc::clone(&self.shared);
-        std::sync::Arc::new(move || {
-            shared
-                .store
-                .lock()
-                .map(|handle| handle.clone())
-                .unwrap_or_default()
-        })
+        std::sync::Arc::new(move || store_of(&shared))
     }
 
     pub fn store(&self) -> Option<yi_session::SharedSession> {
-        self.shared
-            .store
-            .lock()
-            .map(|handle| handle.clone())
-            .unwrap_or_default()
+        store_of(&self.shared)
     }
 
     pub fn store_error(&self) -> Option<String> {
@@ -596,8 +619,12 @@ impl AgentSession {
     }
 
     pub fn steer(&self, text: &str) {
+        self.steer_message(user_message(text));
+    }
+
+    pub fn steer_message(&self, message: AgentMessage) {
         if let Ok(mut queue) = self.shared.steer.lock() {
-            queue.push(user_message(text));
+            queue.push(message);
         }
     }
 
@@ -824,36 +851,29 @@ impl AgentSession {
                     .unwrap_or_default(),
                 tools,
             };
-            let steer = Arc::clone(&shared);
-            let follow = Arc::clone(&shared);
             let mut config = LoopConfig::new(model.clone());
             config.effort = effort;
             config.tool_execution = tool_execution;
             config.convert_to_llm = Box::new(yi_context::convert_to_llm);
             if let Some(compactor) = compactor.clone() {
-                config.maybe_compact = Some(compaction_hook(
+                let stores = Arc::clone(&shared);
+                let notify = Arc::clone(&shared);
+                let hook = on_compacted.clone();
+                config.maybe_compact = Some(crate::compaction::loop_hook(
                     compactor,
-                    Arc::clone(&shared),
                     Arc::clone(&provider),
                     model.clone(),
                     Arc::clone(&system_prompt),
-                    on_compacted.clone(),
+                    Arc::new(move || store_of(&stores)),
+                    Arc::new(move || {
+                        dispatch_ext(&notify, &crate::ext::Event::Compacted);
+                        if let Some(hook) = &hook {
+                            hook();
+                        }
+                    }),
                 ));
             }
-            config.get_steering_messages = Some(Box::new(move || {
-                steer
-                    .steer
-                    .lock()
-                    .map(|mut queue| std::mem::take(&mut *queue))
-                    .unwrap_or_default()
-            }));
-            config.get_follow_up_messages = Some(Box::new(move || {
-                follow
-                    .follow_up
-                    .lock()
-                    .map(|mut queue| std::mem::take(&mut *queue))
-                    .unwrap_or_default()
-            }));
+            wire_queues_and_coupling(&mut config, &shared, &prompt);
             let emit_shared = Arc::clone(&shared);
             let emit_compactor = compactor.clone();
             let mut emit = move |event: AgentEvent| {
@@ -1021,48 +1041,38 @@ impl AgentSession {
     }
 }
 
-type CompactFuture =
-    std::pin::Pin<Box<dyn std::future::Future<Output = Option<Vec<AgentMessage>>> + Send>>;
-type CompactHook = Box<dyn Fn(&[AgentMessage]) -> CompactFuture + Send + Sync>;
-
-fn compaction_hook(
-    compactor: Arc<crate::compaction::Compactor>,
-    shared: Arc<Shared>,
-    provider: Arc<ProviderStream>,
-    model: Model,
-    system_prompt: PromptSource,
-    on_compacted: Option<Arc<dyn Fn() + Send + Sync>>,
-) -> CompactHook {
-    Box::new(move |messages: &[AgentMessage]| {
-        let compactor = Arc::clone(&compactor);
-        let shared = Arc::clone(&shared);
-        let provider = Arc::clone(&provider);
-        let model = model.clone();
-        let assembled = system_prompt();
-        let hook = on_compacted.clone();
-        let messages = messages.to_vec();
-        Box::pin(async move {
-            let store = store_of(&shared);
-            let signal = yi_loop::interrupt::InterruptSignal::default();
-            let replaced = compactor
-                .maybe_compact(
-                    &messages,
-                    &model,
-                    &assembled,
-                    provider.as_ref(),
-                    store.as_ref(),
-                    &signal,
-                )
-                .await;
-            if replaced.is_some() {
-                dispatch_ext(&shared, &crate::ext::Event::Compacted);
-                if let Some(hook) = &hook {
-                    hook();
-                }
-            }
-            replaced
-        })
-    })
+fn wire_queues_and_coupling(config: &mut LoopConfig, shared: &Arc<Shared>, prompt: &AgentMessage) {
+    let steer = Arc::clone(shared);
+    let follow = Arc::clone(shared);
+    config.get_steering_messages = Some(Box::new(move || {
+        steer
+            .steer
+            .lock()
+            .map(|mut queue| std::mem::take(&mut *queue))
+            .unwrap_or_default()
+    }));
+    config.get_follow_up_messages = Some(Box::new(move || {
+        follow
+            .follow_up
+            .lock()
+            .map(|mut queue| std::mem::take(&mut *queue))
+            .unwrap_or_default()
+    }));
+    let coupling = shared
+        .coupling
+        .lock()
+        .ok()
+        .and_then(|slot| slot.as_ref().cloned());
+    if let Some(coupling) = coupling {
+        config.first_turn_tool_choice = (coupling.on_prompt)(prompt);
+        let observe = Arc::clone(&coupling.on_turn);
+        config.prepare_next_turn = Some(Box::new(move |snapshot| {
+            observe(snapshot);
+            None
+        }));
+        let intercept = Arc::clone(&coupling.intercept_stop);
+        config.intercept_stop = Some(Box::new(move |snapshot| intercept(snapshot)));
+    }
 }
 
 fn prompt_text(prompt: &AgentMessage) -> String {
@@ -1148,10 +1158,14 @@ fn start_ext(shared: &Arc<Shared>, prompt: &str) {
 }
 
 fn user_message(text: &str) -> AgentMessage {
-    AgentMessage::User {
-        content: UserContent::Text(text.to_owned()),
-        timestamp: 0,
-    }
+    AgentMessage::host_user(UserContent::Text(text.to_owned()), 0)
+}
+
+/// Invariant: only input that crossed the process boundary mints
+/// [`yi_types::message::Attribution::User`]; every other user-role message the
+/// host writes stays unproven, so no `user://` address serves it.
+pub fn user_input(text: &str) -> AgentMessage {
+    AgentMessage::user_input(UserContent::Text(text.to_owned()), 0)
 }
 
 fn attribute_to_shared(shared: &Arc<Shared>, child: &Usage) {

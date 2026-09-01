@@ -707,6 +707,7 @@ fn plain_is_safe(text: &str) -> bool {
         || text.ends_with(':')
         || text.contains(" #")
         || text.contains('"')
+        || text.contains(['[', ']', '{', '}', ','])
         || text.chars().any(|ch| ch.is_control() && ch != '\t')
     {
         return false;
@@ -716,11 +717,6 @@ fn plain_is_safe(text: &str) -> bool {
         Some(
             b'-' | b'?'
                 | b':'
-                | b','
-                | b'['
-                | b']'
-                | b'{'
-                | b'}'
                 | b'#'
                 | b'&'
                 | b'*'
@@ -939,6 +935,29 @@ mod tests {
         let text = to_yaml(&value)?;
         assert_eq!(from_yaml(&text)?, value);
         assert_eq!(to_yaml(&from_yaml(&text)?)?, text);
+        Ok(())
+    }
+
+    #[test]
+    fn a_flow_indicator_anywhere_in_a_key_still_reads_back_as_a_key() -> Fallible {
+        let labels = [
+            "hint[see docs",
+            "close]bracket",
+            "brace{open",
+            "close}brace",
+            "comma,separated",
+            "colon:tight",
+            "hash#tag",
+            "-leading dash",
+            "trailing space ",
+            "[bracketed]",
+        ];
+        for label in labels {
+            let value = json!({ label: "read the seam notes", "after": [label] });
+            let text = to_yaml(&value)?;
+            assert_eq!(from_yaml(&text)?, value, "{label:?} rendered as {text:?}");
+            assert_eq!(to_yaml(&from_yaml(&text)?)?, text);
+        }
         Ok(())
     }
 
