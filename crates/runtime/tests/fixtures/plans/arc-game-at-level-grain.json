@@ -1,0 +1,208 @@
+{
+  "id": "arc-game-at-level-grain",
+  "description": "An interactive game where the check is a prediction against the next frame and no command exists. Todos sit at level grain; the thirty probes a minute that decide a level run inside the kernel and never reach the ledger. Proves the unit of decision is not the unit of iteration.",
+  "decisions": [
+    "A todo with no delegation carries no acceptance Check: 'accept' is mandatory on a Delegation, because a child is about to run blind, and nowhere else. Main working a todo inline already has the whole session's evidence. Making Check mandatory on every todo would have forced a fake command here, where none exists.",
+    "'done' with no declared output schema completes with output null. A delegation that declares an output schema makes 'done' without a validated output illegal -- the requirement is a property of the delegation, not of the todo, so it is checked in the step table rather than encoded in the state.",
+    "The work-triggered nudge counts host tool calls that mutated something, one per call. An ipython cell that runs thirty probes inside the kernel is one call, so a level's worth of fast thinking cannot spend the nudge budget. The threshold is 12 -- omp's shipped value, named once in yi_runtime::plan::gate beside the init gate's constants and fitted, when it is fitted, on task-shape features and never on which benchmark is running.",
+    "The nudge fires at most twice per prompt cycle and is hidden: it is a host-authored reminder in the internal-context wrapper, dropped at compaction like every other one, never a user message.",
+    "A failed level is retried in place rather than decomposed: retry replaces the delegation, and here there is none to replace, so retry only returns the todo to Pending and increments the saturating retry counter. Decompose stays available and unused -- an ARC level has no sub-deliverables, and the ladder is retry before decompose before supersede for exactly this reason."
+  ],
+  "prompt": "Play ls20 and get as far as you can. Score is baseline over actions per level, so a wrong action costs you.",
+  "eagerInit": true,
+  "goal": "Reach the deepest level of ls20 that the rules allow",
+  "plan": "reach-the-deepest-level-of-ls20-that",
+  "steps": [
+    {
+      "op": "init",
+      "actor": "agent://main",
+      "args": {
+        "goal": "Reach the deepest level of ls20 that the rules allow",
+        "todos": [
+          { "label": "Reach level 1" },
+          { "label": "Reach level 2", "after": ["Reach level 1"] },
+          { "label": "Reach level 3", "after": ["Reach level 2"] }
+        ]
+      },
+      "expect": {
+        "ok": true,
+        "version": 1,
+        "touched": 1,
+        "planState": "active",
+        "todos": [
+          { "label": "Reach level 1", "state": "pending" },
+          { "label": "Reach level 2", "state": "pending" },
+          { "label": "Reach level 3", "state": "pending" }
+        ],
+        "ready": ["Reach level 1"],
+        "dispatched": ["Reach level 1"]
+      }
+    },
+    {
+      "op": "start",
+      "actor": "agent://main",
+      "args": { "label": "Reach level 1" },
+      "expect": { "ok": true, "version": 1, "touched": 2 }
+    },
+    {
+      "work": { "mutatingCalls": 1, "kernelActions": 30 },
+      "expect": { "nudge": false, "nudgesThisCycle": 0 }
+    },
+    {
+      "op": "done",
+      "actor": "agent://main",
+      "args": { "label": "Reach level 1" },
+      "expect": {
+        "ok": true,
+        "version": 1,
+        "touched": 3,
+        "todos": [
+          { "label": "Reach level 1", "state": "done", "output": null },
+          { "label": "Reach level 2", "state": "pending" },
+          { "label": "Reach level 3", "state": "pending" }
+        ],
+        "ready": ["Reach level 2"],
+        "dispatched": ["Reach level 2"]
+      }
+    },
+    {
+      "op": "start",
+      "actor": "agent://main",
+      "args": { "label": "Reach level 2" },
+      "expect": { "ok": true, "version": 1, "touched": 4 }
+    },
+    {
+      "work": { "mutatingCalls": 11, "kernelActions": 340 },
+      "expect": { "nudge": false, "nudgesThisCycle": 0 }
+    },
+    {
+      "work": { "mutatingCalls": 1, "kernelActions": 30 },
+      "expect": { "nudge": true, "nudgesThisCycle": 1 }
+    },
+    {
+      "op": "fail",
+      "actor": "agent://main",
+      "args": {
+        "label": "Reach level 2",
+        "cause": "the colour-swap hypothesis predicted the frame and the frame disagreed on every probe after the third"
+      },
+      "expect": {
+        "ok": true,
+        "version": 1,
+        "touched": 5,
+        "todos": [
+          { "label": "Reach level 1", "state": "done" },
+          { "label": "Reach level 2", "state": "failed" },
+          { "label": "Reach level 3", "state": "pending" }
+        ],
+        "ready": []
+      }
+    },
+    {
+      "op": "retry",
+      "actor": "agent://main",
+      "args": { "label": "Reach level 2" },
+      "expect": {
+        "ok": true,
+        "version": 1,
+        "touched": 6,
+        "todos": [
+          { "label": "Reach level 1", "state": "done" },
+          { "label": "Reach level 2", "state": "pending", "retries": 1 },
+          { "label": "Reach level 3", "state": "pending" }
+        ],
+        "ready": ["Reach level 2"],
+        "dispatched": ["Reach level 2"]
+      }
+    },
+    {
+      "op": "start",
+      "actor": "agent://main",
+      "args": { "label": "Reach level 2" },
+      "expect": { "ok": true, "version": 1, "touched": 7 }
+    },
+    {
+      "op": "done",
+      "actor": "agent://main",
+      "args": { "label": "Reach level 2" },
+      "expect": {
+        "ok": true,
+        "version": 1,
+        "touched": 8,
+        "todos": [
+          { "label": "Reach level 1", "state": "done" },
+          { "label": "Reach level 2", "state": "done", "retries": 1 },
+          { "label": "Reach level 3", "state": "pending" }
+        ],
+        "ready": ["Reach level 3"]
+      }
+    },
+    {
+      "op": "start",
+      "actor": "agent://main",
+      "args": { "label": "Reach level 3" },
+      "expect": { "ok": true, "version": 1, "touched": 9 }
+    },
+    {
+      "op": "block",
+      "actor": "agent://main",
+      "args": {
+        "label": "Reach level 3",
+        "on": { "user": null },
+        "note": "the level needs a rule the transcript never states and no probe can settle"
+      },
+      "expect": {
+        "ok": true,
+        "version": 1,
+        "touched": 10,
+        "todos": [
+          { "label": "Reach level 1", "state": "done" },
+          { "label": "Reach level 2", "state": "done" },
+          { "label": "Reach level 3", "state": "blocked", "blockedOn": "user" }
+        ],
+        "stopPosture": "ask",
+        "stopInterception": false
+      }
+    },
+    {
+      "op": "unblock",
+      "actor": "user://3",
+      "args": { "label": "Reach level 3" },
+      "expect": { "ok": true, "version": 1, "touched": 11 }
+    },
+    {
+      "op": "done",
+      "actor": "agent://main",
+      "args": { "label": "Reach level 3" },
+      "expect": { "ok": false, "error": "pending" }
+    },
+    {
+      "op": "start",
+      "actor": "agent://main",
+      "args": { "label": "Reach level 3" },
+      "expect": { "ok": true, "version": 1, "touched": 12 }
+    },
+    {
+      "op": "done",
+      "actor": "agent://main",
+      "args": { "label": "Reach level 3" },
+      "expect": {
+        "ok": true,
+        "version": 1,
+        "touched": 13,
+        "planState": "done",
+        "todos": [
+          { "label": "Reach level 1", "state": "done" },
+          { "label": "Reach level 2", "state": "done" },
+          { "label": "Reach level 3", "state": "done" }
+        ],
+        "ready": []
+      }
+    }
+  ],
+  "final": {
+    "planCount": 1,
+    "stopInterception": false,
+    "superseded": 0
+  }
+}
