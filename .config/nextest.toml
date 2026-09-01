@@ -4,3 +4,14 @@ slow-timeout = { period = "30s", terminate-after = 2 }
 
 [test-groups]
 kernel = { max-threads = 1 }
+# Every test in these binaries spawns the built `yi` as a child, and that child
+# is itself multithreaded. Turned loose in one global pool they oversubscribe
+# the machine and blow the slow-timeout: unbounded, 14 of them time out and the
+# run takes 121.9s; capped, all 671 pass in 66.4s. The cap is a scheduling
+# bound, not a coverage one — every test still runs. Three, because the PR
+# runners have three and four cores; raise it when the runners grow.
+subprocess = { max-threads = 3 }
+
+[[profile.default.overrides]]
+filter = 'binary(cli_surfaces) + binary(tui_drive) + binary(mcp_oauth) + binary(acp_protocol) + binary(serve_daemon) + binary(mcp_cli) + binary(rpc_protocol) + binary(ready_check) + binary(request_budget) + binary(orient) + binary(tools) + binary(journeys)'
+test-group = 'subprocess'

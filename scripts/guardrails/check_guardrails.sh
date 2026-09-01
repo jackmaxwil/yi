@@ -42,24 +42,28 @@ run "$PY" scripts/pr_body.py --selfcheck
 # Prose is not exempt: 1,485 comment lines are under ratchet, and the design docs
 # are the reference. Config and the domain-word allowlist live in .codespellrc.
 if command -v codespell >/dev/null; then run codespell; else echo "FAIL codespell (uv tool install codespell)"; FAILED=$((FAILED+1)); fi
-# Both gates read target/dist/yi and both are skipped for two different reasons.
-# D70: the baseline is a macOS arm64 byte count, so any other target measures a
-# different binary against it. --fast skips it because it needs a dist build.
+# binary_size and startup are the only two readers of target/dist/yi, and the
+# fat-LTO build that writes it is minutes, so this is where it is paid for
+# (D91): one branch decides whether either gate runs, and the build lives
+# inside it. D70: the baseline is a macOS arm64 byte count, so any other
+# target measures a different binary against it. D68: wall clock on a shared
+# runner is noise against a 5 ms budget. --fast skips both because one needs
+# the build and hyperfine is most of the other. Announced, never silent (9).
 if [ "$FAST" -eq 1 ]; then
   echo "skip binary_size (--fast: needs a dist build)"
-elif [ -n "${CI:-}" ]; then
-  echo "skip binary_size (D70: baseline is macOS arm64; CI is another target)"
-else
-  run "$PY" scripts/guardrails/check_binary_size.py
-fi
-# D68: wall clock on a shared runner is noise against a 5 ms budget; --fast
-# skips it because hyperfine is most of the run. Announced, never silent (9).
-if [ "$FAST" -eq 1 ]; then
   echo "skip startup (--fast: hyperfine is most of the run)"
 elif [ -n "${CI:-}" ]; then
+  echo "skip binary_size (D70: baseline is macOS arm64; CI is another target)"
   echo "skip startup (D68: a shared runner cannot measure a 5 ms budget)"
-else
+  echo "skip build-dist (D91: nothing on CI reads target/dist/yi)"
+elif cargo build --profile dist -p yi-cli; then
+  run "$PY" scripts/guardrails/check_binary_size.py
   run "$PY" scripts/guardrails/check_startup.py
+else
+  # A stale target/dist/yi from an earlier build would pass both gates while
+  # measuring code nobody wrote, so a failed build fails them instead.
+  echo "FAIL dist build (binary_size and startup have nothing to measure)"
+  FAILED=$((FAILED + 1))
 fi
 # Growth is priced once per version, in the changelog row a landing writes last,
 # so asking it of every commit inside that landing only teaches people to ignore

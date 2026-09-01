@@ -9,26 +9,39 @@ fmt-check:
 clippy:
     cargo clippy --workspace --all-targets -- -D warnings
 
+# nextest when it is on PATH, cargo when it is not, so a fresh clone still
+# runs the suite. `cargo test` runs the 101 test binaries one after another
+# and five of them are 96 % of the wall clock; nextest pools every test from
+# every binary, and .config/nextest.toml's slow-timeout kills a hang in 60s
+# instead of letting it hold a runner. nextest cannot run doctests, so those
+# stay a second cargo invocation rather than quietly leaving the gate.
 test:
-    cargo test --workspace
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if command -v cargo-nextest >/dev/null; then
+      cargo nextest run --workspace
+      cargo test --workspace --doc
+    else
+      cargo test --workspace
+    fi
 
-# Per-test timeouts and a slow-test report; `test` stays on cargo, no install.
-test-nextest:
-    cargo nextest run --workspace
+# The lanes `check` runs, named so CI can run them as separate jobs.
+lint: fmt-check clippy
 
 build-dist:
     cargo build --profile dist -p yi-cli
 
-# Depends on build-dist: binary_size and startup read target/dist/yi, and a
-# gate measuring whatever stale binary is lying around measures nothing.
-guardrails: build-dist
+# No build-dist dependency: the aggregator is the one place that knows whether
+# binary_size and startup will run at all, so it owns the LTO build they read
+# (D91). CI skips both, and paid 2-3 min a job for a binary nothing measured.
+guardrails:
     bash scripts/guardrails/check_guardrails.sh
 
 # The build-free subset, which is what keeps pre-commit under two seconds.
 guardrails-fast:
     bash scripts/guardrails/check_guardrails.sh --fast
 
-check: fmt-check clippy guardrails test
+check: lint guardrails test
 
 # --- Local CI: three tiers, run by the hooks in scripts/hooks ----------------
 
@@ -55,14 +68,20 @@ install-hooks:
 precommit: fmt-check clippy guardrails-fast
 
 # Tier 2, every push: the full gate, and nothing the gate itself regenerated.
-prepush:
+prepush: (lane "check")
+
+# One lane of the gate, carrying the invariant. `lint`, `guardrails` and
+# `test` do not depend on each other, so CI runs them as parallel jobs and
+# pays the longest rather than the sum; the invariant has to ride the lane
+# rather than the whole gate, or a split run stops asserting it.
+lane name:
     #!/usr/bin/env bash
     set -euo pipefail
     # Not "is the tree clean" — a push with unrelated WIP is normal. The
     # invariant is that the gate wrote nothing: the ratchet baselines are
     # generated files, and one left behind fails on the next machine.
     before=$(git status --porcelain)
-    just check
+    just {{name}}
     if [ "$before" != "$(git status --porcelain)" ]; then
       echo "the gate regenerated files — commit them:"
       git status --porcelain
