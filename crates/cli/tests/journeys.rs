@@ -163,52 +163,15 @@ fn a_resumed_session_keeps_one_file_and_undo_restores_the_turns_start_tree() -> 
 
 #[test]
 #[ignore = "tier-2 journey: `just journeys`"]
-fn a_red_check_refuses_the_done_claim_and_the_completion_gate_holds() -> TestResult {
-    let journey = Journey::new("plan")?;
+fn a_red_goal_check_refuses_the_completion_claim_and_the_plan_surface_stays_read_only() -> TestResult
+{
+    let journey = Journey::new("goalgate")?;
     let responses = journey.rpc(&[
-        json!({"id": "create", "type": "plan", "action": "create", "tasks": [
-            {"title": "land it", "acceptance": "the check passes", "check": "echo case 9 diverges; exit 2"},
-            {"title": "tidy up", "acceptance": "nothing is left over", "check": "true"}
-        ]}),
-        json!({"id": "red", "type": "plan", "action": "update", "taskId": "t1", "state": "done"}),
-        json!({"id": "green", "type": "plan", "action": "update", "taskId": "t2", "state": "done"}),
         json!({"id": "goal", "type": "goal", "action": "create", "objective": "ship it", "check": "echo goal check red; exit 3"}),
         json!({"id": "complete", "type": "goal", "action": "update", "status": "complete"}),
+        json!({"id": "read", "type": "plan", "action": "get"}),
+        json!({"id": "write", "type": "plan", "action": "update", "taskId": "t1", "state": "done"}),
     ])?;
-
-    let created = reply(&responses, "create")?;
-    assert_eq!(created["success"], json!(true), "plan.create: {created}");
-
-    let red = reply(&responses, "red")?;
-    assert_eq!(
-        red["success"],
-        json!(false),
-        "a red check must refuse the done claim: {red}"
-    );
-    let refusal = error_of(red);
-    assert!(
-        refusal.contains("case 9 diverges"),
-        "the refusal carries the check's own output: {refusal}"
-    );
-
-    let green = reply(&responses, "green")?;
-    assert_eq!(
-        green["success"],
-        json!(true),
-        "a green check admits the claim the gate is not blanket: {green}"
-    );
-    let tasks = green["data"]["plan"]["tasks"]
-        .as_array()
-        .ok_or("the accepted claim returned no plan")?;
-    let states: Vec<&str> = tasks
-        .iter()
-        .map(|task| task["state"].as_str().unwrap_or_default())
-        .collect();
-    assert_eq!(
-        states,
-        vec!["blocked", "done"],
-        "the refused task stays blocked with its evidence: {tasks:?}"
-    );
 
     let complete = reply(&responses, "complete")?;
     assert_eq!(
@@ -220,6 +183,22 @@ fn a_red_check_refuses_the_done_claim_and_the_completion_gate_holds() -> TestRes
     assert!(
         rejection.contains("goal check red"),
         "the completion refusal names the red check: {rejection}"
+    );
+
+    // D97 left one writer: the plan tool. The rpc surface is a view, and the
+    // done-gate it used to carry is `plan_ops` plus the walkthrough fixtures.
+    let read = reply(&responses, "read")?;
+    assert_eq!(
+        read["success"],
+        json!(false),
+        "no plan is open, so the view says so rather than inventing one: {read}"
+    );
+    let write = reply(&responses, "write")?;
+    assert_eq!(write["success"], json!(false), "{write}");
+    assert!(
+        error_of(write).contains("read-only"),
+        "a mutation through rpc is refused by name: {}",
+        error_of(write)
     );
     journey.reclaim();
     Ok(())
