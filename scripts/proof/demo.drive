@@ -1,0 +1,10 @@
+# A paced walkthrough for a PR proof: typing is slowed so the recording is
+# watchable, and each beat holds long enough to read.
+type-ms 45
+wait 400
+type hello from yi
+wait 600
+key enter
+wait-idle 20000
+wait 900
+quit

@@ -118,6 +118,46 @@ journeys:
     HOME="$home" python3 scripts/tui_pty.py --send-quit --expect '› ping' \
       --expect 'faux:' -- tui --model faux/faux-1 --session-dir "$home/sessions" ping
 
+# A drive script rendered for people: the motion and still GIFs a UI change
+# attaches to its PR, so a reviewer can judge how it looks. `agg` is dev-only
+# (brew install agg) and never enters the binary.
+tui-proof script out="target/proof":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    # Incident: `out` is a caller argument that is `rm -rf`'d and was also
+    # spliced after $PWD for the HOME isolation, so an absolute value deleted
+    # a path outside the repo and isolated a directory it never wrote to.
+    case "{{out}}" in /*|*..*) echo "out must be a relative path in the repo"; exit 1 ;; esac
+    out="$PWD/{{out}}"
+    rm -rf "$out"
+    mkdir -p "$out/frames"
+    # Same isolation as `journeys`: a `keys` entry in the developer's own
+    # ~/.yi/config.json must not decide what the proof shows.
+    home="$out/home"
+    mkdir -p "$home"
+    HOME="$home" cargo run -q -p yi-cli -- tui --headless --model faux/faux-1 \
+      --session-dir "$out/sessions" --keys "{{script}}" \
+      --frames "$out/frames" --record "$out/run.cast" \
+      --snap "$out/still.cast" --deadline 300
+    # Incident: a renderer can exit 0 and write an empty file, so a proof that
+    # rendered nothing printed a path and looked like it worked.
+    rendered() { [ -s "$1" ] || { echo "empty render: $1"; exit 1; }; }
+    # One renderer for both artifacts: agg is a terminal emulator, so the
+    # still and the motion agree cell for cell. Theme and size are pinned so
+    # proofs from different machines look alike.
+    if command -v agg >/dev/null; then
+      agg --theme monokai --font-size 16 --idle-time-limit 1 \
+        "$out/run.cast" "$out/run.gif"
+      rendered "$out/run.gif"
+      agg --theme monokai --font-size 16 "$out/still.cast" "$out/still.gif"
+      rendered "$out/still.gif"
+      echo "motion: $out/run.gif"
+      echo "still:  $out/still.gif"
+    else
+      echo "no agg on PATH — casts only (brew install agg)"
+    fi
+    echo "cast: $out/run.cast"
+
 # Tier 4, after a merge: the suite against the profile that ships, unwind forced.
 postmerge: journeys
     CARGO_PROFILE_DIST_PANIC=unwind cargo test --workspace --profile dist

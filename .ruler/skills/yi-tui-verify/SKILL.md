@@ -26,3 +26,17 @@ description: Verify a Yi TUI change against the rendered UI — headless drive m
 5. Animation and orb changes: the engine is pinned by the golden-vector
    parity test; a rendering change is verified by frame dumps or the PTY
    harness, never by re-deriving geometry.
+6. A UI change that a person has to look at gets a proof artifact:
+   `just tui-proof <script>` runs the same drive loop with `--record`
+   (asciicast v2 of the whole run) and `--snap` (the last frame as a cast
+   of its own), then renders `run.gif` and `still.gif` with agg. Attach one
+   to the PR — frame dumps prove the contract held, they do not show
+   whether it looks right. Both artifacts go through agg because agg is a
+   terminal emulator: it renders the cell grid the TUI actually painted.
+   `freeze` was tried and dropped — it re-renders text in its own font and
+   chrome, so the still was not 1:1 (the composer border ran off the edge)
+   and `-c full` wrote a 0-byte file while exiting 0. Pace the typing with
+   `type-ms <n>` (0 by default, so assertion scripts stay instant) and
+   raise `--deadline <secs>` when the beats outlast the 60 s default.
+   `scripts/proof/demo.drive` is the worked example. A test replays both
+   casts and asserts they land on the frame the assertions ran against.

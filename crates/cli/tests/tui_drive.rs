@@ -357,3 +357,141 @@ fn reverse_search_enter_accepts_a_match_without_submitting() -> TestResult {
     let _ = std::fs::remove_dir_all(&dir);
     Ok(())
 }
+
+/// `--deadline` seconds arrive straight off the command line, and
+/// `Instant + Duration` panics rather than saturating: an unclamped value
+/// aborted the process at 101 before the loop ran a single step.
+#[test]
+fn an_absurd_deadline_is_clamped_rather_than_panicking() -> TestResult {
+    let dir = std::env::temp_dir().join(format!("yi-tui-deadline-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir)?;
+    let keys = dir.join("keys");
+    std::fs::write(&keys, "quit\n")?;
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "the drive contract is the spawned binary's headless mode; tests must run the real process"
+    )]
+    let output = Command::new(env!("CARGO_BIN_EXE_yi"))
+        .args([
+            "tui",
+            "--headless",
+            "--model",
+            "faux/faux-1",
+            "--session-dir",
+            &dir.join("sessions").display().to_string(),
+            "--keys",
+            &keys.display().to_string(),
+            "--deadline",
+            &u64::MAX.to_string(),
+        ])
+        .env("HOME", &dir)
+        .output()?;
+    let _ = std::fs::remove_dir_all(&dir);
+    assert_ne!(
+        output.status.code(),
+        Some(101),
+        "a panic, not a clamp: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    Ok(())
+}
+
+/// One path for `--record` and `--snap` left the still truncating the
+/// recording still open on it, and the run exited 0 having lost it.
+#[test]
+fn one_path_for_both_capture_sinks_is_refused() -> TestResult {
+    let dir = std::env::temp_dir().join(format!("yi-tui-samepath-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir)?;
+    let keys = dir.join("keys");
+    std::fs::write(&keys, "quit\n")?;
+    let both = dir.join("both.cast");
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "the drive contract is the spawned binary's headless mode; tests must run the real process"
+    )]
+    let output = Command::new(env!("CARGO_BIN_EXE_yi"))
+        .args([
+            "tui",
+            "--headless",
+            "--model",
+            "faux/faux-1",
+            "--session-dir",
+            &dir.join("sessions").display().to_string(),
+            "--keys",
+            &keys.display().to_string(),
+            "--record",
+            &both.display().to_string(),
+            "--snap",
+            &both.display().to_string(),
+        ])
+        .env("HOME", &dir)
+        .output()?;
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    let _ = std::fs::remove_dir_all(&dir);
+    assert_eq!(output.status.code(), Some(2), "{stderr}");
+    assert!(stderr.contains("different files"), "{stderr}");
+    Ok(())
+}
+
+/// A paced `type` step holds the outer loop for its whole duration, and the
+/// wall clock is read there: without a check inside the step, a long paced
+/// line ran to completion past the deadline meant to bound it. Counting the
+/// characters that landed says so without depending on wall time, which here
+/// is dominated by the one-time kernel setup.
+#[test]
+fn a_paced_type_step_still_honours_the_deadline() -> TestResult {
+    let dir = std::env::temp_dir().join(format!("yi-tui-paced-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir)?;
+    let keys = dir.join("keys");
+    let frames = dir.join("frames");
+    // 40 characters at 100 ms is 4 s of typing against a 1 s deadline, so at
+    // most a quarter of them may reach the screen.
+    let typed = "x".repeat(40);
+    std::fs::write(&keys, format!("type-ms 100\ntype {typed}\nquit\n"))?;
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "the drive contract is the spawned binary's headless mode; tests must run the real process"
+    )]
+    let output = Command::new(env!("CARGO_BIN_EXE_yi"))
+        .args([
+            "tui",
+            "--headless",
+            "--model",
+            "faux/faux-1",
+            "--session-dir",
+            &dir.join("sessions").display().to_string(),
+            "--keys",
+            &keys.display().to_string(),
+            "--frames",
+            &frames.display().to_string(),
+            "--deadline",
+            "1",
+        ])
+        .env("HOME", &dir)
+        .output()?;
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    let mut dumps: Vec<_> = std::fs::read_dir(&frames)?
+        .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+        .collect();
+    dumps.sort();
+    let last = std::fs::read_to_string(dumps.last().ok_or("no frames dumped")?)?;
+    let landed = last.matches('x').count();
+    let _ = std::fs::remove_dir_all(&dir);
+
+    assert_eq!(output.status.code(), Some(1), "{stderr}");
+    assert!(stderr.contains("timed out"), "{stderr}");
+    assert!(
+        landed < 30,
+        "the step typed {landed} of 40 characters, so it ran past its deadline"
+    );
+    Ok(())
+}

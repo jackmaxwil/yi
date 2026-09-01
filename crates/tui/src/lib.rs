@@ -3,6 +3,7 @@
 pub mod agents;
 pub mod app;
 pub mod approval;
+pub mod capture;
 pub mod cell;
 pub mod colors;
 pub mod commands;
