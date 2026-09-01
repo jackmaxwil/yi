@@ -74,7 +74,12 @@ pub struct Compactor {
     window: Mutex<Window>,
     pending: AtomicBool,
     instructions: Mutex<Option<String>>,
+    standing: Mutex<Option<Standing>>,
 }
+
+/// Read at every compaction rather than stored, so a directive derived from
+/// live state cannot go stale between the schedule and the summarizer call.
+pub type Standing = std::sync::Arc<dyn Fn() -> Option<String> + Send + Sync>;
 
 fn lock_window(window: &Mutex<Window>) -> std::sync::MutexGuard<'_, Window> {
     window
@@ -144,6 +149,13 @@ pub(crate) async fn complete_text(
     Err("summarizer stream ended without a terminal event".to_owned())
 }
 
+fn merge(standing: Option<String>, once: Option<String>) -> Option<String> {
+    match (standing, once) {
+        (Some(standing), Some(once)) => Some(format!("{standing}\n\n{once}")),
+        (standing, once) => standing.or(once),
+    }
+}
+
 fn directive_message(prepared: &Preparation, instructions: Option<&str>) -> AgentMessage {
     let mut text = String::new();
     if let Some(previous) = &prepared.previous_summary {
@@ -167,7 +179,31 @@ impl Compactor {
             window: Mutex::new(Window::new_initial(initial_window_id)),
             pending: AtomicBool::new(false),
             instructions: Mutex::new(None),
+            standing: Mutex::new(None),
         }
+    }
+
+    /// A directive that rides every compaction, ahead of whatever `/compact`
+    /// asked for once. The caller's own words win, so this leads.
+    pub fn set_standing(&self, standing: Standing) {
+        if let Ok(mut slot) = self.standing.lock() {
+            *slot = Some(standing);
+        }
+    }
+
+    pub fn standing_directive(&self) -> Option<String> {
+        self.standing
+            .lock()
+            .ok()
+            .and_then(|slot| slot.clone())
+            .and_then(|read| read())
+    }
+
+    /// What the next compaction would tell the summarizer, without spending the
+    /// one-shot half — the same merge that compaction itself applies.
+    pub fn pending_directive(&self) -> Option<String> {
+        let once = self.instructions.lock().ok().and_then(|slot| slot.clone());
+        merge(self.standing_directive(), once)
     }
 
     pub fn schedule(&self) {
@@ -249,11 +285,12 @@ impl Compactor {
             return None;
         }
         self.pending.store(false, Ordering::Relaxed);
-        let instructions = self
+        let once = self
             .instructions
             .lock()
             .ok()
             .and_then(|mut slot| slot.take());
+        let instructions = merge(self.standing_directive(), once);
         let entries: Vec<Entry> = match store {
             Some(store) => yi_session::lock_session(store)
                 .find_entries_on_branch(
