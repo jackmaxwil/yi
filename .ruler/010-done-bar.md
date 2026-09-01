@@ -16,9 +16,9 @@ necessary, not sufficient.
 4. Report failures verbatim; never paraphrase an error you have not fixed.
 
 Misdiagnosis defaults: a gate that turns red after your change was broken by
-your change — fix the code, never the baseline. The one exception is a gate
-that measures wall time (startup): under a concurrent build it reads several
-times its quiet value, so re-measure idle before believing it — and never
-re-measure to explain away a number that stays high. If a stale-cache explanation
-tempts you, `touch` the crate's lib.rs and rerun before believing it. Ratchet
-growth is intentional only as `--update` in its own commit.
+your change — fix the code, never the baseline. That holds for the wall-clock
+gate too: `startup` scores the *minimum* of its 50 runs, which contention can
+only raise toward, never below, the binary's real cost — so a red startup gate
+is a red startup gate, and re-running it idle is not an explanation. If a
+stale-cache explanation tempts you, `touch` the crate's lib.rs and rerun before
+believing it. Ratchet growth is intentional only as `--update` in its own commit.

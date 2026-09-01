@@ -1525,7 +1525,7 @@ size builds only as an experiment, never required.
 | Budget | Initial | File |
 |---|---|---|
 | dist binary, macOS arm64, default features | ratcheted to the measured size (D69: 4,636,896; the §13.6 v1 ceiling was ≤ 6 MiB, target 4) | `guardrails/binary_size_budget.json` |
-| `yi --version` startup (hyperfine, warm) | ≤ 5 ms | `guardrails/startup_ms_budget.json` |
+| `yi --version` startup (hyperfine, warm, scored on the run's *minimum* — the mean prices the machine's load, not the binary) | ≤ 5 ms | `guardrails/startup_ms_budget.json` |
 | `yi ask --help` | ≤ 8 ms | same |
 | direct deps (default features) | ≤ 16 | `guardrails/deps_budget.json` |
 | transitive deps (default features) | ≤ 135 (raised from 125 with phase 4: the pure-Rust `zeromq` tree pins rand/regex/dashmap internals, wrapped in deny.toml; they never cross into Yi code) | same |
