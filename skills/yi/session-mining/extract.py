@@ -837,6 +837,9 @@ def selfcheck():
         fp = result["board"][0]["fingerprint"]
         last_seen = result["board"][0]["lastSeen"]
         assert result["board"][0]["state"] == "NEW"
+        plant = next(r for r in result["mu"] if r["sessionId"] == "fixture-planted-0001")
+        assert plant["model"] == "faux-1", plant
+        assert plant["provider"] == "faux", plant
         mark(first, fp, "cased", "docs/cases/fake.md")
         assert build_board_state(fixtures, first, fp) == "CASED"
         mark(first, fp, "fixed", "deadbeef")
@@ -889,9 +892,19 @@ def selfcheck():
         assert row["childTokens"]["input"] == 104485, row["childTokens"]
         assert row["childTokens"]["costUsd"] == 0.0247, row["childTokens"]
         assert row["tokens"]["costUsd"] == 0.011, row["tokens"]
+
+        types_src = Path(__file__).resolve().parents[3] / "crates/types/tests/fixtures/v4-golden.jsonl"
+        golden_in = Path(tmp) / "golden-in"
+        golden_in.mkdir()
+        (golden_in / "v4-golden.jsonl").write_bytes(types_src.read_bytes())
+        gold_rows = sweep(golden_in, Path(tmp) / "golden-out")["mu"]
+        gold = next(r for r in gold_rows if r["sessionId"] == "fixture-a")
+        assert gold["model"] == "claude-opus-4-5", gold
+        assert gold["provider"] == "anthropic", gold
+        assert gold["childTokens"]["input"] == 0, gold["childTokens"]
     print(
         "ok   selfcheck: redaction, determinism, corrupt tolerance, lifecycle,"
-        " dedupe, orientation, rust mirrors, model slice, childTokens"
+        " dedupe, orientation, rust mirrors, model slice, childTokens, v4 golden"
     )
     return 0
 
