@@ -1,9 +1,10 @@
 use serde_json::Map;
-use yi_types::plan::PlanVersion;
 use yi_types::plan::doc::{
-    BlockedOn, Check, DocError, GoalText, Isolation, Plan, PlanId, PlanIssue, PlanState, PlanTier,
-    ProbeCommand, RetryCount, SPAWN_CAP, Spawns, Todo, TodoAddr, TodoLabel, TodoState, TouchCount,
+    AgentId, BlockedOn, Check, DocError, GoalText, Isolation, Plan, PlanId, PlanIssue, PlanState,
+    PlanTier, ProbeCommand, RetryCount, SPAWN_CAP, Todo, TodoAddr, TodoLabel, TodoState,
+    terminal_durability,
 };
+use yi_types::url::{Durability, Url};
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
@@ -37,17 +38,12 @@ fn slug_matches_the_golden_fixtures() -> TestResult {
 }
 
 fn plan_with(todos: Vec<Todo>) -> Result<Plan, DocError> {
-    Ok(Plan {
-        id: PlanId::new("p")?,
-        goal: GoalText::new("g")?,
-        version: PlanVersion(1),
-        touched: TouchCount(1),
-        tier: PlanTier::Root,
-        spawns: Spawns::default(),
+    Ok(Plan::opening(
+        PlanId::new("p")?,
+        GoalText::new("g")?,
+        PlanTier::Root,
         todos,
-        state: PlanState::Active,
-        extra: Map::new(),
-    })
+    ))
 }
 
 fn todo(label: &str, after: &[&str], state: TodoState) -> Result<Todo, DocError> {
@@ -231,12 +227,57 @@ fn todo_addr_urls_use_the_slug() -> TestResult {
 fn spawns_only_charges_upward_and_skips_when_zero() -> TestResult {
     let mut plan = plan_with(vec![todo("a", &[], TodoState::Pending)?])?;
     assert!(!serde_json::to_string(&plan)?.contains("spawns"));
-    plan.spawns = plan.spawns.charge().charge();
-    assert_eq!(plan.spawns.get(), 2);
-    assert!(plan.spawns < SPAWN_CAP);
+    plan.charge_spawn();
+    plan.charge_spawn();
+    assert_eq!(plan.spawns().get(), 2);
+    assert!(plan.spawns() < SPAWN_CAP);
     let json = serde_json::to_string(&plan)?;
     assert!(json.contains("\"spawns\":2"));
     let back: Plan = serde_json::from_str(&json)?;
-    assert_eq!(back.spawns, plan.spawns);
+    assert_eq!(back.spawns(), plan.spawns());
+    Ok(())
+}
+
+#[test]
+fn an_abandoned_predecessor_clears_its_edge_and_a_failed_one_does_not() -> TestResult {
+    let plan = plan_with(vec![
+        todo("dropped", &[], TodoState::Abandoned)?,
+        todo("after the drop", &["dropped"], TodoState::Pending)?,
+        todo(
+            "flunked",
+            &[],
+            TodoState::Failed {
+                cause: "the probe disagreed".to_owned(),
+                last: None,
+            },
+        )?,
+        todo("after the failure", &["flunked"], TodoState::Pending)?,
+    ])?;
+    let ready: Vec<&str> = plan
+        .ready()
+        .iter()
+        .map(|todo| todo.label.as_str())
+        .collect();
+    assert_eq!(ready, vec!["after the drop"]);
+    Ok(())
+}
+
+#[test]
+fn a_terminal_record_keeps_the_owners_kernel_and_refuses_a_childs() -> TestResult {
+    let owner = AgentId::new("main")?;
+    for (url, expected) in [
+        ("kernel://token_api_seam", Durability::Durable),
+        ("kernel://main/cli_surface", Durability::Durable),
+        ("kernel://write-the-patch/scratch", Durability::Ephemeral),
+        ("agent://main", Durability::Ephemeral),
+        ("history://main/e7", Durability::Durable),
+        ("local://seam.md", Durability::Durable),
+    ] {
+        assert_eq!(
+            terminal_durability(&url.parse::<Url>()?, &owner),
+            expected,
+            "{url}"
+        );
+    }
     Ok(())
 }
