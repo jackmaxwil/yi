@@ -124,6 +124,101 @@ fn sanitize_paste_strips_control_keeps_newlines() -> TestResult {
     Ok(())
 }
 
+fn composer_with_history(entries: &[&str]) -> Composer {
+    let mut composer = Composer::default();
+    for entry in entries {
+        composer.set_text(entry);
+        let _ = composer.take_submission();
+    }
+    composer
+}
+
+#[test]
+fn reverse_search_does_not_preview_until_the_query_has_text() -> TestResult {
+    let mut composer = composer_with_history(&["alpha", "beta"]);
+    composer.set_text("draft");
+    composer.begin_search();
+    assert_eq!(composer.text(), "draft");
+    assert_eq!(composer.search_title().as_deref(), Some("reverse-i-search"));
+    Ok(())
+}
+
+#[test]
+fn reverse_search_previews_the_newest_case_insensitive_hit() -> TestResult {
+    let mut composer = composer_with_history(&["Alpha one", "beta"]);
+    composer.set_text("draft");
+    composer.begin_search();
+    composer.handle_search_key(ratatui::crossterm::event::KeyEvent::new(
+        ratatui::crossterm::event::KeyCode::Char('a'),
+        ratatui::crossterm::event::KeyModifiers::NONE,
+    ));
+    assert_eq!(composer.text(), "beta");
+    composer.handle_search_key(ratatui::crossterm::event::KeyEvent::new(
+        ratatui::crossterm::event::KeyCode::Char('l'),
+        ratatui::crossterm::event::KeyModifiers::NONE,
+    ));
+    assert_eq!(composer.text(), "Alpha one");
+    assert_eq!(
+        composer.search_title().as_deref(),
+        Some("reverse-i-search: al")
+    );
+    Ok(())
+}
+
+#[test]
+fn reverse_search_miss_and_escape_restore_the_draft() -> TestResult {
+    let mut composer = composer_with_history(&["alpha"]);
+    composer.set_text("draft");
+    composer.begin_search();
+    composer.handle_search_key(ratatui::crossterm::event::KeyEvent::new(
+        ratatui::crossterm::event::KeyCode::Char('z'),
+        ratatui::crossterm::event::KeyModifiers::NONE,
+    ));
+    assert_eq!(composer.text(), "draft");
+    assert_eq!(
+        composer.search_title().as_deref(),
+        Some("failing reverse-i-search: z")
+    );
+    assert!(composer.cancel_search());
+    assert_eq!(composer.text(), "draft");
+    assert!(!composer.search_active());
+    Ok(())
+}
+
+#[test]
+fn reverse_search_enter_accepts_without_submitting_and_skips_duplicate_text() -> TestResult {
+    let mut composer = composer_with_history(&["alpha", "alphabet", "alpha"]);
+    composer.set_text("draft");
+    composer.begin_search();
+    composer.handle_search_key(ratatui::crossterm::event::KeyEvent::new(
+        ratatui::crossterm::event::KeyCode::Char('a'),
+        ratatui::crossterm::event::KeyModifiers::NONE,
+    ));
+    composer.handle_search_key(ratatui::crossterm::event::KeyEvent::new(
+        ratatui::crossterm::event::KeyCode::Char('l'),
+        ratatui::crossterm::event::KeyModifiers::NONE,
+    ));
+    assert_eq!(composer.text(), "alpha");
+    composer.search_older();
+    assert_eq!(composer.text(), "alphabet");
+    composer.search_older();
+    assert_eq!(composer.text(), "alphabet");
+    assert!(composer.accept_search());
+    assert_eq!(composer.text(), "alphabet");
+    assert!(!composer.search_active());
+    Ok(())
+}
+
+#[test]
+fn keymap_binds_ctrl_r_to_history_search() -> TestResult {
+    let key = KeyInput::parse("ctrl-r")?;
+    assert_eq!(
+        default_keymap().resolve(&key, &EvalContext::default()),
+        Some(Action::HistorySearch)
+    );
+    Ok(())
+}
+
 #[test]
 fn frame_scheduler_honors_floor_and_ceiling() -> TestResult {
     use std::time::{Duration, Instant};
