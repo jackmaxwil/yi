@@ -111,7 +111,10 @@ impl<B: Backend> Terminal<B> {
                 // region. The `floor` rows under the live text hold still instead.
                 let carries_live = previous_area.bottom() == screen.height
                     && previous_area.width == screen.width
-                    && floor <= previous_area.height;
+                    && floor <= previous_area.height
+                    // Incident: a one-row region is an invalid DECSTBM, a terminal
+                    // ignores it, and the scroll then takes the whole screen.
+                    && floor.saturating_add(2) <= screen.height;
                 let region_bottom = if carries_live {
                     screen.height - floor
                 } else {

@@ -457,6 +457,65 @@ fn a_streamed_line_is_written_as_an_append() -> TestResult {
         24,
         "the region stays anchored to the bottom row:\n{contents}"
     );
+
+    // Past the live tail's limit each streamed line commits one, so the region
+    // shrinks back and takes the erase path the append never took. Pinned here
+    // so the append's measured win stays attached to the phase it was measured in.
+    for n in 9..=20 {
+        body.push_str(&format!("- item {n} of the answer\n"));
+        app.reduce_agent(streamed(&body));
+        yi_tui::render::draw(&mut app, &mut terminal, None);
+    }
+    let capped = terminal.viewport_area().height;
+    for n in 21..=32 {
+        body.push_str(&format!("- item {n} of the answer\n"));
+        app.reduce_agent(streamed(&body));
+        let _ = terminal.backend_mut().take_written();
+        yi_tui::render::draw(&mut app, &mut terminal, None);
+    }
+    let written = terminal.backend_mut().take_written();
+    assert!(
+        terminal.viewport_area().height <= capped,
+        "the live tail is capped at {capped}; the region must stop following the answer"
+    );
+    assert!(
+        written.contains("\u{1b}[J"),
+        "a saturated tail still repaints — if this stopped being true the append \
+         now covers the commit path too, and the 0.98.0 row must say so: {written:?}"
+    );
+    Ok(())
+}
+
+/// A screen short enough to leave the live region one row puts the whole floor
+/// under the scroll, and a one-row region is an invalid DECSTBM: the terminal
+/// ignores the margins and the scroll takes the working line and composer with it.
+#[test]
+fn a_short_screen_keeps_its_floor_through_a_growth() -> TestResult {
+    let mut backend = VT100Backend::with_scrollback(40, 6, 200);
+    {
+        use std::io::Write;
+        backend.write_all(&b"\n".repeat(5))?;
+    }
+    let mut terminal = yi_tui::terminal::Terminal::new(backend, 4)?;
+    let mut app = App::new(
+        options(),
+        Theme::new(ColorTier::TrueColor, true),
+        default_keymap(),
+        40,
+    );
+    app.set_rows(6);
+    app.reduce_agent(yi_types::event::AgentEvent::AgentStart);
+    yi_tui::render::draw(&mut app, &mut terminal, None);
+    app.reduce_agent(streamed("hello there\n"));
+    yi_tui::render::draw(&mut app, &mut terminal, None);
+
+    let contents = terminal.backend().contents();
+    for expected in ["hello there", "interrupt", "╭", "╰", "faux-1"] {
+        assert!(
+            contents.contains(expected),
+            "a six-row screen lost {expected:?} to the growth:\n{contents}"
+        );
+    }
     Ok(())
 }
 
