@@ -61,6 +61,26 @@ impl Sandbox {
         sections.join("\n")
     }
 
+    pub fn kernel_policy(&self) -> String {
+        format!(
+            "{}\n; Jupyter ZMQ is loopback TCP. Remote IPs stay denied.\n\
+             (allow system-socket)\n\
+             (allow network-outbound (remote ip \"localhost:*\"))\n\
+             (allow network-inbound (local ip \"localhost:*\"))\n\
+             (allow network-bind (local ip \"localhost:*\"))\n",
+            self.policy()
+        )
+    }
+
+    pub fn kernel_prefix(&self) -> (String, Vec<String>) {
+        let mut wrapped = vec!["-p".to_owned(), self.kernel_policy()];
+        for (key, value) in self.params() {
+            wrapped.push(format!("-D{key}={}", value.to_string_lossy()));
+        }
+        wrapped.push("--".to_owned());
+        (SEATBELT.to_owned(), wrapped)
+    }
+
     fn read_policy(&self) -> String {
         if self.deny_read.is_empty() {
             return "; reads are open\n(allow file-read*)".to_owned();

@@ -81,6 +81,7 @@ async fn ipython_tool_runs_a_cell_through_the_full_agent_loop() -> Result<(), Bo
         session_dir: None,
         host: Arc::new(registry),
         on_restore: None,
+        sandbox: None,
     }));
     let mut tools = yi_tools::builtin_tools();
     tools.push(ipython_tool(Arc::clone(&service)));
@@ -148,6 +149,7 @@ async fn an_unawaited_spawn_is_named_in_the_cell_result() -> Result<(), Box<dyn 
         session_dir: None,
         host: Arc::new(registry),
         on_restore: None,
+        sandbox: None,
     }));
     let mut tools = yi_tools::builtin_tools();
     tools.push(ipython_tool(Arc::clone(&service)));

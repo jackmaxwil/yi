@@ -76,6 +76,20 @@ fn the_policy_denies_by_default_and_names_its_roots() -> TestResult {
     assert_eq!(tail, vec!["ls", "-c", "sh"], "the command comes last");
     assert!(args.iter().any(|arg| arg == "--"));
     assert!(args.iter().any(|arg| arg.starts_with("-DWRITABLE_ROOT_0=")));
+
+    let kernel = sandbox.kernel_policy();
+    assert!(
+        kernel.contains("network-bind") && kernel.contains("localhost"),
+        "the kernel profile needs loopback ZMQ"
+    );
+    assert!(
+        !sandbox.policy().contains("network-outbound")
+            && !sandbox.policy().contains("(allow network"),
+        "bash wrap stays egress-off"
+    );
+    let (program, prefix) = sandbox.kernel_prefix();
+    assert_eq!(program, "/usr/bin/sandbox-exec");
+    assert_eq!(prefix.last().map(String::as_str), Some("--"));
     Ok(())
 }
 
