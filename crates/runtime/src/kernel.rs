@@ -26,6 +26,8 @@ except Exception:
 try:
     import rlm as _prime_agent_rlm_module
     rlm = _prime_agent_rlm_module.rlm
+    fetch = _prime_agent_rlm_module.fetch
+    bash = _prime_agent_rlm_module.bash
     import rlm.mcp as mcp
 except Exception as _prime_agent_rlm_error:
     _PRIME_AGENT_RLM_IMPORT_ERROR = str(_prime_agent_rlm_error)
@@ -152,6 +154,90 @@ impl HostRegistry {
             .insert(request_type.to_owned(), Arc::new(handler));
     }
 
+    /// The host half of the kernel's `bash()` handle: five `exec.*` requests
+    /// over [`yi_tools::jobs`]. A spawned job is handle-owned — no session
+    /// poller announces it and only `exec.release` retires it.
+    pub fn register_exec(&mut self, cwd: PathBuf) {
+        self.register("exec.spawn", move |payload| {
+            let cwd = cwd.clone();
+            Box::pin(async move {
+                let command = payload
+                    .get("command")
+                    .and_then(Value::as_str)
+                    .filter(|command| !command.trim().is_empty())
+                    .ok_or_else(|| {
+                        "exec.spawn requires a non-empty \"command\" argument".to_owned()
+                    })?
+                    .to_owned();
+                let id = tokio::task::spawn_blocking(move || {
+                    let cancelled: CancelFlag = Arc::new(|| false);
+                    yi_tools::jobs::spawn_job(&command, &cwd, &cancelled, None)
+                })
+                .await
+                .map_err(|error| format!("exec.spawn task failed: {error}"))?;
+                let mut reply = Map::new();
+                reply.insert("job_id".to_owned(), Value::from(id.0));
+                Ok(reply)
+            })
+        });
+        self.register("exec.tail", |payload| {
+            Box::pin(async move {
+                let id = job_id_of(&payload, "exec.tail")?;
+                let cursor = payload.get("cursor").and_then(Value::as_u64).unwrap_or(0);
+                let chunk = tokio::task::spawn_blocking(move || {
+                    yi_tools::jobs::registry().output_since(id, cursor)
+                })
+                .await
+                .map_err(|error| format!("exec.tail task failed: {error}"))?
+                .map_err(|error| error.to_string())?;
+                let mut reply = Map::new();
+                reply.insert("text".to_owned(), Value::String(chunk.text));
+                reply.insert("next".to_owned(), Value::from(chunk.next));
+                reply.insert("dropped".to_owned(), Value::from(chunk.dropped));
+                Ok(reply)
+            })
+        });
+        self.register("exec.poll", |payload| {
+            Box::pin(async move {
+                let id = job_id_of(&payload, "exec.poll")?;
+                let report =
+                    tokio::task::spawn_blocking(move || yi_tools::jobs::registry().report(id))
+                        .await
+                        .map_err(|error| format!("exec.poll task failed: {error}"))?
+                        .ok_or_else(|| format!("no such job: {id}"))?;
+                Ok(job_report_reply(&report))
+            })
+        });
+        self.register("exec.kill", |payload| {
+            Box::pin(async move {
+                let id = job_id_of(&payload, "exec.kill")?;
+                let outcome =
+                    tokio::task::spawn_blocking(move || yi_tools::jobs::registry().kill(id))
+                        .await
+                        .map_err(|error| format!("exec.kill task failed: {error}"))?
+                        .map_err(|error| error.to_string())?;
+                let mut reply = Map::new();
+                let named = match outcome {
+                    yi_tools::jobs::KillOutcome::Signalled => "signalled",
+                    yi_tools::jobs::KillOutcome::AlreadySettled(_) => "already_settled",
+                };
+                reply.insert("outcome".to_owned(), Value::String(named.to_owned()));
+                Ok(reply)
+            })
+        });
+        self.register("exec.release", |payload| {
+            Box::pin(async move {
+                let id = job_id_of(&payload, "exec.release")?;
+                let report =
+                    tokio::task::spawn_blocking(move || yi_tools::jobs::registry().release(id))
+                        .await
+                        .map_err(|error| format!("exec.release task failed: {error}"))?
+                        .map_err(|error| error.to_string())?;
+                Ok(job_report_reply(&report))
+            })
+        });
+    }
+
     /// `mcp.config` returns `{}` (the Python side raises its own KeyError),
     /// `mcp.refresh` throws, and `mcp.begin_login` is never registered: a 401
     /// must not open a browser.
@@ -166,6 +252,34 @@ impl HostRegistry {
             })
         });
     }
+}
+
+fn job_id_of(payload: &Map<String, Value>, request: &str) -> Result<yi_tools::JobId, String> {
+    payload
+        .get("job_id")
+        .and_then(Value::as_u64)
+        .map(yi_tools::JobId)
+        .ok_or_else(|| format!("{request} requires an integer \"job_id\" argument"))
+}
+
+fn job_report_reply(report: &yi_tools::JobReport) -> Map<String, Value> {
+    use yi_tools::jobs::{JobState, Outcome};
+    let (running, exit_code, killed) = match report.state {
+        JobState::Running => (true, None, false),
+        JobState::Settled(Outcome::Exited { code }) => (false, code, false),
+        JobState::Settled(Outcome::Killed) => (false, None, true),
+    };
+    let mut reply = Map::new();
+    reply.insert("job_id".to_owned(), Value::from(report.id.0));
+    reply.insert("command".to_owned(), Value::String(report.command.clone()));
+    reply.insert("running".to_owned(), Value::Bool(running));
+    reply.insert(
+        "exit_code".to_owned(),
+        exit_code.map_or(Value::Null, Value::from),
+    );
+    reply.insert("killed".to_owned(), Value::Bool(killed));
+    reply.insert("output".to_owned(), Value::String(report.output.clone()));
+    reply
 }
 
 impl HostHandlers for HostRegistry {
@@ -447,5 +561,431 @@ impl KernelBridge for KernelService {
         let handle = tokio::runtime::Handle::try_current()
             .map_err(|_| "ipython requires a tokio runtime".to_owned())?;
         handle.block_on(self.execute_async(code, cancelled))
+    }
+}
+
+const VARIABLE_MARKER: &str = "__yi_kernel_var__";
+const VARIABLE_MAX_CHARS: usize = 8_192;
+const VARIABLE_NAME_MAX_BYTES: usize = 128;
+
+/// Invariant: an ASCII Python identifier, never a dotted path: the name is
+/// interpolated into a cell, and attribute access runs arbitrary code.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VariableName(String);
+
+impl VariableName {
+    pub fn parse(raw: &str) -> Result<Self, VariableReadError> {
+        let head_ok = raw
+            .chars()
+            .next()
+            .is_some_and(|first| first.is_ascii_alphabetic() || first == '_');
+        let body_ok = raw
+            .chars()
+            .all(|char| char.is_ascii_alphanumeric() || char == '_');
+        if head_ok && body_ok && raw.len() <= VARIABLE_NAME_MAX_BYTES {
+            return Ok(Self(raw.to_owned()));
+        }
+        Err(VariableReadError::NotAnIdentifier {
+            name: raw.to_owned(),
+            max: VARIABLE_NAME_MAX_BYTES,
+        })
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for VariableName {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.0)
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum VariableReadError {
+    #[error("{name:?} is not an ASCII Python identifier of 1 to {max} bytes")]
+    NotAnIdentifier { name: String, max: usize },
+    #[error("no IPython kernel is running for this agent")]
+    NotRunning,
+    #[error("the kernel could not be read: {detail}")]
+    Cell { detail: String },
+    #[error("repr({name}) raised {python}")]
+    Unreadable { name: VariableName, python: String },
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum VariableReply {
+    Missing,
+    Value { text: String, chars: usize },
+    Unreadable { python: String },
+}
+
+fn py_literal(value: &str) -> String {
+    Value::String(value.to_owned()).to_string()
+}
+
+fn read_variable_code(name: &VariableName) -> String {
+    format!(
+        r#"def _yi_read_variable():
+    import builtins as _b, json
+    ip = None
+    try:
+        ip = get_ipython()  # noqa: F821 (injected by IPython)
+    except _b.Exception:
+        ip = None
+    ns = ip.user_ns if ip is not None else _b.globals()
+    name = {name}
+    if name not in ns:
+        _b.print({marker} + json.dumps({{"found": False}}))
+        return
+    try:
+        text = _b.repr(ns[name])
+        payload = json.dumps({{"found": True, "chars": _b.len(text), "text": text[:{limit}]}})
+    except _b.BaseException as exc:
+        payload = json.dumps({{"found": True, "error": _b.repr(exc)}})
+    _b.print({marker} + payload)
+
+
+try:
+    _yi_read_variable()
+finally:
+    del _yi_read_variable"#,
+        name = py_literal(name.as_str()),
+        marker = py_literal(VARIABLE_MARKER),
+        limit = VARIABLE_MAX_CHARS,
+    )
+}
+
+fn parse_variable_reply(stdout: &str) -> Option<VariableReply> {
+    let index = stdout.rfind(VARIABLE_MARKER)?;
+    let rest = &stdout[index.saturating_add(VARIABLE_MARKER.len())..];
+    let value: Value = serde_json::from_str(rest.lines().next()?.trim()).ok()?;
+    if !value.get("found")?.as_bool()? {
+        return Some(VariableReply::Missing);
+    }
+    if let Some(python) = value.get("error").and_then(Value::as_str) {
+        return Some(VariableReply::Unreadable {
+            python: python.to_owned(),
+        });
+    }
+    Some(VariableReply::Value {
+        text: value.get("text")?.as_str()?.to_owned(),
+        chars: usize::try_from(value.get("chars")?.as_u64()?).ok()?,
+    })
+}
+
+fn render_value(text: String, chars: usize) -> String {
+    let shown = text.chars().count();
+    if chars <= shown {
+        return text;
+    }
+    format!("{text}\n[... truncated: {shown} of {chars} chars ...]")
+}
+
+impl KernelService {
+    /// Invariant: reads a kernel already running — a fetch must not boot one.
+    pub async fn read_variable(
+        &self,
+        name: &VariableName,
+    ) -> Result<Option<String>, VariableReadError> {
+        let manager = self
+            .manager_if_running()
+            .await
+            .ok_or(VariableReadError::NotRunning)?;
+        let abort = AbortFlag::default();
+        let timer = {
+            let abort = abort.clone();
+            tokio::spawn(async move {
+                tokio::time::sleep(std::time::Duration::from_millis(
+                    yi_kernel::KERNEL_STATE_LISTING_TIMEOUT_MS,
+                ))
+                .await;
+                abort.fire();
+            })
+        };
+        let outcome = manager
+            .execute(
+                &read_variable_code(name),
+                ExecuteOptions {
+                    abort: Some(abort),
+                    internal: true,
+                    ..ExecuteOptions::default()
+                },
+            )
+            .await;
+        timer.abort();
+        let result = outcome.map_err(|error| VariableReadError::Cell {
+            detail: error.to_string(),
+        })?;
+        if result.status != yi_types::kernel::ExecuteStatus::Ok {
+            return Err(VariableReadError::Cell {
+                detail: result
+                    .error
+                    .map(|error| error.evalue)
+                    .unwrap_or(result.stderr),
+            });
+        }
+        match parse_variable_reply(&result.stdout) {
+            None => Err(VariableReadError::Cell {
+                detail: format!("the read cell printed no {VARIABLE_MARKER} line"),
+            }),
+            Some(VariableReply::Missing) => Ok(None),
+            Some(VariableReply::Unreadable { python }) => Err(VariableReadError::Unreadable {
+                name: name.clone(),
+                python,
+            }),
+            Some(VariableReply::Value { text, chars }) => Ok(Some(render_value(text, chars))),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::error::Error;
+
+    type TestResult = Result<(), Box<dyn Error>>;
+
+    #[test]
+    fn only_a_bare_ascii_identifier_is_a_variable_name() -> TestResult {
+        for good in ["x", "_x", "a1", "Data_2", "_", "__doc__"] {
+            let parsed = VariableName::parse(good)?;
+            assert_eq!(parsed.as_str(), good);
+        }
+        let long = "a".repeat(VARIABLE_NAME_MAX_BYTES.saturating_add(1));
+        for bad in [
+            "",
+            "a.b",
+            "os.system",
+            "a b",
+            "1a",
+            "x;import os",
+            "x)",
+            "x[0]",
+            "__import__('os')",
+            "é",
+            long.as_str(),
+        ] {
+            assert!(
+                VariableName::parse(bad).is_err(),
+                "{bad:?} must be refused before it reaches a cell"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn the_read_cell_carries_the_name_as_data_not_as_code() -> TestResult {
+        let code = read_variable_code(&VariableName::parse("answer")?);
+        assert!(code.contains("name = \"answer\""), "{code}");
+        assert!(code.contains("if name not in ns:"), "{code}");
+        assert!(
+            !code.contains("repr(answer)"),
+            "the name must never be evaluated: {code}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_reply_is_parsed_into_absence_value_or_failure() -> TestResult {
+        let reply = |json: &str| parse_variable_reply(&format!("noise\n{VARIABLE_MARKER}{json}\n"));
+        assert_eq!(reply(r#"{"found": false}"#), Some(VariableReply::Missing));
+        assert_eq!(
+            reply(r#"{"found": true, "chars": 2, "text": "42"}"#),
+            Some(VariableReply::Value {
+                text: "42".to_owned(),
+                chars: 2,
+            })
+        );
+        assert_eq!(
+            reply(r#"{"found": true, "error": "ValueError()"}"#),
+            Some(VariableReply::Unreadable {
+                python: "ValueError()".to_owned(),
+            })
+        );
+        assert!(reply("not-json").is_none());
+        assert!(parse_variable_reply("no marker at all").is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn a_clipped_value_reports_what_was_hidden() {
+        assert_eq!(render_value("42".to_owned(), 2), "42");
+        assert_eq!(
+            render_value("ab".to_owned(), 900),
+            "ab\n[... truncated: 2 of 900 chars ...]"
+        );
+    }
+
+    async fn exec(
+        registry: &HostRegistry,
+        request: &str,
+        payload: Value,
+    ) -> Result<Map<String, Value>, String> {
+        let payload = payload.as_object().cloned().unwrap_or_default();
+        match registry.dispatch(request, payload) {
+            Some(future) => future.await,
+            None => Err(format!("{request} is not registered")),
+        }
+    }
+
+    fn exec_registry() -> HostRegistry {
+        let mut registry = HostRegistry::default();
+        registry.register_exec(std::env::temp_dir());
+        registry
+    }
+
+    async fn settled(registry: &HostRegistry, job: &Value) -> Result<Map<String, Value>, String> {
+        for _attempt in 0u16..500 {
+            let report = exec(registry, "exec.poll", serde_json::json!({"job_id": job})).await?;
+            if report.get("running") == Some(&Value::Bool(false)) {
+                return Ok(report);
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        Err("job under test never settled".to_owned())
+    }
+
+    #[tokio::test]
+    async fn an_exec_job_spawns_tails_and_releases() -> TestResult {
+        let registry = exec_registry();
+        let spawned = exec(
+            &registry,
+            "exec.spawn",
+            serde_json::json!({"command": "printf hello"}),
+        )
+        .await?;
+        let job = spawned.get("job_id").ok_or("no job_id")?.clone();
+        let report = settled(&registry, &job).await?;
+        assert_eq!(report.get("exit_code"), Some(&Value::from(0)));
+        assert_eq!(report.get("killed"), Some(&Value::Bool(false)));
+        let chunk = exec(
+            &registry,
+            "exec.tail",
+            serde_json::json!({"job_id": job, "cursor": 0}),
+        )
+        .await?;
+        assert_eq!(chunk.get("text"), Some(&Value::String("hello".to_owned())));
+        assert_eq!(chunk.get("dropped"), Some(&Value::from(0)));
+        let released = exec(
+            &registry,
+            "exec.release",
+            serde_json::json!({"job_id": job}),
+        )
+        .await?;
+        assert!(
+            released
+                .get("output")
+                .and_then(Value::as_str)
+                .is_some_and(|output| output.contains("hello"))
+        );
+        let gone = exec(&registry, "exec.poll", serde_json::json!({"job_id": job})).await;
+        assert!(gone.is_err(), "a released job must be gone");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn an_exec_kill_settles_the_job_as_killed() -> TestResult {
+        let registry = exec_registry();
+        let spawned = exec(
+            &registry,
+            "exec.spawn",
+            serde_json::json!({"command": "sleep 300"}),
+        )
+        .await?;
+        let job = spawned.get("job_id").ok_or("no job_id")?.clone();
+        let killed = exec(&registry, "exec.kill", serde_json::json!({"job_id": job})).await?;
+        assert_eq!(
+            killed.get("outcome"),
+            Some(&Value::String("signalled".to_owned()))
+        );
+        let report = settled(&registry, &job).await?;
+        assert_eq!(report.get("killed"), Some(&Value::Bool(true)));
+        assert_eq!(report.get("exit_code"), Some(&Value::Null));
+        let again = exec(&registry, "exec.kill", serde_json::json!({"job_id": job})).await?;
+        assert_eq!(
+            again.get("outcome"),
+            Some(&Value::String("already_settled".to_owned()))
+        );
+        exec(
+            &registry,
+            "exec.release",
+            serde_json::json!({"job_id": job}),
+        )
+        .await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn exec_requests_refuse_bad_arguments_by_name() -> TestResult {
+        let registry = exec_registry();
+        let empty = exec(
+            &registry,
+            "exec.spawn",
+            serde_json::json!({"command": "  "}),
+        )
+        .await;
+        assert!(empty.is_err_and(|error| error.contains("command")));
+        for request in ["exec.tail", "exec.poll", "exec.kill", "exec.release"] {
+            let missing = exec(&registry, request, serde_json::json!({})).await;
+            assert!(
+                missing.is_err_and(|error| error.contains("job_id")),
+                "{request}"
+            );
+        }
+        let unknown = exec(
+            &registry,
+            "exec.poll",
+            serde_json::json!({"job_id": 4_000_000_000u64}),
+        )
+        .await;
+        assert!(unknown.is_err_and(|error| error.contains("no such job")));
+        Ok(())
+    }
+
+    fn service() -> KernelService {
+        let mut registry = HostRegistry::default();
+        registry.register_mcp_stubs();
+        KernelService::new(KernelServiceOptions {
+            cwd: std::env::temp_dir(),
+            home: std::env::var_os("HOME")
+                .map(PathBuf::from)
+                .unwrap_or_default(),
+            session_dir: None,
+            host: Arc::new(registry),
+            on_restore: None,
+        })
+    }
+
+    #[tokio::test]
+    async fn a_read_without_a_kernel_is_not_an_absence() -> TestResult {
+        let error = service().read_variable(&VariableName::parse("x")?).await;
+        assert!(matches!(error, Err(VariableReadError::NotRunning)));
+        Ok(())
+    }
+
+    #[tokio::test]
+    #[ignore = "tier-2 journey: `just journeys`"]
+    async fn a_live_kernel_answers_one_name_and_admits_the_rest() -> TestResult {
+        let service = service();
+        let manager = service.ensure().await?;
+        manager
+            .execute("answer = 6 * 7", ExecuteOptions::default())
+            .await?;
+        assert_eq!(
+            service
+                .read_variable(&VariableName::parse("answer")?)
+                .await?,
+            Some("42".to_owned())
+        );
+        assert_eq!(
+            service
+                .read_variable(&VariableName::parse("never_bound")?)
+                .await?,
+            None
+        );
+        service.dispose().await;
+        Ok(())
     }
 }
