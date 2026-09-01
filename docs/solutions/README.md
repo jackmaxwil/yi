@@ -75,8 +75,12 @@ when it changes rather than editing them by hand.
 - [D86](adr/d86.md) - heartbeat lanes are in-process, keyed by session_id
 - [D91](adr/d91.md) - the dist build belongs to the aggregator, not to `just guardrails`
 - [D92](adr/d92.md) - the gate's lanes run in parallel, and its suite runs under nextest
+- [D93](adr/d93.md) - the startup budget is scored on the minimum, not the mean
+- [D94](adr/d94.md) - a TUI recording is captured at the draw boundary and rendered outside the binary
+- [D95](adr/d95.md) - the workspace shell is a new crate speaking ACP to the daemon
+- [D96](adr/d96.md) - pane content is an enum, and kernel media rides the existing details record
 - [D97](adr/d97.md) - the plan is a git-tracked document and `Fact::Plan` is a pointer at it
 - [D98](adr/d98.md) - every reference is a URL behind one read path
 - [D99](adr/d99.md) - a plan-attributed commit carries one `Plan:` trailer
 
-D36-D51, D72, D73, D74 and D93-D96 have no ADR yet; ARCHITECTURE.md is the record for those rows.
+D36-D51, D72, D73 and D74 have no ADR yet; ARCHITECTURE.md is the record for those rows.
