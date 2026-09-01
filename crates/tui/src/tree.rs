@@ -21,7 +21,7 @@ pub enum TreeResult {
     Rewind(String),
 }
 
-const PAGE: usize = 8;
+pub(crate) const PAGE: usize = 8;
 
 const HELP: &str = "Enter: rewind. ↑/↓: move. Alt+↑/↓: previous/next turn. PgUp/PgDn: page. Home/End: first/last. Tab: filter. Type to search. Esc: close";
 
@@ -229,55 +229,38 @@ impl TreeView {
             .iter()
             .position(|(i, _)| *i == self.selected)
             .unwrap_or(0);
-        let (start, end) = centered_window(position, visible.len(), max_rows);
-        let overflow = visible.len() > max_rows;
-        let content_width = inner.saturating_sub(usize::from(overflow));
-        let thumb = thumb_range(start, visible.len(), max_rows);
-        let mut lines = Vec::new();
-        for (offset, (index, entry)) in visible
-            .iter()
-            .enumerate()
-            .skip(start)
-            .take(end.saturating_sub(start))
-        {
-            let selected = *index == self.selected;
-            let background = selected.then(|| theme.selection_bg());
-            let mut spans = vec![Span::styled(
-                if selected { "› " } else { "  " }.to_owned(),
-                paint(theme.accent_style(), background),
-            )];
-            let prefix = gutter_prefix(entry);
-            if !prefix.is_empty() {
-                spans.push(Span::styled(prefix, paint(theme.dim_style(), background)));
-            }
-            if entry.on_path {
-                spans.push(Span::styled(
-                    "● ".to_owned(),
-                    paint(theme.accent_style(), background),
-                ));
-            }
-            spans.push(Span::styled(
-                role_prefix(entry.role),
-                paint(role_style(entry.role, theme), background),
-            ));
-            spans.push(Span::styled(
-                entry.label.clone(),
-                paint(Style::default().fg(theme.text), background),
-            ));
-            let mut spans = fit_spans(spans, content_width, background);
-            if overflow {
-                let row_index = offset.saturating_sub(start);
-                let in_thumb = row_index >= thumb.0 && row_index < thumb.1;
-                let (glyph, style) = if in_thumb {
-                    ("█", theme.accent_style())
-                } else {
-                    ("│", theme.muted_style())
+        window_lines(
+            visible.len(),
+            position,
+            inner,
+            max_rows,
+            theme,
+            |index, background| {
+                let Some((_, entry)) = visible.get(index) else {
+                    return Vec::new();
                 };
-                spans.push(Span::styled(glyph.to_owned(), style));
-            }
-            lines.push(spans);
-        }
-        lines
+                let mut spans = Vec::new();
+                let prefix = gutter_prefix(entry.depth, entry.is_last);
+                if !prefix.is_empty() {
+                    spans.push(Span::styled(prefix, paint(theme.dim_style(), background)));
+                }
+                if entry.on_path {
+                    spans.push(Span::styled(
+                        "● ".to_owned(),
+                        paint(theme.accent_style(), background),
+                    ));
+                }
+                spans.push(Span::styled(
+                    role_prefix(entry.role),
+                    paint(role_style(entry.role, theme), background),
+                ));
+                spans.push(Span::styled(
+                    entry.label.clone(),
+                    paint(Style::default().fg(theme.text), background),
+                ));
+                spans
+            },
+        )
     }
 
     /// Alt+↑/↓ steps whole turns: from anywhere in a turn to the user message
@@ -387,7 +370,7 @@ impl TreeView {
     }
 }
 
-fn paint(style: Style, background: Option<ratatui::style::Color>) -> Style {
+pub(crate) fn paint(style: Style, background: Option<ratatui::style::Color>) -> Style {
     match background {
         Some(color) => style.bg(color),
         None => style,
@@ -410,16 +393,16 @@ fn role_style(role: &str, theme: &Theme) -> Style {
     }
 }
 
-fn gutter_prefix(row: &Row) -> String {
-    if row.depth == 0 {
+pub(crate) fn gutter_prefix(depth: usize, is_last: bool) -> String {
+    if depth == 0 {
         return String::new();
     }
-    let connector = if row.is_last { "└─ " } else { "├─ " };
-    format!("{}{connector}", "│  ".repeat(row.depth.saturating_sub(1)))
+    let connector = if is_last { "└─ " } else { "├─ " };
+    format!("{}{connector}", "│  ".repeat(depth.saturating_sub(1)))
 }
 
 /// So a selection background covers the row end to end (OMP `fit`).
-fn fit_spans(
+pub(crate) fn fit_spans(
     spans: Vec<Span<'static>>,
     width: usize,
     background: Option<ratatui::style::Color>,
@@ -450,7 +433,7 @@ fn fit_spans(
     out
 }
 
-fn row(
+pub(crate) fn row(
     spans: Vec<Span<'static>>,
     inner: usize,
     theme: &Theme,
@@ -464,12 +447,13 @@ fn row(
     Line::from(out)
 }
 
-fn top_border(width: usize, title: &str, theme: &Theme) -> Line<'static> {
-    let inner = width.saturating_sub(2);
-    let shown = format!(" {title} ");
-    let fill = inner
-        .saturating_sub(1)
-        .saturating_sub(unicode_width::UnicodeWidthStr::width(shown.as_str()));
+pub(crate) fn top_border(width: usize, title: &str, theme: &Theme) -> Line<'static> {
+    let room = width.saturating_sub(3);
+    let mut shown = format!(" {title} ");
+    if unicode_width::UnicodeWidthStr::width(shown.as_str()) > room {
+        shown = shown.chars().take(room).collect();
+    }
+    let fill = room.saturating_sub(unicode_width::UnicodeWidthStr::width(shown.as_str()));
     Line::from(vec![
         Span::styled("╭─".to_owned(), theme.dim_style()),
         Span::styled(shown, theme.accent_style().add_modifier(Modifier::BOLD)),
@@ -477,18 +461,58 @@ fn top_border(width: usize, title: &str, theme: &Theme) -> Line<'static> {
     ])
 }
 
-fn divider(width: usize, theme: &Theme) -> Line<'static> {
+pub(crate) fn divider(width: usize, theme: &Theme) -> Line<'static> {
     Line::from(Span::styled(
         format!("├{}┤", "─".repeat(width.saturating_sub(2))),
         theme.dim_style(),
     ))
 }
 
-fn bottom_border(width: usize, theme: &Theme) -> Line<'static> {
+pub(crate) fn bottom_border(width: usize, theme: &Theme) -> Line<'static> {
     Line::from(Span::styled(
         format!("╰{}╯", "─".repeat(width.saturating_sub(2))),
         theme.dim_style(),
     ))
+}
+
+/// The scrolling half every tree panel shares: the centered window, the
+/// selection ground, the end-to-end fit, and the overflow thumb; the caller
+/// supplies only one row's own spans.
+pub(crate) fn window_lines(
+    total: usize,
+    position: usize,
+    inner: usize,
+    max_rows: usize,
+    theme: &Theme,
+    mut spans_of: impl FnMut(usize, Option<ratatui::style::Color>) -> Vec<Span<'static>>,
+) -> Vec<Vec<Span<'static>>> {
+    let (start, end) = centered_window(position, total, max_rows);
+    let overflow = total > max_rows;
+    let content_width = inner.saturating_sub(usize::from(overflow));
+    let thumb = thumb_range(start, total, max_rows);
+    let mut lines = Vec::new();
+    for index in start..end {
+        let selected = index == position;
+        let background = selected.then(|| theme.selection_bg());
+        let mut spans = vec![Span::styled(
+            if selected { "› " } else { "  " }.to_owned(),
+            paint(theme.accent_style(), background),
+        )];
+        spans.extend(spans_of(index, background));
+        let mut spans = fit_spans(spans, content_width, background);
+        if overflow {
+            let row_index = index.saturating_sub(start);
+            let in_thumb = row_index >= thumb.0 && row_index < thumb.1;
+            let (glyph, style) = if in_thumb {
+                ("█", theme.accent_style())
+            } else {
+                ("│", theme.muted_style())
+            };
+            spans.push(Span::styled(glyph.to_owned(), style));
+        }
+        lines.push(spans);
+    }
+    lines
 }
 
 /// OMP `centeredWindow`: keep the selection in the middle of the window

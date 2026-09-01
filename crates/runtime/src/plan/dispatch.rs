@@ -113,6 +113,21 @@ fn parse_url(rendered: String) -> Result<Url, String> {
         .map_err(|error| format!("{rendered}: {error}"))
 }
 
+impl SessionDelegate {
+    fn say(&self, text: String) {
+        (self.deliver)(
+            AgentMessage::Custom {
+                custom_type: "plan_relevance".to_owned(),
+                content: UserContent::Text(text),
+                display: true,
+                details: None,
+                timestamp: yi_session::now_ms(),
+            },
+            DeliveryMode::Steer,
+        );
+    }
+}
+
 impl Delegate for SessionDelegate {
     fn spawn(&self, at: &TodoAddr, delegation: &Delegation) -> Result<AgentId, String> {
         let agent = child_name(at)?;
@@ -121,16 +136,34 @@ impl Delegate for SessionDelegate {
         Ok(agent)
     }
 
-    fn reap(&self, agent: &AgentId) -> Result<Option<Url>, String> {
+    fn reap(&self, agent: &AgentId, supplied: &[Url]) -> Result<Option<Url>, String> {
         if !self.host.holds(agent.as_str()) {
             return Ok(None);
         }
+        // Measured before the reap frees the record, and only when something was
+        // handed over: with nothing supplied there is no supply to be wrong about.
+        let measured = (!supplied.is_empty())
+            .then(|| self.host.transcript(agent.as_str()))
+            .flatten()
+            .map(|session| crate::fetch::relevance_of(&session, supplied));
         let harvest = self.host.reap(agent.as_str())?;
         let live = parse_url(format!("agent://{agent}"))?;
         let trace = parse_url(format!("history://{agent}"))?;
         self.pins
             .register_pin(&live, trace.clone())
             .map_err(|error| error.to_string())?;
+        if let Some(measured) = measured {
+            self.say(format!(
+                "context relevance for {agent}: {} of {} supplied URLs were read{}",
+                measured.referenced,
+                measured.supplied,
+                if measured.unused.is_empty() {
+                    String::new()
+                } else {
+                    format!("; unread: {}", measured.unused.join(", "))
+                }
+            ));
+        }
         Ok(harvest.produced.then_some(trace))
     }
 
@@ -439,9 +472,12 @@ mod tests {
                 .as_str()
                 .replace('.', "/"),
         )?;
-        assert!(delegate.reap(&agent)?.is_some(), "the first reap harvests");
         assert!(
-            delegate.reap(&agent)?.is_none(),
+            delegate.reap(&agent, &[])?.is_some(),
+            "the first reap harvests"
+        );
+        assert!(
+            delegate.reap(&agent, &[])?.is_none(),
             "a second reap of a child the host no longer holds must answer, not refuse"
         );
         Ok(())

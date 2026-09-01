@@ -1,8 +1,10 @@
 #![forbid(unsafe_code)]
 
+mod plan;
 mod rpc;
 mod sessions;
 mod stats;
+mod why;
 
 use std::sync::Arc;
 
@@ -515,6 +517,27 @@ impl yi_runtime::fetch::McpResourceRead for McpOneShot {
             .trim_end()
             .to_owned())
     }
+}
+
+fn run_why(args: &Args) -> i32 {
+    let cwd = effective_cwd(args);
+    let options = why::Options {
+        plans_dir: configured_plans_dir(&cwd),
+        cwd,
+        json: args.json,
+    };
+    why::run(&args.prompt, &options)
+}
+
+fn run_plan(args: &Args) -> i32 {
+    let cwd = effective_cwd(args);
+    let options = plan::Options {
+        plans_dir: configured_plans_dir(&cwd),
+        session_dir: default_session_dir(args),
+        cwd,
+        json: args.json,
+    };
+    plan::run(&args.prompt, &options)
 }
 
 fn run_fetch(args: &Args) -> i32 {
@@ -1079,6 +1102,8 @@ fn main() {
         "trust" => std::process::exit(run_trust(&args)),
         "gate" => std::process::exit(run_gate(&args)),
         "fetch" => std::process::exit(run_fetch(&args)),
+        "why" => std::process::exit(run_why(&args)),
+        "plan" => std::process::exit(run_plan(&args)),
         "sessions" => {
             let options = sessions::Options {
                 session_dir: default_session_dir(&args),
@@ -1107,7 +1132,7 @@ fn main() {
                 std::process::exit(run_tui_command(&args, None));
             }
             println!(
-                "yi {version} (yi [prompt], yi ask, yi sessions, yi stats, yi trust, yi gate, yi fetch, yi rpc, yi acp, yi serve; more surfaces land in later phases)"
+                "yi {version} (yi [prompt], yi ask, yi sessions, yi stats, yi plan, yi why, yi trust, yi gate, yi fetch, yi rpc, yi acp, yi serve; more surfaces land in later phases)"
             );
         }
         other => {

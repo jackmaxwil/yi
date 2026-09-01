@@ -11,7 +11,7 @@ use yi_types::url::{Scheme, Url};
 use crate::kernel::{VariableName, VariableReadError};
 use crate::wall::Wall;
 
-pub use log::{FetchLog, PinError, Relevance, TerminalRecordError};
+pub use log::{FetchLog, PinError, Relevance, TerminalRecordError, relevance_of};
 pub use yi_types::fetch::{FETCH_ENTRY_TYPE, FetchRecord};
 
 pub const KERNEL_MISSING: &str =

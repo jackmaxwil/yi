@@ -1801,3 +1801,31 @@ fn the_recording_backend_drops_into_a_plain_ratatui_terminal() -> TestResult {
     );
     Ok(())
 }
+
+/// Incident: `/plantree` shadowed `/plan` the moment it entered the table —
+/// the popup preserved table order, so typing a whole command's name and
+/// pressing Enter ran the longer one that merely started with it.
+#[test]
+fn typing_a_commands_whole_name_selects_it_over_a_longer_one()
+-> Result<(), Box<dyn std::error::Error>> {
+    use yi_tui::popup::ListPopup;
+    let mut popup = ListPopup::new(
+        '/',
+        vec![
+            "plantree".to_owned(),
+            "plan".to_owned(),
+            "planner".to_owned(),
+        ],
+    );
+    popup.query = "plan".to_owned();
+    let first = popup
+        .filtered()
+        .first()
+        .map(|item| (*item).clone())
+        .ok_or("the query matches three commands")?;
+    assert_eq!(first, "plan");
+    popup.query = "plant".to_owned();
+    let narrowed: Vec<String> = popup.filtered().into_iter().cloned().collect();
+    assert_eq!(narrowed, vec!["plantree".to_owned()]);
+    Ok(())
+}

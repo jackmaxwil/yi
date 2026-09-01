@@ -177,6 +177,25 @@ pub(super) fn check_plan_state(plan: &Plan, op: OpKind) -> Result<(), PlanOpErro
     }
 }
 
+pub(super) fn op_name(op: OpKind) -> &'static str {
+    match op {
+        OpKind::Init => "init",
+        OpKind::Append => "append",
+        OpKind::Drop => "drop",
+        OpKind::Block => "block",
+        OpKind::Unblock => "unblock",
+        OpKind::Reorder => "reorder",
+        OpKind::AddEdge => "add_edge",
+        OpKind::Start => "start",
+        OpKind::Done => "done",
+        OpKind::Fail => "fail",
+        OpKind::Retry => "retry",
+        OpKind::Decompose => "decompose",
+        OpKind::Supersede => "supersede",
+        OpKind::View => "view",
+    }
+}
+
 pub(super) fn check_actor(actor: &Actor, op: OpKind) -> Result<(), PlanOpError> {
     let allowed = match actor {
         Actor::Owner => true,
