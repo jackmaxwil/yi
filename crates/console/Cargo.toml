@@ -1,0 +1,16 @@
+[package]
+name = "yi-console"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+yi-types = { workspace = true }
+yi-tui = { workspace = true }
+ratatui = { workspace = true }
+tui-textarea = { workspace = true }
+serde_json = { workspace = true }

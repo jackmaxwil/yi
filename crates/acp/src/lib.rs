@@ -435,13 +435,17 @@ impl AcpState {
                     self.attach(&store)
                         .map_err(|error| (INTERNAL_ERROR, error))?;
                 }
-                if params
-                    .get("replayFrom")
-                    .is_some_and(|replay| !replay.is_null())
-                {
-                    self.replay(&id)?;
+                let mut result = self.session_result(&id);
+                // v2 clients send `{"type": "start"}`; a bare number is the
+                // entry-offset extension. Anything non-null replays.
+                if let Some(replay_from) = params.get("replayFrom").filter(|v| !v.is_null()) {
+                    let from = replay_from.as_u64().unwrap_or(0);
+                    let replayed_to = self.replay(&id, from)?;
+                    if let Some(map) = result.as_object_mut() {
+                        map.insert("replayedTo".to_owned(), json!(replayed_to));
+                    }
                 }
-                Ok(self.session_result(&id))
+                Ok(result)
             }
             "session/close" => {
                 let id = self.session(params)?.1;
@@ -531,14 +535,15 @@ impl AcpState {
         (self.sink)(&update_notification(session_id, update));
     }
 
-    /// Design C6: the stored branch walked through the C3 vocabulary as
-    /// `session/update` notifications, emitted after the resume response.
-    fn replay(&mut self, session_id: &str) -> Result<(), (i64, String)> {
+    /// Design C6: the stored branch replayed as `session/update`s. `from`
+    /// skips entries a client already holds (valid only when it saw nothing
+    /// since); returns the total entry count as the next `replayedTo`.
+    fn replay(&mut self, session_id: &str, from: u64) -> Result<u64, (i64, String)> {
         let Some(handle) = self.sessions.get(session_id) else {
-            return Ok(());
+            return Ok(0);
         };
         let Some(store) = handle.session.store() else {
-            return Ok(());
+            return Ok(0);
         };
         let entries = lock_session(&store)
             .find_entries(&EntryQuery {
@@ -546,11 +551,14 @@ impl AcpState {
                 ..EntryQuery::default()
             })
             .map_err(|error| (INTERNAL_ERROR, error.to_string()))?;
+        let total = u64::try_from(entries.len()).unwrap_or(u64::MAX);
+        let skip = usize::try_from(from.min(total)).unwrap_or(usize::MAX);
+        let tail = entries.get(skip..).unwrap_or_default();
         let mut ids = IdMap::new(handle.session.model().context_window);
-        for updated in replay_updates(&entries, &mut ids) {
+        for updated in replay_updates(tail, &mut ids) {
             (self.sink)(&update_notification(session_id, updated));
         }
-        Ok(())
+        Ok(total)
     }
 }
 

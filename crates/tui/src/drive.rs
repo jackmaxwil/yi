@@ -68,7 +68,7 @@ pub fn parse_script(source: &str) -> Result<Vec<Step>, String> {
     Ok(steps)
 }
 
-fn key_event(key: &SingleKey) -> KeyEvent {
+pub fn key_event(key: &SingleKey) -> KeyEvent {
     let code = match key.code {
         KeyCodeValue::Char(c) => KeyCode::Char(c),
         KeyCodeValue::Enter => KeyCode::Enter,
@@ -103,6 +103,40 @@ fn key_event(key: &SingleKey) -> KeyEvent {
 /// A day. `--deadline` is a convenience for paced proof runs, not a way to
 /// park a headless process, and the seconds are attacker-free but unbounded.
 const DEADLINE_CAP_SECS: u64 = 86_400;
+
+/// Key events for a `type` step, shared by drive loops.
+pub fn typed_events(text: &str) -> Vec<CtEvent> {
+    text.chars()
+        .map(|ch| {
+            CtEvent::Key(key_event(&SingleKey {
+                code: KeyCodeValue::Char(ch),
+                ctrl: false,
+                alt: false,
+                shift: false,
+            }))
+        })
+        .collect()
+}
+
+pub enum WaitPoll {
+    Done,
+    Retry,
+    TimedOut,
+}
+
+/// One poll of a wait step: unsatisfied conditions sleep 2 ms and requeue,
+/// TimedOut prints the failure line.
+pub fn poll_condition(satisfied: bool, started: Instant, ms: u64, what: &str) -> WaitPoll {
+    if satisfied {
+        return WaitPoll::Done;
+    }
+    if started.elapsed() > Duration::from_millis(ms) {
+        eprintln!("error: {what} timed out after {ms} ms");
+        return WaitPoll::TimedOut;
+    }
+    std::thread::sleep(Duration::from_millis(2));
+    WaitPoll::Retry
+}
 
 pub struct DriveOptions {
     pub script: Vec<Step>,
@@ -229,14 +263,8 @@ pub fn run_headless(
                 app.handle_event(&cmd_tx, CtEvent::Key(key_event(&key)));
             }
             (Step::Type(text), _) => {
-                for ch in text.chars() {
-                    let key = SingleKey {
-                        code: KeyCodeValue::Char(ch),
-                        ctrl: false,
-                        alt: false,
-                        shift: false,
-                    };
-                    app.handle_event(&cmd_tx, CtEvent::Key(key_event(&key)));
+                for event in typed_events(&text) {
+                    app.handle_event(&cmd_tx, event);
                     // Paced typing has to reach the screen character by
                     // character, or the recording still shows the whole line
                     // appearing at once.
@@ -260,24 +288,23 @@ pub fn run_headless(
                 }
             }
             (Step::WaitIdle(ms), started) => {
-                if app.is_running() || app.awaiting_turn() || !app.has_run() {
-                    if started.elapsed() > Duration::from_millis(ms) {
-                        eprintln!("error: wait-idle timed out after {ms} ms");
-                        exit_code = 1;
-                    } else {
-                        current = Some((Step::WaitIdle(ms), started));
-                        std::thread::sleep(Duration::from_millis(2));
-                    }
+                let idle = !(app.is_running() || app.awaiting_turn() || !app.has_run());
+                match poll_condition(idle, started, ms, "wait-idle") {
+                    WaitPoll::Done => {}
+                    WaitPoll::Retry => current = Some((Step::WaitIdle(ms), started)),
+                    WaitPoll::TimedOut => exit_code = 1,
                 }
             }
             (Step::WaitFrame(ms, present, text), started) => {
-                if terminal.backend().screen().contains(&text) != present {
-                    if started.elapsed() > Duration::from_millis(ms) {
-                        eprintln!("error: wait-frame timed out after {ms} ms waiting for {text:?}");
+                let shown = terminal.backend().screen().contains(&text) == present;
+                match poll_condition(shown, started, ms, "wait-frame") {
+                    WaitPoll::Done => {}
+                    WaitPoll::Retry => {
+                        current = Some((Step::WaitFrame(ms, present, text), started))
+                    }
+                    WaitPoll::TimedOut => {
+                        eprintln!("  waiting for {text:?}");
                         exit_code = 1;
-                    } else {
-                        current = Some((Step::WaitFrame(ms, present, text), started));
-                        std::thread::sleep(Duration::from_millis(2));
                     }
                 }
             }

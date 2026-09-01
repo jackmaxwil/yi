@@ -447,3 +447,49 @@ fn ledgers_are_intact(sessions: &Path) -> Result<bool, Box<dyn Error>> {
     }
     Ok(true)
 }
+
+/// One session, two attached clients: both must receive the same update
+/// stream. A single attached-pointer regression sends the fan-out to only
+/// the last resumer.
+#[test]
+fn two_clients_both_stream_one_session() -> TestResult {
+    let dir = std::env::temp_dir().join(format!("yi-fanout-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir)?;
+    let root = dir.join("repo");
+    std::fs::create_dir_all(&root)?;
+    let (mut daemon, socket) = spawn_daemon(&dir)?;
+
+    let outcome = (|| -> TestResult {
+        let mut first = DaemonClient::connect(&socket)?;
+        first.request("i1", "initialize", json!({"protocolVersion": 2}))?;
+        let session_id = new_session(&mut first, "n1", &root)?;
+
+        let mut second = DaemonClient::connect(&socket)?;
+        second.request("i2", "initialize", json!({"protocolVersion": 2}))?;
+        second.request(
+            "r2",
+            "session/resume",
+            json!({"sessionId": session_id, "cwd": root.display().to_string(), "replayFrom": 0}),
+        )?;
+
+        first.send(
+            "p1",
+            "session/prompt",
+            json!({"sessionId": session_id,
+                "prompt": [{"type": "text", "text": "fan this out"}]}),
+        )?;
+
+        let is_chunk = |frame: &Value| {
+            frame["method"] == "session/update"
+                && frame["params"]["update"]["sessionUpdate"] == "agent_message_chunk"
+        };
+        first.read_until(is_chunk)?;
+        second.read_until(is_chunk)?;
+        Ok(())
+    })();
+
+    let _ = daemon.kill();
+    let _ = daemon.wait();
+    outcome
+}

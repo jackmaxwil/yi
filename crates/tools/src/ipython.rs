@@ -131,6 +131,7 @@ impl Tool for IpythonTool {
             "durationMs": result.duration_ms,
             "diffs": diffs,
             "attachments": result.attachments.len(),
+            "attachmentMedia": result.attachments,
             "sentAgentMessages": result.sent_agent_messages,
             "kernelRestarted": outcome.kernel_restarted,
             "code": detail_text(code),
