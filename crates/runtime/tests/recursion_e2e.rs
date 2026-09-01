@@ -1245,6 +1245,7 @@ async fn a_high_row_that_cannot_reach_the_ledger_holds_the_result_back() -> Test
         tasks: vec![task("t1", "exit 4")],
         created: 0,
         updated: 0,
+        doc: None,
         extra: Map::new(),
     })?;
     harness
@@ -1303,6 +1304,7 @@ async fn criticality_is_derived_by_re_running_the_ancestors_check() -> TestResul
         tasks: vec![task("t1", "exit 4"), task("t2", "true")],
         created: 0,
         updated: 0,
+        doc: None,
         extra: Map::new(),
     })?;
     yi_session::lock_session(&harness.store).set_goal(yi_types::goal::Goal {
