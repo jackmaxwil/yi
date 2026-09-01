@@ -83,6 +83,10 @@ class RLMSubagent:
     session_dir: Path
     status: str
 
+    @property
+    def name(self) -> str:
+        return self.session_name
+
 
 def _install_control_comm_handlers() -> None:
     """Let comm replies arrive on the control channel during an execute_request."""
