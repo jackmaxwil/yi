@@ -433,6 +433,7 @@ fn build_session(
             depth: 0,
             max_depth: 1,
             rlm_dir: default_session_dir(args).join(format!("rlm-{}", std::process::id())),
+            sessions_dir: Some(default_session_dir(args)),
             summarizer: summarizer_model(args),
             advisor: advisor_model(),
             auto_review: auto_review_model(),

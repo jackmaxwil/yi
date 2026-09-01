@@ -37,12 +37,32 @@ fn parse_paths(value: Option<&Value>, cwd: &Path, key: &str) -> Result<Vec<PathB
         .collect()
 }
 
+/// A deny entry is matched as a literal prefix of the rendered URL, so a bare
+/// scheme (`kernel://`) walls the whole scheme and a longer prefix walls a path.
+fn parse_prefixes(value: Option<&Value>) -> Result<Vec<String>, String> {
+    let Some(value) = value.filter(|value| !value.is_null()) else {
+        return Ok(Vec::new());
+    };
+    let entries = value
+        .as_array()
+        .ok_or_else(|| "rlm.run deny_url must be a list of URL prefixes".to_owned())?;
+    entries
+        .iter()
+        .map(|entry| {
+            entry
+                .as_str()
+                .map(str::to_owned)
+                .ok_or_else(|| format!("rlm.run deny_url entries must be strings, got {entry}"))
+        })
+        .collect()
+}
+
 impl Wall {
     pub fn from_kwargs(kwargs: &Map<String, Value>, cwd: &Path) -> Result<Self, String> {
         Ok(Self {
             deny_write: parse_paths(kwargs.get("deny_write"), cwd, "deny_write")?,
             deny_read: parse_paths(kwargs.get("deny_read"), cwd, "deny_read")?,
-            deny_url: Vec::new(),
+            deny_url: parse_prefixes(kwargs.get("deny_url"))?,
         })
     }
 

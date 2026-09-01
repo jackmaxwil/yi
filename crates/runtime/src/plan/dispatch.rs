@@ -122,6 +122,9 @@ impl Delegate for SessionDelegate {
     }
 
     fn reap(&self, agent: &AgentId) -> Result<Option<Url>, String> {
+        if !self.host.holds(agent.as_str()) {
+            return Ok(None);
+        }
         let harvest = self.host.reap(agent.as_str())?;
         let live = parse_url(format!("agent://{agent}"))?;
         let trace = parse_url(format!("history://{agent}"))?;
@@ -407,6 +410,39 @@ mod tests {
         assert!(
             rig.host.children_view().is_empty(),
             "the reaped child's slot is disposed"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn reaping_a_child_the_host_no_longer_holds_is_a_no_op() -> TestResult {
+        let rig = rig("done and gone")?;
+        rig.engine.apply(owner(Op::Init {
+            goal: GoalText::new("ship the widget")?,
+            todos: vec![delegated("cut the seam")?],
+        }))?;
+        rig.engine.apply(owner(Op::Start {
+            label: TodoLabel::new("cut the seam")?,
+        }))?;
+        assert!(wait_done(&rig.host).await, "child never completed");
+        let delegate = SessionDelegate::new(
+            Arc::clone(&rig.host),
+            Arc::new(|_message, _mode| {}),
+            Arc::clone(&rig.pins),
+        );
+        let agent = AgentId::new(
+            rig.engine
+                .apply(owner(Op::View { full: false }))?
+                .plan
+                .id
+                .child(&TodoLabel::new("cut the seam")?)?
+                .as_str()
+                .replace('.', "/"),
+        )?;
+        assert!(delegate.reap(&agent)?.is_some(), "the first reap harvests");
+        assert!(
+            delegate.reap(&agent)?.is_none(),
+            "a second reap of a child the host no longer holds must answer, not refuse"
         );
         Ok(())
     }

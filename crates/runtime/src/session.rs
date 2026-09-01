@@ -10,6 +10,8 @@ use yi_types::model::{Effort, Model};
 
 use crate::provider::ProviderStream;
 
+mod hooks;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Status {
     Idle,
@@ -171,6 +173,18 @@ impl AgentSession {
         }
     }
 
+    /// Incident: the kernel pump's monitor task owns the tokio Child, so a
+    /// dropped session leaks its IPython process; every path that retires a
+    /// session calls this, not only the one that reaps a subagent.
+    pub fn dispose_kernel(&self) {
+        let Some(kernel) = self.kernel_service() else {
+            return;
+        };
+        if tokio::runtime::Handle::try_current().is_ok() {
+            tokio::spawn(async move { kernel.dispose().await });
+        }
+    }
+
     pub fn kernel_service(&self) -> Option<Arc<crate::kernel::KernelService>> {
         self.kernel
             .lock()
@@ -202,11 +216,6 @@ impl AgentSession {
         let shared = Arc::clone(&self.shared);
         let fallback = self.config.system_prompt.clone();
         Arc::new(move || assembled_prompt(&shared, &fallback))
-    }
-
-    pub fn ext_hook(&self) -> ExtHook {
-        let shared = Arc::clone(&self.shared);
-        Arc::new(move |event| dispatch_ext(&shared, &event))
     }
 
     pub fn set_turn_start_hook(&self, hook: Arc<TurnHook>) {
@@ -468,13 +477,6 @@ impl AgentSession {
         }
     }
 
-    pub fn store_handle(
-        &self,
-    ) -> std::sync::Arc<dyn Fn() -> Option<yi_session::SharedSession> + Send + Sync> {
-        let shared = Arc::clone(&self.shared);
-        std::sync::Arc::new(move || store_of(&shared))
-    }
-
     pub fn store(&self) -> Option<yi_session::SharedSession> {
         store_of(&self.shared)
     }
@@ -493,25 +495,6 @@ impl AgentSession {
             .lock()
             .map(|model| model.clone())
             .unwrap_or_else(|poisoned| poisoned.into_inner().clone())
-    }
-
-    /// Incident: snapshotting these left `rlm.run` and `model.info` on the
-    /// startup model once the TUI could switch.
-    pub fn settings_handle(&self) -> Arc<dyn Fn() -> (Model, Effort) + Send + Sync> {
-        let shared = Arc::clone(&self.shared);
-        Arc::new(move || {
-            let model = shared
-                .model
-                .lock()
-                .map(|model| model.clone())
-                .unwrap_or_else(|poisoned| poisoned.into_inner().clone());
-            let effort = shared
-                .effort
-                .lock()
-                .map(|effort| *effort)
-                .unwrap_or_else(|poisoned| *poisoned.into_inner());
-            (model, effort)
-        })
     }
 
     /// Re-clamps the effort onto the new ladder without recording a level
@@ -702,107 +685,11 @@ impl AgentSession {
         Arc::new(move |prompt| Self::spawn_run(parts.clone(), prompt))
     }
 
-    /// Running session ⇒ queued (Steer drains at the next message boundary,
-    /// FollowUp at turn end); idle session ⇒ the message starts a run.
-    pub fn heartbeat_hook(
-        &self,
-    ) -> Arc<dyn Fn(AgentMessage, yi_types::schedule::DeliveryMode) + Send + Sync> {
-        let shared = Arc::clone(&self.shared);
-        let run = self.run_handle();
-        Arc::new(move |message, mode| {
-            let running = shared
-                .status
-                .lock()
-                .map(|status| *status == Status::Running)
-                .unwrap_or(false);
-            if running {
-                let queue = match mode {
-                    yi_types::schedule::DeliveryMode::Steer => &shared.steer,
-                    yi_types::schedule::DeliveryMode::FollowUp => &shared.follow_up,
-                };
-                if let Ok(mut pending) = queue.lock() {
-                    pending.push(message);
-                }
-            } else {
-                let _ = run(message);
-            }
-        })
-    }
-
-    /// Waits out any running turn rather than gating on status: AgentEnd is
-    /// emitted while the status is still Running, so a status-gated hook queued
-    /// into a follow-up that never drained.
-    pub fn wake_idle_hook(&self) -> Arc<dyn Fn(AgentMessage) + Send + Sync> {
-        let shared = Arc::clone(&self.shared);
-        let run = self.run_handle();
-        Arc::new(move |message| {
-            let shared = Arc::clone(&shared);
-            let run = Arc::clone(&run);
-            tokio::spawn(async move {
-                loop {
-                    let idle = shared
-                        .status
-                        .lock()
-                        .map(|status| *status == Status::Idle)
-                        .unwrap_or(true);
-                    if idle {
-                        break;
-                    }
-                    shared.idle.notified().await;
-                }
-                let _busy_means_queued = run(message);
-            });
-        })
-    }
-
-    /// Running ⇒ steer queue (next tool boundary); idle ⇒ follow-up queue. The
-    /// advisor never wakes an idle primary.
-    pub fn advisory_hook(&self) -> Arc<dyn Fn(AgentMessage) + Send + Sync> {
-        let shared = Arc::clone(&self.shared);
-        Arc::new(move |message| {
-            let running = shared
-                .status
-                .lock()
-                .map(|status| *status == Status::Running)
-                .unwrap_or(false);
-            let queue = if running {
-                &shared.steer
-            } else {
-                &shared.follow_up
-            };
-            if let Ok(mut pending) = queue.lock() {
-                pending.push(message);
-            }
-        })
-    }
-
-    pub fn history_handle(&self) -> Arc<dyn Fn() -> Vec<AgentMessage> + Send + Sync> {
-        let shared = Arc::clone(&self.shared);
-        Arc::new(move || {
-            shared
-                .messages
-                .lock()
-                .map(|messages| messages.clone())
-                .unwrap_or_default()
-        })
-    }
-
     /// Invariant: pre-first-turn only (B5) — mid-run it races the appending turn.
     pub fn seed_messages(&self, seed: Vec<AgentMessage>) {
         if let Ok(mut messages) = self.shared.messages.lock() {
             *messages = seed;
         }
-    }
-
-    pub fn activity_handle(&self) -> Arc<dyn Fn() -> bool + Send + Sync> {
-        let shared = Arc::clone(&self.shared);
-        Arc::new(move || {
-            shared
-                .status
-                .lock()
-                .map(|status| *status == Status::Running)
-                .unwrap_or(false)
-        })
     }
 
     fn spawn_run(parts: RunParts, prompt: AgentMessage) -> Result<(), SessionError> {
@@ -972,50 +859,6 @@ impl AgentSession {
             }
             None => false,
         }
-    }
-
-    /// A user-role steering message consumed at the next message boundary, or
-    /// the next turn when idle — R3 delivery for work finishing outside a turn.
-    pub fn follow_up_hook(&self) -> Arc<dyn Fn(&str) + Send + Sync> {
-        let shared = Arc::clone(&self.shared);
-        Arc::new(move |text: &str| {
-            if let Ok(mut queue) = shared.follow_up.lock() {
-                queue.push(user_message(text));
-            }
-        })
-    }
-
-    pub fn notice_hook(&self) -> Arc<dyn Fn(&str) + Send + Sync> {
-        let shared = Arc::clone(&self.shared);
-        Arc::new(move |text: &str| {
-            if let Ok(mut queue) = shared.steer.lock() {
-                queue.push(user_message(text));
-            }
-        })
-    }
-
-    /// The model snapshot is taken now: a later [`AgentSession::set_model`] leaves percent
-    /// computed against the old window until re-wired.
-    pub fn compact_status_handle(
-        &self,
-    ) -> Option<Arc<dyn Fn() -> crate::compaction::CompactStatus + Send + Sync>> {
-        let compactor = self.compactor.clone()?;
-        let shared = Arc::clone(&self.shared);
-        let model = self.model();
-        Some(Arc::new(move || {
-            let messages = shared
-                .messages
-                .lock()
-                .map(|messages| messages.clone())
-                .unwrap_or_default();
-            compactor.status(&messages, &model)
-        }))
-    }
-
-    /// Usable after the session moves — the hook holds only shared state.
-    pub fn attribution_handle(&self) -> Arc<dyn Fn(&Usage) + Send + Sync> {
-        let shared = Arc::clone(&self.shared);
-        Arc::new(move |child: &Usage| attribute_to_shared(&shared, child))
     }
 
     /// In-memory usage aggregates; an attached store gains a

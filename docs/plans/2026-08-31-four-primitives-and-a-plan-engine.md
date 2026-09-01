@@ -333,8 +333,10 @@ the manual path.
 - Goal text is denormalized into the root frontmatter; the op editing it
   accepts only user-attributed writes — D25 at the op seam.
 - Issues: one per **root** plan, sub-plans as nested sections; mirror
-  **off by default** (`plans.mirror`), one-way render out, inbound
-  comments as yard-fenced proposals. TB4/ARC degrade to files-only.
+  **off by default**, one-way render out, inbound comments as yard-fenced
+  proposals. TB4/ARC degrade to files-only. The `plans.mirror` key lands
+  with the mirror: a config switch for a feature nobody wrote reads as a
+  capability the tree does not have, so it is not carried ahead of it.
 - Concurrent sessions: `.yi/plans/.lease`, K1's lock discipline verbatim
   (pid file; stale = pid dead ∨ mtime > 30 s); `view` works, mutation is
   refused with the lease named; stale takeover is a recorded event.

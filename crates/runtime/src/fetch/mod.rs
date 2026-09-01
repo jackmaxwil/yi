@@ -11,7 +11,7 @@ use yi_types::url::{Scheme, Url};
 use crate::kernel::{VariableName, VariableReadError};
 use crate::wall::Wall;
 
-pub use log::{FetchLog, PinError, TerminalRecordError};
+pub use log::{FetchLog, PinError, Relevance, TerminalRecordError};
 pub use yi_types::fetch::{FETCH_ENTRY_TYPE, FetchRecord};
 
 pub const KERNEL_MISSING: &str =
@@ -36,6 +36,38 @@ impl CheckpointShow for Checkpoints {
 /// Invariant: every MCP socket and token stays in the one-shot CLI, never here.
 pub trait McpResourceRead: Send + Sync {
     fn read(&self, server: &str, resource: &str) -> Result<String, String>;
+}
+
+/// The corpus as one address space: a transcript that is not the attached
+/// session's own — a live child the host still holds, or a session on disk.
+pub trait Transcripts: Send + Sync {
+    fn open(&self, agent: &str) -> Option<yi_session::SharedSession>;
+}
+
+/// Composition wires the resolver before the subagent host exists, so the desk
+/// is handed over empty and filled in once — the [`KernelServiceMap`] shape.
+#[derive(Default)]
+pub struct TranscriptDesk {
+    source: std::sync::Mutex<Option<Arc<dyn Transcripts>>>,
+}
+
+impl TranscriptDesk {
+    pub fn new() -> Arc<Self> {
+        Arc::new(Self::default())
+    }
+
+    pub fn attach(&self, source: Arc<dyn Transcripts>) {
+        if let Ok(mut slot) = self.source.lock() {
+            *slot = Some(source);
+        }
+    }
+}
+
+impl Transcripts for TranscriptDesk {
+    fn open(&self, agent: &str) -> Option<yi_session::SharedSession> {
+        let source = self.source.lock().ok()?.clone()?;
+        source.open(agent)
+    }
 }
 
 pub trait KernelVariables: Send + Sync {
@@ -93,6 +125,37 @@ impl KernelVariables for KernelServiceMap {
                 detail: format!("kernel:// needs a tokio runtime: {error}"),
             })?;
         handle.block_on(service.read_variable(variable))
+    }
+}
+
+/// A live child first, then the corpus on disk addressed by session id.
+pub struct SessionTranscripts {
+    host: Arc<crate::subagent::SubagentHost>,
+    sessions_dir: Option<PathBuf>,
+    cwd: String,
+}
+
+impl SessionTranscripts {
+    pub fn new(
+        host: Arc<crate::subagent::SubagentHost>,
+        sessions_dir: Option<PathBuf>,
+        cwd: &Path,
+    ) -> Self {
+        Self {
+            host,
+            sessions_dir,
+            cwd: cwd.to_string_lossy().into_owned(),
+        }
+    }
+}
+
+impl Transcripts for SessionTranscripts {
+    fn open(&self, agent: &str) -> Option<yi_session::SharedSession> {
+        if let Some(live) = self.host.transcript(agent) {
+            return Some(live);
+        }
+        let mut repo = yi_session::JsonlRepo::new(self.sessions_dir.clone()?, self.cwd.clone());
+        yi_session::SessionRepo::open(&mut repo, agent).ok()
     }
 }
 
@@ -155,6 +218,7 @@ pub struct Resolver {
     checkpoint_show: Option<Arc<dyn CheckpointShow>>,
     mcp_read: Option<Arc<dyn McpResourceRead>>,
     kernel_variables: Option<Arc<dyn KernelVariables>>,
+    transcripts: Option<Arc<dyn Transcripts>>,
     log: Arc<FetchLog>,
 }
 
@@ -170,6 +234,7 @@ impl Resolver {
             checkpoint_show: None,
             mcp_read: None,
             kernel_variables: None,
+            transcripts: None,
             log: Arc::new(FetchLog::new()),
         }
     }
@@ -221,6 +286,11 @@ impl Resolver {
 
     pub fn with_kernel_variables(mut self, kernels: Arc<dyn KernelVariables>) -> Self {
         self.kernel_variables = Some(kernels);
+        self
+    }
+
+    pub fn with_transcripts(mut self, transcripts: Arc<dyn Transcripts>) -> Self {
+        self.transcripts = Some(transcripts);
         self
     }
 
@@ -302,6 +372,10 @@ impl Resolver {
 
     pub(super) fn kernel_variables(&self) -> Option<&Arc<dyn KernelVariables>> {
         self.kernel_variables.as_ref()
+    }
+
+    pub(super) fn transcripts(&self) -> Option<&Arc<dyn Transcripts>> {
+        self.transcripts.as_ref()
     }
 }
 
