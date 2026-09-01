@@ -82,6 +82,7 @@ fn alias(name: &str) -> &str {
         "shell" => "sh",
         "python3" | "ipython" => "py",
         "ts" | "tsx" | "jsx" | "typescript" => "js",
+        "jsonc" => "json",
         other => other,
     }
 }
