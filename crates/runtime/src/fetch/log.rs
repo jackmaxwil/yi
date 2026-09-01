@@ -58,6 +58,34 @@ impl FetchLog {
             .collect()
     }
 
+    /// M3: what a delegation named against what the resolver actually served.
+    /// Both sides are scheme-plus-path, so a citation with a fragment counts as
+    /// a reference to the address that was supplied.
+    pub fn relevance(&self, supplied: &[Url]) -> Relevance {
+        let served: Vec<String> = {
+            let state = self.lock();
+            let mut bases: Vec<String> =
+                state.records.iter().map(|(base, _)| base.clone()).collect();
+            bases.sort_unstable();
+            bases.dedup();
+            bases
+        };
+        let named: Vec<String> = supplied.iter().map(base_of).collect();
+        Relevance {
+            supplied: named.len(),
+            referenced: named.iter().filter(|base| served.contains(base)).count(),
+            unused: supplied
+                .iter()
+                .filter(|url| !served.contains(&base_of(url)))
+                .map(Url::to_string)
+                .collect(),
+            unsupplied: served
+                .into_iter()
+                .filter(|base| !named.contains(base))
+                .collect(),
+        }
+    }
+
     /// Invariant: identity is scheme plus path — a fragment is an expectation
     /// on the content, so a fetch without one still backs a cited span.
     pub fn backs(&self, citation: &Url) -> bool {
@@ -115,6 +143,15 @@ impl FetchLog {
     }
 }
 
+/// Over-supply is `unused`; under-supply is `unsupplied` — what nobody handed over.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Relevance {
+    pub supplied: usize,
+    pub referenced: usize,
+    pub unused: Vec<String>,
+    pub unsupplied: Vec<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum PinError {
     #[error("pin source {url} is durable already; only an ephemeral URL downgrades")]
@@ -141,6 +178,22 @@ mod tests {
             hash: "deadbeef".to_owned(),
             served_by: "test".to_owned(),
         }
+    }
+
+    #[test]
+    fn relevance_names_both_the_unused_and_the_unsupplied() -> TestResult {
+        let log = FetchLog::new();
+        let read: Url = "local://src/auth.rs".parse()?;
+        let found: Url = "local://src/token.rs".parse()?;
+        log.record(&read, record_for(&read));
+        log.record(&found, record_for(&found));
+        let handed: Url = "local://docs/auth.md".parse()?;
+        let measured = log.relevance(&[read, handed.clone()]);
+        assert_eq!(measured.supplied, 2);
+        assert_eq!(measured.referenced, 1);
+        assert_eq!(measured.unused, vec![handed.to_string()]);
+        assert_eq!(measured.unsupplied, vec![found.to_string()]);
+        Ok(())
     }
 
     #[test]

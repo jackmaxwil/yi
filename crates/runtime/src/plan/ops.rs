@@ -191,6 +191,19 @@ pub enum PlanOpError {
         url: Url,
         cause: String,
     },
+    #[error("delegation for {label:?} declares schema {schema}, which is unusable: {cause}")]
+    UnusableSchema {
+        label: TodoLabel,
+        schema: Box<Url>,
+        cause: String,
+    },
+    #[error("output {url} of {label:?} does not satisfy schema {schema}: {detail}")]
+    OutputMismatch {
+        label: TodoLabel,
+        url: Box<Url>,
+        schema: Box<Url>,
+        detail: String,
+    },
     #[error(transparent)]
     Store(#[from] StoreError),
     #[error(transparent)]
@@ -203,20 +216,21 @@ pub trait Delegate: Send + Sync {
     fn follow_up(&self, dispatched: &[TodoLabel], held: usize);
 }
 
-/// One existence probe over the fetch seam, shaped like
-/// [`crate::fetch::CheckpointShow`]: Ok means the referent resolves today.
+/// One read over the fetch seam, shaped like [`crate::fetch::CheckpointShow`].
+/// `Ok(None)` is resolved-but-unserved: the referent exists as far as this
+/// resolver can tell, and its bytes are not available to adjudicate a schema.
 pub trait OutputResolve: Send + Sync {
-    fn resolve(&self, url: &Url) -> Result<(), String>;
+    fn resolve(&self, url: &Url) -> Result<Option<String>, String>;
 }
 
 impl OutputResolve for crate::fetch::Resolver {
-    fn resolve(&self, url: &Url) -> Result<(), String> {
+    fn resolve(&self, url: &Url) -> Result<Option<String>, String> {
         use crate::fetch::FetchError;
         match self.fetch(url) {
-            Ok(_) => Ok(()),
+            Ok(fetched) => Ok(Some(fetched.text)),
             // Invariant: a missing reader is not a missing referent — a scheme
             // this resolver has no backend for cannot adjudicate existence.
-            Err(FetchError::Unsupported { .. }) => Ok(()),
+            Err(FetchError::Unsupported { .. }) => Ok(None),
             Err(
                 error @ (FetchError::Denied { .. }
                 | FetchError::External { .. }
@@ -228,6 +242,34 @@ impl OutputResolve for crate::fetch::Resolver {
             ) => Err(error.to_string()),
         }
     }
+}
+
+/// The §3 clause the existence probe alone leaves unenforced: a delegation that
+/// declared a schema makes `done` legal only on a product that satisfies it.
+fn validate_product(
+    label: &TodoLabel,
+    url: &Url,
+    schema: &Url,
+    product: &str,
+    document: &str,
+) -> Result<(), PlanOpError> {
+    let unusable = |cause: String| PlanOpError::UnusableSchema {
+        label: label.clone(),
+        schema: Box::new(schema.clone()),
+        cause,
+    };
+    let mismatch = |detail: String| PlanOpError::OutputMismatch {
+        label: label.clone(),
+        url: Box::new(url.clone()),
+        schema: Box::new(schema.clone()),
+        detail,
+    };
+    let document: serde_json::Value =
+        serde_json::from_str(document).map_err(|error| unusable(error.to_string()))?;
+    let value = crate::schema::extract(product).map_err(mismatch)?;
+    crate::schema::Schema::from_value(document)
+        .validate(&value)
+        .map_err(mismatch)
 }
 
 pub fn dispatch_width(cores: NonZeroUsize) -> NonZeroUsize {
@@ -407,11 +449,12 @@ impl PlanEngine {
         };
         for edit in self.store.user_edits(&snapshot)? {
             let left_running = match &edit {
-                UserEdit::TodoStateChanged { label, from, to } => {
-                    (matches!(from, TodoState::Running { .. })
-                        && !matches!(to, TodoState::Running { .. }))
-                    .then_some(label)
-                }
+                // Invariant: the reap is keyed on the agent, not on the state
+                // name — a hand edit that swaps one Running agent for another
+                // never leaves Running and would otherwise leak the first child.
+                UserEdit::TodoStateChanged { label, from, to } => running_by(from)
+                    .is_some_and(|was| running_by(to) != Some(was))
+                    .then_some(label),
                 UserEdit::TodoDropped { label } => Some(label),
                 UserEdit::GoalReworded { .. }
                 | UserEdit::PlanStateChanged { .. }
@@ -679,13 +722,24 @@ impl PlanEngine {
                 }
                 Some(url) => {
                     if let Some(resolve) = &self.output_resolve {
-                        resolve
-                            .resolve(url)
-                            .map_err(|cause| PlanOpError::UnresolvedOutput {
+                        let product = resolve.resolve(url).map_err(|cause| {
+                            PlanOpError::UnresolvedOutput {
                                 label: label.clone(),
                                 url: url.clone(),
                                 cause,
-                            })?;
+                            }
+                        })?;
+                        let schema = &declared.schema;
+                        let document = resolve.resolve(schema).map_err(|cause| {
+                            PlanOpError::UnusableSchema {
+                                label: label.clone(),
+                                schema: Box::new(schema.clone()),
+                                cause,
+                            }
+                        })?;
+                        if let (Some(product), Some(document)) = (product, document) {
+                            validate_product(&label, url, schema, &product, &document)?;
+                        }
                     }
                 }
             }
@@ -833,6 +887,14 @@ impl PlanEngine {
                 subs.push(self.store.read(&id)?);
             }
         }
+        // Invariant: every refusable check runs before the first reap, so a
+        // supersede that refuses has killed nothing; the reaps that remain are
+        // idempotent, which is what makes the refused op safe to retry.
+        let mut next = file.plan.clone();
+        next.version = next.version.bump();
+        next.todos = specs.into_iter().map(new_todo).collect();
+        validate_plan(&next)?;
+        precheck_plan(&next)?;
         let mut delta = Delta::default();
         self.reap_superseded(&mut file.plan, &reason, &mut delta)?;
         for sub in &mut subs {
@@ -840,9 +902,7 @@ impl PlanEngine {
             sub.plan.state = PlanState::Abandoned;
         }
         delta.extra.append(&mut subs);
-        file.plan.version = file.plan.version.bump();
-        file.plan.todos = specs.into_iter().map(new_todo).collect();
-        validate_plan(&file.plan)?;
+        file.plan = next;
         Ok(delta)
     }
 
@@ -885,9 +945,25 @@ fn agent_url(addr: &TodoAddr) -> Result<Url, PlanOpError> {
     })
 }
 
+fn running_by(state: &TodoState) -> Option<&AgentId> {
+    match state {
+        TodoState::Running { by } => Some(by),
+        TodoState::Pending
+        | TodoState::Blocked { .. }
+        | TodoState::Done { .. }
+        | TodoState::Failed { .. }
+        | TodoState::Abandoned
+        | TodoState::Other(_) => None,
+    }
+}
+
 fn precheck(file: &PlanFile) -> Result<(), PlanOpError> {
-    let id = &file.plan.id;
-    let value = serde_json::to_value(&file.plan).map_err(|source| StoreError::Serialize {
+    precheck_plan(&file.plan)
+}
+
+fn precheck_plan(plan: &Plan) -> Result<(), PlanOpError> {
+    let id = &plan.id;
+    let value = serde_json::to_value(plan).map_err(|source| StoreError::Serialize {
         id: id.clone(),
         source,
     })?;

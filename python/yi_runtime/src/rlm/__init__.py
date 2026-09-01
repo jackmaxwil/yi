@@ -224,6 +224,8 @@ async def run(prompt: str, **kwargs: Any) -> RLMSpawnHandle:
     ``merge_worktree`` or ``discard_worktree``.
     ``deny_write`` (and ``deny_read``) are lists of paths the child may not touch —
     the wall that keeps an implementer out of the standard it is measured against.
+    ``deny_url`` is the same wall in URL space: a list of literal prefixes the
+    child's ``fetch`` refuses, so ``["kernel://"]`` walls a whole scheme.
     ``context_keys`` is the child's whole view of this kernel: those variables are
     serialized into its brief and nothing else of this namespace reaches it.
     ``check`` makes it a protocol child — it owes a ``{"value": …, "discoveries":

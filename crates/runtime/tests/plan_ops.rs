@@ -932,13 +932,187 @@ fn a_plan_whose_last_todo_failed_stays_reachable_unnamed() -> TestResult {
 struct Probe;
 
 impl OutputResolve for Probe {
-    fn resolve(&self, url: &Url) -> Result<(), String> {
+    fn resolve(&self, url: &Url) -> Result<Option<String>, String> {
         if url.to_string().contains("never-written") {
             Err("not found".to_owned())
         } else {
-            Ok(())
+            Ok(None)
         }
     }
+}
+
+/// Serves bytes for both halves of the check: the declared schema and the
+/// product the `done` names.
+struct Served(&'static str, &'static str);
+
+impl OutputResolve for Served {
+    fn resolve(&self, url: &Url) -> Result<Option<String>, String> {
+        let rendered = url.to_string();
+        if rendered.contains("schema") {
+            Ok(Some(self.0.to_owned()))
+        } else {
+            Ok(Some(self.1.to_owned()))
+        }
+    }
+}
+
+fn declaring(schema: &str) -> Result<Delegation, Box<dyn Error>> {
+    let mut declared = delegation();
+    declared.output = Some(OutputSchema {
+        schema: schema.parse::<Url>()?,
+        extra: Map::new(),
+    });
+    Ok(declared)
+}
+
+const REPORT_SCHEMA: &str =
+    r#"{"type":"object","required":["passed"],"properties":{"passed":{"type":"boolean"}}}"#;
+
+#[test]
+fn a_declared_output_is_validated_against_its_schema() -> TestResult {
+    let (_temp, _store, _stub, engine) = harness(8)?;
+    let engine = engine.with_output_resolve(Arc::new(Served(REPORT_SCHEMA, r#"{"passed":"yes"}"#)));
+    init(
+        &engine,
+        vec![TodoSpec {
+            label: label("write the report")?,
+            after: Vec::new(),
+            delegation: Some(declaring("local://schemas/report.json")?),
+        }],
+    )?;
+    engine.apply(owner(Op::Start {
+        label: label("write the report")?,
+    }))?;
+    let refused = engine.apply(owner(Op::Done {
+        label: label("write the report")?,
+        output: Some("kernel://main/report".parse::<Url>()?),
+    }));
+    match refused {
+        Err(error @ PlanOpError::OutputMismatch { .. }) => {
+            let told = error.to_string();
+            assert!(
+                told.contains("expected boolean"),
+                "the refusal must name the mismatch: {told}"
+            );
+        }
+        other => return Err(format!("expected a schema mismatch, got {other:?}").into()),
+    }
+    Ok(())
+}
+
+#[test]
+fn a_product_that_satisfies_its_schema_completes() -> TestResult {
+    let (_temp, _store, _stub, engine) = harness(8)?;
+    let engine = engine.with_output_resolve(Arc::new(Served(REPORT_SCHEMA, r#"{"passed":true}"#)));
+    init(
+        &engine,
+        vec![TodoSpec {
+            label: label("write the report")?,
+            after: Vec::new(),
+            delegation: Some(declaring("local://schemas/report.json")?),
+        }],
+    )?;
+    engine.apply(owner(Op::Start {
+        label: label("write the report")?,
+    }))?;
+    let out = engine.apply(owner(Op::Done {
+        label: label("write the report")?,
+        output: Some("local://reports/final.json".parse::<Url>()?),
+    }))?;
+    let todo = out
+        .plan
+        .todo(&label("write the report")?)
+        .ok_or("todo missing")?;
+    assert!(matches!(todo.state, TodoState::Done { output: Some(_) }));
+    Ok(())
+}
+
+#[test]
+fn a_schema_that_is_not_json_refuses_the_done_naming_the_schema() -> TestResult {
+    let (_temp, _store, _stub, engine) = harness(8)?;
+    let engine = engine.with_output_resolve(Arc::new(Served("not json at all", "{}")));
+    init(
+        &engine,
+        vec![TodoSpec {
+            label: label("write the report")?,
+            after: Vec::new(),
+            delegation: Some(declaring("local://schemas/report.json")?),
+        }],
+    )?;
+    engine.apply(owner(Op::Start {
+        label: label("write the report")?,
+    }))?;
+    let refused = engine.apply(owner(Op::Done {
+        label: label("write the report")?,
+        output: Some("local://reports/final.json".parse::<Url>()?),
+    }));
+    match refused {
+        Err(error @ PlanOpError::UnusableSchema { .. }) => {
+            assert!(
+                error.to_string().contains("local://schemas/report.json"),
+                "the refusal must name the schema: {error}"
+            );
+        }
+        other => return Err(format!("expected an unusable-schema refusal, got {other:?}").into()),
+    }
+    Ok(())
+}
+
+#[test]
+fn a_hand_edit_that_swaps_the_running_agent_reaps_the_first_child() -> TestResult {
+    let (_temp, store, stub, engine) = harness(8)?;
+    let out = init(&engine, vec![delegated_spec("delegated job")?])?;
+    engine.apply(owner(Op::Start {
+        label: label("delegated job")?,
+    }))?;
+    let reaped_before = stub.reaps.load(Ordering::SeqCst);
+    let mut file = store.read(&out.plan.id)?;
+    let todo = file
+        .plan
+        .todos
+        .get_mut(0)
+        .ok_or("the plan lost its only todo")?;
+    todo.state = TodoState::Running {
+        by: AgentId::new("someone-else")?,
+    };
+    store.write(&file)?;
+    engine.apply(owner(Op::View { full: false }))?;
+    engine.apply(owner(Op::Append {
+        todos: vec![spec("a second job")?],
+    }))?;
+    assert_eq!(
+        stub.reaps.load(Ordering::SeqCst),
+        reaped_before.saturating_add(1),
+        "swapping the running agent by hand must reap the child it replaced"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_supersede_refused_on_its_new_cut_kills_no_child() -> TestResult {
+    let (_temp, store, stub, engine) = harness(8)?;
+    let out = init(&engine, vec![delegated_spec("delegated job")?])?;
+    engine.apply(owner(Op::Start {
+        label: label("delegated job")?,
+    }))?;
+    let reaped_before = stub.reaps.load(Ordering::SeqCst);
+    let refused = engine.apply(owner(Op::Supersede {
+        reason: "rethink".to_owned(),
+        todos: vec![spec("same label")?, spec("same label")?],
+    }));
+    assert!(matches!(refused, Err(PlanOpError::LabelNotUnique { .. })));
+    assert_eq!(
+        stub.reaps.load(Ordering::SeqCst),
+        reaped_before,
+        "a supersede refused on its own new cut must not have killed anything first"
+    );
+    let file = store.read(&out.plan.id)?;
+    let todo = file
+        .plan
+        .todo(&label("delegated job")?)
+        .ok_or("todo missing")?;
+    assert!(matches!(todo.state, TodoState::Running { .. }));
+    Ok(())
 }
 
 #[test]

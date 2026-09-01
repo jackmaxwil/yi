@@ -19,6 +19,43 @@ use crate::plan::yaml;
 
 type Served = (String, String);
 
+fn render_history(
+    url: &Url,
+    session: &yi_session::SharedSession,
+    entry_id: Option<&str>,
+) -> Result<Served, FetchError> {
+    let backend = |message: String| FetchError::Backend {
+        url: url.to_string(),
+        message,
+    };
+    let store = yi_session::lock_session(session);
+    match entry_id {
+        Some(id) => {
+            let entry = store.entry(id).ok_or_else(|| FetchError::NotFound {
+                url: url.to_string(),
+                what: format!("entry {id}"),
+            })?;
+            let text =
+                serde_json::to_string_pretty(&entry).map_err(|error| backend(error.to_string()))?;
+            Ok((text, "session-entry".to_owned()))
+        }
+        None => {
+            let entries = store
+                .find_entries(&EntryQuery {
+                    order: EntryOrder::OldestFirst,
+                    ..EntryQuery::default()
+                })
+                .map_err(|error| backend(error.to_string()))?;
+            let lines = entries
+                .iter()
+                .map(serde_json::to_string)
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|error| backend(error.to_string()))?;
+            Ok((lines.join("\n"), "session-transcript".to_owned()))
+        }
+    }
+}
+
 impl Resolver {
     pub(super) fn resolve_local(&self, url: &Url) -> Result<Served, FetchError> {
         let raw = Path::new(url.path());
@@ -91,54 +128,36 @@ impl Resolver {
         Ok((rendered, "plan-file".to_owned()))
     }
 
+    /// Invariant: an agent name is a todo address and carries its own slash, so
+    /// the whole path is tried as an agent before a trailing entry id is split
+    /// off — splitting first read a reap pin as a plan plus a missing entry.
     pub(super) fn resolve_history(&self, url: &Url) -> Result<Served, FetchError> {
-        let (agent, entry_id) = match url.path().split_once('/') {
-            Some((agent, entry_id)) => (agent, Some(entry_id)),
-            None => (url.path(), None),
-        };
-        let Some(name) = self.session_agent() else {
-            return Err(unsupported(url, SESSION_MISSING));
-        };
-        if name != agent {
-            return Err(FetchError::NotFound {
-                url: url.to_string(),
-                what: format!("agent {agent}: only the attached session {name} is reachable"),
-            });
+        let path = url.path();
+        if let Some(session) = self.transcript_of(path) {
+            return render_history(url, &session, None);
         }
-        let Some(session) = self.session_store() else {
+        if let Some((agent, entry)) = path.rsplit_once('/')
+            && let Some(session) = self.transcript_of(agent)
+        {
+            return render_history(url, &session, Some(entry));
+        }
+        if self.session_store().is_none() && self.transcripts().is_none() {
             return Err(unsupported(url, SESSION_MISSING));
-        };
-        let backend = |message: String| FetchError::Backend {
+        }
+        Err(FetchError::NotFound {
             url: url.to_string(),
-            message,
-        };
-        let store = yi_session::lock_session(&session);
-        match entry_id {
-            Some(id) => {
-                let entry = store.entry(id).ok_or_else(|| FetchError::NotFound {
-                    url: url.to_string(),
-                    what: format!("entry {id}"),
-                })?;
-                let text = serde_json::to_string_pretty(&entry)
-                    .map_err(|error| backend(error.to_string()))?;
-                Ok((text, "session-entry".to_owned()))
-            }
-            None => {
-                let query = EntryQuery {
-                    order: EntryOrder::OldestFirst,
-                    ..EntryQuery::default()
-                };
-                let entries = store
-                    .find_entries(&query)
-                    .map_err(|error| backend(error.to_string()))?;
-                let lines = entries
-                    .iter()
-                    .map(serde_json::to_string)
-                    .collect::<Result<Vec<_>, _>>()
-                    .map_err(|error| backend(error.to_string()))?;
-                Ok((lines.join("\n"), "session-transcript".to_owned()))
-            }
+            what: format!(
+                "agent {path}: not the attached session, not a live child, and no session on disk carries that id"
+            ),
+        })
+    }
+
+    /// One address space: this session, then a live child, then the corpus.
+    pub(super) fn transcript_of(&self, agent: &str) -> Option<yi_session::SharedSession> {
+        if self.session_agent() == Some(agent) {
+            return self.session_store();
         }
+        self.transcripts().and_then(|desk| desk.open(agent))
     }
 
     pub(super) fn resolve_kernel(&self, url: &Url) -> Result<Served, FetchError> {
@@ -185,6 +204,12 @@ impl Resolver {
     /// Invariant: [`super::FetchLog::register_pin`] admits only durable pins,
     /// so the re-resolution below terminates — a pin never names `agent://`.
     pub(super) fn resolve_agent(&self, url: &Url) -> Result<Served, FetchError> {
+        // §5: a live child is inspectable at will and a dead one through what
+        // the reap promoted, so the running transcript answers before the pin.
+        if let Some(session) = self.transcripts().and_then(|desk| desk.open(url.path())) {
+            let (text, _reaped) = render_history(url, &session, None)?;
+            return Ok((text, format!("live-child {}", url.path())));
+        }
         let Some(pinned) = self.log().pin_of(url) else {
             return Err(FetchError::NotFound {
                 url: url.to_string(),
@@ -714,6 +739,83 @@ mod tests {
         );
         assert!(fetched.text.contains("note"));
         assert!(resolver.log().backs(&live));
+        Ok(())
+    }
+
+    struct Desk(String, yi_session::SharedSession);
+
+    impl super::super::Transcripts for Desk {
+        fn open(&self, agent: &str) -> Option<yi_session::SharedSession> {
+            (agent == self.0).then(|| std::sync::Arc::clone(&self.1))
+        }
+    }
+
+    fn desk(agent: &str) -> Result<std::sync::Arc<Desk>, Box<dyn std::error::Error>> {
+        let mut store = in_memory_session();
+        store.append_custom("main", "child-note", None)?;
+        Ok(std::sync::Arc::new(Desk(
+            agent.to_owned(),
+            std::sync::Arc::new(std::sync::Mutex::new(store)),
+        )))
+    }
+
+    #[test]
+    fn a_reap_pin_named_like_a_todo_address_still_resolves() -> TestResult {
+        let workspace = scratch("agent-pin-slash")?;
+        let log = std::sync::Arc::new(FetchLog::new());
+        let resolver = Resolver::new(workspace, Wall::default())
+            .with_log(std::sync::Arc::clone(&log))
+            .with_session(
+                "main",
+                std::sync::Arc::new(std::sync::Mutex::new(in_memory_session())),
+            )
+            .with_transcripts(desk("demo-plan/cut-the-seam")?);
+        let live: Url = "agent://demo-plan/cut-the-seam".parse()?;
+        log.register_pin(&live, "history://demo-plan/cut-the-seam".parse()?)?;
+        let pinned: Url = "history://demo-plan/cut-the-seam".parse()?;
+        let fetched = resolver.fetch(&pinned)?;
+        assert_eq!(fetched.served_by, "session-transcript");
+        assert!(fetched.text.contains("child-note"));
+        Ok(())
+    }
+
+    #[test]
+    fn a_live_child_answers_its_own_agent_url_before_any_pin_exists() -> TestResult {
+        let workspace = scratch("agent-live")?;
+        let resolver = Resolver::new(workspace, Wall::default())
+            .with_session(
+                "main",
+                std::sync::Arc::new(std::sync::Mutex::new(in_memory_session())),
+            )
+            .with_transcripts(desk("demo-plan/cut-the-seam")?);
+        let live: Url = "agent://demo-plan/cut-the-seam".parse()?;
+        let fetched = resolver.fetch(&live)?;
+        assert_eq!(fetched.served_by, "live-child demo-plan/cut-the-seam");
+        assert!(fetched.text.contains("child-note"));
+        let unknown: Url = "agent://demo-plan/never-started".parse()?;
+        assert!(matches!(
+            resolver.fetch(&unknown),
+            Err(FetchError::NotFound { .. })
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn history_reaches_a_run_that_is_not_the_attached_session() -> TestResult {
+        let workspace = scratch("history-corpus")?;
+        let resolver = Resolver::new(workspace, Wall::default())
+            .with_session(
+                "main",
+                std::sync::Arc::new(std::sync::Mutex::new(in_memory_session())),
+            )
+            .with_transcripts(desk("some-older-run")?);
+        let elsewhere: Url = "history://some-older-run".parse()?;
+        assert_eq!(resolver.fetch(&elsewhere)?.served_by, "session-transcript");
+        let nowhere: Url = "history://a-run-that-never-happened".parse()?;
+        assert!(matches!(
+            resolver.fetch(&nowhere),
+            Err(FetchError::NotFound { .. })
+        ));
         Ok(())
     }
 }

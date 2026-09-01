@@ -243,6 +243,7 @@ fn require_kwargs(kwargs: &Map<String, Value>) -> Result<(), String> {
                     | "isolation"
                     | "deny_write"
                     | "deny_read"
+                    | "deny_url"
                     | "context"
                     | "check"
             )
@@ -683,13 +684,8 @@ impl SubagentHost {
         reply
     }
 
-    /// Incident: a reaped child's booted IPython process outlived its dropped
-    /// [`crate::kernel::KernelService`] — the pump's monitor task owns the tokio
-    /// Child, so only an explicit dispose kills it; never-booted is a no-op.
     pub(crate) fn dispose_child_kernel(session: &AgentSession) {
-        if let Some(kernel) = session.kernel_service() {
-            tokio::spawn(async move { kernel.dispose().await });
-        }
+        session.dispose_kernel();
     }
 
     pub(crate) fn key_of(
@@ -701,6 +697,22 @@ impl SubagentHost {
             .find(|(id, record)| id.as_str() == target || record.session_name == target)
             .map(|(id, _)| id.clone())
             .ok_or_else(|| format!("No RLM child matches \"{target}\""))
+    }
+
+    /// The live half of the corpus: a running child answers for its own address.
+    pub fn transcript(&self, target: &str) -> Option<yi_session::SharedSession> {
+        let children = self.children.lock().ok()?;
+        let key = Self::key_of(&children, target).ok()?;
+        children.get(&key)?.session.store()
+    }
+
+    /// Invariant: a reap asks that a child no longer be running, so a host
+    /// holding no such child has already answered it — the caller skips rather
+    /// than refusing, which is what keeps a partial supersede cascade retryable.
+    pub fn holds(&self, target: &str) -> bool {
+        self.children
+            .lock()
+            .is_ok_and(|children| Self::key_of(&children, target).is_ok())
     }
 
     pub fn delete(&self, target: &str) -> Result<Map<String, Value>, String> {
