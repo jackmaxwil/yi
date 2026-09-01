@@ -1,5 +1,5 @@
 use crate::plan::PlanVersion;
-use crate::url::{Url, UrlError};
+use crate::url::{Durability, Scheme, Url, UrlError};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use std::collections::{HashMap, HashSet};
@@ -102,6 +102,40 @@ impl TodoState {
             Self::Done { .. } | Self::Failed { .. } | Self::Abandoned => true,
             Self::Pending | Self::Running { .. } | Self::Blocked { .. } | Self::Other(_) => false,
         }
+    }
+
+    /// Invariant: Abandoned clears the edge it holds and Failed does not —
+    /// dropping a todo is a decision its successors must survive, while a
+    /// failure is retryable and still owes them the work.
+    pub fn clears_edge(&self) -> bool {
+        match self {
+            Self::Done { .. } | Self::Abandoned => true,
+            Self::Failed { .. }
+            | Self::Pending
+            | Self::Running { .. }
+            | Self::Blocked { .. }
+            | Self::Other(_) => false,
+        }
+    }
+}
+
+/// Invariant: a terminal record may not name a referent that dies before it —
+/// never a live agent, and a kernel variable only in the plan owner's own
+/// namespace, which is what makes that namespace the downgrade target.
+pub fn terminal_durability(url: &Url, owner: &AgentId) -> Durability {
+    match url.scheme() {
+        Scheme::Agent => Durability::Ephemeral,
+        Scheme::Kernel => match url.path().split_once('/') {
+            Some((agent, _)) if agent != owner.as_str() => Durability::Ephemeral,
+            Some(_) | None => Durability::Durable,
+        },
+        Scheme::Local
+        | Scheme::Plan
+        | Scheme::History
+        | Scheme::Checkpoint
+        | Scheme::Mcp
+        | Scheme::User
+        | Scheme::External(_) => Durability::Durable,
     }
 }
 
@@ -349,7 +383,10 @@ pub struct Plan {
     pub version: PlanVersion,
     pub touched: TouchCount,
     pub tier: PlanTier,
-    pub spawns: Spawns,
+    /// Invariant: the delegation fuse is monotonic, so birth at zero and
+    /// [`Plan::charge_spawn`] are its only writers and a reset cannot compile;
+    /// a user editing the plan file down is the sanctioned way back.
+    spawns: Spawns,
     pub todos: Vec<Todo>,
     pub state: PlanState,
     pub extra: Map<String, Value>,
@@ -439,21 +476,43 @@ impl TryFrom<PlanRepr> for Plan {
 }
 
 impl Plan {
+    pub fn opening(id: PlanId, goal: GoalText, tier: PlanTier, todos: Vec<Todo>) -> Self {
+        Self {
+            id,
+            goal,
+            version: PlanVersion(1),
+            touched: TouchCount(1),
+            tier,
+            spawns: Spawns::default(),
+            todos,
+            state: PlanState::Active,
+            extra: Map::new(),
+        }
+    }
+
+    pub fn spawns(&self) -> Spawns {
+        self.spawns
+    }
+
+    pub fn charge_spawn(&mut self) {
+        self.spawns = self.spawns.charge();
+    }
+
     pub fn todo(&self, label: &TodoLabel) -> Option<&Todo> {
         self.todos.iter().find(|todo| &todo.label == label)
     }
 
-    /// Ready = Pending with every `after` predecessor Done, in Vec order —
+    /// Ready = Pending with every `after` predecessor cleared, in Vec order —
     /// Vec order is priority, so the first entry is the dispatch pointer.
     pub fn ready(&self) -> Vec<&Todo> {
         self.todos
             .iter()
             .filter(|todo| {
                 matches!(todo.state, TodoState::Pending)
-                    && todo.after.iter().all(|label| {
-                        self.todo(label)
-                            .is_some_and(|dep| matches!(dep.state, TodoState::Done { .. }))
-                    })
+                    && todo
+                        .after
+                        .iter()
+                        .all(|label| self.todo(label).is_some_and(|dep| dep.state.clears_edge()))
             })
             .collect()
     }

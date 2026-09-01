@@ -94,6 +94,7 @@ pub struct SubagentHostOptions {
     pub attribute: Arc<AttributeFn>,
     /// The plan a discovery's named ancestor task is resolved against.
     pub store: crate::goal::StoreHandle,
+    pub plans_dir: PathBuf,
 }
 
 pub struct SubagentHost {
@@ -631,6 +632,9 @@ impl SubagentHost {
         } else {
             ChildStatus::Completed
         };
+        // A reaped child has no record left; its product was already promoted,
+        // so the terminal notice would only echo a closed slot.
+        let mut reaped = true;
         if let Ok(mut children) = self.children.lock()
             && let Some(record) = children.get_mut(&child_id)
         {
@@ -638,6 +642,10 @@ impl SubagentHost {
             record.activity = ChildActivity::Waiting;
             record.error = error.clone();
             record.pending = record.pending.saturating_add(1);
+            reaped = false;
+        }
+        if reaped {
+            return;
         }
         self.publish(&child_id);
         // Terminal notices reach the parent as user-role host status, never as
@@ -675,6 +683,15 @@ impl SubagentHost {
         reply
     }
 
+    /// Incident: a reaped child's booted IPython process outlived its dropped
+    /// [`crate::kernel::KernelService`] — the pump's monitor task owns the tokio
+    /// Child, so only an explicit dispose kills it; never-booted is a no-op.
+    pub(crate) fn dispose_child_kernel(session: &AgentSession) {
+        if let Some(kernel) = session.kernel_service() {
+            tokio::spawn(async move { kernel.dispose().await });
+        }
+    }
+
     pub(crate) fn key_of(
         children: &HashMap<String, ChildRecord>,
         target: &str,
@@ -706,6 +723,7 @@ impl SubagentHost {
         if record.status == ChildStatus::Running {
             record.session.abort();
         }
+        Self::dispose_child_kernel(&record.session);
         let mut reply = Map::new();
         reply.insert("subagent".to_owned(), child_entry(&key, &record));
         Ok(reply)

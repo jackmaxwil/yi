@@ -58,19 +58,39 @@ fn service_with_store() -> (
     yi_session::SharedSession,
     Arc<Mutex<Vec<AgentMessage>>>,
 ) {
+    let (service, store, delivered, _plans) = service_with_plans();
+    (service, store, delivered)
+}
+
+fn service_with_plans() -> (
+    Arc<GoalService>,
+    yi_session::SharedSession,
+    Arc<Mutex<Vec<AgentMessage>>>,
+    std::path::PathBuf,
+) {
+    static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    let plans = std::env::temp_dir().join(format!(
+        "yi-goal-plans-{}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+    ));
+    let _ = std::fs::remove_dir_all(&plans);
     let store = memory_store();
     let handle = store.clone();
     let delivered: Arc<Mutex<Vec<AgentMessage>>> = Arc::new(Mutex::new(Vec::new()));
     let sink = Arc::clone(&delivered);
-    let service = Arc::new(GoalService::new(
-        Arc::new(move || Some(handle.clone())),
-        Arc::new(move |message, _mode: DeliveryMode| {
-            if let Ok(mut queue) = sink.lock() {
-                queue.push(message);
-            }
-        }),
-    ));
-    (service, store, delivered)
+    let service = Arc::new(
+        GoalService::new(
+            Arc::new(move || Some(handle.clone())),
+            Arc::new(move |message, _mode: DeliveryMode| {
+                if let Ok(mut queue) = sink.lock() {
+                    queue.push(message);
+                }
+            }),
+        )
+        .with_plans_dir(plans.clone()),
+    );
+    (service, store, delivered, plans)
 }
 
 #[test]
@@ -204,7 +224,7 @@ async fn active_goal_continues_past_idle_until_a_failing_turn_blocks_it() -> Tes
     );
     let store = memory_store();
     session.attach_store(store.clone())?;
-    let service = attach_goal(&session);
+    let service = attach_goal(&session, std::env::temp_dir().join(".yi/plans"));
     service.create("keep going until proven done", None, None, None)?;
 
     session.prompt("start")?;
@@ -342,32 +362,50 @@ fn check_gate_timeout_rejects_with_the_timeout_named() -> TestResult {
     Ok(())
 }
 
-fn seed_plan(store: &yi_session::SharedSession, check: &str) -> TestResult {
-    seed_plan_of(store, "t1", check)
+fn seed_plan(plans: &std::path::Path, check: &str) -> TestResult {
+    seed_plan_of(plans, "t1", check)
 }
 
-fn seed_plan_of(store: &yi_session::SharedSession, id: &str, check: &str) -> TestResult {
-    yi_session::lock_session(store).set_plan(yi_types::plan::Plan {
-        version: yi_types::plan::PlanVersion(1),
-        tasks: vec![yi_types::plan::Task {
-            id: yi_types::plan::TaskId(id.to_owned()),
-            title: "hold the invariant".to_owned(),
-            acceptance: "the check is green".to_owned(),
-            schema: None,
-            check: Some(check.to_owned()),
-            deps: Vec::new(),
-            state: yi_types::plan::TaskState::Done,
-            blocked_reason: None,
-            assignee: None,
-            red_count: None,
-            red_fingerprint: None,
-            readmit: None,
+/// The canonical plan file is truth: one Active root whose single todo carries
+/// the runnable acceptance a discovery row can name.
+fn seed_plan_of(plans: &std::path::Path, label: &str, check: &str) -> TestResult {
+    use yi_types::plan::doc::{
+        Check, Delegation, GoalText, Plan, PlanId, PlanTier, RetryCount, SpawnSpec, Todo,
+        TodoLabel, TodoState,
+    };
+    let store = yi_runtime::plan::store::PlanStore::open(plans.to_path_buf())?;
+    let plan = Plan::opening(
+        PlanId::new("hold-the-invariant")?,
+        GoalText::new("hold the invariant")?,
+        PlanTier::Root,
+        vec![Todo {
+            label: TodoLabel::new(label)?,
+            after: Vec::new(),
+            state: TodoState::Done { output: None },
+            delegation: Some(Delegation {
+                spec: SpawnSpec {
+                    role: None,
+                    model: None,
+                    effort: None,
+                    tools: Vec::new(),
+                    isolation: None,
+                    budget: None,
+                    extra: serde_json::Map::new(),
+                },
+                accept: Check::Command(check.to_owned()),
+                output: None,
+                context: Vec::new(),
+                note: None,
+                extra: serde_json::Map::new(),
+            }),
+            subplan: None,
+            retries: RetryCount::default(),
             extra: serde_json::Map::new(),
         }],
-        created: 0,
-        updated: 0,
-        doc: None,
-        extra: serde_json::Map::new(),
+    );
+    store.write(&yi_runtime::plan::store::PlanFile {
+        plan,
+        body: yi_runtime::plan::store::PlanBody::default(),
     })?;
     Ok(())
 }
@@ -380,9 +418,9 @@ fn rows_naming_one_task_adjudicate_on_a_single_check_run() -> TestResult {
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir)?;
     let tally = dir.join("runs");
-    let (service, store, _delivered) = service_with_store();
+    let (service, store, _delivered, plans) = service_with_plans();
     service.create("ship the fix", None, None, None)?;
-    seed_plan(&store, &format!("echo run >> {}", tally.display()))?;
+    seed_plan(&plans, &format!("echo run >> {}", tally.display()))?;
     let handle = store_handle(&store);
     for fingerprint in ["aaa", "bbb", "ccc"] {
         let mut row = high_row();
@@ -418,9 +456,9 @@ fn store_handle(store: &yi_session::SharedSession) -> StoreHandle {
 
 #[test]
 fn an_undrained_discovery_refuses_completion_until_its_check_goes_green() -> TestResult {
-    let (service, store, delivered) = service_with_store();
+    let (service, store, delivered, plans) = service_with_plans();
     service.create("ship the fix", None, None, None)?;
-    seed_plan(&store, "echo t1 still broken; exit 4")?;
+    seed_plan(&plans, "echo t1 still broken; exit 4")?;
     let handle = store_handle(&store);
     record_discovery(&handle, &high_row())?;
     record_discovery(&handle, &high_row())?;
@@ -445,7 +483,7 @@ fn an_undrained_discovery_refuses_completion_until_its_check_goes_green() -> Tes
         "the row survives the refusal (and a repeat record), so the gate keeps holding"
     );
 
-    seed_plan(&store, "true")?;
+    seed_plan(&plans, "true")?;
     service.update("complete")?;
     let stored = yi_session::lock_session(&store).goal().ok_or("goal")?;
     assert_eq!(stored.status, GoalStatus::Complete);
@@ -482,12 +520,12 @@ fn an_undrained_discovery_refuses_completion_until_its_check_goes_green() -> Tes
 
 #[test]
 fn a_row_whose_check_left_the_plan_drains_instead_of_wedging_the_goal() -> TestResult {
-    let (service, store, delivered) = service_with_store();
+    let (service, store, delivered, plans) = service_with_plans();
     service.create("ship the fix", None, None, None)?;
-    seed_plan(&store, "exit 4")?;
+    seed_plan(&plans, "exit 4")?;
     record_discovery(&store_handle(&store), &high_row())?;
     // The plan the row named is replaced by one that no longer carries t1.
-    seed_plan_of(&store, "t9", "true")?;
+    seed_plan_of(&plans, "t9", "true")?;
     service.update("complete")?;
     let stored = yi_session::lock_session(&store).goal().ok_or("goal")?;
     assert_eq!(stored.status, GoalStatus::Complete);
@@ -561,5 +599,50 @@ fn check_gate_ignores_blocked_and_checkless_goals() -> TestResult {
     let (service, _store, _delivered) = service_with_store();
     service.create("no check", None, None, None)?;
     service.update("complete")?;
+    Ok(())
+}
+
+/// D25 at the op seam: the objective edit demands a `user://` citation that
+/// resolves to a message carrying genuine user attribution.
+#[test]
+fn a_goal_edit_requires_an_attributed_user_citation() -> TestResult {
+    let (service, store, _delivered) = service_with_store();
+    service.create("original objective", None, None, None)?;
+    {
+        let mut session = yi_session::lock_session(&store);
+        session.append_message(
+            "main",
+            AgentMessage::user_input(UserContent::Text("ship the refactor".to_owned()), 1),
+        )?;
+        session.append_message(
+            "main",
+            AgentMessage::host_user(UserContent::Text("host-minted continuation".to_owned()), 2),
+        )?;
+    }
+    let uncited = service.set_objective("new objective", None).err();
+    assert!(
+        uncited.is_some_and(|error| error.contains("no citation")),
+        "an uncited goal edit must be refused"
+    );
+    let forged = service
+        .set_objective("new objective", Some("user://2"))
+        .err();
+    assert!(
+        forged.is_some_and(|error| error.contains("without user attribution")),
+        "citing a host-minted message must be refused"
+    );
+    let dangling = service
+        .set_objective("new objective", Some("user://9"))
+        .err();
+    assert!(
+        dangling.is_some_and(|error| error.contains("does not resolve")),
+        "citing a user message that does not exist must be refused"
+    );
+    service.set_objective("new objective", Some("user://1"))?;
+    let objective = yi_session::lock_session(&store)
+        .goal()
+        .map(|goal| goal.objective)
+        .unwrap_or_default();
+    assert_eq!(objective, "new objective");
     Ok(())
 }

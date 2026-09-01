@@ -61,10 +61,7 @@ fn compaction_summary(summary: &str) -> AgentMessage {
 }
 
 fn user(text: &str) -> AgentMessage {
-    AgentMessage::User {
-        content: UserContent::Text(text.to_owned()),
-        timestamp: 0,
-    }
+    AgentMessage::host_user(UserContent::Text(text.to_owned()), 0)
 }
 
 fn tool_result(name: &str) -> AgentMessage {

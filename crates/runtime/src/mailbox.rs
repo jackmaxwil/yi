@@ -408,7 +408,7 @@ impl SubagentHost {
         Ok(reply)
     }
 
-    /// L5 criticality is derived, never declared: the ancestor task a row names is
+    /// L5 criticality is derived, never declared: the ancestor todo a row names is
     /// looked up and its check re-run, and only a red one is HIGH. Fails closed — a
     /// row that cannot be adjudicated or recorded holds the whole result back.
     fn route_discoveries(&self, child: &str, discoveries: &[Discovery]) -> Result<(), String> {
@@ -420,12 +420,12 @@ impl SubagentHost {
         } else {
             None
         };
-        // One check run per named task, however many rows name it.
+        // One check run per named todo, however many rows name it.
         let mut adjudged: HashMap<&yi_types::plan::TaskId, Option<String>> = HashMap::new();
         for row in discoveries {
             let named = row.violates_check_of.as_ref().and_then(|id| {
                 plan.as_ref()
-                    .and_then(|plan| crate::goal::task_check(plan, id))
+                    .and_then(|plan| crate::plan::todo_check(plan, id.as_str()))
                     .map(|check| (id, check))
             });
             let red = named.and_then(|(id, check)| {
@@ -474,16 +474,310 @@ impl SubagentHost {
         Ok(())
     }
 
-    /// Invariant: an absent store or plan is an adjudication failure, never a
-    /// deferred row — a check-violating discovery must not be downgraded by a
+    /// Invariant: an unreadable canonical plan is an adjudication failure, never
+    /// a deferred row — a check-violating discovery must not be downgraded by a
     /// missing reader.
-    fn ancestor_plan(&self) -> Result<yi_types::plan::Plan, String> {
-        let store = (self.options.store)().ok_or(
-            "a discovery names an ancestor check but no session store is attached, so criticality cannot be derived",
-        )?;
-        yi_session::lock_session(&store).plan().ok_or_else(|| {
-            "a discovery names an ancestor check but the session carries no plan, so criticality cannot be derived; create the plan and read the result again"
-                .to_owned()
+    fn ancestor_plan(&self) -> Result<yi_types::plan::doc::Plan, String> {
+        crate::plan::canonical_plan(&self.options.store, &self.options.plans_dir)
+            .map_err(|cause| {
+                format!(
+                    "a discovery names an ancestor check but the canonical plan cannot be read ({cause}), so criticality cannot be derived"
+                )
+            })
+    }
+
+    /// Invariant: promotion runs at reap whatever the outcome — the last
+    /// product reaches the owner's transcript before the slot is freed, so the
+    /// failure path leaves evidence and never a dangling live child.
+    pub fn reap(&self, target: &str) -> Result<Harvest, String> {
+        let record = {
+            let mut children = self
+                .children
+                .lock()
+                .map_err(|_| "subagent state poisoned")?;
+            let key = Self::key_of(&children, target)?;
+            children
+                .remove(&key)
+                .ok_or_else(|| format!("No RLM child matches \"{target}\""))?
+        };
+        if record.status == ChildStatus::Running {
+            record.session.abort();
+        }
+        SubagentHost::dispose_child_kernel(&record.session);
+        let answer = last_assistant_text(&record.session.messages());
+        let body = match (&record.error, &answer) {
+            (Some(error), Some(answer)) => {
+                format!(
+                    "failed: {error}\nlast product:\n{}",
+                    clamp(answer, RESULT_TAIL_CHARS)
+                )
+            }
+            (Some(error), None) => format!("failed: {error}"),
+            (None, Some(answer)) => clamp(answer, RESULT_TAIL_CHARS),
+            (None, None) => "(no product)".to_owned(),
+        };
+        let name = record.session_name.clone();
+        (self.options.report)(AgentMessage::Custom {
+            custom_type: "reap".to_owned(),
+            content: UserContent::Text(format!(
+                "<reaped_child from=\"{name}\">\n{body}\n</reaped_child>"
+            )),
+            display: true,
+            details: Some(json!({
+                "child": name,
+                "status": record.status.as_str(),
+                "error": record.error,
+            })),
+            timestamp: yi_session::now_ms(),
+        });
+        Ok(Harvest {
+            name,
+            produced: answer.is_some(),
         })
+    }
+}
+
+/// What a reap found: the child's name and whether it left any product to
+/// point a terminal record at.
+pub struct Harvest {
+    pub name: String,
+    pub produced: bool,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+    use std::sync::Mutex;
+    use std::sync::atomic::{AtomicU32, Ordering};
+    use yi_types::plan::TaskId;
+
+    type TestResult = Result<(), Box<dyn std::error::Error>>;
+
+    static NEXT: AtomicU32 = AtomicU32::new(0);
+
+    fn scratch(tag: &str) -> Result<PathBuf, Box<dyn std::error::Error>> {
+        let dir = std::env::temp_dir().join(format!(
+            "yi-mailbox-{tag}-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::SeqCst)
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir)?;
+        Ok(dir)
+    }
+
+    fn memory_store_with_goal() -> Result<yi_session::SharedSession, Box<dyn std::error::Error>> {
+        let store: yi_session::SharedSession = Arc::new(Mutex::new(
+            yi_session::SessionStore::in_memory(yi_session::SessionMetadata {
+                id: "mailbox-test".to_owned(),
+                created_at: 0,
+                parent_session_id: None,
+            }),
+        ));
+        yi_session::lock_session(&store).set_goal(yi_types::goal::Goal {
+            objective: "adjudicate".to_owned(),
+            status: yi_types::goal::GoalStatus::Active,
+            token_budget: None,
+            tokens_used: 0,
+            time_used_seconds: 0,
+            created: 0,
+            updated: 0,
+            check: None,
+            check_timeout_ms: None,
+            check_failure: None,
+            discoveries: Vec::new(),
+            extra: Map::new(),
+        })?;
+        Ok(store)
+    }
+
+    fn write_canonical_plan(cwd: &std::path::Path, check: &str) -> TestResult {
+        use yi_types::plan::doc::{
+            Check, Delegation, GoalText, Plan, PlanId, PlanTier, RetryCount, SpawnSpec, Todo,
+            TodoLabel, TodoState,
+        };
+        let store = crate::plan::store::PlanStore::open(cwd.join(crate::plan::PLANS_DIR))?;
+        let plan = Plan::opening(
+            PlanId::new("adjudication")?,
+            GoalText::new("adjudicate discoveries")?,
+            PlanTier::Root,
+            vec![Todo {
+                label: TodoLabel::new("t1")?,
+                after: Vec::new(),
+                state: TodoState::Pending,
+                delegation: Some(Delegation {
+                    spec: SpawnSpec {
+                        role: None,
+                        model: None,
+                        effort: None,
+                        tools: Vec::new(),
+                        isolation: None,
+                        budget: None,
+                        extra: Map::new(),
+                    },
+                    accept: Check::Command(check.to_owned()),
+                    output: None,
+                    context: Vec::new(),
+                    note: None,
+                    extra: Map::new(),
+                }),
+                subplan: None,
+                retries: RetryCount::default(),
+                extra: Map::new(),
+            }],
+        );
+        store.write(&crate::plan::store::PlanFile {
+            plan,
+            body: crate::plan::store::PlanBody::default(),
+        })?;
+        Ok(())
+    }
+
+    type Sink = Arc<Mutex<Vec<AgentMessage>>>;
+
+    fn host_at(
+        cwd: PathBuf,
+        store: yi_session::SharedSession,
+    ) -> Result<(Arc<SubagentHost>, Sink), Box<dyn std::error::Error>> {
+        let (events, _keep) = tokio::sync::broadcast::channel(16);
+        let reports: Sink = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&reports);
+        let plans_dir = cwd.join(crate::plan::PLANS_DIR);
+        let host = Arc::new(SubagentHost::new(crate::subagent::SubagentHostOptions {
+            depth: 0,
+            max_depth: 1,
+            max_children: 8,
+            parent_session_dir: cwd.join("children"),
+            cwd,
+            defaults: Arc::new(|| {
+                (
+                    yi_types::model::Model {
+                        id: "faux-1".to_owned(),
+                        name: "Faux".to_owned(),
+                        api: "faux".to_owned(),
+                        provider: "faux".to_owned(),
+                        base_url: "http://localhost:0".to_owned(),
+                        reasoning: false,
+                        input: vec!["text".to_owned()],
+                        cost: yi_types::model::ModelCost {
+                            input: serde_json::Number::from(0u64),
+                            output: serde_json::Number::from(0u64),
+                            cache_read: serde_json::Number::from(0u64),
+                            cache_write: serde_json::Number::from(0u64),
+                            tiers: None,
+                        },
+                        context_window: 128_000,
+                        max_tokens: 16_384,
+                        compat: None,
+                        thinking_level_map: None,
+                        headers: None,
+                    },
+                    yi_types::model::Effort::Medium,
+                )
+            }),
+            factory: Arc::new(|_build| Err("no child in this test".to_owned())),
+            notice: Arc::new(|_text: &str| {}),
+            events,
+            parent_messages: Arc::new(Vec::new),
+            report: Arc::new(move |message| {
+                if let Ok(mut queue) = sink.lock() {
+                    queue.push(message);
+                }
+            }),
+            attribute: Arc::new(|_usage| {}),
+            store: Arc::new(move || Some(store.clone())),
+            plans_dir,
+        }));
+        Ok((host, reports))
+    }
+
+    fn row(names_check: bool) -> Discovery {
+        Discovery {
+            text: "the retry loop double-counts".to_owned(),
+            violates_check_of: names_check.then(|| TaskId("t1".to_owned())),
+            fingerprint: "aaa".to_owned(),
+            extra: Map::new(),
+        }
+    }
+
+    #[test]
+    fn a_discovery_is_adjudicated_against_the_canonical_document() -> TestResult {
+        let cwd = scratch("adjudicate")?;
+        write_canonical_plan(&cwd, "echo t1 broken; exit 4")?;
+        let store = memory_store_with_goal()?;
+        let (host, reports) = host_at(cwd, store.clone())?;
+        host.route_discoveries("finder", &[row(true)])?;
+        let texts: Vec<String> = reports
+            .lock()
+            .map_err(|_| "poisoned")?
+            .iter()
+            .filter_map(|message| match message {
+                AgentMessage::Custom {
+                    content: UserContent::Text(text),
+                    ..
+                } => Some(text.clone()),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            texts.iter().any(|text| {
+                text.starts_with("HIGH discovery from finder") && text.contains("t1 broken")
+            }),
+            "a red canonical check derives HIGH with the evidence: {texts:?}"
+        );
+        let goal = yi_session::lock_session(&store).goal().ok_or("goal")?;
+        assert_eq!(
+            goal.discoveries.len(),
+            1,
+            "the HIGH row lands on the goal ledger so completion stays gated"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_green_canonical_check_defers_the_row() -> TestResult {
+        let cwd = scratch("defer")?;
+        write_canonical_plan(&cwd, "true")?;
+        let (host, reports) = host_at(cwd, memory_store_with_goal()?)?;
+        host.route_discoveries("finder", &[row(true)])?;
+        let texts: Vec<String> = reports
+            .lock()
+            .map_err(|_| "poisoned")?
+            .iter()
+            .filter_map(|message| match message {
+                AgentMessage::Custom {
+                    content: UserContent::Text(text),
+                    ..
+                } => Some(text.clone()),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            texts
+                .iter()
+                .any(|text| text.starts_with("deferred discovery from finder")),
+            "{texts:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn adjudication_fails_closed_when_no_canonical_plan_is_readable() -> TestResult {
+        let cwd = scratch("fail-closed")?;
+        let (host, reports) = host_at(cwd, memory_store_with_goal()?)?;
+        let error = host
+            .route_discoveries("finder", &[row(true)])
+            .err()
+            .ok_or("a check-naming row with no readable plan must hold the result back")?;
+        assert!(
+            error.contains("canonical plan cannot be read"),
+            "the refusal names the missing reader: {error}"
+        );
+        assert!(
+            reports.lock().map_err(|_| "poisoned")?.is_empty(),
+            "nothing is routed when adjudication is impossible"
+        );
+        Ok(())
     }
 }

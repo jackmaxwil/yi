@@ -31,6 +31,7 @@ pub struct UserConfig {
     pub models: Option<ModelRoles>,
     pub bash: Option<BashConfig>,
     pub plan: Option<PlanConfig>,
+    pub plans: Option<PlansConfig>,
     pub mcp: Option<McpConfig>,
     pub kernel: Option<KernelConfig>,
     pub edit: Option<EditConfig>,
@@ -65,6 +66,16 @@ pub struct BashConfig {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PlanConfig {
     pub stale_reminder_turns: Option<u64>,
+}
+
+/// `plans.dir` (default `.yi/plans`, relative to the workspace root) and
+/// `plans.mirror`, off unless set. X7's project layer is unbuilt, so both are
+/// read from the user's own config and are global to every workspace.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PlansConfig {
+    pub dir: Option<String>,
+    pub mirror: Option<bool>,
 }
 
 /// D36: MCP is compiled in but runtime-gated; `mcp.enabled` is the switch.
