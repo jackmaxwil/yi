@@ -1,16 +1,13 @@
-use std::io::Write;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::mpsc::Receiver;
 use std::time::{Duration, Instant};
 
-use ratatui::backend::{Backend, ClearType, TestBackend, WindowSize};
-use ratatui::buffer::Cell;
 use ratatui::crossterm::event::{Event as CtEvent, KeyCode, KeyEvent, KeyModifiers};
-use ratatui::layout::{Position, Size};
 use yi_runtime::{AgentSession, SubagentHost};
 
 use crate::app::{App, AskRequest, TuiOptions, UiEvent};
+use crate::capture::{RecordingBackend, write_still};
 use crate::colors::Theme;
 use crate::keymap::{KeyCodeValue, SingleKey, default_keymap};
 
@@ -27,6 +24,10 @@ pub enum Step {
     /// it stops showing it when written `!text`. Timeout first so the text may
     /// hold spaces; the bool is the polarity.
     WaitFrame(u64, bool, String),
+    /// `type-ms <n>` paces every later `type` step at one character per `n`
+    /// milliseconds. Zero, the default, keeps assertion scripts instant; a
+    /// recording is only watchable when the typing takes human time.
+    TypeMs(u64),
     Quit,
 }
 
@@ -58,6 +59,7 @@ pub fn parse_script(source: &str) -> Result<Vec<Step>, String> {
                     text.to_owned(),
                 )
             }
+            "type-ms" => Step::TypeMs(rest.parse().map_err(|e| error(format!("{e}")))?),
             "quit" => Step::Quit,
             other => return Err(error(format!("unknown step: {other}"))),
         };
@@ -98,88 +100,21 @@ fn key_event(key: &SingleKey) -> KeyEvent {
     KeyEvent::new(code, modifiers)
 }
 
-/// TestBackend with a no-op `Write`, so the shared draw/commit path (which
-/// brackets real output in synchronized updates) accepts it unchanged.
-pub struct HeadlessBackend(pub TestBackend);
-
-impl Write for HeadlessBackend {
-    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        Ok(buf.len())
-    }
-
-    fn flush(&mut self) -> std::io::Result<()> {
-        Ok(())
-    }
-}
-
-impl Backend for HeadlessBackend {
-    fn draw<'a, I>(&mut self, content: I) -> std::io::Result<()>
-    where
-        I: Iterator<Item = (u16, u16, &'a Cell)>,
-    {
-        self.0.draw(content)
-    }
-
-    fn hide_cursor(&mut self) -> std::io::Result<()> {
-        self.0.hide_cursor()
-    }
-
-    fn show_cursor(&mut self) -> std::io::Result<()> {
-        self.0.show_cursor()
-    }
-
-    fn get_cursor_position(&mut self) -> std::io::Result<Position> {
-        self.0.get_cursor_position()
-    }
-
-    fn set_cursor_position<P: Into<Position>>(&mut self, position: P) -> std::io::Result<()> {
-        self.0.set_cursor_position(position)
-    }
-
-    fn clear(&mut self) -> std::io::Result<()> {
-        self.0.clear()
-    }
-
-    fn clear_region(&mut self, clear_type: ClearType) -> std::io::Result<()> {
-        self.0.clear_region(clear_type)
-    }
-
-    fn append_lines(&mut self, line_count: u16) -> std::io::Result<()> {
-        self.0.append_lines(line_count)
-    }
-
-    fn size(&self) -> std::io::Result<Size> {
-        self.0.size()
-    }
-
-    fn window_size(&mut self) -> std::io::Result<WindowSize> {
-        self.0.window_size()
-    }
-
-    fn flush(&mut self) -> std::io::Result<()> {
-        Backend::flush(&mut self.0)
-    }
-
-    fn scroll_region_up(
-        &mut self,
-        region: std::ops::Range<u16>,
-        scroll_by: u16,
-    ) -> std::io::Result<()> {
-        self.0.scroll_region_up(region, scroll_by)
-    }
-
-    fn scroll_region_down(
-        &mut self,
-        region: std::ops::Range<u16>,
-        scroll_by: u16,
-    ) -> std::io::Result<()> {
-        self.0.scroll_region_down(region, scroll_by)
-    }
-}
+/// A day. `--deadline` is a convenience for paced proof runs, not a way to
+/// park a headless process, and the seconds are attacker-free but unbounded.
+const DEADLINE_CAP_SECS: u64 = 86_400;
 
 pub struct DriveOptions {
     pub script: Vec<Step>,
     pub frames_dir: Option<PathBuf>,
+    /// asciicast v2 of the whole run, for `agg` to turn into a GIF.
+    pub record: Option<PathBuf>,
+    /// The last frame as a one-event cast, so `agg` renders the still with
+    /// the same emulator as the recording.
+    pub snap: Option<PathBuf>,
+    /// Wall clock the whole script gets. A paced proof run legitimately
+    /// outlives the default an assertion run needs.
+    pub deadline_secs: u64,
     pub width: u16,
     pub height: u16,
 }
@@ -205,12 +140,24 @@ pub fn run_headless(
         eprintln!("error: keys config: {error}");
         return 2;
     }
+    // One path for both sinks means the still truncates the recording that is
+    // still open on it, and the run reports success having lost it.
+    if let (Some(record), Some(snap)) = (&drive.record, &drive.snap)
+        && std::path::absolute(record).ok() == std::path::absolute(snap).ok()
+    {
+        eprintln!("error: --record and --snap need different files");
+        return 2;
+    }
     let width = drive.width.max(20);
     let height = drive.height.max(8);
-    let mut terminal = match crate::terminal::Terminal::new(
-        HeadlessBackend(TestBackend::new(width, height)),
-        4.min(height - 1),
-    ) {
+    let backend = match RecordingBackend::new(width, height, drive.record.as_deref()) {
+        Ok(backend) => backend,
+        Err(error) => {
+            eprintln!("error: recording: {error}");
+            return 1;
+        }
+    };
+    let mut terminal = match crate::terminal::Terminal::new(backend, 4.min(height - 1)) {
         Ok(terminal) => terminal,
         Err(error) => {
             eprintln!("error: headless terminal: {error}");
@@ -239,12 +186,16 @@ pub fn run_headless(
     let mut last_frame = String::new();
     let mut steps = drive.script.into_iter();
     let mut current: Option<(Step, Instant)> = None;
-    let deadline = Instant::now() + Duration::from_secs(60);
+    let deadline_secs = drive.deadline_secs.clamp(1, DEADLINE_CAP_SECS);
+    // `Instant + Duration` panics rather than saturating, and the seconds come
+    // straight off the command line.
+    let start = Instant::now();
+    let mut type_ms = 0_u64;
     let mut exit_code = 0;
 
     while !app.is_quit() {
-        if Instant::now() > deadline {
-            eprintln!("error: drive script timed out (60 s wall)");
+        if start.elapsed() > Duration::from_secs(deadline_secs) {
+            eprintln!("error: drive script timed out ({deadline_secs} s wall)");
             exit_code = 1;
             break;
         }
@@ -286,8 +237,22 @@ pub fn run_headless(
                         shift: false,
                     };
                     app.handle_event(&cmd_tx, CtEvent::Key(key_event(&key)));
+                    // Paced typing has to reach the screen character by
+                    // character, or the recording still shows the whole line
+                    // appearing at once.
+                    if type_ms > 0 {
+                        crate::render::draw(&mut app, &mut terminal, Some(&session));
+                        std::thread::sleep(Duration::from_millis(type_ms));
+                        // The step holds the outer loop, which is where the
+                        // wall clock is read, so a long paced line would
+                        // otherwise outrun the deadline unchecked.
+                        if start.elapsed() > Duration::from_secs(deadline_secs) {
+                            break;
+                        }
+                    }
                 }
             }
+            (Step::TypeMs(ms), _) => type_ms = ms,
             (Step::Wait(ms), started) => {
                 if started.elapsed() < Duration::from_millis(ms) {
                     current = Some((Step::Wait(ms), started));
@@ -306,7 +271,7 @@ pub fn run_headless(
                 }
             }
             (Step::WaitFrame(ms, present, text), started) => {
-                if terminal.backend().0.to_string().contains(&text) != present {
+                if terminal.backend().screen().contains(&text) != present {
                     if started.elapsed() > Duration::from_millis(ms) {
                         eprintln!("error: wait-frame timed out after {ms} ms waiting for {text:?}");
                         exit_code = 1;
@@ -321,15 +286,32 @@ pub fn run_headless(
 
         crate::render::draw(&mut app, &mut terminal, Some(&session));
         if let Some(dir) = &drive.frames_dir {
-            let frame = terminal.backend().0.to_string();
+            let frame = terminal.backend().screen();
             if frame != last_frame {
                 let path = dir.join(format!("{frame_index:04}.txt"));
-                if std::fs::write(&path, &frame).is_ok() {
-                    frame_index += 1;
-                    last_frame = frame;
+                // A dump that silently failed to land reads downstream as a
+                // frame that never differed.
+                if let Err(error) = std::fs::write(&path, &frame) {
+                    eprintln!("error: frame {}: {error}", path.display());
+                    exit_code = 1;
+                    break;
                 }
+                frame_index += 1;
+                last_frame = frame;
             }
         }
+    }
+
+    if let Some(path) = &drive.snap
+        && let Err(error) = write_still(path, terminal.backend().buffer())
+    {
+        eprintln!("error: snap {}: {error}", path.display());
+        exit_code = 1;
+    }
+    // The cast is buffered; an unflushed tail is a truncated recording.
+    if let Err(error) = std::io::Write::flush(terminal.backend_mut()) {
+        eprintln!("error: recording flush: {error}");
+        exit_code = 1;
     }
 
     let _ = cmd_tx.send(crate::app::Command::Shutdown);

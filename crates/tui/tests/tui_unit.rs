@@ -1632,3 +1632,172 @@ fn the_turn_timer_wakes_on_the_spinner_boundary_not_a_fixed_interval() -> TestRe
     }
     Ok(())
 }
+
+/// The still image a reviewer sees is rendered from this dump, so it has to
+/// carry the styling — a frame that serializes to bare text proves nothing
+/// about how the UI looks.
+#[test]
+fn a_frame_dump_carries_style_not_just_text() -> TestResult {
+    use ratatui::buffer::Buffer;
+    use ratatui::layout::Rect;
+    use ratatui::style::Color;
+
+    let mut buffer = Buffer::empty(Rect::new(0, 0, 6, 2));
+    buffer.set_string(
+        0,
+        0,
+        "yi",
+        Style::default()
+            .fg(Color::Cyan)
+            .add_modifier(Modifier::BOLD),
+    );
+    buffer.set_string(0, 1, "ok", Style::default().fg(Color::Red));
+    let ansi = String::from_utf8(yi_tui::capture::buffer_to_ansi(&buffer)?)?;
+
+    assert!(
+        ansi.starts_with("\x1b[0m\x1b[H"),
+        "the dump must open from a clean style at the origin: {ansi:?}"
+    );
+    // Rows are placed, never newline-terminated: 24 newlines on a 24-row
+    // screen scroll the frame off itself and the still renders blank.
+    assert!(
+        !ansi.contains('\n'),
+        "a placed frame carries no newlines: {ansi:?}"
+    );
+    assert!(
+        ansi.contains("\x1b[2;1H"),
+        "the second row is placed, not flowed: {ansi:?}"
+    );
+    assert!(ansi.contains("yi") && ansi.contains("ok"), "{ansi:?}");
+    assert!(
+        ansi.contains("\x1b[1m"),
+        "bold must survive the dump: {ansi:?}"
+    );
+    // Crossterm writes the ANSI palette in indexed form: cyan is 6, red 1.
+    assert!(
+        ansi.contains("\x1b[38;5;6") && ansi.contains("\x1b[38;5;1"),
+        "both foreground colours must reach the dump: {ansi:?}"
+    );
+    Ok(())
+}
+
+fn cast_payloads(path: &std::path::Path) -> Result<Vec<String>, Box<dyn Error>> {
+    let text = std::fs::read_to_string(path)?;
+    let mut payloads = Vec::new();
+    for line in text.lines().skip(1) {
+        let event: serde_json::Value = serde_json::from_str(line)?;
+        payloads.push(event[2].as_str().unwrap_or_default().to_owned());
+    }
+    Ok(payloads)
+}
+
+/// asciicast payloads are JSON strings, and crossterm hands the writer
+/// arbitrary byte chunks — a box-drawing character split across two of them
+/// must reassemble rather than corrupt the line or vanish.
+#[test]
+fn a_character_split_across_writes_survives_the_cast() -> TestResult {
+    use std::io::Write;
+
+    let path = std::env::temp_dir().join(format!("yi-cast-utf8-{}.cast", std::process::id()));
+    let mut cast = yi_tui::capture::CastWriter::create(&path, 80, 24)?;
+    // "─" is e2 94 80: two bytes now, the third only after a flush.
+    cast.write_all(b"a\xe2\x94")?;
+    cast.flush()?;
+    let first = cast_payloads(&path)?;
+    assert_eq!(
+        first,
+        vec!["a".to_owned()],
+        "the partial character must wait"
+    );
+
+    cast.write_all(b"\x80b")?;
+    cast.flush()?;
+    let second = cast_payloads(&path)?;
+    assert_eq!(
+        second.concat(),
+        "a─b",
+        "the completed character belongs to the next event: {second:?}"
+    );
+
+    // A byte that can never complete is dropped, not held forever.
+    cast.write_all(b"\xffok")?;
+    cast.flush()?;
+    let third = cast_payloads(&path)?;
+    let _ = std::fs::remove_file(&path);
+    assert_eq!(
+        third.concat(),
+        "a─bok",
+        "invalid bytes stall nothing: {third:?}"
+    );
+    Ok(())
+}
+
+/// The drive loop redraws every couple of milliseconds. Every call that
+/// carries no change — an empty diff, a cursor already hidden, the
+/// synchronized-update bracket — must leave the recording untouched, or a
+/// minute of idling buries the frames a reviewer came for.
+#[test]
+fn an_unchanged_frame_records_nothing() -> TestResult {
+    use ratatui::backend::Backend;
+    use std::io::Write;
+
+    let path = std::env::temp_dir().join(format!("yi-cast-idle-{}.cast", std::process::id()));
+    let mut backend = yi_tui::capture::RecordingBackend::new(80, 24, Some(&path))?;
+    // Exactly what `render::draw` does on a tick that changed nothing.
+    let idle_tick = |backend: &mut yi_tui::capture::RecordingBackend| -> TestResult {
+        backend.write_all(b"\x1b[?2026h")?;
+        Write::flush(backend)?;
+        backend.draw(std::iter::empty())?;
+        backend.hide_cursor()?;
+        Backend::flush(backend)?;
+        backend.write_all(b"\x1b[?2026l")?;
+        Write::flush(backend)?;
+        Ok(())
+    };
+    // The first tick hides the cursor for real, so it earns one event.
+    idle_tick(&mut backend)?;
+    let first = cast_payloads(&path)?;
+    assert_eq!(first, vec!["\x1b[?25l".to_owned()], "{first:?}");
+
+    for _ in 0..200 {
+        idle_tick(&mut backend)?;
+    }
+    let idle = cast_payloads(&path)?;
+    assert_eq!(idle, first, "200 more idle ticks wrote {:?}", &idle[1..]);
+
+    // One real change still lands, so the filter is not simply off.
+    let mut cell = ratatui::buffer::Cell::default();
+    cell.set_symbol("x");
+    backend.draw(std::iter::once((0, 0, &cell)))?;
+    Backend::flush(&mut backend)?;
+    let changed = cast_payloads(&path)?;
+    let _ = std::fs::remove_file(&path);
+    assert_eq!(
+        changed.len(),
+        first.len() + 1,
+        "one changed frame, one event: {changed:?}"
+    );
+    assert!(
+        changed.last().is_some_and(|last| last.contains('x')),
+        "{changed:?}"
+    );
+    Ok(())
+}
+
+/// `RecordingBackend` replaced `HeadlessBackend`, and a second drive loop
+/// (yi-console) constructs its screen through ratatui's own `Terminal`
+/// rather than Yi's. Recording off, it must still be a drop-in there.
+#[test]
+fn the_recording_backend_drops_into_a_plain_ratatui_terminal() -> TestResult {
+    let backend = yi_tui::capture::RecordingBackend::new(80, 24, None)?;
+    let mut terminal = ratatui::Terminal::new(backend)?;
+    terminal.draw(|frame| {
+        frame.render_widget(ratatui::widgets::Paragraph::new("console"), frame.area());
+    })?;
+    assert!(
+        terminal.backend().screen().contains("console"),
+        "the screen accessor replaces the old tuple field: {}",
+        terminal.backend().screen()
+    );
+    Ok(())
+}

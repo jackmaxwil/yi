@@ -920,6 +920,9 @@ fn the_status_cost_sums_the_session_not_the_last_turn() -> TestResult {
         yi_tui::DriveOptions {
             script,
             frames_dir: Some(dir.clone()),
+            record: None,
+            snap: None,
+            deadline_secs: 60,
             width: 80,
             height: 24,
         },
@@ -960,6 +963,141 @@ fn an_unfocused_child_turn_reaches_the_status_cost() -> TestResult {
     assert!(
         contents.contains("$0.06"),
         "the child's spend belongs to the session total: {contents}"
+    );
+    Ok(())
+}
+
+/// Strip `TestBackend`'s per-row quoting and the trailing blanks a terminal
+/// screen and a text dump disagree about, so the two can be compared at all.
+fn screen_lines(text: &str) -> Vec<String> {
+    let mut lines: Vec<String> = text
+        .lines()
+        .map(|line| line.trim_matches('"').trim_end().to_owned())
+        .collect();
+    while lines.last().is_some_and(String::is_empty) {
+        lines.pop();
+    }
+    lines
+}
+
+/// The recording and the frames the script asserted on are two sinks for one
+/// draw stream, so they must not disagree: replaying the cast through a real
+/// terminal parser has to land on the frame the run finished with. This is
+/// what makes a GIF handed to a reviewer evidence of the same UI the
+/// assertions passed against.
+#[test]
+fn a_recording_replays_to_the_frame_the_run_asserted_on() -> TestResult {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    let dir = std::env::temp_dir().join(format!("yi-tui-cast-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir)?;
+    let session = Arc::new(faux_session("recorded reply"));
+    let host = Arc::new(SubagentHost::new(SubagentHostOptions {
+        depth: 0,
+        max_depth: 1,
+        max_children: 4,
+        parent_session_dir: dir.clone(),
+        cwd: dir.clone(),
+        defaults: Arc::new(|| (faux_model(), yi_types::model::Effort::Medium)),
+        factory: Arc::new(|_build| Ok(faux_session("child answer"))),
+        notice: Arc::new(|_notice| {}),
+        events: tokio::sync::broadcast::channel(64).0,
+        parent_messages: Arc::new(Vec::new),
+        report: Arc::new(|_message| {}),
+        attribute: Arc::new(|_usage| {}),
+        store: Arc::new(|| None),
+    }));
+    let (_ask_tx, ask_rx) = std::sync::mpsc::channel();
+    let cast = dir.join("run.cast");
+    let still = dir.join("still.cast");
+    let script = yi_tui::parse_script("type ping\nkey enter\nwait-idle 10000\nquit\n")?;
+    let code = yi_tui::run_headless(
+        runtime,
+        Arc::clone(&session),
+        host,
+        ask_rx,
+        options(),
+        yi_tui::DriveOptions {
+            script,
+            frames_dir: Some(dir.clone()),
+            record: Some(cast.clone()),
+            snap: Some(still.clone()),
+            deadline_secs: 60,
+            width: 80,
+            height: 24,
+        },
+    );
+    assert_eq!(code, 0, "drive script must run clean");
+
+    let recording = std::fs::read_to_string(&cast)?;
+    let mut lines = recording.lines();
+    let header: serde_json::Value = serde_json::from_str(lines.next().ok_or("empty cast")?)?;
+    assert_eq!(header["version"], 2, "asciicast v2 header: {header}");
+    assert_eq!(header["width"], 80);
+    assert_eq!(header["height"], 24);
+
+    let mut parser = vt100::Parser::new(24, 80, 0);
+    let mut previous = 0.0_f64;
+    let mut events = 0_usize;
+    for line in lines {
+        let event: serde_json::Value = serde_json::from_str(line)?;
+        let time = event[0].as_f64().ok_or("event time")?;
+        assert!(
+            time >= previous,
+            "cast time went backwards: {time} < {previous}"
+        );
+        previous = time;
+        assert_eq!(event[1], "o", "only output events: {event}");
+        parser.process(event[2].as_str().ok_or("event payload")?.as_bytes());
+        events += 1;
+    }
+
+    let mut frames: Vec<_> = std::fs::read_dir(&dir)?
+        .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+        .filter(|path| path.extension().is_some_and(|extension| extension == "txt"))
+        .collect();
+    frames.sort();
+    let dumped = std::fs::read_to_string(frames.last().ok_or("no frames dumped")?)?;
+    let replayed = parser.screen().contents();
+    // The still is a cast of its own so one renderer draws both artifacts.
+    // It has to stand alone: a single event that paints the whole screen.
+    let still_text = std::fs::read_to_string(&still)?;
+    let mut still_lines = still_text.lines();
+    let still_header: serde_json::Value =
+        serde_json::from_str(still_lines.next().ok_or("empty still")?)?;
+    assert_eq!(still_header["version"], 2, "{still_header}");
+    let still_events: Vec<&str> = still_lines.collect();
+    assert_eq!(
+        still_events.len(),
+        1,
+        "one frame, one event: {still_events:?}"
+    );
+    let still_event: serde_json::Value = serde_json::from_str(still_events[0])?;
+    let mut still_parser = vt100::Parser::new(24, 80, 0);
+    still_parser.process(still_event[2].as_str().ok_or("still payload")?.as_bytes());
+    let still_screen = still_parser.screen().contents();
+    let _ = std::fs::remove_dir_all(&dir);
+
+    assert_eq!(
+        screen_lines(&replayed),
+        screen_lines(&dumped),
+        "the cast must replay to the frame the assertions ran against"
+    );
+    // The loop draws every couple of milliseconds; only changed frames may
+    // reach the cast, or a minute of idling buries the recording in no-ops.
+    assert!(
+        events <= frames.len() * 4 + 20,
+        "{events} events for {} changed frames — the no-op filter regressed",
+        frames.len()
+    );
+    // The point of the still: painted cold into an empty terminal, it must
+    // land on the same screen the recording ends on.
+    assert_eq!(
+        screen_lines(&still_screen),
+        screen_lines(&dumped),
+        "the still must paint the frame the run ended on"
     );
     Ok(())
 }

@@ -28,6 +28,9 @@ struct Args {
     headless: bool,
     keys: Option<String>,
     frames: Option<String>,
+    record: Option<String>,
+    snap: Option<String>,
+    deadline: Option<u64>,
     resume: Resume,
     schema: Option<String>,
     prompt: String,
@@ -58,6 +61,9 @@ fn parse_args() -> Result<Args, lexopt::Error> {
     let mut headless = false;
     let mut keys = None;
     let mut frames = None;
+    let mut record = None;
+    let mut snap = None;
+    let mut deadline = None;
     let mut continue_leaf = false;
     let mut session = None;
     let mut schema = None;
@@ -87,6 +93,9 @@ fn parse_args() -> Result<Args, lexopt::Error> {
             Long("headless") => headless = true,
             Long("keys") => keys = Some(parser.value()?.string()?),
             Long("frames") => frames = Some(parser.value()?.string()?),
+            Long("record") => record = Some(parser.value()?.string()?),
+            Long("snap") => snap = Some(parser.value()?.string()?),
+            Long("deadline") => deadline = Some(parser.value()?.parse()?),
             Long("continue") => continue_leaf = true,
             Long("session") => session = Some(parser.value()?.string()?),
             Long("schema") => schema = Some(parser.value()?.string()?),
@@ -100,6 +109,23 @@ fn parse_args() -> Result<Args, lexopt::Error> {
             }
             _ => return Err(argument.unexpected()),
         }
+    }
+    // Drive-only flags are silently inert outside the headless loop, which
+    // reads downstream as a capture that produced nothing.
+    if !headless
+        && let Some(flag) = [
+            ("--keys", keys.is_some()),
+            ("--frames", frames.is_some()),
+            ("--record", record.is_some()),
+            ("--snap", snap.is_some()),
+            ("--deadline", deadline.is_some()),
+        ]
+        .into_iter()
+        .find_map(|(name, present)| present.then_some(name))
+    {
+        return Err(lexopt::Error::Custom(
+            format!("{flag} needs --headless").into(),
+        ));
     }
     Ok(Args {
         command,
@@ -115,6 +141,9 @@ fn parse_args() -> Result<Args, lexopt::Error> {
         headless,
         keys,
         frames,
+        record,
+        snap,
+        deadline,
         resume: match (session, continue_leaf) {
             (Some(id), _) => Resume::Named(id),
             (None, true) => Resume::Leaf,
@@ -914,6 +943,9 @@ fn run_tui_command(args: &Args, initial_prompt: Option<String>) -> i32 {
         let drive = yi_tui::DriveOptions {
             script,
             frames_dir: args.frames.clone().map(std::path::PathBuf::from),
+            record: args.record.clone().map(std::path::PathBuf::from),
+            snap: args.snap.clone().map(std::path::PathBuf::from),
+            deadline_secs: args.deadline.unwrap_or(60),
             width: 80,
             height: 24,
         };
