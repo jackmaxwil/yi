@@ -565,6 +565,42 @@ fn markdown_renders_fences_dim_and_headings_bold() -> TestResult {
 }
 
 #[test]
+fn fenced_code_body_reads_bright_while_the_rail_stays_dim() -> TestResult {
+    for dark in [true, false] {
+        let theme = Theme::new(ColorTier::TrueColor, dark);
+        let lines = yi_tui::markdown::render("```rust\nlet x = 1;\n```", 60, &theme);
+        let body = lines
+            .iter()
+            .find(|l| flat(l).contains("let x = 1;"))
+            .ok_or("missing fenced body")?;
+        let rail = body.spans.first().ok_or("missing rail span")?;
+        assert_eq!(
+            rail.style.fg,
+            Some(theme.dim),
+            "rail stays dim (dark={dark})"
+        );
+        let gap = body
+            .spans
+            .iter()
+            .find(|s| s.content.contains('x'))
+            .ok_or("missing untokenized span")?;
+        assert_eq!(
+            gap.style.fg,
+            Some(theme.text),
+            "code syntect leaves untokenized is the payload, not chrome (dark={dark})"
+        );
+        let keyword = body
+            .spans
+            .iter()
+            .find(|s| s.content.contains("let"))
+            .ok_or("missing keyword span")?;
+        assert_eq!(keyword.style.fg, Some(theme.accent), "dark={dark}");
+        assert!(keyword.style.add_modifier.contains(Modifier::BOLD));
+    }
+    Ok(())
+}
+
+#[test]
 fn thought_cells_are_labeled_and_dim_while_prose_stays_bright() -> TestResult {
     let theme = theme();
     let thought = yi_tui::cell::Cell::Thought {
