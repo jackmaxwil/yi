@@ -5,10 +5,13 @@ use rmcp::ServiceExt;
 use rmcp::handler::server::ServerHandler;
 use rmcp::model::{
     CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, ListToolsResult,
-    PaginatedRequestParams, ServerInfo, Tool,
+    PaginatedRequestParams, ReadResourceRequestParams, ReadResourceResponse, ReadResourceResult,
+    ResourceContents, ServerInfo, Tool,
 };
 use rmcp::service::RequestContext;
 use rmcp::{ErrorData as McpError, RoleServer};
+
+const RESOURCE_URI: &str = "echo://greeting";
 
 #[derive(Clone)]
 struct Echo;
@@ -38,6 +41,20 @@ impl ServerHandler for Echo {
             "returns its argument",
             schema,
         )]))
+    }
+
+    async fn read_resource(
+        &self,
+        request: ReadResourceRequestParams,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<ReadResourceResponse, McpError> {
+        if request.uri != RESOURCE_URI {
+            return Err(McpError::resource_not_found("no such resource", None));
+        }
+        Ok(
+            ReadResourceResult::new(vec![ResourceContents::text("the greeting", RESOURCE_URI)])
+                .into(),
+        )
     }
 
     async fn call_tool(

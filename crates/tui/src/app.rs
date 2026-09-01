@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 use ratatui::crossterm::event::{self, Event as CtEvent};
 use ratatui::text::Line;
 use serde_json::{Value, json};
-use yi_runtime::{AgentSession, ChildStatus, ChildUpdate, SubagentHost};
+use yi_runtime::{AgentSession, ChildStatus, ChildUpdate, SubagentHost, session::user_input};
 use yi_types::entry::Entry;
 use yi_types::event::AgentEvent;
 use yi_types::message::{AgentMessage, StopReason};
@@ -869,9 +869,9 @@ pub(crate) fn spawn_runtime_bridge(
             while let Some(command) = cmd_rx.recv().await {
                 match command {
                     Command::Prompt(text) => {
-                        let _ = driver_session.prompt(&text);
+                        let _ = driver_session.prompt_message(user_input(&text));
                     }
-                    Command::Steer(text) => driver_session.steer(&text),
+                    Command::Steer(text) => driver_session.steer_message(user_input(&text)),
                     Command::SummarizeBranch(stub) => {
                         let session = Arc::clone(&driver_session);
                         tokio::spawn(

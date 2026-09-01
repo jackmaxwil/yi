@@ -214,6 +214,7 @@ fn subagent_task_cell_focus_and_back() -> TestResult {
         report: Arc::new(|_message| {}),
         attribute: Arc::new(|_usage| {}),
         store: Arc::new(|| None),
+        plans_dir: dir.join(".yi/plans"),
     }));
     let mut app = app();
     runtime.block_on(async {
@@ -906,6 +907,7 @@ fn the_status_cost_sums_the_session_not_the_last_turn() -> TestResult {
         report: Arc::new(|_message| {}),
         attribute: Arc::new(|_usage| {}),
         store: Arc::new(|| None),
+        plans_dir: dir.join(".yi/plans"),
     }));
     let (_ask_tx, ask_rx) = std::sync::mpsc::channel();
     let script = yi_tui::parse_script(
@@ -1008,6 +1010,7 @@ fn a_recording_replays_to_the_frame_the_run_asserted_on() -> TestResult {
         report: Arc::new(|_message| {}),
         attribute: Arc::new(|_usage| {}),
         store: Arc::new(|| None),
+        plans_dir: dir.join(".yi/plans"),
     }));
     let (_ask_tx, ask_rx) = std::sync::mpsc::channel();
     let cast = dir.join("run.cast");

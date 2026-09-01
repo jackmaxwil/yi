@@ -98,6 +98,7 @@ async fn the_wall_denies_a_write_to_the_instrument_before_it_runs() -> TestResul
     let wall = Wall {
         deny_write: vec![instrument.clone()],
         deny_read: Vec::new(),
+        deny_url: Vec::new(),
     };
 
     let (denial, is_error) =
@@ -137,6 +138,7 @@ async fn a_read_deny_keeps_the_orientation_packet_out_of_the_denied_tree() -> Te
     let wall = Wall {
         deny_write: Vec::new(),
         deny_read: vec![root.join("secret")],
+        deny_url: Vec::new(),
     };
 
     let (packet, is_error) =
@@ -168,6 +170,7 @@ fn a_read_deny_binds_reads_and_a_write_deny_does_not() -> TestResult {
     let write_only = Wall {
         deny_write: vec![root.clone()],
         deny_read: Vec::new(),
+        deny_url: Vec::new(),
     };
     assert!(
         write_only
@@ -183,6 +186,7 @@ fn a_read_deny_binds_reads_and_a_write_deny_does_not() -> TestResult {
     let read_too = Wall {
         deny_write: Vec::new(),
         deny_read: vec![root.clone()],
+        deny_url: Vec::new(),
     };
     assert!(
         read_too

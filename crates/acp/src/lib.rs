@@ -396,8 +396,9 @@ impl AcpState {
             "session/prompt" => {
                 let (handle, _) = self.session(params)?;
                 let text = prompt_text(params);
-                if handle.session.prompt(&text).is_err() {
-                    handle.session.follow_up(&text);
+                let prompt = yi_runtime::session::user_input(&text);
+                if handle.session.prompt_message(prompt.clone()).is_err() {
+                    handle.session.follow_up_message(prompt);
                 }
                 Ok(json!({}))
             }
@@ -509,7 +510,10 @@ impl AcpState {
                     // Blocks dispatch up to the check timeout — same class as
                     // the C5 permission bridge's synchronous wait.
                     "update" => service.update(text("status")),
-                    "objective" => service.set_objective(text("objective")),
+                    "objective" => service.set_objective(
+                        text("objective"),
+                        params.get("citation").and_then(Value::as_str),
+                    ),
                     other => Err(format!(
                         "unknown goal action {other}; use get|create|update|objective"
                     )),

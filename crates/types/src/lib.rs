@@ -7,6 +7,7 @@ pub mod compaction;
 pub mod config;
 pub mod entry;
 pub mod event;
+pub mod fetch;
 pub mod goal;
 pub mod harness;
 pub mod kernel;

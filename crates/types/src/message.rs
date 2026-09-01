@@ -32,6 +32,23 @@ pub enum Content {
     },
 }
 
+/// D25: who a user-role message actually came from. Absent means
+/// [`Attribution::Unproven`], so every message written before this field and
+/// every host-minted one is unresolvable by `user://`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum Attribution {
+    #[default]
+    Unproven,
+    User,
+}
+
+impl Attribution {
+    pub fn is_unproven(&self) -> bool {
+        matches!(self, Self::Unproven)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum UserContent {
@@ -161,6 +178,8 @@ pub enum AgentMessage {
     User {
         content: UserContent,
         timestamp: u64,
+        #[serde(default, skip_serializing_if = "Attribution::is_unproven")]
+        attribution: Attribution,
     },
     #[serde(rename_all = "camelCase")]
     Assistant {
@@ -235,4 +254,69 @@ pub enum AgentMessage {
         tokens_before: u64,
         timestamp: u64,
     },
+}
+
+impl AgentMessage {
+    /// A user-role message the host minted for itself; it never carries the
+    /// user's authority.
+    pub fn host_user(content: UserContent, timestamp: u64) -> Self {
+        Self::User {
+            content,
+            timestamp,
+            attribution: Attribution::Unproven,
+        }
+    }
+
+    /// Input that crossed the process boundary from the user, the only kind
+    /// `user://` serves.
+    pub fn user_input(content: UserContent, timestamp: u64) -> Self {
+        Self::User {
+            content,
+            timestamp,
+            attribution: Attribution::User,
+        }
+    }
+
+    pub fn attribution(&self) -> Attribution {
+        match self {
+            Self::User { attribution, .. } => *attribution,
+            Self::Assistant { .. }
+            | Self::ToolResult { .. }
+            | Self::BashExecution { .. }
+            | Self::Custom { .. }
+            | Self::BranchSummary { .. }
+            | Self::CompactionSummary { .. } => Attribution::Unproven,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{AgentMessage, Attribution, UserContent};
+
+    type TestResult = Result<(), Box<dyn std::error::Error>>;
+
+    #[test]
+    fn an_absent_field_reads_as_unproven_and_writes_nothing_back() -> TestResult {
+        let wire = r#"{"role":"user","content":"hi","timestamp":7}"#;
+        let message: AgentMessage = serde_json::from_str(wire)?;
+        assert_eq!(message.attribution(), Attribution::Unproven);
+        assert_eq!(serde_json::to_string(&message)?, wire);
+        Ok(())
+    }
+
+    #[test]
+    fn only_the_user_input_mint_carries_the_users_authority() -> TestResult {
+        let host = AgentMessage::host_user(UserContent::Text("hi".to_owned()), 7);
+        assert_eq!(host.attribution(), Attribution::Unproven);
+        let typed = AgentMessage::user_input(UserContent::Text("hi".to_owned()), 7);
+        assert_eq!(typed.attribution(), Attribution::User);
+        let wire = serde_json::to_string(&typed)?;
+        assert!(wire.contains(r#""attribution":"user""#), "{wire}");
+        assert_eq!(
+            serde_json::from_str::<AgentMessage>(&wire)?.attribution(),
+            Attribution::User
+        );
+        Ok(())
+    }
 }

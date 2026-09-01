@@ -2,6 +2,7 @@ use std::path::{Path, PathBuf};
 
 use serde_json::{Map, Value};
 use yi_tools::ToolKind;
+use yi_types::url::{Scheme, Url};
 
 /// Design B1 overlay, plan §3.4: a reduction of the child's capability set,
 /// never an extension. Expand-only enforcement lives here — an implementer
@@ -10,6 +11,7 @@ use yi_tools::ToolKind;
 pub struct Wall {
     pub deny_write: Vec<PathBuf>,
     pub deny_read: Vec<PathBuf>,
+    pub deny_url: Vec<String>,
 }
 
 fn parse_paths(value: Option<&Value>, cwd: &Path, key: &str) -> Result<Vec<PathBuf>, String> {
@@ -40,11 +42,39 @@ impl Wall {
         Ok(Self {
             deny_write: parse_paths(kwargs.get("deny_write"), cwd, "deny_write")?,
             deny_read: parse_paths(kwargs.get("deny_read"), cwd, "deny_read")?,
+            deny_url: Vec::new(),
         })
     }
 
     pub fn is_empty(&self) -> bool {
-        self.deny_write.is_empty() && self.deny_read.is_empty()
+        self.deny_write.is_empty() && self.deny_read.is_empty() && self.deny_url.is_empty()
+    }
+
+    /// Invariant: a fetch is read-only, so only [`Wall::deny_read`] maps into
+    /// URL space — a read-walled path is also a walled `local://` URL.
+    pub fn check_url(&self, url: &Url, workspace: &Path) -> Option<String> {
+        let rendered = url.to_string();
+        if let Some(hit) = self
+            .deny_url
+            .iter()
+            .find(|prefix| rendered.starts_with(prefix.as_str()))
+        {
+            return Some(refusal("fetch", hit));
+        }
+        if !matches!(url.scheme(), Scheme::Local) {
+            return None;
+        }
+        let raw = Path::new(url.path());
+        let target = if raw.is_absolute() {
+            raw.to_path_buf()
+        } else {
+            workspace.join(raw)
+        };
+        let normalized = yi_permission::lexical_normalize(&target);
+        self.deny_read
+            .iter()
+            .find(|denied| normalized.starts_with(yi_permission::lexical_normalize(denied)))
+            .map(|hit| refusal("fetch", &hit.display().to_string()))
     }
 
     /// Denies before the call runs, naming the path as evidence. Not a sandbox:
