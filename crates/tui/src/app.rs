@@ -91,8 +91,10 @@ pub struct App {
     pub(crate) composer: Composer,
     pub(crate) bottom: Option<Bottom>,
     pub(crate) tree: Option<TreeView>,
+    pub(crate) plan_tree: Option<crate::plantree::PlanTreeView>,
     pub(crate) pending_commit: Vec<Line<'static>>,
     pub(crate) pending_open_tree: bool,
+    pub(crate) pending_open_plan_tree: bool,
     pub(crate) pending_rewind: Option<String>,
     pub(crate) pending_new: bool,
     pub(crate) pending_editor: bool,
@@ -185,8 +187,10 @@ impl App {
             composer: Composer::default(),
             bottom: None,
             tree: None,
+            plan_tree: None,
             pending_commit: Vec::new(),
             pending_open_tree: false,
+            pending_open_plan_tree: false,
             pending_rewind: None,
             pending_new: false,
             pending_editor: false,
@@ -1016,10 +1020,7 @@ pub fn run_tui(
             last_spinner_phase = phase;
             app.scheduler.request();
         }
-        if app.pending_open_tree {
-            app.pending_open_tree = false;
-            open_tree(&mut app, &session);
-        }
+        process_pending_tree(&mut app, &session);
         crate::rewind::process_pending_rewind(&mut app, &mut terminal, &session, &cmd_tx);
         crate::rewind::process_pending_new(&mut app, &mut terminal, &session);
         crate::rewind::process_pending_undo(&mut app, &session);
@@ -1048,6 +1049,10 @@ pub(crate) fn process_pending_tree(app: &mut App, session: &Arc<AgentSession>) {
     if app.pending_open_tree {
         app.pending_open_tree = false;
         open_tree(app, session);
+    }
+    if app.pending_open_plan_tree {
+        app.pending_open_plan_tree = false;
+        crate::plantree::open_plan_tree(app, session);
     }
 }
 

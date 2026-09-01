@@ -62,28 +62,9 @@ impl FetchLog {
     /// Both sides are scheme-plus-path, so a citation with a fragment counts as
     /// a reference to the address that was supplied.
     pub fn relevance(&self, supplied: &[Url]) -> Relevance {
-        let served: Vec<String> = {
-            let state = self.lock();
-            let mut bases: Vec<String> =
-                state.records.iter().map(|(base, _)| base.clone()).collect();
-            bases.sort_unstable();
-            bases.dedup();
-            bases
-        };
-        let named: Vec<String> = supplied.iter().map(base_of).collect();
-        Relevance {
-            supplied: named.len(),
-            referenced: named.iter().filter(|base| served.contains(base)).count(),
-            unused: supplied
-                .iter()
-                .filter(|url| !served.contains(&base_of(url)))
-                .map(Url::to_string)
-                .collect(),
-            unsupplied: served
-                .into_iter()
-                .filter(|base| !named.contains(base))
-                .collect(),
-        }
+        let state = self.lock();
+        let served = state.records.iter().map(|(base, _)| base.clone());
+        measure(served.collect(), supplied)
     }
 
     /// Invariant: identity is scheme plus path — a fragment is an expectation
@@ -150,6 +131,53 @@ pub struct Relevance {
     pub referenced: usize,
     pub unused: Vec<String>,
     pub unsupplied: Vec<String>,
+}
+
+fn measure(mut served: Vec<String>, supplied: &[Url]) -> Relevance {
+    served.sort_unstable();
+    served.dedup();
+    let named: Vec<String> = supplied.iter().map(base_of).collect();
+    Relevance {
+        supplied: named.len(),
+        referenced: named.iter().filter(|base| served.contains(base)).count(),
+        unused: supplied
+            .iter()
+            .filter(|url| !served.contains(&base_of(url)))
+            .map(Url::to_string)
+            .collect(),
+        unsupplied: served
+            .into_iter()
+            .filter(|base| !named.contains(base))
+            .collect(),
+    }
+}
+
+/// M3 over a transcript rather than a live log: a child's fetches are durable
+/// custom entries, so the owner measures its own supply after the child is gone.
+pub fn relevance_of(session: &yi_session::SharedSession, supplied: &[Url]) -> Relevance {
+    let entries = yi_session::lock_session(session)
+        .find_entries(&yi_session::EntryQuery::default())
+        .unwrap_or_default();
+    let served = entries
+        .iter()
+        .filter_map(|entry| {
+            let yi_types::entry::Entry::Custom {
+                custom_type,
+                data: Some(data),
+                ..
+            } = entry
+            else {
+                return None;
+            };
+            if custom_type != FETCH_ENTRY_TYPE {
+                return None;
+            }
+            serde_json::from_value::<FetchRecord>(data.clone()).ok()
+        })
+        .filter_map(|record| record.url.parse::<Url>().ok())
+        .map(|url| base_of(&url))
+        .collect();
+    measure(served, supplied)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]

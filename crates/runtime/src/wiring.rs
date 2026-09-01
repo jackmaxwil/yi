@@ -255,8 +255,12 @@ fn wire_plan_engine(
         deliver,
         log,
     ));
-    let engine =
-        Arc::new(crate::plan::ops::PlanEngine::new(store, delegate).with_output_resolve(resolver));
+    let ops = Arc::new(crate::plan::ledger::SessionOpSink(session.store_handle()));
+    let engine = Arc::new(
+        crate::plan::ops::PlanEngine::new(store, delegate)
+            .with_output_resolve(resolver)
+            .with_op_sink(ops),
+    );
     tools.push(Arc::new(crate::plan::tool::PlanTool::new(
         Arc::clone(&engine),
         actor,

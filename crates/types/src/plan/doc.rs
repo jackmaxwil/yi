@@ -210,9 +210,11 @@ pub struct Todo {
     pub extra: Map<String, Value>,
 }
 
-#[derive(Clone, Serialize, Deserialize)]
+/// The state's name without its payload — what a duration in the ledger is
+/// measured between, and the one vocabulary that keeps an unknown tag verbatim.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
-enum StateTag {
+pub enum TodoStateName {
     Pending,
     Running,
     Blocked,
@@ -223,8 +225,20 @@ enum StateTag {
     Other(String),
 }
 
-impl StateTag {
-    fn as_str(&self) -> &str {
+impl TodoStateName {
+    pub fn of(state: &TodoState) -> Self {
+        match state {
+            TodoState::Pending => Self::Pending,
+            TodoState::Running { .. } => Self::Running,
+            TodoState::Blocked { .. } => Self::Blocked,
+            TodoState::Done { .. } => Self::Done,
+            TodoState::Failed { .. } => Self::Failed,
+            TodoState::Abandoned => Self::Abandoned,
+            TodoState::Other(tag) => Self::Other(tag.clone()),
+        }
+    }
+
+    pub fn as_str(&self) -> &str {
         match self {
             Self::Pending => "pending",
             Self::Running => "running",
@@ -246,7 +260,7 @@ struct BlockedRepr {
 #[derive(Clone, Serialize, Deserialize)]
 struct TodoRepr {
     label: TodoLabel,
-    state: StateTag,
+    state: TodoStateName,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     by: Option<AgentId>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -272,22 +286,22 @@ struct TodoRepr {
 impl From<Todo> for TodoRepr {
     fn from(todo: Todo) -> Self {
         let (state, by, blocked, cause, last, output) = match todo.state {
-            TodoState::Pending => (StateTag::Pending, None, None, None, None, None),
-            TodoState::Running { by } => (StateTag::Running, Some(by), None, None, None, None),
+            TodoState::Pending => (TodoStateName::Pending, None, None, None, None, None),
+            TodoState::Running { by } => (TodoStateName::Running, Some(by), None, None, None, None),
             TodoState::Blocked { on, note } => (
-                StateTag::Blocked,
+                TodoStateName::Blocked,
                 None,
                 Some(BlockedRepr { on, note }),
                 None,
                 None,
                 None,
             ),
-            TodoState::Done { output } => (StateTag::Done, None, None, None, None, output),
+            TodoState::Done { output } => (TodoStateName::Done, None, None, None, None, output),
             TodoState::Failed { cause, last } => {
-                (StateTag::Failed, None, None, Some(cause), last, None)
+                (TodoStateName::Failed, None, None, Some(cause), last, None)
             }
-            TodoState::Abandoned => (StateTag::Abandoned, None, None, None, None, None),
-            TodoState::Other(tag) => (StateTag::Other(tag), None, None, None, None, None),
+            TodoState::Abandoned => (TodoStateName::Abandoned, None, None, None, None, None),
+            TodoState::Other(tag) => (TodoStateName::Other(tag), None, None, None, None, None),
         };
         Self {
             label: todo.label,
@@ -325,26 +339,26 @@ impl TryFrom<TodoRepr> for Todo {
         let mut last = repr.last;
         let mut output = repr.output;
         let state = match repr.state {
-            StateTag::Pending => TodoState::Pending,
-            StateTag::Running => TodoState::Running {
+            TodoStateName::Pending => TodoState::Pending,
+            TodoStateName::Running => TodoState::Running {
                 by: by.take().ok_or_else(|| missing("by"))?,
             },
-            StateTag::Blocked => {
+            TodoStateName::Blocked => {
                 let repr = blocked.take().ok_or_else(|| missing("blocked"))?;
                 TodoState::Blocked {
                     on: repr.on,
                     note: repr.note,
                 }
             }
-            StateTag::Done => TodoState::Done {
+            TodoStateName::Done => TodoState::Done {
                 output: output.take(),
             },
-            StateTag::Failed => TodoState::Failed {
+            TodoStateName::Failed => TodoState::Failed {
                 cause: cause.take().ok_or_else(|| missing("cause"))?,
                 last: last.take(),
             },
-            StateTag::Abandoned => TodoState::Abandoned,
-            StateTag::Other(other) => TodoState::Other(other),
+            TodoStateName::Abandoned => TodoState::Abandoned,
+            TodoStateName::Other(other) => TodoState::Other(other),
         };
         if by.is_some() {
             return Err(stray("by"));

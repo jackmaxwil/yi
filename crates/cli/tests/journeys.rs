@@ -224,3 +224,143 @@ fn a_red_check_refuses_the_done_claim_and_the_completion_gate_holds() -> TestRes
     journey.reclaim();
     Ok(())
 }
+
+const HAND_WRITTEN_PLAN: &str = "---
+format: 1
+plan: ship-the-widget
+goal: \"Ship the widget end to end\"
+version: 1
+touched: 3
+tier: root
+state: active
+todos:
+  - label: \"Cut the seam\"
+    state: done
+    output: \"agent://ship-the-widget/cut-the-seam\"
+  - label: \"Wire the adapter\"
+    state: blocked
+    after: [\"Cut the seam\"]
+    blocked:
+      on:
+        external: {}
+      note: \"the staging deploy has to finish\"
+  - label: \"Write the manpage\"
+    state: pending
+    delegation:
+      spec:
+        role: writer
+      accept:
+        stated: \"the manpage reads well\"
+---
+
+## Wire the adapter
+
+The adapter cannot land before staging is green.
+";
+
+/// The plan document driven through the real binary: the store parses it, the
+/// resolver addresses a todo by slug, the lint reads it, and a `Plan:` trailer
+/// resolves back to the goal. The tool itself is model-invoked, so this journey
+/// covers every surface around it rather than the tool's own call path.
+#[test]
+#[ignore = "tier-2 journey: `just journeys`"]
+fn a_hand_written_plan_lints_resolves_and_answers_why() -> TestResult {
+    let journey = Journey::new("plandoc")?;
+    let plans = journey.project().join(".yi/plans");
+    std::fs::create_dir_all(&plans)?;
+    std::fs::write(plans.join("ship-the-widget.md"), HAND_WRITTEN_PLAN)?;
+
+    let linted = succeeded(&journey.yi(&["plan", "lint", "--json"])?, "yi plan lint")?;
+    let findings: Value = serde_json::from_str(linted.trim())?;
+    let rules: Vec<&str> = findings["findings"]
+        .as_array()
+        .ok_or("lint returned no findings array")?
+        .iter()
+        .filter_map(|finding| finding["rule"].as_str())
+        .collect();
+    assert!(
+        rules.contains(&"ephemeral-terminal"),
+        "a done output that will not outlive the run is a hard finding: {linted}"
+    );
+    assert!(
+        rules.contains(&"no-probe"),
+        "an external block with no probe is a hard finding: {linted}"
+    );
+    assert!(
+        rules.contains(&"unrunnable-acceptance"),
+        "a stated acceptance adjudicates nothing: {linted}"
+    );
+
+    let fetched = succeeded(
+        &journey.yi(&["fetch", "plan://ship-the-widget/wire-the-adapter"])?,
+        "yi fetch plan://",
+    )?;
+    assert!(
+        fetched.contains("staging is green"),
+        "the todo's body section rides its address: {fetched}"
+    );
+
+    let reported = succeeded(
+        &journey.yi(&["plan", "report", "--json"])?,
+        "yi plan report",
+    )?;
+    let measured: Value = serde_json::from_str(reported.trim())?;
+    assert_eq!(
+        measured["plan"],
+        json!("ship-the-widget"),
+        "the report names the plan even with no op stream: {reported}"
+    );
+
+    let project = journey.project();
+    for args in [
+        vec!["init", "-q"],
+        vec!["config", "user.email", "journey@example.invalid"],
+        vec!["config", "user.name", "Journey"],
+        vec!["add", "-A"],
+        vec![
+            "commit",
+            "-q",
+            "-m",
+            "Wire the adapter through the staging seam\n\nPlan: plan://ship-the-widget/wire-the-adapter",
+        ],
+    ] {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "the trailer index is git's own, so the journey has to write a real commit"
+        )]
+        let status = Command::new("git")
+            .arg("-C")
+            .arg(&project)
+            .args(&args)
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_SYSTEM", "/dev/null")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()?;
+        assert!(status.success(), "git {args:?} failed");
+    }
+
+    let answered = succeeded(
+        &journey.yi(&["why", ".yi/plans/ship-the-widget.md:1"])?,
+        "yi why <file>:<line>",
+    )?;
+    assert!(
+        answered.contains("Ship the widget end to end"),
+        "blame to commit to todo to goal resolves with no inference: {answered}"
+    );
+    assert!(
+        answered.contains("Wire the adapter"),
+        "the answer names the todo the trailer pointed at: {answered}"
+    );
+
+    let indexed = succeeded(
+        &journey.yi(&["why", "ship-the-widget/wire-the-adapter"])?,
+        "yi why <plan>/<todo>",
+    )?;
+    assert!(
+        indexed.contains("Wire the adapter through the staging seam"),
+        "the reverse index is the same data: {indexed}"
+    );
+    journey.reclaim();
+    Ok(())
+}

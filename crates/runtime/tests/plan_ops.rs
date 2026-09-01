@@ -66,7 +66,7 @@ impl Delegate for Stub {
         AgentId::new(format!("child-{serial}")).map_err(|error| error.to_string())
     }
 
-    fn reap(&self, _agent: &AgentId) -> Result<Option<Url>, String> {
+    fn reap(&self, _agent: &AgentId, _supplied: &[Url]) -> Result<Option<Url>, String> {
         if self.fail_reap.load(Ordering::SeqCst) {
             return Err("child is wedged".to_owned());
         }

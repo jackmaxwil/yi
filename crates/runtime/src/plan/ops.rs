@@ -4,14 +4,15 @@ use std::sync::{Arc, Mutex};
 
 use yi_types::plan::doc::{
     AgentId, BlockedOn, Delegation, DocError, GoalText, Plan, PlanId, PlanIssue, PlanState,
-    PlanTier, RetryCount, Spawns, Todo, TodoAddr, TodoLabel, TodoState,
+    PlanTier, RetryCount, Spawns, Todo, TodoAddr, TodoLabel, TodoState, TodoStateName,
 };
+use yi_types::plan::ledger::PlanOpRecord;
 use yi_types::url::Url;
 
 use super::store::{FRONTMATTER_CAP_BYTES, PlanBody, PlanFile, PlanStore, StoreError, UserEdit};
 use super::table::{
     OpKind, StateName, add_edge, admissible, append_todos, charge_retry, charge_spawn, check_actor,
-    check_plan_state, check_terminal, in_flight, locate_step, new_todo, ready_labels,
+    check_plan_state, check_terminal, in_flight, locate_step, new_todo, op_name, ready_labels,
     reorder_todos, step, validate_plan,
 };
 use super::yaml;
@@ -91,6 +92,25 @@ pub enum Op {
 }
 
 impl Op {
+    pub fn label(&self) -> Option<&TodoLabel> {
+        match self {
+            Self::Drop { label }
+            | Self::Block { label, .. }
+            | Self::Unblock { label }
+            | Self::Start { label }
+            | Self::Done { label, .. }
+            | Self::Fail { label, .. }
+            | Self::Retry { label, .. }
+            | Self::Decompose { label, .. } => Some(label),
+            Self::AddEdge { todo, .. } => Some(todo),
+            Self::Init { .. }
+            | Self::Append { .. }
+            | Self::Reorder { .. }
+            | Self::Supersede { .. }
+            | Self::View { .. } => None,
+        }
+    }
+
     pub fn kind(&self) -> OpKind {
         match self {
             Self::Init { .. } => OpKind::Init,
@@ -212,8 +232,16 @@ pub enum PlanOpError {
 
 pub trait Delegate: Send + Sync {
     fn spawn(&self, at: &TodoAddr, delegation: &Delegation) -> Result<AgentId, String>;
-    fn reap(&self, agent: &AgentId) -> Result<Option<Url>, String>;
+    /// `supplied` is the delegation's context, so the seam that frees the child
+    /// is also the one that can say how much of it the child ever read.
+    fn reap(&self, agent: &AgentId, supplied: &[Url]) -> Result<Option<Url>, String>;
     fn follow_up(&self, dispatched: &[TodoLabel], held: usize);
+}
+
+/// Where an applied op is recorded. The plan file is the state; this is the
+/// only record of when it moved, which every duration in §12 is a difference of.
+pub trait OpSink: Send + Sync {
+    fn record(&self, record: PlanOpRecord);
 }
 
 /// One read over the fetch seam, shaped like [`crate::fetch::CheckpointShow`].
@@ -290,6 +318,7 @@ pub struct PlanEngine {
     width: NonZeroUsize,
     known: Mutex<HashMap<PlanId, PlanFile>>,
     output_resolve: Option<Arc<dyn OutputResolve>>,
+    op_sink: Option<Arc<dyn OpSink>>,
 }
 
 impl PlanEngine {
@@ -301,6 +330,7 @@ impl PlanEngine {
             width: dispatch_width(cores),
             known: Mutex::new(HashMap::new()),
             output_resolve: None,
+            op_sink: None,
         }
     }
 
@@ -315,57 +345,98 @@ impl PlanEngine {
         }
     }
 
+    pub fn with_op_sink(self, sink: Arc<dyn OpSink>) -> Self {
+        Self {
+            op_sink: Some(sink),
+            ..self
+        }
+    }
+
+    fn emit(
+        &self,
+        plan: &Plan,
+        op: OpKind,
+        actor: &Actor,
+        todo: Option<TodoLabel>,
+        from: Option<TodoStateName>,
+    ) {
+        let Some(sink) = &self.op_sink else {
+            return;
+        };
+        let to = todo
+            .as_ref()
+            .and_then(|label| plan.todo(label))
+            .map(|found| TodoStateName::of(&found.state));
+        sink.record(PlanOpRecord {
+            plan: plan.id.clone(),
+            op: op_name(op).to_owned(),
+            actor: actor_word(actor),
+            at: yi_session::now_ms(),
+            todo,
+            from,
+            to,
+            todos: u32::try_from(plan.todos.len()).unwrap_or(u32::MAX),
+            extra: serde_json::Map::new(),
+        });
+    }
+
     pub fn apply(&self, request: OpRequest) -> Result<Outcome, PlanOpError> {
         let OpRequest { plan, actor, op } = request;
         let kind = op.kind();
         check_actor(&actor, kind)?;
         let _lease = self.store.lease()?;
+        let named = op.label().cloned();
         match op {
-            Op::Init { goal, todos } => self.init(goal, todos),
-            Op::Append { todos } => self.framed(plan, kind, |file, _| {
+            Op::Init { goal, todos } => self.init(goal, todos, &actor),
+            Op::Append { todos } => self.framed(plan, kind, &actor, named, |file, _| {
                 append_todos(&mut file.plan, todos)?;
                 Ok(Delta::default())
             }),
-            Op::Drop { label } => self.framed(plan, kind, |file, _| {
+            Op::Drop { label } => self.framed(plan, kind, &actor, named, |file, _| {
                 self.do_mark(file, &label, OpKind::Drop, TodoState::Abandoned)
             }),
-            Op::Block { label, on, note } => self.framed(plan, kind, |file, _| {
+            Op::Block { label, on, note } => self.framed(plan, kind, &actor, named, |file, _| {
                 self.do_mark(file, &label, OpKind::Block, TodoState::Blocked { on, note })
             }),
-            Op::Unblock { label } => self.framed(plan, kind, |file, _| {
+            Op::Unblock { label } => self.framed(plan, kind, &actor, named, |file, _| {
                 self.do_mark(file, &label, OpKind::Unblock, TodoState::Pending)
             }),
-            Op::Reorder { labels } => self.framed(plan, kind, |file, _| {
+            Op::Reorder { labels } => self.framed(plan, kind, &actor, named, |file, _| {
                 reorder_todos(&mut file.plan, labels)?;
                 Ok(Delta::default())
             }),
-            Op::AddEdge { todo, after } => self.framed(plan, kind, |file, _| {
+            Op::AddEdge { todo, after } => self.framed(plan, kind, &actor, named, |file, _| {
                 add_edge(&mut file.plan, todo, after)?;
                 Ok(Delta::default())
             }),
-            Op::Start { label } => {
-                self.framed(plan, kind, |file, root| self.do_start(file, root, label))
-            }
-            Op::Done { label, output } => {
-                self.framed(plan, kind, |file, _| self.do_done(file, label, output))
-            }
-            Op::Fail { label, cause } => {
-                self.framed(plan, kind, |file, _| self.do_fail(file, label, cause))
-            }
-            Op::Retry { label, delegation } => {
-                self.framed(plan, kind, |file, _| self.do_retry(file, label, delegation))
-            }
-            Op::Decompose { label, todos } => {
-                self.framed(plan, kind, |file, _| self.do_decompose(file, label, todos))
-            }
-            Op::Supersede { reason, todos } => {
-                self.framed(plan, kind, |file, _| self.do_supersede(file, reason, todos))
-            }
+            Op::Start { label } => self.framed(plan, kind, &actor, named, |file, root| {
+                self.do_start(file, root, label)
+            }),
+            Op::Done { label, output } => self.framed(plan, kind, &actor, named, |file, _| {
+                self.do_done(file, label, output)
+            }),
+            Op::Fail { label, cause } => self.framed(plan, kind, &actor, named, |file, _| {
+                self.do_fail(file, label, cause)
+            }),
+            Op::Retry { label, delegation } => self.framed(plan, kind, &actor, named, |file, _| {
+                self.do_retry(file, label, delegation)
+            }),
+            Op::Decompose { label, todos } => self.framed(plan, kind, &actor, named, |file, _| {
+                self.do_decompose(file, label, todos)
+            }),
+            Op::Supersede { reason, todos } => self.framed(plan, kind, &actor, named, |file, _| {
+                self.do_supersede(file, reason, todos)
+            }),
             Op::View { full } => self.view(plan, full),
         }
     }
 
-    fn init(&self, goal: GoalText, specs: Vec<TodoSpec>) -> Result<Outcome, PlanOpError> {
+    fn init(
+        &self,
+        goal: GoalText,
+        specs: Vec<TodoSpec>,
+        actor: &Actor,
+    ) -> Result<Outcome, PlanOpError> {
         for id in self.store.roots()? {
             if self.store.read(&id)?.plan.state == PlanState::Active {
                 return Err(PlanOpError::PlanExists { id });
@@ -384,6 +455,7 @@ impl PlanEngine {
             body: PlanBody::default(),
         };
         self.write_all(&file, &[])?;
+        self.emit(&file.plan, OpKind::Init, actor, None, None);
         self.conclude(&id, &id, &[], Delta::default())
     }
 
@@ -402,7 +474,14 @@ impl PlanEngine {
         })
     }
 
-    fn framed<F>(&self, plan: Option<PlanId>, op: OpKind, mutate: F) -> Result<Outcome, PlanOpError>
+    fn framed<F>(
+        &self,
+        plan: Option<PlanId>,
+        op: OpKind,
+        actor: &Actor,
+        label: Option<TodoLabel>,
+        mutate: F,
+    ) -> Result<Outcome, PlanOpError>
     where
         F: FnOnce(&mut PlanFile, &PlanId) -> Result<Delta, PlanOpError>,
     {
@@ -414,6 +493,10 @@ impl PlanEngine {
         self.fold_user_edits(&mut file, &mut delta)?;
         let flight = self.family_flight(&root)?;
         let before = admissible(&file.plan, self.width.get().saturating_sub(flight));
+        let was = label
+            .as_ref()
+            .and_then(|name| file.plan.todo(name))
+            .map(|found| TodoStateName::of(&found.state));
         let mutated = mutate(&mut file, &root)?;
         delta.spawned.extend(mutated.spawned);
         delta.reaped.extend(mutated.reaped);
@@ -429,10 +512,11 @@ impl PlanEngine {
         }
         if let Err(refused) = self.write_all(&file, &delta.extra) {
             for (_, agent) in &delta.spawned {
-                let _ = self.delegate.reap(agent);
+                let _ = self.delegate.reap(agent, &[]);
             }
             return Err(refused);
         }
+        self.emit(&file.plan, op, actor, label, was);
         self.conclude(&id, &root, &before, delta)
     }
 
@@ -634,9 +718,14 @@ impl PlanEngine {
             return Ok(None);
         };
         let agent = by.clone();
+        let supplied = todo
+            .delegation
+            .as_ref()
+            .map(|delegation| delegation.context.clone())
+            .unwrap_or_default();
         let last = self
             .delegate
-            .reap(&agent)
+            .reap(&agent, &supplied)
             .map_err(|reason| PlanOpError::ReapFailed { agent, reason })?;
         check_terminal(&todo.label, last.as_ref())?;
         delta.reaped.push(agent_url(&TodoAddr {
@@ -924,6 +1013,15 @@ impl PlanEngine {
             };
         }
         Ok(())
+    }
+}
+
+fn actor_word(actor: &Actor) -> String {
+    match actor {
+        Actor::Owner => OWNER_AGENT.to_owned(),
+        Actor::Child(agent) => agent.as_str().to_owned(),
+        Actor::User(_) => "user".to_owned(),
+        Actor::Host => "host".to_owned(),
     }
 }
 

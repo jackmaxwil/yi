@@ -8,7 +8,7 @@ use yi_types::plan::doc::{
 use yi_types::url::Url;
 
 use super::ops::{Actor, Op, OpRequest, Outcome, PlanEngine, PlanOpError, TodoSpec};
-use super::table::{OpKind, StateName};
+use super::table::{OpKind, StateName, op_name};
 
 const WINDOW: usize = 8;
 
@@ -28,25 +28,6 @@ const ALL_OPS: [OpKind; 14] = [
     OpKind::Supersede,
     OpKind::View,
 ];
-
-fn op_name(op: OpKind) -> &'static str {
-    match op {
-        OpKind::Init => "init",
-        OpKind::Append => "append",
-        OpKind::Drop => "drop",
-        OpKind::Block => "block",
-        OpKind::Unblock => "unblock",
-        OpKind::Reorder => "reorder",
-        OpKind::AddEdge => "add_edge",
-        OpKind::Start => "start",
-        OpKind::Done => "done",
-        OpKind::Fail => "fail",
-        OpKind::Retry => "retry",
-        OpKind::Decompose => "decompose",
-        OpKind::Supersede => "supersede",
-        OpKind::View => "view",
-    }
-}
 
 fn legal_ops() -> String {
     ALL_OPS

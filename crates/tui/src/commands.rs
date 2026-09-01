@@ -9,9 +9,9 @@ use crate::cell::Cell;
 /// Invariant: the popup offers exactly what [`process_pending_command`] and
 /// [`crate::input::handle_slash`] route, so the table lives beside them.
 #[rustfmt::skip]
-pub(crate) const SLASH_COMMANDS: [&str; 13] = [
-    "new", "undo", "quit", "tree", "editor", "advisor", "plan", "goal", "agents", "model",
-    "permissions", "compact", "sessions",
+pub(crate) const SLASH_COMMANDS: [&str; 14] = [
+    "new", "undo", "quit", "tree", "editor", "advisor", "plan", "plantree", "goal", "agents",
+    "model", "permissions", "compact", "sessions",
 ];
 
 pub fn process_pending_command(app: &mut App, session: &Arc<AgentSession>) {

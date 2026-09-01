@@ -27,7 +27,7 @@ impl Delegate for Nobody {
         Err("this plan delegates nothing".to_owned())
     }
 
-    fn reap(&self, _agent: &AgentId) -> Result<Option<Url>, String> {
+    fn reap(&self, _agent: &AgentId, _supplied: &[Url]) -> Result<Option<Url>, String> {
         Ok(None)
     }
 

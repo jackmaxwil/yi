@@ -8,6 +8,7 @@ use crate::cell::Cell;
 use crate::commands::SLASH_COMMANDS;
 use crate::focus::{FocusMove, focus_move, set_focus};
 use crate::keymap::{Action, EvalContext, KeyCodeValue, KeyInput, SingleKey};
+use crate::plantree::PlanTreeResult;
 use crate::popup::{BottomView, ListPopup, PopupResult, walk_files};
 use crate::tree::TreeResult;
 
@@ -36,6 +37,10 @@ pub fn handle_terminal_event(
             app.scheduler.request();
             if app.tree.is_some() {
                 handle_tree_key(app, &key);
+                return;
+            }
+            if app.plan_tree.is_some() {
+                handle_plan_tree_key(app, &key);
                 return;
             }
             if app.bottom.is_some() {
@@ -97,6 +102,16 @@ pub(crate) fn handle_tree_key(app: &mut App, key: &SingleKey) {
             app.tree = None;
             app.pending_rewind = Some(id);
         }
+    }
+}
+
+pub(crate) fn handle_plan_tree_key(app: &mut App, key: &SingleKey) {
+    let Some(view) = app.plan_tree.as_mut() else {
+        return;
+    };
+    match view.handle_key(key) {
+        PlanTreeResult::Open => {}
+        PlanTreeResult::Close => app.plan_tree = None,
     }
 }
 
@@ -230,6 +245,7 @@ pub(crate) fn handle_slash(app: &mut App, line: &str) {
         "undo" => app.pending_undo = true,
         "quit" => app.quit = true,
         "tree" => app.pending_open_tree = true,
+        "plantree" => app.pending_open_plan_tree = true,
         "editor" => app.pending_editor = true,
         "agents" => app.open_agents(),
         "model" => app.open_model_picker(),
