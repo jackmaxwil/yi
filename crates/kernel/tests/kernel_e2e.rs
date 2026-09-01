@@ -56,6 +56,7 @@ fn manager_with_snapshot(snapshot: Option<KernelSnapshotConfig>) -> Result<Kerne
         host: Some(Arc::new(EchoHost)),
         on_progress: None,
         snapshot,
+        wrap: None,
     })
 }
 

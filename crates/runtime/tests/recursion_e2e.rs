@@ -881,6 +881,7 @@ async fn rlm_run_round_trips_through_a_real_kernel() -> TestResult {
         session_dir: Some(harness.root.clone()),
         host: Arc::new(registry),
         on_restore: None,
+        sandbox: None,
     }));
 
     let cancelled: yi_tools::CancelFlag = Arc::new(|| false);

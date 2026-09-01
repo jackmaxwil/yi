@@ -183,21 +183,43 @@ pub struct KernelServiceOptions {
     pub session_dir: Option<PathBuf>,
     pub host: Arc<dyn HostHandlers>,
     pub on_restore: Option<Arc<RestoreNoticeFn>>,
+    pub sandbox: Option<yi_tools::Sandbox>,
 }
 
 /// Boots on first cell, memoizes the running manager, retries after a failed
 /// start, and owns the busy-kernel recovery path.
 pub struct KernelService {
     options: KernelServiceOptions,
+    sandbox: tokio::sync::Mutex<Option<yi_tools::Sandbox>>,
     manager: tokio::sync::Mutex<Option<Arc<KernelManager>>>,
 }
 
 impl KernelService {
     pub fn new(options: KernelServiceOptions) -> Self {
         Self {
+            sandbox: tokio::sync::Mutex::new(options.sandbox.clone()),
             options,
             manager: tokio::sync::Mutex::new(None),
         }
+    }
+
+    pub async fn set_sandbox(&self, sandbox: Option<yi_tools::Sandbox>) {
+        let mut slot = self.sandbox.lock().await;
+        if *slot == sandbox {
+            return;
+        }
+        *slot = sandbox;
+        drop(slot);
+        self.kill().await;
+    }
+
+    fn kernel_wrap(&self, sandbox: Option<&yi_tools::Sandbox>) -> Option<(String, Vec<String>)> {
+        let sandbox = sandbox.filter(|_| yi_tools::Sandbox::available())?;
+        let mut profile = sandbox.clone();
+        profile.writable.push(self.options.home.join(".yi"));
+        profile.writable.sort();
+        profile.writable.dedup();
+        Some(profile.kernel_prefix())
     }
 
     fn kernel_env(&self) -> Vec<(String, String)> {
@@ -228,19 +250,22 @@ impl KernelService {
     }
 
     /// Boot the kernel now so the first cell pays execution only. A failed
-    /// prewarm is deliberately quiet: the first real cell repeats [`Self::ensure`]
-    /// and surfaces the same error where the model can act on it.
+    /// prewarm stays quiet: the next cell repeats [`Self::ensure`] and reports it.
     pub async fn prewarm(&self) {
         let _first_cell_will_report = self.ensure().await;
     }
 
     async fn ensure(&self) -> Result<Arc<KernelManager>, String> {
+        let wrap = self.kernel_wrap(self.sandbox.lock().await.as_ref());
         let mut slot = self.manager.lock().await;
-        if let Some(manager) = slot.as_ref() {
-            if manager.is_running() {
-                return Ok(Arc::clone(manager));
-            }
-            *slot = None;
+        if let Some(manager) = slot.as_ref()
+            && manager.is_running()
+            && manager.wrap() == wrap.as_ref()
+        {
+            return Ok(Arc::clone(manager));
+        }
+        if let Some(old) = slot.take() {
+            old.dispose().await;
         }
         // Only sessions with an on-disk directory get a revivable snapshot
         // (design K10) — prime's artifact-dir gate.
@@ -266,6 +291,7 @@ impl KernelService {
             host: Some(Arc::clone(&self.options.host)),
             on_progress: Some(Arc::new(|message: &str| eprintln!("{message}"))),
             snapshot,
+            wrap,
         })?);
         manager.start().await?;
         // Revive before the bootstrap cell, so the bootstrap overwrites live

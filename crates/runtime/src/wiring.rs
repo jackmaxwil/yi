@@ -271,6 +271,7 @@ pub fn attach_runtime(session: &mut AgentSession, wiring: RuntimeWiring) -> Arc<
             on_restore: Some(Arc::new(move |restore| {
                 restore_notice(&crate::kernel::restore_notice_text(restore));
             })),
+            sandbox: crate::workspace_sandbox(&wiring.cwd, &wiring.home, &wiring.rlm_dir),
         },
     ));
     wire_advisor(session, &wiring);
