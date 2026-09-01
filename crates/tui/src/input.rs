@@ -18,7 +18,9 @@ pub fn handle_terminal_event(
 ) {
     match ct_event {
         CtEvent::Paste(text) => {
-            app.composer.handle_paste(&text);
+            if !app.composer.search_active() {
+                app.composer.handle_paste(&text);
+            }
             app.scheduler.request();
         }
         CtEvent::Resize(cols, rows) => {
@@ -43,6 +45,20 @@ pub fn handle_terminal_event(
             let ctx = EvalContext {
                 input_empty: app.composer.is_empty(),
             };
+            if app.composer.search_active() {
+                match app.keymap.resolve(&KeyInput::Single(key), &ctx) {
+                    Some(
+                        action @ (Action::HistorySearch
+                        | Action::Submit
+                        | Action::Abort
+                        | Action::Quit),
+                    ) => handle_action(app, cmd_tx, action),
+                    Some(Action::HistoryPrev) => app.composer.search_older(),
+                    Some(Action::HistoryNext) => app.composer.search_newer(),
+                    Some(_) | None => app.composer.handle_search_key(key_event),
+                }
+                return;
+            }
             match app.keymap.resolve(&KeyInput::Single(key), &ctx) {
                 Some(action) => handle_action(app, cmd_tx, action),
                 None => {
@@ -137,6 +153,10 @@ pub(crate) fn handle_action(
 ) {
     match action {
         Action::Submit => {
+            if app.composer.search_active() {
+                let _ = app.composer.accept_search();
+                return;
+            }
             if let Some(text) = app.composer.take_submission() {
                 // A typed line is a command only when its first word is one:
                 // a prompt that opens with a path (`/usr/...`) still prompts.
@@ -156,6 +176,9 @@ pub(crate) fn handle_action(
         Action::InsertNewline => app.composer.insert_newline(),
         Action::Abort => handle_escape(app, cmd_tx),
         Action::Quit => {
+            if app.composer.cancel_search() {
+                return;
+            }
             let now = Instant::now();
             if !app.composer.is_empty() {
                 app.composer.set_text("");
@@ -173,6 +196,7 @@ pub(crate) fn handle_action(
         }
         Action::HistoryPrev => app.composer.history_prev(),
         Action::HistoryNext => app.composer.history_next(),
+        Action::HistorySearch => app.composer.begin_search(),
         Action::ToggleExpand => app.cycle_mode(),
         Action::ToggleHud => app.hud_hidden = !app.hud_hidden,
         Action::ExternalEditor => app.pending_editor = true,
@@ -224,6 +248,9 @@ pub(crate) fn handle_slash(app: &mut App, line: &str) {
 }
 
 pub(crate) fn handle_escape(app: &mut App, cmd_tx: &tokio::sync::mpsc::UnboundedSender<Command>) {
+    if app.composer.cancel_search() {
+        return;
+    }
     let now = Instant::now();
     if app.focused.is_some() {
         set_focus(app, None);

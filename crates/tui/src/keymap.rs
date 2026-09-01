@@ -239,6 +239,7 @@ pub enum Action {
     CycleModel,
     CycleModelBack,
     OpenModelPicker,
+    HistorySearch,
 }
 
 impl Action {
@@ -262,6 +263,7 @@ impl Action {
             "cycle-model" => Ok(Self::CycleModel),
             "cycle-model-back" => Ok(Self::CycleModelBack),
             "open-model-picker" => Ok(Self::OpenModelPicker),
+            "history-search" => Ok(Self::HistorySearch),
             _ => Err(format!("unknown action: {s}")),
         }
     }
@@ -406,6 +408,10 @@ pub fn default_keymap() -> Keymap {
     map.bind(
         single(KeyCodeValue::Left, false, true),
         Action::FocusPrevSibling,
+    );
+    map.bind(
+        single(KeyCodeValue::Char('r'), true, false),
+        Action::HistorySearch,
     );
     map
 }

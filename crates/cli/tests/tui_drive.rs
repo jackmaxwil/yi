@@ -280,3 +280,80 @@ fn plan_and_undo_answer_for_the_session_the_turn_ran_in() -> TestResult {
     let _ = std::fs::remove_dir_all(&dir);
     Ok(())
 }
+
+/// Ctrl+R searches submitted prompts; Enter accepts a match as a draft and
+/// does not start another turn.
+#[test]
+fn reverse_search_enter_accepts_a_match_without_submitting() -> TestResult {
+    let dir = std::env::temp_dir().join(format!("yi-tui-isearch-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir)?;
+    std::fs::create_dir_all(dir.join(".yi"))?;
+    std::fs::write(
+        dir.join(".yi/config.json"),
+        r#"{"kernel":{"prewarm":false}}"#,
+    )?;
+    let keys = dir.join("script.keys");
+    std::fs::write(
+        &keys,
+        "wait-idle 10000\ntype findme\nkey enter\nwait-idle 10000\n\
+         type draft\nkey ctrl-r\nwait-frame 10000 reverse-i-search\n\
+         type findme\nwait-frame 10000 reverse-i-search: findme\nkey enter\n\
+         wait-frame 10000 !reverse-i-search\nquit\n",
+    )?;
+    let frames = dir.join("frames");
+
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "the drive contract is the spawned binary's headless mode; tests must run the real process"
+    )]
+    let output = Command::new(env!("CARGO_BIN_EXE_yi"))
+        .args([
+            "tui",
+            "--headless",
+            "--model",
+            "faux/faux-1",
+            "--session-dir",
+            &dir.join("sessions").display().to_string(),
+            "--keys",
+            &keys.display().to_string(),
+            "--frames",
+            &frames.display().to_string(),
+            "ping",
+        ])
+        .env("HOME", &dir)
+        .output()?;
+    assert!(
+        output.status.success(),
+        "drive run must exit 0: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let mut entries: Vec<_> = std::fs::read_dir(&frames)?.filter_map(Result::ok).collect();
+    entries.sort_by_key(std::fs::DirEntry::file_name);
+    let mut all_frames = String::new();
+    for entry in &entries {
+        all_frames.push_str(&std::fs::read_to_string(entry.path())?);
+    }
+    assert!(
+        all_frames.contains("reverse-i-search: findme"),
+        "frames must show the query on a hit: {all_frames}"
+    );
+    let last = entries.last().ok_or("no frames dumped")?;
+    let final_frame = std::fs::read_to_string(last.path())?;
+    assert!(
+        !final_frame.contains("reverse-i-search"),
+        "Enter must leave search: {final_frame}"
+    );
+    assert_eq!(
+        final_frame.matches("› findme").count(),
+        1,
+        "Enter accepts the preview; it must not submit a third turn: {final_frame}"
+    );
+    assert!(
+        final_frame.contains("│findme"),
+        "the accepted match stays in the composer: {final_frame}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+    Ok(())
+}

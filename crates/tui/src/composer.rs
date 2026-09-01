@@ -1,7 +1,13 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 
-use ratatui::crossterm::event::KeyEvent;
+use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use tui_textarea::TextArea;
+
+struct HistorySearch {
+    original: String,
+    query: String,
+    match_cursor: Option<usize>,
+}
 
 pub struct Composer {
     pub textarea: TextArea<'static>,
@@ -10,6 +16,7 @@ pub struct Composer {
     history: Vec<String>,
     history_index: Option<usize>,
     draft: Option<String>,
+    search: Option<HistorySearch>,
 }
 
 impl Default for Composer {
@@ -23,6 +30,7 @@ impl Default for Composer {
             history: Vec::new(),
             history_index: None,
             draft: None,
+            search: None,
         }
     }
 }
@@ -73,12 +81,163 @@ impl Composer {
     pub fn set_frame(&mut self, border: ratatui::style::Style, placeholder: ratatui::style::Style) {
         use ratatui::widgets::{Block, BorderType, Borders};
         self.textarea.set_placeholder_style(placeholder);
-        self.textarea.set_block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_type(BorderType::Rounded)
-                .border_style(border),
-        );
+        let mut block = Block::default()
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .border_style(border);
+        if let Some(title) = self.search_title() {
+            block = block.title(title);
+        }
+        self.textarea.set_block(block);
+    }
+
+    pub fn search_active(&self) -> bool {
+        self.search.is_some()
+    }
+
+    pub fn search_title(&self) -> Option<String> {
+        let search = self.search.as_ref()?;
+        Some(if search.query.is_empty() {
+            "reverse-i-search".to_owned()
+        } else if search.match_cursor.is_none() {
+            format!("failing reverse-i-search: {}", search.query)
+        } else {
+            format!("reverse-i-search: {}", search.query)
+        })
+    }
+
+    pub fn begin_search(&mut self) {
+        if self.search.is_some() {
+            self.search_older();
+            return;
+        }
+        // Invariant: empty query never previews; match_cursor stays None until a hit.
+        self.search = Some(HistorySearch {
+            original: self.text(),
+            query: String::new(),
+            match_cursor: None,
+        });
+    }
+
+    pub fn cancel_search(&mut self) -> bool {
+        let Some(search) = self.search.take() else {
+            return false;
+        };
+        self.set_text(&search.original);
+        true
+    }
+
+    pub fn accept_search(&mut self) -> bool {
+        if self
+            .search
+            .as_ref()
+            .is_none_or(|s| s.match_cursor.is_none())
+        {
+            return false;
+        }
+        self.search = None;
+        true
+    }
+
+    pub fn search_older(&mut self) {
+        self.step_search(true);
+    }
+
+    pub fn search_newer(&mut self) {
+        self.step_search(false);
+    }
+
+    pub fn handle_search_key(&mut self, event: KeyEvent) {
+        match event.code {
+            KeyCode::Up => self.search_older(),
+            KeyCode::Down => self.step_search(false),
+            KeyCode::Char('s') if event.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.step_search(false);
+            }
+            KeyCode::Backspace => self.edit_query(None),
+            KeyCode::Char('h') if event.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.edit_query(None);
+            }
+            KeyCode::Char(ch)
+                if !event.modifiers.contains(KeyModifiers::CONTROL)
+                    && !event.modifiers.contains(KeyModifiers::ALT)
+                    && !ch.is_control() =>
+            {
+                self.edit_query(Some(ch));
+            }
+            _ => {}
+        }
+    }
+
+    fn edit_query(&mut self, push: Option<char>) {
+        let Some(search) = self.search.as_mut() else {
+            return;
+        };
+        match push {
+            Some(ch) => search.query.push(ch),
+            None => {
+                let _ = search.query.pop();
+            }
+        }
+        self.refresh_search();
+    }
+
+    fn step_search(&mut self, older: bool) {
+        let Some(search) = self.search.as_ref() else {
+            return;
+        };
+        if search.query.is_empty() {
+            return;
+        }
+        let hits = self.unique_matches(&search.query);
+        let Some(last) = hits.len().checked_sub(1) else {
+            return;
+        };
+        let next = match search.match_cursor {
+            None => 0,
+            Some(i) if older => i.saturating_add(1).min(last),
+            Some(i) => i.saturating_sub(1),
+        };
+        if let Some(search) = self.search.as_mut() {
+            search.match_cursor = Some(next);
+        }
+        self.apply_preview();
+    }
+
+    fn refresh_search(&mut self) {
+        let Some(search) = self.search.as_ref() else {
+            return;
+        };
+        let hits = self.unique_matches(&search.query);
+        let cursor = (!search.query.is_empty() && !hits.is_empty()).then_some(0);
+        if let Some(search) = self.search.as_mut() {
+            search.match_cursor = cursor;
+        }
+        self.apply_preview();
+    }
+
+    fn unique_matches(&self, query: &str) -> Vec<usize> {
+        let needle = query.to_lowercase();
+        let mut seen = HashSet::new();
+        let mut hits = Vec::new();
+        for (index, entry) in self.history.iter().enumerate().rev() {
+            if entry.to_lowercase().contains(&needle) && seen.insert(entry.as_str()) {
+                hits.push(index);
+            }
+        }
+        hits
+    }
+
+    fn apply_preview(&mut self) {
+        let Some(search) = self.search.as_ref() else {
+            return;
+        };
+        let original = search.original.clone();
+        let preview = search.match_cursor.and_then(|cursor| {
+            let hits = self.unique_matches(&search.query);
+            hits.get(cursor).and_then(|i| self.history.get(*i)).cloned()
+        });
+        self.set_text(preview.as_deref().unwrap_or(&original));
     }
 
     pub fn input(&mut self, event: KeyEvent) {
@@ -171,6 +330,7 @@ impl Composer {
         let expanded = self.expand_markers(&text);
         self.history.push(text);
         self.history_index = None;
+        self.search = None;
         self.pastes.clear();
         self.set_text("");
         Some(expanded)
