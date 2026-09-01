@@ -199,7 +199,7 @@ impl Builder<'_> {
             return;
         }
         if self.in_code_block {
-            let base = self.theme.dim_style();
+            let base = self.theme.syntax_style(crate::highlight::Token::Plain);
             for raw in text.split_inclusive('\n') {
                 let chunk = raw.strip_suffix('\n');
                 let body = chunk.unwrap_or(raw);
