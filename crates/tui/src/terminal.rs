@@ -90,7 +90,7 @@ impl<B: Backend> Terminal<B> {
     /// Growth scrolls the rows above the viewport up, but when the *terminal*
     /// shrank the scroll is skipped — the emulator already moved those rows, and
     /// scrolling again moves the viewport twice. True ⇒ rebuild above and repaint.
-    pub fn resize_viewport(&mut self, height: u16) -> io::Result<bool> {
+    pub fn resize_viewport(&mut self, height: u16, floor: u16) -> io::Result<bool> {
         let screen = self.backend.size()?;
         let terminal_height_shrank = screen.height < self.screen_size.height;
         let terminal_height_grew = screen.height > self.screen_size.height;
@@ -101,11 +101,26 @@ impl<B: Backend> Terminal<B> {
         area.height = height.min(screen.height).max(1);
         area.width = screen.width;
         let mut needs_full_repaint = false;
+        let mut vacated = 0;
 
         if area.bottom() > screen.height {
             let scroll_by = area.bottom() - screen.height;
             if !terminal_height_shrank {
-                self.backend.scroll_region_up(0..area.top(), scroll_by)?;
+                // Incident: scrolling only above the viewport left every live row
+                // one position stale, so a streamed line erased and repainted the
+                // region. The `floor` rows under the live text hold still instead.
+                let carries_live = previous_area.bottom() == screen.height
+                    && previous_area.width == screen.width
+                    && floor <= previous_area.height;
+                let region_bottom = if carries_live {
+                    screen.height - floor
+                } else {
+                    area.top()
+                };
+                self.backend.scroll_region_up(0..region_bottom, scroll_by)?;
+                if carries_live {
+                    vacated = scroll_by;
+                }
             }
             area.y = screen.height.saturating_sub(area.height);
         } else if terminal_height_grew && viewport_was_bottom_aligned {
@@ -113,16 +128,35 @@ impl<B: Backend> Terminal<B> {
         }
 
         if area != self.viewport_area {
-            // Incident: clearing from the old anchor alone left a stale composer
-            // box per resize step — on a shrink the new anchor is above the old
-            // one, which off a shorter screen degenerates to a single row.
-            let clear_position = Position::new(0, previous_area.y.min(area.y));
-            self.set_viewport_area(area);
-            self.clear_after_position(clear_position)?;
-            needs_full_repaint = true;
+            if vacated > 0 {
+                self.rebase_after_scroll(area, previous_area.height - floor, vacated);
+            } else {
+                // Incident: clearing from the old anchor alone left a stale composer
+                // box per resize step — on a shrink the new anchor is above the old
+                // one, which off a shorter screen degenerates to a single row.
+                let clear_position = Position::new(0, previous_area.y.min(area.y));
+                self.set_viewport_area(area);
+                self.clear_after_position(clear_position)?;
+                needs_full_repaint = true;
+            }
         }
         self.screen_size = screen;
         Ok(needs_full_repaint)
+    }
+
+    /// The screen still holds the last frame, only at other coordinates, so the
+    /// diff baseline is re-indexed rather than thrown away: the rows above the
+    /// scroll keep their place and the `vacated` rows it opened arrive blank.
+    fn rebase_after_scroll(&mut self, area: Rect, above: u16, vacated: u16) {
+        let row = |n: u16| usize::from(area.width).saturating_mul(usize::from(n));
+        let previous = self.previous_buffer_mut();
+        let at = row(above).min(previous.content.len());
+        previous
+            .content
+            .splice(at..at, std::iter::repeat_n(Cell::EMPTY, row(vacated)));
+        previous.resize(area);
+        self.current_buffer_mut().resize(area);
+        self.viewport_area = area;
     }
 
     /// Resetting the diff buffer alone leaves stale terminal content showing
