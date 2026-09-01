@@ -409,15 +409,14 @@ pub fn render_stream(
                     b.flush_line();
                 }
                 b.blank();
-                // OMP gives fenced code a border hook rather than the
-                // author's backticks; the language rides the opening rail.
-                if let CodeBlockKind::Fenced(lang) = &kind
-                    && !lang.is_empty()
-                {
+                // OMP gives fenced code a border hook rather than the author's
+                // backticks; only a fence has an opening line a stream reopens.
+                if let CodeBlockKind::Fenced(lang) = &kind {
                     if !continued {
                         *b.code_lang = crate::highlight::lang_for(lang);
+                        let head = format!("{}{CODE_RAIL} {lang}", b.indent);
                         b.out.push(Line::from(Span::styled(
-                            format!("{}{CODE_RAIL} {lang}", b.indent),
+                            head.trim_end().to_owned(),
                             b.theme.dim_style(),
                         )));
                     }
