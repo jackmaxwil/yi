@@ -650,10 +650,11 @@ fn stable_stream_commits_fence_interiors_line_by_line() -> TestResult {
 /// block; a continuation slice reopens the fence without redrawing it.
 #[test]
 fn streamed_fence_paints_the_language_rail_once() -> TestResult {
-    use yi_tui::markdown::{render, render_continuation, stable_stream};
+    use yi_tui::markdown::{render, render_stream, stable_stream};
     let whole = "intro\n\n```rust\nlet a = 1;\nlet b = 2;\n```\n";
     let mut cut = 0;
     let mut reopen: Option<String> = None;
+    let mut lang = None;
     let mut painted: Vec<String> = Vec::new();
     for end in 1..=whole.len() {
         let Some(source) = whole.get(..end) else {
@@ -664,10 +665,11 @@ fn streamed_fence_paints_the_language_rail_once() -> TestResult {
             continue;
         }
         let slice = source.get(cut..stream.cut).unwrap_or_default();
-        let lines = match &reopen {
-            Some(open) => render_continuation(&format!("{open}\n{slice}"), 60, &theme()),
-            None => render(slice, 60, &theme()),
+        let (text, continued) = match &reopen {
+            Some(open) => (format!("{open}\n{slice}"), true),
+            None => (slice.to_owned(), false),
         };
+        let lines = render_stream(&text, 60, &theme(), continued, &mut lang);
         painted.extend(lines.iter().map(flat));
         (cut, reopen) = (stream.cut, stream.reopen);
     }
@@ -687,6 +689,40 @@ fn streamed_fence_paints_the_language_rail_once() -> TestResult {
         painted.iter().filter(|line| line.contains("rust")).count(),
         1,
         "the language rail is drawn once: {painted:?}"
+    );
+    Ok(())
+}
+
+/// A triple-quoted string spanning a commit seam stays one string: the parse
+/// state rides the seam instead of the fence being re-lexed from its reopen.
+#[test]
+fn a_streamed_fence_keeps_string_colour_across_the_seam() -> TestResult {
+    let whole = r#"```python
+def f():
+    s = """
+    def not_real(x, y):
+        return x + y
+    """
+    return s
+```
+"#;
+    let mut app = streamed(whole);
+    let committed = app.take_commits();
+    let row = committed
+        .iter()
+        .find(|line| flat(line).contains("return x + y"))
+        .ok_or("no committed row for the string body")?;
+    let body: Vec<_> = row
+        .spans
+        .iter()
+        .skip_while(|span| !span.content.contains("return"))
+        .map(|span| (span.content.as_ref(), span.style.fg))
+        .collect();
+    let string_fg = theme().syntax_style(yi_tui::highlight::Token::Str).fg;
+    assert_eq!(
+        body,
+        vec![("        return x + y", string_fg)],
+        "the string body was re-lexed as code or lost its colour: {row:?}"
     );
     Ok(())
 }

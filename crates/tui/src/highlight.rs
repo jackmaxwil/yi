@@ -21,6 +21,7 @@ pub enum Token {
     Function,
 }
 
+#[derive(Clone)]
 pub struct Lang {
     state: ParseState,
     stack: ScopeStack,
