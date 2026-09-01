@@ -130,7 +130,7 @@ fn draw_frame<B>(
     }
     if !app.live_markdown.is_empty() {
         let tail = app.live_markdown.get(app.live_cut..).unwrap_or_default();
-        let painted = crate::transcript::paint_slice(app, tail);
+        let painted = crate::transcript::paint_slice(app, tail).0;
         let rendered = crate::cell::gutter(painted, app.live_cut == 0, &theme);
         live_lines.extend(live_tail(rendered, app.rows));
     }
