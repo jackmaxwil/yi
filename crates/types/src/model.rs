@@ -193,6 +193,98 @@ pub struct FreeformFormat {
 /// A control character: prompt assembly strips it from environment text.
 pub const SYSTEM_BLOCK_SEPARATOR: &str = "\u{1d}";
 
+/// Schema fact: every provider validates a tool name against
+/// `^[a-zA-Z0-9_-]{1,128}$`, so a name outside it is a wire rejection.
+pub const TOOL_NAME_MAX: usize = 128;
+
+/// The tool a turn is forced onto. Checked at construction, so no adapter can
+/// be handed a name it is unable to put on the wire.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub struct ForcedTool(String);
+
+impl ForcedTool {
+    pub fn new(name: &str) -> Result<Self, ToolChoiceError> {
+        let Some(offending) = name.chars().find(|character| {
+            !character.is_ascii_alphanumeric() && *character != '_' && *character != '-'
+        }) else {
+            return match name.len() {
+                0 => Err(ToolChoiceError::EmptyName),
+                length if length > TOOL_NAME_MAX => Err(ToolChoiceError::NameTooLong {
+                    name: name.to_owned(),
+                    length,
+                    max: TOOL_NAME_MAX,
+                }),
+                _ => Ok(Self(name.to_owned())),
+            };
+        };
+        Err(ToolChoiceError::NameCharacter {
+            name: name.to_owned(),
+            offending,
+        })
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl TryFrom<String> for ForcedTool {
+    type Error = ToolChoiceError;
+
+    fn try_from(name: String) -> Result<Self, Self::Error> {
+        Self::new(&name)
+    }
+}
+
+impl From<ForcedTool> for String {
+    fn from(tool: ForcedTool) -> Self {
+        tool.0
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ToolChoiceError {
+    EmptyName,
+    NameTooLong {
+        name: String,
+        length: usize,
+        max: usize,
+    },
+    NameCharacter {
+        name: String,
+        offending: char,
+    },
+}
+
+impl std::fmt::Display for ToolChoiceError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::EmptyName => write!(formatter, "forced tool name is empty"),
+            Self::NameTooLong { name, length, max } => write!(
+                formatter,
+                "forced tool name {name:?} is {length} characters, over the {max} cap"
+            ),
+            Self::NameCharacter { name, offending } => write!(
+                formatter,
+                "forced tool name {name:?} carries {offending:?}, outside [A-Za-z0-9_-]"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for ToolChoiceError {}
+
+/// A turn's tool posture. The three provider adapters spell these same three
+/// intents in three different wire shapes, so the choice travels typed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolChoice {
+    Auto,
+    None,
+    Tool(ForcedTool),
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LlmContext {
@@ -200,12 +292,44 @@ pub struct LlmContext {
     pub messages: Vec<crate::message::AgentMessage>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tools: Option<Vec<ToolDef>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_choice: Option<ToolChoice>,
 }
 
 #[cfg(test)]
 mod tests {
-    use super::Effort;
+    use super::{Effort, ForcedTool, LlmContext, TOOL_NAME_MAX, ToolChoiceError};
     use std::str::FromStr;
+
+    #[test]
+    fn a_forced_tool_name_is_checked_against_the_provider_pattern() {
+        assert_eq!(ForcedTool::new(""), Err(ToolChoiceError::EmptyName));
+        assert!(matches!(
+            ForcedTool::new("plan op"),
+            Err(ToolChoiceError::NameCharacter { offending: ' ', .. })
+        ));
+        assert!(matches!(
+            ForcedTool::new(&"p".repeat(TOOL_NAME_MAX + 1)),
+            Err(ToolChoiceError::NameTooLong {
+                length: 129,
+                max: 128,
+                ..
+            })
+        ));
+        assert_eq!(
+            ForcedTool::new("plan_op-1").map(|tool| tool.as_str().to_owned()),
+            Ok("plan_op-1".to_owned())
+        );
+    }
+
+    #[test]
+    fn a_context_without_a_choice_keeps_its_bytes() -> Result<(), Box<dyn std::error::Error>> {
+        let wire = r#"{"systemPrompt":"s","messages":[]}"#;
+        let context: LlmContext = serde_json::from_str(wire)?;
+        assert_eq!(context.tool_choice, None);
+        assert_eq!(serde_json::to_string(&context)?, wire);
+        Ok(())
+    }
 
     #[test]
     fn med_parses_on_both_paths_and_never_serializes() -> Result<(), Box<dyn std::error::Error>> {

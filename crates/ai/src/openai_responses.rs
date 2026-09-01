@@ -2,7 +2,7 @@ use serde_json::{Map, Value, json};
 use tokio::sync::mpsc::{Receiver, Sender};
 use yi_types::event::AssistantMessageEvent;
 use yi_types::message::{AgentMessage, Content, StopReason, UserContent};
-use yi_types::model::{LlmContext, Model, ToolDef};
+use yi_types::model::{LlmContext, Model, ToolChoice, ToolDef};
 
 use crate::catalog::calculate_cost;
 use crate::compat::compat_bool;
@@ -293,6 +293,26 @@ fn convert_tools(tools: &[ToolDef]) -> Vec<Value> {
         .collect()
 }
 
+fn convert_tool_choice(choice: &ToolChoice, tools: Option<&[ToolDef]>) -> Value {
+    match choice {
+        ToolChoice::Auto => json!("auto"),
+        ToolChoice::None => json!("none"),
+        ToolChoice::Tool(forced) => {
+            let emitted_as_custom = tools.is_some_and(|tools| {
+                tools
+                    .iter()
+                    .any(|tool| tool.name == forced.as_str() && tool.freeform.is_some())
+            });
+            let kind = if emitted_as_custom {
+                "custom"
+            } else {
+                "function"
+            };
+            json!({"type": kind, "name": forced.as_str()})
+        }
+    }
+}
+
 fn apply_reasoning(model: &Model, options: &OpenAiOptions, params: &mut Value) {
     let off = model
         .thinking_level_map
@@ -334,6 +354,9 @@ pub fn build_params(model: &Model, context: &LlmContext, options: &OpenAiOptions
         && !tools.is_empty()
     {
         params["tools"] = Value::Array(convert_tools(tools));
+    }
+    if let Some(choice) = &context.tool_choice {
+        params["tool_choice"] = convert_tool_choice(choice, context.tools.as_deref());
     }
     apply_reasoning(model, options, &mut params);
     params
