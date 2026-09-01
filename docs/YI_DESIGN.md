@@ -1195,7 +1195,22 @@ by construction.
 | G5 | accounting | token deltas streamed from `MessageEnd.usage` (P14 aggregate), wall-clock accumulated per goal; budget crossings emit one-shot latched reminders; interpolated fresh into G4 each continuation | I/O | codex `accounting.rs:313-427` |
 | G6 | injection | all goal prompts ride L4's `<yi_internal_context source="goal">` wrapper — recognized and dropped at compaction, never accumulating | pure | codex (C9) |
 
-### 8.17.1 Plan (`yi-runtime::plan`, 0.33.0 — D52/D53)
+### 8.17.1 Plan (`yi-runtime::plan`, 0.33.0 — D52/D53; storage superseded at 0.98.0 — D97)
+
+**Superseded where it says the fact is the store.** D97 makes the canonical plan a
+git-tracked Markdown file with YAML frontmatter under `plans.dir`, and `Fact::Plan` a
+pointer at it — the fact keeps its exact wire shape, so every session file below still
+loads. Todos are addressed by verbatim label rather than by `TaskId`, `after` edges
+carry ordering and no data, `version` moves on `supersede` alone with a monotonic
+`touched` counter carrying the staleness signal the 12-turn latch below used to read
+off `version`, and the surfaces become one `plan` tool with an op parameter rather than
+`plan.*` host requests plus a kernel skill. **Carried forward unchanged:** D26 (no
+advisory-only state tool — a plan tool is checked at turn end or it is a print
+statement with a schema), host-verified done, and D53's anti-laundering intent, which
+is reconciled rather than repealed: nothing is deleted, `drop` is a state, rewording is
+append-new plus abandon-old, and `supersede` is the audited exception D53 was defending
+against silent versions of. The paragraph below records the 0.33.0 shape it replaced.
+
 
 The task DAG under the goal, per docs/plans/2026-08-27-closing-the-loop.md §3.2:
 `Fact::Plan` beside `Fact::Goal` (compaction-immune by construction); `yi-types::plan`
@@ -1498,6 +1513,7 @@ size builds only as an experiment, never required.
 | `tokio` | async runtime for provider streams, kernel sockets, scheduler timer | `rt`, `sync`, `time`, `io-util`, `net`, `process`, `macros`; **no** `rt-multi-thread` unless measured | medium | `smol` smaller but `zeromq` is tokio-shaped |
 | `ureq` + `rustls` + `rustls-platform-verifier` | HTTP + SSE streaming to providers; blocking client driven from `spawn_blocking`, body read incrementally | `rustls`, no `json`, no `brotli`; platform verifier ⇒ **no bundled root store** | small | `reqwest` rejected: hyper + tower + h2 stack ≈ +1.5–2.5 MiB; `native-tls` rejected: openssl on Linux |
 | ~~`rmcp`~~ | **Moved to dev-only at D71.** The hand-rolled client is the shipped path; rmcp stays a `yi-mcp-cli` dev-dependency, serving `examples/reference_server.rs` so the client is tested against an implementation Yi does not own | dev-only: `server`, `transport-io`, `macros` | -700,272 bytes measured (size-ledger) | the reverse of this row's old entry — see D70 for why protocol churn argues *for* the hand-roll here |
+| ~~`proptest`~~ | **Dev-only from 0.98.0, the D71 pattern.** Fuzzes the plan engine's step table (§12): random op sequences through the real engine, every invariant asserted after every op, and a shrunk failure minimised to the shortest sequence that still breaks it, which is then committed as a fixture. The ledger is the one component where a missed illegal transition corrupts state itself, so it earns this and the TUI does not | dev-only; `just check` runs 256 cases, `PROPTEST_CASES` soaks | 0 bytes in the default build — a dev-dependency never enters the direct or transitive counts | writing the generator by hand was rejected: shrinking is the whole payoff, and it found a defect on its first run |
 | ~~`sse-stream`~~ | **Dropped at D71** with `futures-util` and `http`: all three existed only to name types in rmcp's `StreamableHttpClient` trait, which Yi no longer implements | — | -0 direct, -12 transitive | — |
 | `zeromq` (pure Rust) | Jupyter channels (DEALER/SUB) | `tokio-runtime`, no `tcp-transport` extras beyond TCP | medium | `zmq` (libzmq FFI) rejected by rule 4; custom wire shim rejected — standard Jupyter keeps ipykernel stock |
 | `hmac`, `sha2` | Jupyter message signing; permission rule digests | — | small | — |
