@@ -319,6 +319,36 @@ fn external_editor_replaces_the_draft() -> TestResult {
     Ok(())
 }
 
+fn streamed(body: &str) -> yi_types::event::AgentEvent {
+    let message = yi_types::message::AgentMessage::Assistant {
+        content: vec![yi_types::message::Content::Text {
+            text: body.to_owned(),
+            text_signature: None,
+        }],
+        api: String::new(),
+        provider: String::new(),
+        model: String::new(),
+        response_model: None,
+        response_id: None,
+        diagnostics: None,
+        usage: yi_types::message::Usage::zero(),
+        stop_reason: StopReason::Stop,
+        deferred: None,
+        error_message: None,
+        raw_stop_reason: None,
+        end_turn: None,
+        timestamp: 0,
+    };
+    yi_types::event::AgentEvent::MessageUpdate {
+        message: message.clone(),
+        assistant_message_event: yi_types::event::AssistantMessageEvent::TextDelta {
+            content_index: 0,
+            delta: String::new(),
+            partial: message,
+        },
+    }
+}
+
 fn tool_start(id: &str) -> yi_types::event::AgentEvent {
     yi_types::event::AgentEvent::ToolExecutionStart {
         tool_call_id: id.to_owned(),
@@ -366,6 +396,66 @@ fn viewport_height_follows_the_live_region_and_stays_bottom_anchored() -> TestRe
         terminal.backend().row_text(23).contains("faux-1"),
         "status row after growth: {:?}",
         terminal.backend().row_text(23)
+    );
+    Ok(())
+}
+
+/// The live region is bottom-anchored and its height follows its content, so a
+/// streamed line moved the anchor — and every anchor move erased from there to
+/// the end of the screen and repainted the rows the reader was already reading.
+#[test]
+fn a_streamed_line_is_written_as_an_append() -> TestResult {
+    let mut backend = VT100Backend::with_scrollback(80, 24, 200);
+    {
+        use std::io::Write;
+        backend.write_all(&b"\n".repeat(23))?;
+    }
+    let mut terminal = yi_tui::terminal::Terminal::new(backend, 4)?;
+    let mut app = app();
+    app.set_rows(24);
+    app.reduce_agent(yi_types::event::AgentEvent::AgentStart);
+
+    let mut body = String::new();
+    for n in 1..=8 {
+        body.push_str(&format!("- item {n} of the answer\n"));
+        app.reduce_agent(streamed(&body));
+        let _ = terminal.backend_mut().take_written();
+        yi_tui::render::draw(&mut app, &mut terminal, None);
+        let written = terminal.backend_mut().take_written();
+        if n == 1 {
+            // The turn's first frame lays the region out; there is nothing to keep.
+            continue;
+        }
+        assert!(
+            !written.contains("\u{1b}[J") && !written.contains("\u{1b}[0J"),
+            "item {n} erased the screen from the anchor down: {written:?}"
+        );
+        assert!(
+            !written.contains("item 1 of the answer") && !written.contains("faux-1"),
+            "item {n} rewrote rows that had not changed: {written:?}"
+        );
+        assert!(
+            written.contains("item") && written.len() < 400,
+            "item {n} must cost one row of writes, not a repaint of {}: {written:?}",
+            terminal.viewport_area().height
+        );
+    }
+
+    let contents = terminal.backend().contents();
+    for n in 1..=8 {
+        assert!(
+            contents.contains(&format!("item {n} of the answer")),
+            "item {n} must still be on screen:\n{contents}"
+        );
+    }
+    assert!(
+        contents.contains('╰') && contents.contains("faux-1"),
+        "composer and status survive the appends:\n{contents}"
+    );
+    assert_eq!(
+        terminal.viewport_area().bottom(),
+        24,
+        "the region stays anchored to the bottom row:\n{contents}"
     );
     Ok(())
 }
@@ -526,33 +616,7 @@ fn the_mark_trails_the_streaming_tail_instead_of_splitting_the_answer() -> TestR
     // Two paragraphs: the first is stable and commits, the second is the tail
     // still streaming under it.
     let streaming = "Committed paragraph.\n\nTail paragraph still streaming";
-    let message = yi_types::message::AgentMessage::Assistant {
-        content: vec![yi_types::message::Content::Text {
-            text: streaming.to_owned(),
-            text_signature: None,
-        }],
-        api: String::new(),
-        provider: String::new(),
-        model: String::new(),
-        response_model: None,
-        response_id: None,
-        diagnostics: None,
-        usage: yi_types::message::Usage::zero(),
-        stop_reason: yi_types::message::StopReason::Stop,
-        deferred: None,
-        error_message: None,
-        raw_stop_reason: None,
-        end_turn: None,
-        timestamp: 0,
-    };
-    app.reduce_agent(yi_types::event::AgentEvent::MessageUpdate {
-        message: message.clone(),
-        assistant_message_event: yi_types::event::AssistantMessageEvent::TextDelta {
-            content_index: 0,
-            delta: String::new(),
-            partial: message,
-        },
-    });
+    app.reduce_agent(streamed(streaming));
     yi_tui::render::draw(&mut app, &mut terminal, None);
 
     let contents = terminal.backend().contents();
@@ -594,33 +658,7 @@ fn a_short_screen_keeps_the_composer_and_status_under_a_long_tail() -> TestResul
             .map(|n| format!("line {n}"))
             .collect::<Vec<_>>()
             .join("\n");
-        let message = yi_types::message::AgentMessage::Assistant {
-            content: vec![yi_types::message::Content::Text {
-                text: body,
-                text_signature: None,
-            }],
-            api: String::new(),
-            provider: String::new(),
-            model: String::new(),
-            response_model: None,
-            response_id: None,
-            diagnostics: None,
-            usage: yi_types::message::Usage::zero(),
-            stop_reason: yi_types::message::StopReason::Stop,
-            deferred: None,
-            error_message: None,
-            raw_stop_reason: None,
-            end_turn: None,
-            timestamp: 0,
-        };
-        app.reduce_agent(yi_types::event::AgentEvent::MessageUpdate {
-            message: message.clone(),
-            assistant_message_event: yi_types::event::AssistantMessageEvent::TextDelta {
-                content_index: 0,
-                delta: String::new(),
-                partial: message,
-            },
-        });
+        app.reduce_agent(streamed(&body));
         yi_tui::render::draw(&mut app, &mut terminal, None);
 
         let contents = terminal.backend().contents();
