@@ -1,0 +1,242 @@
+use serde_json::Map;
+use yi_types::plan::PlanVersion;
+use yi_types::plan::doc::{
+    BlockedOn, Check, DocError, GoalText, Isolation, Plan, PlanId, PlanIssue, PlanState, PlanTier,
+    ProbeCommand, RetryCount, SPAWN_CAP, Spawns, Todo, TodoAddr, TodoLabel, TodoState, TouchCount,
+};
+
+type TestResult = Result<(), Box<dyn std::error::Error>>;
+
+#[test]
+fn slug_matches_the_golden_fixtures() -> TestResult {
+    let cases = [
+        (
+            "Reach the deepest level of ls20 that the rules allow",
+            "reach-the-deepest-level-of-ls20-that",
+        ),
+        (
+            "Ship logrotate-lite with a packaged tarball",
+            "ship-logrotate-lite-with-a-packaged",
+        ),
+        (
+            "Implement rotation with size and age triggers",
+            "implement-rotation-with-size-and-age",
+        ),
+    ];
+    for (goal, expected) in cases {
+        assert_eq!(PlanId::slug(goal)?.as_str(), expected);
+    }
+    let parent = PlanId::slug("Ship logrotate-lite with a packaged tarball")?;
+    let label = TodoLabel::new("Implement rotation with size and age triggers")?;
+    assert_eq!(
+        parent.child(&label)?.as_str(),
+        "ship-logrotate-lite-with-a-packaged.implement-rotation-with-size-and-age"
+    );
+    assert!(parent.child(&label)?.child(&label).is_err());
+    Ok(())
+}
+
+fn plan_with(todos: Vec<Todo>) -> Result<Plan, DocError> {
+    Ok(Plan {
+        id: PlanId::new("p")?,
+        goal: GoalText::new("g")?,
+        version: PlanVersion(1),
+        touched: TouchCount(1),
+        tier: PlanTier::Root,
+        spawns: Spawns::default(),
+        todos,
+        state: PlanState::Active,
+        extra: Map::new(),
+    })
+}
+
+fn todo(label: &str, after: &[&str], state: TodoState) -> Result<Todo, DocError> {
+    Ok(Todo {
+        label: TodoLabel::new(label)?,
+        after: after
+            .iter()
+            .map(|name| TodoLabel::new(*name))
+            .collect::<Result<_, _>>()?,
+        state,
+        delegation: None,
+        subplan: None,
+        retries: RetryCount::default(),
+        extra: Map::new(),
+    })
+}
+
+#[test]
+fn ready_finished_and_validate() -> TestResult {
+    let plan = plan_with(vec![
+        todo("a", &[], TodoState::Done { output: None })?,
+        todo("b", &["a"], TodoState::Pending)?,
+        todo("c", &["b"], TodoState::Pending)?,
+    ])?;
+    let ready: Vec<&str> = plan
+        .ready()
+        .iter()
+        .map(|todo| todo.label.as_str())
+        .collect();
+    assert_eq!(ready, ["b"]);
+    assert!(!plan.finished());
+    assert!(plan.validate().is_empty());
+
+    let done = plan_with(vec![
+        todo("a", &[], TodoState::Done { output: None })?,
+        todo("b", &[], TodoState::Abandoned)?,
+        todo(
+            "c",
+            &[],
+            TodoState::Failed {
+                cause: "x".to_owned(),
+                last: None,
+            },
+        )?,
+    ])?;
+    assert!(done.finished());
+
+    let cyclic = plan_with(vec![
+        todo("a", &["b"], TodoState::Pending)?,
+        todo("b", &["a"], TodoState::Pending)?,
+        todo("b", &["missing"], TodoState::Pending)?,
+    ])?;
+    let issues = cyclic.validate();
+    assert!(
+        issues
+            .iter()
+            .any(|issue| matches!(issue, PlanIssue::DuplicateLabel { .. }))
+    );
+    assert!(
+        issues
+            .iter()
+            .any(|issue| matches!(issue, PlanIssue::UnresolvedEdge { .. }))
+    );
+    let pure_cycle = plan_with(vec![
+        todo("a", &["b"], TodoState::Pending)?,
+        todo("b", &["a"], TodoState::Pending)?,
+    ])?;
+    assert!(
+        pure_cycle
+            .validate()
+            .iter()
+            .any(|issue| matches!(issue, PlanIssue::Cycle { .. }))
+    );
+    Ok(())
+}
+
+#[test]
+fn frontmatter_round_trips() -> TestResult {
+    let mut plan = plan_with(vec![
+        todo(
+            "a",
+            &[],
+            TodoState::Done {
+                output: Some("kernel://main/seam".parse()?),
+            },
+        )?,
+        todo(
+            "b",
+            &["a"],
+            TodoState::Blocked {
+                on: BlockedOn::External { probe: None },
+                note: "waiting".to_owned(),
+            },
+        )?,
+    ])?;
+    plan.tier = PlanTier::Sub {
+        parent: TodoAddr {
+            plan: PlanId::new("root")?,
+            todo: TodoLabel::new("Some parent todo")?,
+        },
+    };
+    let json = serde_json::to_string(&plan)?;
+    assert!(json.contains("\"format\":1"));
+    assert!(json.contains("\"parent\":\"root/Some parent todo\""));
+    let back: Plan = serde_json::from_str(&json)?;
+    assert_eq!(back, plan);
+    let stray = json.replace("\"state\":\"blocked\"", "\"state\":\"pending\"");
+    assert!(serde_json::from_str::<Plan>(&stray).is_err());
+    Ok(())
+}
+
+#[test]
+fn unknown_tags_round_trip_byte_identically() -> TestResult {
+    let json = concat!(
+        "{\"format\":1,\"plan\":\"p\",\"goal\":\"g\",\"version\":1,",
+        "\"touched\":1,\"tier\":\"quarantine\",\"state\":\"parked\",",
+        "\"todos\":[{\"label\":\"a\",\"state\":\"quarantined\"}]}"
+    );
+    let plan: Plan = serde_json::from_str(json)?;
+    assert_eq!(plan.state, PlanState::Other("parked".to_owned()));
+    assert_eq!(
+        plan.todos.first().map(|todo| &todo.state),
+        Some(&TodoState::Other("quarantined".to_owned()))
+    );
+    assert_eq!(serde_json::to_string(&plan)?, json);
+
+    let blocked: BlockedOn = serde_json::from_str("\"quarantined\"")?;
+    assert_eq!(blocked, BlockedOn::Other("quarantined".to_owned()));
+    let isolation: Isolation = serde_json::from_str("\"vm\"")?;
+    assert_eq!(isolation, Isolation::Other("vm".to_owned()));
+    let check: Check = serde_json::from_str("\"just look\"")?;
+    assert_eq!(check, Check::Other("just look".to_owned()));
+    Ok(())
+}
+
+#[test]
+fn external_probe_matches_the_fixture_wire_form() -> TestResult {
+    let wire = "{\"external\":{\"probe\":\"test -e /app/vendor/zstd\"}}";
+    let on: BlockedOn = serde_json::from_str(wire)?;
+    assert_eq!(
+        on,
+        BlockedOn::External {
+            probe: Some(ProbeCommand::new("test -e /app/vendor/zstd")?),
+        }
+    );
+    assert_eq!(serde_json::to_string(&on)?, wire);
+    assert!(ProbeCommand::new(" ").is_err());
+    assert!(ProbeCommand::new("a\nb").is_err());
+    Ok(())
+}
+
+#[test]
+fn todo_addr_urls_use_the_slug() -> TestResult {
+    let addr = TodoAddr {
+        plan: PlanId::new("ship-logrotate-lite-with-a-packaged")?,
+        todo: TodoLabel::new("Implement refresh flow")?,
+    };
+    assert_eq!(
+        addr.to_url()?.to_string(),
+        "plan://ship-logrotate-lite-with-a-packaged/implement-refresh-flow"
+    );
+    assert_eq!(
+        String::from(addr),
+        "ship-logrotate-lite-with-a-packaged/Implement refresh flow"
+    );
+
+    let colliding = plan_with(vec![
+        todo("Fix the bug!", &[], TodoState::Pending)?,
+        todo("Fix the bug?", &[], TodoState::Pending)?,
+    ])?;
+    assert!(
+        colliding
+            .validate()
+            .iter()
+            .any(|issue| matches!(issue, PlanIssue::SlugCollision { .. }))
+    );
+    Ok(())
+}
+
+#[test]
+fn spawns_only_charges_upward_and_skips_when_zero() -> TestResult {
+    let mut plan = plan_with(vec![todo("a", &[], TodoState::Pending)?])?;
+    assert!(!serde_json::to_string(&plan)?.contains("spawns"));
+    plan.spawns = plan.spawns.charge().charge();
+    assert_eq!(plan.spawns.get(), 2);
+    assert!(plan.spawns < SPAWN_CAP);
+    let json = serde_json::to_string(&plan)?;
+    assert!(json.contains("\"spawns\":2"));
+    let back: Plan = serde_json::from_str(&json)?;
+    assert_eq!(back.spawns, plan.spawns);
+    Ok(())
+}

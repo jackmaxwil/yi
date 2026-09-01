@@ -366,6 +366,7 @@ fn seed_plan_of(store: &yi_session::SharedSession, id: &str, check: &str) -> Tes
         }],
         created: 0,
         updated: 0,
+        doc: None,
         extra: serde_json::Map::new(),
     })?;
     Ok(())

@@ -11,6 +11,8 @@ use yi_types::schedule::DeliveryMode;
 
 use crate::goal::{DeliverFn, StoreHandle};
 
+pub mod yaml;
+
 pub type PlanChangeHook = Arc<dyn Fn(&Plan) + Send + Sync>;
 
 pub const NO_PLAN_ERROR: &str = "No plan exists for this session; create one with plan.create.";
@@ -534,6 +536,7 @@ impl PlanService {
             tasks,
             created: now,
             updated: now,
+            doc: None,
             extra: Map::new(),
         };
         self.write_plan(plan.clone())?;

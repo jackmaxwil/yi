@@ -405,8 +405,15 @@ content; topology decides eligibility.
   unrepresentable, not discouraged.
 - **Rehydration**: on resume, `Running` whose agent no longer exists
   reconciles to `Ready`, retries intact.
-- **Output lifetime**: at collect, a todo's output is promoted into the
-  plan owner's kernel (B14's schema seam). Sub-plan intermediates die with
+- **Output lifetime**: promotion runs at **reap, whatever the outcome** —
+  collect is a reap-time action, not a success-time one. A todo's output is
+  promoted into the plan owner's kernel (B14's schema seam), and a child
+  that failed after doing real work carries its last product as
+  `Failed{cause, last}`, host-minted at reap like every other pin, so
+  `retry`'s new context can *fetch* the failed attempt instead of being told
+  about it in prose. The terminal-record rule needs no extension to cover
+  it: `Failed` is terminal, so `last` is `history://`, `local://` or
+  `checkpoint://` and never `agent://`. Sub-plan intermediates die with
   their child unless folded into the todo's output. Live children are
   inspectable at will; dead ones through what was promoted.
 - **Windowed injection**: continuations and compaction re-inject counts
@@ -418,6 +425,29 @@ content; topology decides eligibility.
   the kernel is fast thinking.
 - **No budget minting**: a sub-plan has no budget field; a delegation's
   slice is an allocation of the parent todo's own allowance.
+- **A spawn ceiling is a fuse, not a budget**: `Spawns` rides the *root*
+  plan's frontmatter — sub-plans charge the root — is charged at one site
+  on every dispatch path, and is monotonic across `supersede` and
+  rehydration both, because a counter that reset is the runaway it exists
+  to catch and an in-memory one makes crash-resume unbounded. A budget
+  divides a real resource fairly; a fuse catches a bug in the model's own
+  control flow and should never fire in a healthy run. The user may edit
+  it down in the file, as the sanctioned second writer.
+- **Width is measured, never configured**: the dispatcher admits
+  `clamp(cores − 1, 1, 8)` children — `available_parallelism`, reserving
+  main's own kernel and builds, clamped *low* as well as high, because a
+  2-core container is exactly where `cpus − 2` goes to zero. The queued
+  follow-up names only that slice, so backpressure needs no state: nothing
+  is marked `Running` before its child exists, and `start` is never
+  refused for width. `bash()` handles are not children and never charge
+  it — conflating them would defeat the point of preferring them.
+- **A cap is refused or reported, never silently applied**: the 32 KiB
+  frontmatter cap is checked *before* the write and refused with what
+  exceeded and by how much, never written-then-trimmed; a windowed `view`
+  counts what it hid as well as what it showed; a held-back ready todo is
+  named in the follow-up, or backpressure reads as an empty ready set.
+  There is no separate todo-count cap: the byte cap binds first, and a
+  second one would be dead code beneath it.
 - **Authority does not recurse**: merge, commit, push, and user
   communication have no op on Plan or Todo at all; they exist only on
   main's session, whoever decomposed.

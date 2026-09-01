@@ -10,6 +10,7 @@ pub enum ToolKind {
     Read,
     Write,
     Exec,
+    Ledger,
 }
 
 pub type CancelFlag = Arc<dyn Fn() -> bool + Send + Sync>;
@@ -73,8 +74,7 @@ pub trait Tool: Send + Sync {
     }
 
     /// The approval prompt judges a mutation by what it changes, and only the
-    /// tool can render that: the patch language and the snapshot store it
-    /// validates against are the tool's, not the permission layer's.
+    /// tool can render that: the patch language and snapshot store are its own.
     fn preview(&self, _input: &Map<String, Value>, _cwd: &std::path::Path) -> Option<String> {
         None
     }

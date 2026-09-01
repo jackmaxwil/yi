@@ -10,6 +10,7 @@ pub enum Effort {
     Minimal,
     Low,
     #[default]
+    #[serde(alias = "med")]
     Medium,
     High,
     XHigh,
@@ -66,7 +67,13 @@ impl std::fmt::Display for Effort {
 impl std::str::FromStr for Effort {
     type Err = UnknownEffort;
 
+    /// Invariant: every `#[serde(alias)]` spelling on [`Effort`] is accepted
+    /// here too — the two parsers are separate, and a spelling the wire takes
+    /// and this one refuses is a plan file that loads but a flag that errors.
     fn from_str(value: &str) -> Result<Self, Self::Err> {
+        if value == "med" {
+            return Ok(Self::Medium);
+        }
         Self::ALL
             .into_iter()
             .find(|effort| effort.as_str() == value)
@@ -193,4 +200,21 @@ pub struct LlmContext {
     pub messages: Vec<crate::message::AgentMessage>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tools: Option<Vec<ToolDef>>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Effort;
+    use std::str::FromStr;
+
+    #[test]
+    fn med_parses_on_both_paths_and_never_serializes() -> Result<(), Box<dyn std::error::Error>> {
+        for spelling in ["med", "medium"] {
+            assert_eq!(Effort::from_str(spelling), Ok(Effort::Medium));
+            let wire: Effort = serde_json::from_str(&format!("\"{spelling}\""))?;
+            assert_eq!(wire, Effort::Medium);
+        }
+        assert_eq!(serde_json::to_string(&Effort::Medium)?, "\"medium\"");
+        Ok(())
+    }
 }

@@ -48,8 +48,7 @@ impl Wall {
     }
 
     /// Denies before the call runs, naming the path as evidence. Not a sandbox:
-    /// a command that names no denied path runs, so this stops an honest agent
-    /// from editing its own instrument, not an evasive one.
+    /// a command naming no denied path runs, stopping an honest agent, not an evasive one.
     pub fn check(
         &self,
         tool_name: &str,
