@@ -196,6 +196,7 @@ fn harness_with(options: HarnessOptions) -> Harness {
             attribute_sink.fetch_add(u32::from(usage.total_tokens == 120), Ordering::SeqCst);
         }),
         store: Arc::new(move || Some(store_handle.clone())),
+        plans_dir: cwd.join(".yi/plans"),
     }));
     Harness {
         host,
@@ -339,10 +340,7 @@ async fn child_updates_ride_the_parent_bus_with_counts_and_activity() -> TestRes
 
 fn parent_turn(user: &str, answer: &str) -> [AgentMessage; 2] {
     [
-        AgentMessage::User {
-            content: yi_types::message::UserContent::Text(user.to_owned()),
-            timestamp: 0,
-        },
+        AgentMessage::host_user(yi_types::message::UserContent::Text(user.to_owned()), 0),
         child_reply(answer),
     ]
 }
@@ -1163,22 +1161,61 @@ async fn a_checked_childs_result_is_held_back_while_its_check_is_red() -> TestRe
     Ok(())
 }
 
-fn task(id: &str, check: &str) -> yi_types::plan::Task {
-    yi_types::plan::Task {
-        id: yi_types::plan::TaskId(id.to_owned()),
-        title: format!("task {id}"),
-        acceptance: "the check is green".to_owned(),
-        schema: None,
-        check: Some(check.to_owned()),
-        deps: Vec::new(),
-        state: yi_types::plan::TaskState::Pending,
-        blocked_reason: None,
-        assignee: None,
-        red_count: None,
-        red_fingerprint: None,
-        readmit: None,
-        extra: Map::new(),
-    }
+fn fresh_cwd(tag: &str) -> Result<PathBuf, Box<dyn Error>> {
+    let dir = std::env::temp_dir().join(format!("yi-adjudication-{tag}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir)?;
+    Ok(dir)
+}
+
+/// Adjudication reads the canonical plan file, never the session fact: the
+/// named todo's delegation carries the runnable acceptance.
+fn write_canonical_plan(cwd: &std::path::Path, todos: &[(&str, &str)]) -> TestResult {
+    use yi_types::plan::doc::{
+        Check, Delegation, GoalText, Plan, PlanId, PlanTier, RetryCount, SpawnSpec, Todo,
+        TodoLabel, TodoState,
+    };
+    let store = yi_runtime::plan::store::PlanStore::open(cwd.join(".yi/plans"))?;
+    let todos = todos
+        .iter()
+        .map(|(label, check)| {
+            Ok(Todo {
+                label: TodoLabel::new(*label)?,
+                after: Vec::new(),
+                state: TodoState::Pending,
+                delegation: Some(Delegation {
+                    spec: SpawnSpec {
+                        role: None,
+                        model: None,
+                        effort: None,
+                        tools: Vec::new(),
+                        isolation: None,
+                        budget: None,
+                        extra: Map::new(),
+                    },
+                    accept: Check::Command((*check).to_owned()),
+                    output: None,
+                    context: Vec::new(),
+                    note: None,
+                    extra: Map::new(),
+                }),
+                subplan: None,
+                retries: RetryCount::default(),
+                extra: Map::new(),
+            })
+        })
+        .collect::<Result<Vec<_>, yi_types::plan::doc::DocError>>()?;
+    let plan = Plan::opening(
+        PlanId::new("adjudication")?,
+        GoalText::new("adjudicate discoveries")?,
+        PlanTier::Root,
+        todos,
+    );
+    store.write(&yi_runtime::plan::store::PlanFile {
+        plan,
+        body: String::new(),
+    })?;
+    Ok(())
 }
 
 const TWO_DISCOVERIES: &str = r#"{"value": "patched", "discoveries": [
@@ -1213,7 +1250,13 @@ fn discovery_texts(harness: &Harness) -> Vec<String> {
 
 #[tokio::test]
 async fn a_discovery_the_runtime_cannot_adjudicate_holds_the_result_back() -> TestResult {
-    let harness = harness(0, 1, ONE_DISCOVERY);
+    let harness = harness_with(HarnessOptions {
+        depth: 0,
+        max_depth: 1,
+        child_answer: ONE_DISCOVERY,
+        tool_command: None,
+        cwd: Some(fresh_cwd("no-plan")?),
+    });
     harness
         .host
         .spawn(
@@ -1227,7 +1270,7 @@ async fn a_discovery_the_runtime_cannot_adjudicate_holds_the_result_back() -> Te
             "a row naming an ancestor check must not pass while nothing can adjudicate it",
         )?;
     assert!(
-        error.contains("result held back") && error.contains("carries no plan"),
+        error.contains("result held back") && error.contains("canonical plan cannot be read"),
         "the refusal names the adjudication failure rather than downgrading the row: {error}"
     );
     assert!(
@@ -1240,14 +1283,15 @@ async fn a_discovery_the_runtime_cannot_adjudicate_holds_the_result_back() -> Te
 
 #[tokio::test]
 async fn a_high_row_that_cannot_reach_the_ledger_holds_the_result_back() -> TestResult {
-    let harness = harness(0, 1, ONE_DISCOVERY);
-    yi_session::lock_session(&harness.store).set_plan(yi_types::plan::Plan {
-        version: yi_types::plan::PlanVersion(1),
-        tasks: vec![task("t1", "exit 4")],
-        created: 0,
-        updated: 0,
-        extra: Map::new(),
-    })?;
+    let cwd = fresh_cwd("no-ledger")?;
+    write_canonical_plan(&cwd, &[("t1", "exit 4")])?;
+    let harness = harness_with(HarnessOptions {
+        depth: 0,
+        max_depth: 1,
+        child_answer: ONE_DISCOVERY,
+        tool_command: None,
+        cwd: Some(cwd),
+    });
     harness
         .host
         .spawn(
@@ -1298,14 +1342,15 @@ async fn an_oversized_discovery_list_is_refused_before_any_check_runs() -> TestR
 
 #[tokio::test]
 async fn criticality_is_derived_by_re_running_the_ancestors_check() -> TestResult {
-    let harness = harness(0, 1, TWO_DISCOVERIES);
-    yi_session::lock_session(&harness.store).set_plan(yi_types::plan::Plan {
-        version: yi_types::plan::PlanVersion(1),
-        tasks: vec![task("t1", "exit 4"), task("t2", "true")],
-        created: 0,
-        updated: 0,
-        extra: Map::new(),
-    })?;
+    let cwd = fresh_cwd("criticality")?;
+    write_canonical_plan(&cwd, &[("t1", "exit 4"), ("t2", "true")])?;
+    let harness = harness_with(HarnessOptions {
+        depth: 0,
+        max_depth: 1,
+        child_answer: TWO_DISCOVERIES,
+        tool_command: None,
+        cwd: Some(cwd),
+    });
     yi_session::lock_session(&harness.store).set_goal(yi_types::goal::Goal {
         objective: "ship the retry fix".to_owned(),
         status: yi_types::goal::GoalStatus::Active,

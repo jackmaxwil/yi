@@ -265,7 +265,10 @@ impl PermissionBroker {
         let workspace = yi_permission::lexical_normalize(&self.cwd);
         let call = ToolCall {
             tool_name,
-            reads_only: matches!(kind, ToolKind::Read),
+            // Invariant: a ledger tool takes no path argument and writes only
+            // inside the configured plans directory, under a lease and an
+            // owner gate, so there is no target for the user to adjudicate.
+            reads_only: matches!(kind, ToolKind::Read | ToolKind::Ledger),
             irreversible,
             in_workspace: !targets.is_empty()
                 && targets

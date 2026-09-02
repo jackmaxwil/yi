@@ -243,7 +243,7 @@ pub fn run_headless(
             app.open_approval(ask);
         }
         crate::app::sync_roster(&mut app, &host, &handle, &ui_tx);
-        crate::app::process_pending_tree(&mut app, &session);
+        crate::rewind::process_pending_tree(&mut app, &session);
         crate::rewind::process_pending_rewind(&mut app, &mut terminal, &session, &cmd_tx);
         crate::rewind::process_pending_new(&mut app, &mut terminal, &session);
         crate::rewind::process_pending_undo(&mut app, &session);

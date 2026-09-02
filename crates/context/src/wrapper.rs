@@ -15,12 +15,12 @@ pub fn wrap_internal(source: &str, text: &str, timestamp: u64) -> AgentMessage {
     } else {
         "internal"
     };
-    AgentMessage::User {
-        content: UserContent::Text(format!(
+    AgentMessage::host_user(
+        UserContent::Text(format!(
             "<yi_internal_context source=\"{source}\">\n{text}\n</yi_internal_context>"
         )),
         timestamp,
-    }
+    )
 }
 
 pub fn internal_source(message: &AgentMessage) -> Option<&str> {
@@ -45,6 +45,9 @@ pub fn internal_source_of_custom(custom_type: &str) -> Option<&'static str> {
         "heartbeat_prompt" => Some("heartbeat"),
         "advisory" => Some("advisory"),
         "goal_prompt" => Some("goal"),
+        "ledger_prompt" => Some("ledger"),
+        "plan_dispatch" => Some("dispatch"),
+        "reminder" => Some("reminder"),
         _ => None,
     }
 }

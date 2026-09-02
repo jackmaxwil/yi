@@ -97,6 +97,12 @@ impl Checkpoints {
         Ok(crate::diff::GitPatch::from_text(text))
     }
 
+    /// Invariant: `<tree>:<path>` is one revision argument, and it opens with
+    /// the tree's hex, so no path can present itself to git as an option.
+    pub fn show(&self, tree: &TreeId, path: &str) -> Result<String, CheckpointError> {
+        self.git(&["show", &format!("{}:{path}", tree.as_str())])
+    }
+
     fn git(&self, args: &[&str]) -> Result<String, CheckpointError> {
         let _serialized = self
             .serial

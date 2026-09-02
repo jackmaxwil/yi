@@ -37,16 +37,17 @@ fn model(reasoning: bool) -> Model {
 fn context() -> LlmContext {
     LlmContext {
         system_prompt: "be terse".to_owned(),
-        messages: vec![AgentMessage::User {
-            content: UserContent::Text("hi".to_owned()),
-            timestamp: 0,
-        }],
+        messages: vec![AgentMessage::host_user(
+            UserContent::Text("hi".to_owned()),
+            0,
+        )],
         tools: Some(vec![ToolDef {
             name: "bash".to_owned(),
             description: "run".to_owned(),
             parameters: json!({"type":"object","properties":{"cmd":{"type":"string"}}}),
             freeform: None,
         }]),
+        tool_choice: None,
     }
 }
 

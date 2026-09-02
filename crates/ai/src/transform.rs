@@ -55,7 +55,11 @@ pub fn transform_messages(
 
     for message in messages {
         match message {
-            AgentMessage::User { content, timestamp } => {
+            AgentMessage::User {
+                content,
+                timestamp,
+                attribution,
+            } => {
                 let content = match content {
                     yi_types::message::UserContent::Blocks(blocks) if !vision => {
                         yi_types::message::UserContent::Blocks(downgrade_images(
@@ -68,6 +72,7 @@ pub fn transform_messages(
                 transformed.push(AgentMessage::User {
                     content,
                     timestamp: *timestamp,
+                    attribution: *attribution,
                 });
             }
             AgentMessage::ToolResult {

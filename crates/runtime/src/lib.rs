@@ -6,6 +6,7 @@ pub mod auto_review;
 pub mod checkpoint;
 pub mod compaction;
 pub mod ext;
+pub mod fetch;
 pub mod gate;
 pub mod goal;
 pub mod kernel;

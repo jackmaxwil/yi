@@ -26,7 +26,7 @@ const DEFAULT_RLM_EXTRA_IMPORT_NAMES: [&str; 12] = [
     "pydantic", "tyro",
 ];
 const UV_INSTALL_COMMAND: &str = "curl -LsSf https://astral.sh/uv/install.sh | sh";
-pub const RUNTIME_READY_CHECK: &str = "import inspect; import rlm; from rlm import McpIntegration; import rlm.mcp as mcp; from rlm.harness import HarnessEntry; _harness_methods = [\"create_memory\",\"update_memory\",\"delete_memory\",\"create_skill\",\"update_skill\",\"delete_skill\",\"create_subagent\",\"update_subagent\",\"delete_subagent\",\"create_prompt_note\",\"update_prompt_note\",\"delete_prompt_note\",\"record_refinement\"]; assert callable(mcp.list_tools); assert callable(mcp.call_tool); assert hasattr(rlm, 'run'); assert callable(rlm); assert hasattr(rlm, 'rlm'); assert callable(rlm.rlm); assert callable(rlm.host_request); assert callable(rlm.find_models); assert callable(rlm.rlm.find_models); assert hasattr(rlm, 'harness'); assert hasattr(rlm, 'get_harness_state'); assert hasattr(rlm.rlm, 'harness'); assert hasattr(rlm.rlm, 'get_harness_state'); assert all(callable(getattr(_harness, _method, None)) for _harness in (rlm.harness, rlm.rlm.harness) for _method in _harness_methods); assert 'reference' in HarnessEntry.__dataclass_fields__; assert 'scope' in HarnessEntry.__dataclass_fields__; assert 'reference' in inspect.signature(rlm.harness.create_skill).parameters; assert 'reference' in inspect.signature(rlm.harness.update_skill).parameters; assert 'global_' in inspect.signature(rlm.harness.create_memory).parameters; assert 'global_' in inspect.signature(rlm.get_harness_state).parameters; assert not hasattr(rlm, 'background'); assert not hasattr(rlm.rlm, 'background'); from pathlib import Path as _P; assert rlm.RLMSubagent(rlm_child_id='c', active_session_id=None, session_id=None, session_name='kid', session_dir=_P('.'), status='idle').name == 'kid'";
+pub const RUNTIME_READY_CHECK: &str = "import inspect; import rlm; from rlm import McpIntegration; import rlm.mcp as mcp; from rlm.harness import HarnessEntry; _harness_methods = [\"create_memory\",\"update_memory\",\"delete_memory\",\"create_skill\",\"update_skill\",\"delete_skill\",\"create_subagent\",\"update_subagent\",\"delete_subagent\",\"create_prompt_note\",\"update_prompt_note\",\"delete_prompt_note\",\"record_refinement\"]; assert callable(mcp.list_tools); assert callable(mcp.call_tool); assert hasattr(rlm, 'run'); assert callable(rlm); assert hasattr(rlm, 'rlm'); assert callable(rlm.rlm); assert callable(rlm.host_request); assert callable(rlm.find_models); assert callable(rlm.rlm.find_models); assert hasattr(rlm, 'harness'); assert hasattr(rlm, 'get_harness_state'); assert hasattr(rlm.rlm, 'harness'); assert hasattr(rlm.rlm, 'get_harness_state'); assert all(callable(getattr(_harness, _method, None)) for _harness in (rlm.harness, rlm.rlm.harness) for _method in _harness_methods); assert 'reference' in HarnessEntry.__dataclass_fields__; assert 'scope' in HarnessEntry.__dataclass_fields__; assert 'reference' in inspect.signature(rlm.harness.create_skill).parameters; assert 'reference' in inspect.signature(rlm.harness.update_skill).parameters; assert 'global_' in inspect.signature(rlm.harness.create_memory).parameters; assert 'global_' in inspect.signature(rlm.get_harness_state).parameters; assert inspect.iscoroutinefunction(rlm.fetch); assert callable(rlm.rlm.fetch); assert callable(rlm.bash); assert not inspect.iscoroutinefunction(rlm.bash); assert callable(rlm.rlm.bash); assert not inspect.iscoroutinefunction(rlm.rlm.bash); assert hasattr(rlm.BashHandle, '__await__'); assert not hasattr(rlm, 'background'); assert not hasattr(rlm.rlm, 'background'); from pathlib import Path as _P; assert rlm.RLMSubagent(rlm_child_id='c', active_session_id=None, session_id=None, session_name='kid', session_dir=_P('.'), status='idle').name == 'kid'";
 const BOOTSTRAP_VERSION_FILE: &str = ".bootstrap-version";
 const BOOTSTRAP_LOCK_NAME: &str = ".bootstrap.lock";
 const BOOTSTRAP_LOCK_RETRY_MS: u64 = 100;
@@ -361,7 +361,7 @@ fn bootstrap_lock_dir(venv: &Path) -> PathBuf {
 }
 
 #[cfg(unix)]
-fn process_is_running(pid: u32) -> bool {
+pub fn process_is_running(pid: u32) -> bool {
     // kill -0 probes liveness; EPERM still means the pid exists.
     command(Path::new("kill"))
         .args(["-0", &pid.to_string()])
@@ -373,17 +373,17 @@ fn process_is_running(pid: u32) -> bool {
 }
 
 #[cfg(not(unix))]
-fn process_is_running(_pid: u32) -> bool {
+pub fn process_is_running(_pid: u32) -> bool {
     true
 }
 
-fn read_lock_pid(lock_dir: &Path) -> Option<u32> {
+pub fn read_lock_pid(lock_dir: &Path) -> Option<u32> {
     let raw = std::fs::read_to_string(lock_dir.join("pid")).ok()?;
     let pid: u32 = raw.trim().parse().ok()?;
     (pid > 0).then_some(pid)
 }
 
-fn lock_missing_pid_is_stale(lock_dir: &Path) -> bool {
+pub fn lock_missing_pid_is_stale(lock_dir: &Path) -> bool {
     let Ok(meta) = std::fs::metadata(lock_dir) else {
         return false;
     };

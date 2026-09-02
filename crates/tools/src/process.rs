@@ -4,6 +4,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use crate::jobs::LiveOutput;
 use crate::tool::CancelFlag;
 
 pub const OUTPUT_CAP: usize = 30_000;
@@ -51,7 +52,7 @@ fn kill_tree(child: &mut Child) {
     }
 }
 
-fn drain_capped(mut reader: impl Read, cap: usize) -> (String, bool) {
+fn drain_capped(mut reader: impl Read, cap: usize, live: Option<&LiveOutput>) -> (String, bool) {
     let mut buffer = Vec::new();
     let mut chunk = [0u8; 8192];
     let mut truncated = false;
@@ -59,6 +60,9 @@ fn drain_capped(mut reader: impl Read, cap: usize) -> (String, bool) {
         match reader.read(&mut chunk) {
             Ok(0) | Err(_) => break,
             Ok(n) => {
+                if let Some(live) = live {
+                    live.push(chunk.get(..n).unwrap_or(&[]));
+                }
                 if buffer.len() < cap {
                     let take = n.min(cap.saturating_sub(buffer.len()));
                     buffer.extend_from_slice(chunk.get(..take).unwrap_or(&[]));
@@ -74,11 +78,38 @@ fn drain_capped(mut reader: impl Read, cap: usize) -> (String, bool) {
     (String::from_utf8_lossy(&buffer).into_owned(), truncated)
 }
 
+/// Incident: waiting under the guard parked the cancel watchdog on the same
+/// lock for the child's whole life, so a command that closed its own pipes
+/// early could not be killed. The guard is released between polls.
+fn wait_polled(child: &Mutex<Child>) -> Result<Option<i32>, String> {
+    loop {
+        let polled = child
+            .lock()
+            .map_err(|_| "child lock poisoned".to_owned())?
+            .try_wait()
+            .map_err(|error| format!("wait failed: {error}"))?;
+        if let Some(status) = polled {
+            return Ok(status.code());
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
 pub fn run_captured(
+    command: Command,
+    stdin: Option<Vec<u8>>,
+    cancelled: &CancelFlag,
+    cap: usize,
+) -> Result<CommandCapture, String> {
+    run_captured_live(command, stdin, cancelled, cap, None)
+}
+
+pub(crate) fn run_captured_live(
     mut command: Command,
     stdin: Option<Vec<u8>>,
     cancelled: &CancelFlag,
     cap: usize,
+    live: Option<Arc<LiveOutput>>,
 ) -> Result<CommandCapture, String> {
     command
         .stdin(if stdin.is_some() {
@@ -131,27 +162,20 @@ pub fn run_captured(
         })
     };
 
+    let stderr_live = live.clone();
     let stderr_reader = std::thread::spawn(move || match stderr_pipe {
-        Some(pipe) => drain_capped(pipe, cap),
+        Some(pipe) => drain_capped(pipe, cap, stderr_live.as_deref()),
         None => (String::new(), false),
     });
     let (stdout, stdout_truncated) = match stdout_pipe {
-        Some(pipe) => drain_capped(pipe, cap),
+        Some(pipe) => drain_capped(pipe, cap, live.as_deref()),
         None => (String::new(), false),
     };
     let (stderr, stderr_truncated) = stderr_reader
         .join()
         .unwrap_or_else(|_| (String::new(), false));
 
-    let exit_code = child
-        .lock()
-        .map_err(|_| "child lock poisoned".to_owned())
-        .and_then(|mut child| {
-            child
-                .wait()
-                .map_err(|error| format!("wait failed: {error}"))
-        })
-        .map(|status| status.code())?;
+    let waited = wait_polled(&child);
     done.store(true, Ordering::SeqCst);
     let _watchdog_exits_on_done = watchdog.join();
     if let Some(writer) = stdin_writer {
@@ -161,7 +185,7 @@ pub fn run_captured(
     Ok(CommandCapture {
         stdout,
         stderr,
-        exit_code,
+        exit_code: waited?,
         cancelled: was_cancelled.load(Ordering::SeqCst),
         truncated: stdout_truncated || stderr_truncated,
     })
@@ -179,4 +203,30 @@ pub fn edit_file(path: &std::path::Path) -> (String, std::io::Result<std::proces
         .stderr(Stdio::inherit())
         .status();
     (editor, status)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Instant;
+
+    type Fallible = Result<(), Box<dyn std::error::Error>>;
+
+    #[test]
+    fn cancel_kills_a_child_that_closed_its_own_pipes() -> Fallible {
+        let mut shell = command("sh");
+        shell.arg("-c").arg("exec >/dev/null 2>&1; sleep 5");
+        let deadline = Instant::now() + Duration::from_millis(300);
+        let cancelled: CancelFlag = Arc::new(move || Instant::now() >= deadline);
+        let started = Instant::now();
+        let capture = run_captured(shell, None, &cancelled, OUTPUT_CAP)?;
+        let elapsed = started.elapsed();
+        assert!(capture.cancelled);
+        assert_eq!(
+            capture.exit_code, None,
+            "the sleep exited on its own, so nothing was signalled"
+        );
+        assert!(elapsed < Duration::from_millis(2500), "waited {elapsed:?}");
+        Ok(())
+    }
 }
