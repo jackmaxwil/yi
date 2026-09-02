@@ -340,6 +340,10 @@ impl Resolver {
         &self.workspace
     }
 
+    pub(super) fn wall(&self) -> &Wall {
+        &self.wall
+    }
+
     pub(super) fn plans_dir(&self) -> &std::path::Path {
         &self.plans_dir
     }
@@ -467,6 +471,49 @@ mod tests {
             resolver.fetch(&url_walled),
             Err(FetchError::Denied { .. })
         ));
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_symlink_leaves_the_workspace_no_wider_than_a_path_does() -> TestResult {
+        let workspace = scratch("symlink")?;
+        let elsewhere = scratch("symlink-elsewhere")?;
+        std::fs::write(elsewhere.join("passwd"), "root:x:0:0\n")?;
+        std::fs::create_dir_all(workspace.join("secret"))?;
+        std::fs::write(workspace.join("secret/key.txt"), "hunter2\n")?;
+        for (link, target) in [
+            ("escape.txt", elsewhere.join("passwd")),
+            ("walled.txt", workspace.join("secret/key.txt")),
+        ] {
+            let at = workspace.join(link);
+            let _ = std::fs::remove_file(&at);
+            std::os::unix::fs::symlink(target, &at)?;
+        }
+        let wall = Wall {
+            deny_write: Vec::new(),
+            deny_read: vec![workspace.join("secret")],
+            deny_url: Vec::new(),
+        };
+        let resolver = Resolver::new(workspace, wall);
+        let escape: Url = "local://escape.txt".parse()?;
+        let error = resolver
+            .fetch(&escape)
+            .err()
+            .ok_or("a link out must refuse")?;
+        assert!(
+            matches!(error, FetchError::OutsideWorkspace { .. }),
+            "a link out of the workspace was served: {error}"
+        );
+        let walled: Url = "local://walled.txt".parse()?;
+        let error = resolver
+            .fetch(&walled)
+            .err()
+            .ok_or("a link in must refuse")?;
+        assert!(
+            matches!(error, FetchError::Denied { .. }),
+            "a link into a denied tree was served: {error}"
+        );
         Ok(())
     }
 
