@@ -117,6 +117,7 @@ fn service() -> Arc<KernelService> {
         session_dir: None,
         host: Arc::new(registry),
         on_restore: None,
+        sandbox: None,
     }))
 }
 

@@ -92,6 +92,7 @@ pub struct KernelOptions {
     pub host: Option<Arc<dyn HostHandlers>>,
     pub on_progress: Option<Arc<ProgressFn>>,
     pub snapshot: Option<KernelSnapshotConfig>,
+    pub wrap: Option<(String, Vec<String>)>,
 }
 
 pub type StreamFn = dyn FnMut(&str, &str) + Send;
@@ -167,6 +168,7 @@ pub(crate) struct Inner {
     pub(crate) child_pid: Mutex<Option<u32>>,
     pub(crate) snapshot: Option<KernelSnapshotConfig>,
     pub(crate) snapshot_timer: Mutex<Option<tokio::task::JoinHandle<()>>>,
+    pub(crate) wrap: Option<(String, Vec<String>)>,
 }
 
 pub struct KernelManager {
@@ -225,7 +227,14 @@ fn spawn_kernel_process(
     python: &std::path::Path,
     connection_path: &std::path::Path,
 ) -> Result<tokio::process::Child, String> {
-    let mut command = tokio::process::Command::new(python);
+    let mut command = match &inner.wrap {
+        Some((program, prefix)) => {
+            let mut command = tokio::process::Command::new(program);
+            command.args(prefix).arg(python);
+            command
+        }
+        None => tokio::process::Command::new(python),
+    };
     command
         .args(["-m", "ipykernel_launcher", "-f"])
         .arg(connection_path)
@@ -550,12 +559,17 @@ impl KernelManager {
                 child_pid: Mutex::new(None),
                 snapshot: options.snapshot,
                 snapshot_timer: Mutex::new(None),
+                wrap: options.wrap,
             }),
         })
     }
 
     pub fn is_running(&self) -> bool {
         self.inner.state() == Lifecycle::Running
+    }
+
+    pub fn wrap(&self) -> Option<&(String, Vec<String>)> {
+        self.inner.wrap.as_ref()
     }
 
     pub async fn start(&self) -> Result<(), String> {
