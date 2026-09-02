@@ -99,10 +99,20 @@ impl Wall {
         } else {
             workspace.join(raw)
         };
-        let normalized = yi_permission::lexical_normalize(&target);
+        self.check_read_path(&target)
+    }
+
+    /// Invariant: the wall covers the path a read lands on, so a link resolved
+    /// out of one tree and into a denied one is refused on the target; the
+    /// denied root is canonicalized only once the lexical match has missed.
+    pub fn check_read_path(&self, path: &Path) -> Option<String> {
+        let normalized = yi_permission::lexical_normalize(path);
         self.deny_read
             .iter()
-            .find(|denied| normalized.starts_with(yi_permission::lexical_normalize(denied)))
+            .find(|denied| {
+                normalized.starts_with(yi_permission::lexical_normalize(denied))
+                    || std::fs::canonicalize(denied).is_ok_and(|real| normalized.starts_with(real))
+            })
             .map(|hit| refusal("fetch", &hit.display().to_string()))
     }
 

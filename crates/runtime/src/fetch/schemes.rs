@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use yi_permission::lexical_normalize;
 use yi_session::{EntryOrder, EntryQuery};
@@ -57,30 +57,52 @@ fn render_history(
 impl Resolver {
     pub(super) fn resolve_local(&self, url: &Url) -> Result<Served, FetchError> {
         let raw = Path::new(url.path());
-        let (path, served_by) = if raw.is_absolute() {
-            let normalized = lexical_normalize(raw);
-            let inside_spill = self
-                .spill_dir()
-                .is_some_and(|spill| normalized.starts_with(lexical_normalize(spill)));
-            if !inside_spill {
-                return Err(FetchError::OutsideWorkspace {
-                    url: url.to_string(),
-                    path: normalized,
-                });
-            }
-            (normalized, "spill-file")
-        } else {
-            let normalized = lexical_normalize(&self.workspace().join(raw));
-            if !normalized.starts_with(lexical_normalize(self.workspace())) {
-                return Err(FetchError::OutsideWorkspace {
-                    url: url.to_string(),
-                    path: normalized,
-                });
-            }
-            (normalized, "workspace-file")
+        let outside = |path: PathBuf| FetchError::OutsideWorkspace {
+            url: url.to_string(),
+            path,
         };
-        let text = read_text(url, &path)?;
+        let (path, served_by, root) = if raw.is_absolute() {
+            let normalized = lexical_normalize(raw);
+            let inside = self
+                .spill_dir()
+                .filter(|spill| normalized.starts_with(lexical_normalize(spill)));
+            let Some(spill) = inside else {
+                return Err(outside(normalized));
+            };
+            (normalized, "spill-file", spill.to_path_buf())
+        } else {
+            let root = lexical_normalize(self.workspace());
+            let normalized = lexical_normalize(&self.workspace().join(raw));
+            if !normalized.starts_with(&root) {
+                return Err(outside(normalized));
+            }
+            (normalized, "workspace-file", root)
+        };
+        let text = read_text(url, &self.resolved(url, path, &root)?)?;
         Ok((apply_fragment(url, text)?, served_by.to_owned()))
+    }
+
+    /// Incident: containment was lexical, so a link inside the workspace at
+    /// `notes -> /etc/passwd` was served; what the read lands on takes the same
+    /// wall a path naming it directly takes.
+    fn resolved(&self, url: &Url, path: PathBuf, root: &Path) -> Result<PathBuf, FetchError> {
+        let Ok(real) = std::fs::canonicalize(&path) else {
+            return Ok(path);
+        };
+        let real_root = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+        if !real.starts_with(&real_root) {
+            return Err(FetchError::OutsideWorkspace {
+                url: url.to_string(),
+                path: real,
+            });
+        }
+        match self.wall().check_read_path(&real) {
+            Some(refusal) => Err(FetchError::Denied {
+                url: url.to_string(),
+                refusal,
+            }),
+            None => Ok(real),
+        }
     }
 
     pub(super) fn resolve_plan(&self, url: &Url) -> Result<Served, FetchError> {
