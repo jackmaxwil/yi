@@ -218,6 +218,25 @@ fn the_outcome_ledger_is_a_difference_of_recorded_timestamps() -> TestResult {
 }
 
 #[test]
+fn a_hand_edited_cycle_still_reports_instead_of_walking_forever() -> TestResult {
+    let plan = plan_with(&[("a", &["b"]), ("b", &["a"]), ("c", &["b"])])?;
+    let records = vec![
+        moved("a", "start", TodoStateName::Running, 1_000, 3)?,
+        moved("a", "done", TodoStateName::Done, 3_000, 3)?,
+        moved("c", "start", TodoStateName::Running, 3_000, 3)?,
+        moved("c", "done", TodoStateName::Done, 4_000, 3)?,
+    ];
+    let measured = report(&plan, &records);
+    assert_eq!(measured.wall_ms, 3_000);
+    assert!(
+        measured.critical_path_ms <= measured.wall_ms,
+        "an edge back into the cycle counts as nothing: {}",
+        measured.critical_path_ms
+    );
+    Ok(())
+}
+
+#[test]
 fn a_plan_with_no_op_stream_reports_nothing_rather_than_guessing() -> TestResult {
     let plan = plan_with(&[("a", &[])])?;
     let measured = report(&plan, &[]);
