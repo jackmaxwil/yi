@@ -32,3 +32,13 @@ jobs:
       # install steps the GitHub file needs are both gone.
       - run: just postmerge
       - run: just postmerge-evals
+      # The issues this merge closed are annotated whether or not the away game
+      # above went green: they are closed either way, and a version that never
+      # reached them is a gap in the trail nothing later fills.
+      - name: annotate the issues this merge closed
+        if: always()
+        env:
+          FORGEJO_API_URL: ${{ github.api_url }}
+          FORGEJO_REPOSITORY: ${{ github.repository }}
+          FORGEJO_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python3 scripts/forge_tracking.py --comment-closed
