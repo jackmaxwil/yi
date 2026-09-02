@@ -16,7 +16,7 @@ import sys
 
 from forgejo_pr_comment import send
 
-# docs/TODOS.md's own sizing, which the labels carry: S = a day, M = three, L = a week.
+# The sizing the register was written in and the labels carry: S = a day, M = three, L = a week.
 WEIGHTS = {"size:S": 1, "size:M": 3, "size:L": 7}
 
 
