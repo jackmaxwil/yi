@@ -1,24 +1,24 @@
 # The T2 lane's away game: the suite under the profile that ships, with panic
 # forced back to unwind, which nothing else covers because the shipping profile
 # aborts. Too slow to block a PR, so it runs after the merge.
+#
+# No macOS arm: the estate has no macOS runner, and `just prepush` is where the
+# platform Yi is developed on gets covered.
 name: postmerge
 
 on:
   push:
     branches: [main]
 
-permissions:
-  contents: read
-
 jobs:
+  # One arm left, so the matrix (and its fail-fast: false) went with the macOS
+  # row it existed for.
   postmerge:
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest]
-    runs-on: ${{ matrix.os }}
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - run: rustup show
       # `test` is the PR gate's heaviest lane and the one whose profile this
       # job also builds, so a cache saved here — on refs/heads/main, the one
@@ -28,18 +28,7 @@ jobs:
         with:
           shared-key: test
           cache-on-failure: true
-      - uses: taiki-e/install-action@v2
-        with:
-          tool: just
-      # `just journeys` boots the Python kernel, which refuses to install uv
-      # itself; without this every push to main failed there, which is also why
-      # main never saved a cache for a pull request to inherit.
-      - name: install uv for the kernel journey
-        run: |
-          set -euo pipefail
-          if ! command -v uv >/dev/null; then
-            curl -LsSf https://astral.sh/uv/install.sh | sh
-            echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-          fi
+      # The image carries just and the uv the kernel journey boots, so the
+      # install steps the GitHub file needs are both gone.
       - run: just postmerge
       - run: just postmerge-evals
