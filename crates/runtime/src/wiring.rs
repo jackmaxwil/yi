@@ -93,6 +93,10 @@ pub struct RuntimeWiring {
     /// The session corpus root, so `history://<session-id>` reaches a run other
     /// than this one; absent, the corpus is this session and its live children.
     pub sessions_dir: Option<PathBuf>,
+    /// Invariant: created once at the composition root and carried down every
+    /// child, because `kernel://<child>/var` is a parent reading a namespace
+    /// that is not its own — a map per session can only ever answer itself.
+    pub kernels: Arc<crate::fetch::KernelServiceMap>,
 }
 
 /// Every spawned child wires itself the same way at depth+1; the depth check in
@@ -405,7 +409,7 @@ pub fn attach_runtime(session: &mut AgentSession, mut wiring: RuntimeWiring) -> 
     wire_goal(session, &mut registry, wiring.plan_stale_turns, &plans_dir);
     let fetch_log = Arc::new(crate::fetch::FetchLog::new());
     fetch_log.attach_session_handle(session.store_handle());
-    let kernels = crate::fetch::KernelServiceMap::new();
+    let kernels = Arc::clone(&wiring.kernels);
     let resolver = wire_fetch(
         session,
         &wiring,
@@ -441,7 +445,7 @@ pub fn attach_runtime(session: &mut AgentSession, mut wiring: RuntimeWiring) -> 
             .parent_link
             .as_ref()
             .map_or_else(|| "main".to_owned(), |link| link.child_name.clone()),
-        Arc::clone(&service),
+        &service,
     );
     let mut tools = (wiring.tools)();
     tools.push(crate::kernel::ipython_tool(service));
