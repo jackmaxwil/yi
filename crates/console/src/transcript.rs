@@ -402,6 +402,7 @@ mod tests {
         });
         let lines = transcript.lines(&theme);
         assert_eq!(transcript.slots.len(), 3, "no block may be trimmed here");
-        assert!(transcript.line_total <= lines.len());
+        // Three blocks, two blank separators: the count must be exact.
+        assert_eq!(transcript.line_total + 2, lines.len());
     }
 }
