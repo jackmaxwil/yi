@@ -1,5 +1,6 @@
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 
 use crate::process::command;
 
@@ -41,17 +42,26 @@ pub enum CheckpointError {
 pub struct Checkpoints {
     git_dir: PathBuf,
     work_tree: PathBuf,
-    // One shadow index, so two concurrent captures would race on index.lock.
-    serial: Mutex<()>,
+    serial: Arc<Mutex<()>>,
+}
+
+// Per gitdir, not per handle: git fails hard on index.lock, and one shadow has several openers.
+fn serial_for(git_dir: &Path) -> Arc<Mutex<()>> {
+    static LOCKS: OnceLock<Mutex<HashMap<PathBuf, Arc<Mutex<()>>>>> = OnceLock::new();
+    let mut locks = LOCKS
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner);
+    Arc::clone(locks.entry(git_dir.to_path_buf()).or_default())
 }
 
 impl Checkpoints {
     pub fn open(checkpoint_root: &Path, project: &Path) -> Result<Self, CheckpointError> {
         let git_dir = checkpoint_root.join(project_key(project));
         let checkpoints = Self {
+            serial: serial_for(&git_dir),
             git_dir,
             work_tree: project.to_path_buf(),
-            serial: Mutex::new(()),
         };
         if !checkpoints.git_dir.join("HEAD").exists() {
             std::fs::create_dir_all(&checkpoints.git_dir)
