@@ -1,10 +1,9 @@
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use yi_runtime::AgentSession;
+use yi_runtime::plan::accept_text;
 use yi_runtime::plan::store::PlanStore;
-use yi_types::plan::doc::{
-    BlockedOn, Check, Plan, PlanState, PlanTier, Todo, TodoLabel, TodoState,
-};
+use yi_types::plan::doc::{BlockedOn, Plan, PlanTier, Todo, TodoLabel, TodoState};
 
 use crate::app::App;
 use crate::cell::Cell;
@@ -93,24 +92,6 @@ fn face(state: &TodoState, label: &str) -> (char, Face) {
     }
 }
 
-fn plan_state(state: &PlanState) -> String {
-    match state {
-        PlanState::Active => "active".to_owned(),
-        PlanState::Done => "done".to_owned(),
-        PlanState::Superseded { by } => format!("superseded by v{}", by.0),
-        PlanState::Abandoned => "abandoned".to_owned(),
-        PlanState::Other(tag) => tag.clone(),
-    }
-}
-
-fn accept_text(check: &Check) -> &str {
-    match check {
-        Check::Command(command) => command,
-        Check::Stated(stated) => stated,
-        Check::Other(other) => other,
-    }
-}
-
 fn blocked_text(on: &BlockedOn) -> String {
     match on {
         BlockedOn::Child(agent) => format!("child {agent}"),
@@ -164,10 +145,7 @@ fn owned_by(sub: &Plan, plan: &Plan, todo: &TodoLabel) -> bool {
 fn push_plan(rows: &mut Vec<Row>, plan: &Plan, depth: usize, subplans: &[Plan]) {
     let head = format!(
         "{} v{} · {} · {}",
-        plan.id,
-        plan.version.0,
-        plan.goal,
-        plan_state(&plan.state)
+        plan.id, plan.version.0, plan.goal, plan.state
     );
     rows.push(Row {
         depth,

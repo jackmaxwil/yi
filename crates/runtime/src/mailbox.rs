@@ -634,7 +634,7 @@ mod tests {
         );
         store.write(&crate::plan::store::PlanFile {
             plan,
-            body: crate::plan::store::PlanBody::default(),
+            body: String::new(),
         })?;
         Ok(())
     }

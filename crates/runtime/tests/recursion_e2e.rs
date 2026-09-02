@@ -1212,7 +1212,7 @@ fn write_canonical_plan(cwd: &std::path::Path, todos: &[(&str, &str)]) -> TestRe
     );
     store.write(&yi_runtime::plan::store::PlanFile {
         plan,
-        body: yi_runtime::plan::store::PlanBody::default(),
+        body: String::new(),
     })?;
     Ok(())
 }

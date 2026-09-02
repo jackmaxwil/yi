@@ -16,7 +16,6 @@ use yi_runtime::plan::ops::{
 };
 use yi_runtime::plan::store::{FRONTMATTER_CAP_BYTES, PlanStore, StoreError};
 use yi_runtime::plan::table::RETRY_CAP;
-use yi_runtime::plan::yaml;
 use yi_types::plan::PlanVersion;
 use yi_types::plan::doc::{
     AgentId, BlockedOn, Check, Delegation, GoalText, OutputSchema, PlanId, PlanState, SPAWN_CAP,
@@ -701,7 +700,7 @@ fn a_refused_write_publishes_no_extra_files() -> TestResult {
         .plan
         .extra
         .insert("pad".to_owned(), seed.clone().into());
-    let rendered = yaml::to_yaml(&serde_json::to_value(&probe.plan)?)?;
+    let rendered = PlanStore::render(&probe.plan)?;
     let filler = FRONTMATTER_CAP_BYTES
         .saturating_add(1)
         .saturating_sub(rendered.len().saturating_sub(seed.len()));

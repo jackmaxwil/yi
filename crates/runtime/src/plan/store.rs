@@ -2,11 +2,7 @@ use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use yi_types::plan::doc::{
-    DocError, GoalText, Plan, PlanId, PlanState, Spawns, Todo, TodoLabel, TodoState,
-};
-
-use super::yaml::{self, YamlError};
+use yi_types::plan::doc::{AgentId, DocError, GoalText, Plan, PlanId, TodoLabel, TodoState};
 
 /// Invariant: the frontmatter byte cap is checked before the atomic replace
 /// and never trimmed after — a cap is refused or reported, never silently
@@ -40,23 +36,15 @@ pub enum StoreError {
     #[error("no plan {id} at {path}")]
     Missing { id: PlanId, path: PathBuf },
     #[error("{path}: {source}")]
-    Yaml { path: PathBuf, source: YamlError },
-    #[error("{path}: {source}")]
-    Doc {
+    Document {
         path: PathBuf,
-        source: serde_json::Error,
+        source: DocumentError,
     },
     #[error("plan {id} did not serialize: {source}")]
     Serialize {
         id: PlanId,
         source: serde_json::Error,
     },
-    #[error("plan {id} frontmatter left the yaml subset: {source}")]
-    Emit { id: PlanId, source: YamlError },
-    #[error("plan {id} frontmatter did not read back: {source}; nothing was written")]
-    Unreadable { id: PlanId, source: YamlError },
-    #[error("plan {id} frontmatter read back as a different document; nothing was written")]
-    Drifted { id: PlanId },
     #[error(
         "plan {id} frontmatter is {bytes} bytes, {over} over the {cap} cap; nothing was written",
         over = bytes.saturating_sub(*cap)
@@ -74,183 +62,102 @@ pub enum StoreError {
     AllocateExhausted { slug: PlanId, tried: u32 },
 }
 
-/// One `## <heading>` section of the Markdown body; `text` is the verbatim
-/// prose after the heading line, up to the next section.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub struct BodySection {
-    pub heading: String,
-    pub text: String,
+/// Invariant: the frontmatter is JSON between two `---` lines, so the one
+/// parser behind a user-editable file is serde_json and nothing hand-rolled.
+#[derive(Debug, thiserror::Error)]
+pub enum DocumentError {
+    #[error("no opening --- delimiter: {head}")]
+    NoFrontmatter { head: String },
+    #[error("frontmatter opened at line 1 is unclosed after {lines} lines")]
+    OpenFrontmatter { lines: usize },
+    #[error("frontmatter: {0}")]
+    Json(#[from] serde_json::Error),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub struct PlanBody {
-    pub preamble: String,
-    pub sections: Vec<BodySection>,
-}
-
-impl PlanBody {
-    pub fn parse(text: &str) -> Self {
-        let mut body = Self::default();
-        for line in text.split_inclusive('\n') {
-            if let Some(rest) = line.strip_prefix("## ") {
-                body.sections.push(BodySection {
-                    heading: rest.trim_end().to_owned(),
-                    text: String::new(),
+pub fn split_frontmatter(document: &str) -> Result<(&str, &str), DocumentError> {
+    let mut offset = 0usize;
+    let mut opened = false;
+    let mut start = 0usize;
+    let mut count = 0usize;
+    for raw in document.split_inclusive('\n') {
+        count = count.saturating_add(1);
+        let closing = raw.trim_end() == "---";
+        if !opened {
+            if !closing {
+                return Err(DocumentError::NoFrontmatter {
+                    head: raw.trim_end().to_string(),
                 });
-            } else {
-                match body.sections.last_mut() {
-                    Some(section) => section.text.push_str(line),
-                    None => body.preamble.push_str(line),
-                }
             }
+            opened = true;
+            start = offset.saturating_add(raw.len());
+        } else if closing {
+            let body = offset.saturating_add(raw.len());
+            return Ok((
+                document.get(start..offset).unwrap_or(""),
+                document.get(body..).unwrap_or(""),
+            ));
         }
-        body
+        offset = offset.saturating_add(raw.len());
     }
+    if opened {
+        Err(DocumentError::OpenFrontmatter { lines: count })
+    } else {
+        Err(DocumentError::NoFrontmatter {
+            head: String::new(),
+        })
+    }
+}
 
-    pub fn render(&self) -> String {
-        let mut out = self.preamble.clone();
-        for section in &self.sections {
-            out.push_str("## ");
-            out.push_str(&section.heading);
-            out.push('\n');
-            out.push_str(&section.text);
+pub fn parse_document(text: &str) -> Result<PlanFile, DocumentError> {
+    let (front, body) = split_frontmatter(text)?;
+    Ok(PlanFile {
+        plan: serde_json::from_str(front)?,
+        body: body.to_owned(),
+    })
+}
+
+/// The `## <heading>` section of a body with its heading line, up to the next
+/// section, trailing blank lines dropped.
+pub fn section_of(body: &str, heading: &str) -> Option<String> {
+    let header = format!("## {heading}");
+    let mut collected: Vec<&str> = Vec::new();
+    let mut inside = false;
+    for line in body.lines() {
+        if line.trim_end() == header {
+            inside = true;
+            collected.push(line);
+        } else if inside && line.starts_with("## ") {
+            break;
+        } else if inside {
+            collected.push(line);
         }
-        out
     }
-
-    pub fn section(&self, heading: &str) -> Option<&str> {
-        self.sections
-            .iter()
-            .find(|section| section.heading == heading)
-            .map(|section| section.text.as_str())
-    }
+    inside.then(|| collected.join("\n").trim_end().to_owned())
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct PlanFile {
     pub plan: Plan,
-    pub body: PlanBody,
+    pub body: String,
 }
 
-/// What one hand edit of the plan file changed, attributable to the user;
-/// [`std::fmt::Display`] renders the human-readable diff line.
-#[derive(Debug, Clone, PartialEq)]
-pub enum UserEdit {
-    GoalReworded {
-        from: GoalText,
-        to: GoalText,
-    },
-    PlanStateChanged {
-        from: PlanState,
-        to: PlanState,
-    },
-    SpawnsChanged {
-        from: Spawns,
-        to: Spawns,
-    },
-    TodoAdded {
-        todo: Box<Todo>,
-    },
-    TodoDropped {
-        label: TodoLabel,
-    },
-    TodoStateChanged {
-        label: TodoLabel,
-        from: TodoState,
-        to: TodoState,
-    },
-    TodoEdgesChanged {
-        label: TodoLabel,
-        from: Vec<TodoLabel>,
-        to: Vec<TodoLabel>,
-    },
-    TodoEdited {
-        label: TodoLabel,
-    },
-    TodoReordered {
-        order: Vec<TodoLabel>,
-    },
-    PreambleEdited,
-    SectionEdited {
-        heading: String,
-    },
+/// What a hand edit moved that the engine must answer for: todos whose
+/// recorded Running child is no longer the one on disk. Every other
+/// divergence is the user's to make and costs one [`Plan::touched`] bump.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HandEdit {
+    pub left_running: Vec<TodoLabel>,
 }
 
-fn state_name(state: &TodoState) -> &str {
+pub(super) fn running_by(state: &TodoState) -> Option<&AgentId> {
     match state {
-        TodoState::Pending => "pending",
-        TodoState::Running { .. } => "running",
-        TodoState::Blocked { .. } => "blocked",
-        TodoState::Done { .. } => "done",
-        TodoState::Failed { .. } => "failed",
-        TodoState::Abandoned => "abandoned",
-        TodoState::Other(tag) => tag,
-    }
-}
-
-fn plan_state_name(state: &PlanState) -> &str {
-    match state {
-        PlanState::Active => "active",
-        PlanState::Done => "done",
-        PlanState::Superseded { .. } => "superseded",
-        PlanState::Abandoned => "abandoned",
-        PlanState::Other(tag) => tag,
-    }
-}
-
-impl std::fmt::Display for UserEdit {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::GoalReworded { from, to } => {
-                write!(
-                    formatter,
-                    "goal reworded from {:?} to {:?}",
-                    from.as_str(),
-                    to.as_str()
-                )
-            }
-            Self::PlanStateChanged { from, to } => write!(
-                formatter,
-                "plan state changed from {} to {}",
-                plan_state_name(from),
-                plan_state_name(to)
-            ),
-            Self::SpawnsChanged { from, to } => {
-                write!(
-                    formatter,
-                    "spawns changed from {} to {}",
-                    from.get(),
-                    to.get()
-                )
-            }
-            Self::TodoAdded { todo } => write!(formatter, "todo {:?} added", todo.label.as_str()),
-            Self::TodoDropped { label } => write!(formatter, "todo {:?} dropped", label.as_str()),
-            Self::TodoStateChanged { label, from, to } => write!(
-                formatter,
-                "todo {:?} moved from {} to {}",
-                label.as_str(),
-                state_name(from),
-                state_name(to)
-            ),
-            Self::TodoEdgesChanged { label, from, to } => {
-                let from: Vec<&str> = from.iter().map(TodoLabel::as_str).collect();
-                let to: Vec<&str> = to.iter().map(TodoLabel::as_str).collect();
-                write!(
-                    formatter,
-                    "todo {:?} after edges changed from {from:?} to {to:?}",
-                    label.as_str()
-                )
-            }
-            Self::TodoEdited { label } => write!(formatter, "todo {:?} edited", label.as_str()),
-            Self::TodoReordered { order } => {
-                let order: Vec<&str> = order.iter().map(TodoLabel::as_str).collect();
-                write!(formatter, "todos reordered to {order:?}")
-            }
-            Self::PreambleEdited => write!(formatter, "body preamble edited"),
-            Self::SectionEdited { heading } => {
-                write!(formatter, "body section {heading:?} edited")
-            }
-        }
+        TodoState::Running { by } => Some(by),
+        TodoState::Pending
+        | TodoState::Blocked { .. }
+        | TodoState::Done { .. }
+        | TodoState::Failed { .. }
+        | TodoState::Abandoned
+        | TodoState::Other(_) => None,
     }
 }
 
@@ -330,50 +237,29 @@ impl PlanStore {
             }
             Err(source) => return Err(StoreError::Io { path, source }),
         };
-        let (front, body) = yaml::split_frontmatter(&text).map_err(|source| StoreError::Yaml {
-            path: path.clone(),
-            source,
-        })?;
-        let value = yaml::from_yaml(front).map_err(|source| StoreError::Yaml {
-            path: path.clone(),
-            source,
-        })?;
-        let plan: Plan =
-            serde_json::from_value(value).map_err(|source| StoreError::Doc { path, source })?;
-        Ok(PlanFile {
-            plan,
-            body: PlanBody::parse(body),
-        })
+        parse_document(&text).map_err(|source| StoreError::Document { path, source })
     }
 
-    pub fn write(&self, file: &PlanFile) -> Result<(), StoreError> {
-        let id = &file.plan.id;
-        let value = serde_json::to_value(&file.plan).map_err(|source| StoreError::Serialize {
-            id: id.clone(),
-            source,
-        })?;
-        let front = yaml::to_yaml(&value).map_err(|source| StoreError::Emit {
-            id: id.clone(),
+    /// The frontmatter as [`PlanStore::write`] puts it on disk; the cap is the only refusal.
+    pub fn render(plan: &Plan) -> Result<String, StoreError> {
+        let front = serde_json::to_string_pretty(plan).map_err(|source| StoreError::Serialize {
+            id: plan.id.clone(),
             source,
         })?;
         if front.len() > FRONTMATTER_CAP_BYTES {
             return Err(StoreError::FrontmatterOverCap {
-                id: id.clone(),
+                id: plan.id.clone(),
                 bytes: front.len(),
                 cap: FRONTMATTER_CAP_BYTES,
             });
         }
-        match yaml::from_yaml(&front) {
-            Ok(back) if back == value => {}
-            Ok(_) => return Err(StoreError::Drifted { id: id.clone() }),
-            Err(source) => {
-                return Err(StoreError::Unreadable {
-                    id: id.clone(),
-                    source,
-                });
-            }
-        }
-        let document = format!("---\n{front}---\n{}", file.body.render());
+        Ok(front)
+    }
+
+    pub fn write(&self, file: &PlanFile) -> Result<(), StoreError> {
+        let id = &file.plan.id;
+        let front = Self::render(&file.plan)?;
+        let document = format!("---\n{front}\n---\n{}", file.body);
         let tmp = self.dir.join(format!(".{id}.{}.tmp", nonce()));
         std::fs::write(&tmp, &document).map_err(io_at(&tmp))?;
         let target = self.path(id);
@@ -486,116 +372,34 @@ impl PlanStore {
         })
     }
 
-    pub fn user_edits(&self, known: &PlanFile) -> Result<Vec<UserEdit>, StoreError> {
+    pub fn user_edits(&self, known: &PlanFile) -> Result<Option<HandEdit>, StoreError> {
         let disk = self.read(&known.plan.id)?;
-        Ok(diff(known, &disk))
-    }
-}
-
-fn todo_changes(known: &Plan, disk: &Plan, edits: &mut Vec<UserEdit>) {
-    for todo in &known.todos {
-        if disk.todo(&todo.label).is_none() {
-            edits.push(UserEdit::TodoDropped {
-                label: todo.label.clone(),
-            });
+        if disk == *known {
+            return Ok(None);
         }
+        let left_running = known
+            .plan
+            .todos
+            .iter()
+            .filter(|todo| {
+                running_by(&todo.state).is_some_and(|was| {
+                    disk.plan
+                        .todo(&todo.label)
+                        .and_then(|now| running_by(&now.state))
+                        != Some(was)
+                })
+            })
+            .map(|todo| todo.label.clone())
+            .collect();
+        Ok(Some(HandEdit { left_running }))
     }
-    for todo in &disk.todos {
-        let Some(old) = known.todo(&todo.label) else {
-            edits.push(UserEdit::TodoAdded {
-                todo: Box::new(todo.clone()),
-            });
-            continue;
-        };
-        if old.state != todo.state {
-            edits.push(UserEdit::TodoStateChanged {
-                label: todo.label.clone(),
-                from: old.state.clone(),
-                to: todo.state.clone(),
-            });
-        }
-        if old.after != todo.after {
-            edits.push(UserEdit::TodoEdgesChanged {
-                label: todo.label.clone(),
-                from: old.after.clone(),
-                to: todo.after.clone(),
-            });
-        }
-        if old.delegation != todo.delegation
-            || old.subplan != todo.subplan
-            || old.retries != todo.retries
-            || old.extra != todo.extra
-        {
-            edits.push(UserEdit::TodoEdited {
-                label: todo.label.clone(),
-            });
-        }
-    }
-    let known_common: Vec<&TodoLabel> = known
-        .todos
-        .iter()
-        .map(|todo| &todo.label)
-        .filter(|label| disk.todo(label).is_some())
-        .collect();
-    let disk_common: Vec<&TodoLabel> = disk
-        .todos
-        .iter()
-        .map(|todo| &todo.label)
-        .filter(|label| known.todo(label).is_some())
-        .collect();
-    if known_common != disk_common {
-        edits.push(UserEdit::TodoReordered {
-            order: disk.todos.iter().map(|todo| todo.label.clone()).collect(),
-        });
-    }
-}
-
-fn diff(known: &PlanFile, disk: &PlanFile) -> Vec<UserEdit> {
-    let mut edits = Vec::new();
-    if known.plan.goal != disk.plan.goal {
-        edits.push(UserEdit::GoalReworded {
-            from: known.plan.goal.clone(),
-            to: disk.plan.goal.clone(),
-        });
-    }
-    if known.plan.state != disk.plan.state {
-        edits.push(UserEdit::PlanStateChanged {
-            from: known.plan.state.clone(),
-            to: disk.plan.state.clone(),
-        });
-    }
-    if known.plan.spawns() != disk.plan.spawns() {
-        edits.push(UserEdit::SpawnsChanged {
-            from: known.plan.spawns(),
-            to: disk.plan.spawns(),
-        });
-    }
-    todo_changes(&known.plan, &disk.plan, &mut edits);
-    if known.body.preamble != disk.body.preamble {
-        edits.push(UserEdit::PreambleEdited);
-    }
-    for section in &known.body.sections {
-        if disk.body.section(&section.heading) != Some(section.text.as_str()) {
-            edits.push(UserEdit::SectionEdited {
-                heading: section.heading.clone(),
-            });
-        }
-    }
-    for section in &disk.body.sections {
-        if known.body.section(&section.heading).is_none() {
-            edits.push(UserEdit::SectionEdited {
-                heading: section.heading.clone(),
-            });
-        }
-    }
-    edits
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use yi_types::plan::PlanVersion;
-    use yi_types::plan::doc::{PlanTier, RetryCount, TouchCount};
+    use yi_types::plan::doc::{PlanTier, RetryCount, Todo, TouchCount};
 
     type Fallible = Result<(), Box<dyn std::error::Error>>;
 
@@ -640,7 +444,9 @@ mod tests {
                 Todo {
                     label: TodoLabel::new("Implement refresh flow")?,
                     after: vec![TodoLabel::new("Freeze the token API seam")?],
-                    state: TodoState::Pending,
+                    state: TodoState::Running {
+                        by: AgentId::new("child-1")?,
+                    },
                     delegation: None,
                     subplan: None,
                     retries: RetryCount(1),
@@ -657,14 +463,14 @@ mod tests {
         let temp = TempStore::new("round-trip")?;
         let file = PlanFile {
             plan: plan("Ship OAuth login end to end")?,
-            body: PlanBody::parse("\n## Implement refresh flow\n\nSeam notes.\n"),
+            body: "\n## Implement refresh flow\n\nSeam notes.\n".to_owned(),
         };
         temp.store.write(&file)?;
         let back = temp.store.read(&file.plan.id)?;
         assert_eq!(back, file);
         assert_eq!(
-            back.body.section("Implement refresh flow"),
-            Some("\nSeam notes.\n")
+            section_of(&back.body, "Implement refresh flow").as_deref(),
+            Some("## Implement refresh flow\n\nSeam notes.")
         );
         assert_eq!(temp.store.list()?, vec![file.plan.id.clone()]);
         assert_eq!(temp.store.roots()?, vec![file.plan.id.clone()]);
@@ -672,38 +478,31 @@ mod tests {
     }
 
     #[test]
-    fn reads_the_section_3_1_example_document() -> Fallible {
+    fn reads_a_hand_written_document() -> Fallible {
         let temp = TempStore::new("example")?;
         let document = concat!(
             "---\n",
-            "format: 1\n",
-            "plan: 7f3a-auth-refactor\n",
-            "goal: Ship OAuth login end to end\n",
-            "version: 3\n",
-            "tier: root\n",
-            "state: active\n",
-            "todos:\n",
-            "  - label: Freeze the token API seam\n",
-            "    state: done\n",
-            "    output: kernel://token_api_seam\n",
-            "  - label: Implement refresh flow\n",
-            "    state: running\n",
-            "    by: child-1\n",
-            "    after:\n",
-            "      - Freeze the token API seam\n",
-            "    delegation:\n",
-            "      spec:\n",
-            "        role: coder\n",
-            "        effort: med\n",
-            "        isolation: worktree\n",
-            "      accept:\n",
-            "        command: cargo test -p yi-ai refresh\n",
-            "      output:\n",
-            "        schema: local://.yi/schemas/refresh_result.json\n",
-            "      context:\n",
-            "        - plan://7f3a-auth-refactor/seam-notes\n",
-            "        - local://docs/auth.md\n",
-            "    retries: 1\n",
+            "{\n",
+            "  \"format\": 1,\n",
+            "  \"plan\": \"7f3a-auth-refactor\",\n",
+            "  \"goal\": \"Ship OAuth login end to end\",\n",
+            "  \"version\": 3,\n",
+            "  \"tier\": \"root\",\n",
+            "  \"state\": \"active\",\n",
+            "  \"todos\": [\n",
+            "    {\"label\": \"Freeze the token API seam\", \"state\": \"done\",\n",
+            "     \"output\": \"kernel://token_api_seam\"},\n",
+            "    {\"label\": \"Implement refresh flow\", \"state\": \"running\", \"by\": \"child-1\",\n",
+            "     \"after\": [\"Freeze the token API seam\"],\n",
+            "     \"delegation\": {\n",
+            "       \"spec\": {\"role\": \"coder\", \"effort\": \"med\", \"isolation\": \"worktree\"},\n",
+            "       \"accept\": {\"command\": \"cargo test -p yi-ai refresh\"},\n",
+            "       \"output\": {\"schema\": \"local://.yi/schemas/refresh_result.json\"},\n",
+            "       \"context\": [\"plan://7f3a-auth-refactor/seam-notes\", \"local://docs/auth.md\"]\n",
+            "     },\n",
+            "     \"retries\": 1}\n",
+            "  ]\n",
+            "}\n",
             "---\n",
             "\n",
             "## seam-notes\n",
@@ -726,11 +525,31 @@ mod tests {
         let delegation = running.delegation.as_ref().ok_or("no delegation")?;
         assert_eq!(delegation.context.len(), 2);
         assert_eq!(
-            file.body.section("seam-notes"),
-            Some("\nThe refresh endpoint owns rotation.\n")
+            section_of(&file.body, "seam-notes").as_deref(),
+            Some("## seam-notes\n\nThe refresh endpoint owns rotation.")
         );
         temp.store.write(&file)?;
         assert_eq!(temp.store.read(&id)?, file);
+        assert!(matches!(
+            temp.store.read(&PlanId::new("nowhere")?),
+            Err(StoreError::Missing { .. })
+        ));
+        std::fs::write(temp.store.path(&id), "# not a plan\n")?;
+        assert!(matches!(
+            temp.store.read(&id),
+            Err(StoreError::Document {
+                source: DocumentError::NoFrontmatter { .. },
+                ..
+            })
+        ));
+        std::fs::write(temp.store.path(&id), "---\n{\"format\": 1\n")?;
+        assert!(matches!(
+            temp.store.read(&id),
+            Err(StoreError::Document {
+                source: DocumentError::OpenFrontmatter { lines: 2 },
+                ..
+            })
+        ));
         Ok(())
     }
 
@@ -739,7 +558,7 @@ mod tests {
         let temp = TempStore::new("cap")?;
         let mut file = PlanFile {
             plan: plan("Ship OAuth login end to end")?,
-            body: PlanBody::default(),
+            body: String::new(),
         };
         temp.store.write(&file)?;
         let before = std::fs::read_to_string(temp.store.path(&file.plan.id))?;
@@ -765,7 +584,7 @@ mod tests {
         assert_eq!(first.as_str(), "ship-oauth-login-end-to-end");
         let mut file = PlanFile {
             plan: plan(goal.as_str())?,
-            body: PlanBody::default(),
+            body: String::new(),
         };
         temp.store.write(&file)?;
         let second = temp.store.allocate(&goal)?;
@@ -867,7 +686,7 @@ mod tests {
         let temp = TempStore::new("torn-write")?;
         let file = PlanFile {
             plan: plan("Ship OAuth login end to end")?,
-            body: PlanBody::parse(&format!("\n## seam-notes\n\n{}\n", "x".repeat(200_000))),
+            body: format!("\n## seam-notes\n\n{}\n", "x".repeat(200_000)),
         };
         temp.store.write(&file)?;
         let path = temp.store.path(&file.plan.id);
@@ -922,11 +741,11 @@ mod tests {
     }
 
     #[test]
-    fn yaml_metacharacters_in_labels_and_keys_survive_write_then_read() -> Fallible {
+    fn metacharacters_in_labels_and_keys_survive_write_then_read() -> Fallible {
         let temp = TempStore::new("metacharacters")?;
         let mut file = PlanFile {
             plan: plan("Ship OAuth login end to end")?,
-            body: PlanBody::default(),
+            body: String::new(),
         };
         file.plan.todos.clear();
         for label in [
@@ -939,6 +758,8 @@ mod tests {
             "hash#tag",
             "-leading dash",
             "trailing space ",
+            "quote\"and\\slash",
+            "--- looks like a fence",
         ] {
             let mut extra = serde_json::Map::new();
             extra.insert(format!("note{label}"), "read the seam notes".into());
@@ -958,62 +779,45 @@ mod tests {
     }
 
     #[test]
-    fn a_hand_edit_diffs_into_user_edits() -> Fallible {
+    fn a_hand_edit_names_the_todos_that_left_their_running_child() -> Fallible {
         let temp = TempStore::new("edits")?;
         let known = PlanFile {
             plan: plan("Ship OAuth login end to end")?,
-            body: PlanBody::parse("\n## seam-notes\n\nold\n"),
+            body: "\n## seam-notes\n\nold\n".to_owned(),
         };
         temp.store.write(&known)?;
+        assert_eq!(temp.store.user_edits(&known)?, None);
         let mut edited = known.clone();
-        edited.plan.goal = GoalText::new("Ship OAuth login and refresh")?;
-        edited.plan.todos.reverse();
-        if let Some(todo) = edited.plan.todos.first_mut() {
-            todo.state = TodoState::Done { output: None };
+        edited.body = "\n## seam-notes\n\nnew\n".to_owned();
+        assert_eq!(
+            temp.store
+                .write(&edited)
+                .and_then(|()| temp.store.user_edits(&known))?,
+            Some(HandEdit {
+                left_running: Vec::new()
+            }),
+            "prose moved, no child did"
+        );
+        if let Some(todo) = edited.plan.todos.get_mut(1) {
+            todo.state = TodoState::Running {
+                by: AgentId::new("child-2")?,
+            };
         }
-        edited.plan.todos.push(Todo {
-            label: TodoLabel::new("Write the rollout note")?,
-            after: vec![TodoLabel::new("A step nobody added")?],
-            state: TodoState::Pending,
-            delegation: None,
-            subplan: None,
-            retries: RetryCount(0),
-            extra: serde_json::Map::new(),
-        });
-        edited.body = PlanBody::parse("\n## seam-notes\n\nnew\n");
         temp.store.write(&edited)?;
-        let disk = temp.store.read(&known.plan.id)?;
-        assert!(
-            !disk.plan.validate().is_empty(),
-            "dangling edge still parses"
+        let swapped = temp.store.user_edits(&known)?.ok_or("no divergence")?;
+        assert_eq!(
+            swapped.left_running,
+            vec![TodoLabel::new("Implement refresh flow")?],
+            "a swapped agent leaves the first child behind"
         );
-        let edits = temp.store.user_edits(&known)?;
-        assert!(edits.iter().any(|edit| matches!(
-            edit,
-            UserEdit::GoalReworded { to, .. } if to.as_str() == "Ship OAuth login and refresh"
-        )));
-        assert!(edits.iter().any(|edit| matches!(
-            edit,
-            UserEdit::TodoStateChanged { label, to: TodoState::Done { .. }, .. }
-                if label.as_str() == "Implement refresh flow"
-        )));
-        assert!(edits.iter().any(|edit| matches!(
-            edit,
-            UserEdit::TodoAdded { todo } if todo.label.as_str() == "Write the rollout note"
-        )));
-        assert!(
-            edits
-                .iter()
-                .any(|edit| matches!(edit, UserEdit::TodoReordered { .. }))
+        edited.plan.todos.remove(1);
+        temp.store.write(&edited)?;
+        let dropped = temp.store.user_edits(&known)?.ok_or("no divergence")?;
+        assert_eq!(
+            dropped.left_running,
+            vec![TodoLabel::new("Implement refresh flow")?],
+            "a todo deleted by hand leaves its child behind too"
         );
-        assert!(edits.iter().any(|edit| matches!(
-            edit,
-            UserEdit::SectionEdited { heading } if heading == "seam-notes"
-        )));
-        assert!(temp.store.user_edits(&disk)?.is_empty());
-        for edit in &edits {
-            assert!(!edit.to_string().is_empty());
-        }
         Ok(())
     }
 }

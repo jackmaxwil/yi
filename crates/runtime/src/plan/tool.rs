@@ -3,12 +3,13 @@ use std::sync::Arc;
 use serde_json::{Map, Value, json};
 use yi_tools::{Tool, ToolContext, ToolKind, ToolOutput, error_output, text_output};
 use yi_types::plan::doc::{
-    BlockedOn, Delegation, GoalText, Plan, PlanId, PlanState, PlanTier, Todo, TodoLabel, TodoState,
+    BlockedOn, Delegation, GoalText, Plan, PlanId, PlanTier, Todo, TodoLabel, TodoState,
+    TodoStateName,
 };
 use yi_types::url::Url;
 
 use super::ops::{Actor, Op, OpRequest, Outcome, PlanEngine, PlanOpError, TodoSpec};
-use super::table::{OpKind, StateName, op_name};
+use super::table::{OpKind, op_name};
 
 const WINDOW: usize = 8;
 
@@ -63,6 +64,8 @@ pub enum PlanToolError {
     Op(#[from] PlanOpError),
 }
 
+/// Invariant: yi-runtime carries no `serde` dependency, so the deserialize
+/// bound is a local trait over `serde_json::from_value`.
 trait FromArg: Sized {
     fn from_arg(value: Value) -> Result<Self, serde_json::Error>;
 }
@@ -205,28 +208,6 @@ fn request(actor: &Actor, args: &Map<String, Value>) -> Result<OpRequest, ArgErr
     })
 }
 
-fn state_tag(state: &TodoState) -> &str {
-    match state {
-        TodoState::Pending => "pending",
-        TodoState::Running { .. } => "running",
-        TodoState::Blocked { .. } => "blocked",
-        TodoState::Done { .. } => "done",
-        TodoState::Failed { .. } => "failed",
-        TodoState::Abandoned => "abandoned",
-        TodoState::Other(tag) => tag,
-    }
-}
-
-fn plan_state(state: &PlanState) -> String {
-    match state {
-        PlanState::Active => "active".to_owned(),
-        PlanState::Done => "done".to_owned(),
-        PlanState::Superseded { by } => format!("superseded by v{}", by.0),
-        PlanState::Abandoned => "abandoned".to_owned(),
-        PlanState::Other(tag) => tag.clone(),
-    }
-}
-
 fn labels(of: &[TodoLabel]) -> String {
     of.iter()
         .map(TodoLabel::as_str)
@@ -237,16 +218,16 @@ fn labels(of: &[TodoLabel]) -> String {
 fn counts(todos: &[Todo]) -> String {
     let mut parts = Vec::new();
     for name in [
-        StateName::Pending,
-        StateName::Running,
-        StateName::Blocked,
-        StateName::Done,
-        StateName::Failed,
-        StateName::Abandoned,
+        TodoStateName::Pending,
+        TodoStateName::Running,
+        TodoStateName::Blocked,
+        TodoStateName::Done,
+        TodoStateName::Failed,
+        TodoStateName::Abandoned,
     ] {
         let count = todos
             .iter()
-            .filter(|todo| StateName::of(&todo.state) == Some(name))
+            .filter(|todo| TodoStateName::of(&todo.state) == name)
             .count();
         if count > 0 {
             parts.push(format!("{count} {name}"));
@@ -254,7 +235,7 @@ fn counts(todos: &[Todo]) -> String {
     }
     let unknown = todos
         .iter()
-        .filter(|todo| StateName::of(&todo.state).is_none())
+        .filter(|todo| matches!(TodoStateName::of(&todo.state), TodoStateName::Other(_)))
         .count();
     if unknown > 0 {
         parts.push(format!("{unknown} unknown"));
@@ -266,7 +247,7 @@ fn counts(todos: &[Todo]) -> String {
 }
 
 fn todo_line(todo: &Todo) -> String {
-    let mut line = format!("- {} {}", state_tag(&todo.state), todo.label);
+    let mut line = format!("- {} {}", TodoStateName::of(&todo.state), todo.label);
     if !todo.after.is_empty() {
         line.push_str(&format!(" after {}", labels(&todo.after)));
     }
@@ -300,10 +281,7 @@ fn todo_line(todo: &Todo) -> String {
 fn header(plan: &Plan, out: &mut Vec<String>) {
     out.push(format!(
         "plan {} v{} touched {} {}",
-        plan.id,
-        plan.version.0,
-        plan.touched.0,
-        plan_state(&plan.state)
+        plan.id, plan.version.0, plan.touched.0, plan.state
     ));
     match &plan.tier {
         PlanTier::Root => {}
@@ -326,8 +304,8 @@ fn body(outcome: &Outcome, full: bool, out: &mut Vec<String>) {
             .filter(|todo| {
                 outcome.ready.contains(&todo.label)
                     || matches!(
-                        StateName::of(&todo.state),
-                        Some(StateName::Running | StateName::Blocked)
+                        TodoStateName::of(&todo.state),
+                        TodoStateName::Running | TodoStateName::Blocked
                     )
             })
             .take(WINDOW)

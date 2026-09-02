@@ -87,5 +87,6 @@ when it changes rather than editing them by hand.
 - [D102](adr/d102.md) - a declared output schema is checked at `done`, not merely resolved
 - [D103](adr/d103.md) - an applied plan op is a durable record on the owning session
 - [D104](adr/d104.md) - the plan DAG is a panel, not an inline checkbox list
+- [D105](adr/d105.md) - the plan frontmatter is JSON, and the YAML subset codec is gone
 
 D36-D51, D72, D73 and D74 have no ADR yet; ARCHITECTURE.md is the record for those rows.

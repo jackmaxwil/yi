@@ -4,7 +4,9 @@ use std::sync::{Arc, Mutex};
 use serde_json::{Value, json};
 use yi_types::event::AgentEvent;
 use yi_types::message::{AgentMessage, StopReason, UserContent};
-use yi_types::plan::doc::{Check, DocError, Plan, PlanId, PlanState, TodoState, TouchCount};
+use yi_types::plan::doc::{
+    Check, DocError, Plan, PlanId, PlanState, TodoState, TodoStateName, TouchCount,
+};
 use yi_types::schedule::DeliveryMode;
 
 use crate::goal::{DeliverFn, StoreHandle};
@@ -18,11 +20,9 @@ pub mod store;
 pub mod table;
 pub mod tool;
 pub mod why;
-pub mod yaml;
 
 pub use loop_coupling::gate;
 use store::{PlanStore, StoreError};
-use table::StateName;
 
 pub type PlanChangeHook = Arc<dyn Fn(&Plan) + Send + Sync>;
 
@@ -89,10 +89,10 @@ pub fn todo_check(plan: &Plan, name: &str) -> Option<String> {
         })
 }
 
-fn count(plan: &Plan, name: StateName) -> usize {
+fn count(plan: &Plan, name: TodoStateName) -> usize {
     plan.todos
         .iter()
-        .filter(|todo| StateName::of(&todo.state) == Some(name))
+        .filter(|todo| TodoStateName::of(&todo.state) == name)
         .count()
 }
 
@@ -104,23 +104,23 @@ pub fn summary_line(plan: &Plan) -> String {
         plan.version.0,
         plan.touched.0,
         plan.ready().len(),
-        count(plan, StateName::Running),
-        count(plan, StateName::Blocked),
-        count(plan, StateName::Done),
+        count(plan, TodoStateName::Running),
+        count(plan, TodoStateName::Blocked),
+        count(plan, TodoStateName::Done),
         plan.todos.len()
     );
-    let failed = count(plan, StateName::Failed);
+    let failed = count(plan, TodoStateName::Failed);
     if failed > 0 {
         line.push_str(&format!(", {failed} failed"));
     }
-    let abandoned = count(plan, StateName::Abandoned);
+    let abandoned = count(plan, TodoStateName::Abandoned);
     if abandoned > 0 {
         line.push_str(&format!(", {abandoned} abandoned"));
     }
     line
 }
 
-fn accept_text(check: &Check) -> &str {
+pub fn accept_text(check: &Check) -> &str {
     match check {
         Check::Command(command) => command,
         Check::Stated(stated) => stated,

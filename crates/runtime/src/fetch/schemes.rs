@@ -5,7 +5,6 @@ use yi_session::{EntryOrder, EntryQuery};
 use yi_tools::hashline::format::compute_file_hash;
 use yi_tools::hashline::normalize::{normalize_to_lf, strip_bom};
 use yi_types::message::UserContent;
-use yi_types::plan::doc::Plan;
 use yi_types::plan::ids::TodoAddr;
 use yi_types::url::Url;
 
@@ -14,7 +13,7 @@ use super::{
     Transcript, unsupported,
 };
 use crate::kernel::{VariableName, VariableReadError};
-use crate::plan::yaml;
+use crate::plan::store::{parse_document, section_of};
 
 type Served = (String, String);
 
@@ -98,11 +97,8 @@ impl Resolver {
             url: url.to_string(),
             message,
         };
-        let (front, body) =
-            yaml::split_frontmatter(&text).map_err(|error| backend(error.to_string()))?;
-        let value = yaml::from_yaml(front).map_err(|error| backend(error.to_string()))?;
-        let plan: Plan =
-            serde_json::from_value(value).map_err(|error| backend(error.to_string()))?;
+        let document = parse_document(&text).map_err(|error| backend(error.to_string()))?;
+        let plan = document.plan;
         let todo = plan
             .todos
             .iter()
@@ -120,7 +116,7 @@ impl Resolver {
             })?;
         let mut rendered =
             serde_json::to_string_pretty(todo).map_err(|error| backend(error.to_string()))?;
-        if let Some(prose) = body_section(body, todo.label.as_str()) {
+        if let Some(prose) = section_of(&document.body, todo.label.as_str()) {
             rendered.push_str("\n\n");
             rendered.push_str(&prose);
         }
@@ -365,23 +361,6 @@ fn apply_fragment(url: &Url, text: String) -> Result<String, FetchError> {
         })
 }
 
-fn body_section(body: &str, label: &str) -> Option<String> {
-    let header = format!("## {label}");
-    let mut collected: Vec<&str> = Vec::new();
-    let mut inside = false;
-    for line in body.lines() {
-        if line.trim_end() == header {
-            inside = true;
-            collected.push(line);
-        } else if inside && line.starts_with("## ") {
-            break;
-        } else if inside {
-            collected.push(line);
-        }
-    }
-    inside.then(|| collected.join("\n").trim_end().to_owned())
-}
-
 fn is_git_object_id(tree: &str) -> bool {
     (tree.len() == 40 || tree.len() == 64) && tree.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
@@ -507,7 +486,14 @@ mod tests {
         let workspace = scratch("plan")?;
         let plans = workspace.join(".yi/plans");
         std::fs::create_dir_all(&plans)?;
-        let document = "---\nformat: 1\nplan: auth-refactor\ngoal: \"Ship OAuth\"\nversion: 1\ntier: root\nstate: active\ntodos:\n  - label: \"Freeze the token API seam\"\n    state: pending\n---\n## Freeze the token API seam\nHold the seam steady.\n";
+        let document = concat!(
+            "---\n",
+            "{\"format\": 1, \"plan\": \"auth-refactor\", \"goal\": \"Ship OAuth\", \"version\": 1,\n",
+            " \"tier\": \"root\", \"state\": \"active\",\n",
+            " \"todos\": [{\"label\": \"Freeze the token API seam\", \"state\": \"pending\"}]}\n",
+            "---\n",
+            "## Freeze the token API seam\nHold the seam steady.\n"
+        );
         std::fs::write(plans.join("auth-refactor.md"), document)?;
         let resolver = Resolver::new(workspace, Wall::default());
         let whole: Url = "plan://auth-refactor".parse()?;

@@ -2,7 +2,7 @@ use std::error::Error;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use yi_runtime::plan::store::{PlanBody, PlanFile, PlanStore};
+use yi_runtime::plan::store::{PlanFile, PlanStore};
 use yi_runtime::plan::{CanonicalPlanError, PlanService};
 use yi_types::event::AgentEvent;
 use yi_types::message::{AgentMessage, StopReason};
@@ -56,7 +56,7 @@ fn doc_plan(id: &str, touched: u64, todos: Vec<Todo>) -> Result<Plan, Box<dyn Er
 fn write_plan(dir: &Path, plan: Plan) -> TestResult {
     PlanStore::open(dir.to_path_buf())?.write(&PlanFile {
         plan,
-        body: PlanBody::default(),
+        body: String::new(),
     })?;
     Ok(())
 }
