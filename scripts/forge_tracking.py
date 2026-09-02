@@ -11,13 +11,31 @@ import argparse
 import datetime
 import math
 import os
+import pathlib
+import re
 import subprocess
 import sys
 
-from forgejo_pr_comment import send
+from forgejo_pr_comment import send, upsert
 
 # The sizing the register was written in and the labels carry: S = a day, M = three, L = a week.
 WEIGHTS = {"size:S": 1, "size:M": 3, "size:L": 7}
+ROOT = pathlib.Path(__file__).resolve().parents[1]
+# Forgejo's own default keywords, because they are what closed the issue: a
+# wider pattern would annotate issues this merge only mentioned.
+CLOSES = re.compile(r"\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s+#(\d+)", re.I)
+PULL = re.compile(r"\(#(\d+)\)")
+
+
+def git(*args):
+    """Trailing whitespace off, because every caller of this is building a string."""
+    return subprocess.run(("git", *args), capture_output=True, text=True, check=False).stdout.strip()
+
+
+def version():
+    """The version in docs/ARCHITECTURE.md's header — the one the merge shipped."""
+    header = (ROOT / "docs/ARCHITECTURE.md").read_text()
+    return re.search(r"^version:\s*(\S+)", header, re.M).group(1)
 
 
 def points(issue):
@@ -93,6 +111,103 @@ def write_rows(transport, api, repo, rows, closed, window, today, commit):
         )
 
 
+def closed_by(transport, api, repo, message):
+    """The issues a merge closed, from the PR it names and from its own message.
+
+    A merge subject carries the pull request's number and the close keywords sit
+    in that pull request's body; a squash or a direct push carries them here.
+    """
+    numbers = set(CLOSES.findall(message))
+    named = PULL.search(message.splitlines()[0] if message else "")
+    if named:
+        pull = transport("GET", f"{api}/repos/{repo}/pulls/{named.group(1)}", None)
+        numbers.update(CLOSES.findall(pull.get("body") or ""))
+    return sorted(int(number) for number in numbers)
+
+
+def comment_closed(transport, api, repo, message, release, sha):
+    """One comment per issue, naming the version and the merge that closed it.
+
+    The body is one line and the whole line is the marker, so a re-run of the
+    same postmerge job edits its own comment instead of stacking a second.
+    """
+    numbers = closed_by(transport, api, repo, message)
+    for number in numbers:
+        upsert(transport, api, repo, number, f"Closed by yi {release}, merge {sha[:12]}.")
+    return numbers
+
+
+def hygiene(transport, api, repo, window, today):
+    """(misses, notes). A miss is what is wrong and the command that fixes it."""
+    misses, notes, pinned = [], [], None
+    for issue in paged(transport, f"{api}/repos/{repo}/issues?type=issues&state=open"):
+        number = issue["number"]
+        names = [label["name"] for label in issue["labels"]]
+        sizes = [name for name in names if name in WEIGHTS]
+        if issue.get("pin_order") and issue["title"] == "Tracking":
+            pinned = issue
+        if len(sizes) > 1:
+            misses.append(
+                (
+                    f"#{number} carries {len(sizes)} size labels ({', '.join(sizes)})",
+                    f"tea issues edit {number} --remove-labels {','.join(sizes[1:])} --repo {repo}",
+                )
+            )
+        elif not sizes:
+            misses.append(
+                (
+                    f"#{number} has no size label",
+                    f"tea issues edit {number} --add-labels size:M --repo {repo}",
+                )
+            )
+        if not [name for name in names if name.startswith("area:")]:
+            misses.append(
+                (
+                    f"#{number} has no area label",
+                    f"tea issues edit {number} --add-labels area:runtime --repo {repo}",
+                )
+            )
+        if not issue.get("milestone"):
+            misses.append(
+                (
+                    f"#{number} has no milestone",
+                    f'tea issues edit {number} --milestone "<title>" --repo {repo}',
+                )
+            )
+    closed, rows = measure(transport, api, repo, window, today)
+    for milestone, days, _span, due in rows:
+        title, have = milestone["title"], (milestone.get("due_on") or "")[:10]
+        if have != str(due):
+            misses.append(
+                (
+                    f"milestone {title!r} is due {have or 'never'}; {days} open size-days at"
+                    f" {closed} closed in {window} days derives {due}",
+                    f"python3 scripts/forge_tracking.py --measure --repo {repo}",
+                )
+            )
+        if have and have < str(today):
+            misses.append(
+                (
+                    f"milestone {title!r} is due {have}, in the past, with {days} size-days open",
+                    f"python3 scripts/forge_tracking.py --measure --repo {repo}",
+                )
+            )
+    if pinned is None:
+        # A warning until the estate timer that writes it lands; a repo with no
+        # tracking verdict is unproven, not yet broken.
+        notes.append("no pinned issue titled Tracking; the estate timer has not landed")
+        return misses, notes
+    number = pinned["number"]
+    read = f"tea issues {number} --comments --repo {repo}"
+    first = ((pinned.get("body") or "").strip().splitlines() or [""])[0]
+    if not first.lower().startswith("green"):
+        misses.append((f"pinned Tracking #{number} does not open green: {first[:60]!r}", read))
+    age = (today - datetime.datetime.fromisoformat(pinned["updated_at"]).date()).days
+    if age > 8:
+        misses.append((f"pinned Tracking #{number} was last written {age} days ago", read))
+    return misses, notes
+
+
 def selfcheck():
     def recorder(pages):
         calls = []
@@ -101,9 +216,10 @@ def selfcheck():
             calls.append((method, url, payload))
             if method != "GET":
                 return {}
+            page = int(url.split("page=")[1]) if "page=" in url else 1
             for key, batches in pages.items():
                 if key in url:
-                    return batches.pop(0) if batches else []
+                    return batches[page - 1] if page <= len(batches) else []
             return []
 
         return transport, calls
@@ -158,12 +274,72 @@ def selfcheck():
 
     # A milestone with no open issues is left alone rather than dated at today.
     assert all("/milestones/3" not in c[1] for c in calls), calls
+    # A merge closes what its pull request's body says, and what its own message
+    # says — a squash carries the keywords in neither place twice.
+    transport, calls = recorder({"/pulls/9": [{"body": "narrative\n\nCloses #40, fixes #41"}]})
+    merge = "Merge pull request 'Do the thing' (#9) from feat/x into main\n\nResolved #42"
+    assert closed_by(transport, "https://git.example/api/v1", "apex/yi", merge) == [40, 41, 42]
+
+    # One comment per issue, and the marker is the line itself, so the second run
+    # of the same postmerge job edits rather than stacks.
+    transport, calls = recorder({"/comments": [[]]})
+    annotated = comment_closed(
+        transport, "https://git.example/api/v1", "apex/yi", "Fixes #7", "0.9.0", "a" * 40
+    )
+    assert annotated == [7], annotated
+    assert [c[0] for c in calls] == ["GET", "POST"], calls
+    assert calls[-1][2] == {"body": "Closed by yi 0.9.0, merge aaaaaaaaaaaa."}, calls[-1][2]
+
+    # Hygiene names the issue and the command that fixes it. The pinned verdict is
+    # absent here, which is a note rather than a miss until the timer lands.
+    pages["issues?type=issues&state=open"] = [
+        [
+            issue(20, "size:L", milestone={"id": 1}),
+            {"number": 21, "labels": [{"name": "size:S"}, {"name": "size:M"}], "milestone": None},
+        ]
+    ]
+    pages["issues?type=issues&state=closed"] = [[issue(1, "size:M", "2026-03-09T00:00:00Z")]]
+    pages["milestones?"] = [[{"id": 1, "title": "wide", "due_on": "2026-01-01T23:59:59Z"}]]
+    transport, calls = recorder(pages)
+    misses, notes = hygiene(transport, "https://git.example/api/v1", "apex/yi", 14, today)
+    reported = [what for what, _fix in misses]
+    assert any("#21 carries 2 size labels" in r for r in reported), reported
+    assert any("#21 has no area label" in r for r in reported), reported
+    assert any("#21 has no milestone" in r for r in reported), reported
+    assert any("is due 2026-01-01, in the past" in r for r in reported), reported
+    assert any("derives 2026-04-12" in r for r in reported), reported
+    assert not [r for r in reported if r.startswith("#20")], reported
+    assert notes == ["no pinned issue titled Tracking; the estate timer has not landed"], notes
+    assert misses[1][1] == "tea issues edit 21 --add-labels area:runtime --repo apex/yi", misses
+
+    # The pinned verdict is read rather than assumed: a first line that is not
+    # green, and one written more than eight days ago, are each a miss.
+    pages["issues?type=issues&state=open"] = [
+        [
+            dict(
+                issue(20, "size:L", milestone={"id": 1}),
+                title="Tracking",
+                pin_order=1,
+                body="red: 3 issues unsized\nand the rest",
+                updated_at="2026-02-01T00:00:00Z",
+            )
+        ]
+    ]
+    misses, notes = hygiene(recorder(pages)[0], "https://git.example/api/v1", "apex/yi", 14, today)
+    reported = [what for what, _fix in misses]
+    assert any("does not open green" in what for what in reported), reported
+    assert any("last written 37 days ago" in what for what in reported), reported
+    assert notes == [], notes
+
     print("ok   forge_tracking selfcheck")
 
 
 def main(argv):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--measure", action="store_true")
+    parser.add_argument("--hygiene", action="store_true")
+    parser.add_argument("--comment-closed", action="store_true")
+    parser.add_argument("--sha", default=os.environ.get("GITHUB_SHA"))
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--selfcheck", action="store_true")
     parser.add_argument("--window", type=int, default=14)
@@ -176,13 +352,26 @@ def main(argv):
     if not os.environ.get("FORGEJO_TOKEN"):
         print("FORGEJO_TOKEN is unset; refusing to run", file=sys.stderr)
         return 2
-    if not (args.measure and args.repo and args.api):
+    if not (args.measure or args.hygiene or args.comment_closed) or not (args.repo and args.api):
         parser.print_usage(sys.stderr)
         return 2
     today = datetime.datetime.now(datetime.timezone.utc).date()
-    commit = subprocess.run(
-        ("git", "rev-parse", "--short", "HEAD"), capture_output=True, text=True, check=False
-    ).stdout.strip()
+    if args.comment_closed:
+        sha = args.sha or git("rev-parse", "HEAD")
+        numbers = comment_closed(
+            send, args.api, args.repo, git("log", "-1", "--format=%B", sha), version(), sha
+        )
+        print(f"{args.repo}: {sha[:12]} closed {numbers or 'nothing'}")
+        return 0
+    if args.hygiene:
+        misses, notes = hygiene(send, args.api, args.repo, args.window, today)
+        for note in notes:
+            print(f"warn {args.repo}: {note}")
+        for what, fix in misses:
+            print(f"MISS {what}\n     {fix}")
+        print(f"{args.repo}: {len(misses)} misses")
+        return 1 if misses else 0
+    commit = git("rev-parse", "--short", "HEAD")
     closed, rows = measure(send, args.api, args.repo, args.window, today)
     rate = closed / args.window
     print(f"{args.repo}: {closed} size-days closed in {args.window} days = {rate:.2f}/day at {commit}")
