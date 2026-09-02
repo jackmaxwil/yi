@@ -42,6 +42,10 @@ run "$PY" scripts/pr_body.py --selfcheck
 # The size-report comment is upserted by marker, and a marker that stops matching
 # posts a duplicate rather than failing; only this flag exercises the routing.
 run "$PY" scripts/forgejo_pr_comment.py --selfcheck
+# Milestone dates are written from this script's arithmetic, and a rate that
+# divides wrong writes a plausible date nobody can catch by eye; only this flag
+# exercises the window, the weighting and the PATCH routing.
+run "$PY" scripts/forge_tracking.py --selfcheck
 # The PR metadata gate only ever runs in CI (040), so the tree's own check of it
 # is this flag: a fake transport walks every branch — each issue defect, each tea
 # fix line, and the exempt path that must ask the forge nothing at all.
