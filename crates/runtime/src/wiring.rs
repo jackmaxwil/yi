@@ -149,14 +149,16 @@ fn wire_fetch(
     session: &AgentSession,
     wiring: &RuntimeWiring,
     plans_dir: &Path,
+    host: &Arc<SubagentHost>,
     registry: &mut crate::kernel::HostRegistry,
     log: Arc<crate::fetch::FetchLog>,
     kernels: Arc<crate::fetch::KernelServiceMap>,
-) -> (
-    Arc<crate::fetch::Resolver>,
-    Arc<crate::fetch::TranscriptDesk>,
-) {
-    let transcripts = crate::fetch::TranscriptDesk::new();
+) -> Arc<crate::fetch::Resolver> {
+    let transcripts = Arc::new(crate::fetch::SessionTranscripts::new(
+        Arc::clone(host),
+        wiring.sessions_dir.clone(),
+        &wiring.cwd,
+    ));
     let agent = wiring
         .parent_link
         .as_ref()
@@ -166,7 +168,7 @@ fn wire_fetch(
         .with_session_handle(agent, session.store_handle())
         .with_log(log)
         .with_kernel_variables(kernels)
-        .with_transcripts(Arc::clone(&transcripts) as Arc<dyn crate::fetch::Transcripts>);
+        .with_transcripts(transcripts);
     if let Ok(show) = crate::fetch::open_checkpoint_show(&wiring.home, &wiring.cwd) {
         resolver = resolver.with_checkpoint_show(show);
     }
@@ -198,21 +200,7 @@ fn wire_fetch(
             Ok(reply)
         })
     });
-    (resolver, transcripts)
-}
-
-/// The host exists only after the resolver is built, so the desk is handed over
-/// empty and filled here — one seam, not a second resolver.
-fn wire_transcripts(
-    transcripts: &Arc<crate::fetch::TranscriptDesk>,
-    host: &Arc<SubagentHost>,
-    wiring: &RuntimeWiring,
-) {
-    transcripts.attach(Arc::new(crate::fetch::SessionTranscripts::new(
-        Arc::clone(host),
-        wiring.sessions_dir.clone(),
-        &wiring.cwd,
-    )));
+    resolver
 }
 
 /// The plan engine, its tool, and the loop coupling, composed over the live
@@ -268,7 +256,6 @@ fn wire_plan_engine(
     if wiring.depth == 0 {
         crate::plan::probe::spawn(Arc::new(crate::plan::probe::ProbeLadder::new(
             engine,
-            session.store_handle(),
             plans_dir.to_path_buf(),
             probe_deliver,
         )));
@@ -419,15 +406,15 @@ pub fn attach_runtime(session: &mut AgentSession, mut wiring: RuntimeWiring) -> 
     let fetch_log = Arc::new(crate::fetch::FetchLog::new());
     fetch_log.attach_session_handle(session.store_handle());
     let kernels = crate::fetch::KernelServiceMap::new();
-    let (resolver, transcripts) = wire_fetch(
+    let resolver = wire_fetch(
         session,
         &wiring,
         &plans_dir,
+        &host,
         &mut registry,
         Arc::clone(&fetch_log),
         Arc::clone(&kernels),
     );
-    wire_transcripts(&transcripts, &host, &wiring);
     wire_plan_compaction(session, &plans_dir);
     let restore_notice = session.notice_hook();
     let service = Arc::new(crate::kernel::KernelService::new(

@@ -217,6 +217,19 @@ fn a_spawn_declares_url_denies_and_the_child_wall_carries_them() -> TestResult {
     );
     let open: yi_types::url::Url = "plan://another-cut/step".parse()?;
     assert!(wall.check_url(&open, &root).is_none());
+    // Incident: only `local://` mapped onto deny_read, so a walled path stayed
+    // readable as of any checkpoint tree.
+    let read_walled: serde_json::Map<String, serde_json::Value> =
+        serde_json::from_str(r#"{"deny_read": ["secret"]}"#)?;
+    let wall = Wall::from_kwargs(&read_walled, &root)?;
+    let tree = "a".repeat(40);
+    let as_of: yi_types::url::Url = format!("checkpoint://{tree}/secret/key.txt").parse()?;
+    assert!(
+        wall.check_url(&as_of, &root).is_some(),
+        "a read-walled path is walled as of every checkpoint tree too"
+    );
+    let elsewhere: yi_types::url::Url = format!("checkpoint://{tree}/src/lib.rs").parse()?;
+    assert!(wall.check_url(&elsewhere, &root).is_none());
     let not_a_list: serde_json::Map<String, serde_json::Value> =
         serde_json::from_str(r#"{"deny_url": "kernel://"}"#)?;
     assert!(

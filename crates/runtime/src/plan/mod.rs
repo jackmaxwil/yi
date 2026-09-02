@@ -279,6 +279,10 @@ impl PlanService {
         canonical_plan(&self.store, &self.plans_dir)
     }
 
+    pub fn plans_dir(&self) -> &Path {
+        &self.plans_dir
+    }
+
     pub fn get(&self) -> Result<Value, String> {
         let plan = self.read_plan().map_err(|error| error.to_string())?;
         plan_json(&plan)

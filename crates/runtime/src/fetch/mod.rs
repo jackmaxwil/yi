@@ -5,7 +5,10 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use sha2::{Digest, Sha256};
+use yi_session::{EntryOrder, EntryQuery};
 use yi_tools::{CheckpointError, Checkpoints, TreeId};
+use yi_types::entry::Entry;
+use yi_types::message::{AgentMessage, Attribution, UserContent};
 use yi_types::url::{Scheme, Url};
 
 use crate::kernel::{VariableName, VariableReadError};
@@ -38,36 +41,23 @@ pub trait McpResourceRead: Send + Sync {
     fn read(&self, server: &str, resource: &str) -> Result<String, String>;
 }
 
-/// The corpus as one address space: a transcript that is not the attached
-/// session's own — a live child the host still holds, or a session on disk.
-pub trait Transcripts: Send + Sync {
-    fn open(&self, agent: &str) -> Option<yi_session::SharedSession>;
+/// Invariant: `agent://` serves a live child alone — a reaped one is reached
+/// through the pin its reap minted, so its transcript is never labelled live.
+pub enum Transcript {
+    Live(yi_session::SharedSession),
+    Kept(yi_session::SharedSession),
 }
 
-/// Composition wires the resolver before the subagent host exists, so the desk
-/// is handed over empty and filled in once — the [`KernelServiceMap`] shape.
-#[derive(Default)]
-pub struct TranscriptDesk {
-    source: std::sync::Mutex<Option<Arc<dyn Transcripts>>>,
-}
-
-impl TranscriptDesk {
-    pub fn new() -> Arc<Self> {
-        Arc::new(Self::default())
-    }
-
-    pub fn attach(&self, source: Arc<dyn Transcripts>) {
-        if let Ok(mut slot) = self.source.lock() {
-            *slot = Some(source);
+impl Transcript {
+    pub fn session(self) -> yi_session::SharedSession {
+        match self {
+            Self::Live(session) | Self::Kept(session) => session,
         }
     }
 }
 
-impl Transcripts for TranscriptDesk {
-    fn open(&self, agent: &str) -> Option<yi_session::SharedSession> {
-        let source = self.source.lock().ok()?.clone()?;
-        source.open(agent)
-    }
+pub trait Transcripts: Send + Sync {
+    fn open(&self, agent: &str) -> Option<Transcript>;
 }
 
 pub trait KernelVariables: Send + Sync {
@@ -128,7 +118,6 @@ impl KernelVariables for KernelServiceMap {
     }
 }
 
-/// A live child first, then the corpus on disk addressed by session id.
 pub struct SessionTranscripts {
     host: Arc<crate::subagent::SubagentHost>,
     sessions_dir: Option<PathBuf>,
@@ -150,12 +139,17 @@ impl SessionTranscripts {
 }
 
 impl Transcripts for SessionTranscripts {
-    fn open(&self, agent: &str) -> Option<yi_session::SharedSession> {
+    fn open(&self, agent: &str) -> Option<Transcript> {
         if let Some(live) = self.host.transcript(agent) {
-            return Some(live);
+            return Some(Transcript::Live(live));
+        }
+        if let Some(kept) = self.host.kept_transcript(agent) {
+            return Some(Transcript::Kept(kept));
         }
         let mut repo = yi_session::JsonlRepo::new(self.sessions_dir.clone()?, self.cwd.clone());
-        yi_session::SessionRepo::open(&mut repo, agent).ok()
+        yi_session::SessionRepo::open(&mut repo, agent)
+            .ok()
+            .map(Transcript::Kept)
     }
 }
 
@@ -377,6 +371,35 @@ impl Resolver {
     pub(super) fn transcripts(&self) -> Option<&Arc<dyn Transcripts>> {
         self.transcripts.as_ref()
     }
+}
+
+/// Invariant: the one index behind every `user://` reader, so a citation
+/// checked at one seam names the message a fetch serves at another.
+pub fn user_inputs(session: &yi_session::SharedSession) -> Result<Vec<UserContent>, String> {
+    let entries = yi_session::lock_session(session)
+        .find_entries(&EntryQuery {
+            order: EntryOrder::OldestFirst,
+            ..EntryQuery::default()
+        })
+        .map_err(|error| error.to_string())?;
+    Ok(entries
+        .into_iter()
+        .filter_map(|entry| {
+            let Entry::Message {
+                message:
+                    AgentMessage::User {
+                        content,
+                        attribution: Attribution::User,
+                        ..
+                    },
+                ..
+            } = entry
+            else {
+                return None;
+            };
+            Some(content)
+        })
+        .collect())
 }
 
 pub(crate) fn content_hash(text: &str) -> String {

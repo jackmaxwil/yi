@@ -100,6 +100,9 @@ pub struct SubagentHostOptions {
 pub struct SubagentHost {
     pub(crate) options: SubagentHostOptions,
     pub(crate) children: Mutex<HashMap<String, ChildRecord>>,
+    /// Invariant: a reap pin names `history://<child>`, and a child's file lives
+    /// under a `sub-*` directory no session repo scans, so it is kept by name here.
+    pub(crate) reaped: Mutex<HashMap<String, yi_session::SharedSession>>,
 }
 
 pub(crate) fn random_suffix() -> Result<String, String> {
@@ -358,6 +361,7 @@ impl SubagentHost {
         Self {
             options,
             children: Mutex::new(HashMap::new()),
+            reaped: Mutex::new(HashMap::new()),
         }
     }
 
@@ -699,11 +703,14 @@ impl SubagentHost {
             .ok_or_else(|| format!("No RLM child matches \"{target}\""))
     }
 
-    /// The live half of the corpus: a running child answers for its own address.
     pub fn transcript(&self, target: &str) -> Option<yi_session::SharedSession> {
         let children = self.children.lock().ok()?;
         let key = Self::key_of(&children, target).ok()?;
         children.get(&key)?.session.store()
+    }
+
+    pub fn kept_transcript(&self, target: &str) -> Option<yi_session::SharedSession> {
+        self.reaped.lock().ok()?.get(target).cloned()
     }
 
     /// Invariant: a reap asks that a child no longer be running, so a host
