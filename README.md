@@ -60,6 +60,16 @@ rewind to any entry, resume after a crash, read with tools that are not this
 program. Unknown fields survive round-trips, so a newer session still loads
 in an older binary.
 
+## Planning
+
+Planned work lives on the forge, not in this tree: an issue is the identity of
+a piece of work, and its number is what everything else cites. A feature pull
+request names its issue and the merge closes it — nothing is marked done by
+hand. Milestone dates are not typed; they are divided out of measured
+throughput and rewritten every week. The board's five columns are queries over
+the issues they claim to hold, and are checked against them rather than
+dragged.
+
 ## Subagents
 
 Subagents are function calls, not protocol. Each session can own a
