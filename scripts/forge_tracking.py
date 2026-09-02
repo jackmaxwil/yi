@@ -146,6 +146,10 @@ def hygiene(transport, api, repo, window, today):
         sizes = [name for name in names if name in WEIGHTS]
         if issue.get("pin_order") and issue["title"] == "Tracking":
             pinned = issue
+            # Infrastructure the estate timer writes, not planned work: sizing
+            # or milestoning it would fold its size into the milestone's own
+            # due-date arithmetic below.
+            continue
         if len(sizes) > 1:
             misses.append(
                 (
@@ -329,6 +333,27 @@ def selfcheck():
     reported = [what for what, _fix in misses]
     assert any("does not open green" in what for what in reported), reported
     assert any("last written 37 days ago" in what for what in reported), reported
+    assert notes == [], notes
+
+    # The pinned Tracking issue is infrastructure the estate timer writes, not
+    # planned work: it carries no size, area or milestone by design, so those
+    # checks must not fire on it (a size or milestone would count it toward
+    # the milestone's own due-date arithmetic, which is wrong).
+    pages["issues?type=issues&state=open"] = [
+        [
+            {
+                "number": 22,
+                "title": "Tracking",
+                "pin_order": 1,
+                "labels": [{"name": "kind:decision"}],
+                "milestone": None,
+                "body": "green: all clear",
+                "updated_at": today.isoformat() + "T00:00:00Z",
+            }
+        ]
+    ]
+    misses, notes = hygiene(recorder(pages)[0], "https://git.example/api/v1", "apex/yi", 14, today)
+    assert misses == [], misses
     assert notes == [], notes
 
     print("ok   forge_tracking selfcheck")
