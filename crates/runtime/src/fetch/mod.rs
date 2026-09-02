@@ -87,10 +87,6 @@ impl KernelServiceMap {
         self.lock().insert(agent.into(), Arc::downgrade(service));
     }
 
-    pub fn remove(&self, agent: &str) {
-        self.lock().remove(agent);
-    }
-
     fn service(&self, agent: &str) -> Option<Arc<crate::kernel::KernelService>> {
         let mut kernels = self.lock();
         match kernels.get(agent).and_then(std::sync::Weak::upgrade) {
@@ -657,7 +653,6 @@ mod tests {
             map.service("main").is_none(),
             "a finished session leaves no entry behind"
         );
-        map.remove("main");
         read_via(&map, "main").await?;
         Ok(())
     }
