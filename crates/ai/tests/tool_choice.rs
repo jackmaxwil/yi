@@ -134,3 +134,28 @@ fn no_choice_emits_no_key_and_leaves_the_body_byte_identical() -> TestResult {
     }
     Ok(())
 }
+
+#[test]
+fn a_forced_tool_switches_extended_thinking_off_for_that_turn() -> TestResult {
+    let mut reasoning = model();
+    reasoning.reasoning = true;
+    let options = AnthropicOptions {
+        thinking: anthropic::Thinking::Adaptive { effort: None },
+        ..AnthropicOptions::default()
+    };
+    let context = |choice| LlmContext {
+        system_prompt: "s".to_owned(),
+        messages: vec![AgentMessage::host_user(
+            UserContent::Text("hi".to_owned()),
+            0,
+        )],
+        tools: Some(vec![tool("plan", None)]),
+        tool_choice: Some(choice),
+    };
+    let forced_turn = anthropic::build_params(&reasoning, &context(forced("plan")?), &options);
+    assert_eq!(forced_turn["tool_choice"]["type"], json!("tool"));
+    assert_eq!(forced_turn["thinking"], json!({"type": "disabled"}));
+    let free_turn = anthropic::build_params(&reasoning, &context(ToolChoice::Auto), &options);
+    assert_eq!(free_turn["thinking"]["type"], json!("adaptive"));
+    Ok(())
+}

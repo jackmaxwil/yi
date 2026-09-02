@@ -302,8 +302,16 @@ pub fn build_params(model: &Model, context: &LlmContext, options: &AnthropicOpti
     if let Some(choice) = &context.tool_choice {
         params["tool_choice"] = convert_tool_choice(choice);
     }
+    // Incident: the API refuses a forced tool beside extended thinking, so the
+    // one turn that forces a tool goes without thinking rather than 400ing.
+    let forced = matches!(context.tool_choice, Some(ToolChoice::Tool(_)));
+    let thinking = if forced {
+        &Thinking::Off
+    } else {
+        &options.thinking
+    };
     if model.reasoning {
-        match &options.thinking {
+        match thinking {
             Thinking::Adaptive { effort } => {
                 params["thinking"] = json!({"type": "adaptive", "display": "summarized"});
                 if let Some(effort) = effort {
