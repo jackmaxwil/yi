@@ -320,6 +320,36 @@ fn external_editor_replaces_the_draft() -> TestResult {
     Ok(())
 }
 
+fn streamed(body: &str) -> yi_types::event::AgentEvent {
+    let message = yi_types::message::AgentMessage::Assistant {
+        content: vec![yi_types::message::Content::Text {
+            text: body.to_owned(),
+            text_signature: None,
+        }],
+        api: String::new(),
+        provider: String::new(),
+        model: String::new(),
+        response_model: None,
+        response_id: None,
+        diagnostics: None,
+        usage: yi_types::message::Usage::zero(),
+        stop_reason: StopReason::Stop,
+        deferred: None,
+        error_message: None,
+        raw_stop_reason: None,
+        end_turn: None,
+        timestamp: 0,
+    };
+    yi_types::event::AgentEvent::MessageUpdate {
+        message: message.clone(),
+        assistant_message_event: yi_types::event::AssistantMessageEvent::TextDelta {
+            content_index: 0,
+            delta: String::new(),
+            partial: message,
+        },
+    }
+}
+
 fn tool_start(id: &str) -> yi_types::event::AgentEvent {
     yi_types::event::AgentEvent::ToolExecutionStart {
         tool_call_id: id.to_owned(),
@@ -368,6 +398,125 @@ fn viewport_height_follows_the_live_region_and_stays_bottom_anchored() -> TestRe
         "status row after growth: {:?}",
         terminal.backend().row_text(23)
     );
+    Ok(())
+}
+
+/// The live region is bottom-anchored and its height follows its content, so a
+/// streamed line moved the anchor — and every anchor move erased from there to
+/// the end of the screen and repainted the rows the reader was already reading.
+#[test]
+fn a_streamed_line_is_written_as_an_append() -> TestResult {
+    let mut backend = VT100Backend::with_scrollback(80, 24, 200);
+    {
+        use std::io::Write;
+        backend.write_all(&b"\n".repeat(23))?;
+    }
+    let mut terminal = yi_tui::terminal::Terminal::new(backend, 4)?;
+    let mut app = app();
+    app.set_rows(24);
+    app.reduce_agent(yi_types::event::AgentEvent::AgentStart);
+
+    let mut body = String::new();
+    for n in 1..=8 {
+        body.push_str(&format!("- item {n} of the answer\n"));
+        app.reduce_agent(streamed(&body));
+        let _ = terminal.backend_mut().take_written();
+        yi_tui::render::draw(&mut app, &mut terminal, None);
+        let written = terminal.backend_mut().take_written();
+        if n == 1 {
+            // The turn's first frame lays the region out; there is nothing to keep.
+            continue;
+        }
+        assert!(
+            !written.contains("\u{1b}[J") && !written.contains("\u{1b}[0J"),
+            "item {n} erased the screen from the anchor down: {written:?}"
+        );
+        assert!(
+            !written.contains("item 1 of the answer") && !written.contains("faux-1"),
+            "item {n} rewrote rows that had not changed: {written:?}"
+        );
+        assert!(
+            written.contains("item") && written.len() < 400,
+            "item {n} must cost one row of writes, not a repaint of {}: {written:?}",
+            terminal.viewport_area().height
+        );
+    }
+
+    let contents = terminal.backend().contents();
+    for n in 1..=8 {
+        assert!(
+            contents.contains(&format!("item {n} of the answer")),
+            "item {n} must still be on screen:\n{contents}"
+        );
+    }
+    assert!(
+        contents.contains('╰') && contents.contains("faux-1"),
+        "composer and status survive the appends:\n{contents}"
+    );
+    assert_eq!(
+        terminal.viewport_area().bottom(),
+        24,
+        "the region stays anchored to the bottom row:\n{contents}"
+    );
+
+    // Past the live tail's limit each streamed line commits one, so the region
+    // shrinks back and takes the erase path the append never took. Pinned here
+    // so the append's measured win stays attached to the phase it was measured in.
+    for n in 9..=20 {
+        body.push_str(&format!("- item {n} of the answer\n"));
+        app.reduce_agent(streamed(&body));
+        yi_tui::render::draw(&mut app, &mut terminal, None);
+    }
+    let capped = terminal.viewport_area().height;
+    for n in 21..=32 {
+        body.push_str(&format!("- item {n} of the answer\n"));
+        app.reduce_agent(streamed(&body));
+        let _ = terminal.backend_mut().take_written();
+        yi_tui::render::draw(&mut app, &mut terminal, None);
+    }
+    let written = terminal.backend_mut().take_written();
+    assert!(
+        terminal.viewport_area().height <= capped,
+        "the live tail is capped at {capped}; the region must stop following the answer"
+    );
+    assert!(
+        written.contains("\u{1b}[J"),
+        "a saturated tail still repaints — if this stopped being true the append \
+         now covers the commit path too, and the 0.98.0 row must say so: {written:?}"
+    );
+    Ok(())
+}
+
+/// A screen short enough to leave the live region one row puts the whole floor
+/// under the scroll, and a one-row region is an invalid DECSTBM: the terminal
+/// ignores the margins and the scroll takes the working line and composer with it.
+#[test]
+fn a_short_screen_keeps_its_floor_through_a_growth() -> TestResult {
+    let mut backend = VT100Backend::with_scrollback(40, 6, 200);
+    {
+        use std::io::Write;
+        backend.write_all(&b"\n".repeat(5))?;
+    }
+    let mut terminal = yi_tui::terminal::Terminal::new(backend, 4)?;
+    let mut app = App::new(
+        options(),
+        Theme::new(ColorTier::TrueColor, true),
+        default_keymap(),
+        40,
+    );
+    app.set_rows(6);
+    app.reduce_agent(yi_types::event::AgentEvent::AgentStart);
+    yi_tui::render::draw(&mut app, &mut terminal, None);
+    app.reduce_agent(streamed("hello there\n"));
+    yi_tui::render::draw(&mut app, &mut terminal, None);
+
+    let contents = terminal.backend().contents();
+    for expected in ["hello there", "interrupt", "╭", "╰", "faux-1"] {
+        assert!(
+            contents.contains(expected),
+            "a six-row screen lost {expected:?} to the growth:\n{contents}"
+        );
+    }
     Ok(())
 }
 
@@ -527,33 +676,7 @@ fn the_mark_trails_the_streaming_tail_instead_of_splitting_the_answer() -> TestR
     // Two paragraphs: the first is stable and commits, the second is the tail
     // still streaming under it.
     let streaming = "Committed paragraph.\n\nTail paragraph still streaming";
-    let message = yi_types::message::AgentMessage::Assistant {
-        content: vec![yi_types::message::Content::Text {
-            text: streaming.to_owned(),
-            text_signature: None,
-        }],
-        api: String::new(),
-        provider: String::new(),
-        model: String::new(),
-        response_model: None,
-        response_id: None,
-        diagnostics: None,
-        usage: yi_types::message::Usage::zero(),
-        stop_reason: yi_types::message::StopReason::Stop,
-        deferred: None,
-        error_message: None,
-        raw_stop_reason: None,
-        end_turn: None,
-        timestamp: 0,
-    };
-    app.reduce_agent(yi_types::event::AgentEvent::MessageUpdate {
-        message: message.clone(),
-        assistant_message_event: yi_types::event::AssistantMessageEvent::TextDelta {
-            content_index: 0,
-            delta: String::new(),
-            partial: message,
-        },
-    });
+    app.reduce_agent(streamed(streaming));
     yi_tui::render::draw(&mut app, &mut terminal, None);
 
     let contents = terminal.backend().contents();
@@ -595,33 +718,7 @@ fn a_short_screen_keeps_the_composer_and_status_under_a_long_tail() -> TestResul
             .map(|n| format!("line {n}"))
             .collect::<Vec<_>>()
             .join("\n");
-        let message = yi_types::message::AgentMessage::Assistant {
-            content: vec![yi_types::message::Content::Text {
-                text: body,
-                text_signature: None,
-            }],
-            api: String::new(),
-            provider: String::new(),
-            model: String::new(),
-            response_model: None,
-            response_id: None,
-            diagnostics: None,
-            usage: yi_types::message::Usage::zero(),
-            stop_reason: yi_types::message::StopReason::Stop,
-            deferred: None,
-            error_message: None,
-            raw_stop_reason: None,
-            end_turn: None,
-            timestamp: 0,
-        };
-        app.reduce_agent(yi_types::event::AgentEvent::MessageUpdate {
-            message: message.clone(),
-            assistant_message_event: yi_types::event::AssistantMessageEvent::TextDelta {
-                content_index: 0,
-                delta: String::new(),
-                partial: message,
-            },
-        });
+        app.reduce_agent(streamed(&body));
         yi_tui::render::draw(&mut app, &mut terminal, None);
 
         let contents = terminal.backend().contents();

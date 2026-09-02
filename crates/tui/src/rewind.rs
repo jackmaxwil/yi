@@ -5,8 +5,9 @@ use ratatui::backend::Backend;
 use ratatui::layout::Rect;
 use yi_runtime::AgentSession;
 
-use crate::app::App;
+use crate::app::{App, entries_of};
 use crate::cell::Cell;
+use crate::tree::{TreeFilter, TreeView};
 
 /// A rewind is only believable if the screen agrees with it: the entries that
 /// were undone leave the transcript, and a rewound user message goes back into
@@ -174,4 +175,31 @@ fn count_label(count: usize) -> String {
     } else {
         format!("{count} files")
     }
+}
+
+pub(crate) fn process_pending_tree(app: &mut App, session: &Arc<AgentSession>) {
+    if app.pending_open_tree {
+        app.pending_open_tree = false;
+        open_tree(app, session);
+    }
+    if app.pending_open_plan_tree {
+        app.pending_open_plan_tree = false;
+        crate::plantree::open_plan_tree(app, session);
+    }
+}
+
+fn open_tree(app: &mut App, session: &Arc<AgentSession>) {
+    let (entries, leaf) = entries_of(session);
+    if entries.is_empty() {
+        app.commit_cell(&Cell::Notice {
+            text: "no session store attached — tree unavailable".to_owned(),
+        });
+        return;
+    }
+    app.tree = Some(TreeView::new(
+        &entries,
+        leaf.as_deref(),
+        TreeFilter::Default,
+    ));
+    app.scheduler.request();
 }
