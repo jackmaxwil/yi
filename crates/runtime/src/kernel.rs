@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use serde_json::{Map, Value};
 use yi_kernel::client::{
@@ -142,6 +142,7 @@ pub type HostHandlerFn = dyn Fn(Map<String, Value>) -> HostFuture + Send + Sync;
 #[derive(Default)]
 pub struct HostRegistry {
     handlers: HashMap<String, Arc<HostHandlerFn>>,
+    handles: Arc<Mutex<Vec<yi_tools::JobId>>>,
 }
 
 impl HostRegistry {
@@ -158,8 +159,10 @@ impl HostRegistry {
     /// over [`yi_tools::jobs`]. A spawned job is handle-owned — no session
     /// poller announces it and only `exec.release` retires it.
     pub fn register_exec(&mut self, cwd: PathBuf) {
+        let spawned = Arc::clone(&self.handles);
         self.register("exec.spawn", move |payload| {
             let cwd = cwd.clone();
+            let spawned = Arc::clone(&spawned);
             Box::pin(async move {
                 let command = payload
                     .get("command")
@@ -170,6 +173,7 @@ impl HostRegistry {
                     })?;
                 let cancelled: CancelFlag = Arc::new(|| false);
                 let id = yi_tools::jobs::spawn_job(command, &cwd, &cancelled, None);
+                lock(&spawned).push(id);
                 let mut reply = Map::new();
                 reply.insert("job_id".to_owned(), Value::from(id.0));
                 Ok(reply)
@@ -213,12 +217,15 @@ impl HostRegistry {
                 Ok(reply)
             })
         });
-        self.register("exec.release", |payload| {
+        let released = Arc::clone(&self.handles);
+        self.register("exec.release", move |payload| {
+            let released = Arc::clone(&released);
             Box::pin(async move {
                 let id = job_id_of(&payload, "exec.release")?;
                 let report = yi_tools::jobs::registry()
                     .release(id)
                     .map_err(|error| error.to_string())?;
+                lock(&released).retain(|held| *held != id);
                 Ok(job_report_reply(&report))
             })
         });
@@ -268,10 +275,27 @@ fn job_report_reply(report: &yi_tools::JobReport) -> Map<String, Value> {
     reply
 }
 
+fn lock(handles: &Mutex<Vec<yi_tools::JobId>>) -> std::sync::MutexGuard<'_, Vec<yi_tools::JobId>> {
+    handles
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 impl HostHandlers for HostRegistry {
     fn dispatch(&self, request_type: &str, payload: Map<String, Value>) -> Option<HostFuture> {
         let handler = self.handlers.get(request_type)?;
         Some(handler(payload))
+    }
+
+    /// Incident: only `exec.release` retired a handle job, so a kernel that
+    /// was disposed or crashed left its children and their registry entries
+    /// for the host's lifetime.
+    fn retire(&self) {
+        let registry = yi_tools::jobs::registry();
+        for id in lock(&self.handles).drain(..) {
+            let _a_settled_job_is_already_retired = registry.kill(id);
+            let _releasing_an_unknown_job_is_the_same_absence = registry.release(id);
+        }
     }
 }
 
@@ -439,6 +463,7 @@ impl KernelService {
         if let Some(manager) = manager {
             manager.dispose().await;
         }
+        self.options.host.retire();
     }
 
     /// A peek, never a boot: post-compaction sync must not spawn a kernel
@@ -956,6 +981,34 @@ mod tests {
         )
         .await;
         assert!(unknown.is_err_and(|error| error.contains("no such job")));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn disposing_the_kernel_retires_its_handle_jobs() -> TestResult {
+        let registry = Arc::new(exec_registry());
+        let spawned = exec(
+            &registry,
+            "exec.spawn",
+            serde_json::json!({"command": "sleep 300"}),
+        )
+        .await?;
+        let job = spawned.get("job_id").ok_or("no job_id")?.clone();
+        let id = yi_tools::JobId(job.as_u64().ok_or("job_id is not a number")?);
+        assert!(yi_tools::jobs::registry().report(id).is_some());
+        let service = KernelService::new(KernelServiceOptions {
+            cwd: std::env::temp_dir(),
+            home: std::env::temp_dir(),
+            session_dir: None,
+            host: registry,
+            on_restore: None,
+            sandbox: None,
+        });
+        service.dispose().await;
+        assert!(
+            yi_tools::jobs::registry().report(id).is_none(),
+            "a disposed kernel left its handle job in the registry"
+        );
         Ok(())
     }
 

@@ -69,6 +69,10 @@ pub type HostFuture = Pin<Box<dyn Future<Output = HostReply> + Send>>;
 /// means the type is not registered and errors prime's way.
 pub trait HostHandlers: Send + Sync {
     fn dispatch(&self, request_type: &str, payload: Map<String, Value>) -> Option<HostFuture>;
+
+    /// A handle a kernel opened dies with the kernel, so whatever the host is
+    /// holding for it is dropped here; a host holding nothing needs no body.
+    fn retire(&self) {}
 }
 
 /// Where and how the kernel namespace is persisted (design K10). Only
