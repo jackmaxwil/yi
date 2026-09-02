@@ -209,7 +209,6 @@ fn io_at(path: &Path) -> impl FnOnce(std::io::Error) -> StoreError + '_ {
 
 impl PlanStore {
     pub fn open(dir: PathBuf) -> Result<Self, StoreError> {
-        std::fs::create_dir_all(&dir).map_err(io_at(&dir))?;
         Ok(Self { dir })
     }
 
@@ -257,6 +256,7 @@ impl PlanStore {
     }
 
     pub fn write(&self, file: &PlanFile) -> Result<(), StoreError> {
+        std::fs::create_dir_all(&self.dir).map_err(io_at(&self.dir))?;
         let id = &file.plan.id;
         let front = Self::render(&file.plan)?;
         let document = format!("---\n{front}\n---\n{}", file.body);
@@ -275,7 +275,12 @@ impl PlanStore {
 
     pub fn list(&self) -> Result<Vec<PlanId>, StoreError> {
         let mut ids = Vec::new();
-        for entry in std::fs::read_dir(&self.dir).map_err(io_at(&self.dir))? {
+        let entries = match std::fs::read_dir(&self.dir) {
+            Ok(entries) => entries,
+            Err(source) if source.kind() == std::io::ErrorKind::NotFound => return Ok(ids),
+            Err(source) => return Err(io_at(&self.dir)(source)),
+        };
+        for entry in entries {
             let path = entry.map_err(io_at(&self.dir))?.path();
             if path.extension().and_then(OsStr::to_str) != Some("md") {
                 continue;
@@ -319,6 +324,7 @@ impl PlanStore {
     /// staleness dead-pid only, and the 30 s mtime rule covers the arms K1
     /// leaves it, plus a lease whose generation cannot be named.
     pub fn lease(&self) -> Result<Lease, StoreError> {
+        std::fs::create_dir_all(&self.dir).map_err(io_at(&self.dir))?;
         let dir = self.dir.join(LEASE_NAME);
         for _ in 0..LEASE_ATTEMPTS {
             match std::fs::create_dir(&dir) {
@@ -413,6 +419,10 @@ mod tests {
             let dir =
                 std::env::temp_dir().join(format!("yi-plan-store-{name}-{}", std::process::id()));
             let _ = std::fs::remove_dir_all(&dir);
+            // `open` no longer creates the directory (production callers wire
+            // a store before any plan exists); tests that touch `dir` directly
+            // still need it there.
+            std::fs::create_dir_all(&dir).map_err(io_at(&dir))?;
             let store = PlanStore::open(dir.clone())?;
             Ok(Self { dir, store })
         }
