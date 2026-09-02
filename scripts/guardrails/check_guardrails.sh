@@ -39,6 +39,9 @@ run "$PY" skills/yi/session-mining/extract.py --selfcheck
 # The PR narrative's net-src number is what the growth budget is argued against, and
 # a path in the wrong bucket misprices it silently; only this flag exercises the split.
 run "$PY" scripts/pr_body.py --selfcheck
+# The size-report comment is upserted by marker, and a marker that stops matching
+# posts a duplicate rather than failing; only this flag exercises the routing.
+run "$PY" scripts/forgejo_pr_comment.py --selfcheck
 # Prose is not exempt: 1,485 comment lines are under ratchet, and the design docs
 # are the reference. Config and the domain-word allowlist live in .codespellrc.
 if command -v codespell >/dev/null; then run codespell; else echo "FAIL codespell (uv tool install codespell)"; FAILED=$((FAILED+1)); fi

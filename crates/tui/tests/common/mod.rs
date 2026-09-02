@@ -14,12 +14,15 @@ use ratatui::prelude::CrosstermBackend;
 use std::sync::{Arc, Mutex};
 
 #[derive(Clone)]
-pub struct SharedParser(Arc<Mutex<vt100::Parser>>);
+pub struct SharedParser(Arc<Mutex<vt100::Parser>>, Arc<Mutex<Vec<u8>>>);
 
 impl Write for SharedParser {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         if let Ok(mut parser) = self.0.lock() {
             parser.process(buf);
+        }
+        if let Ok(mut log) = self.1.lock() {
+            log.extend_from_slice(buf);
         }
         Ok(buf.len())
     }
@@ -42,11 +45,14 @@ impl VT100Backend {
 
     pub fn with_scrollback(width: u16, height: u16, scrollback_len: usize) -> Self {
         ratatui::crossterm::style::force_color_output(true);
-        let parser = SharedParser(Arc::new(Mutex::new(vt100::Parser::new(
-            height,
-            width,
-            scrollback_len,
-        ))));
+        let parser = SharedParser(
+            Arc::new(Mutex::new(vt100::Parser::new(
+                height,
+                width,
+                scrollback_len,
+            ))),
+            Arc::new(Mutex::new(Vec::new())),
+        );
         Self {
             parser: parser.clone(),
             crossterm_backend: CrosstermBackend::new(parser),
@@ -68,6 +74,19 @@ impl VT100Backend {
         if let Ok(mut parser) = self.parser.0.lock() {
             parser.set_size(height, width);
         }
+    }
+
+    /// Drains the bytes written since the last call: what one frame actually
+    /// sent the terminal, erases and all.
+    #[allow(dead_code)]
+    pub fn take_written(&mut self) -> String {
+        let bytes = self
+            .parser
+            .1
+            .lock()
+            .map(|mut log| std::mem::take(&mut *log))
+            .unwrap_or_default();
+        String::from_utf8_lossy(&bytes).into_owned()
     }
 
     #[allow(dead_code)]
