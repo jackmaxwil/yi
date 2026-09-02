@@ -157,6 +157,8 @@ pub fn run_console(options: &ConsoleOptions) -> i32 {
     let code = run_interactive(&mut app, &mut terminal, &events, &outbound, &theme);
     restore_terminal();
     outbound.shutdown();
+    // Frees a reader parked on the bounded queue nobody drains now.
+    drop(events);
     join_with_deadline(threads);
     code
 }
@@ -214,7 +216,10 @@ fn run_interactive(
                 let _ = out.flush();
             }
             if kitty_ok {
+                use std::io::Write;
                 place_notebook_image(app, &mut out, &mut placed);
+                // No newline in a graphics escape, so nothing else flushes it.
+                let _ = out.flush();
             }
         }
     }
@@ -384,7 +389,7 @@ pub fn run_headless(options: &ConsoleOptions, drive: DriveOptions) -> i32 {
             }
             (ConsoleStep::Tui(Step::WaitFrame(ms, present, text)), started) => {
                 let shown = terminal.backend().screen().contains(&text) == present;
-                match poll_condition(shown, started, ms, "wait-frame") {
+                match poll_condition(shown, started, ms, &format!("wait-frame {text:?}")) {
                     WaitPoll::Done => {}
                     WaitPoll::Retry => {
                         current = Some((
@@ -416,6 +421,7 @@ pub fn run_headless(options: &ConsoleOptions, drive: DriveOptions) -> i32 {
     }
 
     outbound.shutdown();
+    drop(events);
     join_with_deadline(threads);
     exit_code
 }
