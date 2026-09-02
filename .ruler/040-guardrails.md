@@ -22,3 +22,6 @@ before claiming any task done; quote failures verbatim, do not paraphrase them.
   most the free band.
 - A new YI_* env var is a row in scripts/guardrails/baselines/env_vars.json first (hard cap 40).
 - The dist profile is what binary-size and startup budgets measure — never release.
+- No tracking check runs offline. A green `just check` says nothing about whether the work is
+  registered, sized or dated — it cannot reach the forge and never tries. The PR job
+  (check_pr_metadata.py) and the weekly hygiene job are where that is enforced.

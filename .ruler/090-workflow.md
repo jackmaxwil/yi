@@ -31,6 +31,11 @@
   where it cannot be ticked by hand.
 - Commit messages containing backticks or `$(` go through `git commit -F -` with a quoted
   heredoc, never `-m` — zsh command-substitutes inside double quotes and mangles the message.
+- A change that adds a feature-ledger row, or whose net src growth exceeds the free band, carries
+  `Closes #N` or `Refs #N` in its PR body and cites the same `#N` in its changelog row — the
+  register is on the forge (095), so the row and the issue have to name each other or neither
+  can be found from the other. Ratchets, doc fixes and in-band repairs are exempt by
+  construction: they add no ledger row and move no bytes past the band.
 - A user-visible behavior change updates the ARCHITECTURE feature ledger and,
   when structural, the changelog — in the same change as the code.
 - A landed decision gets its ADR under docs/solutions/adr/ (one file per decision-log row,
