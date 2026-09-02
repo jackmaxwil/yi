@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
-"""Commit subjects and PR titles: one plain imperative sentence, no trailers.
+"""Commit subjects: one plain imperative sentence, no trailers. The same rule
+judges a PR title, but from check_pr_metadata.py — `subject_errors` is the one
+implementation and CI imports it rather than re-deriving it.
 Incident: every commit across the five open PRs carried an assistant co-author
 trailer. Scans HEAD --not origin/main, so the landed history stays untouched."""
-import argparse, os, pathlib, re, subprocess, sys
+import argparse, pathlib, re, subprocess, sys
 sys.path.insert(0, str(pathlib.Path(__file__).parent))
 from _common import ROOT, fail
 
@@ -100,72 +102,67 @@ def upstream():
     return None
 
 
-ap = argparse.ArgumentParser()
-ap.add_argument("--range", help="git revision range (default: HEAD --not origin/main)")
-ap.add_argument("--title", help="check a PR title instead of a commit range")
-args = ap.parse_args()
+if __name__ == "__main__":
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--range", help="git revision range (default: HEAD --not origin/main)")
+    args = ap.parse_args()
 
-title = args.title or os.environ.get("PR_TITLE")
-if title:
-    fail([f"{title} — {e}" for e in subject_errors(title.strip())], "pr_title")
-    sys.exit(0)
+    if args.range:
+        span, hint = (args.range,), args.range
+    else:
+        hint = "origin/main"
+        base = upstream()
+        if base is None:
+            print("FAIL commit_style")
+            print("  no origin/main or main to compare against; a shallow clone cannot")
+            print("  run this gate, and passing blind is what it exists to prevent")
+            sys.exit(1)
+        span = ("HEAD", "--not", base)
+        if git("rev-parse", "--verify", "--quiet", STANDARD_STARTS + "^{commit}").returncode == 0:
+            span += (STANDARD_STARTS,)
 
-if args.range:
-    span, hint = (args.range,), args.range
-else:
-    hint = "origin/main"
-    base = upstream()
-    if base is None:
+    log = git("log", f"--format={FORMAT}", *span)
+    if log.returncode != 0:
         print("FAIL commit_style")
-        print("  no origin/main or main to compare against; a shallow clone cannot")
-        print("  run this gate, and passing blind is what it exists to prevent")
+        print(f"  git log failed: {log.stderr.strip()}")
         sys.exit(1)
-    span = ("HEAD", "--not", base)
-    if git("rev-parse", "--verify", "--quiet", STANDARD_STARTS + "^{commit}").returncode == 0:
-        span += (STANDARD_STARTS,)
 
-log = git("log", f"--format={FORMAT}", *span)
-if log.returncode != 0:
-    print("FAIL commit_style")
-    print(f"  git log failed: {log.stderr.strip()}")
-    sys.exit(1)
-
-BASELINES = "scripts/guardrails/baselines/"
+    BASELINES = "scripts/guardrails/baselines/"
 
 
-def code_path(path):
-    if path.startswith("crates/") and "/src/" in path:
-        return True
-    return path == "justfile" or (path.startswith("scripts/") and not path.startswith(BASELINES))
+    def code_path(path):
+        if path.startswith("crates/") and "/src/" in path:
+            return True
+        return path == "justfile" or (path.startswith("scripts/") and not path.startswith(BASELINES))
 
 
-def composition_errors(sha):
-    show = git("show", "--name-status", "--format=%P", sha)
-    if show.returncode != 0:
-        return [f"git show failed: {show.stderr.strip()}"]
-    lines = show.stdout.splitlines()
-    if lines and len(lines[0].split()) > 1:
+    def composition_errors(sha):
+        show = git("show", "--name-status", "--format=%P", sha)
+        if show.returncode != 0:
+            return [f"git show failed: {show.stderr.strip()}"]
+        lines = show.stdout.splitlines()
+        if lines and len(lines[0].split()) > 1:
+            return []
+        edits = []
+        for line in lines[1:]:
+            parts = line.split("\t")
+            if len(parts) >= 2:
+                edits.append((parts[0][:1], parts[-1]))
+        baselines = sum(1 for status, f in edits if f.startswith(BASELINES) and status in "MD")
+        code = sum(1 for _, f in edits if code_path(f))
+        if baselines and code:
+            return [f"{baselines} baseline edit(s) ride beside {code} code file(s); a baseline edit lands in its own commit (a new baseline may seed with its gate)"]
         return []
-    edits = []
-    for line in lines[1:]:
-        parts = line.split("\t")
-        if len(parts) >= 2:
-            edits.append((parts[0][:1], parts[-1]))
-    baselines = sum(1 for status, f in edits if f.startswith(BASELINES) and status in "MD")
-    code = sum(1 for _, f in edits if code_path(f))
-    if baselines and code:
-        return [f"{baselines} baseline edit(s) ride beside {code} code file(s); a baseline edit lands in its own commit (a new baseline may seed with its gate)"]
-    return []
 
 
-errs, seen = [], 0
-for record in log.stdout.split("\x1e"):
-    if not record.strip():
-        continue
-    sha, subject, trailers = record.strip("\n").split("\x00", 2)
-    seen += 1
-    for e in subject_errors(subject) + trailer_errors(trailers) + composition_errors(sha):
-        errs.append(f"{sha[:8]} {subject} — {e}")
-if errs:
-    errs.append(f"rewrite the messages: git rebase -i {hint}")
-fail(errs, f"commit_style ({seen} commits)")
+    errs, seen = [], 0
+    for record in log.stdout.split("\x1e"):
+        if not record.strip():
+            continue
+        sha, subject, trailers = record.strip("\n").split("\x00", 2)
+        seen += 1
+        for e in subject_errors(subject) + trailer_errors(trailers) + composition_errors(sha):
+            errs.append(f"{sha[:8]} {subject} — {e}")
+    if errs:
+        errs.append(f"rewrite the messages: git rebase -i {hint}")
+    fail(errs, f"commit_style ({seen} commits)")

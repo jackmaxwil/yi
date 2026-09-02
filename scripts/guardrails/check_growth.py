@@ -8,9 +8,8 @@ free band lands almost exactly on the seam between the two regimes — 46 organi
 bumps under it, 49 landings over — and 7 of those landings clear +2000."""
 import json, re, statistics, subprocess, sys, pathlib
 sys.path.insert(0, str(pathlib.Path(__file__).parent))
-from _common import ROOT, BASE, src_files, fail
+from _common import ROOT, BASE, src_files, fail, FREE_BAND as FREE
 
-FREE = 150
 DROW = 2000
 BASELINE = BASE / "src_loc.json"
 ARCH = ROOT / "docs/ARCHITECTURE.md"
