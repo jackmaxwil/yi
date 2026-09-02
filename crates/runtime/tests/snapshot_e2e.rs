@@ -36,6 +36,7 @@ fn service(session_dir: &std::path::Path, notices: &Arc<Mutex<Vec<String>>>) -> 
                 queue.push(restore_notice_text(restore));
             }
         })),
+        sandbox: None,
     }))
 }
 

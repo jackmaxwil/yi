@@ -585,6 +585,7 @@ mod tests {
                     session_dir: None,
                     host: Arc::new(NoHost),
                     on_restore: None,
+                    sandbox: None,
                 },
             )),
         );

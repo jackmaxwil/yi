@@ -72,6 +72,7 @@ when it changes rather than editing them by hand.
 - [D83](adr/d83.md) - net src growth is budgeted per version
 - [D84](adr/d84.md) - the forge is GitHub, and `.github/` returns as thin callers
 - [D85](adr/d85.md) - tests are tiered, and a ledger row names its journey
+- [D87](adr/d87.md) - the IPython kernel starts inside the session Seatbelt
 - [D86](adr/d86.md) - heartbeat lanes are in-process, keyed by session_id
 - [D91](adr/d91.md) - the dist build belongs to the aggregator, not to `just guardrails`
 - [D92](adr/d92.md) - the gate's lanes run in parallel, and its suite runs under nextest
