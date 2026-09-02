@@ -47,10 +47,12 @@ jobs:
           cache-on-failure: true
       - run: just lane ${{ matrix.lane }}
 
-  # The title is judged by the same rule the subjects are, and only CI can see
-  # it: it exists nowhere in the tree the local hook scans. Forgejo populates
-  # github.event.pull_request.title on the pull_request event, so the job ports
-  # unchanged. Its own job, so the three gate lanes do not each re-run a
+  # Title and body, and only CI can see either: neither exists in the tree the
+  # local hook scans, and the body's rule asks the forge whether the issue it
+  # cites is open, sized and scheduled (D106) — a question `just check` has no
+  # forge to put. Forgejo populates github.event.pull_request.{title,body} on
+  # the pull_request event. The job keeps its name because the required context
+  # is pinned to it. Its own job, so the three gate lanes do not each re-run a
   # one-second python script.
   title:
     runs-on: ubuntu-latest
@@ -58,9 +60,17 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+      # The body rule measures this branch against the merge base, the way
+      # pr_body.py does — the fetch is what gives it an origin/main to find.
+      - run: git fetch --no-tags origin main
       - env:
           PR_TITLE: ${{ github.event.pull_request.title }}
-        run: python3 scripts/guardrails/check_commit_style.py
+          PR_BODY: ${{ github.event.pull_request.body }}
+          FORGEJO_API_URL: ${{ github.api_url }}
+          FORGEJO_REPOSITORY: ${{ github.repository }}
+          FORGEJO_PR: ${{ github.event.pull_request.number }}
+          FORGEJO_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python3 scripts/guardrails/check_pr_metadata.py
 
   size-report:
     runs-on: ubuntu-latest

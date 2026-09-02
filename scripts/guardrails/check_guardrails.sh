@@ -42,6 +42,10 @@ run "$PY" scripts/pr_body.py --selfcheck
 # The size-report comment is upserted by marker, and a marker that stops matching
 # posts a duplicate rather than failing; only this flag exercises the routing.
 run "$PY" scripts/forgejo_pr_comment.py --selfcheck
+# The PR metadata gate only ever runs in CI (040), so the tree's own check of it
+# is this flag: a fake transport walks every branch — each issue defect, each tea
+# fix line, and the exempt path that must ask the forge nothing at all.
+run "$PY" scripts/guardrails/check_pr_metadata.py --selfcheck
 # Prose is not exempt: 1,485 comment lines are under ratchet, and the design docs
 # are the reference. Config and the domain-word allowlist live in .codespellrc.
 if command -v codespell >/dev/null; then run codespell; else echo "FAIL codespell (uv tool install codespell)"; FAILED=$((FAILED+1)); fi
