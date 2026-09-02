@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use yi_types::plan::doc::{BlockedOn, Check, Plan, PlanId, TodoLabel, TodoState, TodoStateName};
 use yi_types::plan::ledger::{PLAN_OP_ENTRY_TYPE, PlanOpRecord};
@@ -125,10 +125,12 @@ fn terminal(state: &TodoStateName) -> bool {
     }
 }
 
-/// The critical path over `after` edges, memoized with an explicit stack —
-/// `Plan::validate` refuses a cycle at insert, and this refuses to recurse.
+/// The critical path over `after` edges, memoized with an explicit stack.
+/// Incident: a hand-edited cycle is never refused by the parser, and the walk
+/// re-pushed it forever; an edge back into the open walk now counts as zero.
 fn critical_path(plan: &Plan, spans: &HashMap<String, u64>) -> u64 {
     let mut best: HashMap<&str, u64> = HashMap::new();
+    let mut open: HashSet<&str> = HashSet::new();
     let mut longest = 0u64;
     for todo in &plan.todos {
         let mut stack = vec![(todo.label.as_str(), false)];
@@ -145,9 +147,10 @@ fn critical_path(plan: &Plan, spans: &HashMap<String, u64>) -> u64 {
                     .after
                     .iter()
                     .map(TodoLabel::as_str)
-                    .filter(|edge| !best.contains_key(edge))
+                    .filter(|edge| !best.contains_key(edge) && !open.contains(edge))
                     .collect();
                 if !pending.is_empty() {
+                    open.insert(name);
                     stack.push((name, true));
                     stack.extend(pending.into_iter().map(|edge| (edge, false)));
                     continue;
