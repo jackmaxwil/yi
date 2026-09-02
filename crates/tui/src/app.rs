@@ -115,6 +115,9 @@ pub struct App {
     /// Fence-open line active at `live_cut`: any slice rendered from there
     /// reopens the fence so its rows still render as code.
     pub(crate) live_reopen: Option<String>,
+    /// Syntax parse state at `live_cut`: a string or comment that spans the cut
+    /// keeps one colour instead of being re-lexed from the reopened fence.
+    pub(crate) live_lang: Option<crate::highlight::Lang>,
     pub(crate) live_thought: String,
     pub(crate) live_cut: usize,
     /// The byte of `live_thought` already committed to scrollback, the mirror of
@@ -201,6 +204,7 @@ impl App {
             reflow: crate::reflow::ReflowState::default(),
             live_markdown: String::new(),
             live_reopen: None,
+            live_lang: None,
             live_thought: String::new(),
             live_cut: 0,
             live_thought_cut: 0,
@@ -422,6 +426,7 @@ impl App {
         self.pending_commit.clear();
         self.live_markdown.clear();
         self.live_reopen = None;
+        self.live_lang = None;
         self.live_thought.clear();
         self.live_cut = 0;
         self.live_thought_cut = 0;
@@ -620,7 +625,7 @@ impl App {
                 if !text.is_empty() {
                     let remainder = text.get(self.live_cut..).unwrap_or_default().to_owned();
                     let first = self.live_cut == 0;
-                    let rendered = crate::transcript::paint_slice(self, &remainder);
+                    let rendered = crate::transcript::paint_slice(self, &remainder).0;
                     if !rendered.is_empty() {
                         if self.live_reopen.is_none() {
                             self.pending_commit.push(Line::default());
@@ -640,6 +645,7 @@ impl App {
                 self.live_thought.clear();
                 self.live_cut = 0;
                 self.live_reopen = None;
+                self.live_lang = None;
                 self.live_thought_cut = 0;
                 if *stop_reason == StopReason::Error {
                     let text = error_message

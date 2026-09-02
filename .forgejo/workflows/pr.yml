@@ -2,13 +2,16 @@
 # of the rules. CI=true makes the aggregator announce-skip binary_size and
 # startup: the baseline is a macOS arm64 byte count, and a shared runner cannot
 # resolve a 5 ms budget.
+#
+# The estate has no macOS runner, so the macOS matrix arm of .github/workflows/
+# pr.yml is dropped here rather than faked: `just prepush` runs the same three
+# lanes on the developer's own mac before every push, which is where macOS
+# coverage now comes from. `permissions:` blocks are omitted because Forgejo
+# ignores them; the token below is the one the runner scopes to this repo.
 name: pr
 
 on:
   pull_request:
-
-permissions:
-  contents: read
 
 jobs:
   gate:
@@ -21,47 +24,34 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
         lane: [lint, guardrails, test]
-    runs-on: ${{ matrix.os }}
+    runs-on: ubuntu-latest
     steps:
       # check_commit_style.py resolves origin/main and refuses to pass blind on
       # a shallow clone, so the full history is the gate's precondition.
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+      # The image ships just, codespell, uv, cargo-deny, cargo-machete and
+      # cargo-nextest, so taiki-e/install-action and the pipx/uv bootstrap the
+      # GitHub file carries are both gone. `rustup show` stays: it prints — and
+      # installs — whatever rust-toolchain.toml pins, which is the one thing
+      # the image can go stale on.
       - run: rustup show
-      # The hand-rolled cache had no restore-keys, tarred all of target/ (1.6 GB
-      # a copy, which overran the 10 GB repo limit and the Linux runner's disk),
-      # and only ever saved under refs/pull/N, a scope no other PR can read — so
-      # every job was cold. rust-cache prunes to the dependency artifacts, falls
-      # back on a stale key, and shares one key per lane with postmerge, which
-      # is what puts a warm cache on main for a first push to inherit.
+      # The runner's cache server is on, so rust-cache works here as it does on
+      # GitHub: one key per lane, shared with postmerge, which is what puts a
+      # warm cache on main for a branch's first push to inherit.
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: ${{ matrix.lane }}
           cache-on-failure: true
-      # Prebuilt binaries: `cargo install --locked` compiled these from source
-      # on every cold cache, 3-6 min a job for tools the gate only shells out
-      # to. Installed for every lane rather than per-lane — the whole set costs
-      # seconds, and a matrix arm that has to say which tools it needs is the
-      # start of a second copy of the rules.
-      - uses: taiki-e/install-action@v2
-        with:
-          tool: just,cargo-deny,cargo-machete,cargo-nextest
-      - name: install the tools the gate shells out to
-        run: |
-          set -euo pipefail
-          command -v codespell >/dev/null || pipx install codespell
-          if ! command -v uv >/dev/null; then
-            curl -LsSf https://astral.sh/uv/install.sh | sh
-            echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-          fi
       - run: just lane ${{ matrix.lane }}
 
   # The title is judged by the same rule the subjects are, and only CI can see
-  # it: it exists nowhere in the tree the local hook scans. Its own job, so the
-  # six gate lanes do not each re-run a one-second python script.
+  # it: it exists nowhere in the tree the local hook scans. Forgejo populates
+  # github.event.pull_request.title on the pull_request event, so the job ports
+  # unchanged. Its own job, so the three gate lanes do not each re-run a
+  # one-second python script.
   title:
     runs-on: ubuntu-latest
     steps:
@@ -74,29 +64,29 @@ jobs:
 
   size-report:
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      pull-requests: write
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
       - name: post the measured LOC map and growth verdict
         env:
-          GH_TOKEN: ${{ github.token }}
-          PR: ${{ github.event.pull_request.number }}
+          FORGEJO_API_URL: ${{ github.api_url }}
+          FORGEJO_REPOSITORY: ${{ github.repository }}
+          FORGEJO_PR: ${{ github.event.pull_request.number }}
+          FORGEJO_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           git fetch --no-tags origin main
           python3 scripts/pr_body.py > body.md
           # The narrative is the author's; only the counted sections are
-          # machine-truth, so the comment carries those and says so.
+          # machine-truth, so the comment carries those and says so. The first
+          # line is also the marker the upsert keys on, so it must not vary.
           {
             echo "Measured against \`origin/main\` by \`just pr-body\` — the sections below are counted, not written."
             echo
             sed -n '/^## Files edited/,$p' body.md | sed -n '/^## Architecture notes/q;p'
           } > comment.md
-          # One comment per PR, edited in place: a fresh comment per push turns
-          # the thread into a changelog nobody reads.
-          gh pr comment "$PR" --body-file comment.md --edit-last \
-            || gh pr comment "$PR" --body-file comment.md
+          # There is no `gh` here: the script does the same edit-in-place over
+          # the Forgejo API. One comment per PR — a fresh one per push turns the
+          # thread into a changelog nobody reads.
+          python3 scripts/forgejo_pr_comment.py comment.md
