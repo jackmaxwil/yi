@@ -1,0 +1,92 @@
+# A thin caller of the justfile the git hooks already run — never a second copy
+# of the rules. CI=true makes the aggregator announce-skip binary_size and
+# startup: the baseline is a macOS arm64 byte count, and a shared runner cannot
+# resolve a 5 ms budget.
+#
+# The estate has no macOS runner, so the macOS matrix arm of .github/workflows/
+# pr.yml is dropped here rather than faked: `just prepush` runs the same three
+# lanes on the developer's own mac before every push, which is where macOS
+# coverage now comes from. `permissions:` blocks are omitted because Forgejo
+# ignores them; the token below is the one the runner scopes to this repo.
+name: pr
+
+on:
+  pull_request:
+
+jobs:
+  gate:
+    # `lint`, `guardrails` and `test` are the three lanes of `just check` and
+    # none depends on another, so the gate pays the longest rather than the
+    # sum. `just lane` is what runs them: it carries prepush's own invariant
+    # — that the gate regenerated nothing — into each lane, so splitting the
+    # run does not drop it. The rules stay in the justfile (D84); this file
+    # only says which lane on which runner.
+    strategy:
+      fail-fast: false
+      matrix:
+        lane: [lint, guardrails, test]
+    runs-on: ubuntu-latest
+    steps:
+      # check_commit_style.py resolves origin/main and refuses to pass blind on
+      # a shallow clone, so the full history is the gate's precondition.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      # The image ships just, codespell, uv, cargo-deny, cargo-machete and
+      # cargo-nextest, so taiki-e/install-action and the pipx/uv bootstrap the
+      # GitHub file carries are both gone. `rustup show` stays: it prints — and
+      # installs — whatever rust-toolchain.toml pins, which is the one thing
+      # the image can go stale on.
+      - run: rustup show
+      # The runner's cache server is on, so rust-cache works here as it does on
+      # GitHub: one key per lane, shared with postmerge, which is what puts a
+      # warm cache on main for a branch's first push to inherit.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ${{ matrix.lane }}
+          cache-on-failure: true
+      - run: just lane ${{ matrix.lane }}
+
+  # The title is judged by the same rule the subjects are, and only CI can see
+  # it: it exists nowhere in the tree the local hook scans. Forgejo populates
+  # github.event.pull_request.title on the pull_request event, so the job ports
+  # unchanged. Its own job, so the three gate lanes do not each re-run a
+  # one-second python script.
+  title:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+        run: python3 scripts/guardrails/check_commit_style.py
+
+  size-report:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: post the measured LOC map and growth verdict
+        env:
+          FORGEJO_API_URL: ${{ github.api_url }}
+          FORGEJO_REPOSITORY: ${{ github.repository }}
+          FORGEJO_PR: ${{ github.event.pull_request.number }}
+          FORGEJO_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin main
+          python3 scripts/pr_body.py > body.md
+          # The narrative is the author's; only the counted sections are
+          # machine-truth, so the comment carries those and says so. The first
+          # line is also the marker the upsert keys on, so it must not vary.
+          {
+            echo "Measured against \`origin/main\` by \`just pr-body\` — the sections below are counted, not written."
+            echo
+            sed -n '/^## Files edited/,$p' body.md | sed -n '/^## Architecture notes/q;p'
+          } > comment.md
+          # There is no `gh` here: the script does the same edit-in-place over
+          # the Forgejo API. One comment per PR — a fresh one per push turns the
+          # thread into a changelog nobody reads.
+          python3 scripts/forgejo_pr_comment.py comment.md

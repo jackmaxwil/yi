@@ -1,0 +1,34 @@
+# The T2 lane's away game: the suite under the profile that ships, with panic
+# forced back to unwind, which nothing else covers because the shipping profile
+# aborts. Too slow to block a PR, so it runs after the merge.
+#
+# No macOS arm: the estate has no macOS runner, and `just prepush` is where the
+# platform Yi is developed on gets covered.
+name: postmerge
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  # One arm left, so the matrix (and its fail-fast: false) went with the macOS
+  # row it existed for.
+  postmerge:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - run: rustup show
+      # `test` is the PR gate's heaviest lane and the one whose profile this
+      # job also builds, so a cache saved here — on refs/heads/main, the one
+      # scope every pull request can read — is what makes a branch's first
+      # push warm rather than cold.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: test
+          cache-on-failure: true
+      # The image carries just and the uv the kernel journey boots, so the
+      # install steps the GitHub file needs are both gone.
+      - run: just postmerge
+      - run: just postmerge-evals
