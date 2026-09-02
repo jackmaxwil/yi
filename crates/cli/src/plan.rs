@@ -4,7 +4,8 @@ use std::path::PathBuf;
 use yi_runtime::plan::ledger::{self, Report};
 use yi_runtime::plan::ops::dispatch_width;
 use yi_runtime::plan::store::PlanStore;
-use yi_types::plan::doc::{Plan, PlanState};
+use yi_types::plan::doc::{Plan, PlanId, PlanState};
+use yi_types::plan::ledger::PlanOpRecord;
 
 pub struct Options {
     pub cwd: PathBuf,
@@ -48,7 +49,7 @@ fn with_plan(options: &Options, id: Option<&str>, run: impl FnOnce(&Plan) -> i32
         }
     };
     let chosen = match id {
-        Some(name) => yi_types::plan::doc::PlanId::new(name).ok(),
+        Some(name) => PlanId::new(name).ok(),
         None => store.roots().ok().and_then(|roots| {
             roots.into_iter().find(|id| {
                 store
@@ -106,11 +107,7 @@ fn lint(plan: &Plan, options: &Options) -> i32 {
 }
 
 fn report(plan: &Plan, options: &Options) -> i32 {
-    let records = match latest_session(options) {
-        Some(session) => ledger::records(&session),
-        None => Vec::new(),
-    };
-    let measured = ledger::report(plan, &records);
+    let measured = ledger::report(plan, &plan_records(options, &plan.id));
     if options.json {
         println!("{}", as_json(plan, &measured));
         return 0;
@@ -168,18 +165,95 @@ fn as_json(plan: &Plan, measured: &Report) -> serde_json::Value {
     })
 }
 
-/// The op stream lives on the session that wrote it, so a report with no
-/// session named reads the most recent one for this workspace.
-fn latest_session(options: &Options) -> Option<yi_runtime::session_store::SharedSession> {
+/// Incident: reading the workspace's newest session measured the one the report
+/// was asked from, not the one the plan ran under. The owner is whichever
+/// session wrote a record for this plan, newest first.
+fn plan_records(options: &Options, plan: &PlanId) -> Vec<PlanOpRecord> {
     let mut repo = yi_runtime::session_store::JsonlRepo::new(
         options.session_dir.clone(),
         options.cwd.to_string_lossy().into_owned(),
     );
-    let listed = yi_runtime::session_store::SessionRepo::list(&mut repo).ok()?;
-    let newest = listed
-        .iter()
-        .max_by_key(|metadata| metadata.created_at)?
-        .id
-        .clone();
-    yi_runtime::session_store::SessionRepo::open(&mut repo, &newest).ok()
+    let Ok(mut listed) = yi_runtime::session_store::SessionRepo::list(&mut repo) else {
+        return Vec::new();
+    };
+    listed.sort_by_key(|metadata| std::cmp::Reverse(metadata.created_at));
+    for metadata in &listed {
+        let Ok(session) = yi_runtime::session_store::SessionRepo::open(&mut repo, &metadata.id)
+        else {
+            continue;
+        };
+        let records = ledger::records(&session);
+        if records.iter().any(|record| record.plan == *plan) {
+            return records;
+        }
+    }
+    Vec::new()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use yi_runtime::session_store::{CreateOptions, JsonlRepo, SessionRepo, lock_session};
+    use yi_types::plan::doc::TodoLabel;
+    use yi_types::plan::ledger::PLAN_OP_ENTRY_TYPE;
+
+    type TestResult = Result<(), Box<dyn std::error::Error>>;
+
+    fn op(plan: &PlanId) -> PlanOpRecord {
+        PlanOpRecord {
+            plan: plan.clone(),
+            op: "init".to_owned(),
+            actor: "host".to_owned(),
+            at: 1,
+            todo: TodoLabel::new("Cut the seam").ok(),
+            from: None,
+            to: None,
+            todos: 1,
+            extra: serde_json::Map::new(),
+        }
+    }
+
+    #[test]
+    fn a_report_reads_the_session_that_ran_the_plan() -> TestResult {
+        let root = std::env::temp_dir().join(format!("yi-plan-report-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let sessions = root.join("sessions");
+        let cwd = root.join("project");
+        std::fs::create_dir_all(&sessions)?;
+        std::fs::create_dir_all(&cwd)?;
+        let plan = PlanId::new("ship-the-widget")?;
+        let mut repo = JsonlRepo::new(sessions.clone(), cwd.to_string_lossy().into_owned());
+        let owner = repo.create(CreateOptions {
+            id: Some("owner".to_owned()),
+            parent_session_id: None,
+            metadata: None,
+        })?;
+        lock_session(&owner).append_custom(
+            "main",
+            PLAN_OP_ENTRY_TYPE,
+            Some(serde_json::to_value(op(&plan))?),
+        )?;
+        // The newest session is the one this report is being asked from, and it
+        // is a different millisecond, not a different ordering rule.
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        repo.create(CreateOptions {
+            id: Some("asking".to_owned()),
+            parent_session_id: None,
+            metadata: None,
+        })?;
+        let options = Options {
+            cwd,
+            plans_dir: None,
+            session_dir: sessions,
+            json: true,
+        };
+        let records = plan_records(&options, &plan);
+        assert_eq!(
+            records.len(),
+            1,
+            "the plan's own session carries its op stream, whatever ran last"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+        Ok(())
+    }
 }

@@ -47,7 +47,19 @@ impl FetchLog {
                 Some(payload),
             );
         }
-        self.lock().records.push((base_of(url), record));
+        let key = base_of(url);
+        let mut state = self.lock();
+        match state.records.iter().position(|(base, _)| *base == key) {
+            // Invariant: one row per address, so a daemon re-reading a file for
+            // a week logs the latest hash rather than a week of rows; every
+            // reader here is a membership test or a set already.
+            Some(at) => {
+                if let Some(row) = state.records.get_mut(at) {
+                    row.1 = record;
+                }
+            }
+            None => state.records.push((key, record)),
+        }
     }
 
     pub fn records(&self) -> Vec<FetchRecord> {
@@ -221,6 +233,24 @@ mod tests {
         assert_eq!(measured.referenced, 1);
         assert_eq!(measured.unused, vec![handed.to_string()]);
         assert_eq!(measured.unsupplied, vec![found.to_string()]);
+        Ok(())
+    }
+
+    #[test]
+    fn re_reading_one_address_leaves_one_row() -> TestResult {
+        let log = FetchLog::new();
+        let url: Url = "local://src/auth.rs".parse()?;
+        for _ in 0..64 {
+            log.record(&url, record_for(&url));
+        }
+        let with_fragment: Url = "local://src/auth.rs#L1-2@9F3E".parse()?;
+        log.record(&with_fragment, record_for(&with_fragment));
+        assert_eq!(
+            log.records().len(),
+            1,
+            "one address is one row however often it is read"
+        );
+        assert!(log.backs(&url), "the row still backs its citation");
         Ok(())
     }
 

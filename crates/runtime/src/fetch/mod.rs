@@ -478,11 +478,19 @@ mod tests {
             resolver.fetch(&path_walled),
             Err(FetchError::Denied { .. })
         ));
-        let url_walled: Url = "plan://forbidden-plan".parse()?;
-        assert!(matches!(
-            resolver.fetch(&url_walled),
-            Err(FetchError::Denied { .. })
-        ));
+        for walled in ["plan://forbidden", "plan://forbidden/a-todo"] {
+            let url: Url = walled.parse()?;
+            assert!(
+                matches!(resolver.fetch(&url), Err(FetchError::Denied { .. })),
+                "{walled} is the denied address or under it"
+            );
+        }
+        let neighbour: Url = "plan://forbidden-plan".parse()?;
+        let error = resolver.fetch(&neighbour).err().ok_or("no such plan")?;
+        assert!(
+            !matches!(error, FetchError::Denied { .. }),
+            "a deny prefix must end at an address boundary: {error}"
+        );
         Ok(())
     }
 
