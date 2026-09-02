@@ -149,7 +149,8 @@ impl App {
             .unwrap_or_default()
             .to_owned();
         let first = self.live_cut == 0;
-        let rendered = crate::transcript::paint_slice(self, &slice);
+        let (rendered, lang) = crate::transcript::paint_slice(self, &slice);
+        self.live_lang = lang;
         if !rendered.is_empty() {
             if (spaced || first) && self.live_reopen.is_none() {
                 self.pending_commit.push(Line::default());

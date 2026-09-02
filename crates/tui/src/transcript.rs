@@ -114,14 +114,23 @@ pub(crate) fn intent_of(args: &Value) -> Option<String> {
 
 /// A slice starting inside a fence renders under it reopened; the rail header
 /// stays with the slice that opened the block, one block not one per line.
-pub(crate) fn paint_slice(app: &crate::app::App, slice: &str) -> Vec<ratatui::text::Line<'static>> {
+pub(crate) fn paint_slice(
+    app: &crate::app::App,
+    slice: &str,
+) -> (
+    Vec<ratatui::text::Line<'static>>,
+    Option<crate::highlight::Lang>,
+) {
     let width = app
         .content_width()
         .saturating_sub(crate::cell::GUTTER.len());
-    match app.live_reopen.as_ref().filter(|_| !slice.is_empty()) {
-        Some(open) => {
-            crate::markdown::render_continuation(&format!("{open}\n{slice}"), width, &app.theme)
-        }
-        None => crate::markdown::render(slice, width, &app.theme),
-    }
+    let reopen = app.live_reopen.as_ref().filter(|_| !slice.is_empty());
+    let source = match reopen {
+        Some(open) => format!("{open}\n{slice}"),
+        None => slice.to_owned(),
+    };
+    let mut lang = app.live_lang.clone();
+    let lines =
+        crate::markdown::render_stream(&source, width, &app.theme, reopen.is_some(), &mut lang);
+    (lines, lang)
 }

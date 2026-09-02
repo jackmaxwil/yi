@@ -93,12 +93,18 @@ fn console_creates_prompts_detaches_and_replays() -> TestResult {
              quit\n",
         )?;
         // Run 2: a fresh console reattaches and replays the stored branch.
+        // The wait is for the sidebar's empty placeholder to go, not for the
+        // stored-session dot: `·` is also the pane's own "· no session" title,
+        // which is on screen from the first draw. On a loaded runner that draw
+        // lands before the session list does, so a `·` wait passed instantly
+        // and `enter` resumed nothing — the whole run then sat out both later
+        // waits (15 s + 8 s = the 23 s this failed in on CI).
         run_console(
             &dir,
             &socket,
             &root,
             "wait-frame 8000 ● connected\n\
-             wait-frame 8000 ·\n\
+             wait-frame 8000 !no sessions yet\n\
              key enter\n\
              wait-frame 15000 faux:\n\
              wait-frame 8000 hello daemon\n\
