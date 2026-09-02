@@ -1108,6 +1108,30 @@ fn tree_scrolls_around_the_selection_with_a_scrollbar() -> TestResult {
 }
 
 #[test]
+fn a_query_that_hides_the_selection_moves_it_to_a_visible_row() -> TestResult {
+    let entries = vec![
+        entry("u1", None, 1, "alpha ask"),
+        assistant_entry("a1", Some("u1"), 2, "alpha answer"),
+        entry("u2", Some("a1"), 3, "beta ask"),
+    ];
+    let mut view = TreeView::new(&entries, Some("u2"), TreeFilter::Default);
+    for c in "alpha".chars() {
+        view.handle_key(&yi_tui::keymap::SingleKey {
+            code: yi_tui::keymap::KeyCodeValue::Char(c),
+            ctrl: false,
+            alt: false,
+            shift: false,
+        });
+    }
+    let enter = yi_tui::keymap::SingleKey::parse("enter")?;
+    match view.handle_key(&enter) {
+        TreeResult::Rewind(id) => assert_ne!(id, "u2", "enter acted on a row the query had hidden"),
+        _ => return Err("enter must rewind".into()),
+    }
+    Ok(())
+}
+
+#[test]
 fn alt_arrows_step_whole_turns() -> TestResult {
     let entries = vec![
         entry("u1", None, 1, "first ask"),

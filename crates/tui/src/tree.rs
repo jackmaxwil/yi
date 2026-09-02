@@ -359,15 +359,34 @@ impl TreeView {
             },
             KeyCodeValue::Backspace => {
                 self.query.pop();
+                self.reselect();
                 TreeResult::Open
             }
             KeyCodeValue::Char(c) if !key.ctrl && !key.alt => {
                 self.query.push(c);
+                self.reselect();
                 TreeResult::Open
             }
             _ => TreeResult::Open,
         }
     }
+
+    fn reselect(&mut self) {
+        self.selected = first_if_hidden(self.visible().iter().map(|(i, _)| *i), self.selected);
+    }
+}
+
+/// Incident: a query that hid the selected row painted the first visible row
+/// as selected while Enter still acted on the hidden one.
+pub(crate) fn first_if_hidden(mut visible: impl Iterator<Item = usize>, selected: usize) -> usize {
+    let mut first = None;
+    for index in visible.by_ref() {
+        if index == selected {
+            return selected;
+        }
+        first.get_or_insert(index);
+    }
+    first.unwrap_or(selected)
 }
 
 pub(crate) fn paint(style: Style, background: Option<ratatui::style::Color>) -> Style {
