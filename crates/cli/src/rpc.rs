@@ -199,7 +199,10 @@ impl RpcState {
                                 Err(error) => Err(format!("goal.update task failed: {error}")),
                             }
                         }
-                        "objective" => service.set_objective(text_arg("objective")),
+                        "objective" => service.set_objective(
+                            text_arg("objective"),
+                            payload.get("citation").and_then(Value::as_str),
+                        ),
                         other => Err(format!(
                             "unknown goal action {other}; use get|create|update|objective"
                         )),
@@ -213,40 +216,19 @@ impl RpcState {
             },
             "plan" => match self.session.plan_service() {
                 Some(service) => {
-                    let outcome =
-                        match text_arg("action") {
-                            "get" => service.get(),
-                            "create" => service
-                                .create(payload.get("tasks").unwrap_or(&serde_json::Value::Null)),
-                            "update" => {
-                                let service = std::sync::Arc::clone(&service);
-                                let task_id = text_arg("taskId").to_owned();
-                                let state = text_arg("state").to_owned();
-                                let evidence = payload.get("evidence").cloned();
-                                let reason = payload
-                                    .get("reason")
-                                    .and_then(Value::as_str)
-                                    .map(str::to_owned);
-                                match tokio::task::spawn_blocking(move || {
-                                    service.update(
-                                        &task_id,
-                                        &state,
-                                        evidence.as_ref(),
-                                        reason.as_deref(),
-                                    )
-                                })
-                                .await
-                                {
-                                    Ok(outcome) => outcome,
-                                    Err(error) => Err(format!("plan.update task failed: {error}")),
-                                }
+                    // Mutation lives in the model's plan tool; rpc is a view.
+                    let outcome = match text_arg("action") {
+                        "get" => {
+                            let service = std::sync::Arc::clone(&service);
+                            match tokio::task::spawn_blocking(move || service.get()).await {
+                                Ok(outcome) => outcome,
+                                Err(error) => Err(format!("plan.get task failed: {error}")),
                             }
-                            "edit" => service
-                                .edit(text_arg("editAction"), &Value::Object(payload.clone())),
-                            other => Err(format!(
-                                "unknown plan action {other}; use get|create|update|edit"
-                            )),
-                        };
+                        }
+                        other => Err(format!(
+                            "unknown plan action {other}; the rpc plan surface is read-only — use get"
+                        )),
+                    };
                     match outcome {
                         Ok(plan) => data_frame(id, "plan", json!({"plan": plan})),
                         Err(error) => error_frame(id, "plan", &error),

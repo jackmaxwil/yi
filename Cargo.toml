@@ -64,6 +64,7 @@ unicode-width = { version = "0.2", default-features = false }
 miniz_oxide = { version = "0.9", default-features = false, features = ["with-alloc"] }
 vt100 = "0.15"
 insta = { version = "1", default-features = false }
+proptest = { version = "1", default-features = false, features = ["std"] }
 rmcp = { version = "3", default-features = false, features = ["server", "transport-io", "macros"] }
 
 [workspace.lints.rustdoc]

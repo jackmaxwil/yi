@@ -62,10 +62,10 @@ pub fn retain_floor(summarized: &[AgentMessage], budget: Tokens) -> Vec<AgentMes
                 AgentMessage::User { timestamp, .. } => *timestamp,
                 _ => 0,
             };
-            survivors_reversed.push(AgentMessage::User {
-                content: UserContent::Text(truncated),
+            survivors_reversed.push(AgentMessage::host_user(
+                UserContent::Text(truncated),
                 timestamp,
-            });
+            ));
             remaining = Tokens(0);
         }
     }

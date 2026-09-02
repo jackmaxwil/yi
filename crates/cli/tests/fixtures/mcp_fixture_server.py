@@ -2,7 +2,8 @@
 """Deterministic stdio MCP server for yi mcp e2e tests.
 
 Speaks newline-delimited JSON-RPC 2.0: initialize, tools/list, tools/call
-(echo + add), resources/list, prompts/list, ping. Exits on stdin EOF.
+(echo + add), resources/list, resources/read, prompts/list, ping.
+Exits on stdin EOF.
 """
 import json
 import sys
@@ -50,7 +51,10 @@ def result_for(method, params):
             return {"content": [{"type": "text", "text": str(total)}], "isError": False}
         return {"content": [{"type": "text", "text": f"no such tool {name}"}], "isError": True}
     if method == "resources/list":
-        return {"resources": []}
+        return {"resources": [{"uri": "note://alpha", "name": "alpha"}]}
+    if method == "resources/read":
+        uri = params.get("uri", "")
+        return {"contents": [{"uri": uri, "mimeType": "text/plain", "text": "alpha"}]}
     if method == "prompts/list":
         return {"prompts": []}
     if method == "ping":

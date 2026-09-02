@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import sys
 import types
 from dataclasses import dataclass
@@ -223,6 +224,8 @@ async def run(prompt: str, **kwargs: Any) -> RLMSpawnHandle:
     ``merge_worktree`` or ``discard_worktree``.
     ``deny_write`` (and ``deny_read``) are lists of paths the child may not touch —
     the wall that keeps an implementer out of the standard it is measured against.
+    ``deny_url`` is the same wall in URL space: a list of literal prefixes the
+    child's ``fetch`` refuses, so ``["kernel://"]`` walls a whole scheme.
     ``context_keys`` is the child's whole view of this kernel: those variables are
     serialized into its brief and nothing else of this namespace reaches it.
     ``check`` makes it a protocol child — it owes a ``{"value": …, "discoveries":
@@ -390,6 +393,180 @@ async def discard_worktree(target: "str | RLMSubagent") -> dict[str, Any]:
     return await host_request("rlm.discard_worktree", {"target": _worktree_target(target)})
 
 
+_KERNEL_SCHEME = "kernel://"
+_OWNER_AGENT = "main"
+
+
+def _kernel_local_name(url: str) -> str | None:
+    """The variable this URL names in this kernel's own namespace, or None.
+
+    Only the plan owner's kernel resolves locally: a child kernel (its session
+    dir is a ``sub-`` directory) forwards every ``kernel://`` URL to the host,
+    because an elided owner means the plan owner's namespace, not its own.
+    """
+    if not url.startswith(_KERNEL_SCHEME):
+        return None
+    session_dir = os.environ.get("RLM_SESSION_DIR", "")
+    basename = os.path.basename(os.path.normpath(session_dir)) if session_dir else ""
+    if basename.startswith("sub-"):
+        return None
+    rest = url[len(_KERNEL_SCHEME):]
+    owner, slash, variable = rest.partition("/")
+    if not slash:
+        owner, variable = _OWNER_AGENT, owner
+    if owner != _OWNER_AGENT or not variable.isidentifier():
+        return None
+    return variable
+
+
+async def fetch(url: str) -> Any:
+    """Read one addressable URL; a URL names a noun, so a fetch never writes.
+
+    ``kernel://<var>`` and ``kernel://main/<var>`` in the plan owner's kernel
+    read this namespace directly and return the live object, with no host
+    round trip. Every other URL — ``local://``, ``plan://``, ``history://``,
+    ``checkpoint://``, ``mcp://``, another agent's ``kernel://`` — is resolved
+    by the host and returns text. Batch reads with ``asyncio.gather``.
+    """
+    if not isinstance(url, str) or not url:
+        raise TypeError("url must be a non-empty str")
+    name = _kernel_local_name(url)
+    if name is not None:
+        shell = get_ipython() if get_ipython is not None else None
+        if shell is None:
+            raise RuntimeError(f"{url} reads this kernel's namespace, but no IPython shell is active")
+        namespace = shell.user_ns
+        if name not in namespace:
+            raise KeyError(f"{url} names {name!r}, which is not bound in this kernel")
+        return namespace[name]
+    reply = await host_request("fetch", {"url": url})
+    text = reply.get("text")
+    if not isinstance(text, str):
+        raise RuntimeError(f"fetch of {url} returned no text")
+    return text
+
+
+class BashHandle:
+    """One backgrounded shell command; this handle owns the host-side job.
+
+    ``await h`` waits for exit and returns the final report (``command``,
+    ``output``, ``exit_code``, ``killed``); ``await h.kill()`` stops the job
+    first and returns the same report. Both release the host-side job, so a
+    handle needs no manual cleanup. ``await h`` has no deadline of its own —
+    it polls in short host round trips, so wrap ``h.wait()`` in
+    ``asyncio.wait_for`` (or ``asyncio.timeout``) when one is needed.
+    """
+
+    def __init__(self, command: str) -> None:
+        if not isinstance(command, str) or not command.strip():
+            raise ValueError("command must be a non-empty str")
+        self._command = command
+        self._cursor = 0
+        self._report: dict[str, Any] | None = None
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            self._spawn: asyncio.Future[dict[str, Any]] | None = None
+        else:
+            self._spawn = loop.create_task(host_request("exec.spawn", {"command": command}))
+
+    async def _id(self) -> int:
+        if self._spawn is None:
+            self._spawn = asyncio.get_running_loop().create_task(
+                host_request("exec.spawn", {"command": self._command})
+            )
+        reply = await asyncio.shield(self._spawn)
+        job = reply.get("job_id")
+        if not isinstance(job, int):
+            raise RuntimeError("exec.spawn returned an invalid job_id")
+        return job
+
+    async def tail(self) -> str:
+        """New output since the last ``tail``; a released job's output lives on its report."""
+        if self._report is not None:
+            return ""
+        chunk = await host_request("exec.tail", {"job_id": await self._id(), "cursor": self._cursor})
+        next_cursor = chunk.get("next")
+        if isinstance(next_cursor, int):
+            self._cursor = next_cursor
+        text = chunk.get("text")
+        text = text if isinstance(text, str) else ""
+        dropped = chunk.get("dropped")
+        if isinstance(dropped, int) and dropped > 0:
+            return f"[... {dropped} bytes trimmed from the front ...]\n{text}"
+        return text
+
+    async def poll(self) -> dict[str, Any]:
+        """A snapshot — ``running``, ``exit_code``, ``killed`` — that never waits."""
+        if self._report is not None:
+            return {
+                "running": False,
+                "exit_code": self._report.get("exit_code"),
+                "killed": self._report.get("killed", False),
+            }
+        return await host_request("exec.poll", {"job_id": await self._id()})
+
+    async def kill(self) -> dict[str, Any]:
+        """Stop the job if it still runs, release it, and return the final report."""
+        if self._report is None:
+            await host_request("exec.kill", {"job_id": await self._id()})
+        return await self.wait(poll=0.05)
+
+    async def wait(self, poll: float = 0.5) -> dict[str, Any]:
+        """Wait for exit, release the host-side job, and return the final report."""
+        while self._report is None:
+            status = await self.poll()
+            if self._report is not None:
+                break
+            if not status.get("running"):
+                self._report = await host_request("exec.release", {"job_id": await self._id()})
+                break
+            await asyncio.sleep(poll)
+        return self._report
+
+    def __await__(self):
+        return self.wait().__await__()
+
+    def __repr__(self) -> str:
+        if self._report is None:
+            return f"BashHandle(command={self._command!r}, live)"
+        return (
+            f"BashHandle(command={self._command!r}, released, "
+            f"exit_code={self._report.get('exit_code')!r}, killed={self._report.get('killed')!r})"
+        )
+
+    def __del__(self) -> None:
+        if self._report is not None or self._spawn is None:
+            return
+        spawn = self._spawn
+
+        async def _reap() -> None:
+            try:
+                job = (await asyncio.shield(spawn)).get("job_id")
+                if isinstance(job, int):
+                    await host_request("exec.kill", {"job_id": job})
+                    await host_request("exec.release", {"job_id": job})
+            except Exception:
+                pass
+
+        try:
+            asyncio.get_running_loop().create_task(_reap())
+        except RuntimeError:
+            pass
+
+
+def bash(command: str) -> BashHandle:
+    """Start a shell command host-side and return its handle without waiting.
+
+    The latency-hiding tool of first resort: ``h = bash("cargo build")``
+    overlaps the build with everything else this cell does, then ``await
+    h.tail()`` peeks, ``await h.poll()`` checks, ``await h.kill()`` stops,
+    and ``await h`` collects. The job runs on the host under its broker —
+    never as a kernel-side child process.
+    """
+    return BashHandle(command)
+
+
 class _HarnessProxy:
     """Resolve the harness state against the current environment on every access.
 
@@ -448,6 +625,12 @@ class _RLMCallable:
     async def run(self, prompt: str, **kwargs: Any) -> RLMSpawnHandle:
         return await run(prompt, **kwargs)
 
+    async def fetch(self, url: str) -> Any:
+        return await fetch(url)
+
+    def bash(self, command: str) -> BashHandle:
+        return bash(command)
+
     async def find_models(self, query: str = "", limit: int = 8) -> list[RLMModel]:
         return await find_models(query, limit)
 
@@ -499,6 +682,7 @@ class _CallableModule(types.ModuleType):
 sys.modules[__name__].__class__ = _CallableModule
 
 __all__ = [
+    "BashHandle",
     "HarnessEntry",
     "HarnessScope",
     "HarnessState",
@@ -509,8 +693,10 @@ __all__ = [
     "RLMSpawnHandle",
     "RLMSubagent",
     "RefinementEvent",
+    "bash",
     "delete_subagent",
     "discard_worktree",
+    "fetch",
     "find_models",
     "get_harness_state",
     "followup",
