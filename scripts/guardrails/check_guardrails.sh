@@ -42,6 +42,10 @@ run "$PY" scripts/pr_body.py --selfcheck
 # The size-report comment is upserted by marker, and a marker that stops matching
 # posts a duplicate rather than failing; only this flag exercises the routing.
 run "$PY" scripts/forgejo_pr_comment.py --selfcheck
+# Milestone dates are written from this script's arithmetic, and a rate that
+# divides wrong writes a plausible date nobody can catch by eye; only this flag
+# exercises the window, the weighting and the PATCH routing.
+run "$PY" scripts/forge_tracking.py --selfcheck
 # Prose is not exempt: 1,485 comment lines are under ratchet, and the design docs
 # are the reference. Config and the domain-word allowlist live in .codespellrc.
 if command -v codespell >/dev/null; then run codespell; else echo "FAIL codespell (uv tool install codespell)"; FAILED=$((FAILED+1)); fi
