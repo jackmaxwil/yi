@@ -107,10 +107,27 @@ fn env_path(name: &str) -> Option<PathBuf> {
         .map(PathBuf::from)
 }
 
+/// Incident: one `~/.yi/kernel-venv` served every commit, so two sessions
+/// whose ready checks differed rebuilt it back and forth; the check the venv
+/// has to satisfy names the directory instead.
+fn venv_name(check: &str) -> String {
+    let digest = Sha256::digest(check.as_bytes());
+    let slot: String = digest
+        .iter()
+        .take(4)
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    format!("kernel-venv-{slot}")
+}
+
+fn default_kernel_venv_dir(home: &Path, check: &str) -> PathBuf {
+    home.join(".yi").join(venv_name(check))
+}
+
 pub fn kernel_venv_dir(home: &Path) -> PathBuf {
     match env_path("YI_KERNEL_VENV") {
         Some(dir) => dir,
-        None => home.join(".yi").join("kernel-venv"),
+        None => default_kernel_venv_dir(home, RUNTIME_READY_CHECK),
     }
 }
 
@@ -119,7 +136,7 @@ fn xdg_kernel_venv_dir(home: &Path) -> PathBuf {
         Some(dir) => dir,
         None => home.join(".local").join("share"),
     };
-    data_home.join("yi").join("kernel-venv")
+    data_home.join("yi").join(venv_name(RUNTIME_READY_CHECK))
 }
 
 fn resolve_writable_venv_dir(home: &Path) -> Result<PathBuf, String> {
@@ -599,6 +616,20 @@ mod tests {
             "a pre-dill venv must rebuild once"
         );
         assert!(!bootstrap_version_current(None, "sha256:abc"));
+    }
+
+    #[test]
+    fn the_default_venv_is_keyed_by_the_ready_check() {
+        let home = Path::new("/nonexistent/home");
+        assert_ne!(
+            default_kernel_venv_dir(home, "check-a"),
+            default_kernel_venv_dir(home, "check-b"),
+            "two commits whose ready check differs must not share one venv"
+        );
+        assert_eq!(
+            default_kernel_venv_dir(home, RUNTIME_READY_CHECK),
+            home.join(".yi").join(venv_name(RUNTIME_READY_CHECK))
+        );
     }
 
     #[test]
