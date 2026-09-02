@@ -27,3 +27,11 @@ jobs:
           FORGEJO_REPOSITORY: ${{ github.repository }}
           FORGEJO_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: python3 scripts/forge_tracking.py --measure
+      # After the re-measure, so the derivation it compares against is the one
+      # just written; a red here is an issue or a date no one can fix by rerunning.
+      - name: fail on an issue or a date the design does not allow
+        env:
+          FORGEJO_API_URL: ${{ github.api_url }}
+          FORGEJO_REPOSITORY: ${{ github.repository }}
+          FORGEJO_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python3 scripts/forge_tracking.py --hygiene
