@@ -378,15 +378,13 @@ impl TreeView {
 
 /// Incident: a query that hid the selected row painted the first visible row
 /// as selected while Enter still acted on the hidden one.
-pub(crate) fn first_if_hidden(mut visible: impl Iterator<Item = usize>, selected: usize) -> usize {
-    let mut first = None;
-    for index in visible.by_ref() {
-        if index == selected {
-            return selected;
-        }
-        first.get_or_insert(index);
+pub(crate) fn first_if_hidden(visible: impl Iterator<Item = usize>, selected: usize) -> usize {
+    let visible: Vec<usize> = visible.collect();
+    if visible.contains(&selected) {
+        selected
+    } else {
+        visible.first().copied().unwrap_or(selected)
     }
-    first.unwrap_or(selected)
 }
 
 pub(crate) fn paint(style: Style, background: Option<ratatui::style::Color>) -> Style {
