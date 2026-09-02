@@ -63,9 +63,8 @@ impl Sandbox {
 
     pub fn kernel_policy(&self) -> String {
         format!(
-            "{}\n; Jupyter ZMQ is loopback TCP. Remote IPs stay denied.\n\
-             (allow system-socket)\n\
-             (allow network-outbound (remote ip \"localhost:*\"))\n\
+            "{}\n; Jupyter ZMQ: the kernel binds loopback and the host connects to it.\n\
+             ; No outbound rule, so a cell reaches no local service either.\n\
              (allow network-inbound (local ip \"localhost:*\"))\n\
              (allow network-bind (local ip \"localhost:*\"))\n",
             self.policy()
