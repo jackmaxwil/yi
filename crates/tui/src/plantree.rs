@@ -9,7 +9,9 @@ use crate::app::App;
 use crate::cell::Cell;
 use crate::colors::{Theme, name_accent};
 use crate::keymap::{KeyCodeValue, SingleKey};
-use crate::tree::{PAGE, bottom_border, divider, gutter_prefix, row, top_border, window_lines};
+use crate::tree::{
+    PAGE, bottom_border, divider, first_if_hidden, gutter_prefix, row, top_border, window_lines,
+};
 
 const LEGEND: &str = "↑↓ move · type to filter · esc close";
 
@@ -323,12 +325,7 @@ impl PlanTreeView {
     /// Invariant: the selection is an index into every row, so a filter that
     /// hides it must move it or the cursor renders nowhere.
     fn reselect(&mut self) {
-        let visible = self.visible();
-        if visible.iter().all(|(index, _)| *index != self.selected)
-            && let Some((index, _)) = visible.first()
-        {
-            self.selected = *index;
-        }
+        self.selected = first_if_hidden(self.visible().iter().map(|(i, _)| *i), self.selected);
     }
 }
 
