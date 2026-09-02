@@ -125,8 +125,7 @@ fn terminal(state: &TodoStateName) -> bool {
     }
 }
 
-/// The critical path over `after` edges, memoized with an explicit stack.
-/// Incident: a hand-edited cycle is never refused by the parser, and the walk
+/// Incident: a hand-edited cycle is never refused by the parser, and this walk
 /// re-pushed it forever; an edge back into the open walk now counts as zero.
 fn critical_path(plan: &Plan, spans: &HashMap<String, u64>) -> u64 {
     let mut best: HashMap<&str, u64> = HashMap::new();
