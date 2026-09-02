@@ -24,7 +24,7 @@ use crate::orb;
 use crate::popup::ListPopup;
 use crate::term;
 use crate::transcript::{arg_summary, intent_of, preview_lines, text_of, thinking_of, user_text};
-use crate::tree::{TreeFilter, TreeView};
+use crate::tree::TreeView;
 use yi_orb::OrbState;
 
 pub struct AskRequest {
@@ -117,6 +117,9 @@ pub struct App {
     /// Fence-open line active at `live_cut`: any slice rendered from there
     /// reopens the fence so its rows still render as code.
     pub(crate) live_reopen: Option<String>,
+    /// Syntax parse state at `live_cut`: a string or comment that spans the cut
+    /// keeps one colour instead of being re-lexed from the reopened fence.
+    pub(crate) live_lang: Option<crate::highlight::Lang>,
     pub(crate) live_thought: String,
     pub(crate) live_cut: usize,
     /// The byte of `live_thought` already committed to scrollback, the mirror of
@@ -205,6 +208,7 @@ impl App {
             reflow: crate::reflow::ReflowState::default(),
             live_markdown: String::new(),
             live_reopen: None,
+            live_lang: None,
             live_thought: String::new(),
             live_cut: 0,
             live_thought_cut: 0,
@@ -426,6 +430,7 @@ impl App {
         self.pending_commit.clear();
         self.live_markdown.clear();
         self.live_reopen = None;
+        self.live_lang = None;
         self.live_thought.clear();
         self.live_cut = 0;
         self.live_thought_cut = 0;
@@ -624,7 +629,7 @@ impl App {
                 if !text.is_empty() {
                     let remainder = text.get(self.live_cut..).unwrap_or_default().to_owned();
                     let first = self.live_cut == 0;
-                    let rendered = crate::transcript::paint_slice(self, &remainder);
+                    let rendered = crate::transcript::paint_slice(self, &remainder).0;
                     if !rendered.is_empty() {
                         if self.live_reopen.is_none() {
                             self.pending_commit.push(Line::default());
@@ -644,6 +649,7 @@ impl App {
                 self.live_thought.clear();
                 self.live_cut = 0;
                 self.live_reopen = None;
+                self.live_lang = None;
                 self.live_thought_cut = 0;
                 if *stop_reason == StopReason::Error {
                     let text = error_message
@@ -1020,7 +1026,7 @@ pub fn run_tui(
             last_spinner_phase = phase;
             app.scheduler.request();
         }
-        process_pending_tree(&mut app, &session);
+        crate::rewind::process_pending_tree(&mut app, &session);
         crate::rewind::process_pending_rewind(&mut app, &mut terminal, &session, &cmd_tx);
         crate::rewind::process_pending_new(&mut app, &mut terminal, &session);
         crate::rewind::process_pending_undo(&mut app, &session);
@@ -1043,17 +1049,6 @@ pub fn run_tui(
     drop(guard);
     let _ = runtime_thread.join();
     app.exit_code
-}
-
-pub(crate) fn process_pending_tree(app: &mut App, session: &Arc<AgentSession>) {
-    if app.pending_open_tree {
-        app.pending_open_tree = false;
-        open_tree(app, session);
-    }
-    if app.pending_open_plan_tree {
-        app.pending_open_plan_tree = false;
-        crate::plantree::open_plan_tree(app, session);
-    }
 }
 
 pub(crate) fn sync_roster(
@@ -1121,22 +1116,6 @@ pub(crate) fn entries_of(session: &AgentSession) -> (Vec<Entry>, Option<String>)
         .unwrap_or_default();
     let leaf = locked.leaf_id("main").ok().flatten();
     (entries, leaf)
-}
-
-fn open_tree(app: &mut App, session: &Arc<AgentSession>) {
-    let (entries, leaf) = entries_of(session);
-    if entries.is_empty() {
-        app.commit_cell(&Cell::Notice {
-            text: "no session store attached — tree unavailable".to_owned(),
-        });
-        return;
-    }
-    app.tree = Some(TreeView::new(
-        &entries,
-        leaf.as_deref(),
-        TreeFilter::Default,
-    ));
-    app.scheduler.request();
 }
 
 pub(crate) fn replay_child(app: &mut App, child_id: &str) {
