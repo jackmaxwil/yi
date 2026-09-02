@@ -124,12 +124,13 @@ impl ProbeLadder {
                 }
                 let verdict = match probe {
                     Some(command) => match (self.run)(command.as_str()) {
-                        Ok(()) => {
-                            self.unblock(&plan.id, &todo.label);
-                            Verdict::Unblocked {
-                                label: todo.label.clone(),
-                            }
-                        }
+                        Ok(()) if self.unblock(&plan.id, &todo.label) => Verdict::Unblocked {
+                            label: todo.label.clone(),
+                        },
+                        Ok(()) => Verdict::Retry {
+                            label: todo.label.clone(),
+                            rung: self.climb(&slot, now),
+                        },
                         Err(_red) => Verdict::Retry {
                             label: todo.label.clone(),
                             rung: self.climb(&slot, now),
@@ -187,7 +188,9 @@ impl ProbeLadder {
         ));
     }
 
-    fn unblock(&self, plan: &PlanId, label: &TodoLabel) {
+    /// Incident: a refused unblock left the slot due, so the loop re-ran the
+    /// probe and re-delivered the refusal every second until the lease freed.
+    fn unblock(&self, plan: &PlanId, label: &TodoLabel) -> bool {
         let request = OpRequest {
             plan: Some(plan.clone()),
             actor: Actor::Host,
@@ -196,12 +199,18 @@ impl ProbeLadder {
             },
         };
         match self.engine.apply(request) {
-            Ok(_) => self.say(format!(
-                "external block {label} cleared: its probe passed, so the todo is ready again."
-            )),
-            Err(refused) => self.say(format!(
-                "external block {label} passed its probe but could not be unblocked: {refused}"
-            )),
+            Ok(_) => {
+                self.say(format!(
+                    "external block {label} cleared: its probe passed, so the todo is ready again."
+                ));
+                true
+            }
+            Err(refused) => {
+                self.say(format!(
+                    "external block {label} passed its probe but could not be unblocked: {refused}"
+                ));
+                false
+            }
         }
     }
 

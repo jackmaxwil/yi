@@ -317,3 +317,33 @@ fn a_todo_that_is_no_longer_blocked_leaves_the_ladder() -> TestResult {
     );
     Ok(())
 }
+
+#[test]
+fn a_passed_probe_whose_unblock_is_refused_climbs_the_rung() -> TestResult {
+    let (rig, ladder) = rig()?;
+    rig.green.store(true, Ordering::SeqCst);
+    open(&rig, "wait for the deploy", Some("true"))?;
+    let due = arm(&ladder)?;
+    let held = rig.store.lease()?;
+    let verdicts = ladder.tick(due);
+    assert!(
+        matches!(verdicts.as_slice(), [Verdict::Retry { .. }]),
+        "a refused unblock is a retry, not a clear: {verdicts:?}"
+    );
+    assert!(matches!(
+        state_of(&rig, "wait for the deploy")?,
+        TodoState::Blocked { .. }
+    ));
+    let ran = rig.ran.load(Ordering::SeqCst);
+    let too_soon = due
+        .checked_add(std::time::Duration::from_secs(1))
+        .ok_or("clock overflowed")?;
+    assert!(ladder.tick(too_soon).is_empty());
+    assert_eq!(
+        rig.ran.load(Ordering::SeqCst),
+        ran,
+        "a refused unblock waits its rung instead of re-running every second"
+    );
+    drop(held);
+    Ok(())
+}
