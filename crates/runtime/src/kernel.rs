@@ -36,7 +36,7 @@ except Exception as _prime_agent_rlm_error:
         def _raise_missing(self):
             raise RuntimeError(
                 "yi-runtime is not installed in this IPython kernel. "
-                "Remove ~/.yi/kernel-venv so yi can rebuild it, or set "
+                "Remove ~/.yi/kernel-venv-* so yi can rebuild it, or set "
                 "YI_KERNEL_PYTHON to a kernel environment with yi-runtime installed. "
                 f"Import error: {_PRIME_AGENT_RLM_IMPORT_ERROR}"
             )
