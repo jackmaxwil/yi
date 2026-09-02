@@ -21,6 +21,14 @@ fn a_spawn_hands_back_the_exact_collect_and_watch_calls() {
 }
 
 #[test]
+fn listing_name_names_the_session_name_field() {
+    let line = affordance::listing_name();
+    assert!(line.starts_with(affordance::NEXT));
+    assert!(line.contains("session_name"));
+    assert!(line.contains("RLMSpawnHandle.name"));
+}
+
+#[test]
 fn a_finished_child_says_how_to_take_its_answer_as_data() {
     let line = affordance::child_finished("porter");
     assert!(line.contains("rlm.result('porter', schema="));

@@ -23,7 +23,7 @@ import tempfile
 import time
 from pathlib import Path
 
-EXTRACTOR_VERSION = 2
+EXTRACTOR_VERSION = 3
 SCHEMA_VERSION = 1
 
 # Tool names from the crates/tools registry that cannot change the tree; the
@@ -260,6 +260,8 @@ def extract_session(path, header, entries, census):
     orientation_trace, first_mutation, reads = [], None, 0
     pending, delegation, last_stop = {}, [], None
     ended_at = header.get("createdAt", 0)
+    child = dict(input=0, output=0, cacheRead=0, cacheWrite=0, costUsd=0.0)
+    models, providers = [], []
 
     for entry in entries:
         etype = entry.get("type") or f"kind:{entry.get('kind', '?')}"
@@ -269,6 +271,12 @@ def extract_session(path, header, entries, census):
             compactions += 1
         if etype == "custom":
             census["custom"][entry.get("customType", "?")] += 1
+        if etype == "usage" and entry.get("cause") == "child_usage_attributed":
+            usage = entry.get("usage") or {}
+            for key in ("input", "output", "cacheRead", "cacheWrite"):
+                child[key] += int(usage.get(key) or 0)
+            child["costUsd"] += float((usage.get("cost") or {}).get("total") or 0.0)
+            continue
         if etype != "message":
             continue
         message = entry.get("message") or {}
@@ -276,6 +284,10 @@ def extract_session(path, header, entries, census):
         census["role"][role] += 1
         if role == "assistant":
             turns += 1
+            if message.get("model"):
+                models.append(message["model"])
+            if message.get("provider"):
+                providers.append(message["provider"])
             usage = message.get("usage") or {}
             for key in ("input", "output", "cacheRead", "cacheWrite"):
                 tokens[key] += int(usage.get(key) or 0)
@@ -350,14 +362,15 @@ def extract_session(path, header, entries, census):
         "file": path.name,
         "startedAt": header.get("createdAt", 0),
         "endedAt": ended_at,
-        "model": header.get("model"),
-        "provider": header.get("provider"),
+        "model": next(iter(models), None),
+        "provider": next(iter(providers), None),
         "turns": turns,
         "toolCalls": {"total": total_calls, "byTool": dict(sorted(by_tool.items()))},
         "repeatedCalls": repeated,
         "failedStreakMax": streak_max,
         "failures": failures,
         "tokens": {**tokens, "costUsd": round(tokens["costUsd"], 6)},
+        "childTokens": {**child, "costUsd": round(child["costUsd"], 6)},
         "readRatio": round(reads / total_calls, 4) if total_calls else 0.0,
         "peakContextTokens": peak,
         "compactions": compactions,
@@ -381,6 +394,10 @@ def extract_session(path, header, entries, census):
         "premise": {},
         "wins": bool(last_stop == "stop" and failures == 0 and interrupts == 0),
     }
+    if len(set(models)) > 1:
+        mu["models"] = list(dict.fromkeys(models))
+    if len(set(providers)) > 1:
+        mu["providers"] = list(dict.fromkeys(providers))
     orientation = {
         "v": SCHEMA_VERSION,
         "sessionId": sid,
@@ -722,6 +739,54 @@ def orientation_fixture(directory):
     return directory
 
 
+def model_usage_fixture(directory):
+    """v4 header has no model; spend on type:usage child rows is not on the parent message."""
+    directory.mkdir(parents=True, exist_ok=True)
+    rows = [
+        {"kind": "header", "version": 4, "id": "fixture-mu", "createdAt": 1780000000002, "cwd": "/tmp"},
+        {
+            "kind": "entry",
+            "lane": "main",
+            "type": "message",
+            "message": {
+                "role": "assistant",
+                "model": "claude-opus-4-5",
+                "provider": "anthropic",
+                "usage": {"input": 10, "output": 2, "cacheRead": 0, "cacheWrite": 0, "cost": {"total": 0.01}},
+                "stopReason": "stop",
+                "content": [],
+            },
+        },
+        {
+            "kind": "entry",
+            "lane": "main",
+            "type": "message",
+            "message": {
+                "role": "assistant",
+                "model": "z-ai/glm-5.3-flash",
+                "provider": "openrouter",
+                "usage": {"input": 1, "output": 1, "cacheRead": 0, "cacheWrite": 0, "cost": {"total": 0.001}},
+                "stopReason": "stop",
+                "content": [],
+            },
+        },
+        {
+            "kind": "record",
+            "type": "usage",
+            "cause": "child_usage_attributed",
+            "usage": {
+                "input": 104485,
+                "output": 17896,
+                "cacheRead": 823040,
+                "cacheWrite": 0,
+                "cost": {"total": 0.0247},
+            },
+        },
+    ]
+    (directory / "mu.jsonl").write_text("\n".join(json.dumps(r) for r in rows) + "\n")
+    return directory
+
+
 def rust_string_array(root, relative, name):
     """The literals of a Rust `const NAME: [&str; N] = [...]`. N is checked too,
     so a regex that matched half an array cannot read as agreement."""
@@ -772,6 +837,9 @@ def selfcheck():
         fp = result["board"][0]["fingerprint"]
         last_seen = result["board"][0]["lastSeen"]
         assert result["board"][0]["state"] == "NEW"
+        plant = next(r for r in result["mu"] if r["sessionId"] == "fixture-planted-0001")
+        assert plant["model"] == "faux-1", plant
+        assert plant["provider"] == "faux", plant
         mark(first, fp, "cased", "docs/cases/fake.md")
         assert build_board_state(fixtures, first, fp) == "CASED"
         mark(first, fp, "fixed", "deadbeef")
@@ -812,9 +880,31 @@ def selfcheck():
         text = report(oriented, Path(tmp) / "orient-in", Path(tmp) / "orient-out")
         assert "1 of 2 carried a tool call" in text, text
         assert "wins: 1/1 working sessions" in text, text
+
+        sliced = sweep(
+            model_usage_fixture(Path(tmp) / "mu-in"), Path(tmp) / "mu-out"
+        )
+        row = next(r for r in sliced["mu"] if r["sessionId"] == "fixture-mu")
+        assert row["model"] == "claude-opus-4-5", row
+        assert row["provider"] == "anthropic", row
+        assert row["models"] == ["claude-opus-4-5", "z-ai/glm-5.3-flash"], row
+        assert row["providers"] == ["anthropic", "openrouter"], row
+        assert row["childTokens"]["input"] == 104485, row["childTokens"]
+        assert row["childTokens"]["costUsd"] == 0.0247, row["childTokens"]
+        assert row["tokens"]["costUsd"] == 0.011, row["tokens"]
+
+        types_src = Path(__file__).resolve().parents[3] / "crates/types/tests/fixtures/v4-golden.jsonl"
+        golden_in = Path(tmp) / "golden-in"
+        golden_in.mkdir()
+        (golden_in / "v4-golden.jsonl").write_bytes(types_src.read_bytes())
+        gold_rows = sweep(golden_in, Path(tmp) / "golden-out")["mu"]
+        gold = next(r for r in gold_rows if r["sessionId"] == "fixture-a")
+        assert gold["model"] == "claude-opus-4-5", gold
+        assert gold["provider"] == "anthropic", gold
+        assert gold["childTokens"]["input"] == 0, gold["childTokens"]
     print(
         "ok   selfcheck: redaction, determinism, corrupt tolerance, lifecycle,"
-        " dedupe, orientation, rust mirrors"
+        " dedupe, orientation, rust mirrors, model slice, childTokens, v4 golden"
     )
     return 0
 
