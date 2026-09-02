@@ -37,8 +37,8 @@ fn parse_paths(value: Option<&Value>, cwd: &Path, key: &str) -> Result<Vec<PathB
         .collect()
 }
 
-/// A deny entry is matched as a literal prefix of the rendered URL, so a bare
-/// scheme (`kernel://`) walls the whole scheme and a longer prefix walls a path.
+/// A deny entry is matched at an address boundary, so a bare scheme
+/// (`kernel://`) walls the whole scheme and a longer prefix walls a path.
 fn parse_prefixes(value: Option<&Value>) -> Result<Vec<String>, String> {
     let Some(value) = value.filter(|value| !value.is_null()) else {
         return Ok(Vec::new());
@@ -74,11 +74,7 @@ impl Wall {
     /// URL space — a read-walled path is also a walled `local://` URL.
     pub fn check_url(&self, url: &Url, workspace: &Path) -> Option<String> {
         let rendered = url.to_string();
-        if let Some(hit) = self
-            .deny_url
-            .iter()
-            .find(|prefix| rendered.starts_with(prefix.as_str()))
-        {
+        if let Some(hit) = self.deny_url.iter().find(|prefix| walls(prefix, &rendered)) {
             return Some(refusal("fetch", hit));
         }
         let raw = match url.scheme() {
@@ -151,6 +147,16 @@ impl Wall {
             .find(|denied| command.contains(&denied.to_string_lossy().into_owned()))
             .map(|hit| refusal(tool_name, &hit.display().to_string()))
     }
+}
+
+/// Incident: a raw prefix walled every address that merely began with it, so
+/// `plan://secret` refused `plan://secretary`. The match ends at the entry, at
+/// a path separator, or at a fragment, and nowhere else.
+fn walls(prefix: &str, rendered: &str) -> bool {
+    let Some(rest) = rendered.strip_prefix(prefix) else {
+        return false;
+    };
+    rest.is_empty() || prefix.ends_with('/') || rest.starts_with('/') || rest.starts_with('#')
 }
 
 fn refusal(tool_name: &str, path: &str) -> String {
