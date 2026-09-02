@@ -9,13 +9,12 @@ use yi_types::plan::doc::{
 use yi_types::plan::ledger::PlanOpRecord;
 use yi_types::url::Url;
 
-use super::store::{FRONTMATTER_CAP_BYTES, PlanBody, PlanFile, PlanStore, StoreError, UserEdit};
+use super::store::{PlanFile, PlanStore, StoreError};
 use super::table::{
-    OpKind, StateName, add_edge, admissible, append_todos, charge_retry, charge_spawn, check_actor,
+    OpKind, add_edge, admissible, append_todos, charge_retry, charge_spawn, check_actor,
     check_plan_state, check_terminal, in_flight, locate_step, new_todo, op_name, ready_labels,
     reorder_todos, step, validate_plan,
 };
-use super::yaml;
 
 pub(super) const OWNER_AGENT: &str = "main";
 
@@ -162,7 +161,7 @@ pub enum PlanOpError {
     #[error("{op:?} is illegal for todo {label:?} in state {from}")]
     IllegalStep {
         label: TodoLabel,
-        from: StateName,
+        from: TodoStateName,
         op: OpKind,
     },
     #[error("todo {label:?} carries unknown state {state:?}, which admits no op")]
@@ -452,7 +451,7 @@ impl PlanEngine {
         validate_plan(&plan)?;
         let file = PlanFile {
             plan,
-            body: PlanBody::default(),
+            body: String::new(),
         };
         self.write_all(&file, &[])?;
         self.emit(&file.plan, OpKind::Init, actor, None, None);
@@ -521,8 +520,8 @@ impl PlanEngine {
     }
 
     /// Invariant: the plan file's second sanctioned writer is the user's
-    /// editor, so a divergence folds in as user-attributed ops — each moves
-    /// `touched`, and an exit from Running reaps like an engine op's would.
+    /// editor, so a divergence moves [`Plan::touched`], and a todo whose Running child
+    /// it replaced or deleted reaps that child like an engine op would.
     fn fold_user_edits(&self, file: &mut PlanFile, delta: &mut Delta) -> Result<(), PlanOpError> {
         let snapshot = match self.known.lock() {
             Ok(known) => known.get(&file.plan.id).cloned(),
@@ -531,30 +530,17 @@ impl PlanEngine {
         let Some(snapshot) = snapshot else {
             return Ok(());
         };
-        for edit in self.store.user_edits(&snapshot)? {
-            let left_running = match &edit {
-                // Invariant: the reap is keyed on the agent, not on the state
-                // name — a hand edit that swaps one Running agent for another
-                // never leaves Running and would otherwise leak the first child.
-                UserEdit::TodoStateChanged { label, from, to } => running_by(from)
-                    .is_some_and(|was| running_by(to) != Some(was))
-                    .then_some(label),
-                UserEdit::TodoDropped { label } => Some(label),
-                UserEdit::GoalReworded { .. }
-                | UserEdit::PlanStateChanged { .. }
-                | UserEdit::SpawnsChanged { .. }
-                | UserEdit::TodoAdded { .. }
-                | UserEdit::TodoEdgesChanged { .. }
-                | UserEdit::TodoEdited { .. }
-                | UserEdit::TodoReordered { .. }
-                | UserEdit::PreambleEdited
-                | UserEdit::SectionEdited { .. } => None,
-            };
-            if let Some(was) = left_running.and_then(|label| snapshot.plan.todo(label)) {
-                self.reap_leaving_running(&file.plan.id, was, delta)?;
-            }
-            file.plan.touched = file.plan.touched.bump();
+        let Some(edit) = self.store.user_edits(&snapshot)? else {
+            return Ok(());
+        };
+        for was in edit
+            .left_running
+            .iter()
+            .filter_map(|label| snapshot.plan.todo(label))
+        {
+            self.reap_leaving_running(&file.plan.id, was, delta)?;
         }
+        file.plan.touched = file.plan.touched.bump();
         Ok(())
     }
 
@@ -623,10 +609,12 @@ impl PlanEngine {
         failed.map(|(id, _)| id).ok_or(PlanOpError::NoPlan)
     }
 
+    /// Every document is rendered before the first is written, so a cap
+    /// refusal leaves the whole family as it was.
     fn write_all(&self, target: &PlanFile, extra: &[PlanFile]) -> Result<(), PlanOpError> {
-        precheck(target)?;
+        PlanStore::render(&target.plan)?;
         for file in extra {
-            precheck(file)?;
+            PlanStore::render(&file.plan)?;
         }
         for file in extra {
             self.store.write(file)?;
@@ -689,13 +677,14 @@ impl PlanEngine {
             return Err(missing());
         };
         let last = match step(&todo.state, op) {
-            Some(StateName::Running) | None => None,
+            Some(TodoStateName::Running) | None => None,
             Some(
-                StateName::Pending
-                | StateName::Blocked
-                | StateName::Done
-                | StateName::Failed
-                | StateName::Abandoned,
+                TodoStateName::Pending
+                | TodoStateName::Blocked
+                | TodoStateName::Done
+                | TodoStateName::Failed
+                | TodoStateName::Abandoned
+                | TodoStateName::Other(_),
             ) => self.reap_leaving_running(&plan_id, todo, delta)?,
         };
         let Some(todo) = file.plan.todos.get_mut(index) else {
@@ -936,7 +925,7 @@ impl PlanEngine {
             subplan: Some(sub_id),
             extra: vec![PlanFile {
                 plan: sub,
-                body: PlanBody::default(),
+                body: String::new(),
             }],
         })
     }
@@ -983,7 +972,7 @@ impl PlanEngine {
         next.version = next.version.bump();
         next.todos = specs.into_iter().map(new_todo).collect();
         validate_plan(&next)?;
-        precheck_plan(&next)?;
+        PlanStore::render(&next)?;
         let mut delta = Delta::default();
         self.reap_superseded(&mut file.plan, &reason, &mut delta)?;
         for sub in &mut subs {
@@ -1041,40 +1030,4 @@ fn agent_url(addr: &TodoAddr) -> Result<Url, PlanOpError> {
             cause,
         })
     })
-}
-
-fn running_by(state: &TodoState) -> Option<&AgentId> {
-    match state {
-        TodoState::Running { by } => Some(by),
-        TodoState::Pending
-        | TodoState::Blocked { .. }
-        | TodoState::Done { .. }
-        | TodoState::Failed { .. }
-        | TodoState::Abandoned
-        | TodoState::Other(_) => None,
-    }
-}
-
-fn precheck(file: &PlanFile) -> Result<(), PlanOpError> {
-    precheck_plan(&file.plan)
-}
-
-fn precheck_plan(plan: &Plan) -> Result<(), PlanOpError> {
-    let id = &plan.id;
-    let value = serde_json::to_value(plan).map_err(|source| StoreError::Serialize {
-        id: id.clone(),
-        source,
-    })?;
-    let front = yaml::to_yaml(&value).map_err(|source| StoreError::Emit {
-        id: id.clone(),
-        source,
-    })?;
-    if front.len() > FRONTMATTER_CAP_BYTES {
-        return Err(PlanOpError::Store(StoreError::FrontmatterOverCap {
-            id: id.clone(),
-            bytes: front.len(),
-            cap: FRONTMATTER_CAP_BYTES,
-        }));
-    }
-    Ok(())
 }

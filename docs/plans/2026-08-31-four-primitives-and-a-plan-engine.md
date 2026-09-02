@@ -127,7 +127,7 @@ bare).
 
 ### 3.1 Where the strings live
 
-Plans are files: one Markdown document per plan, YAML frontmatter, in
+Plans are files: one Markdown document per plan, JSON frontmatter (D105), in
 `.yi/plans/` at the workspace root — tracked by git, one config key
 (`plans.dir`) to move or ignore it. Not `docs/plans/`: that namespace is
 for human-authored deliverables, and a machine-churned ledger would
@@ -287,27 +287,35 @@ extension-registered code.
 **The frontmatter, `format: 1`** — the machine truth, schema-validated on
 every read, last-good recovered from the shadow gitdir:
 
-```yaml
-format: 1
-plan: 7f3a-auth-refactor
-goal: "Ship OAuth login end to end"   # edits are a user-attributed op (D25)
-version: 3
-tier: root                            # sub adds: parent: <plan>/<todo label>
-state: active
-todos:
-  - label: "Freeze the token API seam"      # ≤ 80 chars, unique, the address
-    state: done                       # ready is NEVER stored — derived from
-    output: kernel://token_api_seam   # `after` + states at read
-  - label: "Implement refresh flow"
-    state: running               # the running child is agent://<plan>/implement-refresh-flow
-    after: ["Freeze the token API seam"]
-    delegation:
-      spec:    { role: coder, effort: med, isolation: worktree }
-      accept:  { command: "cargo test -p yi-ai refresh" }   # or { stated: … }
-      output:  { schema: local://.yi/schemas/refresh_result.json }
-      context: ["plan://7f3a-auth-refactor/seam-notes", "local://docs/auth.md"]
-    retries: 1
+```json
+{
+  "format": 1,
+  "plan": "7f3a-auth-refactor",
+  "goal": "Ship OAuth login end to end",
+  "version": 3,
+  "tier": "root",
+  "state": "active",
+  "todos": [
+    {"label": "Freeze the token API seam", "state": "done",
+     "output": "kernel://token_api_seam"},
+    {"label": "Implement refresh flow", "state": "running",
+     "after": ["Freeze the token API seam"],
+     "delegation": {
+       "spec": {"role": "coder", "effort": "med", "isolation": "worktree"},
+       "accept": {"command": "cargo test -p yi-ai refresh"},
+       "output": {"schema": "local://.yi/schemas/refresh_result.json"},
+       "context": ["plan://7f3a-auth-refactor/seam-notes", "local://docs/auth.md"]
+     },
+     "retries": 1}
+  ]
+}
 ```
+
+Editing a goal is a user-attributed op (D25); `tier: sub` adds `parent:
+<plan>/<todo label>`; ready is never stored, it is derived from `after`
+plus states at read; the running child of a delegated todo is
+`agent://<plan>/<slug>`; a label is at most 80 chars, unique, and the
+address. Comments do not survive a rewrite, so the file carries none.
 
 Blocked stores its discriminant inline (`blocked: {on: user, note: …}`).
 Frontmatter ≤ 32 KiB. Body: one `## <todo label>` section per todo that
@@ -634,7 +642,7 @@ state. Affirmed from the 2026-08-31 ideation; each names what it rides.
   ephemeral URL); judgment rules are soft advisories (vague labels,
   skeleton-first violations); every threshold is fitted on task-shape
   features, never hand-set.
-- **The corpus as a kernel dataframe.** Plans are YAML files; `fetch`
+- **The corpus as a kernel dataframe.** Plans are JSON-fronted files; `fetch`
   plus a three-line loader and the model queries its own history
   mid-session — "what did we decide about auth last month" is a Python
   expression over its own past, not a memory feature.

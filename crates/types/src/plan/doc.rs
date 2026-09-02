@@ -42,6 +42,18 @@ pub enum PlanState {
     Other(String),
 }
 
+impl std::fmt::Display for PlanState {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Active => formatter.write_str("active"),
+            Self::Done => formatter.write_str("done"),
+            Self::Superseded { by } => write!(formatter, "superseded by v{}", by.0),
+            Self::Abandoned => formatter.write_str("abandoned"),
+            Self::Other(tag) => formatter.write_str(tag),
+        }
+    }
+}
+
 /// The acceptance envelope: the runtime checks existence and provenance, the
 /// content is for models.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -248,6 +260,12 @@ impl TodoStateName {
             Self::Abandoned => "abandoned",
             Self::Other(tag) => tag,
         }
+    }
+}
+
+impl std::fmt::Display for TodoStateName {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(self.as_str())
     }
 }
 

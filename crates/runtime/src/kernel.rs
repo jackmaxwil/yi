@@ -167,14 +167,9 @@ impl HostRegistry {
                     .filter(|command| !command.trim().is_empty())
                     .ok_or_else(|| {
                         "exec.spawn requires a non-empty \"command\" argument".to_owned()
-                    })?
-                    .to_owned();
-                let id = tokio::task::spawn_blocking(move || {
-                    let cancelled: CancelFlag = Arc::new(|| false);
-                    yi_tools::jobs::spawn_job(&command, &cwd, &cancelled, None)
-                })
-                .await
-                .map_err(|error| format!("exec.spawn task failed: {error}"))?;
+                    })?;
+                let cancelled: CancelFlag = Arc::new(|| false);
+                let id = yi_tools::jobs::spawn_job(command, &cwd, &cancelled, None);
                 let mut reply = Map::new();
                 reply.insert("job_id".to_owned(), Value::from(id.0));
                 Ok(reply)
@@ -184,12 +179,9 @@ impl HostRegistry {
             Box::pin(async move {
                 let id = job_id_of(&payload, "exec.tail")?;
                 let cursor = payload.get("cursor").and_then(Value::as_u64).unwrap_or(0);
-                let chunk = tokio::task::spawn_blocking(move || {
-                    yi_tools::jobs::registry().output_since(id, cursor)
-                })
-                .await
-                .map_err(|error| format!("exec.tail task failed: {error}"))?
-                .map_err(|error| error.to_string())?;
+                let chunk = yi_tools::jobs::registry()
+                    .output_since(id, cursor)
+                    .map_err(|error| error.to_string())?;
                 let mut reply = Map::new();
                 reply.insert("text".to_owned(), Value::String(chunk.text));
                 reply.insert("next".to_owned(), Value::from(chunk.next));
@@ -200,22 +192,18 @@ impl HostRegistry {
         self.register("exec.poll", |payload| {
             Box::pin(async move {
                 let id = job_id_of(&payload, "exec.poll")?;
-                let report =
-                    tokio::task::spawn_blocking(move || yi_tools::jobs::registry().report(id))
-                        .await
-                        .map_err(|error| format!("exec.poll task failed: {error}"))?
-                        .ok_or_else(|| format!("no such job: {id}"))?;
+                let report = yi_tools::jobs::registry()
+                    .report(id)
+                    .ok_or_else(|| format!("no such job: {id}"))?;
                 Ok(job_report_reply(&report))
             })
         });
         self.register("exec.kill", |payload| {
             Box::pin(async move {
                 let id = job_id_of(&payload, "exec.kill")?;
-                let outcome =
-                    tokio::task::spawn_blocking(move || yi_tools::jobs::registry().kill(id))
-                        .await
-                        .map_err(|error| format!("exec.kill task failed: {error}"))?
-                        .map_err(|error| error.to_string())?;
+                let outcome = yi_tools::jobs::registry()
+                    .kill(id)
+                    .map_err(|error| error.to_string())?;
                 let mut reply = Map::new();
                 let named = match outcome {
                     yi_tools::jobs::KillOutcome::Signalled => "signalled",
@@ -228,11 +216,9 @@ impl HostRegistry {
         self.register("exec.release", |payload| {
             Box::pin(async move {
                 let id = job_id_of(&payload, "exec.release")?;
-                let report =
-                    tokio::task::spawn_blocking(move || yi_tools::jobs::registry().release(id))
-                        .await
-                        .map_err(|error| format!("exec.release task failed: {error}"))?
-                        .map_err(|error| error.to_string())?;
+                let report = yi_tools::jobs::registry()
+                    .release(id)
+                    .map_err(|error| error.to_string())?;
                 Ok(job_report_reply(&report))
             })
         });

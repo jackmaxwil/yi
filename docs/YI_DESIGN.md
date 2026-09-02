@@ -1198,7 +1198,7 @@ by construction.
 ### 8.17.1 Plan (`yi-runtime::plan`, 0.33.0 — D52/D53; storage superseded at 0.98.0 — D97)
 
 **Superseded where it says the fact is the store.** D97 makes the canonical plan a
-git-tracked Markdown file with YAML frontmatter under `plans.dir`, and `Fact::Plan` a
+git-tracked Markdown file with JSON frontmatter under `plans.dir` (YAML until D105), and `Fact::Plan` a
 pointer at it — the fact keeps its exact wire shape, so every session file below still
 loads. Todos are addressed by verbatim label rather than by `TaskId`, `after` edges
 carry ordering and no data, `version` moves on `supersede` alone with a monotonic

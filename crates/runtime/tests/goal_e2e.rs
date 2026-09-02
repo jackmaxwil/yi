@@ -405,7 +405,7 @@ fn seed_plan_of(plans: &std::path::Path, label: &str, check: &str) -> TestResult
     );
     store.write(&yi_runtime::plan::store::PlanFile {
         plan,
-        body: yi_runtime::plan::store::PlanBody::default(),
+        body: String::new(),
     })?;
     Ok(())
 }

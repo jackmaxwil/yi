@@ -3,7 +3,7 @@ use std::collections::HashSet;
 use serde_json::Map;
 use yi_types::plan::doc::{
     AgentId, Plan, PlanIssue, PlanState, RetryCount, SPAWN_CAP, Todo, TodoLabel, TodoState,
-    terminal_durability,
+    TodoStateName, terminal_durability,
 };
 use yi_types::url::{Durability, Url};
 
@@ -27,133 +27,92 @@ pub enum OpKind {
     View,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum StateName {
-    Pending,
-    Running,
-    Blocked,
-    Done,
-    Failed,
-    Abandoned,
-}
-
-impl StateName {
-    pub fn of(state: &TodoState) -> Option<Self> {
-        match state {
-            TodoState::Pending => Some(Self::Pending),
-            TodoState::Running { .. } => Some(Self::Running),
-            TodoState::Blocked { .. } => Some(Self::Blocked),
-            TodoState::Done { .. } => Some(Self::Done),
-            TodoState::Failed { .. } => Some(Self::Failed),
-            TodoState::Abandoned => Some(Self::Abandoned),
-            TodoState::Other(_) => None,
-        }
-    }
-
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Pending => "pending",
-            Self::Running => "running",
-            Self::Blocked => "blocked",
-            Self::Done => "done",
-            Self::Failed => "failed",
-            Self::Abandoned => "abandoned",
-        }
-    }
-}
-
-impl std::fmt::Display for StateName {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str(self.as_str())
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Step {
-    pub from: StateName,
+    pub from: TodoStateName,
     pub op: OpKind,
-    pub to: StateName,
+    pub to: TodoStateName,
 }
 
 pub const STEPS: &[Step] = &[
     Step {
-        from: StateName::Pending,
+        from: TodoStateName::Pending,
         op: OpKind::Start,
-        to: StateName::Running,
+        to: TodoStateName::Running,
     },
     Step {
-        from: StateName::Pending,
+        from: TodoStateName::Pending,
         op: OpKind::Block,
-        to: StateName::Blocked,
+        to: TodoStateName::Blocked,
     },
     Step {
-        from: StateName::Pending,
+        from: TodoStateName::Pending,
         op: OpKind::Drop,
-        to: StateName::Abandoned,
+        to: TodoStateName::Abandoned,
     },
     Step {
-        from: StateName::Pending,
+        from: TodoStateName::Pending,
         op: OpKind::AddEdge,
-        to: StateName::Pending,
+        to: TodoStateName::Pending,
     },
     Step {
-        from: StateName::Running,
+        from: TodoStateName::Running,
         op: OpKind::Done,
-        to: StateName::Done,
+        to: TodoStateName::Done,
     },
     Step {
-        from: StateName::Running,
+        from: TodoStateName::Running,
         op: OpKind::Fail,
-        to: StateName::Failed,
+        to: TodoStateName::Failed,
     },
     Step {
-        from: StateName::Running,
+        from: TodoStateName::Running,
         op: OpKind::Block,
-        to: StateName::Blocked,
+        to: TodoStateName::Blocked,
     },
     Step {
-        from: StateName::Running,
+        from: TodoStateName::Running,
         op: OpKind::Decompose,
-        to: StateName::Running,
+        to: TodoStateName::Running,
     },
     Step {
-        from: StateName::Blocked,
+        from: TodoStateName::Blocked,
         op: OpKind::Unblock,
-        to: StateName::Pending,
+        to: TodoStateName::Pending,
     },
     Step {
-        from: StateName::Blocked,
+        from: TodoStateName::Blocked,
         op: OpKind::Drop,
-        to: StateName::Abandoned,
+        to: TodoStateName::Abandoned,
     },
     Step {
-        from: StateName::Blocked,
+        from: TodoStateName::Blocked,
         op: OpKind::AddEdge,
-        to: StateName::Blocked,
+        to: TodoStateName::Blocked,
     },
     Step {
-        from: StateName::Done,
+        from: TodoStateName::Done,
         op: OpKind::AddEdge,
-        to: StateName::Done,
+        to: TodoStateName::Done,
     },
     Step {
-        from: StateName::Failed,
+        from: TodoStateName::Failed,
         op: OpKind::Retry,
-        to: StateName::Pending,
+        to: TodoStateName::Pending,
     },
     Step {
-        from: StateName::Failed,
+        from: TodoStateName::Failed,
         op: OpKind::AddEdge,
-        to: StateName::Failed,
+        to: TodoStateName::Failed,
     },
 ];
 
-pub fn step(from: &TodoState, op: OpKind) -> Option<StateName> {
-    let name = StateName::of(from)?;
+pub fn step(from: &TodoState, op: OpKind) -> Option<TodoStateName> {
+    let name = TodoStateName::of(from);
     STEPS
         .iter()
         .find(|step| step.from == name && step.op == op)
-        .map(|step| step.to)
+        .map(|step| step.to.clone())
 }
 
 /// Invariant: a plan that is not Active admits `view` alone, with one
@@ -312,21 +271,13 @@ pub(super) fn locate_step(
             label: label.clone(),
         });
     };
-    let Some(from) = StateName::of(&todo.state) else {
-        let state = match &todo.state {
-            TodoState::Other(tag) => tag.clone(),
-            TodoState::Pending
-            | TodoState::Running { .. }
-            | TodoState::Blocked { .. }
-            | TodoState::Done { .. }
-            | TodoState::Failed { .. }
-            | TodoState::Abandoned => String::new(),
-        };
+    let from = TodoStateName::of(&todo.state);
+    if let TodoStateName::Other(state) = from {
         return Err(PlanOpError::UnknownState {
             label: label.clone(),
             state,
         });
-    };
+    }
     if step(&todo.state, op).is_none() {
         return Err(PlanOpError::IllegalStep {
             label: label.clone(),
@@ -435,31 +386,31 @@ mod tests {
         OpKind::View,
     ];
 
-    fn named_states() -> Result<Vec<(StateName, TodoState)>, Box<dyn std::error::Error>> {
+    fn named_states() -> Result<Vec<(TodoStateName, TodoState)>, Box<dyn std::error::Error>> {
         Ok(vec![
-            (StateName::Pending, TodoState::Pending),
+            (TodoStateName::Pending, TodoState::Pending),
             (
-                StateName::Running,
+                TodoStateName::Running,
                 TodoState::Running {
                     by: AgentId::new("main")?,
                 },
             ),
             (
-                StateName::Blocked,
+                TodoStateName::Blocked,
                 TodoState::Blocked {
                     on: BlockedOn::User,
                     note: String::new(),
                 },
             ),
-            (StateName::Done, TodoState::Done { output: None }),
+            (TodoStateName::Done, TodoState::Done { output: None }),
             (
-                StateName::Failed,
+                TodoStateName::Failed,
                 TodoState::Failed {
                     cause: "probe disagreed".to_owned(),
                     last: None,
                 },
             ),
-            (StateName::Abandoned, TodoState::Abandoned),
+            (TodoStateName::Abandoned, TodoState::Abandoned),
         ])
     }
 
@@ -470,7 +421,7 @@ mod tests {
                 let expected = STEPS
                     .iter()
                     .find(|step| step.from == name && step.op == op)
-                    .map(|step| step.to);
+                    .map(|step| step.to.clone());
                 assert_eq!(step(&state, op), expected, "{name} x {op:?}");
             }
         }
@@ -484,11 +435,14 @@ mod tests {
         };
         assert_eq!(
             step(&TodoState::Pending, OpKind::Start),
-            Some(StateName::Running)
+            Some(TodoStateName::Running)
         );
-        assert_eq!(step(&running, OpKind::Done), Some(StateName::Done));
-        assert_eq!(step(&running, OpKind::Fail), Some(StateName::Failed));
-        assert_eq!(step(&running, OpKind::Decompose), Some(StateName::Running));
+        assert_eq!(step(&running, OpKind::Done), Some(TodoStateName::Done));
+        assert_eq!(step(&running, OpKind::Fail), Some(TodoStateName::Failed));
+        assert_eq!(
+            step(&running, OpKind::Decompose),
+            Some(TodoStateName::Running)
+        );
         assert_eq!(
             step(
                 &TodoState::Failed {
@@ -497,11 +451,11 @@ mod tests {
                 },
                 OpKind::Retry
             ),
-            Some(StateName::Pending)
+            Some(TodoStateName::Pending)
         );
         assert_eq!(
             step(&TodoState::Done { output: None }, OpKind::AddEdge),
-            Some(StateName::Done)
+            Some(TodoStateName::Done)
         );
         assert_eq!(step(&TodoState::Pending, OpKind::Done), None);
         assert_eq!(step(&TodoState::Pending, OpKind::Retry), None);
@@ -513,17 +467,19 @@ mod tests {
     #[test]
     fn terminal_states_admit_only_retry_and_edge_bookkeeping() -> TestResult {
         for (name, state) in named_states()? {
-            match name {
-                StateName::Abandoned => {
+            match &name {
+                TodoStateName::Abandoned => {
                     for op in OPS {
                         assert_eq!(step(&state, op), None, "{name} x {op:?}");
                     }
                 }
-                StateName::Done | StateName::Failed => {
+                TodoStateName::Done | TodoStateName::Failed => {
                     for op in OPS {
                         let expected = match op {
-                            OpKind::Retry if name == StateName::Failed => Some(StateName::Pending),
-                            OpKind::AddEdge => Some(name),
+                            OpKind::Retry if name == TodoStateName::Failed => {
+                                Some(TodoStateName::Pending)
+                            }
+                            OpKind::AddEdge => Some(name.clone()),
                             OpKind::Init
                             | OpKind::Append
                             | OpKind::Drop
@@ -541,7 +497,10 @@ mod tests {
                         assert_eq!(step(&state, op), expected, "{name} x {op:?}");
                     }
                 }
-                StateName::Pending | StateName::Running | StateName::Blocked => {}
+                TodoStateName::Pending
+                | TodoStateName::Running
+                | TodoStateName::Blocked
+                | TodoStateName::Other(_) => {}
             }
         }
         Ok(())

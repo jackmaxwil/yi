@@ -204,38 +204,30 @@ fn a_red_goal_check_refuses_the_completion_claim_and_the_plan_surface_stays_read
     Ok(())
 }
 
-const HAND_WRITTEN_PLAN: &str = "---
-format: 1
-plan: ship-the-widget
-goal: \"Ship the widget end to end\"
-version: 1
-touched: 3
-tier: root
-state: active
-todos:
-  - label: \"Cut the seam\"
-    state: done
-    output: \"agent://ship-the-widget/cut-the-seam\"
-  - label: \"Wire the adapter\"
-    state: blocked
-    after: [\"Cut the seam\"]
-    blocked:
-      on:
-        external: {}
-      note: \"the staging deploy has to finish\"
-  - label: \"Write the manpage\"
-    state: pending
-    delegation:
-      spec:
-        role: writer
-      accept:
-        stated: \"the manpage reads well\"
+const HAND_WRITTEN_PLAN: &str = r#"---
+{
+  "format": 1,
+  "plan": "ship-the-widget",
+  "goal": "Ship the widget end to end",
+  "version": 1,
+  "touched": 3,
+  "tier": "root",
+  "state": "active",
+  "todos": [
+    {"label": "Cut the seam", "state": "done",
+     "output": "agent://ship-the-widget/cut-the-seam"},
+    {"label": "Wire the adapter", "state": "blocked", "after": ["Cut the seam"],
+     "blocked": {"on": {"external": {}}, "note": "the staging deploy has to finish"}},
+    {"label": "Write the manpage", "state": "pending",
+     "delegation": {"spec": {"role": "writer"}, "accept": {"stated": "the manpage reads well"}}}
+  ]
+}
 ---
 
 ## Wire the adapter
 
 The adapter cannot land before staging is green.
-";
+"#;
 
 /// The plan document driven through the real binary: the store parses it, the
 /// resolver addresses a todo by slug, the lint reads it, and a `Plan:` trailer
