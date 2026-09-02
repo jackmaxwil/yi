@@ -141,8 +141,9 @@ pub fn compute_view(app: &mut App, area: Rect, theme: &Theme) -> ViewState {
     let mut tab_hits = Vec::new();
     if let Some(bar) = tab_bar {
         let mut x = bar.x;
-        for index in 0..app.state.tabs.len() {
-            let width = 4_u16;
+        // Invariant: hit widths come from the label builder the bar draws with.
+        for (index, tab) in app.state.tabs.iter().enumerate() {
+            let width = u16::try_from(tab_label(index, tab.zoomed).chars().count()).unwrap_or(3);
             tab_hits.push((Rect::new(x, bar.y, width, 1), index));
             x = x.saturating_add(width);
         }
@@ -424,11 +425,15 @@ fn glyph(up: bool, down: bool, left: bool, right: bool) -> &'static str {
     }
 }
 
+fn tab_label(index: usize, zoomed: bool) -> String {
+    let zoom = if zoomed { "Z" } else { "" };
+    format!(" {}{zoom} ", index.saturating_add(1))
+}
+
 fn render_tab_bar(app: &App, frame: &mut Frame<'_>, area: Rect, theme: &Theme) {
     let mut spans = Vec::new();
     for (index, tab) in app.state.tabs.iter().enumerate() {
-        let zoom = if tab.zoomed { "Z" } else { "" };
-        let label = format!(" {}{zoom} ", index.saturating_add(1));
+        let label = tab_label(index, tab.zoomed);
         let style = if index == app.state.active_tab {
             theme.accent_style().add_modifier(Modifier::BOLD)
         } else {
