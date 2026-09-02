@@ -43,6 +43,7 @@ Commands:
   @session tools-list           list tools
   @session tools-get <name> [--schema <file>] [--schema-mode strict|compatible]
   @session tools-call <name> [key:=value ... | '<json>' | <stdin]
+  @session resources-read <uri>  read one resource
   @session resources-list | prompts-list | ping | close | restart | grep <pattern>
   help --skill                  print the agent-facing skill document
 
@@ -261,6 +262,7 @@ fn do_session_op(store: &mut SessionsStore, session: &str, op: SessionOp, flags:
             Err(error) => return fail(&error, 2),
         },
         SessionOp::ResourcesList => run(store, Op::ResourcesList),
+        SessionOp::ResourcesRead { uri } => run(store, Op::ResourcesRead { uri }),
         SessionOp::PromptsList => run(store, Op::PromptsList),
         SessionOp::Ping => run(store, Op::Ping),
         SessionOp::Grep { pattern } => {

@@ -96,11 +96,12 @@ pub async fn summarize_branch(session: &AgentSession, stub: BranchStub) {
         .unwrap_or_else(|| session.model());
     let context = LlmContext {
         system_prompt: BRANCH_SUMMARY_PROMPT.to_owned(),
-        messages: vec![AgentMessage::User {
-            content: UserContent::Text(yi_context::serialize_conversation(&stub.messages)),
-            timestamp: 0,
-        }],
+        messages: vec![AgentMessage::host_user(
+            UserContent::Text(yi_context::serialize_conversation(&stub.messages)),
+            0,
+        )],
         tools: None,
+        tool_choice: None,
     };
     let signal = yi_loop::interrupt::InterruptSignal::default();
     let Ok(summary) =

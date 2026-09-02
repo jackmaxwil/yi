@@ -10,6 +10,8 @@ use yi_types::model::{Effort, Model};
 
 use crate::provider::ProviderStream;
 
+mod hooks;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Status {
     Idle,
@@ -54,6 +56,21 @@ struct Shared {
     signal: InterruptSignal,
     on_turn_start: Mutex<Option<Arc<TurnHook>>>,
     on_turn_end: Mutex<Option<Arc<TurnHook>>>,
+    coupling: Mutex<Option<TurnCoupling>>,
+}
+
+pub type PromptChoiceFn =
+    dyn Fn(&AgentMessage) -> Option<yi_types::model::ToolChoice> + Send + Sync;
+pub type TurnObserveFn = dyn Fn(&yi_loop::TurnSnapshot) + Send + Sync;
+pub type InterceptStopFn = dyn Fn(&yi_loop::TurnSnapshot) -> Option<AgentMessage> + Send + Sync;
+
+/// Loop hooks the runtime fills; read live at run start, so late installation
+/// still binds handles minted earlier.
+#[derive(Clone)]
+pub struct TurnCoupling {
+    pub on_prompt: Arc<PromptChoiceFn>,
+    pub on_turn: Arc<TurnObserveFn>,
+    pub intercept_stop: Arc<InterceptStopFn>,
 }
 
 /// The start hook captures the tree the turn is about to change, the end hook
@@ -105,6 +122,7 @@ pub struct AgentSession {
     plan: Mutex<Option<Arc<crate::plan::PlanService>>>,
     rules: Mutex<Option<Arc<crate::rules::RuleEngine>>>,
     wall: Mutex<crate::wall::Wall>,
+    kernel: Mutex<Option<Arc<crate::kernel::KernelService>>>,
 }
 
 impl AgentSession {
@@ -131,6 +149,7 @@ impl AgentSession {
                 signal: InterruptSignal::default(),
                 on_turn_start: Mutex::new(None),
                 on_turn_end: Mutex::new(None),
+                coupling: Mutex::new(None),
             }),
             config,
             provider,
@@ -144,7 +163,33 @@ impl AgentSession {
             plan: Mutex::new(None),
             rules: Mutex::new(None),
             wall: Mutex::new(crate::wall::Wall::default()),
+            kernel: Mutex::new(None),
         }
+    }
+
+    pub fn set_kernel_service(&self, service: Arc<crate::kernel::KernelService>) {
+        if let Ok(mut slot) = self.kernel.lock() {
+            *slot = Some(service);
+        }
+    }
+
+    /// Incident: the kernel pump's monitor task owns the tokio Child, so a
+    /// dropped session leaks its IPython process; every path that retires a
+    /// session calls this, not only the one that reaps a subagent.
+    pub fn dispose_kernel(&self) {
+        let Some(kernel) = self.kernel_service() else {
+            return;
+        };
+        if tokio::runtime::Handle::try_current().is_ok() {
+            tokio::spawn(async move { kernel.dispose().await });
+        }
+    }
+
+    pub fn kernel_service(&self) -> Option<Arc<crate::kernel::KernelService>> {
+        self.kernel
+            .lock()
+            .ok()
+            .and_then(|slot| slot.as_ref().map(Arc::clone))
     }
 
     pub fn install_extensions(&self, host: crate::ext::Host) {
@@ -160,11 +205,7 @@ impl AgentSession {
     }
 
     pub fn extensions(&self) -> Option<Arc<Mutex<crate::ext::Host>>> {
-        self.shared
-            .ext
-            .lock()
-            .ok()
-            .and_then(|slot| slot.as_ref().map(Arc::clone))
+        extensions_of(&self.shared)
     }
 
     pub fn system_prompt(&self) -> String {
@@ -175,11 +216,6 @@ impl AgentSession {
         let shared = Arc::clone(&self.shared);
         let fallback = self.config.system_prompt.clone();
         Arc::new(move || assembled_prompt(&shared, &fallback))
-    }
-
-    pub fn ext_hook(&self) -> ExtHook {
-        let shared = Arc::clone(&self.shared);
-        Arc::new(move |event| dispatch_ext(&shared, &event))
     }
 
     pub fn set_turn_start_hook(&self, hook: Arc<TurnHook>) {
@@ -274,6 +310,12 @@ impl AgentSession {
     }
 
     /// The hook must be non-blocking — spawn any kernel work.
+    pub fn set_turn_coupling(&self, coupling: TurnCoupling) {
+        if let Ok(mut slot) = self.shared.coupling.lock() {
+            *slot = Some(coupling);
+        }
+    }
+
     pub fn set_on_compacted(&self, hook: Arc<dyn Fn() + Send + Sync>) {
         if let Ok(mut slot) = self.on_compacted.lock() {
             *slot = Some(hook);
@@ -435,25 +477,8 @@ impl AgentSession {
         }
     }
 
-    pub fn store_handle(
-        &self,
-    ) -> std::sync::Arc<dyn Fn() -> Option<yi_session::SharedSession> + Send + Sync> {
-        let shared = Arc::clone(&self.shared);
-        std::sync::Arc::new(move || {
-            shared
-                .store
-                .lock()
-                .map(|handle| handle.clone())
-                .unwrap_or_default()
-        })
-    }
-
     pub fn store(&self) -> Option<yi_session::SharedSession> {
-        self.shared
-            .store
-            .lock()
-            .map(|handle| handle.clone())
-            .unwrap_or_default()
+        store_of(&self.shared)
     }
 
     pub fn store_error(&self) -> Option<String> {
@@ -470,25 +495,6 @@ impl AgentSession {
             .lock()
             .map(|model| model.clone())
             .unwrap_or_else(|poisoned| poisoned.into_inner().clone())
-    }
-
-    /// Incident: snapshotting these left `rlm.run` and `model.info` on the
-    /// startup model once the TUI could switch.
-    pub fn settings_handle(&self) -> Arc<dyn Fn() -> (Model, Effort) + Send + Sync> {
-        let shared = Arc::clone(&self.shared);
-        Arc::new(move || {
-            let model = shared
-                .model
-                .lock()
-                .map(|model| model.clone())
-                .unwrap_or_else(|poisoned| poisoned.into_inner().clone());
-            let effort = shared
-                .effort
-                .lock()
-                .map(|effort| *effort)
-                .unwrap_or_else(|poisoned| *poisoned.into_inner());
-            (model, effort)
-        })
     }
 
     /// Re-clamps the effort onto the new ladder without recording a level
@@ -596,8 +602,12 @@ impl AgentSession {
     }
 
     pub fn steer(&self, text: &str) {
+        self.steer_message(user_message(text));
+    }
+
+    pub fn steer_message(&self, message: AgentMessage) {
         if let Ok(mut queue) = self.shared.steer.lock() {
-            queue.push(user_message(text));
+            queue.push(message);
         }
     }
 
@@ -675,107 +685,11 @@ impl AgentSession {
         Arc::new(move |prompt| Self::spawn_run(parts.clone(), prompt))
     }
 
-    /// Running session ⇒ queued (Steer drains at the next message boundary,
-    /// FollowUp at turn end); idle session ⇒ the message starts a run.
-    pub fn heartbeat_hook(
-        &self,
-    ) -> Arc<dyn Fn(AgentMessage, yi_types::schedule::DeliveryMode) + Send + Sync> {
-        let shared = Arc::clone(&self.shared);
-        let run = self.run_handle();
-        Arc::new(move |message, mode| {
-            let running = shared
-                .status
-                .lock()
-                .map(|status| *status == Status::Running)
-                .unwrap_or(false);
-            if running {
-                let queue = match mode {
-                    yi_types::schedule::DeliveryMode::Steer => &shared.steer,
-                    yi_types::schedule::DeliveryMode::FollowUp => &shared.follow_up,
-                };
-                if let Ok(mut pending) = queue.lock() {
-                    pending.push(message);
-                }
-            } else {
-                let _ = run(message);
-            }
-        })
-    }
-
-    /// Waits out any running turn rather than gating on status: AgentEnd is
-    /// emitted while the status is still Running, so a status-gated hook queued
-    /// into a follow-up that never drained.
-    pub fn wake_idle_hook(&self) -> Arc<dyn Fn(AgentMessage) + Send + Sync> {
-        let shared = Arc::clone(&self.shared);
-        let run = self.run_handle();
-        Arc::new(move |message| {
-            let shared = Arc::clone(&shared);
-            let run = Arc::clone(&run);
-            tokio::spawn(async move {
-                loop {
-                    let idle = shared
-                        .status
-                        .lock()
-                        .map(|status| *status == Status::Idle)
-                        .unwrap_or(true);
-                    if idle {
-                        break;
-                    }
-                    shared.idle.notified().await;
-                }
-                let _busy_means_queued = run(message);
-            });
-        })
-    }
-
-    /// Running ⇒ steer queue (next tool boundary); idle ⇒ follow-up queue. The
-    /// advisor never wakes an idle primary.
-    pub fn advisory_hook(&self) -> Arc<dyn Fn(AgentMessage) + Send + Sync> {
-        let shared = Arc::clone(&self.shared);
-        Arc::new(move |message| {
-            let running = shared
-                .status
-                .lock()
-                .map(|status| *status == Status::Running)
-                .unwrap_or(false);
-            let queue = if running {
-                &shared.steer
-            } else {
-                &shared.follow_up
-            };
-            if let Ok(mut pending) = queue.lock() {
-                pending.push(message);
-            }
-        })
-    }
-
-    pub fn history_handle(&self) -> Arc<dyn Fn() -> Vec<AgentMessage> + Send + Sync> {
-        let shared = Arc::clone(&self.shared);
-        Arc::new(move || {
-            shared
-                .messages
-                .lock()
-                .map(|messages| messages.clone())
-                .unwrap_or_default()
-        })
-    }
-
     /// Invariant: pre-first-turn only (B5) — mid-run it races the appending turn.
     pub fn seed_messages(&self, seed: Vec<AgentMessage>) {
         if let Ok(mut messages) = self.shared.messages.lock() {
             *messages = seed;
         }
-    }
-
-    pub fn activity_handle(&self) -> Arc<dyn Fn() -> bool + Send + Sync> {
-        let shared = Arc::clone(&self.shared);
-        Arc::new(move || {
-            shared
-                .status
-                .lock()
-                .map(|status| *status == Status::Running)
-                .unwrap_or(false)
-        })
     }
 
     fn spawn_run(parts: RunParts, prompt: AgentMessage) -> Result<(), SessionError> {
@@ -824,36 +738,29 @@ impl AgentSession {
                     .unwrap_or_default(),
                 tools,
             };
-            let steer = Arc::clone(&shared);
-            let follow = Arc::clone(&shared);
             let mut config = LoopConfig::new(model.clone());
             config.effort = effort;
             config.tool_execution = tool_execution;
             config.convert_to_llm = Box::new(yi_context::convert_to_llm);
             if let Some(compactor) = compactor.clone() {
-                config.maybe_compact = Some(compaction_hook(
+                let stores = Arc::clone(&shared);
+                let notify = Arc::clone(&shared);
+                let hook = on_compacted.clone();
+                config.maybe_compact = Some(crate::compaction::loop_hook(
                     compactor,
-                    Arc::clone(&shared),
                     Arc::clone(&provider),
                     model.clone(),
                     Arc::clone(&system_prompt),
-                    on_compacted.clone(),
+                    Arc::new(move || store_of(&stores)),
+                    Arc::new(move || {
+                        dispatch_ext(&notify, &crate::ext::Event::Compacted);
+                        if let Some(hook) = &hook {
+                            hook();
+                        }
+                    }),
                 ));
             }
-            config.get_steering_messages = Some(Box::new(move || {
-                steer
-                    .steer
-                    .lock()
-                    .map(|mut queue| std::mem::take(&mut *queue))
-                    .unwrap_or_default()
-            }));
-            config.get_follow_up_messages = Some(Box::new(move || {
-                follow
-                    .follow_up
-                    .lock()
-                    .map(|mut queue| std::mem::take(&mut *queue))
-                    .unwrap_or_default()
-            }));
+            wire_queues_and_coupling(&mut config, &shared, &prompt);
             let emit_shared = Arc::clone(&shared);
             let emit_compactor = compactor.clone();
             let mut emit = move |event: AgentEvent| {
@@ -954,50 +861,6 @@ impl AgentSession {
         }
     }
 
-    /// A user-role steering message consumed at the next message boundary, or
-    /// the next turn when idle — R3 delivery for work finishing outside a turn.
-    pub fn follow_up_hook(&self) -> Arc<dyn Fn(&str) + Send + Sync> {
-        let shared = Arc::clone(&self.shared);
-        Arc::new(move |text: &str| {
-            if let Ok(mut queue) = shared.follow_up.lock() {
-                queue.push(user_message(text));
-            }
-        })
-    }
-
-    pub fn notice_hook(&self) -> Arc<dyn Fn(&str) + Send + Sync> {
-        let shared = Arc::clone(&self.shared);
-        Arc::new(move |text: &str| {
-            if let Ok(mut queue) = shared.steer.lock() {
-                queue.push(user_message(text));
-            }
-        })
-    }
-
-    /// The model snapshot is taken now: a later [`AgentSession::set_model`] leaves percent
-    /// computed against the old window until re-wired.
-    pub fn compact_status_handle(
-        &self,
-    ) -> Option<Arc<dyn Fn() -> crate::compaction::CompactStatus + Send + Sync>> {
-        let compactor = self.compactor.clone()?;
-        let shared = Arc::clone(&self.shared);
-        let model = self.model();
-        Some(Arc::new(move || {
-            let messages = shared
-                .messages
-                .lock()
-                .map(|messages| messages.clone())
-                .unwrap_or_default();
-            compactor.status(&messages, &model)
-        }))
-    }
-
-    /// Usable after the session moves — the hook holds only shared state.
-    pub fn attribution_handle(&self) -> Arc<dyn Fn(&Usage) + Send + Sync> {
-        let shared = Arc::clone(&self.shared);
-        Arc::new(move |child: &Usage| attribute_to_shared(&shared, child))
-    }
-
     /// In-memory usage aggregates; an attached store gains a
     /// `child_usage_attributed` record.
     pub fn attribute_child_usage(&self, child: &Usage) {
@@ -1021,48 +884,38 @@ impl AgentSession {
     }
 }
 
-type CompactFuture =
-    std::pin::Pin<Box<dyn std::future::Future<Output = Option<Vec<AgentMessage>>> + Send>>;
-type CompactHook = Box<dyn Fn(&[AgentMessage]) -> CompactFuture + Send + Sync>;
-
-fn compaction_hook(
-    compactor: Arc<crate::compaction::Compactor>,
-    shared: Arc<Shared>,
-    provider: Arc<ProviderStream>,
-    model: Model,
-    system_prompt: PromptSource,
-    on_compacted: Option<Arc<dyn Fn() + Send + Sync>>,
-) -> CompactHook {
-    Box::new(move |messages: &[AgentMessage]| {
-        let compactor = Arc::clone(&compactor);
-        let shared = Arc::clone(&shared);
-        let provider = Arc::clone(&provider);
-        let model = model.clone();
-        let assembled = system_prompt();
-        let hook = on_compacted.clone();
-        let messages = messages.to_vec();
-        Box::pin(async move {
-            let store = store_of(&shared);
-            let signal = yi_loop::interrupt::InterruptSignal::default();
-            let replaced = compactor
-                .maybe_compact(
-                    &messages,
-                    &model,
-                    &assembled,
-                    provider.as_ref(),
-                    store.as_ref(),
-                    &signal,
-                )
-                .await;
-            if replaced.is_some() {
-                dispatch_ext(&shared, &crate::ext::Event::Compacted);
-                if let Some(hook) = &hook {
-                    hook();
-                }
-            }
-            replaced
-        })
-    })
+fn wire_queues_and_coupling(config: &mut LoopConfig, shared: &Arc<Shared>, prompt: &AgentMessage) {
+    let steer = Arc::clone(shared);
+    let follow = Arc::clone(shared);
+    config.get_steering_messages = Some(Box::new(move || {
+        steer
+            .steer
+            .lock()
+            .map(|mut queue| std::mem::take(&mut *queue))
+            .unwrap_or_default()
+    }));
+    config.get_follow_up_messages = Some(Box::new(move || {
+        follow
+            .follow_up
+            .lock()
+            .map(|mut queue| std::mem::take(&mut *queue))
+            .unwrap_or_default()
+    }));
+    let coupling = shared
+        .coupling
+        .lock()
+        .ok()
+        .and_then(|slot| slot.as_ref().cloned());
+    if let Some(coupling) = coupling {
+        config.first_turn_tool_choice = (coupling.on_prompt)(prompt);
+        let observe = Arc::clone(&coupling.on_turn);
+        config.prepare_next_turn = Some(Box::new(move |snapshot| {
+            observe(snapshot);
+            None
+        }));
+        let intercept = Arc::clone(&coupling.intercept_stop);
+        config.intercept_stop = Some(Box::new(move |snapshot| intercept(snapshot)));
+    }
 }
 
 fn prompt_text(prompt: &AgentMessage) -> String {
@@ -1148,10 +1001,14 @@ fn start_ext(shared: &Arc<Shared>, prompt: &str) {
 }
 
 fn user_message(text: &str) -> AgentMessage {
-    AgentMessage::User {
-        content: UserContent::Text(text.to_owned()),
-        timestamp: 0,
-    }
+    AgentMessage::host_user(UserContent::Text(text.to_owned()), 0)
+}
+
+/// Invariant: only input that crossed the process boundary mints
+/// [`yi_types::message::Attribution::User`]; every other user-role message the
+/// host writes stays unproven, so no `user://` address serves it.
+pub fn user_input(text: &str) -> AgentMessage {
+    AgentMessage::user_input(UserContent::Text(text.to_owned()), 0)
 }
 
 fn attribute_to_shared(shared: &Arc<Shared>, child: &Usage) {

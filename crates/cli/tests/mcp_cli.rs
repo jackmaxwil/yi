@@ -41,13 +41,12 @@ struct Output {
     stderr: String,
 }
 
-fn yi_mcp(home: &McpHome, args: &[&str]) -> Result<Output, Box<dyn Error>> {
+fn yi(home: &McpHome, args: &[&str]) -> Result<Output, Box<dyn Error>> {
     #[expect(
         clippy::disallowed_methods,
         reason = "the contract under test is the spawned binary's stdio"
     )]
     let output = std::process::Command::new(env!("CARGO_BIN_EXE_yi"))
-        .arg("mcp")
         .args(args)
         .env("HOME", &home.home)
         .output()?;
@@ -56,6 +55,12 @@ fn yi_mcp(home: &McpHome, args: &[&str]) -> Result<Output, Box<dyn Error>> {
         stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
         stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
     })
+}
+
+fn yi_mcp(home: &McpHome, args: &[&str]) -> Result<Output, Box<dyn Error>> {
+    let mut full = vec!["mcp"];
+    full.extend_from_slice(args);
+    yi(home, &full)
 }
 
 #[test]
@@ -221,6 +226,39 @@ fn skill_document_is_printed_only_by_explicit_ask() -> TestResult {
     assert_eq!(skill.code, 0);
     assert!(skill.stdout.contains("yi mcp: MCP command-line client"));
     assert!(skill.stdout.contains("progressive discovery") || skill.stdout.contains("grep"));
+    std::fs::remove_dir_all(&home.home)?;
+    Ok(())
+}
+
+#[test]
+fn fetch_resolves_an_mcp_url_through_the_one_shot_cli() -> TestResult {
+    let home = mcp_home()?;
+    let connected = yi_mcp(&home, &["connect", "fixture", "@fx"])?;
+    assert_eq!(connected.code, 0, "stderr: {}", connected.stderr);
+
+    let served = yi(&home, &["fetch", "mcp://fx/note://alpha"])?;
+    assert_eq!(served.code, 0, "stderr: {}", served.stderr);
+    let contents: serde_json::Value = serde_json::from_str(served.stdout.trim())?;
+    assert_eq!(contents["contents"][0]["uri"], "note://alpha");
+    assert_eq!(contents["contents"][0]["text"], "alpha");
+
+    let unconnected = yi(&home, &["fetch", "mcp://ghost/note://alpha"])?;
+    assert_eq!(unconnected.code, 1);
+    assert!(
+        unconnected.stderr.contains("backing store failed")
+            && unconnected.stderr.contains("unknown session @ghost"),
+        "{}",
+        unconnected.stderr
+    );
+
+    let addressless = yi(&home, &["fetch", "mcp://fx"])?;
+    assert_eq!(addressless.code, 1);
+    assert!(
+        addressless.stderr.contains("<server>/<resource uri>"),
+        "{}",
+        addressless.stderr
+    );
+
     std::fs::remove_dir_all(&home.home)?;
     Ok(())
 }

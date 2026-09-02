@@ -94,11 +94,15 @@ pub struct SubagentHostOptions {
     pub attribute: Arc<AttributeFn>,
     /// The plan a discovery's named ancestor task is resolved against.
     pub store: crate::goal::StoreHandle,
+    pub plans_dir: PathBuf,
 }
 
 pub struct SubagentHost {
     pub(crate) options: SubagentHostOptions,
     pub(crate) children: Mutex<HashMap<String, ChildRecord>>,
+    /// Invariant: a reap pin names `history://<child>`, and a child's file lives
+    /// under a `sub-*` directory no session repo scans, so it is kept by name here.
+    pub(crate) reaped: Mutex<HashMap<String, yi_session::SharedSession>>,
 }
 
 pub(crate) fn random_suffix() -> Result<String, String> {
@@ -242,6 +246,7 @@ fn require_kwargs(kwargs: &Map<String, Value>) -> Result<(), String> {
                     | "isolation"
                     | "deny_write"
                     | "deny_read"
+                    | "deny_url"
                     | "context"
                     | "check"
             )
@@ -356,6 +361,7 @@ impl SubagentHost {
         Self {
             options,
             children: Mutex::new(HashMap::new()),
+            reaped: Mutex::new(HashMap::new()),
         }
     }
 
@@ -631,6 +637,9 @@ impl SubagentHost {
         } else {
             ChildStatus::Completed
         };
+        // A reaped child has no record left; its product was already promoted,
+        // so the terminal notice would only echo a closed slot.
+        let mut reaped = true;
         if let Ok(mut children) = self.children.lock()
             && let Some(record) = children.get_mut(&child_id)
         {
@@ -638,6 +647,10 @@ impl SubagentHost {
             record.activity = ChildActivity::Waiting;
             record.error = error.clone();
             record.pending = record.pending.saturating_add(1);
+            reaped = false;
+        }
+        if reaped {
+            return;
         }
         self.publish(&child_id);
         // Terminal notices reach the parent as user-role host status, never as
@@ -675,6 +688,10 @@ impl SubagentHost {
         reply
     }
 
+    pub(crate) fn dispose_child_kernel(session: &AgentSession) {
+        session.dispose_kernel();
+    }
+
     pub(crate) fn key_of(
         children: &HashMap<String, ChildRecord>,
         target: &str,
@@ -684,6 +701,25 @@ impl SubagentHost {
             .find(|(id, record)| id.as_str() == target || record.session_name == target)
             .map(|(id, _)| id.clone())
             .ok_or_else(|| format!("No RLM child matches \"{target}\""))
+    }
+
+    pub fn transcript(&self, target: &str) -> Option<yi_session::SharedSession> {
+        let children = self.children.lock().ok()?;
+        let key = Self::key_of(&children, target).ok()?;
+        children.get(&key)?.session.store()
+    }
+
+    pub fn kept_transcript(&self, target: &str) -> Option<yi_session::SharedSession> {
+        self.reaped.lock().ok()?.get(target).cloned()
+    }
+
+    /// Invariant: a reap asks that a child no longer be running, so a host
+    /// holding no such child has already answered it — the caller skips rather
+    /// than refusing, which is what keeps a partial supersede cascade retryable.
+    pub fn holds(&self, target: &str) -> bool {
+        self.children
+            .lock()
+            .is_ok_and(|children| Self::key_of(&children, target).is_ok())
     }
 
     pub fn delete(&self, target: &str) -> Result<Map<String, Value>, String> {
@@ -706,6 +742,7 @@ impl SubagentHost {
         if record.status == ChildStatus::Running {
             record.session.abort();
         }
+        Self::dispose_child_kernel(&record.session);
         let mut reply = Map::new();
         reply.insert("subagent".to_owned(), child_entry(&key, &record));
         Ok(reply)

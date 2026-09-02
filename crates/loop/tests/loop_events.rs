@@ -39,10 +39,7 @@ fn faux_model() -> Model {
 }
 
 fn user(text: &str) -> AgentMessage {
-    AgentMessage::User {
-        content: yi_types::message::UserContent::Text(text.to_owned()),
-        timestamp: 0,
-    }
+    AgentMessage::host_user(yi_types::message::UserContent::Text(text.to_owned()), 0)
 }
 
 struct Scripted {

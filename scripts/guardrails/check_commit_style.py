@@ -14,6 +14,10 @@ FORMAT = "%H%x00%s%x00%(trailers:only,unfold,separator=%x0b)%x1e"
 # The optimizer's run record is landed law (prompt-flywheel plan §8) and git
 # appends the sign-off itself; every other key is the drift this gate stops.
 TRAILER_OK = re.compile(r"^(Opt-(Run|Delta|Lever|Cases)|Signed-off-by)$", re.I)
+# `Plan:` is the third carve-out: it indexes a commit to the todo that asked for
+# it, so `git blame` resolves to the user's own words. Its value is checked
+# because a trailer nothing can resolve indexes nothing.
+PLAN_TRAILER = re.compile(r"^plan://[a-z0-9.-]+/[^\s]+$")
 
 LIMIT = 72
 # Incident: the subject rules arrived on a lineage 62 commits ahead of main and
@@ -71,6 +75,10 @@ def trailer_errors(trailers):
         key, _, value = line.partition(":")
         key = key.strip()
         if not key or TRAILER_OK.match(key):
+            continue
+        if key.lower() == "plan":
+            if not PLAN_TRAILER.match(value.strip()):
+                errs.append(f"Plan trailer {value.strip()!r} is not a plan://<plan>/<todo> url")
             continue
         if key.lower() == "co-authored-by" and NAMED.search(value):
             errs.append(f"assistant co-author trailer {value.strip()!r}")

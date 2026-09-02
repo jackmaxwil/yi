@@ -127,7 +127,7 @@ bare).
 
 ### 3.1 Where the strings live
 
-Plans are files: one Markdown document per plan, YAML frontmatter, in
+Plans are files: one Markdown document per plan, JSON frontmatter (D105), in
 `.yi/plans/` at the workspace root — tracked by git, one config key
 (`plans.dir`) to move or ignore it. Not `docs/plans/`: that namespace is
 for human-authored deliverables, and a machine-churned ledger would
@@ -287,27 +287,35 @@ extension-registered code.
 **The frontmatter, `format: 1`** — the machine truth, schema-validated on
 every read, last-good recovered from the shadow gitdir:
 
-```yaml
-format: 1
-plan: 7f3a-auth-refactor
-goal: "Ship OAuth login end to end"   # edits are a user-attributed op (D25)
-version: 3
-tier: root                            # sub adds: parent: <plan>/<todo label>
-state: active
-todos:
-  - label: "Freeze the token API seam"      # ≤ 80 chars, unique, the address
-    state: done                       # ready is NEVER stored — derived from
-    output: kernel://token_api_seam   # `after` + states at read
-  - label: "Implement refresh flow"
-    state: running               # the running child is agent://<plan>/implement-refresh-flow
-    after: ["Freeze the token API seam"]
-    delegation:
-      spec:    { role: coder, effort: med, isolation: worktree }
-      accept:  { command: "cargo test -p yi-ai refresh" }   # or { stated: … }
-      output:  { schema: local://.yi/schemas/refresh_result.json }
-      context: ["plan://7f3a-auth-refactor/seam-notes", "local://docs/auth.md"]
-    retries: 1
+```json
+{
+  "format": 1,
+  "plan": "7f3a-auth-refactor",
+  "goal": "Ship OAuth login end to end",
+  "version": 3,
+  "tier": "root",
+  "state": "active",
+  "todos": [
+    {"label": "Freeze the token API seam", "state": "done",
+     "output": "kernel://token_api_seam"},
+    {"label": "Implement refresh flow", "state": "running",
+     "after": ["Freeze the token API seam"],
+     "delegation": {
+       "spec": {"role": "coder", "effort": "med", "isolation": "worktree"},
+       "accept": {"command": "cargo test -p yi-ai refresh"},
+       "output": {"schema": "local://.yi/schemas/refresh_result.json"},
+       "context": ["plan://7f3a-auth-refactor/seam-notes", "local://docs/auth.md"]
+     },
+     "retries": 1}
+  ]
+}
 ```
+
+Editing a goal is a user-attributed op (D25); `tier: sub` adds `parent:
+<plan>/<todo label>`; ready is never stored, it is derived from `after`
+plus states at read; the running child of a delegated todo is
+`agent://<plan>/<slug>`; a label is at most 80 chars, unique, and the
+address. Comments do not survive a rewrite, so the file carries none.
 
 Blocked stores its discriminant inline (`blocked: {on: user, note: …}`).
 Frontmatter ≤ 32 KiB. Body: one `## <todo label>` section per todo that
@@ -333,8 +341,10 @@ the manual path.
 - Goal text is denormalized into the root frontmatter; the op editing it
   accepts only user-attributed writes — D25 at the op seam.
 - Issues: one per **root** plan, sub-plans as nested sections; mirror
-  **off by default** (`plans.mirror`), one-way render out, inbound
-  comments as yard-fenced proposals. TB4/ARC degrade to files-only.
+  **off by default**, one-way render out, inbound comments as yard-fenced
+  proposals. TB4/ARC degrade to files-only. The `plans.mirror` key lands
+  with the mirror: a config switch for a feature nobody wrote reads as a
+  capability the tree does not have, so it is not carried ahead of it.
 - Concurrent sessions: `.yi/plans/.lease`, K1's lock discipline verbatim
   (pid file; stale = pid dead ∨ mtime > 30 s); `view` works, mutation is
   refused with the lease named; stale takeover is a recorded event.
@@ -405,8 +415,15 @@ content; topology decides eligibility.
   unrepresentable, not discouraged.
 - **Rehydration**: on resume, `Running` whose agent no longer exists
   reconciles to `Ready`, retries intact.
-- **Output lifetime**: at collect, a todo's output is promoted into the
-  plan owner's kernel (B14's schema seam). Sub-plan intermediates die with
+- **Output lifetime**: promotion runs at **reap, whatever the outcome** —
+  collect is a reap-time action, not a success-time one. A todo's output is
+  promoted into the plan owner's kernel (B14's schema seam), and a child
+  that failed after doing real work carries its last product as
+  `Failed{cause, last}`, host-minted at reap like every other pin, so
+  `retry`'s new context can *fetch* the failed attempt instead of being told
+  about it in prose. The terminal-record rule needs no extension to cover
+  it: `Failed` is terminal, so `last` is `history://`, `local://` or
+  `checkpoint://` and never `agent://`. Sub-plan intermediates die with
   their child unless folded into the todo's output. Live children are
   inspectable at will; dead ones through what was promoted.
 - **Windowed injection**: continuations and compaction re-inject counts
@@ -418,6 +435,29 @@ content; topology decides eligibility.
   the kernel is fast thinking.
 - **No budget minting**: a sub-plan has no budget field; a delegation's
   slice is an allocation of the parent todo's own allowance.
+- **A spawn ceiling is a fuse, not a budget**: `Spawns` rides the *root*
+  plan's frontmatter — sub-plans charge the root — is charged at one site
+  on every dispatch path, and is monotonic across `supersede` and
+  rehydration both, because a counter that reset is the runaway it exists
+  to catch and an in-memory one makes crash-resume unbounded. A budget
+  divides a real resource fairly; a fuse catches a bug in the model's own
+  control flow and should never fire in a healthy run. The user may edit
+  it down in the file, as the sanctioned second writer.
+- **Width is measured, never configured**: the dispatcher admits
+  `clamp(cores − 1, 1, 8)` children — `available_parallelism`, reserving
+  main's own kernel and builds, clamped *low* as well as high, because a
+  2-core container is exactly where `cpus − 2` goes to zero. The queued
+  follow-up names only that slice, so backpressure needs no state: nothing
+  is marked `Running` before its child exists, and `start` is never
+  refused for width. `bash()` handles are not children and never charge
+  it — conflating them would defeat the point of preferring them.
+- **A cap is refused or reported, never silently applied**: the 32 KiB
+  frontmatter cap is checked *before* the write and refused with what
+  exceeded and by how much, never written-then-trimmed; a windowed `view`
+  counts what it hid as well as what it showed; a held-back ready todo is
+  named in the follow-up, or backpressure reads as an empty ready set.
+  There is no separate todo-count cap: the byte cap binds first, and a
+  second one would be dead code beneath it.
 - **Authority does not recurse**: merge, commit, push, and user
   communication have no op on Plan or Todo at all; they exist only on
   main's session, whoever decomposed.
@@ -602,7 +642,7 @@ state. Affirmed from the 2026-08-31 ideation; each names what it rides.
   ephemeral URL); judgment rules are soft advisories (vague labels,
   skeleton-first violations); every threshold is fitted on task-shape
   features, never hand-set.
-- **The corpus as a kernel dataframe.** Plans are YAML files; `fetch`
+- **The corpus as a kernel dataframe.** Plans are JSON-fronted files; `fetch`
   plus a three-line loader and the model queries its own history
   mid-session — "what did we decide about auth last month" is a Python
   expression over its own past, not a memory feature.

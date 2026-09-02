@@ -235,15 +235,9 @@ async fn an_unknown_usage_never_pins_the_window_prefill() -> Result<(), Box<dyn 
         reported.input = 1_500;
         compactor.on_usage(&reported);
         let messages = vec![
-            AgentMessage::User {
-                content: UserContent::Text("ask ".repeat(30)),
-                timestamp: 0,
-            },
+            AgentMessage::host_user(UserContent::Text("ask ".repeat(30)), 0),
             reply_with_usage(&"answer ".repeat(30), 1_500, 1_600),
-            AgentMessage::User {
-                content: UserContent::Text("follow up".to_owned()),
-                timestamp: 0,
-            },
+            AgentMessage::host_user(UserContent::Text("follow up".to_owned()), 0),
         ];
         let provider = Arc::new(ProviderStream::new(None, None));
         let signal = yi_loop::interrupt::InterruptSignal::default();
