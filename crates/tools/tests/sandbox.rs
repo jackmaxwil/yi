@@ -87,6 +87,10 @@ fn the_policy_denies_by_default_and_names_its_roots() -> TestResult {
             && !sandbox.policy().contains("(allow network"),
         "bash wrap stays egress-off"
     );
+    assert!(
+        !kernel.contains("network-outbound") && !kernel.contains("system-socket"),
+        "the kernel binds and accepts; it never connects out, not even to localhost"
+    );
     let (program, prefix) = sandbox.kernel_prefix();
     assert_eq!(program, "/usr/bin/sandbox-exec");
     assert_eq!(prefix.last().map(String::as_str), Some("--"));

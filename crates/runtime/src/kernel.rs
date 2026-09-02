@@ -216,7 +216,10 @@ impl KernelService {
     fn kernel_wrap(&self, sandbox: Option<&yi_tools::Sandbox>) -> Option<(String, Vec<String>)> {
         let sandbox = sandbox.filter(|_| yi_tools::Sandbox::available())?;
         let mut profile = sandbox.clone();
-        profile.writable.push(self.options.home.join(".yi"));
+        // Only what the kernel side writes under ~/.yi; the venv stays read-only.
+        let yi = self.options.home.join(".yi");
+        profile.writable.push(yi.join("harness"));
+        profile.writable.push(yi.join("mcp"));
         profile.writable.sort();
         profile.writable.dedup();
         Some(profile.kernel_prefix())

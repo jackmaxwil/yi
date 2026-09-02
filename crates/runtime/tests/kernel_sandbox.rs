@@ -91,8 +91,33 @@ async fn an_ipython_cell_cannot_write_outside_the_confined_roots() -> TestResult
         !escape.is_file(),
         "the file must not exist after a contained write"
     );
+
+    // ~/.yi itself is read-only; only the harness store the kernel owns takes writes.
+    let yi = home.join(".yi");
+    let config = yi.join(format!("yi-p7-config-{}.txt", std::process::id()));
+    let config_path = config.display().to_string();
+    let denied = cell(&kernel, format!("open(r'{config_path}','w').write('x')")).await?;
+    assert_eq!(denied.result.status, yi_types::kernel::ExecuteStatus::Error);
+    assert!(
+        !config.is_file(),
+        "a cell must not write under ~/.yi itself"
+    );
+    let harness = yi.join("harness");
+    let store = harness.join(format!("yi-p7-store-{}.txt", std::process::id()));
+    let store_path = store.display().to_string();
+    let allowed = cell(
+        &kernel,
+        format!(
+            "import os\nos.makedirs(r'{}', exist_ok=True)\nopen(r'{store_path}','w').write('ok')",
+            harness.display()
+        ),
+    )
+    .await?;
+    assert_eq!(allowed.result.status, yi_types::kernel::ExecuteStatus::Ok);
+    assert_eq!(std::fs::read_to_string(&store)?, "ok");
     kernel.dispose().await;
     let _ = std::fs::remove_file(&escape);
+    let _ = std::fs::remove_file(&store);
     Ok(())
 }
 
