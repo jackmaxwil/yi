@@ -68,9 +68,16 @@ fn grid_note(tool: &str, command: &str, result: &yi_types::event::ToolResult) ->
         .flatten()
 }
 
-fn coroutine_note(tool: &str, result: &yi_types::event::ToolResult) -> Option<String> {
-    (tool == "ipython" && result_text(result).contains("<coroutine object "))
-        .then(crate::affordance::coroutine_leak)
+fn ipython_note(tool: &str, result: &yi_types::event::ToolResult) -> Option<String> {
+    if tool != "ipython" {
+        return None;
+    }
+    let text = result_text(result);
+    if text.contains("<coroutine object ") {
+        return Some(crate::affordance::coroutine_leak());
+    }
+    (text.contains("AttributeError") && text.contains("RLMSubagent") && text.contains("'name'"))
+        .then(crate::affordance::listing_name)
 }
 
 fn absolute(cwd: &std::path::Path, path: &str) -> PathBuf {
@@ -294,7 +301,7 @@ impl AgentTool for ToolAdapter {
                     if let Some(line) = grid_note(&name, &command, &output.result) {
                         crate::affordance::append(&mut output.result, &line);
                     }
-                    if let Some(line) = coroutine_note(&name, &output.result) {
+                    if let Some(line) = ipython_note(&name, &output.result) {
                         crate::affordance::append(&mut output.result, &line);
                     }
                     if let Some(ext) = &ext {

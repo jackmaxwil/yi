@@ -18,6 +18,13 @@ pub fn coroutine_leak() -> String {
     )
 }
 
+pub fn listing_name() -> String {
+    // Incident: list_subagents()[0].name raised; listings expose session_name, spawn handles expose name.
+    format!(
+        "{NEXT}list_subagents() entries expose session_name; RLMSpawnHandle.name is the spawn handle"
+    )
+}
+
 pub fn child_finished(name: &str) -> String {
     format!(
         "{NEXT}await rlm.result('{name}', schema=…) validates the answer host-side; the child stays addressable for follow-ups"

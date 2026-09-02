@@ -1,0 +1,49 @@
+{
+  "id": "mined-0003-subagent-listing-name",
+  "description": "list_subagents() entries expose session_name, not the spawn handle's name; a parent that indexes [0].name gets AttributeError and burns turns unless the result names the listing field (cluster 076dc628ba79)",
+  "provenance": {
+    "kind": "mined",
+    "session": "01a04771"
+  },
+  "stubs": [
+    {
+      "name": "ipython",
+      "results": [
+        {
+          "text": "AttributeError: 'RLMSubagent' object has no attribute 'name'"
+        }
+      ]
+    }
+  ],
+  "turns": [
+    {
+      "user": "list the running children and print the first child's name",
+      "responses": [
+        {
+          "toolCall": {
+            "id": "ipython-list-name",
+            "name": "ipython",
+            "arguments": {
+              "code": "print(list_subagents()[0].name)"
+            }
+          }
+        },
+        {
+          "text": "reading the first listed child"
+        }
+      ]
+    }
+  ],
+  "assertions": [
+    {
+      "kind": "toolResultContains",
+      "callId": "ipython-list-name",
+      "needle": "next: list_subagents() entries expose session_name; RLMSpawnHandle.name is the spawn handle"
+    },
+    {
+      "kind": "toolCallCount",
+      "name": "ipython",
+      "max": 1
+    }
+  ]
+}
