@@ -187,6 +187,8 @@ fn draw_frame<B>(
     let status_row = crate::status::render(&status_input, width, &theme);
     let bottom_lines: Option<Vec<Line<'static>>> = if let Some(tree) = &app.tree {
         Some(tree.lines(width, &theme, tree_rows(app.rows)))
+    } else if let Some(plan_tree) = &app.plan_tree {
+        Some(plan_tree.lines(width, &theme, tree_rows(app.rows)))
     } else {
         match &app.bottom {
             Some(Bottom::Approval(view, _)) => Some(view.lines(width, &theme)),

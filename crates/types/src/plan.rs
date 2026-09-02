@@ -1,3 +1,7 @@
+pub mod doc;
+pub mod ids;
+pub mod ledger;
+
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
@@ -99,6 +103,11 @@ pub struct Plan {
     pub tasks: Vec<Task>,
     pub created: u64,
     pub updated: u64,
+    /// Invariant: unvalidated, like every sibling id here — a validating
+    /// newtype on a durable JSONL field makes one bad pointer fail the whole
+    /// session file. Set means a [`crate::plan::doc::PlanId`] file is truth.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub doc: Option<String>,
     #[serde(flatten)]
     pub extra: Map<String, Value>,
 }
@@ -125,5 +134,30 @@ impl Plan {
 
     pub fn is_finished(&self) -> bool {
         !self.tasks.is_empty() && self.tasks.iter().all(|task| task.state == TaskState::Done)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::wire::{Fact, Mutation};
+
+    #[test]
+    fn a_malformed_doc_pointer_leaves_the_fact_loadable() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let line = concat!(
+            r#"{"kind":"fact","seq":1,"fact":"plan","plan":{"version":1,"tasks":[],"#,
+            r#""created":0,"updated":0,"doc":"NOT_a.plan.id"}}"#
+        );
+        let Mutation::Fact {
+            fact: Fact::Plan { plan },
+            ..
+        } = serde_json::from_str(line)?
+        else {
+            return Err("expected a plan fact".into());
+        };
+        assert_eq!(plan.doc.as_deref(), Some("NOT_a.plan.id"));
+        assert!(crate::plan::doc::PlanId::new("NOT_a.plan.id").is_err());
+        assert!(serde_json::to_string(&plan)?.contains("NOT_a.plan.id"));
+        Ok(())
     }
 }

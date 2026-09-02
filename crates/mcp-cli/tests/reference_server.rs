@@ -98,6 +98,23 @@ fn a_multiline_argument_survives_the_line_framing() -> Result<(), Box<dyn Error>
 }
 
 #[test]
+fn resources_read_returns_the_resource_and_names_an_unknown_uri() -> Result<(), Box<dyn Error>> {
+    let uri = "echo://greeting".to_owned();
+    let read = one_shot(&server_spec()?, Op::ResourcesRead { uri })?;
+    assert_eq!(
+        read.pointer("/contents/0/text").and_then(Value::as_str),
+        Some("the greeting")
+    );
+    let uri = "echo://missing".to_owned();
+    let outcome = one_shot(&server_spec()?, Op::ResourcesRead { uri });
+    let message = outcome
+        .err()
+        .ok_or("an unknown resource should not succeed")?;
+    assert!(message.contains("resources/read failed"), "{message}");
+    Ok(())
+}
+
+#[test]
 fn ping_reports_the_negotiated_version() -> Result<(), Box<dyn Error>> {
     let pong = one_shot(&server_spec()?, Op::Ping)?;
     assert_eq!(pong.pointer("/ok").and_then(Value::as_bool), Some(true));

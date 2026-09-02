@@ -1,5 +1,5 @@
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 
 use yi_context::{
     Prefill, Preparation, Scope, Settings, Tokens, Window, compose_summary, convert_to_llm,
@@ -13,6 +13,48 @@ use yi_types::message::{AgentMessage, Content, StopReason, Usage, UserContent};
 use yi_types::model::{Effort, LlmContext, Model};
 
 use crate::provider::ProviderStream;
+
+pub type CompactFuture =
+    std::pin::Pin<Box<dyn std::future::Future<Output = Option<Vec<AgentMessage>>> + Send>>;
+pub type CompactHook = Box<dyn Fn(&[AgentMessage]) -> CompactFuture + Send + Sync>;
+pub type StoreOf = Arc<dyn Fn() -> Option<yi_session::SharedSession> + Send + Sync>;
+
+/// Adapts the [`Compactor`] to the loop's mid-run compaction slot.
+pub fn loop_hook(
+    compactor: Arc<Compactor>,
+    provider: Arc<ProviderStream>,
+    model: Model,
+    system_prompt: Arc<dyn Fn() -> String + Send + Sync>,
+    store: StoreOf,
+    compacted: Arc<dyn Fn() + Send + Sync>,
+) -> CompactHook {
+    Box::new(move |messages: &[AgentMessage]| {
+        let compactor = Arc::clone(&compactor);
+        let provider = Arc::clone(&provider);
+        let model = model.clone();
+        let assembled = system_prompt();
+        let store = store();
+        let compacted = Arc::clone(&compacted);
+        let messages = messages.to_vec();
+        Box::pin(async move {
+            let signal = InterruptSignal::default();
+            let replaced = compactor
+                .maybe_compact(
+                    &messages,
+                    &model,
+                    &assembled,
+                    provider.as_ref(),
+                    store.as_ref(),
+                    &signal,
+                )
+                .await;
+            if replaced.is_some() {
+                compacted();
+            }
+            replaced
+        })
+    })
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CompactStatus {
@@ -32,7 +74,12 @@ pub struct Compactor {
     window: Mutex<Window>,
     pending: AtomicBool,
     instructions: Mutex<Option<String>>,
+    standing: Mutex<Option<Standing>>,
 }
+
+/// Read at every compaction rather than stored, so a directive derived from
+/// live state cannot go stale between the schedule and the summarizer call.
+pub type Standing = std::sync::Arc<dyn Fn() -> Option<String> + Send + Sync>;
 
 fn lock_window(window: &Mutex<Window>) -> std::sync::MutexGuard<'_, Window> {
     window
@@ -102,6 +149,13 @@ pub(crate) async fn complete_text(
     Err("summarizer stream ended without a terminal event".to_owned())
 }
 
+fn merge(standing: Option<String>, once: Option<String>) -> Option<String> {
+    match (standing, once) {
+        (Some(standing), Some(once)) => Some(format!("{standing}\n\n{once}")),
+        (standing, once) => standing.or(once),
+    }
+}
+
 fn directive_message(prepared: &Preparation, instructions: Option<&str>) -> AgentMessage {
     let mut text = String::new();
     if let Some(previous) = &prepared.previous_summary {
@@ -113,10 +167,7 @@ fn directive_message(prepared: &Preparation, instructions: Option<&str>) -> Agen
         instructions,
         prepared.previous_summary.as_deref(),
     ));
-    AgentMessage::User {
-        content: UserContent::Text(text),
-        timestamp: 0,
-    }
+    AgentMessage::host_user(UserContent::Text(text), 0)
 }
 
 impl Compactor {
@@ -128,7 +179,31 @@ impl Compactor {
             window: Mutex::new(Window::new_initial(initial_window_id)),
             pending: AtomicBool::new(false),
             instructions: Mutex::new(None),
+            standing: Mutex::new(None),
         }
+    }
+
+    /// A directive that rides every compaction, ahead of whatever `/compact`
+    /// asked for once. The caller's own words win, so this leads.
+    pub fn set_standing(&self, standing: Standing) {
+        if let Ok(mut slot) = self.standing.lock() {
+            *slot = Some(standing);
+        }
+    }
+
+    pub fn standing_directive(&self) -> Option<String> {
+        self.standing
+            .lock()
+            .ok()
+            .and_then(|slot| slot.clone())
+            .and_then(|read| read())
+    }
+
+    /// What the next compaction would tell the summarizer, without spending the
+    /// one-shot half — the same merge that compaction itself applies.
+    pub fn pending_directive(&self) -> Option<String> {
+        let once = self.instructions.lock().ok().and_then(|slot| slot.clone());
+        merge(self.standing_directive(), once)
     }
 
     pub fn schedule(&self) {
@@ -210,11 +285,12 @@ impl Compactor {
             return None;
         }
         self.pending.store(false, Ordering::Relaxed);
-        let instructions = self
+        let once = self
             .instructions
             .lock()
             .ok()
             .and_then(|mut slot| slot.take());
+        let instructions = merge(self.standing_directive(), once);
         let entries: Vec<Entry> = match store {
             Some(store) => yi_session::lock_session(store)
                 .find_entries_on_branch(
@@ -237,6 +313,7 @@ impl Compactor {
                 converted
             },
             tools: None,
+            tool_choice: None,
         };
         let summarizer = self.summarizer.as_ref().unwrap_or(model);
         let summary = match complete_text(provider, summarizer, &request(messages), signal).await {
