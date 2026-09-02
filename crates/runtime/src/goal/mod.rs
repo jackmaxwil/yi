@@ -79,8 +79,6 @@ pub enum GoalEditError {
     NotUser { citation: String },
     #[error("goal edit refused: {citation} does not resolve: {detail}")]
     Unresolved { citation: String, detail: String },
-    #[error("goal edit refused: {citation} names a message without user attribution")]
-    Unattributed { citation: String },
 }
 pub type DeliverFn = Arc<dyn Fn(AgentMessage, DeliveryMode) + Send + Sync>;
 
@@ -456,31 +454,11 @@ impl GoalService {
             })?;
         let store =
             (self.store)().ok_or_else(|| unresolved("no session store is attached".to_owned()))?;
-        let entries = yi_session::lock_session(&store)
-            .find_entries(&yi_session::EntryQuery {
-                order: yi_session::EntryOrder::OldestFirst,
-                ..yi_session::EntryQuery::default()
-            })
-            .map_err(|error| unresolved(error.to_string()))?;
-        let users: Vec<&AgentMessage> = entries
-            .iter()
-            .filter_map(|entry| {
-                if let yi_types::entry::Entry::Message { message, .. } = entry
-                    && matches!(message, AgentMessage::User { .. })
-                {
-                    Some(message)
-                } else {
-                    None
-                }
-            })
-            .collect();
-        let cited = users
-            .get(ordinal.saturating_sub(1))
-            .ok_or_else(|| unresolved(format!("only {} user message(s) exist", users.len())))?;
-        if cited.attribution() != yi_types::message::Attribution::User {
-            return Err(GoalEditError::Unattributed {
-                citation: citation.to_owned(),
-            });
+        let held = crate::fetch::user_inputs(&store).map_err(unresolved)?.len();
+        if ordinal > held {
+            return Err(unresolved(format!(
+                "the transcript holds {held} attributed user message(s)"
+            )));
         }
         Ok(())
     }

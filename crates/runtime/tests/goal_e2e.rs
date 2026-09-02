@@ -628,8 +628,10 @@ fn a_goal_edit_requires_an_attributed_user_citation() -> TestResult {
         .set_objective("new objective", Some("user://2"))
         .err();
     assert!(
-        forged.is_some_and(|error| error.contains("without user attribution")),
-        "citing a host-minted message must be refused"
+        forged
+            .as_ref()
+            .is_some_and(|error| error.contains("holds 1")),
+        "a host-minted message is invisible to the index, so it cannot be cited: {forged:?}"
     );
     let dangling = service
         .set_objective("new objective", Some("user://9"))
@@ -644,5 +646,33 @@ fn a_goal_edit_requires_an_attributed_user_citation() -> TestResult {
         .map(|goal| goal.objective)
         .unwrap_or_default();
     assert_eq!(objective, "new objective");
+    Ok(())
+}
+
+/// Incident: the goal check counted every user-role message and the resolver
+/// only attributed ones, so one host-minted message between two asks made
+/// `user://2` name different messages at the two seams.
+#[test]
+fn a_citation_ordinal_names_the_same_message_at_the_goal_and_the_fetch_seam() -> TestResult {
+    let (service, store, _delivered) = service_with_store();
+    service.create("original objective", None, None, None)?;
+    {
+        let mut session = yi_session::lock_session(&store);
+        session.append_message(
+            "main",
+            AgentMessage::user_input(UserContent::Text("first ask".to_owned()), 1),
+        )?;
+        session.append_message(
+            "main",
+            AgentMessage::host_user(UserContent::Text("host-minted continuation".to_owned()), 2),
+        )?;
+        session.append_message(
+            "main",
+            AgentMessage::user_input(UserContent::Text("second ask".to_owned()), 3),
+        )?;
+    }
+    let inputs = yi_runtime::fetch::user_inputs(&store)?;
+    assert_eq!(inputs.len(), 2, "the index skips the host-minted message");
+    service.set_objective("new objective", Some("user://2"))?;
     Ok(())
 }

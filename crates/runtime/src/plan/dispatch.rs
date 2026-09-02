@@ -276,6 +276,7 @@ mod tests {
         pins: Arc<FetchLog>,
         reports: Arc<Mutex<Vec<AgentMessage>>>,
         delivered: Arc<Mutex<Vec<AgentMessage>>>,
+        cwd: PathBuf,
     }
 
     fn rig(child_answer: &'static str) -> Result<Rig, Box<dyn std::error::Error>> {
@@ -326,6 +327,7 @@ mod tests {
             pins,
             reports,
             delivered,
+            cwd: root,
         })
     }
 
@@ -425,20 +427,26 @@ mod tests {
         let pin = rig.pins.pin_of(&agent).ok_or("no pin registered at reap")?;
         assert_eq!(pin.durability(), Durability::Durable);
         assert!(pin.to_string().starts_with("history://"), "{pin}");
+        // Incident: the real seam looked a reaped child up by name under the
+        // sessions root, where no child transcript lives; only a stub desk passed.
         let resolver =
             crate::fetch::Resolver::new(scratch("resolver")?, crate::wall::Wall::default())
-                .with_log(Arc::clone(&rig.pins));
-        let error = resolver
-            .fetch(&agent)
-            .err()
-            .ok_or("the pinned history target has no attached session here")?;
+                .with_log(Arc::clone(&rig.pins))
+                .with_transcripts(Arc::new(crate::fetch::SessionTranscripts::new(
+                    Arc::clone(&rig.host),
+                    None,
+                    &rig.cwd,
+                )));
+        let fetched = resolver.fetch(&agent)?;
         assert!(
-            matches!(
-                &error,
-                crate::fetch::FetchError::Unsupported { missing, .. }
-                    if *missing == crate::fetch::SESSION_MISSING
-            ),
-            "agent:// must resolve through the shared log into its pin, got: {error}"
+            fetched.served_by.starts_with("reap-pin history://"),
+            "agent:// must resolve through the shared log into its pin: {}",
+            fetched.served_by
+        );
+        assert!(
+            fetched.text.contains("seam is cut"),
+            "the reaped child's transcript answers for its pin: {}",
+            fetched.text
         );
         assert!(
             rig.host.children_view().is_empty(),

@@ -354,7 +354,7 @@ impl PlanTreeView {
     }
 }
 
-fn subplans_of(plan: &Plan) -> Vec<Plan> {
+fn subplans_of(plan: &Plan, plans_dir: &std::path::Path) -> Vec<Plan> {
     let ids: Vec<_> = plan
         .todos
         .iter()
@@ -363,7 +363,7 @@ fn subplans_of(plan: &Plan) -> Vec<Plan> {
     if ids.is_empty() {
         return Vec::new();
     }
-    let Ok(store) = PlanStore::open(yi_runtime::plan::default_plans_dir()) else {
+    let Ok(store) = PlanStore::open(plans_dir.to_path_buf()) else {
         return Vec::new();
     };
     ids.iter()
@@ -384,7 +384,7 @@ pub(crate) fn open_plan_tree(app: &mut App, session: &AgentSession) {
     match service.read_plan() {
         Err(error) => notice(app, format!("/plantree: {error}")),
         Ok(plan) => {
-            let subplans = subplans_of(&plan);
+            let subplans = subplans_of(&plan, service.plans_dir());
             app.plan_tree = Some(PlanTreeView::new(&plan, &subplans));
         }
     }

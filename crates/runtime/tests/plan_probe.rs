@@ -12,7 +12,7 @@ use yi_runtime::plan::probe::{FIRST_DELAY, MAX_DELAY, ProbeLadder, Rung, Verdict
 use yi_runtime::plan::store::PlanStore;
 use yi_types::message::AgentMessage;
 use yi_types::plan::doc::{
-    AgentId, BlockedOn, Delegation, GoalText, ProbeCommand, TodoAddr, TodoLabel, TodoState,
+    AgentId, BlockedOn, Delegation, GoalText, PlanId, ProbeCommand, TodoAddr, TodoLabel, TodoState,
 };
 use yi_types::url::Url;
 
@@ -69,7 +69,6 @@ fn rig() -> Result<(Rig, ProbeLadder), Box<dyn Error>> {
     let count = Arc::clone(&ran);
     let ladder = ProbeLadder::new(
         Arc::clone(&engine),
-        Arc::new(|| None),
         dir.clone(),
         Arc::new(move |message: AgentMessage, _mode| {
             if let AgentMessage::Custom { content, .. } = message
@@ -136,6 +135,80 @@ fn arm(ladder: &ProbeLadder) -> Result<Instant, Box<dyn Error>> {
     start
         .checked_add(FIRST_DELAY)
         .ok_or("clock overflowed".into())
+}
+
+/// Incident: the ladder walked the canonical root alone, so a block inside a
+/// sub-plan was never probed and never nudged.
+#[test]
+fn a_block_inside_a_sub_plan_is_probed_too() -> TestResult {
+    let (rig, ladder) = rig()?;
+    let owner = |plan: Option<PlanId>, op: Op| OpRequest {
+        plan,
+        actor: Actor::Owner,
+        op,
+    };
+    rig.engine.apply(owner(
+        None,
+        Op::Init {
+            goal: GoalText::new("wait on the world")?,
+            todos: vec![TodoSpec {
+                label: TodoLabel::new("deploy the widget")?,
+                after: Vec::new(),
+                delegation: None,
+            }],
+        },
+    ))?;
+    rig.engine.apply(owner(
+        None,
+        Op::Start {
+            label: TodoLabel::new("deploy the widget")?,
+        },
+    ))?;
+    let sub = rig
+        .engine
+        .apply(owner(
+            None,
+            Op::Decompose {
+                label: TodoLabel::new("deploy the widget")?,
+                todos: vec![TodoSpec {
+                    label: TodoLabel::new("wait for staging")?,
+                    after: Vec::new(),
+                    delegation: None,
+                }],
+            },
+        ))?
+        .subplan
+        .ok_or("decompose opened no sub-plan")?;
+    rig.engine.apply(owner(
+        Some(sub.clone()),
+        Op::Block {
+            label: TodoLabel::new("wait for staging")?,
+            on: BlockedOn::External {
+                probe: Some(ProbeCommand::new("curl staging")?),
+            },
+            note: "staging is deploying".to_owned(),
+        },
+    ))?;
+    rig.green.store(true, Ordering::SeqCst);
+    let due = arm(&ladder)?;
+    let verdicts = ladder.tick(due);
+    assert_eq!(
+        verdicts,
+        vec![Verdict::Unblocked {
+            label: TodoLabel::new("wait for staging")?
+        }],
+        "the sub-plan's block is on the ladder"
+    );
+    let todo = rig
+        .store
+        .read(&sub)?
+        .plan
+        .todo(&TodoLabel::new("wait for staging")?)
+        .ok_or("todo missing")?
+        .state
+        .clone();
+    assert_eq!(todo, TodoState::Pending);
+    Ok(())
 }
 
 fn state_of(rig: &Rig, label: &str) -> Result<TodoState, Box<dyn Error>> {

@@ -4,11 +4,12 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use yi_types::message::{AgentMessage, UserContent};
-use yi_types::plan::doc::{BlockedOn, Plan, PlanId, TodoLabel, TodoState};
+use yi_types::plan::doc::{BlockedOn, Plan, PlanId, PlanState, TodoLabel, TodoState};
 use yi_types::schedule::DeliveryMode;
 
 use super::ops::{Actor, Op, OpRequest, PlanEngine};
-use crate::goal::{DeliverFn, StoreHandle};
+use super::store::PlanStore;
+use crate::goal::DeliverFn;
 
 pub const FIRST_DELAY: Duration = Duration::from_secs(60);
 
@@ -20,6 +21,7 @@ pub const MAX_DELAY: Duration = Duration::from_secs(30 * 60);
 const IDLE_POLL: Duration = Duration::from_secs(60);
 
 const PROBE_TIMEOUT_MS: u64 = 30_000;
+const SATURATED_SHIFT: u32 = 5;
 
 pub type ProbeRun = Arc<dyn Fn(&str) -> Result<(), String> + Send + Sync>;
 
@@ -30,20 +32,15 @@ pub type ProbeRun = Arc<dyn Fn(&str) -> Result<(), String> + Send + Sync>;
 pub struct Rung(u32);
 
 impl Rung {
+    /// Incident: `checked_shl` refuses only a shift of 64 or more, so rungs 62
+    /// and 63 shifted every bit out and read as a zero-second delay.
     pub fn delay(self) -> Duration {
-        let seconds = FIRST_DELAY
-            .as_secs()
-            .checked_shl(self.0)
-            .unwrap_or(u64::MAX);
+        let seconds = FIRST_DELAY.as_secs() << self.0.min(SATURATED_SHIFT);
         Duration::from_secs(seconds.min(MAX_DELAY.as_secs()))
     }
 
     pub fn next(self) -> Self {
         Self(self.0.saturating_add(1))
-    }
-
-    pub fn attempts(self) -> u32 {
-        self.0
     }
 }
 
@@ -69,7 +66,6 @@ struct Pending {
 /// at the ceiling interval, because a block nobody re-examines never returns.
 pub struct ProbeLadder {
     engine: Arc<PlanEngine>,
-    store: StoreHandle,
     plans_dir: PathBuf,
     deliver: DeliverFn,
     run: ProbeRun,
@@ -77,15 +73,9 @@ pub struct ProbeLadder {
 }
 
 impl ProbeLadder {
-    pub fn new(
-        engine: Arc<PlanEngine>,
-        store: StoreHandle,
-        plans_dir: PathBuf,
-        deliver: DeliverFn,
-    ) -> Self {
+    pub fn new(engine: Arc<PlanEngine>, plans_dir: PathBuf, deliver: DeliverFn) -> Self {
         Self {
             engine,
-            store,
             plans_dir,
             deliver,
             run: Arc::new(|command| crate::goal::run_check(command, PROBE_TIMEOUT_MS)),
@@ -98,53 +88,62 @@ impl ProbeLadder {
         self
     }
 
-    fn plan(&self) -> Option<Plan> {
-        super::canonical_plan(&self.store, &self.plans_dir).ok()
+    fn plans(&self) -> Vec<Plan> {
+        let Ok(store) = PlanStore::open(self.plans_dir.clone()) else {
+            return Vec::new();
+        };
+        store
+            .list()
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|id| store.read(&id).ok())
+            .map(|file| file.plan)
+            .filter(|plan| plan.state == PlanState::Active)
+            .collect()
     }
 
     /// Invariant: due times live only in memory, so a resumed session restarts
     /// every ladder at the first rung — a probe is cheap and re-running one is
     /// not the runaway the spawn fuse guards, which is why it may reset.
     pub fn tick(&self, now: Instant) -> Vec<Verdict> {
-        let Some(plan) = self.plan() else {
-            return Vec::new();
-        };
         let mut verdicts = Vec::new();
         let mut live = Vec::new();
-        for todo in &plan.todos {
-            let TodoState::Blocked {
-                on: BlockedOn::External { probe },
-                note: _,
-            } = &todo.state
-            else {
-                continue;
-            };
-            let slot = key(&plan.id, &todo.label);
-            live.push(slot.clone());
-            if !self.due(&slot, now) {
-                continue;
-            }
-            let verdict = match probe {
-                Some(command) => match (self.run)(command.as_str()) {
-                    Ok(()) => {
-                        self.unblock(&plan.id, &todo.label);
-                        Verdict::Unblocked {
+        for plan in self.plans() {
+            for todo in &plan.todos {
+                let TodoState::Blocked {
+                    on: BlockedOn::External { probe },
+                    note: _,
+                } = &todo.state
+                else {
+                    continue;
+                };
+                let slot = key(&plan.id, &todo.label);
+                live.push(slot.clone());
+                if !self.due(&slot, now) {
+                    continue;
+                }
+                let verdict = match probe {
+                    Some(command) => match (self.run)(command.as_str()) {
+                        Ok(()) => {
+                            self.unblock(&plan.id, &todo.label);
+                            Verdict::Unblocked {
+                                label: todo.label.clone(),
+                            }
+                        }
+                        Err(_red) => Verdict::Retry {
+                            label: todo.label.clone(),
+                            rung: self.climb(&slot, now),
+                        },
+                    },
+                    None => {
+                        self.nudge(&slot, now, &todo.label);
+                        Verdict::Nudged {
                             label: todo.label.clone(),
                         }
                     }
-                    Err(_red) => Verdict::Retry {
-                        label: todo.label.clone(),
-                        rung: self.climb(&slot, now),
-                    },
-                },
-                None => {
-                    self.nudge(&slot, now, &todo.label);
-                    Verdict::Nudged {
-                        label: todo.label.clone(),
-                    }
-                }
-            };
-            verdicts.push(verdict);
+                };
+                verdicts.push(verdict);
+            }
         }
         self.forget_all_but(&live);
         verdicts
@@ -276,6 +275,8 @@ mod tests {
 
     #[test]
     fn a_rung_far_past_the_ceiling_still_names_the_ceiling() {
-        assert_eq!(Rung(4_000_000_000).delay(), MAX_DELAY);
+        for rung in [6, 31, 62, 63, 64, 4_000_000_000] {
+            assert_eq!(Rung(rung).delay(), MAX_DELAY, "rung {rung}");
+        }
     }
 }

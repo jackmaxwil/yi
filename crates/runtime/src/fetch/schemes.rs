@@ -4,15 +4,14 @@ use yi_permission::lexical_normalize;
 use yi_session::{EntryOrder, EntryQuery};
 use yi_tools::hashline::format::compute_file_hash;
 use yi_tools::hashline::normalize::{normalize_to_lf, strip_bom};
-use yi_types::entry::Entry;
-use yi_types::message::{AgentMessage, Attribution, UserContent};
+use yi_types::message::UserContent;
 use yi_types::plan::doc::Plan;
 use yi_types::plan::ids::TodoAddr;
 use yi_types::url::Url;
 
 use super::{
     CHECKPOINT_MISSING, FetchError, KERNEL_MISSING, MCP_MISSING, Resolver, SESSION_MISSING,
-    unsupported,
+    Transcript, unsupported,
 };
 use crate::kernel::{VariableName, VariableReadError};
 use crate::plan::yaml;
@@ -157,7 +156,9 @@ impl Resolver {
         if self.session_agent() == Some(agent) {
             return self.session_store();
         }
-        self.transcripts().and_then(|desk| desk.open(agent))
+        self.transcripts()
+            .and_then(|desk| desk.open(agent))
+            .map(Transcript::session)
     }
 
     pub(super) fn resolve_kernel(&self, url: &Url) -> Result<Served, FetchError> {
@@ -206,7 +207,9 @@ impl Resolver {
     pub(super) fn resolve_agent(&self, url: &Url) -> Result<Served, FetchError> {
         // §5: a live child is inspectable at will and a dead one through what
         // the reap promoted, so the running transcript answers before the pin.
-        if let Some(session) = self.transcripts().and_then(|desk| desk.open(url.path())) {
+        if let Some(Transcript::Live(session)) =
+            self.transcripts().and_then(|desk| desk.open(url.path()))
+        {
             let (text, _reaped) = render_history(url, &session, None)?;
             return Ok((text, format!("live-child {}", url.path())));
         }
@@ -236,39 +239,20 @@ impl Resolver {
         let Some(session) = self.session_store() else {
             return Err(unsupported(url, SESSION_MISSING));
         };
-        let store = yi_session::lock_session(&session);
-        let entries = store
-            .find_entries(&EntryQuery {
-                order: EntryOrder::OldestFirst,
-                ..EntryQuery::default()
-            })
-            .map_err(|error| FetchError::Backend {
-                url: url.to_string(),
-                message: error.to_string(),
-            })?;
-        let mut seen = 0usize;
-        for entry in &entries {
-            let Entry::Message {
-                message:
-                    AgentMessage::User {
-                        content,
-                        attribution: Attribution::User,
-                        ..
-                    },
-                ..
-            } = entry
-            else {
-                continue;
-            };
-            seen = seen.saturating_add(1);
-            if seen == ordinal {
-                return Ok((user_text(url, content)?, "user-input".to_owned()));
-            }
-        }
-        Err(FetchError::NotFound {
+        let inputs = super::user_inputs(&session).map_err(|message| FetchError::Backend {
             url: url.to_string(),
-            what: format!("attributed user message {ordinal}: the transcript holds {seen}"),
-        })
+            message,
+        })?;
+        match inputs.get(ordinal.saturating_sub(1)) {
+            Some(content) => Ok((user_text(url, content)?, "user-input".to_owned())),
+            None => Err(FetchError::NotFound {
+                url: url.to_string(),
+                what: format!(
+                    "attributed user message {ordinal}: the transcript holds {}",
+                    inputs.len()
+                ),
+            }),
+        }
     }
 
     pub(super) fn resolve_mcp(&self, url: &Url) -> Result<Served, FetchError> {
@@ -409,6 +393,7 @@ mod tests {
     use super::*;
     use crate::fetch::{FetchLog, KernelVariables, McpResourceRead, open_checkpoint_show};
     use crate::wall::Wall;
+    use yi_types::message::AgentMessage;
 
     struct StubKernel;
 
@@ -745,8 +730,8 @@ mod tests {
     struct Desk(String, yi_session::SharedSession);
 
     impl super::super::Transcripts for Desk {
-        fn open(&self, agent: &str) -> Option<yi_session::SharedSession> {
-            (agent == self.0).then(|| std::sync::Arc::clone(&self.1))
+        fn open(&self, agent: &str) -> Option<Transcript> {
+            (agent == self.0).then(|| Transcript::Live(std::sync::Arc::clone(&self.1)))
         }
     }
 

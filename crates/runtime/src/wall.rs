@@ -81,10 +81,19 @@ impl Wall {
         {
             return Some(refusal("fetch", hit));
         }
-        if !matches!(url.scheme(), Scheme::Local) {
-            return None;
-        }
-        let raw = Path::new(url.path());
+        let raw = match url.scheme() {
+            Scheme::Local => Path::new(url.path()),
+            Scheme::Checkpoint => {
+                Path::new(url.path().split_once('/').map_or("", |(_, path)| path))
+            }
+            Scheme::Kernel
+            | Scheme::Plan
+            | Scheme::Agent
+            | Scheme::History
+            | Scheme::Mcp
+            | Scheme::User
+            | Scheme::External(_) => return None,
+        };
         let target = if raw.is_absolute() {
             raw.to_path_buf()
         } else {

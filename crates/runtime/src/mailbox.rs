@@ -517,6 +517,11 @@ impl SubagentHost {
             (None, None) => "(no product)".to_owned(),
         };
         let name = record.session_name.clone();
+        if let Some(store) = record.session.store()
+            && let Ok(mut reaped) = self.reaped.lock()
+        {
+            reaped.insert(name.clone(), store);
+        }
         (self.options.report)(AgentMessage::Custom {
             custom_type: "reap".to_owned(),
             content: UserContent::Text(format!(
