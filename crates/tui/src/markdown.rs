@@ -88,7 +88,7 @@ struct Builder<'t> {
     pending_marker: Option<Span<'static>>,
     in_code_block: bool,
     continued: bool,
-    code_lang: Option<crate::highlight::Lang>,
+    code_lang: &'t mut Option<crate::highlight::Lang>,
     link_dest: Option<String>,
     table: Option<TableState>,
 }
@@ -199,7 +199,7 @@ impl Builder<'_> {
             return;
         }
         if self.in_code_block {
-            let base = self.theme.dim_style();
+            let base = self.theme.syntax_style(crate::highlight::Token::Plain);
             for raw in text.split_inclusive('\n') {
                 let chunk = raw.strip_suffix('\n');
                 let body = chunk.unwrap_or(raw);
@@ -335,14 +335,17 @@ fn reduce_table(b: &mut Builder, event: &Event) -> bool {
 }
 
 pub fn render(source: &str, width: usize, theme: &Theme) -> Vec<Line<'static>> {
-    render_inner(source, width, theme, false)
+    render_stream(source, width, theme, false, &mut None)
 }
-/// A slice whose first fence reopens a block already on screen: the rail
-/// header is drawn once per block, not once per streamed line.
-pub fn render_continuation(source: &str, width: usize, theme: &Theme) -> Vec<Line<'static>> {
-    render_inner(source, width, theme, true)
-}
-fn render_inner(source: &str, width: usize, theme: &Theme, continued: bool) -> Vec<Line<'static>> {
+/// `continued` reopens a fence already on screen: its rail header is drawn once
+/// per block, and `lang` carries the syntax parse state across the commit seam.
+pub fn render_stream(
+    source: &str,
+    width: usize,
+    theme: &Theme,
+    continued: bool,
+    lang: &mut Option<crate::highlight::Lang>,
+) -> Vec<Line<'static>> {
     let width = width.max(4);
     let mut b = Builder {
         theme,
@@ -355,7 +358,7 @@ fn render_inner(source: &str, width: usize, theme: &Theme, continued: bool) -> V
         pending_marker: None,
         in_code_block: false,
         continued,
-        code_lang: None,
+        code_lang: lang,
         link_dest: None,
         table: None,
     };
@@ -406,18 +409,19 @@ fn render_inner(source: &str, width: usize, theme: &Theme, continued: bool) -> V
                     b.flush_line();
                 }
                 b.blank();
-                // OMP gives fenced code a border hook rather than the
-                // author's backticks; the language rides the opening rail.
-                if let CodeBlockKind::Fenced(lang) = &kind
-                    && !lang.is_empty()
-                {
-                    b.code_lang = crate::highlight::lang_for(lang);
+                // OMP gives fenced code a border hook rather than the author's
+                // backticks; only a fence has an opening line a stream reopens.
+                if let CodeBlockKind::Fenced(lang) = &kind {
                     if !continued {
+                        *b.code_lang = crate::highlight::lang_for(lang);
+                        let head = format!("{}{CODE_RAIL} {lang}", b.indent);
                         b.out.push(Line::from(Span::styled(
-                            format!("{}{CODE_RAIL} {lang}", b.indent),
+                            head.trim_end().to_owned(),
                             b.theme.dim_style(),
                         )));
                     }
+                } else if !continued {
+                    *b.code_lang = None;
                 }
                 b.indent.push_str(CODE_RAIL_INDENT);
                 b.in_code_block = true;
@@ -427,7 +431,6 @@ fn render_inner(source: &str, width: usize, theme: &Theme, continued: bool) -> V
                 let len = b.indent.len().saturating_sub(CODE_RAIL_INDENT.len());
                 b.indent.truncate(len);
                 b.in_code_block = false;
-                b.code_lang = None;
             }
             Event::Start(Tag::List(start)) => {
                 if b.list_stack.is_empty() {

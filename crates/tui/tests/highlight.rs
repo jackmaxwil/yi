@@ -88,6 +88,7 @@ fn the_language_names_fences_actually_carry_all_resolve() -> TestResult {
         "zsh",
         "shell",
         "json",
+        "jsonc",
         "js",
         "jsx",
         "javascript",
@@ -105,6 +106,10 @@ fn the_language_names_fences_actually_carry_all_resolve() -> TestResult {
 fn an_unknown_language_is_declined_rather_than_guessed() -> TestResult {
     assert!(lang_for("brainfuck").is_none());
     assert!(lang_for("").is_none());
+    // A console fence is a session dump, mostly program output. Borrowing the
+    // sh grammar paints output words as commands, and one apostrophe in prose
+    // opens a string the parser carries to the end of the block.
+    assert!(lang_for("console").is_none());
     assert!(lang_for("crates/tui/src/cell.rs").is_some());
     Ok(())
 }
@@ -154,7 +159,9 @@ fn a_diff_body_is_highlighted_from_the_path_in_its_header() -> TestResult {
 }
 
 /// A shell call names itself; `$ bash cargo test` says the word "bash" where
-/// the command should be, and hides a nonzero exit entirely.
+/// the command should be, and hides a nonzero exit entirely. The body's own
+/// base style is the muted grey, so a token colour equal to it renders as no
+/// colour at all — the flag has to leave that grey to have been highlighted.
 #[test]
 fn a_bash_cell_shows_the_command_and_its_exit() -> TestResult {
     let cell = ToolCell {
@@ -169,8 +176,8 @@ fn a_bash_cell_shows_the_command_and_its_exit() -> TestResult {
         calls: 1,
         details: json!({ "exitCode": 1 }),
     };
-    let rendered: Vec<String> = Cell::Tool(cell)
-        .lines(100, &theme(), TranscriptMode::Normal, 0)
+    let lines = Cell::Tool(cell).lines(100, &theme(), TranscriptMode::Normal, 0);
+    let rendered: Vec<String> = lines
         .iter()
         .map(|line| {
             line.spans
@@ -184,6 +191,12 @@ fn a_bash_cell_shows_the_command_and_its_exit() -> TestResult {
     assert!(!joined.contains("bash cargo"), "{joined}");
     assert!(joined.contains("· exit 1"), "{joined}");
     assert!(joined.contains("· 1s"), "{joined}");
+    let flag = lines
+        .iter()
+        .flat_map(|line| line.spans.iter())
+        .find(|span| span.content.trim() == "--workspace")
+        .ok_or("no flag span")?;
+    assert_ne!(flag.style.fg, Some(theme().muted), "{joined}");
     Ok(())
 }
 
@@ -248,6 +261,30 @@ fn a_shell_hash_mid_word_is_not_a_comment() -> TestResult {
             .iter()
             .any(|(text, token)| *token == Token::Comment && text.starts_with("#tight")),
         "{python:?}"
+    );
+    Ok(())
+}
+
+/// A `$VAR` and a flag are most of what an ordinary shell command is made of,
+/// and both rendered plain: the table answered `variable.function` and nothing
+/// else under `variable`. The command name must keep the function colour it
+/// already had, which only holds while the specific prefix stays listed first.
+#[test]
+fn a_shell_variable_and_a_flag_are_not_left_plain() -> TestResult {
+    let found = kinds("curl -sSL $URL", "sh");
+    assert!(
+        found
+            .iter()
+            .any(|(text, token)| text.trim() == "-sSL" && *token == Token::Variable),
+        "{found:?}"
+    );
+    assert!(
+        found.contains(&("URL".to_owned(), Token::Variable)),
+        "{found:?}"
+    );
+    assert!(
+        found.contains(&("curl".to_owned(), Token::Function)),
+        "{found:?}"
     );
     Ok(())
 }
