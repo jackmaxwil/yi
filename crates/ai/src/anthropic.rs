@@ -2,7 +2,7 @@ use serde_json::{Map, Value, json};
 use tokio::sync::mpsc::{Receiver, Sender};
 use yi_types::event::AssistantMessageEvent;
 use yi_types::message::{AgentMessage, Content, StopReason, Usage, UserContent};
-use yi_types::model::{LlmContext, Model, SYSTEM_BLOCK_SEPARATOR, ToolDef};
+use yi_types::model::{LlmContext, Model, SYSTEM_BLOCK_SEPARATOR, ToolChoice, ToolDef};
 
 use crate::catalog::calculate_cost;
 use crate::compat::compat_bool;
@@ -262,6 +262,14 @@ fn convert_tools(tools: &[ToolDef], cache: bool) -> Vec<Value> {
         .collect()
 }
 
+fn convert_tool_choice(choice: &ToolChoice) -> Value {
+    match choice {
+        ToolChoice::Auto => json!({"type": "auto"}),
+        ToolChoice::None => json!({"type": "none"}),
+        ToolChoice::Tool(forced) => json!({"type": "tool", "name": forced.as_str()}),
+    }
+}
+
 pub fn build_params(model: &Model, context: &LlmContext, options: &AnthropicOptions) -> Value {
     let transformed = transform_messages(
         &context.messages,
@@ -291,8 +299,19 @@ pub fn build_params(model: &Model, context: &LlmContext, options: &AnthropicOpti
         let cache_tools = options.cache && context.system_prompt.is_empty();
         params["tools"] = Value::Array(convert_tools(tools, cache_tools));
     }
+    if let Some(choice) = &context.tool_choice {
+        params["tool_choice"] = convert_tool_choice(choice);
+    }
+    // Incident: the API refuses a forced tool beside extended thinking, so the
+    // one turn that forces a tool goes without thinking rather than 400ing.
+    let forced = matches!(context.tool_choice, Some(ToolChoice::Tool(_)));
+    let thinking = if forced {
+        &Thinking::Off
+    } else {
+        &options.thinking
+    };
     if model.reasoning {
-        match &options.thinking {
+        match thinking {
             Thinking::Adaptive { effort } => {
                 params["thinking"] = json!({"type": "adaptive", "display": "summarized"});
                 if let Some(effort) = effort {

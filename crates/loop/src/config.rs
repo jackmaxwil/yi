@@ -1,5 +1,5 @@
 use yi_types::message::AgentMessage;
-use yi_types::model::{Effort, Model};
+use yi_types::model::{Effort, Model, ToolChoice};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ExecutionMode {
@@ -24,6 +24,7 @@ type TransformFn = dyn Fn(&[AgentMessage]) -> Option<Vec<AgentMessage>> + Send +
 type StopFn = dyn Fn(&TurnSnapshot) -> bool + Send + Sync;
 type PrepareFn = dyn Fn(&TurnSnapshot) -> Option<NextTurn> + Send + Sync;
 type QueueFn = dyn Fn() -> Vec<AgentMessage> + Send + Sync;
+type InterceptFn = dyn Fn(&TurnSnapshot) -> Option<AgentMessage> + Send + Sync;
 type CompactFuture =
     std::pin::Pin<Box<dyn std::future::Future<Output = Option<Vec<AgentMessage>>> + Send>>;
 type CompactFn = dyn Fn(&[AgentMessage]) -> CompactFuture + Send + Sync;
@@ -42,6 +43,11 @@ pub struct LoopConfig {
     /// tool-heavy turn can blow the window before the turn ends. Some(new)
     /// replaces the in-flight history with the compacted view.
     pub maybe_compact: Option<Box<CompactFn>>,
+    pub first_turn_tool_choice: Option<ToolChoice>,
+    /// Invariant: consulted synchronously, only when a turn ended with no tool
+    /// calls and the steering queue drained empty — the caller decides whether
+    /// the run really ends; Some forces one more turn carrying the message.
+    pub intercept_stop: Option<Box<InterceptFn>>,
 }
 
 impl LoopConfig {
@@ -57,6 +63,8 @@ impl LoopConfig {
             get_steering_messages: None,
             get_follow_up_messages: None,
             maybe_compact: None,
+            first_turn_tool_choice: None,
+            intercept_stop: None,
         }
     }
 }

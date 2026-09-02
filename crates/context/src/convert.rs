@@ -34,10 +34,7 @@ fn bash_execution_to_text(
 }
 
 fn as_user(text: String, timestamp: u64) -> AgentMessage {
-    AgentMessage::User {
-        content: UserContent::Text(text),
-        timestamp,
-    }
+    AgentMessage::host_user(UserContent::Text(text), timestamp)
 }
 
 /// Design L4 (Pi `convertToLlm`, ported verbatim in text): harness-internal
@@ -86,10 +83,7 @@ pub fn convert_to_llm(messages: &[AgentMessage]) -> Vec<AgentMessage> {
                     },
                     *timestamp,
                 )),
-                None => Some(AgentMessage::User {
-                    content: content.clone(),
-                    timestamp: *timestamp,
-                }),
+                None => Some(AgentMessage::host_user(content.clone(), *timestamp)),
             },
             AgentMessage::BranchSummary {
                 summary, timestamp, ..

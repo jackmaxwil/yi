@@ -120,8 +120,7 @@ impl ToolAdapter {
         self
     }
 
-    /// D13: default off — a command that detaches on its own is a surprise
-    /// unless the user asked for it.
+    /// D13: default off — self-detaching is a surprise unless asked for.
     pub fn with_auto_background(mut self, limit: Option<std::time::Duration>) -> Self {
         self.auto_background = limit;
         self
@@ -152,7 +151,9 @@ impl AgentTool for ToolAdapter {
     fn execution_mode(&self) -> yi_loop::config::ExecutionMode {
         match self.tool.kind() {
             yi_tools::ToolKind::Read => yi_loop::config::ExecutionMode::Parallel,
-            _ => yi_loop::config::ExecutionMode::Sequential,
+            yi_tools::ToolKind::Write | yi_tools::ToolKind::Exec | yi_tools::ToolKind::Ledger => {
+                yi_loop::config::ExecutionMode::Sequential
+            }
         }
     }
 

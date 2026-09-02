@@ -7,7 +7,7 @@ use yi_loop::tool::{AgentTool, ToolFuture, ToolOutcome, error_tool_result};
 use yi_loop::{LoopConfig, LoopContext, NextTurn, run_loop};
 use yi_types::event::{AgentEvent, AssistantMessageEvent};
 use yi_types::message::{AgentMessage, StopReason};
-use yi_types::model::{Effort, LlmContext, Model, ModelCost, ToolDef};
+use yi_types::model::{Effort, ForcedTool, LlmContext, Model, ModelCost, ToolChoice, ToolDef};
 
 fn faux_model() -> Model {
     let zero = || serde_json::Number::from(0u64);
@@ -34,9 +34,11 @@ fn faux_model() -> Model {
     }
 }
 
-/// Records the effort each turn's request went out with.
+type Spied = Vec<(Effort, Option<ToolChoice>)>;
+
+/// Records the effort and forced choice each turn's request went out with.
 struct Spy {
-    seen: Arc<Mutex<Vec<Effort>>>,
+    seen: Arc<Mutex<Spied>>,
     responses: Mutex<Vec<AgentMessage>>,
 }
 
@@ -44,12 +46,12 @@ impl yi_loop::run::StreamFn for Spy {
     fn stream(
         &self,
         _model: &Model,
-        _context: &LlmContext,
+        context: &LlmContext,
         effort: Effort,
         _signal: &InterruptSignal,
     ) -> Receiver<AssistantMessageEvent> {
         if let Ok(mut seen) = self.seen.lock() {
-            seen.push(effort);
+            seen.push((effort, context.tool_choice.clone()));
         }
         let (sender, receiver) = tokio::sync::mpsc::channel(64);
         let message = match self.responses.lock() {
@@ -94,6 +96,14 @@ impl AgentTool for Noop {
 }
 
 async fn run(config: LoopConfig, responses: Vec<AgentMessage>) -> Vec<Effort> {
+    run_spied(config, responses)
+        .await
+        .into_iter()
+        .map(|(effort, _)| effort)
+        .collect()
+}
+
+async fn run_spied(config: LoopConfig, responses: Vec<AgentMessage>) -> Spied {
     let seen = Arc::new(Mutex::new(Vec::new()));
     let stream = Spy {
         seen: Arc::clone(&seen),
@@ -108,10 +118,10 @@ async fn run(config: LoopConfig, responses: Vec<AgentMessage>) -> Vec<Effort> {
     let mut emit = |_: AgentEvent| {};
     run_loop(
         &mut context,
-        vec![AgentMessage::User {
-            content: yi_types::message::UserContent::Text("hi".to_owned()),
-            timestamp: 0,
-        }],
+        vec![AgentMessage::host_user(
+            yi_types::message::UserContent::Text("hi".to_owned()),
+            0,
+        )],
         &config,
         &signal,
         &mut emit,
@@ -179,4 +189,28 @@ async fn a_switch_reclamps_the_current_effort_onto_the_new_model() {
         run(config, responses).await,
         vec![Effort::Low, Effort::High]
     );
+}
+
+#[tokio::test]
+async fn a_forced_choice_is_spent_on_the_first_turn_and_gone_by_the_second()
+-> Result<(), Box<dyn std::error::Error>> {
+    let mut config = LoopConfig::new(faux_model());
+    config.first_turn_tool_choice = Some(ToolChoice::Tool(ForcedTool::new("noop")?));
+    let responses = vec![
+        faux_assistant_message(
+            vec![faux_tool_call("call-1", "noop", serde_json::Map::new())],
+            StopReason::ToolUse,
+        ),
+        faux_assistant_message(vec![faux_text("done")], StopReason::Stop),
+    ];
+    let choices: Vec<Option<ToolChoice>> = run_spied(config, responses)
+        .await
+        .into_iter()
+        .map(|(_, choice)| choice)
+        .collect();
+    assert_eq!(
+        choices,
+        vec![Some(ToolChoice::Tool(ForcedTool::new("noop")?)), None]
+    );
+    Ok(())
 }

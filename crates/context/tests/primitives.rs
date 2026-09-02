@@ -14,10 +14,7 @@ use yi_types::record::LaneRecord;
 type TestResult = Result<(), Box<dyn Error>>;
 
 fn user(text: &str) -> AgentMessage {
-    AgentMessage::User {
-        content: UserContent::Text(text.to_owned()),
-        timestamp: 1,
-    }
+    AgentMessage::host_user(UserContent::Text(text.to_owned()), 1)
 }
 
 fn usage(input: i64, output: i64, total: i64) -> Usage {

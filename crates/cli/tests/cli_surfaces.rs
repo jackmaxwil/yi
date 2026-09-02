@@ -477,3 +477,70 @@ fn an_undialable_proxy_fails_a_provider_run_and_spares_the_faux_path() -> TestRe
     assert!(named.contains("proxy.corp:3128"), "{named}");
     Ok(())
 }
+
+/// An unregistered verb falls through to the prompt catch-all, so a bad URL
+/// must come back as the URL type's own refusal, never as an answer.
+#[test]
+fn fetch_serves_a_url_and_refuses_a_bad_one() -> TestResult {
+    let workspace = Workspace::new("fetch")?;
+    std::fs::write(workspace.project().join("note.txt"), "alpha\n")?;
+
+    let served = workspace.yi(&["fetch", "local://note.txt"])?;
+    assert_eq!(served.status.code(), Some(0));
+    assert_eq!(stdout(&served), "alpha\n");
+
+    let bad = workspace.yi(&["fetch", "not-a-url"])?;
+    assert_eq!(bad.status.code(), Some(2));
+    assert!(stdout(&bad).is_empty(), "{}", stdout(&bad));
+    let named = String::from_utf8_lossy(&bad.stderr).into_owned();
+    assert!(named.contains("has no scheme separator"), "{named}");
+    Ok(())
+}
+
+#[test]
+fn plans_config_takes_dir_and_names_every_other_key() -> TestResult {
+    let workspace = Workspace::new("plans-config")?;
+    let home = workspace.0.join("home");
+    std::fs::create_dir_all(home.join(".yi"))?;
+    std::fs::write(workspace.project().join("note.txt"), "read me")?;
+    std::fs::write(
+        home.join(".yi/config.json"),
+        r#"{"plans":{"dir":"docs/plans"}}"#,
+    )?;
+    let accepted = workspace.yi(&["fetch", "local://note.txt"])?;
+    assert_eq!(
+        accepted.status.code(),
+        Some(0),
+        "a config carrying only `dir` is accepted: {}",
+        String::from_utf8_lossy(&accepted.stderr)
+    );
+
+    for absent in ["folder", "mirror"] {
+        std::fs::write(
+            home.join(".yi/config.json"),
+            format!(r#"{{"plans":{{"{absent}":"x"}}}}"#),
+        )?;
+        let typo = workspace.yi(&["fetch", "local://note.txt"])?;
+        let named = String::from_utf8_lossy(&typo.stderr).into_owned();
+        assert!(
+            named.contains(absent),
+            "a key the tree does not have is named, not ignored: {named}"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn a_typed_prompt_lands_user_attributed_in_the_session_file() -> TestResult {
+    let workspace = Workspace::new("attribution")?;
+    ask(&workspace, "prove it", &[])?;
+    let mut lines = String::new();
+    for project in std::fs::read_dir(workspace.0.join("home/sessions"))? {
+        for entry in std::fs::read_dir(project?.path())? {
+            lines.push_str(&std::fs::read_to_string(entry?.path())?);
+        }
+    }
+    assert!(lines.contains("prove it"), "{lines}");
+    assert!(lines.contains(r#""attribution":"user""#), "{lines}");
+    Ok(())
+}

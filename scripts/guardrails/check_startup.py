@@ -23,7 +23,11 @@ report = []
 with tempfile.NamedTemporaryFile(suffix=".json") as tmp:
     for args, max_ms in budgets.items():
         cmd = str(bin_path) + args.removeprefix("yi")
-        subprocess.run(["hyperfine", "--warmup", "10", "--runs", "50", "--export-json", tmp.name, cmd],
+        # Incident: without --shell=none hyperfine subtracts a calibrated shell
+        # startup, which drove D93's minimum to 0.00 ms and left the budget
+        # unable to fail on any binary at all.
+        subprocess.run(["hyperfine", "-N", "--warmup", "10", "--runs", "50",
+                        "--export-json", tmp.name, cmd],
                        capture_output=True, check=True)
         min_ms = json.load(open(tmp.name))["results"][0]["min"] * 1000
         report.append(f"{args}: {min_ms:.2f} ms / {max_ms:.1f} ms")

@@ -56,6 +56,9 @@ fn options() -> AnthropicOptions {
     }
 }
 
+/// Invariant: the plan tool is wired per session rather than into the builtin
+/// list, so pricing only the builtins would leave the largest single tool in
+/// the prefix invisible to the gate that exists to catch prefix growth.
 fn tool_defs() -> Vec<ToolDef> {
     builtin_tools()
         .iter()
@@ -65,6 +68,12 @@ fn tool_defs() -> Vec<ToolDef> {
             parameters: tool.schema(),
             freeform: None,
         })
+        .chain(std::iter::once(ToolDef {
+            name: "plan".to_owned(),
+            description: yi_runtime::plan::tool::DESCRIPTION.to_owned(),
+            parameters: yi_runtime::plan::tool::schema(),
+            freeform: None,
+        }))
         .collect()
 }
 
@@ -81,10 +90,7 @@ fn system_prompt() -> String {
 }
 
 fn user(text: &str) -> AgentMessage {
-    AgentMessage::User {
-        content: UserContent::Text(text.to_owned()),
-        timestamp: 0,
-    }
+    AgentMessage::host_user(UserContent::Text(text.to_owned()), 0)
 }
 
 fn assistant_call(id: &str, name: &str, arguments: Map<String, Value>) -> AgentMessage {
@@ -115,6 +121,7 @@ fn context(messages: Vec<AgentMessage>) -> LlmContext {
         system_prompt: system_prompt(),
         messages,
         tools: Some(tool_defs()),
+        tool_choice: None,
     }
 }
 

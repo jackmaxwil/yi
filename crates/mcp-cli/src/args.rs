@@ -27,6 +27,9 @@ pub enum SessionOp {
         args: CallArgs,
     },
     ResourcesList,
+    ResourcesRead {
+        uri: String,
+    },
     PromptsList,
     Ping,
     Close,
@@ -147,11 +150,13 @@ fn schema_options(options: &[(String, String)]) -> Result<(Option<PathBuf>, Sche
     Ok((schema, mode))
 }
 
+const JSON_OPENERS: [char; 2] = ['{', '['];
+
 fn call_args(rest: &[String]) -> CallArgs {
     if rest.is_empty() {
         return CallArgs::Stdin;
     }
-    if rest.len() == 1 && rest[0].trim_start().starts_with(['{', '[']) {
+    if rest.len() == 1 && rest[0].trim_start().starts_with(JSON_OPENERS) {
         return CallArgs::Json(rest[0].clone());
     }
     CallArgs::Pairs(rest.to_vec())
@@ -180,6 +185,12 @@ fn session_op(words: &[String], options: &[(String, String)]) -> Result<SessionO
             })
         }
         "resources-list" => Ok(SessionOp::ResourcesList),
+        "resources-read" => Ok(SessionOp::ResourcesRead {
+            uri: words
+                .get(1)
+                .ok_or("resources-read requires a resource URI")?
+                .clone(),
+        }),
         "prompts-list" => Ok(SessionOp::PromptsList),
         "ping" => Ok(SessionOp::Ping),
         "close" => Ok(SessionOp::Close),

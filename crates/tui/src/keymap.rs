@@ -320,8 +320,16 @@ impl Keymap {
         I: IntoIterator<Item = (&'a str, &'a str)>,
     {
         for (key, action) in overrides {
-            let key = KeyInput::parse(key)?;
-            let action = Action::parse(action)?;
+            // Incident: `keys` in the user config is this map, and a config that
+            // filed provider API keys under it failed with a bare "unknown key",
+            // naming neither the field nor what it is for.
+            let named = |cause: String| {
+                format!(
+                    "config `keys` binds a keystroke to an action, and {key:?} is not one: {cause}"
+                )
+            };
+            let key = KeyInput::parse(key).map_err(named)?;
+            let action = Action::parse(action).map_err(named)?;
             self.bind(key, action);
         }
         Ok(())

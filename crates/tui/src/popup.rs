@@ -36,12 +36,22 @@ impl ListPopup {
         }
     }
 
+    /// Invariant: a query that is exactly one item's name selects that item and
+    /// not a longer one it is a prefix of — typing `/plan` must not run
+    /// `/plantree`, whichever order the table happens to be in.
     pub fn filtered(&self) -> Vec<&String> {
-        self.items
+        let query = self.query.to_lowercase();
+        let mut found: Vec<&String> = self
+            .items
             .iter()
-            .filter(|item| item.to_lowercase().contains(&self.query.to_lowercase()))
+            .filter(|item| item.to_lowercase().contains(&query))
             .take(100)
-            .collect()
+            .collect();
+        if let Some(exact) = found.iter().position(|item| item.to_lowercase() == query) {
+            let hit = found.remove(exact);
+            found.insert(0, hit);
+        }
+        found
     }
 }
 

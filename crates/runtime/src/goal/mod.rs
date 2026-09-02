@@ -68,16 +68,21 @@ pub(crate) fn run_check(check: &str, timeout_ms: u64) -> Result<(), String> {
 }
 
 pub type StoreHandle = Arc<dyn Fn() -> Option<yi_session::SharedSession> + Send + Sync>;
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum GoalEditError {
+    #[error(
+        "goal edit refused: no citation; cite the user:// message that authorizes the new objective"
+    )]
+    Uncited,
+    #[error("goal edit refused: citation {citation} is not a user:// address")]
+    NotUser { citation: String },
+    #[error("goal edit refused: {citation} does not resolve: {detail}")]
+    Unresolved { citation: String, detail: String },
+}
 pub type DeliverFn = Arc<dyn Fn(AgentMessage, DeliveryMode) + Send + Sync>;
 
-pub fn task_check(plan: &yi_types::plan::Plan, id: &yi_types::plan::TaskId) -> Option<String> {
-    plan.tasks
-        .iter()
-        .find(|task| &task.id == id)
-        .and_then(|task| task.check.clone())
-}
-
-/// A discovery's check is one task's own gate, not the goal's integration gate:
+/// A discovery's check is one todo's own gate, not the goal's integration gate:
 /// it is re-run per row and per completion attempt, so it gets a per-row budget
 /// rather than [`DEFAULT_CHECK_TIMEOUT_MS`].
 pub(crate) const DISCOVERY_CHECK_TIMEOUT_MS: u64 = 60_000;
@@ -133,7 +138,7 @@ fn budget_values(goal: &Goal) -> [(&'static str, String); 3] {
 
 pub fn continuation_text(
     goal: &Goal,
-    plan: Option<&yi_types::plan::Plan>,
+    plan: Option<&yi_types::plan::doc::Plan>,
 ) -> Result<String, template::TemplateError> {
     let check_status = goal
         .check_failure
@@ -209,6 +214,7 @@ fn usage_delta(usage: &yi_types::message::Usage) -> u64 {
 /// accounting. One per session.
 pub struct GoalService {
     store: StoreHandle,
+    plans_dir: std::path::PathBuf,
     deliver: DeliverFn,
     /// Set by an abort: auto-continuation stops until the next real user input.
     deferred: Mutex<bool>,
@@ -221,6 +227,7 @@ impl GoalService {
     pub fn new(store: StoreHandle, deliver: DeliverFn) -> Self {
         Self {
             store,
+            plans_dir: crate::plan::default_plans_dir(),
             deliver,
             deferred: Mutex::new(false),
             pending: Mutex::new(false),
@@ -228,14 +235,18 @@ impl GoalService {
         }
     }
 
+    pub fn with_plans_dir(mut self, dir: std::path::PathBuf) -> Self {
+        self.plans_dir = dir;
+        self
+    }
+
     fn read_goal(&self) -> Option<Goal> {
         let store = (self.store)()?;
         yi_session::lock_session(&store).goal()
     }
 
-    fn read_plan(&self) -> Option<yi_types::plan::Plan> {
-        let store = (self.store)()?;
-        yi_session::lock_session(&store).plan()
+    fn read_plan(&self) -> Result<yi_types::plan::doc::Plan, crate::plan::CanonicalPlanError> {
+        crate::plan::canonical_plan(&self.store, &self.plans_dir)
     }
 
     fn write_goal(&self, goal: Goal) -> Result<(), String> {
@@ -340,21 +351,23 @@ impl GoalService {
         if goal.discoveries.is_empty() {
             return None;
         }
-        let Some(plan) = self.read_plan() else {
-            return Some(format!(
-                "cannot adjudicate {} recorded discovery row(s): no plan is readable, so a row that was confirmed red cannot be shown drained",
-                goal.discoveries.len()
-            ));
+        let plan = match self.read_plan() {
+            Ok(plan) => plan,
+            Err(cause) => {
+                return Some(format!(
+                    "cannot adjudicate {} recorded discovery row(s): {cause}, so a row that was confirmed red cannot be shown drained",
+                    goal.discoveries.len()
+                ));
+            }
         };
-        // One check run per named task, however many rows name it.
+        // One check run per named todo, however many rows name it.
         let mut adjudged: HashMap<yi_types::plan::TaskId, Option<String>> = HashMap::new();
         let mut kept = Vec::new();
         let mut blockers = Vec::new();
         for row in std::mem::take(&mut goal.discoveries) {
-            let named = row
-                .violates_check_of
-                .clone()
-                .and_then(|id| task_check(&plan, &id).map(|check| (id, check)));
+            let named = row.violates_check_of.clone().and_then(|id| {
+                crate::plan::todo_check(&plan, id.as_str()).map(|check| (id, check))
+            });
             let message = match named {
                 Some((id, check)) => {
                     let evidence = adjudged
@@ -389,10 +402,14 @@ impl GoalService {
     }
 
     /// Supersedes the objective and steers `objective_updated` into the turn.
-    pub fn set_objective(&self, objective: &str) -> Result<Value, String> {
+    /// Invariant: the objective carries user authority, so the edit demands a
+    /// `user://` citation resolving to a user-attributed message (D25).
+    pub fn set_objective(&self, objective: &str, citation: Option<&str>) -> Result<Value, String> {
         if objective.trim().is_empty() {
             return Err("objective must not be empty".to_owned());
         }
+        self.verify_citation(citation)
+            .map_err(|error| error.to_string())?;
         let mut goal = self.read_goal().ok_or(NO_GOAL_ERROR)?;
         goal.objective = objective.to_owned();
         goal.status = GoalStatus::Active;
@@ -406,6 +423,44 @@ impl GoalService {
             *deferred = false;
         }
         Ok(goal_json(&goal))
+    }
+
+    fn verify_citation(&self, citation: Option<&str>) -> Result<(), GoalEditError> {
+        let Some(citation) = citation else {
+            return Err(GoalEditError::Uncited);
+        };
+        let unresolved = |detail: String| GoalEditError::Unresolved {
+            citation: citation.to_owned(),
+            detail,
+        };
+        let url: yi_types::url::Url = citation
+            .parse()
+            .map_err(|error: yi_types::url::UrlError| unresolved(error.to_string()))?;
+        if url.scheme() != &yi_types::url::Scheme::User {
+            return Err(GoalEditError::NotUser {
+                citation: citation.to_owned(),
+            });
+        }
+        let ordinal: usize = url
+            .path()
+            .parse()
+            .ok()
+            .filter(|ordinal| *ordinal > 0)
+            .ok_or_else(|| {
+                unresolved(format!(
+                    "the path must be a 1-based user-message ordinal, got {}",
+                    url.path()
+                ))
+            })?;
+        let store =
+            (self.store)().ok_or_else(|| unresolved("no session store is attached".to_owned()))?;
+        let held = crate::fetch::user_inputs(&store).map_err(unresolved)?.len();
+        if ordinal > held {
+            return Err(unresolved(format!(
+                "the transcript holds {held} attributed user message(s)"
+            )));
+        }
+        Ok(())
     }
 
     fn set_flag(flag: &Mutex<bool>, value: bool) {
@@ -476,7 +531,7 @@ impl GoalService {
         if !goal.status.is_active() {
             return;
         }
-        let Ok(text) = continuation_text(&goal, self.read_plan().as_ref()) else {
+        let Ok(text) = continuation_text(&goal, self.read_plan().ok().as_ref()) else {
             return;
         };
         Self::set_flag(&self.pending, true);
@@ -556,14 +611,18 @@ fn as_object(value: Value) -> Result<Map<String, Value>, String> {
 }
 
 /// Events are observed in a spawned task; the caller registers the host surface.
-pub fn attach_goal(session: &crate::AgentSession) -> Arc<GoalService> {
+pub fn attach_goal(
+    session: &crate::AgentSession,
+    plans_dir: std::path::PathBuf,
+) -> Arc<GoalService> {
     let steer = session.heartbeat_hook();
     let wake = session.wake_idle_hook();
     let deliver: DeliverFn = Arc::new(move |message, mode| match mode {
         DeliveryMode::Steer => steer(message, DeliveryMode::Steer),
         DeliveryMode::FollowUp => wake(message),
     });
-    let service = Arc::new(GoalService::new(session.store_handle(), deliver));
+    let service =
+        Arc::new(GoalService::new(session.store_handle(), deliver).with_plans_dir(plans_dir));
     let mut events = session.subscribe();
     let observer = Arc::clone(&service);
     tokio::spawn(async move {

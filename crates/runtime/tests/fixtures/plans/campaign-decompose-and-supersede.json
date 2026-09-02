@@ -1,0 +1,627 @@
+{
+  "id": "campaign-decompose-and-supersede",
+  "description": "A container-scale campaign on two cores: the declared artifact is created first, the dispatch width holds a delegated todo back with nothing marked Running, a child that fails after real work still leaves its trace behind, one todo is decomposed after it is already running, and a supersede interrupts and reaps what is still in flight. Exercises every op in the vocabulary at least once.",
+  "decisions": [
+    "Plan identity is a deterministic slug of the goal text -- lowercase, non-alphanumeric collapsed to '-', truncated at a word boundary to 40 characters, with a '-2' collision suffix. No random component: the doc's '7f3a-auth-refactor' example spends four bytes of entropy on a filename that git already versions, and a random id makes every fixture and every replay nondeterministic. A sub-plan's id is '<parent>.<todo slug>'.",
+    "'version' bumps on supersede alone (section 4). The staleness latch therefore cannot key on version: a separate monotonic 'touched' counter counts every applied op and is what the section 6 nudge and reminder read. The landed module bumped on every mutation and latched on that; this fixture fixes the split.",
+    "supersede performs the cascade itself: it interrupts and reaps every Running delegation in the plan and in its sub-plans, and fails atomically if any child cannot be reaped -- the plan is left untouched, still Active, at the same version. There is no separate interrupt op, because a cut that is half-replaced while a child still writes to it is the zombie state section 5 calls unrepresentable.",
+    "A superseded plan's sub-plans go to Abandoned, not Superseded: Superseded{by} names a version of the same plan identity, and a sub-plan has no successor version -- its parent todo ceased to exist.",
+    "'drop' marks Abandoned and Abandoned is terminal: a plan is finished when every todo is in a terminal state (Done, Failed, or Abandoned), not when every todo is Done. The landed is_finished() required all-Done, which one dropped todo would have wedged forever.",
+    "'append' inserts at the end of the Vec, because Vec order is priority and a discovery is not automatically more urgent than what is already queued. 'reorder' is the op that says otherwise, and it takes a full permutation of the plan's labels so a partial reorder cannot silently drop a todo.",
+    "The dispatch width is measured from the machine, never configured: clamp(cores - 1, 1, 8). This fixture pins cores at 2 -- the container case the prompt describes -- so the width is 1 and backpressure is observable. The width gates CHILDREN only: a ready todo with no delegation costs no child and is always dispatchable, and bash() handles are not children and never charge it.",
+    "Backpressure is invisible and automatic: the queued follow-up names only the dispatchable slice, so there is no refusal to handle. A held todo stays Pending -- marking it Running before its child exists would read as crashed to the rehydration rule -- and 'start' is never refused for width. The follow-up names the held count too, or an ordinary hold reads as an empty ready set.",
+    "Promotion runs at reap whatever the outcome, not at Done. A child reaped on a failure carries its last product as Failed{cause, last}, host-minted from what the reap found; the model never supplies it. A todo worked inline has no child, so its failure carries last: null.",
+    "The spawn ceiling is a fuse and not a budget: monotonic, on the root plan, charged once per dispatch, never reset by supersede. This fixture asserts it counts every child the run ever started, including the one supersede reaped and the one that failed.",
+    "A cap is refused before the write, never applied silently: the frontmatter byte cap is checked ahead of the atomic replace and names what exceeded and by how much."
+  ],
+  "prompt": "Ship logrotate-lite: a CLI that rotates a log file by size and by age, with a test suite and a manpage, packaged as a tarball at /app/dist/logrotate-lite.tar.gz. You have 2 CPUs and 8 hours.",
+  "eagerInit": true,
+  "cores": 2,
+  "width": 1,
+  "goal": "Ship logrotate-lite with a packaged tarball",
+  "plan": "ship-logrotate-lite-with-a-packaged",
+  "steps": [
+    {
+      "op": "init",
+      "actor": "agent://main",
+      "args": {
+        "goal": "Ship logrotate-lite with a packaged tarball",
+        "todos": [
+          { "label": "Create the declared tarball path with a stub" },
+          { "label": "Freeze the CLI argument surface" },
+          {
+            "label": "Write the manpage",
+            "delegation": {
+              "spec": { "role": "writer", "effort": "low" },
+              "accept": { "stated": "man logrotate-lite renders with every flag documented" },
+              "context": ["local://README.md"]
+            }
+          },
+          {
+            "label": "Implement rotation with size and age triggers",
+            "after": ["Freeze the CLI argument surface"]
+          },
+          {
+            "label": "Write the test suite",
+            "after": ["Freeze the CLI argument surface"],
+            "delegation": {
+              "spec": { "role": "coder", "effort": "med", "isolation": "worktree" },
+              "accept": { "command": "pytest -q tests/" },
+              "context": ["plan://ship-logrotate-lite-with-a-packaged/freeze-the-cli-argument-surface"],
+              "output": { "schema": "local://.yi/schemas/test_report.json" }
+            }
+          },
+          {
+            "label": "Repackage the tarball from the finished build",
+            "after": [
+              "Create the declared tarball path with a stub",
+              "Implement rotation with size and age triggers",
+              "Write the test suite"
+            ]
+          }
+        ]
+      },
+      "expect": {
+        "ok": true,
+        "version": 1,
+        "touched": 1,
+        "spawns": 0,
+        "planState": "active",
+        "todos": [
+          { "label": "Create the declared tarball path with a stub", "state": "pending" },
+          { "label": "Freeze the CLI argument surface", "state": "pending" },
+          { "label": "Write the manpage", "state": "pending", "delegated": true },
+          { "label": "Implement rotation with size and age triggers", "state": "pending" },
+          { "label": "Write the test suite", "state": "pending", "delegated": true },
+          { "label": "Repackage the tarball from the finished build", "state": "pending" }
+        ],
+        "ready": [
+          "Create the declared tarball path with a stub",
+          "Freeze the CLI argument surface",
+          "Write the manpage"
+        ],
+        "dispatched": [
+          "Create the declared tarball path with a stub",
+          "Freeze the CLI argument surface",
+          "Write the manpage"
+        ],
+        "held": []
+      }
+    },
+    {
+      "op": "init",
+      "actor": "agent://main",
+      "args": { "goal": "a second root plan", "todos": [{ "label": "anything" }] },
+      "expect": { "ok": false, "error": "already" }
+    },
+    {
+      "op": "start",
+      "actor": "agent://main",
+      "args": { "label": "Write the manpage" },
+      "expect": {
+        "ok": true,
+        "version": 1,
+        "touched": 2,
+        "spawns": 1,
+        "spawned": ["agent://ship-logrotate-lite-with-a-packaged/write-the-manpage"],
+        "todos": [
+          { "label": "Create the declared tarball path with a stub", "state": "pending" },
+          { "label": "Freeze the CLI argument surface", "state": "pending" },
+          { "label": "Write the manpage", "state": "running" },
+          { "label": "Implement rotation with size and age triggers", "state": "pending" },
+          { "label": "Write the test suite", "state": "pending" },
+          { "label": "Repackage the tarball from the finished build", "state": "pending" }
+        ]
+      }
+    },
+    {
+      "op": "start",
+      "actor": "agent://main",
+      "args": { "label": "Create the declared tarball path with a stub" },
+      "expect": { "ok": true, "version": 1, "touched": 3, "spawns": 1 }
+    },
+    {
+      "op": "done",
+      "actor": "agent://main",
+      "args": {
+        "label": "Create the declared tarball path with a stub",
+        "output": "local://dist/logrotate-lite.tar.gz"
+      },
+      "expect": {
+        "ok": true,
+        "version": 1,
+        "touched": 4,
+        "todos": [
+          {
+            "label": "Create the declared tarball path with a stub",
+            "state": "done",
+            "output": "local://dist/logrotate-lite.tar.gz"
+          },
+          { "label": "Freeze the CLI argument surface", "state": "pending" },
+          { "label": "Write the manpage", "state": "running" },
+          { "label": "Implement rotation with size and age triggers", "state": "pending" },
+          { "label": "Write the test suite", "state": "pending" },
+          { "label": "Repackage the tarball from the finished build", "state": "pending" }
+        ],
+        "ready": ["Freeze the CLI argument surface"]
+      }
+    },
+    {
+      "op": "done",
+      "actor": "agent://main",
+      "args": { "label": "Freeze the CLI argument surface" },
+      "expect": { "ok": false, "error": "pending" }
+    },
+    {
+      "op": "start",
+      "actor": "agent://main",
+      "args": { "label": "Freeze the CLI argument surface" },
+      "expect": { "ok": true, "version": 1, "touched": 5 }
+    },
+    {
+      "op": "done",
+      "actor": "agent://main",
+      "args": {
+        "label": "Freeze the CLI argument surface",
+        "output": "kernel://main/cli_surface"
+      },
+      "expect": {
+        "ok": true,
+        "version": 1,
+        "touched": 6,
+        "todos": [
+          { "label": "Create the declared tarball path with a stub", "state": "done" },
+          {
+            "label": "Freeze the CLI argument surface",
+            "state": "done",
+            "output": "kernel://main/cli_surface"
+          },
+          { "label": "Write the manpage", "state": "running" },
+          { "label": "Implement rotation with size and age triggers", "state": "pending" },
+          { "label": "Write the test suite", "state": "pending" },
+          { "label": "Repackage the tarball from the finished build", "state": "pending" }
+        ],
+        "ready": [
+          "Implement rotation with size and age triggers",
+          "Write the test suite"
+        ],
+        "dispatched": ["Implement rotation with size and age triggers"],
+        "held": ["Write the test suite"]
+      }
+    },
+    {
+      "op": "fail",
+      "actor": "agent://main",
+      "args": {
+        "label": "Write the manpage",
+        "cause": "the child documented the flags it invented rather than the frozen surface"
+      },
+      "childProduced": "history://write-the-manpage/e7",
+      "expect": {
+        "ok": true,
+        "version": 1,
+        "touched": 7,
+        "spawns": 1,
+        "reaped": ["agent://ship-logrotate-lite-with-a-packaged/write-the-manpage"],
+        "todos": [
+          { "label": "Create the declared tarball path with a stub", "state": "done" },
+          { "label": "Freeze the CLI argument surface", "state": "done" },
+          {
+            "label": "Write the manpage",
+            "state": "failed",
+            "last": "history://write-the-manpage/e7"
+          },
+          { "label": "Implement rotation with size and age triggers", "state": "pending" },
+          { "label": "Write the test suite", "state": "pending" },
+          { "label": "Repackage the tarball from the finished build", "state": "pending" }
+        ],
+        "ready": [
+          "Implement rotation with size and age triggers",
+          "Write the test suite"
+        ],
+        "dispatched": ["Write the test suite"],
+        "held": []
+      }
+    },
+    {
+      "op": "append",
+      "actor": "agent://main",
+      "args": {
+        "todos": [
+          {
+            "label": "Handle the compressed-rotation flag",
+            "after": ["Implement rotation with size and age triggers"]
+          }
+        ]
+      },
+      "expect": {
+        "ok": true,
+        "version": 1,
+        "touched": 8,
+        "todos": [
+          { "label": "Create the declared tarball path with a stub", "state": "done" },
+          { "label": "Freeze the CLI argument surface", "state": "done" },
+          { "label": "Write the manpage", "state": "failed" },
+          { "label": "Implement rotation with size and age triggers", "state": "pending" },
+          { "label": "Write the test suite", "state": "pending" },
+          { "label": "Repackage the tarball from the finished build", "state": "pending" },
+          { "label": "Handle the compressed-rotation flag", "state": "pending" }
+        ]
+      }
+    },
+    {
+      "op": "append",
+      "actor": "agent://main",
+      "args": { "todos": [{ "label": "Freeze the CLI argument surface" }] },
+      "expect": { "ok": false, "error": "unique" }
+    },
+    {
+      "op": "add_edge",
+      "actor": "agent://main",
+      "args": {
+        "todo": "Freeze the CLI argument surface",
+        "after": "Handle the compressed-rotation flag"
+      },
+      "expect": { "ok": false, "error": "cycle" }
+    },
+    {
+      "op": "add_edge",
+      "actor": "agent://main",
+      "args": {
+        "todo": "Repackage the tarball from the finished build",
+        "after": "Handle the compressed-rotation flag"
+      },
+      "expect": { "ok": true, "version": 1, "touched": 9 }
+    },
+    {
+      "op": "reorder",
+      "actor": "agent://main",
+      "args": {
+        "labels": [
+          "Create the declared tarball path with a stub",
+          "Freeze the CLI argument surface",
+          "Write the manpage",
+          "Write the test suite",
+          "Implement rotation with size and age triggers",
+          "Handle the compressed-rotation flag",
+          "Repackage the tarball from the finished build"
+        ]
+      },
+      "expect": {
+        "ok": true,
+        "version": 1,
+        "touched": 10,
+        "ready": [
+          "Write the test suite",
+          "Implement rotation with size and age triggers"
+        ]
+      }
+    },
+    {
+      "op": "reorder",
+      "actor": "agent://main",
+      "args": { "labels": ["Write the test suite"] },
+      "expect": { "ok": false, "error": "permutation" }
+    },
+    {
+      "op": "start",
+      "actor": "agent://main",
+      "args": { "label": "Write the test suite" },
+      "expect": {
+        "ok": true,
+        "version": 1,
+        "touched": 11,
+        "spawns": 2,
+        "spawned": ["agent://ship-logrotate-lite-with-a-packaged/write-the-test-suite"],
+        "todos": [
+          { "label": "Create the declared tarball path with a stub", "state": "done" },
+          { "label": "Freeze the CLI argument surface", "state": "done" },
+          { "label": "Write the manpage", "state": "failed" },
+          { "label": "Write the test suite", "state": "running" },
+          { "label": "Implement rotation with size and age triggers", "state": "pending" },
+          { "label": "Handle the compressed-rotation flag", "state": "pending" },
+          { "label": "Repackage the tarball from the finished build", "state": "pending" }
+        ]
+      }
+    },
+    {
+      "op": "start",
+      "actor": "agent://main",
+      "args": { "label": "Implement rotation with size and age triggers" },
+      "expect": { "ok": true, "version": 1, "touched": 12, "spawns": 2 }
+    },
+    {
+      "op": "decompose",
+      "actor": "agent://main",
+      "args": {
+        "label": "Implement rotation with size and age triggers",
+        "todos": [
+          { "label": "Rotate on a size threshold" },
+          {
+            "label": "Rotate on an age threshold",
+            "after": ["Rotate on a size threshold"]
+          }
+        ]
+      },
+      "expect": {
+        "ok": true,
+        "version": 1,
+        "touched": 13,
+        "subplan": "ship-logrotate-lite-with-a-packaged.implement-rotation-with-size-and-age",
+        "todos": [
+          { "label": "Create the declared tarball path with a stub", "state": "done" },
+          { "label": "Freeze the CLI argument surface", "state": "done" },
+          { "label": "Write the manpage", "state": "failed" },
+          { "label": "Write the test suite", "state": "running" },
+          {
+            "label": "Implement rotation with size and age triggers",
+            "state": "running",
+            "subplan": "ship-logrotate-lite-with-a-packaged.implement-rotation-with-size-and-age"
+          },
+          { "label": "Handle the compressed-rotation flag", "state": "pending" },
+          { "label": "Repackage the tarball from the finished build", "state": "pending" }
+        ]
+      }
+    },
+    {
+      "op": "view",
+      "actor": "agent://main",
+      "plan": "ship-logrotate-lite-with-a-packaged.implement-rotation-with-size-and-age",
+      "args": { "full": true },
+      "expect": {
+        "ok": true,
+        "version": 1,
+        "planState": "active",
+        "tier": "sub",
+        "parent": "ship-logrotate-lite-with-a-packaged/Implement rotation with size and age triggers",
+        "todos": [
+          { "label": "Rotate on a size threshold", "state": "pending" },
+          { "label": "Rotate on an age threshold", "state": "pending" }
+        ],
+        "ready": ["Rotate on a size threshold"]
+      }
+    },
+    {
+      "op": "decompose",
+      "actor": "agent://main",
+      "plan": "ship-logrotate-lite-with-a-packaged.implement-rotation-with-size-and-age",
+      "args": {
+        "label": "Rotate on a size threshold",
+        "todos": [{ "label": "anything at depth three" }]
+      },
+      "expect": { "ok": false, "error": "DepthExhausted" }
+    },
+    {
+      "op": "start",
+      "actor": "agent://main",
+      "plan": "ship-logrotate-lite-with-a-packaged.implement-rotation-with-size-and-age",
+      "args": { "label": "Rotate on a size threshold" },
+      "expect": { "ok": true, "touched": 2 }
+    },
+    {
+      "op": "fail",
+      "actor": "agent://main",
+      "plan": "ship-logrotate-lite-with-a-packaged.implement-rotation-with-size-and-age",
+      "args": {
+        "label": "Rotate on a size threshold",
+        "cause": "the size check raced the writer and truncated a partial line"
+      },
+      "expect": {
+        "ok": true,
+        "touched": 3,
+        "todos": [
+          { "label": "Rotate on a size threshold", "state": "failed", "last": null },
+          { "label": "Rotate on an age threshold", "state": "pending" }
+        ],
+        "ready": []
+      }
+    },
+    {
+      "op": "retry",
+      "actor": "agent://main",
+      "plan": "ship-logrotate-lite-with-a-packaged.implement-rotation-with-size-and-age",
+      "args": {
+        "label": "Rotate on a size threshold",
+        "delegation": {
+          "spec": { "role": "coder", "effort": "high" },
+          "accept": { "stated": "rotation is atomic under a concurrent writer" },
+          "context": ["plan://ship-logrotate-lite-with-a-packaged.implement-rotation-with-size-and-age/rotate-on-a-size-threshold"]
+        }
+      },
+      "expect": {
+        "ok": true,
+        "touched": 4,
+        "spawns": 2,
+        "todos": [
+          {
+            "label": "Rotate on a size threshold",
+            "state": "pending",
+            "retries": 1,
+            "delegated": true
+          },
+          { "label": "Rotate on an age threshold", "state": "pending" }
+        ],
+        "ready": ["Rotate on a size threshold"],
+        "dispatched": [],
+        "held": ["Rotate on a size threshold"]
+      }
+    },
+    {
+      "op": "block",
+      "actor": "agent://main",
+      "args": {
+        "label": "Handle the compressed-rotation flag",
+        "on": { "external": { "probe": "test -e /app/vendor/zstd" } },
+        "note": "the image has no zstd; the vendor mount is still syncing"
+      },
+      "expect": {
+        "ok": true,
+        "version": 1,
+        "touched": 14,
+        "todos": [
+          { "label": "Create the declared tarball path with a stub", "state": "done" },
+          { "label": "Freeze the CLI argument surface", "state": "done" },
+          { "label": "Write the manpage", "state": "failed" },
+          { "label": "Write the test suite", "state": "running" },
+          { "label": "Implement rotation with size and age triggers", "state": "running" },
+          { "label": "Handle the compressed-rotation flag", "state": "blocked", "blockedOn": "external" },
+          { "label": "Repackage the tarball from the finished build", "state": "pending" }
+        ],
+        "stopPosture": "cadence"
+      }
+    },
+    {
+      "op": "unblock",
+      "actor": "host",
+      "args": { "label": "Handle the compressed-rotation flag" },
+      "expect": {
+        "ok": true,
+        "version": 1,
+        "touched": 15,
+        "todos": [
+          { "label": "Create the declared tarball path with a stub", "state": "done" },
+          { "label": "Freeze the CLI argument surface", "state": "done" },
+          { "label": "Write the manpage", "state": "failed" },
+          { "label": "Write the test suite", "state": "running" },
+          { "label": "Implement rotation with size and age triggers", "state": "running" },
+          { "label": "Handle the compressed-rotation flag", "state": "pending" },
+          { "label": "Repackage the tarball from the finished build", "state": "pending" }
+        ]
+      }
+    },
+    {
+      "op": "drop",
+      "actor": "agent://main",
+      "args": { "label": "Handle the compressed-rotation flag" },
+      "expect": {
+        "ok": true,
+        "version": 1,
+        "touched": 16,
+        "todos": [
+          { "label": "Create the declared tarball path with a stub", "state": "done" },
+          { "label": "Freeze the CLI argument surface", "state": "done" },
+          { "label": "Write the manpage", "state": "failed" },
+          { "label": "Write the test suite", "state": "running" },
+          { "label": "Implement rotation with size and age triggers", "state": "running" },
+          { "label": "Handle the compressed-rotation flag", "state": "abandoned" },
+          { "label": "Repackage the tarball from the finished build", "state": "pending" }
+        ]
+      }
+    },
+    {
+      "op": "done",
+      "actor": "agent://ship-logrotate-lite-with-a-packaged/write-the-test-suite",
+      "args": { "label": "Write the test suite", "output": "kernel://main/test_report" },
+      "expect": { "ok": false, "error": "propose to the owner" }
+    },
+    {
+      "op": "append",
+      "actor": "agent://main",
+      "args": { "todos": [{ "label": "PADDING", "repeat": 4096 }] },
+      "expect": { "ok": false, "error": "32768" }
+    },
+    {
+      "op": "supersede",
+      "actor": "agent://main",
+      "args": {
+        "reason": "the tarball must be produced by the project's own Makefile, not repackaged after the fact",
+        "todos": [{ "label": "Drive the whole build through make dist" }],
+        "reapFails": true
+      },
+      "expect": {
+        "ok": false,
+        "error": "reap",
+        "version": 1,
+        "touched": 16,
+        "planState": "active",
+        "todos": [
+          { "label": "Create the declared tarball path with a stub", "state": "done" },
+          { "label": "Freeze the CLI argument surface", "state": "done" },
+          { "label": "Write the manpage", "state": "failed" },
+          { "label": "Write the test suite", "state": "running" },
+          { "label": "Implement rotation with size and age triggers", "state": "running" },
+          { "label": "Handle the compressed-rotation flag", "state": "abandoned" },
+          { "label": "Repackage the tarball from the finished build", "state": "pending" }
+        ]
+      }
+    },
+    {
+      "op": "supersede",
+      "actor": "agent://main",
+      "args": {
+        "reason": "the tarball must be produced by the project's own Makefile, not repackaged after the fact",
+        "todos": [
+          { "label": "Write the Makefile dist target" },
+          {
+            "label": "Drive the whole build through make dist",
+            "after": ["Write the Makefile dist target"]
+          }
+        ]
+      },
+      "expect": {
+        "ok": true,
+        "version": 2,
+        "touched": 17,
+        "spawns": 2,
+        "planState": "active",
+        "reaped": ["agent://ship-logrotate-lite-with-a-packaged/write-the-test-suite"],
+        "todos": [
+          { "label": "Write the Makefile dist target", "state": "pending" },
+          { "label": "Drive the whole build through make dist", "state": "pending" }
+        ],
+        "ready": ["Write the Makefile dist target"],
+        "subplanStates": {
+          "ship-logrotate-lite-with-a-packaged.implement-rotation-with-size-and-age": "abandoned"
+        }
+      }
+    },
+    {
+      "op": "start",
+      "actor": "agent://main",
+      "args": { "label": "Write the Makefile dist target" },
+      "expect": { "ok": true, "version": 2, "touched": 18 }
+    },
+    {
+      "op": "done",
+      "actor": "agent://main",
+      "args": { "label": "Write the Makefile dist target" },
+      "expect": { "ok": true, "version": 2, "touched": 19 }
+    },
+    {
+      "op": "start",
+      "actor": "agent://main",
+      "args": { "label": "Drive the whole build through make dist" },
+      "expect": { "ok": true, "version": 2, "touched": 20 }
+    },
+    {
+      "op": "done",
+      "actor": "agent://main",
+      "args": {
+        "label": "Drive the whole build through make dist",
+        "output": "local://dist/logrotate-lite.tar.gz"
+      },
+      "expect": {
+        "ok": true,
+        "version": 2,
+        "touched": 21,
+        "spawns": 2,
+        "planState": "done",
+        "ready": [],
+        "todos": [
+          { "label": "Write the Makefile dist target", "state": "done" },
+          {
+            "label": "Drive the whole build through make dist",
+            "state": "done",
+            "output": "local://dist/logrotate-lite.tar.gz"
+          }
+        ]
+      }
+    }
+  ],
+  "final": {
+    "planCount": 2,
+    "stopInterception": false,
+    "superseded": 1,
+    "spawns": 2
+  }
+}

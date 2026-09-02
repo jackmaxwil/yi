@@ -464,10 +464,10 @@ fn the_status_bar_does_not_repeat_the_program_name() -> TestResult {
 fn entry(id: &str, parent: Option<&str>, seq: u64, text: &str) -> yi_types::entry::Entry {
     yi_types::entry::Entry::Message {
         id: id.to_owned(),
-        message: yi_types::message::AgentMessage::User {
-            content: yi_types::message::UserContent::Text(text.to_owned()),
-            timestamp: 0,
-        },
+        message: yi_types::message::AgentMessage::host_user(
+            yi_types::message::UserContent::Text(text.to_owned()),
+            0,
+        ),
         terminate: None,
         parent_id: parent.map(str::to_owned),
         seq,
@@ -1104,6 +1104,30 @@ fn tree_scrolls_around_the_selection_with_a_scrollbar() -> TestResult {
         rows.iter().any(|line| line.contains('█')),
         "an overflowing list gets a scrollbar thumb: {rows:?}"
     );
+    Ok(())
+}
+
+#[test]
+fn a_query_that_hides_the_selection_moves_it_to_a_visible_row() -> TestResult {
+    let entries = vec![
+        entry("u1", None, 1, "alpha ask"),
+        assistant_entry("a1", Some("u1"), 2, "alpha answer"),
+        entry("u2", Some("a1"), 3, "beta ask"),
+    ];
+    let mut view = TreeView::new(&entries, Some("u2"), TreeFilter::Default);
+    for c in "alpha".chars() {
+        view.handle_key(&yi_tui::keymap::SingleKey {
+            code: yi_tui::keymap::KeyCodeValue::Char(c),
+            ctrl: false,
+            alt: false,
+            shift: false,
+        });
+    }
+    let enter = yi_tui::keymap::SingleKey::parse("enter")?;
+    match view.handle_key(&enter) {
+        TreeResult::Rewind(id) => assert_ne!(id, "u2", "enter acted on a row the query had hidden"),
+        _ => return Err("enter must rewind".into()),
+    }
     Ok(())
 }
 
@@ -1891,5 +1915,33 @@ fn the_recording_backend_drops_into_a_plain_ratatui_terminal() -> TestResult {
         "the screen accessor replaces the old tuple field: {}",
         terminal.backend().screen()
     );
+    Ok(())
+}
+
+/// Incident: `/plantree` shadowed `/plan` the moment it entered the table —
+/// the popup preserved table order, so typing a whole command's name and
+/// pressing Enter ran the longer one that merely started with it.
+#[test]
+fn typing_a_commands_whole_name_selects_it_over_a_longer_one()
+-> Result<(), Box<dyn std::error::Error>> {
+    use yi_tui::popup::ListPopup;
+    let mut popup = ListPopup::new(
+        '/',
+        vec![
+            "plantree".to_owned(),
+            "plan".to_owned(),
+            "planner".to_owned(),
+        ],
+    );
+    popup.query = "plan".to_owned();
+    let first = popup
+        .filtered()
+        .first()
+        .map(|item| (*item).clone())
+        .ok_or("the query matches three commands")?;
+    assert_eq!(first, "plan");
+    popup.query = "plant".to_owned();
+    let narrowed: Vec<String> = popup.filtered().into_iter().cloned().collect();
+    assert_eq!(narrowed, vec!["plantree".to_owned()]);
     Ok(())
 }

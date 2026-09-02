@@ -43,13 +43,13 @@ fn for_each_backend(case: impl Fn(&mut dyn SessionRepo) -> TestResult) -> TestRe
 }
 
 fn user_message(text: &str) -> AgentMessage {
-    AgentMessage::User {
-        content: UserContent::Blocks(vec![Content::Text {
+    AgentMessage::host_user(
+        UserContent::Blocks(vec![Content::Text {
             text: text.to_owned(),
             text_signature: None,
         }]),
-        timestamp: 1,
-    }
+        1,
+    )
 }
 
 fn assistant_message(text: &str, usage: Usage) -> AgentMessage {
