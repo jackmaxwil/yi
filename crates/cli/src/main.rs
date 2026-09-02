@@ -452,6 +452,7 @@ fn build_session(
                 .as_ref()
                 .and_then(|kernel| kernel.prewarm)
                 .unwrap_or(true),
+            kernels: yi_runtime::fetch::KernelServiceMap::new(),
         },
     );
     Ok((session, host))

@@ -68,9 +68,14 @@ pub trait KernelVariables: Send + Sync {
     ) -> Result<Option<String>, VariableReadError>;
 }
 
+/// Invariant: an entry is a weak handle on a session's own service, so the map
+/// one root shares with every child never keeps a finished session's kernel
+/// alive and never grows past the sessions that are still open.
 #[derive(Default)]
 pub struct KernelServiceMap {
-    kernels: std::sync::Mutex<std::collections::HashMap<String, Arc<crate::kernel::KernelService>>>,
+    kernels: std::sync::Mutex<
+        std::collections::HashMap<String, std::sync::Weak<crate::kernel::KernelService>>,
+    >,
 }
 
 impl KernelServiceMap {
@@ -78,19 +83,30 @@ impl KernelServiceMap {
         Arc::new(Self::default())
     }
 
-    pub fn insert(&self, agent: impl Into<String>, service: Arc<crate::kernel::KernelService>) {
-        self.lock().insert(agent.into(), service);
+    pub fn insert(&self, agent: impl Into<String>, service: &Arc<crate::kernel::KernelService>) {
+        self.lock().insert(agent.into(), Arc::downgrade(service));
     }
 
     pub fn remove(&self, agent: &str) {
         self.lock().remove(agent);
     }
 
+    fn service(&self, agent: &str) -> Option<Arc<crate::kernel::KernelService>> {
+        let mut kernels = self.lock();
+        match kernels.get(agent).and_then(std::sync::Weak::upgrade) {
+            Some(service) => Some(service),
+            None => {
+                kernels.remove(agent);
+                None
+            }
+        }
+    }
+
     fn lock(
         &self,
     ) -> std::sync::MutexGuard<
         '_,
-        std::collections::HashMap<String, Arc<crate::kernel::KernelService>>,
+        std::collections::HashMap<String, std::sync::Weak<crate::kernel::KernelService>>,
     > {
         self.kernels
             .lock()
@@ -107,7 +123,7 @@ impl KernelVariables for KernelServiceMap {
         agent: &str,
         variable: &VariableName,
     ) -> Result<Option<String>, VariableReadError> {
-        let Some(service) = self.lock().get(agent).cloned() else {
+        let Some(service) = self.service(agent) else {
             return Err(VariableReadError::NotRunning);
         };
         let handle =
@@ -576,20 +592,24 @@ mod tests {
         let map = KernelServiceMap::new();
         read_via(&map, "ghost").await?;
         let dir = scratch("kernel-map")?;
-        map.insert(
-            "main",
-            Arc::new(crate::kernel::KernelService::new(
-                crate::kernel::KernelServiceOptions {
-                    cwd: dir.clone(),
-                    home: dir,
-                    session_dir: None,
-                    host: Arc::new(NoHost),
-                    on_restore: None,
-                    sandbox: None,
-                },
-            )),
-        );
+        let service = Arc::new(crate::kernel::KernelService::new(
+            crate::kernel::KernelServiceOptions {
+                cwd: dir.clone(),
+                home: dir,
+                session_dir: None,
+                host: Arc::new(NoHost),
+                on_restore: None,
+                sandbox: None,
+            },
+        ));
+        map.insert("main", &service);
         read_via(&map, "main").await?;
+        assert!(map.service("main").is_some(), "a live session is reachable");
+        drop(service);
+        assert!(
+            map.service("main").is_none(),
+            "a finished session leaves no entry behind"
+        );
         map.remove("main");
         read_via(&map, "main").await?;
         Ok(())
