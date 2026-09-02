@@ -4,7 +4,7 @@ use serde_json::{Map, Value};
 use tokio::sync::mpsc::Receiver;
 use yi_types::event::{AgentEvent, AssistantMessageEvent, ToolResult};
 use yi_types::message::{AgentMessage, Content, StopReason, Usage};
-use yi_types::model::{Effort, LlmContext, Model, ToolDef};
+use yi_types::model::{Effort, LlmContext, Model, ToolChoice, ToolDef};
 
 use crate::config::{ExecutionMode, LoopConfig, TurnSnapshot};
 use crate::interrupt::InterruptSignal;
@@ -352,15 +352,25 @@ fn fail_truncated_calls(
         .collect()
 }
 
+struct TurnRequest<'a> {
+    model: &'a Model,
+    effort: Effort,
+    tool_choice: Option<ToolChoice>,
+}
+
 async fn stream_assistant_response<S: StreamFn>(
     context: &mut LoopContext,
     config: &LoopConfig,
-    model: &Model,
-    effort: Effort,
+    turn: TurnRequest<'_>,
     signal: &InterruptSignal,
     emit: &mut (dyn FnMut(AgentEvent) + Send),
     stream: &S,
 ) -> AgentMessage {
+    let TurnRequest {
+        model,
+        effort,
+        tool_choice,
+    } = turn;
     let mut messages = context.messages.clone();
     if let Some(transform) = &config.transform_context
         && let Some(transformed) = transform(&messages)
@@ -377,6 +387,7 @@ async fn stream_assistant_response<S: StreamFn>(
         } else {
             Some(tool_defs)
         },
+        tool_choice,
     };
 
     let mut receiver = stream.stream(model, &llm_context, effort, signal);
@@ -488,6 +499,7 @@ pub async fn run_loop<S: StreamFn>(
     let mut current_model = config.model.clone();
     let mut current_effort = config.effort;
     let mut first_turn = true;
+    let mut tool_choice = config.first_turn_tool_choice.clone();
     let mut pending: Vec<AgentMessage> = config
         .get_steering_messages
         .as_ref()
@@ -520,8 +532,11 @@ pub async fn run_loop<S: StreamFn>(
             let message = stream_assistant_response(
                 context,
                 config,
-                &current_model,
-                current_effort,
+                TurnRequest {
+                    model: &current_model,
+                    effort: current_effort,
+                    tool_choice: tool_choice.take(),
+                },
                 signal,
                 emit,
                 stream,
@@ -591,6 +606,13 @@ pub async fn run_loop<S: StreamFn>(
                 .get_steering_messages
                 .as_ref()
                 .map_or_else(Vec::new, |get| get());
+            if !has_more_tool_calls
+                && pending.is_empty()
+                && let Some(intercept) = &config.intercept_stop
+                && let Some(message) = intercept(&snapshot)
+            {
+                pending.push(message);
+            }
         }
 
         let follow_ups = config

@@ -10,7 +10,7 @@ instead of carrying tool definitions in context.
    metadata and tool snapshot are saved. There is no resident process: every
    command connects, runs, and exits.
 2. **Run commands against the `@session`**: list and call tools, list
-   resources and prompts, ping.
+   resources and prompts, read a resource by URI, ping.
 3. **Default output is human-readable**; add `--json` for machine-readable,
    MCP-spec-shaped output that composes with `jq` and shell pipelines.
 

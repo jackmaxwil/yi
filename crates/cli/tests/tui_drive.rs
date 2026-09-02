@@ -266,7 +266,7 @@ fn plan_and_undo_answer_for_the_session_the_turn_ran_in() -> TestResult {
     let last = entries.last().ok_or("no frames dumped")?;
     let final_frame = std::fs::read_to_string(last.path())?;
     for needle in [
-        "/plan: no plan in this session",
+        "/plan: no plan is open",
         "/undo: nothing to restore",
         "permission mode: yolo",
         "compaction scheduled",

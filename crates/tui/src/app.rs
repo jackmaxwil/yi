@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 use ratatui::crossterm::event::{self, Event as CtEvent};
 use ratatui::text::Line;
 use serde_json::{Value, json};
-use yi_runtime::{AgentSession, ChildStatus, ChildUpdate, SubagentHost};
+use yi_runtime::{AgentSession, ChildStatus, ChildUpdate, SubagentHost, session::user_input};
 use yi_types::entry::Entry;
 use yi_types::event::AgentEvent;
 use yi_types::message::{AgentMessage, StopReason};
@@ -24,7 +24,7 @@ use crate::orb;
 use crate::popup::ListPopup;
 use crate::term;
 use crate::transcript::{arg_summary, intent_of, preview_lines, text_of, thinking_of, user_text};
-use crate::tree::{TreeFilter, TreeView};
+use crate::tree::TreeView;
 use yi_orb::OrbState;
 
 pub struct AskRequest {
@@ -91,8 +91,10 @@ pub struct App {
     pub(crate) composer: Composer,
     pub(crate) bottom: Option<Bottom>,
     pub(crate) tree: Option<TreeView>,
+    pub(crate) plan_tree: Option<crate::plantree::PlanTreeView>,
     pub(crate) pending_commit: Vec<Line<'static>>,
     pub(crate) pending_open_tree: bool,
+    pub(crate) pending_open_plan_tree: bool,
     pub(crate) pending_rewind: Option<String>,
     pub(crate) pending_new: bool,
     pub(crate) pending_editor: bool,
@@ -188,8 +190,10 @@ impl App {
             composer: Composer::default(),
             bottom: None,
             tree: None,
+            plan_tree: None,
             pending_commit: Vec::new(),
             pending_open_tree: false,
+            pending_open_plan_tree: false,
             pending_rewind: None,
             pending_new: false,
             pending_editor: false,
@@ -875,9 +879,9 @@ pub(crate) fn spawn_runtime_bridge(
             while let Some(command) = cmd_rx.recv().await {
                 match command {
                     Command::Prompt(text) => {
-                        let _ = driver_session.prompt(&text);
+                        let _ = driver_session.prompt_message(user_input(&text));
                     }
-                    Command::Steer(text) => driver_session.steer(&text),
+                    Command::Steer(text) => driver_session.steer_message(user_input(&text)),
                     Command::SummarizeBranch(stub) => {
                         let session = Arc::clone(&driver_session);
                         tokio::spawn(
@@ -1022,10 +1026,7 @@ pub fn run_tui(
             last_spinner_phase = phase;
             app.scheduler.request();
         }
-        if app.pending_open_tree {
-            app.pending_open_tree = false;
-            open_tree(&mut app, &session);
-        }
+        crate::rewind::process_pending_tree(&mut app, &session);
         crate::rewind::process_pending_rewind(&mut app, &mut terminal, &session, &cmd_tx);
         crate::rewind::process_pending_new(&mut app, &mut terminal, &session);
         crate::rewind::process_pending_undo(&mut app, &session);
@@ -1048,13 +1049,6 @@ pub fn run_tui(
     drop(guard);
     let _ = runtime_thread.join();
     app.exit_code
-}
-
-pub(crate) fn process_pending_tree(app: &mut App, session: &Arc<AgentSession>) {
-    if app.pending_open_tree {
-        app.pending_open_tree = false;
-        open_tree(app, session);
-    }
 }
 
 pub(crate) fn sync_roster(
@@ -1122,22 +1116,6 @@ pub(crate) fn entries_of(session: &AgentSession) -> (Vec<Entry>, Option<String>)
         .unwrap_or_default();
     let leaf = locked.leaf_id("main").ok().flatten();
     (entries, leaf)
-}
-
-fn open_tree(app: &mut App, session: &Arc<AgentSession>) {
-    let (entries, leaf) = entries_of(session);
-    if entries.is_empty() {
-        app.commit_cell(&Cell::Notice {
-            text: "no session store attached — tree unavailable".to_owned(),
-        });
-        return;
-    }
-    app.tree = Some(TreeView::new(
-        &entries,
-        leaf.as_deref(),
-        TreeFilter::Default,
-    ));
-    app.scheduler.request();
 }
 
 pub(crate) fn replay_child(app: &mut App, child_id: &str) {

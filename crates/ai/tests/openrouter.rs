@@ -20,10 +20,7 @@ fn history_context() -> LlmContext {
     LlmContext {
         system_prompt: "be terse".to_owned(),
         messages: vec![
-            AgentMessage::User {
-                content: UserContent::Text("hi".to_owned()),
-                timestamp: 0,
-            },
+            AgentMessage::host_user(UserContent::Text("hi".to_owned()), 0),
             AgentMessage::Assistant {
                 content: vec![Content::Text {
                     text: "hello".to_owned(),
@@ -43,12 +40,10 @@ fn history_context() -> LlmContext {
                 end_turn: None,
                 timestamp: 0,
             },
-            AgentMessage::User {
-                content: UserContent::Text("again".to_owned()),
-                timestamp: 0,
-            },
+            AgentMessage::host_user(UserContent::Text("again".to_owned()), 0),
         ],
         tools: None,
+        tool_choice: None,
     }
 }
 
