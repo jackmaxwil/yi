@@ -576,8 +576,7 @@ impl TaskCell {
         let head = format!("  {glyph} {} Task — {}", self.agent, self.description);
         let detail = match (&self.status, &self.error, &self.last_tool) {
             (TaskStatus::Failed, Some(error), _) => {
-                let mut error = error.clone();
-                error.truncate(80);
+                let error: String = error.chars().take(80).collect();
                 format!("    ↳ {error}")
             }
             (TaskStatus::Running, _, Some(tool)) => format!("    ↳ {tool}"),
