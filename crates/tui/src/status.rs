@@ -17,7 +17,6 @@ pub struct StatusInput {
     pub subagents: usize,
     pub context_used: u64,
     pub context_window: u64,
-    pub threshold_pct: Option<u8>,
     pub focused_child: Option<String>,
 }
 

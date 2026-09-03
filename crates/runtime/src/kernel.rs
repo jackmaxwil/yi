@@ -32,7 +32,7 @@ try:
 except Exception as _yi_rlm_error:
     _RLM_IMPORT_ERROR = str(_yi_rlm_error)
 
-    class _PrimeAgentMissingRlm:
+    class _YiMissingRlm:
         def _raise_missing(self):
             raise RuntimeError(
                 "yi-runtime is not installed in this IPython kernel. "
@@ -56,7 +56,7 @@ except Exception as _yi_rlm_error:
         async def __call__(self, prompt, **kwargs):
             return await self.run(prompt, **kwargs)
 
-    rlm = _PrimeAgentMissingRlm()
+    rlm = _YiMissingRlm()
 "#;
 
 const SKILL_WRAPPER_CODE: &str = r#"
@@ -65,14 +65,14 @@ import inspect as _yi_inspect
 import sys as _yi_sys
 import types as _yi_types
 
-class _PrimeAgentCallableSkillModule(_yi_types.ModuleType):
+class _YiCallableSkillModule(_yi_types.ModuleType):
     async def __call__(self, *args, **kwargs):
         result = self.run(*args, **kwargs)
         if _yi_inspect.isawaitable(result):
             return await result
         return result
 
-class _PrimeAgentUnavailableSkill:
+class _YiUnavailableSkill:
     def __init__(self, name, error):
         self.__name__ = name
         self._yi_import_error = error
@@ -94,9 +94,9 @@ def _yi_wrap_skill_module(module):
     run = getattr(module, "run", None)
     if not callable(run):
         return module
-    if isinstance(module, _PrimeAgentCallableSkillModule):
+    if isinstance(module, _YiCallableSkillModule):
         return module
-    wrapped = _PrimeAgentCallableSkillModule(module.__name__)
+    wrapped = _YiCallableSkillModule(module.__name__)
     wrapped.__dict__.update(module.__dict__)
     try:
         wrapped.__signature__ = _yi_inspect.signature(run)
@@ -117,7 +117,7 @@ for _yi_skill_name in %IMPORTS%:
         )
     except Exception as _yi_skill_error:
         _SKILL_IMPORT_ERRORS[_yi_skill_name] = str(_yi_skill_error)
-        globals()[_yi_skill_name] = _PrimeAgentUnavailableSkill(
+        globals()[_yi_skill_name] = _YiUnavailableSkill(
             _yi_skill_name,
             str(_yi_skill_error),
         )

@@ -32,6 +32,7 @@ run "$PY" scripts/guardrails/check_deps_budget.py
 run "$PY" scripts/guardrails/check_request_budget.py
 run "$PY" scripts/guardrails/check_behavior.py
 run "$PY" scripts/guardrails/check_prompt_examples.py
+run env PYTHONPATH=python/yi_runtime/src "$PY" -m unittest discover -q -s python/yi_runtime/tests
 run "$PY" evals/selftest.py
 # The mined artifacts carry session text, so §10's planted-fake redaction proof is a
 # gate, not a habit: its only executable check is this flag.

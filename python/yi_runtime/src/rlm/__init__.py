@@ -26,6 +26,11 @@ except Exception:  # pragma: no cover - only available in kernels
 HOST_COMM_TARGET = "host.request"
 
 
+def _check_schema(schema: dict[str, Any] | None) -> None:
+    if schema is not None and not isinstance(schema, dict):
+        raise TypeError(f"schema must be a dict or None, got {type(schema).__name__}")
+
+
 @dataclass(frozen=True)
 class RLMSpawnHandle:
     rlm_child_id: str
@@ -43,6 +48,7 @@ class RLMSpawnHandle:
 
     async def result(
         self,
+        *,
         schema: dict[str, Any] | None = None,
         timeout: float = 900.0,
         poll: float = 0.5,
@@ -52,15 +58,25 @@ class RLMSpawnHandle:
         The reply carries ``text`` and, when the child answered with JSON,
         ``json``. A ``schema`` is checked host-side and a mismatch raises,
         so a malformed result never reaches the parent's transcript as if
-        it had passed.
+        it had passed. The deadline is wall clock, not a poll count, and a
+        child no longer registered with the parent (``delete_subagent``
+        reaps it) raises immediately instead of polling to the deadline.
         """
-        deadline = 0.0
-        while deadline < timeout:
-            for entry in await list_subagents():
-                if entry.rlm_child_id == self.rlm_child_id and entry.status != "running":
-                    return await result(self.rlm_child_id, schema)
+        _check_schema(schema)
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout
+        while loop.time() < deadline:
+            entries = await list_subagents()
+            mine = next((e for e in entries if e.rlm_child_id == self.rlm_child_id), None)
+            if mine is None:
+                raise RuntimeError(
+                    f"child {self.name} ({self.rlm_child_id}) is no longer registered with "
+                    "the parent; rlm.delete_subagent reaps a child and its answer with it"
+                )
+            if mine.status != "running":
+                return await result(self.rlm_child_id, schema=schema)
+            # ponytail: 0.5 s listing poll; switch to rlm.wait(...) if the round trips ever matter.
             await asyncio.sleep(poll)
-            deadline += poll
         raise TimeoutError(f"child {self.name} did not finish within {timeout}s")
 
     async def send(self, message: str, followup: bool = False) -> dict[str, Any]:
@@ -364,8 +380,11 @@ async def interrupt(target: "str | RLMSubagent") -> dict[str, Any]:
     return await host_request("rlm.interrupt", {"target": _worktree_target(target)})
 
 
-async def result(target: "str | RLMSubagent", schema: dict[str, Any] | None = None) -> dict[str, Any]:
+async def result(
+    target: "str | RLMSubagent", *, schema: dict[str, Any] | None = None
+) -> dict[str, Any]:
     """A finished child's answer as data, checked against ``schema`` host-side."""
+    _check_schema(schema)
     payload: dict[str, Any] = {"target": _worktree_target(target)}
     if schema is not None:
         payload["schema"] = schema
@@ -660,9 +679,9 @@ class _RLMCallable:
         return await interrupt(target)
 
     async def result(
-        self, target: str | RLMSubagent, schema: dict[str, Any] | None = None
+        self, target: str | RLMSubagent, *, schema: dict[str, Any] | None = None
     ) -> dict[str, Any]:
-        return await result(target, schema)
+        return await result(target, schema=schema)
 
     async def merge_worktree(self, target: str | RLMSubagent) -> dict[str, Any]:
         return await merge_worktree(target)
