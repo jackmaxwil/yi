@@ -1,6 +1,7 @@
 #![forbid(unsafe_code)]
 #![deny(clippy::string_slice)]
 
+pub mod cells;
 pub mod daemon;
 pub mod update;
 
@@ -147,12 +148,6 @@ pub fn bridge_asker(session_id: String, sink: LineSink, pending: PendingAsks) ->
     })
 }
 
-struct UserCell {
-    call_id: String,
-    cancelled: Arc<std::sync::atomic::AtomicBool>,
-    task: JoinHandle<()>,
-}
-
 struct SessionHandle {
     session: AgentSession,
     forwarder: JoinHandle<()>,
@@ -166,8 +161,7 @@ impl Drop for SessionHandle {
 }
 
 struct AcpState {
-    user_cells: HashMap<String, Vec<UserCell>>,
-    user_cell_serial: u64,
+    user_cells: crate::cells::UserCells,
     repo: JsonlRepo,
     sessions: HashMap<String, SessionHandle>,
     build: SessionBuilder,
@@ -304,16 +298,7 @@ impl AcpState {
         events: tokio::sync::broadcast::Sender<AgentEvent>,
         code: String,
     ) -> Result<Value, (i64, String)> {
-        let cells = self.user_cells.entry(session_id).or_default();
-        cells.retain(|cell| !cell.task.is_finished());
-        if cells.len() >= 8 {
-            return Err((
-                -32000,
-                "kernel busy: eight user cells are queued".to_owned(),
-            ));
-        }
-        self.user_cell_serial = self.user_cell_serial.saturating_add(1);
-        let call_id = format!("user-{}", self.user_cell_serial);
+        let call_id = self.user_cells.admit(&session_id)?;
         let cancelled = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let flag: Arc<dyn Fn() -> bool + Send + Sync> = {
             let cancelled = Arc::clone(&cancelled);
@@ -340,11 +325,14 @@ impl AcpState {
                 eprintln!("user cell {id}: the session closed before its output");
             }
         });
-        cells.push(UserCell {
-            call_id: call_id.clone(),
-            cancelled,
-            task,
-        });
+        self.user_cells.track(
+            &session_id,
+            crate::cells::UserCell {
+                call_id: call_id.clone(),
+                cancelled,
+                task,
+            },
+        );
         Ok(json!({ "callId": call_id }))
     }
 
@@ -511,11 +499,7 @@ impl AcpState {
             }
             "session/close" => {
                 let id = self.session(params)?.1;
-                for cell in self.user_cells.remove(&id).unwrap_or_default() {
-                    cell.cancelled
-                        .store(true, std::sync::atomic::Ordering::SeqCst);
-                    cell.task.abort();
-                }
+                self.user_cells.close(&id);
                 self.sessions.remove(&id);
                 Ok(json!({}))
             }
@@ -544,10 +528,7 @@ impl AcpState {
         let text = |key: &str| params.get(key).and_then(Value::as_str).unwrap_or("");
         match method {
             "_yi/kernel_execute" => {
-                let code = text("code").to_owned();
-                if code.len() > 64 * 1024 {
-                    return Err((INVALID_PARAMS, "a cell is at most 64 KB".to_owned()));
-                }
+                let code = crate::cells::cell_code(params)?;
                 let service = handle
                     .session
                     .kernel_service()
@@ -557,17 +538,10 @@ impl AcpState {
             }
             "_yi/kernel_cancel" => {
                 let call = text("callId");
-                let cells = self.user_cells.get(&session_id);
-                let hit = cells
-                    .into_iter()
-                    .flatten()
-                    .find(|cell| cell.call_id == call)
-                    .map(|cell| {
-                        cell.cancelled
-                            .store(true, std::sync::atomic::Ordering::SeqCst)
-                    });
-                hit.map(|()| json!({}))
-                    .ok_or((INVALID_PARAMS, format!("no running user cell {call}")))
+                if self.user_cells.cancel(&session_id, call) {
+                    return Ok(json!({}));
+                }
+                Err((INVALID_PARAMS, format!("no running user cell {call}")))
             }
             "_yi/tracked" => {
                 let paths: Vec<String> = params
@@ -697,8 +671,7 @@ pub fn run_acp(options: AcpOptions, runtime: tokio::runtime::Runtime) -> i32 {
     let sink = stdout_sink();
     let pending: PendingAsks = Arc::new(Mutex::new(HashMap::new()));
     let mut state = AcpState {
-        user_cells: HashMap::new(),
-        user_cell_serial: 0,
+        user_cells: crate::cells::UserCells::default(),
         repo,
         sessions: HashMap::new(),
         build: options.build,

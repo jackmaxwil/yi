@@ -1346,3 +1346,38 @@ fn rounded_borders_and_context_strip_render() -> TestResult {
          quit\n",
     )
 }
+
+fn long_rust_file(name: &str) -> Result<PathBuf, Box<dyn Error>> {
+    // A block comment opens on line 1 and closes on line 70, so every row a scrolled
+    // viewport shows sits inside a construct that began above it.
+    let mut body = String::from("/* the header comment this file opens with\n");
+    for n in 2..=69 {
+        body.push_str(&format!("   still inside the comment, line {n}\n"));
+    }
+    body.push_str("*/\nfn after() -> u32 { 7 }\n");
+    let path = editor_file(name);
+    std::fs::write(&path, body)?;
+    Ok(path)
+}
+
+/// A file taller than its pane wears a scroll bar, and the wheel moves the viewport
+/// without the cursor dragging it back.
+#[test]
+fn the_editor_shows_a_scroll_bar_and_the_wheel_moves_it() -> TestResult {
+    let path = long_rust_file("scroll")?;
+    let mut script = String::from("wait-frame 3000 the header comment\nwait-frame 3000 \u{2503}\n");
+    for _ in 0..12 {
+        script.push_str("mouse scrolldown 60 8\n");
+    }
+    script.push_str(
+        "wait-frame 3000 line 40\nwait-frame 3000 !the header comment\n\
+         wait-frame 3000 \u{2503}\nquit\n",
+    );
+    run(
+        "editor-scroll",
+        session_fixture(),
+        &open_editor_script(&path, &script),
+    )?;
+    let _ = std::fs::remove_file(&path);
+    Ok(())
+}
