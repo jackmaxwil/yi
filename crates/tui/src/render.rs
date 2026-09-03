@@ -27,20 +27,6 @@ pub fn live_tail(lines: Vec<Line<'static>>, rows: usize) -> Vec<Line<'static>> {
     keep_last(lines, live_tail_rows(rows))
 }
 
-/// Swaps the static `∴` on a live thought's header for the breathing starburst.
-/// Every frame is one cell wide, so the row cannot reflow under it.
-fn pulse_thought_header(lines: &mut [Line<'static>], spinner_phase: usize) {
-    let glyph = crate::motion::thinking_glyph(crate::motion::elapsed_of(spinner_phase));
-    for line in lines.iter_mut() {
-        for span in &mut line.spans {
-            if span.content.contains('∴') {
-                span.content = span.content.replace('∴', &glyph.to_string()).into();
-                return;
-            }
-        }
-    }
-}
-
 /// Half the terminal, floor 5, less the panel's chrome.
 fn tree_rows(rows: usize) -> usize {
     (rows / 2).max(5).min(rows.saturating_sub(9)).max(1)
@@ -122,7 +108,14 @@ fn draw_frame<B>(
         );
         // The label pulses only while it is still live and still here: past the
         // first committed slice the tail has no header and this is a no-op.
-        pulse_thought_header(&mut rendered, spinner);
+        let glyph = crate::motion::thinking_glyph(crate::motion::elapsed_of(spinner));
+        if let Some(span) = rendered
+            .iter_mut()
+            .flat_map(|l| l.spans.iter_mut())
+            .find(|s| s.content.contains('∴'))
+        {
+            span.content = span.content.replace('∴', &glyph.to_string()).into();
+        }
         live_lines.extend(live_tail(rendered, app.rows));
     }
     if !app.live_markdown.is_empty() {
@@ -152,13 +145,13 @@ fn draw_frame<B>(
             if state.finished.is_none() {
                 cell.elapsed_ms = elapsed_ms(state.started);
             }
-            live_lines.extend(cell.lines(content_width, &theme, spinner));
+            live_lines.extend(cell.lines(content_width, &theme, app.mode, spinner));
         }
     }
     let hud_lines = if app.hud_hidden {
         Vec::new()
     } else {
-        crate::hud::render(&app.hud_input(goal), &theme, spinner)
+        crate::hud::render(&app.hud_input(goal), &theme)
     };
 
     let status_input = StatusInput {

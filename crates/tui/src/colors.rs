@@ -42,6 +42,12 @@ pub struct Theme {
     pub error: Color,
     pub warning: Color,
     pub success: Color,
+    pub magenta: Color,
+    pub cyan: Color,
+    pub teal: Color,
+    pub orange: Color,
+    pub purple: Color,
+    pub blue5: Color,
     /// The ground lifted toward white. Yi cannot probe the terminal background,
     /// so the tint is offered only where the theme already assumes its ground.
     pub user_bg: Option<Color>,
@@ -49,27 +55,15 @@ pub struct Theme {
 
 impl Theme {
     pub fn new(tier: ColorTier, dark: bool) -> Self {
-        // Truecolor dark is the primary look: TokyoNight Moon values, chosen to sit on
-        // translucent grounds without banding. Text stays Color::Reset so the terminal wins.
-        if tier == ColorTier::TrueColor && dark {
-            return Self {
-                tier,
-                dark,
-                accent: Color::Rgb(0x82, 0xaa, 0xff),
-                text: Color::Reset,
-                muted: Color::Rgb(0x82, 0x8b, 0xb8),
-                dim: Color::Rgb(0x63, 0x6d, 0xa6),
-                error: Color::Rgb(0xff, 0x75, 0x7f),
-                warning: Color::Rgb(0xff, 0xc7, 0x77),
-                success: Color::Rgb(0xc3, 0xe8, 0x8d),
-                user_bg: Some(Color::Rgb(0x2f, 0x33, 0x47)),
-            };
-        }
+        let pick = |named, indexed| match tier {
+            ColorTier::Ansi16 => named,
+            _ => Color::Indexed(indexed),
+        };
         let (muted, dim) = match tier {
             ColorTier::TrueColor => (Color::Rgb(120, 120, 120), Color::Rgb(160, 160, 160)),
             _ => (Color::DarkGray, Color::DarkGray),
         };
-        Self {
+        let base = Self {
             tier,
             dark,
             accent: Color::Cyan,
@@ -79,7 +73,34 @@ impl Theme {
             error: Color::Red,
             warning: Color::Yellow,
             success: Color::Green,
+            magenta: pick(Color::Magenta, 176),
+            cyan: pick(Color::Cyan, 117),
+            teal: pick(Color::Cyan, 79),
+            orange: pick(Color::Yellow, 209),
+            purple: pick(Color::Magenta, 219),
+            blue5: pick(Color::LightBlue, 123),
             user_bg: None,
+        };
+        if tier != ColorTier::TrueColor || !dark {
+            return base;
+        }
+        // Truecolor dark is the primary look: TokyoNight Moon values, chosen to sit on
+        // translucent grounds without banding. Text stays Color::Reset so the terminal wins.
+        Self {
+            accent: Color::Rgb(0x82, 0xaa, 0xff),
+            muted: Color::Rgb(0x82, 0x8b, 0xb8),
+            dim: Color::Rgb(0x63, 0x6d, 0xa6),
+            error: Color::Rgb(0xff, 0x75, 0x7f),
+            warning: Color::Rgb(0xff, 0xc7, 0x77),
+            success: Color::Rgb(0xc3, 0xe8, 0x8d),
+            magenta: Color::Rgb(0xc0, 0x99, 0xff),
+            cyan: Color::Rgb(0x86, 0xe1, 0xfc),
+            teal: Color::Rgb(0x4f, 0xd6, 0xbe),
+            orange: Color::Rgb(0xff, 0x96, 0x6c),
+            purple: Color::Rgb(0xfc, 0xa7, 0xea),
+            blue5: Color::Rgb(0x89, 0xdd, 0xff),
+            user_bg: Some(Color::Rgb(0x2f, 0x33, 0x47)),
+            ..base
         }
     }
 
