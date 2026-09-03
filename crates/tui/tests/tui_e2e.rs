@@ -1410,3 +1410,278 @@ fn a_host_notice_titles_nothing_and_draws_no_prompt_rail() -> TestResult {
     );
     Ok(())
 }
+
+/// The M1 corpus: the session that produced the screenshots, scrubbed and
+/// replayed through the reducer the screen runs. Ground truth for input shape;
+/// what it should render still comes from the invariant.
+const CORPUS: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/tests/fixtures/sessions/01a0648f.jsonl"
+);
+
+const MODES: [yi_tui::cell::TranscriptMode; 3] = [
+    yi_tui::cell::TranscriptMode::Normal,
+    yi_tui::cell::TranscriptMode::Thinking,
+    yi_tui::cell::TranscriptMode::Verbose,
+];
+
+/// A needle short enough that the renderer's own wrap cannot split it.
+fn needle(line: &str) -> String {
+    line.chars().take(30).collect()
+}
+
+fn recorded_messages() -> Result<Vec<serde_json::Value>, Box<dyn Error>> {
+    let mut out = Vec::new();
+    for line in std::fs::read_to_string(CORPUS)?.lines() {
+        let row: serde_json::Value = serde_json::from_str(line)?;
+        if row.get("type").and_then(serde_json::Value::as_str) == Some("message")
+            && let Some(message) = row.get("message")
+        {
+            out.push(message.clone());
+        }
+    }
+    Ok(out)
+}
+
+fn replayed(mode: yi_tui::cell::TranscriptMode) -> Result<(App, Vec<String>), Box<dyn Error>> {
+    let mut app = app();
+    while app.mode() != mode {
+        app.cycle_mode();
+    }
+    common::replay_stream(&mut app, std::path::Path::new(CORPUS))?;
+    let rows = flat_lines(&app.take_commits());
+    Ok((app, rows))
+}
+
+fn role_is(message: &serde_json::Value, role: &str) -> bool {
+    message.get("role").and_then(serde_json::Value::as_str) == Some(role)
+}
+
+/// The field's thought is one unterminated line, so it never reaches a stable
+/// cut and used to wait for `MessageEnd` — landing under the answer it
+/// preceded. Every fixture that passed had chosen a three-paragraph thought.
+#[test]
+fn the_recorded_session_orders_every_thought_above_its_prose() -> TestResult {
+    let mut pairs = Vec::new();
+    for message in recorded_messages()? {
+        if !role_is(&message, "assistant") {
+            continue;
+        }
+        let blocks = message
+            .get("content")
+            .and_then(serde_json::Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        let first = |kind: &str| {
+            blocks
+                .iter()
+                .find(|block| block.get("type").and_then(serde_json::Value::as_str) == Some(kind))
+                .and_then(|block| block.get(kind))
+                .and_then(serde_json::Value::as_str)
+                .and_then(|text| text.lines().next())
+                .map(needle)
+        };
+        if let (Some(thought), Some(prose)) = (first("thinking"), first("text")) {
+            pairs.push((thought, prose));
+        }
+    }
+    assert!(
+        !pairs.is_empty(),
+        "the corpus must carry a message with both a thought and prose"
+    );
+    for mode in MODES {
+        let (_, rows) = replayed(mode)?;
+        for (thought, prose) in &pairs {
+            let answer = rows
+                .iter()
+                .position(|row| row.contains(prose.as_str()))
+                .ok_or_else(|| format!("{mode:?}: no prose row for {prose:?}: {rows:?}"))?;
+            let turn = rows
+                .get(..answer)
+                .unwrap_or_default()
+                .iter()
+                .rposition(|row| row.contains("┃ ›"))
+                .map_or(0, |at| at.saturating_add(1));
+            let labels = rows
+                .get(turn..answer)
+                .unwrap_or_default()
+                .iter()
+                .filter(|row| row.contains("∴ thinking"))
+                .count();
+            assert_eq!(
+                labels,
+                1,
+                "{mode:?}: the thought {thought:?} commits once, above its own prose, \
+                 not after it: {:?}",
+                rows.get(turn..=answer)
+            );
+        }
+    }
+    Ok(())
+}
+
+/// The kernel sent forty-nine rows of asyncio internals; the fixture that
+/// passed had two, and the head counted none of them.
+#[test]
+fn the_recorded_session_bounds_every_failed_cell_and_counts_its_rows() -> TestResult {
+    let count = |text: &str| {
+        if text.is_empty() {
+            0
+        } else {
+            text.trim_end_matches('\n').split('\n').count()
+        }
+    };
+    let mut cells: Vec<(Vec<String>, usize)> = Vec::new();
+    for message in recorded_messages()? {
+        if !role_is(&message, "toolResult")
+            || message.get("toolName").and_then(serde_json::Value::as_str) != Some("ipython")
+            || message.get("isError").and_then(serde_json::Value::as_bool) != Some(true)
+        {
+            continue;
+        }
+        let details = message
+            .get("details")
+            .cloned()
+            .unwrap_or(serde_json::Value::Null);
+        let stream = |key: &str| {
+            details
+                .get(key)
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default()
+                .to_owned()
+        };
+        let traceback = details
+            .pointer("/error/traceback")
+            .and_then(serde_json::Value::as_array)
+            .map(|rows| {
+                rows.iter()
+                    .filter_map(serde_json::Value::as_str)
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            })
+            .unwrap_or_default();
+        let down = count(&stream("stdout"))
+            .saturating_add(count(&stream("stderr")))
+            .saturating_add(count(&stream("result")))
+            .saturating_add(count(&traceback));
+        let rows: Vec<String> = traceback.split('\n').map(str::to_owned).collect();
+        cells.push((rows, down));
+    }
+    assert!(
+        cells.iter().any(|(rows, _)| rows.len() > 11),
+        "the corpus must carry a traceback longer than head + elision + tail"
+    );
+    for mode in MODES {
+        let (_, committed) = replayed(mode)?;
+        for (traceback, down) in &cells {
+            let head = format!("↓ {down} lines");
+            assert!(
+                committed.iter().any(|row| row.contains(&head)),
+                "{mode:?}: the head counts every row the streams produced, traceback \
+                 included, so it must read {head:?}: {committed:?}"
+            );
+            let shown = |line: &String| {
+                !line.trim().is_empty() && committed.iter().any(|row| row.contains(&needle(line)))
+            };
+            let visible = traceback.iter().filter(|line| shown(line)).count();
+            let carried = traceback
+                .iter()
+                .filter(|line| !line.trim().is_empty())
+                .count();
+            if mode == yi_tui::cell::TranscriptMode::Verbose {
+                assert_eq!(
+                    visible, carried,
+                    "verbose keeps the whole traceback: {traceback:?}"
+                );
+                continue;
+            }
+            assert!(
+                visible <= 11,
+                "{mode:?}: a failed cell's stream is bounded to head 5 + elision + tail 5, \
+                 but {visible} of its {carried} traceback rows reached scrollback"
+            );
+            if traceback.len() > 10 {
+                let omitted = traceback.len().saturating_sub(10);
+                assert!(
+                    committed
+                        .iter()
+                        .any(|row| row.contains(&format!("… {omitted} more lines"))),
+                    "{mode:?}: the elided middle says how much it dropped: {committed:?}"
+                );
+                let middle = traceback
+                    .get(traceback.len() / 2)
+                    .map_or_else(|| String::from("<none>"), |line| needle(line));
+                assert!(
+                    !committed.iter().any(|row| row.contains(&middle)),
+                    "{mode:?}: the middle of the traceback stays off the screen, \
+                     but {middle:?} reached it"
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+/// The host's own status arrived as a user-role message with no attribution,
+/// so it retitled the window with its own truncated first line, opened a turn,
+/// and drew the user's rail on text the user never typed.
+#[test]
+fn the_recorded_session_titles_nothing_on_a_host_notice() -> TestResult {
+    let messages = recorded_messages()?;
+    let prompts: Vec<String> = messages
+        .iter()
+        .filter(|message| {
+            role_is(message, "user")
+                && message
+                    .get("attribution")
+                    .and_then(serde_json::Value::as_str)
+                    == Some("user")
+        })
+        .filter_map(|message| message.get("content").and_then(serde_json::Value::as_str))
+        .map(str::to_owned)
+        .collect();
+    let notices = messages
+        .iter()
+        .filter(|message| role_is(message, "user") && message.get("attribution").is_none())
+        .count();
+    assert_eq!(
+        (prompts.len(), notices),
+        (3, 1),
+        "the corpus carries three typed prompts and one host notice"
+    );
+    let last = prompts.last().cloned().unwrap_or_default();
+    for mode in MODES {
+        let (mut app, rows) = replayed(mode)?;
+        assert_eq!(
+            app.take_title(),
+            Some(format!("Yi — {last}")),
+            "{mode:?}: the notice arrived after the last prompt and must not have retitled \
+             the window"
+        );
+        let flag = rows
+            .iter()
+            .position(|row| row.contains("⚑ [subagent"))
+            .ok_or_else(|| format!("{mode:?}: no notice row: {rows:?}"))?;
+        assert!(
+            !rows
+                .get(flag)
+                .is_some_and(|row| row.contains('›') || row.contains('┃')),
+            "{mode:?}: the notice draws no prompt rail: {:?}",
+            rows.get(flag)
+        );
+        assert_eq!(
+            rows.iter().filter(|row| row.contains("┃ ›")).count(),
+            prompts.len(),
+            "{mode:?}: only what the user typed is a user cell: {rows:?}"
+        );
+        assert_eq!(
+            rows.iter()
+                .filter(|row| row.trim_start().starts_with('─'))
+                .count(),
+            prompts.len().saturating_sub(1),
+            "{mode:?}: a divider opens a turn only for the user's own input, so the notice \
+             left the turn count alone: {rows:?}"
+        );
+    }
+    Ok(())
+}

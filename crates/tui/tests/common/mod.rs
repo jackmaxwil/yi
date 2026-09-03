@@ -233,3 +233,123 @@ pub fn test_model(id: &str) -> yi_types::model::Model {
         headers: None,
     }
 }
+
+/// The partial every streaming event carries; `Done`/`Error` carry the whole
+/// message instead.
+fn partial_of(event: &yi_types::event::AssistantMessageEvent) -> yi_types::message::AgentMessage {
+    use yi_types::event::AssistantMessageEvent as Event;
+    match event {
+        Event::Start { partial }
+        | Event::TextStart { partial, .. }
+        | Event::TextDelta { partial, .. }
+        | Event::TextEnd { partial, .. }
+        | Event::ThinkingStart { partial, .. }
+        | Event::ThinkingDelta { partial, .. }
+        | Event::ThinkingEnd { partial, .. }
+        | Event::ToolCallStart { partial, .. }
+        | Event::ToolCallDelta { partial, .. }
+        | Event::ToolCallEnd { partial, .. } => partial.clone(),
+        Event::Done { message, .. } => message.clone(),
+        Event::Error { error, .. } => error.clone(),
+    }
+}
+
+/// Replay a recorded session as the event stream the reducer sees live: each
+/// assistant entry re-streamed through `stream_with_deltas`, each tool result
+/// paired with the call it answers. The §10 scrub masks every uuid, so entries
+/// are ordered by the file's own `seq` rather than the parent chain.
+#[allow(dead_code, reason = "the shared harness serves several test binaries")]
+pub fn replay_stream(
+    app: &mut yi_tui::app::App,
+    path: &std::path::Path,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use serde_json::Value;
+    use std::collections::VecDeque;
+    use yi_types::event::{AgentEvent, ToolResult};
+    use yi_types::message::{AgentMessage, Content};
+
+    let text = std::fs::read_to_string(path)?;
+    let mut entries: Vec<(u64, AgentMessage)> = Vec::new();
+    for line in text.lines() {
+        let row: Value = serde_json::from_str(line)?;
+        let field = |key: &str| row.get(key).and_then(Value::as_str).map(str::to_owned);
+        if (field("kind"), field("type"), field("lane"))
+            != (
+                Some("entry".to_owned()),
+                Some("message".to_owned()),
+                Some("main".to_owned()),
+            )
+        {
+            continue;
+        }
+        let Some(message) = row.get("message") else {
+            continue;
+        };
+        let seq = row.get("seq").and_then(Value::as_u64).unwrap_or(0);
+        entries.push((seq, serde_json::from_value(message.clone())?));
+    }
+    entries.sort_by_key(|(seq, _)| *seq);
+
+    let mut calls: VecDeque<(String, Value)> = VecDeque::new();
+    app.reduce_agent(AgentEvent::AgentStart);
+    for (_, message) in entries {
+        match &message {
+            AgentMessage::User { .. } => app.reduce_agent(AgentEvent::MessageStart {
+                message: message.clone(),
+            }),
+            AgentMessage::Assistant { content, .. } => {
+                app.reduce_agent(AgentEvent::MessageStart {
+                    message: message.clone(),
+                });
+                for event in yi_runtime::faux::stream_with_deltas(&message) {
+                    app.reduce_agent(AgentEvent::MessageUpdate {
+                        message: partial_of(&event),
+                        assistant_message_event: event,
+                    });
+                }
+                app.reduce_agent(AgentEvent::MessageEnd {
+                    message: message.clone(),
+                });
+                for block in content {
+                    if let Content::ToolCall { id, arguments, .. } = block {
+                        calls.push_back((id.clone(), Value::Object(arguments.clone())));
+                    }
+                }
+            }
+            AgentMessage::ToolResult {
+                tool_call_id,
+                tool_name,
+                content,
+                details,
+                is_error,
+                ..
+            } => {
+                let (id, args) = calls
+                    .pop_front()
+                    .unwrap_or_else(|| (tool_call_id.clone(), Value::Null));
+                app.reduce_agent(AgentEvent::ToolExecutionStart {
+                    tool_call_id: id.clone(),
+                    tool_name: tool_name.clone(),
+                    args,
+                });
+                app.reduce_agent(AgentEvent::ToolExecutionEnd {
+                    tool_call_id: id,
+                    tool_name: tool_name.clone(),
+                    result: ToolResult {
+                        content: content.clone(),
+                        details: details.clone().unwrap_or(Value::Null),
+                        usage: None,
+                        added_tool_names: None,
+                        terminate: None,
+                    },
+                    is_error: *is_error,
+                });
+            }
+            AgentMessage::BashExecution { .. }
+            | AgentMessage::Custom { .. }
+            | AgentMessage::BranchSummary { .. }
+            | AgentMessage::CompactionSummary { .. } => {}
+        }
+    }
+    Ok(())
+}
