@@ -7,7 +7,6 @@ use ratatui::crossterm::event::{self, Event as CtEvent};
 use ratatui::text::Line;
 use serde_json::{Value, json};
 use yi_runtime::{AgentSession, ChildStatus, ChildUpdate, SubagentHost, session::user_input};
-use yi_types::entry::Entry;
 use yi_types::event::AgentEvent;
 use yi_types::message::{AgentMessage, Attribution, StopReason};
 
@@ -17,7 +16,7 @@ use crate::colors::{Theme, detect_dark, detect_tier};
 use crate::composer::Composer;
 use crate::focus::set_focus;
 use crate::frame::FrameScheduler;
-use crate::hud::{BoardCard, CardKind, CardStatus, GoalView, HudInput};
+use crate::hud::{GoalView, HudInput};
 use crate::input::handle_terminal_event;
 use crate::keymap::{Keymap, default_keymap};
 use crate::orb;
@@ -159,6 +158,10 @@ pub struct App {
     pub(crate) context_used: u64,
     pub(crate) cost_total: f64,
     pub(crate) cost_unknown: bool,
+    turn_started: Instant,
+    turn_tools: u64,
+    turn_tokens: (u64, u64),
+    turn_cost: f64,
     pub(crate) width: usize,
     pub(crate) rows: usize,
 }
@@ -175,7 +178,10 @@ pub(crate) fn elapsed_ms(since: Instant) -> u64 {
     u64::try_from(since.elapsed().as_millis()).unwrap_or(0)
 }
 
+mod replay;
 mod stream;
+
+pub(crate) use replay::{entries_of, replay_child, replay_session, sync_roster};
 
 impl App {
     pub fn new(options: TuiOptions, theme: Theme, keymap: Keymap, width: usize) -> Self {
@@ -239,6 +245,10 @@ impl App {
             context_used: 0,
             cost_total: 0.0,
             cost_unknown: false,
+            turn_started: Instant::now(),
+            turn_tools: 0,
+            turn_tokens: (0, 0),
+            turn_cost: 0.0,
             width,
             rows: 24,
         };
@@ -473,12 +483,7 @@ impl App {
 
     pub fn reduce_agent(&mut self, event: AgentEvent) {
         match event {
-            AgentEvent::AgentStart => {
-                self.running = true;
-                self.seen_turn = true;
-                self.started_turns = self.started_turns.saturating_add(1);
-                self.esc_armed_at = None;
-            }
+            AgentEvent::AgentStart => self.start_turn(),
             AgentEvent::AgentEnd { .. } => {
                 self.running = false;
                 self.intent = None;
@@ -487,6 +492,7 @@ impl App {
                 self.live_tools.clear();
                 self.flush_explored();
                 self.commit_finished_tasks();
+                self.commit_turn_footer();
                 self.scheduler.request();
             }
             AgentEvent::MessageStart { message } => {
@@ -496,7 +502,16 @@ impl App {
                 };
                 let text = user_text(&content);
                 match attribution {
-                    Attribution::Unproven => self.commit_cell(&Cell::Notice { text }),
+                    Attribution::Unproven => {
+                        let carded = text.starts_with("[subagent ")
+                            && self
+                                .tasks
+                                .keys()
+                                .any(|id| text.contains(&format!("({id})")));
+                        if !carded {
+                            self.commit_cell(&Cell::Notice { text });
+                        }
+                    }
                     Attribution::User => {
                         if self.user_turns > 0 {
                             self.commit_cell(&Cell::Divider);
@@ -555,6 +570,7 @@ impl App {
                 result,
                 is_error,
             } => {
+                self.turn_tools = self.turn_tools.saturating_add(1);
                 let elapsed = self
                     .tool_started
                     .remove(&tool_call_id)
@@ -594,7 +610,7 @@ impl App {
                 cell.elapsed_ms = elapsed;
                 let text = text_of(&result.content);
                 cell.digest = ToolCell::digest_of(&tool_name, &text, is_error);
-                cell.preview = preview_lines(&text);
+                cell.preview = preview_lines(&text, 12, 6);
                 cell.details = result.details.clone();
                 self.commit_cell(&Cell::Tool(cell));
                 self.commit_finished_tasks();
@@ -623,6 +639,16 @@ impl App {
             } => {
                 self.cost_total += usage.cost.total.as_f64().unwrap_or(0.0);
                 self.cost_unknown |= usage.unknown;
+                let read = usage
+                    .input
+                    .saturating_add(usage.cache_read)
+                    .saturating_add(usage.cache_write);
+                let (input, output) = self.turn_tokens;
+                self.turn_tokens = (
+                    input.saturating_add(u64::try_from(read).unwrap_or(0)),
+                    output.saturating_add(u64::try_from(usage.output).unwrap_or(0)),
+                );
+                self.turn_cost += usage.cost.total.as_f64().unwrap_or(0.0);
                 self.live_thought = thinking_of(content);
                 self.flush_thought();
                 self.live_markdown = text_of(content);
@@ -657,6 +683,15 @@ impl App {
     }
 
     pub fn reduce_child(&mut self, child_id: &str, event: AgentEvent) {
+        if let AgentEvent::MessageUpdate {
+            message: AgentMessage::Assistant { content, .. },
+            ..
+        } = &event
+            && let Some(state) = self.tasks.get_mut(child_id)
+        {
+            state.cell.answer = Some(crate::cell::tail_bounded(text_of(content)));
+            self.scheduler.request();
+        }
         if let AgentEvent::ToolExecutionStart {
             tool_name, args, ..
         } = &event
@@ -700,7 +735,7 @@ impl App {
                     status: ToolStatus::Done,
                     summary: ToolCell::summary_of(&tool_name, ""),
                     digest: ToolCell::digest_of(&tool_name, &text, is_error),
-                    preview: preview_lines(&text),
+                    preview: preview_lines(&text, 12, 6),
                     elapsed_ms: 0,
                     calls: 1,
                     details: result.details.clone(),
@@ -720,7 +755,6 @@ impl App {
                     id.clone(),
                     TaskState {
                         cell: TaskCell {
-                            agent: "rlm".to_owned(),
                             child_id: id.clone(),
                             description: child.update.name.clone(),
                             status: TaskStatus::Running,
@@ -730,6 +764,8 @@ impl App {
                             elapsed_ms: 0,
                             error: None,
                             spawn: self.spawning_cell(),
+                            answer: None,
+                            activity: child.update.activity,
                         },
                         started: Instant::now(),
                         finished: None,
@@ -762,18 +798,59 @@ impl App {
         if state.cell.status != status
             || state.cell.toolcalls != toolcalls
             || state.cell.tokens != update.token_count
+            || state.cell.activity != update.activity
         {
             state.cell.status = status;
+            state.cell.activity = update.activity;
             state.cell.error = update.error.clone();
             state.cell.toolcalls = toolcalls;
             state.cell.tokens = update.token_count;
             state.cell.elapsed_ms = elapsed_ms(state.started);
             if status != TaskStatus::Running && state.finished.is_none() {
                 state.finished = Some(Instant::now());
+                let answer = state.session.messages().iter().rev().find_map(|m| match m {
+                    AgentMessage::Assistant { content, .. } => Some(text_of(content)),
+                    _ => None,
+                });
+                if let Some(text) = answer.filter(|t| !t.trim().is_empty()) {
+                    state.cell.answer = Some(crate::cell::tail_bounded(text));
+                }
             }
             self.scheduler.request();
         }
         self.commit_finished_tasks();
+    }
+
+    fn start_turn(&mut self) {
+        self.running = true;
+        self.seen_turn = true;
+        self.started_turns = self.started_turns.saturating_add(1);
+        self.esc_armed_at = None;
+        self.turn_started = Instant::now();
+        self.turn_tools = 0;
+        self.turn_tokens = (0, 0);
+        self.turn_cost = 0.0;
+    }
+
+    /// One dim row closes a turn with what it cost, so the price of an answer is read
+    /// where the answer is, not only in the status bar.
+    fn commit_turn_footer(&mut self) {
+        let (input, output) = self.turn_tokens;
+        if self.turn_tools == 0 && input == 0 && output == 0 {
+            return;
+        }
+        let tools = usize::try_from(self.turn_tools).unwrap_or(usize::MAX);
+        let mut text = format!(
+            "{} · {} · {} in / {} out",
+            crate::cell::count_label(tools, "tool"),
+            crate::cell::elapsed_label(elapsed_ms(self.turn_started)),
+            crate::status::fmt_tokens(input),
+            crate::status::fmt_tokens(output),
+        );
+        if self.turn_cost > 0.0 {
+            text.push_str(&format!(" · ${:.3}", self.turn_cost));
+        }
+        self.commit_cell(&Cell::Footer { text });
     }
 
     fn commit_finished_tasks(&mut self) {
@@ -797,37 +874,8 @@ impl App {
     }
 
     pub fn hud_input(&self, goal: Option<GoalView>) -> HudInput {
-        let mut cards = Vec::new();
-        let any_running = self
-            .tasks
-            .values()
-            .any(|state| state.cell.status == TaskStatus::Running);
-        for id in &self.task_order {
-            let Some(state) = self.tasks.get(id) else {
-                continue;
-            };
-            if !any_running {
-                break;
-            }
-            let status = match state.cell.status {
-                TaskStatus::Running => CardStatus::Running,
-                TaskStatus::Done => CardStatus::Done,
-                TaskStatus::Failed => CardStatus::Blocked,
-            };
-            cards.push(BoardCard {
-                title: format!("{} ⟨{}⟩", state.cell.child_id, state.cell.agent),
-                kind: CardKind::Subagent,
-                status,
-                detail: state.cell.description.clone(),
-                done_ms: state
-                    .finished
-                    .map(elapsed_ms)
-                    .filter(|_| status == CardStatus::Done),
-            });
-        }
         HudInput {
             goal,
-            cards,
             steering: self.steering.clone(),
             follow_up: Vec::new(),
         }
@@ -1035,130 +1083,4 @@ pub fn run_tui(
     drop(guard);
     let _ = runtime_thread.join();
     app.exit_code
-}
-
-pub(crate) fn sync_roster(
-    app: &mut App,
-    host: &Arc<SubagentHost>,
-    handle: &tokio::runtime::Handle,
-    ui_tx: &Sender<UiEvent>,
-) {
-    let children = host.children_view();
-    for child in &children {
-        let subscribed = app
-            .tasks
-            .get(child.update.id.as_str())
-            .is_some_and(|state| state.subscribed);
-        if !subscribed {
-            let mut events = child.session.subscribe();
-            let child_id = child.update.id.as_str().to_owned();
-            let ui_tx = ui_tx.clone();
-            handle.spawn(async move {
-                while let Ok(event) = events.recv().await {
-                    if ui_tx
-                        .send(UiEvent::Child {
-                            child_id: child_id.clone(),
-                            event,
-                        })
-                        .is_err()
-                    {
-                        break;
-                    }
-                }
-            });
-        }
-    }
-    app.sync_children(&children);
-}
-
-/// The active branch only — [`entries_of`] returns the whole tree for the tree
-/// view, and a transcript built from that leaves rewound turns on screen.
-pub(crate) fn branch_of(session: &AgentSession) -> Vec<Entry> {
-    let Some(store) = session.store() else {
-        return Vec::new();
-    };
-    yi_runtime::session_store::lock_session(&store)
-        .find_entries_on_branch(
-            "main",
-            &yi_runtime::session_store::EntryQuery {
-                order: yi_runtime::session_store::EntryOrder::OldestFirst,
-                ..yi_runtime::session_store::EntryQuery::default()
-            },
-            &yi_runtime::session_store::BranchBounds::default(),
-        )
-        .unwrap_or_default()
-}
-
-pub(crate) fn entries_of(session: &AgentSession) -> (Vec<Entry>, Option<String>) {
-    let Some(store) = session.store() else {
-        return (Vec::new(), None);
-    };
-    let locked = yi_runtime::session_store::lock_session(&store);
-    let entries = locked
-        .find_entries(&yi_runtime::session_store::EntryQuery {
-            order: yi_runtime::session_store::EntryOrder::OldestFirst,
-            ..yi_runtime::session_store::EntryQuery::default()
-        })
-        .unwrap_or_default();
-    let leaf = locked.leaf_id("main").ok().flatten();
-    (entries, leaf)
-}
-
-pub(crate) fn replay_child(app: &mut App, child_id: &str) {
-    let Some(session) = app.tasks.get(child_id).map(|s| Arc::clone(&s.session)) else {
-        return;
-    };
-    replay_session(app, &session);
-}
-
-/// The model's context and the screen must agree about what was said.
-pub(crate) fn replay_session(app: &mut App, session: &AgentSession) {
-    let entries = branch_of(session);
-    let cells: Vec<Cell> = entries
-        .iter()
-        .filter_map(|entry| match entry {
-            Entry::Message { message, .. } => match message {
-                AgentMessage::User { content, .. } => Some(Cell::User {
-                    text: user_text(content),
-                }),
-                AgentMessage::Assistant { content, .. } => {
-                    let text = text_of(content);
-                    if text.is_empty() {
-                        None
-                    } else {
-                        Some(Cell::Assistant { markdown: text })
-                    }
-                }
-                AgentMessage::ToolResult {
-                    tool_name,
-                    content,
-                    is_error,
-                    details,
-                    ..
-                } => Some(Cell::Tool(ToolCell {
-                    name: tool_name.clone(),
-                    // A replayed entry has no live call to pair with, and the
-                    // session never recorded how long the call took.
-                    call_id: String::new(),
-                    intent: None,
-                    status: if *is_error {
-                        ToolStatus::Failed
-                    } else {
-                        ToolStatus::Done
-                    },
-                    summary: ToolCell::summary_of(tool_name, ""),
-                    digest: ToolCell::digest_of(tool_name, &text_of(content), *is_error),
-                    preview: Vec::new(),
-                    elapsed_ms: 0,
-                    calls: 1,
-                    details: details.clone().unwrap_or(Value::Null),
-                })),
-                _ => None,
-            },
-            _ => None,
-        })
-        .collect();
-    for cell in cells {
-        app.commit_cell(&cell);
-    }
 }

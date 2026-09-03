@@ -15,7 +15,7 @@ type Test the ipython tooling: spawn a child with rlm.run and read its answer
 wait 400
 key enter
 wait-frame 20000 ⊙ python · h = await rlm.run('trace')
-wait-frame 20000 ✓ rlm Task —
+wait-frame 20000 ↳ Trace sub
 wait-idle 20000
 wait 900
 quit
