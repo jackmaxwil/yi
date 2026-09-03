@@ -787,17 +787,13 @@ impl App {
         if self.live_tools.iter().any(spawning) {
             return;
         }
-        let finished: Vec<TaskCell> = self
-            .task_order
-            .iter()
-            .filter_map(|id| self.tasks.get(id).map(|state| &state.cell))
-            .filter(|cell| {
-                cell.status != TaskStatus::Running && !self.committed_tasks.contains(&cell.child_id)
-            })
-            .cloned()
-            .collect();
-        for cell in finished {
-            self.committed_tasks.insert(cell.child_id.clone());
+        for id in self.task_order.clone() {
+            let Some(cell) = self.tasks.get(&id).map(|state| state.cell.clone()) else {
+                continue;
+            };
+            if cell.status == TaskStatus::Running || !self.committed_tasks.insert(id) {
+                continue;
+            }
             self.commit_cell(&Cell::Task(cell));
         }
     }
