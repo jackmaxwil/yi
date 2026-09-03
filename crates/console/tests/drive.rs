@@ -488,8 +488,10 @@ fn navigator_filters_and_opens() -> TestResult {
             Step::Expect("_yi/seen", seen_ok),
         ],
         "wait-frame 5000 s-alpha\n\
+         wait-frame 3000 !╭\n\
          key alt-/\n\
          wait-frame 3000 find\n\
+         wait-frame 3000 ╭\n\
          type beta\n\
          wait-frame 3000 find beta\n\
          key enter\n\
@@ -1322,8 +1324,8 @@ fn cmd_f_scrolls_to_match() -> TestResult {
     Ok(())
 }
 
-/// Corners are rounded and the focused pane wears a reversed chip; the strip above the
-/// composer names the files the session touched.
+/// Once a second pane exists the corners are rounded and the focused pane wears a reversed
+/// chip; the strip above the composer names the files the session touched.
 #[test]
 fn rounded_borders_and_context_strip_render() -> TestResult {
     run(
@@ -1338,9 +1340,11 @@ fn rounded_borders_and_context_strip_render() -> TestResult {
             Step::Expect("_yi/tracked", tracked_no),
         ],
         "wait-frame 5000 s-alpha\n\
-         wait-frame 3000 ╭\n\
          key enter\n\
          wait-frame 5000 replayed world\n\
+         key alt-v\n\
+         key alt-left\n\
+         wait-frame 3000 ╭\n\
          wait-frame 3000 ❯ s-alpha\n\
          wait-frame 5000 touched lib.rs\n\
          quit\n",
@@ -1380,4 +1384,49 @@ fn the_editor_shows_a_scroll_bar_and_the_wheel_moves_it() -> TestResult {
     )?;
     let _ = std::fs::remove_file(&path);
     Ok(())
+}
+
+/// A lone chat pane is the chat itself and wears no frame or title; the frame arrives with
+/// the second pane, whose edge it separates, and leaves with it.
+#[test]
+fn a_lone_chat_pane_wears_no_frame() -> TestResult {
+    run(
+        "lone-pane",
+        session_fixture(),
+        "wait-frame 5000 s-alpha\n\
+         key enter\n\
+         wait-frame 5000 replayed world\n\
+         wait-frame 3000 !❯ s-alpha\n\
+         wait-frame 3000 !╭\n\
+         key alt-v\n\
+         wait-frame 3000 ❯ s-alpha\n\
+         wait-frame 3000 ┬\n\
+         key alt-x\n\
+         wait-frame 3000 !❯ s-alpha\n\
+         wait-frame 3000 replayed world\n\
+         quit\n",
+    )
+}
+
+/// ctrl+c is the solo vocabulary: a drafted prompt clears, an idle composer cancels the
+/// turn and arms, and a second press inside the window quits the console.
+#[test]
+fn ctrl_c_clears_the_draft_then_cancels_then_quits() -> TestResult {
+    let mut fixture = session_fixture();
+    fixture.push(Step::Expect("session/cancel", seen_ok));
+    run(
+        "ctrl-c",
+        fixture,
+        "wait-frame 5000 s-alpha\n\
+         key enter\n\
+         wait-frame 5000 replayed world\n\
+         type draft text\n\
+         wait-frame 3000 draft text\n\
+         key ctrl-c\n\
+         wait-frame 3000 !draft text\n\
+         key ctrl-c\n\
+         wait-frame 3000 ctrl+c again quits\n\
+         key ctrl-c\n\
+         wait-frame 3000 the console quit before this frame\n",
+    )
 }

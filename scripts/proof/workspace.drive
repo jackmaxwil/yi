@@ -2,7 +2,7 @@
 # panes by chord, the palette, and the sidebar toggle.
 wait-frame 5000 workspaces
 key alt-n
-wait-frame 8000 ❯ 01
+wait-frame 8000 ○ 01
 type hello workspace
 key enter
 wait-frame 10000 faux:
