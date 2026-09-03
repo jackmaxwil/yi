@@ -88,6 +88,14 @@ impl App {
             }
             return true;
         }
+        if let Some(pattern) = query.strip_prefix('/') {
+            self.find_in_editor(pattern.trim());
+            return true;
+        }
+        if let Some(("e", path)) = query.split_once(' ') {
+            self.open_editor(&resolve(path.trim()));
+            return true;
+        }
         let (kind, path) = match query.split_once(' ') {
             Some(("md", path)) => (true, resolve(path.trim())),
             Some(("diff", path)) => (false, resolve(path.trim())),

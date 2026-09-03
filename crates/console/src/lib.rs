@@ -121,7 +121,9 @@ fn draw<B: Backend>(
     terminal.draw(|frame| {
         let view = render::compute_view(app, frame.area(), theme);
         render::render(app, frame, &view, theme);
-        if app.state.zone == crate::model::Zone::Panes {
+        if let Some(cursor) = view.editor_cursor {
+            frame.set_cursor_position(cursor);
+        } else if app.state.zone == crate::model::Zone::Panes {
             frame.set_cursor_position((view.composer.x, view.composer.y));
         }
     })?;

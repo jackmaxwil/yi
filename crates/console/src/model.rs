@@ -135,6 +135,29 @@ pub enum PaneContent {
     SessionDiff {
         session: SessionId,
     },
+    Editor(Editor),
+}
+
+pub struct Editor {
+    pub path: String,
+    pub text: Box<tui_textarea::TextArea<'static>>,
+    pub dirty: bool,
+    pub mtime: Option<std::time::SystemTime>,
+    pub stale: bool,
+    pub scroll_top: usize,
+    pub lang: Option<String>,
+}
+
+impl Editor {
+    pub fn gutter(&self) -> usize {
+        self.text
+            .lines()
+            .len()
+            .max(1)
+            .to_string()
+            .len()
+            .saturating_add(1)
+    }
 }
 
 pub struct FileDiff {
@@ -211,7 +234,8 @@ impl Pane {
             }
             PaneContent::Markdown { .. }
             | PaneContent::Diff { .. }
-            | PaneContent::SessionDiff { .. } => None,
+            | PaneContent::SessionDiff { .. }
+            | PaneContent::Editor(_) => None,
         }
     }
 }

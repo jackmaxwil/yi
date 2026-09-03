@@ -1155,3 +1155,166 @@ fn esc_cancels_running_user_cell() -> TestResult {
          quit\n",
     )
 }
+
+fn editor_file(name: &str) -> PathBuf {
+    std::env::temp_dir().join(format!(
+        "yi-console-editor-{}-{name}.rs",
+        std::process::id()
+    ))
+}
+
+fn seed_editor_file(name: &str, body: &str) -> Result<PathBuf, Box<dyn Error>> {
+    let path = editor_file(name);
+    std::fs::write(&path, body)?;
+    Ok(path)
+}
+
+fn open_editor_script(path: &std::path::Path, rest: &str) -> String {
+    format!(
+        "wait-frame 5000 s-alpha\nkey enter\nwait-frame 5000 replayed world\n\
+         key alt-/\ntype e {}\nkey enter\nwait-frame 3000 ✎ \n{rest}",
+        path.display()
+    )
+}
+
+fn session_fixture() -> Vec<Step> {
+    vec![
+        Step::Expect("initialize", init_reply),
+        Step::Expect("session/list", two_session_list),
+        Step::Expect("session/list", empty_list),
+        Step::Expect("session/resume", resume_alpha),
+        Step::Expect("_yi/seen", seen_ok),
+    ]
+}
+
+/// `e <path>` opens a file in the pane; typing marks it dirty and ⌘S writes it back.
+#[test]
+fn editor_opens_types_and_saves() -> TestResult {
+    let path = seed_editor_file("save", "fn main() {}\n")?;
+    run(
+        "editor-save",
+        session_fixture(),
+        &open_editor_script(
+            &path,
+            "wait-frame 3000 fn main\nkey end\ntype  // done\nwait-frame 3000 .rs ●\n\
+             cmd-s\nwait-frame 3000 saved\nwait-frame 3000 !.rs ●\nquit\n",
+        ),
+    )?;
+    assert_eq!(std::fs::read_to_string(&path)?, "fn main() {} // done\n");
+    let _ = std::fs::remove_file(&path);
+    Ok(())
+}
+
+/// A click places the cursor on that cell; a drag selects, and backspace removes the run.
+#[test]
+fn editor_click_places_cursor_and_drag_selects() -> TestResult {
+    let path = seed_editor_file("mouse", "abcdef\nsecond\n")?;
+    // Sidebar 26 wide, border at x=26, inner x=27, gutter "1 " puts text at x=29; row 0 at y=1.
+    run(
+        "editor-mouse",
+        session_fixture(),
+        &open_editor_script(
+            &path,
+            "wait-frame 3000 abcdef\nmouse down 31 1\nmouse up 31 1\ntype X\n\
+             wait-frame 3000 abXcdef\nmouse down 29 1\nmouse drag 31 1\nmouse up 31 1\n\
+             key backspace\nwait-frame 3000 Xcdef\nwait-frame 3000 !abXcdef\nquit\n",
+        ),
+    )?;
+    let _ = std::fs::remove_file(&path);
+    Ok(())
+}
+
+fn agent_rewrites_reload_file() -> Vec<Value> {
+    let path = editor_file("reload");
+    let _write = std::fs::write(&path, "rewritten by the agent\n");
+    vec![update(
+        "s-alpha",
+        json!({"sessionUpdate": "tool_call_update",
+        "toolCallId": "e9", "title": "edit", "kind": "edit", "status": "completed",
+        "rawOutput": {"patch": format!("--- a/{0}\n+++ b/{0}\n@@ -1,1 +1,1 @@\n-old\n+rewritten by the agent\n", path.display()),
+                      "added": 1, "removed": 1}}),
+    )]
+}
+
+/// A clean editor follows the agent's edit to the same file without asking.
+#[test]
+fn agent_edit_reloads_clean_editor_silently() -> TestResult {
+    let path = seed_editor_file("reload", "old\n")?;
+    // The daemon list poll (every 5 s) is the sequencing point: the agent's rewrite lands
+    // after the editor has read the original.
+    let mut fixture = session_fixture();
+    fixture.push(Step::Expect("session/list", empty_list));
+    fixture.push(Step::Push(agent_rewrites_reload_file));
+    fixture.push(Step::Expect("_yi/tracked", tracked_no));
+    run(
+        "editor-reload",
+        fixture,
+        &open_editor_script(
+            &path,
+            "wait-frame 3000 1 old\nwait-frame 9000 rewritten by the agent\n\
+             wait-frame 2000 !file changed on disk\nquit\n",
+        ),
+    )?;
+    let _ = std::fs::remove_file(&path);
+    Ok(())
+}
+
+fn agent_rewrites_dirty_file() -> Vec<Value> {
+    let path = editor_file("dirty");
+    let _write = std::fs::write(&path, "rewritten underneath\n");
+    vec![update(
+        "s-alpha",
+        json!({"sessionUpdate": "tool_call_update",
+        "toolCallId": "e10", "title": "edit", "kind": "edit", "status": "completed",
+        "rawOutput": {"patch": format!("--- a/{0}\n+++ b/{0}\n@@ -1,1 +1,1 @@\n-old\n+rewritten underneath\n", path.display()),
+                      "added": 1, "removed": 1}}),
+    )]
+}
+
+/// A dirty editor shows the stale bar instead of losing the draft; `r` takes the disk copy.
+#[test]
+fn dirty_editor_shows_reload_bar_and_r_reloads() -> TestResult {
+    let path = seed_editor_file("dirty", "old\n")?;
+    let mut fixture = session_fixture();
+    fixture.push(Step::Expect("session/list", empty_list));
+    fixture.push(Step::Push(agent_rewrites_dirty_file));
+    fixture.push(Step::Expect("_yi/tracked", tracked_no));
+    run(
+        "editor-dirty",
+        fixture,
+        &open_editor_script(
+            &path,
+            "wait-frame 3000 1 old\nkey end\ntype er draft\nwait-frame 3000 older draft\n\
+             wait-frame 9000 file changed on disk\nkey r\n\
+             wait-frame 3000 rewritten underneath\nwait-frame 3000 !file changed on disk\nquit\n",
+        ),
+    )?;
+    let _ = std::fs::remove_file(&path);
+    Ok(())
+}
+
+/// ⌘F then `/needle` scrolls the editor to the match.
+#[test]
+fn cmd_f_scrolls_to_match() -> TestResult {
+    let body: String = (1..=60)
+        .map(|n| {
+            if n == 55 {
+                "let needle = 1;\n".to_owned()
+            } else {
+                format!("line {n}\n")
+            }
+        })
+        .collect();
+    let path = seed_editor_file("find", &body)?;
+    run(
+        "editor-find",
+        session_fixture(),
+        &open_editor_script(
+            &path,
+            "wait-frame 3000 line 1\nwait-frame 2000 !needle\ncmd-f\ntype needle\nkey enter\n\
+             wait-frame 3000 let needle = 1;\nquit\n",
+        ),
+    )?;
+    let _ = std::fs::remove_file(&path);
+    Ok(())
+}
