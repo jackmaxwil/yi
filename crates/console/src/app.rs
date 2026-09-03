@@ -67,6 +67,8 @@ pub struct App {
     pub animate: bool,
     pub cmd_hints: bool,
     pub autostart: bool,
+    next_disk_check: Instant,
+    editor_drag: bool,
     notes: NoteQueue,
     pub osc_flavor: OscFlavor,
     /// Escapes for the real loop to write to the terminal; drained per draw.
@@ -100,6 +102,8 @@ impl App {
             animations: Vec::new(),
             cmd_hints: false,
             autostart: false,
+            next_disk_check: Instant::now(),
+            editor_drag: false,
             animate: false,
             notes: NoteQueue::default(),
             osc_flavor: OscFlavor::None,
@@ -161,6 +165,7 @@ impl App {
         }
         self.tick_animations(now);
         self.tick_notes(now);
+        self.check_editors(now);
     }
 
     fn tick_animations(&mut self, now: Instant) {
@@ -384,7 +389,8 @@ impl App {
                 PaneContent::Notebook { session: slot, .. } => *slot = Some(session.clone()),
                 PaneContent::Markdown { .. }
                 | PaneContent::Diff { .. }
-                | PaneContent::SessionDiff { .. } => {
+                | PaneContent::SessionDiff { .. }
+                | PaneContent::Editor(_) => {
                     pane.content = PaneContent::Session {
                         session: Some(session.clone()),
                         transcript: crate::transcript::Transcript::new(),
@@ -546,7 +552,8 @@ impl App {
                 }
                 PaneContent::Markdown { .. }
                 | PaneContent::Diff { .. }
-                | PaneContent::SessionDiff { .. } => {}
+                | PaneContent::SessionDiff { .. }
+                | PaneContent::Editor(_) => {}
             }
         }
     }
@@ -606,6 +613,14 @@ impl App {
             "_yi/seen",
             json!({"sessionId": session.0}),
         );
+    }
+
+    fn open_navigator(&mut self, query: &str) {
+        self.state.mode = Mode::Navigator {
+            query: query.to_owned(),
+            selected: 0,
+        };
+        self.dirty = true;
     }
 
     fn on_notebook(&self) -> bool {
@@ -853,6 +868,13 @@ impl App {
             Action::ToggleSidebar => self.state.sidebar_hidden = !self.state.sidebar_hidden,
             Action::ToggleNotebook => self.toggle_side(outbound, diffs::SideKind::Notebook),
             Action::ToggleDiff => self.toggle_side(outbound, diffs::SideKind::Diff),
+            Action::OpenEditor => self.open_navigator("e "),
+            Action::Find => self.open_navigator("/"),
+            Action::Save | Action::Undo | Action::Redo => {
+                if !self.editor_action(action) {
+                    self.note("no editor pane is focused");
+                }
+            }
         }
         // Whatever pane the action landed on, its session counts as looked-at.
         if let Some(session) = self.state.focused_session()
@@ -978,6 +1000,14 @@ impl App {
             if action == Action::CancelTurn && self.on_notebook() {
                 return self.cancel_notebook_cell(outbound);
             }
+            if self.on_editor()
+                && matches!(
+                    action,
+                    Action::CancelTurn | Action::PageUp | Action::PageDown
+                )
+            {
+                return self.editor_key(key);
+            }
             self.apply_action(outbound, action);
             return;
         }
@@ -1006,6 +1036,7 @@ impl App {
                 KeyCode::Enter => self.open_selected(outbound),
                 _ => {}
             },
+            Zone::Panes if self.on_editor() => self.editor_key(key),
             Zone::Panes if self.on_notebook() => match key.code {
                 KeyCode::Enter if key.modifiers.contains(KeyModifiers::SHIFT) => {
                     self.run_notebook_cell(outbound);
@@ -1044,6 +1075,7 @@ fn fresh_composer() -> TextArea<'static> {
 }
 
 mod diffs;
+mod editor;
 mod mouse;
 mod navigator;
 mod notebook;

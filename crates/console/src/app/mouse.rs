@@ -1,5 +1,6 @@
 use crate::client::Outbound;
-use crate::model::{SessionStatus, Zone};
+use crate::layout::PaneId;
+use crate::model::{PaneContent, SessionStatus, Zone};
 
 use super::App;
 
@@ -13,28 +14,57 @@ pub enum MouseKind {
 }
 
 impl App {
+    fn scroll_pane_under(&mut self, x: u16, y: u16, delta: isize) {
+        let target = self.hits.as_ref().and_then(|hits| {
+            hits.panes
+                .iter()
+                .find(|(_, rect)| rect.contains(ratatui::layout::Position::new(x, y)))
+                .map(|(id, _)| *id)
+        });
+        if let Some(pane_id) = target
+            && let Some(pane) = self.state.panes.get_mut(&pane_id)
+        {
+            if let PaneContent::Editor(editor) = &mut pane.content {
+                editor.scroll_top = if delta >= 0 {
+                    editor.scroll_top.saturating_sub(delta.unsigned_abs())
+                } else {
+                    editor.scroll_top.saturating_add(delta.unsigned_abs())
+                };
+                self.dirty = true;
+                return;
+            }
+            pane.scroll_from_bottom = if delta >= 0 {
+                pane.scroll_from_bottom.saturating_add(delta.unsigned_abs())
+            } else {
+                pane.scroll_from_bottom.saturating_sub(delta.unsigned_abs())
+            };
+            self.dirty = true;
+        }
+    }
+
+    fn editor_cell(&self, pane_id: PaneId, x: u16, y: u16) -> Option<(usize, usize)> {
+        let (_, rect) = self
+            .hits
+            .as_ref()?
+            .panes
+            .iter()
+            .find(|(id, _)| *id == pane_id)?;
+        let inner = rect.inner(ratatui::layout::Margin::new(1, 1));
+        let PaneContent::Editor(editor) = &self.state.panes.get(&pane_id)?.content else {
+            return None;
+        };
+        let row = usize::from(y.checked_sub(inner.y)?).saturating_add(editor.scroll_top);
+        let col = usize::from(x.checked_sub(inner.x)?).checked_sub(editor.gutter())?;
+        Some((row, col))
+    }
+
     /// Clicks and drags resolve against the last draw's hit table, so the
     /// mouse can never disagree with what was on screen.
     pub fn handle_mouse(&mut self, outbound: &Outbound, kind: MouseKind, x: u16, y: u16) {
         match kind {
             MouseKind::ScrollUp | MouseKind::ScrollDown => {
                 let delta: isize = if kind == MouseKind::ScrollUp { 3 } else { -3 };
-                let target = self.hits.as_ref().and_then(|hits| {
-                    hits.panes
-                        .iter()
-                        .find(|(_, rect)| rect.contains(ratatui::layout::Position::new(x, y)))
-                        .map(|(id, _)| *id)
-                });
-                if let Some(pane_id) = target
-                    && let Some(pane) = self.state.panes.get_mut(&pane_id)
-                {
-                    pane.scroll_from_bottom = if delta >= 0 {
-                        pane.scroll_from_bottom.saturating_add(delta.unsigned_abs())
-                    } else {
-                        pane.scroll_from_bottom.saturating_sub(delta.unsigned_abs())
-                    };
-                    self.dirty = true;
-                }
+                self.scroll_pane_under(x, y, delta);
             }
             MouseKind::Down => {
                 let Some(hits) = &self.hits else { return };
@@ -92,6 +122,14 @@ impl App {
                         tab.layout.focus_pane(pane_id);
                     }
                     self.state.zone = Zone::Panes;
+                    if let Some((row, col)) = self.editor_cell(pane_id, x, y) {
+                        if let Some(editor) = self.editor_mut() {
+                            editor.click(row, col);
+                        }
+                        self.editor_drag = true;
+                        self.dirty = true;
+                        return;
+                    }
                     if let Some(session) = self.state.focused_session()
                         && self
                             .state
@@ -105,6 +143,17 @@ impl App {
                 }
             }
             MouseKind::Drag => {
+                if self.editor_drag {
+                    let cell = self
+                        .state
+                        .focused_pane_id()
+                        .and_then(|id| self.editor_cell(id, x, y));
+                    if let (Some((row, col)), Some(editor)) = (cell, self.editor_mut()) {
+                        editor.drag_to(row, col);
+                        self.dirty = true;
+                    }
+                    return;
+                }
                 let Some((tab_index, path)) = self.drag.clone() else {
                     return;
                 };
@@ -136,6 +185,12 @@ impl App {
             }
             MouseKind::Up => {
                 self.drag = None;
+                if std::mem::take(&mut self.editor_drag)
+                    && let Some(editor) = self.editor_mut()
+                {
+                    editor.release();
+                    self.dirty = true;
+                }
             }
         }
     }

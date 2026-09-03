@@ -43,6 +43,7 @@ pub struct Hits {
 pub struct ViewState {
     pub sidebar: Rect,
     pub roots: Rect,
+    pub editor_cursor: Option<(u16, u16)>,
     pub tab_bar: Option<Rect>,
     pub panes_area: Rect,
     pub panes: Vec<PaneView>,
@@ -129,6 +130,7 @@ pub fn compute_view(app: &mut App, area: Rect, theme: &Theme) -> ViewState {
 
     let panes_zone = app.state.zone == Zone::Panes;
     let mut panes = Vec::new();
+    let mut editor_cursor = None;
     for pane_rect in pane_rects {
         let inner = pane_rect.rect.inner(ratatui::layout::Margin::new(1, 1));
         let diffs = &app.state.diffs;
@@ -136,6 +138,13 @@ pub fn compute_view(app: &mut App, area: Rect, theme: &Theme) -> ViewState {
             Some(pane) => pane_view_content(pane, diffs, inner, theme),
             None => ("empty".to_owned(), Vec::new()),
         };
+        if pane_rect.focused
+            && panes_zone
+            && let Some(PaneContent::Editor(editor)) =
+                app.state.panes.get(&pane_rect.id).map(|pane| &pane.content)
+        {
+            editor_cursor = editor_cursor_cell(editor, inner);
+        }
         panes.push(PaneView {
             id: pane_rect.id,
             rect: pane_rect.rect,
@@ -183,6 +192,7 @@ pub fn compute_view(app: &mut App, area: Rect, theme: &Theme) -> ViewState {
     ViewState {
         sidebar,
         roots: roots_area,
+        editor_cursor,
         tab_bar,
         panes_area,
         panes,
@@ -228,6 +238,7 @@ fn pane_view_content(
             let lines = window(all, pane.scroll_from_bottom, visible);
             (short_path(path), lines)
         }
+        PaneContent::Editor(editor) => editor_view(editor, inner, theme),
         PaneContent::SessionDiff { session } => {
             let short: String = session.0.chars().take(8).collect();
             let (title, all) = match diffs.get(session).filter(|diff| !diff.files.is_empty()) {
@@ -332,6 +343,92 @@ fn window(all: Vec<Line<'static>>, from_bottom: usize, visible: usize) -> Vec<Li
     all.get(start..end)
         .map(<[Line<'static>]>::to_vec)
         .unwrap_or_default()
+}
+
+fn editor_cursor_cell(editor: &crate::model::Editor, inner: Rect) -> Option<(u16, u16)> {
+    let (row, col) = editor.text.cursor();
+    let line = editor.text.lines().get(row)?;
+    let prefix: String = line.chars().take(col).collect();
+    let x = inner
+        .x
+        .checked_add(u16::try_from(editor.gutter()).ok()?)?
+        .checked_add(u16::try_from(Span::raw(prefix.as_str()).width()).ok()?)?;
+    let y = inner
+        .y
+        .checked_add(u16::try_from(row.checked_sub(editor.scroll_top)?).ok()?)?;
+    (x < inner.x.saturating_add(inner.width) && y < inner.y.saturating_add(inner.height))
+        .then_some((x, y))
+}
+
+fn editor_view(
+    editor: &mut crate::model::Editor,
+    inner: Rect,
+    theme: &Theme,
+) -> (String, Vec<Line<'static>>) {
+    let height = usize::from(inner.height).max(1);
+    let total = editor.text.lines().len();
+    let (row, _) = editor.text.cursor();
+    if row < editor.scroll_top {
+        editor.scroll_top = row;
+    } else if row >= editor.scroll_top.saturating_add(height) {
+        editor.scroll_top = row.saturating_add(1).saturating_sub(height);
+    }
+    editor.scroll_top = editor.scroll_top.min(total.saturating_sub(1));
+    let gutter = editor.gutter();
+    let mut lang = editor.lang.as_deref().and_then(yi_tui::highlight::lang_for);
+    let selection = editor.text.selection_range();
+    let base = Style::default().fg(theme.text);
+    let mut out = Vec::new();
+    for (index, line) in editor
+        .text
+        .lines()
+        .iter()
+        .enumerate()
+        .skip(editor.scroll_top)
+        .take(height)
+    {
+        let number = format!(
+            "{:>width$} ",
+            index.saturating_add(1),
+            width = gutter.saturating_sub(1)
+        );
+        let mut spans = vec![Span::styled(number, theme.dim_style())];
+        let selected = selection.and_then(|(start, end)| {
+            let from = if index == start.0 { start.1 } else { 0 };
+            let to = if index == end.0 {
+                end.1
+            } else {
+                line.chars().count()
+            };
+            (start.0 <= index && index <= end.0).then_some((from, to))
+        });
+        match (selected, lang.as_mut()) {
+            (Some((from, to)), _) => {
+                let head: String = line.chars().take(from).collect();
+                let mid: String = line
+                    .chars()
+                    .skip(from)
+                    .take(to.saturating_sub(from))
+                    .collect();
+                let tail: String = line.chars().skip(to).collect();
+                spans.push(Span::styled(head, base));
+                spans.push(Span::styled(mid, base.add_modifier(Modifier::REVERSED)));
+                spans.push(Span::styled(tail, base));
+            }
+            (None, Some(lang)) => spans.extend(yi_tui::highlight::spans(line, lang, theme, base)),
+            (None, None) => spans.push(Span::styled(line.clone(), base)),
+        }
+        out.push(Line::from(spans));
+    }
+    if editor.stale {
+        out.truncate(height.saturating_sub(1));
+        out.push(Line::styled(
+            "file changed on disk · r reload · k keep",
+            Style::default().fg(theme.warning),
+        ));
+    }
+    let mark = if editor.dirty { " ●" } else { "" };
+    (format!("✎ {}{mark}", short_path(&editor.path)), out)
 }
 
 fn short_path(path: &str) -> String {

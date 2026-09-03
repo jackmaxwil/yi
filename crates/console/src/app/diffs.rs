@@ -65,6 +65,7 @@ impl App {
             .entry(session.clone())
             .or_default()
             .insert(path.clone(), file);
+        self.editors_touched(Some(&path));
         let root = self.root_of(session);
         if self.connected() {
             self.send_request(

@@ -29,6 +29,11 @@ pub enum Action {
     ToggleSidebar,
     ToggleNotebook,
     ToggleDiff,
+    OpenEditor,
+    Find,
+    Save,
+    Undo,
+    Redo,
 }
 
 /// The prefix key: ctrl+b, held as a one-shot armed state by the caller.
@@ -76,6 +81,7 @@ pub fn direct(key: &KeyEvent) -> Option<Action> {
         KeyCode::Char('q') => Some(Action::Quit),
         KeyCode::Char('b') => Some(Action::ToggleSidebar),
         KeyCode::Char('g') => Some(Action::ToggleDiff),
+        KeyCode::Char('e') => Some(Action::OpenEditor),
         KeyCode::Char(digit @ '1'..='9') => {
             let n = u8::try_from(u32::from(digit).saturating_sub(u32::from('0'))).ok()?;
             Some(Action::SelectTab(n))
@@ -99,6 +105,11 @@ fn super_chord(key: &KeyEvent) -> Option<Action> {
         KeyCode::Char('b') => Some(Action::ToggleSidebar),
         KeyCode::Char('j') => Some(Action::ToggleNotebook),
         KeyCode::Char('g') => Some(Action::ToggleDiff),
+        KeyCode::Char('e') => Some(Action::OpenEditor),
+        KeyCode::Char('f') => Some(Action::Find),
+        KeyCode::Char('s') => Some(Action::Save),
+        KeyCode::Char('z' | 'Z') if shift => Some(Action::Redo),
+        KeyCode::Char('z') => Some(Action::Undo),
         KeyCode::Char('.') => Some(Action::CancelTurn),
         KeyCode::Char(digit @ '1'..='9') => {
             let n = u8::try_from(u32::from(digit).saturating_sub(u32::from('0'))).ok()?;
