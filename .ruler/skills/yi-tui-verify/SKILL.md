@@ -22,7 +22,11 @@ description: Verify a Yi TUI change against the rendered UI — headless drive m
 4. In-process tests use `VT100Backend` (tests/common) for escape-level
    assertions and `App::new` + `reduce_agent`/`take_commits` for reduction
    contracts. Any viewport-geometry test pre-scrolls the parser to a nonzero
-   cursor row first.
+   cursor row first. Assert a row with `VT100Backend::row_text(row)`, never a
+   substring over the whole screen: the screen proved "python" was somewhere
+   while the row it sat on said something else. `common::replay_stream` drives
+   a recorded session from crates/tui/tests/fixtures/sessions/ through the same
+   reducer.
 5. Animation and orb changes: the engine is pinned by the golden-vector
    parity test; a rendering change is verified by frame dumps or the PTY
    harness, never by re-deriving geometry.
