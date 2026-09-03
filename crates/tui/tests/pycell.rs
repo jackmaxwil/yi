@@ -235,3 +235,69 @@ fn a_quiet_cell_collapses_to_one_row() -> TestResult {
     );
     Ok(())
 }
+
+/// The screenshot's third defect: a 49-row asyncio traceback filled the screen
+/// in every mode, and the head counted none of it. The head keeps the line that
+/// raised, the tail keeps why, and the count says how much sits between.
+#[test]
+fn a_loud_failed_cell_is_bounded_and_its_lines_counted() -> TestResult {
+    let mut traceback = vec![
+        "Traceback (most recent call last):".to_owned(),
+        "Cell In[2], line 2".to_owned(),
+        "      1 h = await rlm.run('x')".to_owned(),
+        "----> 2 r = await h.result(30)".to_owned(),
+    ];
+    for frame in 0..43 {
+        traceback.push(format!(
+            "  File \"/usr/lib/python3.13/asyncio/tasks.py\", line {}, in __step_run_and_handle_result",
+            300 + frame
+        ));
+    }
+    traceback.push("RuntimeError: child \"sub-1\" did not answer with JSON:".to_owned());
+    traceback.push("RLM OK".to_owned());
+    assert_eq!(traceback.len(), 49);
+    let cell = cell(
+        json!({
+            "code": "h = await rlm.run('x')\nr = await h.result(30)\nprint(r)",
+            "error": {
+                "ename": "RuntimeError",
+                "evalue": "child \"sub-1\" did not answer with JSON:\nRLM OK",
+                "traceback": traceback,
+            },
+            "durationMs": 3579,
+        }),
+        ToolStatus::Failed,
+    );
+    let normal = text(&Cell::Tool(cell.clone()).lines(120, &theme(), TranscriptMode::Normal, 0));
+    assert!(normal.len() <= 16, "{} rows: {normal:?}", normal.len());
+    assert!(
+        normal.iter().any(|row| row.contains("… 39 more lines")),
+        "{normal:?}"
+    );
+    assert!(
+        normal
+            .iter()
+            .any(|row| row.contains("----> 2 r = await h.result(30)")),
+        "the head keeps the line that raised: {normal:?}"
+    );
+    let tail = normal.len().saturating_sub(5);
+    assert!(
+        normal
+            .iter()
+            .skip(tail)
+            .any(|row| row.contains("RuntimeError: child")),
+        "the tail keeps why: {normal:?}"
+    );
+    assert!(
+        normal.last().is_some_and(|row| row.ends_with("RLM OK")),
+        "{normal:?}"
+    );
+    assert!(
+        head(&cell, 0).contains("↓ 49 lines"),
+        "the count includes the traceback: {}",
+        head(&cell, 0)
+    );
+    let verbose = text(&Cell::Tool(cell).lines(120, &theme(), TranscriptMode::Verbose, 0));
+    assert!(verbose.len() > 50, "verbose stays whole: {}", verbose.len());
+    Ok(())
+}
