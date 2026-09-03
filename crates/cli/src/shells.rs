@@ -215,6 +215,7 @@ pub fn run_console_command(args: &Args) -> i32 {
         let drive = yi_console::DriveOptions {
             script,
             frames_dir: args.frames.clone().map(std::path::PathBuf::from),
+            record: args.record.clone().map(std::path::PathBuf::from),
             width: 80,
             height: 24,
         };

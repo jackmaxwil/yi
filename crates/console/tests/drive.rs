@@ -175,6 +175,7 @@ fn run_with(name: &str, fixture: Vec<Step>, script: &str, autostart: bool) -> Te
         DriveOptions {
             script: steps,
             frames_dir: std::env::var("CONSOLE_TEST_FRAMES").ok().map(PathBuf::from),
+            record: None,
             width: 100,
             height: 30,
         },
@@ -368,6 +369,7 @@ fn prompt_rejected_while_daemon_unreachable() -> TestResult {
         DriveOptions {
             script: steps,
             frames_dir: None,
+            record: None,
             width: 100,
             height: 30,
         },
@@ -529,6 +531,7 @@ fn tiny_terminal_survives_splits() -> TestResult {
         DriveOptions {
             script: steps,
             frames_dir: None,
+            record: None,
             width: 20,
             height: 8,
         },
@@ -1317,4 +1320,29 @@ fn cmd_f_scrolls_to_match() -> TestResult {
     )?;
     let _ = std::fs::remove_file(&path);
     Ok(())
+}
+
+/// Corners are rounded and the focused pane wears a reversed chip; the strip above the
+/// composer names the files the session touched.
+#[test]
+fn rounded_borders_and_context_strip_render() -> TestResult {
+    run(
+        "polish",
+        vec![
+            Step::Expect("initialize", init_reply),
+            Step::Expect("session/list", two_session_list),
+            Step::Expect("session/list", empty_list),
+            Step::Expect("session/resume", resume_alpha),
+            Step::Expect("_yi/seen", seen_ok),
+            Step::Push(edit_push),
+            Step::Expect("_yi/tracked", tracked_no),
+        ],
+        "wait-frame 5000 s-alpha\n\
+         wait-frame 3000 ╭\n\
+         key enter\n\
+         wait-frame 5000 replayed world\n\
+         wait-frame 3000 ❯ s-alpha\n\
+         wait-frame 5000 touched lib.rs\n\
+         quit\n",
+    )
 }

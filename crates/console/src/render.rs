@@ -43,6 +43,7 @@ pub struct Hits {
 pub struct ViewState {
     pub sidebar: Rect,
     pub roots: Rect,
+    pub strip: Option<Rect>,
     pub editor_cursor: Option<(u16, u16)>,
     pub tab_bar: Option<Rect>,
     pub panes_area: Rect,
@@ -100,8 +101,14 @@ pub fn compute_view(app: &mut App, area: Rect, theme: &Theme) -> ViewState {
     };
     let (main, status) = split_off_bottom(main, 1);
     let (main, composer) = split_off_bottom(main, COMPOSER_HEIGHT);
+    let (main, strip) = if strip_text(app).is_some() {
+        let (rest, row) = split_off_bottom(main, 1);
+        (rest, Some(row))
+    } else {
+        (main, None)
+    };
     let (transcript_area, ask) = if app.state.ask.is_some() {
-        let (rest, bar) = split_off_bottom(main, 3);
+        let (rest, bar) = split_off_bottom(main, 5);
         (rest, Some(bar))
     } else {
         (main, None)
@@ -192,6 +199,7 @@ pub fn compute_view(app: &mut App, area: Rect, theme: &Theme) -> ViewState {
     ViewState {
         sidebar,
         roots: roots_area,
+        strip,
         editor_cursor,
         tab_bar,
         panes_area,
@@ -223,20 +231,20 @@ fn pane_view_content(
             }
             let lines = window(all, pane.scroll_from_bottom, visible);
             let title = session.as_ref().map_or_else(
-                || "no session".to_owned(),
-                |id| id.0.chars().take(14).collect(),
+                || "❯ no session".to_owned(),
+                |id| format!("❯ {}", id.0.chars().take(14).collect::<String>()),
             );
             (title, lines)
         }
         PaneContent::Markdown { path, source } => {
             let all = yi_tui::markdown::render(source, usize::from(inner.width), theme);
             let lines = window(all, pane.scroll_from_bottom, visible);
-            (short_path(path), lines)
+            (format!("¶ {}", short_path(path)), lines)
         }
         PaneContent::Diff { path, source } => {
             let all = diffview::render(source, usize::from(inner.width), theme, DiffBudget::FULL);
             let lines = window(all, pane.scroll_from_bottom, visible);
-            (short_path(path), lines)
+            (format!("Δ {}", short_path(path)), lines)
         }
         PaneContent::Editor(editor) => editor_view(editor, inner, theme),
         PaneContent::SessionDiff { session } => {
@@ -278,8 +286,8 @@ fn pane_view_content(
         }
         PaneContent::Notebook { session, cells, .. } => {
             let title = session.as_ref().map_or_else(
-                || "notebook".to_owned(),
-                |id| format!("nb:{}", id.0.chars().take(11).collect::<String>()),
+                || "▤ notebook".to_owned(),
+                |id| format!("▤ nb:{}", id.0.chars().take(11).collect::<String>()),
             );
             let all = notebook_lines(cells, usize::from(inner.width), theme);
             let lines = window(all, pane.scroll_from_bottom, visible);
@@ -455,9 +463,19 @@ pub fn render(app: &App, frame: &mut Frame<'_>, view: &ViewState, theme: &Theme)
     if let Some(bar) = view.tab_bar {
         render_tab_bar(app, frame, bar, theme);
     }
+    let crowd = view.panes.len() > 1;
     for pane in &view.panes {
         let inner = pane.rect.inner(ratatui::layout::Margin::new(1, 1));
-        frame.render_widget(Paragraph::new(pane.lines.clone()), inner);
+        let body = Paragraph::new(pane.lines.clone());
+        let body = if crowd && !pane.focused {
+            body.style(Style::default().add_modifier(Modifier::DIM))
+        } else {
+            body
+        };
+        frame.render_widget(body, inner);
+    }
+    if let Some(strip) = view.strip {
+        render_strip(app, frame, strip, theme);
     }
     render_borders(app, frame, view, theme);
     if let Some(area) = view.ask {
@@ -550,7 +568,9 @@ fn render_borders(app: &App, frame: &mut Frame<'_>, view: &ViewState, theme: &Th
         let max = r.width.saturating_sub(4);
         let text: String = text.chars().take(usize::from(max)).collect();
         let style = if pane.focused {
-            theme.accent_style().add_modifier(Modifier::BOLD)
+            theme
+                .accent_style()
+                .add_modifier(Modifier::BOLD | Modifier::REVERSED)
         } else {
             theme.dim_style()
         };
@@ -572,10 +592,10 @@ fn glyph(up: bool, down: bool, left: bool, right: bool) -> &'static str {
         (false, false, true, true) | (false, false, true, false) | (false, false, false, true) => {
             "─"
         }
-        (true, false, true, false) => "┘",
-        (true, false, false, true) => "└",
-        (false, true, true, false) => "┐",
-        (false, true, false, true) => "┌",
+        (true, false, true, false) => "╯",
+        (true, false, false, true) => "╰",
+        (false, true, true, false) => "╮",
+        (false, true, false, true) => "╭",
         (false, false, false, false) => " ",
     }
 }
@@ -723,8 +743,63 @@ fn render_sidebar(app: &App, frame: &mut Frame<'_>, area: Rect, theme: &Theme) {
     frame.render_widget(Paragraph::new(lines), area);
 }
 
+fn strip_text(app: &App) -> Option<String> {
+    let session = app.state.focused_session()?;
+    let mut parts = Vec::new();
+    if let Some(diff) = app.state.diffs.get(&session)
+        && !diff.files.is_empty()
+    {
+        let names: Vec<String> = diff
+            .files
+            .iter()
+            .rev()
+            .take(4)
+            .map(|(path, _)| short_path(path))
+            .collect();
+        let more = diff.files.len().saturating_sub(names.len());
+        let tail = if more > 0 {
+            format!(" +{more}")
+        } else {
+            String::new()
+        };
+        parts.push(format!("touched {}{tail}", names.join(", ")));
+    }
+    let running = app.state.children.get(&session).map_or(0, |rows| {
+        rows.iter()
+            .filter(|row| row.status == yi_types::subagent::ChildStatus::Running)
+            .count()
+    });
+    if running > 0 {
+        parts.push(format!("◐ {running} running"));
+    }
+    if app
+        .state
+        .ask
+        .as_ref()
+        .is_some_and(|ask| ask.params.session_id == session.0)
+    {
+        parts.push("⚠ waiting on you".to_owned());
+    }
+    (!parts.is_empty()).then(|| parts.join("  ·  "))
+}
+
+fn render_strip(app: &App, frame: &mut Frame<'_>, area: Rect, theme: &Theme) {
+    let Some(text) = strip_text(app) else { return };
+    frame.render_widget(
+        Paragraph::new(Line::styled(format!(" {text}"), theme.muted_style())),
+        area,
+    );
+}
+
 fn render_ask(app: &App, frame: &mut Frame<'_>, area: Rect, theme: &Theme) {
     let Some(ask) = &app.state.ask else { return };
+    let block = ratatui::widgets::Block::bordered()
+        .border_type(ratatui::widgets::BorderType::Rounded)
+        .border_style(Style::default().fg(theme.warning))
+        .title(" permission ");
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    let area = inner;
     let title = Line::from(vec![
         Span::styled("⚠ ", Style::default().fg(theme.warning)),
         Span::styled(
@@ -865,9 +940,17 @@ fn render_status(app: &App, frame: &mut Frame<'_>, area: Rect, theme: &Theme) {
             theme.dim_style(),
         ));
     }
-    spans.push(Span::styled(
-        format!("  {}", keys::hint(false, app.cmd_hints)),
-        theme.dim_style(),
-    ));
+    let used: usize = spans.iter().map(Span::width).sum();
+    let hint = keys::hint(false, app.cmd_hints);
+    if used.saturating_add(hint.chars().count()).saturating_add(2) <= usize::from(area.width) {
+        frame.render_widget(Paragraph::new(Line::from(spans)), area);
+        frame.render_widget(
+            Paragraph::new(Line::styled(hint, theme.dim_style()))
+                .alignment(ratatui::layout::Alignment::Right),
+            area,
+        );
+        return;
+    }
+    spans.push(Span::styled(format!("  {hint}"), theme.dim_style()));
     frame.render_widget(Paragraph::new(Line::from(spans)), area);
 }

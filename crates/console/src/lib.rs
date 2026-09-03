@@ -45,6 +45,7 @@ pub struct ConsoleOptions {
 pub struct DriveOptions {
     pub script: Vec<ConsoleStep>,
     pub frames_dir: Option<PathBuf>,
+    pub record: Option<PathBuf>,
     pub width: u16,
     pub height: u16,
 }
@@ -335,7 +336,7 @@ pub fn run_headless(options: &ConsoleOptions, drive: DriveOptions) -> i32 {
     app.state.auto_side = options.auto_side;
     let width = drive.width.max(20);
     let height = drive.height.max(8);
-    let backend = match RecordingBackend::new(width, height, None) {
+    let backend = match RecordingBackend::new(width, height, drive.record.as_deref()) {
         Ok(backend) => backend,
         Err(error) => {
             eprintln!("error: headless backend: {error}");
