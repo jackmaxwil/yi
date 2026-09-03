@@ -24,6 +24,25 @@ not add the test.
   terminal reflow the emulator does not perform, the other asserted a shape
   the fix had already made unreachable. A green test proves nothing until it
   has been seen red for the right reason.
+- A fixture is the production shape, never the convenient one: the smallest input that fails in
+  the field. One unterminated paragraph, not three newline-terminated ones; a forty-nine-row
+  kernel traceback, not two; a schema that is `30`, not data that misses a valid schema; a
+  non-ASCII string where a byte index is taken. Every renderer and parser test carries one
+  life-sized case and one degenerate case, and the life-sized one is a recorded artifact — a
+  scrubbed session under crates/tui/tests/fixtures/sessions/, written by
+  `evals/record.py --scrub-only` — fed through the reducer the screen runs. A session is ground
+  truth for input shape; the expected output still comes from the invariant, never from what Yi
+  rendered. New sessions are added beside the old, never edited. Fourteen defects sat beside
+  green tests whose fixtures had chosen the shape that works.
+- A test that pins a user-facing sentence has read it beside what the user sees next to it.
+  "completed without replying" was asserted on the row above "Last answer: …", and the test
+  defended the contradiction. Quote the sentence in the PR's User outcomes, in its context.
+- Every cell family that commits to scrollback names its antecedent in tui_unit.rs's exhaustive
+  match and has a pair test where the dependent finishes first. Two commit clocks kept correct
+  time alone and were never run against each other — a child landed above the cell that
+  spawned it.
+- The seen-red run is written down: the PR's `Seen red` section carries, per new test, the
+  failure it produced against the unfixed code and where the fixture came from.
 - Tests avoid unwrap/expect by returning `Result<(), Box<dyn Error>>`.
 - Attribute a red gate before editing anything: a test that fails inside the full suite and
   passes standalone is a race, not your diff. Read the failing run's own evidence (frame dumps,
@@ -31,6 +50,10 @@ not add the test.
   before a submitted turn had started was A10, and the frames said so.
 - A drive script waits on the state it depends on, never on a duration: a prompt reaches the
   runtime thread over a channel, so `running` is still false the instant after Enter.
+- The kernel-side Python has its own lane: python/yi_runtime/tests runs in check_guardrails.sh,
+  stdlib unittest over faked `list_subagents`/`result`. 1,789 lines had no test because every
+  test in the suite `just check` runs called the host directly; only a tier-2 journey reached
+  the shim.
 
 Tests are tiered by where they run and what they may spend:
 

@@ -105,7 +105,6 @@ pub struct ApplyResult {
     pub text: String,
     pub first_changed_line: Option<u64>,
     pub warnings: Vec<String>,
-    pub block_resolutions: Vec<BlockResolution>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -116,7 +115,6 @@ pub struct BlockSpan {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BlockResolution {
-    pub anchor_line: u64,
     pub start: u64,
     pub end: u64,
     pub op: BlockMode,

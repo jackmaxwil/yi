@@ -17,6 +17,7 @@ run "$PY" scripts/guardrails/check_boundaries.py
 run "$PY" scripts/guardrails/check_filenames.py
 run "$PY" scripts/guardrails/check_commit_style.py
 run "$PY" scripts/guardrails/check_glob_reexport.py
+run "$PY" scripts/guardrails/check_orphans.py
 run "$PY" scripts/guardrails/check_panic.py
 run "$PY" scripts/guardrails/check_comments.py
 run "$PY" scripts/guardrails/check_file_size.py
@@ -32,6 +33,7 @@ run "$PY" scripts/guardrails/check_deps_budget.py
 run "$PY" scripts/guardrails/check_request_budget.py
 run "$PY" scripts/guardrails/check_behavior.py
 run "$PY" scripts/guardrails/check_prompt_examples.py
+run env PYTHONPATH=python/yi_runtime/src "$PY" -m unittest discover -q -s python/yi_runtime/tests
 run "$PY" evals/selftest.py
 # The mined artifacts carry session text, so §10's planted-fake redaction proof is a
 # gate, not a habit: its only executable check is this flag.
@@ -50,6 +52,10 @@ run "$PY" scripts/forge_tracking.py --selfcheck
 # is this flag: a fake transport walks every branch — each issue defect, each tea
 # fix line, and the exempt path that must ask the forge nothing at all.
 run "$PY" scripts/guardrails/check_pr_metadata.py --selfcheck
+# The orphan scans are heuristics over text, so the flag is where they are proved to
+# judge anything at all: each scan is disabled in turn and the selfcheck must fail
+# for that scan's own reason (D109).
+run "$PY" scripts/guardrails/check_orphans.py --selfcheck
 # Prose is not exempt: 1,485 comment lines are under ratchet, and the design docs
 # are the reference. Config and the domain-word allowlist live in .codespellrc.
 if command -v codespell >/dev/null; then run codespell; else echo "FAIL codespell (uv tool install codespell)"; FAILED=$((FAILED+1)); fi

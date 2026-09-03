@@ -7,23 +7,24 @@ pub struct Schema(Value);
 const MAX_DEPTH: u32 = 32;
 
 impl Schema {
-    pub fn from_value(value: Value) -> Self {
-        Self(value)
+    pub fn from_value(value: Value) -> Result<Self, String> {
+        shape(&value, "$", 0)?;
+        Ok(Self(value))
     }
 
     /// Accepts either inline JSON or a path to a JSON file.
     pub fn load(spec: &str) -> Result<Self, String> {
         let trimmed = spec.trim();
         if trimmed.starts_with('{') {
-            return serde_json::from_str(trimmed)
-                .map(Self)
-                .map_err(|error| format!("schema is not valid JSON: {error}"));
+            let value = serde_json::from_str(trimmed)
+                .map_err(|error| format!("schema is not valid JSON: {error}"))?;
+            return Self::from_value(value);
         }
         let source = std::fs::read_to_string(trimmed)
             .map_err(|error| format!("schema {trimmed}: {error}"))?;
-        serde_json::from_str(&source)
-            .map(Self)
-            .map_err(|error| format!("schema {trimmed} is not valid JSON: {error}"))
+        let value = serde_json::from_str(&source)
+            .map_err(|error| format!("schema {trimmed} is not valid JSON: {error}"))?;
+        Self::from_value(value)
     }
 
     pub fn instruction(&self) -> String {
@@ -39,12 +40,73 @@ impl Schema {
     }
 }
 
+fn shape(schema: &Value, path: &str, depth: u32) -> Result<(), String> {
+    if depth > MAX_DEPTH {
+        return Err(format!("{path}: schema nests deeper than {MAX_DEPTH}"));
+    }
+    let Some(object) = schema.as_object() else {
+        return Err(format!(
+            "{path}: expected a schema object, found {}",
+            kind(schema)
+        ));
+    };
+    if let Some(declared) = object.get("type")
+        && !declared.as_str().is_some_and(|name| {
+            matches!(
+                name,
+                "object" | "array" | "string" | "number" | "integer" | "boolean" | "null"
+            )
+        })
+    {
+        return Err(format!("{path}.type: {declared} is not a JSON Schema type"));
+    }
+    if let Some(required) = object.get("required")
+        && !required
+            .as_array()
+            .is_some_and(|names| names.iter().all(Value::is_string))
+    {
+        return Err(format!(
+            "{path}.required: expected an array of property names, found {required}"
+        ));
+    }
+    if let Some(allowed) = object.get("enum")
+        && !allowed.is_array()
+    {
+        return Err(format!(
+            "{path}.enum: expected an array of values, found {}",
+            kind(allowed)
+        ));
+    }
+    match object.get("properties") {
+        Some(Value::Object(properties)) => {
+            for (name, child) in properties {
+                shape(
+                    child,
+                    &format!("{path}.properties.{name}"),
+                    depth.saturating_add(1),
+                )?;
+            }
+        }
+        Some(other) => {
+            return Err(format!(
+                "{path}.properties: expected an object, found {}",
+                kind(other)
+            ));
+        }
+        None => {}
+    }
+    match object.get("items") {
+        Some(items) => shape(items, &format!("{path}.items"), depth.saturating_add(1)),
+        None => Ok(()),
+    }
+}
+
 fn check(schema: &Value, value: &Value, path: &str, depth: u32) -> Result<(), String> {
     if depth > MAX_DEPTH {
         return Err(format!("{path}: schema nests deeper than {MAX_DEPTH}"));
     }
     let Some(schema) = schema.as_object() else {
-        return Ok(());
+        return Err(format!("{path}: schema is not an object"));
     };
     if let Some(expected) = schema.get("type").and_then(Value::as_str)
         && !matches_type(expected, value)
@@ -104,7 +166,7 @@ fn matches_type(expected: &str, value: &Value) -> bool {
         "integer" => value.as_i64().is_some() || value.as_u64().is_some(),
         "boolean" => value.is_boolean(),
         "null" => value.is_null(),
-        _ => true,
+        _ => false,
     }
 }
 

@@ -130,6 +130,24 @@ fn schema_validates_the_answer() -> TestResult {
 
     let prose = ask(&workspace, "not json at all", &["--schema", schema])?;
     assert_eq!(prose.status.code(), Some(3));
+
+    let bad = workspace.project().join("bad.json");
+    std::fs::write(&bad, "[1]")?;
+    let malformed = ask(
+        &workspace,
+        r#"{"name":"yi"}"#,
+        &["--schema", &bad.display().to_string()],
+    )?;
+    assert_eq!(
+        malformed.status.code(),
+        Some(2),
+        "a malformed schema is the caller's error, refused before the model runs"
+    );
+    assert!(
+        String::from_utf8_lossy(&malformed.stderr).contains("expected a schema object"),
+        "{}",
+        String::from_utf8_lossy(&malformed.stderr)
+    );
     Ok(())
 }
 
