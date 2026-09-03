@@ -74,6 +74,58 @@ pub struct SessionRow {
     pub root: String,
     pub status: SessionStatus,
     pub attached: bool,
+    pub name: Option<String>,
+    pub created_ms: u64,
+    pub last_ms: u64,
+}
+
+impl SessionRow {
+    pub fn label(&self) -> String {
+        self.name
+            .clone()
+            .unwrap_or_else(|| self.id.0.chars().take(16).collect())
+    }
+
+    pub fn recency(&self) -> u64 {
+        self.last_ms.max(self.created_ms)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SidebarMode {
+    Rail,
+    Full,
+    Hidden,
+}
+
+impl SidebarMode {
+    pub fn next(self) -> Self {
+        match self {
+            Self::Rail => Self::Full,
+            Self::Full => Self::Hidden,
+            Self::Hidden => Self::Rail,
+        }
+    }
+
+    pub fn width(self) -> u16 {
+        match self {
+            Self::Rail => 4,
+            Self::Full => 26,
+            Self::Hidden => 0,
+        }
+    }
+}
+
+#[expect(
+    clippy::disallowed_methods,
+    reason = "row ages and a fresh session's birth are read against the wall clock"
+)]
+pub fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| {
+            u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX)
+        })
 }
 
 /// Which zone owns plain keys.
@@ -297,7 +349,8 @@ pub struct ConsoleState {
     pub dropped_frames: u64,
     pub tokens_used: Option<(u64, u64)>,
     pub quit: bool,
-    pub sidebar_hidden: bool,
+    pub sidebar: SidebarMode,
+    pub cursor_moved: bool,
     pub diffs: BTreeMap<SessionId, SessionDiff>,
     pub side_opened: std::collections::BTreeSet<SessionId>,
     pub auto_side: bool,
@@ -329,7 +382,8 @@ impl ConsoleState {
             ask: None,
             status_note: None,
             dropped_frames: 0,
-            sidebar_hidden: false,
+            sidebar: SidebarMode::Rail,
+            cursor_moved: false,
             diffs: BTreeMap::new(),
             side_opened: std::collections::BTreeSet::new(),
             auto_side: true,
@@ -375,13 +429,31 @@ impl ConsoleState {
         self.order.get(self.selected)
     }
 
-    /// Insert or update a row, keeping first-seen order stable.
     pub fn upsert_row(&mut self, row: SessionRow) {
-        if !self.sessions.contains_key(&row.id) {
-            self.order.push(row.id.clone());
+        match self.sessions.get_mut(&row.id) {
+            Some(existing) => {
+                existing.root = row.root;
+                existing.status = row.status;
+                existing.attached = row.attached;
+                existing.name = row.name.or(existing.name.take());
+                existing.created_ms = existing.created_ms.max(row.created_ms);
+                existing.last_ms = existing.last_ms.max(row.last_ms);
+            }
+            None => {
+                self.order.push(row.id.clone());
+                self.sessions.insert(row.id.clone(), row);
+            }
         }
-        self.sessions.insert(row.id.clone(), row);
-        if self.selected >= self.order.len() {
+        self.settle_cursor();
+    }
+
+    /// Until the user moves it, the cursor rests on the newest row through every merge.
+    pub fn settle_cursor(&mut self) {
+        if !self.cursor_moved
+            && let Some(first) = self.visible_rows().first()
+        {
+            self.selected = *first;
+        } else if self.selected >= self.order.len() {
             self.selected = self.order.len().saturating_sub(1);
         }
     }
@@ -392,10 +464,10 @@ impl ConsoleState {
         }
     }
 
-    /// Roots with at least one known session, launch root first.
-    /// `order` indices the sidebar shows under the current root filter.
+    /// Sidebar rows under the root filter, newest activity first; ties keep first-seen order.
     pub fn visible_rows(&self) -> Vec<usize> {
-        self.order
+        let mut rows: Vec<usize> = self
+            .order
             .iter()
             .enumerate()
             .filter(|(_, id)| {
@@ -404,7 +476,16 @@ impl ConsoleState {
                     .is_none_or(|root| self.sessions.get(*id).is_some_and(|row| row.root == root))
             })
             .map(|(index, _)| index)
-            .collect()
+            .collect();
+        rows.sort_by_key(|index| {
+            let recency = self
+                .order
+                .get(*index)
+                .and_then(|id| self.sessions.get(id))
+                .map_or(0, SessionRow::recency);
+            std::cmp::Reverse(recency)
+        });
+        rows
     }
 
     pub fn set_root_filter(&mut self, root: Option<String>) {

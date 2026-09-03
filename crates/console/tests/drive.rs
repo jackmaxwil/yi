@@ -8,6 +8,7 @@ use std::path::PathBuf;
 use std::thread::JoinHandle;
 
 use serde_json::{Value, json};
+use yi_console::model::SidebarMode;
 use yi_console::{ConsoleOptions, DriveOptions, parse_script, run_headless};
 
 type TestResult = Result<(), Box<dyn Error>>;
@@ -162,6 +163,18 @@ fn run(name: &str, fixture: Vec<Step>, script: &str) -> TestResult {
 }
 
 fn run_with(name: &str, fixture: Vec<Step>, script: &str, autostart: bool) -> TestResult {
+    run_sidebar(name, fixture, script, autostart, SidebarMode::Full)
+}
+
+/// The harness opens the sidebar in full so rows can be asserted by name; the
+/// rail the CLI defaults to has its own test.
+fn run_sidebar(
+    name: &str,
+    fixture: Vec<Step>,
+    script: &str,
+    autostart: bool,
+    sidebar: SidebarMode,
+) -> TestResult {
     let socket = scratch_socket(name);
     let server = spawn_fixture(socket.clone(), fixture);
     let steps = parse_script(script)?;
@@ -171,6 +184,7 @@ fn run_with(name: &str, fixture: Vec<Step>, script: &str, autostart: bool) -> Te
             root: "/tmp/demo-root".to_owned(),
             autostart,
             auto_side: true,
+            sidebar,
         },
         DriveOptions {
             script: steps,
@@ -365,6 +379,7 @@ fn prompt_rejected_while_daemon_unreachable() -> TestResult {
             root: "/tmp/demo-root".to_owned(),
             autostart: false,
             auto_side: true,
+            sidebar: SidebarMode::Full,
         },
         DriveOptions {
             script: steps,
@@ -529,6 +544,7 @@ fn tiny_terminal_survives_splits() -> TestResult {
             root: "/tmp/demo-root".to_owned(),
             autostart: false,
             auto_side: true,
+            sidebar: SidebarMode::Full,
         },
         DriveOptions {
             script: steps,
@@ -825,6 +841,8 @@ fn cmd_chords_split_close_and_hide_the_sidebar() -> TestResult {
          cmd-x\n\
          wait-frame 3000 !no session\n\
          wait-frame 3000 s-beta\n\
+         cmd-b\n\
+         wait-frame 3000 !s-beta\n\
          cmd-b\n\
          wait-frame 3000 !s-beta\n\
          cmd-b\n\
@@ -1428,5 +1446,162 @@ fn ctrl_c_clears_the_draft_then_cancels_then_quits() -> TestResult {
          wait-frame 3000 ctrl+c again quits\n\
          key ctrl-c\n\
          wait-frame 3000 the console quit before this frame\n",
+    )
+}
+
+#[expect(
+    clippy::disallowed_methods,
+    reason = "the fixture dates its sessions against the clock the ages are read from"
+)]
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| {
+            u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX)
+        })
+}
+
+fn named_list(frame: &Value) -> Vec<Value> {
+    let now = now_ms();
+    vec![ok(
+        frame,
+        json!({"sessions": [
+            {"sessionId": "s-alpha", "attached": false, "name": "fix login bug",
+             "createdAt": now - 3 * 3_600_000},
+            {"sessionId": "s-beta", "attached": false, "name": "release notes",
+             "createdAt": now - 5 * 60_000},
+        ]}),
+    )]
+}
+
+/// Echoes the resumed id into the transcript, so a frame says which row Enter opened.
+fn resume_named(frame: &Value) -> Vec<Value> {
+    let id = frame
+        .pointer("/params/sessionId")
+        .and_then(Value::as_str)
+        .unwrap_or("?")
+        .to_owned();
+    vec![
+        update(
+            &id,
+            json!({"sessionUpdate": "agent_message", "messageId": "msg_1",
+            "content": [{"type": "text", "text": format!("resumed {id}")}]}),
+        ),
+        ok(frame, json!({"sessionId": id, "configOptions": []})),
+    ]
+}
+
+/// Rows carry the session's name and age, newest first, and the row behind the
+/// focused pane wears the focus bar once it opens.
+#[test]
+fn sidebar_rows_show_names_and_ages_newest_first() -> TestResult {
+    run(
+        "named-rows",
+        vec![
+            Step::Expect("initialize", init_reply),
+            Step::Expect("session/list", named_list),
+            Step::Expect("session/list", empty_list),
+            Step::Expect("session/resume", resume_named),
+            Step::Expect("_yi/seen", seen_ok),
+        ],
+        "wait-frame 5000 release notes\n\
+         wait-frame 3000 fix login bug\n\
+         wait-frame 3000 5m\n\
+         wait-frame 3000 3h\n\
+         wait-frame 3000 !▎\n\
+         key down\n\
+         key up\n\
+         key enter\n\
+         wait-frame 5000 resumed s-beta\n\
+         wait-frame 3000 ▎\n\
+         quit\n",
+    )
+}
+
+fn named_after_prompt(frame: &Value) -> Vec<Value> {
+    vec![ok(
+        frame,
+        json!({"sessions": [
+            {"sessionId": "s-alpha", "cwd": "/tmp/demo-root", "attached": true,
+             "unseen": 0, "lastState": "idle", "lastEventMs": now_ms(), "name": "fix login"},
+        ]}),
+    )]
+}
+
+/// The first prompt names the session: the console re-lists as soon as the prompt is
+/// accepted, and the ledger's name lands on the row the pane is showing.
+#[test]
+fn the_first_prompt_names_the_session_row() -> TestResult {
+    let mut fixture = session_fixture();
+    fixture.push(Step::Expect("session/prompt", prompt_stream));
+    fixture.push(Step::Expect("session/list", named_after_prompt));
+    run(
+        "prompt-names",
+        fixture,
+        "wait-frame 5000 s-alpha\n\
+         key enter\n\
+         wait-frame 5000 replayed world\n\
+         type fix login\n\
+         key enter\n\
+         wait-frame 5000 fix login\n\
+         wait-frame 3000 !s-alpha\n\
+         quit\n",
+    )
+}
+
+/// The CLI opens the sidebar as a rail of status glyphs; ⌘B walks rail, full, hidden.
+#[test]
+fn the_rail_is_the_default_and_cmd_b_walks_full_then_hidden() -> TestResult {
+    run_sidebar(
+        "rail",
+        vec![
+            Step::Expect("initialize", init_reply),
+            Step::Expect("session/list", two_session_list),
+            Step::Expect("session/list", ledger_list),
+        ],
+        "wait-frame 5000 ●\n\
+         wait-frame 3000 !s-alpha\n\
+         wait-frame 3000 !workspaces\n\
+         cmd-b\n\
+         wait-frame 3000 s-alpha\n\
+         wait-frame 3000 workspaces\n\
+         cmd-b\n\
+         wait-frame 3000 !s-alpha\n\
+         wait-frame 3000 !▸\n\
+         cmd-b\n\
+         wait-frame 3000 ●\n\
+         wait-frame 3000 !s-alpha\n\
+         quit\n",
+        false,
+        SidebarMode::Rail,
+    )
+}
+
+fn forty_session_list(frame: &Value) -> Vec<Value> {
+    let sessions: Vec<Value> = (0..40)
+        .map(
+            |n| json!({"sessionId": format!("s-{n:02}"), "attached": false, "createdAt": 1000 + n}),
+        )
+        .collect();
+    vec![ok(frame, json!({"sessions": sessions}))]
+}
+
+/// More rows than the sidebar has lines: the window starts at the newest and follows
+/// the cursor down, so nothing is unreachable and nothing overflows the column.
+#[test]
+fn the_sidebar_windows_to_the_viewport_and_follows_the_cursor() -> TestResult {
+    let mut script = String::from("wait-frame 5000 s-39\nwait-frame 3000 !s-05\n");
+    for _ in 0..34 {
+        script.push_str("key down\n");
+    }
+    script.push_str("wait-frame 3000 s-05\nwait-frame 3000 !s-39\nquit\n");
+    run(
+        "forty-rows",
+        vec![
+            Step::Expect("initialize", init_reply),
+            Step::Expect("session/list", forty_session_list),
+            Step::Expect("session/list", empty_list),
+        ],
+        &script,
     )
 }

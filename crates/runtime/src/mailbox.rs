@@ -577,6 +577,7 @@ mod tests {
                 id: "mailbox-test".to_owned(),
                 created_at: 0,
                 parent_session_id: None,
+                name: None,
             }),
         ));
         yi_session::lock_session(&store).set_goal(yi_types::goal::Goal {
