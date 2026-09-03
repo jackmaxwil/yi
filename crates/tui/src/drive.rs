@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 use ratatui::crossterm::event::{Event as CtEvent, KeyCode, KeyEvent, KeyModifiers};
 use yi_runtime::{AgentSession, SubagentHost};
 
-use crate::app::{App, AskRequest, TuiOptions, UiEvent};
+use crate::app::{App, AskRequest, TuiOptions};
 use crate::capture::{RecordingBackend, write_still};
 use crate::colors::Theme;
 use crate::keymap::{KeyCodeValue, SingleKey, default_keymap};
@@ -205,9 +205,15 @@ pub fn run_headless(
     let initial_prompt = options.initial_prompt.clone();
     let mut app = App::new(options, theme, keymap, usize::from(width));
     app.set_rows(usize::from(height));
-    let (ui_tx, ui_rx, cmd_tx, handle, runtime_thread) =
-        crate::app::spawn_runtime_bridge(runtime, &session);
-    crate::app::replay_session(&mut app, &session);
+    let (ui_rx, cmd_tx, runtime_thread) = crate::app::spawn_runtime_bridge(
+        runtime,
+        &session,
+        &host,
+        ask_rx,
+        Duration::from_millis(16),
+    );
+    let mut port = Arc::clone(&session);
+    app.load_history(&mut port);
     if let Some(prompt) = initial_prompt {
         app.note_submission();
         let _ = cmd_tx.send(crate::app::Command::Prompt(prompt));
@@ -230,22 +236,7 @@ pub fn run_headless(
             exit_code = 1;
             break;
         }
-        for ui_event in ui_rx.try_iter().collect::<Vec<_>>() {
-            match ui_event {
-                UiEvent::Agent(event) => app.reduce_agent(event),
-                UiEvent::Child { child_id, event } => app.reduce_child(&child_id, event),
-            }
-        }
-        for ask in ask_rx.try_iter().collect::<Vec<_>>() {
-            app.open_approval(ask);
-        }
-        crate::app::sync_roster(&mut app, &host, &handle, &ui_tx);
-        crate::rewind::process_pending_tree(&mut app, &session);
-        crate::rewind::process_pending_rewind(&mut app, &mut terminal, &session, &cmd_tx);
-        crate::rewind::process_pending_new(&mut app, &mut terminal, &session);
-        crate::rewind::process_pending_undo(&mut app, &session);
-        crate::commands::process_pending_selection(&mut app, &session);
-        crate::commands::process_pending_command(&mut app, &session);
+        crate::port::tick(&mut app, &mut port, &ui_rx, &cmd_tx);
         crate::editor::process_pending_editor(&mut app, &mut terminal, false);
 
         let step = match current.take() {
@@ -265,7 +256,7 @@ pub fn run_headless(
                     // Paced typing has to reach the screen character by character, or the
                     // recording still shows the whole line appearing at once.
                     if type_ms > 0 {
-                        crate::render::draw(&mut app, &mut terminal, Some(&session));
+                        crate::render::draw(&mut app, &mut terminal, Some(&port));
                         std::thread::sleep(Duration::from_millis(type_ms));
                         // The step holds the outer loop, where the wall clock is read, so a
                         // long paced line would otherwise outrun the deadline unchecked.
@@ -306,7 +297,7 @@ pub fn run_headless(
             (Step::Quit, _) => break,
         }
 
-        crate::render::draw(&mut app, &mut terminal, Some(&session));
+        crate::render::draw(&mut app, &mut terminal, Some(&port));
         if let Some(dir) = &drive.frames_dir {
             let frame = terminal.backend().screen();
             if frame != last_frame {

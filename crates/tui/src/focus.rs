@@ -1,4 +1,4 @@
-use crate::app::{App, replay_child};
+use crate::app::App;
 use crate::cell::Cell;
 
 pub(crate) enum FocusMove {
@@ -60,7 +60,17 @@ pub(crate) fn set_focus(app: &mut App, target: Option<String>) {
             text: format!("subagent {name} ({position} of {})", app.task_order.len()),
             accent_name: child_id.clone(),
         });
-        replay_child(app, &child_id);
+        match app
+            .tasks
+            .get(&child_id)
+            .and_then(|state| state.session.clone())
+        {
+            Some(session) => {
+                let entries = crate::port::branch_of(&session);
+                app.replay_entries(&entries);
+            }
+            None => app.pending_focus = Some(child_id.clone()),
+        }
         app.focused = Some(child_id);
     }
     app.scheduler.request();
