@@ -8,6 +8,16 @@ har-supply, har-verify always; the rest by their stated triggers. Enforced highl
 - Newtypes for every id and unit (EntryId, SessionId, Tokens(u64), Bytes(usize)); no bare
   String/u64 across a crate boundary. Checked or saturating arithmetic on all budget, token,
   and offset math.
+- A byte index is not a character index. A crate root carries `#![deny(clippy::string_slice)]`
+  unless it is named in baselines/string_slice_pending.json, a list that only shrinks; there is
+  no allow and no expect, a crate is clean or it is pending with an issue. `String::truncate` is
+  a disallowed method: take `chars().take(n)`, `strip_suffix`, or walk back on `is_char_boundary`
+  and say why. `error.truncate(80)` on a non-ASCII child error was a panic the zero-panic gate
+  could not see: check_panic.py matches spellings, clippy matches behaviour.
+- A field is written to be read. check_orphans.py fails a `pub` field outside yi-types that no
+  line in the workspace reads (a serde-derived struct is read by the wire), and a baseline no
+  script opens. Two context budgets, a status threshold and a 0-byte baseline were carried by
+  nothing. A field only a test reads is kept with a reason or deleted.
 - Typed errors (thiserror) at crate boundaries; wire-facing enums carry Other(String).
 - A comment earns its line only by naming what the code cannot: the incident that created a
   constant or guard, an invariant the type system cannot express, or a schema fact on a

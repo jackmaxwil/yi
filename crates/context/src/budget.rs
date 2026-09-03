@@ -8,8 +8,6 @@ pub struct SourceBudgets {
     pub project_instructions: Bytes,
     pub skills_meta: Bytes,
     pub ledger: Bytes,
-    pub advisories: Bytes,
-    pub emergency_ceiling: Bytes,
 }
 
 impl Default for SourceBudgets {
@@ -18,8 +16,6 @@ impl Default for SourceBudgets {
             project_instructions: Bytes(32_768),
             skills_meta: Bytes(16_384),
             ledger: Bytes(16_384),
-            advisories: Bytes(8_192),
-            emergency_ceiling: Bytes(131_072),
         }
     }
 }

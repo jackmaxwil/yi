@@ -311,7 +311,8 @@ impl Composer {
         if prefix.ends_with(']')
             && let Some(start) = prefix.rfind("[Paste #")
         {
-            let token_len = prefix.chars().count() - prefix[..start].chars().count();
+            let head = prefix.get(..start).unwrap_or_default();
+            let token_len = prefix.chars().count().saturating_sub(head.chars().count());
             for _ in 0..token_len {
                 self.textarea.delete_char();
             }

@@ -43,3 +43,6 @@
 - Never `git add -A` in a shared tree: it swallows the other session's uncommitted files. Stage
   the paths the change touched, by name — and check `git commit`'s own file list afterwards: a
   deletion another session staged rides along silently otherwise (a moved skill did exactly this).
+- A PR that adds or changes a test fills `## Seen red`: per test, one line — the failure it
+  produced against the unfixed code and the fixture's provenance. It is not gate output; it is
+  the author's claim, and the reviewer's cold-context read is what judges it.
