@@ -12,7 +12,6 @@ pub mod layout;
 pub mod model;
 pub mod notify;
 pub mod render;
-pub mod transcript;
 
 use std::io::Stdout;
 use std::path::PathBuf;
@@ -51,7 +50,6 @@ pub struct DriveOptions {
     pub height: u16,
 }
 
-/// The shared drive grammar plus a console-only `mouse <kind> <x> <y>` step.
 #[derive(Debug, Clone)]
 pub enum ConsoleStep {
     Tui(Step),
@@ -121,8 +119,8 @@ fn draw<B: Backend>(
     }
     app.dirty = false;
     terminal.draw(|frame| {
-        let view = render::compute_view(app, frame.area(), theme);
-        render::render(app, frame, &view, theme);
+        let mut view = render::compute_view(app, frame.area(), theme);
+        render::render(app, frame, &mut view, theme);
         if let Some(cursor) = view.editor_cursor {
             frame.set_cursor_position(cursor);
         }
@@ -130,7 +128,6 @@ fn draw<B: Backend>(
     Ok(())
 }
 
-/// Interactive entry: alt screen, raw mode, crossterm events.
 pub fn run_console(options: &ConsoleOptions) -> i32 {
     let theme = Theme::new(
         detect_tier(
@@ -140,8 +137,12 @@ pub fn run_console(options: &ConsoleOptions) -> i32 {
         detect_dark(std::env::var("COLORFGBG").ok().as_deref()),
     );
     let (events, outbound, threads) = client::spawn(options.socket.clone());
-    let mut app = App::new(options.root.clone());
+    let mut app = App::new(options.root.clone(), theme);
     app.autostart = options.autostart;
+    app.kitty = crate::kitty::supported(
+        std::env::var("TERM").ok().as_deref(),
+        std::env::var("TERM_PROGRAM").ok().as_deref(),
+    );
     app.state.auto_side = options.auto_side;
     app.state.sidebar = options.sidebar;
     app.animate = true;
@@ -185,7 +186,6 @@ pub fn run_console(options: &ConsoleOptions) -> i32 {
     let code = run_interactive(&mut app, &mut terminal, &events, &outbound, &theme);
     restore_terminal();
     outbound.shutdown();
-    // Frees a reader parked on the bounded queue nobody drains now.
     drop(events);
     join_with_deadline(threads);
     code
@@ -198,10 +198,7 @@ fn run_interactive(
     outbound: &Outbound,
     theme: &Theme,
 ) -> i32 {
-    let kitty_ok = crate::kitty::supported(
-        std::env::var("TERM").ok().as_deref(),
-        std::env::var("TERM_PROGRAM").ok().as_deref(),
-    );
+    let kitty_ok = app.kitty;
     // (payload length, rect) of the placed image; unchanged frames skip the
     // retransmit entirely.
     let mut placed: Option<(usize, ratatui::layout::Rect)> = None;
@@ -245,13 +242,32 @@ fn run_interactive(
             }
             if kitty_ok {
                 use std::io::Write;
+                place_chat_orbs(app, &mut out);
                 place_notebook_image(app, &mut out, &mut placed);
-                // No newline in a graphics escape, so nothing else flushes it.
                 let _ = out.flush();
             }
         }
     }
     0
+}
+
+/// One orb per chat pane, each on its own image ids; only the focused pane animates.
+fn place_chat_orbs(app: &mut App, out: &mut std::io::Stdout) {
+    use crate::model::PaneContent;
+    let focused = app.state.focused_pane_id();
+    for (id, pane) in &mut app.state.panes {
+        let PaneContent::Session {
+            chat: Some(chat), ..
+        } = &mut pane.content
+        else {
+            continue;
+        };
+        if Some(*id) == focused {
+            yi_tui::orb::tick(&mut chat.app, out, &mut chat.orb);
+        } else {
+            chat.orb.hide(out);
+        }
+    }
 }
 
 /// The focused notebook pane's newest image rides the kitty protocol over
@@ -331,7 +347,7 @@ fn join_with_deadline(threads: client::ClientThreads) {
 pub fn run_headless(options: &ConsoleOptions, drive: DriveOptions) -> i32 {
     let theme = Theme::new(ColorTier::Ansi16, true);
     let (events, outbound, threads) = client::spawn(options.socket.clone());
-    let mut app = App::new(options.root.clone());
+    let mut app = App::new(options.root.clone(), theme);
     app.autostart = options.autostart;
     app.state.auto_side = options.auto_side;
     app.state.sidebar = options.sidebar;
@@ -415,6 +431,7 @@ pub fn run_headless(options: &ConsoleOptions, drive: DriveOptions) -> i32 {
                     .as_ref()
                     .and_then(|id| app.state.sessions.get(id))
                     .is_some_and(|row| row.status == SessionStatus::Working)
+                    || app.chat_running()
                     || app.state.link == Link::Connecting;
                 match poll_condition(!working, started, ms, "wait-idle") {
                     WaitPoll::Retry => {

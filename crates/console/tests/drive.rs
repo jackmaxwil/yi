@@ -10,6 +10,8 @@ use std::thread::JoinHandle;
 use serde_json::{Value, json};
 use yi_console::model::SidebarMode;
 use yi_console::{ConsoleOptions, DriveOptions, parse_script, run_headless};
+use yi_types::event::{AgentEvent, AssistantMessageEvent};
+use yi_types::message::{AgentMessage, Content, StopReason, Usage, UserContent};
 
 type TestResult = Result<(), Box<dyn Error>>;
 type Responder = fn(&Value) -> Vec<Value>;
@@ -65,6 +67,147 @@ fn update(session: &str, update: Value) -> Value {
         "method": "session/update",
         "params": {"sessionId": session, "update": update},
     })
+}
+
+fn assistant(text: &str) -> AgentMessage {
+    AgentMessage::Assistant {
+        content: vec![Content::Text {
+            text: text.to_owned(),
+            text_signature: None,
+        }],
+        api: "faux".to_owned(),
+        provider: "faux".to_owned(),
+        model: "faux-1".to_owned(),
+        response_model: None,
+        response_id: None,
+        diagnostics: None,
+        usage: Usage::zero(),
+        stop_reason: StopReason::Stop,
+        raw_stop_reason: None,
+        end_turn: None,
+        deferred: None,
+        error_message: None,
+        timestamp: 0,
+    }
+}
+
+fn user_message(text: &str) -> AgentMessage {
+    AgentMessage::host_user(UserContent::Text(text.to_owned()), 0)
+}
+
+fn entry(id: &str, parent: Option<&str>, seq: u64, message: &AgentMessage) -> Value {
+    json!({"type": "message", "id": id, "message": message, "parentId": parent,
+           "seq": seq, "timestamp": seq})
+}
+
+/// The branch verbatim, the way the worker sends it on a resume.
+fn replay(session: &str, entries: &[Value], from: u64, name: Option<&str>) -> Value {
+    let leaf = entries.last().and_then(|entry| entry["id"].as_str());
+    update(
+        session,
+        json!({"sessionUpdate": "_yi/replay", "entries": entries, "from": from,
+               "replayedTo": from + entries.len() as u64, "leafId": leaf, "name": name,
+               "goal": null, "contextWindow": 128000}),
+    )
+}
+
+fn event(session: &str, seq: u64, event: &AgentEvent) -> Value {
+    update(
+        session,
+        json!({"sessionUpdate": "_yi/event", "event": event, "seq": seq}),
+    )
+}
+
+/// An assistant message as the runtime streams it: start, one delta, end.
+fn stream(session: &str, seq: u64, reply: &AgentMessage) -> Vec<Value> {
+    let text = match reply {
+        AgentMessage::Assistant { content, .. } => content
+            .iter()
+            .filter_map(|block| match block {
+                Content::Text { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect::<String>(),
+        _ => String::new(),
+    };
+    vec![
+        event(
+            session,
+            seq,
+            &AgentEvent::MessageStart {
+                message: assistant(""),
+            },
+        ),
+        event(
+            session,
+            seq + 1,
+            &AgentEvent::MessageUpdate {
+                message: reply.clone(),
+                assistant_message_event: AssistantMessageEvent::TextDelta {
+                    content_index: 0,
+                    delta: text,
+                    partial: reply.clone(),
+                },
+            },
+        ),
+        event(
+            session,
+            seq + 2,
+            &AgentEvent::MessageEnd {
+                message: reply.clone(),
+            },
+        ),
+    ]
+}
+
+/// One whole turn: running, the prompt, the reply, idle.
+fn turn(session: &str, seq: u64, prompt: &str, reply: &AgentMessage) -> Vec<Value> {
+    let mut frames = vec![
+        update(
+            session,
+            json!({"sessionUpdate": "state_update", "state": "running"}),
+        ),
+        event(session, seq, &AgentEvent::AgentStart),
+        event(
+            session,
+            seq + 1,
+            &AgentEvent::MessageStart {
+                message: user_message(prompt),
+            },
+        ),
+    ];
+    frames.extend(stream(session, seq + 2, reply));
+    frames.push(event(
+        session,
+        seq + 5,
+        &AgentEvent::AgentEnd {
+            messages: Vec::new(),
+        },
+    ));
+    frames.push(update(
+        session,
+        json!({"sessionUpdate": "state_update", "state": "idle"}),
+    ));
+    frames
+}
+
+fn session_result(frame: &Value, session: &str, name: Option<&str>, extra: Value) -> Value {
+    let mut result = json!({
+        "sessionId": session,
+        "name": name,
+        "configOptions": [
+            {"configId": "model", "name": "Model",
+             "kind": {"type": "select", "value": "faux/faux-1", "options": []}},
+            {"configId": "thought_level", "name": "Thinking level",
+             "kind": {"type": "select", "value": "medium", "options": []}},
+        ],
+    });
+    if let (Some(map), Some(more)) = (result.as_object_mut(), extra.as_object()) {
+        for (key, value) in more {
+            map.insert(key.clone(), value.clone());
+        }
+    }
+    ok(frame, result)
 }
 
 fn read_request(reader: &mut BufReader<UnixStream>) -> Option<Value> {
@@ -166,6 +309,28 @@ fn run_with(name: &str, fixture: Vec<Step>, script: &str, autostart: bool) -> Te
     run_sidebar(name, fixture, script, autostart, SidebarMode::Full)
 }
 
+/// Runs with a frame dump and hands back the last frame, for assertions a substring
+/// cannot make.
+fn run_frames(name: &str, fixture: Vec<Step>, script: &str) -> Result<String, Box<dyn Error>> {
+    let dir = std::env::temp_dir().join(format!("yi-console-frames-{}-{name}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    run_opts(
+        name,
+        fixture,
+        script,
+        false,
+        SidebarMode::Full,
+        Some(dir.clone()),
+    )?;
+    let mut names: Vec<PathBuf> = std::fs::read_dir(&dir)?
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .collect();
+    names.sort();
+    let last = names.last().ok_or("no frames were dumped")?;
+    Ok(std::fs::read_to_string(last)?)
+}
+
 /// The harness opens the sidebar in full so rows can be asserted by name; the
 /// rail the CLI defaults to has its own test.
 fn run_sidebar(
@@ -174,6 +339,17 @@ fn run_sidebar(
     script: &str,
     autostart: bool,
     sidebar: SidebarMode,
+) -> TestResult {
+    run_opts(name, fixture, script, autostart, sidebar, None)
+}
+
+fn run_opts(
+    name: &str,
+    fixture: Vec<Step>,
+    script: &str,
+    autostart: bool,
+    sidebar: SidebarMode,
+    frames: Option<PathBuf>,
 ) -> TestResult {
     let socket = scratch_socket(name);
     let server = spawn_fixture(socket.clone(), fixture);
@@ -188,7 +364,8 @@ fn run_sidebar(
         },
         DriveOptions {
             script: steps,
-            frames_dir: std::env::var("CONSOLE_TEST_FRAMES").ok().map(PathBuf::from),
+            frames_dir: frames
+                .or_else(|| std::env::var("CONSOLE_TEST_FRAMES").ok().map(PathBuf::from)),
             record: None,
             width: 100,
             height: 30,
@@ -234,50 +411,41 @@ fn ledger_list(frame: &Value) -> Vec<Value> {
     )]
 }
 
+fn alpha_branch() -> Vec<Value> {
+    vec![
+        entry("e1", None, 1, &user_message("hello agent")),
+        entry("e2", Some("e1"), 2, &assistant("replayed world")),
+    ]
+}
+
 fn resume_alpha(frame: &Value) -> Vec<Value> {
     vec![
-        update(
-            "s-alpha",
-            json!({"sessionUpdate": "user_message", "messageId": "msg_1",
-            "content": [{"type": "text", "text": "hello agent"}]}),
-        ),
-        update(
-            "s-alpha",
-            json!({"sessionUpdate": "agent_message", "messageId": "msg_2",
-            "content": [{"type": "text", "text": "replayed world"}]}),
-        ),
-        ok(frame, json!({"sessionId": "s-alpha", "configOptions": []})),
+        replay("s-alpha", &alpha_branch(), 0, None),
+        session_result(frame, "s-alpha", None, json!({"replayedTo": 2})),
     ]
 }
 
 fn resume_alpha_again(frame: &Value) -> Vec<Value> {
     vec![
-        update(
+        replay(
             "s-alpha",
-            json!({"sessionUpdate": "agent_message", "messageId": "msg_1",
-            "content": [{"type": "text", "text": "replayed again"}]}),
+            &[entry("e1", None, 1, &assistant("replayed again"))],
+            0,
+            None,
         ),
-        ok(frame, json!({"sessionId": "s-alpha", "configOptions": []})),
+        session_result(frame, "s-alpha", None, json!({"replayedTo": 1})),
     ]
 }
 
 fn prompt_stream(frame: &Value) -> Vec<Value> {
-    vec![
-        ok(frame, json!({})),
-        update(
-            "s-alpha",
-            json!({"sessionUpdate": "state_update", "state": "running"}),
-        ),
-        update(
-            "s-alpha",
-            json!({"sessionUpdate": "agent_message_chunk", "messageId": "msg_3",
-            "content": {"type": "text", "text": "streamed answer"}}),
-        ),
-        update(
-            "s-alpha",
-            json!({"sessionUpdate": "state_update", "state": "idle"}),
-        ),
-    ]
+    let prompt = frame
+        .pointer("/params/prompt/0/text")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_owned();
+    let mut frames = vec![ok(frame, json!({}))];
+    frames.extend(turn("s-alpha", 10, &prompt, &assistant("streamed answer")));
+    frames
 }
 
 fn permission_request() -> Vec<Value> {
@@ -306,17 +474,16 @@ fn permission_answer(frame: &Value) -> Vec<Value> {
         // marker below is only pushed for the accepted option.
         return Vec::new();
     }
-    vec![
-        update(
-            "s-alpha",
-            json!({"sessionUpdate": "state_update", "state": "running"}),
-        ),
-        update(
-            "s-alpha",
-            json!({"sessionUpdate": "agent_message", "messageId": "msg_9",
-            "content": [{"type": "text", "text": "approved, continuing"}]}),
-        ),
-    ]
+    let mut frames = vec![update(
+        "s-alpha",
+        json!({"sessionUpdate": "state_update", "state": "running"}),
+    )];
+    frames.extend(stream("s-alpha", 20, &assistant("approved, continuing")));
+    frames.push(update(
+        "s-alpha",
+        json!({"sessionUpdate": "state_update", "state": "idle"}),
+    ));
+    frames
 }
 
 #[test]
@@ -438,7 +605,7 @@ fn permission_request_blocks_then_answers() -> TestResult {
          key enter\n\
          wait-frame 5000 replayed world\n\
          wait-frame 5000 rm -rf target\n\
-         key a\n\
+         key y\n\
          wait-frame 5000 approved, continuing\n\
          wait-frame 5000 !rm -rf target\n\
          quit\n",
@@ -473,10 +640,10 @@ fn splits_zoom_tabs_and_prefix() -> TestResult {
          key alt-right\n\
          key alt-x\n\
          key ctrl-b\n\
-         wait-frame 3000 PREFIX\n\
          key c\n\
          wait-frame 3000  1 \n\
-         key alt-1\n\
+         key ctrl-b\n\
+         key 1\n\
          wait-frame 3000 replayed world\n\
          quit\n",
     )
@@ -492,12 +659,13 @@ fn navigator_filters_and_opens() -> TestResult {
             Step::Expect("session/list", empty_list),
             Step::Expect("session/resume", |frame| {
                 vec![
-                    update(
+                    replay(
                         "s-beta",
-                        json!({"sessionUpdate": "agent_message", "messageId": "msg_1",
-                        "content": [{"type": "text", "text": "beta transcript"}]}),
+                        &[entry("b1", None, 1, &assistant("beta transcript"))],
+                        0,
+                        None,
                     ),
-                    ok(frame, json!({"sessionId": "s-beta", "configOptions": []})),
+                    session_result(frame, "s-beta", None, json!({"replayedTo": 1})),
                 ]
             }),
             Step::Expect("_yi/seen", seen_ok),
@@ -598,7 +766,7 @@ fn mouse_focuses_opens_and_drags() -> TestResult {
 
 #[test]
 fn background_session_notifies_after_delay() -> TestResult {
-    run(
+    run_sidebar(
         "notify",
         vec![
             Step::Expect("initialize", init_reply),
@@ -624,15 +792,17 @@ fn background_session_notifies_after_delay() -> TestResult {
                 ]
             }),
         ],
-        "wait-frame 5000 s-alpha\n\
+        "wait-frame 5000 ▸·\n\
          key enter\n\
          wait-frame 5000 replayed world\n\
          key alt-v\n\
          key tab\n\
          key down\n\
          key enter\n\
-         wait-frame 5000 finished while you were away\n\
+         wait-frame 5000 done while you were away\n\
          quit\n",
+        false,
+        SidebarMode::Rail,
     )
 }
 
@@ -746,15 +916,18 @@ fn reconnect_reuses_offset_and_skips_replay() -> TestResult {
                 let from = frame.pointer("/params/replayFrom").and_then(Value::as_u64);
                 let mut frames = Vec::new();
                 if from == Some(2) {
-                    frames.push(update(
+                    frames.push(replay(
                         "s-alpha",
-                        json!({"sessionUpdate": "agent_message", "messageId": "msg_9",
-                        "content": [{"type": "text", "text": "offset honored"}]}),
+                        &[entry("e3", Some("e2"), 3, &assistant("offset honored"))],
+                        2,
+                        None,
                     ));
                 }
-                frames.push(ok(
+                frames.push(session_result(
                     frame,
-                    json!({"sessionId": "s-alpha", "configOptions": [], "replayedTo": 3}),
+                    "s-alpha",
+                    None,
+                    json!({"replayedTo": 3}),
                 ));
                 frames
             }),
@@ -778,15 +951,10 @@ fn live_update_invalidates_offset() -> TestResult {
             Step::Expect("session/list", empty_list),
             Step::Expect("session/resume", resume_with_offset),
             Step::Expect("_yi/seen", |frame| {
-                vec![
-                    ok(frame, json!({})),
-                    // A live update past the offset makes it stale.
-                    update(
-                        "s-alpha",
-                        json!({"sessionUpdate": "agent_message", "messageId": "msg_5",
-                        "content": [{"type": "text", "text": "streamed since"}]}),
-                    ),
-                ]
+                // A live update past the offset makes it stale.
+                let mut frames = vec![ok(frame, json!({}))];
+                frames.extend(stream("s-alpha", 40, &assistant("streamed since")));
+                frames
             }),
             Step::Close,
             Step::Accept,
@@ -795,15 +963,18 @@ fn live_update_invalidates_offset() -> TestResult {
                 let from = frame.pointer("/params/replayFrom").and_then(Value::as_u64);
                 let mut frames = Vec::new();
                 if from == Some(0) {
-                    frames.push(update(
+                    frames.push(replay(
                         "s-alpha",
-                        json!({"sessionUpdate": "agent_message", "messageId": "msg_1",
-                        "content": [{"type": "text", "text": "full replay again"}]}),
+                        &[entry("e1", None, 1, &assistant("full replay again"))],
+                        0,
+                        None,
                     ));
                 }
-                frames.push(ok(
+                frames.push(session_result(
                     frame,
-                    json!({"sessionId": "s-alpha", "configOptions": [], "replayedTo": 4}),
+                    "s-alpha",
+                    None,
+                    json!({"replayedTo": 4}),
                 ));
                 frames
             }),
@@ -899,7 +1070,6 @@ fn workspace_autostarts_new_session_when_root_is_empty() -> TestResult {
             Step::Expect("session/new", new_session_reply),
         ],
         "wait-frame 5000 s-new\n\
-         wait-frame 3000 workspace ·\n\
          quit\n",
         true,
     )
@@ -923,15 +1093,47 @@ fn workspace_resumes_first_session_when_root_has_one() -> TestResult {
     )
 }
 
+/// An edit as the worker reports it: the runtime event the chat renders, then the
+/// standard tool update the diff pane reads.
 fn edit_push() -> Vec<Value> {
-    vec![update(
-        "s-alpha",
-        json!({"sessionUpdate": "tool_call_update",
-        "toolCallId": "e1", "title": "edit", "kind": "edit", "status": "completed",
-        "rawOutput": {
-            "patch": "--- a//tmp/demo-root/src/lib.rs\n+++ b//tmp/demo-root/src/lib.rs\n@@ -1,1 +1,2 @@\n old\n+brand new line\n",
-            "added": 1, "removed": 0}}),
-    )]
+    let patch = "--- a//tmp/demo-root/src/lib.rs\n+++ b//tmp/demo-root/src/lib.rs\n@@ -1,1 +1,2 @@\n old\n+brand new line\n";
+    let result = yi_types::event::ToolResult {
+        content: vec![Content::Text {
+            text: "[lib.rs#1]\nupdated; first change at line 2".to_owned(),
+            text_signature: None,
+        }],
+        details: json!({"path": "/tmp/demo-root/src/lib.rs", "patch": patch}),
+        usage: None,
+        added_tool_names: None,
+        terminate: None,
+    };
+    vec![
+        event(
+            "s-alpha",
+            20,
+            &AgentEvent::ToolExecutionStart {
+                tool_call_id: "e1".to_owned(),
+                tool_name: "edit".to_owned(),
+                args: json!({"path": "/tmp/demo-root/src/lib.rs"}),
+            },
+        ),
+        event(
+            "s-alpha",
+            21,
+            &AgentEvent::ToolExecutionEnd {
+                tool_call_id: "e1".to_owned(),
+                tool_name: "edit".to_owned(),
+                result,
+                is_error: false,
+            },
+        ),
+        update(
+            "s-alpha",
+            json!({"sessionUpdate": "tool_call_update",
+            "toolCallId": "e1", "title": "edit", "kind": "edit", "status": "completed",
+            "rawOutput": {"patch": patch, "added": 1, "removed": 0}}),
+        ),
+    ]
 }
 
 fn ipython_push() -> Vec<Value> {
@@ -1347,7 +1549,7 @@ fn cmd_f_scrolls_to_match() -> TestResult {
 }
 
 /// Once a second pane exists the corners are rounded and the focused pane wears a reversed
-/// chip; the strip above the composer names the files the session touched.
+/// chip; nothing sits between the transcript and the composer (M10).
 #[test]
 fn rounded_borders_and_context_strip_render() -> TestResult {
     run(
@@ -1368,7 +1570,7 @@ fn rounded_borders_and_context_strip_render() -> TestResult {
          key alt-left\n\
          wait-frame 3000 ╭\n\
          wait-frame 3000 ❯ s-alpha\n\
-         wait-frame 5000 touched lib.rs\n\
+         wait-frame 3000 !touched\n\
          quit\n",
     )
 }
@@ -1434,11 +1636,9 @@ fn a_lone_chat_pane_wears_no_frame() -> TestResult {
 /// turn and arms, and a second press inside the window quits the console.
 #[test]
 fn ctrl_c_clears_the_draft_then_cancels_then_quits() -> TestResult {
-    let mut fixture = session_fixture();
-    fixture.push(Step::Expect("session/cancel", seen_ok));
     run(
         "ctrl-c",
-        fixture,
+        session_fixture(),
         "wait-frame 5000 s-alpha\n\
          key enter\n\
          wait-frame 5000 replayed world\n\
@@ -1447,7 +1647,6 @@ fn ctrl_c_clears_the_draft_then_cancels_then_quits() -> TestResult {
          key ctrl-c\n\
          wait-frame 3000 !draft text\n\
          key ctrl-c\n\
-         wait-frame 3000 ctrl+c again quits\n\
          key ctrl-c\n\
          wait-frame 3000 the console quit before this frame\n",
     )
@@ -1486,12 +1685,13 @@ fn resume_named(frame: &Value) -> Vec<Value> {
         .unwrap_or("?")
         .to_owned();
     vec![
-        update(
+        replay(
             &id,
-            json!({"sessionUpdate": "agent_message", "messageId": "msg_1",
-            "content": [{"type": "text", "text": format!("resumed {id}")}]}),
+            &[entry("e1", None, 1, &assistant(&format!("resumed {id}")))],
+            0,
+            None,
         ),
-        ok(frame, json!({"sessionId": id, "configOptions": []})),
+        session_result(frame, &id, None, json!({"replayedTo": 1})),
     ]
 }
 
@@ -1635,11 +1835,11 @@ fn the_slash_popup_runs_a_verb_on_the_worker() -> TestResult {
          key enter\n\
          wait-frame 5000 replayed world\n\
          type /\n\
-         wait-frame 3000 permissions\n\
+         wait-frame 3000 plantree\n\
          type goal\n\
          key enter\n\
          wait-frame 5000 ran /goal on the worker\n\
-         wait-frame 3000 !permissions\n\
+         wait-frame 3000 !plantree\n\
          quit\n",
     )
 }
@@ -1664,11 +1864,18 @@ fn slash_new_opens_a_fresh_session_in_the_pane() -> TestResult {
 }
 
 fn status_push() -> Vec<Value> {
-    vec![update(
-        "s-alpha",
-        json!({"sessionUpdate": "_yi/status", "model": "faux-1", "effort": "medium",
-        "cost": 0.12, "costUnknown": false, "contextUsed": 2000, "contextWindow": 200000}),
-    )]
+    let mut reply = assistant("");
+    if let AgentMessage::Assistant { usage, .. } = &mut reply {
+        usage.cost.total = serde_json::Number::from_f64(0.12).unwrap_or_else(|| 0.into());
+        usage.total_tokens = 2000;
+    }
+    vec![
+        event("s-alpha", 30, &AgentEvent::MessageEnd { message: reply }),
+        update(
+            "s-alpha",
+            json!({"sessionUpdate": "usage_update", "used": 2000, "size": 200000}),
+        ),
+    ]
 }
 
 /// The status row is the solo one: model, reasoning effort, cost and context share, with
@@ -1692,10 +1899,13 @@ fn the_status_row_shows_model_effort_cost_and_context() -> TestResult {
 }
 
 fn running_push() -> Vec<Value> {
-    vec![update(
-        "s-alpha",
-        json!({"sessionUpdate": "state_update", "state": "running"}),
-    )]
+    vec![
+        update(
+            "s-alpha",
+            json!({"sessionUpdate": "state_update", "state": "running"}),
+        ),
+        event("s-alpha", 30, &AgentEvent::AgentStart),
+    ]
 }
 
 /// A working session shows the solo working line above the composer, esc hint included.
@@ -1710,6 +1920,64 @@ fn a_working_session_shows_the_working_line() -> TestResult {
          key enter\n\
          wait-frame 5000 replayed world\n\
          wait-frame 3000 [esc] interrupt\n\
+         quit\n",
+    )
+}
+
+/// Two panes on one session both reduce the same events; each keeps its own composer.
+#[test]
+fn two_panes_one_session_both_render_events() -> TestResult {
+    let mut fixture = session_fixture();
+    fixture.push(Step::Expect("session/resume", resume_alpha));
+    fixture.push(Step::Expect("_yi/seen", seen_ok));
+    fixture.push(Step::Push(|| {
+        stream("s-alpha", 50, &assistant("both see me"))
+    }));
+    let frame = run_frames(
+        "two-panes",
+        fixture,
+        "wait-frame 5000 s-alpha\n\
+         key enter\n\
+         wait-frame 5000 replayed world\n\
+         key alt-v\n\
+         key alt-/\n\
+         type alpha\n\
+         key enter\n\
+         wait-frame 5000 both see me\n\
+         wait 300\n\
+         quit\n",
+    )?;
+    assert_eq!(
+        frame.matches("both see me").count(),
+        2,
+        "both panes render the streamed reply: {frame}"
+    );
+    Ok(())
+}
+
+fn malformed_event() -> Vec<Value> {
+    vec![update(
+        "s-alpha",
+        json!({"sessionUpdate": "_yi/event", "event": {"type": "nonsense"}, "seq": 0}),
+    )]
+}
+
+/// A `_yi/event` that does not decode is counted and dropped, never a panic or a wedge.
+#[test]
+fn a_malformed_event_frame_is_counted_and_ignored() -> TestResult {
+    let mut fixture = session_fixture();
+    fixture.push(Step::Push(malformed_event));
+    fixture.push(Step::Push(|| {
+        stream("s-alpha", 1, &assistant("still alive"))
+    }));
+    run(
+        "malformed",
+        fixture,
+        "wait-frame 5000 s-alpha\n\
+         key enter\n\
+         wait-frame 5000 replayed world\n\
+         wait-frame 5000 dropped:1\n\
+         wait-frame 5000 still alive\n\
          quit\n",
     )
 }

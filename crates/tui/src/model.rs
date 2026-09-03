@@ -278,6 +278,31 @@ impl Selection {
     }
 }
 
+/// The catalog's entry, or a stub naming what the wire said when the catalog has none.
+pub fn model_or_stub(provider: &str, id: &str) -> Model {
+    yi_runtime::resolve_model(provider, id).unwrap_or_else(|| Model {
+        id: id.to_owned(),
+        name: id.to_owned(),
+        api: provider.to_owned(),
+        provider: provider.to_owned(),
+        base_url: String::new(),
+        reasoning: false,
+        input: Vec::new(),
+        cost: yi_types::model::ModelCost {
+            input: 0.into(),
+            output: 0.into(),
+            cache_read: 0.into(),
+            cache_write: 0.into(),
+            tiers: None,
+        },
+        context_window: 0,
+        max_tokens: 0,
+        compat: None,
+        thinking_level_map: None,
+        headers: None,
+    })
+}
+
 impl App {
     pub(crate) fn open_model_picker(&mut self) {
         self.bottom = Some(Bottom::Model(Box::new(ModelPopup::new(

@@ -1,7 +1,7 @@
 //! The kitty image the session owns, and the phase walk that feeds it. The engine is
 //! [`yi_orb`]; this is the part that knows about [`crate::app::App`] and the terminal.
 
-use yi_orb::kitty;
+pub use yi_orb::kitty;
 
 /// The loop owns one of these for the session — one kitty image, double
 /// buffered across [`kitty::IMAGE_IDS`].
@@ -10,16 +10,32 @@ pub struct Tick {
     at: Option<(u16, u16)>,
     last: std::time::Instant,
     front: usize,
+    ids: [u32; 2],
 }
 
 impl Default for Tick {
     fn default() -> Self {
+        Self::with_ids(kitty::IMAGE_IDS)
+    }
+}
+
+impl Tick {
+    pub fn with_ids(ids: [u32; 2]) -> Self {
         Self {
             shown: false,
             at: None,
             last: std::time::Instant::now() - std::time::Duration::from_secs(1),
             front: 0,
+            ids,
         }
+    }
+
+    pub fn hide(&mut self, out: &mut impl std::io::Write) {
+        if self.shown {
+            let _ = kitty::delete_id(out, self.ids[self.front]);
+        }
+        self.shown = false;
+        self.at = None;
     }
 }
 
@@ -47,10 +63,10 @@ pub fn tick(app: &mut crate::app::App, out: &mut impl std::io::Write, state: &mu
             if let Some(frame) = crate::logo::frame(app.logo_phase, clock, 64) {
                 let rgba = kitty::paint_rgba(&frame, 64.0, crate::app::ORB_PX);
                 let back = 1 - state.front;
-                let _ = kitty::transmit(out, kitty::IMAGE_IDS[back], &rgba, crate::app::ORB_PX);
+                let _ = kitty::transmit(out, state.ids[back], &rgba, crate::app::ORB_PX);
                 let placed = kitty::place(
                     out,
-                    kitty::IMAGE_IDS[back],
+                    state.ids[back],
                     col,
                     row,
                     crate::app::ORB_COLS,
@@ -58,7 +74,7 @@ pub fn tick(app: &mut crate::app::App, out: &mut impl std::io::Write, state: &mu
                 );
                 if placed.is_ok() {
                     if state.shown {
-                        let _ = kitty::delete_id(out, kitty::IMAGE_IDS[state.front]);
+                        let _ = kitty::delete_id(out, state.ids[state.front]);
                     }
                     state.front = back;
                     state.shown = true;
@@ -69,7 +85,7 @@ pub fn tick(app: &mut crate::app::App, out: &mut impl std::io::Write, state: &mu
         Some((col, row)) if state.at != Some((col, row)) => {
             let placed = kitty::place(
                 out,
-                kitty::IMAGE_IDS[state.front],
+                state.ids[state.front],
                 col,
                 row,
                 crate::app::ORB_COLS,
@@ -79,11 +95,7 @@ pub fn tick(app: &mut crate::app::App, out: &mut impl std::io::Write, state: &mu
                 state.at = Some((col, row));
             }
         }
-        None if state.shown => {
-            state.shown = false;
-            state.at = None;
-            let _ = kitty::delete(out);
-        }
+        None if state.shown => state.hide(out),
         _ => {}
     }
 }
