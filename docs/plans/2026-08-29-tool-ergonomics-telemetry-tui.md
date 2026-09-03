@@ -119,8 +119,8 @@ TUI:
 
 Donor facts this plan leans on (scout study, 2026-08-29):
 
-- the reference has no grep/read tool at all — shell + `rg` by prompt
-  (`gpt_5_codex_prompt.md:5`); its old search tool is `Stage::Removed`. Its
+- the reference has no grep/read tool at all — shell + `rg` by prompt, said
+  in its system prompt; its old search tool is `Stage::Removed`. Its
   transferable pieces: the apply_patch 4-pass anchor ladder
   (`apply-patch/src/seek_sequence.rs:12-114`), two-layer truncation — 1 MiB
   head/tail capture then middle-out token budget, model-settable per call

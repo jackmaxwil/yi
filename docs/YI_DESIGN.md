@@ -1321,7 +1321,7 @@ control experiment — most §9 ideas existed there, and the codebase still rott
 63 % of the code in 3 crates glued into one namespace by `pub use …::*` chains (a split made
 for compile time that removed zero imports, said so in its own doc comment); `struct App` with
 353 fields and `impl App` across 60 files; a 2,234-line match; a 43-verb `action: String` tool
-with a synonym table "for actions models invent"; 517 `JCODE_*` env vars, 87 % undocumented;
+with a synonym table "for actions models invent"; 517 prefixed env vars, 87 % undocumented;
 7,779 duplicated 15-line blocks; ratchets grandfathered at the existing mess (225k LOC over
 ceiling — 40 % of prod code — and 3,248 swallowed errors) with a one-flag `--fix` that
 rebaselines every gate; 4 of 7 gates red on main at HEAD. What held: the `*-types` DTO wall

@@ -23,7 +23,7 @@ sources: research (ref/research/): 2601.04055v1 MPO · 2603.21520v1 MemAPO ·
          2606.04465v1 SePO · 2507.19457v2 GEPA (ICLR 2026) · Factory.ai
          large-tasks PDF · 2608.26263v1 SKILL.state (Google/Purdue) ·
          20885-AAAI26.KawaseY-GT (sequential selling with sunk cost bias)
-         · the reference harness: arXiv 2608.23552 + primeintellect.ai/blog +
+         · the reference harness: arXiv 2608.23552 + its vendor's blog +
          docs.arcprize.org/methodology (RHAE) + arcprize.org/leaderboard
          · the reference autopsy (§0; ref/agents/the reference, excise respected)
          · pattern donors, NOT Appendix A (ports need an A-entry first):

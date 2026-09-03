@@ -432,7 +432,7 @@ fn source_budget_fit_marks_truncation() -> TestResult {
 }
 
 #[test]
-fn ledger_loads_prime_shaped_state_and_formats_hints() -> TestResult {
+fn ledger_loads_reference_shaped_state_and_formats_hints() -> TestResult {
     let dir = std::env::temp_dir().join(format!("yi-ledger-{}", std::process::id()));
     std::fs::create_dir_all(&dir)?;
     let path = dir.join("harness_state.json");

@@ -10,8 +10,8 @@ status:  PROPOSAL. Self-contained capstone of the 2026-08-31 design sessions.
          house workflow.
 date:    2026-08-31
 inputs:  benchmarks read from source (terminal-bench v4.0.0, arc_agi 0.9.1,
-         arcengine 0.9.3, harbor, SWE-Atlas) · can1357/oh-my-pi (todo.ts,
-         todo-tracker.ts, task prompts) · primeintellect-ai/the reference
+         arcengine 0.9.3, harbor, SWE-Atlas) · a Pi fork (todo.ts,
+         todo-tracker.ts, task prompts) · the reference harness
          main@9f5edc1 + branches (rlm/repl.md, SwarmRolePolicy, rlm-ledger)
          · arXiv 2604.11378 (SGH), 2311.05772 (ADaPT), 2312.04511
          (LLMCompiler), 2502.14563, 2510.25320 · Yi ground truth:
