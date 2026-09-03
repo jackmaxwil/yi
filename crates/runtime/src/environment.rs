@@ -51,6 +51,37 @@ fn tokens(count: u64) -> String {
     }
 }
 
+pub fn tracked(root: &Path, paths: &[String]) -> Vec<bool> {
+    let Ok(root) = std::fs::canonicalize(root) else {
+        return vec![false; paths.len()];
+    };
+    let rels: Vec<Option<String>> = paths
+        .iter()
+        .map(|path| {
+            let canonical = std::fs::canonicalize(path).ok()?;
+            let rel = canonical.strip_prefix(&root).ok()?;
+            Some(rel.to_string_lossy().into_owned())
+        })
+        .collect();
+    let mut args = vec!["ls-files", "-z", "--"];
+    args.extend(rels.iter().flatten().map(String::as_str));
+    if args.len() == 3 {
+        return vec![false; paths.len()];
+    }
+    let listed: std::collections::HashSet<String> =
+        crate::worktree::capture(&root, "git", &args, PROBE)
+            .map(|out| {
+                out.split('\0')
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_owned)
+                    .collect()
+            })
+            .unwrap_or_default();
+    rels.iter()
+        .map(|rel| rel.as_deref().is_some_and(|rel| listed.contains(rel)))
+        .collect()
+}
+
 pub fn render(lines: &[String]) -> String {
     format!("{ENVIRONMENT_TAG}\n{}\n</environment>", lines.join("\n"))
 }

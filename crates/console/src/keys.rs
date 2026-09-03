@@ -28,6 +28,7 @@ pub enum Action {
     Quit,
     ToggleSidebar,
     ToggleNotebook,
+    ToggleDiff,
 }
 
 /// The prefix key: ctrl+b, held as a one-shot armed state by the caller.
@@ -74,6 +75,7 @@ pub fn direct(key: &KeyEvent) -> Option<Action> {
         KeyCode::Char('j') => Some(Action::ScrollDown),
         KeyCode::Char('q') => Some(Action::Quit),
         KeyCode::Char('b') => Some(Action::ToggleSidebar),
+        KeyCode::Char('g') => Some(Action::ToggleDiff),
         KeyCode::Char(digit @ '1'..='9') => {
             let n = u8::try_from(u32::from(digit).saturating_sub(u32::from('0'))).ok()?;
             Some(Action::SelectTab(n))
@@ -96,6 +98,7 @@ fn super_chord(key: &KeyEvent) -> Option<Action> {
         KeyCode::Char('p') => Some(Action::Navigator),
         KeyCode::Char('b') => Some(Action::ToggleSidebar),
         KeyCode::Char('j') => Some(Action::ToggleNotebook),
+        KeyCode::Char('g') => Some(Action::ToggleDiff),
         KeyCode::Char('.') => Some(Action::CancelTurn),
         KeyCode::Char(digit @ '1'..='9') => {
             let n = u8::try_from(u32::from(digit).saturating_sub(u32::from('0'))).ok()?;
@@ -135,7 +138,7 @@ pub fn hint(prefix_armed: bool, cmd: bool) -> &'static str {
     if prefix_armed {
         "PREFIX  v split│ s split─ x close z zoom h/j/k/l focus c tab 1..9 tab g nav q quit"
     } else if cmd {
-        "⌘\\ split  ⌥←→↑↓ focus  ⌘⇧M zoom  ⌘X close  ⌘⇧T/⌘1..9 tabs  ⌘P nav  ⌘⇧N new  ⌘B side  ⌘J notebook"
+        "⌘\\ split  ⌥←→↑↓ focus  ⌘⇧M zoom  ⌘X close  ⌘⇧T/⌘1..9 tabs  ⌘P nav  ⌘⇧N new  ⌘B side  ⌘J nb  ⌘G diff"
     } else {
         "⌥v/⌥s split  ⌥←→↑↓ focus  ⌥z zoom  ⌥x close  ⌥t/⌥1..9 tabs  ⌥/ nav  ⌥n new  ⌥b side  ctrl+b prefix"
     }

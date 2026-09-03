@@ -3,12 +3,14 @@
 
 use std::collections::HashMap;
 
+use crate::model::SessionId;
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use yi_tui::colors::Theme;
+use yi_tui::diffview::{self, DiffBudget};
 
 use crate::app::App;
 use crate::keys;
@@ -121,8 +123,9 @@ pub fn compute_view(app: &mut App, area: Rect, theme: &Theme) -> ViewState {
     let mut panes = Vec::new();
     for pane_rect in pane_rects {
         let inner = pane_rect.rect.inner(ratatui::layout::Margin::new(1, 1));
+        let diffs = &app.state.diffs;
         let (title, lines) = match app.state.panes.get_mut(&pane_rect.id) {
-            Some(pane) => pane_view_content(pane, inner, theme),
+            Some(pane) => pane_view_content(pane, diffs, inner, theme),
             None => ("empty".to_owned(), Vec::new()),
         };
         panes.push(PaneView {
@@ -174,6 +177,7 @@ pub fn compute_view(app: &mut App, area: Rect, theme: &Theme) -> ViewState {
 
 fn pane_view_content(
     pane: &mut crate::model::Pane,
+    diffs: &std::collections::BTreeMap<SessionId, crate::model::SessionDiff>,
     inner: Rect,
     theme: &Theme,
 ) -> (String, Vec<Line<'static>>) {
@@ -202,9 +206,46 @@ fn pane_view_content(
             (short_path(path), lines)
         }
         PaneContent::Diff { path, source } => {
-            let all = diff_lines(source, usize::from(inner.width), theme);
+            let all = diffview::render(source, usize::from(inner.width), theme, DiffBudget::FULL);
             let lines = window(all, pane.scroll_from_bottom, visible);
             (short_path(path), lines)
+        }
+        PaneContent::SessionDiff { session } => {
+            let short: String = session.0.chars().take(8).collect();
+            let (title, all) = match diffs.get(session).filter(|diff| !diff.files.is_empty()) {
+                Some(diff) => {
+                    let (added, removed) = diff.totals();
+                    let joined = diff
+                        .files
+                        .iter()
+                        .map(|(_, file)| file.patch.as_str())
+                        .collect::<Vec<_>>()
+                        .join("\n");
+                    let files = diff.files.len();
+                    let noun = if files == 1 { "file" } else { "files" };
+                    let loose = diff.files.iter().filter(|(_, file)| !file.tracked).count();
+                    let loose = if loose == 0 {
+                        String::new()
+                    } else {
+                        format!(" · {loose} untracked")
+                    };
+                    (
+                        format!("Δ {short} · {files} {noun} · +{added} −{removed}{loose}"),
+                        diffview::render(
+                            &joined,
+                            usize::from(inner.width),
+                            theme,
+                            DiffBudget::FULL,
+                        ),
+                    )
+                }
+                None => (
+                    format!("Δ {short}"),
+                    vec![Line::styled("no edits yet this session", theme.dim_style())],
+                ),
+            };
+            let lines = window(all, pane.scroll_from_bottom, visible);
+            (title, lines)
         }
         PaneContent::Notebook { session, cells } => {
             let title = session.as_ref().map_or_else(
@@ -277,23 +318,6 @@ fn window(all: Vec<Line<'static>>, from_bottom: usize, visible: usize) -> Vec<Li
 
 fn short_path(path: &str) -> String {
     path.rsplit('/').next().unwrap_or(path).to_owned()
-}
-
-/// Plain unified-diff coloring; a viewer pane has only text, not the typed
-/// hunks the structured diffview wants.
-fn diff_lines(source: &str, width: usize, theme: &Theme) -> Vec<Line<'static>> {
-    let mut out = Vec::new();
-    for raw in source.lines() {
-        let style = match raw.as_bytes().first() {
-            Some(b'+') => Style::default().fg(theme.success),
-            Some(b'-') => Style::default().fg(theme.error),
-            Some(b'@') => theme.accent_style(),
-            _ => Style::default().fg(theme.text),
-        };
-        let truncated: String = raw.chars().take(width.max(1)).collect();
-        out.push(Line::styled(truncated, style));
-    }
-    out
 }
 
 fn status_style(theme: &Theme, status: SessionStatus) -> Style {

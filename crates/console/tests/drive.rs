@@ -170,6 +170,7 @@ fn run_with(name: &str, fixture: Vec<Step>, script: &str, autostart: bool) -> Te
             socket,
             root: "/tmp/demo-root".to_owned(),
             autostart,
+            auto_side: true,
         },
         DriveOptions {
             script: steps,
@@ -362,6 +363,7 @@ fn prompt_rejected_while_daemon_unreachable() -> TestResult {
             socket,
             root: "/tmp/demo-root".to_owned(),
             autostart: false,
+            auto_side: true,
         },
         DriveOptions {
             script: steps,
@@ -522,6 +524,7 @@ fn tiny_terminal_survives_splits() -> TestResult {
             socket,
             root: "/tmp/demo-root".to_owned(),
             autostart: false,
+            auto_side: true,
         },
         DriveOptions {
             script: steps,
@@ -893,5 +896,112 @@ fn workspace_resumes_first_session_when_root_has_one() -> TestResult {
         "wait-frame 5000 replayed world\n\
          quit\n",
         true,
+    )
+}
+
+fn edit_push() -> Vec<Value> {
+    vec![update(
+        "s-alpha",
+        json!({"sessionUpdate": "tool_call_update",
+        "toolCallId": "e1", "title": "edit", "kind": "edit", "status": "completed",
+        "rawOutput": {
+            "patch": "--- a//tmp/demo-root/src/lib.rs\n+++ b//tmp/demo-root/src/lib.rs\n@@ -1,1 +1,2 @@\n old\n+brand new line\n",
+            "added": 1, "removed": 0}}),
+    )]
+}
+
+fn ipython_push() -> Vec<Value> {
+    vec![update(
+        "s-alpha",
+        json!({"sessionUpdate": "tool_call_update",
+        "toolCallId": "k1", "title": "ipython", "kind": "execute", "status": "in_progress",
+        "rawInput": {"code": "print(1)"}}),
+    )]
+}
+
+fn tracked_yes(frame: &Value) -> Vec<Value> {
+    vec![ok(frame, json!({"tracked": [true]}))]
+}
+
+fn tracked_no(frame: &Value) -> Vec<Value> {
+    vec![ok(frame, json!({"tracked": [false]}))]
+}
+
+/// The first edit to a tracked file opens the session's diff pane beside it, the transcript
+/// shows the patch inline, and focus stays on the chat pane.
+#[test]
+fn edit_to_a_tracked_file_opens_the_diff_pane() -> TestResult {
+    run(
+        "diff-auto",
+        vec![
+            Step::Expect("initialize", init_reply),
+            Step::Expect("session/list", two_session_list),
+            Step::Expect("session/list", empty_list),
+            Step::Expect("session/resume", resume_alpha),
+            Step::Expect("_yi/seen", seen_ok),
+            Step::Push(edit_push),
+            Step::Expect("_yi/tracked", tracked_yes),
+        ],
+        "wait-frame 5000 s-alpha\n\
+         key enter\n\
+         wait-frame 5000 replayed world\n\
+         wait-frame 5000 Δ s-alpha · 1 file · +1 −0\n\
+         wait-frame 3000 brand new line\n\
+         type still typing here\n\
+         wait-frame 3000 still typing here\n\
+         quit\n",
+    )
+}
+
+/// An edit outside git accumulates but opens nothing; ⌘G shows it on demand.
+#[test]
+fn untracked_edit_accumulates_without_opening() -> TestResult {
+    run(
+        "diff-untracked",
+        vec![
+            Step::Expect("initialize", init_reply),
+            Step::Expect("session/list", two_session_list),
+            Step::Expect("session/list", empty_list),
+            Step::Expect("session/resume", resume_alpha),
+            Step::Expect("_yi/seen", seen_ok),
+            Step::Push(edit_push),
+            Step::Expect("_yi/tracked", tracked_no),
+        ],
+        "wait-frame 5000 s-alpha\n\
+         key enter\n\
+         wait-frame 5000 replayed world\n\
+         wait-frame 3000 brand new line\n\
+         wait-frame 2000 !Δ s-alpha\n\
+         cmd-g\n\
+         wait-frame 3000 Δ s-alpha · 1 file · +1 −0\n\
+         cmd-g\n\
+         wait-frame 3000 !Δ s-alpha\n\
+         quit\n",
+    )
+}
+
+/// The first kernel cell opens the notebook pane, and that spends the session's one
+/// automatic side pane: a later tracked edit no longer opens the diff.
+#[test]
+fn first_kernel_cell_opens_the_notebook_and_spends_the_auto_side() -> TestResult {
+    run(
+        "side-once",
+        vec![
+            Step::Expect("initialize", init_reply),
+            Step::Expect("session/list", two_session_list),
+            Step::Expect("session/list", empty_list),
+            Step::Expect("session/resume", resume_alpha),
+            Step::Expect("_yi/seen", seen_ok),
+            Step::Push(ipython_push),
+            Step::Push(edit_push),
+            Step::Expect("_yi/tracked", tracked_yes),
+        ],
+        "wait-frame 5000 s-alpha\n\
+         key enter\n\
+         wait-frame 5000 replayed world\n\
+         wait-frame 5000 nb:s-alpha\n\
+         wait-frame 5000 brand new line\n\
+         wait-frame 2000 !Δ s-alpha\n\
+         quit\n",
     )
 }

@@ -131,6 +131,54 @@ pub enum PaneContent {
         session: Option<SessionId>,
         cells: Vec<NbCell>,
     },
+    SessionDiff {
+        session: SessionId,
+    },
+}
+
+pub struct FileDiff {
+    pub patch: String,
+    pub added: u64,
+    pub removed: u64,
+    pub tracked: bool,
+}
+
+#[derive(Default)]
+pub struct SessionDiff {
+    pub files: Vec<(String, FileDiff)>,
+}
+
+const MAX_DIFF_FILES: usize = 512;
+const MAX_DIFF_BYTES: usize = 4 * 1024 * 1024;
+
+impl SessionDiff {
+    pub fn insert(&mut self, path: String, file: FileDiff) {
+        self.files.retain(|(existing, _)| *existing != path);
+        self.files.push((path, file));
+        while self.files.len() > MAX_DIFF_FILES || self.bytes() > MAX_DIFF_BYTES {
+            if self.files.len() <= 1 {
+                break;
+            }
+            self.files.remove(0);
+        }
+    }
+
+    pub fn file_mut(&mut self, path: &str) -> Option<&mut FileDiff> {
+        self.files
+            .iter_mut()
+            .find(|(existing, _)| existing == path)
+            .map(|(_, file)| file)
+    }
+
+    fn bytes(&self) -> usize {
+        self.files.iter().map(|(_, file)| file.patch.len()).sum()
+    }
+
+    pub fn totals(&self) -> (u64, u64) {
+        self.files.iter().fold((0, 0), |(a, r), (_, file)| {
+            (a.saturating_add(file.added), r.saturating_add(file.removed))
+        })
+    }
 }
 
 pub struct Pane {
@@ -154,7 +202,9 @@ impl Pane {
             PaneContent::Session { session, .. } | PaneContent::Notebook { session, .. } => {
                 session.as_ref()
             }
-            PaneContent::Markdown { .. } | PaneContent::Diff { .. } => None,
+            PaneContent::Markdown { .. }
+            | PaneContent::Diff { .. }
+            | PaneContent::SessionDiff { .. } => None,
         }
     }
 }
@@ -194,6 +244,9 @@ pub struct ConsoleState {
     pub tokens_used: Option<(u64, u64)>,
     pub quit: bool,
     pub sidebar_hidden: bool,
+    pub diffs: BTreeMap<SessionId, SessionDiff>,
+    pub side_opened: std::collections::BTreeSet<SessionId>,
+    pub auto_side: bool,
 }
 
 impl ConsoleState {
@@ -221,6 +274,9 @@ impl ConsoleState {
             status_note: None,
             dropped_frames: 0,
             sidebar_hidden: false,
+            diffs: BTreeMap::new(),
+            side_opened: std::collections::BTreeSet::new(),
+            auto_side: true,
             tokens_used: None,
             quit: false,
         }

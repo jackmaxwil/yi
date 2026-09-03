@@ -39,6 +39,7 @@ pub struct ConsoleOptions {
     pub socket: PathBuf,
     pub root: String,
     pub autostart: bool,
+    pub auto_side: bool,
 }
 
 pub struct DriveOptions {
@@ -139,6 +140,7 @@ pub fn run_console(options: &ConsoleOptions) -> i32 {
     let (events, outbound, threads) = client::spawn(options.socket.clone());
     let mut app = App::new(options.root.clone());
     app.autostart = options.autostart;
+    app.state.auto_side = options.auto_side;
     app.animate = true;
     app.osc_flavor = crate::notify::detect_flavor(
         std::env::var("TERM_PROGRAM").ok().as_deref(),
@@ -328,6 +330,7 @@ pub fn run_headless(options: &ConsoleOptions, drive: DriveOptions) -> i32 {
     let (events, outbound, threads) = client::spawn(options.socket.clone());
     let mut app = App::new(options.root.clone());
     app.autostart = options.autostart;
+    app.state.auto_side = options.auto_side;
     let width = drive.width.max(20);
     let height = drive.height.max(8);
     let backend = match RecordingBackend::new(width, height, None) {

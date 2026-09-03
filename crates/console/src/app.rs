@@ -45,6 +45,7 @@ pub enum RequestKind {
     Prompt,
     Cancel,
     Seen,
+    Tracked(SessionId, Vec<String>),
 }
 
 struct Pending {
@@ -249,7 +250,7 @@ impl App {
                 if let Some(params) = value.get("params").cloned()
                     && let Ok(update) = serde_json::from_value::<AcpUpdateParams>(params)
                 {
-                    self.reduce_update(update);
+                    self.reduce_update(outbound, update);
                 } else {
                     self.state.dropped_frames = self.state.dropped_frames.saturating_add(1);
                 }
@@ -338,6 +339,7 @@ impl App {
                 }
             }
             RequestKind::ListDaemon => self.merge_daemon_list(&result),
+            RequestKind::Tracked(session, paths) => self.absorb_tracked(&session, &paths, &result),
             RequestKind::NewSession(pane_id) => {
                 if let Some(session_id) = result.get("sessionId").and_then(Value::as_str) {
                     let session = SessionId(session_id.to_owned());
@@ -377,7 +379,9 @@ impl App {
                     *slot = Some(session.clone());
                 }
                 PaneContent::Notebook { session: slot, .. } => *slot = Some(session.clone()),
-                PaneContent::Markdown { .. } | PaneContent::Diff { .. } => {
+                PaneContent::Markdown { .. }
+                | PaneContent::Diff { .. }
+                | PaneContent::SessionDiff { .. } => {
                     pane.content = PaneContent::Session {
                         session: Some(session.clone()),
                         transcript: crate::transcript::Transcript::new(),
@@ -455,7 +459,7 @@ impl App {
         }
     }
 
-    fn reduce_update(&mut self, update: AcpUpdateParams) {
+    fn reduce_update(&mut self, outbound: &Outbound, update: AcpUpdateParams) {
         let id = SessionId(update.session_id.clone());
         self.resume_offsets.remove(&id);
         if let AcpSessionUpdate::StateUpdate(state) = &update.update {
@@ -488,6 +492,8 @@ impl App {
         {
             self.state.tokens_used = Some((*used, *size));
         }
+        self.absorb_edit(outbound, &id, &update.update);
+        self.absorb_kernel(&id, &update.update);
         for pane in self.state.panes.values_mut() {
             if pane.session() != Some(&id) {
                 continue;
@@ -503,7 +509,9 @@ impl App {
                         pane.scroll_from_bottom = 0;
                     }
                 }
-                PaneContent::Markdown { .. } | PaneContent::Diff { .. } => {}
+                PaneContent::Markdown { .. }
+                | PaneContent::Diff { .. }
+                | PaneContent::SessionDiff { .. } => {}
             }
         }
     }
@@ -745,7 +753,8 @@ impl App {
             }
             Action::Quit => self.state.quit = true,
             Action::ToggleSidebar => self.state.sidebar_hidden = !self.state.sidebar_hidden,
-            Action::ToggleNotebook => self.toggle_notebook(outbound),
+            Action::ToggleNotebook => self.toggle_side(outbound, diffs::SideKind::Notebook),
+            Action::ToggleDiff => self.toggle_side(outbound, diffs::SideKind::Diff),
         }
         // Whatever pane the action landed on, its session counts as looked-at.
         if let Some(session) = self.state.focused_session()
@@ -758,26 +767,6 @@ impl App {
             self.mark_seen(outbound, &session);
         }
         self.dirty = true;
-    }
-
-    fn toggle_notebook(&mut self, outbound: &Outbound) {
-        let on_notebook = self
-            .state
-            .focused_pane_id()
-            .and_then(|id| self.state.panes.get(&id))
-            .is_some_and(|pane| matches!(pane.content, PaneContent::Notebook { .. }));
-        if on_notebook {
-            return self.apply_action(outbound, Action::ClosePane);
-        }
-        let session = self.state.focused_session();
-        self.split_with_anim(Direction::Horizontal);
-        if let Some(pane) = self.state.focused_pane_mut() {
-            pane.content = PaneContent::Notebook {
-                session,
-                cells: Vec::new(),
-            };
-            pane.scroll_from_bottom = 0;
-        }
     }
 
     fn split_with_anim(&mut self, direction: Direction) {
@@ -929,6 +918,7 @@ fn fresh_composer() -> TextArea<'static> {
     composer
 }
 
+mod diffs;
 mod mouse;
 mod navigator;
 mod notebook;

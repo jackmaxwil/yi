@@ -467,7 +467,7 @@ impl AcpState {
                 Ok(json!({}))
             }
             "session/set_config_option" => self.set_config_option(params),
-            "_yi/heartbeat" | "_yi/goal" => self.handle_extension(method, params),
+            "_yi/heartbeat" | "_yi/goal" | "_yi/tracked" => self.handle_extension(method, params),
             other => Err((METHOD_NOT_FOUND, format!("unknown method {other}"))),
         }
     }
@@ -477,6 +477,24 @@ impl AcpState {
         let (handle, session_id) = self.session(params)?;
         let text = |key: &str| params.get(key).and_then(Value::as_str).unwrap_or("");
         match method {
+            "_yi/tracked" => {
+                let paths: Vec<String> = params
+                    .get("paths")
+                    .and_then(Value::as_array)
+                    .map(|items| {
+                        items
+                            .iter()
+                            .filter_map(Value::as_str)
+                            .map(str::to_owned)
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                if paths.len() > 64 {
+                    return Err((INVALID_PARAMS, "at most 64 paths per call".to_owned()));
+                }
+                let root = std::path::Path::new(text("root"));
+                Ok(json!({"tracked": yi_runtime::environment::tracked(root, &paths)}))
+            }
             "_yi/heartbeat" => {
                 let service = handle
                     .session

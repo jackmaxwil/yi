@@ -198,6 +198,11 @@ pub fn run_console_command(args: &Args) -> i32 {
         socket: daemon_socket(args),
         root: effective_cwd(args).display().to_string(),
         autostart: !args.headless,
+        auto_side: config()
+            .console
+            .as_ref()
+            .and_then(|console| console.auto_side)
+            .unwrap_or(true),
     };
     if !args.headless {
         ensure_daemon(args, &options.socket);
