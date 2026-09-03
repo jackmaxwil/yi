@@ -116,6 +116,10 @@ fn clamp(name: &str, mut body: String) -> String {
     while end > 0 && !body.is_char_boundary(end) {
         end = end.saturating_sub(1);
     }
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "walked back to a char boundary above"
+    )]
     body.truncate(end);
     body.push_str(&format!("\n[{name} truncated at {LAYER_CAP} bytes]"));
     body
