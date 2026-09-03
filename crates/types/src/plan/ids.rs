@@ -98,11 +98,11 @@ pub(super) fn slugify(text: &str) -> String {
         }
     }
     if slug.len() > SLUG_MAX {
-        slug.truncate(SLUG_MAX);
+        slug = slug.chars().take(SLUG_MAX).collect();
         if let Some(cut) = slug.rfind('-')
             && cut > 0
         {
-            slug.truncate(cut);
+            slug = slug.chars().take(cut).collect();
         }
     }
     slug.trim_matches('-').to_owned()
