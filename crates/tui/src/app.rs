@@ -132,7 +132,7 @@ pub struct App {
     tool_started: HashMap<String, Instant>,
     pub(crate) tasks: HashMap<String, TaskState>,
     pub(crate) task_order: Vec<String>,
-    committed_tasks: HashSet<String>,
+    pub(crate) committed_tasks: HashSet<String>,
     pub(crate) steering: Vec<String>,
     pub(crate) running: bool,
     pub(crate) intent: Option<String>,
@@ -492,6 +492,7 @@ impl App {
                 self.steering.clear();
                 self.live_tools.clear();
                 self.flush_explored();
+                self.commit_finished_tasks();
                 self.scheduler.request();
             }
             AgentEvent::MessageStart {
@@ -594,6 +595,7 @@ impl App {
                 cell.preview = preview_lines(&text);
                 cell.details = result.details.clone();
                 self.commit_cell(&Cell::Tool(cell));
+                self.commit_finished_tasks();
                 self.intent = None;
             }
             // opencode colours the waiting call itself, not only the prompt:
@@ -745,7 +747,8 @@ impl App {
         }
     }
 
-    /// Invariant: the sole source of a child's status and counters.
+    /// Invariant: the sole source of a child's status and counters; a task cell
+    /// commits after the tool cell it was born under, never before.
     pub fn reduce_child_update(&mut self, update: &ChildUpdate) {
         let id = update.id.as_str();
         let Some(state) = self.tasks.get_mut(id) else {
@@ -771,15 +774,26 @@ impl App {
             }
             self.scheduler.request();
         }
-        if status != TaskStatus::Running && !self.committed_tasks.contains(id) {
-            self.committed_tasks.insert(id.to_owned());
-            let cell = self
-                .tasks
-                .get(id)
-                .map(|state| Cell::Task(state.cell.clone()));
-            if let Some(cell) = cell {
-                self.commit_cell(&cell);
-            }
+        self.commit_finished_tasks();
+    }
+
+    fn commit_finished_tasks(&mut self) {
+        let spawning = |tool: &ToolCell| tool.name == "ipython" && tool.status != ToolStatus::Done;
+        if self.live_tools.iter().any(spawning) {
+            return;
+        }
+        let finished: Vec<TaskCell> = self
+            .task_order
+            .iter()
+            .filter_map(|id| self.tasks.get(id).map(|state| &state.cell))
+            .filter(|cell| {
+                cell.status != TaskStatus::Running && !self.committed_tasks.contains(&cell.child_id)
+            })
+            .cloned()
+            .collect();
+        for cell in finished {
+            self.committed_tasks.insert(cell.child_id.clone());
+            self.commit_cell(&Cell::Task(cell));
         }
     }
 
