@@ -34,6 +34,13 @@ pub struct UserConfig {
     pub kernel: Option<KernelConfig>,
     pub edit: Option<EditConfig>,
     pub keys: Option<std::collections::BTreeMap<String, String>>,
+    pub console: Option<ConsoleConfig>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ConsoleConfig {
+    pub auto_side: Option<bool>,
 }
 
 /// `kernel.prewarm`: boot the IPython kernel in the background at session open so the first

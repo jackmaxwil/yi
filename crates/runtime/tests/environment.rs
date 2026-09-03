@@ -128,3 +128,38 @@ fn git_summary_reads_branch_and_dirty_count() -> TestResult {
     let _ = std::fs::remove_dir_all(&dir);
     Ok(())
 }
+
+#[test]
+fn tracked_reports_only_paths_git_knows() -> TestResult {
+    let dir = std::env::temp_dir().join(format!("yi-tracked-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("src"))?;
+    assert!(
+        yi_tools::command("git")
+            .args(["init", "-q", "-b", "main"])
+            .current_dir(&dir)
+            .status()?
+            .success()
+    );
+    std::fs::write(dir.join("src/lib.rs"), "x")?;
+    std::fs::write(dir.join("scratch.txt"), "y")?;
+    assert!(
+        yi_tools::command("git")
+            .args(["add", "src/lib.rs"])
+            .current_dir(&dir)
+            .status()?
+            .success()
+    );
+    let inside = dir.join("src/lib.rs").display().to_string();
+    let loose = dir.join("scratch.txt").display().to_string();
+    let outside = std::env::temp_dir()
+        .join("elsewhere.txt")
+        .display()
+        .to_string();
+    assert_eq!(
+        yi_runtime::environment::tracked(&dir, &[inside, loose, outside]),
+        vec![true, false, false]
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+    Ok(())
+}
