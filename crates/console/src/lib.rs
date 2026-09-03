@@ -38,11 +38,14 @@ use crate::model::{Link, SessionStatus};
 pub struct ConsoleOptions {
     pub socket: PathBuf,
     pub root: String,
+    pub autostart: bool,
+    pub auto_side: bool,
 }
 
 pub struct DriveOptions {
     pub script: Vec<ConsoleStep>,
     pub frames_dir: Option<PathBuf>,
+    pub record: Option<PathBuf>,
     pub width: u16,
     pub height: u16,
 }
@@ -52,6 +55,7 @@ pub struct DriveOptions {
 pub enum ConsoleStep {
     Tui(Step),
     Mouse(MouseKind, u16, u16),
+    Cmd(yi_tui::keymap::SingleKey),
 }
 
 pub fn parse_script(source: &str) -> Result<Vec<ConsoleStep>, String> {
@@ -83,6 +87,14 @@ pub fn parse_script(source: &str) -> Result<Vec<ConsoleStep>, String> {
             steps.push(ConsoleStep::Mouse(kind, x, y));
             continue;
         }
+        if let Some(rest) = line.strip_prefix("cmd-") {
+            let parsed = yi_tui::drive::parse_script(&format!("key {rest}")).map_err(error)?;
+            let Some(Step::Key(key)) = parsed.into_iter().next() else {
+                return Err(error(format!("cmd needs a key, got {rest:?}")));
+            };
+            steps.push(ConsoleStep::Cmd(key));
+            continue;
+        }
         let parsed = yi_tui::drive::parse_script(line).map_err(error)?;
         steps.extend(parsed.into_iter().map(ConsoleStep::Tui));
     }
@@ -110,7 +122,9 @@ fn draw<B: Backend>(
     terminal.draw(|frame| {
         let view = render::compute_view(app, frame.area(), theme);
         render::render(app, frame, &view, theme);
-        if app.state.zone == crate::model::Zone::Panes {
+        if let Some(cursor) = view.editor_cursor {
+            frame.set_cursor_position(cursor);
+        } else if app.state.zone == crate::model::Zone::Panes {
             frame.set_cursor_position((view.composer.x, view.composer.y));
         }
     })?;
@@ -128,10 +142,16 @@ pub fn run_console(options: &ConsoleOptions) -> i32 {
     );
     let (events, outbound, threads) = client::spawn(options.socket.clone());
     let mut app = App::new(options.root.clone());
+    app.autostart = options.autostart;
+    app.state.auto_side = options.auto_side;
     app.animate = true;
     app.osc_flavor = crate::notify::detect_flavor(
         std::env::var("TERM_PROGRAM").ok().as_deref(),
         std::env::var("KITTY_WINDOW_ID").ok().as_deref(),
+    );
+    app.cmd_hints = crate::kitty::supported(
+        std::env::var("TERM").ok().as_deref(),
+        std::env::var("TERM_PROGRAM").ok().as_deref(),
     );
 
     if let Err(error) = enable_raw_mode() {
@@ -144,6 +164,13 @@ pub fn run_console(options: &ConsoleOptions) -> i32 {
         EnterAlternateScreen,
         EnableBracketedPaste,
         ratatui::crossterm::event::EnableMouseCapture
+    );
+    let _ = execute!(
+        stdout,
+        ratatui::crossterm::event::PushKeyboardEnhancementFlags(
+            ratatui::crossterm::event::KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
+                | ratatui::crossterm::event::KeyboardEnhancementFlags::REPORT_ALTERNATE_KEYS
+        )
     );
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = match Terminal::new(backend) {
@@ -283,6 +310,7 @@ fn place_notebook_image(
 
 fn restore_terminal() {
     let mut stdout = std::io::stdout();
+    let _ = stdout.execute(ratatui::crossterm::event::PopKeyboardEnhancementFlags);
     let _ = stdout.execute(ratatui::crossterm::event::DisableMouseCapture);
     let _ = stdout.execute(DisableBracketedPaste);
     let _ = stdout.execute(LeaveAlternateScreen);
@@ -304,9 +332,11 @@ pub fn run_headless(options: &ConsoleOptions, drive: DriveOptions) -> i32 {
     let theme = Theme::new(ColorTier::Ansi16, true);
     let (events, outbound, threads) = client::spawn(options.socket.clone());
     let mut app = App::new(options.root.clone());
+    app.autostart = options.autostart;
+    app.state.auto_side = options.auto_side;
     let width = drive.width.max(20);
     let height = drive.height.max(8);
-    let backend = match RecordingBackend::new(width, height, None) {
+    let backend = match RecordingBackend::new(width, height, drive.record.as_deref()) {
         Ok(backend) => backend,
         Err(error) => {
             eprintln!("error: headless backend: {error}");
@@ -356,6 +386,11 @@ pub fn run_headless(options: &ConsoleOptions, drive: DriveOptions) -> i32 {
             }
             (ConsoleStep::Tui(Step::Key(key)), _) => {
                 app.handle_event(&outbound, CtEvent::Key(key_event(&key)));
+            }
+            (ConsoleStep::Cmd(key), _) => {
+                let mut event = key_event(&key);
+                event.modifiers |= ratatui::crossterm::event::KeyModifiers::SUPER;
+                app.handle_event(&outbound, CtEvent::Key(event));
             }
             (ConsoleStep::Tui(Step::TypeMs(ms)), _) => type_ms = ms,
             (ConsoleStep::Tui(Step::Type(text)), _) => {

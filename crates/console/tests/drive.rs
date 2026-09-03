@@ -158,6 +158,10 @@ fn init_reply(frame: &Value) -> Vec<Value> {
 }
 
 fn run(name: &str, fixture: Vec<Step>, script: &str) -> TestResult {
+    run_with(name, fixture, script, false)
+}
+
+fn run_with(name: &str, fixture: Vec<Step>, script: &str, autostart: bool) -> TestResult {
     let socket = scratch_socket(name);
     let server = spawn_fixture(socket.clone(), fixture);
     let steps = parse_script(script)?;
@@ -165,10 +169,13 @@ fn run(name: &str, fixture: Vec<Step>, script: &str) -> TestResult {
         &ConsoleOptions {
             socket,
             root: "/tmp/demo-root".to_owned(),
+            autostart,
+            auto_side: true,
         },
         DriveOptions {
             script: steps,
             frames_dir: std::env::var("CONSOLE_TEST_FRAMES").ok().map(PathBuf::from),
+            record: None,
             width: 100,
             height: 30,
         },
@@ -356,10 +363,13 @@ fn prompt_rejected_while_daemon_unreachable() -> TestResult {
         &ConsoleOptions {
             socket,
             root: "/tmp/demo-root".to_owned(),
+            autostart: false,
+            auto_side: true,
         },
         DriveOptions {
             script: steps,
             frames_dir: None,
+            record: None,
             width: 100,
             height: 30,
         },
@@ -515,10 +525,13 @@ fn tiny_terminal_survives_splits() -> TestResult {
         &ConsoleOptions {
             socket,
             root: "/tmp/demo-root".to_owned(),
+            autostart: false,
+            auto_side: true,
         },
         DriveOptions {
             script: steps,
             frames_dir: None,
+            record: None,
             width: 20,
             height: 8,
         },
@@ -643,17 +656,14 @@ fn notebook_pane_shows_cells_and_image_placeholder() -> TestResult {
                 frames
             }),
         ],
-        // Open the session, swap the pane to the notebook view, then prompt:
-        // the kernel cell renders code, streams and the image placeholder.
+        // Open the session and prompt: the first kernel cell opens the notebook pane
+        // beside it, which renders code, streams and the image placeholder.
         "wait-frame 5000 s-alpha\n\
          key enter\n\
          wait-frame 5000 replayed world\n\
-         key alt-/\n\
-         type nb\n\
-         key enter\n\
-         wait-frame 3000 no kernel cells yet\n\
          type chart it\n\
          key enter\n\
+         wait-frame 5000 nb:s-alpha\n\
          wait-frame 5000 In[1]\n\
          wait-frame 3000 plot_drift\n\
          wait-frame 3000 computing drift\n\
@@ -786,6 +796,553 @@ fn live_update_invalidates_offset() -> TestResult {
          wait-frame 5000 streamed since\n\
          wait-frame 8000 full replay again\n\
          wait-frame 1000 !streamed since\n\
+         quit\n",
+    )
+}
+
+/// ⌘ chords reach the same actions as the ⌥ table once the terminal reports the super
+/// modifier, and the first one flips the hint bar to ⌘ glyphs.
+#[test]
+fn cmd_chords_split_close_and_hide_the_sidebar() -> TestResult {
+    run(
+        "cmd-chords",
+        vec![
+            Step::Expect("initialize", init_reply),
+            Step::Expect("session/list", two_session_list),
+            Step::Expect("session/list", empty_list),
+            Step::Expect("session/resume", resume_alpha),
+            Step::Expect("_yi/seen", seen_ok),
+        ],
+        "wait-frame 5000 s-alpha\n\
+         key enter\n\
+         wait-frame 5000 replayed world\n\
+         wait-frame 3000 ⌥v/⌥s split\n\
+         cmd-d\n\
+         wait-frame 3000 no session\n\
+         wait-frame 3000 ⌘⇧M zoom\n\
+         cmd-x\n\
+         wait-frame 3000 !no session\n\
+         wait-frame 3000 s-beta\n\
+         cmd-b\n\
+         wait-frame 3000 !s-beta\n\
+         cmd-b\n\
+         wait-frame 3000 s-beta\n\
+         quit\n",
+    )
+}
+
+/// ⌘J beside a session opens that session's notebook to the right; ⌘J on it closes it.
+#[test]
+fn cmd_j_toggles_the_notebook_pane() -> TestResult {
+    run(
+        "cmd-notebook",
+        vec![
+            Step::Expect("initialize", init_reply),
+            Step::Expect("session/list", two_session_list),
+            Step::Expect("session/list", empty_list),
+            Step::Expect("session/resume", resume_alpha),
+            Step::Expect("_yi/seen", seen_ok),
+        ],
+        "wait-frame 5000 s-alpha\n\
+         key enter\n\
+         wait-frame 5000 replayed world\n\
+         cmd-j\n\
+         wait-frame 3000 nb:s-alpha\n\
+         wait-frame 3000 no kernel cells yet\n\
+         cmd-j\n\
+         wait-frame 3000 !nb:s-alpha\n\
+         wait-frame 3000 replayed world\n\
+         quit\n",
+    )
+}
+
+fn new_session_reply(frame: &Value) -> Vec<Value> {
+    vec![ok(
+        frame,
+        json!({"sessionId": "s-new", "configOptions": []}),
+    )]
+}
+
+/// Bare `yi` opens a working pane: an empty root gets a fresh session without a keypress.
+#[test]
+fn workspace_autostarts_new_session_when_root_is_empty() -> TestResult {
+    run_with(
+        "autostart-new",
+        vec![
+            Step::Expect("initialize", init_reply),
+            Step::Expect("session/list", empty_list),
+            Step::Expect("session/list", empty_list),
+            Step::Expect("session/new", new_session_reply),
+        ],
+        "wait-frame 5000 s-new\n\
+         wait-frame 3000 workspace ·\n\
+         quit\n",
+        true,
+    )
+}
+
+/// A root with sessions resumes its first one instead of minting another.
+#[test]
+fn workspace_resumes_first_session_when_root_has_one() -> TestResult {
+    run_with(
+        "autostart-resume",
+        vec![
+            Step::Expect("initialize", init_reply),
+            Step::Expect("session/list", two_session_list),
+            Step::Expect("session/list", empty_list),
+            Step::Expect("session/resume", resume_alpha),
+            Step::Expect("_yi/seen", seen_ok),
+        ],
+        "wait-frame 5000 replayed world\n\
+         quit\n",
+        true,
+    )
+}
+
+fn edit_push() -> Vec<Value> {
+    vec![update(
+        "s-alpha",
+        json!({"sessionUpdate": "tool_call_update",
+        "toolCallId": "e1", "title": "edit", "kind": "edit", "status": "completed",
+        "rawOutput": {
+            "patch": "--- a//tmp/demo-root/src/lib.rs\n+++ b//tmp/demo-root/src/lib.rs\n@@ -1,1 +1,2 @@\n old\n+brand new line\n",
+            "added": 1, "removed": 0}}),
+    )]
+}
+
+fn ipython_push() -> Vec<Value> {
+    vec![update(
+        "s-alpha",
+        json!({"sessionUpdate": "tool_call_update",
+        "toolCallId": "k1", "title": "ipython", "kind": "execute", "status": "in_progress",
+        "rawInput": {"code": "print(1)"}}),
+    )]
+}
+
+fn tracked_yes(frame: &Value) -> Vec<Value> {
+    vec![ok(frame, json!({"tracked": [true]}))]
+}
+
+fn tracked_no(frame: &Value) -> Vec<Value> {
+    vec![ok(frame, json!({"tracked": [false]}))]
+}
+
+/// The first edit to a tracked file opens the session's diff pane beside it, the transcript
+/// shows the patch inline, and focus stays on the chat pane.
+#[test]
+fn edit_to_a_tracked_file_opens_the_diff_pane() -> TestResult {
+    run(
+        "diff-auto",
+        vec![
+            Step::Expect("initialize", init_reply),
+            Step::Expect("session/list", two_session_list),
+            Step::Expect("session/list", empty_list),
+            Step::Expect("session/resume", resume_alpha),
+            Step::Expect("_yi/seen", seen_ok),
+            Step::Push(edit_push),
+            Step::Expect("_yi/tracked", tracked_yes),
+        ],
+        "wait-frame 5000 s-alpha\n\
+         key enter\n\
+         wait-frame 5000 replayed world\n\
+         wait-frame 5000 Δ s-alpha · 1 file · +1 −0\n\
+         wait-frame 3000 brand new line\n\
+         type still typing here\n\
+         wait-frame 3000 still typing here\n\
+         quit\n",
+    )
+}
+
+/// An edit outside git accumulates but opens nothing; ⌘G shows it on demand.
+#[test]
+fn untracked_edit_accumulates_without_opening() -> TestResult {
+    run(
+        "diff-untracked",
+        vec![
+            Step::Expect("initialize", init_reply),
+            Step::Expect("session/list", two_session_list),
+            Step::Expect("session/list", empty_list),
+            Step::Expect("session/resume", resume_alpha),
+            Step::Expect("_yi/seen", seen_ok),
+            Step::Push(edit_push),
+            Step::Expect("_yi/tracked", tracked_no),
+        ],
+        "wait-frame 5000 s-alpha\n\
+         key enter\n\
+         wait-frame 5000 replayed world\n\
+         wait-frame 3000 brand new line\n\
+         wait-frame 2000 !Δ s-alpha\n\
+         cmd-g\n\
+         wait-frame 3000 Δ s-alpha · 1 file · +1 −0\n\
+         cmd-g\n\
+         wait-frame 3000 !Δ s-alpha\n\
+         quit\n",
+    )
+}
+
+/// The first kernel cell opens the notebook pane, and that spends the session's one
+/// automatic side pane: a later tracked edit no longer opens the diff.
+#[test]
+fn first_kernel_cell_opens_the_notebook_and_spends_the_auto_side() -> TestResult {
+    run(
+        "side-once",
+        vec![
+            Step::Expect("initialize", init_reply),
+            Step::Expect("session/list", two_session_list),
+            Step::Expect("session/list", empty_list),
+            Step::Expect("session/resume", resume_alpha),
+            Step::Expect("_yi/seen", seen_ok),
+            Step::Push(ipython_push),
+            Step::Push(edit_push),
+            Step::Expect("_yi/tracked", tracked_yes),
+        ],
+        "wait-frame 5000 s-alpha\n\
+         key enter\n\
+         wait-frame 5000 replayed world\n\
+         wait-frame 5000 nb:s-alpha\n\
+         wait-frame 5000 brand new line\n\
+         wait-frame 2000 !Δ s-alpha\n\
+         quit\n",
+    )
+}
+
+fn other_root_ledger(frame: &Value) -> Vec<Value> {
+    vec![ok(
+        frame,
+        json!({"sessions": [
+            {"sessionId": "s-gamma", "cwd": "/tmp/other-root", "attached": false,
+             "unseen": 0, "lastState": "idle", "lastEventMs": 1},
+        ]}),
+    )]
+}
+
+fn subagent_push() -> Vec<Value> {
+    vec![update(
+        "s-alpha",
+        json!({"sessionUpdate": "_yi/subagent_update", "id": "c1",
+        "name": "grep-bot-sub-1a2b3c4d", "status": "running", "activity": "executing",
+        "toolUseCount": 2, "tokenCount": 100}),
+    )]
+}
+
+/// The workspaces block lists every root; ←/→ in the sidebar narrows the session list
+/// to one root and back.
+#[test]
+fn workspace_rows_filter_sessions_by_root() -> TestResult {
+    run(
+        "roots",
+        vec![
+            Step::Expect("initialize", init_reply),
+            Step::Expect("session/list", two_session_list),
+            Step::Expect("session/list", other_root_ledger),
+        ],
+        "wait-frame 5000 s-gamma\n\
+         wait-frame 3000 workspaces\n\
+         wait-frame 3000 other-root 1\n\
+         key right\n\
+         wait-frame 3000 !s-gamma\n\
+         wait-frame 3000 s-alpha\n\
+         key right\n\
+         wait-frame 3000 s-gamma\n\
+         wait-frame 3000 !s-alpha\n\
+         key left\n\
+         key left\n\
+         wait-frame 3000 s-alpha\n\
+         quit\n",
+    )
+}
+
+/// A child reported over `_yi/subagent_update` shows under its parent in the sidebar.
+#[test]
+fn subagent_rows_render_under_parent() -> TestResult {
+    run(
+        "children",
+        vec![
+            Step::Expect("initialize", init_reply),
+            Step::Expect("session/list", two_session_list),
+            Step::Expect("session/list", empty_list),
+            Step::Expect("session/resume", resume_alpha),
+            Step::Expect("_yi/seen", seen_ok),
+            Step::Push(subagent_push),
+        ],
+        "wait-frame 5000 s-alpha\n\
+         key enter\n\
+         wait-frame 5000 replayed world\n\
+         wait-frame 5000 └ grep-bot-sub-1a2 ◐\n\
+         quit\n",
+    )
+}
+
+fn kernel_execute_reply(frame: &Value) -> Vec<Value> {
+    vec![
+        ok(frame, json!({"callId": "user-1"})),
+        update(
+            "s-alpha",
+            json!({"sessionUpdate": "tool_call_update",
+            "toolCallId": "user-1", "title": "ipython", "kind": "execute",
+            "status": "in_progress", "rawInput": {"code": "print(1)"}}),
+        ),
+        update(
+            "s-alpha",
+            json!({"sessionUpdate": "tool_call_update",
+            "toolCallId": "user-1", "status": "completed",
+            "rawOutput": {"stdout": "1\n", "result": "", "error": null}}),
+        ),
+    ]
+}
+
+fn kernel_execute_running(frame: &Value) -> Vec<Value> {
+    vec![
+        ok(frame, json!({"callId": "user-1"})),
+        update(
+            "s-alpha",
+            json!({"sessionUpdate": "tool_call_update",
+            "toolCallId": "user-1", "title": "ipython", "kind": "execute",
+            "status": "in_progress", "rawInput": {"code": "sleep()"}}),
+        ),
+    ]
+}
+
+/// ⇧↩ on the notebook pane runs the draft on the session's kernel, and the cell comes back
+/// through the same tool-call stream the agent's cells use.
+#[test]
+fn shift_enter_runs_user_cell_on_session_kernel() -> TestResult {
+    run(
+        "user-cell",
+        vec![
+            Step::Expect("initialize", init_reply),
+            Step::Expect("session/list", two_session_list),
+            Step::Expect("session/list", empty_list),
+            Step::Expect("session/resume", resume_alpha),
+            Step::Expect("_yi/seen", seen_ok),
+            Step::Expect("_yi/kernel_execute", kernel_execute_reply),
+        ],
+        "wait-frame 5000 s-alpha\n\
+         key enter\n\
+         wait-frame 5000 replayed world\n\
+         cmd-j\n\
+         wait-frame 3000 nb:s-alpha\n\
+         wait-frame 3000 ⇧↩ runs\n\
+         type print(1)\n\
+         key shift-enter\n\
+         wait-frame 5000 ● In[1]\n\
+         wait-frame 3000 print(1)\n\
+         quit\n",
+    )
+}
+
+/// Esc on the notebook cancels the newest running user cell.
+#[test]
+fn esc_cancels_running_user_cell() -> TestResult {
+    run(
+        "user-cell-cancel",
+        vec![
+            Step::Expect("initialize", init_reply),
+            Step::Expect("session/list", two_session_list),
+            Step::Expect("session/list", empty_list),
+            Step::Expect("session/resume", resume_alpha),
+            Step::Expect("_yi/seen", seen_ok),
+            Step::Expect("_yi/kernel_execute", kernel_execute_running),
+            Step::Expect("_yi/kernel_cancel", seen_ok),
+        ],
+        "wait-frame 5000 s-alpha\n\
+         key enter\n\
+         wait-frame 5000 replayed world\n\
+         cmd-j\n\
+         wait-frame 3000 nb:s-alpha\n\
+         type sleep()\n\
+         key shift-enter\n\
+         wait-frame 5000 ◐ In[1]\n\
+         key esc\n\
+         wait 300\n\
+         quit\n",
+    )
+}
+
+fn editor_file(name: &str) -> PathBuf {
+    std::env::temp_dir().join(format!(
+        "yi-console-editor-{}-{name}.rs",
+        std::process::id()
+    ))
+}
+
+fn seed_editor_file(name: &str, body: &str) -> Result<PathBuf, Box<dyn Error>> {
+    let path = editor_file(name);
+    std::fs::write(&path, body)?;
+    Ok(path)
+}
+
+fn open_editor_script(path: &std::path::Path, rest: &str) -> String {
+    format!(
+        "wait-frame 5000 s-alpha\nkey enter\nwait-frame 5000 replayed world\n\
+         key alt-/\ntype e {}\nkey enter\nwait-frame 3000 ✎ \n{rest}",
+        path.display()
+    )
+}
+
+fn session_fixture() -> Vec<Step> {
+    vec![
+        Step::Expect("initialize", init_reply),
+        Step::Expect("session/list", two_session_list),
+        Step::Expect("session/list", empty_list),
+        Step::Expect("session/resume", resume_alpha),
+        Step::Expect("_yi/seen", seen_ok),
+    ]
+}
+
+/// `e <path>` opens a file in the pane; typing marks it dirty and ⌘S writes it back.
+#[test]
+fn editor_opens_types_and_saves() -> TestResult {
+    let path = seed_editor_file("save", "fn main() {}\n")?;
+    run(
+        "editor-save",
+        session_fixture(),
+        &open_editor_script(
+            &path,
+            "wait-frame 3000 fn main\nkey end\ntype  // done\nwait-frame 3000 .rs ●\n\
+             cmd-s\nwait-frame 3000 saved\nwait-frame 3000 !.rs ●\nquit\n",
+        ),
+    )?;
+    assert_eq!(std::fs::read_to_string(&path)?, "fn main() {} // done\n");
+    let _ = std::fs::remove_file(&path);
+    Ok(())
+}
+
+/// A click places the cursor on that cell; a drag selects, and backspace removes the run.
+#[test]
+fn editor_click_places_cursor_and_drag_selects() -> TestResult {
+    let path = seed_editor_file("mouse", "abcdef\nsecond\n")?;
+    // Sidebar 26 wide, border at x=26, inner x=27, gutter "1 " puts text at x=29; row 0 at y=1.
+    run(
+        "editor-mouse",
+        session_fixture(),
+        &open_editor_script(
+            &path,
+            "wait-frame 3000 abcdef\nmouse down 31 1\nmouse up 31 1\ntype X\n\
+             wait-frame 3000 abXcdef\nmouse down 29 1\nmouse drag 31 1\nmouse up 31 1\n\
+             key backspace\nwait-frame 3000 Xcdef\nwait-frame 3000 !abXcdef\nquit\n",
+        ),
+    )?;
+    let _ = std::fs::remove_file(&path);
+    Ok(())
+}
+
+fn agent_rewrites_reload_file() -> Vec<Value> {
+    let path = editor_file("reload");
+    let _write = std::fs::write(&path, "rewritten by the agent\n");
+    vec![update(
+        "s-alpha",
+        json!({"sessionUpdate": "tool_call_update",
+        "toolCallId": "e9", "title": "edit", "kind": "edit", "status": "completed",
+        "rawOutput": {"patch": format!("--- a/{0}\n+++ b/{0}\n@@ -1,1 +1,1 @@\n-old\n+rewritten by the agent\n", path.display()),
+                      "added": 1, "removed": 1}}),
+    )]
+}
+
+/// A clean editor follows the agent's edit to the same file without asking.
+#[test]
+fn agent_edit_reloads_clean_editor_silently() -> TestResult {
+    let path = seed_editor_file("reload", "old\n")?;
+    // The daemon list poll (every 5 s) is the sequencing point: the agent's rewrite lands
+    // after the editor has read the original.
+    let mut fixture = session_fixture();
+    fixture.push(Step::Expect("session/list", empty_list));
+    fixture.push(Step::Push(agent_rewrites_reload_file));
+    fixture.push(Step::Expect("_yi/tracked", tracked_no));
+    run(
+        "editor-reload",
+        fixture,
+        &open_editor_script(
+            &path,
+            "wait-frame 3000 1 old\nwait-frame 9000 rewritten by the agent\n\
+             wait-frame 2000 !file changed on disk\nquit\n",
+        ),
+    )?;
+    let _ = std::fs::remove_file(&path);
+    Ok(())
+}
+
+fn agent_rewrites_dirty_file() -> Vec<Value> {
+    let path = editor_file("dirty");
+    let _write = std::fs::write(&path, "rewritten underneath\n");
+    vec![update(
+        "s-alpha",
+        json!({"sessionUpdate": "tool_call_update",
+        "toolCallId": "e10", "title": "edit", "kind": "edit", "status": "completed",
+        "rawOutput": {"patch": format!("--- a/{0}\n+++ b/{0}\n@@ -1,1 +1,1 @@\n-old\n+rewritten underneath\n", path.display()),
+                      "added": 1, "removed": 1}}),
+    )]
+}
+
+/// A dirty editor shows the stale bar instead of losing the draft; `r` takes the disk copy.
+#[test]
+fn dirty_editor_shows_reload_bar_and_r_reloads() -> TestResult {
+    let path = seed_editor_file("dirty", "old\n")?;
+    let mut fixture = session_fixture();
+    fixture.push(Step::Expect("session/list", empty_list));
+    fixture.push(Step::Push(agent_rewrites_dirty_file));
+    fixture.push(Step::Expect("_yi/tracked", tracked_no));
+    run(
+        "editor-dirty",
+        fixture,
+        &open_editor_script(
+            &path,
+            "wait-frame 3000 1 old\nkey end\ntype er draft\nwait-frame 3000 older draft\n\
+             wait-frame 9000 file changed on disk\nkey r\n\
+             wait-frame 3000 rewritten underneath\nwait-frame 3000 !file changed on disk\nquit\n",
+        ),
+    )?;
+    let _ = std::fs::remove_file(&path);
+    Ok(())
+}
+
+/// ⌘F then `/needle` scrolls the editor to the match.
+#[test]
+fn cmd_f_scrolls_to_match() -> TestResult {
+    let body: String = (1..=60)
+        .map(|n| {
+            if n == 55 {
+                "let needle = 1;\n".to_owned()
+            } else {
+                format!("line {n}\n")
+            }
+        })
+        .collect();
+    let path = seed_editor_file("find", &body)?;
+    run(
+        "editor-find",
+        session_fixture(),
+        &open_editor_script(
+            &path,
+            "wait-frame 3000 line 1\nwait-frame 2000 !needle\ncmd-f\ntype needle\nkey enter\n\
+             wait-frame 3000 let needle = 1;\nquit\n",
+        ),
+    )?;
+    let _ = std::fs::remove_file(&path);
+    Ok(())
+}
+
+/// Corners are rounded and the focused pane wears a reversed chip; the strip above the
+/// composer names the files the session touched.
+#[test]
+fn rounded_borders_and_context_strip_render() -> TestResult {
+    run(
+        "polish",
+        vec![
+            Step::Expect("initialize", init_reply),
+            Step::Expect("session/list", two_session_list),
+            Step::Expect("session/list", empty_list),
+            Step::Expect("session/resume", resume_alpha),
+            Step::Expect("_yi/seen", seen_ok),
+            Step::Push(edit_push),
+            Step::Expect("_yi/tracked", tracked_no),
+        ],
+        "wait-frame 5000 s-alpha\n\
+         wait-frame 3000 ╭\n\
+         key enter\n\
+         wait-frame 5000 replayed world\n\
+         wait-frame 3000 ❯ s-alpha\n\
+         wait-frame 5000 touched lib.rs\n\
          quit\n",
     )
 }

@@ -148,9 +148,16 @@ impl Transcript {
                 title,
                 status,
                 content,
+                raw_output,
                 ..
             } => {
-                self.upsert_tool(tool_call_id, title.as_deref(), status.as_ref(), content);
+                self.upsert_tool(
+                    tool_call_id,
+                    title.as_deref(),
+                    status.as_ref(),
+                    content,
+                    raw_output,
+                );
                 true
             }
             AcpSessionUpdate::ToolCallContentChunk {
@@ -252,6 +259,7 @@ impl Transcript {
         title: Option<&str>,
         status: Option<&AcpToolCallStatus>,
         content: &Option<Vec<AcpToolContent>>,
+        raw_output: &Option<serde_json::Value>,
     ) {
         let digest = content.as_ref().and_then(|items| {
             items.iter().find_map(|item| match item {
@@ -272,6 +280,9 @@ impl Transcript {
                 if let Some(digest) = digest {
                     cell.digest = Some(digest);
                 }
+                if let Some(details) = raw_output {
+                    cell.details = details.clone();
+                }
                 slot.cache = None;
                 return;
             }
@@ -288,7 +299,7 @@ impl Transcript {
             preview: Vec::new(),
             elapsed_ms: 0,
             calls: 1,
-            details: serde_json::Value::Null,
+            details: raw_output.clone().unwrap_or(serde_json::Value::Null),
         }));
     }
 

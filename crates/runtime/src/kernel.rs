@@ -6,6 +6,7 @@ use serde_json::{Map, Value};
 use yi_kernel::client::{
     AbortFlag, ExecuteError, ExecuteOptions, HostFuture, HostHandlers, KernelManager, KernelOptions,
 };
+use yi_tools::ToolOutput;
 use yi_tools::{CancelFlag, KernelBridge, KernelCellOutcome};
 
 /// Binds `rlm` and `mcp` in the namespace, or a loud placeholder when the
@@ -313,6 +314,7 @@ pub struct KernelService {
     options: KernelServiceOptions,
     sandbox: tokio::sync::Mutex<Option<yi_tools::Sandbox>>,
     manager: tokio::sync::Mutex<Option<Arc<KernelManager>>>,
+    lane: tokio::sync::Mutex<()>,
 }
 
 impl KernelService {
@@ -321,6 +323,7 @@ impl KernelService {
             sandbox: tokio::sync::Mutex::new(options.sandbox.clone()),
             options,
             manager: tokio::sync::Mutex::new(None),
+            lane: tokio::sync::Mutex::new(()),
         }
     }
 
@@ -507,11 +510,19 @@ impl KernelService {
         self.kill().await;
     }
 
+    pub async fn execute_user_cell(&self, code: &str, cancelled: &CancelFlag) -> ToolOutput {
+        match self.execute_async(code, cancelled).await {
+            Ok(outcome) => yi_tools::cell_output(code, outcome),
+            Err(message) => yi_tools::error_output(message),
+        }
+    }
+
     async fn execute_async(
         &self,
         code: &str,
         cancelled: &CancelFlag,
     ) -> Result<KernelCellOutcome, String> {
+        let _turn = self.lane.lock().await;
         let mut kernel_restarted = false;
         loop {
             let manager = self.ensure().await?;

@@ -45,20 +45,14 @@ pub enum RequestKind {
     Prompt,
     Cancel,
     Seen,
+    Tracked(SessionId, Vec<String>),
+    KernelExecute,
+    KernelCancel,
 }
 
 struct Pending {
     kind: RequestKind,
     deadline: Instant,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum MouseKind {
-    Down,
-    Up,
-    Drag,
-    ScrollUp,
-    ScrollDown,
 }
 
 pub struct App {
@@ -71,6 +65,10 @@ pub struct App {
     /// Split-open animations; empty under the headless harness.
     animations: Vec<Anim>,
     pub animate: bool,
+    pub cmd_hints: bool,
+    pub autostart: bool,
+    next_disk_check: Instant,
+    editor_drag: bool,
     notes: NoteQueue,
     pub osc_flavor: OscFlavor,
     /// Escapes for the real loop to write to the terminal; drained per draw.
@@ -92,89 +90,6 @@ fn frame(id: Option<u64>, method: &str, params: Value) -> Value {
     }
 }
 
-/// Kernel cells out of the tool-call stream: the start carries the code,
-/// the end carries streams and attachments in the details record.
-fn apply_notebook(cells: &mut Vec<crate::model::NbCell>, update: &AcpSessionUpdate) -> bool {
-    let AcpSessionUpdate::ToolCallUpdate {
-        tool_call_id,
-        title,
-        raw_input,
-        raw_output,
-        status,
-        ..
-    } = update
-    else {
-        return false;
-    };
-    let is_start = title.as_deref() == Some("ipython");
-    let existing = cells.iter_mut().find(|cell| cell.call_id == *tool_call_id);
-    match (existing, is_start) {
-        (None, true) => {
-            let code = raw_input
-                .as_ref()
-                .and_then(|input| input.get("code"))
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_owned();
-            cells.push(crate::model::NbCell {
-                call_id: tool_call_id.clone(),
-                code,
-                running: true,
-                ..crate::model::NbCell::default()
-            });
-            if cells.len() > 50 {
-                cells.remove(0);
-            }
-            true
-        }
-        (Some(cell), _) => {
-            if let Some(details) = raw_output {
-                cell.stdout = details
-                    .get("stdout")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default()
-                    .to_owned();
-                cell.result = details
-                    .get("result")
-                    .and_then(Value::as_str)
-                    .filter(|text| !text.is_empty())
-                    .map(str::to_owned);
-                cell.error = details
-                    .pointer("/error/evalue")
-                    .and_then(Value::as_str)
-                    .map(str::to_owned);
-                cell.images = details
-                    .get("attachmentMedia")
-                    .and_then(Value::as_array)
-                    .map(|items| {
-                        items
-                            .iter()
-                            .filter(|item| {
-                                item.get("mime_type").and_then(Value::as_str) == Some("image/png")
-                            })
-                            .filter_map(|item| {
-                                item.get("data").and_then(Value::as_str).map(str::to_owned)
-                            })
-                            .collect()
-                    })
-                    .unwrap_or_default();
-            }
-            if status.is_some() || raw_output.is_some() {
-                cell.running = false;
-            }
-            true
-        }
-        (None, false) => false,
-    }
-}
-
-fn fresh_composer() -> TextArea<'static> {
-    let mut composer = TextArea::default();
-    composer.set_cursor_line_style(ratatui::style::Style::default());
-    composer.set_placeholder_text("prompt the focused session — enter sends");
-    composer
-}
-
 impl App {
     pub fn new(root: String) -> Self {
         Self {
@@ -185,6 +100,10 @@ impl App {
             next_list_poll: Instant::now() + LIST_POLL,
             dirty: true,
             animations: Vec::new(),
+            cmd_hints: false,
+            autostart: false,
+            next_disk_check: Instant::now(),
+            editor_drag: false,
             animate: false,
             notes: NoteQueue::default(),
             osc_flavor: OscFlavor::None,
@@ -246,6 +165,7 @@ impl App {
         }
         self.tick_animations(now);
         self.tick_notes(now);
+        self.check_editors(now);
     }
 
     fn tick_animations(&mut self, now: Instant) {
@@ -337,7 +257,7 @@ impl App {
                 if let Some(params) = value.get("params").cloned()
                     && let Ok(update) = serde_json::from_value::<AcpUpdateParams>(params)
                 {
-                    self.reduce_update(update);
+                    self.reduce_update(outbound, update);
                 } else {
                     self.state.dropped_frames = self.state.dropped_frames.saturating_add(1);
                 }
@@ -419,11 +339,15 @@ impl App {
             }
             RequestKind::ListWorker => {
                 self.merge_worker_list(&result);
-                if self.state.order.is_empty() {
+                if std::mem::take(&mut self.autostart) {
+                    self.autostart_session(outbound);
+                } else if self.state.order.is_empty() {
                     self.note("no sessions for this root — alt+n starts one");
                 }
             }
             RequestKind::ListDaemon => self.merge_daemon_list(&result),
+            RequestKind::Tracked(session, paths) => self.absorb_tracked(&session, &paths, &result),
+            RequestKind::KernelExecute | RequestKind::KernelCancel => {}
             RequestKind::NewSession(pane_id) => {
                 if let Some(session_id) = result.get("sessionId").and_then(Value::as_str) {
                     let session = SessionId(session_id.to_owned());
@@ -463,7 +387,10 @@ impl App {
                     *slot = Some(session.clone());
                 }
                 PaneContent::Notebook { session: slot, .. } => *slot = Some(session.clone()),
-                PaneContent::Markdown { .. } | PaneContent::Diff { .. } => {
+                PaneContent::Markdown { .. }
+                | PaneContent::Diff { .. }
+                | PaneContent::SessionDiff { .. }
+                | PaneContent::Editor(_) => {
                     pane.content = PaneContent::Session {
                         session: Some(session.clone()),
                         transcript: crate::transcript::Transcript::new(),
@@ -541,12 +468,44 @@ impl App {
         }
     }
 
-    fn reduce_update(&mut self, update: AcpUpdateParams) {
+    fn reduce_update(&mut self, outbound: &Outbound, update: AcpUpdateParams) {
         let id = SessionId(update.session_id.clone());
         self.resume_offsets.remove(&id);
+        if let AcpSessionUpdate::Extension(extension) = &update.update
+            && extension.session_update == "_yi/subagent_update"
+        {
+            let fields: serde_json::Map<String, Value> = extension
+                .fields
+                .iter()
+                .map(|(key, value)| (key.clone(), value.clone()))
+                .collect();
+            if let Ok(child) =
+                serde_json::from_value::<yi_types::subagent::ChildUpdate>(Value::Object(fields))
+            {
+                let rows = self.state.children.entry(id.clone()).or_default();
+                match rows.iter().position(|row| row.id == child.id) {
+                    Some(at) => {
+                        if let Some(slot) = rows.get_mut(at) {
+                            *slot = child;
+                        }
+                    }
+                    None if rows.len() < 32 => rows.push(child),
+                    None => {}
+                }
+                self.dirty = true;
+            }
+        }
         if let AcpSessionUpdate::StateUpdate(state) = &update.update {
             let focused = self.state.focused_session().as_ref() == Some(&id);
             let mut status = SessionStatus::from_state(state, false);
+            let was_working = self
+                .state
+                .sessions
+                .get(&id)
+                .is_some_and(|row| row.status == SessionStatus::Working);
+            if status == SessionStatus::Working && !was_working {
+                self.state.children.remove(&id);
+            }
             // A pane the user is looking at needs no unseen shout, and a
             // resolved permission clears the ask bar.
             if focused && status == SessionStatus::DoneUnseen {
@@ -574,6 +533,8 @@ impl App {
         {
             self.state.tokens_used = Some((*used, *size));
         }
+        self.absorb_edit(outbound, &id, &update.update);
+        self.absorb_kernel(&id, &update.update);
         for pane in self.state.panes.values_mut() {
             if pane.session() != Some(&id) {
                 continue;
@@ -589,7 +550,10 @@ impl App {
                         pane.scroll_from_bottom = 0;
                     }
                 }
-                PaneContent::Markdown { .. } | PaneContent::Diff { .. } => {}
+                PaneContent::Markdown { .. }
+                | PaneContent::Diff { .. }
+                | PaneContent::SessionDiff { .. }
+                | PaneContent::Editor(_) => {}
             }
         }
     }
@@ -651,6 +615,77 @@ impl App {
         );
     }
 
+    fn open_navigator(&mut self, query: &str) {
+        self.state.mode = Mode::Navigator {
+            query: query.to_owned(),
+            selected: 0,
+        };
+        self.dirty = true;
+    }
+
+    fn on_notebook(&self) -> bool {
+        self.state
+            .focused_pane_id()
+            .and_then(|id| self.state.panes.get(&id))
+            .is_some_and(|pane| matches!(pane.content, PaneContent::Notebook { .. }))
+    }
+
+    fn run_notebook_cell(&mut self, outbound: &Outbound) {
+        if !self.connected() {
+            return self.note("not connected — cell not sent");
+        }
+        let Some(PaneContent::Notebook {
+            session: Some(session),
+            input,
+            ..
+        }) = self.state.focused_pane_mut().map(|pane| &mut pane.content)
+        else {
+            return self.note("no session behind this notebook");
+        };
+        let code = input.lines().join("\n");
+        if code.trim().is_empty() {
+            return;
+        }
+        let session = session.clone();
+        *input = crate::model::notebook_input();
+        self.send_request(
+            outbound,
+            RequestKind::KernelExecute,
+            "_yi/kernel_execute",
+            json!({"sessionId": session.0, "code": code}),
+        );
+    }
+
+    fn cancel_notebook_cell(&mut self, outbound: &Outbound) {
+        let Some(PaneContent::Notebook {
+            session: Some(session),
+            cells,
+            ..
+        }) = self
+            .state
+            .focused_pane_id()
+            .and_then(|id| self.state.panes.get(&id))
+            .map(|pane| &pane.content)
+        else {
+            return;
+        };
+        let running = cells
+            .iter()
+            .rev()
+            .find(|cell| cell.running && cell.call_id.starts_with("user-"))
+            .map(|cell| cell.call_id.clone());
+        let Some(call_id) = running else {
+            return self.note("no user cell is running");
+        };
+        let session = session.clone();
+        self.send_request(
+            outbound,
+            RequestKind::KernelCancel,
+            "_yi/kernel_cancel",
+            json!({"sessionId": session.0, "callId": call_id}),
+        );
+    }
+
     fn submit_prompt(&mut self, outbound: &Outbound) {
         if !self.connected() {
             self.note("not connected — prompt not sent");
@@ -706,6 +741,31 @@ impl App {
         self.state.zone = Zone::Panes;
     }
 
+    fn autostart_session(&mut self, outbound: &Outbound) {
+        let bound = self
+            .state
+            .panes
+            .values()
+            .any(|pane| pane.session().is_some());
+        if bound {
+            return;
+        }
+        self.state.zone = Zone::Panes;
+        match (
+            self.state.order.first().cloned(),
+            self.state.focused_pane_id(),
+        ) {
+            (Some(session), Some(pane_id)) => self.resume_into(outbound, pane_id, &session),
+            _ => self.new_session(outbound),
+        }
+        let hint = if self.cmd_hints {
+            "workspace · ⌘P palette · ⌘\\ split · ⌘J notebook · ⌘B sidebar"
+        } else {
+            "workspace · ⌥/ palette · ⌥v split · ⌥⇧J notebook · ⌥b sidebar"
+        };
+        self.note(hint);
+    }
+
     fn new_session(&mut self, outbound: &Outbound) {
         if !self.connected() {
             self.note("not connected");
@@ -714,6 +774,7 @@ impl App {
         let Some(pane_id) = self.state.focused_pane_id() else {
             return;
         };
+        self.state.zone = Zone::Panes;
         let root = self.state.root.clone();
         self.send_request(
             outbound,
@@ -732,25 +793,6 @@ impl App {
             };
             self.dirty = true;
         }
-    }
-
-    /// Sessions matching the navigator query, across every root.
-    pub fn navigator_matches(&self, query: &str) -> Vec<SessionId> {
-        let needle = query.to_lowercase();
-        self.state
-            .order
-            .iter()
-            .filter(|id| {
-                if needle.is_empty() {
-                    return true;
-                }
-                let Some(row) = self.state.sessions.get(*id) else {
-                    return false;
-                };
-                id.0.to_lowercase().contains(&needle) || row.root.to_lowercase().contains(&needle)
-            })
-            .cloned()
-            .collect()
     }
 
     fn apply_action(&mut self, outbound: &Outbound, action: Action) {
@@ -824,6 +866,16 @@ impl App {
                 }
             }
             Action::Quit => self.state.quit = true,
+            Action::ToggleSidebar => self.state.sidebar_hidden = !self.state.sidebar_hidden,
+            Action::ToggleNotebook => self.toggle_side(outbound, diffs::SideKind::Notebook),
+            Action::ToggleDiff => self.toggle_side(outbound, diffs::SideKind::Diff),
+            Action::OpenEditor => self.open_navigator("e "),
+            Action::Find => self.open_navigator("/"),
+            Action::Save | Action::Undo | Action::Redo => {
+                if !self.editor_action(action) {
+                    self.note("no editor pane is focused");
+                }
+            }
         }
         // Whatever pane the action landed on, its session counts as looked-at.
         if let Some(session) = self.state.focused_session()
@@ -870,125 +922,6 @@ impl App {
         }
     }
 
-    /// Clicks and drags resolve against the last draw's hit table, so the
-    /// mouse can never disagree with what was on screen.
-    pub fn handle_mouse(&mut self, outbound: &Outbound, kind: MouseKind, x: u16, y: u16) {
-        match kind {
-            MouseKind::ScrollUp | MouseKind::ScrollDown => {
-                let delta: isize = if kind == MouseKind::ScrollUp { 3 } else { -3 };
-                let target = self.hits.as_ref().and_then(|hits| {
-                    hits.panes
-                        .iter()
-                        .find(|(_, rect)| rect.contains(ratatui::layout::Position::new(x, y)))
-                        .map(|(id, _)| *id)
-                });
-                if let Some(pane_id) = target
-                    && let Some(pane) = self.state.panes.get_mut(&pane_id)
-                {
-                    pane.scroll_from_bottom = if delta >= 0 {
-                        pane.scroll_from_bottom.saturating_add(delta.unsigned_abs())
-                    } else {
-                        pane.scroll_from_bottom.saturating_sub(delta.unsigned_abs())
-                    };
-                    self.dirty = true;
-                }
-            }
-            MouseKind::Down => {
-                let Some(hits) = &self.hits else { return };
-                if let Some((_, index)) = hits
-                    .tabs
-                    .iter()
-                    .find(|(rect, _)| rect.contains(ratatui::layout::Position::new(x, y)))
-                {
-                    let index = *index;
-                    self.state.select_tab(index);
-                    self.dirty = true;
-                    return;
-                }
-                if x < hits.sidebar_width {
-                    if let Some((_, index)) =
-                        hits.sidebar_rows.iter().find(|(row_y, _)| *row_y == y)
-                    {
-                        self.state.selected = *index;
-                        self.state.zone = Zone::Sidebar;
-                        self.open_selected(outbound);
-                    }
-                    return;
-                }
-                let split = hits.splits.iter().find(|border| match border.direction {
-                    ratatui::layout::Direction::Horizontal => {
-                        x == border.pos
-                            && y >= border.area.y
-                            && y < border.area.y.saturating_add(border.area.height)
-                    }
-                    ratatui::layout::Direction::Vertical => {
-                        y == border.pos
-                            && x >= border.area.x
-                            && x < border.area.x.saturating_add(border.area.width)
-                    }
-                });
-                if let Some(border) = split {
-                    self.drag = Some((self.state.active_tab, border.path.clone()));
-                    return;
-                }
-                if let Some((pane_id, _)) = hits
-                    .panes
-                    .iter()
-                    .find(|(_, rect)| rect.contains(ratatui::layout::Position::new(x, y)))
-                {
-                    let pane_id = *pane_id;
-                    if let Some(tab) = self.state.tab_mut() {
-                        tab.layout.focus_pane(pane_id);
-                    }
-                    self.state.zone = Zone::Panes;
-                    if let Some(session) = self.state.focused_session()
-                        && self
-                            .state
-                            .sessions
-                            .get(&session)
-                            .is_some_and(|row| row.status == SessionStatus::DoneUnseen)
-                    {
-                        self.mark_seen(outbound, &session);
-                    }
-                    self.dirty = true;
-                }
-            }
-            MouseKind::Drag => {
-                let Some((tab_index, path)) = self.drag.clone() else {
-                    return;
-                };
-                if tab_index != self.state.active_tab {
-                    self.drag = None;
-                    return;
-                }
-                let border = self.hits.as_ref().and_then(|hits| {
-                    hits.splits
-                        .iter()
-                        .find(|border| border.path == path)
-                        .cloned()
-                });
-                let Some(border) = border else { return };
-                let ratio = match border.direction {
-                    ratatui::layout::Direction::Horizontal => {
-                        let span = f32::from(border.area.width.max(1));
-                        f32::from(x.saturating_sub(border.area.x)) / span
-                    }
-                    ratatui::layout::Direction::Vertical => {
-                        let span = f32::from(border.area.height.max(1));
-                        f32::from(y.saturating_sub(border.area.y)) / span
-                    }
-                };
-                if let Some(tab) = self.state.tab_mut() {
-                    tab.layout.set_ratio_at(&path, ratio);
-                }
-                self.dirty = true;
-            }
-            MouseKind::Up => {
-                self.drag = None;
-            }
-        }
-    }
-
     pub fn handle_event(&mut self, outbound: &Outbound, event: CtEvent) {
         match event {
             CtEvent::Key(key) => self.handle_key(outbound, key),
@@ -1019,90 +952,10 @@ impl App {
         }
     }
 
-    fn handle_navigator_key(&mut self, outbound: &Outbound, key: KeyEvent) {
-        let Mode::Navigator { query, selected } = &mut self.state.mode else {
-            return;
-        };
-        match key.code {
-            KeyCode::Esc => {
-                self.state.mode = Mode::Normal;
-            }
-            KeyCode::Up => *selected = selected.saturating_sub(1),
-            KeyCode::Down => *selected = selected.saturating_add(1),
-            KeyCode::Backspace => {
-                query.pop();
-                *selected = 0;
-            }
-            KeyCode::Enter => {
-                let query = query.clone();
-                let index = *selected;
-                self.state.mode = Mode::Normal;
-                if self.run_navigator_command(&query) {
-                    self.dirty = true;
-                    return;
-                }
-                let matches = self.navigator_matches(&query);
-                let pick = matches
-                    .get(index.min(matches.len().saturating_sub(1)))
-                    .cloned();
-                if let (Some(session), Some(pane_id)) = (pick, self.state.focused_pane_id()) {
-                    self.resume_into(outbound, pane_id, &session);
-                    self.state.zone = Zone::Panes;
-                }
-            }
-            KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
-                query.push(c);
-                *selected = 0;
-            }
-            _ => {}
-        }
-        self.dirty = true;
-    }
-
-    /// `md <path>` / `diff <path>` open viewer panes, `nb` swaps the pane
-    /// to the notebook view of its session. True when handled.
-    fn run_navigator_command(&mut self, query: &str) -> bool {
-        let root = self.state.root.clone();
-        let resolve = |path: &str| {
-            if path.starts_with('/') {
-                path.to_owned()
-            } else {
-                format!("{root}/{path}")
-            }
-        };
-        if query.trim() == "nb" {
-            if let Some(pane) = self.state.focused_pane_mut() {
-                let session = pane.session().cloned();
-                pane.content = PaneContent::Notebook {
-                    session,
-                    cells: Vec::new(),
-                };
-                pane.scroll_from_bottom = 0;
-            }
-            return true;
-        }
-        let (kind, path) = match query.split_once(' ') {
-            Some(("md", path)) => (true, resolve(path.trim())),
-            Some(("diff", path)) => (false, resolve(path.trim())),
-            _ => return false,
-        };
-        match std::fs::read_to_string(&path) {
-            Ok(source) => {
-                if let Some(pane) = self.state.focused_pane_mut() {
-                    pane.content = if kind {
-                        PaneContent::Markdown { path, source }
-                    } else {
-                        PaneContent::Diff { path, source }
-                    };
-                    pane.scroll_from_bottom = 0;
-                }
-            }
-            Err(error) => self.note(&format!("{path}: {error}")),
-        }
-        true
-    }
-
     fn handle_key(&mut self, outbound: &Outbound, key: KeyEvent) {
+        if key.modifiers.contains(KeyModifiers::SUPER) {
+            self.cmd_hints = true;
+        }
         if matches!(self.state.mode, Mode::Navigator { .. }) {
             self.handle_navigator_key(outbound, key);
             return;
@@ -1141,26 +994,62 @@ impl App {
         }
         if let Some(action) = keys::direct(&key) {
             // Esc cancels the turn only from the panes zone; sidebar Esc is
-            // inert rather than surprising.
+            // inert rather than surprising, and on a notebook it cancels the cell.
             if action == Action::CancelTurn && self.state.zone == Zone::Sidebar {
                 return;
+            }
+            if action == Action::CancelTurn && self.on_notebook() {
+                return self.cancel_notebook_cell(outbound);
+            }
+            if self.on_editor()
+                && matches!(
+                    action,
+                    Action::CancelTurn | Action::PageUp | Action::PageDown
+                )
+            {
+                return self.editor_key(key);
             }
             self.apply_action(outbound, action);
             return;
         }
         match self.state.zone {
             Zone::Sidebar => match key.code {
-                KeyCode::Up => {
-                    self.state.selected = self.state.selected.saturating_sub(1);
+                KeyCode::Up | KeyCode::Down => {
+                    let rows = self.state.visible_rows();
+                    let at = rows
+                        .iter()
+                        .position(|i| *i == self.state.selected)
+                        .unwrap_or(0);
+                    let next = if key.code == KeyCode::Up {
+                        at.saturating_sub(1)
+                    } else {
+                        at.saturating_add(1).min(rows.len().saturating_sub(1))
+                    };
+                    if let Some(index) = rows.get(next) {
+                        self.state.selected = *index;
+                    }
                     self.dirty = true;
                 }
-                KeyCode::Down => {
-                    let last = self.state.order.len().saturating_sub(1);
-                    self.state.selected = self.state.selected.saturating_add(1).min(last);
+                KeyCode::Left | KeyCode::Right => {
+                    self.state.cycle_root_filter(key.code == KeyCode::Right);
                     self.dirty = true;
                 }
                 KeyCode::Enter => self.open_selected(outbound),
                 _ => {}
+            },
+            Zone::Panes if self.on_editor() => self.editor_key(key),
+            Zone::Panes if self.on_notebook() => match key.code {
+                KeyCode::Enter if key.modifiers.contains(KeyModifiers::SHIFT) => {
+                    self.run_notebook_cell(outbound);
+                }
+                _ => {
+                    if let Some(PaneContent::Notebook { input, .. }) =
+                        self.state.focused_pane_mut().map(|pane| &mut pane.content)
+                    {
+                        let _ = input.input(CtEvent::Key(key));
+                    }
+                    self.dirty = true;
+                }
             },
             Zone::Panes => match key.code {
                 KeyCode::Enter if !key.modifiers.contains(KeyModifiers::SHIFT) => {
@@ -1178,3 +1067,19 @@ impl App {
         }
     }
 }
+
+fn fresh_composer() -> TextArea<'static> {
+    let mut composer = TextArea::default();
+    composer.set_cursor_line_style(ratatui::style::Style::default());
+    composer.set_placeholder_text("prompt the focused session — enter sends");
+    composer
+}
+
+mod diffs;
+mod editor;
+mod mouse;
+mod navigator;
+mod notebook;
+
+pub use mouse::MouseKind;
+use notebook::apply_notebook;
