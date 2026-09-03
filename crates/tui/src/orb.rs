@@ -1,6 +1,5 @@
-//! The kitty image the session owns, and the phase walk that feeds it.
-//! The engine itself is [`yi_orb`]; this is the part that knows about
-//! [`crate::app::App`] and the terminal.
+//! The kitty image the session owns, and the phase walk that feeds it. The engine is
+//! [`yi_orb`]; this is the part that knows about [`crate::app::App`] and the terminal.
 
 use yi_orb::kitty;
 
@@ -24,9 +23,8 @@ impl Default for Tick {
     }
 }
 
-/// The phase walks toward its target every frame, so the dots visibly travel
-/// between the `Yi` mark and the orb; settled at rest, it needs no repaint.
-/// Frames land transmit-back/place-back/delete-front; a bare move re-places.
+/// The phase walks toward its target every frame, so the dots travel between the `Yi` mark
+/// and the orb; settled it needs no repaint. Frames transmit, place, then delete the front.
 pub fn tick<B>(
     app: &mut crate::app::App,
     terminal: &mut crate::terminal::Terminal<B>,

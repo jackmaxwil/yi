@@ -46,9 +46,8 @@ pub enum CanonicalPlanError {
     Store(#[from] StoreError),
 }
 
-/// The one plan the session is working: the fact's doc pointer when the host
-/// wrote one, else the Active root in the plans directory. The fact never
-/// carries task bodies any more; the file is truth.
+/// The one plan the session is working: the fact's doc pointer when the host wrote one, else
+/// the Active root in the plans directory. The fact carries no task bodies; the file is truth.
 pub fn canonical_plan(store: &StoreHandle, plans_dir: &Path) -> Result<Plan, CanonicalPlanError> {
     let no_plan = || CanonicalPlanError::NoPlanOpen {
         dir: plans_dir.to_path_buf(),
@@ -162,9 +161,8 @@ pub fn frontier_text(plan: &Plan) -> String {
     lines.join("\n")
 }
 
-/// §12's plan-aware compaction, as an instruction rather than a filter: the
-/// ledger names what is still load-bearing and the summarizer disposes. Entry
-/// attribution per todo does not exist, so nothing here pretends to have it.
+/// §12's plan-aware compaction, as an instruction rather than a filter: the ledger names what
+/// is load-bearing and the summarizer disposes. Per-todo entry attribution does not exist.
 pub fn compaction_directive(plan: &Plan) -> Option<String> {
     if plan.state != PlanState::Active || plan.finished() {
         return None;
@@ -222,9 +220,8 @@ struct StaleTracker {
     reminded: bool,
 }
 
-/// Read-only view of the canonical plan for the session's surfaces, plus the
-/// staleness reminder. Mutation lives in the plan tool; this service writes
-/// nothing.
+/// Read-only view of the canonical plan for the session's surfaces, plus the staleness
+/// reminder. Mutation lives in the plan tool; this service writes nothing.
 pub struct PlanService {
     store: StoreHandle,
     plans_dir: PathBuf,

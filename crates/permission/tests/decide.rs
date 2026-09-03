@@ -194,7 +194,7 @@ fn holds_turn_matching_calls_into_ask_with_reason() -> TestResult {
 }
 
 #[test]
-fn mode_fallbacks_match_the_fx_gate() -> TestResult {
+fn mode_fallbacks_match_the_reference_gate() -> TestResult {
     let context = context();
     let session = SessionRules::new();
     let targets = vec![PathBuf::from("/home/user/project/src/main.rs")];

@@ -1,6 +1,5 @@
-//! Desktop notifications over terminal escape sequences (OSC 9, or kitty's
-//! OSC 99), plus the delayed re-validated queue that keeps agent status
-//! flicker from ever reaching the user.
+//! Desktop notifications over terminal escapes (OSC 9, or kitty's OSC 99), plus the delayed
+//! re-validated queue that keeps agent status flicker from reaching the user.
 
 use std::time::{Duration, Instant};
 

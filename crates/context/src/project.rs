@@ -39,9 +39,8 @@ fn entry_messages(entry: &Entry) -> Vec<AgentMessage> {
     }
 }
 
-/// Design P2: drops non-message entries and applies the latest compaction —
-/// everything before the last compaction entry is replaced by its summary
-/// message plus its retained tail (Pi v4 `context.ts` semantics).
+/// Design P2: drops non-message entries and applies the latest compaction — everything before
+/// it becomes that summary plus its retained tail (Pi v4 `context.ts` semantics).
 pub fn project(branch: &[Entry]) -> Vec<AgentMessage> {
     let start = branch
         .iter()

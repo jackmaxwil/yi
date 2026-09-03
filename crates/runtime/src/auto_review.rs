@@ -10,9 +10,8 @@ use crate::session::{AgentSession, SessionConfig};
 
 pub const AUTO_REVIEW_PROMPT: &str = include_str!("prompts/auto_review.md");
 
-/// Incident: the reviewer sits in front of every unprovable command in auto
-/// mode, so a provider that stalls would stall the agent. fx caps its own
-/// classifier the same way; past the cap the answer is a denial, never a wait.
+/// Incident: the reviewer sits in front of every unprovable command in auto mode, so a
+/// stalled provider would stall the agent. Past the cap the answer is a denial, not a wait.
 pub const REVIEW_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// One appended sentence when the role is named (M11): a model that is not
@@ -198,9 +197,8 @@ pub fn resolution_text(display: &str, verdict: UserVerdict) -> String {
     }
 }
 
-/// Model-role-gated the way the advisor is (D28/D50): with the role unnamed
-/// nothing here is constructed, `ask_user` is never registered, and auto mode
-/// is the deterministic ladder it was.
+/// Model-role-gated the way the advisor is (D28/D50): with the role unnamed nothing here is
+/// constructed, `ask_user` is never registered, and auto mode stays deterministic.
 pub fn wire(
     session: &AgentSession,
     wiring: &crate::wiring::RuntimeWiring,

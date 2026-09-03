@@ -48,9 +48,8 @@ impl PlanId {
         Ok(Self(id))
     }
 
-    /// The deterministic identity of a plan for a goal: no randomness, so
-    /// every fixture and replay names the same file. Collision suffixing is
-    /// the store's job, not the slug's.
+    /// The deterministic identity of a plan for a goal: no randomness, so every fixture and
+    /// replay names the same file. Collision suffixing is the store's job, not the slug's.
     pub fn slug(text: &str) -> Result<Self, DocError> {
         let slug = slugify(text);
         if slug.is_empty() {
@@ -85,9 +84,8 @@ impl PlanId {
     }
 }
 
-/// Lowercase, non-alphanumeric runs collapsed to `-`, and when over the cap
-/// the cut lands at a word boundary: hard-cut at 40 bytes, then the trailing
-/// partial word is dropped — the golden fixtures pin exactly this shape.
+/// Lowercase, non-alphanumeric runs collapsed to `-`, over-cap cuts landing at a word
+/// boundary: hard-cut at 40 bytes, then drop the partial word. Golden fixtures pin this.
 pub(super) fn slugify(text: &str) -> String {
     let mut slug = String::with_capacity(text.len());
     for ch in text.chars() {
@@ -128,9 +126,8 @@ impl From<PlanId> for String {
     }
 }
 
-/// The todo's address: verbatim-content identity, unique per plan, immutable
-/// once created — rewording is append-new plus abandon-old, never rename —
-/// which is what makes it safe as an edge endpoint.
+/// The todo's address: verbatim-content identity, unique per plan, immutable once created —
+/// rewording is append-new plus abandon-old — which makes it safe as an edge endpoint.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
 pub struct TodoLabel(String);
@@ -319,9 +316,8 @@ impl TouchCount {
     }
 }
 
-/// Root-plan delegation fuse in the [`crate::plan::doc::TokenBudget`] unit
-/// family: charging is the only way up and a user edit of the plan file — the
-/// sanctioned second writer — is the only way down.
+/// Root-plan delegation fuse in the [`crate::plan::doc::TokenBudget`] unit family: charging
+/// is the only way up, and a user edit of the plan file the only way down.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default, Serialize, Deserialize)]
 pub struct Spawns(u32);
 
@@ -339,9 +335,8 @@ impl Spawns {
     }
 }
 
-/// Incident: append in a discovery loop crossed with retry and decompose has
-/// no named total, so a control-flow bug spawns children forever; the fuse
-/// trips it. Placeholder until fitted an order above the golden fixtures.
+/// Incident: append crossed with retry and decompose has no named total, so a control-flow
+/// bug spawns children forever and the fuse trips it. Placeholder until fitted.
 pub const SPAWN_CAP: Spawns = Spawns(64);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default, Serialize, Deserialize)]
@@ -357,9 +352,8 @@ impl RetryCount {
     }
 }
 
-/// The pair naming one todo from outside its plan, serialized as the
-/// `<plan>/<verbatim label>` string; [`TodoAddr::to_url`] addresses it by the
-/// label's slug instead, because a URL cannot carry whitespace.
+/// The pair naming one todo from outside its plan, serialized `<plan>/<verbatim label>`;
+/// [`TodoAddr::to_url`] uses the label's slug instead, because a URL carries no whitespace.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
 pub struct TodoAddr {
@@ -409,9 +403,8 @@ impl From<TodoAddr> for String {
     }
 }
 
-/// Invariant: a probe is always a runnable command — reused
-/// [`crate::plan::doc::Check::Command`] content — because a stated acceptance
-/// cannot be run on a cadence.
+/// Invariant: a probe is always a runnable command, reusing
+/// [`crate::plan::doc::Check::Command`], because a stated acceptance cannot run on a cadence.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
 pub struct ProbeCommand(String);

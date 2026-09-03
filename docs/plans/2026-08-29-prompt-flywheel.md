@@ -3,7 +3,7 @@
 ```
 status:  LANDED 2026-08-29 at ARCHITECTURE 0.70.0 — D75 task checks · D76
          behavior gate · D77 decomposition protocol. v1 naive optimizer →
-         killed by self-review; v2 lean flywheel → killed by the OMP
+         killed by self-review; v2 lean flywheel → killed by the reference
          autopsy; v3 deterministic rules → demoted by the benchmark
          pressure test; v4 built the instrument and put behavior under the
          gate law; v5 adds the piece v4 hand-waved: a deterministic
@@ -23,13 +23,13 @@ sources: research (ref/research/): 2601.04055v1 MPO · 2603.21520v1 MemAPO ·
          2606.04465v1 SePO · 2507.19457v2 GEPA (ICLR 2026) · Factory.ai
          large-tasks PDF · 2608.26263v1 SKILL.state (Google/Purdue) ·
          20885-AAAI26.KawaseY-GT (sequential selling with sunk cost bias)
-         · Prime Agent: arXiv 2608.23552 + primeintellect.ai/blog +
+         · the reference harness: arXiv 2608.23552 + its vendor's blog +
          docs.arcprize.org/methodology (RHAE) + arcprize.org/leaderboard
-         · omp autopsy (§0; ref/agents/omp, excise respected)
+         · the reference autopsy (§0; ref/agents/the reference, excise respected)
          · pattern donors, NOT Appendix A (ports need an A-entry first):
          dsrs + gepars (ref/optimizers/) · ref/orchestration/
          {pi-dynamic-workflows, tinyflows [GPL-3.0 — patterns only, never
-         code], sayiir, swarms-rs, tsumugi, rk8s} · opencode
+         code], sayiir, swarms-rs, tsumugi, rk8s} · the reference
          packages/codemode (excise respected)
          · literature (§6 evidence): ADaPT 2311.05772 · RSTD 2605.15425 ·
          Planetarium 2407.03321 · LLM-Modulo 2402.01817 · ChatHTN
@@ -83,12 +83,12 @@ sources: research (ref/research/): 2601.04055v1 MPO · 2603.21520v1 MemAPO ·
   recon spec-compiler died to `Task.acceptance` + expand-only `plan.edit` +
   `goal::run_check`; GEPA acceptance was unexecutable from stored traces —
   **acceptance requires execution**.
-- **v2 → v3 (OMP autopsy):** OMP's TTSR/auto-memories/auto-skills devolve
+- **v2 → v3 (the reference autopsy):** the reference's TTSR/auto-memories/auto-skills devolve
   for mechanical reasons — full-context clone per capture with a fresh
   cache key (sdk.ts:1145-1166), write-only stores with no outcome ledger,
   uncapped per-turn renders (one skill ≈ 16k tokens/turn), buffer-regex
   firing on the mention not the act, model-gated persistence with no human
-  gate. What survives in OMP is exactly its deterministic subset; v3
+  gate. What survives in the reference is exactly its deterministic subset; v3
   rebuilt on that subset.
 - **v3 → v4 (benchmark pressure test):** a rule needs repetition, rots in a
   fast repo, and was measured by an unpowered diary. v4 inverted: the unit
@@ -357,7 +357,7 @@ const LADDER: [(u8, Escalation); 3] =
 `Route::OneShot` never sees the protocol — mini-swe-agent's >74% Verified
 with 100 lines says strong models need little structure on known
 distributions. The protocol exists for the Complex/long-horizon regime
-where Factory, RSTD, and the OMP field report show unstructured agents
+where Factory, RSTD, and the reference field report show unstructured agents
 collapse. Every law is a lever on the instrument; belief decides nothing.
 
 ### 6.5 Replaced formulas
@@ -411,7 +411,7 @@ Patterns: Sentry fingerprint→issue lifecycle (NEW → CASED → FIXED(commit)
 → REGRESSED → RETIRED, deterministic transitions) · ELT (raw JSONL is
 immutable truth; versioned extractor; derived stores are disposable
 caches) · aviation blameless reporting (coverage line, labeled
-uncertainty) · Prime Agent's Continual Harness with auto-persist inverted
+uncertainty) · the reference's Continual Harness with auto-persist inverted
 to a human gate · TRACE (corrections compile to checks, not prose) ·
 GEPA/MemAPO/SePO reflection records, 1:1 balance, verify-before-update.
 
@@ -438,7 +438,7 @@ high-entropy tokens masked (SHAs/ulids caught — acceptable, noted);
 
 ## 11. ARC-AGI and the kernel
 
-Prime Agent reports 95.5% ARC-AGI-3 RHAE Best@1 (self-reported, replay
+the reference harness reports 95.5% ARC-AGI-3 RHAE Best@1 (self-reported, replay
 published; official top base model: Opus 5 native 30.2%; NVIDIA AVO and
 Schema claim similar-or-higher). Mechanism: no ARC-specific workflow —
 persistent REPL holding game state as variables, exploration and
@@ -549,7 +549,7 @@ header):
 - Scheduled/heartbeat anything; LLM-judged firing/persistence/eviction/
   control flow (Law 2's scope, and D81's permission reviewer is its one
   recorded exception); TTSR-style stream interrupts; uncapped renders;
-  write-only stores (OMP autopsy).
+  write-only stores (the reference autopsy).
 - **Upfront exhaustive DAG compilation** (ADaPT/RSTD/Planetarium — §6.1);
   **the F and Y formulas as written** (not computable; replaced §6.5);
   **an LLM critic gating splits** (structural gate instead); **LLM juries
@@ -559,7 +559,7 @@ header):
   channels** (run-scoped stores die at run end; reserved schema field +
   drain gate instead); **depth > 1** until a campaign shows the task
   class; **silent-null failure propagation** (malformed = fatal).
-- Prime-style auto-persisted continual state; per-prompt trusted-block
+- reference-style auto-persisted continual state; per-prompt trusted-block
   retrieval; journal/undo DTOs; recon spec-compiler; Reviewer enum;
   diary A/B; embeddings before C-metrics say grep failed; merge/
   crossover; a second μ summarizer; multi-agent validator; dsrs/gepars/

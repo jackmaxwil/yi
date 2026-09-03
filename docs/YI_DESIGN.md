@@ -1,11 +1,13 @@
 # Yi — design, v2 (Rust greenfield)
 
-Status: living design; version and changelog: ARCHITECTURE.md. Supersedes v1 (Zig fork of fx); fx is a reference only.
-References (shallow, gitignored) live under `ref/` by category: `agents/` (pi, prime-agent, omp, fx, jcode, opencode, codex, deepseek-harness), `tui/`, `skills/`, `tools/`, `benchmarks/`. Exact spans: Appendix A.
+Status: living design; version in ARCHITECTURE.md, history in CHANGELOG.md.
+Supersedes v1, a Zig fork. Reference checkouts (shallow, gitignored) live under
+`ref/` by category: `agents/`, `tui/`, `skills/`, `tools/`, `benchmarks/`.
+Exact spans: Appendix A.
 
-Yi is a native Rust coding agent with Pi's core shape and Pi's wire formats, prime-agent's
-runtime (Jupyter kernel, context management, subagents, heartbeats), OMP's hashline editing, and
-a redesigned advisor. Tools are stateless executables. MCP is an opt-in CLI (mcpc-shaped), never a resident client, and there is no automatic
+Yi is a native Rust coding agent with Pi's core shape and Pi's wire formats, a
+Jupyter-kernel runtime (context management, subagents, heartbeats), hashline
+editing, and a redesigned advisor. Tools are stateless executables. MCP is an opt-in CLI (mcpc-shaped), never a resident client, and there is no automatic
 skill creation.
 
 ---
@@ -19,12 +21,12 @@ skill creation.
 | Pi compatibility | **Wire-level, not type-level.** Byte-compatible session JSONL (v3 + harness entries), Pi RPC JSONL protocol, Pi `AgentEvent` JSON. Pi's own tests for those boundaries run against the yi binary (§3). |
 | pi-ai | Rust mirror of pi-ai's *types* (`Message`, `AssistantMessageEvent`, `StopReason`, `Usage`, `Model`) with identical serde shapes; provider implementations ported for Anthropic + OpenAI-compatible (+ responses API). Model catalog = pi-ai's generated data as JSON. No Node sidecar. |
 | MCP | **Not in the core, off by default** — config-gated (`mcp.enabled`), compiled into every build (D36). Shipped as a CLI surface modelled on `apify/mcpc` (`ref/tools/mcpc`): `<bin> mcp connect … @s`, `@s tools-list|tools-get|tools-call`, `grep`, `--json`. The agent reaches it through `bash` and through the kernel, never through a registered tool. No bridge process unless the server is stateful and the user asks for one (§5.2). |
-| Python | Jupyter wire protocol over `zeromq` crate; `ipykernel`; kernel-side package `python/yi_runtime` (module `rlm`) — seeded by copying prime-agent-runtime, owned and evolved by Yi. |
+| Python | Jupyter wire protocol over `zeromq` crate; `ipykernel`; kernel-side package `python/yi_runtime` (module `rlm`) — seeded from a reference runtime, owned and evolved by Yi. |
 | Blast-radius classifier | Cut. Permission engine is modes + rules + `irreversible` tool flag. |
-| Advisor | Redesigned (§7). OMP's is the anti-pattern. |
+| Advisor | Redesigned (§7); §7.1 names the anti-pattern it replaces. |
 | Skills | Read-only discovery from disk + Python skills in the kernel venv. No creation, no learning, no refine. Skills roots are model-write-denied. |
 | ACP | **v2 only** (D1, revised from "v1 and v2"): native wire shapes are v2 (`state_update`, upsert-by-id, structured diffs, `title`/`subject` permissions). The v1 downgrade adapter is cut — no v1-only client exists in this setup (Afterlife and Zed speak v2); additive later if one appears. `protocolVersion: 1` gets a clean version-mismatch response. |
-| Daemon | Phase 6, prime-agent design, over ACP v2 (no private protocol). |
+| Daemon | Phase 6, over ACP v2 (no private protocol). |
 | Console | `yi console` (crate `yi-console`, D89/D90): the multi-pane workspace shell, an ACP client over the `yi serve` daemon socket. Pane = session, workspace = repo root; the daemon stays the only session owner. Rendering is client-side from semantic `session/update` frames — no server-side frame streaming, no PTYs, no blit encoder. Pane content is an enum (`Session`/`Markdown`/`Diff`/`Notebook`), never a `dyn PaneView` trait. |
 
 ### 1.1 Not in scope (maintained list; one-in-one-out for top-level features)
@@ -70,7 +72,7 @@ crates/
   yi-kernel     Jupyter client: connection file, ZMQ shell/iopub/control, HMAC, comm host.request dispatch. deps: yi-types.
   yi-runtime    AgentSession: composes everything above; the ONLY constructor of LoopConfig.
                 Contains `subagent`, `schedule`, `advisor` as MODULES (single-impl, single-consumer:
-                a crate each would buy build fan-out, not a boundary — jcode's own anti-rule).
+                a crate each would buy build fan-out, not a boundary).
                 File-size guardrail keeps them honest. deps: all above.
   yi-acp        ACP v2 server, Event → session/update; hand-rolled v2 wire subset (D40). deps: yi-runtime, yi-types.
   yi-tui        ratatui shell (feature `tui`). Consumes Event + AgentSession methods only. deps: yi-runtime.
@@ -79,7 +81,7 @@ crates/
   yi-cli        `yi` binary: composition root; `yi rpc` (Pi RPC JSONL, ~300-line adapter over the
                 Event stream — a mode, not a crate) and `yi ask` live here. deps: all.
 python/
-  yi_runtime/  = Yi's kernel-side Python package, seeded from prime-agent-runtime
+  yi_runtime/  = Yi's kernel-side Python package, seeded from a reference runtime
                   (rlm/__init__.py, harness.py, skill.py copied; mcp.py rewritten as a subprocess
                   wrapper over `<bin> mcp --json`, §5.2). Yi owns the whole package; the module
                   name `rlm`, `RLM_*` env names and the ready-check string are Yi's wire-internal
@@ -89,8 +91,8 @@ python/
 ```
 
 Rules, CI-enforced (§9): `yi-types` has no async/fs/net deps, **no workspace error enum**
-(errors are per-crate; `yi-types` holds only serialized error shapes — codex's protocol crate
-imported tokio/landlock/seccomp through one 43-variant `#[from]` enum), and **no channels,
+(errors are per-crate; `yi-types` holds only serialized error shapes — a surveyed
+protocol crate pulled tokio/landlock/seccomp in through one 43-variant `#[from]` enum), and **no channels,
 handles, or `*Runtime` types in serialized structs** (CI grep for `Sender`, `Receiver`,
 `Arc<dyn`, `Runtime`); `yi-loop` depends only on
 `yi-types` (+ tokio::sync::Notify); `yi-tui`/`yi-acp`/`yi-cli` never depend on `yi-tools`,
@@ -210,8 +212,9 @@ prior mining issues) behind an honest completeness header.
 
 The registry is **closed**: one `const` list; adding a tool edits this section in the same
 commit. Tool parameters are typed — never `action: String`, never a synonym-alias table
-(jcode's 43-verb `swarm` with 25 aliases and a 1,155-line `execute`, §9.1). No two tools with
-overlapping descriptions (jcode registered five file-mutation tools).
+(a surveyed harness shipped a 43-verb `swarm` with 25 aliases and a 1,155-line
+`execute`, §9.1). No two tools with overlapping descriptions (another registered
+five file-mutation tools).
 
 **Exec tools** (replacement for MCP): any executable under `~/.yi/tools/` or `<project>/.yi/tools/`.
 Contract: `tool --schema` prints `{name, description, input_schema, kind}` (cached by mtime);
@@ -251,11 +254,11 @@ What is changed, because of the no-resident-process preference:
   the next command reconnects transparently. `@s` names still work in both modes.
 - **Off by default.** `mcp.enabled = false` hides the subcommand from the skill list and from
   `bash` allowlists. Turning it on adds the skill and nothing else — no tools are registered.
-- **Kernel-native.** `yi_runtime.mcp` keeps prime-agent's Python API
+- **Kernel-native.** `yi_runtime.mcp` keeps the reference Python API
   (`await mcp.tools("@s")`, `await mcp.call("@s", "tool", {...})`, `mcp.reload()`) but is
-  re-implemented as a thin wrapper that runs `<bin> mcp --json …` as a subprocess. prime's
-  in-kernel client (`mcp.py` `_Generation`/`_Registry`, ~1,000 lines, resident connections
-  inside the kernel) is **not** ported; the unavailable pattern
+  re-implemented as a thin wrapper that runs `<bin> mcp --json …` as a subprocess. The
+  reference in-kernel client (`mcp.py` `_Generation`/`_Registry`, ~1,000 lines, resident
+  connections inside the kernel) is **not** ported; the unavailable pattern
   is pinned in §6. Python code can therefore compose MCP calls with everything else in the
   namespace — the "code mode" mcpc describes — without the kernel holding any sockets.
 - Config sources: `~/.<bin>/mcp.json` and standard files (`.vscode/mcp.json`, `.mcp.json`)
@@ -268,13 +271,13 @@ dependency of `yi-cli` only; no runtime crate may import it (boundary check).
 
 Skills: discovery roots (workspace `.yi/skills`, `skills/`, `.pi/skills`, `.claude/skills`, `.agents/skills`;
 global equivalents), `SKILL.md` frontmatter metadata only at startup, body on invoke. Python
-skills = importable packages in the kernel venv (prime-agent `skill.py`). All skills roots are
+skills = importable packages in the kernel venv. All skills roots are
 configured-deny for `write`/`edit`/`bash` targets; not overridable by session rules.
 
-Skill mechanics (D30, from codex `ext/skills` — whose real path is <1.5k of 21k lines):
+Skill mechanics (D30; the surveyed implementation's real path is <1.5k of 21k lines):
 
 - **No skills tool.** Local skills need a catalog line + absolute path + the existing `read` —
-  codex's `skills.list`/`skills.read` apparatus exists only for remote environments. Saves two
+  a `skills.list`/`skills.read` apparatus exists only for remote environments. Saves two
   tool schemas in the preamble.
 - **Catalog budget = P16 `skills_meta`**, default 2 % of the model context window, with the
   degradation ladder: full lines → shrink descriptions → drop descriptions → omit skills, each
@@ -292,17 +295,18 @@ Skill mechanics (D30, from codex `ext/skills` — whose real path is <1.5k of 21
   a root pointed at `$HOME` degrades, never hangs. Cache successful catalogs for the session
   (empty and warned ones included), never cache a failed discovery, no filesystem watcher.
 - **One matcher syntax** for names/triggers — never semantics that switch on the pattern's
-  character class (codex's hook matchers silently flip exact→regex when a `.` appears).
+  character class (surveyed hook matchers silently flip exact→regex when a `.` appears).
 
 ---
 
-### 5.3 File checkpoints (OpenCode v2 shadow gitdir)
+### 5.3 File checkpoints (shadow gitdir)
 
-Compared: OpenCode v1 (1,020 lines, shadow gitdir), OpenCode v2 (690 lines, same idea, cleaner),
-Pi `git-checkpoint.ts` (53 lines, `git stash create` — merges on restore, loses untracked files,
-dangling commits die at `gc`, no diff), prime `git_state` (110 lines, records sha/branch only,
-restores nothing). OpenCode v2 is the only one meeting all five requirements: per-turn capture,
-`/undo`, diff between checkpoints, never commits on the user's branch, works in a dirty tree.
+Four approaches were compared. Pi `git-checkpoint.ts` (53 lines, `git stash create`)
+merges on restore, loses untracked files, has no diff, and its dangling commits die
+at `gc`; another records sha/branch only and restores nothing. The shadow-gitdir
+approach below is the only one meeting all five requirements: per-turn capture,
+`/undo`, diff between checkpoints, never commits on the user's branch, works in a
+dirty tree.
 
 Mechanism, copied:
 
@@ -319,10 +323,10 @@ Mechanism, copied:
 - Diff: `diff --numstat` / `diff --unified=3 <a> <b>`; trees are plain OIDs.
 - One lock per shadow gitdir; `gc --prune=7.days` occasionally.
 
-Divergence from OpenCode: **non-git directories still get checkpoints** — init the shadow gitdir
+One divergence: **non-git directories still get checkpoints** — init the shadow gitdir
 with `--work-tree` on the plain directory, skip alternates/seed, write a builtin skip list
-(`node_modules`, `target`, `.venv`, `dist`, `.git`) to `info/exclude`. OpenCode disables the
-feature there; that is where scratch-directory users want undo most.
+(`node_modules`, `target`, `.venv`, `dist`, `.git`) to `info/exclude`. The reference
+disables the feature there; that is where scratch-directory users want undo most.
 
 Skipped (ponytail): v1's `cat-file --batch` diff fast path, batched-checkout path-clash logic,
 and v2's dry-run preview index — add when a measured large-repo diff or 500-file undo drags.
@@ -334,27 +338,27 @@ Surface: `/undo` (restore every file changed since the last `TurnStart` checkpoi
 again so `/undo` is itself undoable), `/diff` (last turn), ACP v2 `diff` content from T13 over
 checkpoint trees.
 
-## 6. Kernel (prime-agent, verbatim runtime)
+## 6. Kernel (verbatim runtime)
 
-`yi-kernel` ports prime-agent's kernel client: `kernel/index.ts` (1,845 lines) **plus its
-required satellites** `bootstrap.ts` (929), `state-snapshot.ts` (357), `boot-gate.ts` (50) —
-~3.2k lines; the Linux fork-server (675 lines) is excluded (A.2 excise). Mechanism: the
-standard Jupyter wire — connection file, spawn `ipykernel` from a `uv`-bootstrapped venv,
-shell/iopub/control over ZMQ with `<IDS|MSG>` HMAC framing — plus prime's ordering and timing
-invariants. Every mechanic is pinned in exactly one K row (K1–K12, spans in A.2); this section
-owns only the host-handler vocabulary and the Python-runtime contract.
+`yi-kernel` ports a reference kernel client — client, bootstrap, state snapshot and
+boot gate, ~3.2k lines; its Linux fork-server (675 lines) is excluded. Mechanism:
+the standard Jupyter wire — connection file, spawn `ipykernel` from a
+`uv`-bootstrapped venv, shell/iopub/control over ZMQ with `<IDS|MSG>` HMAC framing —
+plus the reference's ordering and timing invariants. Every mechanic is pinned in
+exactly one K row (K1–K12); this section owns only the host-handler vocabulary and
+the Python-runtime contract.
 
 Host handler table (registered by `yi-runtime`, vocabulary verbatim): `rlm.run`,
 `rlm.list_subagents`, `rlm.delete_subagent`, `rlm.find_models`, `model.info`, `compact.run`,
 `compact.status`, `rlm_heartbeat.*`, `agent_message.*`, `goal.*` (phase 6). Reply envelope and the reserved `status`
-key: K7. "Unavailable" is expressed prime's way, never as a payload: an unregistered
+key: K7. "Unavailable" is expressed as an error, never as a payload: an unregistered
 type errors `host request type "X" is not available`; `mcp.config` returns `{}` (the Python
 side raises its own KeyError), `mcp.refresh` throws, `mcp.begin_login` is not registered.
 Scheduling handlers (`compact.run`) only *schedule* and return — running inline would abort
 the turn whose cell awaits the reply; `rlm.run` returns at admission for the same reason.
 
-Python runtime: seeded by copying prime-agent-runtime verbatim — a one-time de-risk for the
-port, not a parity obligation; the package is Yi's and evolves freely. The module name `rlm`,
+Python runtime: seeded by copying a reference runtime verbatim — a one-time de-risk
+for the port, not a parity obligation; the package is Yi's and evolves freely. The module name `rlm`,
 `RLM_*` env names and the `RUNTIME_READY_CHECK` string were kept because renaming was branding
 with a real diff cost and the names are wire-internal; change them whenever it pays, updating
 host and check together. `mcp.py` was rewritten at the seed (§5.2) and must keep
@@ -362,22 +366,24 @@ host and check together. `mcp.py` was rewritten at the seed (§5.2) and must kee
 changes with it. `RLM_DEPTH`/`RLM_MAX_DEPTH` are set but never read by Python; the host-side
 depth check is authoritative.
 
-Display channels: `application/vnd.prime-agent.{diff,attachment,agent-message}+json` — names
-kept so the Python skills need no edits. Payload casing is inconsistent **by design** and
+Display channels: `application/vnd.yi.{diff,attachment,agent-message}+json`. Payload casing is inconsistent **by design** and
 preserved: diff/attachment snake_case; agent-message camelCase (the host's own receipt echoed
 back).
 
 Tool: `ipython{code}`, sequential, kind `Exec`.
 
-Independent validation: codex's "code mode" is 30k lines + an embedded sandboxed V8 — and its
-own runtime still runs out-of-process over gRPC/WebSocket. The subprocess-kernel design is
-what everyone converges on; Yi gets it for zero bytes in the binary.
+Independent validation: a surveyed "code mode" is 30k lines plus an embedded sandboxed
+V8 — and its own runtime still runs out-of-process over gRPC/WebSocket. The
+subprocess-kernel design is what everyone converges on; Yi gets it for zero bytes in
+the binary.
 
 ---
 
 ## 7. Advisor, redesigned
 
-### 7.1 What was wrong with OMP's
+### 7.1 What was wrong with the surveyed advisor
+
+One reference harness ships a watcher advisor. Four things sink it:
 
 1. It sends the primary's *thinking* to the advisor (`expandPrimaryContext`, `watchedRoles`),
    framed as "the agent you are watching". Models read that as being asked to evaluate another
@@ -429,7 +435,7 @@ entry appended ─► Work log (pure, per entry, zero tokens): the append-only r
                     prose:  "e7f5 assistant: <sentences selected by the §7.4 verb table>"
                  ─► LlmReviewer  system: fixed prompt + ADVISOR.md; user: digest chunk;
                     tools: {advise, read, grep, glob, transcript}; one prompt() per review
-                 ─► EmissionGuard (OMP, verbatim): NFKC key, blocklist, FIFO dedupe, 1 note/cycle
+                 ─► EmissionGuard (ported verbatim): NFKC key, blocklist, FIFO dedupe, 1 note/cycle
                  ─► Delivery
                     Note|Warn  → custom{advisory} entry at next tool boundary;
                                  if idle: follow_up queue (drains on next user prompt/heartbeat)
@@ -461,8 +467,8 @@ Size target: `runtime::advisor` ≤ 1,500 lines including the signal set.
 
 ### 7.4 Unbacked claims (what "fabrication detection" means in Yi)
 
-Scope correction from the OMP survey: OMP has **no** transcript-claim-vs-tool-result verifier.
-Its `abortOnFabricatedResult` (`packages/ai/src/dialect/owned-stream.ts`) is a stream-level scan
+Scope correction from the survey: no reference harness has a transcript-claim-vs-tool-result
+verifier. The nearest thing, an `abortOnFabricatedResult`, is a stream-level scan
 for the *tool-result opening token* of an in-band tool-calling dialect (`<tool_response>`,
 `<function_results>`, …) — it stops a model that starts writing a tool's result itself. That only
 exists for text-based tool calling. Yi uses native tool calling exclusively, so there is nothing
@@ -516,7 +522,7 @@ survived, what changed:
   judge-based *selection* wins 81 %; selector quality beats generator diversity, and adding a
   *weaker* model can help. Consequence: the advisor is one judge; a second opinion, if ever
   added, is a judge choosing between two candidate advices, never a synthesizer merging them.
-  OMP's multi-advisor roster stays cut on evidence, not just taste.
+  The surveyed multi-advisor roster stays cut on evidence, not just taste.
 - **Trajectory diagnostics are the right things to look for, not the right thing to ship**
   (TraceProbe, arXiv 2607.06184: search loops are the most stable anti-pattern; verification
   skips localize failures). Yi built `search_loop`, `verification_skip` and four siblings as
@@ -589,32 +595,32 @@ or a model. Everything else is property-testable in isolation. Module prefixes: 
 · S session · P context · A provider · I interrupt · M permission · T tools · K kernel · B subagent
 · H schedule · V advisor · C acp.
 
-### 8.1 Context management (`yi-context`, from prime-agent)
+### 8.1 Context management (`yi-context`)
 
-prime-agent's context management is ~10 responsibilities inside `agent-session.ts` plus
-`compaction.ts`. Decomposed into primitives, each a pure function or a small trait, each with
+The reference implementation packs ~10 responsibilities into one session file plus a
+compaction file. Decomposed into primitives, each a pure function or a small trait, each with
 its own tests:
 
 | # | Primitive | Signature | Source |
 |---|---|---|---|
 | P1 | **Transcript** | `Repo::append / branch(leaf)` | Pi entry tree |
-| P2 | **Projection** | `project(branch: &[Entry]) -> Vec<AgentMessage>` — drops non-message entries, applies latest compaction/branch summary | Pi `rebuildContext`, prime `convertToLlm` |
-| P3 | **Accounting** | `context_tokens(usage) -> u64` (`total` or in+out+cache_r+cache_w); `estimate(messages) -> Estimate{tokens, usage_tokens, trailing_tokens, last_usage_index}` (last authoritative usage + chars/4 for trailing); `scope: Total \| BodyAfterPrefix` — body-after-prefix subtracts `prefill_input_tokens` (server-observed from the window's first response, estimated fallback) so the ~10 %-priced cached prefix is not charged full price against the compaction budget | prime `compaction.ts:122,173` · fx `token_estimate.zig:5-46` (the single estimator, D22) · codex `context_window.rs:19-91` |
-| P4 | **Policy** | `should_compact(tokens, window, Settings{reserve: 16_384, keep_recent: 20_000}) -> bool`; measures P3's `BodyAfterPrefix` by default (codex leaves ~2.4× Yi's old headroom and its compactions rarely fail mid-flight) | prime `:206` · codex |
-| P5 | **Cut point** | `select_cut(branch, keep_recent) -> Cut{first_kept_entry_id, to_summarize, turn_prefix, is_split_turn}` — never at a tool result; walks back accumulating estimates | prime `prepareCompaction` |
-| P6 | **Serializer** | `serialize(messages) -> String` (`[User]/[Assistant]/[Tool result]`, results truncated 2,000 chars) | prime `utils.ts:93` |
-| P7 | **Summarizer** | `trait Summarizer { fn summarize(last_request: &LlmContext, prev: Option<&str>, directive: &str) -> Summary }` — **prefix-aligned** (§14.5): replays the last routed request byte-identically (tools included — codex drops them and cache-misses every compaction) and appends the directive as a trailing user message; split-turn = two summaries merged. Overflow recovery: trim from the **front** and retry (prefix-preserving); on a model switch mid-history, summarize with the **outgoing** model, current-model fallback | prime/pi · dsh `summarizer.ts:149` · codex `compact.rs:303-320`, `turn.rs:1076-1160` |
-| P8 | **Details** | `file_ops(messages) -> Details{read_files, modified_files}` cumulative across compactions | prime `utils.ts:24` |
-| P9 | **Compaction entry** | `CompactionEntry{summary, first_kept_entry_id, tokens_before, details, window: {first, previous?, id, number}}` appended; nothing deleted. Window ids chain compactions (surfaced to the model), per-window one-shot latches kill repeat advisories. `Compaction::Roll` variant = summary-less window roll (same hooks, same entry) — the fallback when the summarizer itself fails | Pi/prime · codex `auto_compact_window.rs:4-91`, `compact_token_budget.rs` |
-| P10 | **Ledger** | `HarnessState{entries: {prompt, memory, subagent}, scope: local|global}`; `load(mtime-synced)`, `format_for_prompt(limits)` | prime `harness.py`, `refinement.ts:429` (no `skill`, no refine) |
-| P11 | **Assembly** | `assemble(StablePrefix{system, ledger, summary}, overlay: &[WorldStateDiff], kept: &[AgentMessage], current, suffix) -> LlmContext` with cache tiers. The overlay is **append-only diffs** (P18): full world state injected once per window, deltas appended at the tail thereafter — the prefix is never disturbed by a changed value | fx `prompt_context.zig`, prime `system-prompt.ts` · codex `session/mod.rs:3119-3152,3870-3944` |
-| P12 | **Runtime context** | kernel namespace; orthogonal; survives P9 untouched; snapshot/restore is the kernel's job | prime |
-| P13 | **Scheduling** | `compact.run` from a cell or `/compact` sets `pending_compaction`; executed at the next **message boundary inside the tool loop** (codex: a tool-heavy turn can blow the window before the turn ends), with post-compaction placement rules — summary is the last item the model sees; initial context re-injected before the last real user message. Model read side: `compact.status` returns `{tokens, context_window, percent, scheduled}` | prime `handleCompactHostRequest` · codex `turn.rs:458-498`, `compact.rs:60-73,581-635` |
-| P14 | **Attribution** | `child_usage_attributed{parent_entry_id, usage, aggregate, origin}`; `own_and_total_usage(tree)` | prime `session-manager.ts:1497`, `context-tree.ts:76` |
-| P15 | **Branch summary** | P7 applied on `/tree` navigation → `BranchSummaryEntry{from_id, summary}` | Pi/prime |
-| P16 | **Source budgets** | `SourceBudgets{project_instructions, skills_meta, ledger, advisories, emergency_ceiling}` bytes; `fit(source, budget) -> Truncated{text, marker}`; enforced in P11 | fx `context_limits.zig` |
-| P17 | **Retention floor** | `retain_floor(branch, budget: 64_000) -> Vec<EntryId>` — every real user message survives compaction verbatim (role filter, newest-first token budget, oldest middle-truncated; prior summaries and contextual fragments dropped); union with P5's kept suffix. P5 keeps the working set, P17 guarantees no early user requirement is ever summarized away | codex `compact_remote_v2.rs:459-633`, `compact.rs:535-710` |
-| P18 | **World state** | `trait WorldStateSection { name; snapshot() -> Snapshot; render_diff(&prev) -> Option<Fragment> }` — named sections (env, permissions, ledger view), diff rendered only on change, appended at the overlay tail; per-turn re-injection is a diff or it is nothing | codex `world_state/mod.rs:205-411` |
+| P2 | **Projection** | `project(branch: &[Entry]) -> Vec<AgentMessage>` — drops non-message entries, applies latest compaction/branch summary | Pi `rebuildContext` |
+| P3 | **Accounting** | `context_tokens(usage) -> u64` (`total` or in+out+cache_r+cache_w); `estimate(messages) -> Estimate{tokens, usage_tokens, trailing_tokens, last_usage_index}` (last authoritative usage + chars/4 for trailing); `scope: Total \| BodyAfterPrefix` — body-after-prefix subtracts `prefill_input_tokens` (server-observed from the window's first response, estimated fallback) so the ~10 %-priced cached prefix is not charged full price against the compaction budget | — |
+| P4 | **Policy** | `should_compact(tokens, window, Settings{reserve: 16_384, keep_recent: 20_000}) -> bool`; measures P3's `BodyAfterPrefix` by default (the reference leaves ~2.4× Yi's old headroom and its compactions rarely fail mid-flight) | — |
+| P5 | **Cut point** | `select_cut(branch, keep_recent) -> Cut{first_kept_entry_id, to_summarize, turn_prefix, is_split_turn}` — never at a tool result; walks back accumulating estimates | — |
+| P6 | **Serializer** | `serialize(messages) -> String` (`[User]/[Assistant]/[Tool result]`, results truncated 2,000 chars) | — |
+| P7 | **Summarizer** | `trait Summarizer { fn summarize(last_request: &LlmContext, prev: Option<&str>, directive: &str) -> Summary }` — **prefix-aligned** (§14.5): replays the last routed request byte-identically (tools included — the reference drops them and cache-misses every compaction) and appends the directive as a trailing user message; split-turn = two summaries merged. Overflow recovery: trim from the **front** and retry (prefix-preserving); on a model switch mid-history, summarize with the **outgoing** model, current-model fallback | — |
+| P8 | **Details** | `file_ops(messages) -> Details{read_files, modified_files}` cumulative across compactions | — |
+| P9 | **Compaction entry** | `CompactionEntry{summary, first_kept_entry_id, tokens_before, details, window: {first, previous?, id, number}}` appended; nothing deleted. Window ids chain compactions (surfaced to the model), per-window one-shot latches kill repeat advisories. `Compaction::Roll` variant = summary-less window roll (same hooks, same entry) — the fallback when the summarizer itself fails | Pi |
+| P10 | **Ledger** | `HarnessState{entries: {prompt, memory, subagent}, scope: local|global}`; `load(mtime-synced)`, `format_for_prompt(limits)` | — |
+| P11 | **Assembly** | `assemble(StablePrefix{system, ledger, summary}, overlay: &[WorldStateDiff], kept: &[AgentMessage], current, suffix) -> LlmContext` with cache tiers. The overlay is **append-only diffs** (P18): full world state injected once per window, deltas appended at the tail thereafter — the prefix is never disturbed by a changed value | — |
+| P12 | **Runtime context** | kernel namespace; orthogonal; survives P9 untouched; snapshot/restore is the kernel's job | — |
+| P13 | **Scheduling** | `compact.run` from a cell or `/compact` sets `pending_compaction`; executed at the next **message boundary inside the tool loop** (a tool-heavy turn can otherwise blow the window before the turn ends), with post-compaction placement rules — summary is the last item the model sees; initial context re-injected before the last real user message. Model read side: `compact.status` returns `{tokens, context_window, percent, scheduled}` | — |
+| P14 | **Attribution** | `child_usage_attributed{parent_entry_id, usage, aggregate, origin}`; `own_and_total_usage(tree)` | — |
+| P15 | **Branch summary** | P7 applied on `/tree` navigation → `BranchSummaryEntry{from_id, summary}` | Pi |
+| P16 | **Source budgets** | `SourceBudgets{project_instructions, skills_meta, ledger, advisories, emergency_ceiling}` bytes; `fit(source, budget) -> Truncated{text, marker}`; enforced in P11 | — |
+| P17 | **Retention floor** | `retain_floor(branch, budget: 64_000) -> Vec<EntryId>` — every real user message survives compaction verbatim (role filter, newest-first token budget, oldest middle-truncated; prior summaries and contextual fragments dropped); union with P5's kept suffix. P5 keeps the working set, P17 guarantees no early user requirement is ever summarized away | — |
+| P18 | **World state** | `trait WorldStateSection { name; snapshot() -> Snapshot; render_diff(&prev) -> Option<Fragment> }` — named sections (env, permissions, ledger view), diff rendered only on change, appended at the overlay tail; per-turn re-injection is a diff or it is nothing | — |
 
 Only P1, P7 and P10 perform I/O. P2–P6, P8, P9, P11, P13, P14, P17, P18 are pure and property-testable.
 
@@ -689,15 +695,15 @@ flowchart TD
 | L1 | LoopContext | `{system_prompt, messages: Vec<AgentMessage>, tools: Vec<ToolDef>}` | data | pi `types.ts` |
 | L2 | LoopConfig | struct of callbacks (§4.1); ≤ 12 fields, CI-checked | data | pi `AgentLoopConfig` |
 | L3 | transform_context | `fn(&[AgentMessage]) -> Vec<AgentMessage>` — compaction/ledger view; must not fail | pure cb | pi |
-| L4 | convert_to_llm | `fn(&[AgentMessage]) -> Vec<Message>` — custom/heartbeat/advisory entries → `user` wrapped `<yi_internal_context source="heartbeat\|advisory\|goal">…</yi_internal_context>` (source label validated `[a-z][a-z0-9_]*`; registered wrappers are recognized and **dropped at compaction**, so injected prompts never accumulate across windows); drop internal kinds | pure cb | pi · prime `messages.ts:479` · codex `internal_model_context.rs:1-80` |
+| L4 | convert_to_llm | `fn(&[AgentMessage]) -> Vec<Message>` — custom/heartbeat/advisory entries → `user` wrapped `<yi_internal_context source="heartbeat\|advisory\|goal">…</yi_internal_context>` (source label validated `[a-z][a-z0-9_]*`; registered wrappers are recognized and **dropped at compaction**, so injected prompts never accumulate across windows); drop internal kinds | pure cb | pi |
 | L5 | StreamFn | `fn(model, LlmContext, opts, &InterruptSignal) -> impl Stream<AssistantMessageEvent>`; failure = final `stop_reason: Error`, never `Err` | I/O | pi-ai |
-| L6 | reduce_partial | `fn(&mut AssistantMessage, &AssistantMessageEvent)` — builds the partial from `text_delta`/`thinking_delta`/`toolcall_*`; **fold for display, execute from the terminal item** — where an API delivers the complete tool call whole, never execute one assembled from deltas; commits are per completed item (D29) | pure | pi-ai · codex |
+| L6 | reduce_partial | `fn(&mut AssistantMessage, &AssistantMessageEvent)` — builds the partial from `text_delta`/`thinking_delta`/`toolcall_*`; **fold for display, execute from the terminal item** — where an API delivers the complete tool call whole, never execute one assembled from deltas; commits are per completed item (D29) | pure | pi-ai |
 | L7 | extract_tool_calls | `fn(&AssistantMessage) -> Vec<ToolCall>`; if `stop_reason == Length` every call is failed, none executed | pure | pi `agent-loop.ts:212` |
-| L8 | execute_tools | `fn(calls, mode: Sequential\|Parallel, before, after, &InterruptSignal) -> Vec<ToolResultMessage>`; skipped calls still get synthesized results | I/O (via tools) | pi · jcode |
+| L8 | execute_tools | `fn(calls, mode: Sequential\|Parallel, before, after, &InterruptSignal) -> Vec<ToolResultMessage>`; skipped calls still get synthesized results | I/O (via tools) | pi |
 | L9 | drain points | `get_steering_messages()` after each tool batch; `get_follow_up_messages()` only when the loop would otherwise exit | pure cb | pi `PendingMessageQueue` |
 | L10 | stop policy | `should_stop_after_turn(ctx) -> bool`; `prepare_next_turn(ctx) -> Option<NextTurn{messages, model, thinking}>` | pure cb | pi |
 | L11 | Event | 13-variant enum (§4.1); emitted in a fixed order per turn | data | pi `AgentEvent` |
-| L13 | repair_tool_call | `fn(raw: &RawToolCall) -> Option<ToolCall>` — one deterministic repair (balance JSON, trim trailing garbage, exact-case tool-name match); otherwise the call fails with the parse error | pure | jcode `response_recovery.rs` · omp |
+| L13 | repair_tool_call | `fn(raw: &RawToolCall) -> Option<ToolCall>` — one deterministic repair (balance JSON, trim trailing garbage, exact-case tool-name match); otherwise the call fails with the parse error | pure | — |
 | L12 | run_failure | `fn(err) -> [MessageStart, MessageEnd, TurnEnd, AgentEnd]` synthesized so observers never see a truncated stream | pure | pi `handleRunFailure` |
 
 Invariant: `yi-loop` contains no `Result` in its public API and no branch that inspects a
@@ -709,14 +715,14 @@ provider-specific error. Anything that can fail is encoded as a value by L5 or L
 |---|---|---|---|---|
 | R1 | AgentState | `{status: Running\|Idle\|RequiresAction, messages, model, thinking, usage, pending_permission}` — status and usage are derived here, never emitted by the loop | data | pi `AgentState` |
 | R2 | reduce | `fn(&mut AgentState, &Event)`; state is updated **before** listeners are notified, in subscription order | pure | pi `processEvents` |
-| R3 | PendingMessageQueue | `{mode: All\|OneAtATime}`; `push`, `drain`, `clear`, `is_empty` — two instances (steer, follow_up); **durable** (D30): pushes persist as `custom{queued_input}` entries so queued steering survives a crash/Ctrl-C mid-turn (~20 lines given S1 `Custom{}`) | data | pi `agent.ts:120` · codex `ext/queue` |
-| R4 | Turn | `{id, attempt_budget, consumed_attempts, recovery_checkpoint, stop_state}` + `step() -> StepOutcome{Continue, ToolsPending, Stop(reason), Interrupted(point)}` | pure | fx `CommonStopState`, `RecoveryCheckpoint` |
+| R3 | PendingMessageQueue | `{mode: All\|OneAtATime}`; `push`, `drain`, `clear`, `is_empty` — two instances (steer, follow_up); **durable** (D30): pushes persist as `custom{queued_input}` entries so queued steering survives a crash/Ctrl-C mid-turn (~20 lines given S1 `Custom{}`) | data | pi `agent.ts:120` |
+| R4 | Turn | `{id, attempt_budget, consumed_attempts, recovery_checkpoint, stop_state}` + `step() -> StepOutcome{Continue, ToolsPending, Stop(reason), Interrupted(point)}` | pure | — |
 | R5 | build_loop_config | `fn(&AgentSession) -> LoopConfig` — the only constructor in the workspace | pure | new |
 | R6 | prompt | `fn(msgs) -> Admitted` — appends `user` entry, reducer goes `Running`, returns before any model call | I/O | ACP v2 semantics |
 | R7 | steer / follow_up / abort / wait_idle | thin wrappers over R3 + `InterruptSignal` | I/O | pi |
 | R8 | hook bridge | **In-process hook trait stays cut.** Stretch (D14): blocking wire hooks to external processes over stdio JSON (schemas in `yi-types`, §19); per-hook timeout ~500 ms, fail-open/closed per hook, off by default. **L1** = 4 hooks (`before_agent_start`, `context`, `tool_call`, `tool_result`) + events + exec tools ≈ 15–20 % of Pi's 78 example extensions; **L2** adds `registerCommand` [34/78], session lifecycle [11/78], `before_compact`, `input` [7/78], ctx.ui-lite (→ U12/U24) + Bun sidecar autostart ≈ 60–65 % (~90 % of non-UI, unmodified — fs/spawn works because the shim runs in real Bun); **L3** remote-rendered UI ≈ 92–96 % — corpus math and the never-list in §8.16 | wire | pi extension contracts (A.1); measured 2026-08-21 |
 | R10 | tracing | `tracing` spans: `turn`, `provider_attempt`, `tool`, `compaction`, `advisor_review`; JSON export with `YI_TRACE=1`; no vendor SDK | I/O | pi telemetry · har-layout |
-| R9 | retry constants | `MAX_CONTEXT_LIMIT_RETRIES = 5`, `MAX_EMPTY_POST_TOOL_CONTINUATIONS = 5`, … each with its incident in a doc comment; `RetryPolicy{max_attempts, max_delay_ms, max_total_wall_ms}` — **every backoff has a ceiling and every ladder a total wall-clock budget**; a transport fallback never resets the attempt counter; stream idle timeout ≤ 60 s; every retry user-visible from attempt 1 (codex: uncapped backoff × counter-reset fallback ≈ 50 min silent hang, first notice suppressed in release) | data | jcode `turn_loops.rs:7` · codex `util.rs:86-91`, `responses_retry.rs:85-113` (anti-lesson, D26) |
+| R9 | retry constants | `MAX_CONTEXT_LIMIT_RETRIES = 5`, `MAX_EMPTY_POST_TOOL_CONTINUATIONS = 5`, … each with its incident in a doc comment; `RetryPolicy{max_attempts, max_delay_ms, max_total_wall_ms}` — **every backoff has a ceiling and every ladder a total wall-clock budget**; a transport fallback never resets the attempt counter; stream idle timeout ≤ 60 s; every retry user-visible from attempt 1 (a surveyed uncapped backoff × counter-reset fallback gave a ≈ 50 min silent hang, first notice suppressed in release) | data | — |
 
 ### 8.4 Session store (`yi-session`, from Pi `harness/session`)
 
@@ -724,12 +730,12 @@ provider-specific error. Anything that can fail is encoded as a value by L5 or L
 |---|---|---|---|---|
 | S1 | Entry | tagged union: `Message`, `Compaction`, `BranchSummary`, `ModelChange`, `ThinkingLevel`, `ActiveTools`, `Custom{custom_type, data}`; base `{type, id, seq, parent_id, timestamp}` | data | pi `harness/session/types.ts:16` |
 | S2 | ProvisionedEntry | `Entry` minus `seq/parent_id/timestamp`; the only thing `append` accepts | data | pi |
-| S3 | IdGenerator | `fn next() -> EntryId` (ulid-like, sortable); session ids `[0-9a-z-]{8,64}` validated before any path join | pure | pi · fx `session_layout.zig` |
+| S3 | IdGenerator | `fn next() -> EntryId` (ulid-like, sortable); session ids `[0-9a-z-]{8,64}` validated before any path join | pure | pi |
 | S4 | Repo | **Corrected to the implemented v4 contract** (the five-method sketch predated D32/D33): `trait SessionRepo { create, open, list, delete, fork } -> SharedSession` (Arc<Mutex<SessionStore>>); `SessionStore` = replay state + `append_entry/record/message/custom/compaction`, `find_entries[_on_branch]` with cursor semantics, `find_records`, `find_open_operations`, `fork_mutations` | trait | pi `harness/session` (v4) |
-| S5 | JSONL codec | header `{kind:"header", version:4, id, createdAt, cwd, …}`; one mutation per LF line (`kind: entry\|record\|lane\|fact`, D32); v3 files migrate on load; the domain `Entry` enum serializes through a **separate wire enum** (`yi-types::wire`, fixture-locked byte-identical) so the domain type can be refactored without touching the on-disk shape (§19 rule 1's second half) | pure (encode/decode) | pi `jsonl/codec.ts:1-240` · codex `rollout_payload.rs:20-52` |
-| S6 | JsonlRepo / MemRepo | S4 over a file / over a Vec. File repo: append-only; **no fsync on the hot path is the stated choice** (crash safety = ordered appends + the next two rules); **newline re-termination on every open** (a crash mid-write leaves a partial line; append `\n` before writing — 3 lines, prevents corrupt-forever); **deferred file creation** (no disk touch until first entry — `--help` and abandoned sessions leave nothing); load tolerance ladder: skip blanks, count-and-skip bad JSON, hard-fail only on an unknown field that changes replay semantics — and it is the **one** reader with the **one** tolerance policy | I/O / pure | pi · codex `recorder.rs:1009-1072,1920-1933` |
+| S5 | JSONL codec | header `{kind:"header", version:4, id, createdAt, cwd, …}`; one mutation per LF line (`kind: entry\|record\|lane\|fact`, D32); v3 files migrate on load; the domain `Entry` enum serializes through a **separate wire enum** (`yi-types::wire`, fixture-locked byte-identical) so the domain type can be refactored without touching the on-disk shape (§19 rule 1's second half) | pure (encode/decode) | pi `jsonl/codec.ts:1-240` |
+| S6 | JsonlRepo / MemRepo | S4 over a file / over a Vec. File repo: append-only; **no fsync on the hot path is the stated choice** (crash safety = ordered appends + the next two rules); **newline re-termination on every open** (a crash mid-write leaves a partial line; append `\n` before writing — 3 lines, prevents corrupt-forever); **deferred file creation** (no disk touch until first entry — `--help` and abandoned sessions leave nothing); load tolerance ladder: skip blanks, count-and-skip bad JSON, hard-fail only on an unknown field that changes replay semantics — and it is the **one** reader with the **one** tolerance policy | I/O / pure | pi |
 | S7 | lane records | **Revised by D32** (was: cut). Pi's v4 wire interleaves lane/operation records with entries; `yi-types::record` models all nine so Pi files read and re-emit byte-identically. Yi still *maintains* no operation log: crash recovery stays tree-derived (leaf assistant message with unresolved tool calls ⇒ synthesize `ToolResult{error: interrupted}`, I4); Yi-native writes are entry/lane/fact only, records preserved pass-through. | data | pi `harness/session/types.ts:87-209` |
-| S8 | tree ops | `fork(from_id) = set_leaf(from_id)`; `navigate(id)`; `label(id, text)`; `rewind(n)` = `set_leaf(ancestor)` — no copies, no deletes | pure | pi · jcode `rewind` |
+| S8 | tree ops | `fork(from_id) = set_leaf(from_id)`; `navigate(id)`; `label(id, text)`; `rewind(n)` = `set_leaf(ancestor)` — no copies, no deletes | pure | pi |
 | S9 | list / search | `list(dir) -> Vec<SessionHeader>`; `grep(pattern) -> hits` over headers + first user message | I/O | pi |
 | S10 | conformance | shared test suite every `Repo` impl must pass | test | pi `testing/conformance.ts` |
 
@@ -739,37 +745,37 @@ provider-specific error. Anything that can fail is encoded as a value by L5 or L
 |---|---|---|---|---|
 | A1 | Model | `{provider, id, api: Api, context_window, max_output, reasoning: bool, cost: {in, out, cache_r, cache_w}}`; catalog loaded from pi-ai's generated JSON | data | pi-ai `models.ts` |
 | A2 | Message / Content | `User \| Assistant \| ToolResult`; `Text \| Image \| Thinking \| ToolCall`; serde-identical to pi-ai | data | pi-ai `types.ts:467` |
-| A3 | Api adapter | `trait { build_request(model, ctx, opts) -> HttpRequest; parse_event(bytes) -> Vec<AssistantMessageEvent> }` — one per API (`anthropic-messages`, `openai-completions` (D34 OpenRouter), `openai-responses` (D57 native OpenAI)); the **terminal-event decision lives here**, never per-transport (codex: `response.failed` ends the turn immediately on WS but waits for EOF on SSE; Responses terminals are `completed`/`incomplete`/`failed`/`error` and must not wait for body EOF); a terminal event returns without waiting for stream EOF; malformed frames skipped, never fatal; design name `openai-chat` is the completions wire, implemented as `openai-completions` | pure | pi-ai `providers/*` · codex `sse/responses.rs:578-633` |
-| A4 | Transport | `fn send(HttpRequest, &InterruptSignal) -> impl Stream<Bytes>`; SSE decode; idle timeout is **per-poll** (inter-event gap ≤ 60 s), never wall-clock; retry with backoff on 429/5xx before first byte, and **after** first byte too (D29): every completed item is committed to the tree as it arrives and a retry rebuilds the request from the tree — partials never enter history, so the retry is a fresh request from a consistent prefix (delivery certainty still gates anything side-effectful); transport fallback is one-way, latched, counted, and never resets the attempt counter; channels bounded **end-to-end** (one unbounded hop makes the pipeline unbounded); honors `HTTPS_PROXY`/`HTTP_PROXY`/`NO_PROXY` incl. inline basic-auth — `ureq` does not read proxy env itself, and pier's air-gapped tasks route the provider through an authenticated Squid sidecar (§15, E2) | I/O | pi-ai · fx `DeliveryCertainty` |
+| A3 | Api adapter | `trait { build_request(model, ctx, opts) -> HttpRequest; parse_event(bytes) -> Vec<AssistantMessageEvent> }` — one per API (`anthropic-messages`, `openai-completions` (D34 OpenRouter), `openai-responses` (D57 native OpenAI)); the **terminal-event decision lives here**, never per-transport (a surveyed harness ends the turn on `response.failed` immediately on WS but waits for EOF on SSE; Responses terminals are `completed`/`incomplete`/`failed`/`error` and must not wait for body EOF); a terminal event returns without waiting for stream EOF; malformed frames skipped, never fatal; design name `openai-chat` is the completions wire, implemented as `openai-completions` | pure | pi-ai `providers/*` |
+| A4 | Transport | `fn send(HttpRequest, &InterruptSignal) -> impl Stream<Bytes>`; SSE decode; idle timeout is **per-poll** (inter-event gap ≤ 60 s), never wall-clock; retry with backoff on 429/5xx before first byte, and **after** first byte too (D29): every completed item is committed to the tree as it arrives and a retry rebuilds the request from the tree — partials never enter history, so the retry is a fresh request from a consistent prefix (delivery certainty still gates anything side-effectful); transport fallback is one-way, latched, counted, and never resets the attempt counter; channels bounded **end-to-end** (one unbounded hop makes the pipeline unbounded); honors `HTTPS_PROXY`/`HTTP_PROXY`/`NO_PROXY` incl. inline basic-auth — `ureq` does not read proxy env itself, and pier's air-gapped tasks route the provider through an authenticated Squid sidecar (§15, E2) | I/O | pi-ai |
 | A5 | Usage | `{input, output, cache_read, cache_write, total?, cost}`; `normalize(provider_usage) -> Usage`; **wire JSON is Pi's camelCase** (`cacheRead`, `cacheWrite`, `cost: {total}`) — harbor's Pi-shaped parser silently reports zeros on snake_case (§15, E5) | pure | pi-ai |
 | A6 | Auth | `api_key(provider) -> Option<Secret>` from env / keychain; OAuth for providers that need it | I/O | pi-ai `auth/` |
 | A7 | faux | scripted `AssistantMessageEvent` replay for tests; shares fixtures with Pi | pure | pi-ai `providers/faux.ts` |
-| A8 | cache hints | `cache_policy: Stable \| NoCache` per message block → provider-specific cache control | pure | fx `prompt_context` |
-| A9 | quirks | the single home for provider tolerance: lenient decode, arg coercion, error-text classification; every rule carries a named test citing the provider/issue that created it; leniency outside this module is a boundary violation | pure | new (§9.1) — jcode scattered the same job across 4 files |
+| A8 | cache hints | `cache_policy: Stable \| NoCache` per message block → provider-specific cache control | pure | — |
+| A9 | quirks | the single home for provider tolerance: lenient decode, arg coercion, error-text classification; every rule carries a named test citing the provider/issue that created it; leniency outside this module is a boundary violation | pure | new (§9.1) — a surveyed harness scattered the same job across 4 files |
 
-### 8.6 Interrupt (`yi-loop::interrupt`, from jcode `jcode-agent-runtime`)
-
-| # | Primitive | Signature | Purity | Source |
-|---|---|---|---|---|
-| I1 | InterruptSignal | `{fired: AtomicBool, wake: Notify, epoch: AtomicU64}`; `fire()`, `is_fired()` (sync, no await), `wait()`, `reset_if_epoch(e)`. The signal is per-session and outlives a turn, so a run reads `epoch()` at admission and `reset_if_epoch` at the start of the spawned run — an unreset signal makes the first abort poison every later turn, and an unconditional reset swallows an interrupt fired in the gap. `wait()` is the only interrupt checkpoint a streaming answer has: L5's providers take the signal but cannot cancel an in-flight HTTP body, so the stream consumer selects on it `biased` and ends the turn `Aborted` with the partial intact | data | jcode `lib.rs:33` |
-| I2 | SoftInterruptQueue | `Mutex<Vec<SoftInterrupt{text, source, urgent}>>` — std mutex, enqueue without the session lock | data | jcode |
-| I3 | InjectionPoint | enum `AfterTurnNoTools \| BetweenTools \| BeforeProvider`; outcome enums `NoToolCallOutcome`, `PostToolOutcome` | data | jcode `docs/SOFT_INTERRUPT.md` |
-| I4 | synthesize_skipped | `fn(skipped: &[ToolCall]) -> Vec<ToolResultMessage>` — keeps the transcript valid when an urgent interrupt skips remaining calls | pure | jcode |
-
-### 8.7 Permission (`yi-permission`, from fx `core/permissions` minus the classifier)
+### 8.6 Interrupt (`yi-loop::interrupt`)
 
 | # | Primitive | Signature | Purity | Source |
 |---|---|---|---|---|
-| M1 | PermissionMode | `Ask \| Auto \| Yolo` | data | fx `types.zig:1510` |
-| M2 | Rule | `{permission: Tool\|Command\|Path, pattern: glob, action: Allow\|Deny\|Ask}` from config (precedence: configured deny > session rule > session grant) | data | fx |
-| M3 | RuleKey | `{kind: Command\|FileMutation\|StructuredTool, digest: sha256(canonical(tool, args)), canonical}`; `RuleId(u64)` monotonic | pure | fx `session_permission_state.zig` |
-| M4 | SessionRuleState | `{rules: Vec<Rule{id, key, decision, generation}>, next_generation}`; persisted inside the session header; `max_rules = 1024` | data | fx |
+| I1 | InterruptSignal | `{fired: AtomicBool, wake: Notify, epoch: AtomicU64}`; `fire()`, `is_fired()` (sync, no await), `wait()`, `reset_if_epoch(e)`. The signal is per-session and outlives a turn, so a run reads `epoch()` at admission and `reset_if_epoch` at the start of the spawned run — an unreset signal makes the first abort poison every later turn, and an unconditional reset swallows an interrupt fired in the gap. `wait()` is the only interrupt checkpoint a streaming answer has: L5's providers take the signal but cannot cancel an in-flight HTTP body, so the stream consumer selects on it `biased` and ends the turn `Aborted` with the partial intact | data | — |
+| I2 | SoftInterruptQueue | `Mutex<Vec<SoftInterrupt{text, source, urgent}>>` — std mutex, enqueue without the session lock | data | — |
+| I3 | InjectionPoint | enum `AfterTurnNoTools \| BetweenTools \| BeforeProvider`; outcome enums `NoToolCallOutcome`, `PostToolOutcome` | data | — |
+| I4 | synthesize_skipped | `fn(skipped: &[ToolCall]) -> Vec<ToolResultMessage>` — keeps the transcript valid when an urgent interrupt skips remaining calls | pure | — |
+
+### 8.7 Permission (`yi-permission`, minus the reference's classifier)
+
+| # | Primitive | Signature | Purity | Source |
+|---|---|---|---|---|
+| M1 | PermissionMode | `Ask \| Auto \| Yolo` | data | — |
+| M2 | Rule | `{permission: Tool\|Command\|Path, pattern: glob, action: Allow\|Deny\|Ask}` from config (precedence: configured deny > session rule > session grant) | data | — |
+| M3 | RuleKey | `{kind: Command\|FileMutation\|StructuredTool, digest: sha256(canonical(tool, args)), canonical}`; `RuleId(u64)` monotonic | pure | — |
+| M4 | SessionRuleState | `{rules: Vec<Rule{id, key, decision, generation}>, next_generation}`; persisted inside the session header; `max_rules = 1024` | data | — |
 | M5 | Hold | `{pattern, reason, ttl, source: Advisor\|User}` — turns matching calls into `Ask` with `reason` attached; advisor-sourced Holds degrade headless (§7.3, D28) | data | new (§7) |
-| M6 | decide | `fn(call, mode, &[Rule], &SessionRuleState, &[Hold], irreversible: bool) -> Decision{Allow, Deny{reason}, Ask{title, description, subject}}` | pure | fx `permission_gate.zig` |
-| M7 | AutoReview | **deferred to phase 6+ (D3).** Launch `auto` mode is deterministic: Read-kind → allow; Write/Exec → ask unless a rule or hold decides; no model call. The fx reviewer lands only if deterministic-auto nags in practice | I/O (model) | fx `tool_admission.zig:888` |
-| M8 | action-bound approval | **deferred with M7 (D3)** — exists only to make M7's recoverable denials safe | pure | fx `turn_permission_recovery` |
-| M10 | catastrophic denylist | `is_catastrophic(path_or_cmd_targets) -> bool` — home dir, device nodes, the workspace `.git`; denied in **every** mode including yolo; checked before M6; ~200 lines, path-based, no command parsing (D15). Path checks use a **purely lexical normalizer** (pops `..`, skips `.`, never touches the filesystem — `canonicalize()` fails on the file being created, the common case); write-escalation to a parent dir double-filters so an already-writable dir can never escalate to its parent | pure | jcode `paths.rs` absolute tier (`ref/agents/jcode/crates/jcode-command-risk/src/paths.rs`) · codex `safety.rs:137-186`, `apply_patch.rs:236-271` |
-| M11 | mode fragments | one short prompt fragment per `PermissionMode`, selected into the system prompt and tested per mode — the model must be *told* what the current mode allows; not knowing is why models retry denied operations (codex ships a policy×sandbox fragment matrix with 752 lines of selection tests) | data | codex `permissions_instructions.rs` (D30) |
+| M6 | decide | `fn(call, mode, &[Rule], &SessionRuleState, &[Hold], irreversible: bool) -> Decision{Allow, Deny{reason}, Ask{title, description, subject}}` | pure | — |
+| M7 | AutoReview | **deferred to phase 6+ (D3).** Launch `auto` mode is deterministic: Read-kind → allow; Write/Exec → ask unless a rule or hold decides; no model call. A model reviewer lands only if deterministic-auto nags in practice | I/O (model) | — |
+| M8 | action-bound approval | **deferred with M7 (D3)** — exists only to make M7's recoverable denials safe | pure | — |
+| M10 | catastrophic denylist | `is_catastrophic(path_or_cmd_targets) -> bool` — home dir, device nodes, the workspace `.git`; denied in **every** mode including yolo; checked before M6; ~200 lines, path-based, no command parsing (D15). Path checks use a **purely lexical normalizer** (pops `..`, skips `.`, never touches the filesystem — `canonicalize()` fails on the file being created, the common case); write-escalation to a parent dir double-filters so an already-writable dir can never escalate to its parent | pure | — |
+| M11 | mode fragments | one short prompt fragment per `PermissionMode`, selected into the system prompt and tested per mode — the model must be *told* what the current mode allows; not knowing is why models retry denied operations (a surveyed harness ships a policy×sandbox fragment matrix with 752 lines of selection tests) | data | — |
 | M9 | PermissionRequest / Response | `{title, description, subject: ToolCall\|Command, options: [allow_once, allow_always, reject_once, reject_always]}` → `Selected(option)\|Cancelled`; `allow_always` ⇒ M4 insert | data | ACP v2 |
 
 ```mermaid
@@ -788,10 +794,11 @@ flowchart LR
   A -->|allow_always| M4[(M4 session rules)]
 ```
 
-Rules from the codex permission post-mortem (D26): an **unparseable command is a distinct
+Rules from a surveyed permission post-mortem (D26): an **unparseable command is a distinct
 decision input** (`ParseOutcome::Unparsed`) with its own rule, never re-keyed onto `bash` —
-codex collapses any redirect/substitution/glob to `["bash","-lc",…]`, prompts under its strict
-policy, and bans the only rule that could stop it, so `rg foo | head` prompts forever. A denial
+that reference collapses any redirect/substitution/glob to `["bash","-lc",…]`, prompts under
+its strict policy, and bans the only rule that could stop it, so `rg foo | head` prompts
+forever. A denial
 **carries its evidence** — never a generic "command failed; retry?" while the violation text is
 discarded. In `auto`, a sandbox/deny outcome surfaces as `Ask`, never as a silent terminal tool
 error. Compound commands decide **per segment**; the aggregate names the segment that forced
@@ -799,43 +806,43 @@ escalation. Default writable roots include the toolchain caches (`~/.cargo`, `~/
 `~/.cache`) — a sandbox that blocks `cargo build` is wrong, not strict. `decide()` inputs are
 memoized on `(mode, rules_hash)` — never recompiled per call.
 
-### 8.8 Tools (`yi-tools`, fx contract + OMP hashline)
+### 8.8 Tools (`yi-tools`: dispatch contract + hashline editing)
 
 | # | Primitive | Signature | Purity | Source |
 |---|---|---|---|---|
-| T1 | Tool | `trait { name, description, schema, kind: Read\|Write\|Exec, intent: Require\|Omit\|Derive(fn), irreversible(&input) -> bool, validate(&input) -> Result<(), String>, execute(input, &ToolContext) -> ToolResult }`. `to_definition()` prepends `i: {type: string, description: "concise intent"}` to `properties` (and `required` when `Require`; pushed into each `anyOf` branch for union roots); `i` is stripped **before** validation, never enforced, and rides `ToolExecutionStart.intent`. `format: JsonSchema \| Freeform{grammar}` (D29): `edit` ships its hashline patch as a freeform/grammar tool on `openai-responses` — no JSON escaping on the largest model-emitted payload (~5-15 % token tax + an escaping-error class); everything else stays JSON | trait | fx `tool_dispatch.zig:425` (trimmed) · omp `agent-loop.ts:786-891` · jcode `ensure_intent_in_schema` |
-| T2 | ToolContext | `{cwd, emit, permission: PermissionHandle, caps: Capabilities{kernel?, background?, terminal?}}` | data | replaces fx `DispatchContext` |
-| T3 | Registry | `Vec<Arc<dyn Tool>>` + lookup by name; built-ins + discovered exec tools | data | fx `mods/registry.zig` |
-| T4 | ExecTool | discover `~/.yi/tools/*`, `.yi/tools/*`; `--schema` (mtime-cached) → T1; run: JSON stdin → stdout; exit ≠ 0 → error(stderr). **Project-level tools are hash-pinned trust** (D30): a `.yi/tools/*` executable runs only after a user-level grant recording its content hash; an edited tool becomes `Modified` and stops running — a cloned repo's tools are arbitrary code, and trust grants never come from the project layer | I/O | new (§5) · codex hooks `discovery.rs:695-785` |
-| T5 | SnapshotStore | `{key: realpath, tag, text, seen_lines}`; `put(path, text, seen)`, `by_tag(path, tag)`, `by_content`; 4 MiB cap; collision-tolerant | data | omp `snapshots.ts`, `file-snapshot-store.ts` |
-| T6 | hashline format | `compute_tag(text) = xxh32(strip_trailing_ws(text), 0) & 0xffff` → 4 hex; `header(path, tag)`; `numbered(lines)` | pure | omp `format.ts:108` |
-| T7 | normalize | `detect_eol`, `to_lf`, `restore_eol`, `strip_bom`; Unicode confusables table (unicode dashes/curly quotes/NBSP+exotic spaces → ASCII, the `git apply` fuzz set) applied **to the tag computation on both sides** so file identity survives a model that has been reading `.md` | pure | omp `normalize.ts` · codex `seek_sequence.rs:81-112` |
-| T8 | patch parser | `parse(input) -> Patch{sections: [{path, tag, hunks: [Put\|Cut\|Rem\|Mv]}]}` with OMP's lenient recoveries + warnings | pure | omp `parser.ts`, `tokenizer.ts`, `prefixes.ts` |
-| T9 | apply | `fn(snapshot_text, &Section, &mut Registers) -> Result<Postimage, MismatchError>`; all line numbers index the original; overlaps rejected; no fuzzy, no tree-sitter. Register ops counted in session stats — kept on move-token economics, revisit with data (D11) | pure | omp `apply.ts` (minus repair) |
-| T10 | prepare / commit | `prepare(patch, fs) -> Prepared{per-section postimages, diffs}`; `commit(Prepared) -> Written{done, not_written, unknown}` — `unknown` = write errored after partial output (decides whether T14 restore is safe); **`commit` re-validates path constraints and symlink status at write time** (approval of a diff is not approval of a path; one test mirrors codex `no_follow_rechecks_paths_after_verification`) | I/O | omp `patcher.ts` · codex `no_follow.rs:63-108`, `lib.rs:246-284` |
-| T11 | guards | seen-lines guard; no-op loop guard (3 strikes); mismatch error text verbatim | pure | omp `patcher.ts:622`, `noop-loop-guard.ts`, `messages.ts` |
-| T12 | bash | `run(cmd, cwd, env, &InterruptSignal) -> {stdout, stderr, exit, truncated}`; output cap; optional background handle. Background map eviction is **LRU with the 8 most-recent protected**, never idle-timeout (an idle timer kills a quiet `cargo build`); "check on job N" is the same tool with empty input and a 5 s–300 s clamp, not a separate `jobs` tool (D30 — PTY sessions skipped: ~3.7k-line subsystem + a per-session approval hole where every stdin write bypasses the permission gate; `ipython` covers the REPL case) | I/O | fx `tools/shell` · codex `process_manager.rs:823-832,1461-1532` |
-| T14 | checkpoint | shadow gitdir (§5.3): `capture() -> Option<TreeId>` at turn start and turn end (best-effort, never fails the turn); `changed(a, b) -> Vec<Path>`; `restore(paths: [(Path, TreeId)])` per file (`checkout <tree> -- <path>`, delete if absent); `diff(a, b) -> GitPatch`; `custom{checkpoint{tree, at: TurnStart\|TurnEnd}}` entry | I/O | OpenCode v2 `core/src/snapshot.ts` + `git.ts` |
-| T15 | summarize_read | `fn(text, budget) -> Rendered{lines, elided: Vec<Range>}` — collapses brace-balanced blocks to `N-M:` rows + `[…N ln elided]` footer; hashline tag still covers the full file | pure | omp `read-format.ts` |
-| T16 | read_tool_result | `{id, range?}` re-reads a truncated output stored under `<session>/artifacts/tool-output/<id>` — the spill path for **any** unbounded text entering context (tool output, exec-tool output, oversized injected material): over-budget text is spilled to a file and replaced with head/tail preview + recovery id | I/O | fx · codex `output_spill.rs:11-131` |
-| T13 | diff | `fn(pre, post) -> GitPatch` (unified, absolute paths) for permission display and ACP v2 `diff.patch` | pure | fx diff engine |
+| T1 | Tool | `trait { name, description, schema, kind: Read\|Write\|Exec, intent: Require\|Omit\|Derive(fn), irreversible(&input) -> bool, validate(&input) -> Result<(), String>, execute(input, &ToolContext) -> ToolResult }`. `to_definition()` prepends `i: {type: string, description: "concise intent"}` to `properties` (and `required` when `Require`; pushed into each `anyOf` branch for union roots); `i` is stripped **before** validation, never enforced, and rides `ToolExecutionStart.intent`. `format: JsonSchema \| Freeform{grammar}` (D29): `edit` ships its hashline patch as a freeform/grammar tool on `openai-responses` — no JSON escaping on the largest model-emitted payload (~5-15 % token tax + an escaping-error class); everything else stays JSON | trait | — |
+| T2 | ToolContext | `{cwd, emit, permission: PermissionHandle, caps: Capabilities{kernel?, background?, terminal?}}` | data | replaces the reference `DispatchContext` |
+| T3 | Registry | `Vec<Arc<dyn Tool>>` + lookup by name; built-ins + discovered exec tools | data | — |
+| T4 | ExecTool | discover `~/.yi/tools/*`, `.yi/tools/*`; `--schema` (mtime-cached) → T1; run: JSON stdin → stdout; exit ≠ 0 → error(stderr). **Project-level tools are hash-pinned trust** (D30): a `.yi/tools/*` executable runs only after a user-level grant recording its content hash; an edited tool becomes `Modified` and stops running — a cloned repo's tools are arbitrary code, and trust grants never come from the project layer | I/O | new (§5) |
+| T5 | SnapshotStore | `{key: realpath, tag, text, seen_lines}`; `put(path, text, seen)`, `by_tag(path, tag)`, `by_content`; 4 MiB cap; collision-tolerant | data | — |
+| T6 | hashline format | `compute_tag(text) = xxh32(strip_trailing_ws(text), 0) & 0xffff` → 4 hex; `header(path, tag)`; `numbered(lines)` | pure | — |
+| T7 | normalize | `detect_eol`, `to_lf`, `restore_eol`, `strip_bom`; Unicode confusables table (unicode dashes/curly quotes/NBSP+exotic spaces → ASCII, the `git apply` fuzz set) applied **to the tag computation on both sides** so file identity survives a model that has been reading `.md` | pure | — |
+| T8 | patch parser | `parse(input) -> Patch{sections: [{path, tag, hunks: [Put\|Cut\|Rem\|Mv]}]}` with the reference's lenient recoveries + warnings | pure | — |
+| T9 | apply | `fn(snapshot_text, &Section, &mut Registers) -> Result<Postimage, MismatchError>`; all line numbers index the original; overlaps rejected; no fuzzy, no tree-sitter. Register ops counted in session stats — kept on move-token economics, revisit with data (D11) | pure | — |
+| T10 | prepare / commit | `prepare(patch, fs) -> Prepared{per-section postimages, diffs}`; `commit(Prepared) -> Written{done, not_written, unknown}` — `unknown` = write errored after partial output (decides whether T14 restore is safe); **`commit` re-validates path constraints and symlink status at write time** (approval of a diff is not approval of a path; one test mirrors the reference `no_follow_rechecks_paths_after_verification`) | I/O | — |
+| T11 | guards | seen-lines guard; no-op loop guard (3 strikes); mismatch error text verbatim | pure | — |
+| T12 | bash | `run(cmd, cwd, env, &InterruptSignal) -> {stdout, stderr, exit, truncated}`; output cap; optional background handle. Background map eviction is **LRU with the 8 most-recent protected**, never idle-timeout (an idle timer kills a quiet `cargo build`); "check on job N" is the same tool with empty input and a 5 s–300 s clamp, not a separate `jobs` tool (D30 — PTY sessions skipped: ~3.7k-line subsystem + a per-session approval hole where every stdin write bypasses the permission gate; `ipython` covers the REPL case) | I/O | — |
+| T14 | checkpoint | shadow gitdir (§5.3): `capture() -> Option<TreeId>` at turn start and turn end (best-effort, never fails the turn); `changed(a, b) -> Vec<Path>`; `restore(paths: [(Path, TreeId)])` per file (`checkout <tree> -- <path>`, delete if absent); `diff(a, b) -> GitPatch`; `custom{checkpoint{tree, at: TurnStart\|TurnEnd}}` entry | I/O | — |
+| T15 | summarize_read | `fn(text, budget) -> Rendered{lines, elided: Vec<Range>}` — collapses brace-balanced blocks to `N-M:` rows + `[…N ln elided]` footer; hashline tag still covers the full file | pure | — |
+| T16 | read_tool_result | `{id, range?}` re-reads a truncated output stored under `<session>/artifacts/tool-output/<id>` — the spill path for **any** unbounded text entering context (tool output, exec-tool output, oversized injected material): over-budget text is spilled to a file and replaced with head/tail preview + recovery id | I/O | — |
+| T13 | diff | `fn(pre, post) -> GitPatch` (unified, absolute paths) for permission display and ACP v2 `diff.patch` | pure | — |
 
-### 8.9 Kernel (`yi-kernel`, 1:1 from prime-agent `kernel/index.ts`)
+### 8.9 Kernel (`yi-kernel`, 1:1 from the reference kernel client)
 
 | # | Primitive | Signature | Purity | Source |
 |---|---|---|---|---|
-| K1 | bootstrap | `ensure_venv(dir) -> PythonPath`: `uv` install `ipykernel` + runtime pkg; `.bootstrap-version` JSON `{schema, ipykernel, runtime: sha256(src/rlm/** + pyproject), extra_args, skills}` — any mismatch ⇒ full rebuild; lock **directory** (`mkdir` + pid file; stale = pid dead ∨ mtime > 30 s); in-process dedupe memoized on env key; `RUNTIME_READY_CHECK` = venv probe subprocess, not the live kernel; XDG fallback venv dir | I/O | prime `bootstrap.ts:445-499,643-719,919-929` |
-| K2 | ConnectionFile | `{ip: 127.0.0.1, transport: tcp, ports: 0…, key: 32-hex random, signature_scheme: hmac-sha256}`; 0600 file in 0700 `mkdtemp` dir; polled 25 ms until all five ports resolve (30 s) though only shell/iopub/control connect; stdin never wired (`allow_stdin: false`), hb never used | I/O | prime `makeConnection`, `index.ts:487-491,545-547` |
-| K3 | framing | `encode(ids, header, parent, metadata, content) -> frames` with `<IDS|MSG>` delimiter + HMAC; `decode` | pure | prime `kernel/index.ts:26` |
-| K4 | channels | connect shell/iopub/control → `subscribe("")` → **control pump** → 50 ms slow-joiner sleep → **iopub pump** → `kernel_info` handshake (shell, 30 s); first execute only after the handshake, so no output is lost. Shell `execute_reply` is never read in prime — Rust drains shell in a background task (or rcv HWM) or the queue grows unboundedly | I/O | prime `index.ts:790-817,896-934` |
-| K5 | execute | `fn(code, cell_id, &InterruptSignal) -> ExecuteResult`; promise-chain queue orders callers **and** `activeExecution` guard catches re-entrancy from internal cells (both needed); `send` raced against the result promise so an abort mid-send cannot strand the call | I/O | prime `:980-1037,1091-1096` |
-| K6 | reduce_iopub | `fn(&mut ExecuteResult, IopubMsg)`: `stream`→stdout/stderr (live cap 65,536/stream, truncation markers at settle; internal cells 1 MiB), `execute_result`→`text/plain`, `error`→`{ename, evalue, traceback}`, `status: idle` with matching parent →done, `display_data` MIMEs→diffs/attachments/messages (attachment > 10 MiB **fails the cell**, never a silent drop); `on_stream` sees uncapped chunks — UI everything, model the cap | pure | prime `handleExecutionMessage`, `:1226-1300` |
-| K7 | host.request | comm target `"host.request"`; dispatched **before** the `parent_header` filter (a detached task's request must dispatch with no active execution); reply `comm_msg` on **control**; envelope `{status: "ok", …}` / `{status: "error", error}` — `status` reserved; request type placed **last** in comm data (a payload key `type` cannot reroute); one dispatch per comm id (`comm_open` deduped vs `comm_msg`, released on `comm_close`); `last_cell_code` fallback attributes detached requests; late `display_data` after idle → per-cell handlers, LRU 256 | I/O | prime `:1190-1194,1212-1225,1336-1348,1418-1509` |
-| K8 | lifecycle | two interrupt regimes: per-exec `interrupt_request` fire-and-forget + 1 s force-`Aborted` **without clearing** `activeExecution`; reuse re-interrupts every 500 ms ≤ 5 s then `KernelBusyAfterInterruptError` → `Wait\|Restart\|Cancel` (busy path = kill + fresh manager + restart notice into model context; `restart()` is dead code). Death = child-exit event; **generation counter** — every teardown/start bumps, every await re-checks staleness, `shutdown()` returns `performed_cleanup`; socket-closure errors translated with 1 KiB stderr tail; in-flight host requests block dispose 5 s; SIGINT/SIGTERM → snapshot-shutdown; orphan pid journal cleared only on confirmed kill | I/O | prime `:562-586,764-772,936-954,1058-1079,1397-1417,1518-1664,1822-1827` |
-| K9 | boot gate | **live from day one**: process-wide semaphore `min(16, max(4, cpus×2))` wrapping `start()` only — never restore/bootstrap (unbounded executes would pin a permit on a wedged kernel); protects the 30 s port-resolve window under fan-out (B2 bounds children, not boots) | I/O | prime `boot-gate.ts:22-50`, `ipython.ts:504-515` |
-| K10 | snapshot | per-variable `dill` (skip set `{rlm, mcp, asyncio, In, Out, …}`; unpicklable skipped, not fatal; 16 MiB/var, 256 MiB total), atomic tmp+`replace`, result = one marker-prefixed stdout line; debounced 1.5 s after each ok cell, flush ≤ 5 s at dispose; **restore before the bootstrap cell** (live handles overwrite revived ones), restore notice surfaces only after bootstrap succeeds; ready-gate serializes old-kernel flush vs new-kernel restore. **Post-compaction sync**: after each applied compaction, prune live variables above the per-variable cap (purged from namespace + `Out` cache, purge loop finishes through KeyboardInterrupt) and steer the model with `<ipython_state>` naming survivors — a peek, never a boot; listing bounded 5 s | I/O | prime `state-snapshot.ts`, `ipython.ts:479-544`, `agent-session.ts:7222-7269` (phase 4b) |
-| K12 | contract fixtures | JSON fixtures for every `host.request` type (payload + reply shape) shared by `yi-kernel` tests and `python/yi_runtime/tests` | test | prime `host-request-contract.test.ts` |
-| K11 | env | `RLM_*` names verbatim (§6): `RLM_SESSION_DIR`, `RLM_HARNESS_STATE_DIR`, `RLM_GLOBAL_HARNESS_STATE_DIR` read by `harness.py`; `RLM_DEPTH`/`RLM_MAX_DEPTH` set but host-check authoritative; spawn env adds `JPY_PARENT_PID` (ipykernel's parent poller reaps orphans); stderr accumulated, last 1 KiB attached to lifecycle errors | data | prime `_rlmKernelEnv`, `harness.py:78-92`, `index.ts:742-754` |
+| K1 | bootstrap | `ensure_venv(dir) -> PythonPath`: `uv` install `ipykernel` + runtime pkg; `.bootstrap-version` JSON `{schema, ipykernel, runtime: sha256(src/rlm/** + pyproject), extra_args, skills}` — any mismatch ⇒ full rebuild; lock **directory** (`mkdir` + pid file; stale = pid dead ∨ mtime > 30 s); in-process dedupe memoized on env key; `RUNTIME_READY_CHECK` = venv probe subprocess, not the live kernel; XDG fallback venv dir | I/O | — |
+| K2 | ConnectionFile | `{ip: 127.0.0.1, transport: tcp, ports: 0…, key: 32-hex random, signature_scheme: hmac-sha256}`; 0600 file in 0700 `mkdtemp` dir; polled 25 ms until all five ports resolve (30 s) though only shell/iopub/control connect; stdin never wired (`allow_stdin: false`), hb never used | I/O | — |
+| K3 | framing | `encode(ids, header, parent, metadata, content) -> frames` with `<IDS|MSG>` delimiter + HMAC; `decode` | pure | — |
+| K4 | channels | connect shell/iopub/control → `subscribe("")` → **control pump** → 50 ms slow-joiner sleep → **iopub pump** → `kernel_info` handshake (shell, 30 s); first execute only after the handshake, so no output is lost. Shell `execute_reply` is never read by the reference — Rust drains shell in a background task (or rcv HWM) or the queue grows unboundedly | I/O | — |
+| K5 | execute | `fn(code, cell_id, &InterruptSignal) -> ExecuteResult`; promise-chain queue orders callers **and** `activeExecution` guard catches re-entrancy from internal cells (both needed); `send` raced against the result promise so an abort mid-send cannot strand the call | I/O | — |
+| K6 | reduce_iopub | `fn(&mut ExecuteResult, IopubMsg)`: `stream`→stdout/stderr (live cap 65,536/stream, truncation markers at settle; internal cells 1 MiB), `execute_result`→`text/plain`, `error`→`{ename, evalue, traceback}`, `status: idle` with matching parent →done, `display_data` MIMEs→diffs/attachments/messages (attachment > 10 MiB **fails the cell**, never a silent drop); `on_stream` sees uncapped chunks — UI everything, model the cap | pure | — |
+| K7 | host.request | comm target `"host.request"`; dispatched **before** the `parent_header` filter (a detached task's request must dispatch with no active execution); reply `comm_msg` on **control**; envelope `{status: "ok", …}` / `{status: "error", error}` — `status` reserved; request type placed **last** in comm data (a payload key `type` cannot reroute); one dispatch per comm id (`comm_open` deduped vs `comm_msg`, released on `comm_close`); `last_cell_code` fallback attributes detached requests; late `display_data` after idle → per-cell handlers, LRU 256 | I/O | — |
+| K8 | lifecycle | two interrupt regimes: per-exec `interrupt_request` fire-and-forget + 1 s force-`Aborted` **without clearing** `activeExecution`; reuse re-interrupts every 500 ms ≤ 5 s then `KernelBusyAfterInterruptError` → `Wait\|Restart\|Cancel` (busy path = kill + fresh manager + restart notice into model context; `restart()` is dead code). Death = child-exit event; **generation counter** — every teardown/start bumps, every await re-checks staleness, `shutdown()` returns `performed_cleanup`; socket-closure errors translated with 1 KiB stderr tail; in-flight host requests block dispose 5 s; SIGINT/SIGTERM → snapshot-shutdown; orphan pid journal cleared only on confirmed kill | I/O | — |
+| K9 | boot gate | **live from day one**: process-wide semaphore `min(16, max(4, cpus×2))` wrapping `start()` only — never restore/bootstrap (unbounded executes would pin a permit on a wedged kernel); protects the 30 s port-resolve window under fan-out (B2 bounds children, not boots) | I/O | — |
+| K10 | snapshot | per-variable `dill` (skip set `{rlm, mcp, asyncio, In, Out, …}`; unpicklable skipped, not fatal; 16 MiB/var, 256 MiB total), atomic tmp+`replace`, result = one marker-prefixed stdout line; debounced 1.5 s after each ok cell, flush ≤ 5 s at dispose; **restore before the bootstrap cell** (live handles overwrite revived ones), restore notice surfaces only after bootstrap succeeds; ready-gate serializes old-kernel flush vs new-kernel restore. **Post-compaction sync**: after each applied compaction, prune live variables above the per-variable cap (purged from namespace + `Out` cache, purge loop finishes through KeyboardInterrupt) and steer the model with `<ipython_state>` naming survivors — a peek, never a boot; listing bounded 5 s | I/O | — |
+| K12 | contract fixtures | JSON fixtures for every `host.request` type (payload + reply shape) shared by `yi-kernel` tests and `python/yi_runtime/tests` | test | — |
+| K11 | env | `RLM_*` names verbatim (§6): `RLM_SESSION_DIR`, `RLM_HARNESS_STATE_DIR`, `RLM_GLOBAL_HARNESS_STATE_DIR` read by `harness.py`; `RLM_DEPTH`/`RLM_MAX_DEPTH` set but host-check authoritative; spawn env adds `JPY_PARENT_PID` (ipykernel's parent poller reaps orphans); stderr accumulated, last 1 KiB attached to lifecycle errors | data | — |
 
 ```mermaid
 sequenceDiagram
@@ -855,22 +862,22 @@ sequenceDiagram
   K-->>T: ExecuteResult
 ```
 
-### 8.10 Subagent (`yi-runtime::subagent`, from prime-agent)
+### 8.10 Subagent (`yi-runtime::subagent`)
 
 | # | Primitive | Signature | Purity | Source |
 |---|---|---|---|---|
-| B1 | Spec | `{prompt, name?, model?, thinking?, tools?, fork: None\|All\|LastN(n), depth, max_depth, parent_node_id, spawn_code?}`; unknown kwargs are an error; overlays customize or **reduce** the child, never replace parent authority; `All`-fork inherits parent config and rejects overrides | data | prime `CreateRlmSubagentRuntimeOptions` · codex `spawn.rs:284-317`, `role.rs:1-4` |
-| B2 | admit | `fn(&Spec, &Family) -> Result<Admitted, Rejection>`: depth < max (default 1), name unique in family, `max_children` (default 8) — a **completed child holds its slot until closed** (forces the parent to reap) | pure | prime `_startRlmChildRun` · codex `registry.rs:96-113` |
-| B3 | child_dir | `<parent artifacts>/sub-<8 hex>` (retry on collision); ephemeral tmp for non-persistent | I/O | prime `:9258` |
-| B4 | SubagentHost | `trait { create(Spec) -> Child; complete(id); release(id, status); delete(id); dispose_all() }` — in-process impl now, daemon impl phase 6 | trait | prime `SubagentRuntimeHost` |
-| B5 | spawn | `fn(Spec) -> Handle{child_id, name, session_dir, model}` — returns at admission; child runs detached; prompted with `[task from parent]\n\n<prompt>`. `fork: All\|LastN(n)` seeds the child with the parent's P2 projection (truncated to the last n turn boundaries) — the "continue this mid-task thought" class prime/Yi lacked | I/O | prime · codex `control.rs:71-74` |
-| B6 | messaging | `agent_message.send(msg, receiver_role\|name) -> {delivered\|queued}`, `list_agents()`; broadcast (`target: "all"`) = allSettled fan-out with per-target error receipts; directed: `receiver_name` required for sibling/child, forbidden for parent, must match exactly one; sends to a just-spawned child await its session publication; parent reply count; `completed_without_reply` synthesized with last-text preview. **Role split** (injection hardening): revised by D58 — a child's reports arrive as provenanced `custom{agent_message}` (`<agent_message from="…">`), not assistant-role, because Anthropic requires alternating roles; host status notifications arrive as `user` | I/O | prime `agent-messages.ts:548-607` · codex `inter_agent_message.rs:44-66` |
-| B7 | ChildUpdate | `{id, status, activity: Waiting\|Writing\|Executing, tool_use_count, token_count, answer_preview, error}` → `_yi/subagent_update` | data | prime `rlm_child_update` |
-| B8 | discovery | in-process: `list_dir(<artifacts>/sub-*)` — the directory *is* the registry. prime's `rlm-ledger` JSONL is needed only when several writer processes exist; it arrives with the daemon (phase 6) | I/O | prime `rlm-ledger.ts` (later) |
-| B9 | attribute | on child `message_end` → P14 `child_usage_attributed` on the parent's last assistant entry | I/O | prime `:10380` |
-| B11 | isolation | `Isolation::None \| Worktree` — `git worktree add <artifacts>/wt-<id>`; parent `merge(id)` / `discard(id)` | I/O | omp `worktree.ts` (phase 4c) |
-| B10 | permission inheritance | child `PermissionMode` = parent's; child `Ask` surfaces on the parent with the child name in `title`; MCP/exec-tool view is the parent's filtered view | pure | new (fx/omp/prime all force yolo) |
-| B13 | mailbox | `send(msg)` (no turn), `followup(task)` (send **and** trigger a turn if idle; delivered at message boundaries if running), `wait(timeout clamped, clamp reported) -> which agents have updates` (payloads arrive as B6 messages), `close(id)` (releases the B2 slot), `interrupt(id)` — children as addressable peers, not fire-and-forget calls | I/O | codex `multi_agents_spec.rs:186-355` |
+| B1 | Spec | `{prompt, name?, model?, thinking?, tools?, fork: None\|All\|LastN(n), depth, max_depth, parent_node_id, spawn_code?}`; unknown kwargs are an error; overlays customize or **reduce** the child, never replace parent authority; `All`-fork inherits parent config and rejects overrides | data | — |
+| B2 | admit | `fn(&Spec, &Family) -> Result<Admitted, Rejection>`: depth < max (default 1), name unique in family, `max_children` (default 8) — a **completed child holds its slot until closed** (forces the parent to reap) | pure | — |
+| B3 | child_dir | `<parent artifacts>/sub-<8 hex>` (retry on collision); ephemeral tmp for non-persistent | I/O | — |
+| B4 | SubagentHost | `trait { create(Spec) -> Child; complete(id); release(id, status); delete(id); dispose_all() }` — in-process impl now, daemon impl phase 6 | trait | — |
+| B5 | spawn | `fn(Spec) -> Handle{child_id, name, session_dir, model}` — returns at admission; child runs detached; prompted with `[task from parent]\n\n<prompt>`. `fork: All\|LastN(n)` seeds the child with the parent's P2 projection (truncated to the last n turn boundaries) — the "continue this mid-task thought" class both the reference and Yi lacked | I/O | — |
+| B6 | messaging | `agent_message.send(msg, receiver_role\|name) -> {delivered\|queued}`, `list_agents()`; broadcast (`target: "all"`) = allSettled fan-out with per-target error receipts; directed: `receiver_name` required for sibling/child, forbidden for parent, must match exactly one; sends to a just-spawned child await its session publication; parent reply count; `completed_without_reply` synthesized with last-text preview. **Role split** (injection hardening): revised by D58 — a child's reports arrive as provenanced `custom{agent_message}` (`<agent_message from="…">`), not assistant-role, because Anthropic requires alternating roles; host status notifications arrive as `user` | I/O | — |
+| B7 | ChildUpdate | `{id, status, activity: Waiting\|Writing\|Executing, tool_use_count, token_count, answer_preview, error}` → `_yi/subagent_update` | data | — |
+| B8 | discovery | in-process: `list_dir(<artifacts>/sub-*)` — the directory *is* the registry. A `rlm-ledger` JSONL is needed only when several writer processes exist; it arrives with the daemon (phase 6) | I/O | — |
+| B9 | attribute | on child `message_end` → P14 `child_usage_attributed` on the parent's last assistant entry | I/O | — |
+| B11 | isolation | `Isolation::None \| Worktree` — `git worktree add <artifacts>/wt-<id>`; parent `merge(id)` / `discard(id)` | I/O | — |
+| B10 | permission inheritance | child `PermissionMode` = parent's; child `Ask` surfaces on the parent with the child name in `title`; MCP/exec-tool view is the parent's filtered view | pure | new (every reference forces yolo here) |
+| B13 | mailbox | `send(msg)` (no turn), `followup(task)` (send **and** trigger a turn if idle; delivered at message boundaries if running), `wait(timeout clamped, clamp reported) -> which agents have updates` (payloads arrive as B6 messages), `close(id)` (releases the B2 slot), `interrupt(id)` — children as addressable peers, not fire-and-forget calls | I/O | — |
 
 #### 8.10.1 Addendum (0.37.0-0.41.0, as built)
 
@@ -902,20 +909,20 @@ sequenceDiagram
   worktree cannot be reaped by B2's `close`.
 - B6's role split is revised by D58 — see the row.
 
-### 8.11 Schedule / heartbeat (`yi-runtime::schedule`, from prime-agent `cron-jobs.ts`)
+### 8.11 Schedule / heartbeat (`yi-runtime::schedule`)
 
 | # | Primitive | Signature | Purity | Source |
 |---|---|---|---|---|
-| H1 | Schedule | `Once{at} \| Cron{expr} \| Interval{ms ≥ 10_000}`; `parse("in 5m" \| "every 10m" \| "at <ISO>" \| "<5-field cron>")`; cron and `at <ISO>` evaluate in **UTC** (std has no tzdata; chrono banned §13.5) — prime used process-local time | pure | prime `parseAgentCronSchedule` |
-| H2 | Job | `{id, status: Active\|Paused\|Completed\|Cancelled, source: Cron\|Heartbeat\|RlmHeartbeat, delivery: Steer\|FollowUp, session_id, cwd, label, prompt, schedule, next_run_at, last_run_at, run_count, last_error}` | data | prime `AgentCronJob` |
-| H3 | next_run | `fn(&Schedule, after: Instant) -> Option<Instant>` | pure | prime |
-| H4 | Store | `scheduled-jobs.json` per session: `{jobs, dispatches}`; Yi-owned format (D39): camelCase, epoch-ms timestamps; write = lock + tmp + fsync + rename; `on_change` listener | I/O | prime `AgentCronJobStore` |
-| H5 | claim_due | `fn(now) -> Vec<Dispatch{id, job_id, claimed_at, scheduled_for}>` persisted **before** delivery; `record_result(dispatch, Ran\|Skipped\|Error)` | I/O | prime |
-| H6 | recover | on start: unresolved claims → interrupted; missed ticks coalesced; schedule advanced | I/O | prime `recoverInterruptedDispatches` |
-| H7 | lanes | after H5 claim, group by `Job.session_id` (ACP/session-store id; a heartbeat armed before the session store is attached is refused, so no job carries the empty id); serial within a lane, concurrent across lanes via `spawn_blocking`. Lane tasks live in a `JoinSet` across timer ticks and are reaped by task id; the timer's deadline is the soonest job outside the busy set and it parks in one `select!` over {deadline, store change, lane finished}. One interned `JobStore`+timer per `scheduled-jobs.json` path; a `DeliveryHub` lane per bound session, withdrawn when the session drops or rebinds, which also pauses that session's still-Active jobs; the kernel's `rlm_heartbeat.*` verbs are scoped to the bound session like `/heartbeat` is. A second daemon process is not required (D86) | data | prime `dispatchLanes` |
-| H8 | defer | `fn(&Job, &AgentState) -> Deliver\|Defer`: always defer if compacting / retrying / bash running / pending work; `Steer` does not defer on plain streaming, `FollowUp` does | pure | prime `shouldDeferHeartbeatCronJob` |
-| H9 | deliver | `Steer` → `session.steer`; `FollowUp` → `session.follow_up(resume_if_idle)`; message = `custom{heartbeat_prompt, details{job_id, schedule, run_count, next_run_at}}` whose LLM text is `<heartbeat job="…" run="n">prompt</heartbeat>` | I/O | prime `promptHeartbeat` + new framing |
-| H10 | surfaces | `/heartbeat every 10m <instr> \| status \| pause \| resume \| clear`; `rlm_heartbeat.{list,create,update,delete}` from the kernel; ACP `_yi/heartbeat` method + `_yi/heartbeat_changed` | I/O | prime |
+| H1 | Schedule | `Once{at} \| Cron{expr} \| Interval{ms ≥ 10_000}`; `parse("in 5m" \| "every 10m" \| "at <ISO>" \| "<5-field cron>")`; cron and `at <ISO>` evaluate in **UTC** (std has no tzdata; chrono banned §13.5) — the reference used process-local time | pure | — |
+| H2 | Job | `{id, status: Active\|Paused\|Completed\|Cancelled, source: Cron\|Heartbeat\|RlmHeartbeat, delivery: Steer\|FollowUp, session_id, cwd, label, prompt, schedule, next_run_at, last_run_at, run_count, last_error}` | data | — |
+| H3 | next_run | `fn(&Schedule, after: Instant) -> Option<Instant>` | pure | — |
+| H4 | Store | `scheduled-jobs.json` per session: `{jobs, dispatches}`; Yi-owned format (D39): camelCase, epoch-ms timestamps; write = lock + tmp + fsync + rename; `on_change` listener | I/O | — |
+| H5 | claim_due | `fn(now) -> Vec<Dispatch{id, job_id, claimed_at, scheduled_for}>` persisted **before** delivery; `record_result(dispatch, Ran\|Skipped\|Error)` | I/O | — |
+| H6 | recover | on start: unresolved claims → interrupted; missed ticks coalesced; schedule advanced | I/O | — |
+| H7 | lanes | after H5 claim, group by `Job.session_id` (ACP/session-store id; a heartbeat armed before the session store is attached is refused, so no job carries the empty id); serial within a lane, concurrent across lanes via `spawn_blocking`. Lane tasks live in a `JoinSet` across timer ticks and are reaped by task id; the timer's deadline is the soonest job outside the busy set and it parks in one `select!` over {deadline, store change, lane finished}. One interned `JobStore`+timer per `scheduled-jobs.json` path; a `DeliveryHub` lane per bound session, withdrawn when the session drops or rebinds, which also pauses that session's still-Active jobs; the kernel's `rlm_heartbeat.*` verbs are scoped to the bound session like `/heartbeat` is. A second daemon process is not required (D86) | data | — |
+| H8 | defer | `fn(&Job, &AgentState) -> Deliver\|Defer`: always defer if compacting / retrying / bash running / pending work; `Steer` does not defer on plain streaming, `FollowUp` does | pure | — |
+| H9 | deliver | `Steer` → `session.steer`; `FollowUp` → `session.follow_up(resume_if_idle)`; message = `custom{heartbeat_prompt, details{job_id, schedule, run_count, next_run_at}}` whose LLM text is `<heartbeat job="…" run="n">prompt</heartbeat>` | I/O | — |
+| H10 | surfaces | `/heartbeat every 10m <instr> \| status \| pause \| resume \| clear`; `rlm_heartbeat.{list,create,update,delete}` from the kernel; ACP `_yi/heartbeat` method + `_yi/heartbeat_changed` | I/O | — |
 
 ```mermaid
 flowchart LR
@@ -932,7 +939,7 @@ flowchart LR
   R --> S
 ```
 
-### 8.12 Advisor (`yi-runtime::advisor`, redesigned; guard from OMP)
+### 8.12 Advisor (`yi-runtime::advisor`, redesigned; guard ported verbatim)
 
 | # | Primitive | Signature | Purity | Source |
 |---|---|---|---|---|
@@ -940,12 +947,12 @@ flowchart LR
 | V2 | Trigger | `fn(calls_since_review, cadence, budget) -> bool` | pure | new |
 | V3 | Budget | `{tokens_per_hour, spent: ring buffer}`; `remaining()` | data | new |
 | V4 | digest | `fn(&[Entry]) -> Vec<LogLine>`; every line entry-id'd; user lines verbatim (constraint-first truncation over `advisor.user_budget`), assistant lines sentence-selected by the §7.4 verb table (≤ `advisor.prose_budget`), tool lines carry `i`; never `thinking` | pure | new (§7.6) |
-| V5 | Reviewer | `LlmReviewer::review(&AdvisorRuntime, digest_chunk) -> Vec<Advice>` with `Job = Advise \| ClaimAudit` at launch; `CompactionCheck` deferred until compaction misbehaves in practice (D8); `SelectCandidate` is not a scheduled feature — it is the recorded **multi-agent pattern** (D10): parallel subagents' results are judge-*selected*, never synthesized (arXiv 2603.20324); one impl, `LlmReviewer` (own `AgentSession`, append-only; tools `{advise, transcript}` at launch, `read`/`grep`/`glob` join when V9 shows the digest is insufficient). The single judgment seam for the whole harness (§7.5) | pure / I/O | new · omp `advise-tool.ts` · Slipstream · RTV |
+| V5 | Reviewer | `LlmReviewer::review(&AdvisorRuntime, digest_chunk) -> Vec<Advice>` with `Job = Advise \| ClaimAudit` at launch; `CompactionCheck` deferred until compaction misbehaves in practice (D8); `SelectCandidate` is not a scheduled feature — it is the recorded **multi-agent pattern** (D10): parallel subagents' results are judge-*selected*, never synthesized (arXiv 2603.20324); one impl, `LlmReviewer` (own `AgentSession`, append-only; tools `{advise, transcript}` at launch, `read`/`grep`/`glob` join when V9 shows the digest is insufficient). The single judgment seam for the whole harness (§7.5) | pure / I/O | new · Slipstream · RTV |
 | V6 | Advice | `{severity: Note\|Warn\|Hold, kind: Correction\|Risk\|Scope\|Stop, target: Option<EntryId\|Path>, text}` | data | new |
-| V7 | EmissionGuard | lowercase + non-alphanumeric-folded key (NFKC dropped — std has no normalizer and a unicode crate is not worth the dep; revisit if a real dupe slips the fold); phrase blocklist; 4,096-entry FIFO dedupe; one accepted note per cycle | pure | omp `emission-guard.ts` adapted |
+| V7 | EmissionGuard | lowercase + non-alphanumeric-folded key (NFKC dropped — std has no normalizer and a unicode crate is not worth the dep; revisit if a real dupe slips the fold); phrase blocklist; 4,096-entry FIFO dedupe; one accepted note per cycle | pure | — |
 | V8 | deliver | `Note\|Warn` → `custom{advisory}` entry at next tool boundary (idle → follow-up queue); `Hold` → M5, degrading headless (§7.3, D28) | I/O | new |
 | V9 | outcome | `custom{advisory_outcome{advice_id, target_touched_within: n, hold_result}}`; `/advisor stats` | I/O | new |
-| V10 | config | `ADVISOR.md` attention text (project or global) + `advisor.model`. One advisor — judge-selection over synthesis is now evidence-backed (arXiv 2603.20324), not taste. | data | omp `config.ts` (trimmed) |
+| V10 | config | `ADVISOR.md` attention text (project or global) + `advisor.model`. One advisor — judge-selection over synthesis is now evidence-backed (arXiv 2603.20324), not taste. | data | — |
 | V11 | promote | `/advisor promote <advice-id>` compiles a Hold or standing constraint into a rule; the only cross-session persistence the advisor has. **D59 revises the target**: a D54 rule file under `<cwd>/.yi/rules` (gate for Hold, remind otherwise, advice text verbatim + provenance), armed live, not an M4 pattern or an M5 hold | I/O | TRACE arXiv 2606.13174 |
 | V12 | directives | `fn(&UserEntry) -> Vec<Directive{entry_id, text}>` — constraint-sentence extraction (negation/scope markers), verbatim, append-only header panel | pure | new (§7.6) · mempalace |
 | V13 | transcript | advisor tool `transcript{entry_id, range?}` → full text of a digest-named user/assistant entry; never thinking, never cross-session | I/O | new (§7.6) · ARC |
@@ -955,43 +962,44 @@ flowchart LR
 | # | Primitive | Signature | Purity | Source |
 |---|---|---|---|---|
 | C1 | negotiate | `initialize{protocolVersion}`: ≥ 2 → v2; 1 → clean mismatch error (v1 adapter cut, D1) | pure | ACP migration guide |
-| C2 | SessionRegistry | `session_id → AgentSession` + attached clients; `new/list/resume/close/delete` | I/O | fx `acp/sessions.zig` |
+| C2 | SessionRegistry | `session_id → AgentSession` + attached clients; `new/list/resume/close/delete` | I/O | — |
 | C3 | to_update (v2) | `fn(&Event, &mut IdMap) -> Vec<SessionUpdate>`: `MessageStart/Update` → `agent_message_chunk{messageId}`; `ToolExecution*` → `tool_call_update` upsert + `tool_call_content_chunk`; reducer state transitions → `state_update`; `MessageEnd.usage` → `usage_update` | pure | ACP v2 |
 | C4 | ~~downgrade (v1)~~ | **Cut (D1).** The lossy v1 mapping stays in git history should a v1 client ever matter. |
 | C5 | permission bridge | M9 ↔ `session/request_permission{title, subject}`; `state_update: requires_action` while pending | I/O | ACP v2 |
 | C6 | replay | `session/resume{replayFrom: start}` = walk `Repo::branch(leaf)` through C3 | I/O | S4 |
 | C7 | diffs / terminals | T13 → `diff{changes, patch: git_patch}`; T12 output → `terminal_update` / `terminal_output_chunk` | pure | ACP v2 |
 | C8 | config options | `mode` (M1), `model`, `thought_level`, `_yi/advisor`, `_yi/max_depth` → `session/set_config_option` | data | ACP v2 |
-| C9 | extensions | `_yi/advisory`, `_yi/subagent_update`, `_yi/kernel_state`, `_yi/heartbeat_changed`, `_yi/compaction` updates + `_yi/heartbeat`, `_yi/goal` methods; unknown fields ignored, unknown kinds skipped | data | ACP v2 · jcode harness-api rule |
+| C9 | extensions | `_yi/advisory`, `_yi/subagent_update`, `_yi/kernel_state`, `_yi/heartbeat_changed`, `_yi/compaction` updates + `_yi/heartbeat`, `_yi/goal` methods; unknown fields ignored, unknown kinds skipped | data | ACP v2 |
 
 
-### 8.14 TUI (`yi-tui`, feature `tui`; from codex, OMP, opencode, prime-agent, atuin, mdfried, rainfrog)
+### 8.14 TUI (`yi-tui`, feature `tui`; from atuin, mdfried, rainfrog and the agent references)
 
-Six references agree on the mechanics and disagree on the size. codex `tui` is 272k lines, OMP
-`packages/tui` + `modes` is 150k, opencode `packages/tui` 31.8k, atuin's search TUI is 7.8k,
-mdfried 13.8k, rainfrog 17.9k. The mechanisms below are the ~1.5k lines that all of them share;
-everything else is product surface. The split of roles (D41): codex/atuin/mdfried supply the
-mechanical skeleton (inline viewport, native scrollback, synchronous UI thread, keymap);
-opencode supplies the subagent UX (task cell + child-session focus — its alternate-screen
-retained scene graph is rejected, the UX ports onto the inline skeleton); OMP supplies the
-pinned HUD contract, the tree-spine progress meter, and the status-line anatomy. Target:
-`yi-tui` ≤ 10,000 lines (D43), ≤ 1 MiB added to the binary.
+Six references agree on the mechanics and disagree on the size: their TUI layers run
+from 272k lines down to 7.8k (atuin's search TUI), with mdfried at 13.8k and rainfrog
+at 17.9k. The mechanisms below are the ~1.5k lines that all of them share; everything
+else is product surface. The split of roles (D41): atuin/mdfried and the largest agent
+reference supply the mechanical skeleton (inline viewport, native scrollback,
+synchronous UI thread, keymap); another supplies the subagent UX (task cell +
+child-session focus — its alternate-screen retained scene graph is rejected, the UX
+ports onto the inline skeleton); a third supplies the pinned HUD contract, the
+tree-spine progress meter, and the status-line anatomy. Target: `yi-tui` ≤ 10,000
+lines (D43), ≤ 1 MiB added to the binary.
 
 Decisions:
 
-- **Inline viewport on the normal screen, native scrollback.** codex and OMP both arrived here
+- **Inline viewport on the normal screen, native scrollback.** Two references arrived here
   independently and both document why: you cannot observe the terminal's scroll position, so
   never repaint what has scrolled off. Finished transcript cells are written *above* the viewport
   once and never touched; only the live region (streaming tail + composer + status) repaints.
-  ratatui's `Viewport::Inline` was the phase-7 form of codex's DEC scroll-region trick; its
-  height is fixed at construction, which the dynamic live region needs to change, so `yi-tui`
-  now owns a ~270-line `Terminal` derived from ratatui's with codex's mutable-viewport model
-  (`set_viewport_area`, growth by scroll region, clear-on-change) and ratatui's own
-  `Buffer::diff` + `insert_before_scrolling_regions` kept. Codex's buffer differ, hyperlink
+  ratatui's `Viewport::Inline` was the phase-7 form of the reference's DEC scroll-region
+  trick; its height is fixed at construction, which the dynamic live region needs to change,
+  so `yi-tui` now owns a ~270-line `Terminal` derived from ratatui's with that mutable-viewport
+  model (`set_viewport_area`, growth by scroll region, clear-on-change) and ratatui's own
+  `Buffer::diff` + `insert_before_scrolling_regions` kept. Its buffer differ, hyperlink
   coalescing, cursor styles, alt-screen/suspend paths and per-terminal scrollback strategies
   are not ported.
 - **No alternate screen, no mouse, no images.** Resize *does* reflow (D47, revising this row's
-  original "old rows keep their old width"): codex's source-backed rebuild is adopted whole —
+  original "old rows keep their old width"): the reference's source-backed rebuild is adopted whole —
   a width change clears scrollback and the visible screen and re-emits the retained transcript
   at the new width, trailing-debounced 75 ms so a drag rebuilds once, and row-capped per
   terminal while rendering from source. The partial repaint A1/A2 shipped is deleted with it;
@@ -1001,57 +1009,57 @@ Decisions:
   the UI thread. The runtime's `Event` stream arrives over `std::sync::mpsc`; user intents go
   back as `AgentSession` calls through a command channel. The TUI is a client of the runtime in
   exactly the way ACP is, just in-process.
-- **Draw only on change**, coalesced, with OMP's adaptive floor (`next ≥ last_start + 2 ×
+- **Draw only on change**, coalesced, with the reference's adaptive floor (`next ≥ last_start + 2 ×
   last_cost`, cap 200 ms) and a 60 fps ceiling. A timer exists only while a spinner is visible.
 - **Composer** is `tui-textarea` (no features) wrapped by a thin `Composer` that adds history,
   paste atoms, and the two popups. Writing a textarea is the single largest line-count sink in
-  every reference (codex 12.9k + 4.5k, OMP 3.4k).
+  every reference (12.9k + 4.5k lines in one, 3.4k in another).
 - **Keymap** is atuin's: a flat `Action` enum, `KeyInput` (single or sequence), an ordered rule
   list per key, `handle_input(&State, KeyInput) -> InputAction` pure and testable without a
   terminal. Conditional rules (`when = "input-empty"`) arrive with the second conditional binding.
 - **Markdown** via `pulldown-cmark` (no default features) → `Vec<Line>`; streaming commits the
   stable prefix (blank-line boundary outside code fences) to scrollback mid-turn, only the tail
-  repaints. Heading levels follow codex's ladder (h1 accent bold+underlined, h2 accent bold, h3
-  bold italic, h4-6 italic) since Yi drops the literal `#`; bullets are OMP's `•`/`◦`/`‣` by
-  depth; a link keeps its destination as a dim ` (url)` suffix (codex) because a bare label
+  repaints. Heading levels follow the reference ladder (h1 accent bold+underlined, h2 accent
+  bold, h3 bold italic, h4-6 italic) since Yi drops the literal `#`; bullets are `•`/`◦`/`‣` by
+  depth; a link keeps its destination as a dim ` (url)` suffix because a bare label
   drops the only thing a link carries; fenced code hangs off a dim `│` rail with the language
-  on the opening rail rather than reprinting the author's backticks (OMP's border hook); `---`
-  is codex's `———`, which cannot be confused with a full-width divider. Tables are OMP's sharp
-  box (`┌┬┐├┼┤└┴┘`) with one rule under the header — codex's edgeless grid with a rule between
+  on the opening rail rather than reprinting the author's backticks; `---`
+  is `———`, which cannot be confused with a full-width divider. Tables are a sharp
+  box (`┌┬┐├┼┤└┴┘`) with one rule under the header — an edgeless grid with a rule between
   every body row was ported first and is most of the ink for none of the meaning. No LaTeX. Syntax
   highlighting is `syntect` on `regex-fancy` with the bundled grammars, decompressed lazily
   (D74 revises D63, which revised this row to a hand-rolled five-language scanner). The
   scanner was per line and stateless, so a block comment or triple-quoted string coloured
   only the row that opened it and rendered its body as live code; that is the defect D74
   buys out. Still not a cargo feature.
-- **Tests** against a real VT parser (`vt100` dev-dep, codex `VT100Backend` ≈ 100 lines) plus
-  `insta` snapshots of rendered cells. OMP's shadow-ledger fidelity test is the upgrade path if
+- **Tests** against a real VT parser (`vt100` dev-dep, a ≈ 100-line backend) plus
+  `insta` snapshots of rendered cells. A shadow-ledger fidelity test is the upgrade path if
   the inline mechanism ever diverges from ratatui's.
-- **Subagent = opencode's child-session model** (D41). A subagent is one two-line task cell in
+- **Subagent = the child-session model** (D41). A subagent is one two-line task cell in
   the parent transcript (spinner/`✓` + `<agent> Task — <description>`, plus a live `↳` line
   showing the child's most recent titled tool call while running, `↳ N toolcalls · elapsed`
   when done), never nested or interleaved child output. Focus navigation is the inline
-  adaptation of opencode's route swap: focusing a child prints a rule into scrollback, replays
+  adaptation of the reference's route swap: focusing a child prints a rule into scrollback, replays
   the child transcript (cells badged in the child's accent), and the live region becomes the
   child's tail with the composer replaced by a nav footer (`<agent> (n of m) · tokens · cost ·
   Parent ↑ Prev ← Next →`); Esc returns with a closing rule. Child sessions are read-only from
   the TUI (mailbox is B13, deferred); child permission requests bubble to the parent's approval
-  view. opencode's contrast case is kept too: kernel-side child tool calls that arrive as
+  view. The reference's contrast case is kept too: kernel-side child tool calls that arrive as
   metadata (no child session) render as flat `↳` lines under one cell, no navigation.
-- **Pinned HUD above the composer** (D41, OMP's `AnchoredLiveContainer` contract): a block
+- **Pinned HUD above the composer** (D41, an `AnchoredLiveContainer` contract): a block
   rebuilt in place inside the live region, never committed to scrollback. Data source is U20
   `cards(&AgentState)` — a pure view over goal, subagents, queued messages, and heartbeats;
   no persisted state (D26 stands; a persisted todo/plan tool is planned and its HUD rows land
   with it). The tree spine is the progress meter: connector glyphs lit accent top-down by
   done/total, clamped ≥ 1 lit on any progress and never full until truly done. Queued steer /
-  follow-up messages render as OMP's numbered block. HUD auto-clears when everything settles.
-- **Status line is the composer's top border** (D41, OMP anatomy, ~350 adapted lines): left
+  follow-up messages render as a numbered block. HUD auto-clears when everything settles.
+- **Status line is the composer's top border** (D41, ~350 adapted lines): left
   group model (+ thinking level), mode slot (goal, priority-ordered, hidden when none),
   `cwd@branch`, cost; right group session name colored by a stable hash into the theme accents,
   with a subagent badge auto-unshifted when children are live. The gap between groups is the
   context gauge — used portion in the session accent, a tick where speculative compaction
   starts, a heavier tick at the auto-compact threshold, labels placed with collision avoidance,
-  > 100 % clamps with the percent in error color. Overflow runs OMP's named truncation cascade:
+  > 100 % clamps with the percent in error color. Overflow runs a named truncation cascade:
   shrink session name to a floor, pop right segments, shrink path to a floor, drop left
   segments skipping path. The spinner line narrates the current tool's `i` intent + `[esc]`,
   with a double-tap `esc again to interrupt` confirm.
@@ -1059,40 +1067,40 @@ Decisions:
 | # | Primitive | Signature | Purity | Source |
 |---|---|---|---|---|
 | U1 | TerminalGuard | RAII: raw mode, bracketed paste, kitty keyboard flags (`DISAMBIGUATE \| REPORT_ALTERNATE_KEYS`, needed for Shift+Enter), `/dev/tty` writer when stdout is not a TTY; `Drop` restores every step and logs failures instead of panicking; panic hook restores first | I/O | atuin `interactive.rs:1586`, mdfried `main.rs:107` |
-| U2 | Viewport | `yi-tui::terminal::Terminal` (codex-derived, mutable viewport): `h = live + hud + working + bottom + 1` recomputed every draw, where `live` is first trimmed to what the screen leaves above the rest of the stack — the viewport clamps to the screen and the draw drops what overflows, so an unbudgeted tail evicts the status line and then the composer; `resize_viewport` ports codex's reflow rules — growth scrolls the rows above up, a terminal-driven shrink does not (the emulator already moved them), the clear runs from `min(prev, new)`. A viewport move triggers `invalidate_viewport` plus a rebuild of the rows above from the retained transcript (`yi-tui::history`), because a re-wrap leaves mangled copies of earlier frames there | I/O | atuin `:1717`, codex `tui.rs:892-946,1093-1135` |
-| U3 | commit | `insert_before(lines)` for a finished cell, batched per draw. The synchronized-output bracket wraps the **whole frame** — commit, viewport resize, reflow and the viewport draw — not the commit alone (codex `draw_with_resize_reflow`'s `sync_update`): bracketing only the commit presents a screen that has already scrolled with the previous frame's viewport still under it, which is a visible flash at every paragraph boundary. Scrollback order is antecedent-before-dependent, not arrival (D107): a message's thought commits whole before any of its prose commits, a task cell commits after the tool cell it was born under, and every `Cell` family names its antecedent in tui_unit.rs's exhaustive match, so a new family cannot commit unnamed | I/O | codex `tui.rs:1093-1152` |
-| U4 | Renderable | `trait { fn render(&self, area, buf); fn desired_height(&self, width) -> u16 }` — no layout tree; the bottom stack is `[live_cell, composer, status]` summed | trait | codex `render/renderable.rs:16` |
-| U5 | Cell | transcript unit: `User \| Assistant(markdown) \| Tool{intent, status, preview} \| Advisory \| Notice`; `fn lines(&self, width) -> Rc<[Line]>` memoized on `(width, version)`. Role delineation is three donors agreeing: a user turn is a `┃` accent bar (opencode) over a background tint (codex `user_message_bg`, OMP `userMsgBg`) with `› ` marking only its first line, and assistant prose hangs off a dim `• ` gutter (codex). The tint needs a known ground, so it is offered only where the theme supplies one and degrades to bar-plus-caret elsewhere — codex's own fallback when its bg probe fails. User turns are bracketed by OSC 133 prompt zones (OMP) so the terminal can navigate between them | pure | codex `HistoryCell`, opencode `session/index.tsx:1398-1420`, OMP `Component` |
-| U6 | frame scheduler | `request()` sets a dirty flag; loop draws when dirty and `now ≥ max(last + 16 ms, last_start + 2 × last_cost)` (cap 200 ms); no tick timer unless a spinner is live. A running turn does **not** mark every iteration dirty — token arrival already does that, so the only standing timer is the animation, gated on the spinner phase advancing and woken on its 80 ms boundary. Drawing at the ceiling for an 80 ms glyph built four identical frames out of five; the differ hid them from the terminal but not from the render path | pure | OMP `tui.ts:1229`, codex `frame_rate_limiter.rs` |
+| U2 | Viewport | `yi-tui::terminal::Terminal` (mutable viewport): `h = live + hud + working + bottom + 1` recomputed every draw, where `live` is first trimmed to what the screen leaves above the rest of the stack — the viewport clamps to the screen and the draw drops what overflows, so an unbudgeted tail evicts the status line and then the composer; `resize_viewport` ports the reference's reflow rules — growth scrolls the rows above up, a terminal-driven shrink does not (the emulator already moved them), the clear runs from `min(prev, new)`. A viewport move triggers `invalidate_viewport` plus a rebuild of the rows above from the retained transcript (`yi-tui::history`), because a re-wrap leaves mangled copies of earlier frames there | I/O | atuin `:1717`,1093-1135` |
+| U3 | commit | `insert_before(lines)` for a finished cell, batched per draw. The synchronized-output bracket wraps the **whole frame** — commit, viewport resize, reflow and the viewport draw — not the commit alone: bracketing only the commit presents a screen that has already scrolled with the previous frame's viewport still under it, which is a visible flash at every paragraph boundary. Scrollback order is antecedent-before-dependent, not arrival (D107): a message's thought commits whole before any of its prose commits, a task cell commits after the tool cell it was born under, and every `Cell` family names its antecedent in tui_unit.rs's exhaustive match, so a new family cannot commit unnamed | I/O | — |
+| U4 | Renderable | `trait { fn render(&self, area, buf); fn desired_height(&self, width) -> u16 }` — no layout tree; the bottom stack is `[live_cell, composer, status]` summed | trait | — |
+| U5 | Cell | transcript unit: `User \| Assistant(markdown) \| Tool{intent, status, preview} \| Advisory \| Notice`; `fn lines(&self, width) -> Rc<[Line]>` memoized on `(width, version)`. Role delineation is three donors agreeing: a user turn is a `┃` accent bar over a background tint with `› ` marking only its first line, and assistant prose hangs off a dim `• ` gutter. The tint needs a known ground, so it is offered only where the theme supplies one and degrades to bar-plus-caret elsewhere — the reference's own fallback when its bg probe fails. User turns are bracketed by OSC 133 prompt zones so the terminal can navigate between them | pure | — |
+| U6 | frame scheduler | `request()` sets a dirty flag; loop draws when dirty and `now ≥ max(last + 16 ms, last_start + 2 × last_cost)` (cap 200 ms); no tick timer unless a spinner is live. A running turn does **not** mark every iteration dirty — token arrival already does that, so the only standing timer is the animation, gated on the spinner phase advancing and woken on its 80 ms boundary. Drawing at the ceiling for an 80 ms glyph built four identical frames out of five; the differ hid them from the terminal but not from the render path | pure | — |
 | U7 | event loop | UI thread: `poll(100 ms)` → drain **all** pending terminal events → drain all runtime events → reduce → draw once. Runtime events tagged with session generation; stale ones dropped | I/O | atuin `:1917` (drain-then-draw), mdfried `renderer.rs`, `model.rs:265` |
 | U8 | keymap | `Action` enum (kebab serde), `KeyInput::{Single, Sequence}`, `Keymap{ map: HashMap<KeyInput, Vec<Rule>> }`, `resolve(key, &EvalContext) -> Option<Action>`; defaults in code, overrides in `~/.yi/config.json` `keys` | pure | atuin `keybindings/*` |
 | U9 | handle_input | `fn(&mut State, Action) -> InputAction{Continue, Submit(text), Steer(text), Abort, Quit, …}` — never touches the terminal; 100 % unit-testable | pure | atuin `interactive.rs` tests |
-| U10 | Composer | `tui-textarea` + history (↑/↓ at edges) + Ctrl+R reverse-i-search (query on the composer title, preview in the body, Enter accepts, Esc restores the draft; empty query never previews) + paste atoms: a paste > 10 lines or > 1,000 chars becomes `[Paste #n, +L lines]`, expanded on submit in one longest-label-first pass; backspace deletes the whole atom | I/O | OMP `editor.ts:2119`, `:1758` · Codex `history_search.rs` |
-| U11 | popups | `BottomView` trait (`Renderable` + `handle_key`) for `/command` list and `@file` list (prefix match, gitignore-aware walk, ≤ 100 results); rendered in place of the composer. Menu filtering is a hand-rolled ~170-line matcher — repo-file search justifies `nucleo`, menus never do (codex correctly ships both) | pure | codex `bottom_pane_view.rs`, OMP `autocomplete.ts` |
-| U12 | approval view | fixed-height `BottomView` from `PermissionRequest{title, description, subject, options}`; same widget serves `ask_user` questions; height fixed at spawn so it never jitters. The description's first line is prose; everything after it is the tool's own T13 diff, rendered as one — `+`/`-`/`@@` colored, the `--- a/` / `+++ b/` pair dropped as a repeat of the title, lines truncated rather than wrapped (a wrapped diff line loses the column that marks an addition), capped at 10 rows over the permission layer's own 40 | pure | OMP `ask-dialog.ts:41`, codex `approval_overlay.rs` |
-| U13 | markdown | `render(md, width) -> Vec<Line>`; streaming commits by **byte cursor over standalone slices**: `stable_cut` finds the last blank-line boundary outside code fences, each newly stable slice renders standalone and commits once, the tail repaints live — never line counts derived from re-rendering a growing prefix (renderers trim trailing blanks and the counts drift). The whole thought commits before any prose commits — `commit_prose` flushes the uncommitted thought first — and `MessageEnd` is a `commit_prose` call, not a second path (D107). Tables via the codex pipeline (A.10 pass-3) | pure | codex `markdown_stream.rs:84`, `markdown_render.rs` |
-| U14 | wrap | hand-rolled word wrap over `Span`s, unicode-width aware; never break inside a token containing `://` | pure | codex `wrapping.rs` (idea only) |
-| U15 | tool cell | head line: glyph (`◐` running · `✓` · `✗`) + `i` intent + elapsed, then a `└ ` outcome digest derived from the result text in **every** mode (codex commits 5 result lines by default, OMP 4; a call that states nothing is the outlier). A failure's body is never mode-gated. Verbose adds a typed body — reads/edits on a dim line-number gutter with the hashline anchor header dropped, searches grouped one path per file, everything else plain — over a head-5/tail-5 preview (codex `output_lines`; a command's error is in the tail). `edit` names its target from the patch's own `[path#TAG]` headers, having no `path` argument. Consecutive reads coalesce into one cell; spinner phase shared by one ticker. A result carrying `details.patch` (D60) supersedes both the typed body and the mode gate: the digest line gains `+N -N` in the diff's own colours and U37 renders the change itself in **every** mode, budgeted in Normal and full in Verbose — a call whose whole subject is a change had a body worth showing before the reader knew a mode key existed | pure | OMP `tool-execution.ts:271-324`, `default-renderer.ts`, codex `exec_cell/render.rs:103` |
-| U16 | status line | composer top border (D41): left `model · ◉ thinking · mode · cwd@branch · $cost`, right session name (stable name-hash accent) + `👥 n` subagent badge; gap = context gauge (accent fill, speculation tick, threshold tick, collision-avoiding labels, >100 % clamps in error color); truncation cascade shrink-name → pop-right → shrink-path → drop-left-skip-path, floors 8 cells; git HEAD re-read by stat-polling (fs.watch misses atomic swaps) | pure | OMP `status-line/component.ts:1878-1943,1999-2118`, `footer.ts:101-267` |
-| U17 | colors | `COLORTERM`/`TERM` → `{TrueColor, Ansi256, Ansi16}`; `COLORFGBG` → light/dark, default dark; theme derived by blending fg into bg (user bg 12 % on dark, 4 % on light), `.dim()` at 16 colors | pure | codex `style.rs`, `terminal_palette.rs` |
-| U18 | external editor | `Ctrl+G`: drop the event reader, leave raw mode, spawn `$EDITOR` on a temp file, re-enter; the crossterm reader must be recreated or it eats keys | I/O | codex `event_stream.rs:11`, rainfrog `app.rs:447` |
-| U35 | reflow state | `TranscriptReflowState{last_observed_width, last_reflow_width, pending_reflow_width, pending_until, ran_during_stream, resize_requested_during_stream}`: `note_width` (first width initializes without scheduling — no old-width transcript exists yet), `reflow_needed_for_width` (compares against the width that *rebuilt*, not the last observed: a terminal can report its settled size after the rebuild that handled the resize), `schedule_debounced` (75 ms trailing; later events push the deadline out), `schedule_immediate`, `mark_reflowed_width`, and the two stream latches — a reflow that ran mid-stream must be repeated once the stream consolidates or the transcript keeps the transient wrapping | pure | codex `transcript_reflow.rs:18-178` |
-| U36 | resize reflow | on a due deadline: clear scrollback + visible screen (`ESC[r ESC[0m ESC[H ESC[2J ESC[3J ESC[H` as one write — some terminals only honour purge+clear emitted together), reset the viewport to `y = 0`, re-render the retained transcript at the new width and re-emit it. The row cap is enforced **while rendering from source, walking cells newest-first**, never after writing — replaying more rows than the terminal retains is wasted work. Caps: VS Code 1,000 · WezTerm 3,500 · Windows Terminal 9,001 · Alacritty 10,000 · fallback 1,000, from `TERM_PROGRAM`/`TERM`. U2's viewport resize deliberately touches nothing above the viewport; this pass owns those rows | I/O | codex `app/resize_reflow.rs:273-292,420-616`, `resize_reflow_cap.rs:19-76` |
-| U37 | diff body | `yi-tui::diffview::render(patch, width, theme, budget) -> Vec<Line>` over a tool result's `details.patch` (D60). Four layers per row (codex `diff_render.rs:846-943`): line-number gutter, sign column, content, and a tint carried to the right edge; the palette forks on `ColorTier` x dark/light with codex's values verbatim (dark `#213A2B`/`#4A221D`, 256 idx 22/52, light pastels with a more saturated gutter, 16-colour foreground-only). Deletions are numbered in the file they left and everything else in the file that results. **Invariant:** the gutter never narrows below three digits — derived from the widest number it would widen at line 100 and re-pad rows already in native scrollback (OMP `diff.ts:118-121`). A `-N` answered by `+N`, or an addition answered by the context it pushed down, blanks the repeated number; hunks are separated by a dim `⋮`, never a `@@` header; rows wrap by column with a blank gutter that keeps the sign column, never word-wrap and never truncation (U12's approval box keeps truncation — it has a fixed height, the transcript does not). A removal run and an addition run of exactly one line each is a replacement, so the tokens that differ are marked `REVERSED` with the indentation excluded (OMP `diff.ts:55-95`); longer runs are a rewrite, where per-token marking is noise. `DiffBudget::NORMAL` (8 hunks, 40 rows) renders in Normal mode — change rows outrank context, edge context trims to one row, whole hunks drop from the tail, and the footer names what it dropped; Verbose renders `FULL` under a 10,000-row safety cap | pure | codex `diff_render.rs`, OMP `modes/components/diff.ts` |
-| U38 | kernel cell | `yi-tui::pycell` renders the `ipython` tool from its D60 record instead of U15's generic shape. **Invariant:** the head line is byte-identical in every transcript mode (prime-agent `ipython-cell.ts`) — a head that changes width when the body opens moves every row under it. Head is `⊙ <chip> · <preview> · ↑ in ↓ out lines · <elapsed>[ · <ename>]`, where the chip is `bash` for a `%%bash` cell (its output is a shell's), `lines` is spelled out so the counts are not read as tokens, and the duration comes from `details.durationMs` so a replayed cell keeps it. The preview is prime-agent's *scored* line, not the first one: comments, imports, decorators, `set -e`, `print`/`len` are skipped and an effect call outranks a binding, which outranks a bare call. Redaction is a trust boundary, not a nicety — the source reaches the screen and every frame dump of it, so an `sk-`-prefixed run of 16+ key-shaped chars anywhere in a token, a quoted literal on a line naming key/secret/token/password, and any 32+ char base64 run are replaced before rendering. Verbose adds the source under a `› ` first-line prompt gutter, then stdout, `result`, stderr (muted) and the traceback (error colour); stdout preceding a `Traceback (most recent call last):` stays stdout. `details.diffs` — the cell's own file edits, each carrying a unified `patch` computed in `yi-tools` where every other patch is — render through U37 under a `╰─ <path>` header. A failed cell shows source and traceback in **every** mode (U15's rule) | pure | prime-agent `ipython-cell.ts`, `core/tools/code-preview.ts` |
-| U39 | highlight | `yi-tui::highlight`: a hand-rolled per-line scanner over five languages (Rust, Python, shell, JSON, TypeScript/JS), resolved from a fence's info string or a path's extension; an unknown name renders plain. Tokens are `Comment \| Str \| Number \| Keyword \| Type \| Function`, where `Type` needs an uppercase initial **and** a lowercase somewhere, so a SCREAMING_CASE constant is not claimed as one, coloured through `Theme::syntax_style` — foreground and bold only, never background, italic or underline (codex `highlight.rs:514-539`: a background fights the diff tint the row renders inside, and the other two are what terminals render least consistently). `spans(line, lang, theme, base)` keeps whatever background `base` carries, which is what lets a highlighted row sit inside U37's tint. Scanning is per line: a string or block comment crossing a line boundary is not tracked, because that state costs a parser and buys one mis-coloured row. A line over 4 KiB renders plain. No cache — the scanner is a char walk, not the FFI or regex engine whose cost forced OMP's LRU-256. Applied at markdown fences, U37 diff bodies (deletions keep syntax colour under `DIM`), the U38 kernel source, and the `bash` head's command | pure | codex `render/highlight.rs` (policy), OMP `theme/tui-adapters.ts` (token set) |
-| U40 | tool cell polish | Four rules over U15. (1) `ToolStatus::Awaiting` — a call held at the permission gate renders `△` in warning colour in place, from `AgentEvent::PermissionRequested`/`Resolved` paired to the cell by `call_id`, which is also how a result now finds the cell that started it (opencode `index.tsx:1857-1861`). (2) A run of finished read-only calls (`read`/`grep`/`glob`/`find`) is held back and commits as one `Cell::Explored` — `✱ Explored ×N` over one row per call, verb column in accent, cap 32; the run closes on any other commit or at `AgentEnd`, is visible in the live region while open, and a run of one commits as the plain cell it always was. A failure never joins a run (codex `exec_cell/render.rs:293-385`). (3) `bash` renders `$ <command>` highlighted through U39 rather than echoing the tool's name, with `· exit N · <elapsed>` on the digest, the exit in error colour when nonzero (OMP `tools/bash.ts`). (4) Spacing: a blank precedes a cell only when both it and the previously committed cell rendered more than one row, measured from what was actually rendered — the only thing an append-only commit path knows (opencode `util/layout.ts:8-25`) | pure | opencode `routes/session/index.tsx`, codex `exec_cell/render.rs`, OMP `tools/bash.ts` |
-| U41 | agents view | `/agents` opens a `BottomView` over the family (prime-agent `context-tree-format.ts:112-200`, `agents-view-state.ts:627-819`): `├─`/`└─` connectors, per-child glyph (`◆` running · `◇` idle · `✓` done · `✗` failed) in the child's name accent, **own-usage** token and toolcall columns so the total is the sum of what is on screen, and a 10-cell `▓`/`░` context bar against the session window that turns warning at 80 %. Children spawned by one kernel cell are grouped under one dim `⊙ <scored preview>` row naming that cell — the attribution is *observed*, not plumbed: Yi's children come from `rlm.run` inside an `ipython` call, so the kernel call running when a child appears is the call that made it, and a child born outside one carries nothing rather than a wrong parent. `x` arms an in-row confirm for 2 s (`<name> x again to stop`) and a second `x` aborts the child's own session, which is what the host's `interrupt` does; moving the selection or letting the window lapse disarms. The HUD header (U28) becomes the same family's counts — `● 2 running · ◐ 1 idle · ○ 3 done`, zeroes omitted so it shrinks as the family settles. No fullscreen dashboard: §8.14 bans the alternate screen, so prime-agent's row model ports onto the existing popup instead | pure | prime-agent `subagent-summary-line.ts`, `context-tree-format.ts`, `agents-view-state.ts` |
-| U43 | model + effort switching | `/model` and `alt-m` open a `BottomView` picker over the catalog: fuzzy filter, `provider/id` rows, current marked `›`, session-MRU first. A model whose advertised ladder has more than one rung chains in place into its effort list — no second overlay — with `xhigh`/`max` withheld behind a trailing `More reasoning…` row (codex `model_popups.rs:456-560`). `shift-tab` / `alt-tab` step the level within the advertised ladder only, never crossing into the advanced tiers: at the bound the shortcut says where they live rather than silently stopping (codex `reasoning_shortcuts.rs:55-200`). An effort the model does not advertise anchors to the model's clamp instead of guessing a rung. `ctrl-p` / `shift-ctrl-p` walk the models used this session; the whole catalog is the picker's job, not a cycle's. The status line's `◉ level` is the live value. OMP's fullscreen `/models` hub is read-only reference — §8.14 bans the alternate screen — as are its prewalk hand-off and `auto` classifier | pure | OMP `model-picker.ts` (row anatomy), codex `model_popups.rs`, `reasoning_shortcuts.rs` |
-| U42 | motion | `yi-tui::motion`, one clock and two cadences: the App counts 80 ms ticks (`TICK_MS`, the frame scheduler's own wake boundary) and every animation converts once through `elapsed_of` rather than keeping a counter of its own. Braille at 80 ms marks a call in flight; the diamond `◇◈◆◈` at 250 ms marks agent-level work — task cells, HUD child rows — so a family pulses together (prime-agent `theme/working-icon.ts:3-4`). The working line's narration carries codex's shimmer (`shimmer.rs:26-78`): a raised-cosine band (half-width 5, pad 10, 2 s sweep) whose colour blends from the theme's dim toward its text at truecolor — never a hardcoded palette, so it reads on any ground — and whose weight quantises into dim/normal/bold below that, a gradient a 16-colour terminal can show. Runs of one style coalesce, so a row emits a handful of spans, not one per character. A finished HUD row is struck left-to-right over 12 frames and then settles (OMP `todo.ts:990-1015`); a live thought's `∴` becomes OMP's breathing starburst `✻✼❉❊✺✹✸✶`, eased 70→230 ms on a raised cosine, every frame one cell wide so the row cannot reflow under it. **Invariant:** only the live tail animates — the same cell in scrollback keeps the static glyph, which is the one frame it could ever show there | pure | codex `shimmer.rs`, `motion.rs`; OMP `theme/shimmer.ts`, `tools/todo.ts`; prime-agent `theme/working-icon.ts` |
-| U19 | tests | `VT100Backend = CrosstermBackend<vt100::Parser>` for scroll-region behavior; `TestBackend` + `insta` for cells; `handle_input` table tests; drive mode (`yi tui --headless --keys --frames`) runs the real loop over an in-memory screen with scripted keys (`key/type/wait/wait-idle/quit`) and per-change text frame dumps — the rendered-UI e2e surface | test | codex `test_backend.rs`, atuin |
-| U27 | task cell | two lines: `⠙\|✓\|✗ <agent> Task — <description>` + live `↳ <child's latest titled tool>` while running, `↳ N toolcalls · elapsed` done, `↳ <error ≤ 80 chars>` failed in error color; forced blank line above and below; counters computed from the child session's live event stream, not tool metadata. A child that finishes while an `ipython` call is still running is held in the live region, drawn as a finished `✓` task under the running cell, and commits after that cell does — never above it (D107) | pure | opencode `session/index.tsx:2221-2334` |
-| U28 | HUD | pinned block in the live region, never committed: header (goal objective + status when active, else `Subagents`), rows `⠙\|☐\|☑` + strikethrough done + warning blocked, cap 8 + `… n more`; tree-spine connectors `├─\|│\|└────` lit accent top-down by done/total (≥ 1 lit on progress, full only when done); queued `Steering · n` block; auto-clear on settle; data = U20 `cards(&AgentState)` | pure | OMP `interactive-mode.ts:2344-2459,466-521`, `ui-helpers.ts:910-944` |
-| U29 | subagent focus | focus child: rule into scrollback, replay child cells badged in child accent, live region = child tail, composer swapped for nav footer `<agent> (n of m) · tokens (ctx %) · $cost · Parent ↑ Prev ← Next →`; status line dims whole-bar; read-only (B13 deferred); child permission requests bubble to parent U12; Esc/↑ back with closing rule | I/O | opencode `subagent-footer.tsx:65-129`, `session/index.tsx:433-462` |
+| U10 | Composer | `tui-textarea` + history (↑/↓ at edges) + Ctrl+R reverse-i-search (query on the composer title, preview in the body, Enter accepts, Esc restores the draft; empty query never previews) + paste atoms: a paste > 10 lines or > 1,000 chars becomes `[Paste #n, +L lines]`, expanded on submit in one longest-label-first pass; backspace deletes the whole atom | I/O | — |
+| U11 | popups | `BottomView` trait (`Renderable` + `handle_key`) for `/command` list and `@file` list (prefix match, gitignore-aware walk, ≤ 100 results); rendered in place of the composer. Menu filtering is a hand-rolled ~170-line matcher — repo-file search justifies `nucleo`, menus never do (one reference correctly ships both) | pure | — |
+| U12 | approval view | fixed-height `BottomView` from `PermissionRequest{title, description, subject, options}`; same widget serves `ask_user` questions; height fixed at spawn so it never jitters. The description's first line is prose; everything after it is the tool's own T13 diff, rendered as one — `+`/`-`/`@@` colored, the `--- a/` / `+++ b/` pair dropped as a repeat of the title, lines truncated rather than wrapped (a wrapped diff line loses the column that marks an addition), capped at 10 rows over the permission layer's own 40 | pure | — |
+| U13 | markdown | `render(md, width) -> Vec<Line>`; streaming commits by **byte cursor over standalone slices**: `stable_cut` finds the last blank-line boundary outside code fences, each newly stable slice renders standalone and commits once, the tail repaints live — never line counts derived from re-rendering a growing prefix (renderers trim trailing blanks and the counts drift). The whole thought commits before any prose commits — `commit_prose` flushes the uncommitted thought first — and `MessageEnd` is a `commit_prose` call, not a second path (D107). Tables via the ported pipeline | pure | — |
+| U14 | wrap | hand-rolled word wrap over `Span`s, unicode-width aware; never break inside a token containing `://` | pure | — |
+| U15 | tool cell | head line: glyph (`◐` running · `✓` · `✗`) + `i` intent + elapsed, then a `└ ` outcome digest derived from the result text in **every** mode (references commit 4-5 result lines by default; a call that states nothing is the outlier). A failure's body is never mode-gated. Verbose adds a typed body — reads/edits on a dim line-number gutter with the hashline anchor header dropped, searches grouped one path per file, everything else plain — over a head-5/tail-5 preview (a command's error is in the tail). `edit` names its target from the patch's own `[path#TAG]` headers, having no `path` argument. Consecutive reads coalesce into one cell; spinner phase shared by one ticker. A result carrying `details.patch` (D60) supersedes both the typed body and the mode gate: the digest line gains `+N -N` in the diff's own colours and U37 renders the change itself in **every** mode, budgeted in Normal and full in Verbose — a call whose whole subject is a change had a body worth showing before the reader knew a mode key existed | pure | — |
+| U16 | status line | composer top border (D41): left `model · ◉ thinking · mode · cwd@branch · $cost`, right session name (stable name-hash accent) + `👥 n` subagent badge; gap = context gauge (accent fill, speculation tick, threshold tick, collision-avoiding labels, >100 % clamps in error color); truncation cascade shrink-name → pop-right → shrink-path → drop-left-skip-path, floors 8 cells; git HEAD re-read by stat-polling (fs.watch misses atomic swaps) | pure | — |
+| U17 | colors | `COLORTERM`/`TERM` → `{TrueColor, Ansi256, Ansi16}`; `COLORFGBG` → light/dark, default dark; theme derived by blending fg into bg (user bg 12 % on dark, 4 % on light), `.dim()` at 16 colors | pure | — |
+| U18 | external editor | `Ctrl+G`: drop the event reader, leave raw mode, spawn `$EDITOR` on a temp file, re-enter; the crossterm reader must be recreated or it eats keys | I/O | — |
+| U35 | reflow state | `TranscriptReflowState{last_observed_width, last_reflow_width, pending_reflow_width, pending_until, ran_during_stream, resize_requested_during_stream}`: `note_width` (first width initializes without scheduling — no old-width transcript exists yet), `reflow_needed_for_width` (compares against the width that *rebuilt*, not the last observed: a terminal can report its settled size after the rebuild that handled the resize), `schedule_debounced` (75 ms trailing; later events push the deadline out), `schedule_immediate`, `mark_reflowed_width`, and the two stream latches — a reflow that ran mid-stream must be repeated once the stream consolidates or the transcript keeps the transient wrapping | pure | — |
+| U36 | resize reflow | on a due deadline: clear scrollback + visible screen (`ESC[r ESC[0m ESC[H ESC[2J ESC[3J ESC[H` as one write — some terminals only honour purge+clear emitted together), reset the viewport to `y = 0`, re-render the retained transcript at the new width and re-emit it. The row cap is enforced **while rendering from source, walking cells newest-first**, never after writing — replaying more rows than the terminal retains is wasted work. Caps: VS Code 1,000 · WezTerm 3,500 · Windows Terminal 9,001 · Alacritty 10,000 · fallback 1,000, from `TERM_PROGRAM`/`TERM`. U2's viewport resize deliberately touches nothing above the viewport; this pass owns those rows | I/O | — |
+| U37 | diff body | `yi-tui::diffview::render(patch, width, theme, budget) -> Vec<Line>` over a tool result's `details.patch` (D60). Four layers per row: line-number gutter, sign column, content, and a tint carried to the right edge; the palette forks on `ColorTier` x dark/light with the reference's values verbatim (dark `#213A2B`/`#4A221D`, 256 idx 22/52, light pastels with a more saturated gutter, 16-colour foreground-only). Deletions are numbered in the file they left and everything else in the file that results. **Invariant:** the gutter never narrows below three digits — derived from the widest number it would widen at line 100 and re-pad rows already in native scrollback. A `-N` answered by `+N`, or an addition answered by the context it pushed down, blanks the repeated number; hunks are separated by a dim `⋮`, never a `@@` header; rows wrap by column with a blank gutter that keeps the sign column, never word-wrap and never truncation (U12's approval box keeps truncation — it has a fixed height, the transcript does not). A removal run and an addition run of exactly one line each is a replacement, so the tokens that differ are marked `REVERSED` with the indentation excluded; longer runs are a rewrite, where per-token marking is noise. `DiffBudget::NORMAL` (8 hunks, 40 rows) renders in Normal mode — change rows outrank context, edge context trims to one row, whole hunks drop from the tail, and the footer names what it dropped; Verbose renders `FULL` under a 10,000-row safety cap | pure | — |
+| U38 | kernel cell | `yi-tui::pycell` renders the `ipython` tool from its D60 record instead of U15's generic shape. **Invariant:** the head line is byte-identical in every transcript mode — a head that changes width when the body opens moves every row under it. Head is `⊙ <chip> · <preview> · ↑ in ↓ out lines · <elapsed>[ · <ename>]`, where the chip is `bash` for a `%%bash` cell (its output is a shell's), `lines` is spelled out so the counts are not read as tokens, and the duration comes from `details.durationMs` so a replayed cell keeps it. The preview is a *scored* line, not the first one: comments, imports, decorators, `set -e`, `print`/`len` are skipped and an effect call outranks a binding, which outranks a bare call. Redaction is a trust boundary, not a nicety — the source reaches the screen and every frame dump of it, so an `sk-`-prefixed run of 16+ key-shaped chars anywhere in a token, a quoted literal on a line naming key/secret/token/password, and any 32+ char base64 run are replaced before rendering. Verbose adds the source under a `› ` first-line prompt gutter, then stdout, `result`, stderr (muted) and the traceback (error colour); stdout preceding a `Traceback (most recent call last):` stays stdout. `details.diffs` — the cell's own file edits, each carrying a unified `patch` computed in `yi-tools` where every other patch is — render through U37 under a `╰─ <path>` header. A failed cell shows source and traceback in **every** mode (U15's rule) | pure | — |
+| U39 | highlight | `yi-tui::highlight`: a hand-rolled per-line scanner over five languages (Rust, Python, shell, JSON, TypeScript/JS), resolved from a fence's info string or a path's extension; an unknown name renders plain. Tokens are `Comment \| Str \| Number \| Keyword \| Type \| Function`, where `Type` needs an uppercase initial **and** a lowercase somewhere, so a SCREAMING_CASE constant is not claimed as one, coloured through `Theme::syntax_style` — foreground and bold only, never background, italic or underline (a background fights the diff tint the row renders inside, and the other two are what terminals render least consistently). `spans(line, lang, theme, base)` keeps whatever background `base` carries, which is what lets a highlighted row sit inside U37's tint. Scanning is per line: a string or block comment crossing a line boundary is not tracked, because that state costs a parser and buys one mis-coloured row. A line over 4 KiB renders plain. No cache — the scanner is a char walk, not the FFI or regex engine whose cost forced a reference's LRU-256. Applied at markdown fences, U37 diff bodies (deletions keep syntax colour under `DIM`), the U38 kernel source, and the `bash` head's command | pure | — |
+| U40 | tool cell polish | Four rules over U15. (1) `ToolStatus::Awaiting` — a call held at the permission gate renders `△` in warning colour in place, from `AgentEvent::PermissionRequested`/`Resolved` paired to the cell by `call_id`, which is also how a result now finds the cell that started it. (2) A run of finished read-only calls (`read`/`grep`/`glob`/`find`) is held back and commits as one `Cell::Explored` — `✱ Explored ×N` over one row per call, verb column in accent, cap 32; the run closes on any other commit or at `AgentEnd`, is visible in the live region while open, and a run of one commits as the plain cell it always was. A failure never joins a run. (3) `bash` renders `$ <command>` highlighted through U39 rather than echoing the tool's name, with `· exit N · <elapsed>` on the digest, the exit in error colour when nonzero. (4) Spacing: a blank precedes a cell only when both it and the previously committed cell rendered more than one row, measured from what was actually rendered — the only thing an append-only commit path knows | pure | — |
+| U41 | agents view | `/agents` opens a `BottomView` over the family: `├─`/`└─` connectors, per-child glyph (`◆` running · `◇` idle · `✓` done · `✗` failed) in the child's name accent, **own-usage** token and toolcall columns so the total is the sum of what is on screen, and a 10-cell `▓`/`░` context bar against the session window that turns warning at 80 %. Children spawned by one kernel cell are grouped under one dim `⊙ <scored preview>` row naming that cell — the attribution is *observed*, not plumbed: Yi's children come from `rlm.run` inside an `ipython` call, so the kernel call running when a child appears is the call that made it, and a child born outside one carries nothing rather than a wrong parent. `x` arms an in-row confirm for 2 s (`<name> x again to stop`) and a second `x` aborts the child's own session, which is what the host's `interrupt` does; moving the selection or letting the window lapse disarms. The HUD header (U28) becomes the same family's counts — `● 2 running · ◐ 1 idle · ○ 3 done`, zeroes omitted so it shrinks as the family settles. No fullscreen dashboard: §8.14 bans the alternate screen, so the reference row model ports onto the existing popup instead | pure | — |
+| U43 | model + effort switching | `/model` and `alt-m` open a `BottomView` picker over the catalog: fuzzy filter, `provider/id` rows, current marked `›`, session-MRU first. A model whose advertised ladder has more than one rung chains in place into its effort list — no second overlay — with `xhigh`/`max` withheld behind a trailing `More reasoning…` row. `shift-tab` / `alt-tab` step the level within the advertised ladder only, never crossing into the advanced tiers: at the bound the shortcut says where they live rather than silently stopping. An effort the model does not advertise anchors to the model's clamp instead of guessing a rung. `ctrl-p` / `shift-ctrl-p` walk the models used this session; the whole catalog is the picker's job, not a cycle's. The status line's `◉ level` is the live value. A fullscreen `/models` hub is read-only reference — §8.14 bans the alternate screen — as are its prewalk hand-off and `auto` classifier | pure | — |
+| U42 | motion | `yi-tui::motion`, one clock and two cadences: the App counts 80 ms ticks (`TICK_MS`, the frame scheduler's own wake boundary) and every animation converts once through `elapsed_of` rather than keeping a counter of its own. Braille at 80 ms marks a call in flight; the diamond `◇◈◆◈` at 250 ms marks agent-level work — task cells, HUD child rows — so a family pulses together. The working line's narration carries the reference shimmer: a raised-cosine band (half-width 5, pad 10, 2 s sweep) whose colour blends from the theme's dim toward its text at truecolor — never a hardcoded palette, so it reads on any ground — and whose weight quantises into dim/normal/bold below that, a gradient a 16-colour terminal can show. Runs of one style coalesce, so a row emits a handful of spans, not one per character. A finished HUD row is struck left-to-right over 12 frames and then settles; a live thought's `∴` becomes a breathing starburst `✻✼❉❊✺✹✸✶`, eased 70→230 ms on a raised cosine, every frame one cell wide so the row cannot reflow under it. **Invariant:** only the live tail animates — the same cell in scrollback keeps the static glyph, which is the one frame it could ever show there | pure | — |
+| U19 | tests | `VT100Backend = CrosstermBackend<vt100::Parser>` for scroll-region behavior; `TestBackend` + `insta` for cells; `handle_input` table tests; drive mode (`yi tui --headless --keys --frames`) runs the real loop over an in-memory screen with scripted keys (`key/type/wait/wait-idle/quit`) and per-change text frame dumps — the rendered-UI e2e surface | test | — |
+| U27 | task cell | two lines: `⠙\|✓\|✗ <agent> Task — <description>` + live `↳ <child's latest titled tool>` while running, `↳ N toolcalls · elapsed` done, `↳ <error ≤ 80 chars>` failed in error color; forced blank line above and below; counters computed from the child session's live event stream, not tool metadata. A child that finishes while an `ipython` call is still running is held in the live region, drawn as a finished `✓` task under the running cell, and commits after that cell does — never above it (D107) | pure | — |
+| U28 | HUD | pinned block in the live region, never committed: header (goal objective + status when active, else `Subagents`), rows `⠙\|☐\|☑` + strikethrough done + warning blocked, cap 8 + `… n more`; tree-spine connectors `├─\|│\|└────` lit accent top-down by done/total (≥ 1 lit on progress, full only when done); queued `Steering · n` block; auto-clear on settle; data = U20 `cards(&AgentState)` | pure | — |
+| U29 | subagent focus | focus child: rule into scrollback, replay child cells badged in child accent, live region = child tail, composer swapped for nav footer `<agent> (n of m) · tokens (ctx %) · $cost · Parent ↑ Prev ← Next →`; status line dims whole-bar; read-only (B13 deferred); child permission requests bubble to parent U12; Esc/↑ back with closing rule | I/O | — |
 | U34 | session mark | the mark and the activity indicator are one object: `logo::frame(phase, clock, size)` where phase 0 is a `Yi` wordmark built from the same dot primitives the orb uses and phase 1 is the working orb's own live frame. A turn drives the phase to 1 and its end drives it back, so the dots visibly rearrange between letters and orb — never a static mark beside a moving one. Pairing is angle-order about the centre with the orb ordering rotated to the offset that minimises total travel (crossing dots read as noise); easing is exponential ease-in, and `advance` clamps a step to one frame — the mark stops repainting when it settles, so the elapsed time since its last paint is unbounded and turning it into progress skips the animation entirely. The mark trails the live region, below the streaming tail (D46): U13 commits each stable paragraph to scrollback mid-turn, so the live region's first row is the commit boundary and a mark placed there divides the answer instead of leading it, changing rows once per paragraph. Below the tail it is always after all rendered prose, which is where the finished answer already puts it. At rest the image is transmitted once and the frame timer stops; the kitty path is the only renderer, and non-kitty terminals keep the plain spinner line and reserve no rows. Frames go out zlib-deflated (`o=z`, D48) — an RGBA frame this sparse compresses 11-49x, and uncompressed it was outweighing the streamed answer sharing the same pty | pure + I/O | new (over A.13) |
 | U33 | thinking orbs | thinking-orbs engine port (A.13): 9 deterministic mode painters produce z-sorted `OrbFrame` dot lists, geometry-exact against the library's own golden vectors (72 cases, 1e-4). Rendered ONLY via the kitty graphics protocol (TERM contains kitty/ghostty, or KITTY_WINDOW_ID): the canvas painter ported to RGBA — mirrored ink, feathered discs, alpha depth, transparent ground — transmitted as chunked base64 APC frames with one stable image id, scaled into an 8×4-cell rect beside the verb label at the working line; deleted when the turn ends. Non-kitty terminals keep the plain spinner line — no intermediate renderer (braille rejected: binary dots, one color per cell, cannot carry the radius+ink depth language). The working/default state evaluates the composing (ribbon) preset — orbits-64's sparse particles read as noise at cell-rect scale. Activity → verb: tool class → searching/solving, child running → connecting, prose streaming → composing, approval → listening, default working | pure + I/O | `ref/tui/thinking-orbs` (A.13) |
-| U32 | transcript modes | `TranscriptMode{Normal, Thinking, Verbose}` cycled on Ctrl+O: Normal collapses thought cells to `∴ thinking · N lines` and tools to head + digest; Thinking shows reasoning bodies dim-italic; Verbose adds the typed tool body. The change repaints the rows above the viewport from `yi-tui::history` over U2's resize path (D45), so it reaches cells already on screen — only what has scrolled past the top stays as drawn. The active mode occupies U16's mode slot rather than committing a notice per toggle | pure | Claude Code ctrl+o, OMP thinking display |
-| U31 | session tree selector | double-Esc (empty composer, idle, parent session only, 500 ms window) opens an overlay of the session's entry tree: `├─\|└─` connectors + `│` gutters, fuzzy search, filter modes (default \| no-tools \| user-only \| all), current path highlighted; select = rewind — `move_lane` the leaf to the chosen entry and reprint the transcript from the new branch (the Pi tree format is the store, nothing new persisted) | pure + I/O | OMP `tree-selector.ts`, `input-controller.ts:429-445` |
+| U32 | transcript modes | `TranscriptMode{Normal, Thinking, Verbose}` cycled on Ctrl+O: Normal collapses thought cells to `∴ thinking · N lines` and tools to head + digest; Thinking shows reasoning bodies dim-italic; Verbose adds the typed tool body. The change repaints the rows above the viewport from `yi-tui::history` over U2's resize path (D45), so it reaches cells already on screen — only what has scrolled past the top stays as drawn. The active mode occupies U16's mode slot rather than committing a notice per toggle | pure | Claude Code ctrl+o |
+| U31 | session tree selector | double-Esc (empty composer, idle, parent session only, 500 ms window) opens an overlay of the session's entry tree: `├─\|└─` connectors + `│` gutters, fuzzy search, filter modes (default \| no-tools \| user-only \| all), current path highlighted; select = rewind — `move_lane` the leaf to the chosen entry and reprint the transcript from the new branch (the Pi tree format is the store, nothing new persisted) | pure + I/O | — |
 
 ```mermaid
 flowchart LR
@@ -1112,13 +1120,13 @@ flowchart LR
   R -- "prompt / steer / abort / permission reply" --> S
 ```
 
-Not ported, with the reference that proves the point: opencode's alternate screen + retained
-scene graph + own scrollbox/mouse selection (its subagent UX ports without them), its dialog
-framework + ~20 dialogs (~7k), 42-col sidebar, theme engine (Yi keeps U17); OMP's 24-segment
+Not ported, with the reference that proves the point: an alternate screen + retained
+scene graph + own scrollbox/mouse selection (its subagent UX ports without them), a dialog
+framework + ~20 dialogs (~7k), 42-col sidebar, theme engine (Yi keeps U17); a 24-segment
 preset system, powerline caps, shimmer, jj fallback (2,252-line status component → ~350
-adapted); alt-screen pager (codex 1.8k; native
-scrollback + `yi sessions show` cover it), images (OMP ~1k + 4 test files), status-line presets
-(OMP 3.1k), direct-write spinner path (OMP), 236-variant `AppEvent` (codex), `Component` trait
+adapted); alt-screen pager (1.8k; native
+scrollback + `yi sessions show` cover it), images (~1k + 4 test files), status-line presets
+(3.1k), direct-write spinner path, 236-variant `AppEvent`, `Component` trait
 with six methods (rainfrog — three panes do not need a framework), 4 Hz/15 Hz tick timers
 (rainfrog), five-format config loader (rainfrog), popup-over-pty mode (atuin), big headers /
 cosmic-text (mdfried), `arborium {all-languages}` (mdfried — the largest single size line item
@@ -1128,15 +1136,15 @@ in any of the five manifests).
 
 | # | Primitive | Signature | Purity | Source |
 |---|---|---|---|---|
-| X1 | args | `lexopt` hand-parsed: `yi [prompt]` (TUI, or `ask` when stdin/stdout is not a TTY), `yi ask`, `yi rpc`, `yi acp`, `yi serve`, `yi sessions {list\|show\|rm}`, `yi undo`, `yi version`; `--json`, `--model`, `--cwd`, `--session`, `--session-dir` (session storage root — eval harnesses write under `/logs`), `--continue` (resume leaf session — benchmark multi-step + warm cache), `--socket` (yi serve), `--yolo` (M1 yolo, the default since D44; the non-interactive flag every eval harness requires, kept so the flag never breaks), `--confirm` (M1 ask — the opt-in permission gate), `--headless` + `--keys <file>` + `--frames <dir>` (TUI drive mode, D41: the real loop over an in-memory screen, scripted keys, text frame dumps — rendered-UI testing without a PTY), `--schema` (JSON Schema subset; a mismatch exits 3) | pure | fx `cli/`, atuin `main.rs` (shape, not clap) |
+| X1 | args | `lexopt` hand-parsed: `yi [prompt]` (TUI, or `ask` when stdin/stdout is not a TTY), `yi ask`, `yi rpc`, `yi acp`, `yi serve`, `yi sessions {list\|show\|rm}`, `yi undo`, `yi version`; `--json`, `--model`, `--cwd`, `--session`, `--session-dir` (session storage root — eval harnesses write under `/logs`), `--continue` (resume leaf session — benchmark multi-step + warm cache), `--socket` (yi serve), `--yolo` (M1 yolo, the default since D44; the non-interactive flag every eval harness requires, kept so the flag never breaks), `--confirm` (M1 ask — the opt-in permission gate), `--headless` + `--keys <file>` + `--frames <dir>` (TUI drive mode, D41: the real loop over an in-memory screen, scripted keys, text frame dumps — rendered-UI testing without a PTY), `--schema` (JSON Schema subset; a mismatch exits 3) | pure | — |
 | X2 | fast path | `--version`, `--help`, `sessions list` return before config parse or runtime construction; runtime is built per command (`tokio::runtime::Builder::new_current_thread`) | I/O | atuin `client.rs:164-244` |
 | X3 | streams | results on stdout, UI/progress on stderr; if stdout is not a TTY the answer is plain text (or events with `--json`); TUI opens `/dev/tty` when stdout is captured so `$(yi ask …)` works | I/O | atuin `search.rs:241`, `interactive.rs:1391` |
 | X4 | print = json = rpc | `yi ask` text mode, `--json`, and `yi rpc` all render the one `Event` stream; a `Renderer` trait with `Text`, `Json`, `PiRpc` impls | pure | pi `modes/print`, `docs/rpc.md` |
-| X5 | exit codes | `0` ok · `1` error · `2` usage · `3` cancelled (Ctrl+C / `session/cancel`) · `4` permission denied / refusal · `5` budget exceeded; documented in `--help`. **In `--json` mode agent-level failures are reported in-band and the process exits 0** — harbor prepends `pipefail` and classifies any non-zero exit as a scored-0 trial (§15, E1); non-zero is reserved for process/usage errors | data | atuin, fx · harbor `installed/base.py:445-521` |
+| X5 | exit codes | `0` ok · `1` error · `2` usage · `3` cancelled (Ctrl+C / `session/cancel`) · `4` permission denied / refusal · `5` budget exceeded; documented in `--help`. **In `--json` mode agent-level failures are reported in-band and the process exits 0** — harbor prepends `pipefail` and classifies any non-zero exit as a scored-0 trial (§15, E1); non-zero is reserved for process/usage errors | data | atuin· harbor `installed/base.py:445-521` |
 | X6 | errors | typed at crate boundaries (`thiserror`); `main` prints a TTY-aware banner (red box, wrapped ≤ 100 cols) or plain `error: …` when stderr is not a TTY | pure | atuin `print_error.rs` |
-| X7 | config | `~/.yi/config.json` + `<project>/.yi/config.json`, `UserConfig` (all `Option`) merged into `Config` (all concrete) by one `From`; JSON because `serde_json` is already present (no `toml` dep). Layer precedence is an **explicit ordered enum** with provenance from day one (`Defaults < User < Project < CliFlags` — codex's implicit order let a legacy layer outrank CLI flags); `UserConfig` is `deny_unknown_fields` with the failing key named (config is not durable state — §19 rule 4 does not apply to it); the merge is **generic and knows no keys** — schema migration is a separate idempotent per-layer pass before merge (codex's bool→table shim, duplicated in two merge paths, compounds into a 4,640-line requirements merger); `yi doctor` prints every key whose value deviates from its default — the evidence §1.1 deletion needs | pure | mdfried `config.rs:27-60` · codex `config_layer_source.rs:31-81`, `strict_config.rs` |
+| X7 | config | `~/.yi/config.json` + `<project>/.yi/config.json`, `UserConfig` (all `Option`) merged into `Config` (all concrete) by one `From`; JSON because `serde_json` is already present (no `toml` dep). Layer precedence is an **explicit ordered enum** with provenance from day one (`Defaults < User < Project < CliFlags` — a surveyed implicit order let a legacy layer outrank CLI flags); `UserConfig` is `deny_unknown_fields` with the failing key named (config is not durable state — §19 rule 4 does not apply to it); the merge is **generic and knows no keys** — schema migration is a separate idempotent per-layer pass before merge (a surveyed bool→table shim, duplicated in two merge paths, compounds into a 4,640-line requirements merger); `yi doctor` prints every key whose value deviates from its default — the evidence §1.1 deletion needs | pure | mdfried `config.rs:27-60` |
 | X8 | logging | `tracing` spans (R10) to `~/.yi/logs/yi.jsonl` when `YI_TRACE=1`; never to stderr while the TUI owns it; RAII guard flushes on exit; a misconfigured log path is non-fatal | I/O | atuin `logs/mod.rs` |
-| X9 | signals | Ctrl+C: first press cancels the turn (`InterruptSignal`), second within 1 s exits; SIGTERM/SIGHUP run the same teardown, promise-memoized so concurrent callers await one teardown; kernel and children get `shutdown` with a 5 s deadline | I/O | OMP `session-teardown.ts`, prime |
+| X9 | signals | Ctrl+C: first press cancels the turn (`InterruptSignal`), second within 1 s exits; SIGTERM/SIGHUP run the same teardown, promise-memoized so concurrent callers await one teardown; kernel and children get `shutdown` with a 5 s deadline | I/O | — |
 | X10 | completions | static `completions/yi.{bash,zsh,fish}`, hand-written because `lexopt` has no generator; they track the X1 subcommand and flag lists | — | — |
 
 `yi mcp` (config-gated by `mcp.enabled`, D36) follows the same X1–X6 conventions with `--json` output in MCP-spec
@@ -1160,7 +1168,7 @@ Sidecar → Yi: `surface{id, placement, lines: [ansi], cursor?}`, `frame_request
 
 | # | Primitive | Signature | Purity | Source |
 |---|---|---|---|---|
-| U27 | BridgeSlot | `Renderable` painting remote ANSI lines into a layout slot (`header`, `footer`, `status_segment`, `above_editor`); hand SGR→ratatui parser ~150 lines (no new dep) | pure | codex `ansi-escape` (shape) |
+| U27 | BridgeSlot | `Renderable` painting remote ANSI lines into a layout slot (`header`, `footer`, `status_segment`, `above_editor`); hand SGR→ratatui parser ~150 lines (no new dep) | pure | — |
 | U28 | overlay surface | one overlay slot: bridge lines over the viewport, input routed to sidecar while active, `frame_request` feeds the U6 scheduler (coalesced, capped) — games run at their own fps | I/O | pi overlays |
 | U29 | entry-renderer delegation | when the sidecar registered a renderer for an entry type, Cell lines come from `render_entry`, memoized in the U5 cache `(entry_id, version, width)`; streaming cell re-renders at frame cadence (1 IPC/frame max) | I/O | pi `registerEntryRenderer` |
 | U30 | editor delegation | a registered editor component swaps the composer slot: keys → sidecar (running Pi's real `editor.ts`, autocomplete included) → lines back; sub-ms local round-trip | I/O | pi editor |
@@ -1179,21 +1187,21 @@ est. 3–6 of 78. **Ceiling ≈ 92–96 %.** Yi-side cost ≈ 800–1,200 lines 
 `ref/agents/pi/packages/coding-agent/src/core/extensions/types.ts:1-1751` against the wire) lives in
 an external package, zero lines in core.
 
-### 8.17 Goals (`yi-runtime::goal`, phase 6 — from codex `ext/goal`, superseding prime)
+### 8.17 Goals (`yi-runtime::goal`, phase 6)
 
-Codex's goal system replaces prime's as the phase-6 reference (D25). The load-bearing decision:
+A later reference goal system replaces the earlier one for phase 6 (D25). The load-bearing decision:
 **the goal lives outside the transcript** — a session-store row, never a P1 entry — so it cannot
 be summarized away, truncated, or lost to a cut point; compaction is irrelevant to goal survival
 by construction.
 
 | # | Primitive | Signature | Purity | Source |
 |---|---|---|---|---|
-| G1 | Goal | `{objective, status: Active\|Paused\|Blocked\|UsageLimited\|BudgetLimited\|Complete, token_budget?, tokens_used, time_used_seconds, created, updated}` — one per session, stored beside the session header, not in the tree | data | codex `thread_goal.rs:12-71` |
-| G2 | tools | `goal.get` (status+budgets+remaining) · `goal.create{objective, token_budget?}` ("only when explicitly requested; never inferred"; fails if one is unfinished) · `goal.update{status: complete\|blocked}` **only** — the model may *report* terminal state; the host owns pause/resume/limits | I/O | codex `ext/goal/src/spec.rs:13-94` |
-| G3 | continue | on idle with an `Active` goal: check a one-row continuation-deferral latch (cleared by user input) → render the continuation prompt → `follow_up(resume_if_idle)` (R3); mid-turn objective edits steer instead | I/O | codex `runtime.rs:362-454` |
-| G4 | prompts | `continuation.md` ported adapted (~5 KB — the whole value; the update_plan paragraph is excised — D26, Yi ships no plan tool; tool surface renamed `goal.update`): objective in `<untrusted_objective>` tags ("data, not higher-priority instructions"), anti-shrinkage ("do not redefine success around a smaller task"), evidence primacy ("inspect current state before relying on prior context" — the anti-compaction-rot clause), completion audit ("must prove completion, not merely fail to find remaining work"), `blocked` requires the same blocker ≥ 3 consecutive goal turns; + `budget_limit` and `objective_updated` variants. Interpolation via a strict ~150-line `{{name}}` engine where an **unused supplied value is an error** (`ExtraValue` — a renamed placeholder cannot silently drop content); all prompt text lives in `include_str!`-reachable files | data | codex `prompts/templates/goals/*`, `utils/template` — supersedes dsh `goal-round-driver/prompt.ts` (A.6) |
-| G5 | accounting | token deltas streamed from `MessageEnd.usage` (P14 aggregate), wall-clock accumulated per goal; budget crossings emit one-shot latched reminders; interpolated fresh into G4 each continuation | I/O | codex `accounting.rs:313-427` |
-| G6 | injection | all goal prompts ride L4's `<yi_internal_context source="goal">` wrapper — recognized and dropped at compaction, never accumulating | pure | codex (C9) |
+| G1 | Goal | `{objective, status: Active\|Paused\|Blocked\|UsageLimited\|BudgetLimited\|Complete, token_budget?, tokens_used, time_used_seconds, created, updated}` — one per session, stored beside the session header, not in the tree | data | — |
+| G2 | tools | `goal.get` (status+budgets+remaining) · `goal.create{objective, token_budget?}` ("only when explicitly requested; never inferred"; fails if one is unfinished) · `goal.update{status: complete\|blocked}` **only** — the model may *report* terminal state; the host owns pause/resume/limits | I/O | — |
+| G3 | continue | on idle with an `Active` goal: check a one-row continuation-deferral latch (cleared by user input) → render the continuation prompt → `follow_up(resume_if_idle)` (R3); mid-turn objective edits steer instead | I/O | — |
+| G4 | prompts | `continuation.md` ported adapted (~5 KB — the whole value; the update_plan paragraph is excised — D26, Yi ships no plan tool; tool surface renamed `goal.update`): objective in `<untrusted_objective>` tags ("data, not higher-priority instructions"), anti-shrinkage ("do not redefine success around a smaller task"), evidence primacy ("inspect current state before relying on prior context" — the anti-compaction-rot clause), completion audit ("must prove completion, not merely fail to find remaining work"), `blocked` requires the same blocker ≥ 3 consecutive goal turns; + `budget_limit` and `objective_updated` variants. Interpolation via a strict ~150-line `{{name}}` engine where an **unused supplied value is an error** (`ExtraValue` — a renamed placeholder cannot silently drop content); all prompt text lives in `include_str!`-reachable files | data | — |
+| G5 | accounting | token deltas streamed from `MessageEnd.usage` (P14 aggregate), wall-clock accumulated per goal; budget crossings emit one-shot latched reminders; interpolated fresh into G4 each continuation | I/O | — |
+| G6 | injection | all goal prompts ride L4's `<yi_internal_context source="goal">` wrapper — recognized and dropped at compaction, never accumulating | pure | — |
 
 ### 8.17.1 Plan (`yi-runtime::plan`, 0.33.0 — D52/D53; storage superseded at 0.106.0 — D97)
 
@@ -1226,13 +1234,13 @@ explicit-only. Surfaces: `plan.*` host requests, bundled kernel skill `plan`, rp
 degenerate one-task form.
 
 Rules bound to this module (D26): **no advisory-only state tool** — a tool whose entire effect
-is an event emission is a print statement with a schema (codex's `update_plan` persists nothing,
+is an event emission is a print statement with a schema (a surveyed `update_plan` persists nothing,
 and a turn with an all-pending plan terminates identically to an all-completed one); if Yi ever
 ships a plan tool it is G1-backed and checked at turn end. **Completion is judged by a goal,
-never by tool-call absence alone** — codex's only real completion pressure is the goal
+never by tool-call absence alone** — the reference's only real completion pressure is the goal
 continuation prompt; its planless turns end when the model stops calling tools.
 
-## 9. Guardrails (jcode), day one
+## 9. Guardrails, day one
 
 `scripts/guardrails/` + `check_guardrails.sh` + CI job; each script documents its motivating
 incident and fails loudly if its tooling is missing; ratchets may only shrink, `--update` records
@@ -1242,7 +1250,7 @@ intentional growth.
 - `unwrap/expect/panic!/todo!/unimplemented!` budget in non-test code
 - swallowed errors: `let _ = …?`-less `Result` drops, `.ok()` on non-Option chains
 - crate boundaries: `cargo metadata` graph vs `boundaries.toml` — an **allowlist**: each crate
-  declares its exhaustive internal-dep set; unknown crate = error, stale name = error (jcode's
+  declares its exhaustive internal-dep set; unknown crate = error, stale name = error (a surveyed
   denylist covered 14/85 crates, omitted its three 100k-line crates, and carried two dead names)
 - `Event` ≤ 13 variants; `LoopConfig` ≤ 12 fields
 - glob hygiene: `pub use …::*` and `use super::*` in non-test code = **0**, not budgeted — a
@@ -1253,28 +1261,28 @@ intentional growth.
   fails; any red ratchet on main fails the build
 - config surface: every `YI_*` env var is a row in one `yi-types` table; CI greps both
   directions; hard cap 40
-- duplication: 15-line normalized-window detector; production occurrences = 0, tests ratcheted; applies to `.md` prompt content too — one prompt copy, ever (codex ships its patch grammar in four places, > 1,000 tokens of duplicates)
+- duplication: 15-line normalized-window detector; production occurrences = 0, tests ratcheted; applies to `.md` prompt content too — one prompt copy, ever (a surveyed harness ships its patch grammar in four places, > 1,000 tokens of duplicates)
 - debt visibility: CI summary prints one total (LOC over ceiling, swallowed errors, panics)
 - fixed-preamble byte budget: assembled system + project instructions + tool schemas ≤ 8,000
-  bytes, asserted in CI (codex ships 53,671 B ≈ 13.4k tokens before the user speaks); no tool
+  bytes, asserted in CI (a surveyed harness ships 53,671 B ≈ 13.4k tokens before the user speaks); no tool
   description > 2 KB; tool families over 4 KB of schema go behind discovery
 - no orphan prompt files: every `.md` under a crate's `src/` must be `include_str!`-reachable
-  (codex carries ~112 KB of orphaned prompts and one 20.9 KB prompt duplicated byte-identically)
+  (one carries ~112 KB of orphaned prompts and a 20.9 KB prompt duplicated byte-identically)
 - per-step allocation ratchet: the tool registry, schemas, and instruction discovery are built
-  once per **turn**, never per model step (codex rebuilds the full router + refreshes AGENTS.md
+  once per **turn**, never per model step (a surveyed harness rebuilds the full router + refreshes AGENTS.md
   + makes an MCP network call on every step of the tool loop)
 - core-hit budget: a feature may name itself in ≤ 2 files at or above `yi-runtime` and **0**
-  times in `yi-loop`; per-feature CI grep, ratcheted from zero (§9.2 — OMP's checkpoint: 212
+  times in `yi-loop`; per-feature CI grep, ratcheted from zero (§9.2 — the surveyed checkpoint: 212
   LOC of its own, 128 hits in agent-session; hashline: 7,193 LOC, 2 hits)
 - total event vocabulary ≤ 18 **summed across every layer**, measured at design time (13
   loop + 5 ACP `_yi/*`, C9); a bridge or runtime addition edits this number in the same
-  commit; not per enum (OMP: 10 + 15 + 25 = 50, each union individually defensible)
+  commit; not per enum (surveyed: 10 + 15 + 25 = 50, each union individually defensible)
 - seam width ≤ 8 members: an extraction interface wider than 8 is the core with a different
-  name (OMP: 34-member advisor host, 219-member extension API)
+  name (surveyed: 34-member advisor host, 219-member extension API)
 - config-key budget: every settings key names its owning feature; per-feature count ratcheted
-  (OMP: 370 keys, 69 of them — 19 % — owned by its highest-churn feature)
+  (surveyed: 370 keys, 69 of them — 19 % — owned by its highest-churn feature)
 - fix-churn ledger: Fixed:Added per feature from the changelog; sustained F/A > 2.0 over 20
-  releases triggers a demote-or-reseam review (F/A cleanly separated OMP's damage: hub 3.2,
+  releases triggers a demote-or-reseam review (F/A cleanly separated the surveyed damage: hub 3.2,
   memory 3.0, MCP 2.7 vs theme 0.6, voice 0.9, hashline 1.2)
 - workspace lints: `unwrap_used`/`expect_used`/`await_holding_lock`/`await_holding_invalid_type`
   = deny (tests exempt) — the har rules as compiler flags; `clippy.toml disallowed-methods` for
@@ -1287,15 +1295,15 @@ intentional growth.
 - repo plumbing (D31): exact stable `rust-toolchain.toml` pin (+ `clippy`/`rustfmt` components)
   with `rust-version` (MSRV) = the same value, inherited via `[workspace.package]`; every
   dependency — internal path deps included — declared once in `[workspace.dependencies]`,
-  per-crate manifests add `{ workspace = true }` + features only (jcode counterexample: 16
+  per-crate manifests add `{ workspace = true }` + features only (surveyed counterexample: 16
   distinct tokio feature sets across 22 crates, 86 duplicated lockfile versions)
 - manifest-verify gate (D31): naming law folder `x/` ⇒ crate `yi-x`; `[lints] workspace = true`
-  present in every crate (workspace lints are decorative without the opt-in — codex
+  present in every crate (workspace lints are decorative without the opt-in — a surveyed harness
   `verify_cargo_workspace_manifests.py:73-85`); single inherited version; cargo-feature
   allowlist — features legal only where §13.4 declares them, unknown feature = error
-- size ratchets count `src/` only; test LOC carries its own budget (codex `core/` is 67 % test
+- size ratchets count `src/` only; test LOC carries its own budget (a surveyed `core/` is 67 % test
   code — an unscoped ratchet fires forever); `check_guardrails.sh` is itself the CI entrypoint
-  (jcode's aggregator is referenced by zero workflows); `.config/nextest.toml` retries = 1 +
+  (a surveyed aggregator is referenced by zero workflows); `.config/nextest.toml` retries = 1 +
   named test-groups for subprocess-heavy suites; `clippy.toml` sets `allow-unwrap-in-tests`/
   `allow-expect-in-tests` (zero-panic without them makes every test assertion a ceremony);
   deny.toml advisory ignores must name the dep path and removal condition; `justfile` recipes
@@ -1306,14 +1314,14 @@ intentional growth.
 - **token ratchet**: cassette suite replayed on the `faux` provider; per-scenario prompt tokens may not grow > 2 % without `--update`
 - **cache-prefix stability**: stable prefix byte-identical across consecutive cassette turns (§12)
 
-### 9.1 jcode case study (why the ratchets are shaped this way)
+### 9.1 Ratchet case study (why the ratchets are shaped this way)
 
-jcode (`ref/agents/jcode`, v0.79.1: 715k LOC Rust, 84 crates, 62 releases in 50 days) is the
+The control harness (715k LOC Rust, 84 crates, 62 releases in 50 days) is the
 control experiment — most §9 ideas existed there, and the codebase still rotted. Measured:
 63 % of the code in 3 crates glued into one namespace by `pub use …::*` chains (a split made
 for compile time that removed zero imports, said so in its own doc comment); `struct App` with
 353 fields and `impl App` across 60 files; a 2,234-line match; a 43-verb `action: String` tool
-with a synonym table "for actions models invent"; 517 `JCODE_*` env vars, 87 % undocumented;
+with a synonym table "for actions models invent"; 517 prefixed env vars, 87 % undocumented;
 7,779 duplicated 15-line blocks; ratchets grandfathered at the existing mess (225k LOC over
 ceiling — 40 % of prod code — and 3,248 swallowed errors) with a one-flag `--fix` that
 rebaselines every gate; 4 of 7 gates red on main at HEAD. What held: the `*-types` DTO wall
@@ -1323,32 +1331,32 @@ gates over wall-clock. The author's own CONTRIBUTING.md names the cause: heavy c
 generation, "deceptively plausible" output, enforcement one dimension behind reality.
 
 The distilled principle: **measure the dimension the mess will move to next, and start every
-budget at zero.** jcode measured file size, so the mess moved to functions (90 over 200
+budget at zero.** It measured file size, so the mess moved to functions (90 over 200
 lines), structs (353 fields), matches (2,234 lines), namespaces (glob re-exports), filenames
 (`part_01.rs` bisection), and env vars — every dimension without a gate grew without bound.
 Every budget that started above zero only ever measured the slope of decay; both zero-start
 gates (warnings, and now Yi's panics) held. The §9 additions above (glob hygiene, struct/impl
 caps, filename gate, ratchet-reset integrity, allowlist boundaries, env surface, duplication,
 debt visibility), the closed tool registry (§5), the single quirks module (A9), and the
-not-in-scope list (§1.1) are each one observed jcode failure, gated at zero.
+not-in-scope list (§1.1) are each one observed failure there, gated at zero.
 
 Also adopted as a style rule (§18): where a flow has independent axes, the state graph is a
 data table the runtime *reads* — closed vocabulary, exhaustive invariant checks (no dead ends,
 every failure has a recovery edge) — never a descriptive model maintained beside a hand-rolled
-flow: jcode's best idea (`onboarding_graph.rs`) paid 4,223 lines of permanent dual maintenance
+flow: its best idea, an onboarding graph, paid 4,223 lines of permanent dual maintenance
 for shadowing the implementation instead of being it.
 
-### 9.2 Feature admission (OMP case study)
+### 9.2 Feature admission (breadth case study)
 
-OMP (`ref/agents/omp`, v17.4.4: 731k TS + 209k Rust, 29 tools, 370 config keys, 130 slash
-commands, 694 releases) is the complementary control to jcode: it scored 10.0 on features in
+The breadth harness (731k TS + 209k Rust, 29 tools, 370 config keys, 130 slash
+commands, 694 releases) is the complementary control: it scored 10.0 on features in
 the seeding review, and the features were *individually* defensible — the aggregate broke the
 architecture. The measured mechanism: **features that observe or interrupt the turn multiply
-against every core mechanism** (compaction, branching, abort, steer, retry, dispose). OMP's
-`agent-session-*.test.ts` interaction matrix is 78 files / 39,311 LOC whose names are literally
+against every core mechanism** (compaction, branching, abort, steer, retry, dispose). Its
+session-test interaction matrix is 78 files / 39,311 LOC whose names are literally
 feature × core-mechanism pairs (`plan-reference-compaction`, `checkpoint-rewind-branch`,
 `goal-midrun-compaction`, …) — every new turn-participant adds a column, not a cell. Meanwhile
-its sealed features (`github` 5.6k LOC / 3 core hits, theme F/A 0.6, voice, eval, ssh, pdf)
+its sealed features (a `github` integration at 5.6k LOC / 3 core hits, theme F/A 0.6, voice, eval, ssh, pdf)
 cost near nothing — breadth itself was not the problem. LOC is the wrong admission metric:
 checkpoint = 212 LOC / 128 core hits; hashline = 7,193 LOC / 2. Its one structural success:
 **fifteen** features share one out-of-band delivery seam (`yieldQueue`) at zero loop cost,
@@ -1362,31 +1370,31 @@ Admission gates (mechanically-checkable ones are §9 bullets; the rest are revie
 
 - **Gate 0 — existence.** One-in-one-out against §1.1 (held). **Name the metric and the eval
   scenario before the code**: which of accuracy / prompt tokens / wall-clock / turns moves, in
-  which `evals/` scenario would a regression show. OMP's `computer` held 5.3 % of the loop
+  which `evals/` scenario would a regression show. Its `computer` feature held 5.3 % of the loop
   with nothing ever measuring whether it earned it.
 - **Gate 1 — shape.** *Is it a function over values?* `(input) → output`, no session state, no
-  clock, no background task ⇒ admit; size irrelevant (every primitive Yi ported from OMP —
+  clock, no background task ⇒ admit; size irrelevant (every primitive Yi ported from it —
   hashline, read elision, paste atoms, intent injection, read-only policy — has this shape:
   one input type, one output type, one call site, no config namespace). Core-hit budget and
   provider-metadata containment (§9 bullets): the loop never branches on a tool name; wire
   shapes live in `yi-types`.
 - **Gate 2 — seams, in order.** Exec tool → kernel skill → sidecar; justify in writing why
-  none works before a core line is written (the OMP counterfactuals: memory as kernel skill +
+  none works before a core line is written (the counterfactuals: memory as kernel skill +
   ledger ≈ 2 % of its measured coupling, LSP as one-shot ≈ 2 %, images as one DTO variant +
   exec tool ≈ 8 %, extensions as wire bridge ≈ 5 %). A feature needing out-of-band delivery
   uses the follow-up queue (R3) — never a new channel. **Delivery-channel arity = 1**: any
   decision function with > 3 inputs choosing among > 1 channel is rejected (the advisor's
-  single advisory-entry channel, §7.3, is this rule; OMP's `steer` channel alone forced 6 of
+  single advisory-entry channel, §7.3, is this rule; its `steer` channel alone forced 6 of
   the 7 inputs of its delivery matrix).
 - **Gate 3 — surface budgets**, zero-start (§9 bullets): summed event vocabulary, seam width,
-  config keys. **Default-off is not free** — OMP's `images.urls` defaults false and costs
+  config keys. **Default-off is not free** — its `images.urls` defaults false and costs
   8,654 LOC, a broker daemon, and a credential store. **Interaction-cell declaration**: a
   turn-participating feature enumerates its cells against {compaction, branching, abort,
   steer, retry, dispose}; each non-trivial cell is a named test before merge; **> 3
   non-trivial cells is a rejection.**
 - **Gate 4 — post-ship.** Admission is not permanent: fix-churn ledger (§9 bullet); test-LOC >
   1.2× feature-LOC is a coupling alarm (the tests are covering interactions, not the feature —
-  OMP advisor 1.46×); grandfathering never (D23).
+  its advisor at 1.46×); grandfathering never (D23).
 
 One line: **admit functions freely; admit turn-participants one at a time, at a declared
 price, with the interaction cells named up front.**
@@ -1405,9 +1413,9 @@ Chosen: **Yi**. Binary `yi`, crates `yi-*`, config `~/.yi/`, env `YI_*`, Python 
 | 1 | `yi-loop` (incl. interrupt), `yi-ai` (anthropic, openai), `yi-runtime` AgentSession, `yi ask` | Pi `agent-loop` fixtures pass; real turn end-to-end |
 | 2 | `yi-session` JSONL + conformance, `yi rpc` mode, `yi-tools` (read/write/glob/grep/bash, exec tools) | Pi RPC tests pass against `yi rpc` |
 | 2c | `yi-mcp-cli` (stateless connect/list/get/call/grep, `--json`, skill); config-gated off by default (D36) | mcpc's own shell examples run against it |
-| 2b | hashline read/edit; `yi-permission` (ask/auto/yolo, rules, holds) | OMP error-text parity tests |
+| 2b | hashline read/edit; `yi-permission` (ask/auto/yolo, rules, holds) | — |
 | 3 | `yi-context` P2–P14, P16–P18; auto-compaction | compaction e2e; attribution |
-| 4 | `yi-kernel` + venv bootstrap + `ipython`; `runtime::subagent` via `rlm()` | prime `agent-session-recursion` scenarios (depth 1) |
+| 4 | `yi-kernel` + venv bootstrap + `ipython`; `runtime::subagent` via `rlm()` | — |
 | 4b | dill snapshot/restore | namespace revives across real kernels; unpicklable skipped; dispose flush + restore notice |
 | 5 | `runtime::schedule` (in-process), `runtime::advisor` | heartbeat + advisor e2e, `/advisor stats` |
 | 5b | `yi-acp` v2 server | v2 client (Afterlife) drives Yi end-to-end (gate held by a scripted v2 client over the real binary until Afterlife exists) |
@@ -1416,42 +1424,42 @@ Chosen: **Yi**. Binary `yi`, crates `yi-*`, config `~/.yi/`, env `YI_*`, Python 
 
 ## 12. Further borrowings
 
-Second pass over all six harnesses for things not yet in §1–§8. "Adopt" items are added to the
+Second pass over all six surveyed harnesses for things not yet in §1–§8. "Adopt" items are added to the
 primitive tables below by id; "later" items are noted so they are not rediscovered; "skip" items
 are rejected with the reason.
 
 | Source | Idea | Decision | Lands in |
 |---|---|---|---|
-| OpenCode v2 snapshot (chosen over v1, Pi stash, prime `git_state`) | filesystem checkpoint per turn via shadow gitdir (§5.3) | adopt | T14, §5.3 |
-| OMP `SecretObfuscator` | Secret redaction on outbound text | not yet | — (revisit when logs/advisor leave the machine) |
-| OMP `read-format` elision · fx `read_tool_result` | token-efficient reads: structural elision + id-addressable re-read | adopt | T15, T16 |
-| jcode `ensure_intent_in_schema` · OMP intent tracing | required `i` intent on every tool schema (mechanics T1); prompt line: *"Most tools take `i`: capitalized 2–6-word present-participle intent; no period"*; `tools.intent_tracing` default on | adopt | T1, V4, C3 |
-| OMP `abortOnFabricatedResult` | In-band-dialect token scan, not claim verification — no analogue under native tool calling | skip (see §7.4 for what Yi does instead) | the LlmReviewer's claim audit (V1 cut, D50) |
-| OMP `bash.autoBackground` | foreground `bash` > 60 s returns `Backgrounded as job <id>`; completion delivered via follow-up queue (R3) as `custom{async_result}` | **adopt (phase 5), default off — settled over PTY exec (D30)** | T12 `auto_background_ms`; no `jobs` tool — polling is the same tool with empty input |
-| jcode · OMP `response_recovery` | one deterministic malformed-tool-call repair before failing | adopt | L13 |
-| jcode background-tool promotion (Alt+B) | A running `bash` can be promoted to background without cancelling; the turn continues with a handle | adopt | T12 `promote(handle)`; I1 epoch guards the hand-off |
-| OMP `read-only-policy` | A subagent whose tool set is a non-empty subset of `READ_ONLY_TOOLS` is read-only; unknown tool ⇒ not read-only (fail-safe) | adopt | B2 `is_read_only(&Spec)`; read-only children skip permission prompts |
-| OMP isolated-worktree subagents | Optional `isolation: Worktree` on spawn: child gets `git worktree add` under `<artifacts>/wt-<id>`; parent merges or discards | later (phase 4c) | B11 |
-| fx `context_limits` | per-source byte budgets with truncation markers | adopt | P16; enforced in P11 |
-| fx `bench.yml` + `binary-size.yml` | startup and binary-size budgets in CI | adopt | §9 `startup_ms_budget.json`, `binary_size_budget.json` |
-| Pi `evals` · fx `tests/evals` | Scenario eval suite (`yi ask --json` over fixture repos) run nightly, not per-PR | adopt | `evals/` workspace member, phase 3 |
-| **new** (extends jcode ratchets to the stated goal) | token ratchet (defined §9) | adopt | §9 `token_budget.json`; P3 |
-| prime `host-request-contract.test` | Conformance test pinning the `host.request` vocabulary (types, required fields) so the Python package and `yi-kernel` cannot drift | adopt | K12 contract fixtures shared with `python/yi_runtime/tests` |
-| prime nightly multi-worker stress | Nightly job boots N workers × M kernels, verifies reconnect, ledger integrity | adopt (G2; D4 dropped leases) | `just journeys`, run by `just postmerge` and `.github/workflows/postmerge.yml` |
+| — | filesystem checkpoint per turn via shadow gitdir (§5.3) | adopt | T14, §5.3 |
+| — | Secret redaction on outbound text | not yet | — (revisit when logs/advisor leave the machine) |
+| — | token-efficient reads: structural elision + id-addressable re-read | adopt | T15, T16 |
+| — | required `i` intent on every tool schema (mechanics T1); prompt line: *"Most tools take `i`: capitalized 2–6-word present-participle intent; no period"*; `tools.intent_tracing` default on | adopt | T1, V4, C3 |
+| — | In-band-dialect token scan, not claim verification — no analogue under native tool calling | skip (see §7.4 for what Yi does instead) | the LlmReviewer's claim audit (V1 cut, D50) |
+| — | foreground `bash` > 60 s returns `Backgrounded as job <id>`; completion delivered via follow-up queue (R3) as `custom{async_result}` | **adopt (phase 5), default off — settled over PTY exec (D30)** | T12 `auto_background_ms`; no `jobs` tool — polling is the same tool with empty input |
+| — | one deterministic malformed-tool-call repair before failing | adopt | L13 |
+| — | A running `bash` can be promoted to background without cancelling; the turn continues with a handle | adopt | T12 `promote(handle)`; I1 epoch guards the hand-off |
+| — | A subagent whose tool set is a non-empty subset of `READ_ONLY_TOOLS` is read-only; unknown tool ⇒ not read-only (fail-safe) | adopt | B2 `is_read_only(&Spec)`; read-only children skip permission prompts |
+| — | Optional `isolation: Worktree` on spawn: child gets `git worktree add` under `<artifacts>/wt-<id>`; parent merges or discards | later (phase 4c) | B11 |
+| — | per-source byte budgets with truncation markers | adopt | P16; enforced in P11 |
+| — | startup and binary-size budgets in CI | adopt | §9 `startup_ms_budget.json`, `binary_size_budget.json` |
+| Pi `evals` | Scenario eval suite (`yi ask --json` over fixture repos) run nightly, not per-PR | adopt | `evals/` workspace member, phase 3 |
+| **new** (extends the surveyed ratchets to the stated goal) | token ratchet (defined §9) | adopt | §9 `token_budget.json`; P3 |
+| — | Conformance test pinning the `host.request` vocabulary (types, required fields) so the Python package and `yi-kernel` cannot drift | adopt | K12 contract fixtures shared with `python/yi_runtime/tests` |
+| — | Nightly job boots N workers × M kernels, verifies reconnect, ledger integrity | adopt (G2; D4 dropped leases) | `just journeys`, run by `just postmerge` and `.github/workflows/postmerge.yml` |
 | Pi telemetry spans · har-layout | `tracing` spans per turn / tool / provider attempt; JSON export; no vendor SDK | adopt | R10 `span!` discipline; `YI_TRACE=1` |
-| fx `SecretStore.store_interactive` | Host can collect a secret the core never sees (keychain prompt) | adopt | A6 trait method |
-| fx session-id charset / traversal validation | Session ids `[0-9a-z-]`, validated before any path join | adopt | S3 |
+| — | Host can collect a secret the core never sees (keychain prompt) | adopt | A6 trait method |
+| — | Session ids `[0-9a-z-]`, validated before any path join | adopt | S3 |
 | Pi print/json modes are one function | `yi ask` text mode = RPC event stream rendered; `--json` = the raw events | adopt | `yi-cli` |
-| fx WASM / N-API embedding | `yi-runtime` as an embeddable library (napi-rs) | later (after phase 7) | — |
-| OMP LSP/DAP, browser, PDF, voice | resident language servers contradict the no-resident-process preference; diagnostics can be an exec tool (`yi-tools/lsp-diag` one-shot) | skip | — |
-| jcode semantic memory / embeddings / swarm | contradicts minimal core; ledger `memory` entries suffice | skip | — |
-| OpenCode Effect service graph, SQL store, Solid desktop | the complexity the project exists to avoid | skip | — |
+| — | `yi-runtime` as an embeddable library (napi-rs) | later (after phase 7) | — |
+| — | resident language servers contradict the no-resident-process preference; diagnostics can be an exec tool (`yi-tools/lsp-diag` one-shot) | skip | — |
+| — | contradicts minimal core; ledger `memory` entries suffice | skip | — |
+| — | the complexity the project exists to avoid | skip | — |
 | Pi JS extension runtime, themes, packages | no JS runtime in a native binary; hooks are comptime Rust, runtime extension is Python-in-kernel + exec tools + skills | skip | — |
-| prime `agents-view`, `agent-observe`, goals | goals stay phase 6 — **codex `ext/goal` is now the reference design (§8.17, D25)**, prime's `goals.ts` demoted to background; the rest is UI sprawl | skip / later | §8.17 |
-| prime `modelRoles` · OMP `modelRoles.advisor` · jcode cheap-routing | **Model roles**: `{primary, summarizer, advisor, auto_review}` each independently configurable; summaries and reviews default to a cheaper model | adopt | config; A1 lookup by role |
+| — | goals stay phase 6 — **the goal design in §8.17 (D25) is the reference**, the earlier one demoted to background; the rest is UI sprawl | skip / later | §8.17 |
+| — | **Model roles**: `{primary, summarizer, advisor, auto_review}` each independently configurable; summaries and reviews default to a cheaper model | adopt | config; A1 lookup by role |
 | **new** | **Cassette replay**: record a real session's provider responses and tool outputs as fixtures (`evals/cassettes/*.jsonl`); the loop replays them through the `faux` provider with tools stubbed from the cassette. Golden-transcript tests for the loop, compaction and advisor, and the input to the token ratchet | adopt | `yi-ai::faux`, `evals/` |
-| **new** | **Cache-prefix stability guardrail**: a test asserts the stable prefix (system + ledger + summary + tool definitions) is byte-identical across consecutive turns of a cassette unless an entry that legitimately changes it was appended. Catches the cache-miss regressions OMP's advisor suffered | adopt | §9; P11 |
-| OpenCode structured output · Pi `structured-output.ts` | `yi ask --schema` forced-JSON answers | unscheduled idea (D10) | `yi-cli`, A3 |
+| **new** | **Cache-prefix stability guardrail**: a test asserts the stable prefix (system + ledger + summary + tool definitions) is byte-identical across consecutive turns of a cassette unless an entry that legitimately changes it was appended. Catches the cache-miss regressions a surveyed advisor suffered | adopt | §9; P11 |
+| Pi `structured-output.ts` | `yi ask --schema` forced-JSON answers | unscheduled idea (D10) | `yi-cli`, A3 |
 
 Newly referenced primitive ids (added to their tables): L13 repair, S3 id validation,
 T14 checkpoint, T15 read summary, T16 read_tool_result, P16 source budgets, B11 worktree, K12
@@ -1460,8 +1468,8 @@ contract fixtures, R10 tracing.
 ## 13. Dependency policy and binary size
 
 Goal: the smallest binary that does the job, decided per dependency **before** phase 0 code
-exists, and ratcheted after. The reference points: fx ships a 7.8 MiB Zig binary with zero
-deps; jcode's published RAM/startup numbers come from a native shared server; OpenCode's size and
+exists, and ratcheted after. The reference points: one ships a 7.8 MiB Zig binary with zero
+deps; another's published RAM/startup numbers come from a native shared server; a third's size and
 startup are why we are here.
 
 ### 13.1 Rules
@@ -1483,7 +1491,7 @@ startup are why we are here.
 ### 13.2 Profiles (D31: release/dist split)
 
 `release` stays cargo-default — fast link, unwinding intact, `#[should_panic]` and unwind
-harnesses keep working (no reference repo ships `panic = "abort"`; codex keeps `codegen-units
+harnesses keep working (no reference repo ships `panic = "abort"`; one keeps `codegen-units
 = 4`, atuin puts the heavy settings in a separate dist profile). Shipping and every size/
 startup ratchet measure `dist`:
 
@@ -1895,13 +1903,13 @@ trigger). Concretely, enforced by CI where a tool exists:
 Style: **fight for every line.** Every file as small as its job allows; the §9 size ratchet is
 a ceiling, not a target. **No comments by default** — names and types carry the meaning. A
 comment earns its line only by naming what the code cannot: (1) the incident that created a
-constant or guard (jcode rule — the comment names the failure), (2) an invariant the type
+constant or guard (the comment names the failure), (2) an invariant the type
 system cannot express (e.g. "reply on control channel or `await rlm()` deadlocks"), (3) a schema
 fact on a `yi-types` public item, because those are the schema reference. Restating a signature,
 a name, or the next three statements is none of these. The test is the content, not the sigil:
-`///` is allowed wherever a comment is earned and banned where it is not (D49). **Three lines
+`///` is allowed wherever a comment is earned and banned where it is not (D49). **Two lines
 per comment, hard** — only a license or attribution header may exceed it, and it carries
-attribution alone, no explanation. No narrative comments, no section banners, no commented-out
+attribution alone, no explanation. A fact needing three lines is two facts, or it is narration. No narrative comments, no section banners, no commented-out
 code. `scripts/guardrails/check_comments.py` enforces both halves: the length cap outright, the
 volume outside `yi-types` as a shrink-only ratchet.
 
@@ -1940,10 +1948,9 @@ are the one thing that must not. Rules, all CI-enforced:
    frames, `_yi/*` ACP extensions. No serde derive outside `yi-types` except test fixtures.
 2. **Versioned envelopes.** Every on-disk artifact carries an explicit version, following the
    references already mapped: session header `version` (pi v3, A.1), permission state
-   `schema_version` (fx pattern: current=2, legacy accepted, `migrate` idempotent + re-validated,
-   A.4), kernel venv `BOOTSTRAP_SCHEMA` marker (prime, A.2), `scheduled-jobs.json` `{v}`.
-   Wire versions are negotiated (ACP `protocolVersion`) or stamped per frame (`v` on RPC —
-   jcode harness-api rule).
+   `schema_version` (current=2, legacy accepted, `migrate` idempotent + re-validated),
+   kernel venv `BOOTSTRAP_SCHEMA` marker, `scheduled-jobs.json` `{v}`.
+   Wire versions are negotiated (ACP `protocolVersion`) or stamped per frame (`v` on RPC).
 3. **Additive evolution only** within a version: new fields are `Option` or defaulted; fields
    are never renamed (serde `alias` if a name must change) and never repurposed. Breaking
    change = version bump + migration fn `vN -> vN+1`, idempotent, with committed before/after
@@ -1960,9 +1967,9 @@ are the one thing that must not. Rules, all CI-enforced:
 6. **Downgrade tolerance.** A newer artifact must be openable by an older binary: unknown
    entry types decode to `Custom{}` and re-emit verbatim; an envelope version above the known
    max opens read-only, never fatally. This bites the first time a stable and a dev build
-   share `~/.yi` (codex ships `ignore_missing` migrations for exactly this).
-7. **Cross-implementation anchors.** Pi session files (A.1 conformance), the prime `host.request`
-   vocabulary (K12 fixtures shared with `python/yi_runtime/tests`), and OMP hashline tags
+   share `~/.yi` (a surveyed harness ships `ignore_missing` migrations for exactly this).
+7. **Cross-implementation anchors.** Pi session files (A.1 conformance), the `host.request`
+   vocabulary (K12 fixtures shared with `python/yi_runtime/tests`), and hashline tags
    (byte-identical `computeFileHash`) are external schema contracts — their fixtures pin Yi from
    outside the codebase.
 
@@ -2006,7 +2013,7 @@ contract, and it is interop with a format, not parity with code.
 | repo/query/storage traits | `ref/agents/pi/packages/agent/src/harness/session/types.ts:217-393` | 177 | port adapted |
 | JSONL repo | `ref/agents/pi/packages/agent/src/harness/session/jsonl/repo.ts:109-247` | 139 | port adapted |
 | conformance suite (the storage contract) | `ref/agents/pi/packages/agent/src/harness/session/testing/conformance.ts:92-1016` | 925 | port adapted |
-| compaction (settings, trigger, cut-point, prepare, apply) | `ref/agents/pi/packages/agent/src/harness/compaction/compaction.ts:147-794` | 396 | read-only reference (D21 — compaction ports from prime, A.2) |
+| compaction (settings, trigger, cut-point, prepare, apply) | `ref/agents/pi/packages/agent/src/harness/compaction/compaction.ts:147-794` | 396 | read-only reference (D21) |
 | RPC protocol doc | `ref/agents/pi/packages/coding-agent/docs/rpc.md:1-1595` | 1595 | read-only reference |
 | session-format doc | `ref/agents/pi/packages/coding-agent/docs/session-format.md:1-438` | 438 | read-only reference |
 | compaction doc | `ref/agents/pi/packages/coding-agent/docs/compaction.md:1-416` | 416 | read-only reference |
@@ -2023,174 +2030,6 @@ contract, and it is interop with a format, not parity with code.
 (35,778), `packages/ai/test/` (35,352), `packages/coding-agent/src/modes/` (20,755),
 `packages/coding-agent/examples/` (17,206).
 
-### A.2 prime-agent (kernel, bootstrap, Python runtime, ipython, compaction, subagent, heartbeats)
-
-| item | source span | lines | action |
-|---|---|---|---|
-| kernel constants + `KernelBusyAfterInterruptError` | `ref/agents/prime-agent/packages/coding-agent/src/core/kernel/index.ts:26-61` | 36 | port verbatim |
-| host-request types + comm target | `ref/agents/prime-agent/packages/coding-agent/src/core/kernel/index.ts:63-149` | 87 | port adapted |
-| display MIMEs + `ExecuteResult`/options | `ref/agents/prime-agent/packages/coding-agent/src/core/kernel/index.ts:151-316` | 166 | port adapted |
-| `buildMessage` + `sign` (HMAC) | `ref/agents/prime-agent/packages/coding-agent/src/core/kernel/index.ts:434-460` | 27 | port verbatim |
-| `encode`/`decode` framing | `ref/agents/prime-agent/packages/coding-agent/src/core/kernel/index.ts:461-486` | 26 | port verbatim |
-| connection-info parse + `makeConnection` | `ref/agents/prime-agent/packages/coding-agent/src/core/kernel/index.ts:487-549` | 63 | port verbatim |
-| launch (`start`/`doStart`) | `ref/agents/prime-agent/packages/coding-agent/src/core/kernel/index.ts:652-820` | 169 | port adapted |
-| ports-resolve + `probeReady` | `ref/agents/prime-agent/packages/coding-agent/src/core/kernel/index.ts:870-940` | 71 | port adapted |
-| execute queue | `ref/agents/prime-agent/packages/coding-agent/src/core/kernel/index.ts:956-1011` | 56 | port verbatim |
-| `executeInner` + interrupt grace (grace timer `:1058-1079`) | `ref/agents/prime-agent/packages/coding-agent/src/core/kernel/index.ts:1012-1109` | 98 | port adapted |
-| iopub pump, **comms dispatched before parent-filter** | `ref/agents/prime-agent/packages/coding-agent/src/core/kernel/index.ts:1179-1206` | 28 | port verbatim |
-| `handleExecutionMessage` reducer | `ref/agents/prime-agent/packages/coding-agent/src/core/kernel/index.ts:1208-1273` | 66 | port adapted |
-| busy-reuse wait | `ref/agents/prime-agent/packages/coding-agent/src/core/kernel/index.ts:1397-1417` | 21 | port verbatim |
-| comm handling (`handleCommMessage`→`handleHostRequest`) | `ref/agents/prime-agent/packages/coding-agent/src/core/kernel/index.ts:1418-1500` | 83 | port verbatim |
-| **control-channel reply** `sendCommMessage` | `ref/agents/prime-agent/packages/coding-agent/src/core/kernel/index.ts:1502-1509` | 8 | port verbatim |
-| `interrupt` | `ref/agents/prime-agent/packages/coding-agent/src/core/kernel/index.ts:1511-1515` | 5 | port verbatim |
-| cleanup/shutdown/dispose | `ref/agents/prime-agent/packages/coding-agent/src/core/kernel/index.ts:1517-1665,551-587,1813-1845` | 219 | port adapted |
-| generation counter (`startStale` re-checks; `performedCleanup`) | `ref/agents/prime-agent/packages/coding-agent/src/core/kernel/index.ts:669,786,812,1518,1607-1664` | ~70 | port verbatim |
-| late agent-message dispatch + LRU-256 handler registry | `ref/agents/prime-agent/packages/coding-agent/src/core/kernel/index.ts:1212-1225,1326-1348` | 37 | port verbatim |
-| `translateSocketClosure` | `ref/agents/prime-agent/packages/coding-agent/src/core/kernel/index.ts:936-954` | 19 | port verbatim |
-| orphan pid journal (cleared only on confirmed kill) | `ref/agents/prime-agent/packages/coding-agent/src/core/kernel/index.ts:719,749,1544,1555` + `src/core/orphan-process-journal.ts` | ~60 | port adapted |
-| boot gate | `ref/agents/prime-agent/packages/coding-agent/src/core/kernel/boot-gate.ts:22-50` | 29 | port verbatim (minus fork branches) |
-| snapshot python + marker parse + debounce + prune/list-names | `ref/agents/prime-agent/packages/coding-agent/src/core/kernel/state-snapshot.ts:19-357` + `index.ts:960-962,1695-1810` | ~330 | port adapted (phase 4b) |
-| post-compaction kernel sync (prune + names notice) | `ref/agents/prime-agent/packages/coding-agent/src/core/agent-session.ts:918,7222-7269` | ~50 | port adapted (phase 4b) |
-| `BOOTSTRAP_SCHEMA` + required-methods check | `ref/agents/prime-agent/packages/coding-agent/src/core/kernel/bootstrap.ts:14-60` | 47 | port adapted |
-| `RUNTIME_READY_CHECK` | `ref/agents/prime-agent/packages/coding-agent/src/core/kernel/bootstrap.ts:54` | 1 | port verbatim |
-| venv dir resolution | `ref/agents/prime-agent/packages/coding-agent/src/core/kernel/bootstrap.ts:339-373` | 35 | port verbatim |
-| readiness probes | `ref/agents/prime-agent/packages/coding-agent/src/core/kernel/bootstrap.ts:374-444` | 71 | port verbatim |
-| bootstrap lock | `ref/agents/prime-agent/packages/coding-agent/src/core/kernel/bootstrap.ts:445-499` | 55 | port verbatim |
-| `ensureUv` + venv build + dedupe | `ref/agents/prime-agent/packages/coding-agent/src/core/kernel/bootstrap.ts:500-685,855-929` | 260 | port adapted |
-| Python: control handler install | `ref/agents/prime-agent/prime-agent-runtime/src/rlm/__init__.py:53-64` | 12 | port verbatim (keep byte-compatible) |
-| Python: `host_request` w/ type-last (`:137-139`) | `ref/agents/prime-agent/prime-agent-runtime/src/rlm/__init__.py:84-145` | 62 | port verbatim |
-| Python: `_HarnessProxy` | `ref/agents/prime-agent/prime-agent-runtime/src/rlm/__init__.py:240-288` | 49 | port verbatim |
-| Python: `HarnessEntry` + path helpers + `_sync_from_disk` + `load` | `ref/agents/prime-agent/prime-agent-runtime/src/rlm/harness.py:28-128,187-276` | 191 | port verbatim (drop `skill` kind) |
-| `ipythonSchema` | `ref/agents/prime-agent/packages/coding-agent/src/core/tools/ipython.ts:144-150` | 7 | port verbatim |
-| bootstrap cell code | `ref/agents/prime-agent/packages/coding-agent/src/core/tools/ipython.ts:23-143` | 121 | port verbatim |
-| busy-kernel choice | `ref/agents/prime-agent/packages/coding-agent/src/core/tools/ipython.ts:555-618` | 64 | port verbatim |
-| provisioner | `ref/agents/prime-agent/packages/coding-agent/src/core/tools/ipython.ts:330-554` | 225 | port adapted |
-| compaction settings/trigger/estimate | `ref/agents/prime-agent/packages/coding-agent/src/core/compaction/compaction.ts:104-281` | 178 | port verbatim |
-| cut-point walk | `ref/agents/prime-agent/packages/coding-agent/src/core/compaction/compaction.ts:282-416` | 135 | port verbatim |
-| summarization prompts | `ref/agents/prime-agent/packages/coding-agent/src/core/compaction/compaction.ts:417-507` | 91 | port verbatim |
-| `prepareCompaction` + `compact` | `ref/agents/prime-agent/packages/coding-agent/src/core/compaction/compaction.ts:561-750` | 190 | port adapted |
-| `extractFileOpsFromMessage` + `serializeConversation` + system prompt | `ref/agents/prime-agent/packages/coding-agent/src/core/compaction/utils.ts:7-149` | 143 | port verbatim |
-| `_startRlmChildRun` | `ref/agents/prime-agent/packages/coding-agent/src/core/agent-session.ts:10198-10594` | 397 | port adapted |
-| `_createChildRlmSessionDir` | `ref/agents/prime-agent/packages/coding-agent/src/core/agent-session.ts:9258-9278` | 21 | port verbatim |
-| `attributeChildUsage` (in agent-session.ts, not session-manager) | `ref/agents/prime-agent/packages/coding-agent/src/core/agent-session.ts:1018-1026` + call site `:10375-10392` | 27 | port verbatim |
-| `appendChildUsageAttribution` | `ref/agents/prime-agent/packages/coding-agent/src/core/session-manager.ts:1484-1516` | 33 | port verbatim |
-| `completed_without_reply` synth | `ref/agents/prime-agent/packages/coding-agent/src/core/agent-session.ts:10459-10477` | 19 | port verbatim |
-| cron job/schedule types | `ref/agents/prime-agent/packages/coding-agent/src/core/cron-jobs.ts:16-57` | 42 | port verbatim |
-| `parseAgentCronSchedule` | `ref/agents/prime-agent/packages/coding-agent/src/core/cron-jobs.ts:1078-1138` | 61 | port verbatim |
-| `claimDue` → `claimDueInState` | `ref/agents/prime-agent/packages/coding-agent/src/core/cron-jobs.ts:702-704,1573-1599` | 30 | port verbatim |
-| `recordDispatchResult` + recover | `ref/agents/prime-agent/packages/coding-agent/src/core/cron-jobs.ts:716-776` | 61 | port verbatim |
-| scheduler `runDue` + `queueDispatch` lanes | `ref/agents/prime-agent/packages/coding-agent/src/core/cron-jobs.ts:968-1045` | 78 | port adapted |
-| defer rules | `ref/agents/prime-agent/packages/coding-agent/src/core/cron-jobs.ts:1346-1371` | 26 | port verbatim |
-| `/heartbeat` grammar + `nextRunAtForSchedule` | `ref/agents/prime-agent/packages/coding-agent/src/core/cron-jobs.ts:1140-1240` | 101 | port adapted |
-| `createHeartbeatPromptMessage` | `ref/agents/prime-agent/packages/coding-agent/src/core/messages.ts:458-477` | 20 | port verbatim (+ `<heartbeat>` framing, H9) |
-| goals types + `goalHostResponse` | `ref/agents/prime-agent/packages/coding-agent/src/core/goals.ts:4-53,125-153` | 79 | read-only reference (phase 6) |
-
-prime-agent TUI (§8.14, D60 — the kernel-cell and subagent presentation; the pi-tui
-differential-render chassis and the fullscreen agents dashboard are not ported):
-
-| item | source span | lines | action |
-|---|---|---|---|
-| ipython cell: collapsed head contract (byte-identical first line expanded), language chip, `↑ in ↓ out lines` counts, traceback split | `ref/agents/prime-agent/packages/coding-agent/src/modes/interactive/components/ipython-cell.ts:277-332,368-484,499-525` | ~190 | port adapted (U38) |
-| scored one-line code preview + secret/blob redaction | `ref/agents/prime-agent/packages/coding-agent/src/core/tools/code-preview.ts` | ~120 | port adapted (U38) |
-| subagent tray counts line (`● running ◐ idle ○ inactive`, hidden at zero) | `ref/agents/prime-agent/packages/coding-agent/src/modes/interactive/components/subagent-summary-line.ts:13-36,83-123` | ~70 | port adapted (U28) |
-| agents row model: status classification, heartbeat aggregation up the parent chain, spawn-code grouping | `ref/agents/prime-agent/packages/coding-agent/src/modes/agents-view/agents-view-state.ts:472-528,627-819` | — | read-only reference (U40) |
-| `/context` token tree: connectors, own-usage columns, 10-cell context bar | `ref/agents/prime-agent/packages/coding-agent/src/modes/interactive/components/context-tree-format.ts:18-49,73-79,112-200` | ~120 | port adapted (U40) |
-| working-icon pulse cadence (250 ms diamond, one process-wide frame) | `ref/agents/prime-agent/packages/coding-agent/src/modes/theme/working-icon.ts:1-40` | ~40 | port adapted (U6) |
-| rich diff: truecolor-background / 256-colour-foreground fork, word-level inverse on a 1-for-1 replacement, indent glyphs | `ref/agents/prime-agent/packages/coding-agent/src/modes/components/diff.ts:16-95,155-294` | — | read-only reference (U37) |
-
-**excise (prime-agent — do not read):** `packages/coding-agent/test/` (134,872 lines — the
-largest sink in any ref), `packages/ai/test/` (17,457),
-`packages/coding-agent/examples/` (15,405); `packages/tui/` (30,346) and
-`packages/coding-agent/src/modes/` (58,065) were opened 2026-08-28 for the D60 study —
-only the spans above are implementation reads, the rest of both trees stays a token sink
-(`modes/agents-view/agents-view-mode.ts` at 2,916 lines and the `armin.ts`/`daxnuts.ts`
-animations in particular).
-**do not port (kernel):** `kernel/fork-server.ts:1-432` + `fork-server-script.ts:1-243` +
-forked branches `index.ts:598-603,700-739,825-868,1545-1558,1580-1584` (Linux-only cold-boot
-optimization, degrades to direct spawn); `bootstrap-cli.ts:1-13`; `bootstrap.ts:545-558`
-(interactive uv prompt — require uv or a flag); `bootstrap.ts:163-327,748-824` (Python-skill
-dependency toposort — until a skill grows a sibling dep, install in declared order);
-`index.ts:1667-1683` (`restart()` — dead code; the busy path kills + re-`ensure()`s).
-
-### A.3 omp (hashline, advisor pieces, paste atoms, intent)
-
-| item | source span | lines | action |
-|---|---|---|---|
-| HL format constants + header/locator formatters | `ref/agents/omp/packages/hashline/src/format.ts:10-88` | 79 | port verbatim |
-| hash constants + `normalizeFileHashText` + `computeFileHash` | `ref/agents/omp/packages/hashline/src/format.ts:90-121` | 32 | port adapted (Rust xxhash32; keep `[ \t\r]+(?=\n\|$)` normalization exactly) |
-| header/numbered-line/addressable-split | `ref/agents/omp/packages/hashline/src/format.ts:132-158` | 26 | port verbatim |
-| `normalize.ts` whole (EOL detect/normalize/restore, BOM) | `ref/agents/omp/packages/hashline/src/normalize.ts:1-38` | 38 | port verbatim |
-| `types.ts` whole | `ref/agents/omp/packages/hashline/src/types.ts:1-225` | 225 | port adapted |
-| `SnapshotStore` base + `InMemorySnapshotStore` incl. collision rule (`:196-224`, hash **and** full-text equality) | `ref/agents/omp/packages/hashline/src/snapshots.ts:48-258` | 211 | port adapted |
-| tokenizer scanners + hunk-header lowering + `classifyLine` + streaming class | `ref/agents/omp/packages/hashline/src/tokenizer.ts:54-642` | 557 | port adapted (`:456-484`, `:530-570` verbatim) |
-| parser `Executor` (feed/end, overlap normalize, body rows, hunk→edits, entries) | `ref/agents/omp/packages/hashline/src/parser.ts:228-808` | 535 | port adapted (`:641-808` semantics verbatim) |
-| prefixes (echoed `N:`/`+` strip, read-metadata filter) | `ref/agents/omp/packages/hashline/src/prefixes.ts:19-150` | 131 | port adapted (`:19-51` verbatim) |
-| input (path normalize, section split, `PatchSection`/`Patch`, merge) | `ref/agents/omp/packages/hashline/src/input.ts:23-507` | 462 | port adapted |
-| apply prelude + `materializeEdits` + `applyEdits` core + options | `ref/agents/omp/packages/hashline/src/apply.ts:28-137,1194-1374` | 291 | port verbatim/adapted |
-| **boundary repair — SKIP in v1** | `ref/agents/omp/packages/hashline/src/apply.ts:139-894` (+ landing repair `:896-1191`) | 1,052 | read-only reference — the single largest cut in the omp port |
-| clipboard registers + batch fork/commit | `ref/agents/omp/packages/hashline/src/clipboard.ts:30-233` | 203 | port adapted (`:188-233` verbatim) |
-| patcher types + helpers + `apply`/`preflight`/`prepare`/`commit` + `#assertSeenLines` (`:622-654`) + `#mismatchError` (`:655-672`) + `#applyWithRecovery` | `ref/agents/omp/packages/hashline/src/patcher.ts:68-758` | 657 | port adapted |
-| `MismatchError` + `rejectionHeader` (stale-tag & not-from-session texts `:85-100`) | `ref/agents/omp/packages/hashline/src/mismatch.ts:12-118` | 104 | port verbatim |
-| messages: anchored context, drift warnings, missing-tag (`:512-519`), seen-lines reveal (`:574-611`), full string table (`:100-474`) | `ref/agents/omp/packages/hashline/src/messages.ts:14-611` | 585 | port verbatim (string table) |
-| `prompt.md` whole (the model-facing patch-language spec) | `ref/agents/omp/packages/hashline/src/prompt.md:1-135` | 135 | port verbatim |
-| glue: param schema; `executeHashlineSingle`; no-op diagnostics + `renderSection` | `ref/agents/omp/packages/coding-agent/src/edit/hashline/params.ts:1-12`, `execute.ts:50-311` | 274 | port adapted |
-| no-op loop guard whole (`NOOP_HARD_LIMIT = 3`) | `ref/agents/omp/packages/coding-agent/src/edit/hashline/noop-loop-guard.ts:1-99` | 99 | port verbatim |
-| snapshot store glue: 4 MiB cap, realpath key + parent fallback, seen-lines parsing | `ref/agents/omp/packages/coding-agent/src/edit/file-snapshot-store.ts:17-148` | 129 | port adapted (`:96-148` verbatim) |
-| read format: header/numbering, brace merge, seen-line bookkeeping | `ref/agents/omp/packages/coding-agent/src/tools/read-format.ts:28-230` | 201 | port adapted |
-| advisor emission guard whole | `ref/agents/omp/packages/coding-agent/src/advisor/emission-guard.ts:1-172` | 172 | port adapted |
-| advise schema + `<advisory>` injection (`:44-66`) + delivery resolution (`:90-134`) | `ref/agents/omp/packages/coding-agent/src/advisor/advise-tool.ts:13-134` | 122 | port verbatim (injection + delivery), adapted (schema) |
-| `ADVISOR_RENDER_OPTIONS` + chunk-per-message | `ref/agents/omp/packages/coding-agent/src/advisor/delta-split.ts:30-98` | 69 | port verbatim/adapted |
-| paste atoms: collapse (`:2104-2152`), sanitize, marker, `expandPasteMarkers` (`:1758-1776`), atom registry | `ref/agents/omp/packages/tui/src/components/editor.ts:483-523,1758-1807,2104-2192` | 175 | port verbatim (semantics) |
-| intent: `injectIntentIntoSchema` (`:783-843`) + `resolveIntentMode`/`extractIntent` (`:878-891`) + prompt line | `ref/agents/omp/packages/agent/src/agent-loop.ts:783-891`, `prompts/system/system-prompt.md:112` | 110 | port adapted (`:878-891` verbatim) |
-| TUI (D41): TODO/subagent HUD render + tree-spine fill + walking-viewport caps | `ref/agents/omp/packages/coding-agent/src/modes/interactive-mode.ts:466-521,2344-2459` | ~175 | port adapted (U28) |
-| TUI (D41): queued-messages block (`Steering · n` groups, ` ↵ ` flatten, dequeue hint) | `ref/agents/omp/packages/coding-agent/src/modes/utils/ui-helpers.ts:910-944` | 35 | port adapted (U28) |
-| TUI (D41): status truncation cascade + context gauge fill | `ref/agents/omp/packages/coding-agent/src/modes/components/status-line/component.ts:1878-1943,1999-2118` | ~185 | port adapted (U16) |
-| TUI (D41): segment formats (model/mode/path/git/cost/context) + two-line footer (middle-ellipsis path, zero-omitted counters) | `ref/agents/omp/packages/coding-agent/src/modes/components/status-line/segments.ts:114-511`, `components/footer.ts:101-267` | — | read-only reference (U16) |
-| TUI (D41): double-Esc gate (500 ms, empty editor, idle, main-only) + tree selector (flatten, connectors/gutters, filter modes, search) | `ref/agents/omp/packages/coding-agent/src/modes/controllers/input-controller.ts:394-445`, `components/tree-selector.ts` | — | read-only reference (U31) |
-
-**excise (omp — never open):** `packages/catalog/src/models.json` (296,381 lines),
-`crates/pi-natives/tools/cache/deepseek-v3.tokenizer.json` (263,173), `THIRD-PARTY-NOTICES.txt`
-×2 (22,909 each), `packages/coding-agent/CHANGELOG.md` (15,374), lockfiles (21,566).
-
-### A.4 fx (permissions, auto review, context assembly, session log, provider contract)
-
-| item | source span | lines | action |
-|---|---|---|---|
-| `PermissionMode`/`RuleDecision`/`PermissionGrant`/`PermissionAction`/`PermissionRule(Set)` | `ref/agents/fx/src/core/shared/types.zig:1510-1521,1659-1683` | 36 | port verbatim |
-| gate `Action`/`Decision` + yolo/fallback decisions + `decideOrdinary`/`decide` | `ref/agents/fx/src/core/permissions/permission_gate.zig:9-46,72-121` | 87 | port verbatim (decision fns) |
-| `RuleId`/`RuleKey`/`Rule` + caps + `schema_version = 2` + `validateSchema` + idempotent v1→v2 migration | `ref/agents/fx/src/core/permissions/session_permission_state.zig:5-125,187-303` | 238 | port verbatim/adapted — **the §19 versioning exemplar** |
-| auto review: `reviewRequestForCall`; reviewer-unavailable; deterministic dispositions; **`nonAllowAutoReviewOutcome`** (`:868-886`); `automaticReviewOutcome` (`:894-935`); `runAutomaticReview` | `ref/agents/fx/src/core/tooling/tool_admission.zig:761-1010` | 250 | port adapted (outcome fns verbatim) |
-| reviewer model + timeout + `ReviewRequest` + prompt template (untrusted-input framing `:748-800`) | `ref/agents/fx/src/core/permissions/auto_classifier.zig:15,91-140,210-283,748-800` | 178 | port verbatim (config + prompt) |
-| action-bound approval: `PermissionActionId` + denial memory + hashing + orchestrator call sites | `ref/agents/fx/src/core/agent/runtime/tool_admission.zig:32-201`, `orchestrator.zig:2536-2651,6449-6460,6682-6695` | ~310 | read-only reference (re-design into R4/permission_step; grep `orchestrator.zig`, never read it — 7,504 lines, ~140 relevant) |
-| context assembly: `buildGatewayMessages` + budget fn (prod half `:1-52`) + ordering tests | `ref/agents/fx/src/core/agent/runtime/prompt_context.zig:1-297` | 297 | port verbatim (prod), tests adapted |
-| session log: `FailedTail*` + `recoverManifestBoundary` + `CommitLifecycle` | `ref/agents/fx/src/core/session/session_log.zig:106-130,346-522` | 201 | port adapted |
-| `validateSessionId` + `generateSessionId` | `ref/agents/fx/src/core/session/session_layout.zig:7-37` | 30 | port verbatim |
-| `StreamingEstimator` + invariance test | `ref/agents/fx/src/core/shared/token_estimate.zig:5-46` | 41 | port verbatim — the workspace's only estimator (P3 trailing estimate + streaming display, D22) |
-| context budgets: ceiling + `Name`/`defaultBytes`/`parse` + plumbing + truncation helpers | `ref/agents/fx/src/core/config/context_limits.zig:3-225` | 221 | port verbatim (table), adapted (plumbing) |
-| `DeliveryCertainty` + failure evidence + provider vtable → Rust trait | `ref/agents/fx/src/core/agent/stream_provider.zig:20-278` | 257 | port verbatim (`:20-65`), adapted (rest) |
-
-**excise (fx — never open):** `src/core/mcp/mcp_runtime.zig` (18,344), `src/ui/` tree (128,116),
-`src/ui/transcript/runtime_tests.zig` (15,912), `src/core/session/session_store.zig` (13,831 —
-grep only), `src/core/app/app_input_runtime.zig` (13,707).
-
-### A.5 jcode (interrupt leaf, injection points, retry constants, guardrails, provider/tool traits)
-
-| item | source span | lines | action |
-|---|---|---|---|
-| `SoftInterrupt*` types + queue + signal aliases | `ref/agents/jcode/crates/jcode-agent-runtime/src/lib.rs:3-28` | 26 | port verbatim |
-| `InterruptSignal` struct + impl + Default (atomic flag + epoch + Notify) | `ref/agents/jcode/crates/jcode-agent-runtime/src/lib.rs:30-124` | 95 | port verbatim |
-| epoch-race semantics tests | `ref/agents/jcode/crates/jcode-agent-runtime/src/lib.rs:144-283` | 140 | port adapted |
-| `InjectedSoftInterrupt` + `NoToolCallOutcome` + `PostToolInterruptOutcome` enums | `ref/agents/jcode/crates/jcode-app-core/src/agent/interrupts.rs:28-49` | 22 | port verbatim |
-| **synthesize skipped tool results** (`[Skipped: user interrupted]` fill + note) | `ref/agents/jcode/crates/jcode-app-core/src/agent/turn_streaming_mpsc.rs:1258-1295` | 38 | port verbatim — only these lines; the file is ~1,600 |
-| retry constants + incident comments | `ref/agents/jcode/crates/jcode-app-core/src/agent/turn_loops.rs:5-17` | 13 | port verbatim |
-| guardrail scripts: code-size (175), panic (200), swallowed-error (252), dep-boundaries (115), module-files (130), `check_guardrails.sh` (143) | `ref/agents/jcode/scripts/*` | 1,015 | port adapted (Rust-pattern regexes; keep incident docstrings, `--update`, fail-loud-on-missing-tool) |
-| `Provider::complete_split` default + `name`/`display_name` | `ref/agents/jcode/crates/jcode-provider-core/src/lib.rs:87-119` | 33 | port verbatim |
-| `ensure_intent_in_schema` + `Tool::to_definition` | `ref/agents/jcode/crates/jcode-tool-core/src/lib.rs:40-92,143-166` | 77 | port verbatim |
-
-**excise (jcode — never open):** `crates/jcode-tui/` (205,141), `crates/jcode-desktop2/`
-(42,374), `docs/` (22,030), `src/cli/commands.rs` (3,454), `turn_streaming_mpsc.rs` outside
-`:1258-1295`.
-
 ### A.6 deepseek-harness (prefix-aligned summarizer, repeat-tool reminder, ralph, goal prompt)
 
 | item | source span | lines | action |
@@ -2199,7 +2038,7 @@ grep only), `src/core/app/app_input_runtime.zig` (13,707).
 | `SummarizationInput` + replay-request construction + target resolution + `frameSummary` | `ref/agents/deepseek-harness/packages/compaction/compaction-basic/src/summarizer.ts:72-85,128-163,184-195` | 61 | port adapted — P7's new contract |
 | repeat-tool reminder whole file (canonicalize `:81-105`, thresholds+validate `:19-50,123-141`, advisory texts `:59-79`, observe `:181-224`, wildcard/`tracked()` transparency `:107-111,175-179`) | `ref/agents/deepseek-harness/packages/guard/repeat-tool-reminder/src/index.ts:1-233` | 233 | port adapted (marked spans verbatim) |
 | ralph: report types + schema + `validateReport` + round loop | `ref/agents/deepseek-harness/packages/workflow/tool-ralph/src/index.ts:49-176` | 128 | read-only reference (B12 is a 40-line rewrite) |
-| goal round prompt | `ref/agents/deepseek-harness/packages/goal/goal-round-driver/src/prompt.ts:1-26` | 26 | superseded by codex `continuation.md` (§8.17 G4, D25) |
+| goal round prompt | `ref/agents/deepseek-harness/packages/goal/goal-round-driver/src/prompt.ts:1-26` | 26 | superseded by the §8.17 G4 continuation prompt (D25) |
 
 **excise (dsh — never open):** `docs/` (57,565), `apps/` (31,360), `packages/typert/` (14,906),
 `packages/extensions/tool-cordis/src/api-catalog.ts` (5,159), `packages/host/apiproxy/src/api-proxy.ts` (3,642).
@@ -2227,39 +2066,6 @@ herdr `src/server/headless.rs` (11,761), `src/pane/terminal.rs` (6,713), `src/te
 (5,886), `src/ghostty/` (8,323), `vendor/` (16,293); kanban `kanban-service/` (21,474),
 `kanban-mcp/` (7,067), `kanban-persistence-json/` (6,775), `kanban-cli/tests` (5,352).
 
-### A.8 opencode (v2 snapshot — §5.3)
-
-| item | source span | lines | action |
-|---|---|---|---|
-| `enabled` gate + `capture` (best-effort) + `repository()` + gitdir path derivation | `ref/agents/opencode/packages/core/src/snapshot.ts:94-144` | 51 | port adapted |
-| restore wiring (path-escape guard) + `restore` + `checkout` entries | `ref/agents/opencode/packages/core/src/snapshot.ts:178-187,211-224` | 23 | port adapted |
-| ignored-file filtering (`files` + `diff`) + `noopLayer` + `failure()` | `ref/agents/opencode/packages/core/src/snapshot.ts:151-176,238-257` | 44 | port verbatim |
-| per-gitdir lock (`KeyedMutex`) | `ref/agents/opencode/packages/core/src/git.ts:180-182` + `effect/keyed-mutex.ts:1-45` | 48 | port verbatim |
-| shadow-gitdir init + 8 perf configs + **alternates + seeded index** | `ref/agents/opencode/packages/core/src/git.ts:359-427` | 69 | port verbatim (the load-bearing init) |
-| `refresh()` pipeline + `index.ignored` | `ref/agents/opencode/packages/core/src/git.ts:429-528` | 99 | port verbatim |
-| `write-tree` + `tree.capture` | `ref/agents/opencode/packages/core/src/git.ts:530-548` | 18 | port verbatim |
-| `tree.files` + `tree.diff` + `entry()` | `ref/agents/opencode/packages/core/src/git.ts:550-636` | 85 | port verbatim |
-| `tree.preview` (dry-run index) | `ref/agents/opencode/packages/core/src/git.ts:638-688` | 51 | read-only reference (skipped in v1, §5.3) |
-| selective restore + whole-tree checkout | `ref/agents/opencode/packages/core/src/git.ts:690-727` | 37 | port verbatim |
-| `Repository`/`TreeID` types + `repo.discover` | `ref/agents/opencode/packages/core/src/git.ts:14-42,184-203` | 49 | port adapted |
-| revert: `plan` (earliest-tree-per-path) + `stage` + `clear` | `ref/agents/opencode/packages/core/src/session/revert.ts:27-111` | 85 | port adapted |
-
-opencode TUI (§8.14, D41 — behavior specs for the subagent UX; the SolidJS/OpenTUI chassis is
-not ported):
-
-| item | source span | lines | action |
-|---|---|---|---|
-| `Task` component (lifecycle states, live `↳` from child session, counters from child store) | `ref/agents/opencode/packages/tui/src/routes/session/index.tsx:2221-2334` | ~115 | read-only reference (U27) |
-| `SubagentFooter` (label, `(n of m)`, child tokens/cost, nav controls) | `ref/agents/opencode/packages/tui/src/routes/session/subagent-footer.tsx:65-129` | 65 | port adapted (U29) |
-| child navigation commands + bindings | `ref/agents/opencode/packages/tui/src/routes/session/index.tsx:433-462`, `src/config/keybind.ts:103-106` | ~35 | read-only reference (U29) |
-| `InlineToolRow` + `BlockTool` chassis (icon column, permission-warning color, strikethrough denial, clickable failed rows) | `ref/agents/opencode/packages/tui/src/routes/session/index.tsx:1915-2044` | ~130 | read-only reference (U5/U15) |
-| `collapse-tool-output` (line + char budget, overflow flag) | `ref/agents/opencode/packages/tui/src/util/collapse-tool-output.ts` | 20 | port verbatim (U15) |
-
-**excise (opencode — never open):** `packages/opencode/` (177,340), `packages/app/` (170,663),
-`packages/console/` (41,975), `packages/sdk/` (30,328). `packages/tui/` (31,842) was opened
-2026-08-24 for the D41 TUI study; only the spans above are implementation reads — the rest of
-the package stays a token sink.
-
 ### A.9 rtk (vendored at `vendor/rtk/` — §14.3)
 
 | item | source span | lines | action |
@@ -2279,97 +2085,6 @@ the package stays a token sink.
 | git status: format/inner/state/detect/args | `vendor/rtk/git.rs:798-986` | 171 | port verbatim; tests `:2260-3775` strip |
 | grep grouping + `clean_line` + `compact_path` | `vendor/rtk/search.rs:115-133,737-749,786-848` | 91 | port verbatim |
 | `filters/*.toml` corpus | `vendor/rtk/filters/` | 2,402 (data) | embed via build.rs — never read by hand |
-
-### A.10 codex (TUI §8.14 · compaction/goals/subagents D25 · pass-2 D29/D30)
-
-| item | source span | lines | action |
-|---|---|---|---|
-| scroll-region insert + reverse-index pre-roll | `ref/agents/codex/codex-rs/tui/src/insert_history.rs:106-228` | 123 | fallback only — ratatui `insert_before` held at phase 7; port if a measured terminal misbehaves (§8.14) |
-| `SetScrollRegion`/`Reset` commands + `write_history_line` + `write_spans` | `ref/agents/codex/codex-rs/tui/src/insert_history.rs:290-491` | 199 | fallback only (same condition as above) |
-| wrap policy enums + URL-intact wrap + `leading_whitespace_prefix` | `ref/agents/codex/codex-rs/tui/src/insert_history.rs:43-57,230-288` | 72 | superseded by U14's hand-rolled wrap (phase 7) |
-| mutable-viewport terminal (the `Inline` fixed-height limit is the misbehavior; fallback taken) | `ref/agents/codex/codex-rs/tui/src/custom_terminal.rs:126-345,445-560`, `tui.rs:960-1005`, `tui/scrollback.rs:50-78` | ~270 | port adapted (U2, `yi-tui::terminal`) |
-| frame coalescing actor + handle | `ref/agents/codex/codex-rs/tui/src/tui/frame_requester.rs:28-128` | 89 | superseded — U6's synchronous dirty-flag scheduler needs no actor (phase 7) |
-| frame rate limiter | `ref/agents/codex/codex-rs/tui/src/tui/frame_rate_limiter.rs:1-38` | 38 | port adapted (folded into U6 `FrameScheduler`; 60 fps ceiling) |
-| `Renderable` trait (+ blanket impls) | `ref/agents/codex/codex-rs/tui/src/render/renderable.rs:16-74` | 58 | port verbatim/adapted |
-| `commit_complete_source` + collector | `ref/agents/codex/codex-rs/tui/src/markdown_stream.rs:23-116` | 92 | port verbatim (`:82-96`) |
-| stable-prefix `StreamingRender` + `code_fence.rs` | `ref/agents/codex/codex-rs/tui/src/streaming/render.rs:21-216`, `code_fence.rs:1-121` | 315 | port adapted (`:148-196` verbatim) |
-| resize-reflow state machine (widths, 75 ms trailing debounce, stream latches) | `ref/agents/codex/codex-rs/tui/src/transcript_reflow.rs:18-178` | 160 | port adapted (U35; `Instant` deadlines and the width-vs-reflowed-width split kept verbatim) |
-| clear-then-replay + row-capped source render | `ref/agents/codex/codex-rs/tui/src/app/resize_reflow.rs:273-292,420-616` | ~180 | port adapted (U36; `HistoryCell`/overlay/hyperlink-wrap-policy plumbing replaced by `yi-tui::history`) |
-| per-terminal reflow row caps | `ref/agents/codex/codex-rs/tui/src/resize_reflow_cap.rs:19-76` | 58 | port adapted (U36; `codex_terminal_detection` replaced by a `TERM_PROGRAM`/`TERM` sniff — the crate is a §13.3 dependency Yi will not add for four constants) |
-| `clear_scrollback_and_visible_screen_ansi` | `ref/agents/codex/codex-rs/tui/src/custom_terminal.rs:528-545` | 18 | port verbatim (the escape string is the load-bearing part) |
-| whole-frame `sync_update` bracket | `ref/agents/codex/codex-rs/tui/src/tui.rs:1093-1152` | 60 | port adapted (U3; the suspend/alt-screen arms are not ported) |
-| `VT100Backend` | `ref/agents/codex/codex-rs/tui/src/test_backend.rs:1-135` | 135 | port adapted (ratatui 0.29 keeps `CrosstermBackend::writer` private — the parser sits behind a shared handle) |
-| terminal init/restore + sync-update draw + history flush | `ref/agents/codex/codex-rs/tui/src/tui.rs:227-248,304-383,422-512,579-621,929-1030` | ~300 | port adapted (`flush_pending_history_lines :929-952` verbatim) |
-| markdown table pipeline: styled-span cells, spillover filter, column metrics/kinds, priority shrink (binary-searched balance), aligned grid + in-cell wrap | `ref/agents/codex/codex-rs/tui/src/markdown_render.rs:151-244,1085-1470,1641-1785` | ~560 | port adapted (hyperlink remap + HTML-spillover heuristics dropped) |
-| key/value record fallback (fragmentation/starvation thresholds, aligned + stacked fields) | `ref/agents/codex/codex-rs/tui/src/markdown_render/table_key_value.rs:1-267` | 267 | port adapted |
-| `word_wrap_line` entry + URL-token guard | `ref/agents/codex/codex-rs/tui/src/wrapping.rs:400-460,682-727,855-862` (worker starts `:864`, end unverified) | ~110 | port adapted — codex's guard needs the banned `textwrap`+`url` crates; U14 hand-rolls wrap with the `://` no-break rule |
-
-Codex non-TUI ports (compaction / goals / subagents — D25; verified 2026-08-22, `core/` is
-197,845 lines, not the 330k previously noted):
-
-| item | source span | lines | action |
-|---|---|---|---|
-| context-window scope (`Total \| BodyAfterPrefix`) + prefill baseline | `ref/agents/codex/codex-rs/core/src/session/context_window.rs:19-91`, `core/src/state/auto_compact_window.rs:22-140` | ~90 | port adapted (P3/P4) |
-| retention floor: role filter + newest-first budgets (64k / 10k agent-msg cap) | `core/src/compact_remote_v2.rs:459-541,556-633`, `core/src/compact.rs:535-710` | ~120 | port adapted (P17) |
-| window chain + one-shot latches | `core/src/state/auto_compact_window.rs:4-91` | ~40 | port verbatim (P9) |
-| summary-less window roll | `core/src/compact_token_budget.rs:24-92` | 93 | port adapted (P9) |
-| front-trim overflow recovery | `core/src/compact.rs:303-320` | 18 | port verbatim (P7) |
-| outgoing-model compaction on model switch | `core/src/session/turn.rs:1076-1160`, `core/src/compact_model_fallback.rs:1-22` | ~110 | port adapted (P7) |
-| mid-turn compaction + summary-last placement rules | `core/src/session/turn.rs:458-498`, `core/src/compact.rs:60-73,581-635` | ~120 | port adapted (P13) |
-| `WorldStateSection` diff overlay + merge-patch persistence | `core/src/context/world_state/mod.rs:205-411`, `core/src/session/mod.rs:3119-3152,3870-3944` | ~300 | port adapted (P18/P11) |
-| typed internal-context wrapper + compaction-drop matchers | `core/src/context/internal_model_context.rs:1-80`, `contextual_user_message.rs:18-43` | ~110 | port verbatim (L4) |
-| middle truncation 50/50 head/tail + token marker | `core/src/unified_exec/head_tail_buffer.rs:18-19`, `utils/string/src/truncate.rs:126-136` | ~40 | port adapted (T15/P6) |
-| goal row + status enum | `state/src/model/thread_goal.rs:12-71` | 71 | port adapted (G1) |
-| goal tool surface (authority split) | `ext/goal/src/spec.rs:13-94` | 94 | port verbatim (G2) |
-| idle-continuation + deferral latch | `ext/goal/src/runtime.rs:362-454`, `ext/goal/src/extension.rs:97-363` | ~90 | port adapted (G3) |
-| continuation / budget / objective-updated prompts | `prompts/templates/goals/{continuation,budget_limit,objective_updated}.md` | 5.9 KB | port verbatim, adapted names (G4) |
-| goal accounting | `ext/goal/src/accounting.rs:313-427` | ~115 | port adapted (G5) |
-| `fork_turns` spawn modes | `core/src/tools/handlers/multi_agents_v2/spawn.rs:270-317`, `core/src/agent/control.rs:71-74` | ~50 | port adapted (B1/B5) |
-| mailbox tools (`send/followup/wait/close/interrupt`) | `core/src/tools/handlers/multi_agents_spec.rs:186-355`, `multi_agents_v2/wait.rs:37-158` | ~250 | port adapted (B13) |
-| role-split injected messages | `core/src/context/inter_agent_message.rs:44-66`, `inter_agent_completion_message.rs:22-41`, `subagent_notification.rs:20-42` | ~100 | port verbatim (B6) |
-| review rubric + interrupted-exit template | `prompts/templates/review/rubric.md:12-30`, `review/exit_*.xml` | ~40 | port adapted (V5/§7.4) |
-
-Codex pass-2 ports (persistence / streaming / config / skills / patch safety — D29/D30;
-verified 2026-08-22):
-
-| item | source span | lines | action |
-|---|---|---|---|
-| workspace clippy lints + `disallowed-methods` + print bans | `codex-rs/Cargo.toml [workspace.lints]`, `clippy.toml:1-30`, `core/src/lib.rs:6` | ~60 | port verbatim (§9) |
-| wire enum for on-disk records | `history/src/rollout_payload.rs:20-52`, `history/src/lib.rs:107-123` | 33 | port adapted (S5) |
-| newline re-termination + deferred creation + tolerance ladder | `rollout/src/recorder.rs:813-819,1009-1072,1920-1933` | ~90 | port adapted (S6) |
-| commit-per-item + rebuild-from-history retry | `core/src/session/turn.rs:1369-1382,2381-2385`, `stream_events_utils.rs:75-124` | ~60 | port adapted (A4/L6, D29) |
-| per-poll idle timeout; terminal event returns immediately | `codex-api/src/sse/responses.rs:554-633` + test `:1016-1057` | ~20 | port adapted (A3/A4) |
-| latched one-way transport fallback + counter | `core/src/client.rs:532-551` | 20 | port adapted (A4) |
-| hidden-markup stream parser (delta-boundary safe) | `utils/stream-parser/src/{stream_text.rs:1-36,assistant_text.rs:20-77,utf8_stream.rs}` | ~250 | port adapted (L6/advisor/paste atoms) |
-| `x-reasoning-included` no-re-estimate signal | `codex-api/src/common.rs:88-91`, `session/mod.rs:4062-4065` | 10 | port adapted (A5) |
-| config layer enum + strict `serde_ignored` diagnostics | `config/src/config_layer_source.rs:31-81`, `strict_config.rs:15-60` | ~170 | port adapted (X7) |
-| feature-deviation print (`yi doctor`) | `features/src/lib.rs:490-505` | 16 | port adapted (X-misc) |
-| hook/exec-tool hash-pinned trust | `hooks/src/engine/discovery.rs:695-785`, `config_rules.rs:15-65` | ~90 | port adapted (T4, D30) |
-| oversized-text spill + head/tail + recovery id | `hooks/src/output_spill.rs:11-131` | 121 | port adapted (T16) |
-| bundled-asset fingerprint materialization + bounded walk | `skills/src/lib.rs:55-141`, `loader/mod.rs:30-31` | ~100 | port adapted (§5 skills) |
-| `$name` mention + implicit-invocation detection | `ext/skills/src/selection.rs:21-80`, `invocation.rs:17-83`, `skills/src/mentions.rs:41-146` | ~200 | port adapted (§5 skills) |
-| catalog degradation ladder (2 % window default) | `ext/skills/src/render.rs:17-27,127-153,325-408` | ~200 | port adapted (P16 skills_meta) |
-| freeform/grammar tool spec | `tools/src/tool_spec.rs:53-54`, `apply_patch_spec.rs:18-27`, `apply_patch.lark` | ~50 | port adapted (T1 format, D29) |
-| TOCTOU no-follow re-check | `apply-patch/tests/suite/no_follow.rs:12-108`, `lib.rs:72-87` | ~40 | port adapted (T10) |
-| lexical path normalizer + parent-escalation double filter | `core/src/safety.rs:137-186`, `handlers/apply_patch.rs:236-271` | ~70 | port verbatim (M10) |
-| partial-write `exact` honesty flag | `apply-patch/src/lib.rs:246-284,492-502` | ~50 | port adapted (T10) |
-| Unicode confusables table (→ tag computation) | `apply-patch/src/seek_sequence.rs:81-112` | 32 | port adapted (T6/T7) |
-| yield contract + LRU-8-protected eviction (**only if** PTY ever ships) | `core/src/unified_exec/process_manager.rs:1332-1532` | 200 | read-only reference (D30: skipped) |
-| strict `{{name}}` template engine (`ExtraValue` error) | `utils/template/src/lib.rs:1-80` | ~150 | port adapted (G4/advisor prompts) |
-| permission-mode fragment matrix | `prompts/src/permissions_instructions.rs:1-450`, `templates/permissions/**` | ~450 | port adapted (M11) |
-| durable pending queue shape | `ext/queue/src/lib.rs:1-21` | → ~20 | port adapted (R3) |
-| sleep inhibitor (IOKit / systemd-inhibit) | `utils/sleep-inhibitor/src/lib.rs:1-8` | ~150 | read-only reference (ledger) |
-
-**excise (codex — do not read):** `core/src/**/*_tests.rs` (~60k), `core/tests/` and
-`app-server/` (147,638), `tui/src/bottom_pane/` (58,530), `tui/src/chatwidget/` (57,810),
-`cli/` (31,989); the plan tool (`core/src/tools/handlers/plan.rs` — persists nothing, the
-anti-pattern §8.17 bans); the exec-policy/bash-parse stack (`core/src/exec_policy.rs`,
-`shell-command/src/bash.rs` — the unfixable-prompt loop, D26 anti-lessons only); orphan
-prompt files (~112 KB); `exec-server/` (48k — remote-only, duplicates the local spawn call);
-`network-proxy/` (18.5k MITM stack); `code-mode*/` (30k V8 — §6 note); `rollout-trace/` (13k
-third persistence format); `ext/skills/src/{shadow_selection_experiment,dynamic_skill_selector}/`
-(2.1k self-labeled temporary A/B); `codex-client/src/sse.rs` (dead second SSE reader);
-`config/src/config_requirements.rs` (4,640 lines of what per-key merge special-cases compound to).
 
 ### A.11 atuin · mdfried (terminal lifecycle, keymap, CLI, run loop)
 

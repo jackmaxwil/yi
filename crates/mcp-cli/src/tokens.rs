@@ -134,9 +134,8 @@ impl Tokens {
         }
     }
 
-    /// Cross-process refresh serialization (D37, codex lesson): a rotating
-    /// refresh token must be spent by exactly one process. O_EXCL lockfile;
-    /// stale locks (> 60 s) are broken.
+    /// Invariant: a rotating refresh token is spent by exactly one process
+    /// (D37). O_EXCL lockfile; stale locks (> 60 s) are broken.
     pub fn with_refresh_lock<T>(
         &self,
         key: &str,

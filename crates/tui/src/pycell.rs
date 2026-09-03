@@ -62,9 +62,8 @@ fn looks_like_blob(token: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || b == b'+' || b == b'/' || b == b'=')
 }
 
-/// Matched anywhere in the token, not only at its start: a key is usually an
-/// argument (`Anthropic(api_key="sk-…")`), and the run after the prefix has to
-/// be key-shaped so `task-oriented` is not mistaken for one.
+/// Matched anywhere in the token, not only at its start, since a key is usually an argument;
+/// the run after the prefix must be key-shaped so `task-oriented` is not mistaken for one.
 fn holds_api_key(token: &str) -> bool {
     let Some(at) = token.find("sk-") else {
         return false;
@@ -76,9 +75,8 @@ fn holds_api_key(token: &str) -> bool {
         >= 16
 }
 
-/// A cell's source reaches the screen and every frame dump taken of it. Both
-/// halves are load-bearing: the name catches `api_key = "…"`, the shape a bare
-/// literal that names nothing.
+/// A cell's source reaches the screen and every frame dump of it. Both halves are
+/// load-bearing: the name catches `api_key = "…"`, the shape a bare literal naming nothing.
 pub fn redact(line: &str) -> String {
     let lower = line.to_ascii_lowercase();
     let named = SECRETS.iter().any(|needle| lower.contains(needle));
@@ -173,9 +171,8 @@ fn chip(code: &str) -> &'static str {
     }
 }
 
-/// Invariant: byte-identical in every transcript mode (prime-agent
-/// `ipython-cell.ts`). A head that changes width when the body opens moves
-/// every row under it.
+/// Invariant: byte-identical in every transcript mode. A head that changes
+/// width when the body opens moves every row under it.
 pub fn head(cell: &ToolCell, spinner_phase: usize) -> String {
     let code = string(&cell.details, "code");
     let glyph = match cell.status {
@@ -227,9 +224,8 @@ fn gutter_lines(code: &str, width: usize, theme: &Theme) -> Vec<Line<'static>> {
         .enumerate()
         .flat_map(|(index, source)| {
             let marker = if index == 0 { PROMPT } else { CONTINUATION };
-            // The body is redacted on the same terms as the head: the whole
-            // transcript is what gets shared, and a key is no safer one mode
-            // deeper than it was on the row above.
+            // The body is redacted on the head's terms: the whole transcript gets shared,
+            // and a key is no safer one mode deeper than on the row above.
             let source = redact(source);
             let mut spans = vec![Span::styled(
                 format!("{BODY_INDENT}{marker}"),
@@ -285,9 +281,8 @@ fn traceback_of(details: &Value) -> String {
     format!("{ename}: {evalue}")
 }
 
-/// The kernel's own file edits: a cell that wrote three files has three diffs
-/// worth the same rows an `edit` call would earn. The patch is computed where
-/// every other patch is, in `yi-tools`; this only renders it.
+/// The kernel's own file edits: a cell that wrote three files earns three diffs, the same
+/// rows an `edit` would. The patch is computed in `yi-tools`; this only renders it.
 fn diff_lines(
     details: &Value,
     width: usize,

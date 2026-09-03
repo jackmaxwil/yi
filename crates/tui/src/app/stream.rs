@@ -1,6 +1,5 @@
-//! U13's streaming commit path: the prose and the reasoning of a turn both
-//! reach scrollback a stable slice at a time, so the live region only ever
-//! holds the unstable tail and nothing is lost when that tail is outgrown.
+//! U13's streaming commit path: prose and reasoning both reach scrollback a stable slice at a
+//! time, so the live region holds only the unstable tail and outgrowing it loses nothing.
 
 use std::cmp::Ordering;
 
@@ -9,18 +8,16 @@ use ratatui::text::Line;
 use super::App;
 use crate::cell::{Cell, TranscriptMode};
 
-/// The byte of `tail` to cut at so what is left renders within `budget` rows,
-/// or `None` when it already fits. No `stable_cut` boundary is guaranteed: a
-/// model can stream one paragraph longer than the screen, and the tail drops it.
+/// The byte of `tail` to cut at so the rest renders within `budget` rows, or `None` when it
+/// fits. No `stable_cut` boundary is guaranteed: one paragraph can outgrow the screen.
 fn overflow_cut(
     tail: &str,
     budget: usize,
     width: usize,
     rows: impl Fn(&str) -> usize,
 ) -> Option<usize> {
-    // Two scans before the render, which is the expensive half and runs here on
-    // every delta rather than once a frame: text that can fill neither the
-    // budget's rows nor its columns cannot overrun it.
+    // Two scans before the render, the expensive half, which runs on every delta rather than
+    // once a frame: text filling neither the budget's rows nor its columns cannot overrun.
     if tail.lines().count().max(tail.len() / width.max(1)) <= budget {
         return None;
     }
@@ -44,9 +41,8 @@ fn overflow_cut(
             }
         })
         .unwrap_or_else(|index| index);
-    // Cutting on that arbitrary word leaves the head on a half-empty row, a
-    // short line every screenful. The last word that still fits the row that
-    // break lands on wraps the seam like any other line.
+    // Cutting on that arbitrary word leaves the head on a half-empty row every screenful.
+    // The last word that fits the row the break lands on wraps the seam like any other.
     let rest = breaks.get(index..)?;
     let head = rows(tail.get(..*rest.first()?).unwrap_or_default());
     let fills = rest.partition_point(|&at| rows(tail.get(..at).unwrap_or_default()) <= head);
@@ -54,8 +50,8 @@ fn overflow_cut(
 }
 
 impl App {
-    /// Invariant: thought commits on its own stable cuts and whole before any prose
-    /// commits (`commit_prose` flushes it), so reasoning never lands under its answer.
+    /// Invariant: thought commits on its own stable cuts and whole before any prose commits
+    /// (`commit_prose` flushes it), so reasoning never lands under its answer.
     pub(super) fn commit_stable_thought(&mut self) {
         // `normal` renders a whole thought as one line of count; slicing it
         // would print that line once per paragraph.
@@ -111,9 +107,8 @@ impl App {
         self.commit_thought_to(self.live_thought.len());
     }
 
-    /// U13: each newly stable slice renders standalone against a byte cursor.
-    /// Re-rendering the whole prefix let the renderer's trailing-blank trimming
-    /// misalign the committed count and duplicate list items mid-stream.
+    /// U13: each newly stable slice renders standalone against a byte cursor. Re-rendering
+    /// the whole prefix let trailing-blank trimming duplicate list items mid-stream.
     pub(super) fn commit_stable_prefix(&mut self) {
         let stream = crate::markdown::stable_stream(&self.live_markdown);
         if stream.cut > self.live_cut {
@@ -132,9 +127,8 @@ impl App {
         }
     }
 
-    /// `spaced` is false for a forced cut: it lands inside a paragraph, where a
-    /// blank line would read as the break the text does not have — except when
-    /// it opens the block, which is a break and needs the air.
+    /// `spaced` is false for a forced cut: inside a paragraph a blank line reads as a break
+    /// the text does not have — unless it opens the block, which is a break and needs air.
     pub(super) fn commit_prose(&mut self, cut: usize, spaced: bool) {
         if cut <= self.live_cut {
             return;

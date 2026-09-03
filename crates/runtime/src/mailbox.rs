@@ -15,9 +15,8 @@ const CONTEXT_MAX_KEYS: usize = 8;
 const CONTEXT_VALUE_CAP: usize = 4_096;
 const CONTEXT_TOTAL_CAP: usize = 16_384;
 const RESULT_TAIL_CHARS: usize = 2_000;
-/// Invariant: every row can run an ancestor check inside the parent's own
-/// `rlm.result` call, so the list is capped like the context block is — a
-/// degenerate child buys one refusal, not an unbounded run of checks.
+/// Invariant: every row can run an ancestor check inside the parent's own `rlm.result` call,
+/// so the list is capped: a degenerate child buys one refusal, not unbounded checks.
 const MAX_DISCOVERIES: usize = 16;
 
 fn clamp(text: &str, cap: usize) -> String {
@@ -28,9 +27,8 @@ fn clamp(text: &str, cap: usize) -> String {
     format!("{kept}… [truncated to {cap} chars]")
 }
 
-/// Incident: values arrive pre-serialized because a host-side kernel read here
-/// would queue behind the very cell awaiting this reply; the caps are re-applied
-/// because that kernel python is only semi-trusted.
+/// Incident: values arrive pre-serialized because a host-side kernel read would queue behind
+/// the cell awaiting this reply; the caps re-apply because that python is semi-trusted.
 pub(crate) fn context_block(kwargs: &Map<String, Value>) -> Result<Option<String>, String> {
     let Some(value) = kwargs.get("context").filter(|value| !value.is_null()) else {
         return Ok(None);
@@ -335,9 +333,8 @@ impl SubagentHost {
         Ok(reply)
     }
 
-    /// The child's answer as data in the parent's kernel namespace: JSON when
-    /// it parses, checked against `schema` when one is given, and a whole
-    /// [`yi_types::subagent::ChildResult`] when the child was spawned with a check.
+    /// The child's answer as data in the parent's namespace: JSON when it parses, checked
+    /// against `schema` if given, a whole [`yi_types::subagent::ChildResult`] if check-spawned.
     pub fn result(
         &self,
         target: &str,
@@ -413,9 +410,8 @@ impl SubagentHost {
         Ok(reply)
     }
 
-    /// L5 criticality is derived, never declared: the ancestor todo a row names is
-    /// looked up and its check re-run, and only a red one is HIGH. Fails closed — a
-    /// row that cannot be adjudicated or recorded holds the whole result back.
+    /// L5 criticality is derived, never declared: the ancestor todo is looked up, its check
+    /// re-run, and only a red one is HIGH. Fails closed: an unadjudicable row holds the result.
     fn route_discoveries(&self, child: &str, discoveries: &[Discovery]) -> Result<(), String> {
         let plan = if discoveries
             .iter()
@@ -479,9 +475,8 @@ impl SubagentHost {
         Ok(())
     }
 
-    /// Invariant: an unreadable canonical plan is an adjudication failure, never
-    /// a deferred row — a check-violating discovery must not be downgraded by a
-    /// missing reader.
+    /// Invariant: an unreadable canonical plan is an adjudication failure, never a deferred
+    /// row — a check-violating discovery must not be downgraded by a missing reader.
     fn ancestor_plan(&self) -> Result<yi_types::plan::doc::Plan, String> {
         crate::plan::canonical_plan(&self.options.store, &self.options.plans_dir)
             .map_err(|cause| {
@@ -491,9 +486,8 @@ impl SubagentHost {
             })
     }
 
-    /// Invariant: promotion runs at reap whatever the outcome — the last
-    /// product reaches the owner's transcript before the slot is freed, so the
-    /// failure path leaves evidence and never a dangling live child.
+    /// Invariant: promotion runs at reap whatever the outcome, so the last product reaches
+    /// the owner's transcript before the slot frees and no live child dangles.
     pub fn reap(&self, target: &str) -> Result<Harvest, String> {
         let record = {
             let mut children = self

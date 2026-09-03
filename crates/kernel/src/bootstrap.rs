@@ -54,9 +54,8 @@ fn has_python_sources(root: &Path) -> bool {
     root.join("python").join("yi_runtime").is_dir()
 }
 
-/// Root holding `python/yi_runtime` and `python/skills`: walk up from the exe
-/// (cargo target dir, unpacked tarball), then `~/.yi` (install.sh), then the
-/// compile-time path, which alone baked in the *build machine's* checkout.
+/// Root holding `python/yi_runtime` and `python/skills`: walk up from the exe, then `~/.yi`,
+/// then the compile-time path, which alone baked in the *build machine's* checkout.
 fn resolve_python_root(exe: Option<&Path>, home: Option<&Path>, fallback: PathBuf) -> PathBuf {
     let mut dir = exe.and_then(Path::parent);
     // deps/ -> debug/ -> target/ -> root is three; the spare levels cost a
@@ -107,9 +106,8 @@ fn env_path(name: &str) -> Option<PathBuf> {
         .map(PathBuf::from)
 }
 
-/// Incident: one `~/.yi/kernel-venv` served every commit, so two sessions
-/// whose ready checks differed rebuilt it back and forth; the check the venv
-/// has to satisfy names the directory instead.
+/// Incident: one `~/.yi/kernel-venv` served every commit, so two sessions whose ready checks
+/// differed rebuilt it back and forth. The check the venv satisfies now names the directory.
 fn venv_name(check: &str) -> String {
     let digest = Sha256::digest(check.as_bytes());
     let slot: String = digest
@@ -272,9 +270,8 @@ pub fn resolve_runtime_identity(source_dir: &Path) -> Result<String, String> {
     resolve_python_identity(source_dir, None)
 }
 
-/// Any Python change invalidates the venv. A failure here must surface rather
-/// than fall back to a static identity, which would permanently mask later
-/// source changes.
+/// Any Python change invalidates the venv. A failure here surfaces rather than falling back
+/// to a static identity, which would permanently mask later source changes.
 pub fn resolve_python_identity(
     source_dir: &Path,
     skills_dir: Option<&Path>,

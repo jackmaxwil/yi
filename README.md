@@ -174,8 +174,9 @@ a registered surface with a hard cap of 40.
 ## Contribute
 
 Read `docs/YI_DESIGN.md` (the law) and `docs/ARCHITECTURE.md` (the map: version,
-changelog, feature ledger, decision log) first. Code follows the docs;
-revising a settled decision requires a decision-log row in the same change.
+feature ledger, decision log; version history in `docs/CHANGELOG.md`) first.
+Code follows the docs; revising a settled decision requires a decision-log row
+in the same change.
 
 - `just check` green before any claim of done — every gate judged by exit
   code, never by piped output.

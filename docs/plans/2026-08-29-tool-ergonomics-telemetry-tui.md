@@ -10,9 +10,9 @@ status:  LANDED 0.67.0 (2026-08-29), all eleven phases — see ARCHITECTURE.md's
          8256d26 and are historical.
 date:    2026-08-29
 inputs:  a live Yi session's tool self-assessment (bash/read/edit/grep/
-         ipython/grid ratings) · three-scout study (2026-08-29): codex
-         codex-rs (tools/, apply-patch/, unified_exec/, otel/) · omp
-         packages/coding-agent + packages/hashline · pi/opencode/fx/jcode/
+         ipython/grid ratings) · three-scout study (2026-08-29): the reference
+         <ref> (tools/, apply-patch/, unified_exec/, otel/) · another reference
+         packages/coding-agent + packages/hashline · pi/the reference/the reference/the reference/
          deepseek-harness tool trees · Yi ground truth: crates/tools/src
          (builtins.rs, hashline/, reduce.rs, process.rs, ignore.rs),
          crates/loop/src/run.rs, crates/runtime/src/kernel.rs,
@@ -108,7 +108,7 @@ TUI:
   synchronized-output bracket.
 - Streamed markdown commits to scrollback only at a blank line outside a
   fence (`stable_cut`, markdown.rs:25-42; app.rs:460-484). A long fence or
-  list commits nothing until it ends. `commit_complete_source` — the codex
+  list commits nothing until it ends. `commit_complete_source` — the reference
   newline gate — is dead code, used only by a unit test (markdown.rs:15,
   tui_unit.rs:127). Every SSE delta clones the entire partial message
   (run.rs:325-345) and the live tail re-renders from scratch each frame
@@ -119,8 +119,8 @@ TUI:
 
 Donor facts this plan leans on (scout study, 2026-08-29):
 
-- codex has no grep/read tool at all — shell + `rg` by prompt
-  (`gpt_5_codex_prompt.md:5`); its old search tool is `Stage::Removed`. Its
+- the reference has no grep/read tool at all — shell + `rg` by prompt, said
+  in its system prompt; its old search tool is `Stage::Removed`. Its
   transferable pieces: the apply_patch 4-pass anchor ladder
   (`apply-patch/src/seek_sequence.rs:12-114`), two-layer truncation — 1 MiB
   head/tail capture then middle-out token budget, model-settable per call
@@ -128,7 +128,7 @@ Donor facts this plan leans on (scout study, 2026-08-29):
   telemetry: `duration_ms`, `output_truncated`, counter + histogram, and a
   `command_category` tag derived from parsing shell argv
   (`core/src/tools/registry.rs:624-638`).
-- omp is the hashline donor, and its *read* half was never ported:
+- the reference is the hashline donor, and its *read* half was never ported:
   path-embedded selectors with multi-range (`:1-5,20-30`,
   `read-selector.ts:33-68`), outline-by-default with a content-hash LRU
   (`read-summary.ts:1-40`), byte budget scaling with requested lines
@@ -137,14 +137,14 @@ Donor facts this plan leans on (scout study, 2026-08-29):
 - pi: every cap notice names the exact next call, including the
   single-long-line escape hatch `[Line 42 is 3.1MB … Use bash: sed -n '42p'
   …]` (`core/tools/read.ts:297-301`, `grep.ts:344-361`).
-- fx: grep paginates by `offset` and distinguishes *which* cap was hit —
+- the reference: grep paginates by `offset` and distinguishes *which* cap was hit —
   page cap vs collection cap vs unscanned files
   (`grep_files.zig:344`, `grep_search.zig:14-17`).
-- jcode: near-miss edits are diagnosed, never silently fuzzy-applied
+- the reference: near-miss edits are diagnosed, never silently fuzzy-applied
   ("found after trimming whitespace — retry", `edit.rs:263-274`); reads log
   a structured warning whenever they return truncated output
   (`read.rs:241-250`).
-- opencode: one universal post-execute truncation wrapper spills full text
+- the reference: one universal post-execute truncation wrapper spills full text
   to a dated file and tailors the recovery hint (`tool/truncate.ts:85-141`,
   wired at `tool/tool.ts:131-144`).
 - deepseek: rg invoked flag-value style (`--regexp=<pattern>`) so a
@@ -174,7 +174,7 @@ replays it.
    (state.rs:201-211 currently counts only child-lane `LaneRecord::Usage`).
 6. Bash command classification: extend the existing argv screen
    (builtins.rs:345-373) to a `category` detail — `read | list_files |
-   search | build | test | vcs | unknown` — codex's `command_category`,
+   search | build | test | vcs | unknown` — the reference's `command_category`,
    which is what makes "the model fell back to shell rg" measurable.
 7. `yi stats [session]`: per-tool call count, p50/p95 duration, failure
    rate by kind, truncation counts, bytes in/out, chars/4 token estimates,
@@ -193,9 +193,9 @@ defaults stated in the tool description (pi does this; the model then
 plans around them).
 
 1. Byte cap: 50 KiB default model-facing budget alongside the 2 000-line
-   cap, whichever trips first (opencode/pi/deepseek converge on 50 KiB;
-   fx's 256 KiB is the ceiling shape). Explicit `limit` may raise the line
-   cap; the byte budget scales with it — omp's
+   cap, whichever trips first (the reference/pi/deepseek converge on 50 KiB;
+   the reference's 256 KiB is the ceiling shape). Explicit `limit` may raise the line
+   cap; the byte budget scales with it — the reference's
    `max(50 KiB, lines × 512)` — so a deliberate big read is allowed and a
    runaway one is not.
 2. Per-line clip at 2 000 chars with an in-band marker
@@ -205,7 +205,7 @@ plans around them).
 3. Honest notices: fix the "more lines available" wording
    (hashline/tool.rs:129) to state total, shown range, and the exact next
    call (`offset=N`); distinguish "line cap", "byte cap", and "end of
-   file" endings (fx's three-way sentinel).
+   file" endings (the reference's three-way sentinel).
 4. Record `rawBytes`/`outBytes`/`truncated` per P0.3.
 
 done: reading a minified bundle costs ≤ the byte budget; every truncated
@@ -215,7 +215,7 @@ rows are still *seen* — the tag hashes the file, not the rendering).
 ## 5. P2 — multi-range read
 
 Chunks are not linear: what a model needs around an edit is definition +
-callers + types, scattered across a file. omp ships this as `:1-5,20-30`
+callers + types, scattered across a file. the reference ships this as `:1-5,20-30`
 selectors; Agentless-style skeleton→span localization is the published
 evidence; Yi's seen-lines ledger already makes elision safe (an edit
 anchored on an unseen line is already rejected).
@@ -244,14 +244,14 @@ ban list, and a size-ledger row land in this phase's first commit.
    crate is the only new node. Measure the ladder for the ledger row:
    `std` alone, `+perf`, `+unicode-case`; take unicode only if a real
    pattern needs it (ASCII case-insensitivity covers code search).
-2. Semantics: literal by default, `regex: true` opt-in (jcode's default;
+2. Semantics: literal by default, `regex: true` opt-in (the reference's default;
    accidental-regex noise dies). Literal path drops the per-file `String`
    + per-line lowercase for `memchr::memmem::Finder` over bytes
    (aho-corasick's ASCII-case-insensitive automaton for `ignore_case`).
 3. Filters: `include` glob (globset, already in-tree) and a ~10-entry
    `type` map (rust, py, ts, js, md, toml, json, sh, yaml, html). Not
    ripgrep's 250-type table.
-4. Pagination over caps (fx): `offset` param; the footer names *which*
+4. Pagination over caps: `offset` param; the footer names *which*
    limit tripped — page cap ("use offset=200"), collection cap ("N files
    were never scanned — narrow the tree"), so "more exists" and "too
    broad" stop being the same message. Add `files_with_matches` mode.
@@ -302,10 +302,10 @@ sessions that never had the tool registered.
 1. Universal spill-to-file: generalize bash's tee (reduce.rs:199) into a
    post-execute hook on every tool — any result over its budget writes the
    full text under the recovery dir and the marker carries the path
-   (opencode's wrapper, minus the agent-aware hint until subagents need
+   (the reference's wrapper, minus the agent-aware hint until subagents need
    it). read/grep/glob caps stop being silent dead ends.
 2. Per-call budget on bash: `max_output_lines` (or tokens) param, min'd
-   against the global cap — codex's `max_output_tokens`. The model raises
+   against the global cap — the reference's `max_output_tokens`. The model raises
    it when it *knows* (`-v` runs, test suites); `RAW_FLAGS` keeps working
    for the cases the model forgets.
 
@@ -316,15 +316,15 @@ next call; `bash {command, max_output_lines: 500}` honored and capped.
 
 1. C8 (existing row): `edit` becomes a freeform/grammar tool on
    openai-responses; JSON `function` shape stays everywhere else. This
-   deletes the JSON-escaping tax on `+` body rows — codex ships
+   deletes the JSON-escaping tax on `+` body rows — the reference ships
    apply_patch exactly this way (Lark grammar, freeform).
 2. Stale-tag rejection self-service: verify the mismatch context
    (`format_anchored_context`) renders enough fresh renumbered rows around
    the attempted anchors to retry without a `read`; widen if not. The
-   philosophy stays jcode's — diagnose, never silently fuzzy-apply.
+   philosophy stays the reference's — diagnose, never silently fuzzy-apply.
 3. M3 (existing row): with P0's `errorKind`, report stale-tag rate,
    noop-loop rate, op mix (PUT range vs `N*` vs registers), and retry
-   depth over a real corpus. NOOP_HARD_LIMIT came from one omp incident;
+   depth over a real corpus. NOOP_HARD_LIMIT came from one the reference incident;
    the next rule should come from these numbers.
 
 done: C8's own done-gate; a stale-tag failure is recoverable in one turn
@@ -392,7 +392,7 @@ placement-only; `orb::tick` behavior under `!supported()` unchanged.
 
 Symptom: streamed prose reaches the reader in blank-line-sized batches;
 inside a long fence or list, nothing commits until the block closes. The
-newline gate exists (`commit_complete_source`, markdown.rs:15 — codex
+newline gate exists (`commit_complete_source`, markdown.rs:15 — the reference
 semantics, ported) but is dead code; `stable_cut` (blank-line gate) is the
 only committer (app.rs:460). Design scrutiny, then the fix:
 
@@ -452,10 +452,10 @@ Functional gaps:
   (terminal-bench-2-1, harbor, SWE-Atlas) and diff P0's stats across tool
   changes — the only way "the grep upgrade helped" ever becomes a number.
   Candidate first row after P0/P3 land.
-- Image/document read: read returns text only; opencode/pi/jcode return
+- Image/document read: read returns text only; the reference/pi/the reference return
   images as attachments and M1 already covers docs conversion. Lands with
   a vision-capable default model, not before.
-- Session-search tool (jcode's `session_search.rs` precedent): Yi's JSONL
+- Session-search tool (the reference's `session_search.rs` precedent): Yi's JSONL
   sessions are grep-able today; a tool-level search with pagination would
   make prior-session recall a first-class move. Pairs with the
   session-mining skill.
@@ -475,7 +475,7 @@ Architecture / performance:
 - Best-of-N (M5) and auto-review (D1) rows stand; P0's stats give both
   their selection metric.
 - `walk_files` is single-threaded; grep v2 may want a two-thread walk
-  (fx's comment: beyond 2 the walk is I/O-bound). Only if P3's benchmark
+  (the reference's comment: beyond 2 the walk is I/O-bound). Only if P3's benchmark
   says so.
 - Kernel snapshot/journal (crates/kernel/journal.rs) already exists for
   busy-recovery; a `kernel.prewarm` + snapshot-revive fast path could make

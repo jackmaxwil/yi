@@ -7,15 +7,15 @@ status:  PROPOSED 2026-08-28. Nothing landed. Steps carry their own D-rows and
          reading ARCHITECTURE.md's header and last D-row immediately before
          writing (0.35.0/D55 and 0.38.0/D57 were both lost to collisions).
 date:    2026-08-28
-sources: four-scout study of the §8.14 donors (2026-08-28): codex
-         codex-rs/tui/src (diff_render.rs, exec_cell/, shimmer.rs, motion.rs,
-         render/highlight.rs) · OMP packages/coding-agent (edit/renderer.ts,
+sources: four-scout study of the §8.14 donors (2026-08-28): the reference
+         <ref>/tui/src (diff_render.rs, exec_cell/, shimmer.rs, motion.rs,
+         render/highlight.rs) · the reference packages/coding-agent (edit/renderer.ts,
          modes/components/diff.ts, tools/bash.ts, tools/todo.ts,
-         modes/theme/shimmer.ts) · opencode packages/tui
+         modes/theme/shimmer.ts) · the reference packages/tui
          (routes/session/index.tsx, util/collapse-tool-output.ts) ·
-         prime-agent packages/coding-agent/src/modes (ipython-cell.ts,
+         the reference packages/coding-agent/src/modes (ipython-cell.ts,
          subagent-summary-line.ts, agents-view-*.ts, theme/working-icon.ts,
-         components/diff.ts) — prime-agent's TUI is currently under an A.2
+         components/diff.ts) — the reference's TUI is currently under an A.2
          excise line; step P0.d amends it before any port · Yi ground truth:
          crates/tui/src/{cell,app,colors,approval,hud,markdown}.rs,
          crates/tools/src/{diff,ipython,builtins}.rs, hashline/tool.rs,
@@ -90,25 +90,25 @@ ipython `diffs`, approval view later):
 
 ```
  313 │ context           ← gutter: right-aligned, min 3 digits, `│` terminator
-+322 │ added             ← sign fused into the gutter column (OMP shape)
++322 │ added             ← sign fused into the gutter column (the reference shape)
      │ wrapped continua… ← blank gutter, sign column preserved as space
    ⋮                     ← hunk separator: gutter-width spaces + dim ⋮
 ```
 
 - Gutter minimum 3 digits is load-bearing, not cosmetic: a streaming diff
   crossing line 100 must not re-pad rows already committed to native
-  scrollback (OMP `diff.ts:118-121`). Incident comment required.
+  scrollback. Incident comment required.
 - Duplicate gutter numbers blanked: `-N` directly followed by `+N` renders
-  the second gutter as spaces (OMP `:131-142`).
+  the second gutter as spaces.
 - Wrap, don't truncate, with a blank-gutter continuation that keeps the sign
-  column (codex `diff_render.rs:917-921`). This deliberately diverges from
+  column. This deliberately diverges from
   U12's truncate-only rule: U12 protects a fixed-height approval box; the
   transcript has no height budget and a truncated edit body hides the change
   the reader opened Verbose to see. U12's approval view keeps truncation.
-- Four style layers per row (codex `:846-943`): gutter, sign, content,
+- Four style layers per row: gutter, sign, content,
   full-row line background.
 
-**3.3 The diff palette**, forked on `ColorTier` + dark/light (codex
+**3.3 The diff palette**, forked on `ColorTier` + dark/light (the reference
 `diff_render.rs:63-78`, ported verbatim including the values):
 
 | tier | added | removed |
@@ -121,11 +121,10 @@ ipython `diffs`, approval view later):
 
 Context rows: default style, no line bg (terminal ground shows through).
 Light-theme gutters are more saturated than the row so numbers stay legible.
-Once P3 lands, highlighted deletion rows add `DIM` over the syntax color
-(codex `:881-890`).
+Once P3 lands, highlighted deletion rows add `DIM` over the syntax color.
 
 **3.4 Scrollback commit constraint: no animated glyph on the head row of a
-multi-row body.** OMP's rule (`edit/renderer.ts:811-814`): a spinner on row 0
+multi-row body.** the reference's rule (`edit/renderer.ts:811-814`): a spinner on row 0
 of a block pins the streaming-commit boundary at the top and the block cannot
 scroll-append. Yi's tool head line already carries the spinner and today's
 bodies are Verbose-only, so this binds only new *streaming* bodies (P2 has
@@ -141,7 +140,7 @@ live in yi-types and embed as JSON verbatim.
 **3.6 One clock, two cadences** (P6, but the constant lands wherever first
 touched): every animated glyph derives from a single process-relative
 elapsed, braille at 80 ms for I/O spinners, diamond `◇◈◆◈` at 250 ms for
-agent-level work (prime-agent `working-icon.ts:3-4`). No per-cell tickers.
+agent-level work. No per-cell tickers.
 
 ## 4. Phases
 
@@ -167,8 +166,8 @@ Attachments stay a count in v1 (P2 stretch revisits). The joined-text
 sites). Zero rendering change in this step.
 
 **P0.d — Appendix A amendment (its own commit, before any port).**
-prime-agent's `packages/tui/` and `modes/` sit in the A.2 excise block; the
-2026-08-28 study read `modes/` at the user's direction. Mirror the opencode
+the reference's `packages/tui/` and `modes/` sit in the A.2 excise block; the
+2026-08-28 study read `modes/` at the user's direction. Mirror the reference
 precedent (A.8's excise note): narrow the excise line, add a cited-span table
 under A.2 for exactly what P2/P5/P6 port — `interactive/components/
 ipython-cell.ts` (head-line contract, traceback split), `core/tools/
@@ -178,8 +177,8 @@ subagent-summary-line.ts:83-140` (tray), `agents-view/agents-view-state.ts`
 components/context-tree-format.ts:112-200` (token tree), `theme/
 working-icon.ts` (pulse cadence), `components/diff.ts` + `theme/theme.ts:
 874-890` (rich diff, highlight laziness — read-only reference). Everything
-else in prime-agent TUI stays excised. Same commit updates §8.14's donor
-list to name prime-agent.
+else in the reference TUI stays excised. Same commit updates §8.14's donor
+list to name the reference.
 
 Tests: P0.a/b assert details keys on a real tool execution (existing tool
 test files); golden session fixtures untouched (additive). No baseline moves.
@@ -194,7 +193,7 @@ DiffBudget, highlight: Option<&Highlighter>) -> Vec<Line>` — pure, snapshot-
 testable. `DiffBudget { hunks: 8, lines: 40 }` for Normal, unbounded for
 Verbose, plus a 10,000-line hard safety cap either way.
 
-**P1.b — collapse semantics** (OMP `truncateDiffByHunk`, adapted): change
+**P1.b — collapse semantics** (the reference `truncateDiffByHunk`, adapted): change
 lines get priority, remaining budget distributed across context segments,
 a context run sandwiched between kept hunks splits head/tail around a `…`
 gap row; footer `… (3 more hunks, 22 more lines) · ctrl+o` dim. Blank/gap
@@ -203,20 +202,20 @@ rows collapse to one dim `…`.
 **P1.c — word-level highlight** (item 2): when a hunk is exactly one removed
 + one added line, split both on whitespace/word boundaries (hand-rolled ~40
 lines, no dep), mark changed tokens on the added row with `REVERSED`,
-skipping leading indentation (OMP `diff.ts:55-95`). Applies at every tier
+skipping leading indentation. Applies at every tier
 (reverse video survives Ansi16).
 
 **P1.d — the edit/write cell body.** `ToolCell::lines`: when
 `details["patch"]` is present, Normal mode renders head + digest + the
 budgeted diff body (this is the item-1 headline: the diff shows *without*
 Verbose); Verbose renders it unbudgeted. Head digest gains colored stats:
-`└ path +12 -3` with `+12` in success, `-3` in error color (prime-agent's
+`└ path +12 -3` with `+12` in success, `-3` in error color (the reference's
 `edit-summary.ts` shape on Yi's existing `└` slot). The old numbered-line
 body for `edit` is deleted (subsumed).
 
 Docs: one D-row — transcript tool cells grow typed diff bodies in Normal
 mode, revising U15's head+digest-only contract; U15 amended, new U-row for
-the diff renderer citing codex/OMP spans; feature-ledger TUI row notes;
+the diff renderer citing the reference/the reference spans; feature-ledger TUI row notes;
 `details.patch` keys documented on T13's row. Changelog + version bump.
 
 Tests (doctrine: name the regression a consumer sees):
@@ -234,7 +233,7 @@ Tests (doctrine: name the regression a consumer sees):
 
 ### P2 — typed ipython cell (item 4; item 5 stretch)
 
-**P2.a — head line, byte-identical across modes** (prime-agent
+**P2.a — head line, byte-identical across modes** (the reference
 `ipython-cell.ts:368-373`, incident comment required):
 
 ```
@@ -250,7 +249,7 @@ counts; duration from `details.durationMs`; failed cells append `ename`
 spinner/`✓`/`✗` set. The head replaces `summary_of`'s generic argument echo
 for `ipython` only.
 
-**P2.b — scored code preview**, ported adapted from prime-agent
+**P2.b — scored code preview**, ported adapted from the reference
 `core/tools/code-preview.ts` into `crates/tui/src/pycell.rs` (new file, pure
 functions): skip comments / imports / `set -e` / decorators / low-signal
 calls (`print`, `len`), prefer effect calls (`write_text`, `mkdir`,
@@ -263,7 +262,7 @@ two-space continuation (dim), each line through the P3 hook when available
 (bash cells flat); stdout indented 2 under the gutter in text color; stderr
 same indent, muted; `result` as stdout; traceback split — locate `Traceback
 (most recent call last):` or `<Ename>:` in the raw stream so preceding
-stdout renders as output, traceback body in error color (prime-agent
+stdout renders as output, traceback body in error color (the reference
 `splitTraceback :301-320`; Yi has structured `details.error.traceback`, so
 the heuristic only serves mixed stdout) ; `[kernel restarted]` as a warning
 row; `diffs` (kernel-side file edits) rendered by computing
@@ -283,7 +282,7 @@ a clean exit proves nothing).
 
 Docs: one D-row (typed ipython cell revising U15 for the kernel tool; head-
 line byte-stability as the recorded invariant), new U-row citing the
-prime-agent spans from P0.d; ledger row for the kernel feature updated.
+the reference spans from P0.d; ledger row for the kernel feature updated.
 
 Tests: head-line byte-equality Normal vs Verbose (the layout-shift
 regression); scored-preview table tests incl. redaction cases (secret in
@@ -311,21 +310,21 @@ cut. Cargo feature `highlight` on yi-tui only, in the §13.4 allowlist
 **P3.b — scope→theme mapping, no tmTheme.** Do not load syntect themes:
 map returned scopes onto Yi's `Theme` through a fixed ~10-entry table
 (comment→dim, keyword/type/function/string/number/variable→theme colors, the
-OMP nine-color shape), keeping codex's conversion law: fg + BOLD only, never
+the reference nine-color shape), keeping the reference's conversion law: fg + BOLD only, never
 bg/italic/underline. Adaptive by the existing dark/light detection. This
 kills the plist/yaml-theme transitive tail and makes every tier degrade
 through Theme's own machinery.
 
 **P3.c — the cache is load-bearing.** LRU 256 keyed `(lang, hash(code))`,
-cleared on theme change; OMP measured 26–40 ms per 100-line re-tokenize —
+cleared on theme change; the reference measured 26–40 ms per 100-line re-tokenize —
 uncached, the 80 ms spinner starves. Incident comment carries the number.
 Caps ported verbatim: 512 KB / 10,000 lines / 4 KiB per line pre-scanned
-before highlighting is attempted (codex `highlight.rs:585-591`).
+before highlighting is attempted.
 
 **P3.d — application points**, each a small commit: markdown fences (rail
 already carries the language label — `markdown.rs:355-373`); diff context +
 bodies per-hunk-as-one-block so parser state survives multi-line strings,
-DIM on deletions (codex `diff_render.rs:615-631`); bash command in the tool
+DIM on deletions; bash command in the tool
 head (P4.c); read/edit Verbose bodies; ipython source (P2 hook).
 
 Docs: A7 closed; §8.14's "no syntax highlighting at launch" sentence updated
@@ -343,14 +342,14 @@ in CI (`just check` covers default; one cargo invocation with the feature).
 **P4.a — amber awaiting-permission (7).** App tracks
 `pending_permission: HashSet<tool_call_id>` from `PermissionRequested` /
 `PermissionResolved`; a `ToolCell` in that set renders head + summary in
-warning color (opencode's precedence: warning beats running-text color).
+warning color (the reference's precedence: warning beats running-text color).
 Denied keeps the existing strikethrough. Test: event-sequence table test —
 Requested colors the row, Resolved un-colors, Denied strikes.
 
 **P4.b — Explored group (8).** Extend the existing consecutive-read
 coalescing (`app.rs`) to the read/grep/glob/find class: one cell headed
 `✱ Explored` (spinner while any member runs), body rows `verb argument ·
-digest` with the verb in accent — codex's cyan verb column
+digest` with the verb in accent — the reference's cyan verb column
 (`exec_cell/render.rs:293-385`). Group caps at 32; a failed member breaks
 the group so the failure renders alone with its body (failure never buried
 in a group). Digest logic per member unchanged.
@@ -360,12 +359,12 @@ P3, dim `$`), replacing the generic `glyph name argument` echo for bash
 only; digest gains a stats tail from details: `└ <first output line> ·
 exit 1 · 1.2s` with nonzero exit in error color (`details.exitCode` exists;
 elapsed already on the head — move it into the stats tail for bash to avoid
-double time). OMP's bracket dress `⟦…⟧` is skipped: Yi's `·` separators
+double time). the reference's bracket dress `⟦…⟧` is skipped: Yi's `·` separators
 already carry metadata, one grammar is enough. (ponytail: reuse.)
 
 **P4.d — sibling spacing (10).** Pure layout rule in the transcript
 assembler: a blank line precedes a cell iff the previous cell rendered
-multi-line or this cell will; runs of one-liners pack flush (opencode's
+multi-line or this cell will; runs of one-liners pack flush (the reference's
 pre-layout margin, `layout.ts:8-25`). Task cells drop their unconditional
 forced blanks in favor of the rule. Because commits are append-only to
 scrollback, compute from the *already-rendered* height of the previous cell
@@ -381,12 +380,12 @@ as the recorded invariant; U15/U27 rows amended.
 Visual-approach gate applies here (new surface shapes): P5 opens with a
 one-screen static mock of the tray line, the grouped spawn cell, and the
 agents popup, posted for sign-off before implementation. The fullscreen
-prime-agent dashboard is explicitly **not** ported — alternate screen is
+the reference dashboard is explicitly **not** ported — alternate screen is
 banned (§8.14); its row model and navigation port onto Yi's existing
 overlay/popup primitives instead.
 
 **P5.a — tray line (11).** The HUD's subagent section (U28, `hud.rs`)
-gains prime-agent's counts line as its header row when children exist:
+gains the reference's counts line as its header row when children exist:
 `● 2 running · ◐ 1 idle · ○ 3 done` (success/warning/dim), replacing the
 plain `Subagents` header; per-child rows below unchanged, cap 8 stands.
 Goal spine untouched. No focus ring in v1 — navigation stays U29's existing
@@ -404,7 +403,7 @@ the surface no donor has in Rust and the one most native to Yi's
 kernel-spawned children.
 
 **P5.c — `/agents` token tree (13).** A `BottomView` popup (existing U11
-machinery) rendering prime-agent's `/context` shape:
+machinery) rendering the reference's `/context` shape:
 
 ```
    agent            tokens    cost   context
@@ -420,7 +419,7 @@ per-child tokens/cost; reuse that source. Slash command `/agents` joins
 
 **P5.d — kill confirm (14).** In the `/agents` popup, `x` on a child row
 arms a 2-second in-row confirm — the row's right column swaps to red
-`x again to stop` (prime-agent's `DELETE_CONFIRM_DURATION_MS` pattern);
+`x again to stop` (the reference's `DELETE_CONFIRM_DURATION_MS` pattern);
 second press within the window interrupts via the existing mailbox
 `rlm.interrupt` path; timer lapse restores the row. Keymap rows via U8.
 
@@ -448,30 +447,30 @@ cells, diamond `◇◈◆◈` 250 ms for task cells, HUD child rows, and the sta
 subagent badge. Delete any per-surface phase counters. Test: same instant →
 same glyph across surfaces (the lockstep contract).
 
-**P6.b — shimmer working line (16).** codex `shimmer.rs` ported adapted
+**P6.b — shimmer working line (16).** the reference `shimmer.rs` ported adapted
 (~80 lines): raised-cosine band (half-width 5, padding 10, 2 s sweep),
 phase from the process clock, color `blend(bg→fg, t·0.9)+BOLD` at TrueColor
 — blending toward the terminal's own colors so it reads on any theme; tiers
-degrade `t` to DIM/normal/BOLD at Ansi256/16 (codex `:70-78`). Applies to
+degrade `t` to DIM/normal/BOLD at Ansi256/16. Applies to
 the spinner-line narration (U16's `i` intent text). Frame timer already
 exists while a spinner is visible; clamp step to one frame (U34's law —
 the unclamped orb consumed a whole animation in frame one).
 
 **P6.c — strikethrough sweep (17).** HUD todo/goal rows record `done_at`;
 for 12 frames after, render `partial_strike(label, ceil(len·k/12))` — SGR 9
-over a left-to-right sweep (OMP `todo.ts:990-1015`), then settle into the
+over a left-to-right sweep, then settle into the
 existing done style. Pure fn + table test over the frame ramp.
 
 **P6.d — thinking pulse (18).** The `∴ thinking · N lines` collapsed row's
 glyph cycles `✻ ✼ ❉ ❊ ✺ ✹ ✸ ✶` (all width-1 — verify with unicode-width in
 a test, the fixed-width contract that prevents reflow jitter) with
-raised-cosine dwell eased 70→230 ms (OMP's breath), only while the thought
+raised-cosine dwell eased 70→230 ms (the reference's breath), only while the thought
 is streaming; static `∴` at rest. Dwell math is a pure fn with a table
 test; the streaming flag is the state transition test.
 
 Docs: one D-row for the motion kit (records the one-clock invariant and the
 reduced-motion posture: every animated glyph has a static fallback chosen at
-the call site, codex's `motion.rs` discipline — a `YI_*` env var for
+the call site, the reference's `motion.rs` discipline — a `YI_*` env var for
 reduced motion is *not* added unless a row in env_vars.json is budgeted;
 v1 keys off the existing spinner-visibility gating only). Ledger note.
 

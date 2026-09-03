@@ -375,9 +375,8 @@ impl KernelManager {
         }
     }
 
-    /// Revive a previously snapshotted namespace into the kernel. Call right
-    /// after start() and before the runtime bootstrap, which then refreshes
-    /// live handles (rlm, skills) over anything restored. Never fails a boot.
+    /// Revive a snapshotted namespace. Call after start() and before the runtime bootstrap,
+    /// which refreshes live handles over anything restored. Never fails a boot.
     pub async fn restore_state(&self) -> Option<KernelRestoreResult> {
         let config = self.inner.snapshot.clone()?;
         let code = build_restore_code(&config.path);

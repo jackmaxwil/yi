@@ -66,7 +66,7 @@ pub type HostReply = Result<Map<String, Value>, String>;
 pub type HostFuture = Pin<Box<dyn Future<Output = HostReply> + Send>>;
 
 /// Host-side dispatch for `host.request` comms (design K7). Returning `None`
-/// means the type is not registered and errors prime's way.
+/// means the type is not registered and errors rather than replying.
 pub trait HostHandlers: Send + Sync {
     fn dispatch(&self, request_type: &str, payload: Map<String, Value>) -> Option<HostFuture>;
 
@@ -163,9 +163,8 @@ pub(crate) struct Inner {
     pub(crate) comm_targets: Mutex<HashMap<String, String>>,
     pub(crate) handled_host_comm_ids: Mutex<HashSet<String>>,
     pub(crate) late_handlers: Mutex<LateHandlers>,
-    // Source of the most recently started cell, retained after it finishes so
-    // rlm.run spawns from detached asyncio tasks (cell already idle) can still
-    // attribute their spawning program.
+    // Source of the most recently started cell, retained after it finishes so rlm.run spawns
+    // from detached asyncio tasks can still attribute their spawning program.
     pub(crate) last_cell_code: Mutex<Option<String>>,
     pub(crate) kernel_stderr: Mutex<String>,
     pub(crate) in_flight_host: Mutex<Vec<tokio::task::JoinHandle<()>>>,
@@ -952,9 +951,8 @@ impl KernelManager {
             tokio::spawn(async move {
                 abort.fired().await;
                 inner.interrupt();
-                // 1 s grace, then force-Aborted WITHOUT clearing the active
-                // execution: the kernel may still be running the cell, and the
-                // busy-reuse path owns recovery (design K8).
+                // 1 s grace, then force-Aborted WITHOUT clearing the active execution: the
+                // cell may still be running and the busy-reuse path owns recovery (K8).
                 tokio::time::sleep(std::time::Duration::from_millis(KERNEL_ABORT_GRACE_MS)).await;
                 inner.resolve_active(Some(&request_id), false, Some(ExecuteStatus::Aborted));
             })
@@ -1059,9 +1057,8 @@ impl KernelManager {
         let inner = &self.inner;
         // Captured before any await: teardowns and newer starts bump the counter.
         let generation = inner.start_generation.load(Ordering::SeqCst);
-        // Final namespace flush while the kernel is still live (session end),
-        // bounded so a wedged kernel can't hang dispose; the debounced on-disk
-        // copy is the fallback if this is exceeded.
+        // Final namespace flush while the kernel is live, bounded so a wedged kernel cannot
+        // hang dispose; the debounced on-disk copy is the fallback past that bound.
         if inner.snapshot.is_some() && self.is_running() {
             inner.clear_snapshot_timer();
             let deadline = std::time::Duration::from_millis(SNAPSHOT_DISPOSE_TIMEOUT_MS);

@@ -32,7 +32,7 @@ note:    PRAXIST is not in YI_DESIGN.md Appendix A and is not a port source. It 
 
 Praxist is an autonomous research orchestrator — N parallel agent peers over
 generations against a measurable objective, with evidence lanes, synthesis, and
-lifecycle control. Wrong product, right problems. It drives Claude and Codex
+lifecycle control. Wrong product, right problems. It drives Claude and the reference
 agents in a loop with budgets, guards, replay, and prompt caching at a scale Yi
 has not reached, and it has the scars: 125k lines of source, 137k lines of
 tests, and a 6,667-line file that is a cautionary tale rather than a source.
@@ -119,7 +119,7 @@ before building a structure to stop it. Build the card when a loss is seen.
 **A vocabulary-leak gate**, after Praxist's `leakage_audit.sh`, proving reference
 vocabulary does not cross into generic crates. Drafted and cut: the escape hatch
 would be used by most legitimate matches — this codebase deliberately cites its
-sources (`Pi \`convertToLlm\``, `Prime's exact recovery marker`) — and the failure
+sources (`Pi \`convertToLlm\``, `the reference's exact recovery marker`) — and the failure
 it would prevent, drifting into upstream parity, is a judgment failure a grep
 does not reach.
 

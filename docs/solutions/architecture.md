@@ -1,8 +1,8 @@
 # Architecture in one page
 
-Yi is a personal native-Rust coding agent: Pi's core shape and wire formats,
-prime-agent's runtime (Jupyter kernel, context management, subagents,
-heartbeats), OMP's hashline editing, and a redesigned advisor.
+Yi is a personal native-Rust coding agent: Pi's core shape and wire formats, a
+Jupyter-kernel runtime (context management, subagents, heartbeats), hashline
+editing, and a redesigned advisor.
 
 ## Crates
 

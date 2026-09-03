@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Every YI_* env var is a declared row; cap 40. Incident: jcode's 517 JCODE_* vars, 87%
+"""Every YI_* env var is a declared row; cap 40. Incident: 517 prefixed vars, 87%
 undocumented."""
 import json, re, sys, pathlib
 sys.path.insert(0, str(pathlib.Path(__file__).parent))

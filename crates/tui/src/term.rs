@@ -25,9 +25,8 @@ pub fn terminal_writer() -> std::io::Result<Box<dyn Write + Send>> {
     }
 }
 
-/// U1: RAII terminal state. Every step `Drop` restores is applied here;
-/// failures on restore are logged, never panicked — the panic hook calls
-/// [`restore_terminal`] first so a panic message lands on a sane screen.
+/// U1: RAII terminal state. Every step `Drop` restores is applied here and restore failures
+/// log rather than panic; the panic hook restores first so its message lands on a sane screen.
 pub struct TerminalGuard;
 
 impl TerminalGuard {
@@ -37,9 +36,8 @@ impl TerminalGuard {
     }
 }
 
-/// Raw mode plus the U1 flags, without taking ownership of the restore: the
-/// external editor (U18) hands the tty to a child and re-enters afterwards
-/// while the startup guard still owns restore-on-exit.
+/// Raw mode plus the U1 flags without owning the restore: the external editor (U18) hands the
+/// tty to a child and re-enters while the startup guard still owns restore-on-exit.
 pub fn enter_terminal(writer: &mut impl Write) -> std::io::Result<()> {
     enable_raw_mode()?;
     execute!(writer, EnableBracketedPaste)?;
@@ -85,9 +83,8 @@ pub fn build_terminal(
     Terminal::new(CrosstermBackend::new(writer), height)
 }
 
-/// The synchronized bracket lives on the whole frame ([`sync_frame`]), not here:
-/// bracketing the commit alone presented a screen that had already scrolled
-/// with the previous frame's viewport still under it.
+/// The synchronized bracket lives on the whole frame ([`sync_frame`]), not here: bracketing
+/// the commit alone presented a scrolled screen with the previous viewport under it.
 pub fn commit_lines<B>(terminal: &mut Terminal<B>, lines: Vec<Line<'static>>) -> std::io::Result<()>
 where
     B: ratatui::backend::Backend + Write,
@@ -105,9 +102,8 @@ where
     Ok(())
 }
 
-/// One bracket around commit, viewport resize, reflow and draw, so the terminal
-/// presents the scroll and the new viewport together — showing the scrolled
-/// screen with a stale viewport under it flashes at every paragraph boundary.
+/// One bracket around commit, viewport resize, reflow and draw, so the scroll and the new
+/// viewport present together; a stale viewport under a scrolled screen flashes per paragraph.
 pub fn sync_frame<B, R>(terminal: &mut Terminal<B>, frame: impl FnOnce(&mut Terminal<B>) -> R) -> R
 where
     B: ratatui::backend::Backend + Write,

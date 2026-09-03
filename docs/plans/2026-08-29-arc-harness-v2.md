@@ -5,7 +5,7 @@ status:  PLAN 2026-08-29, grounded against origin/flywheel-4 (72c8757) by
          execution-verified mechanics; supersedes the prose expansion in the
          session log. Implements run 2 against ledger rows 0010/0011.
 source:  runs 0010/0011 findings (transcription drift, ls20 oscillation),
-         Prime Agent L1/L2/L3 hierarchy, plan.rs LADDER stationarity,
+         the reference harness L1/L2/L3 hierarchy, plan.rs LADDER stationarity,
          F10 transport semantics, PR-14 disposition review.
 ```
 

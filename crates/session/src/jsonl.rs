@@ -139,9 +139,8 @@ pub struct JsonlRepo {
     ids: IdGenerator,
 }
 
-/// Creates the one session a private directory exists to hold, skipping the
-/// per-cwd segment [`JsonlRepo::new`] adds: it would name nothing there and
-/// hide the file behind a directory name the caller cannot predict (D78).
+/// Creates the one session a private directory holds, skipping the per-cwd segment
+/// [`JsonlRepo::new`] adds: there it names nothing and hides the file (D78).
 pub fn create_flat_session(
     dir: PathBuf,
     cwd: impl Into<String>,

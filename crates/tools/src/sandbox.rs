@@ -6,9 +6,8 @@ const BASE_POLICY: &str = include_str!("../../../vendor/seatbelt/seatbelt_base_p
 /// put a fake earlier on PATH would otherwise choose the sandbox.
 pub const SEATBELT: &str = "/usr/bin/sandbox-exec";
 
-/// What a contained command may touch. Reads are open except the credential
-/// stores, writes are confined to the roots a checkpoint can undo, and no
-/// network rule is ever added, so `(deny default)` is the egress answer.
+/// What a contained command may touch: reads open bar the credential stores, writes confined
+/// to roots a checkpoint can undo, and no network rule, so `(deny default)` covers egress.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Sandbox {
     pub writable: Vec<PathBuf>,
@@ -40,9 +39,8 @@ impl Sandbox {
         cfg!(target_os = "macos") && Path::new(SEATBELT).is_file()
     }
 
-    /// `-D` bindings keep paths out of the policy text. A denied path binds
-    /// twice, logical and resolved: on macOS `/tmp` and `/var` are symlinks
-    /// into `/private`, and the kernel checks the resolved path.
+    /// `-D` bindings keep paths out of the policy text. A denied path binds twice, logical
+    /// and resolved: macOS `/tmp` and `/var` are symlinks and the kernel checks the target.
     pub fn params(&self) -> Vec<(String, PathBuf)> {
         let mut params = Vec::new();
         for (index, root) in self.deny_read.iter().enumerate() {
@@ -104,9 +102,8 @@ impl Sandbox {
         )
     }
 
-    /// The unlink denial on each root is codex's anti-rename guard: a contained
-    /// process must not be able to replace the boundary its own policy is
-    /// written against.
+    /// Invariant: the unlink denial on each root stops a contained process
+    /// replacing the boundary its own policy is written against.
     fn write_policy(&self) -> String {
         if self.writable.is_empty() {
             return "; no writable root\n".to_owned();
@@ -140,9 +137,8 @@ impl Sandbox {
     }
 }
 
-/// Resolve the top-level alias only. Deeper components can be replaced by a
-/// process already inside the sandbox, so following them would turn a path
-/// check into a fresh grant (codex `normalize_top_level_alias_for_sandbox`).
+/// Resolve the top-level alias only: deeper components can be replaced by a process already
+/// inside the sandbox, so following them would turn a path check into a fresh grant.
 fn resolve_aliases(path: &Path) -> PathBuf {
     let Some(top) = path.ancestors().find(|ancestor| {
         ancestor
@@ -175,9 +171,8 @@ fn temp_roots() -> Vec<PathBuf> {
     roots
 }
 
-/// Seatbelt reports a denial as an ordinary errno, so the caller cannot know it
-/// was the sandbox. This is codex's heuristic: a non-zero exit that is not one
-/// of the well-known shell failures, plus output that names a denial.
+/// Seatbelt reports a denial as an ordinary errno, so the caller cannot know it was the
+/// sandbox: a non-zero exit that is no known shell failure, plus output naming a denial.
 pub fn denial_hint(exit_code: Option<i32>, output: &str) -> Option<String> {
     const QUICK_REJECT: [i32; 3] = [2, 126, 127];
     const KEYWORDS: [&str; 5] = [

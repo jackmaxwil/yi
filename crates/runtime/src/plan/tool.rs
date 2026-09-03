@@ -414,9 +414,8 @@ impl Tool for PlanTool {
 /// items rather than a live [`PlanTool`], so what is measured is what ships.
 pub const DESCRIPTION: &str = "The plan ledger. One op per call against the open plan: declare the whole cut before working it, then step todos through it. A todo is a unit of decision, not of iteration -- thirty probes inside one kernel cell are one todo. Batch ops with real work; never call it alone.";
 
-/// Invariant: a flat object, because one provider rebuilds the schema from
-/// `properties` and `required` alone, so a root `oneOf` would vanish there and
-/// survive elsewhere. No live state: it is cached request prefix.
+/// Invariant: a flat object, because one provider rebuilds the schema from `properties` and
+/// `required` alone, so a root `oneOf` would vanish there. No live state: cached prefix.
 pub fn schema() -> Value {
     json!({
             "type": "object",

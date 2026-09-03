@@ -123,9 +123,8 @@ impl Tool for IpythonTool {
                 json!({ "path": diff.path, "patch": detail_text(patch.as_str()) })
             })
             .collect();
-        // The streams are carried apart from the joined text so a renderer can
-        // style stderr and a traceback differently; the joined form stays the
-        // model's view.
+        // The streams are carried apart from the joined text so a renderer can style stderr
+        // and a traceback differently; the joined form stays the model's view.
         output.result.details = json!({
             "status": result.status,
             "durationMs": result.duration_ms,

@@ -13,9 +13,8 @@ fn edit_anchors(edit: &Edit) -> Vec<Anchor> {
     }
 }
 
-/// `split('\n')` yields a trailing "" sentinel, addressable for append-past-end
-/// inserts but not real content — deleting it only strips the final newline, so
-/// deletes landing there are dropped and EOF ranges stop at the last real line.
+/// `split('\n')` yields a trailing "" sentinel: addressable for append-past-end inserts but
+/// not content, so deletes there are dropped and EOF ranges stop at the last real line.
 fn trailing_phantom_line(file_lines: &[String]) -> u64 {
     if file_lines.len() > 1 && file_lines.last().is_some_and(String::is_empty) {
         file_lines.len() as u64

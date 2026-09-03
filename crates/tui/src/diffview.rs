@@ -5,9 +5,8 @@ use unicode_width::UnicodeWidthStr;
 use crate::colors::{DiffRowKind, DiffRowStyle, Theme};
 use crate::highlight::{self, Lang};
 
-/// Invariant: the gutter never narrows below three digits. Sized from the
-/// widest number alone, crossing line 100 would re-pad rows already committed
-/// to native scrollback, which cannot be rewritten.
+/// Invariant: the gutter never narrows below three digits. Sized from the widest number,
+/// crossing line 100 would re-pad rows already in native scrollback, which cannot be rewritten.
 const GUTTER_MIN: usize = 3;
 const INDENT: &str = "    ";
 const SEPARATOR: &str = "⋮";
@@ -20,7 +19,7 @@ pub struct DiffBudget {
 }
 
 impl DiffBudget {
-    /// OMP's collapsed limits: enough of a refactor to see its shape.
+    /// Collapsed limits: enough of a refactor to see its shape.
     pub const NORMAL: Self = Self { hunks: 8, rows: 40 };
     pub const FULL: Self = Self {
         hunks: usize::MAX,
@@ -129,9 +128,8 @@ fn hunk_count(files: &[FileDiff]) -> usize {
     files.iter().map(|file| file.hunks.len()).sum()
 }
 
-/// Whole hunks are kept or dropped, never shown half-formed; the tail goes
-/// first, and the footer names what went. The first hunk is always kept, so a
-/// change wider than the whole budget still shows its opening.
+/// Whole hunks are kept or dropped, never half-formed; the tail goes first and the footer
+/// names what went. The first hunk always stays, so an over-budget change shows its opening.
 fn budgeted(files: Vec<FileDiff>, budget: DiffBudget) -> Budgeted {
     let (total_hunks, total_rows) = (hunk_count(&files), row_count(&files));
     let (mut hunks, mut rows) = (0_usize, 0_usize);
@@ -185,9 +183,8 @@ fn tokens(text: &str) -> Vec<&str> {
     out
 }
 
-/// The span of `text` that differs from `other`, as a byte range. Indentation is
-/// excluded: highlighting the leading whitespace of every changed line marks the
-/// one thing that did not change.
+/// The span of `text` that differs from `other`, as a byte range. Indentation is excluded:
+/// highlighting the leading whitespace of a changed line marks the one thing unchanged.
 fn changed_span(text: &str, other: &str) -> Option<(usize, usize)> {
     let (mine, theirs) = (tokens(text), tokens(other));
     let head = mine
@@ -321,7 +318,7 @@ fn row_lines(
                 spans.extend(emphasized(&row.text, &chunk, start, end, &style));
             }
             // A deletion keeps its syntax colours dimmed, so the polarity still
-            // reads when both sides are highlighted (codex `diff_render.rs`).
+            // reads when both sides are highlighted.
             (None, Some(lang)) => {
                 let base = if row.kind == DiffRowKind::Removed {
                     style.content.add_modifier(Modifier::DIM)
@@ -385,9 +382,8 @@ fn repeats_previous(rows: &[Row], index: usize) -> bool {
     )
 }
 
-/// OMP `diff.ts`: a removal run and an addition run of exactly one line each is
-/// a replacement, and the tokens that actually changed are worth marking.
-/// Longer runs are a rewrite, where per-token marking is noise.
+/// A removal run and an addition run of one line each is a replacement, so the
+/// changed tokens are marked; longer runs are a rewrite, where marking is noise.
 fn emphasis_for(rows: &[Row], index: usize) -> Option<(usize, usize)> {
     let row = rows.get(index)?;
     if row.kind != DiffRowKind::Added {

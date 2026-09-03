@@ -9,9 +9,8 @@ struct Rule {
     negate: bool,
 }
 
-/// Appended as a walk descends, never popped: a rule applies only under the
-/// directory that declared it, and the `base` prefix check is what keeps a
-/// sibling's rules from leaking across.
+/// Appended as a walk descends, never popped: a rule applies only under the directory that
+/// declared it, and the `base` prefix check keeps a sibling's rules from leaking.
 #[derive(Default)]
 pub struct Ignore {
     rules: Vec<Rule>,
@@ -31,8 +30,7 @@ impl Ignore {
     }
 
     /// Last matching rule wins, as git specifies. `.git` is always ignored.
-    // ponytail: linear scan over every gathered rule; a prefix-indexed set if
-    // a repo ever carries enough .gitignore files to show up in a profile.
+    // ponytail: linear scan over every rule; index by prefix if it ever shows in a profile.
     pub fn ignored(&self, path: &Path, is_dir: bool) -> bool {
         if path.file_name().is_some_and(|name| name == ".git") {
             return true;

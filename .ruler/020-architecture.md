@@ -24,7 +24,7 @@ error, stale entry = error, undeclared internal dep = error. Standing rules (YI_
   `KernelBridge` capability seam; yi-runtime implements it (KernelService) and owns the
   host-handler vocabulary (HostRegistry, design §6).
 - python/yi_runtime is Yi's kernel-side Python package (module name `rlm`). It was seeded
-  by copying prime-agent-runtime at phase 4 to de-risk the port; Yi owns it outright and
+  by copying a reference runtime at phase 4 to de-risk the port; Yi owns it outright and
   evolves it freely — there is no upstream to track. Mechanical facts on edits: keep
   `RUNTIME_READY_CHECK` passing (pinned by crates/kernel/tests/ready_check.rs; the check
   string in bootstrap.rs moves with the package), and any package change moves the runtime

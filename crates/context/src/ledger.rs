@@ -21,9 +21,8 @@ fn kind_key(kind: HarnessKind) -> &'static str {
     }
 }
 
-/// Read-side only: the kernel writes this file from Python and Yi re-reads it
-/// on mtime change. Corrupt or missing files load as empty — the ledger must
-/// never block a turn.
+/// Read-side only: the kernel writes this file from Python and Yi re-reads it on mtime
+/// change. Corrupt or missing files load as empty — the ledger must never block a turn.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct HarnessState {
     pub entries: BTreeMap<HarnessKind, Vec<HarnessEntry>>,
@@ -78,7 +77,7 @@ impl HarnessState {
     }
 
     /// Reloads only when another process rewrote the file since the last
-    /// load — the mtime guard from prime `harness.py:_sync_from_disk`.
+    /// load, guarded on mtime.
     pub fn sync_from_disk(&mut self) {
         let Some(path) = self.file_path.clone() else {
             return;

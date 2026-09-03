@@ -1024,7 +1024,7 @@ fn a_long_idle_stretch_does_not_consume_the_whole_morph() {
 }
 
 #[test]
-fn tree_panel_matches_the_omp_layout() -> TestResult {
+fn tree_panel_matches_the_reference_layout() -> TestResult {
     let entries = vec![
         entry("a", None, 1, "root prompt"),
         assistant_entry("r", Some("a"), 2, "root answer"),

@@ -112,7 +112,7 @@ fn the_expanded_source_is_redacted_too() -> TestResult {
 }
 
 /// Invariant: a head that changes width when the body opens moves every row
-/// under it, and the reader loses their place (prime-agent `ipython-cell.ts`).
+/// under it, and the reader loses their place.
 #[test]
 fn the_head_line_is_byte_identical_in_every_mode() -> TestResult {
     let cell = cell(

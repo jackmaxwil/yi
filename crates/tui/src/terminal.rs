@@ -1,9 +1,8 @@
 // Derived from `ratatui::Terminal` (MIT, Florian Dehau / The Ratatui Developers)
-// with codex's mutable-viewport model (`codex-rs/tui/src/custom_terminal.rs`).
+// with a mutable-viewport model taken from a reference terminal.
 
-// Incident: ratatui's `Viewport::Inline(h)` fixes the height at construction, so
-// a live region that grows or shrinks cannot follow it, and rebuilding the
-// terminal instead appends blank lines into scrollback on every rebuild.
+// Incident: ratatui's `Viewport::Inline(h)` fixes the height at construction, so a live
+// region cannot follow it, and rebuilding the terminal appends blanks into scrollback.
 use std::io;
 
 use ratatui::backend::{Backend, ClearType};
@@ -87,9 +86,8 @@ impl<B: Backend> Terminal<B> {
         self.viewport_area = area;
     }
 
-    /// Growth scrolls the rows above the viewport up, but when the *terminal*
-    /// shrank the scroll is skipped — the emulator already moved those rows, and
-    /// scrolling again moves the viewport twice. True ⇒ rebuild above and repaint.
+    /// Growth scrolls the rows above the viewport up, but a *terminal* shrink skips it: the
+    /// emulator already moved them. True ⇒ rebuild above and repaint.
     pub fn resize_viewport(&mut self, height: u16, floor: u16) -> io::Result<bool> {
         let screen = self.backend.size()?;
         let terminal_height_shrank = screen.height < self.screen_size.height;
@@ -106,9 +104,8 @@ impl<B: Backend> Terminal<B> {
         if area.bottom() > screen.height {
             let scroll_by = area.bottom() - screen.height;
             if !terminal_height_shrank {
-                // Incident: scrolling only above the viewport left every live row
-                // one position stale, so a streamed line erased and repainted the
-                // region. The `floor` rows under the live text hold still instead.
+                // Incident: scrolling only above the viewport left every live row one
+                // position stale. The `floor` rows under the live text hold still instead.
                 let carries_live = previous_area.bottom() == screen.height
                     && previous_area.width == screen.width
                     && floor <= previous_area.height
@@ -134,9 +131,8 @@ impl<B: Backend> Terminal<B> {
             if vacated > 0 {
                 self.rebase_after_scroll(area, previous_area.height - floor, vacated);
             } else {
-                // Incident: clearing from the old anchor alone left a stale composer
-                // box per resize step — on a shrink the new anchor is above the old
-                // one, which off a shorter screen degenerates to a single row.
+                // Incident: clearing from the old anchor alone left a stale composer box per
+                // resize step, since on a shrink the new anchor is above the old one.
                 let clear_position = Position::new(0, previous_area.y.min(area.y));
                 self.set_viewport_area(area);
                 self.clear_after_position(clear_position)?;
@@ -147,9 +143,8 @@ impl<B: Backend> Terminal<B> {
         Ok(needs_full_repaint)
     }
 
-    /// The screen still holds the last frame, only at other coordinates, so the
-    /// diff baseline is re-indexed rather than thrown away: the rows above the
-    /// scroll keep their place and the `vacated` rows it opened arrive blank.
+    /// The screen still holds the last frame at other coordinates, so the diff baseline is
+    /// re-indexed, not discarded: rows above the scroll keep their place, `vacated` are blank.
     fn rebase_after_scroll(&mut self, area: Rect, above: u16, vacated: u16) {
         let row = |n: u16| usize::from(area.width).saturating_mul(usize::from(n));
         let previous = self.previous_buffer_mut();
@@ -162,9 +157,8 @@ impl<B: Backend> Terminal<B> {
         self.viewport_area = area;
     }
 
-    /// Resetting the diff buffer alone leaves stale terminal content showing
-    /// through the blanks — a default-style space equals its previous cell. With
-    /// no per-cell `AlwaysUpdate` in 0.29, poison it with an unemittable symbol.
+    /// Resetting the diff buffer alone leaves stale content showing through the blanks, since
+    /// a default space equals its old cell. With no `AlwaysUpdate` in 0.29, poison it.
     pub fn invalidate_viewport(&mut self) {
         let previous = self.previous_buffer_mut();
         previous.reset();
@@ -214,9 +208,8 @@ impl<B: Backend> Terminal<B> {
         Ok(())
     }
 
-    /// U3: commit finished cells above the viewport using DEC scroll regions
-    /// (ratatui's `insert_before_scrolling_regions`, ported onto the mutable
-    /// viewport). The no-scroll-region fallback is dropped — the feature is on.
+    /// U3: commit finished cells above the viewport using DEC scroll regions, ported onto the
+    /// mutable viewport. The no-scroll-region fallback is dropped; the feature is on.
     pub fn insert_before<F: FnOnce(&mut Buffer)>(
         &mut self,
         mut height: u16,
@@ -278,7 +271,7 @@ impl<B: Backend> Terminal<B> {
             height -= to_draw;
         }
         // Cursor-position-neutral, so the resize anchor stays meaningful
-        // (codex `insert_history.rs`).
+        // on a history insert.
         self.backend.set_cursor_position(self.last_cursor)
     }
 
@@ -327,9 +320,8 @@ impl<B: Backend> Terminal<B> {
 }
 
 impl<B: Backend + std::io::Write> Terminal<B> {
-    /// One `write!`, not a sequence of backend calls: some terminals honour the
-    /// scrollback purge only when it arrives with the clear. Reset scroll region,
-    /// reset style, home, clear screen, purge scrollback, home again.
+    /// One `write!`, not a sequence of backend calls: some terminals honour the scrollback
+    /// purge only when it arrives with the clear.
     pub fn clear_scrollback_and_visible_screen(&mut self) -> io::Result<()> {
         if self.viewport_area.is_empty() {
             return Ok(());

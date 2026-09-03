@@ -59,9 +59,8 @@ fn home_dir() -> PathBuf {
     std::env::var_os("HOME").map_or_else(|| PathBuf::from("."), PathBuf::from)
 }
 
-/// Invariant: `run` fills this before dispatch. yi-cli owns the one strict
-/// config read (X7), so this crate never opens the file — a second reader
-/// could disagree with the load that already decided whether to start.
+/// Invariant: `run` fills this before dispatch. yi-cli owns the one strict config read (X7),
+/// so this crate never opens the file; a second reader could disagree with the first.
 static TOKEN_STORE: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
 
 fn token_store() -> Tokens {
@@ -72,9 +71,8 @@ fn token_store() -> Tokens {
     )
 }
 
-/// Bearer token for an HTTP spec via its OAuth profile; stdio needs none.
-/// Never triggers a login — a missing or dead credential is an error that
-/// names the login command.
+/// Bearer token for an HTTP spec via its OAuth profile; stdio needs none. Never triggers a
+/// login: a missing or dead credential is an error that names the login command.
 fn auth_for(spec: &McpServerSpec, profile_name: Option<&str>) -> Result<Option<String>, String> {
     let McpServerSpec::Http { url } = spec else {
         return Ok(None);

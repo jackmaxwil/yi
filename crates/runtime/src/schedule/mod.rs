@@ -15,7 +15,7 @@ pub const DEFAULT_HEARTBEAT_SCHEDULE: &str = "every 5m";
 pub const DEFAULT_HEARTBEAT_DELIVERY_MODE: DeliveryMode = DeliveryMode::Steer;
 pub const HEARTBEAT_USAGE: &str =
     "Usage: /heartbeat [--every <interval>] [--steer|--follow-up] <instruction>";
-// Prime's exact recovery marker; tests and `/heartbeat status` surface it.
+// The exact recovery marker; tests and `/heartbeat status` surface it.
 pub const INTERRUPTED_ERROR: &str = "Interrupted before scheduled operation completion";
 
 fn strip_matching_quotes(value: &str) -> &str {
@@ -254,8 +254,8 @@ fn parse_cron_expression(expression: &str) -> Result<CronFields, String> {
     })
 }
 
-// UTC, where prime evaluates cron in local time: std has no tzdata and chrono
-// is banned (§13.5). The divergence is documented in the H1 row.
+// UTC, where the reference evaluates cron in local time: std has no tzdata and
+// chrono is banned (§13.5); the H1 row documents the divergence.
 struct Civil {
     minute: u64,
     hour: u64,
@@ -491,9 +491,8 @@ pub struct ClaimedDispatch {
     pub job: Job,
 }
 
-/// Design H5 (prime `claimDueInState`, verbatim): advances every due job's
-/// schedule and claims a dispatch for each not already claimed; an
-/// already-claimed due job is skipped, not double-delivered.
+/// Design H5: advances every due job's schedule and claims a dispatch for each
+/// not already claimed; an already-claimed due job is never double-delivered.
 pub fn claim_due_in_state(
     state: &mut ScheduleState,
     due_ms: u64,
@@ -545,8 +544,8 @@ pub enum RunOutcome {
     Skipped,
 }
 
-/// Design H5 (prime `recordDispatchResult`, verbatim): resolves the claim and
-/// advances the job; a clean skip re-arms without counting a run.
+/// Design H5: resolves the claim and advances the job; a clean skip re-arms
+/// without counting a run.
 pub fn record_dispatch_result_in_state(
     state: &mut ScheduleState,
     dispatch_id: &str,
@@ -586,8 +585,8 @@ pub fn record_dispatch_result_in_state(
     updated
 }
 
-/// Design H6 (prime `recoverInterruptedInState`, verbatim): unresolved claims
-/// on start mean the process died mid-dispatch — mark them interrupted.
+/// Design H6: unresolved claims on start mean the process died mid-dispatch,
+/// so mark them interrupted.
 pub fn recover_interrupted_in_state(
     state: &mut ScheduleState,
     now_ms: u64,
@@ -800,9 +799,8 @@ impl HeartbeatService {
             .clone()
     }
 
-    /// Invariant: [`HeartbeatService::new`] starts unbound, and a job stamped
-    /// with the empty id belongs to no lane, matches every other unbound
-    /// session, and is skipped forever.
+    /// Invariant: [`HeartbeatService::new`] starts unbound, and a job stamped with the empty
+    /// id belongs to no lane, matches every other unbound session, and is skipped forever.
     fn bound_session_id(&self) -> Result<String, String> {
         let session_id = self.session_id();
         if session_id.is_empty() {
@@ -828,9 +826,8 @@ impl HeartbeatService {
         *bound = session_id;
     }
 
-    /// Invariant: the interned timer outlives every session on its ledger, so a
-    /// departing session loses its lane and has its still-Active jobs paused —
-    /// left claimable they are re-armed and re-fsynced for the whole process.
+    /// Invariant: the interned timer outlives every session on its ledger, so a departing one
+    /// loses its lane and pauses its Active jobs; left claimable they re-arm forever.
     fn withdraw(&self, session_id: &str) {
         let Some(hub) = &self.hub else { return };
         if session_id.is_empty() {
@@ -860,9 +857,8 @@ impl HeartbeatService {
     }
 }
 
-/// Invariant: a lane is withdrawn by whichever comes first — the session
-/// dropping, or [`HeartbeatService::bind_session`] re-pointing this service at
-/// another id. Neither alone covers a rebind that never drops the service.
+/// Invariant: a lane is withdrawn by whichever comes first, the session dropping or
+/// [`HeartbeatService::bind_session`] rebinding; neither alone covers a rebind with no drop.
 impl Drop for HeartbeatService {
     fn drop(&mut self) {
         self.withdraw(&self.session_id());

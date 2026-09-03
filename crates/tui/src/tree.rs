@@ -170,9 +170,8 @@ impl TreeView {
             .collect()
     }
 
-    /// OMP `TreeSelectorComponent`: a titled panel of spacer / help / search /
-    /// divider / spacer / rows / filter, each row `cursor + gutter + active-path
-    /// bullet + role: text`, selection carried by a full-width background.
+    /// A titled panel of spacer / help / search / divider / rows / filter, each
+    /// row `cursor + gutter + bullet + role: text` on a full-width selection.
     pub fn lines(&self, width: usize, theme: &Theme, max_rows: usize) -> Vec<Line<'static>> {
         let inner = width.saturating_sub(4);
         let mut out = vec![top_border(width, "Session Tree", theme)];
@@ -264,7 +263,7 @@ impl TreeView {
     }
 
     /// Alt+↑/↓ steps whole turns: from anywhere in a turn to the user message
-    /// that started the previous or next one (OMP `previous/next turn`).
+    /// that started the previous or next one.
     fn step_turn(&mut self, visible: &[usize], position: usize, forward: bool) {
         let mut cursor = position;
         loop {
@@ -418,7 +417,7 @@ pub(crate) fn gutter_prefix(depth: usize, is_last: bool) -> String {
     format!("{}{connector}", "│  ".repeat(depth.saturating_sub(1)))
 }
 
-/// So a selection background covers the row end to end (OMP `fit`).
+/// So a selection background covers the row end to end.
 pub(crate) fn fit_spans(
     spans: Vec<Span<'static>>,
     width: usize,
@@ -492,9 +491,8 @@ pub(crate) fn bottom_border(width: usize, theme: &Theme) -> Line<'static> {
     ))
 }
 
-/// The scrolling half every tree panel shares: the centered window, the
-/// selection ground, the end-to-end fit, and the overflow thumb; the caller
-/// supplies only one row's own spans.
+/// The scrolling half every tree panel shares: centered window, selection ground, end-to-end
+/// fit and overflow thumb. The caller supplies only one row's own spans.
 pub(crate) fn window_lines(
     total: usize,
     position: usize,
@@ -532,8 +530,8 @@ pub(crate) fn window_lines(
     lines
 }
 
-/// OMP `centeredWindow`: keep the selection in the middle of the window
-/// instead of only scrolling when it leaves the edge.
+/// Keep the selection in the middle of the window instead of only scrolling
+/// when it leaves the edge.
 fn centered_window(selected: usize, total: usize, max_visible: usize) -> (usize, usize) {
     let start = selected
         .saturating_sub(max_visible / 2)

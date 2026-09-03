@@ -25,9 +25,8 @@ const SATURATED_SHIFT: u32 = 5;
 
 pub type ProbeRun = Arc<dyn Fn(&str) -> Result<(), String> + Send + Sync>;
 
-/// Invariant: the ladder saturates rather than growing without bound, so a
-/// condition nobody will ever satisfy costs one check every [`MAX_DELAY`]
-/// forever instead of one per turn or an interval that overflows.
+/// Invariant: the ladder saturates rather than growing without bound, so a condition nobody
+/// satisfies costs one check per [`MAX_DELAY`], not one per turn or an overflowing interval.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Rung(u32);
 
@@ -61,9 +60,8 @@ struct Pending {
     due: Instant,
 }
 
-/// §5's saturating ladder: a `Blocked{on: External}` todo whose probe passes is
-/// unblocked under the host's own authority; one with no probe nudges its owner
-/// at the ceiling interval, because a block nobody re-examines never returns.
+/// §5's saturating ladder: a `Blocked{on: External}` todo whose probe passes is unblocked by
+/// the host; one with no probe nudges its owner, since an unexamined block never returns.
 pub struct ProbeLadder {
     engine: Arc<PlanEngine>,
     plans_dir: PathBuf,
@@ -102,9 +100,8 @@ impl ProbeLadder {
             .collect()
     }
 
-    /// Invariant: due times live only in memory, so a resumed session restarts
-    /// every ladder at the first rung — a probe is cheap and re-running one is
-    /// not the runaway the spawn fuse guards, which is why it may reset.
+    /// Invariant: due times live only in memory, so a resumed session restarts every ladder
+    /// at the first rung; a probe is cheap and is not the runaway the spawn fuse guards.
     pub fn tick(&self, now: Instant) -> Vec<Verdict> {
         let mut verdicts = Vec::new();
         let mut live = Vec::new();

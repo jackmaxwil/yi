@@ -52,9 +52,8 @@ fn token_is_unbreakable(cells: &[Cell]) -> bool {
     text.contains("://")
 }
 
-/// Breaks at spaces; an overlong plain token splits at a character boundary, but
-/// a token containing `://` never splits — the line overflows instead, so
-/// terminal link detection keeps seeing one intact token.
+/// Breaks at spaces; an overlong plain token splits at a character boundary, but one holding
+/// `://` never does — the line overflows so link detection still sees one intact token.
 pub fn wrap_line(line: &Line<'_>, width: usize, subsequent_indent: &str) -> Vec<Line<'static>> {
     let width = width.max(1);
     let indent_width: usize = subsequent_indent

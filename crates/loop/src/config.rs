@@ -39,14 +39,12 @@ pub struct LoopConfig {
     pub prepare_next_turn: Option<Box<PrepareFn>>,
     pub get_steering_messages: Option<Box<QueueFn>>,
     pub get_follow_up_messages: Option<Box<QueueFn>>,
-    /// Design P13: runs at every message boundary inside the tool loop — a
-    /// tool-heavy turn can blow the window before the turn ends. Some(new)
-    /// replaces the in-flight history with the compacted view.
+    /// Design P13: runs at every message boundary inside the tool loop, since a tool-heavy
+    /// turn can blow the window mid-turn. Some(new) replaces the in-flight history.
     pub maybe_compact: Option<Box<CompactFn>>,
     pub first_turn_tool_choice: Option<ToolChoice>,
-    /// Invariant: consulted synchronously, only when a turn ended with no tool
-    /// calls and the steering queue drained empty — the caller decides whether
-    /// the run really ends; Some forces one more turn carrying the message.
+    /// Invariant: consulted synchronously, only when a turn ended with no tool calls and an
+    /// empty steering queue. Some forces one more turn carrying the message.
     pub intercept_stop: Option<Box<InterceptFn>>,
 }
 

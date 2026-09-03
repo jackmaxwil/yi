@@ -1,6 +1,5 @@
-//! Socket IO threads for the daemon connection, deliberately dumb: every
-//! protocol decision lives in the synchronous app loop, where the drive
-//! harness can exercise it deterministically.
+//! Socket IO threads for the daemon connection, deliberately dumb: every protocol decision
+//! lives in the synchronous app loop, where the drive harness exercises it deterministically.
 
 use std::io::{Read, Write};
 use std::os::unix::net::UnixStream;
@@ -130,9 +129,8 @@ fn reader_loop(
         if events.send(ClientEvent::Disconnected { reason }).is_err() {
             return;
         }
-        // Incident: only the failed-connect path slept, so a daemon that
-        // accepted and closed at once re-dialed in a tight spin. A link that
-        // outlived the cap was healthy, and only that resets the backoff.
+        // Incident: only the failed-connect path slept, so a daemon that accepted and closed
+        // at once re-dialed in a spin. Only a link that outlived the cap resets the backoff.
         if connected_at.elapsed() > BACKOFF_CAP {
             backoff = BACKOFF_START;
         }

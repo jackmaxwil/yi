@@ -4,7 +4,7 @@ Status: **implemented** at ARCHITECTURE 0.62.0; §19 records what shipped and
 where the build deviates from this text. v4. Supersedes YI_DESIGN.md §14.1 (bundled skills) and
 §14.2 (native modes) in their entirety. v2 introduced the extension system
 modeled on Pi (`ref/agents/pi`, `packages/coding-agent/src/core/extensions/`).
-v3 added anti-slop voice rules (Wikipedia "Signs of AI writing"), Prime
+v3 added anti-slop voice rules (Wikipedia "Signs of AI writing"), the reference harness
 Agent principles (arXiv:2608.23552) for orchestrate, and grid. v4 adds:
 project resource discovery (AGENTS.md, `.agents/`, `.pi/`), the
 teach-at-the-point-of-use principle (in-context examples + result
@@ -374,8 +374,8 @@ How the reference agents handle it:
 | Agent | Provider path | Strategy |
 |---|---|---|
 | Pi | Anthropic | breakpoint on each system block, on the last tool where the model supports it, and on the last user message; TTL configurable, 1h retention supported; session id doubles as the cache routing key elsewhere (`pi-ai anthropic-messages.ts:1296-1317`) |
-| Opencode | AI SDK, many providers | breakpoints on the first 2 system messages and the last 2 non-system messages, exactly Anthropic's max of 4; per-provider option-key shims (`transform.ts:358-405`) |
-| Codex | OpenAI Responses | automatic prefix caching; `prompt_cache_key` scoped per thread with subagent keys nested under the parent (`guardian:{parent_thread_id}`); an exhaustive request-equality check over instructions/tools/params gates connection reuse, making prefix stability an explicit contract (`client.rs:309-362`) |
+| Another reference | AI SDK, many providers | breakpoints on the first 2 system messages and the last 2 non-system messages, exactly Anthropic's max of 4; per-provider option-key shims (`transform.ts:358-405`) |
+| the reference | OpenAI Responses | automatic prefix caching; `prompt_cache_key` scoped per thread with subagent keys nested under the parent (`guardian:{parent_thread_id}`); an exhaustive request-equality check over instructions/tools/params gates connection reuse, making prefix stability an explicit contract (`client.rs:309-362`) |
 | Yi today | Anthropic | 3 breakpoints: single system block, last tool, last user message; no TTL request (5m only), though usage parsing already reads `ephemeral_1h_input_tokens` (`crates/ai/src/anthropic.rs:193-256,406`) |
 | Yi today | OpenAI Responses | `prompt_cache_key` = session id (`openai_responses.rs:251`) |
 
@@ -393,7 +393,7 @@ stable as the tools. Yi drops it and spends the budget:
          position is the incremental hit)
 
 When the yard is empty or tiny, bp3 is reallocated to the second-to-last
-user message (Opencode's last-2 pattern) so a retried or steered final
+user message (another reference's last-2 pattern) so a retried or steered final
 turn still hits at the prior message. Adaptive allocation, decided at
 assembly, deterministic given the same session state.
 
@@ -574,7 +574,7 @@ routing has an irreducible error floor, and the failure is asymmetric:
 missing a complex task costs far more than loading orchestrate onto a
 medium one.
 
-Prime Agent (arXiv:2608.23552), distilled into the protocol:
+the reference harness (arXiv:2608.23552), distilled into the protocol:
 
 - **Expressivity over workflow.** A harness exposes primitives the model
   composes, not one fixed pipeline. A task should fail because it
@@ -796,10 +796,10 @@ demands:
   affordance; build at most one of the two, after evidence shows which
   failure actually occurs.
 - `context-sentinel`: context usage crossing a threshold → `Remind` to
-  spill bulk state to files/kernel before compaction (Prime Agent's
+  spill bulk state to files/kernel before compaction (the reference's
   information management, preemptive).
 - `session-refinement`: post-run mining of the trajectory into proposed
-  memories/skills (automates `skills/yi/session-mining`). Prime Agent's
+  memories/skills (automates `skills/yi/session-mining`). the reference's
   warning applies verbatim: their agent preserved a discovered RCON
   exploit as a reusable skill and contaminated later runs. Learned state
   needs provenance, independent validation, auditable rollback. Manual
@@ -880,7 +880,7 @@ demands:
     session and every child in a fan-out read the same cached prefix.
     The spare breakpoint that would have double-protected the last two
     messages is reallocated to the yard, and returns to the last-2
-    pattern only when the yard is empty (§5.6). Chosen because Prime
+    pattern only when the yard is empty (§5.6). Chosen because the reference harness
     style fan-outs multiply the universal prefix by N children while a
     retried final turn costs one small increment.
 17. **The rotating ephemeral overlay is dead for cache reasons too.**

@@ -30,8 +30,9 @@ from check_commit_style import subject_errors  # noqa: E402
 from pr_body import base_commit, diff_stats, git, tally  # noqa: E402
 
 ARCH = "docs/ARCHITECTURE.md"
-LEDGER = "## Feature ledger"
-CHANGELOG = "## Changelog"
+LOG = "docs/CHANGELOG.md"
+LEDGER = "Feature ledger"
+CHANGELOG = "Changelog"
 # `Closes apex/yi#4` is the same citation as `Closes #4`; `Closes other/repo#4`
 # is a citation of someone else's register and does not count as one here.
 CITE = re.compile(r"\b(closes|refs)\s+(?:([\w.-]+/[\w.-]+))?#(\d+)\b", re.I)
@@ -58,13 +59,14 @@ def send(method, url, payload=None):
 
 
 def table_rows(text, heading):
-    """The data rows of the table under a `## ` heading. Rows start after the
-    `|---|` separator, so the header row is not mistaken for a feature named
-    "feature"; a section with no table yields nothing."""
+    """Data rows of the table under a heading, at whatever level it is written —
+    the changelog is its own file's title, the ledger a section of another. Rows
+    start after the `|---|` separator so the header row is not mistaken for a
+    feature named "feature"; a section with no table yields nothing."""
     out, inside, started = [], False, False
     for line in text.splitlines():
-        if line.startswith("## "):
-            inside, started = line.strip() == heading, False
+        if line.startswith("#"):
+            inside, started = line.strip().lstrip("#").strip() == heading, False
             continue
         line = line.strip()
         if not inside or not line.startswith("|"):
@@ -198,6 +200,9 @@ def selfcheck():
     )
     assert [row_key(r) for r in table_rows(doc, CHANGELOG)] == ["0.2.0", "0.1.0"], doc
     assert [row_key(r) for r in table_rows(doc, LEDGER)] == ["loop"]
+    # The changelog is now its own file, so its heading is an h1, not an h2.
+    own = "# Changelog\n\nprose\n\n| ver | date | change |\n|---|---|---|\n| 0.3.0 | d | three |\n"
+    assert [row_key(r) for r in table_rows(own, CHANGELOG)] == ["0.3.0"], own
     grown = doc.replace("| loop | 8.2 | core |", "| loop | 8.2 | core |\n| plan | 6 | core |")
     assert [row_key(r) for r in added_rows(doc, grown, LEDGER)] == ["plan"]
     # A row reworded in place is not a new row, and a diff would say it was.
@@ -277,14 +282,11 @@ def measure():
     ref, base = base_commit()
     if base is None:
         return None, ("no origin/main or main to diff against; this gate cannot pass blind")
-    before = git("show", f"{base}:{ARCH}").stdout
-    after = (ROOT / ARCH).read_text()
+    def added(path, heading):
+        return added_rows(git("show", f"{base}:{path}").stdout, (ROOT / path).read_text(), heading)
+
     rows = diff_stats(base)
-    return (
-        added_rows(before, after, LEDGER),
-        added_rows(before, after, CHANGELOG),
-        tally(rows)[2],
-    ), None
+    return (added(ARCH, LEDGER), added(LOG, CHANGELOG), tally(rows)[2]), None
 
 
 def main(argv):

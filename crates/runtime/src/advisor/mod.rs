@@ -173,9 +173,8 @@ pub fn stats_text(stats: &AdvisorStats) -> String {
     )
 }
 
-/// Why the review was asked for; the summary itself rides the digest as its own
-/// `compaction:` line, so this note stays one sentence and never wears that
-/// prefix.
+/// Why the review was asked for. The summary rides the digest as its own `compaction:` line,
+/// so this note stays one sentence and never wears that prefix.
 pub const COMPACTION_NOTE: &str =
     "the primary's view was replaced by a compaction summary; audit it";
 
@@ -270,9 +269,8 @@ impl AdvisorRuntime {
         }
     }
 
-    /// V5 `CompactionCheck`: the replacement summary enters the advisor's own
-    /// log, so the next digest carries it beside the directives panel the judge
-    /// audits it against — a head plus an id [`AdvisorRuntime::transcript`] resolves.
+    /// V5 `CompactionCheck`: the replacement summary enters the advisor's own log, so the
+    /// next digest carries it as an id [`AdvisorRuntime::transcript`] resolves.
     pub fn note_compaction(&self, summary: String, now_ms: u64) {
         {
             let mut state = self.lock();
@@ -545,9 +543,8 @@ impl AdvisorRuntime {
     }
 }
 
-/// The post-compaction hook carries no summary, so the text comes back off the
-/// lane's newest compaction entry. A session with no store or no advisor gets
-/// no audit — silently, because neither is an error.
+/// The post-compaction hook carries no summary, so the text comes off the lane's newest
+/// compaction entry. No store or no advisor means no audit, silently: neither is an error.
 pub fn note_last_compaction(
     advisor: Option<&AdvisorRuntime>,
     store: Option<&yi_session::SharedSession>,

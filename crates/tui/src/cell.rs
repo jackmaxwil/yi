@@ -52,8 +52,8 @@ pub fn spinner_frame(phase: usize) -> char {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ToolStatus {
     Running,
-    /// Held at the permission gate. opencode colours the call itself rather
-    /// than only the prompt, so the row that is waiting says so.
+    /// Held at the permission gate: the call itself is coloured, not only the
+    /// prompt, so the row that is waiting says so.
     Awaiting,
     Done,
     Failed,
@@ -96,9 +96,8 @@ pub struct TaskCell {
     pub tokens: u64,
     pub elapsed_ms: u64,
     pub error: Option<String>,
-    // ponytail: the spawning kernel cell's scored preview, observed rather than
-    // plumbed — the `ipython` call running when a child appears is the call that
-    // made it. A child born outside one carries None, never a wrong parent.
+    // ponytail: the spawning cell's preview is observed, not plumbed — the `ipython` call
+    // running when a child appears made it, and a child born outside one carries None.
     pub spawn: Option<String>,
 }
 
@@ -121,9 +120,8 @@ pub const CALLOUT_RAIL: &str = "▌";
 const GUTTER_CONTINUATION: &str = "  ";
 const THOUGHT_INDENT: &str = "  ";
 
-/// Reasoning prose, dim and italic under a `∴ thinking` label. `header` is
-/// false past the first slice: a thought streams to scrollback a paragraph at a
-/// time (U13), and a label per paragraph reads as one thought each.
+/// Reasoning prose, dim and italic under a `∴ thinking` label. `header` is false past the
+/// first slice: a thought streams a paragraph at a time, and a label each reads as many.
 pub fn thought_lines(
     markdown: &str,
     width: usize,
@@ -144,9 +142,8 @@ pub fn thought_lines(
         out.push(Line::default());
         out.push(Line::from(Span::styled("  ∴ thinking".to_owned(), style)));
     }
-    // Rendered two columns narrow, because the indent below is two columns
-    // wide: rendered at the full width every line that filled it wrapped again
-    // and shed its last word onto a line of its own.
+    // Rendered two columns narrow, matching the indent below: at full width every line that
+    // filled it wrapped again and shed its last word onto a line of its own.
     for line in markdown::render(markdown, width.saturating_sub(THOUGHT_INDENT.len()), theme) {
         let text: String = line
             .spans
@@ -165,9 +162,8 @@ pub fn thought_lines(
     out
 }
 
-/// codex `history_cell/messages.rs:530`: assistant prose hangs off a dim `• `
-/// on its first line and a two-column gutter after it, so a block of prose is
-/// attributable at a glance without a box or a color band.
+/// Assistant prose hangs off a dim `• ` on its first line and a two-column
+/// gutter after it, so it is attributable without a box or a colour band.
 pub fn gutter(lines: Vec<Line<'static>>, first: bool, theme: &Theme) -> Vec<Line<'static>> {
     let mut marked = first;
     lines
@@ -220,9 +216,8 @@ fn tint(lines: Vec<Line<'static>>, width: usize, theme: &Theme) -> Vec<Line<'sta
         .collect()
 }
 
-/// opencode `routes/session/index.tsx:1398-1420`: the user turn carries a
-/// heavy left bar in the session accent over a panel fill. The bar is what
-/// survives at 16 colors, where the tint degrades to nothing.
+/// The user turn carries a heavy left bar in the session accent over a panel
+/// fill. The bar is what survives at 16 colors, where the tint degrades away.
 const USER_BAR: &str = "┃";
 
 fn bar(lines: Vec<Line<'static>>, theme: &Theme) -> Vec<Line<'static>> {
@@ -249,9 +244,8 @@ fn glyph(tool: &str) -> char {
     }
 }
 
-/// grep prints `path:N:text` for a hit and `path-N-text` for a context row, so
-/// only a hit carries a `:N:` run. A path holding its own `:N:` would overcount
-/// by one; a context row losing the distinction entirely would not.
+/// grep prints `path:N:text` for a hit and `path-N-text` for context, so only a hit carries a
+/// `:N:` run. A path holding its own `:N:` overcounts by one; losing context is worse.
 fn is_grep_hit(line: &str) -> bool {
     line.match_indices(':').any(|(colon, _)| {
         let rest = line.get(colon.saturating_add(1)..).unwrap_or_default();
@@ -323,8 +317,8 @@ fn status_glyph(status: ToolStatus, spinner_phase: usize) -> char {
     }
 }
 
-/// codex groups read-only calls under one bullet: a run of eight of them is one
-/// act of looking, and eight rows of it crowds out the answer.
+/// Read-only calls group under one bullet: a run of eight is one act of
+/// looking, and eight rows of it crowds out the answer.
 pub fn explore_verb(tool: &str) -> Option<&'static str> {
     match tool {
         "read" => Some("Read"),
@@ -407,8 +401,8 @@ impl ToolCell {
         self.details.get("patch")?.as_str()
     }
 
-    /// A shell command is code, and OMP renders it as such rather than echoing
-    /// it as a tool argument: a dim `$` then the command itself, highlighted.
+    /// A shell command is code, so it renders as code rather than as a tool
+    /// argument: a dim `$` then the command itself, highlighted.
     fn summary_spans(&self, theme: &Theme, style: Style) -> Vec<Span<'static>> {
         let command = self.summary.strip_prefix("$ ");
         let Some((mut lang, command)) = crate::highlight::lang_for("bash").zip(command) else {
@@ -459,9 +453,8 @@ impl ToolCell {
         let mut last_path: Option<String> = None;
         let searchy = matches!(self.name.as_str(), "grep" | "glob" | "find");
         let anchored = matches!(self.name.as_str(), "read" | "edit");
-        // A patch routes to `diffview`, which colours from its own header; this
-        // is the plain numbered dump a read prints instead, and its path lives
-        // in the summary because neither tool puts it in `details`.
+        // A patch routes to `diffview`, which colours from its own header; this is the plain
+        // numbered dump a read prints, its path in the summary since `details` lacks it.
         let subject = anchored
             .then(|| self.summary.split_once(self.name.as_str()))
             .flatten()
@@ -485,9 +478,8 @@ impl ToolCell {
             match numbered(raw) {
                 Some((number, body)) => {
                     let mut spans = vec![Span::styled(format!("      {number:>4} "), dim)];
-                    // The parse describes only the rows already fed to it, in
-                    // order from line 1; a preview that opens mid-file or drops
-                    // a row leaves it describing text the reader never saw.
+                    // The parse describes only the rows fed to it from line 1, so a preview
+                    // opening mid-file leaves it describing text the reader never saw.
                     if number.parse::<u64>().ok() != Some(expect) {
                         lang = None;
                     }
@@ -497,9 +489,8 @@ impl ToolCell {
                         }
                         None => spans.push(Span::styled(body.to_owned(), text)),
                     }
-                    // An over-wide row arrives clipped, so its tail — and any
-                    // quote or block comment closing in it — never reached the
-                    // parse that the rows below it would resume from.
+                    // An over-wide row arrives clipped, so its tail, and any quote or block
+                    // comment closing in it, never reached the parse the next rows resume from.
                     if body.ends_with('\u{2026}') {
                         lang = None;
                     }
@@ -526,9 +517,8 @@ impl ToolCell {
             .to_owned()
     }
 
-    /// Yi showed no result lines at all, so a finished call left no trace of its
-    /// outcome unless the reader had switched to verbose before it ran (codex
-    /// commits five under `  └ `, OMP four).
+    /// Yi showed no result lines, so a finished call left no trace of its
+    /// outcome unless the reader had switched to verbose before it ran.
     pub fn digest_of(name: &str, text: &str, failed: bool) -> Option<String> {
         let first = || {
             text.lines()
@@ -621,8 +611,7 @@ impl Cell {
                 let mut out = vec![Line::default()];
                 let width = width.saturating_sub(USER_BAR.len());
                 for (index, raw) in text.lines().enumerate() {
-                    // The bar carries the block; the caret marks only where it
-                    // starts (codex `messages.rs:265`).
+                    // The bar carries the block; the caret marks only its start.
                     let marker = if index == 0 { " › " } else { "   " };
                     out.extend(wrap_line(
                         &Line::from(vec![
@@ -650,9 +639,8 @@ impl Cell {
             Cell::Explored(rows) => explored_lines(rows, width, theme),
             Cell::Task(task) => task.lines(width, theme, spinner_phase),
             Cell::Advisory { source, text } => {
-                // The advisor speaks over the agent's own output, so it takes
-                // the callout rail and blank air rather than a dim aside that
-                // reads as one more line of prose.
+                // The advisor speaks over the agent's own output, so it takes the callout
+                // rail and blank air rather than a dim aside that reads as more prose.
                 let clean = strip_tags(text);
                 let rail = Style::default().fg(theme.warning);
                 let body = wrap_line(
@@ -709,7 +697,7 @@ const EXPLORED_CAP: usize = 32;
 const VERB_WIDTH: usize = 6;
 
 /// A run of read-only calls, one row each under a single bullet: the verb in
-/// accent, its subject, and the digest the call earned (codex `exec_cell`).
+/// accent, its subject, and the digest the call earned.
 fn explored_lines(rows: &[ToolCell], width: usize, theme: &Theme) -> Vec<Line<'static>> {
     let mut out = vec![Line::from(Span::styled(
         format!("  ✱ Explored ×{}", rows.len()),
