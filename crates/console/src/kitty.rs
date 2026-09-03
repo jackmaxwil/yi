@@ -1,14 +1,12 @@
-//! Kitty graphics for the notebook pane: base64 PNG payloads go out as
-//! `f=100` transmits and a cell-rect placement, inside the synchronized
-//! frame so the image lands with the text it belongs to.
+//! Kitty graphics for the notebook pane: base64 PNG payloads go out as `f=100` transmits and
+//! a cell-rect placement, inside the synchronized frame so image and text land together.
 
 use std::io::Write;
 
 use ratatui::layout::Rect;
 
-// Invariant: one placement is live at a time. `place_notebook_image` draws
-// the focused notebook's newest image only and deletes on any change, so a
-// second concurrent image needs an id per placement, not this constant.
+// Invariant: one placement is live at a time — the focused notebook's newest image, deleted
+// on any change. A second concurrent image needs an id per placement, not this constant.
 const IMAGE_ID: u32 = 7701;
 const CHUNK: usize = 4096;
 
@@ -17,9 +15,8 @@ pub fn supported(term: Option<&str>, term_program: Option<&str>) -> bool {
         || term_program.is_some_and(|program| program == "ghostty")
 }
 
-/// Delete the previous placement, transmit the PNG, place it over `rect`.
-/// The payload is already base64 (the wire form the kernel attachment
-/// carries), so this never decodes image data.
+/// Delete the previous placement, transmit the PNG, place it over `rect`. The payload is
+/// already base64, the wire form the kernel attachment carries, so nothing decodes here.
 pub fn place_png(out: &mut impl Write, base64_png: &str, rect: Rect) -> std::io::Result<()> {
     write!(out, "\u{1b}_Ga=d,d=i,i={IMAGE_ID},q=2\u{1b}\\")?;
     let bytes = base64_png.as_bytes();

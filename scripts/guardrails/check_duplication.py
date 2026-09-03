@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""15-line normalized-window duplication, production = 0. Incident: jcode's 7,779 duplicated
-blocks; codex ships its patch grammar in four places."""
+"""15-line normalized-window duplication, production = 0. Incidents: 7,779 duplicated blocks
+in one surveyed harness; another ships its patch grammar in four places."""
 import sys, pathlib
 from collections import defaultdict
 sys.path.insert(0, str(pathlib.Path(__file__).parent))

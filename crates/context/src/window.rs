@@ -2,18 +2,16 @@ use yi_types::compaction::CompactionWindow;
 
 use crate::account::Tokens;
 
-/// Absolute input-token baseline for the current compaction window (design
-/// P3 BodyAfterPrefix). Server-observed usage replaces an estimated baseline
-/// but never the reverse.
+/// Absolute input-token baseline for the current compaction window (design P3
+/// BodyAfterPrefix). Server-observed usage replaces an estimate but never the reverse.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Prefill {
     ServerObserved(Tokens),
     Estimated(Tokens),
 }
 
-/// Design P9 window chain, ported adapted from codex `auto_compact_window.rs`:
-/// ids chain compactions (surfaced to the model), per-window one-shot latches
-/// kill repeat advisories.
+/// Design P9 window chain: ids chain compactions (surfaced to the model) and
+/// per-window one-shot latches kill repeat advisories.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Window {
     number: u64,

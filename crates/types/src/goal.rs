@@ -1,8 +1,8 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
-/// Goal status vocabulary (design G1, from codex `thread_goal.rs`). The
-/// model may report `Complete`/`Blocked`; the host owns the rest (G2).
+/// Goal status vocabulary (design G1). The model may report
+/// `Complete`/`Blocked`; the host owns the rest (G2).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum GoalStatus {
@@ -39,9 +39,8 @@ impl GoalStatus {
     }
 }
 
-/// One goal per session (design G1), stored as a session-store fact beside
-/// the header — never a transcript entry, so compaction cannot lose it.
-/// Timestamps are epoch milliseconds.
+/// One goal per session (design G1), stored as a session-store fact beside the header, never
+/// a transcript entry, so compaction cannot lose it. Timestamps are epoch milliseconds.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Goal {
@@ -64,8 +63,7 @@ pub struct Goal {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub check_failure: Option<String>,
     /// L5 ledger: HIGH discoveries recorded against this goal. A row blocks
-    /// `goal.update(complete)` until the check it names passes, so the durable
-    /// reminder is a gate rather than a timer.
+    /// `goal.update(complete)` until its check passes, so the reminder is a gate, not a timer.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub discoveries: Vec<crate::subagent::Discovery>,
     #[serde(flatten)]

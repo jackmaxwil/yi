@@ -30,8 +30,7 @@ fn default_version() -> u64 {
 }
 
 /// One reusable prompt note, memory, or subagent record. Disk shape is shared
-/// with prime-agent's `harness.py` (snake_case field names, JSON object file
-/// keyed `entries.{kind}.{id}`).
+/// with `harness.py`: snake_case fields, JSON keyed `entries.{kind}.{id}`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct HarnessEntry {
     pub id: String,

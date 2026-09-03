@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Comment length cap (3 lines, §18) plus a shrink-only volume ratchet outside yi-types.
+"""Comment length cap (2 lines, §18) plus a shrink-only volume ratchet outside yi-types.
 Incident: the rule tested the sigil and nothing enforced it, so 82 blocks reached 4+ lines and
 1,017 doc-comment lines accumulated in crates the grant never covered (D49).
 
@@ -11,7 +11,7 @@ import json, re, sys, pathlib
 sys.path.insert(0, str(pathlib.Path(__file__).parent))
 from _common import ROOT, BASE, src_files, prod_lines, fail
 
-CAP = 3
+CAP = 2
 LICENSE = re.compile(r"SPDX|Copyright|\bMIT\b|Apache-2\.0|BSD|licen[sc]e", re.I)
 GRANTS = {"Incident", "Invariant"}
 TAG = re.compile(r"^//[/!]?\s*([A-Z][a-z]+):")

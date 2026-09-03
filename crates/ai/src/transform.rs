@@ -41,9 +41,8 @@ pub fn normalize_anthropic_tool_call_id(id: &str) -> String {
         .collect()
 }
 
-/// Port of pi-ai transformMessages: cross-model content downgrades, tool-call
-/// id normalization, dropped errored/aborted assistants, synthetic tool
-/// results for orphaned calls.
+/// Port of pi-ai transformMessages: cross-model content downgrades, tool-call id
+/// normalization, dropped errored/aborted assistants, synthetic results for orphaned calls.
 pub fn transform_messages(
     messages: &[AgentMessage],
     model: &Model,

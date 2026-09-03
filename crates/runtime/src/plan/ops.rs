@@ -243,9 +243,8 @@ pub trait OpSink: Send + Sync {
     fn record(&self, record: PlanOpRecord);
 }
 
-/// One read over the fetch seam, shaped like [`crate::fetch::CheckpointShow`].
-/// `Ok(None)` is resolved-but-unserved: the referent exists as far as this
-/// resolver can tell, and its bytes are not available to adjudicate a schema.
+/// One read over the fetch seam, shaped like [`crate::fetch::CheckpointShow`]. `Ok(None)` is
+/// resolved-but-unserved: the referent exists, its bytes are not there to adjudicate.
 pub trait OutputResolve: Send + Sync {
     fn resolve(&self, url: &Url) -> Result<Option<String>, String>;
 }
@@ -519,9 +518,8 @@ impl PlanEngine {
         self.conclude(&id, &root, &before, delta)
     }
 
-    /// Invariant: the plan file's second sanctioned writer is the user's
-    /// editor, so a divergence moves [`Plan::touched`], and a todo whose Running child
-    /// it replaced or deleted reaps that child like an engine op would.
+    /// Invariant: the plan file's second sanctioned writer is the user's editor, so a
+    /// divergence moves [`Plan::touched`] and reaps any Running child it displaced.
     fn fold_user_edits(&self, file: &mut PlanFile, delta: &mut Delta) -> Result<(), PlanOpError> {
         let snapshot = match self.known.lock() {
             Ok(known) => known.get(&file.plan.id).cloned(),
@@ -579,9 +577,8 @@ impl PlanEngine {
         })
     }
 
-    /// Invariant: unnamed resolution finds the Active root, else the newest
-    /// finished root still carrying a Failed todo — the §9 ladder's target. A
-    /// root with no Failed todo never matches, so finished work stays closed.
+    /// Invariant: unnamed resolution finds the Active root, else the newest finished root
+    /// still carrying a Failed todo; without one it never matches, so closed work stays shut.
     fn resolve(&self, plan: Option<PlanId>) -> Result<PlanId, PlanOpError> {
         if let Some(id) = plan {
             return Ok(id);
@@ -653,9 +650,8 @@ impl PlanEngine {
             .sum())
     }
 
-    /// Invariant: every todo state write goes through here, so any transition
-    /// out of Running for a delegated todo reaps the child and hands its
-    /// host-minted product to the new state — no exit can forget the reap.
+    /// Invariant: every todo state write goes through here, so any exit from Running for a
+    /// delegated todo reaps the child and hands its product on; no exit can forget it.
     fn step_todo<F>(
         &self,
         file: &mut PlanFile,
@@ -930,9 +926,8 @@ impl PlanEngine {
         })
     }
 
-    /// Invariant: a superseded generation keeps its ledger file forever, so a
-    /// recycled todo label allocates a suffixed child id instead of overwriting
-    /// the abandoned sub-plan — the same collision rule as the root allocator.
+    /// Invariant: a superseded generation keeps its ledger file, so a recycled todo label
+    /// allocates a suffixed child id rather than overwrite the abandoned sub-plan.
     fn allocate_child(&self, base: &PlanId) -> Result<PlanId, PlanOpError> {
         if !self.store.exists(base) {
             return Ok(base.clone());
@@ -965,9 +960,8 @@ impl PlanEngine {
                 subs.push(self.store.read(&id)?);
             }
         }
-        // Invariant: every refusable check runs before the first reap, so a
-        // supersede that refuses has killed nothing; the reaps that remain are
-        // idempotent, which is what makes the refused op safe to retry.
+        // Invariant: every refusable check runs before the first reap, so a supersede that
+        // refuses has killed nothing and the idempotent reaps make a retry safe.
         let mut next = file.plan.clone();
         next.version = next.version.bump();
         next.todos = specs.into_iter().map(new_todo).collect();

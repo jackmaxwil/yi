@@ -8,8 +8,8 @@ use crate::colors::{Theme, name_accent};
 use crate::keymap::SingleKey;
 use crate::popup::{BottomView, PopupResult};
 
-/// prime-agent's in-row confirm window: long enough to be deliberate, short
-/// enough that a stray key does not stay armed while the reader looks away.
+/// In-row confirm window: long enough to be deliberate, short enough that a
+/// stray key does not stay armed while the reader looks away.
 const CONFIRM: Duration = Duration::from_secs(2);
 const BAR_CELLS: u64 = 10;
 
@@ -82,8 +82,8 @@ impl AgentsPopup {
             .map(|(index, _)| index)
     }
 
-    /// prime-agent's `/context` bar: the root's own share of its window, in ten
-    /// cells, warning once the window is most of the way gone.
+    /// The `/context` bar: the root's own share of its window, in ten cells,
+    /// warning once the window is most of the way gone.
     fn bar(&self, tokens: u64, theme: &Theme) -> Vec<Span<'static>> {
         if self.context_window == 0 {
             return Vec::new();
@@ -119,8 +119,8 @@ impl BottomView for AgentsPopup {
         let last = self.rows.len().saturating_sub(1);
         let mut group: Option<&str> = None;
         for (index, row) in self.rows.iter().enumerate() {
-            // prime-agent's `Ctrl+O show program`: the cell that made a family
-            // is shown once above it, not repeated on every child.
+            // The cell that made a family is shown once above it, not
+            // repeated on every child.
             if let Some(spawn) = row.spawn.as_deref()
                 && group != Some(spawn)
             {
@@ -211,8 +211,7 @@ impl BottomView for AgentsPopup {
 /// The view's own half of the `App`: how the family becomes rows, and what a
 /// stop does.
 impl crate::app::App {
-    /// Every child's own token use, so the column sums (prime-agent
-    /// `context-tree-format.ts`).
+    /// Every child's own token use, so the column sums.
     pub fn open_agents(&mut self) {
         let rows = self
             .task_order
@@ -253,9 +252,8 @@ impl crate::app::App {
         Some(crate::pycell::preview(code)).filter(|line| !line.is_empty())
     }
 
-    /// The host's `interrupt` ends a run by aborting the child's own session,
-    /// which the App already holds; the record it keeps besides that is the
-    /// host's either way.
+    /// The host's `interrupt` ends a run by aborting the child's own session, which the App
+    /// already holds; the record it keeps besides that is the host's either way.
     pub fn stop_child(&mut self, child_id: &str) {
         let Some(state) = self.tasks.get(child_id) else {
             return;

@@ -118,7 +118,7 @@ async fn cells_stream_error_host_request_interrupt_and_shutdown() -> TestResult 
         unregistered
             .stdout
             .contains("host request type \"mcp.refresh\" is not available in this session"),
-        "unregistered types must error prime's way: {}",
+        "unregistered types must error rather than reply: {}",
         unregistered.stdout
     );
 

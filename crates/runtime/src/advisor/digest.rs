@@ -58,9 +58,8 @@ fn is_constraint(sentence: &str) -> bool {
         || lowered.contains("actually")
 }
 
-/// User prose is ground truth, so it stays verbatim; over budget the
-/// constraint-carrying sentences survive first, then recency, and an elided
-/// span keeps the entry id as the pull handle.
+/// User prose is ground truth and stays verbatim; over budget the constraint-carrying
+/// sentences survive first, then recency, and an elided span keeps the entry id.
 pub fn truncate_user_text(text: &str, budget: usize, id: &str) -> String {
     if text.len() <= budget {
         return text.to_owned();

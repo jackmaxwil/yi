@@ -37,9 +37,8 @@ impl GitPatch {
     }
 }
 
-/// The `patch` / `added` / `removed` keys an edit or write result carries so
-/// the transcript can render a diff body instead of a one-line digest (T13).
-/// The counts are of the whole change even when the patch text is capped.
+/// The `patch` / `added` / `removed` keys an edit or write result carries so the transcript
+/// can render a diff body (T13). Counts cover the whole change even when the text is capped.
 pub fn patch_details(patch: &GitPatch) -> Value {
     let (added, removed) = patch.stats();
     json!({
@@ -83,9 +82,8 @@ pub fn patch(pre: &str, post: &str, path: &Path) -> GitPatch {
     GitPatch(out)
 }
 
-/// Line numbers in `post` that `pre` does not already have, one per added or
-/// replaced line. A deletion reports the line that closed over it, so a hunk
-/// that only removes text still has somewhere to anchor.
+/// Line numbers in `post` that `pre` lacks, one per added or replaced line. A deletion
+/// reports the line that closed over it, so a removal-only hunk still has an anchor.
 pub fn changed_after_lines(pre: &str, post: &str) -> Vec<u64> {
     if pre == post {
         return Vec::new();

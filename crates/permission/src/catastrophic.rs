@@ -63,9 +63,8 @@ impl CatastrophicContext {
     }
 }
 
-/// Never touches the filesystem: canonicalize() fails on the file being created,
-/// and a hostile argument cannot slow a lexical pass down. Not symlink-aware —
-/// the write-time symlink recheck (T10) is the compensating layer.
+/// Never touches the filesystem: canonicalize() fails on a file being created and a hostile
+/// argument cannot slow a lexical pass. The write-time symlink recheck (T10) compensates.
 pub fn lexical_normalize(path: &Path) -> PathBuf {
     let mut out = PathBuf::new();
     for component in path.components() {
@@ -148,9 +147,8 @@ pub fn is_catastrophic(path: &Path, context: &CatastrophicContext) -> bool {
 
 const DESTRUCTIVE_COMMANDS: [&str; 4] = ["rm", "rmdir", "shred", "unlink"];
 
-/// A key read into the transcript has already left the machine, so the
-/// credential stores are read-gated as well as destruction-denied. Path-shaped
-/// arguments only: this reads a command, it does not run one.
+/// A key read into the transcript has already left the machine, so credential stores are
+/// read-gated too. Path-shaped arguments only: this reads a command, it does not run one.
 pub fn command_reads_credentials(command: &str, context: &CatastrophicContext) -> Option<String> {
     let home = context.home_dir.as_ref()?;
     let protected: Vec<PathBuf> = PROTECTED_CREDENTIAL_SUBPATHS
@@ -188,9 +186,8 @@ pub fn command_targets_catastrophic(
         if token.starts_with('-') {
             continue;
         }
-        // Incident: `rm -rf /` trimmed to an empty path that expanded to the
-        // working directory, and `rm -rf .git` was skipped for having no
-        // slash. Every non-flag argument is a candidate path now.
+        // Incident: `rm -rf /` trimmed to an empty path that expanded to the working dir and
+        // `rm -rf .git` was skipped for having no slash. Every non-flag argument counts now.
         let trimmed = token.trim_end_matches(['*', '/']);
         let bare = match (trimmed.is_empty(), token.starts_with('/')) {
             (false, _) => trimmed,

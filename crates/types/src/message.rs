@@ -32,9 +32,8 @@ pub enum Content {
     },
 }
 
-/// D25: who a user-role message actually came from. Absent means
-/// [`Attribution::Unproven`], so every message written before this field and
-/// every host-minted one is unresolvable by `user://`.
+/// D25: who a user-role message actually came from. Absent means [`Attribution::Unproven`],
+/// so older messages and host-minted ones are unresolvable by `user://`.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum Attribution {
@@ -93,9 +92,8 @@ pub struct Usage {
     // would fail to load those session files.
     pub total_tokens: i64,
     pub cost: Cost,
-    // A provider that reported no usage object at all, as opposed to one that
-    // reported zeros. Absent means known, so files written before the field
-    // re-serialize byte-identically.
+    // A provider that reported no usage object at all, as opposed to one reporting zeros.
+    // Absent means known, so files written before the field re-serialize byte-identically.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub unknown: bool,
 }

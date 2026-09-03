@@ -5,6 +5,7 @@ use std::error::Error;
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
+use std::thread::JoinHandle;
 
 use serde_json::{Value, json};
 use yi_console::{ConsoleOptions, DriveOptions, parse_script, run_headless};
@@ -12,7 +13,7 @@ use yi_console::{ConsoleOptions, DriveOptions, parse_script, run_headless};
 type TestResult = Result<(), Box<dyn Error>>;
 type Responder = fn(&Value) -> Vec<Value>;
 
-enum Fx {
+enum Step {
     /// Wait for a request whose method matches; reply with the responder's
     /// frames. Non-matching requests get a generic empty reply.
     Expect(&'static str, Responder),
@@ -80,7 +81,7 @@ fn read_request(reader: &mut BufReader<UnixStream>) -> Option<Value> {
     }
 }
 
-fn fixture_loop(listener: &UnixListener, script: Vec<Fx>) -> Result<(), String> {
+fn fixture_loop(listener: &UnixListener, script: Vec<Step>) -> Result<(), String> {
     let accept = |listener: &UnixListener| -> Result<(UnixStream, BufReader<UnixStream>), String> {
         let stream = listener
             .accept()
@@ -96,7 +97,7 @@ fn fixture_loop(listener: &UnixListener, script: Vec<Fx>) -> Result<(), String> 
     let (mut stream, mut reader) = accept(listener)?;
     for step in script {
         match step {
-            Fx::Expect(method, respond) => loop {
+            Step::Expect(method, respond) => loop {
                 let Some(frame) = read_request(&mut reader) else {
                     return Err(format!("connection ended while expecting {method}"));
                 };
@@ -111,15 +112,15 @@ fn fixture_loop(listener: &UnixListener, script: Vec<Fx>) -> Result<(), String> 
                     write_frame(&mut stream, &reply)?;
                 }
             },
-            Fx::Push(frames) => {
+            Step::Push(frames) => {
                 for frame in frames() {
                     write_frame(&mut stream, &frame)?;
                 }
             }
-            Fx::Close => {
+            Step::Close => {
                 let _ = stream.shutdown(std::net::Shutdown::Both);
             }
-            Fx::Accept => {
+            Step::Accept => {
                 (stream, reader) = accept(listener)?;
             }
         }
@@ -134,9 +135,8 @@ fn fixture_loop(listener: &UnixListener, script: Vec<Fx>) -> Result<(), String> 
     Ok(())
 }
 
-/// Run the fixture script on its own thread; its Result surfaces through the
-/// join in `run` so a protocol mismatch fails the test with evidence.
-fn spawn_fixture(socket: PathBuf, script: Vec<Fx>) -> std::thread::JoinHandle<Result<(), String>> {
+/// Its Result surfaces through the join in `run`, so a protocol mismatch fails with evidence.
+fn spawn_fixture(socket: PathBuf, script: Vec<Step>) -> JoinHandle<Result<(), String>> {
     std::thread::spawn(move || {
         let _ = std::fs::remove_file(&socket);
         let listener =
@@ -157,7 +157,7 @@ fn init_reply(frame: &Value) -> Vec<Value> {
     )]
 }
 
-fn run(name: &str, fixture: Vec<Fx>, script: &str) -> TestResult {
+fn run(name: &str, fixture: Vec<Step>, script: &str) -> TestResult {
     let socket = scratch_socket(name);
     let server = spawn_fixture(socket.clone(), fixture);
     let steps = parse_script(script)?;
@@ -303,9 +303,9 @@ fn attach_lists_sessions_with_ledger_status() -> TestResult {
     run(
         "attach",
         vec![
-            Fx::Expect("initialize", init_reply),
-            Fx::Expect("session/list", two_session_list),
-            Fx::Expect("session/list", ledger_list),
+            Step::Expect("initialize", init_reply),
+            Step::Expect("session/list", two_session_list),
+            Step::Expect("session/list", ledger_list),
         ],
         "wait-frame 5000 ● connected\n\
          wait-frame 5000 s-alpha\n\
@@ -320,12 +320,12 @@ fn resume_replays_and_prompt_streams() -> TestResult {
     run(
         "resume",
         vec![
-            Fx::Expect("initialize", init_reply),
-            Fx::Expect("session/list", two_session_list),
-            Fx::Expect("session/list", empty_list),
-            Fx::Expect("session/resume", resume_alpha),
-            Fx::Expect("_yi/seen", seen_ok),
-            Fx::Expect("session/prompt", prompt_stream),
+            Step::Expect("initialize", init_reply),
+            Step::Expect("session/list", two_session_list),
+            Step::Expect("session/list", empty_list),
+            Step::Expect("session/resume", resume_alpha),
+            Step::Expect("_yi/seen", seen_ok),
+            Step::Expect("session/prompt", prompt_stream),
         ],
         "wait-frame 5000 s-alpha\n\
          key enter\n\
@@ -375,17 +375,17 @@ fn reconnect_wipes_and_replays() -> TestResult {
     run(
         "reconnect",
         vec![
-            Fx::Expect("initialize", init_reply),
-            Fx::Expect("session/list", two_session_list),
-            Fx::Expect("session/list", empty_list),
-            Fx::Expect("session/resume", resume_alpha),
-            Fx::Expect("_yi/seen", seen_ok),
-            Fx::Close,
-            Fx::Accept,
-            Fx::Expect("initialize", init_reply),
+            Step::Expect("initialize", init_reply),
+            Step::Expect("session/list", two_session_list),
+            Step::Expect("session/list", empty_list),
+            Step::Expect("session/resume", resume_alpha),
+            Step::Expect("_yi/seen", seen_ok),
+            Step::Close,
+            Step::Accept,
+            Step::Expect("initialize", init_reply),
             // The second replay carries different text: seeing it WITHOUT the
             // first replay's text proves the wipe-and-replay contract.
-            Fx::Expect("session/resume", resume_alpha_again),
+            Step::Expect("session/resume", resume_alpha_again),
         ],
         "wait-frame 5000 s-alpha\n\
          key enter\n\
@@ -401,13 +401,13 @@ fn permission_request_blocks_then_answers() -> TestResult {
     run(
         "permission",
         vec![
-            Fx::Expect("initialize", init_reply),
-            Fx::Expect("session/list", two_session_list),
-            Fx::Expect("session/list", empty_list),
-            Fx::Expect("session/resume", resume_alpha),
-            Fx::Expect("_yi/seen", seen_ok),
-            Fx::Push(permission_request),
-            Fx::Expect("<response>", permission_answer),
+            Step::Expect("initialize", init_reply),
+            Step::Expect("session/list", two_session_list),
+            Step::Expect("session/list", empty_list),
+            Step::Expect("session/resume", resume_alpha),
+            Step::Expect("_yi/seen", seen_ok),
+            Step::Push(permission_request),
+            Step::Expect("<response>", permission_answer),
         ],
         "wait-frame 5000 s-alpha\n\
          key enter\n\
@@ -425,11 +425,11 @@ fn splits_zoom_tabs_and_prefix() -> TestResult {
     run(
         "splits",
         vec![
-            Fx::Expect("initialize", init_reply),
-            Fx::Expect("session/list", two_session_list),
-            Fx::Expect("session/list", empty_list),
-            Fx::Expect("session/resume", resume_alpha),
-            Fx::Expect("_yi/seen", seen_ok),
+            Step::Expect("initialize", init_reply),
+            Step::Expect("session/list", two_session_list),
+            Step::Expect("session/list", empty_list),
+            Step::Expect("session/resume", resume_alpha),
+            Step::Expect("_yi/seen", seen_ok),
         ],
         // Open a session, split right, split down, walk focus, zoom in and
         // out, close a pane, then a second tab via the ctrl+b prefix.
@@ -462,10 +462,10 @@ fn navigator_filters_and_opens() -> TestResult {
     run(
         "navigator",
         vec![
-            Fx::Expect("initialize", init_reply),
-            Fx::Expect("session/list", two_session_list),
-            Fx::Expect("session/list", empty_list),
-            Fx::Expect("session/resume", |frame| {
+            Step::Expect("initialize", init_reply),
+            Step::Expect("session/list", two_session_list),
+            Step::Expect("session/list", empty_list),
+            Step::Expect("session/resume", |frame| {
                 vec![
                     update(
                         "s-beta",
@@ -475,7 +475,7 @@ fn navigator_filters_and_opens() -> TestResult {
                     ok(frame, json!({"sessionId": "s-beta", "configOptions": []})),
                 ]
             }),
-            Fx::Expect("_yi/seen", seen_ok),
+            Step::Expect("_yi/seen", seen_ok),
         ],
         "wait-frame 5000 s-alpha\n\
          key alt-/\n\
@@ -494,9 +494,9 @@ fn tiny_terminal_survives_splits() -> TestResult {
     let server = spawn_fixture(
         socket.clone(),
         vec![
-            Fx::Expect("initialize", init_reply),
-            Fx::Expect("session/list", two_session_list),
-            Fx::Expect("session/list", empty_list),
+            Step::Expect("initialize", init_reply),
+            Step::Expect("session/list", two_session_list),
+            Step::Expect("session/list", empty_list),
         ],
     );
     let steps = parse_script(
@@ -539,11 +539,11 @@ fn mouse_focuses_opens_and_drags() -> TestResult {
     run(
         "mouse",
         vec![
-            Fx::Expect("initialize", init_reply),
-            Fx::Expect("session/list", two_session_list),
-            Fx::Expect("session/list", empty_list),
-            Fx::Expect("session/resume", resume_alpha),
-            Fx::Expect("_yi/seen", seen_ok),
+            Step::Expect("initialize", init_reply),
+            Step::Expect("session/list", two_session_list),
+            Step::Expect("session/list", empty_list),
+            Step::Expect("session/resume", resume_alpha),
+            Step::Expect("_yi/seen", seen_ok),
         ],
         // Click the first sidebar row to open it, split, click the right
         // pane, then prove focus moved there by submitting into it.
@@ -570,18 +570,18 @@ fn background_session_notifies_after_delay() -> TestResult {
     run(
         "notify",
         vec![
-            Fx::Expect("initialize", init_reply),
-            Fx::Expect("session/list", two_session_list),
-            Fx::Expect("session/list", empty_list),
-            Fx::Expect("session/resume", resume_alpha),
-            Fx::Expect("_yi/seen", seen_ok),
-            Fx::Expect("session/resume", |frame| {
+            Step::Expect("initialize", init_reply),
+            Step::Expect("session/list", two_session_list),
+            Step::Expect("session/list", empty_list),
+            Step::Expect("session/resume", resume_alpha),
+            Step::Expect("_yi/seen", seen_ok),
+            Step::Expect("session/resume", |frame| {
                 vec![ok(
                     frame,
                     json!({"sessionId": "s-beta", "configOptions": []}),
                 )]
             }),
-            Fx::Expect("_yi/seen", |frame| {
+            Step::Expect("_yi/seen", |frame| {
                 vec![
                     ok(frame, json!({})),
                     // s-alpha finishes while s-beta holds focus: this must
@@ -632,12 +632,12 @@ fn notebook_pane_shows_cells_and_image_placeholder() -> TestResult {
     run(
         "notebook",
         vec![
-            Fx::Expect("initialize", init_reply),
-            Fx::Expect("session/list", two_session_list),
-            Fx::Expect("session/list", empty_list),
-            Fx::Expect("session/resume", resume_alpha),
-            Fx::Expect("_yi/seen", seen_ok),
-            Fx::Expect("session/prompt", |frame| {
+            Step::Expect("initialize", init_reply),
+            Step::Expect("session/list", two_session_list),
+            Step::Expect("session/list", empty_list),
+            Step::Expect("session/resume", resume_alpha),
+            Step::Expect("_yi/seen", seen_ok),
+            Step::Expect("session/prompt", |frame| {
                 let mut frames = vec![ok(frame, json!({}))];
                 frames.extend(ipython_updates());
                 frames
@@ -671,9 +671,9 @@ fn markdown_viewer_pane_renders_file() -> TestResult {
     run(
         "mdview",
         vec![
-            Fx::Expect("initialize", init_reply),
-            Fx::Expect("session/list", two_session_list),
-            Fx::Expect("session/list", empty_list),
+            Step::Expect("initialize", init_reply),
+            Step::Expect("session/list", two_session_list),
+            Step::Expect("session/list", empty_list),
         ],
         &format!(
             "wait-frame 5000 s-alpha\n\
@@ -703,15 +703,15 @@ fn reconnect_reuses_offset_and_skips_replay() -> TestResult {
     run(
         "offset",
         vec![
-            Fx::Expect("initialize", init_reply),
-            Fx::Expect("session/list", two_session_list),
-            Fx::Expect("session/list", empty_list),
-            Fx::Expect("session/resume", resume_with_offset),
-            Fx::Expect("_yi/seen", seen_ok),
-            Fx::Close,
-            Fx::Accept,
-            Fx::Expect("initialize", init_reply),
-            Fx::Expect("session/resume", |frame| {
+            Step::Expect("initialize", init_reply),
+            Step::Expect("session/list", two_session_list),
+            Step::Expect("session/list", empty_list),
+            Step::Expect("session/resume", resume_with_offset),
+            Step::Expect("_yi/seen", seen_ok),
+            Step::Close,
+            Step::Accept,
+            Step::Expect("initialize", init_reply),
+            Step::Expect("session/resume", |frame| {
                 // Nothing streamed since replayedTo=2 landed, so the client
                 // must skip ahead instead of wiping; the marker only appears
                 // on the offset path.
@@ -745,11 +745,11 @@ fn live_update_invalidates_offset() -> TestResult {
     run(
         "offset-invalid",
         vec![
-            Fx::Expect("initialize", init_reply),
-            Fx::Expect("session/list", two_session_list),
-            Fx::Expect("session/list", empty_list),
-            Fx::Expect("session/resume", resume_with_offset),
-            Fx::Expect("_yi/seen", |frame| {
+            Step::Expect("initialize", init_reply),
+            Step::Expect("session/list", two_session_list),
+            Step::Expect("session/list", empty_list),
+            Step::Expect("session/resume", resume_with_offset),
+            Step::Expect("_yi/seen", |frame| {
                 vec![
                     ok(frame, json!({})),
                     // A live update past the offset makes it stale.
@@ -760,10 +760,10 @@ fn live_update_invalidates_offset() -> TestResult {
                     ),
                 ]
             }),
-            Fx::Close,
-            Fx::Accept,
-            Fx::Expect("initialize", init_reply),
-            Fx::Expect("session/resume", |frame| {
+            Step::Close,
+            Step::Accept,
+            Step::Expect("initialize", init_reply),
+            Step::Expect("session/resume", |frame| {
                 let from = frame.pointer("/params/replayFrom").and_then(Value::as_u64);
                 let mut frames = Vec::new();
                 if from == Some(0) {

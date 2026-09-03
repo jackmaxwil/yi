@@ -69,9 +69,8 @@ fn enumerations(prompt: &str) -> i32 {
     i32::try_from(count).unwrap_or(i32::MAX).min(4)
 }
 
-/// Invariant: the persisted route row reads these fields, so the scorer and
-/// the telemetry cannot disagree — a Python mirror of the scoring would be a
-/// shadow model that drifts from the constant it is fitting.
+/// Invariant: the persisted route row reads these fields, so the scorer and the telemetry
+/// cannot disagree; a Python mirror would be a shadow model that drifts from the constant.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Features {
     pub words: usize,

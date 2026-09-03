@@ -11,7 +11,7 @@ status:  PROPOSAL. Self-contained capstone of the 2026-08-31 design sessions.
 date:    2026-08-31
 inputs:  benchmarks read from source (terminal-bench v4.0.0, arc_agi 0.9.1,
          arcengine 0.9.3, harbor, SWE-Atlas) · can1357/oh-my-pi (todo.ts,
-         todo-tracker.ts, task prompts) · primeintellect-ai/prime-agent
+         todo-tracker.ts, task prompts) · primeintellect-ai/the reference
          main@9f5edc1 + branches (rlm/repl.md, SwarmRolePolicy, rlm-ledger)
          · arXiv 2604.11378 (SGH), 2311.05772 (ADaPT), 2312.04511
          (LLMCompiler), 2502.14563, 2510.25320 · Yi ground truth:
@@ -66,7 +66,7 @@ The ontology is `GOAL → PLAN → TODO → (PLAN → TODO)`. GOAL is the why �
 already a session fact (G2, D25) that no message can redirect; it survives
 every replan. PLAN is one version of the how. TODO is the atom. TODO and
 PLAN alternate: a plan contains todos; a todo may open at most one
-sub-plan. The critical split, learned from omp: the **ledger row is soft**
+sub-plan. The critical split, learned from the reference: the **ledger row is soft**
 (labels, discovered and edited constantly) and the **hand-off is hard**
 (acceptance mandatory, because a child is about to run blind on it). They
 are different objects.
@@ -181,7 +181,7 @@ schemes:
 | `kernel://<agent>/<var>` | a variable in any agent's kernel namespace; owner elided = the plan owner's. B14 result collection, the tasking bus, the post-compaction peek, and live ipython inspection are all this one fetch |
 | `plan://<plan>[/<todo label>]` | a plan, or one todo's state + prose + output |
 | `agent://<plan>/<todo label>` | a live delegation's trace and current output. Children have no names: they are addressed by the todo they execute — the plan is the roster, and a second naming scheme is a shadow model of the first. `agent://main` is the root |
-| `history://<agent>[/<entry>]` | transcripts and entries — a cited decision, a compaction summary, the advisor's digest ids (omp precedent) |
+| `history://<agent>[/<entry>]` | transcripts and entries — a cited decision, a compaction summary, the advisor's digest ids (the reference precedent) |
 | `checkpoint://<tree>/<path>` | a file as it was at a shadow-gitdir capture (T14); last-good plan recovery is a fetch of this |
 | `mcp://<server>/<resource>` | MCP resources — URI-addressed in the protocol already, fetched through the one-shot CLI |
 | `user://<n>` | the n-th user message, verbatim — resolves only for entries with genuine user attribution, so a fetched `user://` is unforgeable authority |
@@ -231,7 +231,7 @@ objects, the fetch-hash for everything else. Three rules, one mechanism:
   what it fetched, in the live form it fetched it. The resolver's log
   already holds the tree, tag, and hash of everything it served; the
   host rewrites citations to their pinned forms at the terminal seam. No
-  model ever produces or echoes a hash — the omp id-lesson applied to
+  model ever produces or echoes a hash — the reference id-lesson applied to
   cryptography.
 - **A citation absent from the fetch log is an unbacked claim.** The
   child cited something it never read; the lookup fails and the claim is
@@ -321,7 +321,7 @@ Blocked stores its discriminant inline (`blocked: {on: user, note: …}`).
 Frontmatter ≤ 32 KiB. Body: one `## <todo label>` section per todo that
 needs prose.
 
-**The tool.** One `plan` tool, `op` parameter, omp's shape. Addressing by
+**The tool.** One `plan` tool, `op` parameter, the reference's shape. Addressing by
 verbatim label. `view` returns the windowed frontier; `view: full` the
 whole tree. The owner gets mutating ops; anyone else is refused with
 "propose to the owner" — proposals travel as messages (B6), never through
@@ -356,7 +356,7 @@ the manual path.
   30 min) and a pass becomes a host-attributed `unblock`. No probe → nudge
   the owner at the cap interval.
 - Loop constants (nudge threshold, nudges/cycle, reminder budget) inherit
-  omp's shipped values, named once, refit offline on task-shape features —
+  the reference's shipped values, named once, refit offline on task-shape features —
   never per benchmark.
 - Multi-root workspaces: the primary root owns `.yi/plans/`.
 - Depth-2 visibility: pull the full tree freely; the pushed context is
@@ -385,7 +385,7 @@ conflicts, carried forward where it agrees:
 
 ## 4. The ops and the two granularities
 
-omp's vocabulary, extended for the DAG:
+the reference's vocabulary, extended for the DAG:
 
 | op | effect |
 |---|---|
@@ -462,14 +462,14 @@ content; topology decides eligibility.
   communication have no op on Plan or Todo at all; they exist only on
   main's session, whoever decomposed.
 
-## 6. Coupling to the loop (omp's proven mechanics, kept)
+## 6. Coupling to the loop (the reference's proven mechanics, kept)
 
 - **Eager init**, forced via `tool_choice` on multi-step work; skipped
   when the prompt is a question. Cover the whole request, investigation
   through verification; every user-enumerated item its own todo.
 - **Never a solo ledger call** — ops batch with real work in the turn.
 - **Work-triggered nudge**: N mutating tool calls without a ledger touch
-  (omp ships 12) fires one hidden reconciliation nudge, at most twice per
+  (the reference ships 12) fires one hidden reconciliation nudge, at most twice per
   prompt cycle. Divergence is an event, not a timer.
 - **Stop interception**: a terminal turn with open todos gets a bounded
   reminder and a forced continuation — suppressed when genuinely asking
@@ -477,7 +477,7 @@ content; topology decides eligibility.
   whose `on` discriminant decides posture (child: keep working; user: end
   the turn and ask; external: check on a cadence).
 - **The plan is the compaction spine**: rehydrated from its file (§3.1),
-  re-injected windowed, with omp's staleness protocol — before substantial
+  re-injected windowed, with the reference's staleness protocol — before substantial
   work, compare the next action against the frontier; fix the ledger
   first.
 - The TUI tree and statusline render the ledger directly (U20 stays a
@@ -486,13 +486,13 @@ content; topology decides eligibility.
 
 ## 7. The kernel underneath
 
-- **IPython, long-term.** prime-agent v0.9.0 replaced its Jupyter kernel
+- **IPython, long-term.** the reference v0.9.0 replaced its Jupyter kernel
   with a stdio CPython REPL (2.7× per command, 14× boot); YI_DESIGN §8.9.1
   records Yi's investigation and rejection. The numbers do not price Yi's
   loop: it is model-bound, inner loops run *inside* the kernel (one
   execute, many actions), kernels boot lazily so a child that never
   touches one never pays one, and a single warm kernel makes the first
-  boot perceived-zero — while IPython keeps giving free what prime now
+  boot perceived-zero — while IPython keeps giving free what the reference now
   hand-maintains (interrupts, per-cell output attribution, fd hygiene).
   The async `bash()` handle API (`h = bash(cmd)`; `h.tail/poll/kill`;
   `await h`) runs on the IPython kernel as it stands and is the
@@ -536,8 +536,8 @@ plan-immutable-within-a-version commitments exactly.
 
 | source | what it confirms |
 |---|---|
-| omp (production) | the ledger/delegation split; auto-promotion; work-triggered nudges; stop interception; content-as-identity |
-| prime-agent (production) | pull over broadcast for peers; single-writer ledger with derived topology; one status formula per fleet; per-child caps as typed spawn data |
+| the reference (production) | the ledger/delegation split; auto-promotion; work-triggered nudges; stop interception; content-as-identity |
+| the reference (production) | pull over broadcast for peers; single-writer ledger with derived topology; one status formula per fleet; per-child caps as typed spawn data |
 | SGH 2604.11378 | versioned immutable plans; bounded escalation; deterministic multi-ready dispatch |
 | ADaPT | decompose on failure, as deep as the executor needs — and no deeper |
 | LLMCompiler 2312.04511 | dispatch the whole ready set |

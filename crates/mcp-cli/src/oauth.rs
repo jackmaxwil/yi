@@ -65,9 +65,8 @@ pub struct Discovered {
     pub iss_required: bool,
 }
 
-/// RFC 9728 → RFC 8414 discovery (D37). The authorization server metadata is
-/// validated for issuer binding (codex lesson): issuer must be present and
-/// endpoint origins must be https (or loopback for tests).
+/// RFC 9728 → RFC 8414 discovery (D37). Server metadata is validated for issuer binding:
+/// issuer must be present and endpoint origins https (or loopback for tests).
 pub fn discover(agent: &ureq::Agent, server_url: &str) -> Result<Discovered, String> {
     let resource_metadata_url = match agent.get(server_url).call() {
         Err(ureq::Error::Status(401, response)) => response
@@ -395,9 +394,8 @@ fn expired(tokens: &McpTokenSet) -> bool {
     tokens.expires_at_ms != 0 && now_ms().saturating_add(EXPIRY_SLACK_MS) >= tokens.expires_at_ms
 }
 
-/// Returns a live access token for the profile, refreshing under the
-/// cross-process lock when expired. Re-reads the store inside the lock — the
-/// other process may have already refreshed.
+/// Returns a live access token for the profile, refreshing under the cross-process lock when
+/// expired. Re-reads the store inside the lock: another process may have refreshed.
 pub fn access_token(
     agent: &ureq::Agent,
     profile: &McpOauthProfile,

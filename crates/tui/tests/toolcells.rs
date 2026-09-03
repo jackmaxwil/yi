@@ -74,8 +74,8 @@ fn ended(app: &mut App, id: &str, tool: &str, text: &str) {
     });
 }
 
-/// Eight rows of looking crowds out the answer that follows it; codex groups
-/// the run under one bullet with a verb column.
+/// Eight rows of looking crowds out the answer that follows it, so the run
+/// groups under one bullet with a verb column.
 #[test]
 fn a_run_of_read_only_calls_commits_as_one_cell() -> TestResult {
     let mut app = app();
@@ -204,8 +204,8 @@ fn edit_cell(path: &str) -> ToolCell {
     }
 }
 
-/// opencode's rule: a blank separates blocks, and a run of one-line calls packs
-/// flush. Both halves matter — always blank is as wrong as never blank.
+/// A blank separates blocks and a run of one-line calls packs flush. Both
+/// halves matter: always blank is as wrong as never blank.
 #[test]
 fn spacing_separates_blocks_but_not_one_line_rows() -> TestResult {
     let mut rows = app();

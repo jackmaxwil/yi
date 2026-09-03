@@ -66,9 +66,8 @@ pub fn negotiate(protocol_version: u64) -> Result<u16, String> {
 
 type PendingAsks = Arc<Mutex<HashMap<String, std::sync::mpsc::Sender<Value>>>>;
 
-/// The request is written synchronously BEFORE blocking, and the stdin reader
-/// thread routes the response into the std channel: the blocked executor thread
-/// is never needed to receive it, so a current-thread runtime cannot deadlock.
+/// Written synchronously BEFORE blocking, with the stdin reader thread routing the response
+/// into the std channel, so a current-thread runtime cannot deadlock waiting on itself.
 pub fn bridge_asker(session_id: String, sink: LineSink, pending: PendingAsks) -> Asker {
     let counter = Arc::new(Mutex::new(0_u64));
     Arc::new(move |ask: &yi_runtime::PermissionAsk<'_>| {
@@ -540,9 +539,8 @@ impl AcpState {
         (self.sink)(&update_notification(session_id, update));
     }
 
-    /// Design C6: the stored branch replayed as `session/update`s. `from`
-    /// skips entries a client already holds (valid only when it saw nothing
-    /// since); returns the total entry count as the next `replayedTo`.
+    /// Design C6: the stored branch replayed as `session/update`s. `from` skips entries the
+    /// client holds (valid only if it saw nothing since); returns the next `replayedTo`.
     fn replay(&mut self, session_id: &str, from: u64) -> Result<u64, (i64, String)> {
         let Some(handle) = self.sessions.get(session_id) else {
             return Ok(0);

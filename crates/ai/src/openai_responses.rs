@@ -66,9 +66,8 @@ fn convert_user(content: &UserContent) -> Option<Value> {
     }
 }
 
-/// The one raw argument a freeform (custom) tool call carries. C8 scopes
-/// freeform to the hashline edit tool; thread a per-tool key when a second
-/// freeform tool exists.
+/// The one raw argument a freeform (custom) tool call carries. C8 scopes freeform to the
+/// hashline edit tool; thread a per-tool key when a second freeform tool exists.
 const FREEFORM_ARGUMENT: &str = "patch";
 
 fn convert_assistant(

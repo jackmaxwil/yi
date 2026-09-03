@@ -86,16 +86,14 @@ pub struct RuntimeWiring {
     /// `kernel.prewarm` (default true): boot the kernel in the background at
     /// session open. Children never prewarm — they spawn to run a cell now.
     pub kernel_prewarm: bool,
-    /// Invariant: only yi-cli may see yi-mcp-cli, so `mcp://` reaches a server
-    /// through a reader the composition root supplies; absent, the scheme
-    /// refuses rather than opening a socket the kernel must never hold.
+    /// Invariant: only yi-cli may see yi-mcp-cli, so `mcp://` reaches a server through a
+    /// reader the root supplies; absent, the scheme refuses rather than opening a socket.
     pub mcp_read: Option<Arc<dyn crate::fetch::McpResourceRead>>,
     /// The session corpus root, so `history://<session-id>` reaches a run other
     /// than this one; absent, the corpus is this session and its live children.
     pub sessions_dir: Option<PathBuf>,
-    /// Invariant: created once at the composition root and carried down every
-    /// child, because `kernel://<child>/var` is a parent reading a namespace
-    /// that is not its own — a map per session can only ever answer itself.
+    /// Invariant: created once at the composition root and carried down every child, because
+    /// `kernel://<child>/var` reads another session's namespace; a per-session map cannot.
     pub kernels: Arc<crate::fetch::KernelServiceMap>,
 }
 
@@ -481,9 +479,8 @@ pub fn attach_runtime(session: &mut AgentSession, mut wiring: RuntimeWiring) -> 
     host
 }
 
-/// §12: the ledger names what is still load-bearing at every compaction, and
-/// the summarizer disposes. Read per compaction, never stored, so a directive
-/// cannot go stale between the schedule and the call.
+/// §12: the ledger names what is load-bearing at every compaction and the summarizer
+/// disposes. Read per compaction, never stored, so a directive cannot go stale.
 fn wire_plan_compaction(session: &AgentSession, plans_dir: &Path) {
     let Some(compactor) = session.compactor() else {
         return;

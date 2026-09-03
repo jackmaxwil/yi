@@ -13,6 +13,7 @@ from _common import ROOT, BASE, src_files, fail, FREE_BAND as FREE
 DROW = 2000
 BASELINE = BASE / "src_loc.json"
 ARCH = ROOT / "docs/ARCHITECTURE.md"
+LOG = ROOT / "docs/CHANGELOG.md"
 VERSION = re.compile(r"^version:\s*(\S+)", re.M)
 MEMO = re.compile(r"growth \+(\d+):")
 CITE = re.compile(r"\bD\d+\b")
@@ -52,7 +53,7 @@ def version_at(rev):
 
 
 def changelog_row(version):
-    for line in ARCH.read_text().splitlines():
+    for line in LOG.read_text().splitlines():
         if line.startswith(f"| {version} |"):
             return line
     return None

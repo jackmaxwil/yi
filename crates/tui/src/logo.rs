@@ -1,17 +1,15 @@
 use yi_orb::core::Dot;
 use yi_orb::{OrbFrame, OrbState, evaluate};
 
-/// The mark and the activity indicator are one object (U34). Only the dot
-/// positions interpolate — the orb engine owns every frame the working state
-/// renders, so the morph adds no second renderer.
+/// The mark and the activity indicator are one object (U34). Only the dot positions
+/// interpolate; the orb engine owns every working frame, so the morph adds no renderer.
 pub const LOGO_COLS: u16 = 8;
 pub const LOGO_ROWS: u16 = 4;
 pub const MORPH_MS: u64 = 520;
 pub const FRAME_MS: u64 = 33;
 
-/// Incident: a settled mark stops the frame timer, so the gap since the last
-/// paint is unbounded. Turning it straight into progress let the first animating
-/// frame consume the whole morph; one frame is the most a frame can advance.
+/// Incident: a settled mark stops the frame timer, so the gap since the last paint is
+/// unbounded and raw progress let one frame consume the whole morph. A frame advances one.
 pub fn advance(phase: f64, target: f64, elapsed: std::time::Duration) -> f64 {
     let max = FRAME_MS as f64 / MORPH_MS as f64;
     let elapsed_ms = elapsed.as_secs_f64() * 1000.0;
@@ -86,9 +84,8 @@ fn resample(dots: &[Dot], count: usize) -> Vec<Dot> {
         .collect()
 }
 
-/// The target is the orb's own live frame the whole way, never an intermediate
-/// preset. Pairing decides rearrangement or noise: both clouds order by angle,
-/// and the orb ordering rotates to whichever offset minimises total travel.
+/// The target is the orb's live frame throughout, never an intermediate preset. Both clouds
+/// order by angle and the orb ordering rotates to the offset minimising total travel.
 pub fn frame(phase: f64, clock: f64, size: u32) -> Option<OrbFrame> {
     let phase = phase.clamp(0.0, 1.0);
     let canvas = f64::from(size);
@@ -110,9 +107,8 @@ pub fn frame(phase: f64, clock: f64, size: u32) -> Option<OrbFrame> {
     by_angle(&mut mark, centre);
     by_angle(&mut live, centre);
     rotate_to_shortest(&mark, &mut live);
-    // Exponential ease-in (user-directed): the mark barely stirs at first and
-    // then accelerates into the orb, so the eye reads a launch rather than a
-    // constant slide.
+    // Exponential ease-in (user-directed): the mark barely stirs, then accelerates into the
+    // orb, so the eye reads a launch rather than a constant slide.
     let ease = (10.0 * phase - 10.0).exp2();
     let dots = mark
         .iter()

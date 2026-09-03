@@ -118,9 +118,8 @@ fn convert_messages(messages: &[AgentMessage], cache: bool) -> Vec<Value> {
                             index += 1;
                             continue;
                         }
-                        // D51: one shape every turn. A bare string reshapes
-                        // when it carries the breakpoint, moving the prefix
-                        // hash and re-billing the whole history.
+                        // D51: one shape every turn. A bare string reshapes when it carries
+                        // the breakpoint, moving the prefix hash and re-billing the history.
                         Value::Array(vec![text_block(text)])
                     }
                     UserContent::Blocks(blocks) => {
@@ -805,9 +804,8 @@ fn run_request(
     Ok(())
 }
 
-/// An hour of cache retention is a beta on some accounts and models. If the
-/// API refuses it, the request is retried once at the default five minutes:
-/// a shorter cache is a cost, a failed turn is an outage.
+/// An hour of cache retention is a beta on some accounts. If the API refuses it the request
+/// retries once at the default five minutes: a shorter cache is a cost, a failed turn is not.
 pub fn is_cache_retention_rejection(message: &str) -> bool {
     let lower = message.to_lowercase();
     lower.starts_with("http 400") && (lower.contains("ttl") || lower.contains("beta"))

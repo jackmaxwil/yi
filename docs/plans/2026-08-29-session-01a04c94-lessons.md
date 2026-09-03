@@ -161,8 +161,8 @@ ceiling splits at a seam rather than by line count. No `cost` field on
 and the event path makes it unnecessary.
 
 `YI_DESIGN.md:1054` (U16) specifies `$cost` without saying turn or session, and
-the port source is OMP `segments.ts:114-511`, a read-only-reference span where
-the cost segment is the session's. Read that span before implementing; if OMP
+the port source is the reference `segments.ts:114-511`, a read-only-reference span where
+the cost segment is the session's. Read that span before implementing; if the reference
 shows per-turn, this becomes a decision and needs a D-row first.
 
 ### Two prefilter features are blind to what the run actually did (`P10`)
@@ -218,7 +218,7 @@ exactly four hex characters and `patcher.rs:225,505` reads on every edit. The
 `read` description already says *"Output starts with a [path#TAG] snapshot
 header … use both to anchor edits"* and `hashline/prompt.md:4` says *"`TAG`:
 4-hex snapshot"*. The agent never misused it. Changing the format moves the edit
-protocol, its parser, `HL_FILE_HASH_EXAMPLES` and the OMP-derived fixtures, to
+protocol, its parser, `HL_FILE_HASH_EXAMPLES` and the reference-derived fixtures, to
 correct a misreading by a reader who is not the consumer. No row, and no
 additional documentation either.
 

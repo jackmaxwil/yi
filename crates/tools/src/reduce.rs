@@ -19,9 +19,8 @@ const REDUCE_FLOOR: usize = 2_048;
 /// The user asked for the whole thing; reducing answers a different question.
 const RAW_FLAGS: [&str; 6] = ["-v", "--verbose", "--nocapture", "--porcelain", "-la", "-C"];
 
-/// Every path runs through [`never_worse`], and a lossy result is tee'd so
-/// the full text stays one `read` away. `max_lines` is the caller's per-call
-/// budget: it moves the line caps, never the byte capture ceiling upstream.
+/// Every path runs through [`never_worse`] and a lossy result is tee'd, so the full text is
+/// one `read` away. `max_lines` moves the line caps, never the upstream byte ceiling.
 pub fn reduce(
     command: &str,
     stdout: &str,

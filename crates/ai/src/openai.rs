@@ -309,9 +309,8 @@ pub fn build_params(model: &Model, context: &LlmContext, options: &OpenAiOptions
     params
 }
 
-/// Invariant: callers clamp through [`Model::clamp_effort`] first, so the
-/// `null` arm is unreachable; it stays as the safe answer ([`None`] sends no
-/// reasoning) rather than a rejected level going out on the wire.
+/// Invariant: callers clamp through [`Model::clamp_effort`] first, so the `null` arm is
+/// unreachable; it stays as the safe answer rather than sending a rejected level.
 pub(crate) fn mapped_effort(model: &Model, effort: Effort) -> Option<&str> {
     let Some(map) = model.thinking_level_map.as_ref() else {
         return Some(effort.as_str());

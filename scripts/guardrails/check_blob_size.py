@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""No committed file > 512 KB outside the allowlist (codex blob-size-policy.yml)."""
+"""No committed file > 512 KB outside the allowlist."""
 import sys, subprocess, pathlib
 sys.path.insert(0, str(pathlib.Path(__file__).parent))
 from _common import ROOT, BASE, fail

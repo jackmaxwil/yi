@@ -78,14 +78,14 @@ fn disabled_config_hides_the_subcommand() -> TestResult {
 fn connect_list_call_grep_flow_matches_the_mcpc_examples() -> TestResult {
     let home = mcp_home()?;
 
-    let connect = yi_mcp(&home, &["connect", "fixture", "@fx", "--json"])?;
+    let connect = yi_mcp(&home, &["connect", "fixture", "@s", "--json"])?;
     assert_eq!(connect.code, 0, "stderr: {}", connect.stderr);
     let connected: serde_json::Value = serde_json::from_str(connect.stdout.trim())?;
-    assert_eq!(connected["session"], "@fx");
+    assert_eq!(connected["session"], "@s");
     assert_eq!(connected["state"], "live");
     assert_eq!(connected["server"]["serverInfo"]["name"], "yi-fixture");
 
-    let listed = yi_mcp(&home, &["@fx", "tools-list", "--json"])?;
+    let listed = yi_mcp(&home, &["@s", "tools-list", "--json"])?;
     assert_eq!(listed.code, 0, "stderr: {}", listed.stderr);
     let listing: serde_json::Value = serde_json::from_str(listed.stdout.trim())?;
     let names: Vec<&str> = listing["tools"]
@@ -98,7 +98,7 @@ fn connect_list_call_grep_flow_matches_the_mcpc_examples() -> TestResult {
 
     let called = yi_mcp(
         &home,
-        &["@fx", "tools-call", "echo", "message:=hello mcp", "--json"],
+        &["@s", "tools-call", "echo", "message:=hello mcp", "--json"],
     )?;
     assert_eq!(called.code, 0, "stderr: {}", called.stderr);
     let result: serde_json::Value = serde_json::from_str(called.stdout.trim())?;
@@ -106,7 +106,7 @@ fn connect_list_call_grep_flow_matches_the_mcpc_examples() -> TestResult {
 
     let added = yi_mcp(
         &home,
-        &["@fx", "tools-call", "add", "a:=2", "b:=40", "--json"],
+        &["@s", "tools-call", "add", "a:=2", "b:=40", "--json"],
     )?;
     let result: serde_json::Value = serde_json::from_str(added.stdout.trim())?;
     assert_eq!(result["content"][0]["text"], "42");
@@ -114,7 +114,7 @@ fn connect_list_call_grep_flow_matches_the_mcpc_examples() -> TestResult {
     let json_call = yi_mcp(
         &home,
         &[
-            "@fx",
+            "@s",
             "tools-call",
             "echo",
             r#"{"message":"from json"}"#,
@@ -127,13 +127,13 @@ fn connect_list_call_grep_flow_matches_the_mcpc_examples() -> TestResult {
     let grep_hit = yi_mcp(&home, &["grep", "echo", "--json"])?;
     assert_eq!(grep_hit.code, 0, "stderr: {}", grep_hit.stderr);
     let hits: serde_json::Value = serde_json::from_str(grep_hit.stdout.trim())?;
-    assert_eq!(hits[0]["sessionName"], "fx");
+    assert_eq!(hits[0]["sessionName"], "s");
     assert_eq!(hits[0]["tools"][0]["name"], "echo");
 
     let grep_miss = yi_mcp(&home, &["grep", "zebra-nonexistent"])?;
     assert_eq!(grep_miss.code, 1, "grep convention: 1 on no matches");
 
-    let ping = yi_mcp(&home, &["@fx", "ping", "--json"])?;
+    let ping = yi_mcp(&home, &["@s", "ping", "--json"])?;
     assert_eq!(ping.code, 0);
 
     std::fs::remove_dir_all(&home.home)?;
@@ -143,9 +143,9 @@ fn connect_list_call_grep_flow_matches_the_mcpc_examples() -> TestResult {
 #[test]
 fn schema_snapshot_flags_breaking_changes() -> TestResult {
     let home = mcp_home()?;
-    yi_mcp(&home, &["connect", "fixture", "@fx"])?;
+    yi_mcp(&home, &["connect", "fixture", "@s"])?;
 
-    let tool = yi_mcp(&home, &["@fx", "tools-get", "echo", "--json"])?;
+    let tool = yi_mcp(&home, &["@s", "tools-get", "echo", "--json"])?;
     assert_eq!(tool.code, 0, "stderr: {}", tool.stderr);
     let expected_path = home.home.join("expected.json");
     std::fs::write(&expected_path, tool.stdout.trim())?;
@@ -153,7 +153,7 @@ fn schema_snapshot_flags_breaking_changes() -> TestResult {
     let ok = yi_mcp(
         &home,
         &[
-            "@fx",
+            "@s",
             "tools-get",
             "echo",
             "--schema",
@@ -170,7 +170,7 @@ fn schema_snapshot_flags_breaking_changes() -> TestResult {
     let broken = yi_mcp(
         &home,
         &[
-            "@fx",
+            "@s",
             "tools-get",
             "echo",
             "--schema",
@@ -191,21 +191,21 @@ fn schema_snapshot_flags_breaking_changes() -> TestResult {
 #[test]
 fn sessions_persist_states_and_survive_close_restart() -> TestResult {
     let home = mcp_home()?;
-    yi_mcp(&home, &["connect", "fixture", "@fx"])?;
+    yi_mcp(&home, &["connect", "fixture", "@s"])?;
 
-    let closed = yi_mcp(&home, &["close", "@fx", "--json"])?;
+    let closed = yi_mcp(&home, &["close", "@s", "--json"])?;
     assert_eq!(closed.code, 0);
     let sessions: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(
         home.home.join(".yi/mcp/sessions.json"),
     )?)?;
-    assert_eq!(sessions["sessions"]["fx"]["state"], "disconnected");
+    assert_eq!(sessions["sessions"]["s"]["state"], "disconnected");
 
-    let restarted = yi_mcp(&home, &["restart", "@fx", "--json"])?;
+    let restarted = yi_mcp(&home, &["restart", "@s", "--json"])?;
     assert_eq!(restarted.code, 0, "stderr: {}", restarted.stderr);
     let sessions: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(
         home.home.join(".yi/mcp/sessions.json"),
     )?)?;
-    assert_eq!(sessions["sessions"]["fx"]["state"], "live");
+    assert_eq!(sessions["sessions"]["s"]["state"], "live");
 
     let unknown = yi_mcp(&home, &["@nope", "tools-list"])?;
     assert_eq!(unknown.code, 2);
@@ -233,10 +233,10 @@ fn skill_document_is_printed_only_by_explicit_ask() -> TestResult {
 #[test]
 fn fetch_resolves_an_mcp_url_through_the_one_shot_cli() -> TestResult {
     let home = mcp_home()?;
-    let connected = yi_mcp(&home, &["connect", "fixture", "@fx"])?;
+    let connected = yi_mcp(&home, &["connect", "fixture", "@s"])?;
     assert_eq!(connected.code, 0, "stderr: {}", connected.stderr);
 
-    let served = yi(&home, &["fetch", "mcp://fx/note://alpha"])?;
+    let served = yi(&home, &["fetch", "mcp://s/note://alpha"])?;
     assert_eq!(served.code, 0, "stderr: {}", served.stderr);
     let contents: serde_json::Value = serde_json::from_str(served.stdout.trim())?;
     assert_eq!(contents["contents"][0]["uri"], "note://alpha");
@@ -251,7 +251,7 @@ fn fetch_resolves_an_mcp_url_through_the_one_shot_cli() -> TestResult {
         unconnected.stderr
     );
 
-    let addressless = yi(&home, &["fetch", "mcp://fx"])?;
+    let addressless = yi(&home, &["fetch", "mcp://s"])?;
     assert_eq!(addressless.code, 1);
     assert!(
         addressless.stderr.contains("<server>/<resource uri>"),

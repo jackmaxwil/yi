@@ -1,7 +1,7 @@
 use yi_types::message::{AgentMessage, Content, UserContent};
 
-// Prime `utils.ts`: tool results are truncated in serialized summaries; full
-// content is not needed for summarization.
+// Tool results are truncated in serialized summaries; full content is not
+// needed for summarization.
 const TOOL_RESULT_MAX_CHARS: usize = 2000;
 
 fn truncate_for_summary(text: &str, max_chars: usize) -> String {

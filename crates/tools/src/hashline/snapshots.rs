@@ -17,16 +17,14 @@ fn merge_seen_lines(snapshot: &mut Snapshot, lines: Option<&[u64]>) {
     set.extend(lines.iter().copied());
 }
 
-// Wide sessions routinely touch far more than a few dozen files; evicting a
-// path downgrades a genuinely in-session tag to the misleading "hash is not
-// from this session" rejection. Retention is still bounded by MAX_TOTAL_BYTES.
+// Wide sessions touch far more than a few dozen files, and evicting a path downgrades a real
+// in-session tag to a misleading rejection. MAX_TOTAL_BYTES still bounds retention.
 const MAX_PATHS: usize = 256;
 const MAX_VERSIONS_PER_PATH: usize = 4;
 const MAX_TOTAL_BYTES: usize = 64 * 1024 * 1024;
 
-/// Per-path history is a short ring of full-file versions, path tracking
-/// LRU-bounded. Two texts colliding on the 16-bit tag stay separate versions:
-/// the tag is a fast index, never the identity.
+/// Per-path history is a short ring of full-file versions, path tracking LRU-bounded. Two
+/// texts colliding on the 16-bit tag stay separate: the tag indexes, it does not identify.
 #[derive(Default)]
 pub struct SnapshotStore {
     paths: Vec<(String, Vec<Snapshot>)>,
@@ -107,9 +105,8 @@ impl SnapshotStore {
         let Some((_, history)) = self.paths.first_mut() else {
             return hash;
         };
-        // Dedup requires full-text equality, not tag equality: fusing two texts
-        // that share a 4-hex tag corrupts seen-lines and lets the patcher
-        // misresolve which snapshot a section tag names (omp issue #4075).
+        // Dedup requires full-text equality, not tag equality: fusing two texts sharing a
+        // 4-hex tag corrupts seen-lines and misresolves which snapshot a tag names.
         if let Some(position) = history
             .iter()
             .position(|version| version.hash == hash && version.text == full_text)

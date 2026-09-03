@@ -12,16 +12,16 @@ status:  APPROVED 2026-08-27; steps 1–4 LANDED at 0.33.0 (D52/D53), step 6 tri
          (rides F-row Spec machinery), N9 ACP/TUI surfaces, F rows.
 date:    2026-08-27
 sources: Factory.ai "What it Takes for Coding Agents to Complete Large Software Tasks"
-         (2026-08-27) · opencode packages/codemode @ 15537a4 · omp TTSR
+         (2026-08-27) · the reference packages/codemode @ 15537a4 · the reference TTSR
          (docs/ttsr-injection-lifecycle.md, docs/rulebook-matching-pipeline.md) ·
-         codex plan.rs/plan_spec.rs/collaboration-mode-templates/plan.md @ 2026-08 clone ·
-         prime-agent core survey · dogwood-policy/dogwood (survey only) ·
+         the reference plan.rs/plan_spec.rs/collaboration-mode-templates/plan.md @ 2026-08 clone ·
+         the reference core survey · dogwood-policy/dogwood (survey only) ·
          YI_DESIGN.md §7/§8.10/§8.11/§8.17/§15/§16 ·
          ARCHITECTURE.md decision log · docs/TODOS.md
 ```
 
-The session that produced this reviewed the Factory result, the opencode code-mode
-runtime, omp's stream-rule system, and the codex/prime plan-and-goal lineage, and
+The session that produced this reviewed the Factory result, the reference code-mode
+runtime, the reference's stream-rule system, and the reference/the reference plan-and-goal lineage, and
 pressure-tested each against Yi's settled decisions. What survived is one coherent
 architecture. What died is recorded at the end, because the negative space is half
 the value.
@@ -71,20 +71,20 @@ Eight principles carry the whole design:
   expand-only completion instrument plus an information wall; budget was not the
   separator — "every single-agent campaign ended because the agent decided to end
   it." Directives crossing the wall were feature-level clusters, never raw results.
-- **codex `update_plan` @ HEAD**: still `session.send_event(EventMsg::PlanUpdate)` —
-  persists nothing, checked nowhere, and codex bans it inside its own Plan Mode
+- **the reference `update_plan` @ HEAD**: still `session.send_event(EventMsg::PlanUpdate)` —
+  persists nothing, checked nowhere, and the reference bans it inside its own Plan Mode
   ("update_plan is a TODO/checklist tool and is not allowed in Plan mode"). D26's
-  anti-lesson is current, not historical. Codex Plan Mode's *template* is the
+  anti-lesson is current, not historical. the reference Plan Mode's *template* is the
   valuable half: a **decision-complete** spec — "the implementer does not need to
   make any decisions" — with explore-before-ask discipline.
-- **prime-agent**: has no task system (goals + cron + rlm children only). Nothing to
-  port; Yi's goal module already superseded prime's via codex (D25).
-- **opencode codemode**: independent convergence on the code-mode pattern Yi ships
+- **the reference**: has no task system (goals + cron + rlm children only). Nothing to
+  port; Yi's goal module already superseded the reference's via the reference (D25).
+- **the reference codemode**: independent convergence on the code-mode pattern Yi ships
   as the kernel (§5.2/D36) — one program orchestrates tools, intermediates stay
   in-program, catalog is budgeted and honest, authority is the supplied tool tree,
   failures are data with one safe channel, three limit knobs with no library
   defaults.
-- **omp TTSR**: user-authored markdown rules with frontmatter triggers (regex/
+- **the reference TTSR**: user-authored markdown rules with frontmatter triggers (regex/
   literal `condition`, `scope: tool:edit(*.rs)`, per-rule `repeatGap` in completed
   turns), delivered as verbatim `<system-reminder>` blocks prepended to the matched
   tool's result, or as a mid-stream barge (abort + discard partial + inject +
@@ -146,7 +146,7 @@ runtime does next):
 - **Frontier continuation.** G3 generalizes: idle session + Active goal + nonempty
   frontier → the continuation prompt carries the frontier (ready tasks with their
   acceptance, blocked tasks with reasons). A turn ending with work remaining cannot
-  terminate identically to a finished plan — the exact codex failure D26 named.
+  terminate identically to a finished plan — the exact the reference failure D26 named.
 - **Anti-shrinkage at plan level.** Adding tasks is free; deleting a task or
   weakening its acceptance mid-run requires user approval (or an advisor Hold).
   Factory's "the standard must not quietly collapse around what has been built,"
@@ -189,7 +189,7 @@ F-rows, one addition):
   returning the child's structured result **into the parent's kernel namespace**,
   validated against `Task.schema` at the seam. The parent filters and aggregates N
   children's results in Python; only the digest reaches its transcript. This goes
-  beyond both refs (prime and codex deliver payloads as messages) and is codemode's
+  beyond both refs (the reference and the reference deliver payloads as messages) and is codemode's
   intermediates-stay-in-program rule applied to subagents. Blockers are fields in
   the same value, consumed by the frontier computation.
 
@@ -224,11 +224,11 @@ F-rows, one addition):
   and the plan's checks, never by touching harness verifier paths — TB2.1's judge
   zeroes reward-hacks (a top agent lost 8.99% this way).
 
-### 3.5 Rules unification — one shape, three activations (the omp borrow)
+### 3.5 Rules unification — one shape, three activations (the reference borrow)
 
 Rules and skills collapse into one canonical markdown-plus-frontmatter shape with
 three activation modes; the existing C3 skills catalog is already the middle one
-(omp's rulebook bucket confirms the design independently):
+(the reference's rulebook bucket confirms the design independently):
 
 ```
 RuleDoc { name, description?, body,
@@ -239,22 +239,22 @@ match: Literal(s) | Regex(s)      scope: text | tool:<name>(<glob>)
 ```
 
 - **Triggered + Remind**: on match, the rule body is delivered **verbatim** at the
-  next boundary (tool-source: attached to that tool's result, omp-style). The D50
+  next boundary (tool-source: attached to that tool's result, the reference-style). The D50
   thread that makes this legal: the runtime is a *matcher delivering the user's own
   standing words at the moment they apply* — not a reviewer generating judgment.
   Everything the deleted V1 signals got wrong is inverted: rules are user-authored
-  files (ship **zero** built in; omp ships 28 — Yi's universals live in the
-  doctrine fragment), matches are precise strings the author chose (omp's specimen
+  files (ship **zero** built in; the reference ships 28 — Yi's universals live in the
+  doctrine fragment), matches are precise strings the author chose (the reference's specimen
   condition is the literal `Box::leak`), the voice is the user's verbatim text, and
-  every rule carries a repeat gap in completed turns (omp default 10, `once`
+  every rule carries a repeat gap in completed turns (the reference default 10, `once`
   available).
-- **Triggered + Gate — the barge, translated.** omp barges mid-stream because it
+- **Triggered + Gate — the barge, translated.** the reference barges mid-stream because it
   matches argument *streams*; Yi's tool gate already sits after arguments complete
   and before execution, so the only barge that changes outcomes (stopping a side
   effect) is structurally free: a Gate match makes `decide()` return a
   **deny-with-guidance carrying the rule body as evidence** (D26's
   denial-carries-evidence). The model retries informed. No abort machinery, no
-  retry tokens, no resume gates. Lost relative to omp: `contextMode: discard`
+  retry tokens, no resume gates. Lost relative to the reference: `contextMode: discard`
   (the violating partial never entering context) — deferred D8-style until
   observed need.
 - A *skill* with a trigger self-advertises (fires a one-line "consider skill X"
@@ -266,7 +266,7 @@ match: Literal(s) | Regex(s)      scope: text | tool:<name>(<glob>)
 - Frontmatter is `runtime::skills::frontmatter()` — the minimal `key: value`
   parser already shipped for the C3 catalog, extended in place; a second parser is
   a duplication-budget violation. A malformed rule (bad trigger, unknown mode) is
-  skipped with a named warning, omp's behavior and the config-strictness spirit —
+  skipped with a named warning, the reference's behavior and the config-strictness spirit —
   never silently loaded, never fatal to session start.
 
 ### 3.6 Cadence reminders and the noise budget
@@ -357,7 +357,7 @@ prevention, and D44 already ruled on gates nobody declines.
 - **Orchestrate skill** — long-form method, loaded on demand: decomposition
   heuristics, delegate-vs-do thresholds, wave/DAG shaping, per-child env
   (worktree, tools, rules), search strategy, tone and verbosity contracts, with
-  worked examples as in-context learning. Donor text: codex `plan.md`'s
+  worked examples as in-context learning. Donor text: the reference `plan.md`'s
   decision-complete and explore-before-ask discipline, ported adapted; the
   mode-rules enforcement half is not ported (wrong trust model).
 
@@ -365,7 +365,7 @@ prevention, and D44 already ruled on gates nobody declines.
 
 | idea | verdict | why |
 |---|---|---|
-| `update_plan`-shaped plan tool | dead | event-only at codex HEAD; D26's "print statement with a schema" confirmed current |
+| `update_plan`-shaped plan tool | dead | event-only at the reference HEAD; D26's "print statement with a schema" confirmed current |
 | plan as a permission mode | dead | recovery-not-prevention safety story; D44 logic; planning is judgment + directive |
 | instrument-always | dead | Factory's own economics (14× credits); gated to goals, which are explicit-only |
 | wall by default | dead | Goodhart risk exists only for sampled checks; write-deny default, read-deny opt-in |
@@ -443,7 +443,7 @@ notation (S ≤ 1 day, M ≤ 3, L larger).
   ask-as-mode (`--confirm` remap, C8/H2 naming, M11 fragment count) while keeping
   ask-as-decision.
 - **One-line design-doc addendum** when convenient: §5.2's CLI-shaped MCP is the
-  code-mode pattern, independently convergent with opencode — strengthens D36's
+  code-mode pattern, independently convergent with the reference — strengthens D36's
   "the real restraint is architectural."
 - **Crate budgets**: plan + rules land inside `yi-runtime`'s 6,000-line ceiling and
   `yi-types`' 3,000 or trigger a deliberate D43-style ceiling decision — measured at

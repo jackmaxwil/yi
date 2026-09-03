@@ -173,9 +173,8 @@ impl AgentSession {
         }
     }
 
-    /// Incident: the kernel pump's monitor task owns the tokio Child, so a
-    /// dropped session leaks its IPython process; every path that retires a
-    /// session calls this, not only the one that reaps a subagent.
+    /// Incident: the kernel pump's monitor task owns the tokio Child, so a dropped session
+    /// leaks its IPython process. Every path that retires a session calls this.
     pub fn dispose_kernel(&self) {
         let Some(kernel) = self.kernel_service() else {
             return;
@@ -497,9 +496,8 @@ impl AgentSession {
             .unwrap_or_else(|poisoned| poisoned.into_inner().clone())
     }
 
-    /// Re-clamps the effort onto the new ladder without recording a level
-    /// change of its own; a caller wanting a specific level calls
-    /// [`AgentSession::set_effort`] after.
+    /// Re-clamps the effort onto the new ladder without recording a level change of its own;
+    /// a caller wanting a specific level calls [`AgentSession::set_effort`] after.
     pub fn set_model(&self, model: Model) {
         let current = self.model();
         if current.provider == model.provider && current.id == model.id {
@@ -702,9 +700,8 @@ impl AgentSession {
             }
             *status = Status::Running;
         }
-        // Nothing ever cleared the session-wide signal, so the first abort made
-        // every later turn abort at its first checkpoint. Reading the epoch at
-        // admission still stops a turn interrupted in the gap before the spawn.
+        // Incident: nothing cleared the session-wide signal, so the first abort aborted every
+        // later turn. Reading the epoch at admission still stops one hit before the spawn.
         let admitted_epoch = parts.shared.signal.epoch();
         let RunParts {
             shared,
@@ -808,9 +805,8 @@ impl AgentSession {
                 *status = Status::Idle;
             }
             shared.idle.notify_waiters();
-            // The end capture runs after the session is idle again: holding
-            // Running across it rejects the follow-up the user types the
-            // moment the answer lands.
+            // The end capture runs after the session is idle again: holding Running across it
+            // rejects the follow-up the user types the moment the answer lands.
             let end_hook = shared.on_turn_end.lock().ok().and_then(|slot| slot.clone());
             if let Some(hook) = end_hook {
                 let _hook_failure_never_fails_a_turn =
@@ -1005,8 +1001,7 @@ fn user_message(text: &str) -> AgentMessage {
 }
 
 /// Invariant: only input that crossed the process boundary mints
-/// [`yi_types::message::Attribution::User`]; every other user-role message the
-/// host writes stays unproven, so no `user://` address serves it.
+/// [`yi_types::message::Attribution::User`], so no `user://` address serves a host-written one.
 pub fn user_input(text: &str) -> AgentMessage {
     AgentMessage::user_input(UserContent::Text(text.to_owned()), 0)
 }
