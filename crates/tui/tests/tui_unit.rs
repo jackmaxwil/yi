@@ -2049,3 +2049,43 @@ fn typing_a_commands_whole_name_selects_it_over_a_longer_one()
     assert_eq!(narrowed, vec!["plantree".to_owned()]);
     Ok(())
 }
+
+/// Incident: a child error landing on a non-ASCII byte 80 panicked the render
+/// thread — `String::truncate` cuts at a byte index, not a char boundary.
+#[test]
+fn a_multibyte_error_never_panics_the_task_cell() -> TestResult {
+    use yi_tui::cell::{TaskCell, TaskStatus};
+    let cell = TaskCell {
+        agent: "rlm".to_owned(),
+        child_id: "c1".to_owned(),
+        description: "trace".to_owned(),
+        status: TaskStatus::Failed,
+        last_tool: None,
+        toolcalls: 0,
+        tokens: 0,
+        elapsed_ms: 0,
+        error: Some("€".repeat(100)),
+        spawn: None,
+    };
+    let lines = cell.lines(80, &theme(), 0);
+    let joined: String = lines.iter().map(flat).collect();
+    let tail = joined
+        .split('↳')
+        .nth(1)
+        .ok_or("no ↳ marker in the task cell")?;
+    let kept = tail.chars().filter(|c| !c.is_whitespace()).count();
+    assert_eq!(kept, 80, "80 chars should survive after ↳: {tail:?}");
+    Ok(())
+}
+
+/// Incident: the same class in the popup's list item — a string truncated to
+/// a terminal width must never cut mid-character.
+#[test]
+fn a_multibyte_popup_item_never_panics() -> TestResult {
+    use yi_tui::popup::{BottomView, ListPopup};
+    let popup = ListPopup::new('/', vec!["€".repeat(200)]);
+    for width in 5..60 {
+        let _ = popup.lines(width, &theme());
+    }
+    Ok(())
+}

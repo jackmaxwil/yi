@@ -76,8 +76,8 @@ impl BottomView for ListPopup {
                 theme.muted_style()
             };
             let marker = if selected { "›" } else { " " };
-            let mut text = format!(" {marker} {item}");
-            text.truncate(width.saturating_sub(1));
+            let text = format!(" {marker} {item}");
+            let text: String = text.chars().take(width.saturating_sub(1)).collect();
             out.push(Line::from(Span::styled(text, style)));
         }
         if filtered.len() > MAX_VISIBLE {
