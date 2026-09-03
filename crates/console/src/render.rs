@@ -21,6 +21,7 @@ const SIDEBAR_WIDTH: u16 = 26;
 const COMPOSER_HEIGHT: u16 = 3;
 
 pub struct PaneView {
+    pub scroll: Option<(usize, usize)>,
     pub id: PaneId,
     pub rect: Rect,
     pub focused: bool,
@@ -141,9 +142,9 @@ pub fn compute_view(app: &mut App, area: Rect, theme: &Theme) -> ViewState {
     for pane_rect in pane_rects {
         let inner = pane_rect.rect.inner(ratatui::layout::Margin::new(1, 1));
         let diffs = &app.state.diffs;
-        let (title, lines) = match app.state.panes.get_mut(&pane_rect.id) {
+        let (title, lines, scroll) = match app.state.panes.get_mut(&pane_rect.id) {
             Some(pane) => pane_view_content(pane, diffs, inner, theme),
-            None => ("empty".to_owned(), Vec::new()),
+            None => ("empty".to_owned(), Vec::new(), None),
         };
         if pane_rect.focused
             && panes_zone
@@ -153,6 +154,7 @@ pub fn compute_view(app: &mut App, area: Rect, theme: &Theme) -> ViewState {
             editor_cursor = editor_cursor_cell(editor, inner);
         }
         panes.push(PaneView {
+            scroll,
             id: pane_rect.id,
             rect: pane_rect.rect,
             focused: pane_rect.focused && panes_zone,
@@ -216,7 +218,7 @@ fn pane_view_content(
     diffs: &std::collections::BTreeMap<SessionId, crate::model::SessionDiff>,
     inner: Rect,
     theme: &Theme,
-) -> (String, Vec<Line<'static>>) {
+) -> (String, Vec<Line<'static>>, Option<(usize, usize)>) {
     let visible = usize::from(inner.height);
     match &mut pane.content {
         PaneContent::Session {
@@ -229,22 +231,22 @@ fn pane_view_content(
             if pane.scroll_from_bottom > max_scroll {
                 pane.scroll_from_bottom = max_scroll;
             }
-            let lines = window(all, pane.scroll_from_bottom, visible);
+            let (lines, scroll) = windowed(all, pane.scroll_from_bottom, visible);
             let title = session.as_ref().map_or_else(
                 || "❯ no session".to_owned(),
                 |id| format!("❯ {}", id.0.chars().take(14).collect::<String>()),
             );
-            (title, lines)
+            (title, lines, scroll)
         }
         PaneContent::Markdown { path, source } => {
             let all = yi_tui::markdown::render(source, usize::from(inner.width), theme);
-            let lines = window(all, pane.scroll_from_bottom, visible);
-            (format!("¶ {}", short_path(path)), lines)
+            let (lines, scroll) = windowed(all, pane.scroll_from_bottom, visible);
+            (format!("¶ {}", short_path(path)), lines, scroll)
         }
         PaneContent::Diff { path, source } => {
             let all = diffview::render(source, usize::from(inner.width), theme, DiffBudget::FULL);
-            let lines = window(all, pane.scroll_from_bottom, visible);
-            (format!("Δ {}", short_path(path)), lines)
+            let (lines, scroll) = windowed(all, pane.scroll_from_bottom, visible);
+            (format!("Δ {}", short_path(path)), lines, scroll)
         }
         PaneContent::Editor(editor) => editor_view(editor, inner, theme),
         PaneContent::SessionDiff { session } => {
@@ -281,8 +283,8 @@ fn pane_view_content(
                     vec![Line::styled("no edits yet this session", theme.dim_style())],
                 ),
             };
-            let lines = window(all, pane.scroll_from_bottom, visible);
-            (title, lines)
+            let (lines, scroll) = windowed(all, pane.scroll_from_bottom, visible);
+            (title, lines, scroll)
         }
         PaneContent::Notebook { session, cells, .. } => {
             let title = session.as_ref().map_or_else(
@@ -290,8 +292,8 @@ fn pane_view_content(
                 |id| format!("▤ nb:{}", id.0.chars().take(11).collect::<String>()),
             );
             let all = notebook_lines(cells, usize::from(inner.width), theme);
-            let lines = window(all, pane.scroll_from_bottom, visible);
-            (title, lines)
+            let (lines, scroll) = windowed(all, pane.scroll_from_bottom, visible);
+            (title, lines, scroll)
         }
     }
 }
@@ -345,6 +347,18 @@ fn notebook_lines(
     out
 }
 
+/// The visible slice, plus the total and first-visible row a scroll bar is drawn from.
+fn windowed(
+    all: Vec<Line<'static>>,
+    from_bottom: usize,
+    visible: usize,
+) -> (Vec<Line<'static>>, Option<(usize, usize)>) {
+    let total = all.len();
+    let top = total.saturating_sub(from_bottom).saturating_sub(visible);
+    let extent = (total > visible).then_some((total, top));
+    (window(all, from_bottom, visible), extent)
+}
+
 fn window(all: Vec<Line<'static>>, from_bottom: usize, visible: usize) -> Vec<Line<'static>> {
     let end = all.len().saturating_sub(from_bottom);
     let start = end.saturating_sub(visible);
@@ -372,18 +386,21 @@ fn editor_view(
     editor: &mut crate::model::Editor,
     inner: Rect,
     theme: &Theme,
-) -> (String, Vec<Line<'static>>) {
+) -> (String, Vec<Line<'static>>, Option<(usize, usize)>) {
     let height = usize::from(inner.height).max(1);
     let total = editor.text.lines().len();
-    let (row, _) = editor.text.cursor();
-    if row < editor.scroll_top {
-        editor.scroll_top = row;
-    } else if row >= editor.scroll_top.saturating_add(height) {
-        editor.scroll_top = row.saturating_add(1).saturating_sub(height);
+    let cursor = editor.text.cursor();
+    if cursor != editor.last_cursor {
+        editor.last_cursor = cursor;
+        if cursor.0 < editor.scroll_top {
+            editor.scroll_top = cursor.0;
+        } else if cursor.0 >= editor.scroll_top.saturating_add(height) {
+            editor.scroll_top = cursor.0.saturating_add(1).saturating_sub(height);
+        }
     }
     editor.scroll_top = editor.scroll_top.min(total.saturating_sub(1));
     let gutter = editor.gutter();
-    let mut lang = editor.lang.as_deref().and_then(yi_tui::highlight::lang_for);
+    let mut lang = editor.primed_lang();
     let selection = editor.text.selection_range();
     let base = Style::default().fg(theme.text);
     let mut out = Vec::new();
@@ -436,7 +453,8 @@ fn editor_view(
         ));
     }
     let mark = if editor.dirty { " ●" } else { "" };
-    (format!("✎ {}{mark}", short_path(&editor.path)), out)
+    let extent = (total > height).then_some((total, editor.scroll_top));
+    (format!("✎ {}{mark}", short_path(&editor.path)), out, extent)
 }
 
 fn short_path(path: &str) -> String {
@@ -478,6 +496,7 @@ pub fn render(app: &App, frame: &mut Frame<'_>, view: &ViewState, theme: &Theme)
         render_strip(app, frame, strip, theme);
     }
     render_borders(app, frame, view, theme);
+    render_thumbs(frame, view, theme);
     if let Some(area) = view.ask {
         render_ask(app, frame, area, theme);
     }
@@ -576,6 +595,51 @@ fn render_borders(app: &App, frame: &mut Frame<'_>, view: &ViewState, theme: &Th
         };
         let span = Span::styled(text, style);
         buffer.set_span(r.x.saturating_add(2), r.y, &span, max);
+    }
+}
+
+/// A bar on the right border, sized by the fraction of the content on screen.
+fn render_thumbs(frame: &mut Frame<'_>, view: &ViewState, theme: &Theme) {
+    let buffer = frame.buffer_mut();
+    for pane in &view.panes {
+        let Some((total, top)) = pane.scroll else {
+            continue;
+        };
+        let track = usize::from(pane.rect.height).saturating_sub(2);
+        if track == 0 || pane.rect.width < 2 || total <= track {
+            continue;
+        }
+        let length = track
+            .saturating_mul(track)
+            .div_ceil(total)
+            .max(1)
+            .min(track);
+        let travel = track.saturating_sub(length);
+        let offset = travel
+            .saturating_mul(top)
+            .checked_div(total.saturating_sub(track))
+            .unwrap_or(0)
+            .min(travel);
+        let style = if pane.focused {
+            theme.accent_style()
+        } else {
+            theme.dim_style()
+        };
+        let x = pane
+            .rect
+            .x
+            .saturating_add(pane.rect.width)
+            .saturating_sub(1);
+        for row in 0..length {
+            let Ok(step) = u16::try_from(offset.saturating_add(row)) else {
+                break;
+            };
+            let y = pane.rect.y.saturating_add(1).saturating_add(step);
+            if let Some(cell) = buffer.cell_mut((x, y)) {
+                cell.set_symbol("┃");
+                cell.set_style(style);
+            }
+        }
     }
 }
 
