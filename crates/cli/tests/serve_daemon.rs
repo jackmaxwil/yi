@@ -495,3 +495,90 @@ fn two_clients_both_stream_one_session() -> TestResult {
     let _ = daemon.wait();
     outcome
 }
+
+/// A client that leaves mid-turn is owed one unseen mark for the idle it missed, not one
+/// per streamed event, and the client that comes back gets the branch verbatim.
+#[test]
+#[ignore = "tier-2 journey: `just journeys`"]
+fn a_returning_client_sees_one_unseen_and_the_branch_verbatim() -> TestResult {
+    let dir = std::env::temp_dir().join(format!("yi-serve-replay-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir)?;
+    let (mut daemon, socket) = spawn_daemon(&dir)?;
+
+    let outcome = (|| -> TestResult {
+        let mut first = DaemonClient::connect(&socket)?;
+        first.request("1", "initialize", json!({"protocolVersion": 2}))?;
+        let session_id = new_session(&mut first, "2", &dir)?;
+        first.send(
+            "3",
+            "session/prompt",
+            json!({"sessionId": session_id, "prompt": [{"type": "text", "text": "fan this out"}]}),
+        )?;
+        drop(first);
+
+        let mut second = DaemonClient::connect(&socket)?;
+        second.request("1", "initialize", json!({"protocolVersion": 2}))?;
+        let entry = wait_until(Instant::now() + Duration::from_secs(20), || {
+            let list = second.request("2", "session/list", json!({}))?;
+            Ok(list["result"]["sessions"]
+                .as_array()
+                .and_then(|rows| {
+                    rows.iter()
+                        .find(|row| row["sessionId"] == session_id.as_str())
+                        .filter(|row| row["lastState"] == "idle")
+                        .cloned()
+                })
+                .is_some())
+        })
+        .and_then(|()| second.request("2", "session/list", json!({})))?;
+        let row = entry["result"]["sessions"]
+            .as_array()
+            .and_then(|rows| {
+                rows.iter()
+                    .find(|row| row["sessionId"] == session_id.as_str())
+                    .cloned()
+            })
+            .ok_or("the session row")?;
+        // Running then idle both happened unattended; the event stream between them is
+        // dozens of frames and must not count.
+        assert!(
+            row["unseen"].as_u64().is_some_and(|n| (1..=2).contains(&n)),
+            "the missed transitions, not the event stream: {row}"
+        );
+        assert_eq!(
+            row["name"], "fan this out",
+            "the ledger names the session: {row}"
+        );
+
+        second.send(
+            "3",
+            "session/resume",
+            json!({"sessionId": session_id, "cwd": dir.display().to_string(), "replayFrom": 0}),
+        )?;
+        let frames = second.read_until(|frame| frame["id"] == "3")?;
+        let replays: Vec<&Value> = frames
+            .iter()
+            .filter(|frame| frame["params"]["update"]["sessionUpdate"] == "_yi/replay")
+            .collect();
+        assert_eq!(
+            replays.len(),
+            1,
+            "one replay chunk before the response: {frames:?}"
+        );
+        let entries: Vec<yi_types::entry::Entry> =
+            serde_json::from_value(replays[0]["params"]["update"]["entries"].clone())?;
+        assert!(
+            entries.len() >= 2,
+            "user and assistant entries: {entries:?}"
+        );
+        let response = frames.last().ok_or("no response")?;
+        assert_eq!(response["result"]["name"], "fan this out");
+        Ok(())
+    })();
+
+    let _cleanup = daemon.kill();
+    let _reaped = daemon.wait();
+    let _ = std::fs::remove_dir_all(&dir);
+    outcome
+}

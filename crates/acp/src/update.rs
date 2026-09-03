@@ -5,7 +5,88 @@ use yi_types::acp::{
 };
 use yi_types::entry::Entry;
 use yi_types::event::{AgentEvent, AssistantMessageEvent};
+use yi_types::goal::Goal;
 use yi_types::message::{AgentMessage, Content, StopReason, UserContent};
+use yi_types::subagent::ChildId;
+
+pub fn extension<K: Into<String>>(
+    kind: &str,
+    fields: impl IntoIterator<Item = (K, Value)>,
+) -> AcpSessionUpdate {
+    AcpSessionUpdate::Extension(AcpExtensionUpdate {
+        session_update: kind.to_owned(),
+        fields: fields
+            .into_iter()
+            .map(|(key, value)| (key.into(), value))
+            .collect(),
+    })
+}
+
+/// The runtime event verbatim: what a yi client reduces with solo's own reducer.
+pub fn event_update(event: &AgentEvent, seq: u64, child: Option<&ChildId>) -> AcpSessionUpdate {
+    let mut fields = vec![
+        ("event", serde_json::to_value(event).unwrap_or(Value::Null)),
+        ("seq", Value::from(seq)),
+    ];
+    if let Some(child) = child {
+        fields.push(("childId", Value::String(child.0.clone())));
+    }
+    extension("_yi/event", fields)
+}
+
+pub fn gap_update(seq: u64, dropped: u64, child: Option<&ChildId>) -> AcpSessionUpdate {
+    let mut fields = vec![("seq", Value::from(seq)), ("dropped", Value::from(dropped))];
+    if let Some(child) = child {
+        fields.push(("childId", Value::String(child.0.clone())));
+    }
+    extension("_yi/event_gap", fields)
+}
+
+pub struct ReplayFrame<'a> {
+    pub entries: &'a [Entry],
+    pub from: u64,
+    pub replayed_to: u64,
+    pub leaf: Option<&'a str>,
+    pub name: Option<&'a str>,
+    pub goal: Option<&'a Goal>,
+    pub context_window: u64,
+    pub child: Option<&'a ChildId>,
+}
+
+pub fn replay_update(frame: &ReplayFrame<'_>) -> AcpSessionUpdate {
+    let mut fields = vec![
+        (
+            "entries",
+            serde_json::to_value(frame.entries).unwrap_or(Value::Null),
+        ),
+        ("from", Value::from(frame.from)),
+        ("replayedTo", Value::from(frame.replayed_to)),
+        (
+            "leafId",
+            frame
+                .leaf
+                .map_or(Value::Null, |leaf| Value::String(leaf.to_owned())),
+        ),
+        (
+            "name",
+            frame
+                .name
+                .map_or(Value::Null, |name| Value::String(name.to_owned())),
+        ),
+        (
+            "goal",
+            frame
+                .goal
+                .and_then(|goal| serde_json::to_value(goal).ok())
+                .unwrap_or(Value::Null),
+        ),
+        ("contextWindow", Value::from(frame.context_window)),
+    ];
+    if let Some(child) = frame.child {
+        fields.push(("childId", Value::String(child.0.clone())));
+    }
+    extension("_yi/replay", fields)
+}
 
 /// Per-session translation state (design C3): message ids are allocated
 /// here, tool-call and terminal ids pass through from the event stream.
@@ -91,19 +172,15 @@ fn extension_of(
     content: &UserContent,
     details: Option<&Value>,
 ) -> AcpSessionUpdate {
-    let mut fields = std::collections::BTreeMap::new();
     let text = match content {
         UserContent::Text(text) => text.clone(),
         UserContent::Blocks(blocks) => text_of(blocks),
     };
-    fields.insert("text".to_owned(), Value::String(text));
+    let mut fields = vec![("text", Value::String(text))];
     if let Some(details) = details {
-        fields.insert("details".to_owned(), details.clone());
+        fields.push(("details", details.clone()));
     }
-    AcpSessionUpdate::Extension(AcpExtensionUpdate {
-        session_update: format!("_yi/{custom_type}"),
-        fields,
-    })
+    extension(&format!("_yi/{custom_type}"), fields)
 }
 
 /// Standard base64 for terminal output chunks; std has no encoder and a
@@ -330,12 +407,10 @@ pub fn replay_updates(entries: &[Entry], ids: &mut IdMap) -> Vec<AcpSessionUpdat
                 _ => {}
             },
             Entry::Compaction { summary, .. } => {
-                let mut fields = std::collections::BTreeMap::new();
-                fields.insert("summary".to_owned(), Value::String(summary.clone()));
-                updates.push(AcpSessionUpdate::Extension(AcpExtensionUpdate {
-                    session_update: "_yi/compaction".to_owned(),
-                    fields,
-                }));
+                updates.push(extension(
+                    "_yi/compaction",
+                    [("summary", Value::String(summary.clone()))],
+                ));
             }
             _ => {}
         }

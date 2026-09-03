@@ -2,7 +2,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use yi_runtime::AgentSession;
 use yi_runtime::plan::accept_text;
-use yi_runtime::plan::store::PlanStore;
+use yi_runtime::plan::subplans_of;
 use yi_types::plan::doc::{BlockedOn, Plan, PlanTier, Todo, TodoLabel, TodoState};
 
 use crate::app::App;
@@ -326,24 +326,6 @@ impl PlanTreeView {
     fn reselect(&mut self) {
         self.selected = first_if_hidden(self.visible().iter().map(|(i, _)| *i), self.selected);
     }
-}
-
-fn subplans_of(plan: &Plan, plans_dir: &std::path::Path) -> Vec<Plan> {
-    let ids: Vec<_> = plan
-        .todos
-        .iter()
-        .filter_map(|todo| todo.subplan.clone())
-        .collect();
-    if ids.is_empty() {
-        return Vec::new();
-    }
-    let Ok(store) = PlanStore::open(plans_dir.to_path_buf()) else {
-        return Vec::new();
-    };
-    ids.iter()
-        .filter_map(|id| store.read(id).ok())
-        .map(|file| file.plan)
-        .collect()
 }
 
 pub(crate) fn open_plan_tree(app: &mut App, session: &AgentSession) {
