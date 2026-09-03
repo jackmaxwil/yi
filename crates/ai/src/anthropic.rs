@@ -227,8 +227,14 @@ fn convert_messages(messages: &[AgentMessage], cache: bool) -> Vec<Value> {
         index += 1;
     }
 
+    let mut at = params.len().checked_sub(1);
+    if let Some(index) = at
+        && params.get(index).is_some_and(is_environment)
+    {
+        at = index.checked_sub(1);
+    }
     if cache
-        && let Some(last) = params.last_mut()
+        && let Some(last) = at.and_then(|index| params.get_mut(index))
         && last["role"] == "user"
         && let Value::Array(blocks) = &mut last["content"]
         && let Some(block) = blocks.last_mut()
@@ -236,6 +242,16 @@ fn convert_messages(messages: &[AgentMessage], cache: bool) -> Vec<Value> {
         block["cache_control"] = json!({"type": "ephemeral"});
     }
     params
+}
+
+fn is_environment(param: &Value) -> bool {
+    param["role"] == "user"
+        && param["content"]
+            .as_array()
+            .is_some_and(|blocks| blocks.len() == 1)
+        && param["content"][0]["text"]
+            .as_str()
+            .is_some_and(|text| text.starts_with(yi_types::message::ENVIRONMENT_TAG))
 }
 
 fn convert_tools(tools: &[ToolDef], cache: bool) -> Vec<Value> {

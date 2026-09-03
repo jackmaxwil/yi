@@ -377,29 +377,13 @@ pub fn attach_runtime(session: &mut AgentSession, mut wiring: RuntimeWiring) -> 
             })
         });
     }
-    let factory = child_factory(wiring.clone());
-    let host = Arc::new(SubagentHost::new(SubagentHostOptions {
-        depth: wiring.depth,
-        max_depth: wiring.max_depth,
-        max_children: DEFAULT_MAX_CHILDREN,
-        parent_session_dir: wiring.rlm_dir.clone(),
-        defaults: session.settings_handle(),
-        factory,
-        notice: session.notice_hook(),
-        events: session.events_sender(),
-        parent_messages: session.history_handle(),
-        cwd: wiring.cwd.clone(),
-        report: {
-            let deliver = session.heartbeat_hook();
-            Arc::new(move |message| {
-                deliver(message, yi_types::schedule::DeliveryMode::Steer);
-            })
-        },
-        attribute: session.attribution_handle(),
-        store: session.store_handle(),
-        plans_dir: plans_dir.clone(),
-    }));
+    let host = subagent_host(session, &wiring, &plans_dir);
     host.register(&mut registry);
+    session.set_environment(crate::environment::hook(
+        session,
+        &wiring,
+        Arc::clone(&host),
+    ));
     if let Some(link) = wiring.parent_link.clone() {
         register_child_messaging(link, &host, &mut registry);
     }
@@ -477,6 +461,35 @@ pub fn attach_runtime(session: &mut AgentSession, mut wiring: RuntimeWiring) -> 
     );
     wire_job_completions(session);
     host
+}
+
+fn subagent_host(
+    session: &AgentSession,
+    wiring: &RuntimeWiring,
+    plans_dir: &Path,
+) -> Arc<SubagentHost> {
+    let factory = child_factory(wiring.clone());
+    Arc::new(SubagentHost::new(SubagentHostOptions {
+        depth: wiring.depth,
+        max_depth: wiring.max_depth,
+        max_children: DEFAULT_MAX_CHILDREN,
+        parent_session_dir: wiring.rlm_dir.clone(),
+        defaults: session.settings_handle(),
+        factory,
+        notice: session.notice_hook(),
+        events: session.events_sender(),
+        parent_messages: session.history_handle(),
+        cwd: wiring.cwd.clone(),
+        report: {
+            let deliver = session.heartbeat_hook();
+            Arc::new(move |message| {
+                deliver(message, yi_types::schedule::DeliveryMode::Steer);
+            })
+        },
+        attribute: session.attribution_handle(),
+        store: session.store_handle(),
+        plans_dir: plans_dir.to_path_buf(),
+    }))
 }
 
 /// §12: the ledger names what is load-bearing at every compaction and the summarizer

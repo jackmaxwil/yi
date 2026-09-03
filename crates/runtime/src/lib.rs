@@ -5,6 +5,7 @@ pub mod affordance;
 pub mod auto_review;
 pub mod checkpoint;
 pub mod compaction;
+pub mod environment;
 pub mod ext;
 pub mod fetch;
 pub mod gate;
