@@ -1,7 +1,8 @@
 """F-B1/F-B4: schema is keyword-only and typed; result() waits on a wall clock.
 
-stdlib unittest only, host_request faked at the module boundary (list_subagents,
-result) — no ipykernel, no event loop of the kernel's own. Run with:
+stdlib unittest only: list_subagents/result are faked at the module boundary for the
+handle tests, host_request directly for the module-level guard — no ipykernel, no
+event loop of the kernel's own. Run with:
 PYTHONPATH=python/yi_runtime/src python3 -m unittest discover -q -s python/yi_runtime/tests
 """
 from __future__ import annotations
@@ -100,6 +101,20 @@ class ResultSignatureTests(unittest.IsolatedAsyncioTestCase):
         args, kwargs = calls[0]
         self.assertEqual(args, ("sub-1",))
         self.assertEqual(kwargs, {"schema": {"type": "object"}})
+
+    async def test_module_result_refuses_a_non_dict_schema_before_any_host_round_trip(
+        self,
+    ) -> None:
+        calls: list[tuple[tuple, dict]] = []
+
+        async def fake_host_request(*args, **kwargs):
+            calls.append((args, kwargs))
+            return {}
+
+        with mock.patch.object(rlm, "host_request", fake_host_request):
+            with self.assertRaises(TypeError):
+                await rlm.result("n", schema=30)
+        self.assertEqual(calls, [])
 
 
 if __name__ == "__main__":
