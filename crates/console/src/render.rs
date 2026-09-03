@@ -53,6 +53,11 @@ pub struct ViewState {
     pub ask: Option<Rect>,
     pub composer: Rect,
     pub status: Rect,
+    pub framed: bool,
+}
+
+fn pane_margin(framed: bool) -> ratatui::layout::Margin {
+    ratatui::layout::Margin::new(1, u16::from(framed))
 }
 
 fn split_off_bottom(area: Rect, height: u16) -> (Rect, Rect) {
@@ -136,11 +141,17 @@ pub fn compute_view(app: &mut App, area: Rect, theme: &Theme) -> ViewState {
         }
     }
 
+    let lone_chat = pane_rects.len() == 1
+        && pane_rects
+            .first()
+            .and_then(|pane_rect| app.state.panes.get(&pane_rect.id))
+            .is_some_and(|pane| matches!(pane.content, PaneContent::Session { .. }));
+    let framed = !lone_chat || app.state.tab().is_some_and(|tab| tab.zoomed);
     let panes_zone = app.state.zone == Zone::Panes;
     let mut panes = Vec::new();
     let mut editor_cursor = None;
     for pane_rect in pane_rects {
-        let inner = pane_rect.rect.inner(ratatui::layout::Margin::new(1, 1));
+        let inner = pane_rect.rect.inner(pane_margin(framed));
         let diffs = &app.state.diffs;
         let (title, lines, scroll) = match app.state.panes.get_mut(&pane_rect.id) {
             Some(pane) => pane_view_content(pane, diffs, inner, theme),
@@ -210,6 +221,7 @@ pub fn compute_view(app: &mut App, area: Rect, theme: &Theme) -> ViewState {
         ask,
         composer,
         status,
+        framed,
     }
 }
 
@@ -483,7 +495,7 @@ pub fn render(app: &App, frame: &mut Frame<'_>, view: &ViewState, theme: &Theme)
     }
     let crowd = view.panes.len() > 1;
     for pane in &view.panes {
-        let inner = pane.rect.inner(ratatui::layout::Margin::new(1, 1));
+        let inner = pane.rect.inner(pane_margin(view.framed));
         let body = Paragraph::new(pane.lines.clone());
         let body = if crowd && !pane.focused {
             body.style(Style::default().add_modifier(Modifier::DIM))
@@ -495,7 +507,9 @@ pub fn render(app: &App, frame: &mut Frame<'_>, view: &ViewState, theme: &Theme)
     if let Some(strip) = view.strip {
         render_strip(app, frame, strip, theme);
     }
-    render_borders(app, frame, view, theme);
+    if view.framed {
+        render_borders(app, frame, view, theme);
+    }
     render_thumbs(frame, view, theme);
     if let Some(area) = view.ask {
         render_ask(app, frame, area, theme);
@@ -570,7 +584,6 @@ fn render_borders(app: &App, frame: &mut Frame<'_>, view: &ViewState, theme: &Th
             });
         }
     }
-    // Titles overwrite the top border after the raster settles.
     for pane in &view.panes {
         let r = pane.rect;
         if r.width < 8 {
@@ -910,13 +923,17 @@ fn render_navigator(app: &App, frame: &mut Frame<'_>, view: &ViewState, theme: &
         height,
     };
     frame.render_widget(ratatui::widgets::Clear, popup);
+    let block = ratatui::widgets::Block::bordered()
+        .border_type(ratatui::widgets::BorderType::Rounded)
+        .border_style(theme.accent_style())
+        .style(Style::default().bg(theme.selection_bg()));
     let mut lines = vec![Line::from(vec![
         Span::styled("find ", theme.dim_style()),
         Span::styled(query.clone(), theme.accent_style()),
         Span::styled("▌", theme.accent_style()),
     ])];
     let matches = app.navigator_matches(query);
-    let visible = usize::from(height.saturating_sub(2));
+    let visible = usize::from(height.saturating_sub(3));
     let picked_index = (*selected).min(matches.len().saturating_sub(1));
     for (index, id) in matches.iter().take(visible).enumerate() {
         let row_status = app
@@ -945,7 +962,7 @@ fn render_navigator(app: &App, frame: &mut Frame<'_>, view: &ViewState, theme: &
     if matches.is_empty() {
         lines.push(Line::styled("  no matches", theme.dim_style()));
     }
-    frame.render_widget(Paragraph::new(lines), popup);
+    frame.render_widget(Paragraph::new(lines).block(block), popup);
 }
 
 fn render_status(app: &App, frame: &mut Frame<'_>, area: Rect, theme: &Theme) {

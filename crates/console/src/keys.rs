@@ -25,6 +25,7 @@ pub enum Action {
     PageUp,
     PageDown,
     CancelTurn,
+    Interrupt,
     Quit,
     ToggleSidebar,
     ToggleNotebook,
@@ -56,6 +57,9 @@ pub fn direct(key: &KeyEvent) -> Option<Action> {
             KeyCode::PageUp => Some(Action::PageUp),
             KeyCode::PageDown => Some(Action::PageDown),
             KeyCode::Esc => Some(Action::CancelTurn),
+            KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                Some(Action::Interrupt)
+            }
             _ => None,
         };
     }
