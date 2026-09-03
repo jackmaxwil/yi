@@ -183,7 +183,6 @@ fn draw_frame<B>(
             .count(),
         context_used: app.context_used,
         context_window: app.options.context_window,
-        threshold_pct: Some(80),
         focused_child: app.focused.clone(),
     };
     let status_row = crate::status::render(&status_input, width, &theme);

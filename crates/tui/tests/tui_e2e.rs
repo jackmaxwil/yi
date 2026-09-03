@@ -101,7 +101,9 @@ fn faux_turn_renders_user_and_assistant_cells() -> TestResult {
     runtime.block_on(async {
         let session = faux_session("faux: pong");
         let mut events = session.subscribe();
-        session.prompt("ping").map_err(|e| format!("{e:?}"))?;
+        session
+            .prompt_message(yi_runtime::session::user_input("ping"))
+            .map_err(|e| format!("{e:?}"))?;
         loop {
             let event = events
                 .recv()

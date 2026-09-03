@@ -292,7 +292,6 @@ fn status_cascade_keeps_path_and_model_when_narrow() -> TestResult {
         subagents: 2,
         context_used: 50_000,
         context_window: 128_000,
-        threshold_pct: Some(80),
         ..StatusInput::default()
     };
     let row = yi_tui::status::render(&input, 40, &theme());
@@ -310,7 +309,6 @@ fn status_context_segment_is_compact() -> TestResult {
         session_name: "s".to_owned(),
         context_used: 64_000,
         context_window: 128_000,
-        threshold_pct: Some(80),
         ..StatusInput::default()
     };
     let row = yi_tui::status::render(&input, 80, &theme());
