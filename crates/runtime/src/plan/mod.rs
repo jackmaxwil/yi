@@ -24,6 +24,24 @@ pub mod why;
 pub use loop_coupling::gate;
 use store::{PlanStore, StoreError};
 
+pub fn subplans_of(plan: &Plan, plans_dir: &Path) -> Vec<Plan> {
+    let ids: Vec<_> = plan
+        .todos
+        .iter()
+        .filter_map(|todo| todo.subplan.clone())
+        .collect();
+    if ids.is_empty() {
+        return Vec::new();
+    }
+    let Ok(store) = PlanStore::open(plans_dir.to_path_buf()) else {
+        return Vec::new();
+    };
+    ids.iter()
+        .filter_map(|id| store.read(id).ok())
+        .map(|file| file.plan)
+        .collect()
+}
+
 pub type PlanChangeHook = Arc<dyn Fn(&Plan) + Send + Sync>;
 
 /// A plan untouched this many completed turns while work flows earns one

@@ -20,8 +20,10 @@ pub struct DaemonOptions {
 
 type ClientId = u64;
 
+const CLIENT_QUEUE: usize = 4096;
+
 enum Input {
-    Client(ClientId, mpsc::UnboundedSender<String>),
+    Client(ClientId, mpsc::Sender<String>),
     ClientLine(ClientId, Value),
     ClientClosed(ClientId),
     WorkerLine(String, Value),
@@ -101,7 +103,7 @@ fn now_ms() -> u64 {
 struct Supervisor {
     options: DaemonOptions,
     workers: HashMap<String, Worker>,
-    clients: HashMap<ClientId, mpsc::UnboundedSender<String>>,
+    clients: HashMap<ClientId, mpsc::Sender<String>>,
     /// session_id → routing and ledger state.
     sessions: HashMap<String, SessionEntry>,
     /// rewritten request id → (client, original id, root).
@@ -124,9 +126,13 @@ fn result_frame(id: Value, result: Value) -> String {
 }
 
 impl Supervisor {
+    /// A client that cannot keep up is dropped, never queued without bound; it heals on reconnect.
     fn send_client(&self, client: ClientId, line: String) {
-        if let Some(sink) = self.clients.get(&client) {
-            let _client_gone_is_fine = sink.send(line);
+        let Some(sink) = self.clients.get(&client) else {
+            return;
+        };
+        if let Err(mpsc::error::TrySendError::Full(_)) = sink.try_send(line) {
+            let _ = self.input.send(Input::ClientClosed(client));
         }
     }
 
@@ -394,17 +400,21 @@ impl Supervisor {
                 .and_then(Value::as_str)
                 .map(str::to_owned)
             {
-                // Keep an existing ledger across re-resume; only the
-                // attachment and root refresh.
+                let name = frame
+                    .pointer("/result/name")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned);
                 match self.sessions.get_mut(&session_id) {
                     Some(entry) => {
                         entry.root = request_root;
                         entry.attached.insert(client);
                         entry.provisional = false;
+                        entry.name = name.or(entry.name.take());
                     }
                     None => {
-                        self.sessions
-                            .insert(session_id, SessionEntry::new(request_root, Some(client)));
+                        let mut entry = SessionEntry::new(request_root, Some(client));
+                        entry.name = name;
+                        self.sessions.insert(session_id, entry);
                     }
                 }
             }
@@ -438,11 +448,14 @@ impl Supervisor {
             return;
         };
         entry.last_event_ms = now_ms();
+        let transition = state.is_some();
         if let Some(state) = state {
             entry.last_state = Some(state);
         }
         if entry.attached.is_empty() {
-            entry.unseen = entry.unseen.saturating_add(1);
+            if transition {
+                entry.unseen = entry.unseen.saturating_add(1);
+            }
             // Requests (frames with an id) park for the next attach; a
             // capped queue bounds a worker that asks in a loop.
             if let Some(request_id) = frame.get("id").cloned() {
@@ -515,7 +528,7 @@ impl Supervisor {
 
 fn spawn_client(stream: UnixStream, client: ClientId, input: mpsc::UnboundedSender<Input>) {
     let (read, mut write) = stream.into_split();
-    let (sink, mut outgoing) = mpsc::unbounded_channel::<String>();
+    let (sink, mut outgoing) = mpsc::channel::<String>(CLIENT_QUEUE);
     if input.send(Input::Client(client, sink)).is_err() {
         return;
     }
@@ -631,4 +644,52 @@ pub fn run_daemon(options: DaemonOptions, runtime: tokio::runtime::Runtime) -> i
 
 pub fn daemon_protocol_version() -> u16 {
     PROTOCOL_VERSION
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::io::AsyncReadExt;
+
+    #[tokio::test]
+    async fn a_client_that_stops_reading_is_dropped_at_the_queue_cap() -> Result<(), String> {
+        let path =
+            std::path::PathBuf::from(format!("/tmp/yi-daemon-cap-{}.sock", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let listener = tokio::net::UnixListener::bind(&path).expect("bind");
+        let mut peer = tokio::net::UnixStream::connect(&path)
+            .await
+            .expect("connect");
+        let (server, _) = listener.accept().await.expect("accept");
+        let (input_tx, mut input_rx) = mpsc::unbounded_channel::<Input>();
+        spawn_client(server, 7, input_tx);
+        let Some(Input::Client(_, sink)) = input_rx.recv().await else {
+            return Err("the client must register its sink".to_owned());
+        };
+        let line = "x".repeat(1024);
+        let mut queued = 0_usize;
+        while sink.try_send(line.clone()).is_ok() {
+            queued = queued.saturating_add(1);
+            assert!(
+                queued <= CLIENT_QUEUE.saturating_mul(4),
+                "the queue must fill"
+            );
+            tokio::task::yield_now().await;
+        }
+        drop(sink);
+        let mut buffer = vec![0_u8; 1 << 20];
+        let eof = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                match peer.read(&mut buffer).await {
+                    Ok(0) | Err(_) => break true,
+                    Ok(_) => {}
+                }
+            }
+        })
+        .await
+        .unwrap_or(false);
+        assert!(eof, "dropping the sink must close the client's socket");
+        let _ = std::fs::remove_file(&path);
+        Ok(())
+    }
 }

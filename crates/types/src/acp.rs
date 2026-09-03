@@ -253,6 +253,8 @@ pub struct AcpImplementation {
 pub struct AcpSessionResult {
     pub session_id: String,
     pub config_options: Vec<AcpConfigOption>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
