@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Write-only `pub` fields and reader-less baselines, both at zero (D109). rustc's dead_code
 sees nothing `pub`, so a field that crosses a crate boundary and is never read again warns
-nowhere; two context budgets were defaulted and enforced by no one, and a 0-byte baseline sat
-unread for sixty versions. crates/types is exempt (the wire reads it) and so is any struct
-deriving Serialize/Deserialize; a test counts as a reader."""
+nowhere; two context budgets were defaulted and enforced by no one, and a 0-byte baseline
+added at 0.97.0 went unread for 26 versions until this scan named it. crates/types is
+exempt (the wire reads it) and so is any struct deriving Serialize/Deserialize; a test
+counts as a reader."""
 import re, sys, pathlib
 sys.path.insert(0, str(pathlib.Path(__file__).parent))
 from _common import ROOT, BASE, fail, prod_lines
