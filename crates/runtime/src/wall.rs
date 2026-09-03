@@ -4,9 +4,8 @@ use serde_json::{Map, Value};
 use yi_tools::ToolKind;
 use yi_types::url::{Scheme, Url};
 
-/// Design B1 overlay, plan §3.4: a reduction of the child's capability set,
-/// never an extension. Expand-only enforcement lives here — an implementer
-/// child cannot edit the standard it is measured against.
+/// Design B1 overlay, plan §3.4: a reduction of the child's capability set, never an
+/// extension, so an implementer child cannot edit the standard it is measured against.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Wall {
     pub deny_write: Vec<PathBuf>,
@@ -98,9 +97,8 @@ impl Wall {
         self.check_read_path(&target)
     }
 
-    /// Invariant: the wall covers the path a read lands on, so a link resolved
-    /// out of one tree and into a denied one is refused on the target; the
-    /// denied root is canonicalized only once the lexical match has missed.
+    /// Invariant: the wall covers the path a read lands on, so a link out of one tree into a
+    /// denied one is refused on the target; the root canonicalizes only after a lexical miss.
     pub fn check_read_path(&self, path: &Path) -> Option<String> {
         let normalized = yi_permission::lexical_normalize(path);
         self.deny_read
@@ -149,9 +147,8 @@ impl Wall {
     }
 }
 
-/// Incident: a raw prefix walled every address that merely began with it, so
-/// `plan://secret` refused `plan://secretary`. The match ends at the entry, at
-/// a path separator, or at a fragment, and nowhere else.
+/// Incident: a raw prefix walled every address beginning with it, so `plan://secret` refused
+/// `plan://secretary`. The match ends at the entry, a path separator, or a fragment.
 fn walls(prefix: &str, rendered: &str) -> bool {
     let Some(rest) = rendered.strip_prefix(prefix) else {
         return false;

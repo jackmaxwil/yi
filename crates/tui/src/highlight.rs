@@ -7,7 +7,7 @@ use syntect::parsing::{ParseState, Scope, ScopeStack, SyntaxSet};
 use crate::colors::Theme;
 
 /// A line longer than this is generated, not written, and colouring it costs
-/// more than reading it is worth (codex `highlight.rs`, same intent).
+/// more than reading it is worth.
 const LINE_CAP: usize = 4_096;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -26,9 +26,8 @@ pub enum Token {
 pub struct Lang {
     state: ParseState,
     stack: ScopeStack,
-    /// A parse error leaves the incremental state no longer describing the
-    /// text, so colour stops for the rest of the block rather than resuming
-    /// from a state that would paint the wrong words as keywords.
+    /// A parse error leaves the incremental state no longer describing the text, so colour
+    /// stops for the rest of the block rather than painting the wrong words as keywords.
     poisoned: bool,
 }
 
@@ -38,9 +37,8 @@ fn syntaxes() -> &'static SyntaxSet {
     SET.get_or_init(SyntaxSet::load_defaults_newlines)
 }
 
-/// Scope prefixes, most specific first. `storage.type.numeric` is a numeric
-/// literal's suffix, so it belongs to its number; every other `storage` is a
-/// keyword, because the Rust grammar scopes `let` and `usize` alike.
+/// Scope prefixes, most specific first. `storage.type.numeric` is a literal's suffix and
+/// belongs to its number; every other `storage` is a keyword, as Rust scopes `let` and `usize`.
 fn scope_table() -> &'static [(Scope, Token)] {
     static TABLE: OnceLock<Vec<(Scope, Token)>> = OnceLock::new();
     TABLE.get_or_init(|| {
@@ -79,9 +77,8 @@ fn token_for(stack: &ScopeStack) -> Token {
     Token::Plain
 }
 
-/// Fence names models write that no bundled grammar answers to. There is no
-/// TypeScript grammar in the default set at all; JavaScript is the closest one
-/// that colours its keywords and strings instead of leaving the block plain.
+/// Fence names models write that no bundled grammar answers to. The default set has no
+/// TypeScript at all; JavaScript is the closest that colours it instead of leaving it plain.
 fn alias(name: &str) -> &str {
     match name {
         "shell" => "sh",
@@ -111,9 +108,8 @@ pub fn lang_for(name: &str) -> Option<Lang> {
 }
 
 impl Theme {
-    /// codex `highlight.rs`: foreground and bold only. A background
-    /// would fight the diff tint it renders inside, and italic and underline are
-    /// the two attributes terminals render least consistently.
+    /// Foreground and bold only: a background would fight the diff tint it
+    /// renders inside, and terminals render italic and underline least alike.
     pub fn syntax_style(&self, token: Token) -> Style {
         match token {
             Token::Plain => Style::default().fg(self.text),
@@ -130,9 +126,8 @@ impl Theme {
     }
 }
 
-/// Advances the parse, so the next line resumes where this one left off. The
-/// cap drops a generated line's runs, never its parse: a later line would
-/// otherwise resume from a state that no longer describes the text.
+/// Advances the parse, so the next line resumes where this one left off. The cap drops a
+/// generated line's runs, never its parse, or a later line resumes from a stale state.
 pub fn tokens(line: &str, lang: &mut Lang) -> Vec<(usize, usize, Token)> {
     if lang.poisoned {
         return Vec::new();
@@ -183,9 +178,8 @@ fn merge(runs: Vec<(usize, usize, Token)>) -> Vec<(usize, usize, Token)> {
     out
 }
 
-/// One line as styled spans. `base` carries whatever the caller already decided
-/// about the row — the diff tint, a dim body — and each token adds only its
-/// foreground, so a highlighted row keeps its background.
+/// One line as styled spans. `base` carries what the caller already decided about the row —
+/// the diff tint, a dim body — and each token adds only its foreground.
 pub fn spans(line: &str, lang: &mut Lang, theme: &Theme, base: Style) -> Vec<Span<'static>> {
     let mut out = Vec::new();
     let mut cursor = 0_usize;

@@ -1,6 +1,5 @@
-//! thinking-orbs port (A.13, D41): geometry-exact engine — verified against
-//! the library's own golden vectors — and the kitty painter that puts it on
-//! screen. No terminal framework and no Yi crate: the host owns placement.
+//! thinking-orbs port (A.13, D41): geometry-exact engine, verified against the library's own
+//! golden vectors, plus the kitty painter. No terminal framework: the host owns placement.
 #![forbid(unsafe_code)]
 
 pub mod core;
@@ -96,9 +95,8 @@ impl OrbState {
 /// Evaluate a (state, size) preset at clock time `clock` (seconds): the
 /// preset speed multiplies the shared clock, exactly as `ThinkingOrb` does.
 pub fn evaluate(state: OrbState, size: u32, clock: f64) -> Option<OrbFrame> {
-    // orbits-64's sparse particles read as noise in an ~80px cell rect;
-    // ribbon's dense band survives the downscale, so the working/default
-    // state borrows the composing geometry (user-directed, D41).
+    // orbits-64's sparse particles read as noise in an ~80px cell rect and ribbon's dense
+    // band survives the downscale, so working borrows the composing geometry (D41).
     let key = match state {
         OrbState::Working => "composing",
         other => other.key(),

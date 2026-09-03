@@ -9,9 +9,8 @@ pub(crate) mod pump;
 pub mod reduce;
 pub mod snapshot;
 
-// Generous backstop for a kernel alive but wedged: crashes surface within one
-// 25ms poll and warm boots return in under a second, but a cold boot after a
-// venv provision may need tens of seconds of imports first.
+// Generous backstop for a kernel alive but wedged: crashes surface in one 25ms poll and warm
+// boots return in under a second, but a cold boot may need tens of seconds of imports.
 pub const PORTS_RESOLVE_TIMEOUT_MS: u64 = 30_000;
 pub const READY_TIMEOUT_MS: u64 = 30_000;
 // Loopback PUB/SUB subscription propagation is usually sub-ms, but keep a small guard before first execute.
@@ -40,6 +39,6 @@ pub const MAX_ATTACHMENT_DATA_CHARS: usize = 10_000_000;
 /// Comm target the kernel-side `rlm.host_request` shim opens for typed host requests.
 pub const HOST_COMM_TARGET: &str = "host.request";
 
-pub const DIFF_DISPLAY_MIME: &str = "application/vnd.prime-agent.diff+json";
-pub const ATTACHMENT_DISPLAY_MIME: &str = "application/vnd.prime-agent.attachment+json";
-pub const AGENT_MESSAGE_DISPLAY_MIME: &str = "application/vnd.prime-agent.agent-message+json";
+pub const DIFF_DISPLAY_MIME: &str = "application/vnd.yi.diff+json";
+pub const ATTACHMENT_DISPLAY_MIME: &str = "application/vnd.yi.attachment+json";
+pub const AGENT_MESSAGE_DISPLAY_MIME: &str = "application/vnd.yi.agent-message+json";

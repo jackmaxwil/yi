@@ -11,22 +11,19 @@ use crate::capture::{RecordingBackend, write_still};
 use crate::colors::Theme;
 use crate::keymap::{KeyCodeValue, SingleKey, default_keymap};
 
-/// One step per line, `#` comments. `key <spec>` uses the keymap grammar,
-/// `type <text>` sends characters, `wait <ms>`, `wait-idle <ms>` blocks until
-/// the turn ends (times out red), `quit` exits.
+/// One step per line, `#` comments. `key <spec>` uses the keymap grammar, `type <text>` sends
+/// characters, `wait <ms>` and `wait-idle <ms>` block (the latter times out red), `quit` exits.
 #[derive(Debug, Clone)]
 pub enum Step {
     Key(SingleKey),
     Type(String),
     Wait(u64),
     WaitIdle(u64),
-    /// `wait-frame <ms> <text>` blocks until the frame shows `text`, or until
-    /// it stops showing it when written `!text`. Timeout first so the text may
-    /// hold spaces; the bool is the polarity.
+    /// `wait-frame <ms> <text>` blocks until the frame shows `text`, or stops showing it when
+    /// written `!text`. Timeout first so the text may hold spaces; the bool is the polarity.
     WaitFrame(u64, bool, String),
-    /// `type-ms <n>` paces every later `type` step at one character per `n`
-    /// milliseconds. Zero, the default, keeps assertion scripts instant; a
-    /// recording is only watchable when the typing takes human time.
+    /// `type-ms <n>` paces every later `type` step at one character per `n` ms. Zero, the
+    /// default, keeps assertion scripts instant; a recording needs human typing speed.
     TypeMs(u64),
     Quit,
 }
@@ -265,15 +262,13 @@ pub fn run_headless(
             (Step::Type(text), _) => {
                 for event in typed_events(&text) {
                     app.handle_event(&cmd_tx, event);
-                    // Paced typing has to reach the screen character by
-                    // character, or the recording still shows the whole line
-                    // appearing at once.
+                    // Paced typing has to reach the screen character by character, or the
+                    // recording still shows the whole line appearing at once.
                     if type_ms > 0 {
                         crate::render::draw(&mut app, &mut terminal, Some(&session));
                         std::thread::sleep(Duration::from_millis(type_ms));
-                        // The step holds the outer loop, which is where the
-                        // wall clock is read, so a long paced line would
-                        // otherwise outrun the deadline unchecked.
+                        // The step holds the outer loop, where the wall clock is read, so a
+                        // long paced line would otherwise outrun the deadline unchecked.
                         if start.elapsed() > Duration::from_secs(deadline_secs) {
                             break;
                         }

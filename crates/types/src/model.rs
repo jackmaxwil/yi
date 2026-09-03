@@ -67,9 +67,8 @@ impl std::fmt::Display for Effort {
 impl std::str::FromStr for Effort {
     type Err = UnknownEffort;
 
-    /// Invariant: every `#[serde(alias)]` spelling on [`Effort`] is accepted
-    /// here too — the two parsers are separate, and a spelling the wire takes
-    /// and this one refuses is a plan file that loads but a flag that errors.
+    /// Invariant: every `#[serde(alias)]` spelling on [`Effort`] is accepted here too; the
+    /// parsers are separate, and a split means a file that loads but a flag that errors.
     fn from_str(value: &str) -> Result<Self, Self::Err> {
         if value == "med" {
             return Ok(Self::Medium);
@@ -82,9 +81,8 @@ impl std::str::FromStr for Effort {
 }
 
 impl Model {
-    /// Invariant: the advertised levels, low to high, never empty — a model
-    /// whose every level is `null`-mapped falls back to [`Effort::Off`], so
-    /// callers may take `.first()` / `.last()` with no empty case to invent.
+    /// Invariant: the advertised levels, low to high, never empty — an all-`null` model falls
+    /// back to [`Effort::Off`], so callers take `.first()`/`.last()` with no empty case.
     pub fn supported_efforts(&self) -> Vec<Effort> {
         if !self.reasoning {
             return vec![Effort::Off];
@@ -175,9 +173,8 @@ pub struct ToolDef {
     pub name: String,
     pub description: String,
     pub parameters: serde_json::Value,
-    /// C8: set when the tool's input is one raw text argument under a
-    /// grammar. openai-responses sends it as a custom tool (no JSON escaping
-    /// tax); every other adapter ignores this and keeps the JSON schema.
+    /// C8: set when the tool's input is one raw text argument under a grammar.
+    /// openai-responses sends it as a custom tool; every other adapter keeps the JSON schema.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub freeform: Option<FreeformFormat>,
 }

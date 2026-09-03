@@ -89,9 +89,8 @@ impl Tool for ExecTool {
     }
 }
 
-/// User-level only. Project `.yi/tools` waits on hash-pinned trust (D30):
-/// without a grant store, a cloned repo's tools are arbitrary code behind one
-/// prompt.
+/// User-level only. Project `.yi/tools` waits on hash-pinned trust (D30): without a grant
+/// store, a cloned repo's tools are arbitrary code behind one prompt.
 pub fn discover_exec_tools(dir: &Path) -> Vec<ExecTool> {
     let Ok(entries) = fs::read_dir(dir) else {
         return Vec::new();

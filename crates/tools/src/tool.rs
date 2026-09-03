@@ -25,9 +25,8 @@ pub struct ToolContext {
     pub auto_background: Option<std::time::Duration>,
     /// Set when the permission layer contained this call rather than asking.
     pub sandbox: Option<crate::sandbox::Sandbox>,
-    /// Invariant: paths the reviewer wall hides from this agent. A tool that
-    /// reads a tree instead of a named path shows the wall no target, so it
-    /// consults this set itself.
+    /// Invariant: paths the reviewer wall hides from this agent. A tool reading a tree rather
+    /// than a named path shows the wall no target, so it consults this set itself.
     pub deny_read: Vec<PathBuf>,
     /// The id of the call being executed, so a tool that asks the user in its
     /// own right can name the cell that is waiting. Empty when no id exists.
@@ -119,9 +118,8 @@ pub fn error_output_kind(
     output
 }
 
-/// A `details` string is stored in the session file and replayed from it, so it
-/// is bounded where the text the model reads is not. Past this, a renderer has
-/// long since hit its own row budget.
+/// A `details` string is stored in the session file and replayed, so it is bounded where the
+/// model-facing text is not. Past this a renderer has long since hit its own row budget.
 pub const DETAIL_CAP: usize = 64 * 1024;
 
 /// `text` for JSON `details`, truncated on a char boundary and marked when it

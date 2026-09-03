@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Aggregator = the gate entrypoint itself (D31; jcode's aggregator was referenced by
+# Aggregator = the gate entrypoint itself (D31; a surveyed aggregator was referenced by
 # nothing). Ordered most-legible-failure-first. Prints one debt total at the end.
 # `--fast` drops the gates that need a build (dist binary, startup, rustdoc, the two
 # cargo tools) so pre-commit stays quick; pre-push runs the whole thing.

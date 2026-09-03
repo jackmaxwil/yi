@@ -1,6 +1,5 @@
-//! `yi stats [session-id]` — replay one session's JSONL for per-tool
-//! latency, failure kinds, truncation, shell categories, edit op mix and
-//! token totals. No collector, no dependency: the session file is the ledger.
+//! `yi stats [session-id]` — replay one session's JSONL for per-tool latency, failure kinds,
+//! truncation, shell categories, edit mix and tokens. No collector: the file is the ledger.
 
 use std::collections::BTreeMap;
 

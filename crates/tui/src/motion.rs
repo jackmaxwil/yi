@@ -15,8 +15,8 @@ pub fn elapsed_of(phase: usize) -> u128 {
     u128::try_from(phase).unwrap_or(0).saturating_mul(TICK_MS)
 }
 
-/// OMP's starburst. Every glyph is one cell wide — a width change would reflow
-/// the row on every frame.
+/// Starburst. Every glyph is one cell wide — a width change would reflow the
+/// row on every frame.
 pub const THINKING_FRAMES: [char; 8] = ['✻', '✼', '❉', '❊', '✺', '✹', '✸', '✶'];
 
 /// How long each frame holds: the cycle accelerates and slows rather than
@@ -24,8 +24,8 @@ pub const THINKING_FRAMES: [char; 8] = ['✻', '✼', '❉', '❊', '✺', '✹'
 const DWELL_MS: [u128; 8] = [70, 110, 190, 230, 230, 190, 110, 70];
 pub const BREATH_CYCLE_MS: u128 = 1_200;
 
-/// codex `shimmer.rs`: a band swept across the text, phase taken from the
-/// process clock so two shimmering rows are never out of step.
+/// A band swept across the text, phase taken from the process clock so two
+/// shimmering rows are never out of step.
 const SWEEP_MS: u128 = 2_000;
 const BAND: f64 = 5.0;
 const PAD: f64 = 10.0;
@@ -85,9 +85,8 @@ fn as_f64(value: u128) -> f64 {
     f64::from(u32::try_from(value).unwrap_or(u32::MAX))
 }
 
-/// Text with a band sweeping across it, interpolating toward the theme's own
-/// text colour so it reads on any ground; below truecolor the same weight
-/// quantises into three attributes (codex `shimmer.rs`).
+/// Text with a band sweeping across it, interpolating toward the theme's own text colour so
+/// it reads on any ground; below truecolor the same weight quantises into three attributes.
 pub fn shimmer(text: &str, elapsed_ms: u128, theme: &Theme) -> Vec<Span<'static>> {
     let count = text.chars().count();
     if count == 0 {
@@ -109,7 +108,7 @@ pub fn shimmer(text: &str, elapsed_ms: u128, theme: &Theme) -> Vec<Span<'static>
             _ => Style::default().fg(theme.text).add_modifier(Modifier::BOLD),
         };
         // Runs of one style coalesce, so a row emits a handful of spans rather
-        // than one per character (OMP `theme/shimmer.ts`).
+        // than one per character.
         match out.last_mut() {
             Some(span) if span.style == style => span.content.to_mut().push(ch),
             _ => out.push(Span::styled(ch.to_string(), style)),

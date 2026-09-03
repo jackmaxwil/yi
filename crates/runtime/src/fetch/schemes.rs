@@ -82,9 +82,8 @@ impl Resolver {
         Ok((apply_fragment(url, text)?, served_by.to_owned()))
     }
 
-    /// Incident: containment was lexical, so a link inside the workspace at
-    /// `notes -> /etc/passwd` was served; what the read lands on takes the same
-    /// wall a path naming it directly takes.
+    /// Incident: containment was lexical, so a link at `notes -> /etc/passwd` was served.
+    /// What the read lands on takes the same wall a path naming it directly takes.
     fn resolved(&self, url: &Url, path: PathBuf, root: &Path) -> Result<PathBuf, FetchError> {
         let Ok(real) = std::fs::canonicalize(&path) else {
             return Ok(path);
@@ -145,9 +144,8 @@ impl Resolver {
         Ok((rendered, "plan-file".to_owned()))
     }
 
-    /// Invariant: an agent name is a todo address and carries its own slash, so
-    /// the whole path is tried as an agent before a trailing entry id is split
-    /// off — splitting first read a reap pin as a plan plus a missing entry.
+    /// Invariant: an agent name carries its own slash, so the whole path is tried as an agent
+    /// before an entry id is split off; splitting first read a reap pin as a missing entry.
     pub(super) fn resolve_history(&self, url: &Url) -> Result<Served, FetchError> {
         let path = url.path();
         if let Some(session) = self.transcript_of(path) {
@@ -241,9 +239,8 @@ impl Resolver {
         Ok((text, format!("reap-pin {pinned}")))
     }
 
-    /// Invariant: `<n>` is 1-based over [`yi_types::message::Attribution::User`]
-    /// messages alone, oldest first — a host-minted user-role entry is invisible
-    /// to the index, so interleaving one never shifts what a citation names.
+    /// Invariant: `<n>` is 1-based over [`yi_types::message::Attribution::User`] messages
+    /// alone, so a host-minted user-role entry never shifts what a citation names.
     pub(super) fn resolve_user(&self, url: &Url) -> Result<Served, FetchError> {
         let ordinal = url
             .path()

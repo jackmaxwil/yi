@@ -9,9 +9,8 @@ use super::types::{
     PasteTarget,
 };
 
-/// The block opening at `line` spans to where the scanner returns to the depth
-/// it had before that opener. None when the anchor opens nothing, or when the
-/// delimiters never balance.
+/// The block opening at `line` spans to where the scanner returns to its prior depth. None
+/// when the anchor opens nothing, or when the delimiters never balance.
 pub fn brace_block_resolver(text: &str, line: u64) -> Option<BlockSpan> {
     let lines: Vec<&str> = text.split('\n').collect();
     let anchor_index = usize::try_from(line.checked_sub(1)?).ok()?;
@@ -51,9 +50,8 @@ pub fn brace_block_resolver(text: &str, line: u64) -> Option<BlockSpan> {
     None
 }
 
-/// Delimiters inside string/char literals and line comments do not count.
-/// A lexical pass, not a parser: multi-line strings and block comments are
-/// beyond it — the resolver then fails closed (None) via unbalanced depth.
+/// Delimiters inside string/char literals and line comments do not count. A lexical pass, not
+/// a parser: multi-line strings and block comments fail closed via unbalanced depth.
 fn strip_line_noise(line: &str) -> Vec<u8> {
     let bytes = line.as_bytes();
     let mut out = Vec::with_capacity(bytes.len());

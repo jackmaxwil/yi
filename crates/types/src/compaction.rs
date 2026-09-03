@@ -1,9 +1,8 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
-/// Window ids chaining compactions (design P9): `first` is the session's
-/// initial window, `previous` links windows into a chain, `id` names the
-/// window opened by this compaction.
+/// Window ids chaining compactions (design P9): `first` is the session's initial window,
+/// `previous` links them into a chain, `id` names the window this compaction opened.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CompactionWindow {

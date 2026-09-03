@@ -16,9 +16,8 @@ use super::normalize::{
 use super::snapshots::SnapshotStore;
 use super::types::{ApplyResult, BlockResolverRequest, Clipboard, Edit, FileOp};
 
-/// Upper bound on unseen anchor lines revealed inline in a rejection; larger
-/// ranges keep the re-read guidance so the model cannot piecewise-reveal its
-/// way past the guard.
+/// Upper bound on unseen anchor lines revealed inline in a rejection; larger ranges keep the
+/// re-read guidance so the model cannot piecewise-reveal its way past the guard.
 const SEEN_LINE_REVEAL_CAP: usize = 40;
 /// The one clip width for revealed and read rows alike; an over-wide line
 /// truncates so no line joins the seen set.
@@ -127,9 +126,8 @@ impl<'a> Patcher<'a> {
             .into_owned()
     }
 
-    /// Preflights every section in memory before any write hits disk, then
-    /// commits in order; a mid-batch write failure reports exactly which
-    /// sections landed so the caller re-issues only the missing ones.
+    /// Preflights every section in memory before any write hits disk, then commits in order;
+    /// a mid-batch failure reports which sections landed so only the rest are re-issued.
     pub fn apply(
         &mut self,
         patch: &Patch,
@@ -218,9 +216,8 @@ impl<'a> Patcher<'a> {
         let mut canonical_path = self.canonical_path(&target.path);
         let mut read = self.try_read(&target.path);
 
-        // Path recovery: the authored path doesn't exist, but its filename +
-        // snapshot tag may name a file read this session — the model gave a
-        // bare filename or the wrong directory. Rebind and warn.
+        // Path recovery: the authored path doesn't exist, but its filename plus snapshot tag
+        // may name a file read this session — a bare filename or wrong dir. Rebind and warn.
         if read.is_none()
             && let Some(tag) = FileTag::parse(expected_text)
         {
@@ -300,9 +297,8 @@ impl<'a> Patcher<'a> {
         })
     }
 
-    /// Approval of a diff is not approval of a path: re-validate symlink
-    /// status at write time (codex no_follow lesson) — writing through a
-    /// symlink would land the content outside the reviewed target.
+    /// Approval of a diff is not approval of a path: re-validate symlink status at write
+    /// time, since writing through one lands the content outside the reviewed target.
     fn refuse_symlink(&self, path: &str) -> Result<(), String> {
         let resolved = self.resolve_path(path);
         if let Ok(metadata) = std::fs::symlink_metadata(&resolved)

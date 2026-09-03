@@ -32,16 +32,16 @@ when it changes rather than editing them by hand.
 - [D18](adr/d18.md) - bidirectional session handoff
 - [D19](adr/d19.md) - advisor reviews the emitted work log, not actions-only
 - [D20](adr/d20.md) - bridge wire = JSON-RPC 2.0 reusing the ACP codec
-- [D21](adr/d21.md) - compaction logic ports from prime only
-- [D22](adr/d22.md) - one token estimator (fx `StreamingEstimator`) serves P3 and streami...
-- [D23](adr/d23.md) - jcode-derived guardrails
+- [D21](adr/d21.md) - compaction logic ports from one reference only
+- [D22](adr/d22.md) - one token estimator (a ported `StreamingEstimator`) serves P3 and s...
+- [D23](adr/d23.md) - survey-derived guardrails
 - [D24](adr/d24.md) - AA-index benchmark integration
-- [D25](adr/d25.md) - codex ports
-- [D26](adr/d26.md) - codex anti-lessons
-- [D27](adr/d27.md) - OMP-derived feature admission
+- [D25](adr/d25.md) - reference ports
+- [D26](adr/d26.md) - survey anti-lessons
+- [D27](adr/d27.md) - survey-derived feature admission
 - [D28](adr/d28.md) - advisor two-tier enable
 - [D29](adr/d29.md) - retry after first byte is safe and adopted
-- [D30](adr/d30.md) - codex pass-2 batch
+- [D30](adr/d30.md) - pass-2 batch
 - [D31](adr/d31.md) - repo plumbing from ref evidence
 - [D32](adr/d32.md) - Pi session compat targets the v4 mutation log
 - [D33](adr/d33.md) - yi rpc writes v4 only; phase-2 exit narrows to RPC protocol tests
@@ -89,6 +89,7 @@ when it changes rather than editing them by hand.
 - [D103](adr/d103.md) - an applied plan op is a durable record on the owning session
 - [D104](adr/d104.md) - the plan DAG is a panel, not an inline checkbox list
 - [D105](adr/d105.md) - the plan frontmatter is JSON, and the YAML subset codec is gone
+- [D107](adr/d107.md) - the comment cap drops from three lines to two
 - [D106](adr/d106.md) - the forge is the only register of planned work
 
 D36-D51, D72, D73 and D74 have no ADR yet; ARCHITECTURE.md is the record for those rows.

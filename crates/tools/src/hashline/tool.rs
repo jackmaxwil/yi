@@ -22,9 +22,8 @@ const READ_BYTE_CEIL: usize = 512 * 1024;
 /// The patcher's reveal clip, shared: a row read wider than a rejection can
 /// re-show would anchor blind. A clipped row never joins the seen set.
 const READ_LINE_CLIP: usize = super::patcher::SEEN_LINE_REVEAL_MAX_COLUMNS;
-/// Consecutive byte-identical no-op edits on one path before the soft hint
-/// escalates to a tool error (omp issue #2081: 182 identical repeats in 205
-/// calls before the user aborted).
+/// Incident: 182 byte-identical no-op edits on one path in 205 calls before an
+/// abort; this many consecutive no-ops now escalate the soft hint to an error.
 const NOOP_HARD_LIMIT: u32 = 3;
 const EDIT_CONTEXT_LINES: u64 = 3;
 
@@ -205,9 +204,8 @@ impl Tool for HashlineReadTool {
     }
 }
 
-/// The requested line windows, 1-based inclusive, merged and clamped.
-/// `ranges` and `offset`/`limit` are two spellings of the same thing and
-/// never combine.
+/// The requested line windows, 1-based inclusive, merged and clamped. `ranges` and
+/// `offset`/`limit` are two spellings of the same thing and never combine.
 fn read_windows(
     input: &Map<String, Value>,
     explicit_limit: Option<usize>,
@@ -303,9 +301,8 @@ fn render_section_result(result: &PatchSectionResult, snapshots: &mut SnapshotSt
         let lines: Vec<&str> = result.after.split('\n').collect();
         let total = u64::try_from(lines.len()).unwrap_or(u64::MAX);
         let mut seen: Vec<u64> = Vec::new();
-        // Every hunk gets a window, not just the first. A window the model
-        // cannot see is a line it cannot anchor to, which forced a full
-        // re-read of the file after each multi-hunk edit.
+        // Every hunk gets a window, not just the first: a window the model cannot see is a
+        // line it cannot anchor to, forcing a full re-read after each multi-hunk edit.
         for changed in crate::diff::changed_after_lines(&result.before, &result.after) {
             let lo = changed.saturating_sub(EDIT_CONTEXT_LINES).max(1);
             let hi = changed.saturating_add(EDIT_CONTEXT_LINES).min(total);
@@ -351,8 +348,8 @@ impl Tool for HashlineEditTool {
         ToolKind::Write
     }
 
-    /// The patch language as a Lark grammar (ported from the omp donor); on
-    /// providers with custom tools the body rows stop paying JSON escaping.
+    /// The patch language as a Lark grammar; on providers with custom tools
+    /// the body rows stop paying JSON escaping.
     fn freeform(&self) -> Option<yi_types::model::FreeformFormat> {
         self.freeform_grammar
             .then(|| yi_types::model::FreeformFormat {
@@ -361,8 +358,7 @@ impl Tool for HashlineEditTool {
     }
 
     /// [`Patcher::prepare`] validates and materializes the new text without touching disk.
-    /// The clipboard is forked and the fork dropped, so previewing a patch the
-    /// user then denies leaves no register behind.
+    /// The clipboard fork is dropped, so previewing a denied patch leaves no register.
     fn preview(&self, input: &Map<String, Value>, cwd: &Path) -> Option<String> {
         let patch_text = input.get("patch").and_then(Value::as_str)?;
         let patch = Patch::parse(patch_text, Some(cwd)).ok()?;

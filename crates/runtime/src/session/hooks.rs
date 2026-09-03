@@ -1,6 +1,5 @@
-//! The session's handle vocabulary: every closure the runtime hands a
-//! subsystem so it can steer, notice, or read this session without holding it.
-//! Split from the run loop, which is the one thing nothing here touches.
+//! The session's handle vocabulary: every closure the runtime hands a subsystem so it can
+//! steer, notice or read this session without holding it. The run loop stays out.
 
 use std::sync::Arc;
 
@@ -70,9 +69,8 @@ impl AgentSession {
         })
     }
 
-    /// Waits out any running turn rather than gating on status: AgentEnd is
-    /// emitted while the status is still Running, so a status-gated hook queued
-    /// into a follow-up that never drained.
+    /// Waits out any running turn rather than gating on status: AgentEnd is emitted while the
+    /// status is still Running, so a status-gated hook queued into a follow-up that never ran.
     pub fn wake_idle_hook(&self) -> Arc<dyn Fn(AgentMessage) + Send + Sync> {
         let shared = Arc::clone(&self.shared);
         let run = self.run_handle();

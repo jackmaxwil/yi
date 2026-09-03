@@ -42,17 +42,15 @@ pub struct Theme {
     pub error: Color,
     pub warning: Color,
     pub success: Color,
-    /// The ground lifted toward white. codex probes the terminal's background
-    /// and drops the tint when it cannot; Yi has no probe, so the tint is offered
-    /// only for the truecolor dark theme whose ground it already assumes.
+    /// The ground lifted toward white. Yi cannot probe the terminal background,
+    /// so the tint is offered only where the theme already assumes its ground.
     pub user_bg: Option<Color>,
 }
 
 impl Theme {
     pub fn new(tier: ColorTier, dark: bool) -> Self {
-        // Truecolor dark is the primary look: TokyoNight Moon values, chosen
-        // to sit on translucent dark grounds (Ghostty blur) without banding.
-        // Text stays Color::Reset so the terminal's own fg wins.
+        // Truecolor dark is the primary look: TokyoNight Moon values, chosen to sit on
+        // translucent grounds without banding. Text stays Color::Reset so the terminal wins.
         if tier == ColorTier::TrueColor && dark {
             return Self {
                 tier,
@@ -136,9 +134,8 @@ pub enum DiffRowKind {
 }
 
 impl Theme {
-    /// codex `diff_render.rs`, values verbatim: light needs a
-    /// more saturated gutter to hold a number on the pastel, and at 16 colours a
-    /// background would land on a ground the terminal owns.
+    /// Values ported verbatim: light needs a more saturated gutter to hold a
+    /// number on the pastel, and at 16 colours the terminal owns the ground.
     pub fn diff_row(&self, kind: DiffRowKind) -> DiffRowStyle {
         let added = kind == DiffRowKind::Added;
         if kind == DiffRowKind::Context {

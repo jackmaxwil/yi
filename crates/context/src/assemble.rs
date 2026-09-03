@@ -2,9 +2,8 @@ use yi_types::message::AgentMessage;
 
 use crate::wrapper::wrap_internal;
 
-/// The pieces whose bytes must not change within a window. The compaction
-/// summary rides the message list, and world-state diffs append at the overlay
-/// tail, so the prefix stays cache-warm.
+/// The pieces whose bytes must not change within a window: the summary rides the message
+/// list and world-state diffs append at the overlay tail, so the prefix stays cache-warm.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct StablePrefix {
     pub system_prompt: String,
@@ -20,9 +19,8 @@ impl StablePrefix {
     }
 }
 
-/// Appends world-state overlay fragments to the kept messages as wrapped
-/// internal context — append-only diffs at the tail, never edits to earlier
-/// messages.
+/// Appends world-state overlay fragments to the kept messages as wrapped internal context:
+/// append-only diffs at the tail, never edits to earlier messages.
 pub fn assemble(kept: &[AgentMessage], overlay: &[String], timestamp: u64) -> Vec<AgentMessage> {
     let mut messages = kept.to_vec();
     for fragment in overlay {

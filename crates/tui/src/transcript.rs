@@ -12,9 +12,8 @@ pub(crate) fn text_of(content: &[Content]) -> String {
         .join("\n")
 }
 
-/// codex `exec_cell::output_lines`: the head says what ran and the tail says
-/// how it ended, and a command's error is almost always in the tail. Keeping
-/// only the first ten lines dropped exactly the half worth reading.
+/// The head says what ran and the tail how it ended, and a command's error is
+/// in the tail — keeping ten head lines dropped the half worth reading.
 pub(crate) fn preview_lines(text: &str) -> Vec<String> {
     const HEAD: usize = 5;
     const TAIL: usize = 5;
@@ -56,9 +55,8 @@ pub(crate) fn user_text(content: &UserContent) -> String {
     }
 }
 
-/// The edit tool takes only a `patch`; its target lives in the patch's own
-/// `[path#TAG]` section headers. Without this the cell renders a bare `edit`
-/// with no indication of what it touched.
+/// The edit tool takes only a `patch`; its target lives in the patch's own `[path#TAG]`
+/// headers. Without this the cell renders a bare `edit` naming nothing it touched.
 fn patch_targets(patch: &str) -> String {
     let mut paths: Vec<&str> = patch
         .lines()

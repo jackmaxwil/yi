@@ -7,7 +7,7 @@ The .ruler/ rules are the enforced source; this is the narrative version.
 - Zero panic budget from day one: clippy denies unwrap/expect/panic/todo/
   unimplemented; check_panic.py backs it; #![forbid(unsafe_code)] everywhere.
 - A comment earns its line by naming an incident, an invariant, or a yi-types
-  schema fact, in three lines or fewer, whatever sigil carries it (D49 - the
+  schema fact, in two lines or fewer, whatever sigil carries it (D49 - the
   test is content, not sigil). check_comments.py caps the length outright and
   ratchets volume outside yi-types shrink-only.
 - Comment referents are typed (D55). A Rust item in a doc comment is an
@@ -29,7 +29,7 @@ The .ruler/ rules are the enforced source; this is the narrative version.
   in the same change. deny.toml advisory ignores name their removal condition.
 - Port work reads only the spans cited in YI_DESIGN.md Appendix A; excise lists
   are never opened. Verbatim = 1:1 with constants and error strings.
-- A structural change bumps ARCHITECTURE.md and adds a changelog row; revising
+- A structural change bumps ARCHITECTURE.md and adds a docs/CHANGELOG.md row; revising
   a settled decision needs a new D-row first; cuts get discussed before written.
 
 ## Verification ladder in use

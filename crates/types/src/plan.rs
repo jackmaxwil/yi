@@ -93,9 +93,8 @@ pub struct SubtaskSpec {
     pub extra: Map<String, Value>,
 }
 
-/// One per session, stored as a fact beside the header like the goal, so
-/// compaction cannot lose it. A plan without an Active goal is inert
-/// structure; the goal is what arms unattended continuation.
+/// One per session, stored as a fact beside the header like the goal, so compaction cannot
+/// lose it. Without an Active goal a plan is inert structure; the goal arms continuation.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Plan {
@@ -103,9 +102,8 @@ pub struct Plan {
     pub tasks: Vec<Task>,
     pub created: u64,
     pub updated: u64,
-    /// Invariant: unvalidated, like every sibling id here — a validating
-    /// newtype on a durable JSONL field makes one bad pointer fail the whole
-    /// session file. Set means a [`crate::plan::doc::PlanId`] file is truth.
+    /// Invariant: unvalidated like every sibling id — a validating newtype on a durable JSONL
+    /// field fails the whole file for one bad pointer. Set means a `PlanId` file is truth.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub doc: Option<String>,
     #[serde(flatten)]

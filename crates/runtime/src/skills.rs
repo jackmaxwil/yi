@@ -10,9 +10,8 @@ pub struct Skill {
     pub path: PathBuf,
 }
 
-/// Project roots, then global, own format before the conventions Yi reads for
-/// compatibility. First root wins a name, so a project skill shadows a global
-/// one and `.yi` shadows `.agents`, `.pi`, `.claude`.
+/// Project roots, then global, own format before the compatibility conventions. First root
+/// wins a name, so a project skill shadows a global one and `.yi` shadows the rest.
 pub fn roots(cwd: &Path, home: &Path) -> Vec<PathBuf> {
     crate::ext::resource_roots(cwd, home, "skills")
 }
@@ -27,9 +26,8 @@ pub fn discover(cwd: &Path, home: &Path) -> Vec<Skill> {
     found.into_values().collect()
 }
 
-/// The user's own roots and the repository's, kept apart: a repository author
-/// writes the descriptions in the second set, so those render in the yard
-/// instead of the trusted prefix.
+/// The user's own roots and the repository's, kept apart: a repository author writes the
+/// second set's descriptions, so those render in the yard, not the trusted prefix.
 pub fn discover_split(cwd: &Path, home: &Path) -> (Vec<Skill>, Vec<Skill>) {
     let mut global: BTreeMap<String, Skill> = BTreeMap::new();
     let mut project: BTreeMap<String, Skill> = BTreeMap::new();

@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
-/// Job lifecycle (design H2). Wire strings match prime's `AgentCronJobStatus`.
+/// Job lifecycle (design H2). Wire strings match the reference cron statuses.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum JobStatus {
@@ -47,8 +47,8 @@ pub struct CronSchedule {
     pub interval_ms: Option<u64>,
 }
 
-/// One scheduled job (design H2, prime `AgentCronJob` shape; timestamps are
-/// epoch milliseconds — Yi owns this file format, D39).
+/// One scheduled job (design H2); timestamps are epoch milliseconds and Yi
+/// owns this file format (D39).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Job {

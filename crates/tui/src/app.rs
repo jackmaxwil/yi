@@ -66,9 +66,8 @@ pub struct TuiOptions {
     pub initial_prompt: Option<String>,
 }
 
-// U2: starting tall anchors the composer mid-screen until the first history
-// commit pushes it down, so the viewport opens at an empty live region's
-// height (composer box + status row) and grows upward from the cursor.
+// U2: starting tall anchors the composer mid-screen until the first commit pushes it down,
+// so the viewport opens at an empty live region's height and grows upward from the cursor.
 const MIN_VIEWPORT_ROWS: u16 = 4;
 
 const SPINNER_PERIOD_MS: u128 = 80;
@@ -106,9 +105,8 @@ pub struct App {
     /// the resize-reflow path.
     pending_repaint: bool,
     pub(crate) pending_prompt_mark: bool,
-    /// U34: 0 = the `Yi` wordmark at rest, 1 = the working orb. The dots
-    /// travel between the two; there is one orb, never a static one beside a
-    /// moving one.
+    /// U34: 0 = the `Yi` wordmark at rest, 1 = the working orb. The dots travel between the
+    /// two; there is one orb, never a static one beside a moving one.
     pub(crate) logo_phase: f64,
     pub(crate) logo_target: f64,
     pub(crate) history: crate::history::History,
@@ -142,9 +140,8 @@ pub struct App {
     pub(crate) focused: Option<String>,
     pub(crate) hud_hidden: bool,
     seen_turn: bool,
-    /// Incident: a submitted prompt reaches the runtime thread over a channel,
-    /// so the UI can still look idle after Enter; a drive script that only
-    /// checked `running` opened the session tree mid-write (A10).
+    /// Incident: a submitted prompt reaches the runtime thread over a channel, so the UI can
+    /// look idle after Enter; a script checking only `running` opened the tree mid-write.
     submitted_turns: u64,
     started_turns: u64,
     user_turns: usize,
@@ -152,8 +149,7 @@ pub struct App {
     pub(crate) kitty: bool,
     pub(crate) orb_placement: Option<(u16, u16)>,
     /// Incident: a resize reflows the text a kitty placement scrolls with, but
-    /// [`crate::terminal::Terminal::resize_viewport`] reports a change only when the viewport rect moves —
-    /// without this the image sat where the emulator left it until the next turn.
+    /// [`crate::terminal::Terminal::resize_viewport`] reports only viewport-rect moves.
     orb_stale: bool,
     pub(crate) pending_title: Option<String>,
     pub(crate) started_at: Instant,
@@ -323,9 +319,8 @@ impl App {
         self.width.saturating_sub(2)
     }
 
-    /// The mode decides how every cell renders, including those already above
-    /// the viewport, so the change repaints them rather than reaching only
-    /// cells committed after it.
+    /// The mode decides how every cell renders, including those above the viewport, so the
+    /// change repaints them rather than reaching only cells committed after it.
     pub fn cycle_mode(&mut self) {
         self.mode = self.mode.next();
         self.pending_repaint = true;
@@ -401,9 +396,8 @@ impl App {
         let spinner = self.spinner_phase();
         let width = self.content_width();
         let lines = cell.lines(width, &self.theme, self.mode, spinner);
-        // opencode `util/layout.ts`: a blank separates blocks, never a run
-        // of one-line calls. Measured against what the previous cell actually
-        // rendered, which is the only thing an append-only commit path knows.
+        // A blank separates blocks, never a run of one-line calls, measured
+        // from what the previous cell rendered — all an append path knows.
         let leads_blank = lines
             .first()
             .is_some_and(|line| line.spans.iter().all(|s| s.content.trim().is_empty()));
@@ -596,8 +590,8 @@ impl App {
                 self.commit_cell(&Cell::Tool(cell));
                 self.intent = None;
             }
-            // opencode colours the waiting call itself, not only the prompt:
-            // the row the user is being asked about says so in place.
+            // The waiting call is coloured, not only the prompt, so the row
+            // the user is being asked about says so in place.
             AgentEvent::PermissionRequested { tool_call_id, .. } => {
                 self.set_awaiting(&tool_call_id, ToolStatus::Awaiting);
             }
@@ -982,9 +976,8 @@ pub fn run_tui(
         } else {
             timeout
         };
-        // U36: the reflow deadline is the only thing that will fire after a
-        // drag stops, and a settled terminal sends no more events — without a
-        // wake here the rebuild waits for the next keypress.
+        // U36: the reflow deadline is the only thing firing after a drag stops, and a settled
+        // terminal sends no events, so without a wake the rebuild waits for a keypress.
         if let Some(deadline) = app.reflow.pending_until() {
             let now = Instant::now();
             if now >= deadline {
@@ -1018,9 +1011,8 @@ pub fn run_tui(
             last_roster = Instant::now();
             sync_roster(&mut app, &host, &handle, &ui_tx);
         }
-        // A blanket request here drew every turn at the 16 ms ceiling: five
-        // frames per spinner step, four byte-identical. Tokens dirty their own
-        // frame in `reduce_agent`, leaving only the animation needing a timer.
+        // A blanket request drew every turn at the 16 ms ceiling: five frames per spinner
+        // step, four identical. Tokens dirty their own frame; only animation needs a timer.
         let phase = app.spinner_phase();
         if animating && phase != last_spinner_phase {
             last_spinner_phase = phase;

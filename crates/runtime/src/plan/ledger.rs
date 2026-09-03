@@ -4,9 +4,8 @@ use yi_types::plan::doc::{BlockedOn, Check, Plan, PlanId, TodoLabel, TodoState, 
 use yi_types::plan::ledger::{PLAN_OP_ENTRY_TYPE, PlanOpRecord};
 use yi_types::url::Durability;
 
-/// The op stream's writer, beside its readers: every applied op becomes one
-/// durable custom entry on the owning session, which is where every duration
-/// below is read back from.
+/// The op stream's writer, beside its readers: every applied op becomes one durable custom
+/// entry on the owning session, which is where every duration below is read back from.
 pub struct SessionOpSink(pub crate::goal::StoreHandle);
 
 impl super::ops::OpSink for SessionOpSink {
@@ -84,9 +83,8 @@ pub struct Report {
 }
 
 impl Report {
-    /// K3's serial fraction: the critical path against the clock the run
-    /// actually took. Above 1 means the path overlapped itself, which a
-    /// re-cut plan can do; the caller sees the raw ratio, not a clamp.
+    /// K3's serial fraction: the critical path against the clock the run took. Above 1 means
+    /// the path overlapped itself, which a re-cut plan can do; the caller sees no clamp.
     pub fn serial_fraction(&self) -> Option<f64> {
         (self.wall_ms > 0).then(|| {
             let path = u32::try_from(self.critical_path_ms).unwrap_or(u32::MAX);
@@ -238,9 +236,8 @@ pub fn report(plan: &Plan, records: &[PlanOpRecord]) -> Report {
     }
 }
 
-/// The §12 lint, bounded by what a lint may be: advisory, mechanical, and run
-/// at a cut boundary rather than per op. A judgment rule would need a fitted
-/// threshold, so none is here.
+/// The §12 lint, bounded by what a lint may be: advisory, mechanical, run at a cut boundary
+/// rather than per op. A judgment rule would need a fitted threshold, so none is here.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Finding {
     pub todo: Option<TodoLabel>,

@@ -1,12 +1,11 @@
 use std::collections::{HashSet, VecDeque};
 
-// omp issue #3520: one session recorded 309 advise calls covering 92 unique
-// notes ("Stop." ×114). The gate is invisible to the advisor model — told it
-// was suppressed, the model rephrases to bypass the dedupe.
+// Incident: one session recorded 309 advise calls covering 92 unique notes
+// ("Stop." ×114). Told it was suppressed, the model rephrases past the dedupe.
 const DEFAULT_HISTORY_CAPACITY: usize = 4_096;
 
-// Conservative, normalized filler the omp reporter observed polluting the
-// primary transcript; a genuine "Stop: <reason>" does not match.
+// Conservative, normalized filler observed polluting the primary transcript;
+// a genuine "Stop: <reason>" does not match.
 const SUPPRESSED_NORMALIZED_PHRASES: [&str; 34] = [
     "stop",
     "stop here",

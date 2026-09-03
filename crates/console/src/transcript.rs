@@ -3,9 +3,8 @@ use yi_tui::cell::{ToolCell, ToolStatus, TranscriptMode};
 use yi_tui::colors::Theme;
 use yi_types::acp::{AcpContentBlock, AcpSessionUpdate, AcpToolCallStatus, AcpToolContent};
 
-/// Retained lines per pane; the full history lives in the worker's JsonlRepo,
-/// so dropping the oldest committed blocks loses only local scrollback.
-/// ponytail: fixed cap, make configurable when someone asks.
+/// Retained lines per pane; the full history lives in the worker's JsonlRepo, so dropping the
+/// oldest blocks loses only local scrollback. ponytail: fixed cap, configurable if asked.
 const MAX_LINES: usize = 10_000;
 
 /// Invariant: committed blocks render once into the cache; only the open
@@ -316,9 +315,8 @@ impl Transcript {
         }
     }
 
-    /// All lines at the current width, rendering only uncached slots.
-    /// Invariant: the retained count is re-totalled from the caches, since
-    /// an open block re-renders many times and a running sum would trim.
+    /// All lines at the current width, rendering only uncached slots. Invariant: the retained
+    /// count is re-totalled from the caches, since an open block re-renders many times.
     pub fn lines(&mut self, theme: &Theme) -> Vec<Line<'static>> {
         let width = self.width;
         let mut out = Vec::new();

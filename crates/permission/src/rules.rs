@@ -82,7 +82,7 @@ impl ConfigRule {
 }
 
 /// Session rule state over the yi-types wire shape: digests are recomputed
-/// from `canonical` on load and never trusted from disk (fx exemplar).
+/// from `canonical` on load and never trusted from disk.
 #[derive(Default)]
 pub struct SessionRules {
     state: SessionPermissionState,

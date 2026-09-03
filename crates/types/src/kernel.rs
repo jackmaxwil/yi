@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
 /// Jupyter connection file (design K2). Field order is the byte order of the
-/// file prime writes; ipykernel re-writes it with resolved ports.
+/// file the host writes; ipykernel re-writes it with resolved ports.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ConnectionInfo {
     pub ip: String,
@@ -22,7 +22,7 @@ fn default_kernel_name() -> String {
     "python3".to_owned()
 }
 
-/// Jupyter wire message header (design K3). Field order matches prime's
+/// Jupyter wire message header (design K3). Field order is the reference
 /// `buildMessage` serialization.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct JupyterHeader {

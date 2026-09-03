@@ -26,9 +26,8 @@ pub enum PlanTier {
     },
 }
 
-/// Invariant: the plan file is ledger truth, so an unknown state tag written
-/// by another version degrades to [`PlanState::Other`] and re-emits verbatim
-/// instead of making the whole document unreadable.
+/// Invariant: the plan file is ledger truth, so an unknown state tag from another version
+/// degrades to [`PlanState::Other`] and re-emits verbatim rather than failing the document.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum PlanState {
@@ -95,9 +94,8 @@ pub enum TodoState {
     Done {
         output: Option<Url>,
     },
-    /// Invariant: `last` is minted by the host when the child is reaped, never
-    /// supplied by a model, and is terminal-only — [`crate::url::Durability`]
-    /// keeps an ephemeral trace out of a record that outlives its referent.
+    /// Invariant: `last` is host-minted at reap, never model-supplied, and terminal-only;
+    /// [`crate::url::Durability`] keeps an ephemeral trace out of a record that outlives it.
     Failed {
         cause: String,
         last: Option<Url>,
@@ -116,9 +114,8 @@ impl TodoState {
         }
     }
 
-    /// Invariant: Abandoned clears the edge it holds and Failed does not —
-    /// dropping a todo is a decision its successors must survive, while a
-    /// failure is retryable and still owes them the work.
+    /// Invariant: Abandoned clears the edge it holds and Failed does not: dropping a todo is
+    /// a decision its successors must survive, while a failure still owes them the work.
     pub fn clears_edge(&self) -> bool {
         match self {
             Self::Done { .. } | Self::Abandoned => true,
@@ -131,9 +128,8 @@ impl TodoState {
     }
 }
 
-/// Invariant: a terminal record may not name a referent that dies before it —
-/// never a live agent, and a kernel variable only in the plan owner's own
-/// namespace, which is what makes that namespace the downgrade target.
+/// Invariant: a terminal record may not name a referent that dies before it — never a live
+/// agent, and a kernel variable only in the plan owner's own namespace.
 pub fn terminal_durability(url: &Url, owner: &AgentId) -> Durability {
     match url.scheme() {
         Scheme::Agent => Durability::Ephemeral,
@@ -415,9 +411,8 @@ pub struct Plan {
     pub version: PlanVersion,
     pub touched: TouchCount,
     pub tier: PlanTier,
-    /// Invariant: the delegation fuse is monotonic, so birth at zero and
-    /// [`Plan::charge_spawn`] are its only writers and a reset cannot compile;
-    /// a user editing the plan file down is the sanctioned way back.
+    /// Invariant: the delegation fuse is monotonic, so [`Plan::charge_spawn`] and birth are
+    /// its only writers; a user editing the plan file down is the sanctioned way back.
     spawns: Spawns,
     pub todos: Vec<Todo>,
     pub state: PlanState,
@@ -567,9 +562,8 @@ impl Plan {
                 });
             }
         }
-        // Invariant: labels must also be unique after slugging, because a URL
-        // addresses a todo by the slug of its label and two labels with one
-        // slug would collide in URL space.
+        // Invariant: labels must also be unique after slugging, since a URL addresses a todo
+        // by its label's slug and two labels with one slug collide in URL space.
         let mut slugs: HashMap<String, &TodoLabel> = HashMap::new();
         for todo in &self.todos {
             let slug = slugify(todo.label.as_str());

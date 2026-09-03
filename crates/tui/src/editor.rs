@@ -2,9 +2,8 @@ use crate::app::App;
 use crate::cell::Cell;
 use crate::term;
 
-/// Raw mode and the keyboard flags come off before the child starts and go back
-/// on after it exits: the child owns the tty in between. `restore_tty` is false
-/// where there is no terminal to hand over (headless drive mode, tests).
+/// Raw mode and the keyboard flags come off before the child starts and back on after: the
+/// child owns the tty. `restore_tty` is false where there is no terminal to hand over.
 pub fn process_pending_editor<B: ratatui::backend::Backend>(
     app: &mut App,
     terminal: &mut crate::terminal::Terminal<B>,
@@ -21,9 +20,8 @@ pub fn process_pending_editor<B: ratatui::backend::Backend>(
         });
         return;
     }
-    // Mode toggles go to stdout, as the startup guard's `Drop` and the panic
-    // hook already do: raw mode is process-wide, and the paste/keyboard escapes
-    // ride the same writer those two use.
+    // Mode toggles go to stdout, as the startup guard's `Drop` and the panic hook do: raw
+    // mode is process-wide and the paste/keyboard escapes ride the same writer.
     let mut out = std::io::stdout();
     if restore_tty {
         term::restore_terminal(&mut out);

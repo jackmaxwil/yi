@@ -1,5 +1,5 @@
-// codex markdown table pipeline, port adapted (A.10 pass-3). Hyperlink
-// remapping and HTML-spillover heuristics dropped.
+// Markdown table pipeline, port adapted. Hyperlink remapping and
+// HTML-spillover heuristics dropped.
 
 use pulldown_cmark::Alignment;
 use ratatui::style::{Modifier, Style};
@@ -11,9 +11,8 @@ use crate::wrap::wrap_line;
 
 const TABLE_CELL_PADDING: usize = 1;
 const TABLE_BODY_SEPARATOR_CHAR: char = '─';
-// OMP `theme.boxSharp`: an outer box with inner rules and real junctions.
-// codex's pipeline (which this file ports) draws no edges at all and puts a
-// `─` rule between every body row — most of the ink for none of the meaning.
+// An outer box with inner rules and real junctions. The ported pipeline drew
+// no edges and ruled every body row: most of the ink for none of the meaning.
 const BOX_H: char = '─';
 const BOX_V: &str = "│";
 const BOX_TOP: [char; 3] = ['┌', '┬', '┐'];
@@ -181,9 +180,8 @@ fn preferred_floor(metrics: &ColumnMetrics) -> usize {
         .min(metrics.max_width.max(MIN_COLUMN_WIDTH))
 }
 
-/// Shrink columns in priority order (TokenHeavy, Narrative, Compact),
-/// balancing slack within each kind via a binary-searched cap so
-/// similarly-shaped columns stay even.
+/// Shrink columns in priority order (TokenHeavy, Narrative, Compact), balancing slack within
+/// each kind via a binary-searched cap so similarly-shaped columns stay even.
 fn shrink_columns(
     widths: &mut [usize],
     floors: &[usize],

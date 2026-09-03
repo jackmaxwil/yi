@@ -418,9 +418,8 @@ fn ratio_at(node: &Node, path: &[bool]) -> Option<f32> {
 }
 
 fn split_rect(area: Rect, direction: Direction, ratio: f32) -> (Rect, Rect) {
-    // Invariant: children overlap by one border row/column, so the raster
-    // unions the shared line into real junctions; a pane never shrinks
-    // under 3 cells a side and tiny terminals never overflow.
+    // Invariant: children overlap by one border row/column so the raster unions the shared
+    // line into junctions; no pane shrinks under 3 cells a side, so tiny terminals hold.
     match direction {
         Direction::Horizontal => {
             let ideal = (f32::from(area.width) * valid_ratio(ratio)).round();

@@ -66,9 +66,8 @@ impl Tool for WriteTool {
         {
             return error_output(format!("failed to create {}: {error}", parent.display()));
         }
-        // Read before the write: nothing else reconstructs the ground it
-        // replaced. Past the cap, no base is read and no patch is claimed —
-        // a missing base would report as a whole-file addition.
+        // Read before the write: nothing else reconstructs the ground it replaced. Past the
+        // cap no base is read and no patch claimed, since a missing base reads as an add.
         let cap = u64::try_from(DETAIL_CAP).unwrap_or(u64::MAX);
         let before = match fs::metadata(&path) {
             Ok(meta) if meta.len() > cap => None,
@@ -210,9 +209,8 @@ const READ_ONLY_GIT: [&str; 10] = [
     "shortlog",
 ];
 
-/// Incident: every bash call reported as irreversible, so the advisor flagged
-/// `ls -la && git log` and the warning stopped meaning anything. Each segment is
-/// screened on its own; the command is read-only only when all of them are.
+/// Incident: every bash call reported as irreversible, so the advisor flagged `ls -la && git
+/// log` into meaninglessness. Each segment is screened; all must be read-only.
 fn read_only_command(command: &str) -> bool {
     command
         .split(['|', ';', '\n'])
@@ -243,8 +241,8 @@ fn read_only_segment(segment: &str) -> bool {
     READ_ONLY_VERBS.contains(&verb)
 }
 
-/// codex's `command_category`: persisted per call so a stats pass can see
-/// shell searches the grep tool should have served.
+/// Persisted per call so a stats pass can see shell searches the grep tool
+/// should have served.
 pub(crate) fn command_category(command: &str) -> &'static str {
     let mut categories = command
         .split(['|', ';', '\n'])

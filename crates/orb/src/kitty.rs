@@ -11,14 +11,12 @@ pub fn supported() -> bool {
         || std::env::var_os("KITTY_WINDOW_ID").is_some()
 }
 
-/// TokyoNight-leaning light ink, matching the reference's monochrome
-/// light-dots-on-dark contract; alpha carries depth over a transparent
-/// background so the terminal's own ground (blur included) shows through.
+/// TokyoNight-leaning light ink on the reference's light-dots-on-dark contract; alpha carries
+/// depth over a transparent background so the terminal's own ground shows through.
 const INK: (f64, f64, f64) = (0xc8 as f64, 0xd3 as f64, 0xf5 as f64);
 
-/// Paint a finished frame to RGBA, the canvas painter's contract (dark
-/// substrate: ink mirrored to 1 - white; lines first, dots far→near on top),
-/// with a half-pixel feathered edge in place of canvas antialiasing.
+/// Paint a finished frame to RGBA on the canvas painter's contract — ink mirrored to
+/// 1 - white, lines then dots far→near — with a feathered edge for antialiasing.
 pub fn paint_rgba(frame: &OrbFrame, canvas: f64, px: usize) -> Vec<u8> {
     let scale = px as f64 / canvas;
     let mut buf = vec![0.0_f64; px * px * 4];
@@ -114,9 +112,8 @@ fn base64(data: &[u8]) -> String {
 /// so two ids ping-pong and a placement exists at every instant.
 pub const IMAGE_IDS: [u32; 2] = [7601, 7602];
 
-/// Deflate level for `o=z`. The 192px frame is 83% fully transparent, so the
-/// stream compresses 11x at its densest and 49x at the wordmark; level 9 buys
-/// a further 12% for meaningfully more CPU at 30 fps.
+/// Deflate level for `o=z`. The 192px frame is 83% transparent, so the stream compresses
+/// 11-49x already; level 9 buys a further 12% for meaningfully more CPU at 30 fps.
 const ZLIB_LEVEL: u8 = 6;
 
 /// Transmit frame data only (`a=t`, no display). Chunked at 4096 as the
@@ -144,9 +141,8 @@ pub fn transmit(out: &mut impl Write, id: u32, rgba: &[u8], px: usize) -> std::i
     Ok(())
 }
 
-/// Place (or move) the id's one placement: the same (image, placement) pair
-/// replaces atomically, so a pure scroll re-places ~40 bytes, bracketed in a
-/// synchronized update with the cursor saved and restored around the move.
+/// Place (or move) the id's one placement: the same (image, placement) pair replaces
+/// atomically, so a pure scroll re-places ~40 bytes inside a synchronized update.
 pub fn place(
     out: &mut impl Write,
     id: u32,

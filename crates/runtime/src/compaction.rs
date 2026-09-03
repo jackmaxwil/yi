@@ -66,9 +66,8 @@ pub struct CompactStatus {
 
 pub struct Compactor {
     pub settings: Settings,
-    /// §12 `summarizer` role. The window math stays on the turn's own model —
-    /// a cheaper summarizer with a smaller window must not make compaction
-    /// look overdue.
+    /// §12 `summarizer` role. The window math stays on the turn's own model: a cheaper
+    /// summarizer with a smaller window must not make compaction look overdue.
     pub summarizer: Option<Model>,
     scope: Scope,
     window: Mutex<Window>,
@@ -226,9 +225,8 @@ impl Compactor {
 
     /// Input-side tokens only: the reply is body, not prefix.
     pub fn on_usage(&self, usage: &Usage) {
-        // Invariant: a `ServerObserved` prefill latches for the whole window, so
-        // an unreported usage recorded as zero would pin the prefix at zero and
-        // the guard below would drop every later real observation.
+        // Invariant: a `ServerObserved` prefill latches for the whole window, so an unreported
+        // usage recorded as zero would pin it there and drop every later observation.
         if usage.unknown {
             return;
         }
@@ -269,9 +267,8 @@ impl Compactor {
         should_compact(scoped, Tokens(model.context_window), &self.settings)
     }
 
-    /// Prefix-aligned: the directive appends as a trailing user message, so
-    /// summarization extends the warm cache. Overflow retries once with the
-    /// oldest quarter trimmed; a second failure rolls the window unsummarized.
+    /// Prefix-aligned: the directive appends as a trailing user message, so summarization
+    /// extends the warm cache. Overflow retries once trimmed, then rolls unsummarized.
     pub async fn maybe_compact(
         &self,
         messages: &[AgentMessage],

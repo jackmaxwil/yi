@@ -713,9 +713,8 @@ impl SubagentHost {
         self.reaped.lock().ok()?.get(target).cloned()
     }
 
-    /// Invariant: a reap asks that a child no longer be running, so a host
-    /// holding no such child has already answered it — the caller skips rather
-    /// than refusing, which is what keeps a partial supersede cascade retryable.
+    /// Invariant: a reap asks that a child no longer run, so a host holding no such child has
+    /// answered it; the caller skips rather than refuses, keeping a cascade retryable.
     pub fn holds(&self, target: &str) -> bool {
         self.children
             .lock()

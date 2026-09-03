@@ -1,4 +1,4 @@
-# Model and reasoning-effort switching — a per-model effort ladder, a gated top tier, and the OMP picker
+# Model and reasoning-effort switching — a per-model effort ladder, a gated top tier, and the reference picker
 
 ```
 status:  LANDED 2026-08-28 at 0.60.0 as D72 · U43, in one pass rather than
@@ -7,12 +7,12 @@ status:  LANDED 2026-08-28 at 0.60.0 as D72 · U43, in one pass rather than
          directive (§7). Two things the plan did not name were found during
          implementation and are recorded in §8.
 date:    2026-08-28
-sources: four-agent survey of the §8.14/§12 donors (2026-08-28): codex
-         codex-rs/tui/src/chatwidget/{model_popups.rs,reasoning_shortcuts.rs},
-         codex-rs/core/src/context/model_switch_instructions.rs · pi
-         packages/ai/src/models.ts:900-932 · OMP packages/coding-agent/src/
+sources: four-agent survey of the §8.14/§12 donors (2026-08-28): the reference
+         <ref>/tui/src/chatwidget/{model_popups.rs,reasoning_shortcuts.rs},
+         <ref>/core/src/context/model_switch_instructions.rs · pi
+         packages/ai/src/models.ts:900-932 · the reference packages/coding-agent/src/
          thinking.ts, session/model-controls.ts, modes/components/
-         {model-picker,model-browser}.ts · opencode provider/transform.ts
+         {model-picker,model-browser}.ts · the reference provider/transform.ts
          (read for the variant model, not adopted) · Yi ground truth:
          crates/types/src/{model,entry,config}.rs, crates/ai/src/{openai,
          openai_responses,catalog}.rs, crates/loop/src/{run,config}.rs,
@@ -31,36 +31,36 @@ either a hardcoded global ladder, a lie, or absent.
 
 Four borrowings, one directive, two refusals:
 
-- **codex** — the ladder is *per model, advertised by the catalog*. No global
+- **the reference** — the ladder is *per model, advertised by the catalog*. No global
   list, and a current effort the model does not advertise anchors rather than
   guessing a rung.
-- **codex** — the expensive tier is gated: the inline cycle key refuses to
+- **the reference** — the expensive tier is gated: the inline cycle key refuses to
   cross into it and names where it lives; the picker reaches it only through a
   second, explicit step.
 - **pi** — `thinkingLevelMap` is the single table: it renames a level for the
   wire *and* decides whether the level exists (`null` = rejected,
   `xhigh`/`max` absent = unsupported). Yi already carries it; this plan makes
   the capability half reachable.
-- **OMP** — the model-switching UI: a compact searchable picker with a thinking
+- **the reference** — the model-switching UI: a compact searchable picker with a thinking
   glyph per row, and its keybindings.
 - **user directive** — the default effort is **medium**, always, unless config
   or the user says otherwise. Yi therefore needs no per-model `defaultLevel`
   field, which deletes machinery both donors carry.
-- **refused** — OMP's prewalk and its `auto` per-turn classifier. The level
+- **refused** — the reference's prewalk and its `auto` per-turn classifier. The level
   changes when the user changes it and at no other time.
-- **refused** — OMP's effort ceiling. It was in an earlier draft of this plan
+- **refused** — the reference's effort ceiling. It was in an earlier draft of this plan
   and is cut by directive. With no classifier and no prewalk, nothing in Yi can
   raise its own effort, so the ceiling's only possible writer was a new
   `config.thinking.max` key; without that key it is a parameter threaded
   through every clamp to constrain nothing. Cut with its writer.
 
-**codex's `<model_switch>` developer message is cited and skipped.** It exists
-because codex models carry divergent per-model instructions; Yi's system prompt
+**the reference's `<model_switch>` developer message is cited and skipped.** It exists
+because the reference models carry divergent per-model instructions; Yi's system prompt
 is per session (`crates/cli/src/main.rs:288`) and `yi_types::model::Model` has
 no instructions field, so there is nothing to re-inject. Recorded so it is not
 re-litigated; `Entry::ModelChange` is the hook if that ever changes.
 
-**No fullscreen hub.** §8.14 bans the alternate screen and OMP's is 2,954
+**No fullscreen hub.** §8.14 bans the alternate screen and the reference's is 2,954
 lines against 943 of headroom. Settled, not a tradeoff to revisit.
 
 Six items, four phases.
@@ -166,10 +166,10 @@ deletes it. Net deletion, not duplication.
 session starts at `session_clamp(model, Medium)`. A model switch keeps
 the current effort when the new model advertises it and clamps when it does not
 — it never consults a per-model default, because there isn't one. This is why
-Yi skips OMP's `defaultLevel` re-application (`model-controls.ts:562`) and pi's
+Yi skips the reference's `defaultLevel` re-application (`model-controls.ts:562`) and pi's
 `_getThinkingLevelForModelSwitch` (`agent-session.ts:1775`) entirely.
 
-**3.4 A level change takes effect at the next turn boundary.** codex's rule
+**3.4 A level change takes effect at the next turn boundary.** the reference's rule
 (`model_switching.rs:528`), and it falls out of P1: the run loop reads the
 effort at turn start and `prepare_next_turn` re-reads it, so a mid-stream
 change lands on the following turn instead of tearing a request in half.
@@ -181,7 +181,7 @@ without writing is impossible. They land in the same step.
 
 **3.6 The port brings behavior, not prose.** §18/D49: no comments by default,
 three lines hard, `Incident:`/`Invariant:` tags only, referents as intra-doc
-links (D55). codex's `reasoning_shortcuts.rs` opens with a 15-line module
+links (D55). the reference's `reasoning_shortcuts.rs` opens with a 15-line module
 essay; it does not come over. The one comment this work earns is the
 `Invariant:` on `supported_efforts`' non-empty guarantee.
 
@@ -264,22 +264,22 @@ so the phase is measured, not discovered.
 
 **Item 5 — the picker (`crates/tui/src/model.rs`, ~170 lines).** A `Bottom`
 variant built the way `agents.rs` is built — `BottomView` plus the filter idiom
-from `ListPopup::filtered` — with OMP `model-picker.ts` as **read-only
+from `ListPopup::filtered` — with the reference `model-picker.ts` as **read-only
 reference for the row anatomy only**: `provider/id`, thinking glyph, current
 model marked, ordering by recency then provider. `ListPopup` itself is not
 reused: its rows are plain `String` with no per-row styling.
 
 Selecting a model whose ladder has more than one rung replaces the body with
-the effort list — codex's chained popup, in place rather than as a second
+the effort list — the reference's chained popup, in place rather than as a second
 overlay. Rungs above `High` are not listed; a trailing `More reasoning…` row
-reveals them, which is codex's gate (`model_popups.rs:521-545`) with its
+reveals them, which is the reference's gate (`model_popups.rs:521-545`) with its
 two-step shape intact.
 
-**Item 6 — keys and the status line (~90 lines).** OMP's bindings, all free in
+**Item 6 — keys and the status line (~90 lines).** the reference's bindings, all free in
 Yi's keymap: `shift-tab` cycles effort, `ctrl-p` / `shift-ctrl-p` cycles the
 model, `alt-m` opens the picker, `/model` opens it from the composer. The
 effort cycle walks `supported_efforts` only, **never enters `XHigh`/`Max`**, and
-at the boundary says where they live — codex `reasoning_shortcuts.rs:117-145`,
+at the boundary says where they live — the reference `reasoning_shortcuts.rs:117-145`,
 ported whole because it is the entire value of the gate. `ctrl-p` cycles the
 session's MRU models (the config `model`, plus anything picked this session);
 no scope config, no `--models` flag — if an explicit scope is wanted later it
@@ -296,14 +296,14 @@ commits the hint; a frame assertion on the picker at 80 columns.
 | item | source span | lines | action |
 |---|---|---|---|
 | supported-level derivation + clamp | `ref/agents/pi/packages/ai/src/models.ts:900-932` | 33 | port verbatim |
-| inline effort shortcut: anchor, walk, refuse-to-cross | `ref/agents/codex/codex-rs/tui/src/chatwidget/reasoning_shortcuts.rs:55-200` | 146 | port adapted (prose dropped, §3.6) |
-| chained effort popup + `More reasoning…` gate | `ref/agents/codex/.../model_popups.rs:456-560` | 105 | port adapted |
-| compact session picker — row anatomy | `ref/agents/omp/.../model-picker.ts:1-237` | 237 | **read-only reference** — built on `agents.rs`'s shape instead |
-| **effort ceiling clamp** | `ref/agents/omp/packages/coding-agent/src/thinking.ts:283-330` | 48 | read-only reference — cut by directive (§1) |
-| **`<model_switch>` injection** | `ref/agents/codex/.../model_switch_instructions.rs` | 37 | read-only reference — deliberately not ported (§1) |
-| **fullscreen `/models` hub** | `ref/agents/omp/.../model-hub.ts` | 2,066 | read-only reference — §8.14 bans the alternate screen |
-| **prewalk hand-off** | `ref/agents/omp/.../session/prewalk.ts` | — | read-only reference — refused by directive |
-| **auto-thinking classifier** | `ref/agents/omp/.../model-controls.ts:592-650` | — | read-only reference — refused by directive |
+| inline effort shortcut: anchor, walk, refuse-to-cross | `ref/agents/<ref>/tui/src/chatwidget/reasoning_shortcuts.rs:55-200` | 146 | port adapted (prose dropped, §3.6) |
+| chained effort popup + `More reasoning…` gate | `ref/agents/<ref>/.../model_popups.rs:456-560` | 105 | port adapted |
+| compact session picker — row anatomy | `ref/agents/<ref>/.../model-picker.ts:1-237` | 237 | **read-only reference** — built on `agents.rs`'s shape instead |
+| **effort ceiling clamp** | `ref/agents/<ref>/packages/coding-agent/src/thinking.ts:283-330` | 48 | read-only reference — cut by directive (§1) |
+| **`<model_switch>` injection** | `ref/agents/<ref>/.../model_switch_instructions.rs` | 37 | read-only reference — deliberately not ported (§1) |
+| **fullscreen `/models` hub** | `ref/agents/<ref>/.../model-hub.ts` | 2,066 | read-only reference — §8.14 bans the alternate screen |
+| **prewalk hand-off** | `ref/agents/<ref>/.../session/prewalk.ts` | — | read-only reference — refused by directive |
+| **auto-thinking classifier** | `ref/agents/<ref>/.../model-controls.ts:592-650` | — | read-only reference — refused by directive |
 
 ## 6. Risks
 

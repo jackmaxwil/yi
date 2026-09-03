@@ -92,7 +92,7 @@ impl yi_loop::AgentTool for AdviseTool {
                 });
             }
             // The emission guard is invisible to the advisor model: every
-            // call reads as recorded (omp #3520).
+            // call reads as recorded.
             text_outcome("Recorded.")
         })
     }

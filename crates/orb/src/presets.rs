@@ -1,6 +1,5 @@
-// Resolved (state × size) tunings, baked from thinking-orbs
-// `spec/orbs-golden.json` `resolved` — the post-scaling numbers the golden
-// vectors were generated with, so no scaling machinery can drift.
+// Resolved (state × size) tunings baked from thinking-orbs `spec/orbs-golden.json`: the
+// post-scaling numbers the golden vectors came from, so no scaling machinery can drift.
 
 use crate::{Mode, Opts};
 

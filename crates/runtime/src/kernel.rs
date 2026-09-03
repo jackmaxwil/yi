@@ -12,25 +12,25 @@ use yi_tools::{CancelFlag, KernelBridge, KernelCellOutcome};
 /// runtime package is missing. [`rlm_bootstrap_code`] appends bundled skills.
 pub const RLM_BOOTSTRAP_CODE: &str = r#"
 import asyncio
-import os as _prime_agent_os
+import os as _yi_os
 
-_prime_agent_os.environ["NO_COLOR"] = "1"
+_yi_os.environ["NO_COLOR"] = "1"
 get_ipython().colors = "nocolor"
 
 try:
-    import nest_asyncio as _prime_agent_nest_asyncio
-    _prime_agent_nest_asyncio.apply()
+    import nest_asyncio as _yi_nest_asyncio
+    _yi_nest_asyncio.apply()
 except Exception:
     pass
 
 try:
-    import rlm as _prime_agent_rlm_module
-    rlm = _prime_agent_rlm_module.rlm
-    fetch = _prime_agent_rlm_module.fetch
-    bash = _prime_agent_rlm_module.bash
+    import rlm as _yi_rlm_module
+    rlm = _yi_rlm_module.rlm
+    fetch = _yi_rlm_module.fetch
+    bash = _yi_rlm_module.bash
     import rlm.mcp as mcp
-except Exception as _prime_agent_rlm_error:
-    _PRIME_AGENT_RLM_IMPORT_ERROR = str(_prime_agent_rlm_error)
+except Exception as _yi_rlm_error:
+    _RLM_IMPORT_ERROR = str(_yi_rlm_error)
 
     class _PrimeAgentMissingRlm:
         def _raise_missing(self):
@@ -38,7 +38,7 @@ except Exception as _prime_agent_rlm_error:
                 "yi-runtime is not installed in this IPython kernel. "
                 "Remove ~/.yi/kernel-venv-* so yi can rebuild it, or set "
                 "YI_KERNEL_PYTHON to a kernel environment with yi-runtime installed. "
-                f"Import error: {_PRIME_AGENT_RLM_IMPORT_ERROR}"
+                f"Import error: {_RLM_IMPORT_ERROR}"
             )
 
         async def run(self, prompt, **kwargs):
@@ -60,37 +60,37 @@ except Exception as _prime_agent_rlm_error:
 "#;
 
 const SKILL_WRAPPER_CODE: &str = r#"
-import importlib as _prime_agent_importlib
-import inspect as _prime_agent_inspect
-import sys as _prime_agent_sys
-import types as _prime_agent_types
+import importlib as _yi_importlib
+import inspect as _yi_inspect
+import sys as _yi_sys
+import types as _yi_types
 
-class _PrimeAgentCallableSkillModule(_prime_agent_types.ModuleType):
+class _PrimeAgentCallableSkillModule(_yi_types.ModuleType):
     async def __call__(self, *args, **kwargs):
         result = self.run(*args, **kwargs)
-        if _prime_agent_inspect.isawaitable(result):
+        if _yi_inspect.isawaitable(result):
             return await result
         return result
 
 class _PrimeAgentUnavailableSkill:
     def __init__(self, name, error):
         self.__name__ = name
-        self._prime_agent_import_error = error
+        self._yi_import_error = error
         self.__doc__ = f"Python skill {name} is unavailable: {error}"
 
     async def run(self, *args, **kwargs):
         raise RuntimeError(
             f"Python skill {self.__name__} is unavailable in this IPython kernel. "
-            f"Import error: {self._prime_agent_import_error}"
+            f"Import error: {self._yi_import_error}"
         )
 
     async def __call__(self, *args, **kwargs):
         return await self.run(*args, **kwargs)
 
     def __repr__(self):
-        return f"<unavailable Python skill {self.__name__!r}: {self._prime_agent_import_error}>"
+        return f"<unavailable Python skill {self.__name__!r}: {self._yi_import_error}>"
 
-def _prime_agent_wrap_skill_module(module):
+def _yi_wrap_skill_module(module):
     run = getattr(module, "run", None)
     if not callable(run):
         return module
@@ -99,27 +99,27 @@ def _prime_agent_wrap_skill_module(module):
     wrapped = _PrimeAgentCallableSkillModule(module.__name__)
     wrapped.__dict__.update(module.__dict__)
     try:
-        wrapped.__signature__ = _prime_agent_inspect.signature(run)
+        wrapped.__signature__ = _yi_inspect.signature(run)
     except Exception:
         pass
     doc = getattr(run, "__doc__", None)
     if doc:
         wrapped.__doc__ = doc
-    _prime_agent_sys.modules[module.__name__] = wrapped
+    _yi_sys.modules[module.__name__] = wrapped
     return wrapped
 
-_PRIME_AGENT_SKILL_IMPORT_ERRORS = {}
+_SKILL_IMPORT_ERRORS = {}
 
-for _prime_agent_skill_name in %IMPORTS%:
+for _yi_skill_name in %IMPORTS%:
     try:
-        globals()[_prime_agent_skill_name] = _prime_agent_wrap_skill_module(
-            _prime_agent_importlib.import_module(_prime_agent_skill_name)
+        globals()[_yi_skill_name] = _yi_wrap_skill_module(
+            _yi_importlib.import_module(_yi_skill_name)
         )
-    except Exception as _prime_agent_skill_error:
-        _PRIME_AGENT_SKILL_IMPORT_ERRORS[_prime_agent_skill_name] = str(_prime_agent_skill_error)
-        globals()[_prime_agent_skill_name] = _PrimeAgentUnavailableSkill(
-            _prime_agent_skill_name,
-            str(_prime_agent_skill_error),
+    except Exception as _yi_skill_error:
+        _SKILL_IMPORT_ERRORS[_yi_skill_name] = str(_yi_skill_error)
+        globals()[_yi_skill_name] = _PrimeAgentUnavailableSkill(
+            _yi_skill_name,
+            str(_yi_skill_error),
         )
 "#;
 
@@ -155,9 +155,8 @@ impl HostRegistry {
             .insert(request_type.to_owned(), Arc::new(handler));
     }
 
-    /// The host half of the kernel's `bash()` handle: five `exec.*` requests
-    /// over [`yi_tools::jobs`]. A spawned job is handle-owned — no session
-    /// poller announces it and only `exec.release` retires it.
+    /// The host half of the kernel's `bash()` handle: five `exec.*` requests over
+    /// [`yi_tools::jobs`]. A spawned job is handle-owned; only `exec.release` retires it.
     pub fn register_exec(&mut self, cwd: PathBuf) {
         let spawned = Arc::clone(&self.handles);
         self.register("exec.spawn", move |payload| {
@@ -231,9 +230,8 @@ impl HostRegistry {
         });
     }
 
-    /// `mcp.config` returns `{}` (the Python side raises its own KeyError),
-    /// `mcp.refresh` throws, and `mcp.begin_login` is never registered: a 401
-    /// must not open a browser.
+    /// `mcp.config` returns `{}` (Python raises its own KeyError), `mcp.refresh` throws, and
+    /// `mcp.begin_login` is never registered: a 401 must not open a browser.
     pub fn register_mcp_stubs(&mut self) {
         self.register("mcp.config", |_payload| Box::pin(async { Ok(Map::new()) }));
         self.register("mcp.refresh", |_payload| {
@@ -287,9 +285,8 @@ impl HostHandlers for HostRegistry {
         Some(handler(payload))
     }
 
-    /// Incident: only `exec.release` retired a handle job, so a kernel that
-    /// was disposed or crashed left its children and their registry entries
-    /// for the host's lifetime.
+    /// Incident: only `exec.release` retired a handle job, so a disposed or crashed kernel
+    /// left its children and their registry entries for the host's lifetime.
     fn retire(&self) {
         let registry = yi_tools::jobs::registry();
         for id in lock(&self.handles).drain(..) {
@@ -395,7 +392,7 @@ impl KernelService {
             old.dispose().await;
         }
         // Only sessions with an on-disk directory get a revivable snapshot
-        // (design K10) — prime's artifact-dir gate.
+        // (design K10).
         let snapshot = self.options.session_dir.as_deref().map(|dir| {
             yi_kernel::client::KernelSnapshotConfig {
                 path: yi_kernel::snapshot::snapshot_path_in(dir),
@@ -547,7 +544,7 @@ impl KernelService {
                     });
                 }
                 // Headless busy recovery: kill + fresh kernel + restart notice
-                // into model context (prime's "kill" choice; no UI to ask yet).
+                // into model context; no UI to ask yet.
                 Err(ExecuteError::BusyAfterInterrupt) => {
                     if cancelled() {
                         return Err(ExecuteError::BusyAfterInterrupt.to_string());

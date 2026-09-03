@@ -19,9 +19,8 @@ fn unquote_hashline_path(path_text: &str) -> &str {
     path_text
 }
 
-/// Strip apply_patch-style noise models reflexively prepend to the path:
-/// a leading `***` and a `(Update|Add|Delete|Move)<sep>*(File|to)?<sep>*:`
-/// keyword block, case-insensitive.
+/// Strip apply_patch-style noise models prepend to the path: a leading `***` and a
+/// `(Update|Add|Delete|Move)<sep>*(File|to)?<sep>*:` keyword block, case-insensitive.
 fn strip_apply_patch_path_noise(path_text: &str) -> &str {
     let mut rest = path_text.trim_start();
     let mut stars = 0;
@@ -238,9 +237,8 @@ Example: \"{HL_FILE_PREFIX}src/foo.ts#1A2B{HL_FILE_SUFFIX}\" then edit ops."
     Ok(sections)
 }
 
-/// Same-path sections merge into one with concatenated diffs: anchors authored
-/// against one snapshot must apply as a batch, or the first sub-edit shifts line
-/// numbers out from under the second's. Order is by first occurrence.
+/// Same-path sections merge into one with concatenated diffs: anchors authored against one
+/// snapshot must apply as a batch, or the first shifts lines under the second.
 fn merge_same_path_sections(sections: Vec<RawSection>) -> Result<Vec<RawSection>, String> {
     let mut merged: Vec<RawSection> = Vec::new();
     let mut previous_path: Option<String> = None;
@@ -292,9 +290,8 @@ impl PatchSection {
             executor.feed(&token)?;
         }
         let mut parsed = executor.end()?;
-        // Same-path sections merge into their first occurrence; when that merge
-        // crossed another file's section, the authored top-to-bottom register
-        // order is gone, so clipboard ops cannot apply deterministically.
+        // Same-path sections merge into their first occurrence; if that merge crossed another
+        // file's section the authored register order is gone and clipboard ops are undefined.
         if self.interleaved && has_clipboard_edit(&parsed.edits) {
             return Err(CLIPBOARD_INTERLEAVED_SECTIONS.to_owned());
         }

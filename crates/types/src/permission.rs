@@ -1,8 +1,7 @@
 use serde::{Deserialize, Serialize};
 
-/// Persisted session permission rules (design M4; fx schema exemplar for
-/// section 19 versioning). `digest` is recomputed from `canonical` on load and
-/// never trusted from the wire.
+/// Persisted session permission rules (design M4, section 19 versioning).
+/// `digest` is recomputed from `canonical` on load, never trusted from the wire.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RuleKind {

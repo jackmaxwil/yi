@@ -105,9 +105,8 @@ fn right_segments(input: &StatusInput, name_max: usize) -> Vec<String> {
     segments
 }
 
-/// Overflow runs OMP's truncation cascade: shrink the session name to a floor,
-/// pop right segments, shrink the path to a floor, then drop left segments from
-/// the end, skipping the path — the naive version left only the model.
+/// Overflow cascade: shrink the session name, pop right segments, shrink the
+/// path, then drop left segments — the naive version left only the model.
 pub fn render(input: &StatusInput, width: usize, theme: &Theme) -> Line<'static> {
     let accent = name_accent(&input.session_name);
     let accent_style = Style::default().fg(accent);

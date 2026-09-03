@@ -23,9 +23,8 @@ pub fn is_project_root(root: &Path, cwd: &Path, home: &Path) -> bool {
     root.starts_with(cwd) && !root.starts_with(home)
 }
 
-/// Trust-on-first-use, pinned to the content that was granted: an edit after
-/// the grant reads as untrusted until it is granted again, so a `git pull`
-/// cannot launder authority.
+/// Trust-on-first-use, pinned to the granted content: an edit after the grant reads as
+/// untrusted until granted again, so a `git pull` cannot launder authority.
 pub struct TrustGate {
     path: PathBuf,
 }

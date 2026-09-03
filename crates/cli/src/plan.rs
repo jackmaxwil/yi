@@ -165,9 +165,8 @@ fn as_json(plan: &Plan, measured: &Report) -> serde_json::Value {
     })
 }
 
-/// Incident: reading the workspace's newest session measured the one the report
-/// was asked from, not the one the plan ran under. The owner is whichever
-/// session wrote a record for this plan, newest first.
+/// Incident: reading the workspace's newest session measured the one the report was asked
+/// from, not the one the plan ran under. The owner wrote a record for this plan, newest first.
 fn plan_records(options: &Options, plan: &PlanId) -> Vec<PlanOpRecord> {
     let mut repo = yi_runtime::session_store::JsonlRepo::new(
         options.session_dir.clone(),

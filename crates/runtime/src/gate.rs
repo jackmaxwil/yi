@@ -81,9 +81,8 @@ pub fn class_label(class: Class) -> &'static str {
     }
 }
 
-/// What the broker would answer for this command in a fresh session: the same
-/// `decide()` the tool seam calls, with no session rules and no advisor holds,
-/// because both are state a dry run cannot have.
+/// What the broker would answer for this command in a fresh session: the same `decide()` the
+/// tool seam calls, without session rules or holds, which a dry run cannot have.
 pub fn explain(command: &str, mode: PermissionMode, cwd: &Path) -> Report {
     let (segments, unparsed) = match parse(command) {
         Parsed::Segments(segments) => (
