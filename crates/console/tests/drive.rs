@@ -328,7 +328,7 @@ fn attach_lists_sessions_with_ledger_status() -> TestResult {
             Step::Expect("session/list", two_session_list),
             Step::Expect("session/list", ledger_list),
         ],
-        "wait-frame 5000 ● connected\n\
+        "wait-frame 5000 !connecting…\n\
          wait-frame 5000 s-alpha\n\
          wait-frame 5000 s-beta\n\
          wait-frame 5000 ●\n\
@@ -503,10 +503,10 @@ fn navigator_filters_and_opens() -> TestResult {
             Step::Expect("_yi/seen", seen_ok),
         ],
         "wait-frame 5000 s-alpha\n\
-         wait-frame 3000 !╭\n\
+         wait-frame 3000 !palette\n\
          key alt-/\n\
          wait-frame 3000 find\n\
-         wait-frame 3000 ╭\n\
+         wait-frame 3000 palette\n\
          type beta\n\
          wait-frame 3000 find beta\n\
          key enter\n\
@@ -527,7 +527,7 @@ fn tiny_terminal_survives_splits() -> TestResult {
         ],
     );
     let steps = parse_script(
-        "wait-frame 5000 ●\n\
+        "wait-frame 5000 !connecting…\n\
          key alt-v\n\
          key alt-s\n\
          key alt-v\n\
@@ -834,10 +834,14 @@ fn cmd_chords_split_close_and_hide_the_sidebar() -> TestResult {
         "wait-frame 5000 s-alpha\n\
          key enter\n\
          wait-frame 5000 replayed world\n\
+         key alt-/\n\
          wait-frame 3000 ⌥v/⌥s split\n\
+         key esc\n\
          cmd-d\n\
          wait-frame 3000 no session\n\
+         cmd-p\n\
          wait-frame 3000 ⌘⇧M zoom\n\
+         key esc\n\
          cmd-x\n\
          wait-frame 3000 !no session\n\
          wait-frame 3000 s-beta\n\
@@ -1415,7 +1419,7 @@ fn a_lone_chat_pane_wears_no_frame() -> TestResult {
          key enter\n\
          wait-frame 5000 replayed world\n\
          wait-frame 3000 !❯ s-alpha\n\
-         wait-frame 3000 !╭\n\
+         wait-frame 3000 !┬\n\
          key alt-v\n\
          wait-frame 3000 ❯ s-alpha\n\
          wait-frame 3000 ┬\n\
@@ -1603,5 +1607,109 @@ fn the_sidebar_windows_to_the_viewport_and_follows_the_cursor() -> TestResult {
             Step::Expect("session/list", empty_list),
         ],
         &script,
+    )
+}
+
+fn slash_reply(frame: &Value) -> Vec<Value> {
+    let line = frame
+        .pointer("/params/line")
+        .and_then(Value::as_str)
+        .unwrap_or("?")
+        .to_owned();
+    vec![ok(
+        frame,
+        json!({"text": format!("ran /{line} on the worker")}),
+    )]
+}
+
+/// `/` over an empty composer opens the verb popup; Enter on a verb sends it to the
+/// worker and the reply lands in the transcript as a note.
+#[test]
+fn the_slash_popup_runs_a_verb_on_the_worker() -> TestResult {
+    let mut fixture = session_fixture();
+    fixture.push(Step::Expect("_yi/slash", slash_reply));
+    run(
+        "slash",
+        fixture,
+        "wait-frame 5000 s-alpha\n\
+         key enter\n\
+         wait-frame 5000 replayed world\n\
+         type /\n\
+         wait-frame 3000 permissions\n\
+         type goal\n\
+         key enter\n\
+         wait-frame 5000 ran /goal on the worker\n\
+         wait-frame 3000 !permissions\n\
+         quit\n",
+    )
+}
+
+/// `/new` is the console's own verb: it opens a fresh session in the focused pane.
+#[test]
+fn slash_new_opens_a_fresh_session_in_the_pane() -> TestResult {
+    let mut fixture = session_fixture();
+    fixture.push(Step::Expect("session/new", new_session_reply));
+    fixture.push(Step::Expect("_yi/seen", seen_ok));
+    run(
+        "slash-new",
+        fixture,
+        "wait-frame 5000 s-alpha\n\
+         key enter\n\
+         wait-frame 5000 replayed world\n\
+         type /new\n\
+         key enter\n\
+         wait-frame 5000 !replayed world\n\
+         quit\n",
+    )
+}
+
+fn status_push() -> Vec<Value> {
+    vec![update(
+        "s-alpha",
+        json!({"sessionUpdate": "_yi/status", "model": "faux-1", "effort": "medium",
+        "cost": 0.12, "costUnknown": false, "contextUsed": 2000, "contextWindow": 200000}),
+    )]
+}
+
+/// The status row is the solo one: model, reasoning effort, cost and context share, with
+/// the session's name on the right.
+#[test]
+fn the_status_row_shows_model_effort_cost_and_context() -> TestResult {
+    let mut fixture = session_fixture();
+    fixture.push(Step::Push(status_push));
+    run(
+        "status-row",
+        fixture,
+        "wait-frame 5000 s-alpha\n\
+         key enter\n\
+         wait-frame 5000 replayed world\n\
+         wait-frame 3000 faux-1\n\
+         wait-frame 3000 ◉ medium\n\
+         wait-frame 3000 $0.12\n\
+         wait-frame 3000 1% of 200K\n\
+         quit\n",
+    )
+}
+
+fn running_push() -> Vec<Value> {
+    vec![update(
+        "s-alpha",
+        json!({"sessionUpdate": "state_update", "state": "running"}),
+    )]
+}
+
+/// A working session shows the solo working line above the composer, esc hint included.
+#[test]
+fn a_working_session_shows_the_working_line() -> TestResult {
+    let mut fixture = session_fixture();
+    fixture.push(Step::Push(running_push));
+    run(
+        "working-line",
+        fixture,
+        "wait-frame 5000 s-alpha\n\
+         key enter\n\
+         wait-frame 5000 replayed world\n\
+         wait-frame 3000 [esc] interrupt\n\
+         quit\n",
     )
 }

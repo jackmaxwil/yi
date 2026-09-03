@@ -1,5 +1,8 @@
 use std::collections::BTreeMap;
 
+use serde_json::Value;
+use yi_tui::popup::ListPopup;
+
 use ratatui::layout::Direction;
 use yi_types::acp::{AcpPermissionParams, AcpState};
 
@@ -126,6 +129,58 @@ pub fn now_ms() -> u64 {
         .map_or(0, |elapsed| {
             u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX)
         })
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct StatusInfo {
+    pub model: String,
+    pub effort: Option<String>,
+    pub cost: Option<String>,
+    pub context_used: u64,
+    pub context_window: u64,
+}
+
+impl StatusInfo {
+    pub fn absorb(&mut self, fields: &BTreeMap<String, Value>) {
+        if let Some(model) = fields.get("model").and_then(Value::as_str) {
+            self.model = model.to_owned();
+        }
+        if let Some(effort) = fields.get("effort").and_then(Value::as_str) {
+            self.effort = (effort != "off").then(|| effort.to_owned());
+        }
+        let cost = fields.get("cost").and_then(Value::as_f64).unwrap_or(0.0);
+        let unknown = fields
+            .get("costUnknown")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        let mark = if unknown { "+?" } else { "" };
+        self.cost = (cost > 0.0 || unknown).then(|| format!("${cost:.2}{mark}"));
+        if let Some(used) = fields.get("contextUsed").and_then(Value::as_u64) {
+            self.context_used = used;
+        }
+        if let Some(window) = fields.get("contextWindow").and_then(Value::as_u64) {
+            self.context_window = window;
+        }
+    }
+}
+
+pub enum Bottom {
+    Command(ListPopup),
+    File(ListPopup),
+}
+
+impl Bottom {
+    pub fn popup(&self) -> &ListPopup {
+        match self {
+            Self::Command(popup) | Self::File(popup) => popup,
+        }
+    }
+
+    pub fn popup_mut(&mut self) -> &mut ListPopup {
+        match self {
+            Self::Command(popup) | Self::File(popup) => popup,
+        }
+    }
 }
 
 /// Which zone owns plain keys.
@@ -347,7 +402,7 @@ pub struct ConsoleState {
     pub ask: Option<ActiveAsk>,
     pub status_note: Option<String>,
     pub dropped_frames: u64,
-    pub tokens_used: Option<(u64, u64)>,
+    pub status: BTreeMap<SessionId, StatusInfo>,
     pub quit: bool,
     pub sidebar: SidebarMode,
     pub cursor_moved: bool,
@@ -389,7 +444,7 @@ impl ConsoleState {
             auto_side: true,
             root_filter: None,
             children: BTreeMap::new(),
-            tokens_used: None,
+            status: BTreeMap::new(),
             quit: false,
         }
     }
