@@ -1,41 +1,11 @@
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 
-use crate::colors::{Theme, name_accent};
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CardKind {
-    Heartbeat,
-    Subagent,
-    FollowUp,
-    Task,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CardStatus {
-    Todo,
-    Running,
-    Blocked,
-    Done,
-}
-
-/// One board row, rebuilt from live session state on every draw. Nothing here is persisted,
-/// so a card vanishes with the work behind it and never needs its own invalidation (U20).
-#[derive(Debug, Clone)]
-pub struct BoardCard {
-    pub title: String,
-    pub kind: CardKind,
-    pub status: CardStatus,
-    pub detail: String,
-    /// Milliseconds since this card finished, if it finished during this
-    /// session — the strike sweeps across the label over its first 12 frames.
-    pub done_ms: Option<u64>,
-}
+use crate::colors::Theme;
 
 #[derive(Debug, Clone, Default)]
 pub struct HudInput {
     pub goal: Option<GoalView>,
-    pub cards: Vec<BoardCard>,
     pub steering: Vec<String>,
     pub follow_up: Vec<String>,
 }
@@ -48,68 +18,10 @@ pub struct GoalView {
     pub token_budget: Option<u64>,
 }
 
-const VISIBLE_LIMIT: usize = 8;
 const TAIL_LEN: usize = 4;
 
-fn card_row(card: &BoardCard, theme: &Theme, spinner_phase: usize) -> Line<'static> {
-    let (glyph, style) = match card.status {
-        CardStatus::Running => (
-            crate::motion::pulse_frame(crate::motion::elapsed_of(spinner_phase)),
-            Style::default().fg(name_accent(&card.title)),
-        ),
-        CardStatus::Todo => ('☐', theme.dim_style()),
-        CardStatus::Blocked => ('☐', Style::default().fg(theme.warning)),
-        CardStatus::Done => (
-            '☑',
-            Style::default()
-                .fg(theme.success)
-                .add_modifier(Modifier::CROSSED_OUT),
-        ),
-    };
-    let text = if card.detail.is_empty() {
-        format!("{glyph} {}", card.title)
-    } else {
-        format!("{glyph} {}: {}", card.title, card.detail)
-    };
-    // The strike sweeps in rather than appearing, so a completion is visible
-    // without a notice row announcing it.
-    if let Some(since) = card.done_ms.filter(|_| card.status == CardStatus::Done)
-        && let Some((struck, rest)) = crate::motion::strike_sweep(&text, since)
-    {
-        return Line::from(vec![
-            Span::styled(struck, style),
-            Span::styled(rest, Style::default().fg(theme.success)),
-        ]);
-    }
-    Line::from(Span::styled(text, style))
-}
-
-/// The shape of the family before its members: how many are working, waiting
-/// and finished. Zeroes are omitted, so the header shrinks as it settles.
-fn counts_header(cards: &[BoardCard]) -> String {
-    let count = |status: CardStatus| cards.iter().filter(|c| c.status == status).count();
-    let parts: Vec<String> = [
-        ('●', count(CardStatus::Running), "running"),
-        (
-            '◐',
-            count(CardStatus::Blocked).saturating_add(count(CardStatus::Todo)),
-            "idle",
-        ),
-        ('○', count(CardStatus::Done), "done"),
-    ]
-    .into_iter()
-    .filter(|(_, n, _)| *n > 0)
-    .map(|(glyph, n, label)| format!("{glyph} {n} {label}"))
-    .collect();
-    if parts.is_empty() {
-        return "Subagents".to_owned();
-    }
-    parts.join(" · ")
-}
-
-/// The tree-spine connector is the progress meter, lit accent top-down by
-/// done/total: at least one cell on any progress, never full until all done.
-pub fn render(input: &HudInput, theme: &Theme, spinner_phase: usize) -> Vec<Line<'static>> {
+/// The goal header over a dim tree spine of steering and follow-up rows.
+pub fn render(input: &HudInput, theme: &Theme) -> Vec<Line<'static>> {
     let mut content: Vec<Line<'static>> = Vec::new();
     let header = match &input.goal {
         Some(goal) => {
@@ -124,19 +36,8 @@ pub fn render(input: &HudInput, theme: &Theme, spinner_phase: usize) -> Vec<Line
             }
             Some(header)
         }
-        None if !input.cards.is_empty() => Some(counts_header(&input.cards)),
         None => None,
     };
-    let visible = input.cards.iter().take(VISIBLE_LIMIT);
-    for card in visible {
-        content.push(card_row(card, theme, spinner_phase));
-    }
-    if input.cards.len() > VISIBLE_LIMIT {
-        content.push(Line::from(Span::styled(
-            format!("… {} more", input.cards.len() - VISIBLE_LIMIT),
-            theme.muted_style(),
-        )));
-    }
     for (label, items) in [
         ("Steering", &input.steering),
         ("After yield", &input.follow_up),
@@ -165,25 +66,6 @@ pub fn render(input: &HudInput, theme: &Theme, spinner_phase: usize) -> Vec<Line
         return Vec::new();
     }
 
-    let total = input.cards.len();
-    let closed = input
-        .cards
-        .iter()
-        .filter(|c| c.status == CardStatus::Done)
-        .count();
-    let path_len = content.len() + TAIL_LEN;
-    let mut filled = if total == 0 {
-        0
-    } else {
-        (closed * path_len + total / 2) / total
-    };
-    if closed > 0 {
-        filled = filled.max(1);
-    }
-    if closed < total {
-        filled = filled.min(path_len.saturating_sub(1));
-    }
-
     let mut out = Vec::new();
     out.push(Line::from(Span::styled(
         format!(" {}", header.unwrap_or_default()),
@@ -191,26 +73,15 @@ pub fn render(input: &HudInput, theme: &Theme, spinner_phase: usize) -> Vec<Line
             .fg(theme.accent)
             .add_modifier(Modifier::BOLD),
     )));
-    for (i, line) in content.into_iter().enumerate() {
-        let lit = i < filled;
-        let spine_style = if lit {
-            Style::default().fg(theme.accent)
-        } else {
-            theme.dim_style()
-        };
-        let mut spans = vec![Span::styled(" ├─ ", spine_style)];
+    for line in content {
+        let mut spans = vec![Span::styled(" ├─ ", theme.dim_style())];
         spans.extend(line.spans);
         out.push(Line::from(spans));
     }
     let tail_fill: String = std::iter::repeat_n('─', TAIL_LEN).collect();
-    let tail_lit = filled >= path_len;
     out.push(Line::from(Span::styled(
         format!(" └{tail_fill}"),
-        if tail_lit {
-            Style::default().fg(theme.accent)
-        } else {
-            theme.dim_style()
-        },
+        theme.dim_style(),
     )));
     out
 }

@@ -359,7 +359,7 @@ pub fn lines(
         (trailing.to_owned(), error),
         (traceback_of(&cell.details), error),
     ] {
-        let bounded = (!expanded).then(|| crate::transcript::preview_lines(&text).join("\n"));
+        let bounded = (!expanded).then(|| crate::transcript::preview_lines(&text, 5, 5).join("\n"));
         let shown = bounded.as_deref().unwrap_or(&text);
         if !text.trim().is_empty() {
             out.extend(stream_lines(shown, style, width));

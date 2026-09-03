@@ -138,7 +138,8 @@ impl Builder<'_> {
             return;
         }
         if !self.indent.is_empty() {
-            self.spans.push(Span::raw(self.indent.clone()));
+            let rail = Style::default().fg(self.theme.purple);
+            self.spans.push(Span::styled(self.indent.clone(), rail));
         }
         if let Some(marker) = self.pending_marker.take() {
             self.spans.push(marker);
@@ -180,7 +181,7 @@ impl Builder<'_> {
         if let Some(level) = self.list_stack.last_mut() {
             level.hang = UnicodeWidthStr::width(marker.as_str());
         }
-        let style = self.style();
+        let style = self.style().fg(self.theme.accent);
         self.pending_marker = Some(Span::styled(format!("{}{marker}", " ".repeat(pad)), style));
     }
 
@@ -232,7 +233,7 @@ fn reduce_inline<'e>(b: &mut Builder, event: Event<'e>) -> Option<Event<'e>> {
         Event::End(TagEnd::Strikethrough) => b.pop_style(),
         Event::Start(Tag::Link { dest_url, .. }) => {
             b.link_dest = Some(dest_url.to_string());
-            b.push_style(|s| s.fg(b.theme.accent).add_modifier(Modifier::UNDERLINED));
+            b.push_style(|s| s.fg(b.theme.blue5).add_modifier(Modifier::UNDERLINED));
             b.text("");
         }
         Event::End(TagEnd::Link) => {
@@ -247,9 +248,7 @@ fn reduce_inline<'e>(b: &mut Builder, event: Event<'e>) -> Option<Event<'e>> {
             }
         }
         Event::Code(code) => {
-            let style = Style::default()
-                .fg(b.theme.accent)
-                .add_modifier(Modifier::BOLD);
+            let style = Style::default().fg(b.theme.orange);
             if let Some(table) = &mut b.table {
                 if table.in_cell
                     && let Some(cell) = table.current.last_mut()
@@ -370,15 +369,13 @@ pub fn render_stream(
         match event {
             Event::Start(Tag::Heading { level, .. }) => {
                 b.blank();
-                let accent = b.theme.accent;
+                let (accent, cyan, teal) = (b.theme.accent, b.theme.cyan, b.theme.teal);
                 // The level has to be legible without the literal `#` marks
                 // Yi drops.
                 b.push_style(move |s| match level {
-                    HeadingLevel::H1 => s
-                        .fg(accent)
-                        .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
-                    HeadingLevel::H2 => s.fg(accent).add_modifier(Modifier::BOLD),
-                    HeadingLevel::H3 => s.add_modifier(Modifier::BOLD | Modifier::ITALIC),
+                    HeadingLevel::H1 => s.fg(accent).add_modifier(Modifier::BOLD),
+                    HeadingLevel::H2 => s.fg(cyan).add_modifier(Modifier::BOLD),
+                    HeadingLevel::H3 => s.fg(teal).add_modifier(Modifier::BOLD),
                     _ => s.add_modifier(Modifier::ITALIC),
                 });
             }
