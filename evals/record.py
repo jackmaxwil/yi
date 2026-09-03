@@ -9,6 +9,9 @@ capture layer, no runtime change.
     python3 evals/record.py <session.jsonl> --id <cassette-id> \\
         --description <text> [--out crates/runtime/tests/fixtures/behavior/x.json]
 
+`--scrub-only` writes the session back masked instead, line for line: the TUI
+replay corpus is the session file itself, not a shape derived from it.
+
 Unrepresentable input is fatal (exit 2) with the reason named. A silent skip
 would emit a cassette that replays a session which never happened.
 """
@@ -51,6 +54,17 @@ def scrub_values(value):
     if isinstance(value, str):
         return scrub(value)
     return value
+
+
+def scrub_only(path):
+    """The session file itself as a replay fixture: same lines, same order,
+    same keys, every string value through the §10 redaction."""
+    out = []
+    for line in path.read_text(errors="replace").splitlines():
+        if line.strip():
+            masked = scrub_values(json.loads(line))
+            out.append(json.dumps(masked, separators=(",", ":"), ensure_ascii=False))
+    return "\n".join(out) + "\n"
 
 
 def text_blocks(content, where):
@@ -178,13 +192,31 @@ def record(path, cassette_id, description):
     return cassette, notes
 
 
+def emit(text, out, note=""):
+    if out:
+        out.write_text(text)
+        print(f"wrote {out}{note}", file=sys.stderr)
+    else:
+        sys.stdout.write(text)
+    return 0
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("session", type=Path, help="a v4 session JSONL file")
-    parser.add_argument("--id", required=True, help="cassette id; must equal the filename stem")
-    parser.add_argument("--description", required=True, help="what the case defends")
+    parser.add_argument("--id", help="cassette id; must equal the filename stem")
+    parser.add_argument("--description", help="what the case defends")
     parser.add_argument("--out", type=Path, help="write here instead of stdout")
+    parser.add_argument(
+        "--scrub-only",
+        action="store_true",
+        help="write the session back masked, for a replay fixture; no cassette",
+    )
     args = parser.parse_args(argv)
+    if args.scrub_only:
+        return emit(scrub_only(args.session), args.out)
+    if not (args.id and args.description):
+        parser.error("--id and --description are required without --scrub-only")
     try:
         cassette, notes = record(args.session, args.id, args.description)
     except Unrepresentable as error:
@@ -192,14 +224,8 @@ def main(argv=None):
         return 2
     for note in notes:
         print(note, file=sys.stderr)
-    text = json.dumps(cassette, indent=2) + "\n"
-    if args.out:
-        args.out.write_text(text)
-        print(f"wrote {args.out}; add the pass condition to `assertions` before committing",
-              file=sys.stderr)
-    else:
-        sys.stdout.write(text)
-    return 0
+    note = "; add the pass condition to `assertions` before committing"
+    return emit(json.dumps(cassette, indent=2) + "\n", args.out, note)
 
 
 if __name__ == "__main__":
