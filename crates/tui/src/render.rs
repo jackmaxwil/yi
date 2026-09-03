@@ -108,7 +108,7 @@ fn draw_frame<B>(
 
     let content_width = width.saturating_sub(2);
     let mut live_lines: Vec<Line<'static>> = Vec::new();
-    if !app.live_thought.is_empty() {
+    if app.live_thought.len() > app.live_thought_cut {
         // Reasoning-heavy models stream thought long before prose; show its
         // dim tail so the screen is never silently blank mid-turn. It holds
         // that place once prose starts, rather than being displaced by it.
@@ -149,11 +149,13 @@ fn draw_frame<B>(
     }
     for id in &app.task_order {
         if let Some(state) = app.tasks.get(id)
-            && state.cell.status == TaskStatus::Running
+            && !app.committed_tasks.contains(id)
         {
             let mut cell = state.cell.clone();
-            cell.elapsed_ms = elapsed_ms(state.started);
-            live_lines.extend(cell.lines(width, &theme, spinner));
+            if state.finished.is_none() {
+                cell.elapsed_ms = elapsed_ms(state.started);
+            }
+            live_lines.extend(cell.lines(content_width, &theme, spinner));
         }
     }
     let hud_lines = if app.hud_hidden {
@@ -181,7 +183,6 @@ fn draw_frame<B>(
             .count(),
         context_used: app.context_used,
         context_window: app.options.context_window,
-        threshold_pct: Some(80),
         focused_child: app.focused.clone(),
     };
     let status_row = crate::status::render(&status_input, width, &theme);

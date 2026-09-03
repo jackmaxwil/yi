@@ -192,7 +192,8 @@ pub fn head(cell: &ToolCell, spinner_phase: usize) -> String {
     let inputs = line_count(&code);
     let outputs = line_count(&string(&cell.details, "stdout"))
         .saturating_add(line_count(&string(&cell.details, "stderr")))
-        .saturating_add(line_count(&string(&cell.details, "result")));
+        .saturating_add(line_count(&string(&cell.details, "result")))
+        .saturating_add(line_count(&traceback_of(&cell.details)));
     if inputs > 0 {
         parts.push(if outputs > 0 {
             format!("↑ {inputs} ↓ {outputs} lines")
@@ -352,21 +353,21 @@ pub fn lines(
     }
     let raw_stdout = string(&cell.details, "stdout");
     let (stdout, trailing) = split_traceback(&raw_stdout);
+    let (plain, error) = (
+        Style::default().fg(theme.text),
+        Style::default().fg(theme.error),
+    );
     for (text, style) in [
-        (stdout.to_owned(), Style::default().fg(theme.text)),
-        (
-            string(&cell.details, "result"),
-            Style::default().fg(theme.text),
-        ),
+        (stdout.to_owned(), plain),
+        (string(&cell.details, "result"), plain),
         (string(&cell.details, "stderr"), theme.muted_style()),
-        (trailing.to_owned(), Style::default().fg(theme.error)),
-        (
-            traceback_of(&cell.details),
-            Style::default().fg(theme.error),
-        ),
+        (trailing.to_owned(), error),
+        (traceback_of(&cell.details), error),
     ] {
+        let bounded = (!expanded).then(|| crate::transcript::preview_lines(&text).join("\n"));
+        let shown = bounded.as_deref().unwrap_or(&text);
         if !text.trim().is_empty() {
-            out.extend(stream_lines(&text, style, width));
+            out.extend(stream_lines(shown, style, width));
         }
     }
     out
