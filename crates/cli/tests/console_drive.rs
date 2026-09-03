@@ -85,7 +85,6 @@ fn console_creates_prompts_detaches_and_replays() -> TestResult {
             "wait-frame 8000 ● connected\n\
              key alt-n\n\
              wait-frame 8000 ○\n\
-             key tab\n\
              type hello daemon\n\
              key enter\n\
              wait-frame 15000 faux:\n\
