@@ -1203,3 +1203,210 @@ fn a_recording_replays_to_the_frame_the_run_asserted_on() -> TestResult {
     );
     Ok(())
 }
+
+/// `normal` folds a thought to its line count, and the count is drawn from the
+/// live tail even after the flush moved the cut to the end — an empty tail read
+/// as `∴ thinking · 0 lines` under the count row that had just committed.
+#[test]
+fn a_flushed_thought_leaves_no_empty_count_row_in_the_live_region() -> TestResult {
+    let backend = VT100Backend::with_scrollback(80, 24, 200);
+    let mut terminal = yi_tui::terminal::Terminal::new(backend, 4)?;
+    let mut app = app();
+    while app.mode() != yi_tui::cell::TranscriptMode::Normal {
+        app.cycle_mode();
+    }
+    app.reduce_agent(yi_types::event::AgentEvent::AgentStart);
+    let message = yi_runtime::faux::faux_assistant_message(
+        vec![
+            yi_runtime::faux::faux_thinking("short"),
+            yi_runtime::faux::faux_text("ok.\n\nmore"),
+        ],
+        StopReason::Stop,
+    );
+    app.reduce_agent(yi_types::event::AgentEvent::MessageUpdate {
+        message: message.clone(),
+        assistant_message_event: yi_types::event::AssistantMessageEvent::TextDelta {
+            content_index: 0,
+            delta: String::new(),
+            partial: message,
+        },
+    });
+    yi_tui::render::draw(&mut app, &mut terminal, None);
+    let contents = terminal.backend().contents();
+    assert!(
+        contents.contains("∴ thinking · 1 lines"),
+        "the flushed thought's count row committed:\n{contents}"
+    );
+    // Glyph-agnostic: the live row's `∴` pulses into a starburst every frame.
+    assert!(
+        !contents.contains("thinking · 0 lines"),
+        "an empty live tail draws nothing:\n{contents}"
+    );
+    Ok(())
+}
+
+/// The screenshot's second defect: the child spawned by `h = await rlm.run(…)`
+/// finished while the kernel cell was still running, and the roster poll
+/// committed its task cell above the cell that made it.
+#[test]
+fn a_child_that_finishes_inside_its_spawning_cell_lands_under_it() -> TestResult {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    let dir = std::env::temp_dir().join(format!("yi-tui-spawn-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir)?;
+    let host = Arc::new(SubagentHost::new(SubagentHostOptions {
+        depth: 0,
+        max_depth: 1,
+        max_children: 4,
+        parent_session_dir: dir.clone(),
+        cwd: dir.clone(),
+        defaults: Arc::new(|| (faux_model(), yi_types::model::Effort::Medium)),
+        factory: Arc::new(|_build| Ok(faux_session("child answer"))),
+        notice: Arc::new(|_notice| {}),
+        events: tokio::sync::broadcast::channel(64).0,
+        parent_messages: Arc::new(Vec::new),
+        report: Arc::new(|_message| {}),
+        attribute: Arc::new(|_usage| {}),
+        store: Arc::new(|| None),
+        plans_dir: dir.join(".yi/plans"),
+    }));
+    let backend = VT100Backend::with_scrollback(80, 24, 200);
+    let mut terminal = yi_tui::terminal::Terminal::new(backend, 4)?;
+    let mut app = app();
+    app.reduce_agent(yi_types::event::AgentEvent::AgentStart);
+    let code = "h = await rlm.run('trace')\nr = await h.result()";
+    app.reduce_agent(yi_types::event::AgentEvent::ToolExecutionStart {
+        tool_call_id: "c1".to_owned(),
+        tool_name: "ipython".to_owned(),
+        args: serde_json::json!({ "code": code }),
+    });
+    runtime.block_on(async {
+        host.spawn("trace".to_owned(), Map::new())
+            .map_err(|e| e.to_string())?;
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let children = host.children_view();
+            app.sync_children(&children);
+            if children
+                .iter()
+                .any(|c| c.update.status != yi_runtime::ChildStatus::Running)
+            {
+                return Ok::<(), String>(());
+            }
+            if Instant::now() > deadline {
+                return Err("child never finished".to_owned());
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+    })?;
+    let early = flat_lines(&app.take_commits());
+    assert!(
+        !early.iter().any(|line| line.contains("Task —")),
+        "nothing commits while the spawning cell is still live: {early:?}"
+    );
+    yi_tui::render::draw(&mut app, &mut terminal, None);
+    let contents = terminal.backend().contents();
+    assert!(
+        contents.contains("✓ rlm Task —"),
+        "a held task is drawn finished under the running cell, not hidden:\n{contents}"
+    );
+    app.reduce_agent(yi_types::event::AgentEvent::ToolExecutionEnd {
+        tool_call_id: "c1".to_owned(),
+        tool_name: "ipython".to_owned(),
+        result: yi_types::event::ToolResult {
+            content: vec![yi_types::message::Content::Text {
+                text: "ok".to_owned(),
+                text_signature: None,
+            }],
+            details: serde_json::json!({ "code": code, "stdout": "ok\n" }),
+            usage: None,
+            added_tool_names: None,
+            terminate: None,
+        },
+        is_error: false,
+    });
+    let committed = flat_lines(&app.take_commits());
+    let cell = committed
+        .iter()
+        .position(|line| line.contains("⊙ python · h = await rlm.run('trace')"))
+        .ok_or_else(|| format!("no kernel cell row: {committed:?}"))?;
+    let task = committed
+        .iter()
+        .position(|line| line.contains("✓ rlm Task —"))
+        .ok_or_else(|| format!("no task row: {committed:?}"))?;
+    assert!(
+        cell < task,
+        "the task lands under the cell that spawned it: {committed:?}"
+    );
+    assert_eq!(
+        committed
+            .iter()
+            .filter(|line| line.contains("Task —"))
+            .count(),
+        1,
+        "one task row: {committed:?}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+    Ok(())
+}
+
+/// The screenshot's fourth defect: a host notice arrived as a user-role
+/// message, so it retitled the window, opened a turn with a divider, and drew
+/// the user's `›` rail on text the user never typed.
+#[test]
+fn a_host_notice_titles_nothing_and_draws_no_prompt_rail() -> TestResult {
+    use yi_types::message::{AgentMessage, UserContent};
+    let backend = VT100Backend::with_scrollback(80, 24, 200);
+    let mut terminal = yi_tui::terminal::Terminal::new(backend, 4)?;
+    let mut app = app();
+    app.reduce_agent(yi_types::event::AgentEvent::MessageStart {
+        message: AgentMessage::user_input(UserContent::Text("hello".to_owned()), 0),
+    });
+    yi_tui::render::draw(&mut app, &mut terminal, None);
+    let first = terminal.backend_mut().take_written();
+    assert!(
+        first.contains("\x1b]2;Yi — hello\x07"),
+        "the user's prompt titles the window: {first:?}"
+    );
+
+    let notice = "[subagent x (sub-1) finished]\nLast answer: RLM OK\nnext: rlm.wait('sub-1')";
+    app.reduce_agent(yi_types::event::AgentEvent::MessageStart {
+        message: AgentMessage::host_user(UserContent::Text(notice.to_owned()), 0),
+    });
+    yi_tui::render::draw(&mut app, &mut terminal, None);
+    let second = terminal.backend_mut().take_written();
+    assert!(
+        !second.contains("\x1b]2;"),
+        "a host notice titles nothing: {second:?}"
+    );
+    assert_eq!(app.take_title(), None);
+    let rows: Vec<String> = (0..24)
+        .map(|row| terminal.backend().row_text(row))
+        .collect();
+    let flag = rows
+        .iter()
+        .position(|row| row.contains("⚑ [subagent x (sub-1) finished]"))
+        .ok_or_else(|| format!("no notice row: {rows:?}"))?;
+    assert!(
+        rows.get(flag + 1)
+            .is_some_and(|row| row.contains("Last answer: RLM OK")),
+        "the notice's second line is its own row: {rows:?}"
+    );
+    assert!(
+        rows.get(flag + 2)
+            .is_some_and(|row| row.contains("next: rlm.wait('sub-1')")),
+        "and its third: {rows:?}"
+    );
+    assert_eq!(
+        rows.iter().filter(|row| row.contains('›')).count(),
+        1,
+        "only the user's own prompt carries the rail: {rows:?}"
+    );
+    assert!(
+        !rows.iter().any(|row| row.trim_start().starts_with('─')),
+        "no divider opens a turn for a notice: {rows:?}"
+    );
+    Ok(())
+}
