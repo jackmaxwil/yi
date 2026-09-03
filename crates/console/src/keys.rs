@@ -24,8 +24,8 @@ pub enum Action {
     ScrollDown,
     PageUp,
     PageDown,
-    CancelTurn,
-    Interrupt,
+    /// Resume the nth rail row into the focused pane.
+    SelectSlot(u8),
     Quit,
     ToggleSidebar,
     ToggleNotebook,
@@ -43,7 +43,7 @@ pub fn is_prefix(key: &KeyEvent) -> bool {
 }
 
 /// Direct chords — alt everything, so plain typing always reaches the
-/// composer. Digits map tabs.
+/// composer. Digits jump to rail slots; tabs are `ctrl+b 1..9`.
 pub fn direct(key: &KeyEvent) -> Option<Action> {
     if key.modifiers.contains(KeyModifiers::SUPER) {
         return super_chord(key);
@@ -56,10 +56,6 @@ pub fn direct(key: &KeyEvent) -> Option<Action> {
             }
             KeyCode::PageUp => Some(Action::PageUp),
             KeyCode::PageDown => Some(Action::PageDown),
-            KeyCode::Esc => Some(Action::CancelTurn),
-            KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                Some(Action::Interrupt)
-            }
             _ => None,
         };
     }
@@ -88,7 +84,7 @@ pub fn direct(key: &KeyEvent) -> Option<Action> {
         KeyCode::Char('e') => Some(Action::OpenEditor),
         KeyCode::Char(digit @ '1'..='9') => {
             let n = u8::try_from(u32::from(digit).saturating_sub(u32::from('0'))).ok()?;
-            Some(Action::SelectTab(n))
+            Some(Action::SelectSlot(n))
         }
         _ => None,
     }
@@ -114,10 +110,9 @@ fn super_chord(key: &KeyEvent) -> Option<Action> {
         KeyCode::Char('s') => Some(Action::Save),
         KeyCode::Char('z' | 'Z') if shift => Some(Action::Redo),
         KeyCode::Char('z') => Some(Action::Undo),
-        KeyCode::Char('.') => Some(Action::CancelTurn),
         KeyCode::Char(digit @ '1'..='9') => {
             let n = u8::try_from(u32::from(digit).saturating_sub(u32::from('0'))).ok()?;
-            Some(Action::SelectTab(n))
+            Some(Action::SelectSlot(n))
         }
         _ => None,
     }
@@ -153,8 +148,8 @@ pub fn hint(prefix_armed: bool, cmd: bool) -> &'static str {
     if prefix_armed {
         "PREFIX  v split│ s split─ x close z zoom h/j/k/l focus c tab 1..9 tab g nav q quit"
     } else if cmd {
-        "⌘\\ split  ⌥←→↑↓ focus  ⌘⇧M zoom  ⌘X close  ⌘⇧T/⌘1..9 tabs  ⌘P nav  ⌘⇧N new  ⌘B side  ⌘J nb  ⌘G diff"
+        "⌘\\ split  ⌥←→↑↓ focus  ⌘⇧M zoom  ⌘X close  ⌘⇧T tab  ⌘1..9 slot  ⌘P nav  ⌘⇧N new  ⌘B side  ⌘J nb  ⌘G diff"
     } else {
-        "⌥v/⌥s split  ⌥←→↑↓ focus  ⌥z zoom  ⌥x close  ⌥t/⌥1..9 tabs  ⌥/ nav  ⌥n new  ⌥b side  ctrl+b prefix"
+        "⌥v/⌥s split  ⌥←→↑↓ focus  ⌥z zoom  ⌥x close  ⌥t tab  ⌥1..9 slot  ⌥/ nav  ⌥n new  ⌥b side  ctrl+b prefix"
     }
 }

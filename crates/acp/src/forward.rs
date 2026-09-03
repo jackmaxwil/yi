@@ -16,7 +16,7 @@ use yi_types::message::{AgentMessage, Content, UserContent};
 use yi_types::subagent::ChildId;
 
 use crate::update::{IdMap, event_update, extension, gap_update, to_updates};
-use crate::{LineSink, StatusLedger, status_update, update_notification};
+use crate::{LineSink, update_notification};
 
 pub(crate) struct Forward {
     pub(crate) session_id: String,
@@ -66,8 +66,6 @@ pub(crate) struct Parent {
     pub(crate) session: Arc<AgentSession>,
     pub(crate) host: Arc<SubagentHost>,
     pub(crate) ids: IdMap,
-    pub(crate) ledger: Arc<std::sync::Mutex<StatusLedger>>,
-    pub(crate) context_window: u64,
     pub(crate) children: JoinSet<()>,
     pub(crate) seen: HashSet<String>,
     pub(crate) last_goal: Value,
@@ -103,31 +101,11 @@ impl Parent {
         }
     }
 
-    fn account(&mut self, event: &AgentEvent) {
-        let AgentEvent::MessageEnd {
-            message: AgentMessage::Assistant { usage, .. },
-        } = event
-        else {
-            return;
-        };
-        let snapshot = self.ledger.lock().map(|mut ledger| {
-            ledger.cost += usage.cost.total.as_f64().unwrap_or(0.0);
-            ledger.cost_unknown |= usage.unknown;
-            ledger.context_used = u64::try_from(usage.total_tokens).unwrap_or(0);
-            *ledger
-        });
-        if let Ok(snapshot) = snapshot {
-            self.forward
-                .emit(status_update(None, snapshot, self.context_window));
-        }
-    }
-
     fn reduce(&mut self, event: &AgentEvent) {
         self.forward.event(event);
         for update in to_updates(event, &mut self.ids) {
             self.forward.emit(update);
         }
-        self.account(event);
         match event {
             AgentEvent::ChildUpdate { .. } => self.adopt_children(),
             AgentEvent::MessageEnd { .. }

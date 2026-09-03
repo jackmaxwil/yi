@@ -1,0 +1,14 @@
+# The same keystrokes through `yi tui --headless` and `yi console --headless`: a prompt,
+# the faux reply, the `/` popup and its dismissal. The frames both runs must show are the
+# executable form of "the pane is solo's chat".
+wait-frame 8000 faux-1
+type hello parity
+key enter
+wait-frame 15000 faux:
+wait-idle 15000
+type /
+wait-frame 3000 plantree
+key esc
+wait-frame 3000 !plantree
+wait 200
+quit

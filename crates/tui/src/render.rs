@@ -359,6 +359,48 @@ pub fn paint_chat(
     orb_at
 }
 
+/// The chat inside a rectangle: the retained transcript above, the live frame below it,
+/// `scroll` rows held back from the bottom and clamped to what exists.
+pub fn paint_pane(
+    app: &mut App,
+    goal: Option<GoalView>,
+    buffer: &mut Buffer,
+    area: Rect,
+    scroll: &mut usize,
+) -> Option<(usize, usize)> {
+    // A pane never scrolls anything off: `History` keeps every cell, so the
+    // terminal-bound commits and the clear are drained here and dropped.
+    let _ = app.take_commits();
+    let _ = app.take_pending_clear();
+    let _ = app.take_title();
+    let _ = app.take_pending_repaint();
+    app.set_width(usize::from(area.width));
+    app.set_rows(usize::from(area.height));
+    let layout = layout_chat(app, goal, area.height);
+    let chat_rows = layout.rows().min(area.height);
+    let above = usize::from(area.height.saturating_sub(chat_rows));
+    let history = app.reflowed(above.saturating_add(*scroll));
+    *scroll = (*scroll).min(history.len().saturating_sub(above));
+    let end = history.len().saturating_sub(*scroll);
+    let start = end.saturating_sub(above);
+    let shown: Vec<Line<'static>> = history.get(start..end).unwrap_or_default().to_vec();
+    let rows = u16::try_from(shown.len()).unwrap_or(0);
+    if rows > 0 {
+        let rect = Rect::new(area.left(), area.top(), area.width, rows);
+        Widget::render(Paragraph::new(shown), rect, buffer);
+    }
+    let chat_area = Rect::new(
+        area.left(),
+        area.top().saturating_add(rows),
+        area.width,
+        area.height.saturating_sub(rows),
+    );
+    app.orb_placement = paint_chat(app, &layout, buffer, chat_area);
+    app.logo_target = if layout.orb { 1.0 } else { 0.0 };
+    let total = history.len().saturating_add(usize::from(chat_rows));
+    (total > usize::from(area.height)).then_some((total, start))
+}
+
 /// The transcript above the viewport belongs to a branch that no longer exists and sits in
 /// scrollback no repaint reaches, so the scrollback goes and the viewport re-anchors.
 fn clear_screen<B>(terminal: &mut crate::terminal::Terminal<B>)

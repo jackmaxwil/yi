@@ -18,18 +18,13 @@ const READ_CHUNK: usize = 64 * 1024;
 const BACKOFF_START: Duration = Duration::from_millis(250);
 const BACKOFF_CAP: Duration = Duration::from_secs(2);
 
-/// Reader-side events into the app loop.
 pub enum ClientEvent {
     Connected,
     Frame(Value),
-    /// A non-JSON line, or one past the frame cap (which drops the link).
     BadFrame,
-    Disconnected {
-        reason: String,
-    },
+    Disconnected { reason: String },
 }
 
-/// Outbound side handed to the app loop.
 pub struct Outbound {
     lines: SyncSender<String>,
     shutdown: Arc<AtomicBool>,
@@ -124,7 +119,6 @@ fn reader_loop(
         }
         let connected_at = Instant::now();
         let reason = read_frames(&stream, events, shutdown);
-        // Unblock a writer that still holds the dead stream.
         let _ = stream.shutdown(std::net::Shutdown::Both);
         if events.send(ClientEvent::Disconnected { reason }).is_err() {
             return;
@@ -189,7 +183,6 @@ fn read_frames(
 fn writer_loop(lines: &Receiver<String>, streams: &Receiver<UnixStream>, shutdown: &AtomicBool) {
     let mut current: Option<UnixStream> = None;
     loop {
-        // A fresher stream always wins; drain without blocking.
         while let Ok(stream) = streams.try_recv() {
             current = Some(stream);
         }
