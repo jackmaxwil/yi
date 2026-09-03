@@ -91,7 +91,9 @@ constant > trigger rule.**
 An eval case — a deterministic replayable scenario with a pass condition, seen
 red before it is claimed fixed — is the preferred unit of learning: one
 occurrence suffices, it does not rot, and its pass/fail is external. A rule is
-last because it needs repetition to pay and decays as the repo moves.
+last because it needs repetition to pay and decays as the repo moves. For a
+rendering or shim defect the eval case is the scrubbed session itself under
+crates/tui/tests/fixtures/sessions/, replayed through the reducer.
 
 State each proposal as: the cluster (fingerprint + count + coverage), the
 smallest change that would have prevented it, and where it lands.

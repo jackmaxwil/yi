@@ -1,16 +1,16 @@
 //! thinking-orbs port (A.13, D41): geometry-exact engine, verified against the library's own
 //! golden vectors, plus the kitty painter. No terminal framework: the host owns placement.
 #![forbid(unsafe_code)]
+#![deny(clippy::string_slice)]
 
 pub mod core;
 pub mod kitty;
 pub mod modes;
 pub mod presets;
 
-use std::collections::BTreeMap;
-
 pub use core::OrbFrame;
 pub use presets::{Resolved, resolve};
+use std::collections::BTreeMap;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mode {

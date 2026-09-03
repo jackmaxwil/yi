@@ -1,7 +1,9 @@
 # Domain words, not typos: `ratatui` is the TUI crate, `advices` the advisor's
 # own plural, `unparseable` a valid variant, `disjointness` the set property
 # gating parallel siblings, `modle` the deliberate config typo a 0.55.0 test
-# asserts on, `iTerm` the terminal whose TERM_PROGRAM the console matches. Short fixture fragments carry inline directives.
+# asserts on, `iTerm` the terminal whose TERM_PROGRAM the console matches. Short fixture fragments carry inline directives. The recorded
+# sessions under crates/tui/tests/fixtures/sessions are transcripts of what was
+# said, not prose this repo can correct, so they are skipped whole.
 [codespell]
-skip = ./target,./vendor,./Cargo.lock,./.git,./python/.venv,./ref,./evals/arc/runs
+skip = ./target,./vendor,./Cargo.lock,./.git,./python/.venv,./ref,./evals/arc/runs,./crates/tui/tests/fixtures/sessions
 ignore-words-list = ratatui,advices,unparseable,disjointness,modle,iterm

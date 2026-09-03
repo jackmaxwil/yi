@@ -40,6 +40,14 @@ files, execute the binary. Judgments, in order of strength:
 3. **unverifiable** — the acceptance is too vague to measure; say what
    evidence would be needed.
 
+For every new test: name the fixture's shape and where it came from; a
+hand-typed fixture that is not the smallest field-failing input is
+`unverifiable`, and say what artifact would make it `proven`.
+
+For every asserted user-facing sentence: read it on the rendered surface
+beside its neighbours; a contradiction with the next row is `contradicted`,
+quoted verbatim.
+
 Match verification scope to claim scope: a narrow check never supports a
 broad claim. Never touch harness or verifier paths that belong to an
 evaluation — verify with the task's own gates only.
