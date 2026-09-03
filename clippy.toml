@@ -13,3 +13,7 @@ reason = "process spawns live in yi-tools (design 9); scoped allow at the call s
 [[disallowed-methods]]
 path = "std::time::SystemTime::now"
 reason = "clock reads are I/O; inject time, scoped allow where a timestamp is the job"
+
+[[disallowed-methods]]
+path = "std::string::String::truncate"
+reason = "byte index; use chars().take(n), strip_suffix, or walk back with is_char_boundary"

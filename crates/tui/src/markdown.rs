@@ -398,8 +398,7 @@ pub fn render_stream(
             }
             Event::End(TagEnd::BlockQuote(_)) => {
                 b.pop_style();
-                let len = b.indent.len().saturating_sub("▌ ".len());
-                b.indent.truncate(len);
+                b.indent = b.indent.strip_suffix("▌ ").unwrap_or(&b.indent).to_owned();
                 b.flush_line();
             }
             Event::Start(Tag::CodeBlock(kind)) => {
@@ -428,8 +427,9 @@ pub fn render_stream(
             }
             Event::End(TagEnd::CodeBlock) => {
                 b.flush_line();
-                let len = b.indent.len().saturating_sub(CODE_RAIL_INDENT.len());
-                b.indent.truncate(len);
+                if let Some(rest) = b.indent.strip_suffix(CODE_RAIL_INDENT) {
+                    b.indent = rest.to_owned();
+                }
                 b.in_code_block = false;
             }
             Event::Start(Tag::List(start)) => {
