@@ -8,7 +8,6 @@ use yi_tui::cell::{Cell, ToolCell, ToolStatus, TranscriptMode};
 use yi_tui::colors::{ColorTier, Theme, detect_dark, detect_tier, name_accent};
 use yi_tui::composer::{Composer, sanitize_paste};
 use yi_tui::frame::FrameScheduler;
-use yi_tui::hud::{BoardCard, CardKind, CardStatus, HudInput};
 use yi_tui::keymap::{Action, EvalContext, KeyCodeValue, KeyInput, SingleKey, default_keymap};
 use yi_tui::status::StatusInput;
 use yi_tui::tree::{TreeFilter, TreeResult, TreeView};
@@ -236,48 +235,9 @@ fn frame_scheduler_honors_floor_and_ceiling() -> TestResult {
     Ok(())
 }
 
-fn card(status: CardStatus) -> BoardCard {
-    BoardCard {
-        title: "abc".to_owned(),
-        kind: CardKind::Subagent,
-        status,
-        detail: "work".to_owned(),
-        done_ms: None,
-    }
-}
-
-#[test]
-fn hud_spine_lights_progress_with_clamps() -> TestResult {
-    let theme = theme();
-    let input = HudInput {
-        goal: None,
-        cards: vec![card(CardStatus::Done), card(CardStatus::Running)],
-        steering: Vec::new(),
-        follow_up: Vec::new(),
-    };
-    let lines = yi_tui::hud::render(&input, &theme, 0);
-    // The header counts the family rather than naming it: one of each here.
-    let header = flat(&lines[0]);
-    assert!(header.contains("● 1 running"), "{header}");
-    assert!(header.contains("○ 1 done"), "{header}");
-    let accent = Style::default().fg(theme.accent);
-    let first_spine = lines[1].spans.first().ok_or("spine span missing")?;
-    assert_eq!(
-        first_spine.style, accent,
-        "some progress lights at least one spine cell"
-    );
-    let tail = lines.last().ok_or("tail missing")?;
-    assert_ne!(
-        tail.spans.first().map(|s| s.style),
-        Some(accent),
-        "the spine never fully lights while work remains"
-    );
-    Ok(())
-}
-
 #[test]
 fn hud_empty_input_renders_nothing() -> TestResult {
-    let lines = yi_tui::hud::render(&HudInput::default(), &theme(), 0);
+    let lines = yi_tui::hud::render(&yi_tui::hud::HudInput::default(), &theme());
     assert!(lines.is_empty());
     Ok(())
 }
@@ -592,7 +552,7 @@ fn fenced_code_body_reads_bright_while_the_rail_stays_dim() -> TestResult {
             .iter()
             .find(|s| s.content.contains("let"))
             .ok_or("missing keyword span")?;
-        assert_eq!(keyword.style.fg, Some(theme.accent), "dark={dark}");
+        assert_eq!(keyword.style.fg, Some(theme.magenta), "dark={dark}");
         assert!(keyword.style.add_modifier.contains(Modifier::BOLD));
     }
     Ok(())
@@ -607,8 +567,8 @@ fn thought_cells_are_labeled_and_dim_while_prose_stays_bright() -> TestResult {
     let lines = thought.lines(80, &theme, yi_tui::cell::TranscriptMode::Thinking, 0);
     let text: Vec<String> = lines.iter().map(flat).collect();
     assert!(
-        text.iter().any(|l| l.contains("∴ thinking")),
-        "reasoning carries its label: {text:?}"
+        text.iter().any(|l| l.starts_with("  ∴")),
+        "reasoning carries its glyph: {text:?}"
     );
     assert!(
         lines
@@ -1483,14 +1443,14 @@ fn a_long_thought_reaches_scrollback_and_outlives_the_prose_that_follows() -> Te
     assert_eq!(
         committed
             .iter()
-            .filter(|line| line.contains("\u{2234} thinking"))
+            .filter(|line| line.starts_with("  \u{2234}"))
             .count(),
         1,
         "one label for the thought, not one per paragraph: {committed:?}"
     );
     let label = committed
         .iter()
-        .position(|line| line.contains("\u{2234} thinking"))
+        .position(|line| line.starts_with("  \u{2234}"))
         .ok_or("no thinking label")?;
     let answer = committed
         .iter()
@@ -1513,7 +1473,7 @@ fn a_short_unterminated_thought_still_lands_above_the_answer() -> TestResult {
     let committed: Vec<String> = app.take_commits().iter().map(flat).collect();
     let label = committed
         .iter()
-        .position(|line| line.contains("\u{2234} thinking"))
+        .position(|line| line.starts_with("  \u{2234}"))
         .ok_or("no thinking label")?;
     let answer = committed
         .iter()
@@ -1526,7 +1486,7 @@ fn a_short_unterminated_thought_still_lands_above_the_answer() -> TestResult {
     assert_eq!(
         committed
             .iter()
-            .filter(|line| line.contains("\u{2234} thinking"))
+            .filter(|line| line.starts_with("  \u{2234}"))
             .count(),
         1,
         "one label: {committed:?}"
@@ -1547,7 +1507,7 @@ fn a_short_unterminated_thought_still_lands_above_the_answer_in_normal_mode() ->
     let committed: Vec<String> = app.take_commits().iter().map(flat).collect();
     let label = committed
         .iter()
-        .position(|line| line.contains("\u{2234} thinking \u{b7} 1 lines"))
+        .position(|line| line.contains("\u{2234} 1 lines"))
         .ok_or_else(|| format!("no one-line count row: {committed:?}"))?;
     let answer = committed
         .iter()
@@ -1573,6 +1533,7 @@ fn antecedent(cell: &Cell) -> Option<&'static str> {
         | Cell::Explored(_)
         | Cell::Advisory { .. }
         | Cell::Notice { .. }
+        | Cell::Footer { .. }
         | Cell::Rule { .. }
         | Cell::Divider => None,
     }
@@ -1645,9 +1606,7 @@ fn normal_mode_still_collapses_a_thought_to_its_line_count() -> TestResult {
     assert_eq!(app.mode(), TranscriptMode::Normal);
     let lines: Vec<String> = app.reflowed(200).iter().map(flat).collect();
     assert!(
-        lines
-            .iter()
-            .any(|line| line.contains("\u{2234} thinking \u{b7} 5 lines")),
+        lines.iter().any(|line| line.contains("\u{2234} 5 lines")),
         "the count covers the whole thought, not its last slice: {lines:?}"
     );
     assert!(
@@ -2056,7 +2015,6 @@ fn typing_a_commands_whole_name_selects_it_over_a_longer_one()
 fn a_multibyte_error_never_panics_the_task_cell() -> TestResult {
     use yi_tui::cell::{TaskCell, TaskStatus};
     let cell = TaskCell {
-        agent: "rlm".to_owned(),
         child_id: "c1".to_owned(),
         description: "trace".to_owned(),
         status: TaskStatus::Failed,
@@ -2066,15 +2024,13 @@ fn a_multibyte_error_never_panics_the_task_cell() -> TestResult {
         elapsed_ms: 0,
         error: Some("€".repeat(100)),
         spawn: None,
+        answer: None,
+        activity: yi_types::subagent::ChildActivity::Waiting,
     };
-    let lines = cell.lines(80, &theme(), 0);
+    let lines = cell.lines(120, &theme(), yi_tui::cell::TranscriptMode::Normal, 0);
     let joined: String = lines.iter().map(flat).collect();
-    let tail = joined
-        .split('↳')
-        .nth(1)
-        .ok_or("no ↳ marker in the task cell")?;
-    let kept = tail.chars().filter(|c| !c.is_whitespace()).count();
-    assert_eq!(kept, 80, "80 chars should survive after ↳: {tail:?}");
+    let kept = joined.chars().filter(|c| *c == '€').count();
+    assert_eq!(kept, 80, "80 chars should survive in the card: {joined:?}");
     Ok(())
 }
 

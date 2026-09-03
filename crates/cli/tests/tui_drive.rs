@@ -53,7 +53,7 @@ fn headless_drive_renders_a_turn_and_dumps_frames() -> TestResult {
     for entry in entries {
         all_frames.push_str(&std::fs::read_to_string(entry.path())?);
     }
-    for needle in ["› ping", "faux: ping", "› follow-up", "╭", "faux-1"] {
+    for needle in ["┃   ping", "faux: ping", "┃   follow-up", "╭", "faux-1"] {
         assert!(
             all_frames.contains(needle),
             "frames must show the rendered UI ({needle} missing)"
@@ -120,7 +120,7 @@ fn rewinding_removes_the_exchange_and_restores_the_message() -> TestResult {
         "the kept turn stays: {final_frame}"
     );
     assert!(
-        !final_frame.contains("› second question"),
+        !final_frame.contains("┃   second question"),
         "the rewound user turn leaves the transcript: {final_frame}"
     );
     assert!(
@@ -187,7 +187,7 @@ fn slash_new_swaps_the_session_and_clears_the_transcript() -> TestResult {
         .last()
         .ok_or("the drive dumps at least one frame")?;
     assert!(
-        !last.contains("faux: ping") && !last.contains("› ping"),
+        !last.contains("faux: ping") && !last.contains("┃   ping"),
         "/new leaves the transcript empty: {last}"
     );
 
@@ -346,7 +346,7 @@ fn reverse_search_enter_accepts_a_match_without_submitting() -> TestResult {
         "Enter must leave search: {final_frame}"
     );
     assert_eq!(
-        final_frame.matches("› findme").count(),
+        final_frame.matches("┃   findme").count(),
         1,
         "Enter accepts the preview; it must not submit a third turn: {final_frame}"
     );
