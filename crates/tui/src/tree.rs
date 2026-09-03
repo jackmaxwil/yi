@@ -3,7 +3,7 @@ use std::collections::{HashMap, HashSet};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use yi_types::entry::Entry;
-use yi_types::message::{AgentMessage, Content, UserContent};
+use yi_types::message::{AgentMessage, Content};
 
 use crate::colors::Theme;
 use crate::keymap::{KeyCodeValue, SingleKey};
@@ -42,38 +42,32 @@ pub struct TreeView {
     pub filter: TreeFilter,
 }
 
-fn user_text(content: &UserContent) -> String {
-    match content {
-        UserContent::Text(text) => text.clone(),
-        UserContent::Blocks(blocks) => blocks
-            .iter()
-            .filter_map(|block| match block {
-                Content::Text { text, .. } => Some(text.as_str()),
-                _ => None,
-            })
-            .collect::<Vec<_>>()
-            .join(" "),
-    }
-}
-
 fn entry_label(entry: &Entry) -> Option<(&'static str, String)> {
     match entry {
         Entry::Message { message, .. } => match message {
-            AgentMessage::User { content, .. } => Some(("user", user_text(content))),
+            AgentMessage::User { content, .. } => {
+                Some(("user", crate::transcript::user_text(content)))
+            }
             AgentMessage::Assistant { content, .. } => {
-                let text = content
-                    .iter()
-                    .filter_map(|c| match c {
-                        Content::Text { text, .. } => Some(text.as_str()),
+                let mut text = crate::transcript::text_of(content);
+                if text.trim().is_empty() {
+                    let calls = content.iter().filter_map(|c| match c {
+                        Content::ToolCall {
+                            name, arguments, ..
+                        } => {
+                            let args = serde_json::Value::Object(arguments.clone());
+                            Some(format!(
+                                "⚙ {name} {}",
+                                crate::transcript::arg_summary(name, &args)
+                            ))
+                        }
                         _ => None,
-                    })
-                    .collect::<Vec<_>>()
-                    .join(" ");
-                let text = if text.trim().is_empty() {
-                    "(no content)".to_owned()
-                } else {
-                    text
-                };
+                    });
+                    text = calls.collect::<Vec<_>>().join(" · ");
+                }
+                if text.trim().is_empty() {
+                    text = "(no content)".to_owned();
+                }
                 Some(("assistant", text))
             }
             AgentMessage::ToolResult { tool_name, .. } => Some(("tool", format!("[{tool_name}]"))),

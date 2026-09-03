@@ -115,13 +115,13 @@ impl Theme {
             Token::Plain => Style::default().fg(self.text),
             Token::Comment => self.dim_style(),
             Token::Str => Style::default().fg(self.success),
-            Token::Number => Style::default().fg(self.warning),
+            Token::Number => Style::default().fg(self.orange),
             Token::Keyword => Style::default()
-                .fg(self.accent)
+                .fg(self.magenta)
                 .add_modifier(Modifier::BOLD),
-            Token::Type => Style::default().fg(self.muted).add_modifier(Modifier::BOLD),
-            Token::Function => Style::default().fg(self.warning),
-            Token::Variable => Style::default().fg(self.accent),
+            Token::Type => Style::default().fg(self.teal).add_modifier(Modifier::BOLD),
+            Token::Function => Style::default().fg(self.accent),
+            Token::Variable => Style::default().fg(self.magenta),
         }
     }
 }

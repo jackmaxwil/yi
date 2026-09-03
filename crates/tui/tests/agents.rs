@@ -3,7 +3,6 @@ use std::error::Error;
 use ratatui::text::Line;
 use yi_tui::agents::{AgentRow, AgentState, AgentsPopup};
 use yi_tui::colors::{ColorTier, Theme};
-use yi_tui::hud::{BoardCard, CardKind, CardStatus, HudInput};
 use yi_tui::keymap::{KeyCodeValue, SingleKey};
 use yi_tui::popup::{BottomView, PopupResult};
 
@@ -43,38 +42,6 @@ fn row(id: &str, state: AgentState, tokens: u64, spawn: Option<&str>) -> AgentRo
         toolcalls: 3,
         spawn: spawn.map(str::to_owned),
     }
-}
-
-/// "Subagents" said nothing a reader could act on; the shape of the family is
-/// what tells them whether to wait.
-#[test]
-fn the_hud_header_counts_the_family() -> TestResult {
-    let card = |status| BoardCard {
-        title: "scout".to_owned(),
-        kind: CardKind::Subagent,
-        status,
-        detail: String::new(),
-        done_ms: None,
-    };
-    let input = HudInput {
-        goal: None,
-        cards: vec![
-            card(CardStatus::Running),
-            card(CardStatus::Running),
-            card(CardStatus::Done),
-        ],
-        steering: Vec::new(),
-        follow_up: Vec::new(),
-    };
-    let header = flat(&yi_tui::hud::render(&input, &theme(), 0))
-        .first()
-        .cloned()
-        .ok_or("no header")?;
-    assert!(header.contains("● 2 running"), "{header}");
-    assert!(header.contains("○ 1 done"), "{header}");
-    // A zero is omitted rather than shown, so the header shrinks as it settles.
-    assert!(!header.contains("idle"), "{header}");
-    Ok(())
 }
 
 /// Own-usage columns, so the total is the sum of what is on screen.

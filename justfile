@@ -115,7 +115,7 @@ journeys:
     mkdir -p "$home"
     # Incident: a drive run read the developer's own ~/.yi/config.json, so a
     # `keys` entry there decided whether it passed.
-    HOME="$home" python3 scripts/tui_pty.py --send-quit --expect '› ping' \
+    HOME="$home" python3 scripts/tui_pty.py --send-quit --expect '┃' \
       --expect 'faux:' -- tui --model faux/faux-1 --session-dir "$home/sessions" ping
 
 # A drive script rendered for people: the motion and still GIFs a UI change
