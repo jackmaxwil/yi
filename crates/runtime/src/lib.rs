@@ -21,6 +21,7 @@ pub mod schedule;
 pub mod schema;
 pub mod session;
 pub mod skills;
+pub mod slash;
 pub mod subagent;
 pub mod tools;
 pub mod wall;

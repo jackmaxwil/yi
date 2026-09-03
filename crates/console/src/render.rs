@@ -11,13 +11,14 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use yi_tui::colors::{Theme, name_accent};
 use yi_tui::diffview::{self, DiffBudget};
+use yi_tui::popup::BottomView;
+use yi_tui::status::{StatusInput, working_line};
 
 use crate::app::App;
 use crate::keys;
 use crate::layout::{PaneId, SplitBorder};
 use crate::model::{Link, Mode, PaneContent, SessionStatus, Zone};
 
-const COMPOSER_HEIGHT: u16 = 3;
 const NAME_WIDTH: usize = 16;
 
 pub struct PaneView {
@@ -74,6 +75,22 @@ fn split_off_bottom(area: Rect, height: u16) -> (Rect, Rect) {
     (top, bottom)
 }
 
+fn composer_height(app: &mut App, width: u16, theme: &Theme) -> u16 {
+    let border = if app.state.zone == Zone::Panes {
+        theme.muted_style()
+    } else {
+        theme.dim_style()
+    };
+    app.composer.set_frame(border, theme.dim_style());
+    match &app.bottom {
+        Some(bottom) => {
+            let rows = bottom.popup().lines(usize::from(width), theme).len();
+            u16::try_from(rows).unwrap_or(3)
+        }
+        None => app.composer.desired_height(),
+    }
+}
+
 fn split_off_top(area: Rect, height: u16) -> (Rect, Rect) {
     let height = height.min(area.height);
     let top = Rect { height, ..area };
@@ -108,8 +125,8 @@ pub fn compute_view(app: &mut App, area: Rect, theme: &Theme) -> ViewState {
         ..area
     };
     let (main, status) = split_off_bottom(main, 1);
-    let (main, composer) = split_off_bottom(main, COMPOSER_HEIGHT);
-    let (main, strip) = if strip_text(app).is_some() {
+    let (main, composer) = split_off_bottom(main, composer_height(app, main.width, theme));
+    let (main, strip) = if strip_line(app, theme).is_some() {
         let (rest, row) = split_off_bottom(main, 1);
         (rest, Some(row))
     } else {
@@ -541,9 +558,15 @@ pub fn render(app: &App, frame: &mut Frame<'_>, view: &ViewState, theme: &Theme)
             PaneContent::Notebook { input, .. } => Some(input.as_ref()),
             _ => None,
         });
-    match notebook_input {
-        Some(input) => frame.render_widget(input, view.composer),
-        None => frame.render_widget(&app.composer, view.composer),
+    match (notebook_input, &app.bottom) {
+        (Some(input), _) => frame.render_widget(input, view.composer),
+        (None, Some(bottom)) => {
+            let lines = bottom
+                .popup()
+                .lines(usize::from(view.composer.width), theme);
+            frame.render_widget(Paragraph::new(lines), view.composer);
+        }
+        (None, None) => frame.render_widget(&app.composer.textarea, view.composer),
     }
     render_status(app, frame, view.status, theme);
     if matches!(app.state.mode, Mode::Navigator { .. }) {
@@ -961,12 +984,36 @@ fn strip_text(app: &App) -> Option<String> {
     (!parts.is_empty()).then(|| parts.join("  ·  "))
 }
 
+fn strip_line(app: &App, theme: &Theme) -> Option<Line<'static>> {
+    let working = app
+        .state
+        .focused_session()
+        .and_then(|id| app.state.sessions.get(&id))
+        .is_some_and(|row| row.status == SessionStatus::Working);
+    let mut spans = Vec::new();
+    if let Some(note) = &app.state.status_note {
+        spans.push(Span::styled(
+            format!(" {note}"),
+            Style::default().fg(theme.warning),
+        ));
+    }
+    if let Some(text) = strip_text(app) {
+        let lead = if spans.is_empty() { " " } else { "  ·  " };
+        spans.push(Span::styled(format!("{lead}{text}"), theme.muted_style()));
+    }
+    if working {
+        let mut line = working_line(None, app.spinner, false, theme);
+        line.spans.extend(spans);
+        return Some(line);
+    }
+    (!spans.is_empty()).then(|| Line::from(spans))
+}
+
 fn render_strip(app: &App, frame: &mut Frame<'_>, area: Rect, theme: &Theme) {
-    let Some(text) = strip_text(app) else { return };
-    frame.render_widget(
-        Paragraph::new(Line::styled(format!(" {text}"), theme.muted_style())),
-        area,
-    );
+    let Some(line) = strip_line(app, theme) else {
+        return;
+    };
+    frame.render_widget(Paragraph::new(line), area);
 }
 
 fn render_ask(app: &App, frame: &mut Frame<'_>, area: Rect, theme: &Theme) {
@@ -1027,6 +1074,7 @@ fn render_navigator(app: &App, frame: &mut Frame<'_>, view: &ViewState, theme: &
     let block = ratatui::widgets::Block::bordered()
         .border_type(ratatui::widgets::BorderType::Rounded)
         .border_style(theme.accent_style())
+        .title(" palette ")
         .style(Style::default().bg(theme.selection_bg()));
     let mut lines = vec![Line::from(vec![
         Span::styled("find ", theme.dim_style()),
@@ -1034,7 +1082,7 @@ fn render_navigator(app: &App, frame: &mut Frame<'_>, view: &ViewState, theme: &
         Span::styled("▌", theme.accent_style()),
     ])];
     let matches = app.navigator_matches(query);
-    let visible = usize::from(height.saturating_sub(3));
+    let visible = usize::from(height.saturating_sub(4));
     let picked_index = (*selected).min(matches.len().saturating_sub(1));
     for (index, id) in matches.iter().take(visible).enumerate() {
         let row_status = app
@@ -1063,6 +1111,10 @@ fn render_navigator(app: &App, frame: &mut Frame<'_>, view: &ViewState, theme: &
     if matches.is_empty() {
         lines.push(Line::styled("  no matches", theme.dim_style()));
     }
+    lines.push(Line::styled(
+        keys::hint(false, app.cmd_hints),
+        theme.dim_style(),
+    ));
     frame.render_widget(Paragraph::new(lines).block(block), popup);
 }
 
@@ -1083,56 +1135,54 @@ fn render_status(app: &App, frame: &mut Frame<'_>, area: Rect, theme: &Theme) {
         frame.render_widget(Paragraph::new(Line::from(spans)), area);
         return;
     }
+    let focused = app.state.focused_session();
+    let row = focused.as_ref().and_then(|id| app.state.sessions.get(id));
+    let info = focused
+        .as_ref()
+        .and_then(|id| app.state.status.get(id))
+        .cloned()
+        .unwrap_or_default();
+    let subagents = focused
+        .as_ref()
+        .and_then(|id| app.state.children.get(id))
+        .map_or(0, |rows| {
+            rows.iter()
+                .filter(|child| child.status == yi_types::subagent::ChildStatus::Running)
+                .count()
+        });
+    let input = StatusInput {
+        model: info.model,
+        thinking: info.effort,
+        mode: None,
+        cwd: row.map_or_else(|| app.state.root.clone(), |row| row.root.clone()),
+        branch: None,
+        cost: info.cost,
+        session_name: row.map(SessionRow::label).unwrap_or_default(),
+        subagents,
+        context_used: info.context_used,
+        context_window: info.context_window,
+        focused_child: None,
+    };
+    let mut line = yi_tui::status::render(&input, usize::from(area.width), theme);
     let link = match &app.state.link {
-        Link::Connecting => Span::styled("connecting…", theme.dim_style()),
-        Link::Connected => Span::styled("● connected", Style::default().fg(theme.success)),
+        Link::Connecting => Some(Span::styled(" connecting… ", theme.dim_style())),
+        Link::Connected => None,
         Link::Disconnected { reason } => {
             let short: String = reason.chars().take(28).collect();
-            Span::styled(
-                format!("✕ disconnected: {short}"),
+            Some(Span::styled(
+                format!(" ✕ disconnected: {short} "),
                 Style::default().fg(theme.error),
-            )
+            ))
         }
     };
-    // Invariant: the note renders first so a long link reason can never
-    // push the actionable part off the row.
-    let mut spans = Vec::new();
-    if let Some(note) = &app.state.status_note {
-        spans.push(Span::styled(
-            format!("{note}  "),
-            Style::default().fg(theme.warning),
-        ));
-    }
-    spans.push(link);
-    if let Some(id) = &app.state.focused_session() {
-        let short = label_of(&app.state.sessions, id, NAME_WIDTH);
-        spans.push(Span::styled(format!("  {short}"), theme.muted_style()));
-    }
-    if let Some((used, size)) = app.state.tokens_used
-        && size > 0
-    {
-        spans.push(Span::styled(
-            format!("  {}k/{}k", used / 1000, size / 1000),
-            theme.dim_style(),
-        ));
+    if let Some(link) = link {
+        line.spans.insert(0, link);
     }
     if app.state.dropped_frames > 0 {
-        spans.push(Span::styled(
+        line.spans.push(Span::styled(
             format!("  dropped:{}", app.state.dropped_frames),
             theme.dim_style(),
         ));
     }
-    let used: usize = spans.iter().map(Span::width).sum();
-    let hint = keys::hint(false, app.cmd_hints);
-    if used.saturating_add(hint.chars().count()).saturating_add(2) <= usize::from(area.width) {
-        frame.render_widget(Paragraph::new(Line::from(spans)), area);
-        frame.render_widget(
-            Paragraph::new(Line::styled(hint, theme.dim_style()))
-                .alignment(ratatui::layout::Alignment::Right),
-            area,
-        );
-        return;
-    }
-    spans.push(Span::styled(format!("  {hint}"), theme.dim_style()));
-    frame.render_widget(Paragraph::new(Line::from(spans)), area);
+    frame.render_widget(Paragraph::new(line), area);
 }
