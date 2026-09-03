@@ -149,11 +149,13 @@ fn draw_frame<B>(
     }
     for id in &app.task_order {
         if let Some(state) = app.tasks.get(id)
-            && state.cell.status == TaskStatus::Running
+            && !app.committed_tasks.contains(id)
         {
             let mut cell = state.cell.clone();
-            cell.elapsed_ms = elapsed_ms(state.started);
-            live_lines.extend(cell.lines(width, &theme, spinner));
+            if state.finished.is_none() {
+                cell.elapsed_ms = elapsed_ms(state.started);
+            }
+            live_lines.extend(cell.lines(content_width, &theme, spinner));
         }
     }
     let hud_lines = if app.hud_hidden {
