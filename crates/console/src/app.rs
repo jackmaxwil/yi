@@ -80,9 +80,8 @@ pub struct App {
     /// Split path under an active border drag, pinned to its tab so a
     /// mid-drag tab switch can never resize a colliding path elsewhere.
     drag: Option<(usize, Vec<bool>)>,
-    /// Invariant: a `replayedTo` offset is valid only while nothing later
-    /// streamed for that session — any update clears it, which is what
-    /// keeps a skip-ahead resume equal to a full wipe-and-replay.
+    /// Invariant: a `replayedTo` offset is valid only while nothing later streamed for that
+    /// session; any update clears it, keeping a skip-ahead resume equal to a full replay.
     resume_offsets: HashMap<SessionId, u64>,
 }
 
@@ -397,9 +396,8 @@ impl App {
                     json!({"cwd": root}),
                 );
                 self.send_request(outbound, RequestKind::ListDaemon, "session/list", json!({}));
-                // Invariant: one resume per session, not per pane. A replay
-                // update fans out to every pane bound to the session, so a
-                // second resume renders the whole transcript a second time.
+                // Invariant: one resume per session, not per pane. A replay update fans out
+                // to every bound pane, so a second resume renders the transcript twice.
                 let mut seen: Vec<SessionId> = Vec::new();
                 let visible: Vec<(PaneId, SessionId)> = self
                     .state
@@ -597,9 +595,8 @@ impl App {
     }
 
     fn resume_into(&mut self, outbound: &Outbound, pane_id: PaneId, session: &SessionId) {
-        // Invariant: replay streams ahead of the resume response, so wipe
-        // and bind happen at send time; a stored offset skips the wipe only
-        // when this pane already shows the session.
+        // Invariant: replay streams ahead of the resume response, so wipe and bind happen at
+        // send time; a stored offset skips the wipe only if this pane shows the session.
         let continuous = self
             .state
             .panes

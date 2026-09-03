@@ -54,9 +54,8 @@ fn parse_args() -> Result<Args, lexopt::Error> {
     let mut system = String::new();
     let mut thinking = None;
     let mut json = false;
-    // Auto is the default (auto-mode design): reads and known-safe commands
-    // run, destructive ones ask. `--yolo` removes the gate, `--confirm` asks
-    // for everything.
+    // Auto is the default: reads and known-safe commands run, destructive ones ask.
+    // `--yolo` removes the gate, `--confirm` asks for everything.
     let mut mode = yi_runtime::PermissionMode::Auto;
     let mut session_dir = None;
     let mut cwd = None;
@@ -212,9 +211,8 @@ fn configured_model() -> Option<String> {
 
 static CONFIG: std::sync::OnceLock<yi_types::config::UserConfig> = std::sync::OnceLock::new();
 
-/// X7: the one config load, strict, before dispatch — a typo that reads as an
-/// unset default is the failure nobody sees. It lives here, not beside the
-/// shape: yi-types is the DTO wall (§2), so no fs and no `$HOME` reach it.
+/// X7: the one config load, strict, before dispatch — a typo that reads as an unset default
+/// is the failure nobody sees. It lives here because no fs or `$HOME` may reach yi-types.
 fn load_config() -> Result<(), String> {
     let Some(home) = std::env::var_os("HOME") else {
         return set_config(yi_types::config::UserConfig::default());
@@ -263,9 +261,8 @@ fn configured_auto_background() -> Option<std::time::Duration> {
     (millis > 0).then(|| std::time::Duration::from_millis(millis))
 }
 
-/// §12: an unset role falls back to the primary model.
-/// Naming `models.advisor` is the switch that turns the LLM reviewer on
-/// (D28/D50); an unknown selector warns and leaves the advisor silent.
+/// §12: an unset role falls back to the primary model. Naming `models.advisor` is what turns
+/// the LLM reviewer on (D28/D50); an unknown selector warns and leaves the advisor silent.
 fn advisor_model() -> Option<Model> {
     let spec = configured_roles().advisor?;
     let resolved = resolve(&spec);
@@ -362,9 +359,8 @@ fn build_session(
         use std::io::IsTerminal;
         std::io::stdin().is_terminal()
     };
-    // Incident: an inherited proxy value ureq cannot dial refused every faux run
-    // too, so an operator's shell broke `just check` and the repo's own offline
-    // behavior check. E2 guards provider egress; faux never leaves the process.
+    // Incident: an inherited proxy value ureq cannot dial refused every faux run too, so an
+    // operator's shell broke `just check`. E2 guards egress; faux never leaves the process.
     let proxy = if faux {
         None
     } else {
@@ -487,9 +483,8 @@ fn configured_plans_dir(workspace: &std::path::Path) -> Option<std::path::PathBu
     })
 }
 
-/// Invariant: an MCP read runs as a one-shot child of `yi mcp`, so no socket
-/// and no token ever lives in this process; the server segment of an
-/// `mcp://<server>/<uri>` address is a connected session name.
+/// Invariant: an MCP read runs as a one-shot child of `yi mcp`, so no socket or token lives
+/// in this process; the server segment of `mcp://<server>/<uri>` is a connected session name.
 struct McpOneShot;
 
 impl yi_runtime::fetch::McpResourceRead for McpOneShot {
@@ -769,9 +764,8 @@ fn run(args: &Args) -> i32 {
     })
 }
 
-/// A flag names what the user wants now; a resumed session names what they
-/// wanted last time. `attach_store` replays the session, so the flags go on
-/// after it or `--continue --model X` silently keeps the old model.
+/// A flag names what the user wants now, a resumed session what they wanted last time.
+/// Flags apply after `attach_store` or `--continue --model X` silently keeps the old model.
 fn repin(args: &Args, session: &AgentSession) {
     if args.model_pinned
         && let Some(model) = resolve(&args.model)
@@ -809,9 +803,8 @@ fn attach_store(args: &Args, session: &AgentSession) -> Result<String, String> {
     Ok(id)
 }
 
-/// OMP's parting hint: the exact command that brings this session back.
-/// Only for a session that recorded something — resuming an empty one
-/// restores nothing and reads as a broken suggestion.
+/// The exact command that brings this session back, printed only for a session
+/// that recorded something: resuming an empty one reads as a broken suggestion.
 fn print_resume_hint(session: &AgentSession, id: &str) {
     if session.messages().is_empty() {
         return;

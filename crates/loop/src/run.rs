@@ -45,9 +45,8 @@ fn synthesized_error_message(model: &Model, text: &str) -> AgentMessage {
     }
 }
 
-/// The interrupt lands mid-stream, so whatever has already been shown becomes
-/// the turn's message with an aborted stop reason — the user stopped the
-/// answer, they did not ask for what streamed to be thrown away.
+/// The interrupt lands mid-stream, so what was already shown becomes the turn's message with
+/// an aborted stop reason: the user stopped the answer, not what already streamed.
 fn aborted_message(partial: Option<&AgentMessage>, model: &Model) -> AgentMessage {
     let mut message = partial
         .cloned()
@@ -394,9 +393,8 @@ async fn stream_assistant_response<S: StreamFn>(
     let mut added_partial = false;
     let mut final_message: Option<AgentMessage> = None;
     loop {
-        // The provider's stream takes no cancellation input, so this is the only
-        // interrupt checkpoint a streaming answer has: without it a turn with no
-        // tool call ran to completion before `abort` became observable.
+        // The provider's stream takes no cancellation input, so this is a streaming answer's
+        // only interrupt checkpoint; without it a tool-less turn ran to completion first.
         let event = tokio::select! {
             biased;
             () = signal.wait() => None,

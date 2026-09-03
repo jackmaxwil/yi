@@ -80,9 +80,8 @@ pub mod gate {
     }
 }
 
-/// Divergence between work done and ledger stepped, as an event count — never
-/// a timer, and a different quantity from [`super::DEFAULT_STALE_TURNS`],
-/// which counts quiet completed turns.
+/// Divergence between work done and ledger stepped, as an event count, never a timer — a
+/// different quantity from [`super::DEFAULT_STALE_TURNS`], which counts quiet turns.
 #[derive(Debug, Default)]
 pub struct NudgeState {
     counted: u32,
@@ -340,9 +339,8 @@ pub fn install(session: &AgentSession, options: CouplingOptions) {
             {
                 return None;
             }
-            // Invariant: synchronous by design — no await point exists between
-            // the terminal turn and the queue read, and the read is bounded by
-            // the frontmatter byte cap, so it cannot stall the kernel pumps.
+            // Invariant: synchronous by design — no await point between the terminal turn and
+            // the queue read, which the frontmatter cap bounds, so pumps cannot stall.
             let plan = super::canonical_plan(&store, &plans_dir).ok()?;
             if stop_posture(&plan) != StopPosture::Continue {
                 return None;

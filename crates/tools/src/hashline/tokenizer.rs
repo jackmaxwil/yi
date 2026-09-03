@@ -431,9 +431,8 @@ fn scan_put_target(line: &str, index: usize, end: usize) -> Option<(TargetScan, 
             };
             return finish_target_scan(line, next, end, target);
         }
-        // `<N*` is the same gap as `<N`, so the star is dropped. `<1` is head,
-        // mapped to `bof` so it stays position-stable (never anchor-scoped) and
-        // works when creating empty files.
+        // `<N*` is the same gap as `<N`, so the star drops. `<1` is head, mapped to `bof` so
+        // it stays position-stable, never anchor-scoped, and works on empty files.
         let target = if anchor.line == 1 {
             BlockTarget::Bof { register: None }
         } else {
@@ -636,9 +635,8 @@ pub fn try_parse_header(line: &str) -> Option<ParsedHeader> {
         return None;
     }
 
-    // The snapshot tag, when present, is the trailing `#XXXX` block inside the
-    // bracketed header. We detect it from the suffix so the path may
-    // legitimately contain whitespace (e.g. `OneDrive - Company/file.ts`).
+    // The snapshot tag is the trailing `#XXXX` block inside the bracketed header, detected
+    // from the suffix so the path may contain whitespace (`OneDrive - Company/file.ts`).
     let mut path_end = body_end;
     let mut file_hash = None;
     if body_end > HL_FILE_HASH_LENGTH {
@@ -654,9 +652,8 @@ pub fn try_parse_header(line: &str) -> Option<ParsedHeader> {
         }
     }
 
-    // `#` is the path/tag separator and is not allowed inside a filename, so
-    // any `#` left in the path body — a short, non-hex, over-long, stale or
-    // line-suffixed tag — means the header is malformed.
+    // `#` is the path/tag separator and is banned inside a filename, so any `#` left in the
+    // path body — a short, non-hex, over-long or stale tag — means a malformed header.
     if bytes[prefix_len..path_end].contains(&b'#') {
         return None;
     }

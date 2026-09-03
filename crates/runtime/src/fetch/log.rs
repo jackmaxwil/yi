@@ -50,9 +50,8 @@ impl FetchLog {
         let key = base_of(url);
         let mut state = self.lock();
         match state.records.iter().position(|(base, _)| *base == key) {
-            // Invariant: one row per address, so a daemon re-reading a file for
-            // a week logs the latest hash rather than a week of rows; every
-            // reader here is a membership test or a set already.
+            // Invariant: one row per address, so a daemon re-reading a file for a week logs
+            // the latest hash, not a week of rows; every reader is a membership test.
             Some(at) => {
                 if let Some(row) = state.records.get_mut(at) {
                     row.1 = record;
@@ -70,9 +69,8 @@ impl FetchLog {
             .collect()
     }
 
-    /// M3: what a delegation named against what the resolver actually served.
-    /// Both sides are scheme-plus-path, so a citation with a fragment counts as
-    /// a reference to the address that was supplied.
+    /// M3: what a delegation named against what the resolver served. Both sides are
+    /// scheme-plus-path, so a citation with a fragment still names the supplied address.
     pub fn relevance(&self, supplied: &[Url]) -> Relevance {
         let state = self.lock();
         let served = state.records.iter().map(|(base, _)| base.clone());

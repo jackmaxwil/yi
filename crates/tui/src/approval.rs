@@ -19,9 +19,8 @@ const OPTIONS: [(AskChoice, &str); 3] = [
     (AskChoice::Reject, "Reject"),
 ];
 
-/// Diff rows the prompt shows. The permission layer already cuts the patch at
-/// 40 (`cut_preview`); this is the second cut, sized so the whole view still
-/// fits a 24-row screen beside the transcript.
+/// Diff rows the prompt shows. The permission layer already cuts the patch at 40
+/// (`cut_preview`); this second cut sizes the view to a 24-row screen beside the transcript.
 const BODY_LINES: usize = 10;
 
 /// U12: fixed-height approval view — height is set at spawn so the live
@@ -52,9 +51,8 @@ impl BottomView for ApprovalView {
                 .fg(theme.warning)
                 .add_modifier(Modifier::BOLD),
         ))];
-        // The first line is prose, the rest the tool's own diff. `wrap_line` has
-        // no newline handling, so the whole thing flattened into one span and cut
-        // to three mangled lines — the diff was computed and thrown away here.
+        // The first line is prose, the rest the tool's diff. `wrap_line` has no newline
+        // handling, so it all flattened into one span and the diff was thrown away here.
         let mut prose = self
             .description
             .split('\n')
@@ -88,9 +86,8 @@ impl BottomView for ApprovalView {
                 Some(b'@') => Style::default().fg(theme.accent),
                 _ => theme.dim_style(),
             };
-            // Truncated, never wrapped: a wrapped diff line loses the column
-            // that says whether it is an addition, and one long line could
-            // spend the whole budget.
+            // Truncated, never wrapped: a wrapped diff line loses the column saying whether
+            // it is an addition, and one long line could spend the whole budget.
             let text: String = raw.chars().take(width.saturating_sub(4)).collect();
             out.push(Line::from(Span::styled(format!("   {text}"), style)));
         }

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Crate-boundary allowlist. Incident: jcode's denylist covered 14/85 crates, omitted its three
+"""Crate-boundary allowlist. Incident: a surveyed denylist covered 14/85 crates, omitted its three
 100k-line crates, and carried two dead names — allowlist, unknown = error, stale = error."""
 import sys, tomllib, pathlib
 sys.path.insert(0, str(pathlib.Path(__file__).parent))

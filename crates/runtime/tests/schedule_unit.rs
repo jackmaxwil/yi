@@ -88,7 +88,7 @@ fn job_with(source: Option<yi_types::schedule::JobSource>, mode: Option<Delivery
 }
 
 #[test]
-fn defer_table_matches_prime_rules() {
+fn defer_table_matches_the_reference_rules() {
     let heartbeat = job_with(Some(yi_types::schedule::JobSource::Heartbeat), None);
     let follow_up = job_with(
         Some(yi_types::schedule::JobSource::Heartbeat),

@@ -4,9 +4,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use yi_types::plan::doc::{AgentId, DocError, GoalText, Plan, PlanId, TodoLabel, TodoState};
 
-/// Invariant: the frontmatter byte cap is checked before the atomic replace
-/// and never trimmed after — a cap is refused or reported, never silently
-/// applied — so a file on disk is always whole.
+/// Invariant: the frontmatter byte cap is checked before the atomic replace and never trimmed
+/// after — refused or reported, never silently applied — so a file on disk is always whole.
 pub const FRONTMATTER_CAP_BYTES: usize = 32 * 1024;
 
 const LEASE_NAME: &str = ".lease";
@@ -141,9 +140,8 @@ pub struct PlanFile {
     pub body: String,
 }
 
-/// What a hand edit moved that the engine must answer for: todos whose
-/// recorded Running child is no longer the one on disk. Every other
-/// divergence is the user's to make and costs one [`Plan::touched`] bump.
+/// What a hand edit moved that the engine must answer for: todos whose recorded Running child
+/// is not the one on disk. Every other divergence costs one [`Plan::touched`] bump.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HandEdit {
     pub left_running: Vec<TodoLabel>,
@@ -161,9 +159,8 @@ pub(super) fn running_by(state: &TodoState) -> Option<&AgentId> {
     }
 }
 
-/// Invariant: the arbiter is the uniquely named hold file, never the
-/// directory, so a holder whose file is gone releases nothing and cannot
-/// unlock whoever took the path over.
+/// Invariant: the arbiter is the uniquely named hold file, never the directory, so a holder
+/// whose file is gone releases nothing and cannot unlock whoever took the path over.
 #[derive(Debug)]
 pub struct Lease {
     dir: PathBuf,
@@ -178,9 +175,8 @@ fn lease_hold(dir: &Path) -> Option<String> {
     })
 }
 
-/// Invariant: unlinking one named file is the atomic single-winner step, and
-/// the name changes every takeover, so a racer can only ever condemn the
-/// generation it judged stale.
+/// Invariant: unlinking one named file is the atomic single-winner step and the name changes
+/// every takeover, so a racer can only condemn the generation it judged stale.
 fn condemn(dir: &Path, arbiter: &str) -> bool {
     if std::fs::remove_file(dir.join(arbiter)).is_err() {
         return false;
@@ -320,9 +316,8 @@ impl PlanStore {
         })
     }
 
-    /// Invariant: K1's lock rule branches — a parseable pid file makes
-    /// staleness dead-pid only, and the 30 s mtime rule covers the arms K1
-    /// leaves it, plus a lease whose generation cannot be named.
+    /// Invariant: K1's lock rule branches — a parseable pid file makes staleness dead-pid
+    /// only, and the 30 s mtime rule covers the arms K1 leaves plus an unnamed generation.
     pub fn lease(&self) -> Result<Lease, StoreError> {
         std::fs::create_dir_all(&self.dir).map_err(io_at(&self.dir))?;
         let dir = self.dir.join(LEASE_NAME);

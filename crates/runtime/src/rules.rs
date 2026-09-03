@@ -286,9 +286,8 @@ impl RuleEngine {
         else {
             return;
         };
-        // The per-rule gap latch is the noise budget. The advisor guard is
-        // deliberately NOT in this path: its session-scoped dedupe would
-        // silently override a user-chosen re-arm gap (found by test).
+        // The per-rule gap latch is the noise budget. The advisor guard is deliberately NOT
+        // here: its session-scoped dedupe would override a user-chosen re-arm gap.
         for text in reminders {
             deliver(
                 AgentMessage::Custom {

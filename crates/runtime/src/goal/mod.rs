@@ -82,9 +82,8 @@ pub enum GoalEditError {
 }
 pub type DeliverFn = Arc<dyn Fn(AgentMessage, DeliveryMode) + Send + Sync>;
 
-/// A discovery's check is one todo's own gate, not the goal's integration gate:
-/// it is re-run per row and per completion attempt, so it gets a per-row budget
-/// rather than [`DEFAULT_CHECK_TIMEOUT_MS`].
+/// A discovery's check is one todo's gate, not the goal's integration gate: re-run per row
+/// and per completion attempt, so it gets a per-row budget, not [`DEFAULT_CHECK_TIMEOUT_MS`].
 pub(crate) const DISCOVERY_CHECK_TIMEOUT_MS: u64 = 60_000;
 
 /// L5 ledger writer: a derived-HIGH discovery becomes a goal fact, so it
@@ -301,9 +300,8 @@ impl GoalService {
         Ok(goal_json(&goal))
     }
 
-    /// The model reports terminal state only; the host verifies a `complete`
-    /// report by running the goal check before accepting it. Blocking,
-    /// bounded by the check timeout — async callers wrap in spawn_blocking.
+    /// The model reports terminal state only; the host verifies `complete` by running the
+    /// goal check first. Blocking, bounded by the check timeout; async callers spawn_blocking.
     pub fn update(&self, status: &str) -> Result<Value, String> {
         let status = match status {
             "complete" => GoalStatus::Complete,
@@ -344,9 +342,8 @@ impl GoalService {
         Ok(goal_json(&goal))
     }
 
-    /// L5 drain gate: every recorded row is re-adjudicated by re-running the check
-    /// it names. Green — or a check the plan no longer carries — drains the row; red
-    /// keeps it, and a plan that cannot be read refuses rather than draining.
+    /// L5 drain gate: every recorded row is re-adjudicated by re-running the check it names.
+    /// Green, or a dropped check, drains it; red keeps it, and an unreadable plan refuses.
     fn drain(&self, goal: &mut Goal) -> Option<String> {
         if goal.discoveries.is_empty() {
             return None;
@@ -401,9 +398,8 @@ impl GoalService {
         (!blockers.is_empty()).then(|| blockers.join("\n\n"))
     }
 
-    /// Supersedes the objective and steers `objective_updated` into the turn.
-    /// Invariant: the objective carries user authority, so the edit demands a
-    /// `user://` citation resolving to a user-attributed message (D25).
+    /// Supersedes the objective and steers `objective_updated` into the turn. Invariant: it
+    /// carries user authority, so the edit demands a `user://` citation (D25).
     pub fn set_objective(&self, objective: &str, citation: Option<&str>) -> Result<Value, String> {
         if objective.trim().is_empty() {
             return Err("objective must not be empty".to_owned());
@@ -551,8 +547,8 @@ impl GoalService {
                     },
             } => match stop_reason {
                 StopReason::Aborted => Self::set_flag(&self.deferred, true),
-                // Codex on_turn_error: block the goal so automatic
-                // continuation cannot loop against a failing turn.
+                // Block the goal so automatic continuation cannot loop
+                // against a failing turn.
                 StopReason::Error => self.block_after_error(),
                 _ => self.account(usage),
             },

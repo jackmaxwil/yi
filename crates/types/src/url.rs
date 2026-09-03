@@ -1,9 +1,8 @@
 use serde::{Deserialize, Serialize};
 use std::num::NonZeroU32;
 
-/// The scheme set is deliberately open: `https`, `github`, `s3`, `mount` are
-/// legal references, so unrecognized schemes land in the [`Scheme::External`] tail
-/// instead of failing the parse.
+/// The scheme set is deliberately open: `https`, `github`, `s3`, `mount` are legal, so an
+/// unrecognized scheme lands in the [`Scheme::External`] tail instead of failing the parse.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Scheme {
     Local,
@@ -17,9 +16,8 @@ pub enum Scheme {
     External(String),
 }
 
-/// Ephemeral schemes are legal in live coordination and illegal in any record
-/// that outlives its referent; the step table matches on this to make a
-/// terminal record carrying an ephemeral URL unrepresentable.
+/// Ephemeral schemes are legal in live coordination and illegal in a record outliving its
+/// referent; the step table matches on this to make that combination unrepresentable.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Durability {
     Ephemeral,
@@ -101,9 +99,8 @@ impl HashlineFragment {
         Ok(Self { start, end, tag })
     }
 
-    /// Invariant: the tag is a whole-file xxh32 rendered as exactly four
-    /// UPPERCASE hex digits — it pins the file, never the span, the line range
-    /// only locates within the pinned file, and lowercase hex does not parse.
+    /// Invariant: the tag is a whole-file xxh32 as exactly four UPPERCASE hex digits — it
+    /// pins the file, not the span, and lowercase hex does not parse.
     fn parse(text: &str) -> Result<Self, UrlError> {
         let syntax = || UrlError::FragmentSyntax {
             fragment: text.to_owned(),

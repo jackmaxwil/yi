@@ -1,10 +1,8 @@
-//! Recording sinks for a headless drive run: the draws the script asserts on,
-//! mirrored through a `CrosstermBackend` into an asciicast v2 file `agg` turns
-//! into a GIF, plus `buffer_to_ansi` for a still.
+//! Recording sinks for a headless drive run: the draws a script asserts on, mirrored through
+//! a `CrosstermBackend` into an asciicast v2 file `agg` makes a GIF of, plus a still.
 
-// Crossterm answers `size`, `window_size` and cursor position from the real
-// tty, which headless has none of, so reads never reach it. And the loop
-// redraws every few milliseconds: a call carrying no change is not recorded.
+// Crossterm answers `size`, `window_size` and cursor position from the real tty, which
+// headless lacks, so reads never reach it; and a redraw carrying no change is not recorded.
 
 use std::cell::RefCell;
 use std::fs::File;
@@ -42,9 +40,8 @@ impl Write for SharedBuf {
     }
 }
 
-/// An asciicast v2 file (docs.asciinema.org/manual/asciicast/v2): a JSON
-/// header line, then `[time, "o", data]` per frame. Newline-delimited, so a
-/// killed run still leaves a playable prefix.
+/// An asciicast v2 file (docs.asciinema.org/manual/asciicast/v2): a JSON header line, then
+/// `[time, "o", data]` per frame. Newline-delimited, so a killed run stays playable.
 pub struct CastWriter {
     out: BufWriter<File>,
     start: Instant,
@@ -71,9 +68,8 @@ impl CastWriter {
     }
 
     fn event(&mut self, payload: &str) -> io::Result<()> {
-        // The synchronized-update bracket asks a live terminal to present a
-        // frame atomically: meaningless here, an event on every idle tick,
-        // and a player left mid-update when its closing half is dropped.
+        // The synchronized-update bracket asks a live terminal for an atomic present:
+        // meaningless here, and a dropped closing half leaves a player mid-update.
         let payload = payload
             .replace("\x1b[?2026h", "")
             .replace("\x1b[?2026l", "");
@@ -296,9 +292,8 @@ impl Backend for RecordingBackend {
     }
 }
 
-// Rows are placed, not newline-terminated, because the reader is a terminal:
-// ending 24 rows with a newline on a 24-row screen scrolls the frame off
-// itself, measured, and the still came back blank.
+// Rows are placed, not newline-terminated, because the reader is a terminal: ending 24 rows
+// with a newline on a 24-row screen scrolled the frame off itself and the still came back blank.
 
 /// A whole frame as the escape stream a terminal would receive to paint it:
 /// every cell placed by absolute cursor move, no newlines.

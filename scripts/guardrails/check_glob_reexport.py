@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Glob hygiene = 0, not budgeted. Incident: 63% of jcode glued into one namespace by
+"""Glob hygiene = 0, not budgeted. Incident: 63% of a surveyed harness glued into one namespace by
 pub use ...::* chains; the crate split removed zero imports."""
 import re, sys, pathlib
 sys.path.insert(0, str(pathlib.Path(__file__).parent))

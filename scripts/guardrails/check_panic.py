@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Zero panic budget from day 0 (not ratcheted down). Incident: jcode grandfathered 3,248
+"""Zero panic budget from day 0 (not ratcheted down). Incident: a survey grandfathered 3,248
 swallowed errors and 225k LOC over ceiling; both of its zero-start gates held."""
 import json, re, sys, pathlib
 sys.path.insert(0, str(pathlib.Path(__file__).parent))

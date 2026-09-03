@@ -13,7 +13,7 @@ impl Tokens {
     }
 }
 
-// Estimate images as 4000 chars plus block overhead (prime compaction.ts).
+// Estimate images as 4000 chars plus block overhead.
 const IMAGE_ESTIMATE_CHARS: u64 = 4800;
 
 fn chars_to_tokens(chars: u64) -> Tokens {
@@ -127,9 +127,8 @@ pub fn estimate_context(messages: &[AgentMessage]) -> Estimate {
     }
 }
 
-/// Which tokens count against the compaction budget (design P3): the whole
-/// context, or only growth past the cached prefix baseline — the ~10 %-priced
-/// prefix must not be charged full price against the budget.
+/// Which tokens count against the compaction budget (design P3): the whole context, or only
+/// growth past the cached prefix — the ~10 %-priced prefix must not be charged full price.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Scope {
     Total,

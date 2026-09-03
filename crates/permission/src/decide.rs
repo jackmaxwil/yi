@@ -57,9 +57,8 @@ pub enum Decision {
     Allow {
         reason: String,
     },
-    /// Run it, but inside the platform sandbox. The broker downgrades this to
-    /// Ask where no sandbox exists, so policy stays here and capability stays
-    /// with the caller that knows the platform.
+    /// Run it, but inside the platform sandbox. The broker downgrades this to Ask where no
+    /// sandbox exists, so policy stays here and capability with the caller.
     Contain {
         reason: String,
     },
@@ -69,9 +68,8 @@ pub enum Decision {
     Ask {
         title: String,
         description: String,
-        /// Invariant: jurisdiction of the M7 auto reviewer, set here and never
-        /// by the reviewer — true only for auto-mode fallback asks, false for
-        /// credential reads, holds, configured rules and catastrophic targets.
+        /// Invariant: jurisdiction of the M7 auto reviewer, set here and never by it — true
+        /// only for auto-mode fallback asks, false for holds, rules and catastrophic targets.
         reviewable: bool,
     },
 }
@@ -107,9 +105,8 @@ pub struct ToolCall<'a> {
     pub command: Option<&'a str>,
 }
 
-/// Invariant: catastrophic denylist (every mode, yolo included) > configured
-/// deny > session rule > configured allow/ask > hold > mode fallback.
-// ponytail: no (mode, rules_hash) memoization — add it when decide() profiles.
+/// Invariant: catastrophic denylist (every mode, yolo included) > configured deny > session
+/// rule > configured allow/ask > hold > mode fallback. ponytail: memoize when decide() profiles.
 pub fn decide(
     call: &ToolCall<'_>,
     mode: PermissionMode,
@@ -226,9 +223,8 @@ fn auto(call: &ToolCall<'_>, context: &CatastrophicContext) -> Decision {
                 false => reviewable_ask(call, "the target is outside the working tree"),
             };
         }
-        // A call that names no path is judged by the tool that made it: the
-        // kernel screens its own shell cells, and nothing else claims to be
-        // reversible without a path.
+        // A call naming no path is judged by the tool that made it: the kernel screens its
+        // own shell cells, and nothing else claims to be reversible without a path.
         return if call.irreversible {
             reviewable_ask(call, "the call names no path Yi can check")
         } else {

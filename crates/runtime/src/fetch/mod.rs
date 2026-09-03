@@ -68,9 +68,8 @@ pub trait KernelVariables: Send + Sync {
     ) -> Result<Option<String>, VariableReadError>;
 }
 
-/// Invariant: an entry is a weak handle on a session's own service, so the map
-/// one root shares with every child never keeps a finished session's kernel
-/// alive and never grows past the sessions that are still open.
+/// Invariant: an entry is a weak handle on a session's own service, so the map a root shares
+/// with its children never outlives a finished session's kernel or grows past open ones.
 #[derive(Default)]
 pub struct KernelServiceMap {
     kernels: std::sync::Mutex<
@@ -111,9 +110,8 @@ impl KernelServiceMap {
 }
 
 impl KernelVariables for KernelServiceMap {
-    /// Invariant: parks the calling thread on the shared runtime, so it is
-    /// reachable only through [`Resolver::fetch`]'s spawn_blocking contract,
-    /// never from an async task on the current-thread runtime.
+    /// Invariant: parks the calling thread on the shared runtime, so it is reachable only
+    /// through [`Resolver::fetch`]'s spawn_blocking contract, never from an async task.
     fn read(
         &self,
         agent: &str,
@@ -267,9 +265,8 @@ impl Resolver {
         self.with_session_handle(agent, Arc::new(move || Some(store.clone())))
     }
 
-    /// Invariant: composition wires the resolver before any store is attached,
-    /// so the handle is re-read on every fetch — a store attached later serves
-    /// `history://` and the fetch log without rebuilding the resolver.
+    /// Invariant: composition wires the resolver before any store is attached, so the handle
+    /// is re-read per fetch and a later store serves `history://` without a rebuild.
     pub fn with_session_handle(
         mut self,
         agent: impl Into<String>,
@@ -439,9 +436,8 @@ pub fn fence_untrusted(source: &str, text: &str) -> String {
     )
 }
 
-/// Incident: escaping before stripping let `<<\0<` slip past the escape and
-/// re-form an unescaped sentinel once the control byte was dropped, forging a
-/// `trust="trusted"` label inside the body. Strip first, escape last.
+/// Incident: escaping before stripping let `<<\0<` re-form an unescaped sentinel once the
+/// control byte dropped, forging a `trust="trusted"` label. Strip first, escape last.
 fn sanitize(text: &str) -> String {
     let stripped: String = text
         .chars()

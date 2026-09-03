@@ -563,9 +563,8 @@ Issue ONE hunk per range; payload is only the final desired content, never a bef
             return Err(format!("line {line_num}: {message}"));
         }
         Self::commit_deferred_blanks_into(pending, &mut self.warnings);
-        // An op written with the payload prefix is inserted as literal text. That
-        // is the correct reading of `+TEXT`, but it silently plants a `CUT …` line
-        // in the file, so name it at the moment it happens.
+        // An op written with the payload prefix inserts as literal text. Correct for `+TEXT`,
+        // but it silently plants a `CUT …` line in the file, so name it when it happens.
         if is_hunk_header_text(text) {
             self.warnings.push(literal_op_row_warning(line_num, text));
         }
@@ -615,9 +614,8 @@ Issue ONE hunk per range; payload is only the final desired content, never a bef
                 Self::commit_deferred_blanks_into(pending, &mut self.warnings);
             }
             if let Some(pending) = self.pending.as_mut() {
-                // Defer read-output line-number stripping to flush_pending: a bare
-                // "N:text" row is only a copy-paste artifact from snapshot output
-                // when *every* bare row in the hunk carries that prefix.
+                // Defer read-output line-number stripping to flush_pending: a bare "N:text"
+                // row is a paste artifact only when *every* bare row in the hunk has it.
                 pending.payloads.push(PayloadRow {
                     text: text.to_owned(),
                     line_num,
@@ -646,9 +644,8 @@ Issue ONE hunk per range; payload is only the final desired content, never a bef
             return Ok(());
         }
         if let Some((snapshot_line, snapshot_text)) = parse_top_level_snapshot_row(text) {
-            // Each recovered row becomes a single-line replacement, so a repeated
-            // line number is never a set of replacements — it is a body written as
-            // consecutive lines under one number.
+            // Each recovered row becomes a single-line replacement, so a repeated line number
+            // is not a set of replacements but a body written under one number.
             if self.recovered_snapshot_lines.contains(&snapshot_line) {
                 return Err(format!(
                     "line {line_num}: {}",
@@ -775,9 +772,8 @@ Use `PUT N.=M:`, `CUT N.=M`, or `PUT <N:`/`PUT >N:` above the body. Got {text:?}
         if !saw_bare {
             return;
         }
-        // Every stripped remainder being a lone literal is the shape of a
-        // numeric-keyed dict or YAML mapping (`1: "one",`), not read-output
-        // paste — stripping the "N:" keys there mangles every line.
+        // Every stripped remainder being a lone literal is a numeric-keyed dict or YAML
+        // mapping (`1: "one",`), not pasted read output; stripping "N:" there mangles it.
         if all_literal_values {
             return;
         }
@@ -899,9 +895,8 @@ Use `PUT N.=M:`, `CUT N.=M`, or `PUT <N:`/`PUT >N:` above the body. Got {text:?}
                 self.push_block(anchor, &[], line_num, BlockMode::Cut, register);
                 Ok(())
             }
-            // Span targets: body writes, register pastes over the span; the
-            // anonymous register never pastes over a span (too easy to fire by
-            // forgetting `:` + body on a replace).
+            // Span targets: body writes, register pastes over the span. The anonymous
+            // register never does — too easy to fire by forgetting `:` + body on a replace.
             BlockTarget::Replace { range, register } => {
                 if let Some(register) = register {
                     self.push_paste(PasteTarget::Span { range }, Some(register), line_num);

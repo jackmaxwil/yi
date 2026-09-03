@@ -1,6 +1,5 @@
-//! `yi tui` and `yi console` launchers, the drive-script loader they share,
-//! and the daemon socket they resolve. Lifted out of main.rs, which the
-//! console and capture landings pushed past the 1200-line cap between them.
+//! `yi tui` and `yi console` launchers, their shared drive-script loader, and the daemon
+//! socket they resolve. Lifted out of main.rs, which the console landing pushed past 1200.
 
 use crate::{
     Args, Resume, attach_store, build_session, config, default_session_dir, effective_cwd,

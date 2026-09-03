@@ -9,9 +9,8 @@ use crate::app::{App, entries_of};
 use crate::cell::Cell;
 use crate::tree::{TreeFilter, TreeView};
 
-/// A rewind is only believable if the screen agrees with it: the entries that
-/// were undone leave the transcript, and a rewound user message goes back into
-/// the composer unsent (OMP `navigateTree` + `renderInitialMessages`).
+/// A rewind is only believable if the screen agrees: the undone entries leave the transcript
+/// and a rewound user message goes back into the composer unsent.
 pub fn process_pending_rewind<B: Backend + Write>(
     app: &mut App,
     terminal: &mut crate::terminal::Terminal<B>,
@@ -44,9 +43,8 @@ pub fn process_pending_rewind<B: Backend + Write>(
     app.scheduler.request();
 }
 
-/// A fresh store adopted by the running session, over the same screen reset a
-/// rewind uses. Swapping mid-turn would strand the running turn's messages in
-/// the file it no longer writes to, so a running turn refuses.
+/// A fresh store adopted by the running session, over the screen reset a rewind uses.
+/// Swapping mid-turn would strand that turn's messages, so a running turn refuses.
 pub fn process_pending_new<B: Backend + Write>(
     app: &mut App,
     terminal: &mut crate::terminal::Terminal<B>,
@@ -96,9 +94,8 @@ fn new_store(app: &App) -> Result<(yi_runtime::session_store::SharedSession, Str
     Ok((store, id))
 }
 
-/// The transcript above the viewport belongs to a branch that no longer
-/// exists, and it lives in the emulator's scrollback where no repaint reaches
-/// it — so the scrollback goes too, and the viewport re-anchors at the top.
+/// The transcript above the viewport belongs to a branch that no longer exists and sits in
+/// scrollback no repaint reaches, so the scrollback goes and the viewport re-anchors.
 fn clear_screen<B: Backend + Write>(terminal: &mut crate::terminal::Terminal<B>) {
     // The screen itself is cleared through the backend so the headless screen
     // clears too; only the scrollback erase (`ESC[3J`) has no backend call.
@@ -116,9 +113,8 @@ fn clear_screen<B: Backend + Write>(terminal: &mut crate::terminal::Terminal<B>)
     terminal.invalidate_viewport();
 }
 
-/// The files a turn wrote go back to the capture it started from. This sits
-/// beside the transcript rewind because the pair is what "undo" means to a
-/// reader: one restores the conversation, the other the working tree.
+/// The files a turn wrote go back to the capture it started from. It sits beside the
+/// transcript rewind because "undo" means both: the conversation and the working tree.
 pub fn process_pending_undo(app: &mut App, session: &Arc<AgentSession>) {
     if !std::mem::take(&mut app.pending_undo) {
         return;
@@ -156,9 +152,8 @@ pub fn process_pending_undo(app: &mut App, session: &Arc<AgentSession>) {
                 names.join(", ")
             )
         }
-        // Scoped to this session on purpose: undoing a turn the reader never
-        // saw is not what the word means here. An earlier session's turns are
-        // still reachable, just not from inside this one.
+        // Scoped to this session on purpose: undoing a turn the reader never saw is not what
+        // the word means. An earlier session's turns stay reachable, just not from here.
         yi_runtime::UndoOutcome::NoCheckpoint => {
             "/undo: this session has taken no turn yet — `yi undo` restores an earlier session"
                 .to_owned()

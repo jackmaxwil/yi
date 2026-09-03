@@ -36,9 +36,8 @@ impl ListPopup {
         }
     }
 
-    /// Invariant: a query that is exactly one item's name selects that item and
-    /// not a longer one it is a prefix of — typing `/plan` must not run
-    /// `/plantree`, whichever order the table happens to be in.
+    /// Invariant: a query that is exactly one item's name selects that item, not a longer one
+    /// it prefixes — `/plan` must not run `/plantree`, whatever order the table is in.
     pub fn filtered(&self) -> Vec<&String> {
         let query = self.query.to_lowercase();
         let mut found: Vec<&String> = self

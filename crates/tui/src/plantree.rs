@@ -200,9 +200,8 @@ fn push_plan(rows: &mut Vec<Row>, plan: &Plan, depth: usize, subplans: &[Plan]) 
     }
 }
 
-/// The ledger as the runtime reads it: every plan, todo, state, and `after`
-/// edge, flattened once at open because [`Plan::ready`] walks the whole
-/// document and a draw runs per frame.
+/// The ledger as the runtime reads it: every plan, todo, state and `after` edge, flattened
+/// once at open because [`Plan::ready`] walks the whole document and a draw runs per frame.
 pub struct PlanTreeView {
     title: String,
     rows: Vec<Row>,

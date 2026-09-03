@@ -1,8 +1,7 @@
 use serde::{Deserialize, Serialize};
 
-/// Design §12 model roles. Each role names a `provider/id`; an unset role
-/// falls back to the primary model, so a config that names nothing behaves
-/// exactly as one model for everything.
+/// Design §12 model roles. Each role names a `provider/id`; an unset role falls back to the
+/// primary, so a config that names nothing behaves as one model for everything.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ModelRoles {
@@ -20,9 +19,8 @@ pub struct ModelRoles {
     pub auto_review: Option<String>,
 }
 
-/// X7: `~/.yi/config.json`, the whole user surface. Config is not durable
-/// state, so §19 rule 4 does not apply — an unknown key is a typo the user
-/// wants named, not a field to preserve.
+/// X7: `~/.yi/config.json`, the whole user surface. Config is not durable state, so §19 rule
+/// 4 does not apply: an unknown key is a typo to name, not a field to preserve.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct UserConfig {
@@ -38,9 +36,8 @@ pub struct UserConfig {
     pub keys: Option<std::collections::BTreeMap<String, String>>,
 }
 
-/// `kernel.prewarm`: boot the IPython kernel in the background at session
-/// open so the first cell pays execution only. Default on; `false` keeps
-/// the boot lazy.
+/// `kernel.prewarm`: boot the IPython kernel in the background at session open so the first
+/// cell pays execution only. Default on; `false` keeps the boot lazy.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct KernelConfig {
@@ -68,9 +65,8 @@ pub struct PlanConfig {
     pub stale_reminder_turns: Option<u64>,
 }
 
-/// `plans.dir`, default `.yi/plans` relative to the workspace root. X7's
-/// project layer is unbuilt, so it is read from the user's own config and is
-/// global to every workspace.
+/// `plans.dir`, default `.yi/plans` relative to the workspace root. X7's project layer is
+/// unbuilt, so it reads from the user's own config and is global to every workspace.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PlansConfig {

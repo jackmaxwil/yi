@@ -79,9 +79,8 @@ struct Job {
 #[derive(Debug, Default)]
 struct LiveBuffer {
     bytes: Vec<u8>,
-    // Invariant: the absolute stream offset of `bytes[0]`. Trimming drops the
-    // oldest bytes — a tail that kept the head would stop being a tail — so a
-    // cursor below this names bytes that are gone, and the gap is how many.
+    // Invariant: the absolute stream offset of `bytes[0]`. Trimming drops the oldest bytes,
+    // so a cursor below this names bytes that are gone and the gap is how many.
     start: u64,
 }
 
@@ -344,9 +343,8 @@ fn start(
     (id, receiver)
 }
 
-/// A job owned by its caller's handle: never announced by another session's
-/// follow-up poller and never evicted, so only [`Jobs::release`] retires it.
-/// Returns without blocking — the child runs on its own thread.
+/// A job owned by its caller's handle: never announced by another session's poller and never
+/// evicted, so only [`Jobs::release`] retires it. Returns at once; the child has a thread.
 pub fn spawn_job(
     shell_command: &str,
     cwd: &Path,
@@ -356,9 +354,8 @@ pub fn spawn_job(
     start(shell_command, cwd, cancelled, sandbox, Reaper::Handle).0
 }
 
-/// A command outliving `auto_background` keeps running as a job instead of
-/// holding the turn. `None`, the default, disables it: silently detaching is
-/// its own kind of surprise.
+/// A command outliving `auto_background` keeps running as a job instead of holding the turn.
+/// `None`, the default, disables it: silently detaching is its own kind of surprise.
 pub fn run_or_background(
     shell_command: &str,
     cwd: &Path,

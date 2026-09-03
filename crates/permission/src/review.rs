@@ -7,9 +7,8 @@ use yi_types::permission::RuleKind;
 /// session forgets its oldest answers rather than refusing new ones.
 pub const LEDGER_CAP: usize = 256;
 
-/// Invariant: this is the digest of the same canonical string the session
-/// rules key on, so a mutated argument, path, command or cwd is a different
-/// action and can never reuse an answer given about the original.
+/// Invariant: the digest of the same canonical string the session rules key on, so a mutated
+/// argument, path, command or cwd is a different action and cannot reuse its answer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ActionId([u8; 32]);
 
@@ -106,9 +105,8 @@ impl ActionLedger {
             .map(|entry| (entry.request, entry.state))
     }
 
-    /// Idempotent by action: re-issuing an identical denied call returns the
-    /// request that already exists, so a retry loop cannot spend a second
-    /// review or open a second question for the user.
+    /// Idempotent by action: an identical denied call returns the request that exists, so a
+    /// retry loop cannot spend a second review or open a second question.
     pub fn open(&mut self, action: ActionId, ask: ReviewedAsk) -> RequestId {
         if let Some(entry) = self.entries.iter().find(|entry| entry.action == action) {
             return entry.request;
@@ -164,9 +162,8 @@ impl ActionLedger {
         true
     }
 
-    /// Single use: an approval is spent by the first identical call, so one
-    /// yes never becomes a standing grant. `allow always` goes to the session
-    /// rules instead, which is where a standing grant belongs.
+    /// Single use: an approval is spent by the first identical call, so one yes never becomes
+    /// a standing grant. `allow always` goes to the session rules, where those belong.
     pub fn take_approval(&mut self, action: ActionId) -> bool {
         let Some(position) = self
             .entries

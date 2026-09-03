@@ -6,9 +6,8 @@ fn valid_source(source: &str) -> bool {
         && chars.all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '_')
 }
 
-/// The wrapper makes an injected prompt data-with-provenance to the model and
-/// droppable at compaction, so injected context never accumulates across
-/// windows. Invalid source labels fall back to `internal`.
+/// The wrapper makes an injected prompt data-with-provenance and droppable at compaction, so
+/// it never accumulates across windows. Invalid source labels fall back to `internal`.
 pub fn wrap_internal(source: &str, text: &str, timestamp: u64) -> AgentMessage {
     let source = if valid_source(source) {
         source
@@ -37,9 +36,8 @@ pub fn internal_source(message: &AgentMessage) -> Option<&str> {
         .then_some(&rest[..end])
 }
 
-/// Custom entry kinds that ride the L4 wrapper: their LLM rendering is
-/// `<yi_internal_context source="…">` and they are dropped at compaction so
-/// injected prompts never accumulate across windows.
+/// Custom entry kinds that ride the L4 wrapper: rendered `<yi_internal_context source="…">`
+/// and dropped at compaction, so injected prompts never accumulate across windows.
 pub fn internal_source_of_custom(custom_type: &str) -> Option<&'static str> {
     match custom_type {
         "heartbeat_prompt" => Some("heartbeat"),

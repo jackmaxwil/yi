@@ -1,10 +1,10 @@
 use std::time::{Duration, Instant};
 
-/// 60 fps ceiling (design U6; codex clamps at 120, OMP at 60 — the inline
-/// viewport repaints a handful of rows, 60 is imperceptible from 120 here).
+/// 60 fps ceiling (design U6): the inline viewport repaints a handful of rows,
+/// so 60 is imperceptible from 120 here.
 pub const MIN_FRAME_INTERVAL: Duration = Duration::from_millis(16);
-/// OMP's adaptive floor cap: a draw that cost c schedules the next no earlier
-/// than start + 2c, capped so a pathological draw cannot freeze the UI.
+/// Adaptive floor cap: a draw costing c schedules the next no earlier than
+/// start + 2c, capped so a pathological draw cannot freeze the UI.
 pub const MAX_FRAME_INTERVAL: Duration = Duration::from_millis(200);
 
 #[derive(Debug, Default)]

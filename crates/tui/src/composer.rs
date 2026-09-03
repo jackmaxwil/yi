@@ -35,9 +35,8 @@ impl Default for Composer {
     }
 }
 
-/// omp `#sanitizePastedText`, verbatim semantics — its code expands tabs to
-/// three spaces despite its four-space comment, and the code is the contract.
-/// NFC normalization is dropped: it needs a Unicode tables dep.
+/// Verbatim paste sanitization: tabs expand to three spaces, as the reference
+/// code does. NFC normalization is dropped — it needs a Unicode tables dep.
 pub fn sanitize_paste(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     let mut chars = text.chars().peekable();
@@ -267,9 +266,8 @@ impl Composer {
         }
     }
 
-    /// omp `#expandPasteMarkers` (verbatim semantics): one pass, so replaced
-    /// content is never rescanned — a pasted body containing another marker's
-    /// label survives verbatim. Longer labels first so `#1` never shadows `#10`.
+    /// One pass, so replaced content is never rescanned and a pasted body
+    /// keeps a marker label. Longer labels first so `#1` never shadows `#10`.
     pub fn expand_markers(&self, text: &str) -> String {
         let mut labels: Vec<(String, &str)> = Vec::new();
         for (id, content) in &self.pastes {

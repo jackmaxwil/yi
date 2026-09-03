@@ -123,9 +123,8 @@ pub fn recorded(store: &yi_session::SharedSession) -> Vec<RecordedCheckpoint> {
         .collect()
 }
 
-/// A turn-end capture is the state undo is standing in, so restoring it would
-/// be a no-op; undo walks back to the turn's start, or to the state a previous
-/// undo replaced (which is what makes the second undo a redo).
+/// A turn-end capture is the state undo stands in, so restoring it is a no-op; undo walks to
+/// the turn's start, or to what a previous undo replaced — which makes the second a redo.
 fn undo_target(store: &yi_session::SharedSession) -> Option<CheckpointData> {
     recorded(store)
         .into_iter()

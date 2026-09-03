@@ -38,18 +38,16 @@ struct Worker {
     stdin: ChildStdin,
 }
 
-/// Per-session routing plus the unseen ledger (in-memory, survives detach
-/// not restart). Attachment is a set: every attached client gets the
-/// fan-out, so one session can be watched from any number of terminals.
+/// Per-session routing plus the unseen ledger (in-memory, survives detach not restart).
+/// Attachment is a set, so one session can be watched from any number of terminals.
 struct SessionEntry {
     root: String,
     attached: std::collections::HashSet<ClientId>,
     unseen: u64,
     last_state: Option<String>,
     last_event_ms: u64,
-    /// Invariant: true only for a row the pre-attach path invented so a
-    /// resume's replay could route; the worker's result confirms it, and an
-    /// unconfirmed row is never listed and dies with its client.
+    /// Invariant: true only for a row the pre-attach path invented so a resume's replay
+    /// could route. The worker's result confirms it; an unconfirmed row dies with its client.
     provisional: bool,
 }
 
@@ -84,9 +82,8 @@ fn now_ms() -> u64 {
         .unwrap_or(0)
 }
 
-/// Routes ACP v2 between clients (unix socket) and one worker per root (`yi
-/// acp` over stdio). Workers outlive client connections, so schedulers keep
-/// firing while nobody is attached.
+/// Routes ACP v2 between clients (unix socket) and one worker per root (`yi acp` over
+/// stdio). Workers outlive client connections, so schedulers fire with nobody attached.
 struct Supervisor {
     options: DaemonOptions,
     workers: HashMap<String, Worker>,
@@ -97,9 +94,8 @@ struct Supervisor {
     requests: HashMap<u64, (ClientId, Value, String)>,
     /// worker-originated request id → root (permission bridge round trip).
     worker_requests: HashMap<String, String>,
-    /// Worker-originated requests that arrived while the session had no
-    /// attached client, flushed on the next attach; without this the
-    /// worker's synchronous asker blocks on an answer nobody ever saw.
+    /// Worker-originated requests that arrived with no attached client, flushed on the next
+    /// attach; without this the worker's synchronous asker blocks on an unseen answer.
     parked: HashMap<String, Vec<Value>>,
     next_request: u64,
     input: mpsc::UnboundedSender<Input>,
@@ -246,9 +242,8 @@ impl Supervisor {
                     }
                     return;
                 }
-                // Attach BEFORE forwarding: a resume's replay notifications
-                // stream ahead of its response, and they must route to this
-                // client rather than land in the unseen ledger.
+                // Attach BEFORE forwarding: a resume's replay notifications stream ahead of
+                // its response and must route here, not into the unseen ledger.
                 if let Some(session_id) = frame
                     .pointer("/params/sessionId")
                     .and_then(Value::as_str)
@@ -406,9 +401,8 @@ impl Supervisor {
         if let Some(id) = frame.get("id").and_then(Value::as_str) {
             self.worker_requests.insert(id.to_owned(), root.clone());
         }
-        // Notifications route to the session's attached client; with no
-        // client attached the frame is dropped but the ledger records that
-        // something happened, so a reattaching console sees unseen work.
+        // With no client attached the frame is dropped but the ledger records that something
+        // happened, so a reattaching console still sees the unseen work.
         let session_id = frame
             .pointer("/params/sessionId")
             .and_then(Value::as_str)
@@ -452,9 +446,8 @@ impl Supervisor {
             }
             return;
         }
-        // Fan out to every watcher; for a worker-originated request the
-        // first answer wins and the stale ids of the rest fall out of
-        // `worker_requests` with it.
+        // Fan out to every watcher; for a worker-originated request the first answer wins
+        // and the stale ids of the rest fall out of `worker_requests` with it.
         let watchers: Vec<ClientId> = entry.attached.iter().copied().collect();
         let line = frame.to_string();
         for client in watchers {

@@ -1,4 +1,4 @@
-default_agents = ["claude", "codex", "pi"]
+default_agents = ["claude", "pi"]
 
 [mcp]
 enabled = false

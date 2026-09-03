@@ -26,21 +26,18 @@ pub struct CommandCapture {
     pub truncated: bool,
 }
 
-/// Kill the shell, then its whole process group: a grandchild that outlives the
-/// shell holds the capture pipes, so [`drain_capped`] — and the interrupted turn —
-/// waits out the very command it cancelled. `kill(1)`, not a `libc` dep (§13.1).
+/// Kill the shell, then its process group: a grandchild outliving the shell holds the capture
+/// pipes, so [`drain_capped`] waits out the cancelled command. `kill(1)`, no `libc` (§13.1).
 fn kill_tree(child: &mut Child) {
-    // Also the guard on the group kill below: `Child::kill` is the only thing
-    // that knows whether the child was reaped, and a reaped pid can already
-    // name somebody else's group.
+    // Also the guard on the group kill below: `Child::kill` alone knows whether the child was
+    // reaped, and a reaped pid can already name somebody else's group.
     if child.kill().is_err() {
         return;
     }
     #[cfg(unix)]
     {
-        // Incident: `--` is load-bearing. BSD kill(1) reads a bare `-<pgid>` as a
-        // negative pid; procps reads it as another signal option and refuses, so
-        // on Linux the group survived and the status here swallowed the error.
+        // Incident: `--` is load-bearing. BSD kill(1) reads a bare `-<pgid>` as a negative
+        // pid, procps as a signal option, so on Linux the group survived silently.
         let _group_kill_best_effort = command("kill")
             .arg("-KILL")
             .arg("--")
@@ -78,9 +75,8 @@ fn drain_capped(mut reader: impl Read, cap: usize, live: Option<&LiveOutput>) ->
     (String::from_utf8_lossy(&buffer).into_owned(), truncated)
 }
 
-/// Incident: waiting under the guard parked the cancel watchdog on the same
-/// lock for the child's whole life, so a command that closed its own pipes
-/// early could not be killed. The guard is released between polls.
+/// Incident: waiting under the guard parked the cancel watchdog on the same lock for the
+/// child's whole life, so an early pipe-closer could not be killed. Released between polls.
 fn wait_polled(child: &Mutex<Child>) -> Result<Option<i32>, String> {
     loop {
         let polled = child

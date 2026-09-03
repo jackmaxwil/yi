@@ -108,9 +108,8 @@ impl Scheduler {
                 while let Some(res) = lanes.try_join_next_with_id() {
                     reap_lane(res, &mut owners, &mut busy);
                 }
-                // Invariant: `JobStore::mutate` wakes with `notify_waiters`,
-                // which stores no permit, so the waiter registers before the
-                // snapshot it is about to act on is read.
+                // Invariant: `JobStore::mutate` wakes with `notify_waiters`, which stores no
+                // permit, so the waiter registers before reading the snapshot it acts on.
                 let mut woken = std::pin::pin!(changed.notified());
                 let _ = woken.as_mut().enable();
                 let now = yi_session::now_ms();

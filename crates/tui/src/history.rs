@@ -5,9 +5,8 @@ use ratatui::text::Line;
 use crate::cell::{Cell, TranscriptMode};
 use crate::colors::Theme;
 
-/// The source a resize rebuild renders from (U36). The bound is the reflow row
-/// cap, not a cell count — cells differ in height by two orders of magnitude —
-/// so a cell drops only once the rows it would render are past that cap.
+/// The source a resize rebuild renders from (U36). The bound is the reflow row cap, not a
+/// cell count, since cells differ in height by two orders of magnitude.
 #[derive(Default)]
 pub struct History {
     cells: VecDeque<Cell>,
@@ -22,9 +21,8 @@ impl History {
         self.cells.is_empty()
     }
 
-    /// Consecutive slices merge back into the message they came from: each
-    /// re-rendered on its own takes a fresh bullet gutter, so a reflowed repaint
-    /// grew one bullet per paragraph where the live paint had one per message.
+    /// Consecutive slices merge back into their message: each re-rendered alone takes a fresh
+    /// bullet gutter, so a reflow grew one bullet per paragraph instead of per message.
     pub fn retain(&mut self, cell: Cell) {
         if let Cell::Assistant { markdown } = &cell
             && let Some(Cell::Assistant { markdown: head }) = self.cells.back_mut()
@@ -32,9 +30,8 @@ impl History {
             head.push_str(markdown);
             return;
         }
-        // Thought merges for the same reason, plus one of its own: `normal`
-        // renders a thought as its line count, and a per-slice count would name
-        // the last paragraph rather than the thought.
+        // Thought merges for the same reason plus one of its own: `normal` renders it as a
+        // line count, and a per-slice count would name the last paragraph, not the thought.
         if let Cell::Thought { markdown } = &cell
             && let Some(Cell::Thought { markdown: head }) = self.cells.back_mut()
         {
@@ -44,9 +41,8 @@ impl History {
         self.cells.push_back(cell);
     }
 
-    /// Newest-first until the row cap is exceeded. The cap is enforced here,
-    /// while rendering from source, never after writing to the terminal: rows the
-    /// terminal will not retain are rows nobody can scroll back to.
+    /// Newest-first until the row cap is exceeded, enforced here while rendering from source:
+    /// rows the terminal will not retain are rows nobody can scroll back to.
     pub fn replay(
         &self,
         width: usize,

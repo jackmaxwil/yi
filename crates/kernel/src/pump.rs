@@ -55,9 +55,8 @@ pub(crate) fn spawn_child_tasks(
                             *exited = true;
                         }
                         inner.exit_notify.notify_waiters();
-                        // The journal record flips inactive only when the kill
-                        // signal was confirmed delivered — a wrong inactive
-                        // write could mask a reused pid (design K8).
+                        // The journal record flips inactive only on a confirmed kill: a wrong
+                        // inactive write could mask a reused pid (design K8).
                         if let Some(pid) = child.id().or_else(|| inner.child_pid.lock().ok().and_then(|slot| *slot))
                             && kill_confirmed {
                                 record_orphan_process_state(pid, false, now_iso());
@@ -184,9 +183,8 @@ pub(crate) fn spawn_iopub_task(
             let Some(decoded) = decode(&frames_of(message)) else {
                 continue;
             };
-            // Comms are dispatched before the parent-header filter: a
-            // detached task's host request must dispatch with no active
-            // execution (design K7).
+            // Comms dispatch before the parent-header filter: a detached task's host request
+            // must dispatch with no active execution (design K7).
             match decoded.header.msg_type.as_str() {
                 "comm_open" | "comm_msg" | "comm_close" => handle_comm(&inner, &decoded),
                 _ => handle_execution_message(&inner, &decoded),
@@ -391,9 +389,8 @@ async fn dispatch_host_request(
         .filter(|value| !value.is_empty())
         .map(str::to_owned)
         .ok_or("host request payload must have a string type")?;
-    // Tag the request with the cell that triggered it. A blocking call is still
-    // the in-flight execution; detached spawns (asyncio.create_task) fire after
-    // the scheduling cell goes idle, so fall back to that last cell's source.
+    // Tag the request with the cell that triggered it: a blocking call is the in-flight
+    // execution, and a detached spawn falls back to the last cell's source.
     let cell_source = inner
         .active
         .lock()

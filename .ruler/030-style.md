@@ -23,8 +23,8 @@ har-supply, har-verify always; the rest by their stated triggers. Enforced highl
   constant or guard, an invariant the type system cannot express, or a schema fact on a
   yi-types public item. Restating a signature, a name, or the next three statements is none of
   these. The test is content, not sigil: /// is allowed wherever a comment is earned and banned
-  where it is not. Three lines per comment, hard — only a license/attribution header may exceed
-  it. No narrative comments, no section banners, no commented-out code. check_comments.py backs
+  where it is not. Two lines per comment, hard — only a license/attribution header may exceed
+  it. If the fact needs three lines, it is two facts or it is narration. No narrative comments, no section banners, no commented-out code. check_comments.py backs
   it: the length cap outright, comment volume outside yi-types as a shrink-only ratchet.
 - Comment referents are typed (D55). A Rust item named in a doc comment is an intra-doc link —
   [`AgentSession::attach_store`], [`crate::tools::ToolAdapter`] — never bare backticks;

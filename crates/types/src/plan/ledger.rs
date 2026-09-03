@@ -5,9 +5,8 @@ use super::doc::{PlanId, TodoLabel, TodoStateName};
 
 pub const PLAN_OP_ENTRY_TYPE: &str = "plan_op";
 
-/// The `custom{plan_op}` entry payload: one applied op, appended to the owning
-/// session. The plan file carries the state and nothing else carries when it
-/// moved, so every duration in the ledger's yield is a difference of `at`.
+/// The `custom{plan_op}` entry payload: one applied op appended to the owning session. The
+/// plan file carries state and nothing else carries when it moved, so durations diff `at`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PlanOpRecord {

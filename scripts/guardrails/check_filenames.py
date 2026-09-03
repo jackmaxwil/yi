@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Bisection is not decomposition. Incident: jcode part_01.rs..part_NN.rs file splits."""
+"""Bisection is not decomposition. Incident: part_01.rs..part_NN.rs file splits."""
 import re, sys, pathlib
 sys.path.insert(0, str(pathlib.Path(__file__).parent))
 from _common import ROOT, src_files, fail

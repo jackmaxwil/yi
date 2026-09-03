@@ -115,9 +115,8 @@ pub fn step(from: &TodoState, op: OpKind) -> Option<TodoStateName> {
         .map(|step| step.to.clone())
 }
 
-/// Invariant: a plan that is not Active admits `view` alone, with one
-/// carve-out — `retry` on a finished plan, the §9 ladder's first rung, which
-/// only a Failed todo satisfies, so completed work cannot be resurrected.
+/// Invariant: a plan that is not Active admits `view` alone, bar `retry` on a finished plan,
+/// the §9 ladder's first rung, which only a Failed todo satisfies.
 pub(super) fn check_plan_state(plan: &Plan, op: OpKind) -> Result<(), PlanOpError> {
     let allowed = match &plan.state {
         PlanState::Active => true,
@@ -180,9 +179,8 @@ pub(super) fn charge_spawn(plan: &mut Plan) -> Result<(), PlanOpError> {
     Ok(())
 }
 
-/// Invariant: a cap is refused and reported, never silently applied — the
-/// saturating counter alone would cap retries by wedging at the same number
-/// forever, so the table refuses before the bump.
+/// Invariant: a cap is refused and reported, never silently applied: a saturating counter
+/// alone would wedge retries at the same number forever, so the table refuses first.
 pub const RETRY_CAP: RetryCount = RetryCount(8);
 
 pub(super) fn charge_retry(

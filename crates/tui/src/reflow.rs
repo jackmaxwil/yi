@@ -1,22 +1,19 @@
 use std::time::{Duration, Instant};
 
-/// U35 (codex `transcript_reflow.rs:18`). Trailing, so dragging a terminal edge
-/// rebuilds scrollback once at the settled width instead of at every
-/// intermediate one.
+/// U35, trailing: dragging a terminal edge rebuilds scrollback once at the
+/// settled width instead of at every intermediate one.
 pub const REFLOW_DEBOUNCE: Duration = Duration::from_millis(75);
 
-/// Per-terminal row caps for a rebuild (U36, codex `resize_reflow_cap.rs`).
-/// These mirror documented scrollback defaults: replaying more rows than the
-/// terminal retains is work nobody can scroll back to see.
+/// Per-terminal row caps for a rebuild (U36), mirroring documented scrollback
+/// defaults: replaying more rows than the terminal retains is invisible work.
 const VSCODE_MAX_ROWS: usize = 1_000;
 const WINDOWS_TERMINAL_MAX_ROWS: usize = 9_001;
 const WEZTERM_MAX_ROWS: usize = 3_500;
 const ALACRITTY_MAX_ROWS: usize = 10_000;
 const FALLBACK_MAX_ROWS: usize = 1_000;
 
-/// codex reads this from `codex_terminal_detection`; that crate is not a §13.3
-/// dependency Yi will take for four constants, so the same two environment
-/// variables are read directly.
+/// A terminal-detection crate is not a §13.3 dependency Yi will take for four
+/// constants, so the same two environment variables are read directly.
 pub fn reflow_max_rows() -> usize {
     let program = std::env::var("TERM_PROGRAM").unwrap_or_default();
     let term = std::env::var("TERM").unwrap_or_default();
@@ -40,9 +37,8 @@ pub struct WidthChange {
     pub initialized: bool,
 }
 
-/// Observed width and rebuilt width are deliberately separate: a terminal can
-/// report an intermediate size during a drag and settle on the final one after
-/// the rebuild ran, so the next draw must be able to ask for one more.
+/// Observed width and rebuilt width are separate: a terminal can report an intermediate size
+/// during a drag and settle after the rebuild, so the next draw must ask for one more.
 #[derive(Debug, Default)]
 pub struct ReflowState {
     last_observed_width: Option<u16>,
@@ -54,9 +50,8 @@ pub struct ReflowState {
 }
 
 impl ReflowState {
-    /// Record the width seen during a draw. The first one initializes without
-    /// scheduling: no old-width transcript has been emitted yet, so treating
-    /// initialization as a resize would make the first draw rebuild for nothing.
+    /// Record the width seen during a draw. The first initializes without scheduling: no
+    /// old-width transcript exists yet, so treating it as a resize rebuilds for nothing.
     pub fn note_width(&mut self, width: u16) -> WidthChange {
         let previous = self.last_observed_width.replace(width);
         if previous.is_none() {
@@ -80,9 +75,8 @@ impl ReflowState {
         self.pending_until = Some(now + REFLOW_DEBOUNCE);
     }
 
-    /// Run at the next opportunity. Used after a stream consolidates, where
-    /// waiting out the debounce would leave terminal-wrapped stream rows in the
-    /// finalized transcript.
+    /// Run at the next opportunity, used after a stream consolidates: waiting out the
+    /// debounce would leave terminal-wrapped stream rows in the finalized transcript.
     pub fn schedule_immediate(&mut self, now: Instant) {
         self.pending_reflow_width = None;
         self.pending_until = Some(now);

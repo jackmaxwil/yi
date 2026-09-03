@@ -1,6 +1,5 @@
-/// Models reach for a name they half-remember — `Bash`, `functions.bash`,
-/// `bash_tool` — with the call otherwise well formed, so a single unambiguous
-/// match saves the turn a wasted round trip.
+/// Models reach for a half-remembered name — `Bash`, `functions.bash`, `bash_tool` — with the
+/// call otherwise well formed, so a single unambiguous match saves a wasted round trip.
 pub fn repair_tool_name<'a>(requested: &str, available: &[&'a str]) -> Option<&'a str> {
     if available.contains(&requested) {
         return None;

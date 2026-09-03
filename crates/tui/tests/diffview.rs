@@ -79,8 +79,8 @@ fn hunks_are_separated_and_a_repeated_number_is_blanked() -> TestResult {
     Ok(())
 }
 
-/// OMP's word highlight: on a one-for-one replacement the eye should land on
-/// the token that moved, not re-read the whole line.
+/// Word highlight: on a one-for-one replacement the eye should land on the
+/// token that moved, not re-read the whole line.
 #[test]
 fn a_one_for_one_replacement_marks_only_the_changed_tokens() -> TestResult {
     let theme = Theme::new(ColorTier::TrueColor, true);

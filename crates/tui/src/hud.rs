@@ -71,8 +71,8 @@ fn card_row(card: &BoardCard, theme: &Theme, spinner_phase: usize) -> Line<'stat
     } else {
         format!("{glyph} {}: {}", card.title, card.detail)
     };
-    // OMP `tools/todo.ts`: the strike sweeps in rather than appearing,
-    // so a completion is visible without a notice row announcing it.
+    // The strike sweeps in rather than appearing, so a completion is visible
+    // without a notice row announcing it.
     if let Some(since) = card.done_ms.filter(|_| card.status == CardStatus::Done)
         && let Some((struck, rest)) = crate::motion::strike_sweep(&text, since)
     {
@@ -84,9 +84,8 @@ fn card_row(card: &BoardCard, theme: &Theme, spinner_phase: usize) -> Line<'stat
     Line::from(Span::styled(text, style))
 }
 
-/// prime-agent `subagent-summary-line.ts`: the shape of the family before its
-/// members — how many are working, waiting, and finished. Zeroes are omitted,
-/// so the header shrinks as the family settles.
+/// The shape of the family before its members: how many are working, waiting
+/// and finished. Zeroes are omitted, so the header shrinks as it settles.
 fn counts_header(cards: &[BoardCard]) -> String {
     let count = |status: CardStatus| cards.iter().filter(|c| c.status == status).count();
     let parts: Vec<String> = [

@@ -19,9 +19,8 @@ pub enum AskOutcome {
     Reject,
 }
 
-/// One approval request. `description` and `patch` are separate so a
-/// structured consumer (ACP C7) sends the patch as content while a text one
-/// renders `text()`, which folds the two the same way for everybody.
+/// One approval request. `description` and `patch` are separate so a structured consumer
+/// (ACP C7) sends the patch as content while a text one renders `text()` over both.
 pub struct PermissionAsk<'a> {
     pub title: &'a str,
     pub description: &'a str,
@@ -162,9 +161,8 @@ impl PermissionBroker {
         self.sandbox.as_ref()
     }
 
-    /// The sandbox is the first attempt, the question is the second: a command
-    /// the sandbox refused is asked about the next time it is run, rather than
-    /// failing the same way forever.
+    /// The sandbox is the first attempt and the question the second: a command the sandbox
+    /// refused is asked about next run, rather than failing the same way forever.
     pub fn note_containment_failure(&self, identity: &str) {
         if let Ok(mut failures) = self.contained_failures.lock() {
             failures.insert(identity.to_owned());
@@ -265,9 +263,8 @@ impl PermissionBroker {
         let workspace = yi_permission::lexical_normalize(&self.cwd);
         let call = ToolCall {
             tool_name,
-            // Invariant: a ledger tool takes no path argument and writes only
-            // inside the configured plans directory, under a lease and an
-            // owner gate, so there is no target for the user to adjudicate.
+            // Invariant: a ledger tool takes no path argument and writes only inside the
+            // plans directory under a lease, so there is no target to adjudicate.
             reads_only: matches!(kind, ToolKind::Read | ToolKind::Ledger),
             irreversible,
             in_workspace: !targets.is_empty()
@@ -390,9 +387,8 @@ impl PermissionBroker {
         if !reviewed.reviewable || self.mode() != PermissionMode::Auto {
             return self.run_ask(ask, tool_call_id, rule_kind, canonical, display);
         }
-        // Invariant: a call the deterministic ladder could not prove is
-        // announced and settled whoever answers it. The TUI's waiting cell and
-        // ACP's RequiresAction read this pair and nothing else.
+        // Invariant: a call the deterministic ladder could not prove is announced and settled
+        // whoever answers. The TUI's waiting cell and ACP's RequiresAction read this pair.
         let _ = self.events.send(AgentEvent::PermissionRequested {
             tool_call_id: tool_call_id.to_owned(),
             title: ask.title.to_owned(),
@@ -433,9 +429,8 @@ impl PermissionBroker {
                     ),
                 );
             }
-            // Idempotent by action: a retry of an identical denied call gets
-            // the same request back, never a second review or a second
-            // question for the user.
+            // Idempotent by action: a retry of an identical denied call gets the same request
+            // back, never a second review or a second question for the user.
             Some((request, ActionState::DeniedPendingUser)) => {
                 let evidence = self.evidence_of(request);
                 return self.denied(canonical, Self::escalation_text(&evidence, request));
@@ -536,9 +531,8 @@ impl PermissionBroker {
         };
         let (sender, receiver) = std::sync::mpsc::channel();
         handle.spawn(async move {
-            // Incident: nothing held the join handle, so a provider that stalled
-            // kept streaming — and billing — long after the timeout below had
-            // already denied the call. The deadline rides the future itself.
+            // Incident: nothing held the join handle, so a stalled provider kept streaming,
+            // and billing, past the denial below. The deadline rides the future itself.
             let outcome = tokio::time::timeout(
                 crate::auto_review::REVIEW_TIMEOUT,
                 reviewer.review(&request),

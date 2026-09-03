@@ -361,7 +361,7 @@ edited (100-never law). Edits, by file:
 
 Then, in each worktree that needs the regenerated instructions:
 `npx @intellectronica/ruler apply`. What moves: the untracked generated
-files for the three `default_agents` (`claude` → CLAUDE.md, `codex` →
+files for the three `default_agents` (`claude` → CLAUDE.md, `the reference` →
 AGENTS.md, `pi` → its agent file) plus the propagated skill directories —
 all untracked/gitignored, so `git status` stays clean and nothing is staged.
 

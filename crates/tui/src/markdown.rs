@@ -15,15 +15,13 @@ pub struct StableStream {
     /// Byte offset: everything before re-renders identically as the source
     /// grows.
     pub cut: usize,
-    /// Set when `cut` sits inside a top-level fence: the fence's opening
-    /// line, prepended when rendering a slice that starts at `cut` so its
-    /// rows still render as code.
+    /// Set when `cut` sits inside a top-level fence: the fence's opening line, prepended when
+    /// rendering a slice that starts at `cut` so its rows still render as code.
     pub reopen: Option<String>,
 }
 
-/// U13 commit gate. Outside a fence only a blank line is stable (paragraphs
-/// re-wrap, lists renumber); inside a top-level fence every completed line
-/// is — matched by marker char and run length; indented fences stay opaque.
+/// U13 commit gate. Outside a fence only a blank line is stable (paragraphs re-wrap, lists
+/// renumber); inside a top-level fence every completed line is. Indented fences stay opaque.
 pub fn stable_stream(source: &str) -> StableStream {
     let mut cut = 0;
     let mut reopen = None;
@@ -133,9 +131,8 @@ impl Builder<'_> {
         self.out.extend(wrap_line(&line, self.width, &indent));
     }
 
-    // The marker is held rather than written so that whichever line opens the
-    // item claims it. Writing it eagerly let the paragraph a loose list wraps
-    // its items in flush the marker alone, one blank line above its own text.
+    // The marker is held, not written, so whichever line opens the item claims it. Written
+    // eagerly, a loose list's wrapping paragraph flushed the marker alone above its text.
     fn line_prologue(&mut self) {
         if !self.spans.is_empty() {
             return;
@@ -173,7 +170,7 @@ impl Builder<'_> {
                 *index = index.saturating_add(1);
                 marker
             }
-            // OMP `md.bullet`, with depth glyphs so nesting reads.
+            // Depth glyphs, so nesting reads.
             _ => match depth {
                 0 => "• ".to_owned(),
                 1 => "◦ ".to_owned(),
@@ -240,8 +237,8 @@ fn reduce_inline<'e>(b: &mut Builder, event: Event<'e>) -> Option<Event<'e>> {
         }
         Event::End(TagEnd::Link) => {
             b.pop_style();
-            // codex appends the destination after the label; a label alone
-            // drops the only information a link carries.
+            // The destination follows the label; a label alone drops the only
+            // information a link carries.
             if let Some(dest) = b.link_dest.take()
                 && !dest.is_empty()
             {
@@ -374,8 +371,8 @@ pub fn render_stream(
             Event::Start(Tag::Heading { level, .. }) => {
                 b.blank();
                 let accent = b.theme.accent;
-                // codex's ladder (`markdown_render.rs:107-125`): the level has
-                // to be legible without the literal `#` marks Yi drops.
+                // The level has to be legible without the literal `#` marks
+                // Yi drops.
                 b.push_style(move |s| match level {
                     HeadingLevel::H1 => s
                         .fg(accent)
@@ -408,8 +405,8 @@ pub fn render_stream(
                     b.flush_line();
                 }
                 b.blank();
-                // OMP gives fenced code a border hook rather than the author's
-                // backticks; only a fence has an opening line a stream reopens.
+                // Fenced code gets a border rather than the author's backticks;
+                // only a fence has an opening line a stream reopens.
                 if let CodeBlockKind::Fenced(lang) = &kind {
                     if !continued {
                         *b.code_lang = crate::highlight::lang_for(lang);

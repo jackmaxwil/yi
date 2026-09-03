@@ -1,6 +1,5 @@
-// thinking-orbs mode painters, port verbatim (A.13): orbits (working),
-// globe/rubik/wave (searching/solving/listening), web (connecting),
-// braid (weaving), ribbon/ring (composing/breathing), morph (shaping).
+// thinking-orbs mode painters, port verbatim (A.13): orbits, globe/rubik/wave, web, braid,
+// ribbon/ring and morph, for working, searching, connecting, weaving, composing, shaping.
 
 use std::f64::consts::PI;
 

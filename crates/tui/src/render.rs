@@ -12,9 +12,8 @@ use crate::term;
 
 const LIVE_TAIL_MIN: usize = 6;
 
-/// A markdown table holds no blank line, so nothing commits until the message
-/// ends and the whole table sits here — a fixed six-row tail cut its head off
-/// mid-stream. Half the screen keeps the viewport off [`crate::terminal::Terminal::insert_before`]'s path.
+/// A markdown table holds no blank line, so nothing commits until the message ends and the
+/// whole table sits here; a fixed six-row tail cut its head off mid-stream.
 pub fn live_tail_rows(rows: usize) -> usize {
     (rows / 2).max(LIVE_TAIL_MIN)
 }
@@ -42,7 +41,7 @@ fn pulse_thought_header(lines: &mut [Line<'static>], spinner_phase: usize) {
     }
 }
 
-/// OMP's sizing: half the terminal, floor 5, less the panel's chrome.
+/// Half the terminal, floor 5, less the panel's chrome.
 fn tree_rows(rows: usize) -> usize {
     (rows / 2).max(5).min(rows.saturating_sub(9)).max(1)
 }
@@ -69,9 +68,8 @@ fn draw_frame<B>(
         let _ = terminal.backend_mut().write_all(osc.as_bytes());
     }
     let commits = std::mem::take(&mut app.pending_commit);
-    // OSC 133 semantic prompt zones (OMP `user-message.ts:25-28`): the shell
-    // integration in Ghostty and iTerm2 uses these to jump between prompts, so
-    // a user turn is navigable in the terminal's own UI.
+    // OSC 133 semantic prompt zones: Ghostty and iTerm2 use these to jump
+    // between prompts, so a user turn is navigable in the terminal's own UI.
     let mark = std::mem::take(&mut app.pending_prompt_mark);
     let mode_changed = app.take_pending_repaint();
     schedule_reflow(app);
@@ -109,9 +107,8 @@ fn draw_frame<B>(
     let content_width = width.saturating_sub(2);
     let mut live_lines: Vec<Line<'static>> = Vec::new();
     if app.live_thought.len() > app.live_thought_cut {
-        // Reasoning-heavy models stream thought long before prose; show its
-        // dim tail so the screen is never silently blank mid-turn. It holds
-        // that place once prose starts, rather than being displaced by it.
+        // Reasoning-heavy models stream thought long before prose, so show its dim tail and
+        // the screen is never silently blank mid-turn; prose does not displace it.
         let tail = app
             .live_thought
             .get(app.live_thought_cut..)
@@ -201,9 +198,8 @@ fn draw_frame<B>(
     };
     let show_working = app.running || matches!(app.bottom, Some(Bottom::Approval(..)));
     let orb_state = app.orb_state();
-    // U34: on a kitty terminal the mark is always on screen — at rest it spells
-    // `Yi`, and it rearranges into the orb for the turn. Elsewhere the plain
-    // spinner line appears only while a turn runs.
+    // U34: on kitty the mark is always on screen, spelling `Yi` at rest and rearranging into
+    // the orb for the turn. Elsewhere the plain spinner line appears only while a turn runs.
     let working: Vec<Line<'static>> = if app.kitty {
         let mut rows: Vec<Line<'static>> = (0..ORB_ROWS).map(|_| Line::default()).collect();
         if let (Some(mid), Some(state)) = (rows.get_mut(1), orb_state) {
@@ -248,9 +244,8 @@ fn draw_frame<B>(
         u16::try_from(lines.len()).unwrap_or(composer_height)
     });
     let rows = |lines: &[Line<'static>]| u16::try_from(lines.len()).unwrap_or(u16::MAX);
-    // Incident: `resize_viewport` clamps to the screen and `put` silently drops
-    // what no longer fits, so an unbudgeted live tail evicted the rows drawn
-    // after it — an 8-row screen lost its status line to the hard floor of 6.
+    // Incident: `resize_viewport` clamps to the screen and `put` drops what no longer fits,
+    // so an unbudgeted live tail cost an 8-row screen its status line to a floor of 6.
 
     // ponytail: one elastic member. If the floor alone outgrows the screen a
     // tall approval still clips; budget the HUD before building a priority order.
@@ -269,9 +264,8 @@ fn draw_frame<B>(
         live_lines = keep_last(live_lines, usize::from(budget));
     }
     let desired = rows(&live_lines).saturating_add(floor);
-    // U36 (D47): the viewport resize touches nothing above itself. Painting one
-    // window of freshly wrapped lines over content the emulator already reflowed
-    // is what left the transcript showing fragments at two widths.
+    // U36 (D47): the viewport resize touches nothing above itself. Painting freshly wrapped
+    // lines over content the emulator already reflowed left fragments at two widths.
     let resized = terminal.resize_viewport(desired, floor).unwrap_or(false);
     if resized || mode_changed {
         terminal.invalidate_viewport();
@@ -292,9 +286,8 @@ fn draw_frame<B>(
             *y += height;
         };
         put(frame, &live_lines, &mut y);
-        // Incident (D46): the mark trails the live tail. U13 makes the viewport's
-        // top row the commit boundary, so a leading mark sat wedged mid-answer and
-        // walked down one paragraph at a time, each move a kitty delete-and-replace.
+        // Incident (D46): the mark trails the live tail. U13 makes the viewport's top row the
+        // commit boundary, so a leading mark walked down a paragraph at a time.
         if show_working || app.kitty {
             if orb_active && y < area.bottom() {
                 orb_at.set(Some((area.left(), y)));
@@ -319,9 +312,8 @@ fn draw_frame<B>(
     app.logo_target = if orb_state.is_some() { 1.0 } else { 0.0 };
 }
 
-/// U35/U36: a width change invalidates every wrapped row in scrollback. Each
-/// event pushes the deadline out, so a drag rebuilds once at the settled width;
-/// the first width observed initializes without scheduling.
+/// U35/U36: a width change invalidates every wrapped row in scrollback. Each event pushes the
+/// deadline out, so a drag rebuilds once at the settled width.
 fn schedule_reflow(app: &mut App) {
     let width = u16::try_from(app.width).unwrap_or(u16::MAX);
     let change = app.reflow.note_width(width);
@@ -340,9 +332,8 @@ fn schedule_reflow(app: &mut App) {
         .schedule_debounced(Some(width), std::time::Instant::now());
 }
 
-/// U36: clear scrollback and the visible screen, then re-emit the retained
-/// transcript at the current width. Row-capped while rendering from source, so
-/// rows the terminal would not retain are never written at all.
+/// U36: clear scrollback and the visible screen, then re-emit the retained transcript at the
+/// current width. Row-capped at render, so rows the terminal would not retain are not written.
 fn run_reflow<B>(
     app: &mut App,
     terminal: &mut crate::terminal::Terminal<B>,
