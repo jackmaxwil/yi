@@ -318,6 +318,46 @@ fn checkpoint_diff_reports_what_changed_between_captures() -> TestResult {
     Ok(())
 }
 
+/// Two handles on one project are two handles on one shadow index, and git
+/// treats `index.lock` as a hard failure rather than a wait. The turn-end
+/// capture is started after the session reports idle, so it is still holding
+/// that index while `/undo` opens its own handle — undo answered
+/// "git add failed: fatal: Unable to create ... index.lock" instead of its
+/// outcome, and the drive gate read that as a frame that never arrived.
+#[test]
+fn checkpoints_on_one_project_serialize_across_handles() -> TestResult {
+    let project = temp_dir("checkpoint-concurrent")?;
+    let shadow = temp_dir("checkpoint-concurrent-shadow")?;
+    // Enough of a tree that `git add --all` is wide enough to overlap; a
+    // two-file project closes the window without proving anything.
+    for index in 0..600 {
+        fs::write(project.0.join(format!("f{index}.txt")), "x".repeat(2048))?;
+    }
+    let failures = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+    let mut workers = Vec::new();
+    for _ in 0..2 {
+        let (shadow, project, failures) =
+            (shadow.0.clone(), project.0.clone(), Arc::clone(&failures));
+        workers.push(std::thread::spawn(move || {
+            for _ in 0..8 {
+                let attempt = yi_tools::Checkpoints::open(&shadow, &project)
+                    .and_then(|checkpoints| checkpoints.capture());
+                if let Err(error) = attempt
+                    && let Ok(mut failures) = failures.lock()
+                {
+                    failures.push(error.to_string());
+                }
+            }
+        }));
+    }
+    for worker in workers {
+        let _joined = worker.join();
+    }
+    let failures = failures.lock().map_err(|error| error.to_string())?;
+    assert!(failures.is_empty(), "captures raced: {failures:?}");
+    Ok(())
+}
+
 #[test]
 fn bash_output_is_reduced_and_recoverable() -> TestResult {
     let dir = temp_dir("reduce-bash")?;
