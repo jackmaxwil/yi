@@ -57,6 +57,7 @@ struct Shared {
     on_turn_start: Mutex<Option<Arc<TurnHook>>>,
     on_turn_end: Mutex<Option<Arc<TurnHook>>>,
     coupling: Mutex<Option<TurnCoupling>>,
+    environment: Mutex<Option<Arc<EnvironmentFn>>>,
 }
 
 pub type PromptChoiceFn =
@@ -76,6 +77,8 @@ pub struct TurnCoupling {
 /// The start hook captures the tree the turn is about to change, the end hook
 /// what it left behind.
 pub type TurnHook = dyn Fn() + Send + Sync;
+
+pub type EnvironmentFn = dyn Fn() -> Option<String> + Send + Sync;
 
 fn persist_message(shared: &Shared, message: &AgentMessage) {
     let store = shared
@@ -148,6 +151,7 @@ impl AgentSession {
                 idle: tokio::sync::Notify::new(),
                 signal: InterruptSignal::default(),
                 on_turn_start: Mutex::new(None),
+                environment: Mutex::new(None),
                 on_turn_end: Mutex::new(None),
                 coupling: Mutex::new(None),
             }),
@@ -215,6 +219,12 @@ impl AgentSession {
         let shared = Arc::clone(&self.shared);
         let fallback = self.config.system_prompt.clone();
         Arc::new(move || assembled_prompt(&shared, &fallback))
+    }
+
+    pub fn set_environment(&self, hook: Arc<EnvironmentFn>) {
+        if let Ok(mut slot) = self.shared.environment.lock() {
+            *slot = Some(hook);
+        }
     }
 
     pub fn set_turn_start_hook(&self, hook: Arc<TurnHook>) {
@@ -758,6 +768,7 @@ impl AgentSession {
                 ));
             }
             wire_queues_and_coupling(&mut config, &shared, &prompt);
+            wire_environment(&mut config, &shared).await;
             let emit_shared = Arc::clone(&shared);
             let emit_compactor = compactor.clone();
             let mut emit = move |event: AgentEvent| {
@@ -878,6 +889,23 @@ impl AgentSession {
     pub fn provider_arc(&self) -> &Arc<ProviderStream> {
         &self.provider
     }
+}
+
+async fn wire_environment(config: &mut LoopConfig, shared: &Arc<Shared>) {
+    let hook = shared.environment.lock().ok().and_then(|slot| slot.clone());
+    let Some(hook) = hook else {
+        return;
+    };
+    let Some(block) = tokio::task::spawn_blocking(move || hook())
+        .await
+        .ok()
+        .flatten()
+    else {
+        return;
+    };
+    config.transform_context = Some(Box::new(move |messages| {
+        Some(crate::environment::append(messages, &block))
+    }));
 }
 
 fn wire_queues_and_coupling(config: &mut LoopConfig, shared: &Arc<Shared>, prompt: &AgentMessage) {
