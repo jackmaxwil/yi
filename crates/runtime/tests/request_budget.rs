@@ -478,3 +478,40 @@ fn report_the_prefix_size() -> TestResult {
     );
     Ok(())
 }
+
+/// The environment block trails the last persisted user block, so the cached prefix a
+/// provider matches is the same with or without it.
+#[test]
+fn the_environment_block_does_not_move_the_cached_prefix() -> TestResult {
+    let env = |turn: u32| {
+        user(&format!(
+            "<environment>\ncwd: /x\nturn: {turn}\n</environment>"
+        ))
+    };
+    let mut first = first_turn();
+    first.push(env(1));
+    let mut second = second_turn();
+    second.push(env(2));
+    let a = build_params(&model(), &context(first), &options());
+    let b = build_params(&model(), &context(second), &options());
+    let strip_env = |params: &Value| -> Result<Value, Box<dyn Error>> {
+        let mut out = params.clone();
+        let messages = out["messages"].as_array_mut().ok_or("messages")?;
+        let last = messages.pop().ok_or("no messages")?;
+        assert!(
+            last["content"][0].get("cache_control").is_none(),
+            "the environment block is never a breakpoint: {last}"
+        );
+        Ok(out)
+    };
+    let (a_prefix, b_prefix) = (strip_env(&a)?, strip_env(&b)?);
+    assert_prefix_survives_a_turn(&a_prefix, &b_prefix)?;
+    let ahead = a_prefix["messages"]
+        .as_array()
+        .and_then(|m| m.last())
+        .and_then(|m| m["content"].as_array())
+        .and_then(|blocks| blocks.last())
+        .ok_or("no block ahead of the environment")?;
+    assert_eq!(ahead["cache_control"]["type"], "ephemeral", "{ahead}");
+    Ok(())
+}

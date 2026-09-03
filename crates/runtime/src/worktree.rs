@@ -14,19 +14,33 @@ pub struct Worktree {
 }
 
 fn git(cwd: &Path, args: &[&str]) -> Result<String, String> {
-    let mut command = yi_tools::command("git");
+    capture(
+        cwd,
+        "git",
+        args,
+        std::time::Duration::from_millis(GIT_TIMEOUT_MS),
+    )
+}
+
+pub(crate) fn capture(
+    cwd: &Path,
+    program: &str,
+    args: &[&str],
+    deadline: std::time::Duration,
+) -> Result<String, String> {
+    let mut command = yi_tools::command(program);
     command.current_dir(cwd).args(args);
     let deadline = std::time::Instant::now()
-        .checked_add(std::time::Duration::from_millis(GIT_TIMEOUT_MS))
+        .checked_add(deadline)
         .unwrap_or_else(std::time::Instant::now);
     let cancelled: yi_tools::CancelFlag = Arc::new(move || std::time::Instant::now() >= deadline);
     let capture = yi_tools::run_captured(command, None, &cancelled, 30_000)
-        .map_err(|error| format!("git {}: {error}", args.join(" ")))?;
+        .map_err(|error| format!("{program} {}: {error}", args.join(" ")))?;
     if capture.exit_code == Some(0) {
         return Ok(capture.stdout);
     }
     Err(format!(
-        "git {} failed:\n{}{}",
+        "{program} {} failed:\n{}{}",
         args.join(" "),
         capture.stdout,
         capture.stderr
