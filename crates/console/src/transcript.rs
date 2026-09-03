@@ -99,6 +99,11 @@ impl Transcript {
         }
     }
 
+    pub fn note(&mut self, text: String) {
+        self.close_streams();
+        self.push(Block::Note { text });
+    }
+
     pub fn is_empty(&self) -> bool {
         self.slots.is_empty()
     }

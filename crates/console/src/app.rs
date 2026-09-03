@@ -7,14 +7,15 @@ use std::time::{Duration, Instant};
 use ratatui::crossterm::event::{Event as CtEvent, KeyCode, KeyEvent, KeyModifiers};
 use ratatui::layout::Direction;
 use serde_json::{Value, json};
-use tui_textarea::TextArea;
+use yi_tui::composer::Composer;
+use yi_tui::popup::{ListPopup, walk_files};
 use yi_types::acp::{AcpPermissionParams, AcpSessionUpdate, AcpUpdateParams};
 
 use crate::client::{ClientEvent, Outbound};
 use crate::keys::{self, Action};
 use crate::layout::{NavDirection, PaneId};
 use crate::model::{
-    ActiveAsk, ConsoleState, Link, Mode, PaneContent, RequestId, SessionId, SessionRow,
+    ActiveAsk, Bottom, ConsoleState, Link, Mode, PaneContent, RequestId, SessionId, SessionRow,
     SessionStatus, Zone, now_ms,
 };
 use crate::notify::{NoteQueue, OscFlavor, escape};
@@ -49,6 +50,7 @@ pub enum RequestKind {
     Tracked(SessionId, Vec<String>),
     KernelExecute,
     KernelCancel,
+    Slash(SessionId),
 }
 
 struct Pending {
@@ -58,7 +60,9 @@ struct Pending {
 
 pub struct App {
     pub state: ConsoleState,
-    pub composer: TextArea<'static>,
+    pub composer: Composer,
+    pub bottom: Option<Bottom>,
+    pub spinner: usize,
     pending: HashMap<RequestId, Pending>,
     next_request: u64,
     next_list_poll: Instant,
@@ -96,7 +100,9 @@ impl App {
     pub fn new(root: String) -> Self {
         Self {
             state: ConsoleState::new(root),
-            composer: fresh_composer(),
+            composer: Composer::default(),
+            bottom: None,
+            spinner: 0,
             pending: HashMap::new(),
             next_request: 0,
             next_list_poll: Instant::now() + LIST_POLL,
@@ -169,6 +175,15 @@ impl App {
         self.tick_animations(now);
         self.tick_notes(now);
         self.check_editors(now);
+        if self.focused_status() == Some(SessionStatus::Working) {
+            self.spinner = self.spinner.wrapping_add(1);
+            self.dirty = true;
+        }
+    }
+
+    fn focused_status(&self) -> Option<SessionStatus> {
+        let id = self.state.focused_session()?;
+        self.state.sessions.get(&id).map(|row| row.status)
     }
 
     fn tick_animations(&mut self, now: Instant) {
@@ -351,6 +366,11 @@ impl App {
             RequestKind::ListDaemon => self.merge_daemon_list(&result),
             RequestKind::Tracked(session, paths) => self.absorb_tracked(&session, &paths, &result),
             RequestKind::KernelExecute | RequestKind::KernelCancel => {}
+            RequestKind::Slash(session) => {
+                if let Some(text) = result.get("text").and_then(Value::as_str) {
+                    self.note_transcript(&session, text);
+                }
+            }
             RequestKind::NewSession(pane_id) => {
                 if let Some(session_id) = result.get("sessionId").and_then(Value::as_str) {
                     let session = SessionId(session_id.to_owned());
@@ -552,10 +572,19 @@ impl App {
                 _ => self.notes.disarm(&id),
             }
         }
-        if let AcpSessionUpdate::UsageUpdate { used, size } = &update.update
-            && self.state.focused_session().as_ref() == Some(&id)
+        if let AcpSessionUpdate::UsageUpdate { used, size } = &update.update {
+            let info = self.state.status.entry(id.clone()).or_default();
+            info.context_used = *used;
+            info.context_window = *size;
+        }
+        if let AcpSessionUpdate::Extension(extension) = &update.update
+            && extension.session_update == "_yi/status"
         {
-            self.state.tokens_used = Some((*used, *size));
+            self.state
+                .status
+                .entry(id.clone())
+                .or_default()
+                .absorb(&extension.fields);
         }
         self.absorb_edit(outbound, &id, &update.update);
         self.absorb_kernel(&id, &update.update);
@@ -707,31 +736,6 @@ impl App {
             RequestKind::KernelCancel,
             "_yi/kernel_cancel",
             json!({"sessionId": session.0, "callId": call_id}),
-        );
-    }
-
-    fn submit_prompt(&mut self, outbound: &Outbound) {
-        if !self.connected() {
-            self.note("not connected — prompt not sent");
-            return;
-        }
-        let Some(focused) = self.state.focused_session() else {
-            self.note("no session in this pane — enter on a sidebar row first");
-            return;
-        };
-        let text = self.composer.lines().join("\n");
-        if text.trim().is_empty() {
-            return;
-        }
-        self.composer = fresh_composer();
-        self.send_request(
-            outbound,
-            RequestKind::Prompt,
-            "session/prompt",
-            json!({
-                "sessionId": focused.0,
-                "prompt": [{"type": "text", "text": text}],
-            }),
         );
     }
 
@@ -907,46 +911,6 @@ impl App {
         self.dirty = true;
     }
 
-    fn cancel_turn(&mut self, outbound: &Outbound) {
-        if self.connected()
-            && let Some(session) = self.state.focused_session()
-        {
-            self.send_request(
-                outbound,
-                RequestKind::Cancel,
-                "session/cancel",
-                json!({"sessionId": session.0}),
-            );
-        }
-    }
-
-    /// Solo's ctrl+c: a draft clears, an idle composer cancels and arms, a second press quits.
-    fn interrupt(&mut self, outbound: &Outbound) {
-        if !self.composer_empty() {
-            self.composer = fresh_composer();
-            self.dirty = true;
-            return;
-        }
-        let now = Instant::now();
-        if self
-            .interrupt_at
-            .is_some_and(|at| now.saturating_duration_since(at) < QUIT_WINDOW)
-        {
-            self.state.quit = true;
-            return;
-        }
-        self.interrupt_at = Some(now);
-        self.cancel_turn(outbound);
-        self.note("interrupted — ctrl+c again quits");
-    }
-
-    fn composer_empty(&self) -> bool {
-        self.composer
-            .lines()
-            .iter()
-            .all(|line| line.trim().is_empty())
-    }
-
     fn split_with_anim(&mut self, direction: Direction) {
         let Some(new_id) = self.state.split_focused(direction) else {
             return;
@@ -1001,7 +965,7 @@ impl App {
             }
             CtEvent::Paste(text) => {
                 if self.state.zone == Zone::Panes && matches!(self.state.mode, Mode::Normal) {
-                    self.composer.insert_str(&text);
+                    self.composer.handle_paste(&text);
                     self.dirty = true;
                 }
             }
@@ -1017,7 +981,14 @@ impl App {
             self.handle_navigator_key(outbound, key);
             return;
         }
-        let composer_empty = self.composer_empty();
+        if self.state.zone == Zone::Panes
+            && !self.on_editor()
+            && !self.on_notebook()
+            && let Some(bottom) = self.bottom.take()
+        {
+            return self.handle_bottom_key(outbound, bottom, key);
+        }
+        let composer_empty = self.composer.is_empty();
         // Invariant: bare approval keys fire only over an empty composer, so
         // mid-prompt typing can never answer a permission by accident.
         if self.state.ask.is_some() && (composer_empty || self.state.zone == Zone::Sidebar) {
@@ -1105,30 +1076,36 @@ impl App {
                     self.dirty = true;
                 }
             },
-            Zone::Panes => match key.code {
-                KeyCode::Enter if !key.modifiers.contains(KeyModifiers::SHIFT) => {
-                    self.submit_prompt(outbound);
+            Zone::Panes => {
+                let plain = !key
+                    .modifiers
+                    .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT);
+                match key.code {
+                    KeyCode::Enter if !key.modifiers.contains(KeyModifiers::SHIFT) => {
+                        self.submit_prompt(outbound);
+                    }
+                    KeyCode::Enter => self.composer.insert_newline(),
+                    KeyCode::Char('/') if plain && self.composer.is_empty() => {
+                        let verbs = chat::CONSOLE_VERBS
+                            .iter()
+                            .map(|verb| (*verb).to_owned())
+                            .collect();
+                        self.bottom = Some(Bottom::Command(ListPopup::new('/', verbs)));
+                    }
+                    KeyCode::Char('@') if plain => {
+                        let files = walk_files(std::path::Path::new(&self.state.root), 100);
+                        self.bottom = Some(Bottom::File(ListPopup::new('@', files)));
+                    }
+                    KeyCode::Backspace if plain => self.composer.backspace(),
+                    _ => self.composer.input(key),
                 }
-                KeyCode::Enter => {
-                    self.composer.insert_newline();
-                    self.dirty = true;
-                }
-                _ => {
-                    let _ = self.composer.input(CtEvent::Key(key));
-                    self.dirty = true;
-                }
-            },
+                self.dirty = true;
+            }
         }
     }
 }
 
-fn fresh_composer() -> TextArea<'static> {
-    let mut composer = TextArea::default();
-    composer.set_cursor_line_style(ratatui::style::Style::default());
-    composer.set_placeholder_text("prompt the focused session — enter sends");
-    composer
-}
-
+mod chat;
 mod diffs;
 mod editor;
 mod mouse;

@@ -1,6 +1,6 @@
 # The workspace over a faux daemon: a new session, a prompt, the notebook and the diff
 # panes by chord, the palette, and the sidebar toggle.
-wait-frame 5000 connected
+wait-frame 5000 no sessions for this root
 cmd-b
 wait-frame 5000 workspaces
 key alt-n
