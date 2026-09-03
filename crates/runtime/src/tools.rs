@@ -76,6 +76,10 @@ fn ipython_note(tool: &str, result: &yi_types::event::ToolResult) -> Option<Stri
     if text.contains("<coroutine object ") {
         return Some(crate::affordance::coroutine_leak());
     }
+    // ponytail: CPython 3.11-3.13 wording; add a second needle if a venv rewords it.
+    if text.contains("can't be used in 'await' expression") {
+        return Some(crate::affordance::method_awaited());
+    }
     (text.contains("AttributeError") && text.contains("RLMSubagent") && text.contains("'name'"))
         .then(crate::affordance::listing_name)
 }
@@ -287,8 +291,7 @@ impl AgentTool for ToolAdapter {
             let output = tokio::task::spawn_blocking(move || tool.execute(args, &context)).await;
             match output {
                 Ok(mut output) => {
-                    // A contained command the sandbox refused asks the next
-                    // time, rather than failing the same way forever.
+                    // A contained command the sandbox refused asks the next time, rather than failing the same way forever.
                     if let Some((broker, identity)) = &contained
                         && yi_tools::denial_hint(
                             exit_of(&output.result),
