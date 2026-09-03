@@ -49,6 +49,7 @@ fn memory_store() -> yi_session::SharedSession {
             id: "goal-test".to_owned(),
             created_at: 0,
             parent_session_id: None,
+            name: None,
         },
     )))
 }

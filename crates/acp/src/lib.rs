@@ -466,6 +466,8 @@ impl AcpState {
                         json!({
                             "sessionId": metadata.id,
                             "attached": self.sessions.contains_key(&metadata.id),
+                            "createdAt": metadata.created_at,
+                            "name": metadata.name,
                         })
                     })
                     .collect();

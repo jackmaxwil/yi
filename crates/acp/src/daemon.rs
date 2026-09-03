@@ -46,6 +46,7 @@ struct SessionEntry {
     unseen: u64,
     last_state: Option<String>,
     last_event_ms: u64,
+    name: Option<String>,
     /// Invariant: true only for a row the pre-attach path invented so a resume's replay
     /// could route. The worker's result confirms it; an unconfirmed row dies with its client.
     provisional: bool,
@@ -66,9 +67,22 @@ impl SessionEntry {
             unseen: 0,
             last_state: None,
             last_event_ms: 0,
+            name: None,
             provisional: false,
         }
     }
+}
+
+fn prompt_title(frame: &Value) -> Option<String> {
+    let text = frame
+        .pointer("/params/prompt")?
+        .as_array()?
+        .iter()
+        .filter(|block| block.get("type").and_then(Value::as_str) == Some("text"))
+        .filter_map(|block| block.get("text").and_then(Value::as_str))
+        .collect::<Vec<_>>()
+        .join(" ");
+    yi_runtime::session_store::session_title(&text)
 }
 
 #[expect(
@@ -288,6 +302,7 @@ impl Supervisor {
                             "unseen": entry.unseen,
                             "lastState": entry.last_state,
                             "lastEventMs": entry.last_event_ms,
+                            "name": entry.name,
                         })
                     })
                     .collect();
@@ -323,6 +338,9 @@ impl Supervisor {
                     && let Some(entry) = self.sessions.get_mut(&session_id)
                 {
                     entry.attached.insert(client);
+                    if entry.name.is_none() && method == "session/prompt" {
+                        entry.name = prompt_title(&frame);
+                    }
                     self.flush_parked(&session_id, client);
                 }
                 self.forward_to_worker(&root, client, id, frame).await;

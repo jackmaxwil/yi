@@ -91,6 +91,7 @@ impl App {
                         hits.sidebar_rows.iter().find(|(row_y, _)| *row_y == y)
                     {
                         self.state.selected = *index;
+                        self.state.cursor_moved = true;
                         self.state.zone = Zone::Sidebar;
                         self.open_selected(outbound);
                     }

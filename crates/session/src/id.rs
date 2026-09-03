@@ -30,6 +30,12 @@ pub fn age_label(elapsed_ms: u64) -> String {
     }
 }
 
+pub fn session_title(text: &str) -> Option<String> {
+    let line = text.lines().map(str::trim).find(|line| !line.is_empty())?;
+    let words: Vec<&str> = line.split_whitespace().collect();
+    Some(words.join(" ").chars().take(48).collect())
+}
+
 pub struct IdGenerator {
     seed: RandomState,
     counter: u64,
