@@ -158,6 +158,10 @@ fn init_reply(frame: &Value) -> Vec<Value> {
 }
 
 fn run(name: &str, fixture: Vec<Step>, script: &str) -> TestResult {
+    run_with(name, fixture, script, false)
+}
+
+fn run_with(name: &str, fixture: Vec<Step>, script: &str, autostart: bool) -> TestResult {
     let socket = scratch_socket(name);
     let server = spawn_fixture(socket.clone(), fixture);
     let steps = parse_script(script)?;
@@ -165,6 +169,7 @@ fn run(name: &str, fixture: Vec<Step>, script: &str) -> TestResult {
         &ConsoleOptions {
             socket,
             root: "/tmp/demo-root".to_owned(),
+            autostart,
         },
         DriveOptions {
             script: steps,
@@ -356,6 +361,7 @@ fn prompt_rejected_while_daemon_unreachable() -> TestResult {
         &ConsoleOptions {
             socket,
             root: "/tmp/demo-root".to_owned(),
+            autostart: false,
         },
         DriveOptions {
             script: steps,
@@ -515,6 +521,7 @@ fn tiny_terminal_survives_splits() -> TestResult {
         &ConsoleOptions {
             socket,
             root: "/tmp/demo-root".to_owned(),
+            autostart: false,
         },
         DriveOptions {
             script: steps,
@@ -787,5 +794,104 @@ fn live_update_invalidates_offset() -> TestResult {
          wait-frame 8000 full replay again\n\
          wait-frame 1000 !streamed since\n\
          quit\n",
+    )
+}
+
+/// ⌘ chords reach the same actions as the ⌥ table once the terminal reports the super
+/// modifier, and the first one flips the hint bar to ⌘ glyphs.
+#[test]
+fn cmd_chords_split_close_and_hide_the_sidebar() -> TestResult {
+    run(
+        "cmd-chords",
+        vec![
+            Step::Expect("initialize", init_reply),
+            Step::Expect("session/list", two_session_list),
+            Step::Expect("session/list", empty_list),
+            Step::Expect("session/resume", resume_alpha),
+            Step::Expect("_yi/seen", seen_ok),
+        ],
+        "wait-frame 5000 s-alpha\n\
+         key enter\n\
+         wait-frame 5000 replayed world\n\
+         wait-frame 3000 ⌥v/⌥s split\n\
+         cmd-d\n\
+         wait-frame 3000 no session\n\
+         wait-frame 3000 ⌘⇧M zoom\n\
+         cmd-x\n\
+         wait-frame 3000 !no session\n\
+         wait-frame 3000 s-beta\n\
+         cmd-b\n\
+         wait-frame 3000 !s-beta\n\
+         cmd-b\n\
+         wait-frame 3000 s-beta\n\
+         quit\n",
+    )
+}
+
+/// ⌘J beside a session opens that session's notebook to the right; ⌘J on it closes it.
+#[test]
+fn cmd_j_toggles_the_notebook_pane() -> TestResult {
+    run(
+        "cmd-notebook",
+        vec![
+            Step::Expect("initialize", init_reply),
+            Step::Expect("session/list", two_session_list),
+            Step::Expect("session/list", empty_list),
+            Step::Expect("session/resume", resume_alpha),
+            Step::Expect("_yi/seen", seen_ok),
+        ],
+        "wait-frame 5000 s-alpha\n\
+         key enter\n\
+         wait-frame 5000 replayed world\n\
+         cmd-j\n\
+         wait-frame 3000 nb:s-alpha\n\
+         wait-frame 3000 no kernel cells yet\n\
+         cmd-j\n\
+         wait-frame 3000 !nb:s-alpha\n\
+         wait-frame 3000 replayed world\n\
+         quit\n",
+    )
+}
+
+fn new_session_reply(frame: &Value) -> Vec<Value> {
+    vec![ok(
+        frame,
+        json!({"sessionId": "s-new", "configOptions": []}),
+    )]
+}
+
+/// Bare `yi` opens a working pane: an empty root gets a fresh session without a keypress.
+#[test]
+fn workspace_autostarts_new_session_when_root_is_empty() -> TestResult {
+    run_with(
+        "autostart-new",
+        vec![
+            Step::Expect("initialize", init_reply),
+            Step::Expect("session/list", empty_list),
+            Step::Expect("session/list", empty_list),
+            Step::Expect("session/new", new_session_reply),
+        ],
+        "wait-frame 5000 s-new\n\
+         wait-frame 3000 workspace ·\n\
+         quit\n",
+        true,
+    )
+}
+
+/// A root with sessions resumes its first one instead of minting another.
+#[test]
+fn workspace_resumes_first_session_when_root_has_one() -> TestResult {
+    run_with(
+        "autostart-resume",
+        vec![
+            Step::Expect("initialize", init_reply),
+            Step::Expect("session/list", two_session_list),
+            Step::Expect("session/list", empty_list),
+            Step::Expect("session/resume", resume_alpha),
+            Step::Expect("_yi/seen", seen_ok),
+        ],
+        "wait-frame 5000 replayed world\n\
+         quit\n",
+        true,
     )
 }

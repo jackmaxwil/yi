@@ -73,7 +73,11 @@ fn split_off_top(area: Rect, height: u16) -> (Rect, Rect) {
 }
 
 pub fn compute_view(app: &mut App, area: Rect, theme: &Theme) -> ViewState {
-    let sidebar_width = if area.width >= 50 { SIDEBAR_WIDTH } else { 0 };
+    let sidebar_width = if area.width >= 50 && !app.state.sidebar_hidden {
+        SIDEBAR_WIDTH
+    } else {
+        0
+    };
     let sidebar = Rect {
         width: sidebar_width,
         ..area
@@ -600,7 +604,10 @@ fn render_status(app: &App, frame: &mut Frame<'_>, area: Rect, theme: &Theme) {
                     .fg(theme.accent)
                     .add_modifier(Modifier::REVERSED),
             ),
-            Span::styled(format!(" {}", keys::hint(true)), theme.dim_style()),
+            Span::styled(
+                format!(" {}", keys::hint(true, app.cmd_hints)),
+                theme.dim_style(),
+            ),
         ];
         frame.render_widget(Paragraph::new(Line::from(spans)), area);
         return;
@@ -645,7 +652,7 @@ fn render_status(app: &App, frame: &mut Frame<'_>, area: Rect, theme: &Theme) {
         ));
     }
     spans.push(Span::styled(
-        format!("  {}", keys::hint(false)),
+        format!("  {}", keys::hint(false, app.cmd_hints)),
         theme.dim_style(),
     ));
     frame.render_widget(Paragraph::new(Line::from(spans)), area);

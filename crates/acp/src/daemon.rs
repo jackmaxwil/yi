@@ -529,8 +529,32 @@ fn spawn_client(stream: UnixStream, client: ClientId, input: mpsc::UnboundedSend
     });
 }
 
+#[expect(
+    clippy::disallowed_methods,
+    reason = "the daemon is the one place the CLI forks itself; the console only connects"
+)]
+pub fn spawn_detached(socket: &std::path::Path, worker_args: &[String]) -> std::io::Result<()> {
+    use std::os::unix::process::CommandExt;
+    let exe = std::env::current_exe()?;
+    std::process::Command::new(exe)
+        .arg("serve")
+        .arg("--socket")
+        .arg(socket)
+        .args(worker_args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .process_group(0)
+        .spawn()
+        .map(drop)
+}
+
 pub fn run_daemon(options: DaemonOptions, runtime: tokio::runtime::Runtime) -> i32 {
     runtime.block_on(async move {
+        if std::os::unix::net::UnixStream::connect(&options.socket).is_ok() {
+            eprintln!("daemon already running at {}", options.socket.display());
+            return 0;
+        }
         let _stale = std::fs::remove_file(&options.socket);
         let listener = match UnixListener::bind(&options.socket) {
             Ok(listener) => listener,

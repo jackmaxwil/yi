@@ -193,6 +193,7 @@ pub struct ConsoleState {
     pub dropped_frames: u64,
     pub tokens_used: Option<(u64, u64)>,
     pub quit: bool,
+    pub sidebar_hidden: bool,
 }
 
 impl ConsoleState {
@@ -219,6 +220,7 @@ impl ConsoleState {
             ask: None,
             status_note: None,
             dropped_frames: 0,
+            sidebar_hidden: false,
             tokens_used: None,
             quit: false,
         }
