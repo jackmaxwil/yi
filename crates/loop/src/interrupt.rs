@@ -46,7 +46,6 @@ impl InterruptSignal {
 pub struct SoftInterrupt {
     pub text: String,
     pub source: String,
-    pub urgent: bool,
 }
 
 #[derive(Debug, Default)]
