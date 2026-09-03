@@ -20,6 +20,11 @@ before claiming any task done; quote failures verbatim, do not paraphrase them.
   `--update` charges the same price before it absorbs a delta, so the baseline update is not a
   way around the memo; the memo's number is checked against the measurement, trailing it by at
   most the free band.
+- A new guardrail script's `--selfcheck` is its own refute pass: each check is disabled in turn
+  and the selfcheck must fail for that check's reason. The 0.119.0 refute pass was run by hand
+  and killed fifteen mutants; the flag is the same pass on every run.
+- Every baseline has a reader (check_orphans.py). A new baseline seeds with its gate in one
+  commit — the carve-out check_commit_style already grants — and goes when its gate goes.
 - A new YI_* env var is a row in scripts/guardrails/baselines/env_vars.json first (hard cap 40).
 - The dist profile is what binary-size and startup budgets measure — never release.
 - No tracking check runs offline. A green `just check` says nothing about whether the work is
