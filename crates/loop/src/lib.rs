@@ -1,4 +1,5 @@
 #![forbid(unsafe_code)]
+#![deny(clippy::string_slice)]
 
 pub mod config;
 pub mod interrupt;
