@@ -23,6 +23,10 @@ impl Frame<'_> {
     pub fn render_widget<W: Widget>(&mut self, widget: W, area: Rect) {
         widget.render(area, self.buffer);
     }
+
+    pub fn buffer_mut(&mut self) -> &mut Buffer {
+        self.buffer
+    }
 }
 
 pub struct Terminal<B: Backend> {

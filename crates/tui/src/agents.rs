@@ -258,7 +258,10 @@ impl crate::app::App {
         let Some(state) = self.tasks.get(child_id) else {
             return;
         };
-        state.session.abort();
+        match &state.session {
+            Some(session) => session.abort(),
+            None => self.pending_stop = Some(child_id.to_owned()),
+        }
         self.commit_cell(&Cell::Notice {
             text: format!("stopped {child_id}"),
         });
