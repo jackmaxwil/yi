@@ -9,6 +9,7 @@
     "mined-0003-subagent-listing-name": "pass",
     "recorded-0000-faux-echo": "pass",
     "recorded-0001-tool-turn": "pass",
+    "recorded-0002-await-method-and-result-schema": "pass",
     "repeated-noop-edit-rejected": "pass"
   }
 }
