@@ -7,7 +7,7 @@ description: Prove a test or gate red for its own reason before claiming it: fix
 
 1. Name the failure a consumer would see. If the fixture you are about to type is not the
    smallest input that produces it in the field, stop: find the session that did
-   (skills/yi/session-mining/extract.py report, fingerprint by tool error) and scrub it with
+   (`python3 skills/yi/session-mining/extract.py`, fingerprint by tool error) and scrub it with
    `evals/record.py <session> --scrub-only --out crates/tui/tests/fixtures/sessions/<id>.jsonl`.
 2. Write the life-sized case over that artifact and the degenerate case by hand (one
    unterminated paragraph, a `30` where a dict is due, a non-ASCII string at a byte index).
@@ -19,7 +19,8 @@ description: Prove a test or gate red for its own reason before claiming it: fix
 6. If the change adds a `Cell` family, name its antecedent in tui_unit.rs's match and write the
    pair test where the dependent finishes first.
 7. For a new gate: disable the gate, not the test, and watch it fail for the gate's reason;
-   a script's `--selfcheck` disables each check in turn.
+   a new guardrail script's `--selfcheck` disables each of its checks in turn and must fail for
+   that check's own reason (check_orphans.py is the shape).
 8. Optional, for a renderer or parser fix: `cargo mutants --in-diff <(git diff main) -p <crate>`
    (user-run, minutes; never in a gate until its wall clock is measured); quote survivors in
    `Seen red`, or kill them.
