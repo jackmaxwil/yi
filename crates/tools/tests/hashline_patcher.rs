@@ -201,7 +201,7 @@ fn read_edit_round_trip_replaces_lines_and_mints_a_new_tag() -> TestResult {
 }
 
 #[test]
-fn stale_tag_rejects_with_the_omp_mismatch_header() -> TestResult {
+fn stale_tag_rejects_with_the_ported_mismatch_header() -> TestResult {
     let fixture = Fixture::new("stale")?;
     fixture.write("a.txt", "one\ntwo\nthree\n")?;
     let tag = fixture.tag_of("a.txt")?;
