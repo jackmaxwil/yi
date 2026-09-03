@@ -29,6 +29,7 @@ struct Args {
     cwd: Option<String>,
     socket: Option<String>,
     headless: bool,
+    solo: bool,
     keys: Option<String>,
     frames: Option<String>,
     record: Option<String>,
@@ -61,6 +62,7 @@ fn parse_args() -> Result<Args, lexopt::Error> {
     let mut cwd = None;
     let mut socket = None;
     let mut headless = false;
+    let mut solo = false;
     let mut keys = None;
     let mut frames = None;
     let mut record = None;
@@ -93,6 +95,7 @@ fn parse_args() -> Result<Args, lexopt::Error> {
             Long("cwd") => cwd = Some(parser.value()?.string()?),
             Long("socket") => socket = Some(parser.value()?.string()?),
             Long("headless") => headless = true,
+            Long("solo") => solo = true,
             Long("keys") => keys = Some(parser.value()?.string()?),
             Long("frames") => frames = Some(parser.value()?.string()?),
             Long("record") => record = Some(parser.value()?.string()?),
@@ -141,6 +144,7 @@ fn parse_args() -> Result<Args, lexopt::Error> {
         cwd,
         socket,
         headless,
+        solo,
         keys,
         frames,
         record,
@@ -974,23 +978,7 @@ fn run_serve_command(args: &Args, version: &str) -> i32 {
         }
     };
     let socket = daemon_socket(args);
-    let mut worker_args = Vec::new();
-    if !args.model.is_empty() {
-        worker_args.push("--model".to_owned());
-        worker_args.push(args.model.clone());
-    }
-    if let Some(dir) = &args.session_dir {
-        worker_args.push("--session-dir".to_owned());
-        worker_args.push(dir.clone());
-    }
-    worker_args.push(
-        match args.mode {
-            yi_runtime::PermissionMode::Yolo => "--yolo",
-            yi_runtime::PermissionMode::Auto => "--auto",
-            yi_runtime::PermissionMode::Ask => "--confirm",
-        }
-        .to_owned(),
-    );
+    let worker_args = shells::serve_flags(args);
     yi_acp::daemon::run_daemon(
         yi_acp::daemon::DaemonOptions {
             socket,
@@ -1124,7 +1112,10 @@ fn main() {
         "" => {
             use std::io::IsTerminal;
             if std::io::stdin().is_terminal() && std::io::stdout().is_terminal() {
-                std::process::exit(run_tui_command(&args, None));
+                if args.solo {
+                    std::process::exit(run_tui_command(&args, None));
+                }
+                std::process::exit(run_console_command(&args));
             }
             println!(
                 "yi {version} (yi [prompt], yi ask, yi sessions, yi stats, yi plan, yi why, yi trust, yi gate, yi fetch, yi rpc, yi acp, yi serve; more surfaces land in later phases)"

@@ -1,5 +1,5 @@
-//! Binding model: direct alt-chords by default, a ctrl+b prefix table as
-//! the fallback for terminals that eat alt. One action vocabulary for both.
+//! Binding model: ⌘ chords where the kitty protocol reports them, alt-chords
+//! everywhere, a ctrl+b prefix table for terminals that eat alt. One vocabulary.
 
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
@@ -26,6 +26,8 @@ pub enum Action {
     PageDown,
     CancelTurn,
     Quit,
+    ToggleSidebar,
+    ToggleNotebook,
 }
 
 /// The prefix key: ctrl+b, held as a one-shot armed state by the caller.
@@ -36,6 +38,9 @@ pub fn is_prefix(key: &KeyEvent) -> bool {
 /// Direct chords — alt everything, so plain typing always reaches the
 /// composer. Digits map tabs.
 pub fn direct(key: &KeyEvent) -> Option<Action> {
+    if key.modifiers.contains(KeyModifiers::SUPER) {
+        return super_chord(key);
+    }
     let alt = key.modifiers.contains(KeyModifiers::ALT);
     if !alt {
         return match key.code {
@@ -49,6 +54,9 @@ pub fn direct(key: &KeyEvent) -> Option<Action> {
         };
     }
     match key.code {
+        KeyCode::Char('j' | 'J') if key.modifiers.contains(KeyModifiers::SHIFT) => {
+            Some(Action::ToggleNotebook)
+        }
         KeyCode::Char('v') => Some(Action::SplitRight),
         KeyCode::Char('s') => Some(Action::SplitDown),
         KeyCode::Char('x') => Some(Action::ClosePane),
@@ -65,6 +73,30 @@ pub fn direct(key: &KeyEvent) -> Option<Action> {
         KeyCode::Char('k') => Some(Action::ScrollUp),
         KeyCode::Char('j') => Some(Action::ScrollDown),
         KeyCode::Char('q') => Some(Action::Quit),
+        KeyCode::Char('b') => Some(Action::ToggleSidebar),
+        KeyCode::Char(digit @ '1'..='9') => {
+            let n = u8::try_from(u32::from(digit).saturating_sub(u32::from('0'))).ok()?;
+            Some(Action::SelectTab(n))
+        }
+        _ => None,
+    }
+}
+
+fn super_chord(key: &KeyEvent) -> Option<Action> {
+    let shift = key.modifiers.contains(KeyModifiers::SHIFT);
+    match key.code {
+        KeyCode::Char('\\') | KeyCode::Char('|') if shift => Some(Action::SplitDown),
+        KeyCode::Char('\\') => Some(Action::SplitRight),
+        KeyCode::Char('d') | KeyCode::Char('D') if shift => Some(Action::SplitDown),
+        KeyCode::Char('d') => Some(Action::SplitRight),
+        KeyCode::Char('x') | KeyCode::Char('w') => Some(Action::ClosePane),
+        KeyCode::Char('m') | KeyCode::Char('M') if shift => Some(Action::Zoom),
+        KeyCode::Char('t') | KeyCode::Char('T') if shift => Some(Action::NewTab),
+        KeyCode::Char('n') | KeyCode::Char('N') if shift => Some(Action::NewSession),
+        KeyCode::Char('p') => Some(Action::Navigator),
+        KeyCode::Char('b') => Some(Action::ToggleSidebar),
+        KeyCode::Char('j') => Some(Action::ToggleNotebook),
+        KeyCode::Char('.') => Some(Action::CancelTurn),
         KeyCode::Char(digit @ '1'..='9') => {
             let n = u8::try_from(u32::from(digit).saturating_sub(u32::from('0'))).ok()?;
             Some(Action::SelectTab(n))
@@ -99,10 +131,12 @@ pub fn prefixed(key: &KeyEvent) -> Option<Action> {
 }
 
 /// The mode-bar hint for the current input state.
-pub fn hint(prefix_armed: bool) -> &'static str {
+pub fn hint(prefix_armed: bool, cmd: bool) -> &'static str {
     if prefix_armed {
         "PREFIX  v split│ s split─ x close z zoom h/j/k/l focus c tab 1..9 tab g nav q quit"
+    } else if cmd {
+        "⌘\\ split  ⌥←→↑↓ focus  ⌘⇧M zoom  ⌘X close  ⌘⇧T/⌘1..9 tabs  ⌘P nav  ⌘⇧N new  ⌘B side  ⌘J notebook"
     } else {
-        "⌥v/⌥s split  ⌥←→↑↓ focus  ⌥z zoom  ⌥x close  ⌥t/⌥1..9 tabs  ⌥/ nav  ⌥n new  ctrl+b prefix"
+        "⌥v/⌥s split  ⌥←→↑↓ focus  ⌥z zoom  ⌥x close  ⌥t/⌥1..9 tabs  ⌥/ nav  ⌥n new  ⌥b side  ctrl+b prefix"
     }
 }
