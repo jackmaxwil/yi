@@ -256,8 +256,9 @@ fn partial_of(event: &yi_types::event::AssistantMessageEvent) -> yi_types::messa
 
 /// Replay a recorded session as the event stream the reducer sees live: each
 /// assistant entry re-streamed through `stream_with_deltas`, each tool result
-/// paired with the call it answers. The §10 scrub masks every uuid, so entries
-/// are ordered by the file's own `seq` rather than the parent chain.
+/// paired with the call it answers, and every turn a typed prompt opens is
+/// closed. The §10 scrub masks the ids the branch walk chains through, so
+/// entries are ordered by the file's own `seq` instead.
 #[allow(dead_code, reason = "the shared harness serves several test binaries")]
 pub fn replay_stream(
     app: &mut yi_tui::app::App,
@@ -266,7 +267,7 @@ pub fn replay_stream(
     use serde_json::Value;
     use std::collections::VecDeque;
     use yi_types::event::{AgentEvent, ToolResult};
-    use yi_types::message::{AgentMessage, Content};
+    use yi_types::message::{AgentMessage, Attribution, Content};
 
     let text = std::fs::read_to_string(path)?;
     let mut entries: Vec<(u64, AgentMessage)> = Vec::new();
@@ -291,12 +292,23 @@ pub fn replay_stream(
     entries.sort_by_key(|(seq, _)| *seq);
 
     let mut calls: VecDeque<(String, Value)> = VecDeque::new();
-    app.reduce_agent(AgentEvent::AgentStart);
+    let mut turn_open = false;
     for (_, message) in entries {
         match &message {
-            AgentMessage::User { .. } => app.reduce_agent(AgentEvent::MessageStart {
-                message: message.clone(),
-            }),
+            AgentMessage::User { .. } => {
+                if message.attribution() == Attribution::User {
+                    if turn_open {
+                        app.reduce_agent(AgentEvent::AgentEnd {
+                            messages: Vec::new(),
+                        });
+                    }
+                    app.reduce_agent(AgentEvent::AgentStart);
+                    turn_open = true;
+                }
+                app.reduce_agent(AgentEvent::MessageStart {
+                    message: message.clone(),
+                });
+            }
             AgentMessage::Assistant { content, .. } => {
                 app.reduce_agent(AgentEvent::MessageStart {
                     message: message.clone(),
@@ -350,6 +362,11 @@ pub fn replay_stream(
             | AgentMessage::BranchSummary { .. }
             | AgentMessage::CompactionSummary { .. } => {}
         }
+    }
+    if turn_open {
+        app.reduce_agent(AgentEvent::AgentEnd {
+            messages: Vec::new(),
+        });
     }
     Ok(())
 }
