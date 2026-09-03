@@ -220,6 +220,7 @@ impl SubagentHost {
             && let Some(record) = children.get_mut(&key)
         {
             record.pending = record.pending.saturating_add(1);
+            record.replied = true;
         }
         (self.options.report)(agent_message(from, text));
     }
@@ -362,10 +363,14 @@ impl SubagentHost {
         };
         let json = serde_json::from_str::<Value>(text.trim()).ok();
         if let Some(schema) = schema {
-            let value = json
-                .clone()
-                .ok_or_else(|| format!("child \"{target}\" did not answer with JSON:\n{text}"))?;
-            crate::schema::Schema::from_value(schema.clone())
+            let schema = crate::schema::Schema::from_value(schema.clone())
+                .map_err(|error| format!("child \"{target}\" schema rejected: {error}"))?;
+            let value = json.clone().ok_or_else(|| {
+                format!(
+                    "child \"{target}\" answered with text, not JSON, and a schema was given so JSON is required:\n{text}"
+                )
+            })?;
+            schema
                 .validate(&value)
                 .map_err(|error| format!("child \"{target}\" result rejected: {error}"))?;
         }

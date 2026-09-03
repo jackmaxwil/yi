@@ -50,8 +50,8 @@ fn overflow_cut(
 }
 
 impl App {
-    /// Thought commits on prose's stable-cut boundaries. The live region keeps a half-screen
-    /// tail, so an uncommitted slice is lost, and committing here orders thought before prose.
+    /// Invariant: thought commits on its own stable cuts and whole before any prose commits
+    /// (`commit_prose` flushes it), so reasoning never lands under its answer.
     pub(super) fn commit_stable_thought(&mut self) {
         // `normal` renders a whole thought as one line of count; slicing it
         // would print that line once per paragraph.
@@ -61,11 +61,8 @@ impl App {
         // A cut inside a fence is prose's business: thought has no reopen to
         // carry, so a fenced block commits whole or not at all.
         let stream = crate::markdown::stable_stream(&self.live_thought);
-        let stable = if stream.reopen.is_some() {
-            0
-        } else {
-            stream.cut
-        };
+        let fenced = stream.reopen.is_some();
+        let stable = if fenced { 0 } else { stream.cut };
         let mut cut = stable.max(self.live_thought_cut);
         let (width, theme) = (self.content_width(), self.theme);
         let forced = overflow_cut(
@@ -78,36 +75,36 @@ impl App {
             },
         );
         cut += forced.unwrap_or(0);
-        if cut <= self.live_thought_cut {
-            return;
+        if cut > self.live_thought_cut {
+            self.commit_thought_to(cut);
         }
+    }
+
+    /// Reads `live_thought_cut` for the label, so the cut moves last.
+    fn commit_thought_to(&mut self, cut: usize) {
         let slice = self
             .live_thought
             .get(self.live_thought_cut..cut)
             .unwrap_or_default()
             .to_owned();
-        self.commit_thought_slice(&slice);
+        if !slice.trim().is_empty() {
+            let lines = crate::cell::thought_lines(
+                &slice,
+                self.content_width(),
+                &self.theme,
+                self.mode,
+                self.live_thought_cut == 0,
+            );
+            self.last_commit_rows = lines.len();
+            self.pending_commit.extend(lines);
+            self.retain(Cell::Thought { markdown: slice });
+            self.scheduler.request();
+        }
         self.live_thought_cut = cut;
     }
 
-    /// Reads `live_thought_cut` for the label, so it runs before the cut moves.
-    pub(super) fn commit_thought_slice(&mut self, slice: &str) {
-        if slice.trim().is_empty() {
-            return;
-        }
-        let lines = crate::cell::thought_lines(
-            slice,
-            self.content_width(),
-            &self.theme,
-            self.mode,
-            self.live_thought_cut == 0,
-        );
-        self.last_commit_rows = lines.len();
-        self.pending_commit.extend(lines);
-        self.retain(Cell::Thought {
-            markdown: slice.to_owned(),
-        });
-        self.scheduler.request();
+    pub(super) fn flush_thought(&mut self) {
+        self.commit_thought_to(self.live_thought.len());
     }
 
     /// U13: each newly stable slice renders standalone against a byte cursor. Re-rendering
@@ -132,10 +129,11 @@ impl App {
 
     /// `spaced` is false for a forced cut: inside a paragraph a blank line reads as a break
     /// the text does not have — unless it opens the block, which is a break and needs air.
-    fn commit_prose(&mut self, cut: usize, spaced: bool) {
+    pub(super) fn commit_prose(&mut self, cut: usize, spaced: bool) {
         if cut <= self.live_cut {
             return;
         }
+        self.flush_thought();
         let slice = self
             .live_markdown
             .get(self.live_cut..cut)

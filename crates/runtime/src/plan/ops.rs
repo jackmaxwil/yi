@@ -294,6 +294,7 @@ fn validate_product(
         serde_json::from_str(document).map_err(|error| unusable(error.to_string()))?;
     let value = crate::schema::extract(product).map_err(mismatch)?;
     crate::schema::Schema::from_value(document)
+        .map_err(unusable)?
         .validate(&value)
         .map_err(mismatch)
 }

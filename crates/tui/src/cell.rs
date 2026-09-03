@@ -611,8 +611,7 @@ impl Cell {
                 let mut out = vec![Line::default()];
                 let width = width.saturating_sub(USER_BAR.len());
                 for (index, raw) in text.lines().enumerate() {
-                    // The bar carries the block; the caret marks only where it
-                    // starts.
+                    // The bar carries the block; the caret marks only its start.
                     let marker = if index == 0 { " › " } else { "   " };
                     out.extend(wrap_line(
                         &Line::from(vec![
@@ -661,14 +660,16 @@ impl Cell {
                 out.push(Line::default());
                 out
             }
-            Cell::Notice { text } => wrap_line(
-                &Line::from(Span::styled(
-                    format!("  ⚑ {text}"),
-                    Style::default().fg(theme.warning),
-                )),
-                width,
-                "    ",
-            ),
+            Cell::Notice { text } => {
+                let style = Style::default().fg(theme.warning);
+                let rows = format!("  ⚑ {}", text.replace('\n', "\n    "));
+                rows.lines()
+                    .flat_map(|row| {
+                        let line = Line::from(Span::styled(row.to_owned(), style));
+                        wrap_line(&line, width, "    ")
+                    })
+                    .collect()
+            }
             Cell::Divider => {
                 let fill: String = std::iter::repeat_n('─', width.saturating_sub(4)).collect();
                 vec![

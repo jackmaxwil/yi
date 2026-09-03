@@ -9,7 +9,7 @@ use serde_json::{Value, json};
 use yi_runtime::{AgentSession, ChildStatus, ChildUpdate, SubagentHost, session::user_input};
 use yi_types::entry::Entry;
 use yi_types::event::AgentEvent;
-use yi_types::message::{AgentMessage, StopReason};
+use yi_types::message::{AgentMessage, Attribution, StopReason};
 
 use crate::approval::{ApprovalView, AskChoice};
 use crate::cell::{Cell, TaskCell, TaskStatus, ToolCell, ToolStatus, TranscriptMode};
@@ -130,7 +130,7 @@ pub struct App {
     tool_started: HashMap<String, Instant>,
     pub(crate) tasks: HashMap<String, TaskState>,
     pub(crate) task_order: Vec<String>,
-    committed_tasks: HashSet<String>,
+    pub(crate) committed_tasks: HashSet<String>,
     pub(crate) steering: Vec<String>,
     pub(crate) running: bool,
     pub(crate) intent: Option<String>,
@@ -486,23 +486,32 @@ impl App {
                 self.steering.clear();
                 self.live_tools.clear();
                 self.flush_explored();
+                self.commit_finished_tasks();
                 self.scheduler.request();
             }
-            AgentEvent::MessageStart {
-                message: AgentMessage::User { content, .. },
-            } => {
+            AgentEvent::MessageStart { message } => {
+                let attribution = message.attribution();
+                let AgentMessage::User { content, .. } = message else {
+                    return;
+                };
                 let text = user_text(&content);
-                if self.user_turns > 0 {
-                    self.commit_cell(&Cell::Divider);
+                match attribution {
+                    Attribution::Unproven => self.commit_cell(&Cell::Notice { text }),
+                    Attribution::User => {
+                        if self.user_turns > 0 {
+                            self.commit_cell(&Cell::Divider);
+                        }
+                        self.user_turns += 1;
+                        let mut focus = text.split_whitespace().collect::<Vec<_>>().join(" ");
+                        if focus.chars().count() > 40 {
+                            focus = focus.chars().take(39).collect::<String>() + "…";
+                        }
+                        if !focus.is_empty() {
+                            self.pending_title = Some(format!("Yi — {focus}"));
+                        }
+                        self.commit_cell(&Cell::User { text });
+                    }
                 }
-                self.user_turns += 1;
-                let focus: String = text.split_whitespace().collect::<Vec<_>>().join(" ");
-                let focus: String = focus.chars().take(40).collect();
-                if !focus.is_empty() {
-                    self.pending_title = Some(format!("Yi — {focus}"));
-                }
-                let cell = Cell::User { text };
-                self.commit_cell(&cell);
             }
             AgentEvent::MessageUpdate {
                 message: AgentMessage::Assistant { content, .. },
@@ -588,6 +597,7 @@ impl App {
                 cell.preview = preview_lines(&text);
                 cell.details = result.details.clone();
                 self.commit_cell(&Cell::Tool(cell));
+                self.commit_finished_tasks();
                 self.intent = None;
             }
             // The waiting call is coloured, not only the prompt, so the row
@@ -613,32 +623,11 @@ impl App {
             } => {
                 self.cost_total += usage.cost.total.as_f64().unwrap_or(0.0);
                 self.cost_unknown |= usage.unknown;
-                let thought = thinking_of(content);
-                let rest = thought
-                    .get(self.live_thought_cut..)
-                    .unwrap_or_default()
-                    .to_owned();
-                self.commit_thought_slice(&rest);
-                let text = text_of(content);
-                if !text.is_empty() {
-                    let remainder = text.get(self.live_cut..).unwrap_or_default().to_owned();
-                    let first = self.live_cut == 0;
-                    let rendered = crate::transcript::paint_slice(self, &remainder).0;
-                    if !rendered.is_empty() {
-                        if self.live_reopen.is_none() {
-                            self.pending_commit.push(Line::default());
-                        }
-                        self.pending_commit.extend(crate::cell::gutter(
-                            rendered,
-                            first,
-                            &self.theme,
-                        ));
-                        self.retain(Cell::Assistant {
-                            markdown: remainder,
-                        });
-                    }
-                    self.scheduler.request();
-                }
+                self.live_thought = thinking_of(content);
+                self.flush_thought();
+                self.live_markdown = text_of(content);
+                self.commit_prose(self.live_markdown.len(), true);
+                self.scheduler.request();
                 self.live_markdown.clear();
                 self.live_thought.clear();
                 self.live_cut = 0;
@@ -693,12 +682,9 @@ impl App {
         match event {
             AgentEvent::MessageStart {
                 message: AgentMessage::User { content, .. },
-            } => {
-                let cell = Cell::User {
-                    text: user_text(&content),
-                };
-                self.commit_cell(&cell);
-            }
+            } => self.commit_cell(&Cell::User {
+                text: user_text(&content),
+            }),
             AgentEvent::MessageEnd { message } => self.reduce_message_end(&message),
             AgentEvent::ToolExecutionEnd {
                 tool_name,
@@ -760,7 +746,8 @@ impl App {
         }
     }
 
-    /// Invariant: the sole source of a child's status and counters.
+    /// Invariant: the sole source of a child's status and counters; a task cell
+    /// commits after the tool cell it was born under, never before.
     pub fn reduce_child_update(&mut self, update: &ChildUpdate) {
         let id = update.id.as_str();
         let Some(state) = self.tasks.get_mut(id) else {
@@ -786,15 +773,22 @@ impl App {
             }
             self.scheduler.request();
         }
-        if status != TaskStatus::Running && !self.committed_tasks.contains(id) {
-            self.committed_tasks.insert(id.to_owned());
-            let cell = self
-                .tasks
-                .get(id)
-                .map(|state| Cell::Task(state.cell.clone()));
-            if let Some(cell) = cell {
-                self.commit_cell(&cell);
+        self.commit_finished_tasks();
+    }
+
+    fn commit_finished_tasks(&mut self) {
+        let spawning = |tool: &ToolCell| tool.name == "ipython" && tool.status != ToolStatus::Done;
+        if self.live_tools.iter().any(spawning) {
+            return;
+        }
+        for id in self.task_order.clone() {
+            let Some(cell) = self.tasks.get(&id).map(|state| state.cell.clone()) else {
+                continue;
+            };
+            if cell.status == TaskStatus::Running || !self.committed_tasks.insert(id) {
+                continue;
             }
+            self.commit_cell(&Cell::Task(cell));
         }
     }
 

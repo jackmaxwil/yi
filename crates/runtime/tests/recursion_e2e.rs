@@ -275,7 +275,7 @@ async fn spawn_runs_child_to_completion_with_notice_and_attribution() -> TestRes
     let notices = harness.notices.lock().map_err(|_| "poisoned")?.clone();
     assert_eq!(notices.len(), 1);
     assert!(
-        notices[0].contains("completed without replying")
+        notices[0].contains("sent you no message")
             && notices[0].contains("the answer is forty-two"),
         "terminal notice must carry the answer preview: {}",
         notices[0]
@@ -640,6 +640,62 @@ async fn a_finished_child_hands_back_a_schema_checked_result() -> TestResult {
         harness.host.children_view().len(),
         1,
         "an interrupted child is still on the roster"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_malformed_schema_is_refused_before_the_answer_is_read() -> TestResult {
+    let harness = harness(0, 1, "{\"files\": 3}");
+    harness
+        .host
+        .spawn("count files".to_owned(), kwargs(&[("name", "counter")]))
+        .map_err(|error| error.to_string())?;
+    assert!(wait_for_status_named(&harness, "counter").await);
+
+    assert!(
+        harness
+            .host
+            .result("counter", Some(&json!(30)))
+            .err()
+            .is_some_and(|error| error.contains("schema rejected")),
+        "a schema that is not an object is the caller's error, not the child's"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_child_that_messaged_its_parent_finishes_without_the_silent_note() -> TestResult {
+    let harness = harness(0, 1, "ok");
+    let reply = harness
+        .host
+        .spawn("do it".to_owned(), kwargs(&[("name", "scout")]))
+        .map_err(|error| error.to_string())?;
+    let child_id = reply["rlm_child_id"]
+        .as_str()
+        .ok_or("missing child id")?
+        .to_owned();
+    // The child task cannot run until this test awaits, so the report is in
+    // before the terminal notice is built.
+    yi_runtime::ParentLink {
+        child_name: "scout".to_owned(),
+        host: Arc::downgrade(&harness.host),
+    }
+    .send("parent", "hello", false)
+    .map_err(|error| error.to_string())?;
+
+    assert!(
+        wait_for_status(&harness.host, &child_id, "completed").await,
+        "child must reach completed"
+    );
+    let notices = harness.notices.lock().map_err(|_| "poisoned")?.clone();
+    assert_eq!(notices.len(), 1);
+    assert!(
+        notices[0].contains("finished]")
+            && notices[0].contains("Last answer: ok")
+            && !notices[0].contains("sent you no message"),
+        "a child that reported is not told it stayed silent: {}",
+        notices[0]
     );
     Ok(())
 }

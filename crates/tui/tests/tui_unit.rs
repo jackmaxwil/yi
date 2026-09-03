@@ -292,7 +292,6 @@ fn status_cascade_keeps_path_and_model_when_narrow() -> TestResult {
         subagents: 2,
         context_used: 50_000,
         context_window: 128_000,
-        threshold_pct: Some(80),
         ..StatusInput::default()
     };
     let row = yi_tui::status::render(&input, 40, &theme());
@@ -310,7 +309,6 @@ fn status_context_segment_is_compact() -> TestResult {
         session_name: "s".to_owned(),
         context_used: 64_000,
         context_window: 128_000,
-        threshold_pct: Some(80),
         ..StatusInput::default()
     };
     let row = yi_tui::status::render(&input, 80, &theme());
@@ -1402,6 +1400,17 @@ fn verbose_grep_prints_each_path_once() -> TestResult {
 /// `finish` false stops before `MessageEnd`, which is where a turn commits
 /// whatever it was still holding — the one place mid-stream loss is visible.
 fn streamed_thought(thought: &str, prose: &str, finish: bool) -> yi_tui::app::App {
+    streamed_thought_in(TranscriptMode::Thinking, thought, prose, finish)
+}
+
+/// The same stream under `mode`, reached by cycling from the default the way a
+/// reader does, so the mode-specific commit paths are the ones exercised.
+fn streamed_thought_in(
+    mode: TranscriptMode,
+    thought: &str,
+    prose: &str,
+    finish: bool,
+) -> yi_tui::app::App {
     use yi_tui::app::{App, TuiOptions};
     use yi_tui::keymap::default_keymap;
     let mut app = App::new(
@@ -1418,6 +1427,9 @@ fn streamed_thought(thought: &str, prose: &str, finish: bool) -> yi_tui::app::Ap
         default_keymap(),
         80,
     );
+    while app.mode() != mode {
+        app.cycle_mode();
+    }
     let message = |thinking: &str, text: &str| {
         let mut content = vec![yi_runtime::faux::faux_thinking(thinking)];
         if !text.is_empty() {
@@ -1491,6 +1503,94 @@ fn a_long_thought_reaches_scrollback_and_outlives_the_prose_that_follows() -> Te
     Ok(())
 }
 
+/// The default shape a model produces: one short paragraph with no newline, so
+/// no stable cut ever fires for it. Two prose paragraphs make the answer's own
+/// first paragraph commit mid-stream — a thought that waits for `MessageEnd`
+/// lands under the answer it preceded.
+#[test]
+fn a_short_unterminated_thought_still_lands_above_the_answer() -> TestResult {
+    let mut app = streamed_thought("I should just say ok.", "ok.\n\nThat is all.\n", true);
+    let committed: Vec<String> = app.take_commits().iter().map(flat).collect();
+    let label = committed
+        .iter()
+        .position(|line| line.contains("\u{2234} thinking"))
+        .ok_or("no thinking label")?;
+    let answer = committed
+        .iter()
+        .position(|line| line.contains("ok."))
+        .ok_or("no prose")?;
+    assert!(
+        label < answer,
+        "a one-line thought lands above the prose it preceded: {committed:?}"
+    );
+    assert_eq!(
+        committed
+            .iter()
+            .filter(|line| line.contains("\u{2234} thinking"))
+            .count(),
+        1,
+        "one label: {committed:?}"
+    );
+    Ok(())
+}
+
+/// `normal` never commits a thought on its own cuts, so the whole of it used to
+/// wait for `MessageEnd` — and its count row followed the answer.
+#[test]
+fn a_short_unterminated_thought_still_lands_above_the_answer_in_normal_mode() -> TestResult {
+    let mut app = streamed_thought_in(
+        TranscriptMode::Normal,
+        "I should just say ok.",
+        "ok.\n\nThat is all.\n",
+        true,
+    );
+    let committed: Vec<String> = app.take_commits().iter().map(flat).collect();
+    let label = committed
+        .iter()
+        .position(|line| line.contains("\u{2234} thinking \u{b7} 1 lines"))
+        .ok_or_else(|| format!("no one-line count row: {committed:?}"))?;
+    let answer = committed
+        .iter()
+        .position(|line| line.contains("ok."))
+        .ok_or("no prose")?;
+    assert!(
+        label < answer,
+        "the count row lands above the prose it preceded: {committed:?}"
+    );
+    Ok(())
+}
+
+/// M3 (D107): every `Cell` family that commits to scrollback names the pair
+/// test where its dependent finishes first, or says it has none. The match is
+/// exhaustive, so a new variant fails to compile until it does.
+fn antecedent(cell: &Cell) -> Option<&'static str> {
+    match cell {
+        Cell::Assistant { .. } => Some("a_short_unterminated_thought_still_lands_above_the_answer"),
+        Cell::Task(_) => Some("a_child_that_finishes_inside_its_spawning_cell_lands_under_it"),
+        Cell::User { .. }
+        | Cell::Thought { .. }
+        | Cell::Tool(_)
+        | Cell::Explored(_)
+        | Cell::Advisory { .. }
+        | Cell::Notice { .. }
+        | Cell::Rule { .. }
+        | Cell::Divider => None,
+    }
+}
+
+#[test]
+fn every_cell_family_names_its_antecedent() -> TestResult {
+    let prose = Cell::Assistant {
+        markdown: String::new(),
+    };
+    assert!(
+        antecedent(&prose).is_some_and(|name| name.contains("thought")),
+        "prose depends on the thought before it"
+    );
+    assert_eq!(antecedent(&Cell::Divider), None);
+    Ok(())
+}
+
 #[test]
 fn one_unbroken_paragraph_still_reaches_scrollback() -> TestResult {
     // No blank line anywhere, so `stable_cut` never fires and every row past
@@ -1510,11 +1610,15 @@ fn one_unbroken_paragraph_still_reaches_scrollback() -> TestResult {
             "a forced cut lands on a word boundary: {line:?}"
         );
     }
-    // A body row that does not fill its width is a seam showing through: the
-    // forced cut snaps to the last word of the row it lands on for this reason.
+    // A short body row is a seam showing through, unless it is the thought's own
+    // last row: the forced cut snaps to the last word of the row it lands on.
     let short: Vec<&String> = committed
-        .iter()
-        .filter(|line| line.trim_start().starts_with(char::is_alphabetic))
+        .windows(2)
+        .filter(|pair| {
+            pair.iter()
+                .all(|l| l.trim_start().starts_with(char::is_alphabetic))
+        })
+        .filter_map(|pair| pair.first())
         .filter(|line| line.chars().count() < 60)
         .collect();
     assert!(short.is_empty(), "the seams wrap flush: {short:?}");
