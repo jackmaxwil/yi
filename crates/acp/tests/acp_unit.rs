@@ -340,3 +340,122 @@ fn permission_bridge_writes_the_request_and_maps_the_selected_outcome() -> TestR
     );
     Ok(())
 }
+
+fn tool_result() -> yi_types::event::ToolResult {
+    yi_types::event::ToolResult {
+        content: vec![Content::Text {
+            text: "ok".to_owned(),
+            text_signature: None,
+        }],
+        details: serde_json::json!({"patch": "+x"}),
+        usage: None,
+        added_tool_names: None,
+        terminate: None,
+    }
+}
+
+fn child_update() -> yi_types::subagent::ChildUpdate {
+    yi_types::subagent::ChildUpdate {
+        id: yi_types::subagent::ChildId("sub-abc".to_owned()),
+        name: "sweeper".to_owned(),
+        status: yi_types::subagent::ChildStatus::Running,
+        activity: yi_types::subagent::ChildActivity::Executing,
+        tool_use_count: 3,
+        token_count: 1200,
+        answer_preview: None,
+        error: None,
+    }
+}
+
+/// One sample per `AgentEvent` variant, so a variant added later fails here first.
+fn every_event() -> Vec<AgentEvent> {
+    let user = AgentMessage::host_user(UserContent::Text("sanity".to_owned()), 0);
+    vec![
+        AgentEvent::AgentStart,
+        AgentEvent::AgentEnd {
+            messages: vec![assistant_partial()],
+        },
+        AgentEvent::TurnStart,
+        AgentEvent::TurnEnd {
+            message: assistant_partial(),
+            tool_results: vec![user.clone()],
+        },
+        AgentEvent::MessageStart {
+            message: user.clone(),
+        },
+        AgentEvent::MessageUpdate {
+            message: assistant_partial(),
+            assistant_message_event: AssistantMessageEvent::TextDelta {
+                content_index: 0,
+                delta: "faux: ".to_owned(),
+                partial: assistant_partial(),
+            },
+        },
+        AgentEvent::MessageEnd {
+            message: assistant_partial(),
+        },
+        AgentEvent::ToolExecutionStart {
+            tool_call_id: "call_1".to_owned(),
+            tool_name: "bash".to_owned(),
+            args: serde_json::json!({"cmd": "ls"}),
+        },
+        AgentEvent::ToolExecutionUpdate {
+            tool_call_id: "call_1".to_owned(),
+            tool_name: "bash".to_owned(),
+            args: serde_json::json!({"cmd": "ls"}),
+            partial_result: tool_result(),
+        },
+        AgentEvent::ToolExecutionEnd {
+            tool_call_id: "call_1".to_owned(),
+            tool_name: "bash".to_owned(),
+            result: tool_result(),
+            is_error: false,
+        },
+        AgentEvent::PermissionRequested {
+            tool_call_id: "call_1".to_owned(),
+            title: "run ls".to_owned(),
+            description: "lists the tree".to_owned(),
+        },
+        AgentEvent::PermissionResolved {
+            tool_call_id: "call_1".to_owned(),
+            allowed: true,
+        },
+        AgentEvent::ChildUpdate {
+            update: child_update(),
+        },
+    ]
+}
+
+/// `_yi/event` carries the runtime event verbatim: what the console decodes is what
+/// solo's reducer would have received in-process, for every variant.
+#[test]
+fn yi_event_round_trips_every_variant() -> TestResult {
+    let child = yi_types::subagent::ChildId("sub-1".to_owned());
+    for (n, event) in every_event().into_iter().enumerate() {
+        let seq = u64::try_from(n)?;
+        let update = yi_acp::update::event_update(&event, seq, Some(&child));
+        let wire = serde_json::to_value(yi_types::acp::AcpUpdateParams {
+            session_id: "s".to_owned(),
+            update,
+        })?;
+        let back: yi_types::acp::AcpUpdateParams = serde_json::from_value(wire)?;
+        let AcpSessionUpdate::Extension(extension) = back.update else {
+            return Err("an event update must decode as an extension".into());
+        };
+        assert_eq!(extension.session_update, "_yi/event");
+        assert_eq!(extension.fields["seq"], seq);
+        assert_eq!(extension.fields["childId"], "sub-1");
+        let decoded: AgentEvent = serde_json::from_value(extension.fields["event"].clone())?;
+        assert_eq!(decoded, event, "variant {n} changed across the wire");
+    }
+    let parent = serde_json::to_value(yi_acp::update::event_update(
+        &AgentEvent::AgentStart,
+        0,
+        None,
+    ))?;
+    assert!(
+        parent.get("childId").is_none(),
+        "the parent stream carries no childId key: {parent}"
+    );
+    Ok(())
+}

@@ -3,28 +3,31 @@
 
 pub mod cells;
 pub mod daemon;
+mod forward;
 pub mod update;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::Write;
 use std::path::PathBuf;
+use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, Mutex};
 
 use serde_json::{Value, json};
-use tokio::task::JoinHandle;
+use tokio::task::{JoinHandle, JoinSet};
 use yi_runtime::session_store::{
     CreateOptions, EntryOrder, EntryQuery, JsonlRepo, SessionRepo, SharedSession, lock_session,
 };
-use yi_runtime::{AgentSession, AskOutcome, Asker, available_models, resolve_model};
+use yi_runtime::{AgentSession, AskOutcome, Asker, SubagentHost, available_models, resolve_model};
 use yi_types::acp::{
     AcpConfigOption, AcpErrorResponse, AcpErrorShape, AcpFrame, AcpImplementation,
     AcpInitializeResult, AcpNotification, AcpPermissionOption, AcpPermissionOptionKind,
     AcpPermissionOutcome, AcpResponse, AcpSessionResult, AcpSessionUpdate, AcpUpdateParams,
 };
 use yi_types::event::AgentEvent;
-use yi_types::message::AgentMessage;
+use yi_types::subagent::ChildId;
 
-use crate::update::{IdMap, replay_updates, to_updates};
+use crate::forward::{Forward, Parent, forward_parent, session_name};
+use crate::update::{IdMap, ReplayFrame, extension, replay_update, replay_updates};
 
 pub const PROTOCOL_VERSION: u16 = 2;
 pub const VERSION_MISMATCH_ERROR: &str =
@@ -34,9 +37,10 @@ const INVALID_PARAMS: i64 = -32602;
 const METHOD_NOT_FOUND: i64 = -32601;
 const INTERNAL_ERROR: i64 = -32603;
 
-/// Builds one wired `AgentSession`; the composition root (yi-cli) supplies
-/// this so yi-acp never touches yi-tools/yi-ai/yi-permission directly (§2).
-pub type SessionBuilder = Arc<dyn Fn(Option<Asker>) -> Result<AgentSession, String> + Send + Sync>;
+pub type SessionBuilder =
+    Arc<dyn Fn(Option<Asker>) -> Result<(AgentSession, Arc<SubagentHost>), String> + Send + Sync>;
+
+const REPLAY_CHUNK: usize = 512;
 
 /// Line sink for outgoing frames; injectable so the permission bridge and
 /// mappers are testable without a real stdout.
@@ -150,19 +154,20 @@ pub fn bridge_asker(session_id: String, sink: LineSink, pending: PendingAsks) ->
 }
 
 struct SessionHandle {
-    session: AgentSession,
+    session: Arc<AgentSession>,
+    host: Arc<SubagentHost>,
     forwarder: JoinHandle<()>,
     ledger: Arc<std::sync::Mutex<StatusLedger>>,
 }
 
 #[derive(Default, Clone, Copy)]
-struct StatusLedger {
-    cost: f64,
-    cost_unknown: bool,
-    context_used: u64,
+pub(crate) struct StatusLedger {
+    pub(crate) cost: f64,
+    pub(crate) cost_unknown: bool,
+    pub(crate) context_used: u64,
 }
 
-fn status_update(
+pub(crate) fn status_update(
     session: Option<&AgentSession>,
     ledger: StatusLedger,
     context_window: u64,
@@ -232,7 +237,7 @@ fn undo_text(session: &AgentSession, cwd: &std::path::Path) -> String {
     }
 }
 
-fn update_notification(session_id: &str, update: AcpSessionUpdate) -> Value {
+pub(crate) fn update_notification(session_id: &str, update: AcpSessionUpdate) -> Value {
     json!(AcpNotification {
         jsonrpc: "2.0".to_owned(),
         method: "session/update".to_owned(),
@@ -326,56 +331,40 @@ impl AcpState {
             Arc::clone(&self.sink),
             Arc::clone(&self.pending),
         );
-        let session = (self.build)(Some(asker))?;
+        let (session, host) = (self.build)(Some(asker))?;
         session
             .attach_store(Arc::clone(store))
             .map_err(|error| error.to_string())?;
-        let mut events = session.subscribe();
-        let sink = Arc::clone(&self.sink);
-        let forward_id = session_id.clone();
-        let mut ids = IdMap::new(session.model().context_window);
+        let session = Arc::new(session);
+        let events = session.subscribe();
         let ledger = Arc::new(std::sync::Mutex::new(StatusLedger::default()));
         let context_window = session.model().context_window;
-        sink(&update_notification(
+        (self.sink)(&update_notification(
             &session_id,
             status_update(Some(&session), StatusLedger::default(), context_window),
         ));
-        let status_ledger = Arc::clone(&ledger);
-        let forwarder = tokio::spawn(async move {
-            loop {
-                match events.recv().await {
-                    Ok(event) => {
-                        for update in to_updates(&event, &mut ids) {
-                            sink(&update_notification(&forward_id, update));
-                        }
-                        if let AgentEvent::MessageEnd {
-                            message: AgentMessage::Assistant { usage, .. },
-                        } = &event
-                        {
-                            let snapshot = status_ledger.lock().map(|mut ledger| {
-                                ledger.cost += usage.cost.total.as_f64().unwrap_or(0.0);
-                                ledger.cost_unknown |= usage.unknown;
-                                ledger.context_used =
-                                    u64::try_from(usage.total_tokens).unwrap_or(0);
-                                *ledger
-                            });
-                            if let Ok(snapshot) = snapshot {
-                                sink(&update_notification(
-                                    &forward_id,
-                                    status_update(None, snapshot, context_window),
-                                ));
-                            }
-                        }
-                    }
-                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
-                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
-                }
-            }
-        });
+        let parent = Parent {
+            forward: Forward {
+                session_id: session_id.clone(),
+                child: None,
+                seq: Arc::new(AtomicU64::new(0)),
+                sink: Arc::clone(&self.sink),
+            },
+            session: Arc::clone(&session),
+            host: Arc::clone(&host),
+            ids: IdMap::new(context_window),
+            ledger: Arc::clone(&ledger),
+            context_window,
+            children: JoinSet::new(),
+            seen: HashSet::new(),
+            last_goal: Value::Null,
+        };
+        let forwarder = tokio::spawn(forward_parent(events, parent));
         self.sessions.insert(
             session_id.clone(),
             SessionHandle {
                 session,
+                host,
                 forwarder,
                 ledger,
             },
@@ -440,15 +429,40 @@ impl AcpState {
     }
 
     fn session_result(&self, session_id: &str) -> Value {
-        let options = self
-            .sessions
-            .get(session_id)
+        let handle = self.sessions.get(session_id);
+        let options = handle
             .map(|handle| config_options(&handle.session))
             .unwrap_or_default();
+        let name = handle
+            .and_then(|handle| handle.session.store())
+            .and_then(|store| session_name(&store));
         json!(AcpSessionResult {
             session_id: session_id.to_owned(),
             config_options: options,
+            name,
         })
+    }
+
+    fn emit_config(&self, session_id: &str) {
+        let Some(handle) = self.sessions.get(session_id) else {
+            return;
+        };
+        let update = extension(
+            "_yi/config",
+            [
+                ("configOptions", json!(config_options(&handle.session))),
+                (
+                    "contextWindow",
+                    Value::from(handle.session.model().context_window),
+                ),
+            ],
+        );
+        (self.sink)(&update_notification(session_id, update));
+    }
+
+    fn emit_goal(&self, session_id: &str, goal: &Value) {
+        let update = extension("_yi/goal", [("goal", goal.clone())]);
+        (self.sink)(&update_notification(session_id, update));
     }
 
     fn set_config_option(&mut self, params: &Value) -> Result<Value, (i64, String)> {
@@ -510,6 +524,7 @@ impl AcpState {
             &id,
             status_update(Some(&handle.session), snapshot, context_window),
         ));
+        self.emit_config(&id);
         let result = self.session_result(&id);
         let options = result.get("configOptions").cloned().unwrap_or(Value::Null);
         Ok(json!({"configOptions": options}))
@@ -595,6 +610,7 @@ impl AcpState {
                 if let Some(replay_from) = params.get("replayFrom").filter(|v| !v.is_null()) {
                     let from = replay_from.as_u64().unwrap_or(0);
                     let replayed_to = self.replay(&id, from)?;
+                    self.emit_replay(&id, from, None)?;
                     if let Some(map) = result.as_object_mut() {
                         map.insert("replayedTo".to_owned(), json!(replayed_to));
                     }
@@ -622,6 +638,70 @@ impl AcpState {
             "session/set_config_option" => self.set_config_option(params),
             "_yi/heartbeat" | "_yi/goal" | "_yi/tracked" | "_yi/kernel_execute"
             | "_yi/kernel_cancel" | "_yi/slash" => self.handle_extension(method, params),
+            "_yi/steer" | "_yi/rewind" | "_yi/plan" | "_yi/child_replay" | "_yi/child_abort" => {
+                self.handle_control(method, params)
+            }
+            other => Err((METHOD_NOT_FOUND, format!("unknown method {other}"))),
+        }
+    }
+
+    fn handle_control(&mut self, method: &str, params: &Value) -> Result<Value, (i64, String)> {
+        let (handle, session_id) = self.session(params)?;
+        let text = |key: &str| params.get(key).and_then(Value::as_str).unwrap_or("");
+        match method {
+            "_yi/steer" => {
+                let prompt = yi_runtime::session::user_input(text("text"));
+                handle.session.steer_message(prompt);
+                Ok(json!({}))
+            }
+            "_yi/rewind" => {
+                let rewound = yi_runtime::rewind_to(&handle.session, text("entryId"))
+                    .map_err(|error| (INVALID_PARAMS, error))?;
+                let summarizing = rewound.abandoned.is_some();
+                if let Some(stub) = rewound.abandoned {
+                    let session = Arc::clone(&handle.session);
+                    tokio::spawn(async move {
+                        yi_runtime::summarize_branch(&session, stub).await;
+                    });
+                }
+                self.emit_replay(&session_id, 0, None)?;
+                Ok(json!({
+                    "leafId": rewound.leaf,
+                    "unsent": rewound.unsent,
+                    "summarizing": summarizing,
+                }))
+            }
+            "_yi/plan" => {
+                let service = handle
+                    .session
+                    .plan_service()
+                    .ok_or((INTERNAL_ERROR, "no plan service is attached".to_owned()))?;
+                let plan = service
+                    .read_plan()
+                    .map_err(|error| (INVALID_PARAMS, error.to_string()))?;
+                let subplans = yi_runtime::plan::subplans_of(&plan, service.plans_dir());
+                Ok(json!({"plan": plan, "subplans": subplans}))
+            }
+            "_yi/child_replay" | "_yi/child_abort" => {
+                let child_id = ChildId(text("childId").to_owned());
+                let child = handle
+                    .host
+                    .children_view()
+                    .into_iter()
+                    .find(|child| child.update.id == child_id)
+                    .ok_or((INVALID_PARAMS, format!("unknown child {}", child_id.0)))?;
+                if method == "_yi/child_abort" {
+                    child.session.abort();
+                    return Ok(json!({}));
+                }
+                let store = child
+                    .session
+                    .store()
+                    .ok_or((INTERNAL_ERROR, "the child has no store".to_owned()))?;
+                let context_window = child.session.model().context_window;
+                self.emit_replay_from(&session_id, &store, 0, context_window, Some(&child_id))?;
+                Ok(json!({}))
+            }
             other => Err((METHOD_NOT_FOUND, format!("unknown method {other}"))),
         }
     }
@@ -670,12 +750,20 @@ impl AcpState {
                 let (command, args) = line
                     .split_once(char::is_whitespace)
                     .map_or((line, ""), |(head, rest)| (head, rest.trim()));
+                let before = (handle.session.model().id, handle.session.effort());
                 let reply = match command {
                     "sessions" => self.sessions_text()?,
                     "undo" => undo_text(&handle.session, &self.cwd),
                     other => yi_runtime::slash::run(&handle.session, other, args)
                         .ok_or((INVALID_PARAMS, format!("unknown command: /{other}")))?,
                 };
+                let after = self
+                    .sessions
+                    .get(&session_id)
+                    .map(|handle| (handle.session.model().id, handle.session.effort()));
+                if after.is_some_and(|after| after != before) {
+                    self.emit_config(&session_id);
+                }
                 Ok(json!({"text": reply}))
             }
             "_yi/heartbeat" => {
@@ -721,7 +809,12 @@ impl AcpState {
                     )),
                 };
                 match outcome {
-                    Ok(goal) => Ok(json!({"goal": goal})),
+                    Ok(goal) => {
+                        if text("action") != "get" {
+                            self.emit_goal(&session_id, &goal);
+                        }
+                        Ok(json!({"goal": goal}))
+                    }
                     Err(error) => Err((INVALID_PARAMS, error)),
                 }
             }
@@ -762,6 +855,79 @@ impl AcpState {
             fields,
         });
         (self.sink)(&update_notification(session_id, update));
+    }
+
+    fn emit_replay(
+        &self,
+        session_id: &str,
+        from: u64,
+        child: Option<&ChildId>,
+    ) -> Result<(), (i64, String)> {
+        let Some(handle) = self.sessions.get(session_id) else {
+            return Ok(());
+        };
+        let Some(store) = handle.session.store() else {
+            return Ok(());
+        };
+        let context_window = handle.session.model().context_window;
+        self.emit_replay_from(session_id, &store, from, context_window, child)
+    }
+
+    fn emit_replay_from(
+        &self,
+        session_id: &str,
+        store: &SharedSession,
+        from: u64,
+        context_window: u64,
+        child: Option<&ChildId>,
+    ) -> Result<(), (i64, String)> {
+        let (entries, leaf, goal) = {
+            let session = lock_session(store);
+            let entries = session
+                .find_entries(&EntryQuery {
+                    order: EntryOrder::OldestFirst,
+                    ..EntryQuery::default()
+                })
+                .map_err(|error| (INTERNAL_ERROR, error.to_string()))?;
+            let leaf = session.leaf_id("main").ok().flatten();
+            (entries, leaf, session.goal())
+        };
+        let name = session_name(store);
+        let total = u64::try_from(entries.len()).unwrap_or(u64::MAX);
+        let skip = usize::try_from(from.min(total)).unwrap_or(usize::MAX);
+        let tail = entries.get(skip..).unwrap_or_default();
+        let mut sent = from.min(total);
+        let mut chunks = tail.chunks(REPLAY_CHUNK).peekable();
+        while let Some(chunk) = chunks.next() {
+            let chunk_from = sent;
+            sent = sent.saturating_add(u64::try_from(chunk.len()).unwrap_or(u64::MAX));
+            let last = chunks.peek().is_none();
+            let frame = ReplayFrame {
+                entries: chunk,
+                from: chunk_from,
+                replayed_to: sent,
+                leaf: if last { leaf.as_deref() } else { None },
+                name: name.as_deref(),
+                goal: goal.as_ref(),
+                context_window,
+                child,
+            };
+            (self.sink)(&update_notification(session_id, replay_update(&frame)));
+        }
+        if tail.is_empty() {
+            let frame = ReplayFrame {
+                entries: &[],
+                from: sent,
+                replayed_to: total,
+                leaf: leaf.as_deref(),
+                name: name.as_deref(),
+                goal: goal.as_ref(),
+                context_window,
+                child,
+            };
+            (self.sink)(&update_notification(session_id, replay_update(&frame)));
+        }
+        Ok(())
     }
 
     /// Design C6: the stored branch replayed as `session/update`s. `from` skips entries the

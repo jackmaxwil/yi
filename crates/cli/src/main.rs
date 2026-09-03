@@ -1068,9 +1068,7 @@ fn main() {
                 let runtime_handle = runtime.handle().clone();
                 std::sync::Arc::new(move |asker| {
                     let _guard = runtime_handle.enter();
-                    build_session(&build_args, asker)
-                        .map(|(session, _host)| session)
-                        .map_err(|code| format!("exit code {code}"))
+                    build_session(&build_args, asker).map_err(|code| format!("exit code {code}"))
                 })
             };
             let options = yi_acp::AcpOptions {
