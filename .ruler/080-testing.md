@@ -31,6 +31,9 @@ not add the test.
   before a submitted turn had started was A10, and the frames said so.
 - A drive script waits on the state it depends on, never on a duration: a prompt reaches the
   runtime thread over a channel, so `running` is still false the instant after Enter.
+- The kernel-side Python has its own lane: python/yi_runtime/tests runs in check_guardrails.sh,
+  stdlib unittest over a faked host_request. 1,789 lines had no test because every Rust test
+  called the host directly and routed around the shim.
 
 Tests are tiered by where they run and what they may spend:
 
