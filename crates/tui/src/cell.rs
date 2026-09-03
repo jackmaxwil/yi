@@ -1,11 +1,13 @@
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use serde_json::Value;
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
-use crate::colors::{Theme, name_accent};
+use crate::colors::{ColorTier, Theme, name_accent};
 use crate::diffview::{self, DiffBudget};
 use crate::markdown;
 use crate::wrap::wrap_line;
+use yi_types::subagent::ChildActivity;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TranscriptMode {
@@ -87,7 +89,6 @@ pub enum TaskStatus {
 
 #[derive(Debug, Clone)]
 pub struct TaskCell {
-    pub agent: String,
     pub child_id: String,
     pub description: String,
     pub status: TaskStatus,
@@ -99,6 +100,8 @@ pub struct TaskCell {
     // ponytail: the spawning cell's preview is observed, not plumbed — the `ipython` call
     // running when a child appears made it, and a child born outside one carries None.
     pub spawn: Option<String>,
+    pub answer: Option<String>,
+    pub activity: ChildActivity,
 }
 
 #[derive(Debug, Clone)]
@@ -111,6 +114,7 @@ pub enum Cell {
     Task(TaskCell),
     Advisory { source: String, text: String },
     Notice { text: String },
+    Footer { text: String },
     Rule { text: String, accent_name: String },
     Divider,
 }
@@ -120,7 +124,7 @@ pub const CALLOUT_RAIL: &str = "▌";
 const GUTTER_CONTINUATION: &str = "  ";
 const THOUGHT_INDENT: &str = "  ";
 
-/// Reasoning prose, dim and italic under a `∴ thinking` label. `header` is false past the
+/// Reasoning prose, dim and italic under a `∴` glyph. `header` is false past the
 /// first slice: a thought streams a paragraph at a time, and a label each reads as many.
 pub fn thought_lines(
     markdown: &str,
@@ -130,17 +134,18 @@ pub fn thought_lines(
     header: bool,
 ) -> Vec<Line<'static>> {
     let style = theme.dim_style().add_modifier(Modifier::ITALIC);
+    let glyph = Span::styled("  ∴", style.fg(theme.purple));
     if mode == TranscriptMode::Normal {
         let lines = markdown.lines().count();
-        return vec![Line::from(Span::styled(
-            format!("  ∴ thinking · {lines} lines"),
-            style,
-        ))];
+        return vec![Line::from(vec![
+            glyph,
+            Span::styled(format!(" {lines} lines"), style),
+        ])];
     }
     let mut out = Vec::new();
     if header {
         out.push(Line::default());
-        out.push(Line::from(Span::styled("  ∴ thinking".to_owned(), style)));
+        out.push(Line::from(glyph));
     }
     // Rendered two columns narrow, matching the indent below: at full width every line that
     // filled it wrapped again and shed its last word onto a line of its own.
@@ -244,17 +249,20 @@ fn glyph(tool: &str) -> char {
     }
 }
 
-/// grep prints `path:N:text` for a hit and `path-N-text` for context, so only a hit carries a
-/// `:N:` run. A path holding its own `:N:` overcounts by one; losing context is worse.
-fn is_grep_hit(line: &str) -> bool {
-    line.match_indices(':').any(|(colon, _)| {
-        let rest = line.get(colon.saturating_add(1)..).unwrap_or_default();
-        let digits = rest.chars().take_while(|c| c.is_ascii_digit()).count();
-        digits > 0 && rest.get(digits..).is_some_and(|tail| tail.starts_with(':'))
-    })
+/// A row past three screen lines is generated, not written: two lines and its size.
+fn capped(line: &Line<'static>, width: usize, indent: &str, theme: &Theme) -> Vec<Line<'static>> {
+    let rows = wrap_line(line, width, indent);
+    if rows.len() <= 3 {
+        return rows;
+    }
+    let bytes: usize = line.spans.iter().map(|s| s.content.len()).sum();
+    let mut out: Vec<Line<'static>> = rows.into_iter().take(2).collect();
+    let size = format!("{indent}… {} KB", bytes.div_ceil(1024));
+    out.push(Line::from(Span::styled(size, theme.dim_style())));
+    out
 }
 
-fn count_label(count: usize, noun: &str) -> String {
+pub(crate) fn count_label(count: usize, noun: &str) -> String {
     if count == 1 {
         format!("{count} {noun}")
     } else {
@@ -268,14 +276,7 @@ fn strip_hashline(line: &str) -> &str {
     if line.starts_with('[') {
         return line;
     }
-    match line.split_once(':') {
-        Some((number, text))
-            if !number.is_empty() && number.bytes().all(|b| b.is_ascii_digit()) =>
-        {
-            text
-        }
-        _ => line,
-    }
+    numbered(line).map_or(line, |(_, text)| text)
 }
 
 /// `None` for a line with no number, which is how the hashline header and every
@@ -298,7 +299,7 @@ fn grep_row(line: &str) -> Option<(&str, &str, &str)> {
     Some((path, number, text))
 }
 
-fn elapsed_label(ms: u64) -> String {
+pub(crate) fn elapsed_label(ms: u64) -> String {
     if ms >= 60_000 {
         format!("{}m {}s", ms / 60_000, (ms % 60_000) / 1000)
     } else if ms >= 1000 {
@@ -359,12 +360,17 @@ impl ToolCell {
         if self.elapsed_ms > 0 {
             tail.push_str(&format!(" · {}", elapsed_label(self.elapsed_ms)));
         }
+        let glyph = match self.status {
+            ToolStatus::Done => Style::default().fg(theme.success),
+            ToolStatus::Failed | ToolStatus::Denied => Style::default().fg(theme.error),
+            _ => style,
+        };
         let mut spans = vec![Span::styled(
             format!("  {} ", status_glyph(self.status, spinner_phase)),
-            style,
+            glyph,
         )];
         spans.extend(self.summary_spans(theme, style));
-        spans.push(Span::styled(tail, style));
+        spans.push(Span::styled(tail, theme.dim_style()));
         let mut lines = wrap_line(&Line::from(spans), width, "    ");
         // A failure's body is never mode-gated: a reader who cannot see why a
         // call failed cannot act on it, whatever mode the cell rendered under.
@@ -378,7 +384,7 @@ impl ToolCell {
             let mut spans = vec![Span::styled(format!("    └ {digest}"), detail)];
             spans.extend(self.stats_spans(theme));
             spans.extend(self.exit_span(theme));
-            lines.extend(wrap_line(&Line::from(spans), width, "      "));
+            lines.extend(capped(&Line::from(spans), width, "      ", theme));
         }
         if let Some(patch) = self.patch() {
             let budget = if expanded {
@@ -391,7 +397,7 @@ impl ToolCell {
         }
         if expanded {
             for line in self.body(theme) {
-                lines.extend(wrap_line(&line, width, "        "));
+                lines.extend(capped(&line, width, "        ", theme));
             }
         }
         lines
@@ -406,7 +412,16 @@ impl ToolCell {
     fn summary_spans(&self, theme: &Theme, style: Style) -> Vec<Span<'static>> {
         let command = self.summary.strip_prefix("$ ");
         let Some((mut lang, command)) = crate::highlight::lang_for("bash").zip(command) else {
-            return vec![Span::styled(self.summary.clone(), style)];
+            let name = Style::default()
+                .fg(theme.warning)
+                .add_modifier(Modifier::BOLD);
+            return match self.summary.split_once(self.name.as_str()) {
+                Some((glyph, rest)) => vec![
+                    Span::styled(format!("{glyph}{}", self.name), name),
+                    Span::styled(rest.to_owned(), style),
+                ],
+                None => vec![Span::styled(self.summary.clone(), style)],
+            };
         };
         let mut spans = vec![Span::styled("$ ".to_owned(), theme.dim_style())];
         spans.extend(crate::highlight::spans(command, &mut lang, theme, style));
@@ -499,7 +514,7 @@ impl ToolCell {
                 }
                 // The hashline header repeats the path the head line already
                 // names, and the verb line is the digest above it.
-                None if anchored => {}
+                None if anchored && !raw.starts_with('…') => {}
                 None => out.push(Line::from(Span::styled(format!("      {raw}"), dim))),
             }
         }
@@ -538,7 +553,10 @@ impl ToolCell {
             // `[path#TAG]` then `updated; first change at line N` — the verb
             // and the anchor the model just earned, in the tool's own words.
             "edit" => text.lines().nth(1)?.trim().to_owned(),
-            "grep" => count_label(text.lines().filter(|line| is_grep_hit(line)).count(), "hit"),
+            "grep" => count_label(
+                text.lines().filter(|l| grep_row(l).is_some()).count(),
+                "hit",
+            ),
             "glob" => count_label(
                 text.lines().filter(|line| !line.starts_with('[')).count(),
                 "file",
@@ -551,51 +569,178 @@ impl ToolCell {
 }
 
 impl TaskCell {
-    pub fn lines(&self, width: usize, theme: &Theme, spinner_phase: usize) -> Vec<Line<'static>> {
-        let accent = name_accent(&self.agent);
-        let (glyph, style) = match self.status {
-            // Agent-level work takes the slower diamond; the braille spinner is
-            // for a call in flight (motion's two cadences, one clock).
-            TaskStatus::Running => (
-                crate::motion::pulse_frame(crate::motion::elapsed_of(spinner_phase)),
-                Style::default().fg(accent),
-            ),
-            TaskStatus::Done => ('✓', Style::default().fg(theme.success)),
-            TaskStatus::Failed => ('✗', Style::default().fg(theme.error)),
+    pub fn lines(
+        &self,
+        width: usize,
+        theme: &Theme,
+        mode: TranscriptMode,
+        spinner_phase: usize,
+    ) -> Vec<Line<'static>> {
+        let activity = match self.activity {
+            ChildActivity::Waiting => "waiting",
+            ChildActivity::Writing => "writing",
+            ChildActivity::Executing => "executing",
         };
-        let head = format!("  {glyph} {} Task — {}", self.agent, self.description);
-        let detail = match (&self.status, &self.error, &self.last_tool) {
-            (TaskStatus::Failed, Some(error), _) => {
-                let error: String = error.chars().take(80).collect();
-                format!("    ↳ {error}")
-            }
-            (TaskStatus::Running, _, Some(tool)) => format!("    ↳ {tool}"),
-            (TaskStatus::Running, _, None) => format!("    ↳ {} toolcalls", self.toolcalls),
-            _ => format!(
-                "    ↳ {} toolcalls · {}",
-                self.toolcalls,
-                elapsed_label(self.elapsed_ms)
-            ),
+        let pulse = crate::motion::pulse_frame(crate::motion::elapsed_of(spinner_phase));
+        let (glyph, state, tone) = match self.status {
+            TaskStatus::Running => (pulse, activity, theme.purple),
+            TaskStatus::Done => ('↳', "done", theme.purple),
+            TaskStatus::Failed => ('✗', "failed", theme.error),
         };
-        let detail_style = if self.status == TaskStatus::Failed {
-            Style::default().fg(theme.error)
+        let (name, hash) = humanize(&self.description);
+        let hash = if hash.is_empty() {
+            hash
         } else {
-            theme.muted_style()
+            format!(" · {hash}")
         };
-        let mut lines = vec![Line::default()];
-        lines.extend(wrap_line(
-            &Line::from(Span::styled(head, style)),
-            width,
-            "    ",
-        ));
-        lines.extend(wrap_line(
-            &Line::from(Span::styled(detail, detail_style)),
-            width,
-            "      ",
-        ));
-        lines.push(Line::default());
-        lines
+        let calls = count_label(
+            usize::try_from(self.toolcalls).unwrap_or(usize::MAX),
+            "tool call",
+        );
+        let elapsed = elapsed_label(self.elapsed_ms);
+        let title = format!("{glyph} {name}{hash} · {state} {elapsed} · {calls}");
+        let mut body = Vec::new();
+        if self.status == TaskStatus::Running {
+            let tool = self.last_tool.as_deref().unwrap_or("starting");
+            let row = format!(
+                "⚙ {tool} · {} tokens",
+                crate::status::fmt_tokens(self.tokens)
+            );
+            body.push(Line::from(Span::styled(row, theme.muted_style())));
+        }
+        if let (TaskStatus::Failed, Some(error)) = (&self.status, &self.error) {
+            let error: String = error.chars().take(80).collect();
+            body.push(Line::from(Span::styled(
+                error,
+                Style::default().fg(theme.error),
+            )));
+        }
+        let answer = self.answer.as_deref().filter(|a| !a.trim().is_empty());
+        let rows: Vec<Line<'static>> = answer
+            .map(|a| markdown::render(a, width.saturating_sub(6), theme))
+            .unwrap_or_default()
+            .into_iter()
+            .skip_while(|line| line.spans.is_empty())
+            .collect();
+        let total = rows.len();
+        let running = self.status == TaskStatus::Running;
+        let (skip, take) = match (running, mode) {
+            (true, _) => (total.saturating_sub(4), 4),
+            (false, TranscriptMode::Verbose) => (0, total),
+            (false, _) => (0, 3),
+        };
+        let len = total.saturating_sub(skip).min(take);
+        body.extend(
+            rows.into_iter()
+                .skip(skip)
+                .take(take)
+                .enumerate()
+                .map(|(index, line)| {
+                    let age = if running {
+                        len.saturating_sub(index).saturating_sub(1)
+                    } else {
+                        0
+                    };
+                    fade(line, age, len, theme)
+                }),
+        );
+        if total > skip.saturating_add(take) {
+            let more = format!("… {} more lines", total.saturating_sub(take));
+            body.push(Line::from(Span::styled(more, theme.dim_style())));
+        }
+        boxed(&title, body, width, Style::default().fg(tone))
     }
+}
+
+/// A child's prose is retained state it controls; the card keeps the last 16 KB.
+pub fn tail_bounded(text: String) -> String {
+    let cut = text.len().saturating_sub(16 * 1024);
+    match text
+        .char_indices()
+        .map(|(index, _)| index)
+        .find(|i| *i >= cut)
+    {
+        Some(start) if cut > 0 => text.get(start..).unwrap_or_default().to_owned(),
+        _ => text,
+    }
+}
+
+fn humanize(name: &str) -> (String, String) {
+    let clean: String = name.chars().filter(|c| !c.is_control()).collect();
+    let hashed = clean
+        .rsplit_once('-')
+        .filter(|(_, tail)| tail.len() == 8 && tail.bytes().all(|b| b.is_ascii_hexdigit()));
+    let (head, hash) = hashed.unwrap_or((clean.as_str(), ""));
+    let mut chars = head.chars();
+    let first: String = chars
+        .next()
+        .map(|c| c.to_uppercase().collect())
+        .unwrap_or_default();
+    (
+        format!("{first}{}", chars.as_str()).replace('-', " "),
+        hash.to_owned(),
+    )
+}
+
+fn fade(line: Line<'static>, age: usize, total: usize, theme: &Theme) -> Line<'static> {
+    let style = match (age, theme.tier) {
+        (0, _) => return line,
+        (_, ColorTier::TrueColor) => {
+            let alpha = age.saturating_mul(255).checked_div(total).unwrap_or(0);
+            let alpha = u16::try_from(alpha).unwrap_or(u16::MAX);
+            Style::default().fg(crate::motion::blend(theme.muted, theme.dim, alpha))
+        }
+        _ => theme.dim_style(),
+    };
+    let spans = line
+        .spans
+        .into_iter()
+        .map(|s| Span::styled(s.content, s.style.patch(style)));
+    Line::from(spans.collect::<Vec<_>>())
+}
+
+/// A rounded frame from `Line`s alone; under eight inner columns the frame is dropped.
+fn boxed(title: &str, body: Vec<Line<'static>>, width: usize, style: Style) -> Vec<Line<'static>> {
+    let inner = width.saturating_sub(6);
+    if inner < 8 {
+        let head = Line::from(Span::styled(format!("  {title}"), style));
+        return [Line::default(), head]
+            .into_iter()
+            .chain(body)
+            .chain([Line::default()])
+            .collect();
+    }
+    let mut used = 0_usize;
+    let title: String = title
+        .chars()
+        .take_while(|c| {
+            used = used.saturating_add(UnicodeWidthChar::width(*c).unwrap_or(0));
+            used <= width.saturating_sub(8)
+        })
+        .collect();
+    let fill = width
+        .saturating_sub(7)
+        .saturating_sub(UnicodeWidthStr::width(title.as_str()));
+    let top = format!("  ╭─ {title} {}╮", "─".repeat(fill));
+    let bottom = format!("  ╰{}╯", "─".repeat(width.saturating_sub(4)));
+    let mut out = vec![Line::default(), Line::from(Span::styled(top, style))];
+    for row in body.iter().flat_map(|line| wrap_line(line, inner, "")) {
+        let used: usize = row
+            .spans
+            .iter()
+            .map(|s| UnicodeWidthStr::width(s.content.as_ref()))
+            .sum();
+        let mut spans = vec![Span::styled("  │ ", style)];
+        spans.extend(row.spans);
+        spans.push(Span::styled(
+            format!("{} │", " ".repeat(inner.saturating_sub(used))),
+            style,
+        ));
+        out.push(Line::from(spans));
+    }
+    out.push(Line::from(Span::styled(bottom, style)));
+    out.push(Line::default());
+    out
 }
 
 impl Cell {
@@ -609,15 +754,13 @@ impl Cell {
         match self {
             Cell::User { text } => {
                 let mut out = vec![Line::default()];
-                let width = width.saturating_sub(USER_BAR.len());
-                for (index, raw) in text.lines().enumerate() {
-                    // The bar carries the block; the caret marks only its start.
-                    let marker = if index == 0 { " › " } else { "   " };
+                let width = width.saturating_sub(1);
+                for raw in text.lines() {
                     out.extend(wrap_line(
-                        &Line::from(vec![
-                            Span::styled(marker, Style::default().fg(theme.accent)),
-                            Span::styled(raw.to_owned(), Style::default().fg(theme.text)),
-                        ]),
+                        &Line::from(Span::styled(
+                            format!("   {raw}"),
+                            Style::default().fg(theme.text),
+                        )),
                         width,
                         "   ",
                     ));
@@ -637,7 +780,7 @@ impl Cell {
             Cell::Thought { markdown } => thought_lines(markdown, width, theme, mode, true),
             Cell::Tool(tool) => tool.lines(width, theme, mode, spinner_phase),
             Cell::Explored(rows) => explored_lines(rows, width, theme),
-            Cell::Task(task) => task.lines(width, theme, spinner_phase),
+            Cell::Task(task) => task.lines(width, theme, mode, spinner_phase),
             Cell::Advisory { source, text } => {
                 // The advisor speaks over the agent's own output, so it takes the callout
                 // rail and blank air rather than a dim aside that reads as more prose.
@@ -669,6 +812,10 @@ impl Cell {
                         wrap_line(&line, width, "    ")
                     })
                     .collect()
+            }
+            Cell::Footer { text } => {
+                let line = Line::from(Span::styled(format!("  ↳ {text}"), theme.dim_style()));
+                wrap_line(&line, width, "    ")
             }
             Cell::Divider => {
                 let fill: String = std::iter::repeat_n('─', width.saturating_sub(4)).collect();

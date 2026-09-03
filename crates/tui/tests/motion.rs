@@ -5,7 +5,7 @@ use ratatui::style::Modifier;
 use unicode_width::UnicodeWidthChar;
 use yi_tui::colors::{ColorTier, Theme};
 use yi_tui::motion::{
-    BREATH_CYCLE_MS, PULSE_FRAMES, THINKING_FRAMES, elapsed_of, pulse_frame, shimmer, strike_sweep,
+    BREATH_CYCLE_MS, PULSE_FRAMES, THINKING_FRAMES, elapsed_of, pulse_frame, shimmer,
     thinking_glyph,
 };
 
@@ -114,29 +114,6 @@ fn the_shimmer_degrades_to_attributes_at_sixteen_colours() -> TestResult {
     assert!(!spans.is_empty());
     let rebuilt: String = spans.iter().map(|span| span.content.as_ref()).collect();
     assert_eq!(rebuilt, "Working…");
-    Ok(())
-}
-
-/// The strike sweeps in and then settles; a sweep that never ends would repaint
-/// a finished row forever.
-#[test]
-fn the_strike_sweeps_then_settles() -> TestResult {
-    let label = "☑ scout: read the tree";
-    let (struck, rest) = strike_sweep(label, 0).ok_or("no sweep at the start")?;
-    assert!(
-        struck.is_empty(),
-        "the sweep starts at the left: {struck:?}"
-    );
-    assert_eq!(format!("{struck}{rest}"), label);
-
-    let (mid_struck, mid_rest) = strike_sweep(label, 120).ok_or("no sweep mid-way")?;
-    assert!(!mid_struck.is_empty() && !mid_rest.is_empty());
-    assert_eq!(format!("{mid_struck}{mid_rest}"), label);
-
-    assert!(
-        strike_sweep(label, 60_000).is_none(),
-        "a finished sweep hands the row back to its normal style"
-    );
     Ok(())
 }
 

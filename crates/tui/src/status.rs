@@ -52,7 +52,7 @@ fn shrink_middle(text: &str, max: usize) -> String {
     format!("{head}…{tail}")
 }
 
-fn fmt_tokens(tokens: u64) -> String {
+pub(crate) fn fmt_tokens(tokens: u64) -> String {
     if tokens >= 1_000_000 {
         let m = tokens as f64 / 1_000_000.0;
         if (m - m.round()).abs() < 0.05 {
