@@ -126,6 +126,17 @@ impl AgentSession {
         })
     }
 
+    pub fn usage_handle(&self) -> Arc<dyn Fn() -> Option<Usage> + Send + Sync> {
+        let shared = Arc::clone(&self.shared);
+        Arc::new(move || {
+            shared
+                .last_usage
+                .lock()
+                .ok()
+                .and_then(|usage| usage.clone())
+        })
+    }
+
     pub fn activity_handle(&self) -> Arc<dyn Fn() -> bool + Send + Sync> {
         let shared = Arc::clone(&self.shared);
         Arc::new(move || {

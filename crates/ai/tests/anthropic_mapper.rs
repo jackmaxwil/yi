@@ -272,3 +272,30 @@ fn a_message_start_without_a_usage_object_leaves_the_turn_unknown() -> Result<()
     );
     Ok(())
 }
+
+/// The fourth cache breakpoint must stay on the last persisted user block: on the
+/// trailing environment block, turn N+1 never matches turn N and history re-bills.
+#[test]
+fn the_breakpoint_stays_ahead_of_a_trailing_environment_block() -> Result<(), Box<dyn Error>> {
+    let options = AnthropicOptions {
+        cache: true,
+        ..AnthropicOptions::default()
+    };
+    let mut ctx = context();
+    ctx.messages.push(AgentMessage::host_user(
+        UserContent::Text("<environment>\ncwd: /x\n</environment>".to_owned()),
+        0,
+    ));
+    let params = build_params(&model(), &ctx, &options);
+    let messages = params["messages"].as_array().ok_or("messages")?;
+    assert_eq!(messages.len(), 2, "{messages:?}");
+    assert_eq!(
+        messages[0]["content"][0]["cache_control"]["type"], "ephemeral",
+        "{messages:?}"
+    );
+    assert!(
+        messages[1]["content"][0].get("cache_control").is_none(),
+        "{messages:?}"
+    );
+    Ok(())
+}
