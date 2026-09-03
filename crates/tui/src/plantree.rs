@@ -1,12 +1,8 @@
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use yi_runtime::AgentSession;
 use yi_runtime::plan::accept_text;
-use yi_runtime::plan::subplans_of;
 use yi_types::plan::doc::{BlockedOn, Plan, PlanTier, Todo, TodoLabel, TodoState};
 
-use crate::app::App;
-use crate::cell::Cell;
 use crate::colors::{Theme, name_accent};
 use crate::keymap::{KeyCodeValue, SingleKey};
 use crate::tree::{
@@ -326,23 +322,4 @@ impl PlanTreeView {
     fn reselect(&mut self) {
         self.selected = first_if_hidden(self.visible().iter().map(|(i, _)| *i), self.selected);
     }
-}
-
-pub(crate) fn open_plan_tree(app: &mut App, session: &AgentSession) {
-    let notice = |app: &mut App, text: String| app.commit_cell(&Cell::Notice { text });
-    let Some(service) = session.plan_service() else {
-        notice(
-            app,
-            "/plantree: no plan service is attached to this session".to_owned(),
-        );
-        return;
-    };
-    match service.read_plan() {
-        Err(error) => notice(app, format!("/plantree: {error}")),
-        Ok(plan) => {
-            let subplans = subplans_of(&plan, service.plans_dir());
-            app.plan_tree = Some(PlanTreeView::new(&plan, &subplans));
-        }
-    }
-    app.scheduler.request();
 }

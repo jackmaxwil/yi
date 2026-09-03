@@ -915,13 +915,13 @@ fn a_slash_query_with_arguments_runs_verbatim() -> TestResult {
 #[test]
 fn a_picked_model_and_effort_reach_the_session_and_the_status_line() -> TestResult {
     let mut app = app();
-    let session = Arc::new(faux_session("ok"));
+    let mut session = Arc::new(faux_session("ok"));
     let fable = yi_runtime::resolve_model("anthropic", "claude-fable-5")
         .ok_or("bundled catalog missing claude-fable-5")?;
 
     app.selection
         .select(fable.clone(), yi_types::model::Effort::Max);
-    yi_tui::commands::process_pending_selection(&mut app, &session);
+    app.settle(&mut session);
 
     assert_eq!(session.model().id, "claude-fable-5");
     assert_eq!(session.effort(), yi_types::model::Effort::Max);
@@ -953,12 +953,12 @@ fn a_picked_model_and_effort_reach_the_session_and_the_status_line() -> TestResu
 #[test]
 fn the_session_clamp_wins_over_the_requested_level() -> TestResult {
     let mut app = app();
-    let session = Arc::new(faux_session("ok"));
+    let mut session = Arc::new(faux_session("ok"));
     let haiku = yi_runtime::resolve_model("anthropic", "claude-haiku-4-5")
         .ok_or("bundled catalog missing claude-haiku-4-5")?;
 
     app.selection.select(haiku, yi_types::model::Effort::Max);
-    yi_tui::commands::process_pending_selection(&mut app, &session);
+    app.settle(&mut session);
 
     assert_eq!(session.effort(), yi_types::model::Effort::High);
     assert_eq!(app.selection.effort, yi_types::model::Effort::High);
@@ -1694,4 +1694,154 @@ fn the_recorded_session_titles_nothing_on_a_host_notice() -> TestResult {
 fn prompt_row(row: &str) -> bool {
     row.strip_prefix('┃')
         .is_some_and(|rest| !rest.trim().is_empty())
+}
+
+/// The in-process port answers every touch now, and `apply` is the only writer: a rewind
+/// hands the user's text back to the composer and the tree source empties into a notice.
+#[test]
+fn the_local_port_answers_now_and_apply_is_the_only_writer() -> TestResult {
+    use yi_tui::port::{Answer, Reply, SessionPort};
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    let mut app = app();
+    let mut repo = yi_runtime::session_store::MemRepo::new();
+    let store = yi_runtime::session_store::SessionRepo::create(
+        &mut repo,
+        yi_runtime::session_store::CreateOptions::default(),
+    )?;
+    let session = faux_session("faux: pong");
+    session.attach_store(store)?;
+    let mut port = Arc::new(session);
+    runtime.block_on(async {
+        let mut events = port.subscribe();
+        port.prompt_message(yi_runtime::session::user_input("ping"))
+            .map_err(|e| format!("{e:?}"))?;
+        loop {
+            let event = events
+                .recv()
+                .await
+                .map_err(|e| format!("event stream died: {e}"))?;
+            let done = matches!(event, yi_types::event::AgentEvent::AgentEnd { .. });
+            app.reduce_agent(event);
+            if done {
+                break;
+            }
+        }
+        Ok::<(), String>(())
+    })?;
+    let Answer::Now(history) = port.history() else {
+        return Err("the local port answers history now".into());
+    };
+    let Reply::History(entries) = *history else {
+        return Err("history is a History reply".into());
+    };
+    assert!(
+        entries.len() >= 2,
+        "user and assistant entries: {entries:?}"
+    );
+    let Answer::Now(tree) = port.entries() else {
+        return Err("the local port answers the tree now".into());
+    };
+    let Reply::Entries { leaf, .. } = *tree else {
+        return Err("entries is an Entries reply".into());
+    };
+    assert!(leaf.is_some(), "the branch has a leaf");
+    let user_id = entries
+        .iter()
+        .find_map(|entry| match entry {
+            yi_types::entry::Entry::Message {
+                id,
+                message: yi_types::message::AgentMessage::User { .. },
+                ..
+            } => Some(id.clone()),
+            _ => None,
+        })
+        .ok_or("a user entry")?;
+    let Answer::Now(rewound) = port.rewind(&user_id) else {
+        return Err("the local port rewinds now".into());
+    };
+    app.apply(*rewound);
+    assert_eq!(
+        app.composer_text(),
+        "ping",
+        "a rewind onto the user turn restores it unsent"
+    );
+    assert!(
+        app.take_pending_clear(),
+        "a rewind clears the screen on the next draw"
+    );
+    app.apply(Reply::Entries {
+        entries: Vec::new(),
+        leaf: None,
+    });
+    let committed = flat_lines(&app.take_commits());
+    assert!(
+        committed
+            .iter()
+            .any(|line| line.contains("tree unavailable")),
+        "an empty tree source is a notice: {committed:?}"
+    );
+    Ok(())
+}
+
+/// The chat paints into any rectangle of a buffer: the status row lands on the rect's last
+/// row, nothing lands outside it, and a scroll offset shifts the history above the frame.
+#[test]
+fn the_chat_paints_into_a_rectangle_and_stays_inside_it() -> TestResult {
+    use ratatui::buffer::Buffer;
+    use ratatui::layout::Rect;
+    use ratatui::widgets::{Paragraph, Widget};
+    let mut app = app();
+    app.set_width(60);
+    app.set_rows(12);
+    for n in 0..30 {
+        app.commit_cell(&Cell::User {
+            text: format!("line {n}"),
+        });
+    }
+    let _ = app.take_commits();
+    let rect = Rect::new(10, 5, 60, 12);
+    let layout = yi_tui::render::layout_chat(&mut app, None, rect.height);
+    let used = layout.rows().min(rect.height);
+    let above = rect.height.saturating_sub(used);
+    let mut buffer = Buffer::empty(Rect::new(0, 0, 80, 24));
+    let mut history = app.reflowed(usize::from(above));
+    let skip = history.len().saturating_sub(usize::from(above));
+    let history = history.split_off(skip);
+    Paragraph::new(history).render(Rect::new(rect.x, rect.y, rect.width, above), &mut buffer);
+    yi_tui::render::paint_chat(
+        &app,
+        &layout,
+        &mut buffer,
+        Rect::new(rect.x, rect.y.saturating_add(above), rect.width, used),
+    );
+    let row = |y: u16| -> String {
+        (0..80)
+            .map(|x| buffer.cell((x, y)).map_or(" ", |cell| cell.symbol()))
+            .collect()
+    };
+    let last = row(rect.y + rect.height - 1);
+    assert!(
+        last.contains("faux-1"),
+        "the status row is the rect's last row: {last:?}"
+    );
+    for y in 0..24 {
+        for x in 0..80 {
+            let inside = rect.contains(ratatui::layout::Position::new(x, y));
+            let symbol = buffer.cell((x, y)).map_or(" ", |cell| cell.symbol());
+            assert!(
+                inside || symbol == " ",
+                "painted outside the rect at ({x},{y}): {symbol:?}"
+            );
+        }
+    }
+    let tail = app.reflowed(usize::from(above));
+    let scrolled = app.reflowed(usize::from(above).saturating_add(3));
+    assert_ne!(
+        flat_lines(&tail).first(),
+        flat_lines(&scrolled).first(),
+        "a scroll offset shifts the window"
+    );
+    Ok(())
 }

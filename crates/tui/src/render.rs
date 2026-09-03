@@ -1,12 +1,14 @@
+use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
-use yi_runtime::AgentSession;
+use ratatui::widgets::Widget;
 
 use crate::app::{App, Bottom, ORB_COLS, ORB_ROWS, elapsed_ms};
 use crate::cell::{Cell, TaskStatus, TranscriptMode};
 use crate::hud::GoalView;
 use crate::popup::BottomView;
+use crate::port::SessionPort;
 use crate::status::{StatusInput, working_line};
 use crate::term;
 
@@ -35,23 +37,26 @@ fn tree_rows(rows: usize) -> usize {
 pub fn draw<B>(
     app: &mut App,
     terminal: &mut crate::terminal::Terminal<B>,
-    session: Option<&AgentSession>,
+    port: Option<&dyn SessionPort>,
 ) where
     B: ratatui::backend::Backend + std::io::Write,
 {
-    term::sync_frame(terminal, |terminal| draw_frame(app, terminal, session));
+    term::sync_frame(terminal, |terminal| draw_frame(app, terminal, port));
 }
 
 fn draw_frame<B>(
     app: &mut App,
     terminal: &mut crate::terminal::Terminal<B>,
-    session: Option<&AgentSession>,
+    port: Option<&dyn SessionPort>,
 ) where
     B: ratatui::backend::Backend + std::io::Write,
 {
     if let Some(title) = app.take_title() {
         let osc = format!("\x1b]2;{title}\x07");
         let _ = terminal.backend_mut().write_all(osc.as_bytes());
+    }
+    if app.take_pending_clear() {
+        clear_screen(terminal);
     }
     let commits = std::mem::take(&mut app.pending_commit);
     // OSC 133 semantic prompt zones: Ghostty and iTerm2 use these to jump
@@ -73,23 +78,31 @@ fn draw_frame<B>(
     }
     let reflow_theme = app.theme;
     run_reflow(app, terminal, app.width.saturating_sub(2), &reflow_theme);
-    if let Some(usage) = session.and_then(AgentSession::last_usage) {
-        app.context_used = u64::try_from(usage.total_tokens).unwrap_or(0);
+    let goal = port.and_then(|port| port.goal());
+    let total = u16::try_from(app.rows).unwrap_or(u16::MAX);
+    let layout = layout_chat(app, goal, total);
+    let resized = terminal
+        .resize_viewport(layout.rows(), layout.floor)
+        .unwrap_or(false);
+    if resized || mode_changed {
+        terminal.invalidate_viewport();
     }
-    let goal = session.and_then(AgentSession::store).and_then(|store| {
-        yi_runtime::session_store::lock_session(&store)
-            .goal()
-            .map(|goal| GoalView {
-                objective: goal.objective,
-                status: goal.status.as_str().to_owned(),
-                tokens_used: goal.tokens_used,
-                token_budget: goal.token_budget,
-            })
+    let mut orb_at = None;
+    let _ = terminal.draw(|frame| {
+        let area = frame.area();
+        orb_at = paint_chat(app, &layout, frame.buffer_mut(), area);
     });
-    let spinner = app.spinner_phase();
-    let theme = app.theme;
-    let width = app.width;
+    app.orb_placement = orb_at;
+    app.logo_target = if layout.orb { 1.0 } else { 0.0 };
+}
 
+/// The live region: the streaming thought tail, prose and tool rows of the turn in flight.
+fn live_lines(
+    app: &App,
+    width: usize,
+    spinner: usize,
+    theme: &crate::colors::Theme,
+) -> Vec<Line<'static>> {
     let content_width = width.saturating_sub(2);
     let mut live_lines: Vec<Line<'static>> = Vec::new();
     if app.live_thought.len() > app.live_thought_cut {
@@ -102,7 +115,7 @@ fn draw_frame<B>(
         let mut rendered = crate::cell::thought_lines(
             tail,
             content_width,
-            &theme,
+            theme,
             app.mode,
             app.live_thought_cut == 0,
         );
@@ -121,7 +134,7 @@ fn draw_frame<B>(
     if !app.live_markdown.is_empty() {
         let tail = app.live_markdown.get(app.live_cut..).unwrap_or_default();
         let painted = crate::transcript::paint_slice(app, tail).0;
-        let rendered = crate::cell::gutter(painted, app.live_cut == 0, &theme);
+        let rendered = crate::cell::gutter(painted, app.live_cut == 0, theme);
         live_lines.extend(live_tail(rendered, app.rows));
     }
     // The run is held back from scrollback until it closes, so the live region
@@ -129,13 +142,13 @@ fn draw_frame<B>(
     if !app.explored.is_empty() {
         live_lines.extend(Cell::Explored(app.explored.clone()).lines(
             content_width,
-            &theme,
+            theme,
             app.mode,
             spinner,
         ));
     }
     for tool in &app.live_tools {
-        live_lines.extend(tool.lines(content_width, &theme, app.mode, spinner));
+        live_lines.extend(tool.lines(content_width, theme, app.mode, spinner));
     }
     for id in &app.task_order {
         if let Some(state) = app.tasks.get(id)
@@ -145,9 +158,41 @@ fn draw_frame<B>(
             if state.finished.is_none() {
                 cell.elapsed_ms = elapsed_ms(state.started);
             }
-            live_lines.extend(cell.lines(content_width, &theme, app.mode, spinner));
+            live_lines.extend(cell.lines(content_width, theme, app.mode, spinner));
         }
     }
+    live_lines
+}
+
+pub struct ChatLayout {
+    live: Vec<Line<'static>>,
+    working: Vec<Line<'static>>,
+    hud: Vec<Line<'static>>,
+    bottom: Option<Vec<Line<'static>>>,
+    status: Line<'static>,
+    composer_height: u16,
+    show_working: bool,
+    kitty: bool,
+    orb: bool,
+    pub floor: u16,
+}
+
+impl ChatLayout {
+    pub fn rows(&self) -> u16 {
+        u16::try_from(self.live.len())
+            .unwrap_or(u16::MAX)
+            .saturating_add(self.floor)
+    }
+}
+
+/// Everything the chat shows for a frame of `total` rows, assembled from the app alone;
+/// the live tail is trimmed to what the rest leaves.
+pub fn layout_chat(app: &mut App, goal: Option<GoalView>, total: u16) -> ChatLayout {
+    let spinner = app.spinner_phase();
+    let theme = app.theme;
+    let width = app.width;
+
+    let mut live_lines = live_lines(app, width, spinner, &theme);
     let hud_lines = if app.hud_hidden {
         Vec::new()
     } else {
@@ -229,9 +274,6 @@ fn draw_frame<B>(
     };
     app.composer.set_frame(border, theme.dim_style());
     let composer_height = app.composer.desired_height();
-    let orb_active = app.kitty;
-    let orb_at: std::cell::Cell<Option<(u16, u16)>> = std::cell::Cell::new(None);
-    let composer = &app.composer.textarea;
 
     let bottom_height = bottom_lines.as_ref().map_or(composer_height, |lines| {
         u16::try_from(lines.len()).unwrap_or(composer_height)
@@ -250,59 +292,96 @@ fn draw_frame<B>(
         })
         .saturating_add(bottom_height)
         .saturating_add(1);
-    let budget = u16::try_from(app.rows)
-        .unwrap_or(u16::MAX)
-        .saturating_sub(floor);
+    let budget = total.saturating_sub(floor);
     if rows(&live_lines) > budget {
         live_lines = keep_last(live_lines, usize::from(budget));
     }
-    let desired = rows(&live_lines).saturating_add(floor);
-    // U36 (D47): the viewport resize touches nothing above itself. Painting freshly wrapped
-    // lines over content the emulator already reflowed left fragments at two widths.
-    let resized = terminal.resize_viewport(desired, floor).unwrap_or(false);
-    if resized || mode_changed {
-        terminal.invalidate_viewport();
+    ChatLayout {
+        live: live_lines,
+        working,
+        hud: hud_lines,
+        bottom: bottom_lines,
+        status: status_row,
+        composer_height,
+        show_working,
+        kitty: app.kitty,
+        orb: orb_state.is_some(),
+        floor,
     }
-    let _ = terminal.draw(|frame| {
-        // The inline viewport's buffer area starts at area.y, not 0 — a rect
-        // outside the area renders nowhere, silently.
-        let area = frame.area();
-        let mut y = area.top();
-        let put = |frame: &mut crate::terminal::Frame, lines: &[Line<'static>], y: &mut u16| {
-            let height = u16::try_from(lines.len()).unwrap_or(0);
-            if height == 0 || *y >= area.bottom() {
-                return;
-            }
-            let height = height.min(area.bottom() - *y);
-            let rect = Rect::new(area.left(), *y, area.width, height);
-            frame.render_widget(Paragraph::new(lines.to_vec()), rect);
-            *y += height;
-        };
-        put(frame, &live_lines, &mut y);
-        // Incident (D46): the mark trails the live tail. U13 makes the viewport's top row the
-        // commit boundary, so a leading mark walked down a paragraph at a time.
-        if show_working || app.kitty {
-            if orb_active && y < area.bottom() {
-                orb_at.set(Some((area.left(), y)));
-            }
-            put(frame, &working, &mut y);
+}
+
+/// Paints a layout into any rectangle of a buffer; returns where the orb belongs.
+pub fn paint_chat(
+    app: &App,
+    layout: &ChatLayout,
+    buffer: &mut Buffer,
+    area: Rect,
+) -> Option<(u16, u16)> {
+    let mut orb_at = None;
+    let mut y = area.top();
+    let put = |buffer: &mut Buffer, lines: &[Line<'static>], y: &mut u16| {
+        let height = u16::try_from(lines.len()).unwrap_or(0);
+        if height == 0 || *y >= area.bottom() {
+            return;
         }
-        put(frame, &hud_lines, &mut y);
-        match &bottom_lines {
-            Some(lines) => put(frame, lines, &mut y),
-            None => {
-                if y < area.bottom() {
-                    let height = composer_height.min(area.bottom() - y);
-                    let rect = Rect::new(area.left() + 1, y, area.width.saturating_sub(2), height);
-                    frame.render_widget(composer, rect);
-                    y += height;
-                }
+        let height = height.min(area.bottom().saturating_sub(*y));
+        let rect = Rect::new(area.left(), *y, area.width, height);
+        Widget::render(Paragraph::new(lines.to_vec()), rect, buffer);
+        *y = y.saturating_add(height);
+    };
+    put(buffer, &layout.live, &mut y);
+    // Incident (D46): the mark trails the live tail. U13 makes the viewport's top row the
+    // commit boundary, so a leading mark walked down a paragraph at a time.
+    if layout.show_working || layout.kitty {
+        if layout.kitty && y < area.bottom() {
+            orb_at = Some((area.left(), y));
+        }
+        put(buffer, &layout.working, &mut y);
+    }
+    put(buffer, &layout.hud, &mut y);
+    match &layout.bottom {
+        Some(lines) => put(buffer, lines, &mut y),
+        None => {
+            if y < area.bottom() {
+                let height = layout.composer_height.min(area.bottom().saturating_sub(y));
+                let rect = Rect::new(
+                    area.left().saturating_add(1),
+                    y,
+                    area.width.saturating_sub(2),
+                    height,
+                );
+                Widget::render(&app.composer.textarea, rect, buffer);
+                y = y.saturating_add(height);
             }
         }
-        put(frame, std::slice::from_ref(&status_row), &mut y);
+    }
+    put(buffer, std::slice::from_ref(&layout.status), &mut y);
+    orb_at
+}
+
+/// The transcript above the viewport belongs to a branch that no longer exists and sits in
+/// scrollback no repaint reaches, so the scrollback goes and the viewport re-anchors.
+fn clear_screen<B>(terminal: &mut crate::terminal::Terminal<B>)
+where
+    B: ratatui::backend::Backend + std::io::Write,
+{
+    // The screen itself is cleared through the backend so the headless screen
+    // clears too; only the scrollback erase (`ESC[3J`) has no backend call.
+    let _ = ratatui::backend::Backend::clear(terminal.backend_mut());
+    let _ = terminal.backend_mut().write_all(b"\x1b[3J");
+    let _ = ratatui::backend::Backend::set_cursor_position(
+        terminal.backend_mut(),
+        ratatui::layout::Position::ORIGIN,
+    );
+    let _ = std::io::Write::flush(terminal.backend_mut());
+    let area = terminal.viewport_area();
+    terminal.set_viewport_area(Rect {
+        x: 0,
+        y: 0,
+        width: area.width,
+        height: area.height,
     });
-    app.orb_placement = orb_at.get();
-    app.logo_target = if orb_state.is_some() { 1.0 } else { 0.0 };
+    terminal.invalidate_viewport();
 }
 
 /// U35/U36: a width change invalidates every wrapped row in scrollback. Each event pushes the

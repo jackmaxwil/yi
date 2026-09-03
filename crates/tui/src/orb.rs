@@ -25,13 +25,7 @@ impl Default for Tick {
 
 /// The phase walks toward its target every frame, so the dots travel between the `Yi` mark
 /// and the orb; settled it needs no repaint. Frames transmit, place, then delete the front.
-pub fn tick<B>(
-    app: &mut crate::app::App,
-    terminal: &mut crate::terminal::Terminal<B>,
-    state: &mut Tick,
-) where
-    B: ratatui::backend::Backend + std::io::Write,
-{
+pub fn tick(app: &mut crate::app::App, out: &mut impl std::io::Write, state: &mut Tick) {
     if !app.kitty {
         return;
     }
@@ -53,7 +47,6 @@ pub fn tick<B>(
             if let Some(frame) = crate::logo::frame(app.logo_phase, clock, 64) {
                 let rgba = kitty::paint_rgba(&frame, 64.0, crate::app::ORB_PX);
                 let back = 1 - state.front;
-                let out = terminal.backend_mut();
                 let _ = kitty::transmit(out, kitty::IMAGE_IDS[back], &rgba, crate::app::ORB_PX);
                 let placed = kitty::place(
                     out,
@@ -75,7 +68,7 @@ pub fn tick<B>(
         }
         Some((col, row)) if state.at != Some((col, row)) => {
             let placed = kitty::place(
-                terminal.backend_mut(),
+                out,
                 kitty::IMAGE_IDS[state.front],
                 col,
                 row,
@@ -89,7 +82,7 @@ pub fn tick<B>(
         None if state.shown => {
             state.shown = false;
             state.at = None;
-            let _ = kitty::delete(terminal.backend_mut());
+            let _ = kitty::delete(out);
         }
         _ => {}
     }
