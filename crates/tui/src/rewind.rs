@@ -148,7 +148,7 @@ pub fn process_pending_undo(app: &mut App, session: &Arc<AgentSession>) {
             names.dedup();
             format!(
                 "/undo: restored {} — {}",
-                count_label(names.len()),
+                crate::cell::count_label(names.len(), "file"),
                 names.join(", ")
             )
         }
@@ -162,14 +162,6 @@ pub fn process_pending_undo(app: &mut App, session: &Arc<AgentSession>) {
     };
     app.commit_cell(&Cell::Notice { text });
     app.scheduler.request();
-}
-
-fn count_label(count: usize) -> String {
-    if count == 1 {
-        "1 file".to_owned()
-    } else {
-        format!("{count} files")
-    }
 }
 
 pub(crate) fn process_pending_tree(app: &mut App, session: &Arc<AgentSession>) {
