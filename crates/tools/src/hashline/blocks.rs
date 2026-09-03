@@ -165,7 +165,6 @@ pub fn resolve_block_edits(
                     ));
                 }
                 resolutions.push(BlockResolution {
-                    anchor_line: anchor.line,
                     start: span.start,
                     end: span.end,
                     op: mode,
@@ -245,7 +244,6 @@ pub fn resolve_block_edits(
                     warnings.push(warning);
                 } else if let Some(span) = span {
                     resolutions.push(BlockResolution {
-                        anchor_line: anchor.line,
                         start: span.start,
                         end: span.end,
                         op: mode,
