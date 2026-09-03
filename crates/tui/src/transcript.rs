@@ -14,27 +14,30 @@ pub(crate) fn text_of(content: &[Content]) -> String {
 
 /// The head says what ran and the tail how it ended, and a command's error is
 /// in the tail — keeping ten head lines dropped the half worth reading.
-pub(crate) fn preview_lines(text: &str) -> Vec<String> {
-    const HEAD: usize = 5;
-    const TAIL: usize = 5;
+pub(crate) fn preview_lines(text: &str, head: usize, tail: usize) -> Vec<String> {
+    let compact = text.len() <= 256 * 1024 && !text.contains('\n');
+    let pretty = (compact && text.starts_with(['{', '[']))
+        .then(|| serde_json::from_str::<Value>(text).ok())
+        .flatten()
+        .and_then(|value| serde_json::to_string_pretty(&value).ok());
+    let text = pretty.as_deref().unwrap_or(text);
     let lines: Vec<&str> = text.lines().collect();
-    if lines.len() <= HEAD.saturating_add(TAIL) {
+    if lines.len() <= head.saturating_add(tail) {
         return lines.into_iter().map(str::to_owned).collect();
     }
-    let omitted = lines.len().saturating_sub(HEAD.saturating_add(TAIL));
-    let mut out: Vec<String> = lines
+    let omitted = lines.len().saturating_sub(head.saturating_add(tail));
+    lines
         .iter()
-        .take(HEAD)
+        .take(head)
         .map(|line| (*line).to_owned())
-        .collect();
-    out.push(format!("… {omitted} more lines"));
-    out.extend(
-        lines
-            .iter()
-            .skip(lines.len().saturating_sub(TAIL))
-            .map(|line| (*line).to_owned()),
-    );
-    out
+        .chain(std::iter::once(format!("… {omitted} more lines")))
+        .chain(
+            lines
+                .iter()
+                .skip(lines.len().saturating_sub(tail))
+                .map(|line| (*line).to_owned()),
+        )
+        .collect()
 }
 
 pub(crate) fn thinking_of(content: &[Content]) -> String {

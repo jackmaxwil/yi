@@ -219,7 +219,7 @@ impl crate::app::App {
             .filter_map(|id| self.tasks.get(id))
             .map(|state| AgentRow {
                 id: state.cell.child_id.clone(),
-                name: state.cell.agent.clone(),
+                name: state.cell.description.clone(),
                 state: match state.cell.status {
                     TaskStatus::Running => AgentState::Running,
                     TaskStatus::Done => AgentState::Done,

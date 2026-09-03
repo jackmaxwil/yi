@@ -119,7 +119,7 @@ fn faux_turn_renders_user_and_assistant_cells() -> TestResult {
     })?;
     let committed = flat_lines(&app.take_commits());
     assert!(
-        committed.iter().any(|l| l.contains("› ping")),
+        committed.iter().any(|l| l.contains("┃   ping")),
         "user cell committed: {committed:?}"
     );
     assert!(
@@ -243,12 +243,18 @@ fn subagent_task_cell_focus_and_back() -> TestResult {
     assert!(
         committed
             .iter()
-            .any(|l| l.contains("Task —") || l.contains("Task —")),
-        "finished child commits a task cell: {committed:?}"
+            .any(|l| l.contains("╭─ ↳ Trace the render path sub ·") && l.contains(" done ")),
+        "finished child commits a card titled with its humanized name: {committed:?}"
     );
     assert!(
-        committed.iter().any(|l| l.contains("toolcalls")),
-        "task cell carries the toolcall counter line: {committed:?}"
+        committed.iter().any(|l| l.contains("0 tool calls")),
+        "the card title carries the tool-call counter: {committed:?}"
+    );
+    assert!(
+        committed
+            .iter()
+            .any(|l| l.starts_with("  │ ") && l.contains("child answer")),
+        "the child's answer sits inside the card: {committed:?}"
     );
 
     let child_id = host
@@ -1234,12 +1240,12 @@ fn a_flushed_thought_leaves_no_empty_count_row_in_the_live_region() -> TestResul
     yi_tui::render::draw(&mut app, &mut terminal, None);
     let contents = terminal.backend().contents();
     assert!(
-        contents.contains("∴ thinking · 1 lines"),
+        contents.contains("∴ 1 lines"),
         "the flushed thought's count row committed:\n{contents}"
     );
     // Glyph-agnostic: the live row's `∴` pulses into a starburst every frame.
     assert!(
-        !contents.contains("thinking · 0 lines"),
+        !contents.contains(" 0 lines"),
         "an empty live tail draws nothing:\n{contents}"
     );
     Ok(())
@@ -1303,13 +1309,13 @@ fn a_child_that_finishes_inside_its_spawning_cell_lands_under_it() -> TestResult
     })?;
     let early = flat_lines(&app.take_commits());
     assert!(
-        !early.iter().any(|line| line.contains("Task —")),
+        !early.iter().any(|line| line.contains("↳ Trace sub")),
         "nothing commits while the spawning cell is still live: {early:?}"
     );
     yi_tui::render::draw(&mut app, &mut terminal, None);
     let contents = terminal.backend().contents();
     assert!(
-        contents.contains("✓ rlm Task —"),
+        contents.contains("↳ Trace sub"),
         "a held task is drawn finished under the running cell, not hidden:\n{contents}"
     );
     app.reduce_agent(yi_types::event::AgentEvent::ToolExecutionEnd {
@@ -1334,7 +1340,7 @@ fn a_child_that_finishes_inside_its_spawning_cell_lands_under_it() -> TestResult
         .ok_or_else(|| format!("no kernel cell row: {committed:?}"))?;
     let task = committed
         .iter()
-        .position(|line| line.contains("✓ rlm Task —"))
+        .position(|line| line.contains("╭─ ↳ Trace sub"))
         .ok_or_else(|| format!("no task row: {committed:?}"))?;
     assert!(
         cell < task,
@@ -1343,7 +1349,7 @@ fn a_child_that_finishes_inside_its_spawning_cell_lands_under_it() -> TestResult
     assert_eq!(
         committed
             .iter()
-            .filter(|line| line.contains("Task —"))
+            .filter(|line| line.contains("╭─ ↳ Trace sub"))
             .count(),
         1,
         "one task row: {committed:?}"
@@ -1400,7 +1406,7 @@ fn a_host_notice_titles_nothing_and_draws_no_prompt_rail() -> TestResult {
         "and its third: {rows:?}"
     );
     assert_eq!(
-        rows.iter().filter(|row| row.contains('›')).count(),
+        rows.iter().filter(|row| prompt_row(row)).count(),
         1,
         "only the user's own prompt carries the rail: {rows:?}"
     );
@@ -1500,13 +1506,13 @@ fn the_recorded_session_orders_every_thought_above_its_prose() -> TestResult {
                 .get(..answer)
                 .unwrap_or_default()
                 .iter()
-                .rposition(|row| row.contains("┃ ›"))
+                .rposition(|row| prompt_row(row))
                 .map_or(0, |at| at.saturating_add(1));
             let labels = rows
                 .get(turn..answer)
                 .unwrap_or_default()
                 .iter()
-                .filter(|row| row.contains("∴ thinking"))
+                .filter(|row| row.starts_with("  ∴"))
                 .count();
             assert_eq!(
                 labels,
@@ -1663,14 +1669,12 @@ fn the_recorded_session_titles_nothing_on_a_host_notice() -> TestResult {
             .position(|row| row.contains("⚑ [subagent"))
             .ok_or_else(|| format!("{mode:?}: no notice row: {rows:?}"))?;
         assert!(
-            !rows
-                .get(flag)
-                .is_some_and(|row| row.contains('›') || row.contains('┃')),
+            !rows.get(flag).is_some_and(|row| row.contains('┃')),
             "{mode:?}: the notice draws no prompt rail: {:?}",
             rows.get(flag)
         );
         assert_eq!(
-            rows.iter().filter(|row| row.contains("┃ ›")).count(),
+            rows.iter().filter(|row| prompt_row(row)).count(),
             prompts.len(),
             "{mode:?}: only what the user typed is a user cell: {rows:?}"
         );
@@ -1684,4 +1688,10 @@ fn the_recorded_session_titles_nothing_on_a_host_notice() -> TestResult {
         );
     }
     Ok(())
+}
+
+/// A user row is the bar plus text; the tint's blank rows carry the bar alone.
+fn prompt_row(row: &str) -> bool {
+    row.strip_prefix('┃')
+        .is_some_and(|rest| !rest.trim().is_empty())
 }
