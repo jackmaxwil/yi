@@ -108,7 +108,7 @@ fn draw_frame<B>(
 
     let content_width = width.saturating_sub(2);
     let mut live_lines: Vec<Line<'static>> = Vec::new();
-    if !app.live_thought.is_empty() {
+    if app.live_thought.len() > app.live_thought_cut {
         // Reasoning-heavy models stream thought long before prose; show its
         // dim tail so the screen is never silently blank mid-turn. It holds
         // that place once prose starts, rather than being displaced by it.
