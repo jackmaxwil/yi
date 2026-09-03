@@ -325,3 +325,55 @@ fn resume_replays_the_stored_branch() -> TestResult {
     client.finish()?;
     Ok(())
 }
+
+/// `_yi/slash` runs the chat's slash verbs on the worker that holds the session, so a
+/// console gets the same answers the solo TUI computes locally.
+#[test]
+fn slash_verbs_run_on_the_worker_and_unknown_ones_are_refused() -> TestResult {
+    let dir = temp_dir("slash")?;
+    let mut client = AcpClient::spawn(&dir)?;
+    client.request("1", "initialize", json!({"protocolVersion": 2}))?;
+    let new = client.request(
+        "2",
+        "session/new",
+        json!({"cwd": dir.display().to_string()}),
+    )?;
+    let session_id = new
+        .last()
+        .and_then(|frame| frame["result"]["sessionId"].as_str())
+        .ok_or("missing sessionId")?
+        .to_owned();
+    let text_of = |frames: &[Value]| -> Option<String> {
+        frames.last()?["result"]["text"].as_str().map(str::to_owned)
+    };
+    let mode = client.request(
+        "3",
+        "_yi/slash",
+        json!({"sessionId": session_id, "line": "permissions"}),
+    )?;
+    assert!(
+        text_of(&mode).is_some_and(|text| text.starts_with("permission mode: ")),
+        "/permissions reads the broker: {mode:?}"
+    );
+    let listed = client.request(
+        "4",
+        "_yi/slash",
+        json!({"sessionId": session_id, "line": "sessions"}),
+    )?;
+    assert!(
+        text_of(&listed).is_some_and(|text| text.contains(&session_id)),
+        "/sessions lists this root: {listed:?}"
+    );
+    let unknown = client.request(
+        "5",
+        "_yi/slash",
+        json!({"sessionId": session_id, "line": "dance"}),
+    )?;
+    assert!(
+        unknown
+            .last()
+            .is_some_and(|frame| frame["error"].is_object()),
+        "an unknown verb is an error, not a prompt: {unknown:?}"
+    );
+    client.finish()
+}

@@ -1,0 +1,149 @@
+//! The slash verbs the solo TUI and the ACP worker both route here.
+
+use crate::{AgentSession, PermissionMode};
+
+pub const SESSION_VERBS: [&str; 5] = ["advisor", "plan", "goal", "permissions", "compact"];
+
+pub fn run(session: &AgentSession, command: &str, args: &str) -> Option<String> {
+    Some(match command {
+        "advisor" => advisor(session, args),
+        "plan" => plan(session),
+        "goal" => goal(session),
+        "permissions" => permissions(session, args),
+        "compact" => compact(session, args),
+        _ => return None,
+    })
+}
+
+/// Invariant: V11 promotion has no host request behind it, so this command is
+/// the only writer.
+fn advisor(session: &AgentSession, args: &str) -> String {
+    let Some(advisor) = session.advisor() else {
+        return "/advisor: no advisor is attached to this session".to_owned();
+    };
+    match args.split_once(char::is_whitespace) {
+        Some(("promote", id)) => match crate::advisor::promote_advice(session, id.trim()) {
+            Ok(path) => format!(
+                "/advisor promote {}: armed now and standing in {}",
+                id.trim(),
+                path.display()
+            ),
+            Err(error) => format!("/advisor promote: {error}"),
+        },
+        _ if args == "promote" => {
+            "/advisor promote <advice-id> — the id is in the advisory's details".to_owned()
+        }
+        _ => {
+            let promotable = advisor.promotable();
+            let listed = if promotable.is_empty() {
+                "nothing to promote yet".to_owned()
+            } else {
+                promotable
+                    .iter()
+                    .rev()
+                    .take(5)
+                    .map(|(id, advice)| format!("  {id}  {advice}"))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            };
+            format!("{}\npromotable:\n{listed}", advisor.stats())
+        }
+    }
+}
+
+/// Invariant: the canonical plan file has one writer; this command only renders.
+fn plan(session: &AgentSession) -> String {
+    use crate::plan::{CanonicalPlanError, frontier_text, summary_line};
+    let Some(service) = session.plan_service() else {
+        return "/plan: no plan service is attached to this session".to_owned();
+    };
+    match service.read_plan() {
+        Err(CanonicalPlanError::NoPlanOpen { .. }) => "/plan: no plan is open".to_owned(),
+        Err(error) => format!("/plan: {error}"),
+        Ok(plan) => match frontier_text(&plan) {
+            frontier if frontier.is_empty() => summary_line(&plan),
+            frontier => format!("{}\n{frontier}", summary_line(&plan)),
+        },
+    }
+}
+
+/// Invariant: a goal is explicit-only (G2), so a keystroke may read one and
+/// never create one.
+fn goal(session: &AgentSession) -> String {
+    let Some(service) = session.goal_service() else {
+        return "/goal: no goal service is attached to this session".to_owned();
+    };
+    match service.get() {
+        Err(error) => format!("/goal: {error}"),
+        Ok(goal) => {
+            let field = |key: &str| {
+                goal.get(key)
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("")
+                    .to_owned()
+            };
+            let number = |key: &str| goal.get(key).and_then(serde_json::Value::as_u64);
+            let budget = match (number("tokensUsed"), number("tokenBudget")) {
+                (Some(used), Some(budget)) => format!(" · {used}/{budget} tokens"),
+                (Some(used), None) => format!(" · {used} tokens"),
+                _ => String::new(),
+            };
+            let check = goal
+                .get("check")
+                .and_then(serde_json::Value::as_str)
+                .map(|check| format!("\ncheck: {check}"))
+                .unwrap_or_default();
+            let failure = goal
+                .get("checkFailure")
+                .and_then(serde_json::Value::as_str)
+                .map(|tail| format!("\nlast check failure:\n{tail}"))
+                .unwrap_or_default();
+            format!(
+                "goal [{}]{budget}\n{}{check}{failure}",
+                field("status"),
+                field("objective")
+            )
+        }
+    }
+}
+
+fn parse_mode(text: &str) -> Result<PermissionMode, &'static str> {
+    match text {
+        "ask" => Ok(PermissionMode::Ask),
+        "auto" => Ok(PermissionMode::Auto),
+        "yolo" => Ok(PermissionMode::Yolo),
+        _ => Err("ask, auto, or yolo"),
+    }
+}
+
+fn permissions(session: &AgentSession, args: &str) -> String {
+    let Some(broker) = session.permission_broker() else {
+        return "/permissions: no permission broker is attached to this session".to_owned();
+    };
+    if args.is_empty() {
+        return format!(
+            "permission mode: {}",
+            crate::gate::mode_label(broker.mode())
+        );
+    }
+    match parse_mode(args) {
+        Ok(mode) => {
+            broker.set_mode_and_fragment(mode, session);
+            format!("permission mode: {}", crate::gate::mode_label(mode))
+        }
+        Err(want) => format!("/permissions [{want}]"),
+    }
+}
+
+fn compact(session: &AgentSession, args: &str) -> String {
+    let Some(compactor) = session.compactor() else {
+        return "/compact: compaction is not attached to this session".to_owned();
+    };
+    if args.is_empty() {
+        compactor.schedule();
+        "compaction scheduled".to_owned()
+    } else {
+        compactor.schedule_with_instructions(Some(args.to_owned()));
+        format!("compaction scheduled · {args}")
+    }
+}

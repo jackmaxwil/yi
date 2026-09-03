@@ -82,7 +82,7 @@ fn console_creates_prompts_detaches_and_replays() -> TestResult {
             &dir,
             &socket,
             &root,
-            "wait-frame 8000 ● connected\n\
+            "wait-frame 8000 !connecting…\n\
              key alt-n\n\
              wait-frame 8000 ○\n\
              type hello daemon\n\
@@ -102,7 +102,7 @@ fn console_creates_prompts_detaches_and_replays() -> TestResult {
             &dir,
             &socket,
             &root,
-            "wait-frame 8000 ● connected\n\
+            "wait-frame 8000 !connecting…\n\
              wait-frame 8000 !no sessions yet\n\
              key enter\n\
              wait-frame 15000 faux:\n\

@@ -22,6 +22,7 @@ use yi_types::acp::{
     AcpPermissionOutcome, AcpResponse, AcpSessionResult, AcpSessionUpdate, AcpUpdateParams,
 };
 use yi_types::event::AgentEvent;
+use yi_types::message::AgentMessage;
 
 use crate::update::{IdMap, replay_updates, to_updates};
 
@@ -151,6 +152,37 @@ pub fn bridge_asker(session_id: String, sink: LineSink, pending: PendingAsks) ->
 struct SessionHandle {
     session: AgentSession,
     forwarder: JoinHandle<()>,
+    ledger: Arc<std::sync::Mutex<StatusLedger>>,
+}
+
+#[derive(Default, Clone, Copy)]
+struct StatusLedger {
+    cost: f64,
+    cost_unknown: bool,
+    context_used: u64,
+}
+
+fn status_update(
+    session: Option<&AgentSession>,
+    ledger: StatusLedger,
+    context_window: u64,
+) -> AcpSessionUpdate {
+    let mut fields = std::collections::BTreeMap::new();
+    if let Some(session) = session {
+        fields.insert("model".to_owned(), Value::String(session.model().name));
+        fields.insert(
+            "effort".to_owned(),
+            Value::String(session.effort().to_string()),
+        );
+    }
+    fields.insert("cost".to_owned(), json!(ledger.cost));
+    fields.insert("costUnknown".to_owned(), Value::Bool(ledger.cost_unknown));
+    fields.insert("contextUsed".to_owned(), json!(ledger.context_used));
+    fields.insert("contextWindow".to_owned(), json!(context_window));
+    AcpSessionUpdate::Extension(yi_types::acp::AcpExtensionUpdate {
+        session_update: "_yi/status".to_owned(),
+        fields,
+    })
 }
 
 impl Drop for SessionHandle {
@@ -169,6 +201,35 @@ struct AcpState {
     pending: PendingAsks,
     agent_version: String,
     initialized: bool,
+    cwd: PathBuf,
+}
+
+fn undo_text(session: &AgentSession, cwd: &std::path::Path) -> String {
+    if session.status() == yi_runtime::Status::Running {
+        return "/undo: the current turn is still running (esc stops it)".to_owned();
+    }
+    let Some(store) = session.store() else {
+        return "/undo: this session has no store to read checkpoints from".to_owned();
+    };
+    let home = std::env::var_os("HOME")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_default();
+    match yi_runtime::undo(&store, cwd, &home) {
+        yi_runtime::UndoOutcome::Restored(changes) if changes.is_empty() => {
+            "/undo: nothing to restore — no file changed since the checkpoint".to_owned()
+        }
+        yi_runtime::UndoOutcome::Restored(changes) => {
+            let mut names: Vec<String> = changes
+                .iter()
+                .map(|change| change.path.display().to_string())
+                .collect();
+            names.sort();
+            names.dedup();
+            format!("/undo: restored {} — {}", names.len(), names.join(", "))
+        }
+        yi_runtime::UndoOutcome::NoCheckpoint => "/undo: no checkpoint to restore".to_owned(),
+        yi_runtime::UndoOutcome::Failed(error) => format!("/undo: {error}"),
+    }
 }
 
 fn update_notification(session_id: &str, update: AcpSessionUpdate) -> Value {
@@ -273,6 +334,13 @@ impl AcpState {
         let sink = Arc::clone(&self.sink);
         let forward_id = session_id.clone();
         let mut ids = IdMap::new(session.model().context_window);
+        let ledger = Arc::new(std::sync::Mutex::new(StatusLedger::default()));
+        let context_window = session.model().context_window;
+        sink(&update_notification(
+            &session_id,
+            status_update(Some(&session), StatusLedger::default(), context_window),
+        ));
+        let status_ledger = Arc::clone(&ledger);
         let forwarder = tokio::spawn(async move {
             loop {
                 match events.recv().await {
@@ -280,14 +348,38 @@ impl AcpState {
                         for update in to_updates(&event, &mut ids) {
                             sink(&update_notification(&forward_id, update));
                         }
+                        if let AgentEvent::MessageEnd {
+                            message: AgentMessage::Assistant { usage, .. },
+                        } = &event
+                        {
+                            let snapshot = status_ledger.lock().map(|mut ledger| {
+                                ledger.cost += usage.cost.total.as_f64().unwrap_or(0.0);
+                                ledger.cost_unknown |= usage.unknown;
+                                ledger.context_used =
+                                    u64::try_from(usage.total_tokens).unwrap_or(0);
+                                *ledger
+                            });
+                            if let Ok(snapshot) = snapshot {
+                                sink(&update_notification(
+                                    &forward_id,
+                                    status_update(None, snapshot, context_window),
+                                ));
+                            }
+                        }
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                 }
             }
         });
-        self.sessions
-            .insert(session_id.clone(), SessionHandle { session, forwarder });
+        self.sessions.insert(
+            session_id.clone(),
+            SessionHandle {
+                session,
+                forwarder,
+                ledger,
+            },
+        );
         Ok(session_id)
     }
 
@@ -408,6 +500,16 @@ impl AcpState {
                 ));
             }
         }
+        let snapshot = handle
+            .ledger
+            .lock()
+            .map(|ledger| *ledger)
+            .unwrap_or_default();
+        let context_window = handle.session.model().context_window;
+        (self.sink)(&update_notification(
+            &id,
+            status_update(Some(&handle.session), snapshot, context_window),
+        ));
         let result = self.session_result(&id);
         let options = result.get("configOptions").cloned().unwrap_or(Value::Null);
         Ok(json!({"configOptions": options}))
@@ -519,7 +621,7 @@ impl AcpState {
             }
             "session/set_config_option" => self.set_config_option(params),
             "_yi/heartbeat" | "_yi/goal" | "_yi/tracked" | "_yi/kernel_execute"
-            | "_yi/kernel_cancel" => self.handle_extension(method, params),
+            | "_yi/kernel_cancel" | "_yi/slash" => self.handle_extension(method, params),
             other => Err((METHOD_NOT_FOUND, format!("unknown method {other}"))),
         }
     }
@@ -562,6 +664,19 @@ impl AcpState {
                 }
                 let root = std::path::Path::new(text("root"));
                 Ok(json!({"tracked": yi_runtime::environment::tracked(root, &paths)}))
+            }
+            "_yi/slash" => {
+                let line = text("line").trim();
+                let (command, args) = line
+                    .split_once(char::is_whitespace)
+                    .map_or((line, ""), |(head, rest)| (head, rest.trim()));
+                let reply = match command {
+                    "sessions" => self.sessions_text()?,
+                    "undo" => undo_text(&handle.session, &self.cwd),
+                    other => yi_runtime::slash::run(&handle.session, other, args)
+                        .ok_or((INVALID_PARAMS, format!("unknown command: /{other}")))?,
+                };
+                Ok(json!({"text": reply}))
             }
             "_yi/heartbeat" => {
                 let service = handle
@@ -612,6 +727,29 @@ impl AcpState {
             }
             other => Err((METHOD_NOT_FOUND, format!("unknown method {other}"))),
         }
+    }
+
+    fn sessions_text(&mut self) -> Result<String, (i64, String)> {
+        let listed = self
+            .repo
+            .list()
+            .map_err(|error| (INTERNAL_ERROR, error.to_string()))?;
+        if listed.is_empty() {
+            return Ok("no sessions for this directory".to_owned());
+        }
+        let now = yi_runtime::session_store::now_ms();
+        Ok(listed
+            .iter()
+            .map(|metadata| {
+                format!(
+                    "{}  {:>8}  {}",
+                    metadata.id,
+                    yi_runtime::session_store::age_label(now.saturating_sub(metadata.created_at)),
+                    metadata.name.as_deref().unwrap_or("")
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n"))
     }
 
     /// C9: a schedule mutation is a fact the client cannot infer from the
@@ -681,6 +819,7 @@ pub fn run_acp(options: AcpOptions, runtime: tokio::runtime::Runtime) -> i32 {
         pending: Arc::clone(&pending),
         agent_version: options.agent_version,
         initialized: false,
+        cwd: options.cwd,
     };
     runtime.block_on(async move {
         let (line_tx, mut line_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
