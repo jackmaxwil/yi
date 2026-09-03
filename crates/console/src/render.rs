@@ -33,6 +33,8 @@ pub struct Hits {
     pub sidebar_width: u16,
     /// (screen row, index into `order`) for each session line.
     pub sidebar_rows: Vec<(u16, usize)>,
+    /// (screen row, index into `roots()`) for each workspace line.
+    pub root_rows: Vec<(u16, usize)>,
     pub panes: Vec<(PaneId, Rect)>,
     pub splits: Vec<SplitBorder>,
     pub tabs: Vec<(Rect, usize)>,
@@ -40,6 +42,7 @@ pub struct Hits {
 
 pub struct ViewState {
     pub sidebar: Rect,
+    pub roots: Rect,
     pub tab_bar: Option<Rect>,
     pub panes_area: Rect,
     pub panes: Vec<PaneView>,
@@ -84,6 +87,11 @@ pub fn compute_view(app: &mut App, area: Rect, theme: &Theme) -> ViewState {
         width: sidebar_width,
         ..area
     };
+    let root_count = app.state.roots().len();
+    let (sidebar, roots_area) = split_off_bottom(
+        sidebar,
+        u16::try_from(root_count.saturating_add(1).min(8)).unwrap_or(8),
+    );
     let main = Rect {
         x: area.x.saturating_add(sidebar_width),
         width: area.width.saturating_sub(sidebar_width),
@@ -145,6 +153,14 @@ pub fn compute_view(app: &mut App, area: Rect, theme: &Theme) -> ViewState {
             index.map(|index| (y, index))
         })
         .collect();
+    let root_rows = (0..root_count)
+        .filter_map(|index| {
+            let y = roots_area
+                .y
+                .checked_add(u16::try_from(index.saturating_add(1)).ok()?)?;
+            (y < roots_area.y.saturating_add(roots_area.height)).then_some((y, index))
+        })
+        .collect();
     let mut tab_hits = Vec::new();
     if let Some(bar) = tab_bar {
         let mut x = bar.x;
@@ -158,6 +174,7 @@ pub fn compute_view(app: &mut App, area: Rect, theme: &Theme) -> ViewState {
     app.hits = Some(Hits {
         sidebar_width,
         sidebar_rows,
+        root_rows,
         panes: panes.iter().map(|pane| (pane.id, pane.rect)).collect(),
         splits: split_borders.clone(),
         tabs: tab_hits,
@@ -165,6 +182,7 @@ pub fn compute_view(app: &mut App, area: Rect, theme: &Theme) -> ViewState {
 
     ViewState {
         sidebar,
+        roots: roots_area,
         tab_bar,
         panes_area,
         panes,
@@ -247,7 +265,7 @@ fn pane_view_content(
             let lines = window(all, pane.scroll_from_bottom, visible);
             (title, lines)
         }
-        PaneContent::Notebook { session, cells } => {
+        PaneContent::Notebook { session, cells, .. } => {
             let title = session.as_ref().map_or_else(
                 || "notebook".to_owned(),
                 |id| format!("nb:{}", id.0.chars().take(11).collect::<String>()),
@@ -335,6 +353,7 @@ fn status_style(theme: &Theme, status: SessionStatus) -> Style {
 pub fn render(app: &App, frame: &mut Frame<'_>, view: &ViewState, theme: &Theme) {
     if view.sidebar.width > 0 {
         render_sidebar(app, frame, view.sidebar, theme);
+        render_roots(app, frame, view.roots, theme);
     }
     if let Some(bar) = view.tab_bar {
         render_tab_bar(app, frame, bar, theme);
@@ -347,7 +366,18 @@ pub fn render(app: &App, frame: &mut Frame<'_>, view: &ViewState, theme: &Theme)
     if let Some(area) = view.ask {
         render_ask(app, frame, area, theme);
     }
-    frame.render_widget(&app.composer, view.composer);
+    let notebook_input = app
+        .state
+        .focused_pane_id()
+        .and_then(|id| app.state.panes.get(&id))
+        .and_then(|pane| match &pane.content {
+            PaneContent::Notebook { input, .. } => Some(input.as_ref()),
+            _ => None,
+        });
+    match notebook_input {
+        Some(input) => frame.render_widget(input, view.composer),
+        None => frame.render_widget(&app.composer, view.composer),
+    }
     render_status(app, frame, view.status, theme);
     if matches!(app.state.mode, Mode::Navigator { .. }) {
         render_navigator(app, frame, view, theme);
@@ -478,10 +508,14 @@ fn sidebar_lines(app: &App, theme: &Theme) -> Vec<(Option<usize>, Line<'static>)
     let mut lines = Vec::new();
     let multi_root = app.state.roots().len() > 1;
     let mut current_root: Option<&str> = None;
+    let visible = app.state.visible_rows();
     for (index, id) in app.state.order.iter().enumerate() {
         let Some(row) = app.state.sessions.get(id) else {
             continue;
         };
+        if !visible.contains(&index) {
+            continue;
+        }
         if multi_root && current_root != Some(row.root.as_str()) {
             current_root = Some(row.root.as_str());
             let label = row.root.rsplit('/').next().unwrap_or(&row.root);
@@ -508,8 +542,67 @@ fn sidebar_lines(app: &App, theme: &Theme) -> Vec<(Option<usize>, Line<'static>)
             spans.push(Span::styled(" ·", theme.dim_style()));
         }
         lines.push((Some(index), Line::from(spans)));
+        for child in app.state.children.get(id).into_iter().flatten().take(3) {
+            let name: String = child
+                .name
+                .chars()
+                .filter(|c| !c.is_control())
+                .take(16)
+                .collect();
+            let glyph = match child.status {
+                yi_types::subagent::ChildStatus::Running => "◐",
+                yi_types::subagent::ChildStatus::Completed => "○",
+                yi_types::subagent::ChildStatus::Error => "✕",
+            };
+            lines.push((
+                None,
+                Line::styled(format!("   └ {name} {glyph}"), theme.dim_style()),
+            ));
+        }
     }
     lines
+}
+
+fn render_roots(app: &App, frame: &mut Frame<'_>, area: Rect, theme: &Theme) {
+    let mut lines = vec![Line::styled(
+        " workspaces",
+        theme.accent_style().add_modifier(Modifier::BOLD),
+    )];
+    for root in app.state.roots() {
+        let worst = app
+            .state
+            .sessions
+            .values()
+            .filter(|row| row.root == root)
+            .map(|row| row.status)
+            .min_by_key(|status| *status as u8)
+            .unwrap_or(SessionStatus::Unknown);
+        let count = app
+            .state
+            .sessions
+            .values()
+            .filter(|row| row.root == root)
+            .count();
+        let marker = if app.state.root_filter.as_deref() == Some(root.as_str()) {
+            "▸"
+        } else {
+            " "
+        };
+        let label: String = root
+            .rsplit('/')
+            .next()
+            .unwrap_or(&root)
+            .chars()
+            .take(usize::from(area.width).saturating_sub(6))
+            .collect();
+        lines.push(Line::from(vec![
+            Span::styled(marker.to_owned(), theme.accent_style()),
+            Span::styled(format!("{} ", worst.glyph()), status_style(theme, worst)),
+            Span::styled(label, Style::default().fg(theme.text)),
+            Span::styled(format!(" {count}"), theme.dim_style()),
+        ]));
+    }
+    frame.render_widget(Paragraph::new(lines), area);
 }
 
 fn render_sidebar(app: &App, frame: &mut Frame<'_>, area: Rect, theme: &Theme) {

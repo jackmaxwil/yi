@@ -49,6 +49,14 @@ impl App {
                     return;
                 }
                 if x < hits.sidebar_width {
+                    if let Some((_, index)) = hits.root_rows.iter().find(|(row_y, _)| *row_y == y) {
+                        let root = self.state.roots().get(*index).cloned();
+                        let next = root.filter(|r| self.state.root_filter.as_ref() != Some(r));
+                        self.state.set_root_filter(next);
+                        self.state.zone = Zone::Sidebar;
+                        self.dirty = true;
+                        return;
+                    }
                     if let Some((_, index)) =
                         hits.sidebar_rows.iter().find(|(row_y, _)| *row_y == y)
                     {

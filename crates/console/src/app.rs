@@ -46,6 +46,8 @@ pub enum RequestKind {
     Cancel,
     Seen,
     Tracked(SessionId, Vec<String>),
+    KernelExecute,
+    KernelCancel,
 }
 
 struct Pending {
@@ -340,6 +342,7 @@ impl App {
             }
             RequestKind::ListDaemon => self.merge_daemon_list(&result),
             RequestKind::Tracked(session, paths) => self.absorb_tracked(&session, &paths, &result),
+            RequestKind::KernelExecute | RequestKind::KernelCancel => {}
             RequestKind::NewSession(pane_id) => {
                 if let Some(session_id) = result.get("sessionId").and_then(Value::as_str) {
                     let session = SessionId(session_id.to_owned());
@@ -462,9 +465,41 @@ impl App {
     fn reduce_update(&mut self, outbound: &Outbound, update: AcpUpdateParams) {
         let id = SessionId(update.session_id.clone());
         self.resume_offsets.remove(&id);
+        if let AcpSessionUpdate::Extension(extension) = &update.update
+            && extension.session_update == "_yi/subagent_update"
+        {
+            let fields: serde_json::Map<String, Value> = extension
+                .fields
+                .iter()
+                .map(|(key, value)| (key.clone(), value.clone()))
+                .collect();
+            if let Ok(child) =
+                serde_json::from_value::<yi_types::subagent::ChildUpdate>(Value::Object(fields))
+            {
+                let rows = self.state.children.entry(id.clone()).or_default();
+                match rows.iter().position(|row| row.id == child.id) {
+                    Some(at) => {
+                        if let Some(slot) = rows.get_mut(at) {
+                            *slot = child;
+                        }
+                    }
+                    None if rows.len() < 32 => rows.push(child),
+                    None => {}
+                }
+                self.dirty = true;
+            }
+        }
         if let AcpSessionUpdate::StateUpdate(state) = &update.update {
             let focused = self.state.focused_session().as_ref() == Some(&id);
             let mut status = SessionStatus::from_state(state, false);
+            let was_working = self
+                .state
+                .sessions
+                .get(&id)
+                .is_some_and(|row| row.status == SessionStatus::Working);
+            if status == SessionStatus::Working && !was_working {
+                self.state.children.remove(&id);
+            }
             // A pane the user is looking at needs no unseen shout, and a
             // resolved permission clears the ask bar.
             if focused && status == SessionStatus::DoneUnseen {
@@ -570,6 +605,69 @@ impl App {
             RequestKind::Seen,
             "_yi/seen",
             json!({"sessionId": session.0}),
+        );
+    }
+
+    fn on_notebook(&self) -> bool {
+        self.state
+            .focused_pane_id()
+            .and_then(|id| self.state.panes.get(&id))
+            .is_some_and(|pane| matches!(pane.content, PaneContent::Notebook { .. }))
+    }
+
+    fn run_notebook_cell(&mut self, outbound: &Outbound) {
+        if !self.connected() {
+            return self.note("not connected — cell not sent");
+        }
+        let Some(PaneContent::Notebook {
+            session: Some(session),
+            input,
+            ..
+        }) = self.state.focused_pane_mut().map(|pane| &mut pane.content)
+        else {
+            return self.note("no session behind this notebook");
+        };
+        let code = input.lines().join("\n");
+        if code.trim().is_empty() {
+            return;
+        }
+        let session = session.clone();
+        *input = crate::model::notebook_input();
+        self.send_request(
+            outbound,
+            RequestKind::KernelExecute,
+            "_yi/kernel_execute",
+            json!({"sessionId": session.0, "code": code}),
+        );
+    }
+
+    fn cancel_notebook_cell(&mut self, outbound: &Outbound) {
+        let Some(PaneContent::Notebook {
+            session: Some(session),
+            cells,
+            ..
+        }) = self
+            .state
+            .focused_pane_id()
+            .and_then(|id| self.state.panes.get(&id))
+            .map(|pane| &pane.content)
+        else {
+            return;
+        };
+        let running = cells
+            .iter()
+            .rev()
+            .find(|cell| cell.running && cell.call_id.starts_with("user-"))
+            .map(|cell| cell.call_id.clone());
+        let Some(call_id) = running else {
+            return self.note("no user cell is running");
+        };
+        let session = session.clone();
+        self.send_request(
+            outbound,
+            RequestKind::KernelCancel,
+            "_yi/kernel_cancel",
+            json!({"sessionId": session.0, "callId": call_id}),
         );
     }
 
@@ -873,26 +971,53 @@ impl App {
         }
         if let Some(action) = keys::direct(&key) {
             // Esc cancels the turn only from the panes zone; sidebar Esc is
-            // inert rather than surprising.
+            // inert rather than surprising, and on a notebook it cancels the cell.
             if action == Action::CancelTurn && self.state.zone == Zone::Sidebar {
                 return;
+            }
+            if action == Action::CancelTurn && self.on_notebook() {
+                return self.cancel_notebook_cell(outbound);
             }
             self.apply_action(outbound, action);
             return;
         }
         match self.state.zone {
             Zone::Sidebar => match key.code {
-                KeyCode::Up => {
-                    self.state.selected = self.state.selected.saturating_sub(1);
+                KeyCode::Up | KeyCode::Down => {
+                    let rows = self.state.visible_rows();
+                    let at = rows
+                        .iter()
+                        .position(|i| *i == self.state.selected)
+                        .unwrap_or(0);
+                    let next = if key.code == KeyCode::Up {
+                        at.saturating_sub(1)
+                    } else {
+                        at.saturating_add(1).min(rows.len().saturating_sub(1))
+                    };
+                    if let Some(index) = rows.get(next) {
+                        self.state.selected = *index;
+                    }
                     self.dirty = true;
                 }
-                KeyCode::Down => {
-                    let last = self.state.order.len().saturating_sub(1);
-                    self.state.selected = self.state.selected.saturating_add(1).min(last);
+                KeyCode::Left | KeyCode::Right => {
+                    self.state.cycle_root_filter(key.code == KeyCode::Right);
                     self.dirty = true;
                 }
                 KeyCode::Enter => self.open_selected(outbound),
                 _ => {}
+            },
+            Zone::Panes if self.on_notebook() => match key.code {
+                KeyCode::Enter if key.modifiers.contains(KeyModifiers::SHIFT) => {
+                    self.run_notebook_cell(outbound);
+                }
+                _ => {
+                    if let Some(PaneContent::Notebook { input, .. }) =
+                        self.state.focused_pane_mut().map(|pane| &mut pane.content)
+                    {
+                        let _ = input.input(CtEvent::Key(key));
+                    }
+                    self.dirty = true;
+                }
             },
             Zone::Panes => match key.code {
                 KeyCode::Enter if !key.modifiers.contains(KeyModifiers::SHIFT) => {

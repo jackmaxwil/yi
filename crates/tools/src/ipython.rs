@@ -83,64 +83,68 @@ impl Tool for IpythonTool {
             Ok(outcome) => outcome,
             Err(message) => return error_output(message),
         };
-        let result = outcome.result;
-        let mut sections = Vec::new();
-        if !result.stdout.is_empty() {
-            sections.push(result.stdout.clone());
-        }
-        if !result.stderr.is_empty() {
-            sections.push(format!("stderr:\n{}", result.stderr));
-        }
-        if let Some(value) = &result.result {
-            sections.push(value.clone());
-        }
-        if let Some(error) = &result.error {
-            sections.push(if error.traceback.is_empty() {
-                format!("{}: {}", error.ename, error.evalue)
-            } else {
-                error.traceback.join("\n")
-            });
-        }
-        if result.status == ExecuteStatus::Aborted {
-            sections.push("[cell aborted]".to_owned());
-        }
-        if outcome.kernel_restarted {
-            sections.push("[IPython kernel was restarted; in-memory state was lost]".to_owned());
-        }
-        let text = if sections.is_empty() {
-            "(no output)".to_owned()
-        } else {
-            sections.join("\n")
-        };
-        let mut output = text_output(text);
-        // A kernel edit becomes a real patch here, where every other patch is
-        // computed, rather than being reassembled by whoever renders it.
-        let diffs: Vec<Value> = result
-            .diffs
-            .iter()
-            .map(|diff| {
-                let patch = crate::diff::patch(&diff.old_str, &diff.new_str, Path::new(&diff.path));
-                json!({ "path": diff.path, "patch": detail_text(patch.as_str()) })
-            })
-            .collect();
-        // The streams are carried apart from the joined text so a renderer can style stderr
-        // and a traceback differently; the joined form stays the model's view.
-        output.result.details = json!({
-            "status": result.status,
-            "durationMs": result.duration_ms,
-            "diffs": diffs,
-            "attachments": result.attachments.len(),
-            "attachmentMedia": result.attachments,
-            "sentAgentMessages": result.sent_agent_messages,
-            "kernelRestarted": outcome.kernel_restarted,
-            "code": detail_text(code),
-            "stdout": detail_text(&result.stdout),
-            "stderr": detail_text(&result.stderr),
-            "result": detail_text(result.result.as_deref().unwrap_or_default()),
-            "error": result.error,
-        });
-        output.is_error =
-            result.status == ExecuteStatus::Error || result.status == ExecuteStatus::Aborted;
-        output
+        cell_output(code, outcome)
     }
+}
+
+pub fn cell_output(code: &str, outcome: KernelCellOutcome) -> ToolOutput {
+    let result = outcome.result;
+    let mut sections = Vec::new();
+    if !result.stdout.is_empty() {
+        sections.push(result.stdout.clone());
+    }
+    if !result.stderr.is_empty() {
+        sections.push(format!("stderr:\n{}", result.stderr));
+    }
+    if let Some(value) = &result.result {
+        sections.push(value.clone());
+    }
+    if let Some(error) = &result.error {
+        sections.push(if error.traceback.is_empty() {
+            format!("{}: {}", error.ename, error.evalue)
+        } else {
+            error.traceback.join("\n")
+        });
+    }
+    if result.status == ExecuteStatus::Aborted {
+        sections.push("[cell aborted]".to_owned());
+    }
+    if outcome.kernel_restarted {
+        sections.push("[IPython kernel was restarted; in-memory state was lost]".to_owned());
+    }
+    let text = if sections.is_empty() {
+        "(no output)".to_owned()
+    } else {
+        sections.join("\n")
+    };
+    let mut output = text_output(text);
+    // A kernel edit becomes a real patch here, where every other patch is
+    // computed, rather than being reassembled by whoever renders it.
+    let diffs: Vec<Value> = result
+        .diffs
+        .iter()
+        .map(|diff| {
+            let patch = crate::diff::patch(&diff.old_str, &diff.new_str, Path::new(&diff.path));
+            json!({ "path": diff.path, "patch": detail_text(patch.as_str()) })
+        })
+        .collect();
+    // The streams are carried apart from the joined text so a renderer can style stderr
+    // and a traceback differently; the joined form stays the model's view.
+    output.result.details = json!({
+        "status": result.status,
+        "durationMs": result.duration_ms,
+        "diffs": diffs,
+        "attachments": result.attachments.len(),
+        "attachmentMedia": result.attachments,
+        "sentAgentMessages": result.sent_agent_messages,
+        "kernelRestarted": outcome.kernel_restarted,
+        "code": detail_text(code),
+        "stdout": detail_text(&result.stdout),
+        "stderr": detail_text(&result.stderr),
+        "result": detail_text(result.result.as_deref().unwrap_or_default()),
+        "error": result.error,
+    });
+    output.is_error =
+        result.status == ExecuteStatus::Error || result.status == ExecuteStatus::Aborted;
+    output
 }

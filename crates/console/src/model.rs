@@ -130,6 +130,7 @@ pub enum PaneContent {
     Notebook {
         session: Option<SessionId>,
         cells: Vec<NbCell>,
+        input: Box<tui_textarea::TextArea<'static>>,
     },
     SessionDiff {
         session: SessionId,
@@ -179,6 +180,12 @@ impl SessionDiff {
             (a.saturating_add(file.added), r.saturating_add(file.removed))
         })
     }
+}
+
+pub fn notebook_input() -> Box<tui_textarea::TextArea<'static>> {
+    let mut input = tui_textarea::TextArea::default();
+    input.set_placeholder_text("python · ⇧↩ runs on this session's kernel · esc cancels");
+    Box::new(input)
 }
 
 pub struct Pane {
@@ -247,6 +254,8 @@ pub struct ConsoleState {
     pub diffs: BTreeMap<SessionId, SessionDiff>,
     pub side_opened: std::collections::BTreeSet<SessionId>,
     pub auto_side: bool,
+    pub root_filter: Option<String>,
+    pub children: BTreeMap<SessionId, Vec<yi_types::subagent::ChildUpdate>>,
 }
 
 impl ConsoleState {
@@ -277,6 +286,8 @@ impl ConsoleState {
             diffs: BTreeMap::new(),
             side_opened: std::collections::BTreeSet::new(),
             auto_side: true,
+            root_filter: None,
+            children: BTreeMap::new(),
             tokens_used: None,
             quit: false,
         }
@@ -335,6 +346,43 @@ impl ConsoleState {
     }
 
     /// Roots with at least one known session, launch root first.
+    /// `order` indices the sidebar shows under the current root filter.
+    pub fn visible_rows(&self) -> Vec<usize> {
+        self.order
+            .iter()
+            .enumerate()
+            .filter(|(_, id)| {
+                self.root_filter
+                    .as_deref()
+                    .is_none_or(|root| self.sessions.get(*id).is_some_and(|row| row.root == root))
+            })
+            .map(|(index, _)| index)
+            .collect()
+    }
+
+    pub fn set_root_filter(&mut self, root: Option<String>) {
+        self.root_filter = root;
+        if let Some(first) = self.visible_rows().first() {
+            self.selected = *first;
+        }
+    }
+
+    pub fn cycle_root_filter(&mut self, forward: bool) {
+        let roots = self.roots();
+        let at = self
+            .root_filter
+            .as_ref()
+            .and_then(|root| roots.iter().position(|r| r == root));
+        let next = match (at, forward) {
+            (None, true) => roots.first().cloned(),
+            (None, false) => roots.last().cloned(),
+            (Some(i), true) => roots.get(i.saturating_add(1)).cloned(),
+            (Some(0), false) => None,
+            (Some(i), false) => roots.get(i.saturating_sub(1)).cloned(),
+        };
+        self.set_root_filter(next);
+    }
+
     pub fn roots(&self) -> Vec<String> {
         let mut roots = vec![self.root.clone()];
         for id in &self.order {
