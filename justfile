@@ -126,14 +126,17 @@ console-proof script out="target/proof":
     case "{{out}}" in /*|*..*) echo "out must be a relative path in the repo"; exit 1 ;; esac
     out="$PWD/{{out}}"
     rm -rf "$out"
-    mkdir -p "$out/frames" "$out/home"
+    mkdir -p "$out/frames" "$out/home/.yi"
+    printf '{"kernel":{"prewarm":false}}' > "$out/home/.yi/config.json"
     cargo build -q -p yi-cli
-    HOME="$out/home" target/debug/yi serve --socket "$out/daemon.sock" --model faux/faux-1 \
-      --session-dir "$out/sessions" >/dev/null 2>&1 &
+    # A unix socket path is capped near 100 bytes, so it lives under /tmp, not the repo.
+    sock="$(mktemp -d /tmp/yi-proof.XXXXXX)/d.sock"
+    HOME="$out/home" target/debug/yi serve --socket "$sock" --model faux/faux-1 \
+      --session-dir "$out/sessions" >"$out/serve.log" 2>&1 &
     pid=$!
-    trap 'kill $pid 2>/dev/null || true' EXIT
-    for _ in $(seq 1 60); do [ -S "$out/daemon.sock" ] && break; sleep 0.05; done
-    HOME="$out/home" target/debug/yi console --headless --socket "$out/daemon.sock" \
+    trap 'kill $pid 2>/dev/null || true; rm -rf "$(dirname "$sock")"' EXIT
+    for _ in $(seq 1 60); do [ -S "$sock" ] && break; sleep 0.05; done
+    HOME="$out/home" target/debug/yi console --headless --socket "$sock" \
       --keys "{{script}}" --frames "$out/frames" --record "$out/run.cast"
     rendered() { [ -s "$1" ] || { echo "empty render: $1"; exit 1; }; }
     if command -v agg >/dev/null; then

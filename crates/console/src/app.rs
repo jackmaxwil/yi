@@ -774,6 +774,7 @@ impl App {
         let Some(pane_id) = self.state.focused_pane_id() else {
             return;
         };
+        self.state.zone = Zone::Panes;
         let root = self.state.root.clone();
         self.send_request(
             outbound,

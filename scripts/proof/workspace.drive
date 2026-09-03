@@ -1,0 +1,23 @@
+# The workspace over a faux daemon: a new session, a prompt, the notebook and the diff
+# panes by chord, the palette, and the sidebar toggle.
+wait-frame 5000 workspaces
+key alt-n
+wait-frame 8000 ❯ 01
+type hello workspace
+key enter
+wait-frame 10000 faux:
+cmd-j
+wait-frame 3000 ▤ nb:
+cmd-j
+cmd-g
+wait-frame 3000 Δ 
+cmd-g
+cmd-b
+wait 400
+cmd-b
+cmd-p
+type e scripts/proof/workspace.drive
+key enter
+wait-frame 3000 ✎ workspace.drive
+wait 800
+quit
