@@ -20,6 +20,7 @@ use yi_types::acp::{
     AcpInitializeResult, AcpNotification, AcpPermissionOption, AcpPermissionOptionKind,
     AcpPermissionOutcome, AcpResponse, AcpSessionResult, AcpSessionUpdate, AcpUpdateParams,
 };
+use yi_types::event::AgentEvent;
 
 use crate::update::{IdMap, replay_updates, to_updates};
 
@@ -146,6 +147,12 @@ pub fn bridge_asker(session_id: String, sink: LineSink, pending: PendingAsks) ->
     })
 }
 
+struct UserCell {
+    call_id: String,
+    cancelled: Arc<std::sync::atomic::AtomicBool>,
+    task: JoinHandle<()>,
+}
+
 struct SessionHandle {
     session: AgentSession,
     forwarder: JoinHandle<()>,
@@ -159,6 +166,8 @@ impl Drop for SessionHandle {
 }
 
 struct AcpState {
+    user_cells: HashMap<String, Vec<UserCell>>,
+    user_cell_serial: u64,
     repo: JsonlRepo,
     sessions: HashMap<String, SessionHandle>,
     build: SessionBuilder,
@@ -286,6 +295,57 @@ impl AcpState {
         self.sessions
             .insert(session_id.clone(), SessionHandle { session, forwarder });
         Ok(session_id)
+    }
+
+    fn spawn_user_cell(
+        &mut self,
+        session_id: String,
+        service: Arc<yi_runtime::kernel::KernelService>,
+        events: tokio::sync::broadcast::Sender<AgentEvent>,
+        code: String,
+    ) -> Result<Value, (i64, String)> {
+        let cells = self.user_cells.entry(session_id).or_default();
+        cells.retain(|cell| !cell.task.is_finished());
+        if cells.len() >= 8 {
+            return Err((
+                -32000,
+                "kernel busy: eight user cells are queued".to_owned(),
+            ));
+        }
+        self.user_cell_serial = self.user_cell_serial.saturating_add(1);
+        let call_id = format!("user-{}", self.user_cell_serial);
+        let cancelled = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let flag: Arc<dyn Fn() -> bool + Send + Sync> = {
+            let cancelled = Arc::clone(&cancelled);
+            Arc::new(move || cancelled.load(std::sync::atomic::Ordering::SeqCst))
+        };
+        let start = AgentEvent::ToolExecutionStart {
+            tool_call_id: call_id.clone(),
+            tool_name: "ipython".to_owned(),
+            args: json!({ "code": code }),
+        };
+        if events.send(start).is_err() {
+            return Err((INTERNAL_ERROR, "the session is closed".to_owned()));
+        }
+        let id = call_id.clone();
+        let task = tokio::spawn(async move {
+            let output = service.execute_user_cell(&code, &flag).await;
+            let end = AgentEvent::ToolExecutionEnd {
+                tool_call_id: id.clone(),
+                tool_name: "ipython".to_owned(),
+                result: output.result,
+                is_error: output.is_error,
+            };
+            if events.send(end).is_err() {
+                eprintln!("user cell {id}: the session closed before its output");
+            }
+        });
+        cells.push(UserCell {
+            call_id: call_id.clone(),
+            cancelled,
+            task,
+        });
+        Ok(json!({ "callId": call_id }))
     }
 
     fn session(&self, params: &Value) -> Result<(&SessionHandle, String), (i64, String)> {
@@ -451,6 +511,11 @@ impl AcpState {
             }
             "session/close" => {
                 let id = self.session(params)?.1;
+                for cell in self.user_cells.remove(&id).unwrap_or_default() {
+                    cell.cancelled
+                        .store(true, std::sync::atomic::Ordering::SeqCst);
+                    cell.task.abort();
+                }
                 self.sessions.remove(&id);
                 Ok(json!({}))
             }
@@ -467,7 +532,8 @@ impl AcpState {
                 Ok(json!({}))
             }
             "session/set_config_option" => self.set_config_option(params),
-            "_yi/heartbeat" | "_yi/goal" => self.handle_extension(method, params),
+            "_yi/heartbeat" | "_yi/goal" | "_yi/tracked" | "_yi/kernel_execute"
+            | "_yi/kernel_cancel" => self.handle_extension(method, params),
             other => Err((METHOD_NOT_FOUND, format!("unknown method {other}"))),
         }
     }
@@ -477,6 +543,50 @@ impl AcpState {
         let (handle, session_id) = self.session(params)?;
         let text = |key: &str| params.get(key).and_then(Value::as_str).unwrap_or("");
         match method {
+            "_yi/kernel_execute" => {
+                let code = text("code").to_owned();
+                if code.len() > 64 * 1024 {
+                    return Err((INVALID_PARAMS, "a cell is at most 64 KB".to_owned()));
+                }
+                let service = handle
+                    .session
+                    .kernel_service()
+                    .ok_or((INTERNAL_ERROR, "no kernel is attached".to_owned()))?;
+                let events = handle.session.events_sender();
+                self.spawn_user_cell(session_id, service, events, code)
+            }
+            "_yi/kernel_cancel" => {
+                let call = text("callId");
+                let cells = self.user_cells.get(&session_id);
+                let hit = cells
+                    .into_iter()
+                    .flatten()
+                    .find(|cell| cell.call_id == call)
+                    .map(|cell| {
+                        cell.cancelled
+                            .store(true, std::sync::atomic::Ordering::SeqCst)
+                    });
+                hit.map(|()| json!({}))
+                    .ok_or((INVALID_PARAMS, format!("no running user cell {call}")))
+            }
+            "_yi/tracked" => {
+                let paths: Vec<String> = params
+                    .get("paths")
+                    .and_then(Value::as_array)
+                    .map(|items| {
+                        items
+                            .iter()
+                            .filter_map(Value::as_str)
+                            .map(str::to_owned)
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                if paths.len() > 64 {
+                    return Err((INVALID_PARAMS, "at most 64 paths per call".to_owned()));
+                }
+                let root = std::path::Path::new(text("root"));
+                Ok(json!({"tracked": yi_runtime::environment::tracked(root, &paths)}))
+            }
             "_yi/heartbeat" => {
                 let service = handle
                     .session
@@ -587,6 +697,8 @@ pub fn run_acp(options: AcpOptions, runtime: tokio::runtime::Runtime) -> i32 {
     let sink = stdout_sink();
     let pending: PendingAsks = Arc::new(Mutex::new(HashMap::new()));
     let mut state = AcpState {
+        user_cells: HashMap::new(),
+        user_cell_serial: 0,
         repo,
         sessions: HashMap::new(),
         build: options.build,

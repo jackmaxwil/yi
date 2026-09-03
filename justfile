@@ -118,6 +118,36 @@ journeys:
     HOME="$home" python3 scripts/tui_pty.py --send-quit --expect '┃' \
       --expect 'faux:' -- tui --model faux/faux-1 --session-dir "$home/sessions" ping
 
+# The console counterpart of tui-proof: a faux daemon on a scratch socket drives the
+# real workspace shell headless and agg renders the cast.
+console-proof script out="target/proof":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    case "{{out}}" in /*|*..*) echo "out must be a relative path in the repo"; exit 1 ;; esac
+    out="$PWD/{{out}}"
+    rm -rf "$out"
+    mkdir -p "$out/frames" "$out/home/.yi"
+    printf '{"kernel":{"prewarm":false}}' > "$out/home/.yi/config.json"
+    cargo build -q -p yi-cli
+    # A unix socket path is capped near 100 bytes, so it lives under /tmp, not the repo.
+    sock="$(mktemp -d /tmp/yi-proof.XXXXXX)/d.sock"
+    HOME="$out/home" target/debug/yi serve --socket "$sock" --model faux/faux-1 \
+      --session-dir "$out/sessions" >"$out/serve.log" 2>&1 &
+    pid=$!
+    trap 'kill $pid 2>/dev/null || true; rm -rf "$(dirname "$sock")"' EXIT
+    for _ in $(seq 1 60); do [ -S "$sock" ] && break; sleep 0.05; done
+    HOME="$out/home" target/debug/yi console --headless --socket "$sock" \
+      --keys "{{script}}" --frames "$out/frames" --record "$out/run.cast"
+    rendered() { [ -s "$1" ] || { echo "empty render: $1"; exit 1; }; }
+    if command -v agg >/dev/null; then
+      agg --theme monokai --font-size 16 --idle-time-limit 1 "$out/run.cast" "$out/run.gif"
+      rendered "$out/run.gif"
+      echo "motion: $out/run.gif"
+    else
+      echo "no agg on PATH — cast only (brew install agg)"
+    fi
+    echo "cast: $out/run.cast"
+
 # A drive script rendered for people: the motion and still GIFs a UI change
 # attaches to its PR, so a reviewer can judge how it looks. `agg` is dev-only
 # (brew install agg) and never enters the binary.

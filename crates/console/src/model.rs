@@ -130,7 +130,85 @@ pub enum PaneContent {
     Notebook {
         session: Option<SessionId>,
         cells: Vec<NbCell>,
+        input: Box<tui_textarea::TextArea<'static>>,
     },
+    SessionDiff {
+        session: SessionId,
+    },
+    Editor(Editor),
+}
+
+pub struct Editor {
+    pub path: String,
+    pub text: Box<tui_textarea::TextArea<'static>>,
+    pub dirty: bool,
+    pub mtime: Option<std::time::SystemTime>,
+    pub stale: bool,
+    pub scroll_top: usize,
+    pub lang: Option<String>,
+}
+
+impl Editor {
+    pub fn gutter(&self) -> usize {
+        self.text
+            .lines()
+            .len()
+            .max(1)
+            .to_string()
+            .len()
+            .saturating_add(1)
+    }
+}
+
+pub struct FileDiff {
+    pub patch: String,
+    pub added: u64,
+    pub removed: u64,
+    pub tracked: bool,
+}
+
+#[derive(Default)]
+pub struct SessionDiff {
+    pub files: Vec<(String, FileDiff)>,
+}
+
+const MAX_DIFF_FILES: usize = 512;
+const MAX_DIFF_BYTES: usize = 4 * 1024 * 1024;
+
+impl SessionDiff {
+    pub fn insert(&mut self, path: String, file: FileDiff) {
+        self.files.retain(|(existing, _)| *existing != path);
+        self.files.push((path, file));
+        while self.files.len() > MAX_DIFF_FILES || self.bytes() > MAX_DIFF_BYTES {
+            if self.files.len() <= 1 {
+                break;
+            }
+            self.files.remove(0);
+        }
+    }
+
+    pub fn file_mut(&mut self, path: &str) -> Option<&mut FileDiff> {
+        self.files
+            .iter_mut()
+            .find(|(existing, _)| existing == path)
+            .map(|(_, file)| file)
+    }
+
+    fn bytes(&self) -> usize {
+        self.files.iter().map(|(_, file)| file.patch.len()).sum()
+    }
+
+    pub fn totals(&self) -> (u64, u64) {
+        self.files.iter().fold((0, 0), |(a, r), (_, file)| {
+            (a.saturating_add(file.added), r.saturating_add(file.removed))
+        })
+    }
+}
+
+pub fn notebook_input() -> Box<tui_textarea::TextArea<'static>> {
+    let mut input = tui_textarea::TextArea::default();
+    input.set_placeholder_text("python · ⇧↩ runs on this session's kernel · esc cancels");
+    Box::new(input)
 }
 
 pub struct Pane {
@@ -154,7 +232,10 @@ impl Pane {
             PaneContent::Session { session, .. } | PaneContent::Notebook { session, .. } => {
                 session.as_ref()
             }
-            PaneContent::Markdown { .. } | PaneContent::Diff { .. } => None,
+            PaneContent::Markdown { .. }
+            | PaneContent::Diff { .. }
+            | PaneContent::SessionDiff { .. }
+            | PaneContent::Editor(_) => None,
         }
     }
 }
@@ -193,6 +274,12 @@ pub struct ConsoleState {
     pub dropped_frames: u64,
     pub tokens_used: Option<(u64, u64)>,
     pub quit: bool,
+    pub sidebar_hidden: bool,
+    pub diffs: BTreeMap<SessionId, SessionDiff>,
+    pub side_opened: std::collections::BTreeSet<SessionId>,
+    pub auto_side: bool,
+    pub root_filter: Option<String>,
+    pub children: BTreeMap<SessionId, Vec<yi_types::subagent::ChildUpdate>>,
 }
 
 impl ConsoleState {
@@ -219,6 +306,12 @@ impl ConsoleState {
             ask: None,
             status_note: None,
             dropped_frames: 0,
+            sidebar_hidden: false,
+            diffs: BTreeMap::new(),
+            side_opened: std::collections::BTreeSet::new(),
+            auto_side: true,
+            root_filter: None,
+            children: BTreeMap::new(),
             tokens_used: None,
             quit: false,
         }
@@ -277,6 +370,43 @@ impl ConsoleState {
     }
 
     /// Roots with at least one known session, launch root first.
+    /// `order` indices the sidebar shows under the current root filter.
+    pub fn visible_rows(&self) -> Vec<usize> {
+        self.order
+            .iter()
+            .enumerate()
+            .filter(|(_, id)| {
+                self.root_filter
+                    .as_deref()
+                    .is_none_or(|root| self.sessions.get(*id).is_some_and(|row| row.root == root))
+            })
+            .map(|(index, _)| index)
+            .collect()
+    }
+
+    pub fn set_root_filter(&mut self, root: Option<String>) {
+        self.root_filter = root;
+        if let Some(first) = self.visible_rows().first() {
+            self.selected = *first;
+        }
+    }
+
+    pub fn cycle_root_filter(&mut self, forward: bool) {
+        let roots = self.roots();
+        let at = self
+            .root_filter
+            .as_ref()
+            .and_then(|root| roots.iter().position(|r| r == root));
+        let next = match (at, forward) {
+            (None, true) => roots.first().cloned(),
+            (None, false) => roots.last().cloned(),
+            (Some(i), true) => roots.get(i.saturating_add(1)).cloned(),
+            (Some(0), false) => None,
+            (Some(i), false) => roots.get(i.saturating_sub(1)).cloned(),
+        };
+        self.set_root_filter(next);
+    }
+
     pub fn roots(&self) -> Vec<String> {
         let mut roots = vec![self.root.clone()];
         for id in &self.order {
