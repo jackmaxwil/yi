@@ -96,7 +96,8 @@ fn print_list(listed: &[SessionMetadata], json: bool) {
     let now = now_ms();
     for metadata in listed {
         let age = age_label(now.saturating_sub(metadata.created_at));
-        println!("{}  {age:>8}", metadata.id);
+        let name = metadata.name.as_deref().unwrap_or("");
+        println!("{}  {age:>8}  {name}", metadata.id);
     }
 }
 

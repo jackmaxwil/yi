@@ -305,11 +305,13 @@ fn two_roots_run_two_workers_that_keep_their_own_schedules() -> TestResult {
             .as_array()
             .ok_or("sessions must be an array")?;
         for session in [&first, &second] {
-            assert!(
-                listed
-                    .iter()
-                    .any(|entry| entry["sessionId"] == session.as_str()),
-                "the supervisor must still know {session} after reconnect: {list}"
+            let entry = listed
+                .iter()
+                .find(|entry| entry["sessionId"] == session.as_str())
+                .ok_or_else(|| format!("the supervisor must still know {session}: {list}"))?;
+            assert_eq!(
+                entry["name"], "sanity",
+                "the ledger names a session from its first prompt: {entry}"
             );
             let resume =
                 reconnected.request("3", "session/resume", json!({"sessionId": session}))?;

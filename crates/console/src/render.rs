@@ -3,13 +3,13 @@
 
 use std::collections::HashMap;
 
-use crate::model::SessionId;
+use crate::model::{SessionId, SessionRow, SidebarMode, now_ms};
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
-use yi_tui::colors::Theme;
+use yi_tui::colors::{Theme, name_accent};
 use yi_tui::diffview::{self, DiffBudget};
 
 use crate::app::App;
@@ -17,8 +17,8 @@ use crate::keys;
 use crate::layout::{PaneId, SplitBorder};
 use crate::model::{Link, Mode, PaneContent, SessionStatus, Zone};
 
-const SIDEBAR_WIDTH: u16 = 26;
 const COMPOSER_HEIGHT: u16 = 3;
+const NAME_WIDTH: usize = 16;
 
 pub struct PaneView {
     pub scroll: Option<(usize, usize)>,
@@ -86,8 +86,8 @@ fn split_off_top(area: Rect, height: u16) -> (Rect, Rect) {
 }
 
 pub fn compute_view(app: &mut App, area: Rect, theme: &Theme) -> ViewState {
-    let sidebar_width = if area.width >= 50 && !app.state.sidebar_hidden {
-        SIDEBAR_WIDTH
+    let sidebar_width = if area.width >= 50 {
+        app.state.sidebar.width()
     } else {
         0
     };
@@ -96,10 +96,12 @@ pub fn compute_view(app: &mut App, area: Rect, theme: &Theme) -> ViewState {
         ..area
     };
     let root_count = app.state.roots().len();
-    let (sidebar, roots_area) = split_off_bottom(
-        sidebar,
-        u16::try_from(root_count.saturating_add(1).min(8)).unwrap_or(8),
-    );
+    let roots_height = if sidebar_width > 0 && app.state.sidebar == SidebarMode::Full {
+        u16::try_from(root_count.saturating_add(1).min(8)).unwrap_or(8)
+    } else {
+        0
+    };
+    let (sidebar, roots_area) = split_off_bottom(sidebar, roots_height);
     let main = Rect {
         x: area.x.saturating_add(sidebar_width),
         width: area.width.saturating_sub(sidebar_width),
@@ -153,8 +155,9 @@ pub fn compute_view(app: &mut App, area: Rect, theme: &Theme) -> ViewState {
     for pane_rect in pane_rects {
         let inner = pane_rect.rect.inner(pane_margin(framed));
         let diffs = &app.state.diffs;
+        let sessions = &app.state.sessions;
         let (title, lines, scroll) = match app.state.panes.get_mut(&pane_rect.id) {
-            Some(pane) => pane_view_content(pane, diffs, inner, theme),
+            Some(pane) => pane_view_content(pane, diffs, sessions, inner, theme),
             None => ("empty".to_owned(), Vec::new(), None),
         };
         if pane_rect.focused
@@ -174,7 +177,7 @@ pub fn compute_view(app: &mut App, area: Rect, theme: &Theme) -> ViewState {
         });
     }
 
-    let sidebar_rows = sidebar_lines(app, theme)
+    let sidebar_rows = sidebar_lines(app, theme, sidebar.height)
         .iter()
         .enumerate()
         .filter_map(|(offset, (index, _))| {
@@ -225,9 +228,23 @@ pub fn compute_view(app: &mut App, area: Rect, theme: &Theme) -> ViewState {
     }
 }
 
+fn label_of(
+    sessions: &std::collections::BTreeMap<SessionId, SessionRow>,
+    id: &SessionId,
+    max: usize,
+) -> String {
+    sessions
+        .get(id)
+        .map_or_else(|| id.0.clone(), SessionRow::label)
+        .chars()
+        .take(max)
+        .collect()
+}
+
 fn pane_view_content(
     pane: &mut crate::model::Pane,
     diffs: &std::collections::BTreeMap<SessionId, crate::model::SessionDiff>,
+    sessions: &std::collections::BTreeMap<SessionId, SessionRow>,
     inner: Rect,
     theme: &Theme,
 ) -> (String, Vec<Line<'static>>, Option<(usize, usize)>) {
@@ -246,7 +263,7 @@ fn pane_view_content(
             let (lines, scroll) = windowed(all, pane.scroll_from_bottom, visible);
             let title = session.as_ref().map_or_else(
                 || "❯ no session".to_owned(),
-                |id| format!("❯ {}", id.0.chars().take(14).collect::<String>()),
+                |id| format!("❯ {}", label_of(sessions, id, 14)),
             );
             (title, lines, scroll)
         }
@@ -301,7 +318,7 @@ fn pane_view_content(
         PaneContent::Notebook { session, cells, .. } => {
             let title = session.as_ref().map_or_else(
                 || "▤ notebook".to_owned(),
-                |id| format!("▤ nb:{}", id.0.chars().take(11).collect::<String>()),
+                |id| format!("▤ nb:{}", label_of(sessions, id, 11)),
             );
             let all = notebook_lines(cells, usize::from(inner.width), theme);
             let (lines, scroll) = windowed(all, pane.scroll_from_bottom, visible);
@@ -488,6 +505,8 @@ fn status_style(theme: &Theme, status: SessionStatus) -> Style {
 pub fn render(app: &App, frame: &mut Frame<'_>, view: &ViewState, theme: &Theme) {
     if view.sidebar.width > 0 {
         render_sidebar(app, frame, view.sidebar, theme);
+    }
+    if view.roots.height > 0 {
         render_roots(app, frame, view.roots, theme);
     }
     if let Some(bar) = view.tab_bar {
@@ -698,22 +717,47 @@ fn render_tab_bar(app: &App, frame: &mut Frame<'_>, area: Rect, theme: &Theme) {
 
 /// Sidebar lines paired with the `order` index a row stands for; root
 /// headers carry None. One builder serves rendering and hit-testing.
-fn sidebar_lines(app: &App, theme: &Theme) -> Vec<(Option<usize>, Line<'static>)> {
-    let mut lines = Vec::new();
-    let multi_root = app.state.roots().len() > 1;
+fn age(now: u64, then: u64) -> String {
+    if then == 0 {
+        return String::new();
+    }
+    let seconds = now.saturating_sub(then) / 1000;
+    match seconds {
+        0..60 => "now".to_owned(),
+        60..3600 => format!("{}m", seconds / 60),
+        3600..86_400 => format!("{}h", seconds / 3600),
+        _ => format!("{}d", seconds / 86_400),
+    }
+}
+
+fn fade(line: &mut Line<'static>, level: usize, theme: &Theme) {
+    let mut style = theme.dim_style();
+    if level > 1 {
+        style = style.add_modifier(Modifier::DIM);
+    }
+    for span in &mut line.spans {
+        span.style = span.style.patch(style);
+    }
+}
+
+fn sidebar_lines(app: &App, theme: &Theme, height: u16) -> Vec<(Option<usize>, Line<'static>)> {
+    let mut rows = Vec::new();
+    let rail = app.state.sidebar == SidebarMode::Rail;
+    let multi_root = !rail && app.state.roots().len() > 1;
     let mut current_root: Option<&str> = None;
-    let visible = app.state.visible_rows();
-    for (index, id) in app.state.order.iter().enumerate() {
+    let focused = app.state.focused_session();
+    let now = now_ms();
+    for index in app.state.visible_rows() {
+        let Some(id) = app.state.order.get(index) else {
+            continue;
+        };
         let Some(row) = app.state.sessions.get(id) else {
             continue;
         };
-        if !visible.contains(&index) {
-            continue;
-        }
         if multi_root && current_root != Some(row.root.as_str()) {
             current_root = Some(row.root.as_str());
             let label = row.root.rsplit('/').next().unwrap_or(&row.root);
-            lines.push((
+            rows.push((
                 None,
                 Line::styled(
                     format!(" {label}"),
@@ -721,40 +765,97 @@ fn sidebar_lines(app: &App, theme: &Theme) -> Vec<(Option<usize>, Line<'static>)
                 ),
             ));
         }
-        let selected = index == app.state.selected && app.state.zone == Zone::Sidebar;
-        let marker = if selected { "▸" } else { " " };
-        let short: String = id.0.chars().take(16).collect();
+        let is_focused = focused.as_ref() == Some(id);
+        let marker = if index == app.state.selected && app.state.zone == Zone::Sidebar {
+            "▸"
+        } else if is_focused {
+            "▎"
+        } else {
+            " "
+        };
+        let label = row.label();
+        if rail {
+            let mut glyph = Style::default().fg(name_accent(&label));
+            if is_focused {
+                glyph = glyph.add_modifier(Modifier::REVERSED);
+            }
+            rows.push((
+                Some(index),
+                Line::from(vec![
+                    Span::styled(marker.to_owned(), theme.accent_style()),
+                    Span::styled(row.status.glyph().to_owned(), glyph),
+                ]),
+            ));
+            continue;
+        }
+        let name: String = label.chars().take(NAME_WIDTH).collect();
+        let pad = NAME_WIDTH.saturating_sub(name.chars().count());
+        let name_style = if is_focused {
+            theme.accent_style().add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(theme.text)
+        };
+        let tail = if row.attached { "·" } else { "" };
         let mut spans = vec![
             Span::styled(marker.to_owned(), theme.accent_style()),
             Span::styled(
                 format!("{} ", row.status.glyph()),
                 status_style(theme, row.status),
             ),
-            Span::styled(short, Style::default().fg(theme.text)),
+            Span::styled(name, name_style),
+            Span::styled(
+                format!("{}{:>4}{tail}", " ".repeat(pad), age(now, row.recency())),
+                theme.dim_style(),
+            ),
         ];
-        if row.attached {
-            spans.push(Span::styled(" ·", theme.dim_style()));
-        }
-        lines.push((Some(index), Line::from(spans)));
+        spans.retain(|span| !span.content.is_empty());
+        rows.push((Some(index), Line::from(spans)));
         for child in app.state.children.get(id).into_iter().flatten().take(3) {
             let name: String = child
                 .name
                 .chars()
                 .filter(|c| !c.is_control())
-                .take(16)
+                .take(NAME_WIDTH)
                 .collect();
             let glyph = match child.status {
                 yi_types::subagent::ChildStatus::Running => "◐",
                 yi_types::subagent::ChildStatus::Completed => "○",
                 yi_types::subagent::ChildStatus::Error => "✕",
             };
-            lines.push((
+            rows.push((
                 None,
                 Line::styled(format!("   └ {name} {glyph}"), theme.dim_style()),
             ));
         }
     }
-    lines
+    let visible = usize::from(height);
+    if visible == 0 || rows.len() <= visible {
+        return rows;
+    }
+    let cursor = rows
+        .iter()
+        .position(|(index, _)| *index == Some(app.state.selected))
+        .unwrap_or(0);
+    let start = cursor.saturating_add(1).saturating_sub(visible);
+    let end = start.saturating_add(visible).min(rows.len());
+    let below = end < rows.len();
+    let mut window: Vec<(Option<usize>, Line<'static>)> =
+        rows.get(start..end).map(<[_]>::to_vec).unwrap_or_default();
+    let last = window.len().saturating_sub(1);
+    for (offset, (_, line)) in window.iter_mut().enumerate() {
+        let from_bottom = last.saturating_sub(offset);
+        let level = if start > 0 && offset < 2 {
+            2_usize.saturating_sub(offset)
+        } else if below && from_bottom < 2 {
+            2_usize.saturating_sub(from_bottom)
+        } else {
+            0
+        };
+        if level > 0 {
+            fade(line, level, theme);
+        }
+    }
+    window
 }
 
 fn render_roots(app: &App, frame: &mut Frame<'_>, area: Rect, theme: &Theme) {
@@ -800,11 +901,11 @@ fn render_roots(app: &App, frame: &mut Frame<'_>, area: Rect, theme: &Theme) {
 }
 
 fn render_sidebar(app: &App, frame: &mut Frame<'_>, area: Rect, theme: &Theme) {
-    let mut lines: Vec<Line<'static>> = sidebar_lines(app, theme)
+    let mut lines: Vec<Line<'static>> = sidebar_lines(app, theme, area.height)
         .into_iter()
         .map(|(_, line)| line)
         .collect();
-    if lines.is_empty() {
+    if lines.is_empty() && app.state.sidebar == SidebarMode::Full {
         let label = app
             .state
             .root
@@ -950,7 +1051,7 @@ fn render_navigator(app: &App, frame: &mut Frame<'_>, view: &ViewState, theme: &
                 status_style(theme, row_status),
             ),
             Span::styled(
-                id.0.chars().take(30).collect::<String>(),
+                label_of(&app.state.sessions, id, 30),
                 if picked {
                     theme.accent_style().add_modifier(Modifier::BOLD)
                 } else {
@@ -1004,7 +1105,7 @@ fn render_status(app: &App, frame: &mut Frame<'_>, area: Rect, theme: &Theme) {
     }
     spans.push(link);
     if let Some(id) = &app.state.focused_session() {
-        let short: String = id.0.chars().take(16).collect();
+        let short = label_of(&app.state.sessions, id, NAME_WIDTH);
         spans.push(Span::styled(format!("  {short}"), theme.muted_style()));
     }
     if let Some((used, size)) = app.state.tokens_used

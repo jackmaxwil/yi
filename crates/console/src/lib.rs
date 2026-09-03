@@ -40,6 +40,7 @@ pub struct ConsoleOptions {
     pub root: String,
     pub autostart: bool,
     pub auto_side: bool,
+    pub sidebar: crate::model::SidebarMode,
 }
 
 pub struct DriveOptions {
@@ -144,6 +145,7 @@ pub fn run_console(options: &ConsoleOptions) -> i32 {
     let mut app = App::new(options.root.clone());
     app.autostart = options.autostart;
     app.state.auto_side = options.auto_side;
+    app.state.sidebar = options.sidebar;
     app.animate = true;
     app.osc_flavor = crate::notify::detect_flavor(
         std::env::var("TERM_PROGRAM").ok().as_deref(),
@@ -334,6 +336,7 @@ pub fn run_headless(options: &ConsoleOptions, drive: DriveOptions) -> i32 {
     let mut app = App::new(options.root.clone());
     app.autostart = options.autostart;
     app.state.auto_side = options.auto_side;
+    app.state.sidebar = options.sidebar;
     let width = drive.width.max(20);
     let height = drive.height.max(8);
     let backend = match RecordingBackend::new(width, height, drive.record.as_deref()) {

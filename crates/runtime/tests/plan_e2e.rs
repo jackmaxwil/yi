@@ -26,6 +26,7 @@ fn memory_store() -> yi_session::SharedSession {
             id: "plan-view-test".to_owned(),
             created_at: 0,
             parent_session_id: None,
+            name: None,
         },
     )))
 }
