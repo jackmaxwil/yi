@@ -199,7 +199,6 @@ pub fn apply_edits(
             text: text.to_owned(),
             first_changed_line: None,
             warnings: Vec::new(),
-            block_resolutions: Vec::new(),
         });
     }
     let file_lines: Vec<String> = text.split('\n').map(str::to_owned).collect();
@@ -223,6 +222,5 @@ pub fn apply_edits(
         text: result_text,
         first_changed_line,
         warnings,
-        block_resolutions: Vec::new(),
     })
 }
