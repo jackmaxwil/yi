@@ -155,6 +155,7 @@ impl App {
                 (_, session) => PaneContent::Notebook {
                     session,
                     cells: Vec::new(),
+                    input: crate::model::notebook_input(),
                 },
             };
             pane.scroll_from_bottom = 0;

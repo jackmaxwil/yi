@@ -22,6 +22,7 @@ pub use checkpoint::{Change, ChangeKind, CheckpointError, Checkpoints, TreeId};
 pub use diff::{GitPatch, patch};
 pub use exec::{ExecTool, discover_exec_tools};
 pub use grep::GrepTool;
+pub use ipython::cell_output;
 pub use ipython::{IpythonTool, KernelBridge, KernelCellOutcome};
 pub use jobs::{JobId, JobReport, Run, run_or_background};
 pub use orient::GetContextTool;

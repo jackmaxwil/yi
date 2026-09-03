@@ -653,17 +653,14 @@ fn notebook_pane_shows_cells_and_image_placeholder() -> TestResult {
                 frames
             }),
         ],
-        // Open the session, swap the pane to the notebook view, then prompt:
-        // the kernel cell renders code, streams and the image placeholder.
+        // Open the session and prompt: the first kernel cell opens the notebook pane
+        // beside it, which renders code, streams and the image placeholder.
         "wait-frame 5000 s-alpha\n\
          key enter\n\
          wait-frame 5000 replayed world\n\
-         key alt-/\n\
-         type nb\n\
-         key enter\n\
-         wait-frame 3000 no kernel cells yet\n\
          type chart it\n\
          key enter\n\
+         wait-frame 5000 nb:s-alpha\n\
          wait-frame 5000 In[1]\n\
          wait-frame 3000 plot_drift\n\
          wait-frame 3000 computing drift\n\
@@ -1002,6 +999,159 @@ fn first_kernel_cell_opens_the_notebook_and_spends_the_auto_side() -> TestResult
          wait-frame 5000 nb:s-alpha\n\
          wait-frame 5000 brand new line\n\
          wait-frame 2000 !Δ s-alpha\n\
+         quit\n",
+    )
+}
+
+fn other_root_ledger(frame: &Value) -> Vec<Value> {
+    vec![ok(
+        frame,
+        json!({"sessions": [
+            {"sessionId": "s-gamma", "cwd": "/tmp/other-root", "attached": false,
+             "unseen": 0, "lastState": "idle", "lastEventMs": 1},
+        ]}),
+    )]
+}
+
+fn subagent_push() -> Vec<Value> {
+    vec![update(
+        "s-alpha",
+        json!({"sessionUpdate": "_yi/subagent_update", "id": "c1",
+        "name": "grep-bot-sub-1a2b3c4d", "status": "running", "activity": "executing",
+        "toolUseCount": 2, "tokenCount": 100}),
+    )]
+}
+
+/// The workspaces block lists every root; ←/→ in the sidebar narrows the session list
+/// to one root and back.
+#[test]
+fn workspace_rows_filter_sessions_by_root() -> TestResult {
+    run(
+        "roots",
+        vec![
+            Step::Expect("initialize", init_reply),
+            Step::Expect("session/list", two_session_list),
+            Step::Expect("session/list", other_root_ledger),
+        ],
+        "wait-frame 5000 s-gamma\n\
+         wait-frame 3000 workspaces\n\
+         wait-frame 3000 other-root 1\n\
+         key right\n\
+         wait-frame 3000 !s-gamma\n\
+         wait-frame 3000 s-alpha\n\
+         key right\n\
+         wait-frame 3000 s-gamma\n\
+         wait-frame 3000 !s-alpha\n\
+         key left\n\
+         key left\n\
+         wait-frame 3000 s-alpha\n\
+         quit\n",
+    )
+}
+
+/// A child reported over `_yi/subagent_update` shows under its parent in the sidebar.
+#[test]
+fn subagent_rows_render_under_parent() -> TestResult {
+    run(
+        "children",
+        vec![
+            Step::Expect("initialize", init_reply),
+            Step::Expect("session/list", two_session_list),
+            Step::Expect("session/list", empty_list),
+            Step::Expect("session/resume", resume_alpha),
+            Step::Expect("_yi/seen", seen_ok),
+            Step::Push(subagent_push),
+        ],
+        "wait-frame 5000 s-alpha\n\
+         key enter\n\
+         wait-frame 5000 replayed world\n\
+         wait-frame 5000 └ grep-bot-sub-1a2 ◐\n\
+         quit\n",
+    )
+}
+
+fn kernel_execute_reply(frame: &Value) -> Vec<Value> {
+    vec![
+        ok(frame, json!({"callId": "user-1"})),
+        update(
+            "s-alpha",
+            json!({"sessionUpdate": "tool_call_update",
+            "toolCallId": "user-1", "title": "ipython", "kind": "execute",
+            "status": "in_progress", "rawInput": {"code": "print(1)"}}),
+        ),
+        update(
+            "s-alpha",
+            json!({"sessionUpdate": "tool_call_update",
+            "toolCallId": "user-1", "status": "completed",
+            "rawOutput": {"stdout": "1\n", "result": "", "error": null}}),
+        ),
+    ]
+}
+
+fn kernel_execute_running(frame: &Value) -> Vec<Value> {
+    vec![
+        ok(frame, json!({"callId": "user-1"})),
+        update(
+            "s-alpha",
+            json!({"sessionUpdate": "tool_call_update",
+            "toolCallId": "user-1", "title": "ipython", "kind": "execute",
+            "status": "in_progress", "rawInput": {"code": "sleep()"}}),
+        ),
+    ]
+}
+
+/// ⇧↩ on the notebook pane runs the draft on the session's kernel, and the cell comes back
+/// through the same tool-call stream the agent's cells use.
+#[test]
+fn shift_enter_runs_user_cell_on_session_kernel() -> TestResult {
+    run(
+        "user-cell",
+        vec![
+            Step::Expect("initialize", init_reply),
+            Step::Expect("session/list", two_session_list),
+            Step::Expect("session/list", empty_list),
+            Step::Expect("session/resume", resume_alpha),
+            Step::Expect("_yi/seen", seen_ok),
+            Step::Expect("_yi/kernel_execute", kernel_execute_reply),
+        ],
+        "wait-frame 5000 s-alpha\n\
+         key enter\n\
+         wait-frame 5000 replayed world\n\
+         cmd-j\n\
+         wait-frame 3000 nb:s-alpha\n\
+         wait-frame 3000 ⇧↩ runs\n\
+         type print(1)\n\
+         key shift-enter\n\
+         wait-frame 5000 ● In[1]\n\
+         wait-frame 3000 print(1)\n\
+         quit\n",
+    )
+}
+
+/// Esc on the notebook cancels the newest running user cell.
+#[test]
+fn esc_cancels_running_user_cell() -> TestResult {
+    run(
+        "user-cell-cancel",
+        vec![
+            Step::Expect("initialize", init_reply),
+            Step::Expect("session/list", two_session_list),
+            Step::Expect("session/list", empty_list),
+            Step::Expect("session/resume", resume_alpha),
+            Step::Expect("_yi/seen", seen_ok),
+            Step::Expect("_yi/kernel_execute", kernel_execute_running),
+            Step::Expect("_yi/kernel_cancel", seen_ok),
+        ],
+        "wait-frame 5000 s-alpha\n\
+         key enter\n\
+         wait-frame 5000 replayed world\n\
+         cmd-j\n\
+         wait-frame 3000 nb:s-alpha\n\
+         type sleep()\n\
+         key shift-enter\n\
+         wait-frame 5000 ◐ In[1]\n\
+         key esc\n\
+         wait 300\n\
          quit\n",
     )
 }
