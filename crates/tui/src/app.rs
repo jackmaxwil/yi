@@ -619,32 +619,11 @@ impl App {
             } => {
                 self.cost_total += usage.cost.total.as_f64().unwrap_or(0.0);
                 self.cost_unknown |= usage.unknown;
-                let thought = thinking_of(content);
-                let rest = thought
-                    .get(self.live_thought_cut..)
-                    .unwrap_or_default()
-                    .to_owned();
-                self.commit_thought_slice(&rest);
-                let text = text_of(content);
-                if !text.is_empty() {
-                    let remainder = text.get(self.live_cut..).unwrap_or_default().to_owned();
-                    let first = self.live_cut == 0;
-                    let rendered = crate::transcript::paint_slice(self, &remainder).0;
-                    if !rendered.is_empty() {
-                        if self.live_reopen.is_none() {
-                            self.pending_commit.push(Line::default());
-                        }
-                        self.pending_commit.extend(crate::cell::gutter(
-                            rendered,
-                            first,
-                            &self.theme,
-                        ));
-                        self.retain(Cell::Assistant {
-                            markdown: remainder,
-                        });
-                    }
-                    self.scheduler.request();
-                }
+                self.live_thought = thinking_of(content);
+                self.flush_thought();
+                self.live_markdown = text_of(content);
+                self.commit_prose(self.live_markdown.len(), true);
+                self.scheduler.request();
                 self.live_markdown.clear();
                 self.live_thought.clear();
                 self.live_cut = 0;

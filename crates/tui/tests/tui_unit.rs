@@ -1510,11 +1510,15 @@ fn one_unbroken_paragraph_still_reaches_scrollback() -> TestResult {
             "a forced cut lands on a word boundary: {line:?}"
         );
     }
-    // A body row that does not fill its width is a seam showing through: the
-    // forced cut snaps to the last word of the row it lands on for this reason.
+    // A short body row is a seam showing through, unless it is the thought's own
+    // last row: the forced cut snaps to the last word of the row it lands on.
     let short: Vec<&String> = committed
-        .iter()
-        .filter(|line| line.trim_start().starts_with(char::is_alphabetic))
+        .windows(2)
+        .filter(|pair| {
+            pair.iter()
+                .all(|l| l.trim_start().starts_with(char::is_alphabetic))
+        })
+        .filter_map(|pair| pair.first())
         .filter(|line| line.chars().count() < 60)
         .collect();
     assert!(short.is_empty(), "the seams wrap flush: {short:?}");
