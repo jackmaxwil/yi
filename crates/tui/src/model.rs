@@ -324,7 +324,7 @@ impl App {
         self.scheduler.request();
     }
 
-    fn notice(&mut self, text: impl Into<String>) {
+    pub fn notice(&mut self, text: impl Into<String>) {
         self.commit_cell(&Cell::Notice { text: text.into() });
         self.scheduler.request();
     }
