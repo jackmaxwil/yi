@@ -1,4 +1,5 @@
 #![forbid(unsafe_code)]
+#![deny(clippy::string_slice)]
 
 //! `yi console` — the multi-agent workspace shell: an ACP client over the
 //! `yi serve` daemon socket; the daemon owns every session, this renders.

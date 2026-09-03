@@ -1,0 +1,21 @@
+# The screenshot session over faux (D107, #128): a prompt that makes the model
+# think, run `h = await rlm.run('trace')` in the kernel, and answer. The rows
+# are asserted whole: the kernel cell must be on screen before the task cell
+# that it spawned, and the finished task sits under it, never above.
+#
+# Precondition: the faux provider must answer the prompt with a thinking block,
+# an `ipython` call whose code is `h = await rlm.run('trace')`, and a text
+# block. Today's CLI faux queues one `faux: <prompt>` echo (cli/src/main.rs
+# `yi_ai_faux_reply`), so this script times out on the first `wait-frame` until
+# that seam can be scripted; the in-process pair tests in crates/tui/tests
+# assert the same rows through `render::draw` over a VT100 screen.
+type-ms 30
+wait 300
+type Test the ipython tooling: spawn a child with rlm.run and read its answer
+wait 400
+key enter
+wait-frame 20000 ⊙ python · h = await rlm.run('trace')
+wait-frame 20000 ✓ rlm Task —
+wait-idle 20000
+wait 900
+quit

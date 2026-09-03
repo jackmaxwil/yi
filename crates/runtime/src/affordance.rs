@@ -18,6 +18,12 @@ pub fn coroutine_leak() -> String {
     )
 }
 
+pub fn method_awaited() -> String {
+    format!(
+        "{NEXT}rlm.run is a method, not a coroutine — call it: h = await rlm.run('…'), then r = await h.result()"
+    )
+}
+
 pub fn listing_name() -> String {
     // Incident: list_subagents()[0].name raised; listings expose session_name, spawn handles expose name.
     format!(

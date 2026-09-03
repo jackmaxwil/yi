@@ -101,7 +101,9 @@ fn faux_turn_renders_user_and_assistant_cells() -> TestResult {
     runtime.block_on(async {
         let session = faux_session("faux: pong");
         let mut events = session.subscribe();
-        session.prompt("ping").map_err(|e| format!("{e:?}"))?;
+        session
+            .prompt_message(yi_runtime::session::user_input("ping"))
+            .map_err(|e| format!("{e:?}"))?;
         loop {
             let event = events
                 .recv()
@@ -1199,5 +1201,487 @@ fn a_recording_replays_to_the_frame_the_run_asserted_on() -> TestResult {
         screen_lines(&dumped),
         "the still must paint the frame the run ended on"
     );
+    Ok(())
+}
+
+/// `normal` folds a thought to its line count, and the count is drawn from the
+/// live tail even after the flush moved the cut to the end — an empty tail read
+/// as `∴ thinking · 0 lines` under the count row that had just committed.
+#[test]
+fn a_flushed_thought_leaves_no_empty_count_row_in_the_live_region() -> TestResult {
+    let backend = VT100Backend::with_scrollback(80, 24, 200);
+    let mut terminal = yi_tui::terminal::Terminal::new(backend, 4)?;
+    let mut app = app();
+    while app.mode() != yi_tui::cell::TranscriptMode::Normal {
+        app.cycle_mode();
+    }
+    app.reduce_agent(yi_types::event::AgentEvent::AgentStart);
+    let message = yi_runtime::faux::faux_assistant_message(
+        vec![
+            yi_runtime::faux::faux_thinking("short"),
+            yi_runtime::faux::faux_text("ok.\n\nmore"),
+        ],
+        StopReason::Stop,
+    );
+    app.reduce_agent(yi_types::event::AgentEvent::MessageUpdate {
+        message: message.clone(),
+        assistant_message_event: yi_types::event::AssistantMessageEvent::TextDelta {
+            content_index: 0,
+            delta: String::new(),
+            partial: message,
+        },
+    });
+    yi_tui::render::draw(&mut app, &mut terminal, None);
+    let contents = terminal.backend().contents();
+    assert!(
+        contents.contains("∴ thinking · 1 lines"),
+        "the flushed thought's count row committed:\n{contents}"
+    );
+    // Glyph-agnostic: the live row's `∴` pulses into a starburst every frame.
+    assert!(
+        !contents.contains("thinking · 0 lines"),
+        "an empty live tail draws nothing:\n{contents}"
+    );
+    Ok(())
+}
+
+/// The screenshot's second defect: the child spawned by `h = await rlm.run(…)`
+/// finished while the kernel cell was still running, and the roster poll
+/// committed its task cell above the cell that made it.
+#[test]
+fn a_child_that_finishes_inside_its_spawning_cell_lands_under_it() -> TestResult {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    let dir = std::env::temp_dir().join(format!("yi-tui-spawn-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir)?;
+    let host = Arc::new(SubagentHost::new(SubagentHostOptions {
+        depth: 0,
+        max_depth: 1,
+        max_children: 4,
+        parent_session_dir: dir.clone(),
+        cwd: dir.clone(),
+        defaults: Arc::new(|| (faux_model(), yi_types::model::Effort::Medium)),
+        factory: Arc::new(|_build| Ok(faux_session("child answer"))),
+        notice: Arc::new(|_notice| {}),
+        events: tokio::sync::broadcast::channel(64).0,
+        parent_messages: Arc::new(Vec::new),
+        report: Arc::new(|_message| {}),
+        attribute: Arc::new(|_usage| {}),
+        store: Arc::new(|| None),
+        plans_dir: dir.join(".yi/plans"),
+    }));
+    let backend = VT100Backend::with_scrollback(80, 24, 200);
+    let mut terminal = yi_tui::terminal::Terminal::new(backend, 4)?;
+    let mut app = app();
+    app.reduce_agent(yi_types::event::AgentEvent::AgentStart);
+    let code = "h = await rlm.run('trace')\nr = await h.result()";
+    app.reduce_agent(yi_types::event::AgentEvent::ToolExecutionStart {
+        tool_call_id: "c1".to_owned(),
+        tool_name: "ipython".to_owned(),
+        args: serde_json::json!({ "code": code }),
+    });
+    runtime.block_on(async {
+        host.spawn("trace".to_owned(), Map::new())
+            .map_err(|e| e.to_string())?;
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let children = host.children_view();
+            app.sync_children(&children);
+            if children
+                .iter()
+                .any(|c| c.update.status != yi_runtime::ChildStatus::Running)
+            {
+                return Ok::<(), String>(());
+            }
+            if Instant::now() > deadline {
+                return Err("child never finished".to_owned());
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+    })?;
+    let early = flat_lines(&app.take_commits());
+    assert!(
+        !early.iter().any(|line| line.contains("Task —")),
+        "nothing commits while the spawning cell is still live: {early:?}"
+    );
+    yi_tui::render::draw(&mut app, &mut terminal, None);
+    let contents = terminal.backend().contents();
+    assert!(
+        contents.contains("✓ rlm Task —"),
+        "a held task is drawn finished under the running cell, not hidden:\n{contents}"
+    );
+    app.reduce_agent(yi_types::event::AgentEvent::ToolExecutionEnd {
+        tool_call_id: "c1".to_owned(),
+        tool_name: "ipython".to_owned(),
+        result: yi_types::event::ToolResult {
+            content: vec![yi_types::message::Content::Text {
+                text: "ok".to_owned(),
+                text_signature: None,
+            }],
+            details: serde_json::json!({ "code": code, "stdout": "ok\n" }),
+            usage: None,
+            added_tool_names: None,
+            terminate: None,
+        },
+        is_error: false,
+    });
+    let committed = flat_lines(&app.take_commits());
+    let cell = committed
+        .iter()
+        .position(|line| line.contains("⊙ python · h = await rlm.run('trace')"))
+        .ok_or_else(|| format!("no kernel cell row: {committed:?}"))?;
+    let task = committed
+        .iter()
+        .position(|line| line.contains("✓ rlm Task —"))
+        .ok_or_else(|| format!("no task row: {committed:?}"))?;
+    assert!(
+        cell < task,
+        "the task lands under the cell that spawned it: {committed:?}"
+    );
+    assert_eq!(
+        committed
+            .iter()
+            .filter(|line| line.contains("Task —"))
+            .count(),
+        1,
+        "one task row: {committed:?}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+    Ok(())
+}
+
+/// The screenshot's fourth defect: a host notice arrived as a user-role
+/// message, so it retitled the window, opened a turn with a divider, and drew
+/// the user's `›` rail on text the user never typed.
+#[test]
+fn a_host_notice_titles_nothing_and_draws_no_prompt_rail() -> TestResult {
+    use yi_types::message::{AgentMessage, UserContent};
+    let backend = VT100Backend::with_scrollback(80, 24, 200);
+    let mut terminal = yi_tui::terminal::Terminal::new(backend, 4)?;
+    let mut app = app();
+    app.reduce_agent(yi_types::event::AgentEvent::MessageStart {
+        message: AgentMessage::user_input(UserContent::Text("hello".to_owned()), 0),
+    });
+    yi_tui::render::draw(&mut app, &mut terminal, None);
+    let first = terminal.backend_mut().take_written();
+    assert!(
+        first.contains("\x1b]2;Yi — hello\x07"),
+        "the user's prompt titles the window: {first:?}"
+    );
+
+    let notice = "[subagent x (sub-1) finished]\nLast answer: RLM OK\nnext: rlm.wait('sub-1')";
+    app.reduce_agent(yi_types::event::AgentEvent::MessageStart {
+        message: AgentMessage::host_user(UserContent::Text(notice.to_owned()), 0),
+    });
+    yi_tui::render::draw(&mut app, &mut terminal, None);
+    let second = terminal.backend_mut().take_written();
+    assert!(
+        !second.contains("\x1b]2;"),
+        "a host notice titles nothing: {second:?}"
+    );
+    assert_eq!(app.take_title(), None);
+    let rows: Vec<String> = (0..24)
+        .map(|row| terminal.backend().row_text(row))
+        .collect();
+    let flag = rows
+        .iter()
+        .position(|row| row.contains("⚑ [subagent x (sub-1) finished]"))
+        .ok_or_else(|| format!("no notice row: {rows:?}"))?;
+    assert!(
+        rows.get(flag + 1)
+            .is_some_and(|row| row.contains("Last answer: RLM OK")),
+        "the notice's second line is its own row: {rows:?}"
+    );
+    assert!(
+        rows.get(flag + 2)
+            .is_some_and(|row| row.contains("next: rlm.wait('sub-1')")),
+        "and its third: {rows:?}"
+    );
+    assert_eq!(
+        rows.iter().filter(|row| row.contains('›')).count(),
+        1,
+        "only the user's own prompt carries the rail: {rows:?}"
+    );
+    assert!(
+        !rows.iter().any(|row| row.trim_start().starts_with('─')),
+        "no divider opens a turn for a notice: {rows:?}"
+    );
+    Ok(())
+}
+
+/// The M1 corpus: the session that produced the screenshots, scrubbed and
+/// replayed through the reducer the screen runs. Ground truth for input shape;
+/// what it should render still comes from the invariant.
+const CORPUS: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/tests/fixtures/sessions/01a0648f.jsonl"
+);
+
+const MODES: [yi_tui::cell::TranscriptMode; 3] = [
+    yi_tui::cell::TranscriptMode::Normal,
+    yi_tui::cell::TranscriptMode::Thinking,
+    yi_tui::cell::TranscriptMode::Verbose,
+];
+
+/// A needle short enough that the renderer's own wrap cannot split it.
+fn needle(line: &str) -> String {
+    line.chars().take(30).collect()
+}
+
+fn recorded_messages() -> Result<Vec<serde_json::Value>, Box<dyn Error>> {
+    let mut out = Vec::new();
+    for line in std::fs::read_to_string(CORPUS)?.lines() {
+        let row: serde_json::Value = serde_json::from_str(line)?;
+        if row.get("type").and_then(serde_json::Value::as_str) == Some("message")
+            && let Some(message) = row.get("message")
+        {
+            out.push(message.clone());
+        }
+    }
+    Ok(out)
+}
+
+fn replayed(mode: yi_tui::cell::TranscriptMode) -> Result<(App, Vec<String>), Box<dyn Error>> {
+    let mut app = app();
+    while app.mode() != mode {
+        app.cycle_mode();
+    }
+    common::replay_stream(&mut app, std::path::Path::new(CORPUS))?;
+    let rows = flat_lines(&app.take_commits());
+    Ok((app, rows))
+}
+
+fn role_is(message: &serde_json::Value, role: &str) -> bool {
+    message.get("role").and_then(serde_json::Value::as_str) == Some(role)
+}
+
+/// The field's thought is one unterminated line, so it never reaches a stable
+/// cut and used to wait for `MessageEnd` — landing under the answer it
+/// preceded. Every fixture that passed had chosen a three-paragraph thought.
+#[test]
+fn the_recorded_session_orders_every_thought_above_its_prose() -> TestResult {
+    let mut pairs = Vec::new();
+    for message in recorded_messages()? {
+        if !role_is(&message, "assistant") {
+            continue;
+        }
+        let blocks = message
+            .get("content")
+            .and_then(serde_json::Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        let first = |kind: &str| {
+            blocks
+                .iter()
+                .find(|block| block.get("type").and_then(serde_json::Value::as_str) == Some(kind))
+                .and_then(|block| block.get(kind))
+                .and_then(serde_json::Value::as_str)
+                .and_then(|text| text.lines().next())
+                .map(needle)
+        };
+        if let (Some(thought), Some(prose)) = (first("thinking"), first("text")) {
+            pairs.push((thought, prose));
+        }
+    }
+    assert!(
+        !pairs.is_empty(),
+        "the corpus must carry a message with both a thought and prose"
+    );
+    for mode in MODES {
+        let (_, rows) = replayed(mode)?;
+        for (thought, prose) in &pairs {
+            let answer = rows
+                .iter()
+                .position(|row| row.contains(prose.as_str()))
+                .ok_or_else(|| format!("{mode:?}: no prose row for {prose:?}: {rows:?}"))?;
+            let turn = rows
+                .get(..answer)
+                .unwrap_or_default()
+                .iter()
+                .rposition(|row| row.contains("┃ ›"))
+                .map_or(0, |at| at.saturating_add(1));
+            let labels = rows
+                .get(turn..answer)
+                .unwrap_or_default()
+                .iter()
+                .filter(|row| row.contains("∴ thinking"))
+                .count();
+            assert_eq!(
+                labels,
+                1,
+                "{mode:?}: the thought {thought:?} commits once, above its own prose, \
+                 not after it: {:?}",
+                rows.get(turn..=answer)
+            );
+        }
+    }
+    Ok(())
+}
+
+/// The kernel sent forty-nine rows of asyncio internals; the fixture that
+/// passed had two, and the head counted none of them.
+#[test]
+fn the_recorded_session_bounds_every_failed_cell_and_counts_its_rows() -> TestResult {
+    let count = |text: &str| {
+        if text.is_empty() {
+            0
+        } else {
+            text.trim_end_matches('\n').split('\n').count()
+        }
+    };
+    let mut cells: Vec<(Vec<String>, usize)> = Vec::new();
+    for message in recorded_messages()? {
+        if !role_is(&message, "toolResult")
+            || message.get("toolName").and_then(serde_json::Value::as_str) != Some("ipython")
+            || message.get("isError").and_then(serde_json::Value::as_bool) != Some(true)
+        {
+            continue;
+        }
+        let details = message
+            .get("details")
+            .cloned()
+            .unwrap_or(serde_json::Value::Null);
+        let stream = |key: &str| {
+            details
+                .get(key)
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default()
+                .to_owned()
+        };
+        let traceback = details
+            .pointer("/error/traceback")
+            .and_then(serde_json::Value::as_array)
+            .map(|rows| {
+                rows.iter()
+                    .filter_map(serde_json::Value::as_str)
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            })
+            .unwrap_or_default();
+        let down = count(&stream("stdout"))
+            .saturating_add(count(&stream("stderr")))
+            .saturating_add(count(&stream("result")))
+            .saturating_add(count(&traceback));
+        let rows: Vec<String> = traceback.split('\n').map(str::to_owned).collect();
+        cells.push((rows, down));
+    }
+    assert!(
+        cells.iter().any(|(rows, _)| rows.len() > 11),
+        "the corpus must carry a traceback longer than head + elision + tail"
+    );
+    for mode in MODES {
+        let (_, committed) = replayed(mode)?;
+        for (traceback, down) in &cells {
+            let head = format!("↓ {down} lines");
+            assert!(
+                committed.iter().any(|row| row.contains(&head)),
+                "{mode:?}: the head counts every row the streams produced, traceback \
+                 included, so it must read {head:?}: {committed:?}"
+            );
+            let shown = |line: &String| {
+                !line.trim().is_empty() && committed.iter().any(|row| row.contains(&needle(line)))
+            };
+            let visible = traceback.iter().filter(|line| shown(line)).count();
+            let carried = traceback
+                .iter()
+                .filter(|line| !line.trim().is_empty())
+                .count();
+            if mode == yi_tui::cell::TranscriptMode::Verbose {
+                assert_eq!(
+                    visible, carried,
+                    "verbose keeps the whole traceback: {traceback:?}"
+                );
+                continue;
+            }
+            assert!(
+                visible <= 11,
+                "{mode:?}: a failed cell's stream is bounded to head 5 + elision + tail 5, \
+                 but {visible} of its {carried} traceback rows reached scrollback"
+            );
+            if traceback.len() > 10 {
+                let omitted = traceback.len().saturating_sub(10);
+                assert!(
+                    committed
+                        .iter()
+                        .any(|row| row.contains(&format!("… {omitted} more lines"))),
+                    "{mode:?}: the elided middle says how much it dropped: {committed:?}"
+                );
+                let middle = traceback
+                    .get(traceback.len() / 2)
+                    .map_or_else(|| String::from("<none>"), |line| needle(line));
+                assert!(
+                    !committed.iter().any(|row| row.contains(&middle)),
+                    "{mode:?}: the middle of the traceback stays off the screen, \
+                     but {middle:?} reached it"
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+/// The host's own status arrived as a user-role message with no attribution,
+/// so it retitled the window with its own truncated first line, opened a turn,
+/// and drew the user's rail on text the user never typed.
+#[test]
+fn the_recorded_session_titles_nothing_on_a_host_notice() -> TestResult {
+    let messages = recorded_messages()?;
+    let prompts: Vec<String> = messages
+        .iter()
+        .filter(|message| {
+            role_is(message, "user")
+                && message
+                    .get("attribution")
+                    .and_then(serde_json::Value::as_str)
+                    == Some("user")
+        })
+        .filter_map(|message| message.get("content").and_then(serde_json::Value::as_str))
+        .map(str::to_owned)
+        .collect();
+    let notices = messages
+        .iter()
+        .filter(|message| role_is(message, "user") && message.get("attribution").is_none())
+        .count();
+    assert_eq!(
+        (prompts.len(), notices),
+        (3, 1),
+        "the corpus carries three typed prompts and one host notice"
+    );
+    let last = prompts.last().cloned().unwrap_or_default();
+    for mode in MODES {
+        let (mut app, rows) = replayed(mode)?;
+        assert_eq!(
+            app.take_title(),
+            Some(format!("Yi — {last}")),
+            "{mode:?}: the notice arrived after the last prompt and must not have retitled \
+             the window"
+        );
+        let flag = rows
+            .iter()
+            .position(|row| row.contains("⚑ [subagent"))
+            .ok_or_else(|| format!("{mode:?}: no notice row: {rows:?}"))?;
+        assert!(
+            !rows
+                .get(flag)
+                .is_some_and(|row| row.contains('›') || row.contains('┃')),
+            "{mode:?}: the notice draws no prompt rail: {:?}",
+            rows.get(flag)
+        );
+        assert_eq!(
+            rows.iter().filter(|row| row.contains("┃ ›")).count(),
+            prompts.len(),
+            "{mode:?}: only what the user typed is a user cell: {rows:?}"
+        );
+        assert_eq!(
+            rows.iter()
+                .filter(|row| row.trim_start().starts_with('─'))
+                .count(),
+            prompts.len().saturating_sub(1),
+            "{mode:?}: a divider opens a turn only for the user's own input, so the notice \
+             left the turn count alone: {rows:?}"
+        );
+    }
     Ok(())
 }

@@ -90,5 +90,8 @@ when it changes rather than editing them by hand.
 - [D104](adr/d104.md) - the plan DAG is a panel, not an inline checkbox list
 - [D105](adr/d105.md) - the plan frontmatter is JSON, and the YAML subset codec is gone
 - [D106](adr/d106.md) - the forge is the only register of planned work
+- [D107](adr/d107.md) - scrollback order is antecedent-before-dependent, not arrival
+- [D108](adr/d108.md) - a fixture is the production shape
+- [D109](adr/d109.md) - panic and dead-artifact gates judge behaviour, not spelling
 
 D36-D51, D72, D73 and D74 have no ADR yet; ARCHITECTURE.md is the record for those rows.

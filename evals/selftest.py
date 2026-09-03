@@ -181,6 +181,17 @@ def check_record_redacts():
     assert home not in blob, f"recorded cassette carries {home}"
     assert any("custom" in note for note in notes), notes
 
+    source = RECORDED / "faux-echo.jsonl"
+    scrubbed = record.scrub_only(source)
+    assert PLANT not in scrubbed, "planted secret survived --scrub-only"
+    assert "[MASKED]" in scrubbed, "the scrub-only path masked nothing"
+    assert "CASSETTE-NEEDLE-7" in scrubbed, "redaction swallowed the session's own content"
+    assert home not in scrubbed, f"scrubbed session carries {home}"
+    assert len(scrubbed.splitlines()) == len(source.read_text().splitlines()), (
+        "--scrub-only writes every line back, in order"
+    )
+    assert json.loads(scrubbed.splitlines()[0])["kind"] == "header", "the header stays a header"
+
 
 def check_record_refuses():
     """J3: unrepresentable input is fatal, never a silent skip — a dropped

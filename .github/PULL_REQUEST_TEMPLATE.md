@@ -11,7 +11,15 @@
 ## User outcomes
 <!-- What a user of yi can do, see, or rely on after this that they could
      not before. "Nothing user-visible" is a valid answer — say why the
-     change exists anyway. -->
+     change exists anyway. Quote every user-facing sentence a test asserts,
+     beside the sentences the user reads next to it: "completed without
+     replying" was pinned by a test on the row above "Last answer: …". -->
+
+## Seen red
+<!-- One line per new or changed test: test name · the failure it produced
+     against the unfixed code · where the fixture came from. This is the
+     author's claim, not gate output — a test that was green against the
+     unfixed code is rewritten, not shipped. "No tests changed" if none. -->
 
 ## UI changes
 <!-- TUI/ACP-visible changes. For TUI: the headless frame dump or PTY

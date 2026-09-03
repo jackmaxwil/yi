@@ -576,8 +576,7 @@ impl TaskCell {
         let head = format!("  {glyph} {} Task — {}", self.agent, self.description);
         let detail = match (&self.status, &self.error, &self.last_tool) {
             (TaskStatus::Failed, Some(error), _) => {
-                let mut error = error.clone();
-                error.truncate(80);
+                let error: String = error.chars().take(80).collect();
                 format!("    ↳ {error}")
             }
             (TaskStatus::Running, _, Some(tool)) => format!("    ↳ {tool}"),
@@ -673,14 +672,16 @@ impl Cell {
                 out.push(Line::default());
                 out
             }
-            Cell::Notice { text } => wrap_line(
-                &Line::from(Span::styled(
-                    format!("  ⚑ {text}"),
-                    Style::default().fg(theme.warning),
-                )),
-                width,
-                "    ",
-            ),
+            Cell::Notice { text } => {
+                let style = Style::default().fg(theme.warning);
+                let rows = format!("  ⚑ {}", text.replace('\n', "\n    "));
+                rows.lines()
+                    .flat_map(|row| {
+                        let line = Line::from(Span::styled(row.to_owned(), style));
+                        wrap_line(&line, width, "    ")
+                    })
+                    .collect()
+            }
             Cell::Divider => {
                 let fill: String = std::iter::repeat_n('─', width.saturating_sub(4)).collect();
                 vec![

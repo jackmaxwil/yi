@@ -33,6 +33,7 @@ pub(crate) struct ChildRecord {
     pub(crate) check: Option<String>,
     /// B13 wait: reports and terminal transitions the parent has not collected.
     pub(crate) pending: u64,
+    pub(crate) replied: bool,
     pub(crate) session: Arc<AgentSession>,
 }
 
@@ -551,6 +552,7 @@ impl SubagentHost {
                     error: None,
                     check,
                     pending: 0,
+                    replied: false,
                     session: Arc::clone(&session),
                 },
             );
@@ -640,6 +642,7 @@ impl SubagentHost {
         // A reaped child has no record left; its product was already promoted,
         // so the terminal notice would only echo a closed slot.
         let mut reaped = true;
+        let mut replied = false;
         if let Ok(mut children) = self.children.lock()
             && let Some(record) = children.get_mut(&child_id)
         {
@@ -647,6 +650,7 @@ impl SubagentHost {
             record.activity = ChildActivity::Waiting;
             record.error = error.clone();
             record.pending = record.pending.saturating_add(1);
+            replied = record.replied;
             reaped = false;
         }
         if reaped {
@@ -661,8 +665,13 @@ impl SubagentHost {
                 let answer = last_assistant_text(&session.messages())
                     .map(|text| preview(&text))
                     .unwrap_or_else(|| "(no final answer text)".to_owned());
+                let silent = if replied {
+                    ""
+                } else {
+                    "; it sent you no message"
+                };
                 format!(
-                    "[subagent {session_name} ({child_id}) completed without replying]\nLast answer: {answer}\n{}",
+                    "[subagent {session_name} ({child_id}) finished{silent}]\nLast answer: {answer}\n{}",
                     crate::affordance::child_finished(&session_name)
                 )
             }

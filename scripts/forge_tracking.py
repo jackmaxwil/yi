@@ -25,6 +25,14 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 # wider pattern would annotate issues this merge only mentioned.
 CLOSES = re.compile(r"\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s+#(\d+)", re.I)
 PULL = re.compile(r"\(#(\d+)\)")
+# The estate timer's contract (the infra repository scripts/forgejo_tracking_check.py,
+# verdict_body()) -- the pinned Tracking issue's first line is exactly:
+#     verdict: green|red · <ISO timestamp> · <n> cards checked
+# joined with " · " (middle dot, U+00B7), stamped by
+# datetime.now(UTC).replace(microsecond=0).isoformat(). Anything else -- red,
+# truncated, foreign -- is a miss; this must not degenerate into a substring
+# search for "green", since a red verdict's own miss lines can contain that word.
+VERDICT_RE = re.compile(r"^verdict: (green|red) · \S+ · \d+ cards checked$")
 
 
 def git(*args):
@@ -146,6 +154,10 @@ def hygiene(transport, api, repo, window, today):
         sizes = [name for name in names if name in WEIGHTS]
         if issue.get("pin_order") and issue["title"] == "Tracking":
             pinned = issue
+            # Infrastructure the estate timer writes, not planned work: sizing
+            # or milestoning it would fold its size into the milestone's own
+            # due-date arithmetic below.
+            continue
         if len(sizes) > 1:
             misses.append(
                 (
@@ -200,7 +212,8 @@ def hygiene(transport, api, repo, window, today):
     number = pinned["number"]
     read = f"tea issues {number} --comments --repo {repo}"
     first = ((pinned.get("body") or "").strip().splitlines() or [""])[0]
-    if not first.lower().startswith("green"):
+    match = VERDICT_RE.match(first)
+    if not match or match.group(1) != "green":
         misses.append((f"pinned Tracking #{number} does not open green: {first[:60]!r}", read))
     age = (today - datetime.datetime.fromisoformat(pinned["updated_at"]).date()).days
     if age > 8:
@@ -312,24 +325,82 @@ def selfcheck():
     assert notes == ["no pinned issue titled Tracking; the estate timer has not landed"], notes
     assert misses[1][1] == "tea issues edit 21 --add-labels area:runtime --repo apex/yi", misses
 
-    # The pinned verdict is read rather than assumed: a first line that is not
-    # green, and one written more than eight days ago, are each a miss.
-    pages["issues?type=issues&state=open"] = [
-        [
-            dict(
-                issue(20, "size:L", milestone={"id": 1}),
-                title="Tracking",
-                pin_order=1,
-                body="red: 3 issues unsized\nand the rest",
-                updated_at="2026-02-01T00:00:00Z",
-            )
+    # The pinned verdict is read against the estate timer's real contract
+    # (the infra repository scripts/forgejo_tracking_check.py, verdict_body()):
+    #     verdict: green|red · <ISO timestamp> · <n> cards checked
+    # A loose `startswith("green")` never matches this line -- it starts with
+    # "verdict:" -- so a genuinely green verdict missed forever; that is the
+    # bug this fixture is red-first proof against. Isolated from the
+    # milestone-derived misses above: one closed issue satisfies measure()'s
+    # "nothing closed" guard, and no open milestones means no due-date noise.
+    pages["issues?type=issues&state=closed"] = [[issue(1, "size:M", "2026-03-09T00:00:00Z")]]
+    pages["milestones?"] = [[]]
+
+    def pinned_issue_pages(body, updated_at):
+        # Infrastructure the estate timer writes, not planned work: it carries
+        # no size, area or milestone by design, so those checks must not fire
+        # on it -- a size or milestone would count it toward the milestone's
+        # own due-date arithmetic, which is wrong.
+        return [
+            [
+                {
+                    "number": 20,
+                    "title": "Tracking",
+                    "pin_order": 1,
+                    "labels": [{"name": "kind:decision"}],
+                    "milestone": None,
+                    "body": body,
+                    "updated_at": updated_at,
+                }
+            ]
         ]
-    ]
+
+    fresh = today.isoformat() + "T00:00:00Z"
+    real_green = (
+        "verdict: green · 2026-03-09T12:00:00+00:00 · 42 cards checked\n\n"
+        "every card is in the column its issue's state requires.\n"
+    )
+    real_red = (
+        "verdict: red · 2026-03-09T12:00:00+00:00 · 42 cards checked\n\n"
+        "#5 · in Backlog · must be in Next · in the earliest-due open milestone\n"
+    )
+
+    # A real green verdict is zero misses.
+    pages["issues?type=issues&state=open"] = pinned_issue_pages(real_green, fresh)
     misses, notes = hygiene(recorder(pages)[0], "https://git.example/api/v1", "apex/yi", 14, today)
-    reported = [what for what, _fix in misses]
-    assert any("does not open green" in what for what in reported), reported
-    assert any("last written 37 days ago" in what for what in reported), reported
+    assert misses == [], misses
     assert notes == [], notes
+
+    # A real red verdict is exactly one miss.
+    pages["issues?type=issues&state=open"] = pinned_issue_pages(real_red, fresh)
+    misses, notes = hygiene(recorder(pages)[0], "https://git.example/api/v1", "apex/yi", 14, today)
+    assert len(misses) == 1, misses
+    assert "does not open green" in misses[0][0], misses
+
+    # A red verdict's own miss lines can name a column called "green" -- a
+    # substring search for "green" would wrongly pass this; it must still miss.
+    tricky_red = (
+        "verdict: red · 2026-03-09T12:00:00+00:00 · 42 cards checked\n\n"
+        "#5 · in green-ish-backlog · must be in Next · rule text\n"
+    )
+    pages["issues?type=issues&state=open"] = pinned_issue_pages(tricky_red, fresh)
+    misses, notes = hygiene(recorder(pages)[0], "https://git.example/api/v1", "apex/yi", 14, today)
+    assert len(misses) == 1, misses
+    assert "does not open green" in misses[0][0], misses
+
+    # Truncated, empty and foreign first lines are each a miss, not a pass.
+    truncated = real_green.splitlines()[0][:-3]  # a write cut off mid-word
+    for bad_body in (truncated, "", "not a verdict line"):
+        pages["issues?type=issues&state=open"] = pinned_issue_pages(bad_body, fresh)
+        misses, notes = hygiene(recorder(pages)[0], "https://git.example/api/v1", "apex/yi", 14, today)
+        assert len(misses) == 1, (bad_body, misses)
+        assert "does not open green" in misses[0][0], misses
+
+    # Staleness still fires on a genuinely green verdict written too long ago.
+    pages["issues?type=issues&state=open"] = pinned_issue_pages(real_green, "2026-02-01T00:00:00Z")
+    misses, notes = hygiene(recorder(pages)[0], "https://git.example/api/v1", "apex/yi", 14, today)
+    assert len(misses) == 1, misses
+    assert "last written 37 days ago" in misses[0][0], misses
 
     print("ok   forge_tracking selfcheck")
 
