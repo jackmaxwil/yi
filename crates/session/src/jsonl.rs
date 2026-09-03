@@ -3,10 +3,12 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use serde_json::error::Category;
-use yi_types::wire::{HeaderKind, JsonlV4Header, Mutation};
+use yi_types::entry::Entry;
+use yi_types::message::{AgentMessage, Content, UserContent};
+use yi_types::wire::{Fact, HeaderKind, JsonlV4Header, Mutation};
 
 use crate::error::SessionError;
-use crate::id::{IdGenerator, now_ms, validate_session_id};
+use crate::id::{IdGenerator, now_ms, session_title, validate_session_id};
 use crate::query::{CreateOptions, ForkScope, SessionMetadata};
 use crate::repo::{SessionRepo, SharedSession, lock_session};
 use crate::store::SessionStore;
@@ -46,7 +48,49 @@ fn metadata_from_header(header: &JsonlV4Header) -> SessionMetadata {
         id: header.id.clone(),
         created_at: header.created_at,
         parent_session_id: header.parent_session_id.clone(),
+        name: None,
     }
+}
+
+/// Only lines that can carry a prompt or a name fact are parsed, so listing stays cheap.
+fn scan_name(content: &str) -> Option<String> {
+    let mut fact_name = None;
+    let mut prompt_name = None;
+    for line in content.split('\n').skip(1) {
+        if line.contains(r#""fact":"name""#) {
+            if let Ok(Mutation::Fact {
+                fact: Fact::Name { name },
+                ..
+            }) = serde_json::from_str::<Mutation>(line)
+            {
+                fact_name = name;
+            }
+        } else if prompt_name.is_none()
+            && line.contains(r#""role":"user""#)
+            && let Ok(Mutation::Entry {
+                entry:
+                    Entry::Message {
+                        message: AgentMessage::User { content, .. },
+                        ..
+                    },
+                ..
+            }) = serde_json::from_str::<Mutation>(line)
+        {
+            let text = match content {
+                UserContent::Text(text) => text,
+                UserContent::Blocks(blocks) => blocks
+                    .iter()
+                    .filter_map(|block| match block {
+                        Content::Text { text, .. } => Some(text.as_str()),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>()
+                    .join(" "),
+            };
+            prompt_name = session_title(&text);
+        }
+    }
+    fact_name.or(prompt_name)
 }
 
 fn encode_header(header: &JsonlV4Header) -> Result<String, SessionError> {
@@ -282,7 +326,9 @@ impl SessionRepo for JsonlRepo {
                 continue;
             };
             if header.kind == HeaderKind::Header && header.version == 4 {
-                listed.push(metadata_from_header(&header));
+                let mut metadata = metadata_from_header(&header);
+                metadata.name = scan_name(&content);
+                listed.push(metadata);
             }
         }
         listed.sort_by(|left, right| right.created_at.cmp(&left.created_at));

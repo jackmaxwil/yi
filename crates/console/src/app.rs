@@ -15,7 +15,7 @@ use crate::keys::{self, Action};
 use crate::layout::{NavDirection, PaneId};
 use crate::model::{
     ActiveAsk, ConsoleState, Link, Mode, PaneContent, RequestId, SessionId, SessionRow,
-    SessionStatus, Zone,
+    SessionStatus, Zone, now_ms,
 };
 use crate::notify::{NoteQueue, OscFlavor, escape};
 
@@ -360,6 +360,9 @@ impl App {
                         root,
                         status: SessionStatus::Idle,
                         attached: true,
+                        name: None,
+                        created_ms: now_ms(),
+                        last_ms: 0,
                     });
                     self.bind_pane(pane_id, &session);
                     self.mark_seen(outbound, &session);
@@ -374,7 +377,10 @@ impl App {
                 }
                 self.mark_seen(outbound, &session);
             }
-            RequestKind::Prompt | RequestKind::Cancel | RequestKind::Seen => {}
+            RequestKind::Prompt => {
+                self.send_request(outbound, RequestKind::ListDaemon, "session/list", json!({}));
+            }
+            RequestKind::Cancel | RequestKind::Seen => {}
         }
         self.dirty = true;
     }
@@ -428,6 +434,9 @@ impl App {
                 root: root.clone(),
                 status,
                 attached,
+                name: entry.get("name").and_then(Value::as_str).map(str::to_owned),
+                created_ms: entry.get("createdAt").and_then(Value::as_u64).unwrap_or(0),
+                last_ms: 0,
             });
         }
     }
@@ -441,9 +450,18 @@ impl App {
                 continue;
             };
             let id = SessionId(id.to_owned());
+            let name = entry.get("name").and_then(Value::as_str).map(str::to_owned);
+            let last_ms = entry
+                .get("lastEventMs")
+                .and_then(Value::as_u64)
+                .unwrap_or(0);
             // A session on screen streams its own state; the ledger covers
-            // the ones nobody is attached to.
+            // the ones nobody is attached to, and names whichever it can.
             if self.state.session_visible(&id) {
+                if let Some(row) = self.state.sessions.get_mut(&id) {
+                    row.name = name.or(row.name.take());
+                    row.last_ms = row.last_ms.max(last_ms);
+                }
                 continue;
             }
             let unseen = entry.get("unseen").and_then(Value::as_u64).unwrap_or(0);
@@ -467,6 +485,9 @@ impl App {
                 root,
                 status,
                 attached,
+                name,
+                created_ms: 0,
+                last_ms,
             });
         }
     }
@@ -754,10 +775,13 @@ impl App {
             return;
         }
         self.state.zone = Zone::Panes;
-        match (
-            self.state.order.first().cloned(),
-            self.state.focused_pane_id(),
-        ) {
+        let newest = self
+            .state
+            .visible_rows()
+            .first()
+            .and_then(|index| self.state.order.get(*index))
+            .cloned();
+        match (newest, self.state.focused_pane_id()) {
             (Some(session), Some(pane_id)) => self.resume_into(outbound, pane_id, &session),
             _ => self.new_session(outbound),
         }
@@ -859,7 +883,7 @@ impl App {
             Action::CancelTurn => self.cancel_turn(outbound),
             Action::Interrupt => self.interrupt(outbound),
             Action::Quit => self.state.quit = true,
-            Action::ToggleSidebar => self.state.sidebar_hidden = !self.state.sidebar_hidden,
+            Action::ToggleSidebar => self.state.sidebar = self.state.sidebar.next(),
             Action::ToggleNotebook => self.toggle_side(outbound, diffs::SideKind::Notebook),
             Action::ToggleDiff => self.toggle_side(outbound, diffs::SideKind::Diff),
             Action::OpenEditor => self.open_navigator("e "),
@@ -1057,6 +1081,7 @@ impl App {
                     if let Some(index) = rows.get(next) {
                         self.state.selected = *index;
                     }
+                    self.state.cursor_moved = true;
                     self.dirty = true;
                 }
                 KeyCode::Left | KeyCode::Right => {

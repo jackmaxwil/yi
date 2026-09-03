@@ -3,7 +3,7 @@ use std::fs;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use yi_session::{EntryQuery, LogOptions, load_session};
+use yi_session::{EntryQuery, JsonlRepo, LogOptions, SessionRepo, load_session};
 
 type TestResult = Result<(), Box<dyn Error>>;
 
@@ -91,4 +91,46 @@ fn rejects_a_mid_file_corrupt_line() -> TestResult {
             Ok(())
         }
     }
+}
+
+/// A listing names a session from its first prompt, and a name fact written later wins.
+#[test]
+fn list_names_sessions_from_the_first_prompt_or_the_name_fact() -> TestResult {
+    let dir = temp_dir()?;
+    let mut repo = JsonlRepo::new(dir.0.clone(), "/tmp/yi-named");
+    let header = |id: &str, at: u64| {
+        format!(
+            r#"{{"kind":"header","version":4,"id":"{id}","createdAt":{at},"cwd":"/tmp/yi-named"}}"#
+        )
+    };
+    let user = r#"{"kind":"entry","lane":"main","type":"message","id":"e1","message":{"role":"user","content":"  fix the login bug\nand the logout one","timestamp":0},"parentId":null,"seq":1,"timestamp":1}"#;
+    let fact = r#"{"kind":"fact","seq":2,"fact":"name","name":"login work"}"#;
+    let sessions = dir.0.join("--tmp-yi-named--");
+    fs::create_dir_all(&sessions)?;
+    fs::write(
+        sessions.join("1_first.jsonl"),
+        format!("{}\n{user}\n", header("first", 1)),
+    )?;
+    fs::write(
+        sessions.join("2_named.jsonl"),
+        format!("{}\n{user}\n{fact}\n", header("named", 2)),
+    )?;
+    fs::write(
+        sessions.join("3_bare.jsonl"),
+        format!("{}\n", header("bare", 3)),
+    )?;
+    let listed = repo.list()?;
+    let names: Vec<(String, Option<String>)> = listed
+        .iter()
+        .map(|metadata| (metadata.id.clone(), metadata.name.clone()))
+        .collect();
+    assert_eq!(
+        names,
+        vec![
+            ("bare".to_owned(), None),
+            ("named".to_owned(), Some("login work".to_owned())),
+            ("first".to_owned(), Some("fix the login bug".to_owned())),
+        ]
+    );
+    Ok(())
 }

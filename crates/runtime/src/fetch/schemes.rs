@@ -620,6 +620,7 @@ mod tests {
             id: "test".to_owned(),
             created_at: 0,
             parent_session_id: None,
+            name: None,
         };
         let mut store = yi_session::SessionStore::in_memory(metadata);
         let id = store.append_custom("main", "note", None)?;
@@ -642,6 +643,7 @@ mod tests {
             id: "test".to_owned(),
             created_at: 0,
             parent_session_id: None,
+            name: None,
         })
     }
 

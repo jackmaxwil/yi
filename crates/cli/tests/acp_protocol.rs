@@ -156,11 +156,13 @@ fn v2_client_drives_a_session_end_to_end() -> TestResult {
     let listed = list["result"]["sessions"]
         .as_array()
         .ok_or("sessions must be an array")?;
+    let own = listed
+        .iter()
+        .find(|entry| entry["sessionId"] == session_id.as_str())
+        .ok_or("the new session must appear in session/list")?;
     assert!(
-        listed
-            .iter()
-            .any(|entry| entry["sessionId"] == session_id.as_str()),
-        "the new session must appear in session/list"
+        own["createdAt"].is_u64(),
+        "a listed session carries its birth for the sidebar's ages: {own}"
     );
 
     let close = client.request("5", "session/close", json!({"sessionId": session_id}))?;
