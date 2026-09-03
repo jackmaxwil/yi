@@ -22,6 +22,7 @@ use crate::notify::{NoteQueue, OscFlavor, escape};
 const REQUEST_DEADLINE: Duration = Duration::from_secs(10);
 const LIST_POLL: Duration = Duration::from_secs(5);
 const SPLIT_ANIM: Duration = Duration::from_millis(140);
+const QUIT_WINDOW: Duration = Duration::from_secs(1);
 
 /// One split-open animation: the fresh split's ratio eases 0.12 -> 0.5.
 struct Anim {
@@ -81,6 +82,7 @@ pub struct App {
     /// Invariant: a `replayedTo` offset is valid only while nothing later streamed for that
     /// session; any update clears it, keeping a skip-ahead resume equal to a full replay.
     resume_offsets: HashMap<SessionId, u64>,
+    interrupt_at: Option<Instant>,
 }
 
 fn frame(id: Option<u64>, method: &str, params: Value) -> Value {
@@ -111,6 +113,7 @@ impl App {
             hits: None,
             drag: None,
             resume_offsets: HashMap::new(),
+            interrupt_at: None,
         }
     }
 
@@ -853,18 +856,8 @@ impl App {
             Action::ScrollDown => self.scroll_focused(-3),
             Action::PageUp => self.scroll_focused(20),
             Action::PageDown => self.scroll_focused(-20),
-            Action::CancelTurn => {
-                if self.connected()
-                    && let Some(session) = self.state.focused_session()
-                {
-                    self.send_request(
-                        outbound,
-                        RequestKind::Cancel,
-                        "session/cancel",
-                        json!({"sessionId": session.0}),
-                    );
-                }
-            }
+            Action::CancelTurn => self.cancel_turn(outbound),
+            Action::Interrupt => self.interrupt(outbound),
             Action::Quit => self.state.quit = true,
             Action::ToggleSidebar => self.state.sidebar_hidden = !self.state.sidebar_hidden,
             Action::ToggleNotebook => self.toggle_side(outbound, diffs::SideKind::Notebook),
@@ -888,6 +881,46 @@ impl App {
             self.mark_seen(outbound, &session);
         }
         self.dirty = true;
+    }
+
+    fn cancel_turn(&mut self, outbound: &Outbound) {
+        if self.connected()
+            && let Some(session) = self.state.focused_session()
+        {
+            self.send_request(
+                outbound,
+                RequestKind::Cancel,
+                "session/cancel",
+                json!({"sessionId": session.0}),
+            );
+        }
+    }
+
+    /// Solo's ctrl+c: a draft clears, an idle composer cancels and arms, a second press quits.
+    fn interrupt(&mut self, outbound: &Outbound) {
+        if !self.composer_empty() {
+            self.composer = fresh_composer();
+            self.dirty = true;
+            return;
+        }
+        let now = Instant::now();
+        if self
+            .interrupt_at
+            .is_some_and(|at| now.saturating_duration_since(at) < QUIT_WINDOW)
+        {
+            self.state.quit = true;
+            return;
+        }
+        self.interrupt_at = Some(now);
+        self.cancel_turn(outbound);
+        self.note("interrupted — ctrl+c again quits");
+    }
+
+    fn composer_empty(&self) -> bool {
+        self.composer
+            .lines()
+            .iter()
+            .all(|line| line.trim().is_empty())
     }
 
     fn split_with_anim(&mut self, direction: Direction) {
@@ -960,11 +993,7 @@ impl App {
             self.handle_navigator_key(outbound, key);
             return;
         }
-        let composer_empty = self
-            .composer
-            .lines()
-            .iter()
-            .all(|line| line.trim().is_empty());
+        let composer_empty = self.composer_empty();
         // Invariant: bare approval keys fire only over an empty composer, so
         // mid-prompt typing can never answer a permission by accident.
         if self.state.ask.is_some() && (composer_empty || self.state.zone == Zone::Sidebar) {
