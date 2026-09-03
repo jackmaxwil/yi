@@ -65,11 +65,8 @@ impl App {
         // A cut inside a fence is prose's business: thought has no reopen to
         // carry, so a fenced block commits whole or not at all.
         let stream = crate::markdown::stable_stream(&self.live_thought);
-        let stable = if stream.reopen.is_some() {
-            0
-        } else {
-            stream.cut
-        };
+        let fenced = stream.reopen.is_some();
+        let stable = if fenced { 0 } else { stream.cut };
         let mut cut = stable.max(self.live_thought_cut);
         let (width, theme) = (self.content_width(), self.theme);
         let forced = overflow_cut(

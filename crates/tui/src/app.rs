@@ -9,7 +9,7 @@ use serde_json::{Value, json};
 use yi_runtime::{AgentSession, ChildStatus, ChildUpdate, SubagentHost, session::user_input};
 use yi_types::entry::Entry;
 use yi_types::event::AgentEvent;
-use yi_types::message::{AgentMessage, StopReason};
+use yi_types::message::{AgentMessage, Attribution, StopReason};
 
 use crate::approval::{ApprovalView, AskChoice};
 use crate::cell::{Cell, TaskCell, TaskStatus, ToolCell, ToolStatus, TranscriptMode};
@@ -495,21 +495,29 @@ impl App {
                 self.commit_finished_tasks();
                 self.scheduler.request();
             }
-            AgentEvent::MessageStart {
-                message: AgentMessage::User { content, .. },
-            } => {
+            AgentEvent::MessageStart { message } => {
+                let attribution = message.attribution();
+                let AgentMessage::User { content, .. } = message else {
+                    return;
+                };
                 let text = user_text(&content);
-                if self.user_turns > 0 {
-                    self.commit_cell(&Cell::Divider);
+                match attribution {
+                    Attribution::Unproven => self.commit_cell(&Cell::Notice { text }),
+                    Attribution::User => {
+                        if self.user_turns > 0 {
+                            self.commit_cell(&Cell::Divider);
+                        }
+                        self.user_turns += 1;
+                        let mut focus = text.split_whitespace().collect::<Vec<_>>().join(" ");
+                        if focus.chars().count() > 40 {
+                            focus = focus.chars().take(39).collect::<String>() + "…";
+                        }
+                        if !focus.is_empty() {
+                            self.pending_title = Some(format!("Yi — {focus}"));
+                        }
+                        self.commit_cell(&Cell::User { text });
+                    }
                 }
-                self.user_turns += 1;
-                let focus: String = text.split_whitespace().collect::<Vec<_>>().join(" ");
-                let focus: String = focus.chars().take(40).collect();
-                if !focus.is_empty() {
-                    self.pending_title = Some(format!("Yi — {focus}"));
-                }
-                let cell = Cell::User { text };
-                self.commit_cell(&cell);
             }
             AgentEvent::MessageUpdate {
                 message: AgentMessage::Assistant { content, .. },
@@ -680,12 +688,9 @@ impl App {
         match event {
             AgentEvent::MessageStart {
                 message: AgentMessage::User { content, .. },
-            } => {
-                let cell = Cell::User {
-                    text: user_text(&content),
-                };
-                self.commit_cell(&cell);
-            }
+            } => self.commit_cell(&Cell::User {
+                text: user_text(&content),
+            }),
             AgentEvent::MessageEnd { message } => self.reduce_message_end(&message),
             AgentEvent::ToolExecutionEnd {
                 tool_name,
