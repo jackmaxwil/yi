@@ -308,13 +308,11 @@ pub struct KernelServiceOptions {
     pub sandbox: Option<yi_tools::Sandbox>,
 }
 
-/// Boots on first cell, memoizes the running manager, retries after a failed
-/// start, and owns the busy-kernel recovery path.
+/// Boots on first cell, memoizes the manager, retries a failed start, owns busy recovery.
 pub struct KernelService {
     options: KernelServiceOptions,
     sandbox: tokio::sync::Mutex<Option<yi_tools::Sandbox>>,
     manager: tokio::sync::Mutex<Option<Arc<KernelManager>>>,
-    lane: tokio::sync::Mutex<()>,
 }
 
 impl KernelService {
@@ -323,7 +321,6 @@ impl KernelService {
             sandbox: tokio::sync::Mutex::new(options.sandbox.clone()),
             options,
             manager: tokio::sync::Mutex::new(None),
-            lane: tokio::sync::Mutex::new(()),
         }
     }
 
@@ -522,7 +519,6 @@ impl KernelService {
         code: &str,
         cancelled: &CancelFlag,
     ) -> Result<KernelCellOutcome, String> {
-        let _turn = self.lane.lock().await;
         let mut kernel_restarted = false;
         loop {
             let manager = self.ensure().await?;

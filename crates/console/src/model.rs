@@ -146,9 +146,32 @@ pub struct Editor {
     pub stale: bool,
     pub scroll_top: usize,
     pub lang: Option<String>,
+    /// Parse state at a row: a viewport below a block comment still colours inside it.
+    pub primed: Option<(usize, yi_tui::highlight::Lang)>,
+    /// The cursor at the last draw; the viewport chases it only when it moves.
+    pub last_cursor: (usize, usize),
 }
 
 impl Editor {
+    /// The lexer positioned at `scroll_top`, advanced over the rows above it.
+    pub fn primed_lang(&mut self) -> Option<yi_tui::highlight::Lang> {
+        let fresh = || self.lang.as_deref().and_then(yi_tui::highlight::lang_for);
+        let (from, mut lang) = match self.primed.take() {
+            Some((at, lang)) if at <= self.scroll_top => (at, lang),
+            _ => (0, fresh()?),
+        };
+        for line in self
+            .text
+            .lines()
+            .get(from..self.scroll_top)
+            .unwrap_or_default()
+        {
+            yi_tui::highlight::tokens(line, &mut lang);
+        }
+        self.primed = Some((self.scroll_top, lang.clone()));
+        Some(lang)
+    }
+
     pub fn gutter(&self) -> usize {
         self.text
             .lines()

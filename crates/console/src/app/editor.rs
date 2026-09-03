@@ -41,6 +41,8 @@ pub(super) fn load(path: &str) -> Result<Editor, String> {
         mtime: mtime_of(path),
         stale: false,
         scroll_top: 0,
+        primed: None,
+        last_cursor: (0, 0),
         lang: Path::new(path)
             .extension()
             .map(|ext| ext.to_string_lossy().into_owned()),
@@ -89,6 +91,7 @@ impl Editor {
         self.mtime = fresh.mtime;
         self.dirty = false;
         self.stale = false;
+        self.primed = None;
         Ok(())
     }
 
@@ -115,8 +118,14 @@ impl Editor {
             }
             return None;
         }
+        let before = self.text.cursor().0;
         if self.text.input(CtEvent::Key(key)) {
             self.dirty = true;
+            // Only an edit above the viewport can change what the visible rows sit inside.
+            let touched = before.min(self.text.cursor().0);
+            if touched < self.scroll_top {
+                self.primed = None;
+            }
         }
         None
     }
