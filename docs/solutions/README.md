@@ -94,8 +94,6 @@ when it changes rather than editing them by hand.
 - [D108](adr/d108.md) - a fixture is the production shape
 - [D109](adr/d109.md) - panic and dead-artifact gates judge behaviour, not spelling
 - [D110](adr/d110.md) - the comment cap drops from three lines to two
-- [D114](adr/d114.md) - compaction's recall half is an extractive view plus store-native grep
-- [D115](adr/d115.md) - compaction is a deterministic fold; the LLM summary is a mode
-- [D116](adr/d116.md) - user session constraints are pinned verbatim
+- [D115](adr/d115.md) - compaction's recall half is an extractive view plus store-native grep
 
 D36-D51, D72, D73 and D74 have no ADR yet; ARCHITECTURE.md is the record for those rows.

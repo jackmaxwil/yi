@@ -621,7 +621,7 @@ its own tests:
 | P16 | **Source budgets** | `SourceBudgets{project_instructions, skills_meta, ledger, advisories, emergency_ceiling}` bytes; `fit(source, budget) -> Truncated{text, marker}`; enforced in P11 | — |
 | P17 | **Retention floor** | `retain_floor(branch, budget: 64_000) -> Vec<EntryId>` — every real user message survives compaction verbatim (role filter, newest-first token budget, oldest middle-truncated; prior summaries and contextual fragments dropped); union with P5's kept suffix. P5 keeps the working set, P17 guarantees no early user requirement is ever summarized away | — |
 | P18 | **World state** | `trait WorldStateSection { name; snapshot() -> Snapshot; render_diff(&prev) -> Option<Fragment> }` — named sections (env, permissions, ledger view), diff rendered only on change, appended at the overlay tail; per-turn re-injection is a diff or it is nothing | — |
-| P19 | **Compact view** | `compile_view(attributed, previous_view) -> CompiledView{outstanding, brief, earlier, dropped}` — extractive index (D114): user turns stay out of the brief (P17 already keeps `UserContent::Text`); assistant prose is omitted; successful tool results are pointers (`tool: name → N chars`); a read whose path a later edit touched is `stale`; `[Earlier]` indexes rolled brief windows as `(#first..#last)` (cap 24); `[Kernel]` carries the persist note; identifiers present in the summarized span but absent from the view, the retained tail, and the P7 prose land in `[Dropped]` (`ident (#id)`, cap 40) and the count is `details.dropped`; `compose_summary` prefixes the view ahead of the full P7 checkpoint. Recall is `SessionStore::grep` behind the host verb `history.grep` (`compact.recall` in the kernel), then `history://<agent>/<entryId>` fetches the full entry | ARC (arXiv 2607.25066) |
+| P19 | **Compact view** | `compile_view(attributed, previous) -> CompiledView{outstanding, brief, earlier}` — extractive index (D115): user turns stay out of the brief (P17 already keeps `UserContent::Text`); assistant prose is omitted; a successful tool result is a pointer (`tool: name → N chars`) and only `is_error` or a non-zero exit code makes an outstanding line; a read whose path a later message edits is `stale`; `[Earlier]` indexes rolled brief windows as `(#first..#last)` (cap 24); `[Kernel]` carries the persist note; `compose_summary` prefixes the view ahead of the full P7 checkpoint and persists the brief and `[Earlier]` lines in `CompactionDetails.extra`, which is what the next round rolls. Recall is `SessionStore::grep` behind the host verb `history.grep` (`compact.recall` in the kernel), then `history://<agent>/<entryId>` fetches the full entry | ARC (arXiv 2607.25066) |
 
 Only P1, P7 and P10 perform I/O. P2–P6, P8, P9, P11, P13, P14, P17, P18, P19 are pure and property-testable.
 
@@ -1858,11 +1858,10 @@ Principles, each with its evidence:
 
 Compaction (P4–P9) is not a memory: nothing is forgotten, the model's *view* shrinks; the tree
 keeps everything and `CompactionCheck` (V5) validates the view against forward intent
-(Slipstream, arXiv 2605.08580). P19 is an extractive index over the summarized span (D114):
-pointer-only tool results, stale reads, `[Earlier]` / `[Dropped]` / `[Kernel]`, then grep by
-`(#entryId)`. User text is P17 (newest-first 64k tok, oldest middle-truncated). Constraints
-live in P7's `## Constraints & Preferences`. CompInt's `C(H)` append after compact is not
-shipped. D115 and D116 are unshipped (0.140.0).
+(Slipstream, arXiv 2605.08580). P19 is an extractive index over the summarized span (D115):
+pointer-only tool results, stale reads, `[Earlier]` and `[Kernel]`, then grep by `(#entryId)`.
+User text is P17 (newest-first 64k tok, oldest middle-truncated). Constraints live in P7's
+`## Constraints & Preferences`. CompInt's `C(H)` append after compact is not shipped.
 
 ## 17. Desktop: Afterlife
 
