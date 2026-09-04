@@ -307,16 +307,11 @@ impl AgentTool for ToolAdapter {
                     if let Some(line) = ipython_note(&name, &output.result) {
                         crate::affordance::append(&mut output.result, &line);
                     }
+                    let text = result_text(&output.result);
                     if let Some(rules) = &rules {
-                        rules.check_result(
-                            &name,
-                            &args_json,
-                            &result_text(&output.result),
-                            output.is_error,
-                        );
+                        rules.check_result(&name, &args_json, &text, output.is_error);
                     }
                     if let Some(ext) = &ext {
-                        let text = result_text(&output.result);
                         ext(crate::ext::Event::ToolResult {
                             files_matched: files_matched(&name, &text),
                             exit: output

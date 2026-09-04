@@ -403,7 +403,7 @@ fn paths_and_the_needle() -> TestResult {
         RuleGap::Once,
         RuleMode::Remind,
     );
-    rust.paths = vec!["**/*.rs".to_owned()];
+    rust.paths = vec![yi_permission::PathGlob::new("**/*.rs")?];
     let (engine, delivered) = engine_with_sink(vec![rust]);
     engine.check_result(
         "read",
@@ -533,5 +533,153 @@ fn skill_trigger_compiles_when_the_user_did_not_claim_the_name() -> TestResult {
         .ok_or("skill did not compile")?;
     assert_eq!(rule.body, "skill://rust-borrowck");
     assert_eq!(rule.scope, RuleScope::Error);
+    Ok(())
+}
+
+/// The D54 fire-lane corpus (`evals/fixtures/rules/lanes.jsonl`) run through the
+/// real engine. The Python beside it scores the labels; this scores the matcher,
+/// so a recall claim can never again be moved by editing a model of the engine.
+#[test]
+fn the_lane_fixture_runs_through_the_engine() -> TestResult {
+    let fixture =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../evals/fixtures/rules/lanes.jsonl");
+    let corpus = std::fs::read_to_string(&fixture)?;
+    let mut should = 0;
+    let mut comment_fp = 0;
+    let mut args_fp = 0;
+    for line in corpus.lines().filter(|line| !line.trim().is_empty()) {
+        let row: serde_json::Value = serde_json::from_str(line)?;
+        let lane = row["lane"].as_str().ok_or("row has no lane")?;
+        let haystack = row["haystack"].as_str().ok_or("row has no haystack")?;
+        let needle = row["needle"].as_str().unwrap_or("E0502");
+        let is_error = row["is_error"].as_bool().unwrap_or(false);
+        let scope = match lane {
+            "args" => RuleScope::AnyTool,
+            "result" => RuleScope::Result,
+            "error" => RuleScope::Error,
+            "text" => RuleScope::Text,
+            other => return Err(format!("unknown lane `{other}`").into()),
+        };
+        // A fresh engine per row: the latch is state, and rows are independent.
+        let (engine, delivered) = engine_with_sink(vec![rule(
+            "lane",
+            needle,
+            scope,
+            RuleGap::Once,
+            RuleMode::Remind,
+        )]);
+        match lane {
+            "args" => {
+                let _ = engine.check_tool("edit", haystack);
+            }
+            "result" => engine.check_result("bash", "{}", haystack, false),
+            "error" => engine.check_result("bash", "{}", haystack, is_error),
+            _ => engine.observe(&assistant_saying(haystack)),
+        }
+        let fired = delivered.lock().map_err(|_| "lock")?.len();
+        if row["label"] == "should" {
+            assert_eq!(fired, 1, "a should-fire row went silent: {line}");
+            should += 1;
+        } else if lane == "text" {
+            comment_fp += fired;
+        } else if lane == "args" {
+            args_fp += fired;
+        } else {
+            assert_eq!(fired, 0, "a should-not row fired: {line}");
+        }
+    }
+    assert_eq!(should, 2, "the corpus's should-fire rows");
+    // The fixture's own notes: a literal substring cannot tell a needle in a
+    // comment from one in an error. Pinned honestly rather than papered over.
+    assert_eq!(comment_fp, 2, "the known text-lane comment false positives");
+    assert_eq!(args_fp, 1, "the patch-comment coincidence in the args lane");
+    Ok(())
+}
+
+#[test]
+fn three_user_rules_all_deliver_in_one_scan() -> TestResult {
+    let rules = ["no-leak", "prefer-arc", "read-the-drop"]
+        .into_iter()
+        .map(|name| {
+            rule(
+                name,
+                "Box::leak",
+                RuleScope::AnyTool,
+                RuleGap::Once,
+                RuleMode::Remind,
+            )
+        })
+        .collect();
+    let (engine, delivered) = engine_with_sink(rules);
+    assert!(
+        engine
+            .check_tool("edit", r#"{"patch":"let x = Box::leak(y);"}"#)
+            .is_none()
+    );
+    assert_eq!(
+        delivered.lock().map_err(|_| "lock")?.len(),
+        3,
+        "the cap is for skill:// pointers; a user's own words are never dropped"
+    );
+    Ok(())
+}
+
+#[test]
+fn the_third_skill_pointer_is_dropped_and_stays_armed() -> TestResult {
+    let pointers = ["alpha", "beta", "gamma"]
+        .into_iter()
+        .map(|name| {
+            let mut doc = rule(
+                name,
+                "E0502",
+                RuleScope::Error,
+                RuleGap::Once,
+                RuleMode::Remind,
+            );
+            doc.body = format!("skill://{name}");
+            doc
+        })
+        .collect();
+    let (engine, delivered) = engine_with_sink(pointers);
+    engine.check_result("bash", "{}", "error[E0502]: cannot borrow", true);
+    {
+        let queue = delivered.lock().map_err(|_| "lock")?;
+        assert_eq!(queue.len(), 2, "two pointers is the budget for one scan");
+    }
+    engine.check_result("bash", "{}", "error[E0502]: cannot borrow", true);
+    let queue = delivered.lock().map_err(|_| "lock")?;
+    assert_eq!(queue.len(), 3, "the dropped pointer was never latched");
+    assert_eq!(
+        queue[2],
+        "Relevant: skill://gamma (read before the next edit)"
+    );
+    Ok(())
+}
+
+#[test]
+fn after_three_counts_one_needle_through_a_changing_result() -> TestResult {
+    let mut doc = rule(
+        "borrowck",
+        "E0502",
+        RuleScope::Result,
+        RuleGap::Once,
+        RuleMode::Remind,
+    );
+    doc.after = 3;
+    let (engine, delivered) = engine_with_sink(vec![doc]);
+    let args = r#"{"path":"src/borrow.rs"}"#;
+    let body = "error[E0502]: cannot borrow `x` as mutable";
+    engine.check_result("bash", args, &format!("Compiling yi v0.1.0\n{body}"), false);
+    engine.check_result("bash", args, &format!("Checking yi v0.1.0\n{body}"), false);
+    assert!(
+        delivered.lock().map_err(|_| "lock")?.is_empty(),
+        "two sightings are under the threshold"
+    );
+    engine.check_result("bash", args, &format!("Building yi v0.1.0\n{body}"), false);
+    assert_eq!(
+        delivered.lock().map_err(|_| "lock")?.len(),
+        1,
+        "needle and path are the evidence; the lines above them are not"
+    );
     Ok(())
 }
