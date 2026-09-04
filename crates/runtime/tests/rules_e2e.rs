@@ -3,7 +3,9 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use yi_runtime::goal::DeliverFn;
-use yi_runtime::rules::{RuleDoc, RuleEngine, RuleGap, RuleMode, RuleScope, discover};
+use yi_runtime::rules::{
+    RuleDoc, RuleEngine, RuleGap, RuleMode, RuleScope, discover, discover_armed,
+};
 use yi_types::event::AgentEvent;
 use yi_types::message::{AgentMessage, Content, StopReason, Usage, UserContent};
 use yi_types::schedule::DeliveryMode;
@@ -73,7 +75,7 @@ fn discovery_parses_shadows_and_names_skips() -> TestResult {
         set.warnings
             .iter()
             .any(|warning| warning.contains("gate-on-text.md")
-                && warning.contains("text cannot be denied"))
+                && warning.contains("cannot be denied"))
     );
     Ok(())
 }
@@ -87,6 +89,8 @@ fn rule(name: &str, needle: &str, scope: RuleScope, gap: RuleGap, mode: RuleMode
         scope,
         gap,
         mode,
+        paths: Vec::new(),
+        after: 1,
     }
 }
 
@@ -336,5 +340,198 @@ async fn gate_rule_denies_through_the_real_adapter_before_execution() -> TestRes
         !marker.exists(),
         "the command must never have executed: the gate sits before the spawn"
     );
+    Ok(())
+}
+
+#[test]
+fn result_scope_fires_on_the_output_not_the_args() -> TestResult {
+    let (engine, delivered) = engine_with_sink(vec![rule(
+        "borrowck",
+        "E0502",
+        RuleScope::Result,
+        RuleGap::Once,
+        RuleMode::Remind,
+    )]);
+    assert!(
+        engine
+            .check_tool("bash", r#"{"command":"cargo test","path":"src/lib.rs"}"#)
+            .is_none()
+    );
+    assert!(
+        delivered.lock().map_err(|_| "lock")?.is_empty(),
+        "args never carry the rustc code"
+    );
+    engine.check_result(
+        "bash",
+        r#"{"command":"cargo test","path":"src/lib.rs"}"#,
+        "error[E0502]: cannot borrow `x` as mutable",
+        true,
+    );
+    let queue = delivered.lock().map_err(|_| "lock")?;
+    assert_eq!(queue.len(), 1);
+    assert!(queue[0].contains("borrowck body"), "{}", queue[0]);
+    Ok(())
+}
+
+#[test]
+fn error_scope_skips_a_clean_result() -> TestResult {
+    let (engine, delivered) = engine_with_sink(vec![rule(
+        "borrowck",
+        "E0502",
+        RuleScope::Error,
+        RuleGap::Once,
+        RuleMode::Remind,
+    )]);
+    engine.check_result(
+        "bash",
+        "{}",
+        "error[E0502]: mentioned in a passing log",
+        false,
+    );
+    assert!(delivered.lock().map_err(|_| "lock")?.is_empty());
+    engine.check_result("bash", "{}", "error[E0502]: cannot borrow", true);
+    assert_eq!(delivered.lock().map_err(|_| "lock")?.len(), 1);
+    Ok(())
+}
+
+#[test]
+fn paths_and_the_needle() -> TestResult {
+    let mut rust = rule(
+        "borrowck",
+        "E0502",
+        RuleScope::Result,
+        RuleGap::Once,
+        RuleMode::Remind,
+    );
+    rust.paths = vec!["**/*.rs".to_owned()];
+    let (engine, delivered) = engine_with_sink(vec![rust]);
+    engine.check_result(
+        "read",
+        r#"{"path":"notes.md"}"#,
+        "error[E0502]: cannot borrow",
+        true,
+    );
+    assert!(
+        delivered.lock().map_err(|_| "lock")?.is_empty(),
+        "wrong path"
+    );
+    engine.check_result(
+        "read",
+        r#"{"path":"src/borrow.rs"}"#,
+        "error[E0502]: cannot borrow",
+        true,
+    );
+    assert_eq!(delivered.lock().map_err(|_| "lock")?.len(), 1);
+    Ok(())
+}
+
+#[test]
+fn after_three_escalates_a_gate() -> TestResult {
+    let mut doc = rule(
+        "no-leak",
+        "Box::leak",
+        RuleScope::AnyTool,
+        RuleGap::Once,
+        RuleMode::Gate,
+    );
+    doc.after = 3;
+    let (engine, _delivered) = engine_with_sink(vec![doc]);
+    let args = r#"{"patch":"let x = Box::leak(y);"}"#;
+    assert!(engine.check_tool("edit", args).is_none());
+    assert!(engine.check_tool("edit", args).is_none());
+    assert!(
+        engine.check_tool("edit", args).is_some(),
+        "third identical evidence denies"
+    );
+    Ok(())
+}
+
+#[test]
+fn evidence_latch_is_per_path() -> TestResult {
+    let (engine, delivered) = engine_with_sink(vec![rule(
+        "borrowck",
+        "E0502",
+        RuleScope::Result,
+        RuleGap::Once,
+        RuleMode::Remind,
+    )]);
+    engine.check_result(
+        "bash",
+        r#"{"path":"a.rs"}"#,
+        "error[E0502]: cannot borrow",
+        true,
+    );
+    engine.check_result(
+        "bash",
+        r#"{"path":"a.rs"}"#,
+        "error[E0502]: cannot borrow",
+        true,
+    );
+    engine.check_result(
+        "bash",
+        r#"{"path":"b.rs"}"#,
+        "error[E0502]: cannot borrow",
+        true,
+    );
+    assert_eq!(
+        delivered.lock().map_err(|_| "lock")?.len(),
+        2,
+        "same path latches; a new path is new evidence"
+    );
+    Ok(())
+}
+
+#[test]
+fn skill_pointer_is_one_line_and_read_suppresses() -> TestResult {
+    let mut doc = rule(
+        "rust-borrowck",
+        "E0502",
+        RuleScope::Error,
+        RuleGap::Once,
+        RuleMode::Remind,
+    );
+    doc.body = "skill://rust-borrowck".to_owned();
+    let (engine, delivered) = engine_with_sink(vec![doc]);
+    engine.check_result("bash", "{}", "error[E0502]: cannot borrow", true);
+    {
+        let queue = delivered.lock().map_err(|_| "lock")?;
+        assert_eq!(queue.len(), 1);
+        assert_eq!(
+            queue[0],
+            "Relevant: skill://rust-borrowck (read before the next edit)"
+        );
+    }
+    engine.rearm();
+    engine.check_result(
+        "read",
+        r#"{"path":"/tmp/.yi/skills/rust-borrowck/SKILL.md"}"#,
+        "body",
+        false,
+    );
+    engine.check_result("bash", "{}", "error[E0502]: cannot borrow", true);
+    assert_eq!(
+        delivered.lock().map_err(|_| "lock")?.len(),
+        1,
+        "a read of the skill file spends the pointer"
+    );
+    Ok(())
+}
+
+#[test]
+fn skill_trigger_compiles_when_the_user_did_not_claim_the_name() -> TestResult {
+    let (home, cwd) = scratch("skill-rule")?;
+    std::fs::create_dir_all(cwd.join(".yi/skills/rust-borrowck"))?;
+    std::fs::write(
+        cwd.join(".yi/skills/rust-borrowck/SKILL.md"),
+        "---\nname: rust-borrowck\ntrigger: E0502\nscope: error\n---\nHow to fix borrows.\n",
+    )?;
+    let set = discover_armed(&cwd, &home);
+    let rule = set
+        .rules
+        .iter()
+        .find(|rule| rule.name == "rust-borrowck")
+        .ok_or("skill did not compile")?;
+    assert_eq!(rule.body, "skill://rust-borrowck");
+    assert_eq!(rule.scope, RuleScope::Error);
     Ok(())
 }

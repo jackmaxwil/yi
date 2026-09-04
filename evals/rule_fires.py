@@ -3,8 +3,8 @@
 
 Zero spend. A cassette is JSONL of {lane, haystack, label, needle?}.
 Lanes: args (tool JSON, pre-gate), result, error (is_error bodies), text
-(assistant prose). The current engine fires on args and text only. This script does not load
-`RuleEngine`; it models those scopes as a substring haystack.
+(assistant prose). The current engine fires on args, result, error, and text. This script does not
+load `RuleEngine`; it models those scopes as a substring haystack.
 """
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ import sys
 from pathlib import Path
 
 LANES = ("args", "result", "error", "text")
-CURRENT = frozenset(("args", "text"))
+CURRENT = frozenset(("args", "result", "error", "text"))
 
 
 def load_events(path: Path) -> list[dict]:

@@ -216,17 +216,17 @@ impl AgentTool for ToolAdapter {
             }
             // User rules gate before permission: a matching eligible gate rule
             // denies once with the rule body as evidence (D26 shape).
-            if let Some(rules) = rules {
-                let args_json = serde_json::to_string(&args).unwrap_or_default();
-                if let Some(denial) = rules.check_tool(tool.name(), &args_json) {
-                    return ToolOutcome {
-                        result: yi_loop::tool::error_tool_result_kind(
-                            &denial,
-                            yi_types::event::ToolErrorKind::Denied,
-                        ),
-                        is_error: true,
-                    };
-                }
+            let args_json = serde_json::to_string(&args).unwrap_or_default();
+            if let Some(rules) = &rules
+                && let Some(denial) = rules.check_tool(tool.name(), &args_json)
+            {
+                return ToolOutcome {
+                    result: yi_loop::tool::error_tool_result_kind(
+                        &denial,
+                        yi_types::event::ToolErrorKind::Denied,
+                    ),
+                    is_error: true,
+                };
             }
             if let Some(denial) = wall.check(tool.name(), tool.kind(), &args, &context.cwd) {
                 return ToolOutcome {
@@ -306,6 +306,14 @@ impl AgentTool for ToolAdapter {
                     }
                     if let Some(line) = ipython_note(&name, &output.result) {
                         crate::affordance::append(&mut output.result, &line);
+                    }
+                    if let Some(rules) = &rules {
+                        rules.check_result(
+                            &name,
+                            &args_json,
+                            &result_text(&output.result),
+                            output.is_error,
+                        );
                     }
                     if let Some(ext) = &ext {
                         let text = result_text(&output.result);

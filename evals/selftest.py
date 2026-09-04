@@ -268,14 +268,14 @@ def check_orient_census():
 
 
 def check_rule_fires():
-    """Result-lane rustc codes are invisible; comment needles already match as text."""
+    """Result and error lanes fire; comment needles still match as text."""
     report = rule_fires.measure(FIXTURES / "rules" / "lanes.jsonl")
     assert report["should"] == 2, report
     assert report["recall_oracle"] == 1.0, report
-    assert report["gap"] == ["result", "error"], report
+    assert report["gap"] == [], report
     assert report["comment_fp"] == 2, report
     assert report["fp_current"] == 0.5, report
-    assert report["recall_current"] == 0.0, report
+    assert report["recall_current"] == 1.0, report
 
 
 CHECKS = (
