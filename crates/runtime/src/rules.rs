@@ -2,7 +2,6 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use sha2::{Digest, Sha256};
 use yi_types::event::AgentEvent;
 use yi_types::message::{AgentMessage, Content, StopReason, UserContent};
 use yi_types::schedule::DeliveryMode;
@@ -11,6 +10,7 @@ use crate::fetch::FetchLog;
 use crate::goal::DeliverFn;
 
 // Incident: always-on skill bodies were the cost regression; two pointers is the budget.
+// It caps `skill://` pointers only — a user's own rule is their words and is never dropped.
 const POINTER_CAP: usize = 2;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -44,7 +44,7 @@ pub struct RuleDoc {
     pub scope: RuleScope,
     pub gap: RuleGap,
     pub mode: RuleMode,
-    pub paths: Vec<String>,
+    pub paths: Vec<yi_permission::PathGlob>,
     pub after: u64,
 }
 
@@ -91,62 +91,57 @@ pub fn discover(cwd: &Path, home: &Path) -> RuleSet {
 pub fn discover_armed(cwd: &Path, home: &Path) -> RuleSet {
     let mut set = discover(cwd, home);
     let names: BTreeSet<String> = set.rules.iter().map(|rule| rule.name.clone()).collect();
-    for (skill, warning) in skill_rules(cwd, home) {
-        if let Some(reason) = warning {
-            set.warnings.push(reason);
-            continue;
+    for compiled in skill_rules(cwd, home) {
+        match compiled {
+            Err(reason) => set.warnings.push(reason),
+            Ok(None) => {}
+            Ok(Some(rule)) if names.contains(&rule.name) => {}
+            Ok(Some(rule)) => set.rules.push(rule),
         }
-        let Some(rule) = skill else {
-            continue;
-        };
-        if names.contains(&rule.name) {
-            continue;
-        }
-        set.rules.push(rule);
     }
     set
 }
 
-fn skill_rules(cwd: &Path, home: &Path) -> Vec<(Option<RuleDoc>, Option<String>)> {
+fn skill_rules(cwd: &Path, home: &Path) -> Vec<Result<Option<RuleDoc>, String>> {
     crate::skills::discover(cwd, home)
         .into_iter()
-        .map(|skill| match skill_as_rule(&skill) {
-            Ok(None) => (None, None),
-            Ok(Some(rule)) => (Some(rule), None),
-            Err(reason) => (
-                None,
-                Some(format!(
-                    "skill {} skipped as rule: {reason}",
-                    skill.path.display()
-                )),
-            ),
+        .map(|skill| {
+            skill_as_rule(&skill).map_err(|reason| {
+                format!("skill {} skipped as rule: {reason}", skill.path.display())
+            })
         })
         .collect()
 }
 
+/// Discovery already parsed the frontmatter, so an armed skill costs no second read.
 fn skill_as_rule(skill: &crate::skills::Skill) -> Result<Option<RuleDoc>, String> {
-    let source =
-        std::fs::read_to_string(&skill.path).map_err(|error| format!("unreadable: {error}"))?;
-    let fields = crate::skills::frontmatter(&source);
-    if !fields.contains_key("trigger") {
+    if !skill.frontmatter.contains_key("trigger") {
         return Ok(None);
     }
-    let mut rule = fields_to_rule(&skill.path, &fields, &source)?;
+    let mut rule = fields_to_rule(
+        &skill.path,
+        &skill.frontmatter,
+        &format!("skill://{}", skill.name),
+    )?;
     rule.name = skill.name.clone();
-    rule.body = format!("skill://{}", skill.name);
     Ok(Some(rule))
 }
 
 pub(crate) fn read_rule(path: &Path) -> Result<RuleDoc, String> {
     let source = std::fs::read_to_string(path).map_err(|error| format!("unreadable: {error}"))?;
     let fields = crate::skills::frontmatter(&source);
-    fields_to_rule(path, &fields, &source)
+    let body = source
+        .split_once("---")
+        .and_then(|(_, rest)| rest.split_once("---"))
+        .map_or(source.as_str(), |(_, body)| body)
+        .trim();
+    fields_to_rule(path, &fields, body)
 }
 
 fn fields_to_rule(
     path: &Path,
     fields: &BTreeMap<String, String>,
-    source: &str,
+    body: &str,
 ) -> Result<RuleDoc, String> {
     let name = path
         .file_stem()
@@ -203,18 +198,12 @@ fn fields_to_rule(
             _ => return Err(format!("after `{raw}` is not a positive count")),
         },
     };
-    let body = source
-        .split_once("---")
-        .and_then(|(_, rest)| rest.split_once("---"))
-        .map_or(source, |(_, body)| body)
-        .trim()
-        .to_owned();
     if body.is_empty() {
         return Err("empty rule body".to_owned());
     }
     Ok(RuleDoc {
         name,
-        body,
+        body: body.to_owned(),
         path: path.to_path_buf(),
         needles,
         scope,
@@ -241,53 +230,71 @@ fn parse_scope(scope: Option<&str>) -> Result<RuleScope, String> {
     }
 }
 
-fn parse_paths(fields: &BTreeMap<String, String>) -> Result<Vec<String>, String> {
+fn parse_paths(fields: &BTreeMap<String, String>) -> Result<Vec<yi_permission::PathGlob>, String> {
     let Some(raw) = fields.get("paths") else {
         return Ok(Vec::new());
     };
-    let mut paths = Vec::new();
-    for pattern in raw.split(',').map(str::trim).filter(|p| !p.is_empty()) {
-        yi_permission::glob_matches(pattern, "").map_err(|error| format!("paths: {error}"))?;
-        paths.push(pattern.to_owned());
+    raw.split(',')
+        .map(str::trim)
+        .filter(|pattern| !pattern.is_empty())
+        .map(|pattern| {
+            yi_permission::PathGlob::new(pattern).map_err(|error| format!("paths: {error}"))
+        })
+        .collect()
+}
+
+/// What the rule saw, kept whole rather than hashed: the lines around a needle
+/// are not evidence, so `after: N` counts one needle on one path through them.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct Evidence {
+    rule: String,
+    needle: String,
+    path: String,
+}
+
+impl Evidence {
+    fn of(rule: &RuleDoc, haystack: &str, path: &str) -> Self {
+        Self {
+            rule: rule.name.clone(),
+            needle: matched_needle(rule, haystack).to_owned(),
+            path: path.to_owned(),
+        }
     }
-    Ok(paths)
 }
 
 #[derive(Default)]
 struct FireState {
     turn: u64,
-    last_fired: BTreeMap<String, u64>,
-    fired_once: BTreeMap<String, bool>,
-    seen: BTreeMap<String, u64>,
+    last_fired: BTreeMap<Evidence, u64>,
+    fired_once: BTreeMap<Evidence, bool>,
+    seen: BTreeMap<Evidence, u64>,
     loaded: BTreeSet<String>,
 }
 
 impl FireState {
-    fn latch_key(rule: &str, evidence: &str) -> String {
-        format!("{rule}\n{evidence}")
-    }
-
-    fn eligible(&self, rule: &RuleDoc, evidence: &str) -> bool {
-        let key = Self::latch_key(&rule.name, evidence);
+    fn eligible(&self, rule: &RuleDoc, evidence: &Evidence) -> bool {
         match rule.gap {
-            RuleGap::Once => !self.fired_once.get(&key).copied().unwrap_or(false),
+            RuleGap::Once => !self.fired_once.get(evidence).copied().unwrap_or(false),
             RuleGap::AfterTurns(gap) => self
                 .last_fired
-                .get(&key)
+                .get(evidence)
                 .is_none_or(|fired| self.turn.saturating_sub(*fired) >= gap),
         }
     }
 
-    fn mark(&mut self, rule: &RuleDoc, evidence: &str) {
-        let key = Self::latch_key(&rule.name, evidence);
-        self.fired_once.insert(key.clone(), true);
-        self.last_fired.insert(key, self.turn);
+    fn mark(&mut self, evidence: &Evidence) {
+        self.fired_once.insert(evidence.clone(), true);
+        self.last_fired.insert(evidence.clone(), self.turn);
     }
 
-    fn bump(&mut self, rule: &str, evidence: &str) -> u64 {
-        let key = Self::latch_key(rule, evidence);
-        let next = self.seen.get(&key).copied().unwrap_or(0).saturating_add(1);
-        self.seen.insert(key, next);
+    fn bump(&mut self, evidence: &Evidence) -> u64 {
+        let next = self
+            .seen
+            .get(evidence)
+            .copied()
+            .unwrap_or(0)
+            .saturating_add(1);
+        self.seen.insert(evidence.clone(), next);
         next
     }
 
@@ -347,42 +354,28 @@ fn call_path(args_json: &str) -> String {
         .unwrap_or_default()
 }
 
-fn paths_ok(rule: &RuleDoc, args_json: &str) -> bool {
+/// `paths:` reads the call's `path` argument alone: a rule with one skips `bash`.
+fn paths_ok(rule: &RuleDoc, path: &str) -> bool {
     if rule.paths.is_empty() {
         return true;
     }
-    let path = call_path(args_json);
-    if path.is_empty() {
-        return false;
-    }
-    rule.paths
-        .iter()
-        .any(|pattern| yi_permission::glob_matches(pattern, &path).unwrap_or(false))
-}
-
-fn evidence_hash(rule: &RuleDoc, haystack: &str, args_json: &str, result_head: bool) -> String {
-    let path = call_path(args_json);
-    let needle = matched_needle(rule, haystack);
-    let head: String = if result_head {
-        haystack.chars().take(80).collect()
-    } else {
-        String::new()
-    };
-    let mut hasher = Sha256::new();
-    hasher.update(rule.name.as_bytes());
-    hasher.update(needle.as_bytes());
-    hasher.update(path.as_bytes());
-    hasher.update(head.as_bytes());
-    let digest = hasher.finalize();
-    digest
-        .iter()
-        .take(8)
-        .map(|byte| format!("{byte:02x}"))
-        .collect()
+    !path.is_empty() && rule.paths.iter().any(|glob| glob.is_match(path))
 }
 
 fn skill_name(rule: &RuleDoc) -> Option<&str> {
     rule.body.strip_prefix("skill://")
+}
+
+/// A dropped pointer is not latched, so the next scan that matches it delivers.
+fn take_pointer_slot(rule: &RuleDoc, pointers: &mut usize) -> bool {
+    if skill_name(rule).is_none() {
+        return true;
+    }
+    if *pointers >= POINTER_CAP {
+        return false;
+    }
+    *pointers += 1;
+    true
 }
 
 impl RuleEngine {
@@ -439,6 +432,7 @@ impl RuleEngine {
 
     pub fn check_result(&self, tool: &str, args_json: &str, result: &str, is_error: bool) {
         self.note_skill_read(tool, args_json);
+        // The tool already ran: a post-spawn scan only reminds, so its denial slot is always None.
         let _ = self.scan(tool, args_json, result, is_error, false);
     }
 
@@ -477,6 +471,8 @@ impl RuleEngine {
         };
         let mut denial = None;
         let mut reminders = Vec::new();
+        let mut pointers = 0;
+        let path = call_path(args_json);
         let rules = self.snapshot();
         for rule in &rules {
             let in_scope = if pre {
@@ -484,11 +480,11 @@ impl RuleEngine {
             } else {
                 result_scope(rule, is_error)
             };
-            if !in_scope || !paths_ok(rule, args_json) || !matches(rule, haystack) {
+            if !in_scope || !paths_ok(rule, &path) || !matches(rule, haystack) {
                 continue;
             }
-            let evidence = evidence_hash(rule, haystack, args_json, !pre);
-            let n = state.bump(&rule.name, &evidence);
+            let evidence = Evidence::of(rule, haystack, &path);
+            let n = state.bump(&evidence);
             if n < rule.after.max(1) || !state.eligible(rule, &evidence) {
                 continue;
             }
@@ -497,7 +493,7 @@ impl RuleEngine {
             }
             match rule.mode {
                 RuleMode::Gate if pre && denial.is_none() => {
-                    state.mark(rule, &evidence);
+                    state.mark(&evidence);
                     denial = Some(format!(
                         "Denied by rule `{}` ({}):\n{}",
                         rule.name,
@@ -507,13 +503,16 @@ impl RuleEngine {
                 }
                 RuleMode::Gate => {}
                 RuleMode::Remind => {
-                    state.mark(rule, &evidence);
+                    if !take_pointer_slot(rule, &mut pointers) {
+                        continue;
+                    }
+                    // Incident: the cap ran after the latch, so a marked rule could be dropped unheard.
+                    state.mark(&evidence);
                     reminders.push(self.render_reminder(rule));
                 }
             }
         }
         drop(state);
-        reminders.truncate(POINTER_CAP);
         self.deliver_reminders(reminders);
         denial
     }
@@ -594,6 +593,7 @@ impl RuleEngine {
             .collect::<Vec<_>>()
             .join("\n");
         let mut reminders = Vec::new();
+        let mut pointers = 0;
         let rules = self.snapshot();
         if let Ok(mut state) = self.state.lock() {
             if !text.is_empty() {
@@ -604,21 +604,23 @@ impl RuleEngine {
                     if !matches(rule, &text) {
                         continue;
                     }
-                    let evidence = evidence_hash(rule, &text, "", false);
-                    let n = state.bump(&rule.name, &evidence);
+                    let evidence = Evidence::of(rule, &text, "");
+                    let n = state.bump(&evidence);
                     if n < rule.after.max(1) || !state.eligible(rule, &evidence) {
                         continue;
                     }
                     if self.skill_already_loaded(&state, rule) {
                         continue;
                     }
-                    state.mark(rule, &evidence);
+                    if !take_pointer_slot(rule, &mut pointers) {
+                        continue;
+                    }
+                    state.mark(&evidence);
                     reminders.push(self.render_reminder(rule));
                 }
             }
             state.turn = state.turn.saturating_add(1);
         }
-        reminders.truncate(POINTER_CAP);
         self.deliver_reminders(reminders);
     }
 }

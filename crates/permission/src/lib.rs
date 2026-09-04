@@ -18,7 +18,7 @@ pub use review::{
     ActionId, ActionLedger, ActionState, LEDGER_CAP, RequestId, ReviewedAsk, UserVerdict,
 };
 pub use rules::{
-    ConfigRule, ConfigRuleAction, RuleStateError, SessionRules, canonical_command_identity,
-    canonical_tool_identity, glob_matches,
+    ConfigRule, ConfigRuleAction, PathGlob, RuleStateError, SessionRules,
+    canonical_command_identity, canonical_tool_identity,
 };
 pub use safety::{Class, Parsed, Verdict, classify, parse, verdict};
