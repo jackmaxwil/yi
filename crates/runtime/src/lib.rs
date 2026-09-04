@@ -69,7 +69,7 @@ pub fn doctrine_fragment() -> &'static str {
     include_str!("prompts/doctrine.md")
 }
 pub use yi_ai::faux;
-pub use yi_context::{Bytes, Settings, SourceBudgets, Tokens, Truncated};
+pub use yi_context::{Bytes, SourceBudgets, Truncated};
 pub use yi_loop::ExecutionMode;
 pub use yi_permission::{
     Class, ConfigRule, ConfigRuleAction, Decision, PermissionMode, Verdict, mode_fragment,

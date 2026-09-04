@@ -277,6 +277,47 @@ impl AgentMessage {
         }
     }
 
+    /// Every text this message carries, for search and for a brief line: assistant tool calls
+    /// read `name {args}`, bash reads `command\noutput`, thinking is excluded.
+    pub fn plain_text(&self) -> String {
+        fn texts(blocks: &[Content]) -> Vec<String> {
+            blocks
+                .iter()
+                .filter_map(|block| match block {
+                    Content::Text { text, .. } => Some(text.clone()),
+                    _ => None,
+                })
+                .collect()
+        }
+        match self {
+            Self::User { content, .. } | Self::Custom { content, .. } => match content {
+                UserContent::Text(text) => text.clone(),
+                UserContent::Blocks(blocks) => texts(blocks).join("\n"),
+            },
+            Self::Assistant { content, .. } => content
+                .iter()
+                .filter_map(|block| match block {
+                    Content::Text { text, .. } => Some(text.clone()),
+                    Content::ToolCall {
+                        name, arguments, ..
+                    } => Some(format!(
+                        "{name} {}",
+                        serde_json::Value::Object(arguments.clone())
+                    )),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+                .join("\n"),
+            Self::ToolResult { content, .. } => texts(content).join("\n"),
+            Self::BashExecution {
+                command, output, ..
+            } => format!("{command}\n{output}"),
+            Self::BranchSummary { summary, .. } | Self::CompactionSummary { summary, .. } => {
+                summary.clone()
+            }
+        }
+    }
+
     pub fn attribution(&self) -> Attribution {
         match self {
             Self::User { attribution, .. } => *attribution,
