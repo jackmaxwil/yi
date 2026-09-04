@@ -309,11 +309,22 @@ pub struct KernelServiceOptions {
     pub snapshot_key: Option<Arc<dyn Fn() -> Option<String> + Send + Sync>>,
 }
 
-/// Where a session's kernel snapshot lives: its own directory under the root's.
-pub fn snapshot_dir(base: &std::path::Path, key: Option<&str>) -> PathBuf {
+/// A session's snapshot files, beside the root's, prefixed with its id: the sessions
+/// directory is read flat by its consumers, so no subdirectory appears in it.
+pub fn snapshot_paths(base: &std::path::Path, key: Option<&str>) -> (PathBuf, PathBuf) {
+    let (snapshot, manifest) = (
+        yi_kernel::snapshot::snapshot_path_in(base),
+        yi_kernel::snapshot::manifest_path_in(base),
+    );
+    let prefixed = |path: PathBuf, id: &str| {
+        let name = path
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned());
+        name.map_or(path.clone(), |name| base.join(format!("{id}.{name}")))
+    };
     match key {
-        Some(id) if !id.is_empty() => base.join("kernels").join(id),
-        _ => base.to_path_buf(),
+        Some(id) if !id.is_empty() => (prefixed(snapshot, id), prefixed(manifest, id)),
+        _ => (snapshot, manifest),
     }
 }
 
@@ -404,12 +415,10 @@ impl KernelService {
         // (design K10).
         let key = self.options.snapshot_key.as_ref().and_then(|key| key());
         let snapshot = self.options.session_dir.as_deref().map(|dir| {
-            let dir = snapshot_dir(dir, key.as_deref());
-            let _ = std::fs::create_dir_all(&dir);
-            let dir = dir.as_path();
+            let (path, manifest_path) = snapshot_paths(dir, key.as_deref());
             yi_kernel::client::KernelSnapshotConfig {
-                path: yi_kernel::snapshot::snapshot_path_in(dir),
-                manifest_path: yi_kernel::snapshot::manifest_path_in(dir),
+                path,
+                manifest_path,
                 max_bytes: None,
                 max_variable_bytes: None,
                 debounce_ms: None,
@@ -802,12 +811,21 @@ mod tests {
     #[test]
     fn a_snapshot_is_keyed_by_its_session() {
         let base = std::path::Path::new("/tmp/sessions");
+        let (keyed, manifest) = super::snapshot_paths(base, Some("01a0"));
+        let (bare, _) = super::snapshot_paths(base, None);
         assert_eq!(
-            super::snapshot_dir(base, Some("01a0")),
-            std::path::PathBuf::from("/tmp/sessions/kernels/01a0")
+            keyed.parent(),
+            Some(base),
+            "flat beside the sessions, never a subdirectory"
         );
-        assert_eq!(super::snapshot_dir(base, None), base.to_path_buf());
-        assert_eq!(super::snapshot_dir(base, Some("")), base.to_path_buf());
+        assert!(
+            keyed
+                .file_name()
+                .is_some_and(|name| name.to_string_lossy().starts_with("01a0."))
+        );
+        assert!(manifest.to_string_lossy().ends_with(".json"));
+        assert_eq!(bare, yi_kernel::snapshot::snapshot_path_in(base));
+        assert_eq!(super::snapshot_paths(base, Some("")).0, bare);
     }
 
     use super::*;
