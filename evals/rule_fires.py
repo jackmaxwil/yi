@@ -3,8 +3,12 @@
 
 Zero spend. A cassette is JSONL of {lane, haystack, label, needle?}.
 Lanes: args (tool JSON, pre-gate), result, error (is_error bodies), text
-(assistant prose). The current engine fires on args, result, error, and text. This script does not
-load `RuleEngine`; it models those scopes as a substring haystack.
+(assistant prose). The current engine fires on args, result, error, and text. This
+script does not load `RuleEngine`; it models those scopes as a substring haystack.
+
+So `recall_current` measures which lanes the engine reads — the `CURRENT` set — and
+not a `RuleEngine` run, over the default needle `E0502`, which applies to every row
+that does not set its own `needle`.
 """
 from __future__ import annotations
 

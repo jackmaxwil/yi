@@ -178,14 +178,6 @@ def cmd_ratchet(args):
     before = {path: read_json(path) for path in baseline_paths()}
     for script in ("check_test_size.py", "check_crate_size.py", "check_schemas_lock.py"):
         subprocess.run((sys.executable, str(ROOT / "scripts/guardrails" / script), "--update"), check=False)
-    if not args.no_binary:
-        out = subprocess.run(
-            (sys.executable, str(ROOT / "scripts/guardrails/check_binary_size.py")),
-            capture_output=True, text=True, check=False,
-        )
-        grown = re.search(r"dist binary (\d+) > (\d+)", out.stdout + out.stderr)
-        if grown:
-            (BASELINES / "binary_size_budget.json").write_text(f'{{"max_bytes": {grown.group(1)}}}\n')
     changed = dirty(baseline_paths())
     if not changed:
         print("ratchet: every baseline already matches")
@@ -230,11 +222,36 @@ def cmd_commit(args):
     if out.returncode != 0:
         return out.returncode
     print(f"committed {git('rev-parse', '--short', 'HEAD')} {args.subject.strip()}")
+    return binary_ratchet(args.topic)
+
+
+def binary_ratchet(topic):
+    """Measured after the code commit: the dist binary embeds the commit, so a build from
+    the dirty tree is not the binary the lane measures (16 bytes off, twice)."""
+    out = subprocess.run(
+        (sys.executable, str(ROOT / "scripts/guardrails/check_binary_size.py")),
+        capture_output=True, text=True, check=False,
+    )
+    grown = re.search(r"dist binary (\d+) > (\d+)", out.stdout + out.stderr)
+    verdict = next((line for line in (out.stdout + out.stderr).splitlines() if "binary_size" in line), "")
+    print(f"binary: {verdict.strip() or 'no measurement'}")
+    if not grown:
+        return 0
+    path = BASELINES / "binary_size_budget.json"
+    path.write_text(f'{{"max_bytes": {grown.group(1)}}}\n')
+    subject = ratchet_subject([f"dist binary {grown.group(2)} -> {grown.group(1)}"], topic)
+    git("commit", "-q", "-m", subject, "--", str(path.relative_to(ROOT)), check=True)
+    print(f"ratchet: {subject}")
     return 0
 
 
-def cmd_push(_args):
+def cmd_push(args):
     name = branch()
+    if git("status", "--porcelain"):
+        print("push: the tree is dirty — just commit first")
+        return 1
+    # The lane refuses a grown binary; measuring here is the last chance before it.
+    binary_ratchet(getattr(args, "topic", "") or "")
     print(f"push: {name} through the pre-push lane (minutes; run this in the background)")
     out = subprocess.run(("git", "-C", str(ROOT), "push", "-u", "origin", name), check=False)
     return out.returncode
@@ -486,7 +503,6 @@ def main(argv):
     verbs = parser.add_subparsers(dest="verb", required=True)
     ratchet = verbs.add_parser("ratchet")
     ratchet.add_argument("topic", nargs="?", default="")
-    ratchet.add_argument("--no-binary", action="store_true")
     ratchet.set_defaults(run=cmd_ratchet)
     commit = verbs.add_parser("commit")
     commit.add_argument("subject")

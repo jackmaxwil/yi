@@ -6,12 +6,11 @@ use std::io::Write;
 
 use yi_tui::orb::kitty;
 
-use crate::model::SessionId;
-
 /// Pixels per side; 8 px cells, so a two-column, one-row placement is one cell per glyph.
 pub const PX: usize = 40;
 const CELL: usize = 6;
-const MARGIN: usize = 5;
+const MARGIN: usize = 6;
+const RING: (u8, u8, u8) = (0x3b, 0x40, 0x5a);
 const FIRST_ID: u32 = 8000;
 const CAP: usize = 64;
 
@@ -94,16 +93,42 @@ pub fn grid(seed: &str) -> Grid {
 /// 40×40 RGBA on an opaque dark ground: the image covers the tile text under it whole.
 pub fn rgba(grid: &Grid, fg: (u8, u8, u8)) -> Vec<u8> {
     let mut out = Vec::with_capacity(PX.saturating_mul(PX).saturating_mul(4));
+    let edge = MARGIN.saturating_sub(2);
+    let far = PX.saturating_sub(edge).saturating_sub(1);
     for y in 0..PX {
         for x in 0..PX {
             let inside = (MARGIN..PX - MARGIN).contains(&x) && (MARGIN..PX - MARGIN).contains(&y);
             let (row, col) = ((y - MARGIN.min(y)) / CELL, (x - MARGIN.min(x)) / CELL);
+            let on_ring = (edge..=far).contains(&x)
+                && (edge..=far).contains(&y)
+                && (x == edge || x == far || y == edge || y == far)
+                && !((x == edge || x == far) && (y == edge || y == far));
             if inside && grid.on(row, col) {
                 out.extend_from_slice(&[fg.0, fg.1, fg.2, 255]);
+            } else if on_ring {
+                out.extend_from_slice(&[RING.0, RING.1, RING.2, 255]);
             } else {
-                out.extend_from_slice(&[0x1e, 0x1e, 0x2e, 255]);
+                out.extend_from_slice(&[0, 0, 0, 0]);
             }
         }
+    }
+    out
+}
+
+pub fn assign_accents(seeds: &[&str]) -> Vec<usize> {
+    let count = yi_tui::colors::ACCENT_RGB.len();
+    let mut taken = vec![false; count];
+    let mut out = Vec::with_capacity(seeds.len());
+    for seed in seeds {
+        let start = yi_tui::colors::accent_index(seed);
+        let pick = (0..count)
+            .map(|step| (start + step) % count)
+            .find(|hue| !taken.get(*hue).copied().unwrap_or(true))
+            .unwrap_or(start);
+        if let Some(slot) = taken.get_mut(pick) {
+            *slot = true;
+        }
+        out.push(pick);
     }
     out
 }
@@ -115,7 +140,7 @@ pub struct Placement {
     pub row: u16,
     pub cols: u16,
     pub rows: u16,
-    pub session: SessionId,
+    pub key: String,
     pub accent: (u8, u8, u8),
 }
 
@@ -123,55 +148,66 @@ pub struct Placement {
 #[derive(Default)]
 pub struct Avatars {
     pool: ImageIds,
-    ids: HashMap<SessionId, ImageId>,
-    placed: HashMap<SessionId, (u16, u16, u16, u16)>,
+    ids: HashMap<String, ImageId>,
+    placed: HashMap<String, (u16, u16, u16, u16)>,
 }
 
 impl Avatars {
     pub fn sync(&mut self, out: &mut impl Write, rows: &[Placement]) {
-        let wanted: Vec<&SessionId> = rows.iter().map(|place| &place.session).collect();
-        let gone: Vec<SessionId> = self
+        let wanted: Vec<&str> = rows.iter().map(|place| place.key.as_str()).collect();
+        let gone: Vec<String> = self
             .placed
             .keys()
-            .filter(|id| !wanted.contains(id))
+            .filter(|key| !wanted.contains(&key.as_str()))
             .cloned()
             .collect();
-        for id in gone {
-            self.placed.remove(&id);
-            if let Some(image) = self.ids.get(&id) {
+        for key in gone {
+            self.placed.remove(&key);
+            if let Some(image) = self.ids.get(&key) {
                 let _ = kitty::delete_id(out, image.raw());
             }
             if self.ids.len() > CAP {
-                self.ids.remove(&id);
+                self.ids.remove(&key);
             }
         }
         for place in rows {
-            let (id, col, row) = (&place.session, place.col, place.row);
-            let (cols, rows) = (place.cols, place.rows);
-            let image = match self.ids.get(id) {
+            let (col, row, cols, rows) = (place.col, place.row, place.cols, place.rows);
+            let image = match self.ids.get(&place.key) {
                 Some(image) => *image,
                 None => {
                     let Some(image) = self.pool.allocate() else {
                         continue;
                     };
-                    let _ =
-                        kitty::transmit(out, image.raw(), &rgba(&grid(&id.0), place.accent), PX);
-                    self.ids.insert(id.clone(), image);
+                    let _ = kitty::transmit(
+                        out,
+                        image.raw(),
+                        &rgba(&grid(&place.key), place.accent),
+                        PX,
+                    );
+                    self.ids.insert(place.key.clone(), image);
                     image
                 }
             };
-            if self.placed.get(id) == Some(&(col, row, cols, rows)) {
+            if self.placed.get(&place.key) == Some(&(col, row, cols, rows)) {
                 continue;
             }
             if kitty::place(out, image.raw(), col, row, cols, rows).is_ok() {
-                self.placed.insert(id.clone(), (col, row, cols, rows));
+                self.placed
+                    .insert(place.key.clone(), (col, row, cols, rows));
             }
         }
     }
 
+    /// Incident: a resize clears the screen, and kitty drops every placement with the cells
+    /// under it; the ledger still said placed, so the tiles showed until the row moved.
+    pub fn forget(&mut self) {
+        self.placed.clear();
+        self.ids.clear();
+    }
+
     pub fn hide_all(&mut self, out: &mut impl Write) {
-        for (id, image) in &self.ids {
-            if self.placed.contains_key(id) {
+        for (key, image) in &self.ids {
+            if self.placed.contains_key(key) {
                 let _ = kitty::delete_id(out, image.raw());
             }
         }
@@ -197,6 +233,50 @@ mod tests {
             (0..100).map(|n| grid(&format!("s-{n:02}")).0).collect();
         assert!(distinct.len() >= 95, "{}", distinct.len());
         assert_eq!(rgba(&g, (1, 2, 3)).len(), PX * PX * 4);
+    }
+
+    #[test]
+    fn a_forgotten_ledger_places_again_after_a_clear() {
+        let place = Placement {
+            col: 2,
+            row: 0,
+            cols: 4,
+            rows: 2,
+            key: "s-alpha".to_owned(),
+            accent: (1, 2, 3),
+        };
+        let mut avatars = Avatars::default();
+        let mut first = Vec::new();
+        avatars.sync(&mut first, std::slice::from_ref(&place));
+        assert!(
+            String::from_utf8_lossy(&first).contains("a=p,i="),
+            "placed once"
+        );
+        let mut again = Vec::new();
+        avatars.sync(&mut again, std::slice::from_ref(&place));
+        assert!(again.is_empty(), "an unmoved placement writes nothing");
+        avatars.forget();
+        let mut after = Vec::new();
+        avatars.sync(&mut after, std::slice::from_ref(&place));
+        assert!(
+            String::from_utf8_lossy(&after).contains("a=p,i="),
+            "placed again after a clear"
+        );
+    }
+
+    #[test]
+    fn visible_agents_never_share_a_hue() {
+        let seeds: Vec<String> = (0..14).map(|n| format!("s-{n:02}")).collect();
+        let refs: Vec<&str> = seeds.iter().map(String::as_str).collect();
+        let hues = assign_accents(&refs);
+        let distinct: std::collections::HashSet<usize> = hues.iter().copied().collect();
+        assert_eq!(distinct.len(), 14, "{hues:?}");
+        let fewer = assign_accents(&refs[..5]);
+        assert_eq!(
+            &hues[..5],
+            &fewer[..],
+            "a shorter list keeps the same hues for its head"
+        );
     }
 
     #[test]

@@ -8,6 +8,7 @@ use ratatui::crossterm::event::{Event as CtEvent, KeyCode, KeyEvent, KeyModifier
 use ratatui::layout::Direction;
 use serde_json::{Value, json};
 use yi_tui::colors::Theme;
+use yi_tui::input::handle_terminal_event;
 use yi_tui::{Reply, UiEvent};
 use yi_types::acp::{AcpPermissionParams, AcpSessionUpdate, AcpUpdateParams};
 
@@ -82,6 +83,7 @@ pub struct App {
     pub osc_out: Vec<String>,
     pub hits: Option<crate::render::Hits>,
     pub avatars: crate::avatar::Avatars,
+    pub accents: HashMap<String, usize>,
     /// Split path under an active border drag, pinned to its tab so a
     /// mid-drag tab switch can never resize a colliding path elsewhere.
     drag: Option<(usize, Vec<bool>)>,
@@ -126,6 +128,7 @@ impl App {
             osc_out: Vec::new(),
             hits: None,
             avatars: crate::avatar::Avatars::default(),
+            accents: HashMap::new(),
             drag: None,
             resume_offsets: HashMap::new(),
             seq: HashMap::new(),
@@ -164,6 +167,41 @@ impl App {
             None => self.state.banner = Some(text.to_owned()),
         }
         self.dirty = true;
+    }
+
+    pub fn accent_of(&self, key: &str, seed: &str) -> usize {
+        self.accents
+            .get(key)
+            .copied()
+            .unwrap_or_else(|| yi_tui::colors::accent_index(seed))
+    }
+
+    pub fn assign_accents(&mut self) {
+        let mut keys: Vec<(String, String)> = Vec::new();
+        for index in self.state.visible_rows() {
+            let Some(id) = self.state.order.get(index) else {
+                continue;
+            };
+            let Some(row) = self.state.sessions.get(id) else {
+                continue;
+            };
+            keys.push((id.0.clone(), row.seed().to_owned()));
+        }
+        for index in self.state.visible_rows() {
+            let Some(id) = self.state.order.get(index) else {
+                continue;
+            };
+            for child in self.state.children.get(id).into_iter().flatten() {
+                keys.push((child.id.as_str().to_owned(), child.name.clone()));
+            }
+        }
+        let seeds: Vec<&str> = keys.iter().map(|(_, seed)| seed.as_str()).collect();
+        let hues = crate::avatar::assign_accents(&seeds);
+        self.accents = keys
+            .into_iter()
+            .zip(hues)
+            .map(|((key, _), hue)| (key, hue))
+            .collect();
     }
 
     fn connected(&self) -> bool {
@@ -964,7 +1002,20 @@ impl App {
     pub fn handle_event(&mut self, outbound: &Outbound, event: CtEvent) {
         match event {
             CtEvent::Key(key) => self.handle_key(outbound, key),
-            CtEvent::Resize(_, _) => {
+            CtEvent::Resize(cols, rows) => {
+                for pane in self.state.panes.values_mut() {
+                    if let PaneContent::Session {
+                        chat: Some(chat), ..
+                    } = &mut pane.content
+                    {
+                        handle_terminal_event(
+                            &mut chat.app,
+                            &chat.commands.0,
+                            CtEvent::Resize(cols, rows),
+                        );
+                    }
+                }
+                self.avatars.forget();
                 self.dirty = true;
             }
             CtEvent::Mouse(mouse) => {
