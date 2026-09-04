@@ -3,12 +3,12 @@
 
 Zero spend. A cassette is JSONL of {lane, haystack, label, needle?}.
 Lanes: args (tool JSON, pre-gate), result, error (is_error bodies), text
-(assistant prose). The current engine fires on args, result, error, and text. This
-script does not load `RuleEngine`; it models those scopes as a substring haystack.
+(assistant prose). This script does not load `RuleEngine`; it is the labelled
+corpus, and `oracle` is what a matcher that reads every lane would catch.
 
-So `recall_current` measures which lanes the engine reads — the `CURRENT` set — and
-not a `RuleEngine` run, over the default needle `E0502`, which applies to every row
-that does not set its own `needle`.
+The engine itself is measured by `rules_e2e::the_lane_fixture_runs_through_the_engine`,
+which runs this same fixture through `RuleEngine` over the default needle `E0502`,
+which applies to every row that does not set its own `needle`.
 """
 from __future__ import annotations
 
@@ -17,7 +17,6 @@ import sys
 from pathlib import Path
 
 LANES = ("args", "result", "error", "text")
-CURRENT = frozenset(("args", "result", "error", "text"))
 
 
 def load_events(path: Path) -> list[dict]:
@@ -49,7 +48,6 @@ def measure(path: Path, needle: str = "E0502") -> dict:
                 "lane": lane,
                 "label": event["label"],
                 "hit": hit,
-                "current": hit if lane in CURRENT else False,
                 "oracle": hit,
                 "want": want,
             }
@@ -68,15 +66,8 @@ def measure(path: Path, needle: str = "E0502") -> dict:
         "events": len(rows),
         "should": len(should),
         "should_not": len(should_not),
-        "recall_current": rate(should, "current"),
         "recall_oracle": rate(should, "oracle"),
         "fp_oracle": rate(should_not, "oracle"),
-        "fp_current": rate(should_not, "current"),
-        "gap": [
-            r["lane"]
-            for r in should
-            if r["oracle"] and not r["current"]
-        ],
         "comment_fp": sum(
             1
             for r in rows
