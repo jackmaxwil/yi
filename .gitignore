@@ -10,7 +10,6 @@ __pycache__/
 /vendor/rtk/
 
 # START Ruler Generated Files
-/.agents/skills
 /.claude/skills
 /.pi/skills
 /AGENTS.md

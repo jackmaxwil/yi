@@ -52,6 +52,9 @@ run "$PY" scripts/forge_tracking.py --selfcheck
 # is this flag: a fake transport walks every branch — each issue defect, each tea
 # fix line, and the exempt path that must ask the forge nothing at all.
 run "$PY" scripts/guardrails/check_pr_metadata.py --selfcheck
+# The landing verbs decide from the forge's answers — behind, failed, ready — and a
+# decision read wrong retries a refusal forever; only this flag walks the table.
+run "$PY" scripts/forge_pr.py --selfcheck
 # The orphan scans are heuristics over text, so the flag is where they are proved to
 # judge anything at all: each scan is disabled in turn and the selfcheck must fail
 # for that scan's own reason (D109).

@@ -234,6 +234,24 @@ postmerge-evals:
 pr-body:
     python3 scripts/pr_body.py
 
+# Finishing a branch, as verbs that check first (the yi-forge skill is the procedure):
+# ratchet the baselines alone, commit with a judged subject, push through the lane,
+# open the PR with the title job's own judge, read the gate, merge with the reason.
+ratchet *args:
+    python3 scripts/forge_pr.py ratchet {{args}}
+
+commit subject *args:
+    python3 scripts/forge_pr.py commit "{{subject}}" {{args}}
+
+push:
+    python3 scripts/forge_pr.py push
+
+pr *args:
+    python3 scripts/forge_pr.py pr {{args}}
+
+land title *args:
+    python3 scripts/forge_pr.py land "{{title}}" {{args}}
+
 # Upload an already-built, signed release to Forgejo (release-scoped token).
 publish version:
     #!/usr/bin/env bash
