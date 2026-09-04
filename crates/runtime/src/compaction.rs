@@ -2,8 +2,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use yi_context::{
-    CompactionMode, Prefill, Preparation, Scope, Settings, Tokens, Window, compose_summary,
-    convert_to_llm, drop_internal, estimate_context, prepare_compaction, prompts, should_compact,
+    Prefill, Preparation, Scope, Settings, Tokens, Window, compose_summary, convert_to_llm,
+    drop_internal, estimate_context, prepare_compaction, prompts, should_compact,
 };
 use yi_loop::interrupt::InterruptSignal;
 use yi_loop::run::StreamFn;
@@ -302,20 +302,18 @@ impl Compactor {
             None => synthesize_entries(messages),
         };
         let prepared = prepare_compaction(&entries, &self.settings)?;
-        let summary_text = if self.settings.mode == CompactionMode::Fold {
-            String::new()
-        } else {
-            let request = |window_messages: &[AgentMessage]| LlmContext {
-                system_prompt: system_prompt.to_owned(),
-                messages: {
-                    let mut converted = convert_to_llm(window_messages);
-                    converted.push(directive_message(&prepared, instructions.as_deref()));
-                    converted
-                },
-                tools: None,
-                tool_choice: None,
-            };
-            let summarizer = self.summarizer.as_ref().unwrap_or(model);
+        let request = |window_messages: &[AgentMessage]| LlmContext {
+            system_prompt: system_prompt.to_owned(),
+            messages: {
+                let mut converted = convert_to_llm(window_messages);
+                converted.push(directive_message(&prepared, instructions.as_deref()));
+                converted
+            },
+            tools: None,
+            tool_choice: None,
+        };
+        let summarizer = self.summarizer.as_ref().unwrap_or(model);
+        let summary_text =
             match complete_text(provider, summarizer, &request(messages), signal).await {
                 Ok(text) => text,
                 Err(_) => {
@@ -324,8 +322,7 @@ impl Compactor {
                         .await
                         .unwrap_or_default()
                 }
-            }
-        };
+            };
         let (composed, mut details) =
             compose_summary(&summary_text, &prepared.file_ops, &prepared.view);
         let retained_tail = drop_internal(&prepared.retained_tail);

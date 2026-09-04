@@ -9,27 +9,70 @@ Use this EXACT format:
 ## Goal
 [What is the user trying to accomplish? Can be multiple items if the session covers different tasks.]
 
+## Constraints & Preferences
+- [Any constraints, preferences, or requirements mentioned by user]
+- [Or "(none)" if none were mentioned]
+
+## Progress
+### Done
+- [x] [Completed tasks/changes]
+
+### In Progress
+- [ ] [Current work]
+
+### Blocked
+- [Issues preventing progress, if any]
+
+## Key Decisions
+- **[Decision]**: [Brief rationale]
+
 ## Next Steps
 1. [Ordered list of what should happen next]
 
-Keep each section concise. Constraints, progress, decisions and file pointers are already in the compact view."#;
+## Critical Context
+- [Any data, examples, or references needed to continue]
+- [Or "(none)" if not applicable]
+
+Keep each section concise. Preserve exact file paths, function names, and error messages."#;
 
 pub const UPDATE_SUMMARIZATION_PROMPT: &str = r#"The messages above are NEW conversation messages to incorporate into the existing summary provided in <previous-summary> tags.
 
 Update the existing structured summary with new information. RULES:
-- PRESERVE existing Goal items, add new ones if the task expanded
-- UPDATE Next Steps based on what was accomplished
-- Constraints, progress, decisions and file pointers live in the compact view, not here
+- PRESERVE all existing information from the previous summary
+- ADD new progress, decisions, and context from the new messages
+- UPDATE the Progress section: move items from "In Progress" to "Done" when completed
+- UPDATE "Next Steps" based on what was accomplished
+- PRESERVE exact file paths, function names, and error messages
+- If something is no longer relevant, you may remove it
 
 Use this EXACT format:
 
 ## Goal
 [Preserve existing goals, add new ones if the task expanded]
 
+## Constraints & Preferences
+- [Preserve existing, add new ones discovered]
+
+## Progress
+### Done
+- [x] [Include previously done items AND newly completed items]
+
+### In Progress
+- [ ] [Current work - update based on progress]
+
+### Blocked
+- [Current blockers - remove if resolved]
+
+## Key Decisions
+- **[Decision]**: [Brief rationale] (preserve all previous, add new)
+
 ## Next Steps
 1. [Update based on current state]
 
-Keep each section concise."#;
+## Critical Context
+- [Preserve important context, add new if needed]
+
+Keep each section concise. Preserve exact file paths, function names, and error messages."#;
 
 pub const TURN_PREFIX_SUMMARIZATION_PROMPT: &str = r#"This is the PREFIX of a turn that was too large to keep. The SUFFIX (recent work) is retained.
 
@@ -62,5 +105,7 @@ pub fn build_summarization_prompt(
             "\n\n<user-instructions>\nThe user provided these instructions for this summary. Follow them with high priority while keeping the section format above: emphasize what they ask to focus on, and preserve verbatim anything they ask to remember.\n{instructions}\n</user-instructions>"
         ));
     }
+    prompt.push_str("\n\n");
+    prompt.push_str(KERNEL_PERSIST_SUMMARY_NOTE);
     prompt
 }

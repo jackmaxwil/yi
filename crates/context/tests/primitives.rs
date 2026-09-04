@@ -494,23 +494,32 @@ fn ledger_loads_reference_shaped_state_and_formats_hints() -> TestResult {
 }
 
 #[test]
-fn compile_view_puts_entry_ids_on_brief_lines() -> TestResult {
+fn compile_view_puts_entry_ids_on_tool_pointers_not_user_prose() -> TestResult {
+    let long = "body ".repeat(80);
     let attributed = vec![
         ("m1".to_owned(), user("port the parser")),
         (
             "m2".to_owned(),
-            assistant("working", usage(0, 0, 0), StopReason::Stop),
+            assistant("working because we must", usage(0, 0, 0), StopReason::Stop),
         ),
+        ("t1".to_owned(), tool_result(&long)),
     ];
-    let view = compile_view(&attributed, None, &FileOps::default());
+    let view = compile_view(&attributed, None);
     let rendered = view.render();
     assert!(
-        rendered.contains("(#m1) user: port the parser"),
-        "a compacted-away user turn must stay addressable by id: {rendered}"
+        !rendered.contains("port the parser"),
+        "P17 already keeps user text; the brief must not re-summarize it: {rendered}"
     );
     assert!(
-        rendered.contains("(#m2) assistant: working"),
-        "a compacted-away assistant turn must stay addressable by id: {rendered}"
+        !rendered.contains("working because"),
+        "assistant prose is not a keyword brief: {rendered}"
+    );
+    assert!(
+        rendered.contains(&format!(
+            "(#t1) tool: read → {} chars",
+            long.chars().count()
+        )),
+        "a compacted-away tool result stays addressable by id: {rendered}"
     );
     Ok(())
 }
@@ -519,16 +528,16 @@ fn compile_view_puts_entry_ids_on_brief_lines() -> TestResult {
 fn compile_view_rolls_previous_brief_and_caps_at_120() -> TestResult {
     let mut previous_lines = Vec::new();
     for index in 0..100 {
-        previous_lines.push(format!("(#old{index}) user: earlier turn {index}"));
+        previous_lines.push(format!("(#old{index}) tool: probe → 10 chars"));
     }
     let previous = format!(
         "<yi_compact_view>\n[Brief]\n{}\n</yi_compact_view>",
         previous_lines.join("\n")
     );
     let attributed: Vec<(String, AgentMessage)> = (0..30)
-        .map(|index| (format!("n{index}"), user(&format!("new turn {index}"))))
+        .map(|index| (format!("n{index}"), tool_result(&format!("ok {index}"))))
         .collect();
-    let view = compile_view(&attributed, Some(&previous), &FileOps::default());
+    let view = compile_view(&attributed, Some(&previous));
     assert_eq!(view.brief.len(), 120);
     assert!(
         !view.brief.iter().any(|line| line.contains("(#old0)")),
@@ -539,10 +548,8 @@ fn compile_view_rolls_previous_brief_and_caps_at_120() -> TestResult {
         "an older id that still fits the rolling window must survive"
     );
     assert!(
-        view.brief
-            .iter()
-            .any(|line| line.contains("(#n29)") && line.contains("new turn 29")),
-        "the newest summarized turn must survive the cap"
+        view.brief.iter().any(|line| line.contains("(#n29)")),
+        "the newest summarized tool turn must survive the cap"
     );
     Ok(())
 }
@@ -656,7 +663,7 @@ fn prepare_records_a_dropped_path_from_a_summarized_tool_result() -> TestResult 
 }
 
 #[test]
-fn fold_tool_result_is_a_pointer_and_a_later_edit_marks_the_read_stale() -> TestResult {
+fn tool_result_is_a_pointer_and_a_later_edit_marks_the_read_stale() -> TestResult {
     let long = "body ".repeat(80);
     let attributed = vec![
         ("u1".to_owned(), user("must keep the latch")),
@@ -672,7 +679,7 @@ fn fold_tool_result_is_a_pointer_and_a_later_edit_marks_the_read_stale() -> Test
             ),
         ),
     ];
-    let view = compile_view(&attributed, None, &FileOps::default());
+    let view = compile_view(&attributed, None);
     let rendered = view.render();
     assert!(
         rendered.contains(&format!(
@@ -694,108 +701,38 @@ fn fold_tool_result_is_a_pointer_and_a_later_edit_marks_the_read_stale() -> Test
         "an edit is a path pointer: {rendered}"
     );
     assert!(
-        rendered.contains("decided the latch because") && rendered.contains("must never"),
-        "a decision line is kept whole: {rendered}"
+        !rendered.contains("decided the latch"),
+        "assistant decisions are not keyword-kept: {rendered}"
     );
     assert!(
         rendered.contains("[Kernel]") && rendered.contains("IPython kernel keeps running"),
-        "both modes carry the kernel persist note in the view: {rendered}"
+        "the view carries the kernel persist note: {rendered}"
     );
     Ok(())
 }
 
 #[test]
-fn fold_earlier_index_names_the_demoted_span() -> TestResult {
+fn earlier_index_names_the_demoted_span() -> TestResult {
     let attributed: Vec<(String, AgentMessage)> = (0..125)
-        .map(|index| {
-            (
-                format!("u{index}"),
-                user(&format!("turn {index} about the parser")),
-            )
-        })
+        .map(|index| (format!("t{index}"), tool_result(&format!("ok {index}"))))
         .collect();
-    let view = compile_view(&attributed, None, &FileOps::default());
+    let view = compile_view(&attributed, None);
     assert_eq!(view.brief.len(), 120);
     assert_eq!(view.earlier.len(), 1);
     assert_eq!(
-        view.earlier[0], "turn 0 about the parser … (#u0..#u4)",
+        view.earlier[0], "(#t0..#t4)",
         "demoted lines collapse to one index line with exact ids"
     );
     Ok(())
 }
 
 #[test]
-fn fold_degenerate_one_message_still_renders_a_kernel_line() -> TestResult {
-    let view = compile_view(
-        &[("only".to_owned(), user("hi"))],
-        None,
-        &FileOps::default(),
-    );
+fn a_user_only_span_still_renders_a_kernel_line() -> TestResult {
+    let view = compile_view(&[("only".to_owned(), user("hi"))], None);
     let rendered = view.render();
-    assert!(rendered.contains("(#only) user: hi"), "{rendered}");
+    assert!(!rendered.contains("(#only)"), "{rendered}");
     assert!(rendered.contains("[Kernel]"), "{rendered}");
     assert!(view.earlier.is_empty());
-    assert!(view.pinned.is_empty(), "{rendered}");
-    Ok(())
-}
-
-#[test]
-fn a_user_constraint_is_pinned_verbatim_when_the_brief_rolls() -> TestResult {
-    let pin = format!(
-        "Never touch vendored/lock.json (SENTINEL-K7QX). {}",
-        "pad ".repeat(80)
-    );
-    let pin = pin.trim().to_owned();
-    let mut attributed = vec![("c0".to_owned(), user(&pin))];
-    attributed.extend((0..125).map(|index| {
-        (
-            format!("u{index}"),
-            user(&format!("turn {index} about the parser")),
-        )
-    }));
-    let view = compile_view(&attributed, None, &FileOps::default());
-    let rendered = view.render();
-    assert!(
-        rendered.contains("[Pinned]") && rendered.contains(&pin),
-        "the pin must not ride [Brief] truncation or [Earlier] collapse: {rendered}"
-    );
-    assert!(
-        !view.brief.iter().any(|line| line.contains(&pin)),
-        "the untruncated pin belongs in [Pinned], not a 160-char brief line"
-    );
-    let (composed, details) = compose_summary("", &FileOps::default(), &view);
-    assert!(
-        composed.contains(&pin),
-        "compose_summary integrity: the pin is a substring of the compaction body: {composed}"
-    );
-    assert_eq!(
-        details
-            .extra
-            .get("pinned")
-            .and_then(serde_json::Value::as_u64),
-        Some(1)
-    );
-    Ok(())
-}
-
-#[test]
-fn a_previous_view_keeps_its_pins_across_a_later_fold() -> TestResult {
-    let previous = "<yi_compact_view>\n[Pinned]\n(#old) Never delete the latch\n[Kernel]\nnote\n</yi_compact_view>";
-    let view = compile_view(
-        &[("n1".to_owned(), user("must keep the second latch"))],
-        Some(previous),
-        &FileOps::default(),
-    );
-    assert!(
-        view.pinned
-            .iter()
-            .any(|line| line.contains("Never delete the latch"))
-            && view
-                .pinned
-                .iter()
-                .any(|line| line.contains("must keep the second latch")),
-        "{:?}",
-        view.pinned
-    );
+    assert!(view.brief.is_empty());
     Ok(())
 }
