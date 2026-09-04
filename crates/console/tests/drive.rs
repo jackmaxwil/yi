@@ -671,12 +671,12 @@ fn navigator_filters_and_opens() -> TestResult {
             Step::Expect("_yi/seen", seen_ok),
         ],
         "wait-frame 5000 s-alpha\n\
-         wait-frame 3000 !palette\n\
+         wait-frame 3000 !Command Palette\n\
          key alt-/\n\
-         wait-frame 3000 find\n\
-         wait-frame 3000 palette\n\
+         wait-frame 3000 ›\n\
+         wait-frame 3000 Command Palette\n\
          type beta\n\
-         wait-frame 3000 find beta\n\
+         wait-frame 3000 › beta\n\
          key enter\n\
          wait-frame 5000 beta transcript\n\
          quit\n",
@@ -747,7 +747,7 @@ fn mouse_focuses_opens_and_drags() -> TestResult {
         // Click the first sidebar row to open it, split, click the right
         // pane, then prove focus moved there by submitting into it.
         "wait-frame 5000 s-alpha\n\
-         mouse down 2 0\n\
+         mouse down 2 1\n\
          wait-frame 5000 replayed world\n\
          key alt-v\n\
          wait-frame 3000 no session\n\
@@ -852,10 +852,10 @@ fn notebook_pane_shows_cells_and_image_placeholder() -> TestResult {
          type chart it\n\
          key enter\n\
          wait-frame 5000 nb:s-alpha\n\
-         wait-frame 5000 In[1]\n\
+         wait-frame 5000 In [1]\n\
          wait-frame 3000 plot_drift\n\
          wait-frame 3000 computing drift\n\
-         wait-frame 3000 image 0 KB png\n\
+         wait-frame 3000 image · 0 KB png\n\
          quit\n",
     )
 }
@@ -1292,7 +1292,7 @@ fn subagent_rows_render_under_parent() -> TestResult {
         "wait-frame 5000 s-alpha\n\
          key enter\n\
          wait-frame 5000 replayed world\n\
-         wait-frame 5000 └ grep-bot-sub-1a2 ◐\n\
+         wait-frame 5000 └ grep-bot-sub-1a2b3c4 ◐\n\
          quit\n",
     )
 }
@@ -1349,7 +1349,7 @@ fn shift_enter_runs_user_cell_on_session_kernel() -> TestResult {
          wait-frame 3000 ⇧↩ runs\n\
          type print(1)\n\
          key shift-enter\n\
-         wait-frame 5000 ● In[1]\n\
+         wait-frame 5000 ● In [1]\n\
          wait-frame 3000 print(1)\n\
          quit\n",
     )
@@ -1376,7 +1376,7 @@ fn esc_cancels_running_user_cell() -> TestResult {
          wait-frame 3000 nb:s-alpha\n\
          type sleep()\n\
          key shift-enter\n\
-         wait-frame 5000 ◐ In[1]\n\
+         wait-frame 5000 ◐ In [1]\n\
          key esc\n\
          wait 300\n\
          quit\n",
@@ -1723,10 +1723,10 @@ fn sidebar_rows_show_names_and_ages_newest_first() -> TestResult {
             Step::Expect("session/resume", resume_named),
             Step::Expect("_yi/seen", seen_ok),
         ],
-        "wait-frame 5000 1 RE · release notes\n\
-         wait-frame 3000 2 FI · fix login bug\n\
-         wait-frame 3000 5m\n\
-         wait-frame 3000 3h\n\
+        "wait-frame 5000 1 RE release notes\n\
+         wait-frame 3000 2 FI fix login bug\n\
+         wait-frame 3000 this hour\n\
+         wait-frame 3000 today\n\
          key down\n\
          key up\n\
          key enter\n\
@@ -1783,7 +1783,7 @@ fn the_rail_is_the_default_and_cmd_b_walks_to_full_and_back() -> TestResult {
          wait-frame 3000 !s-alpha\n\
          wait-frame 3000 !workspaces\n\
          cmd-b\n\
-         wait-frame 3000 2 SA · s-alpha\n\
+         wait-frame 3000 2 SA s-alpha\n\
          wait-frame 3000 workspaces\n\
          cmd-b\n\
          wait-frame 3000 1 SB   ●│\n\
@@ -2008,7 +2008,7 @@ fn alt_digit_resumes_the_rail_slot() -> TestResult {
             Step::Expect("session/resume", resume_named),
             Step::Expect("_yi/seen", seen_ok),
         ],
-        "wait-frame 5000 2 FI · fix login bug\n\
+        "wait-frame 5000 2 FI fix login bug\n\
          key alt-2\n\
          wait-frame 5000 resumed s-alpha\n\
          wait-frame 3000 FI · fix login\n\
@@ -2043,7 +2043,8 @@ fn the_focused_session_row_wears_the_active_background() -> TestResult {
         };
     }
     app.state.zone = Zone::Panes;
-    let rows = yi_console::render::sidebar_lines(&app, &theme, 10);
+    app.state.sidebar = yi_console::model::SidebarMode::Full;
+    let rows = yi_console::sidebar::sidebar_lines(&app, &theme, 10);
     let bg_of = |id: &str| {
         let index = app.state.order.iter().position(|row| row.0 == id);
         rows.iter()
@@ -2106,7 +2107,7 @@ fn unnamed_rows_take_their_tile_from_the_id() -> TestResult {
             last_ms: 1,
         });
     }
-    let rows = yi_console::render::sidebar_lines(&app, &theme, 10);
+    let rows = yi_console::sidebar::sidebar_lines(&app, &theme, 10);
     let tiles: Vec<(String, Option<ratatui::style::Color>)> = rows
         .iter()
         .filter_map(|(_, line)| line.spans.get(1))
@@ -2121,4 +2122,44 @@ fn unnamed_rows_take_their_tile_from_the_id() -> TestResult {
         "{tiles:?}"
     );
     Ok(())
+}
+
+/// The command palette runs an action by name: `split` splits the focused pane.
+#[test]
+fn the_command_palette_runs_an_action_by_name() -> TestResult {
+    run(
+        "palette-action",
+        session_fixture(),
+        "wait-frame 5000 s-alpha\n\
+         key enter\n\
+         wait-frame 5000 replayed world\n\
+         key alt-/\n\
+         wait-frame 3000 actions\n\
+         type split right\n\
+         wait-frame 3000 ▸ split right\n\
+         key enter\n\
+         wait-frame 3000 no session\n\
+         wait-frame 3000 ╭\n\
+         quit\n",
+    )
+}
+
+/// ⌥? shows every chord with its keys; the next key closes it.
+#[test]
+fn the_keys_overlay_lists_every_chord() -> TestResult {
+    run(
+        "keys",
+        vec![
+            Step::Expect("initialize", init_reply),
+            Step::Expect("session/list", two_session_list),
+            Step::Expect("session/list", empty_list),
+        ],
+        "wait-frame 5000 s-alpha\n\
+         key alt-?\n\
+         wait-frame 3000 stop the daemon and quit\n\
+         wait-frame 3000 ctrl+b then\n\
+         key esc\n\
+         wait-frame 3000 !ctrl+b then\n\
+         quit\n",
+    )
 }

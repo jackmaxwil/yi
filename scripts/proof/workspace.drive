@@ -4,7 +4,7 @@ wait-frame 5000 no sessions for this root
 cmd-b
 wait-frame 5000 workspaces
 key alt-n
-wait-frame 8000 1 UN
+wait-frame 8000 untitled
 type hello workspace
 key enter
 wait-frame 10000 faux:
