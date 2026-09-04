@@ -36,7 +36,7 @@ pub struct Hits {
     pub sidebar_width: u16,
     pub sidebar_rows: Vec<(u16, usize)>,
     /// (column, row, session) of every avatar cell on screen; the kitty pass places there.
-    pub avatars: Vec<(u16, u16, SessionId)>,
+    pub avatars: Vec<crate::avatar::Placement>,
     pub root_rows: Vec<(u16, usize)>,
     pub panes: Vec<(PaneId, Rect)>,
     pub splits: Vec<SplitBorder>,
@@ -169,22 +169,27 @@ pub fn compute_view(app: &mut App, area: Rect, theme: &Theme) -> ViewState {
         });
     }
 
-    let sidebar_rows: Vec<(u16, usize)> = crate::sidebar::sidebar_lines(app, theme, sidebar.height)
+    let lines = crate::sidebar::sidebar_lines(app, theme, sidebar.height);
+    let sidebar_rows: Vec<(u16, usize)> = lines
         .iter()
         .enumerate()
-        .filter_map(|(offset, (index, _))| {
+        .filter_map(|(offset, row)| {
             let y = sidebar.y.checked_add(u16::try_from(offset).ok()?)?;
-            index.map(|index| (y, index))
+            row.index.map(|index| (y, index))
         })
         .collect();
-    let mut seen_avatar = std::collections::HashSet::new();
-    let avatars = sidebar_rows
-        .iter()
+    let avatars: Vec<crate::avatar::Placement> = lines
+        .into_iter()
+        .enumerate()
         .filter(|_| sidebar_width > 0)
-        .filter(|(_, index)| seen_avatar.insert(*index))
-        .filter_map(|(y, index)| {
-            let id = app.state.order.get(*index)?.clone();
-            Some((sidebar.x.saturating_add(2), *y, id))
+        .filter_map(|(offset, row)| {
+            let y = sidebar.y.checked_add(u16::try_from(offset).ok()?)?;
+            let avatar = row.avatar?;
+            Some(crate::avatar::Placement {
+                col: sidebar.x.saturating_add(avatar.col),
+                row: y,
+                ..avatar
+            })
         })
         .collect();
     let root_rows = (0..root_count)
