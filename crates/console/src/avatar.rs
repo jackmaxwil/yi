@@ -90,7 +90,7 @@ pub fn grid(seed: &str) -> Grid {
     Grid(cells)
 }
 
-/// 40×40 RGBA: the foreground on a transparent ground, so the terminal's own colour shows.
+/// 40×40 RGBA on an opaque dark ground: the image covers the tile text under it whole.
 pub fn rgba(grid: &Grid, fg: (u8, u8, u8)) -> Vec<u8> {
     let mut out = Vec::with_capacity(PX.saturating_mul(PX).saturating_mul(4));
     for y in 0..PX {
@@ -99,7 +99,7 @@ pub fn rgba(grid: &Grid, fg: (u8, u8, u8)) -> Vec<u8> {
             if grid.on(row, col) {
                 out.extend_from_slice(&[fg.0, fg.1, fg.2, 255]);
             } else {
-                out.extend_from_slice(&[0, 0, 0, 0]);
+                out.extend_from_slice(&[0x1e, 0x1e, 0x2e, 255]);
             }
         }
     }

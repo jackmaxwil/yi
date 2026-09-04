@@ -1632,13 +1632,15 @@ fn a_lone_chat_pane_wears_no_frame() -> TestResult {
     )
 }
 
-/// ctrl+c is the solo vocabulary: a drafted prompt clears, an idle composer cancels the
-/// turn and arms, and a second press inside the window quits the console.
+/// ctrl+c is the solo vocabulary: a drafted prompt clears, an idle composer warns, and a
+/// second press inside the window asks the daemon to stop and quits the console.
 #[test]
-fn ctrl_c_clears_the_draft_then_cancels_then_quits() -> TestResult {
+fn ctrl_c_clears_the_draft_then_warns_then_stops_the_daemon() -> TestResult {
+    let mut fixture = session_fixture();
+    fixture.push(Step::Expect("_yi/shutdown", seen_ok));
     run(
         "ctrl-c",
-        session_fixture(),
+        fixture,
         "wait-frame 5000 s-alpha\n\
          key enter\n\
          wait-frame 5000 replayed world\n\
@@ -1647,7 +1649,22 @@ fn ctrl_c_clears_the_draft_then_cancels_then_quits() -> TestResult {
          key ctrl-c\n\
          wait-frame 3000 !draft text\n\
          key ctrl-c\n\
+         wait-frame 3000 stops the daemon\n\
          key ctrl-c\n\
+         wait-frame 3000 the console quit before this frame\n",
+    )
+}
+
+/// ⌥q leaves: the console exits and no `_yi/shutdown` reaches the daemon.
+#[test]
+fn alt_q_detaches_and_leaves_the_daemon_running() -> TestResult {
+    run(
+        "detach",
+        session_fixture(),
+        "wait-frame 5000 s-alpha\n\
+         key enter\n\
+         wait-frame 5000 replayed world\n\
+         key alt-q\n\
          wait-frame 3000 the console quit before this frame\n",
     )
 }
@@ -2041,5 +2058,72 @@ fn the_focused_session_row_wears_the_active_background() -> TestResult {
     };
     assert_eq!(bg_of("s-beta"), Some(theme.active_row_bg()));
     assert_eq!(bg_of("s-alpha"), None);
+    Ok(())
+}
+
+fn old_daemon_resume(frame: &Value) -> Vec<Value> {
+    vec![
+        update(
+            "s-alpha",
+            json!({"sessionUpdate": "agent_message", "messageId": "msg_1",
+            "content": [{"type": "text", "text": "standard kinds only"}]}),
+        ),
+        ok(frame, json!({"sessionId": "s-alpha", "configOptions": []})),
+    ]
+}
+
+/// A daemon that resumes without a `_yi/replay` is an older binary; the pane says so
+/// instead of sitting silent under every prompt.
+#[test]
+fn an_old_daemon_is_named_when_the_resume_brings_no_replay() -> TestResult {
+    run(
+        "old-daemon",
+        vec![
+            Step::Expect("initialize", init_reply),
+            Step::Expect("session/list", two_session_list),
+            Step::Expect("session/list", empty_list),
+            Step::Expect("session/resume", old_daemon_resume),
+            Step::Expect("_yi/seen", seen_ok),
+        ],
+        "wait-frame 5000 s-alpha\n\
+         key enter\n\
+         wait-frame 5000 older yi\n\
+         quit\n",
+    )
+}
+
+/// Unnamed sessions take their tile and colour from the id, so no two look alike.
+#[test]
+fn unnamed_rows_take_their_tile_from_the_id() -> TestResult {
+    use yi_console::app::App;
+    use yi_console::model::{SessionId, SessionRow, SessionStatus};
+    use yi_tui::colors::{ColorTier, Theme, name_accent};
+    let theme = Theme::new(ColorTier::TrueColor, true);
+    let mut app = App::new("/tmp/demo-root".to_owned(), theme);
+    for id in ["alpha-1", "beta-2"] {
+        app.state.upsert_row(SessionRow {
+            id: SessionId(id.to_owned()),
+            root: "/tmp/demo-root".to_owned(),
+            status: SessionStatus::Idle,
+            attached: false,
+            name: None,
+            created_ms: 1,
+            last_ms: 1,
+        });
+    }
+    let rows = yi_console::render::sidebar_lines(&app, &theme, 10);
+    let tiles: Vec<(String, Option<ratatui::style::Color>)> = rows
+        .iter()
+        .filter_map(|(_, line)| line.spans.get(1))
+        .map(|span| (span.content.to_string(), span.style.bg))
+        .collect();
+    assert!(
+        tiles.contains(&("AL".to_owned(), Some(name_accent("alpha-1")))),
+        "{tiles:?}"
+    );
+    assert!(
+        tiles.contains(&("BE".to_owned(), Some(name_accent("beta-2")))),
+        "{tiles:?}"
+    );
     Ok(())
 }
