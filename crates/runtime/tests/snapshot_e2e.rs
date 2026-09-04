@@ -37,6 +37,7 @@ fn service(session_dir: &std::path::Path, notices: &Arc<Mutex<Vec<String>>>) -> 
             }
         })),
         sandbox: None,
+        snapshot_key: None,
     }))
 }
 

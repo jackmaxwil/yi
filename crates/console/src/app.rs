@@ -8,6 +8,7 @@ use ratatui::crossterm::event::{Event as CtEvent, KeyCode, KeyEvent, KeyModifier
 use ratatui::layout::Direction;
 use serde_json::{Value, json};
 use yi_tui::colors::Theme;
+use yi_tui::input::handle_terminal_event;
 use yi_tui::{Reply, UiEvent};
 use yi_types::acp::{AcpPermissionParams, AcpSessionUpdate, AcpUpdateParams};
 
@@ -55,6 +56,7 @@ pub enum RequestKind {
     Plan(SessionId),
     SetConfig,
     Steer,
+    Shutdown,
 }
 
 struct Pending {
@@ -89,8 +91,12 @@ pub struct App {
     resume_offsets: HashMap<SessionId, u64>,
     /// The last `_yi/event` seen per session; `None` between a resume and its first event.
     seq: HashMap<SessionId, Option<EventSeq>>,
-    /// The first ctrl+c outside a chat pane; a second inside the window quits.
+    /// Sessions whose resume brought a `_yi/replay`: a resume without one is an old daemon.
+    pub(crate) replayed: std::collections::HashSet<SessionId>,
+    /// The first ctrl+c anywhere; a second inside the window stops the daemon and quits.
     quit_at: Option<Instant>,
+    /// When `_yi/shutdown` went out; the reply or two seconds ends the console.
+    shutdown_at: Option<Instant>,
 }
 
 fn frame(id: Option<u64>, method: &str, params: Value) -> Value {
@@ -124,7 +130,9 @@ impl App {
             drag: None,
             resume_offsets: HashMap::new(),
             seq: HashMap::new(),
+            replayed: std::collections::HashSet::new(),
             quit_at: None,
+            shutdown_at: None,
         }
     }
 
@@ -184,6 +192,21 @@ impl App {
         self.tick_notes(now);
         self.check_editors(now);
         self.pump_chats(outbound);
+        if self
+            .shutdown_at
+            .is_some_and(|at| now.saturating_duration_since(at) > Duration::from_secs(2))
+        {
+            self.state.quit = true;
+        }
+    }
+
+    fn stop_daemon_and_quit(&mut self, outbound: &Outbound) {
+        if !self.connected() {
+            self.state.quit = true;
+            return;
+        }
+        self.send_request(outbound, RequestKind::Shutdown, "_yi/shutdown", json!({}));
+        self.shutdown_at = Some(Instant::now());
     }
 
     fn tick_animations(&mut self, now: Instant) {
@@ -317,6 +340,10 @@ impl App {
         let Some(pending) = self.pending.remove(&RequestId(id)) else {
             return;
         };
+        if pending.kind == RequestKind::Shutdown {
+            self.state.quit = true;
+            return;
+        }
         if let Some(error) = value.get("error") {
             let message = error
                 .get("message")
@@ -374,7 +401,8 @@ impl App {
             RequestKind::KernelExecute
             | RequestKind::KernelCancel
             | RequestKind::SetConfig
-            | RequestKind::Steer => {}
+            | RequestKind::Steer
+            | RequestKind::Shutdown => {}
             RequestKind::Slash(session) => {
                 if let Some(text) = result.get("text").and_then(Value::as_str) {
                     let text = text.to_owned();
@@ -433,6 +461,12 @@ impl App {
                     self.resume_offsets.insert(session.clone(), replayed_to);
                 }
                 self.absorb_result(&session, &result);
+                if !self.replayed.contains(&session) {
+                    self.note(
+                        "the daemon is an older yi and streams nothing this pane can draw — \
+                         restart it: pkill -f 'yi serve', then run yi again",
+                    );
+                }
                 self.mark_seen(outbound, &session);
             }
             RequestKind::Prompt => {
@@ -856,6 +890,8 @@ impl App {
             Action::PageDown => self.scroll_focused(-20),
             Action::SelectSlot(n) => self.select_slot(outbound, n),
             Action::Quit => self.state.quit = true,
+            Action::StopDaemon => self.stop_daemon_and_quit(outbound),
+            Action::Keys => self.state.mode = Mode::Keys,
             Action::ToggleSidebar => self.state.sidebar = self.state.sidebar.next(),
             Action::ToggleNotebook => self.toggle_side(outbound, diffs::SideKind::Notebook),
             Action::ToggleDiff => self.toggle_side(outbound, diffs::SideKind::Diff),
@@ -929,7 +965,20 @@ impl App {
     pub fn handle_event(&mut self, outbound: &Outbound, event: CtEvent) {
         match event {
             CtEvent::Key(key) => self.handle_key(outbound, key),
-            CtEvent::Resize(_, _) => {
+            CtEvent::Resize(cols, rows) => {
+                for pane in self.state.panes.values_mut() {
+                    if let PaneContent::Session {
+                        chat: Some(chat), ..
+                    } = &mut pane.content
+                    {
+                        handle_terminal_event(
+                            &mut chat.app,
+                            &chat.commands.0,
+                            CtEvent::Resize(cols, rows),
+                        );
+                    }
+                }
+                self.avatars.forget();
                 self.dirty = true;
             }
             CtEvent::Mouse(mouse) => {
@@ -961,6 +1010,11 @@ impl App {
         }
         if matches!(self.state.mode, Mode::Navigator { .. }) {
             return self.handle_navigator_key(outbound, key);
+        }
+        if matches!(self.state.mode, Mode::Keys) {
+            self.state.mode = Mode::Normal;
+            self.dirty = true;
+            return;
         }
         if matches!(self.state.mode, Mode::Prefix) {
             self.state.mode = Mode::Normal;
@@ -999,20 +1053,24 @@ impl App {
             }
             return self.chat_event(CtEvent::Key(key));
         }
-        // ctrl+c is solo's own binding inside a chat pane; elsewhere a plain double-tap quits.
-        if key.code == KeyCode::Char('c')
-            && key.modifiers.contains(KeyModifiers::CONTROL)
-            && !on_chat
-        {
+        if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
+            let drafting = self
+                .focused_chat()
+                .is_some_and(|chat| !chat.app.composer_text().is_empty());
+            if on_chat && drafting {
+                return self.chat_event(CtEvent::Key(key));
+            }
             let now = Instant::now();
             if self
                 .quit_at
                 .is_some_and(|at| now.saturating_duration_since(at) < QUIT_WINDOW)
             {
-                self.state.quit = true;
-            } else {
-                self.quit_at = Some(now);
-                self.note("ctrl+c again quits");
+                return self.stop_daemon_and_quit(outbound);
+            }
+            self.quit_at = Some(now);
+            self.note("ctrl+c again stops the daemon and quits · ⌥q leaves it running");
+            if on_chat {
+                self.chat_event(CtEvent::Key(key));
             }
             return;
         }
@@ -1071,4 +1129,5 @@ mod notebook;
 pub mod port;
 
 pub use mouse::MouseKind;
+pub use navigator::PaletteEntry;
 use notebook::apply_notebook;

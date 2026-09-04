@@ -461,6 +461,10 @@ impl App {
         }
     }
 
+    pub fn set_status_name_shown(&mut self, shown: bool) {
+        self.status_name_hidden = !shown;
+    }
+
     pub fn take_pending_editor(&mut self) -> bool {
         std::mem::take(&mut self.pending_editor)
     }

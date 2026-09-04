@@ -671,12 +671,12 @@ fn navigator_filters_and_opens() -> TestResult {
             Step::Expect("_yi/seen", seen_ok),
         ],
         "wait-frame 5000 s-alpha\n\
-         wait-frame 3000 !palette\n\
+         wait-frame 3000 !Command Palette\n\
          key alt-/\n\
-         wait-frame 3000 find\n\
-         wait-frame 3000 palette\n\
+         wait-frame 3000 ›\n\
+         wait-frame 3000 Command Palette\n\
          type beta\n\
-         wait-frame 3000 find beta\n\
+         wait-frame 3000 › beta\n\
          key enter\n\
          wait-frame 5000 beta transcript\n\
          quit\n",
@@ -747,7 +747,7 @@ fn mouse_focuses_opens_and_drags() -> TestResult {
         // Click the first sidebar row to open it, split, click the right
         // pane, then prove focus moved there by submitting into it.
         "wait-frame 5000 s-alpha\n\
-         mouse down 2 0\n\
+         mouse down 2 1\n\
          wait-frame 5000 replayed world\n\
          key alt-v\n\
          wait-frame 3000 no session\n\
@@ -852,10 +852,10 @@ fn notebook_pane_shows_cells_and_image_placeholder() -> TestResult {
          type chart it\n\
          key enter\n\
          wait-frame 5000 nb:s-alpha\n\
-         wait-frame 5000 In[1]\n\
+         wait-frame 5000 In [1]\n\
          wait-frame 3000 plot_drift\n\
          wait-frame 3000 computing drift\n\
-         wait-frame 3000 image 0 KB png\n\
+         wait-frame 3000 image · 0 KB png\n\
          quit\n",
     )
 }
@@ -1006,18 +1006,16 @@ fn cmd_chords_split_close_and_hide_the_sidebar() -> TestResult {
          key enter\n\
          wait-frame 5000 replayed world\n\
          key alt-/\n\
-         wait-frame 3000 ⌥v/⌥s split\n\
+         wait-frame 3000 ⌥n new\n\
          key esc\n\
          cmd-d\n\
          wait-frame 3000 no session\n\
          cmd-p\n\
-         wait-frame 3000 ⌘⇧M zoom\n\
+         wait-frame 3000 ⌘⇧N new\n\
          key esc\n\
          cmd-x\n\
          wait-frame 3000 !no session\n\
          wait-frame 3000 s-beta\n\
-         cmd-b\n\
-         wait-frame 3000 !s-beta\n\
          cmd-b\n\
          wait-frame 3000 !s-beta\n\
          cmd-b\n\
@@ -1294,7 +1292,7 @@ fn subagent_rows_render_under_parent() -> TestResult {
         "wait-frame 5000 s-alpha\n\
          key enter\n\
          wait-frame 5000 replayed world\n\
-         wait-frame 5000 └ grep-bot-sub-1a2 ◐\n\
+         wait-frame 5000 └ GR grep-bot-sub-1a2b ◐\n\
          quit\n",
     )
 }
@@ -1351,7 +1349,7 @@ fn shift_enter_runs_user_cell_on_session_kernel() -> TestResult {
          wait-frame 3000 ⇧↩ runs\n\
          type print(1)\n\
          key shift-enter\n\
-         wait-frame 5000 ● In[1]\n\
+         wait-frame 5000 ● In [1]\n\
          wait-frame 3000 print(1)\n\
          quit\n",
     )
@@ -1378,7 +1376,7 @@ fn esc_cancels_running_user_cell() -> TestResult {
          wait-frame 3000 nb:s-alpha\n\
          type sleep()\n\
          key shift-enter\n\
-         wait-frame 5000 ◐ In[1]\n\
+         wait-frame 5000 ◐ In [1]\n\
          key esc\n\
          wait 300\n\
          quit\n",
@@ -1632,13 +1630,15 @@ fn a_lone_chat_pane_wears_no_frame() -> TestResult {
     )
 }
 
-/// ctrl+c is the solo vocabulary: a drafted prompt clears, an idle composer cancels the
-/// turn and arms, and a second press inside the window quits the console.
+/// ctrl+c is the solo vocabulary: a drafted prompt clears, an idle composer warns, and a
+/// second press inside the window asks the daemon to stop and quits the console.
 #[test]
-fn ctrl_c_clears_the_draft_then_cancels_then_quits() -> TestResult {
+fn ctrl_c_clears_the_draft_then_warns_then_stops_the_daemon() -> TestResult {
+    let mut fixture = session_fixture();
+    fixture.push(Step::Expect("_yi/shutdown", seen_ok));
     run(
         "ctrl-c",
-        session_fixture(),
+        fixture,
         "wait-frame 5000 s-alpha\n\
          key enter\n\
          wait-frame 5000 replayed world\n\
@@ -1647,7 +1647,22 @@ fn ctrl_c_clears_the_draft_then_cancels_then_quits() -> TestResult {
          key ctrl-c\n\
          wait-frame 3000 !draft text\n\
          key ctrl-c\n\
+         wait-frame 3000 stops the daemon\n\
          key ctrl-c\n\
+         wait-frame 3000 the console quit before this frame\n",
+    )
+}
+
+/// ⌥q leaves: the console exits and no `_yi/shutdown` reaches the daemon.
+#[test]
+fn alt_q_detaches_and_leaves_the_daemon_running() -> TestResult {
+    run(
+        "detach",
+        session_fixture(),
+        "wait-frame 5000 s-alpha\n\
+         key enter\n\
+         wait-frame 5000 replayed world\n\
+         key alt-q\n\
          wait-frame 3000 the console quit before this frame\n",
     )
 }
@@ -1708,15 +1723,15 @@ fn sidebar_rows_show_names_and_ages_newest_first() -> TestResult {
             Step::Expect("session/resume", resume_named),
             Step::Expect("_yi/seen", seen_ok),
         ],
-        "wait-frame 5000 1 RE · release notes\n\
-         wait-frame 3000 2 FI · fix login bug\n\
-         wait-frame 3000 5m\n\
-         wait-frame 3000 3h\n\
+        "wait-frame 5000 1 RE release notes\n\
+         wait-frame 3000 2 FI fix login bug\n\
+         wait-frame 3000 this hour\n\
+         wait-frame 3000 today\n\
          key down\n\
          key up\n\
          key enter\n\
          wait-frame 5000 resumed s-beta\n\
-         wait-frame 3000 RE release\n\
+         wait-frame 3000 RE · release\n\
          quit\n",
     )
 }
@@ -1754,7 +1769,7 @@ fn the_first_prompt_names_the_session_row() -> TestResult {
 
 /// The CLI opens the sidebar as a rail of status glyphs; ⌘B walks rail, full, hidden.
 #[test]
-fn the_rail_is_the_default_and_cmd_b_walks_full_then_hidden() -> TestResult {
+fn the_rail_is_the_default_and_cmd_b_walks_to_full_and_back() -> TestResult {
     run_sidebar(
         "rail",
         vec![
@@ -1763,18 +1778,15 @@ fn the_rail_is_the_default_and_cmd_b_walks_full_then_hidden() -> TestResult {
             Step::Expect("session/list", ledger_list),
         ],
         "wait-frame 5000 ●\n\
-         wait-frame 3000 1 SB ●│\n\
+         wait-frame 3000 1 SB   ●│\n\
          wait-frame 3000 2 SA\n\
          wait-frame 3000 !s-alpha\n\
          wait-frame 3000 !workspaces\n\
          cmd-b\n\
-         wait-frame 3000 2 SA · s-alpha\n\
+         wait-frame 3000 2 SA s-alpha\n\
          wait-frame 3000 workspaces\n\
          cmd-b\n\
-         wait-frame 3000 !s-alpha\n\
-         wait-frame 3000 !SA\n\
-         cmd-b\n\
-         wait-frame 3000 1 SB ●│\n\
+         wait-frame 3000 1 SB   ●│\n\
          wait-frame 3000 !s-alpha\n\
          quit\n",
         false,
@@ -1996,10 +2008,10 @@ fn alt_digit_resumes_the_rail_slot() -> TestResult {
             Step::Expect("session/resume", resume_named),
             Step::Expect("_yi/seen", seen_ok),
         ],
-        "wait-frame 5000 2 FI · fix login bug\n\
+        "wait-frame 5000 2 FI fix login bug\n\
          key alt-2\n\
          wait-frame 5000 resumed s-alpha\n\
-         wait-frame 3000 FI fix login\n\
+         wait-frame 3000 FI · fix login\n\
          quit\n",
     )
 }
@@ -2031,15 +2043,123 @@ fn the_focused_session_row_wears_the_active_background() -> TestResult {
         };
     }
     app.state.zone = Zone::Panes;
-    let rows = yi_console::render::sidebar_lines(&app, &theme, 10);
+    app.state.sidebar = yi_console::model::SidebarMode::Full;
+    let rows = yi_console::sidebar::sidebar_lines(&app, &theme, 10);
     let bg_of = |id: &str| {
         let index = app.state.order.iter().position(|row| row.0 == id);
         rows.iter()
-            .find(|(row, _)| *row == index)
-            .and_then(|(_, line)| line.spans.first())
+            .find(|row| row.index == index)
+            .and_then(|row| row.line.spans.first())
             .and_then(|span| span.style.bg)
     };
     assert_eq!(bg_of("s-beta"), Some(theme.active_row_bg()));
     assert_eq!(bg_of("s-alpha"), None);
     Ok(())
+}
+
+fn old_daemon_resume(frame: &Value) -> Vec<Value> {
+    vec![
+        update(
+            "s-alpha",
+            json!({"sessionUpdate": "agent_message", "messageId": "msg_1",
+            "content": [{"type": "text", "text": "standard kinds only"}]}),
+        ),
+        ok(frame, json!({"sessionId": "s-alpha", "configOptions": []})),
+    ]
+}
+
+/// A daemon that resumes without a `_yi/replay` is an older binary; the pane says so
+/// instead of sitting silent under every prompt.
+#[test]
+fn an_old_daemon_is_named_when_the_resume_brings_no_replay() -> TestResult {
+    run(
+        "old-daemon",
+        vec![
+            Step::Expect("initialize", init_reply),
+            Step::Expect("session/list", two_session_list),
+            Step::Expect("session/list", empty_list),
+            Step::Expect("session/resume", old_daemon_resume),
+            Step::Expect("_yi/seen", seen_ok),
+        ],
+        "wait-frame 5000 s-alpha\n\
+         key enter\n\
+         wait-frame 5000 older yi\n\
+         quit\n",
+    )
+}
+
+/// Unnamed sessions take their tile and colour from the id, so no two look alike.
+#[test]
+fn unnamed_rows_take_their_tile_from_the_id() -> TestResult {
+    use yi_console::app::App;
+    use yi_console::model::{SessionId, SessionRow, SessionStatus};
+    use yi_tui::colors::{ColorTier, Theme, name_accent};
+    let theme = Theme::new(ColorTier::TrueColor, true);
+    let mut app = App::new("/tmp/demo-root".to_owned(), theme);
+    for id in ["alpha-1", "beta-2"] {
+        app.state.upsert_row(SessionRow {
+            id: SessionId(id.to_owned()),
+            root: "/tmp/demo-root".to_owned(),
+            status: SessionStatus::Idle,
+            attached: false,
+            name: None,
+            created_ms: 1,
+            last_ms: 1,
+        });
+    }
+    let rows = yi_console::sidebar::sidebar_lines(&app, &theme, 10);
+    let tiles: Vec<(String, Option<ratatui::style::Color>)> = rows
+        .iter()
+        .filter_map(|row| row.line.spans.get(1))
+        .map(|span| (span.content.to_string(), span.style.bg))
+        .collect();
+    assert!(
+        tiles.contains(&("AL".to_owned(), Some(name_accent("alpha-1")))),
+        "{tiles:?}"
+    );
+    assert!(
+        tiles.contains(&("BE".to_owned(), Some(name_accent("beta-2")))),
+        "{tiles:?}"
+    );
+    Ok(())
+}
+
+/// The command palette runs an action by name: `split` splits the focused pane.
+#[test]
+fn the_command_palette_runs_an_action_by_name() -> TestResult {
+    run(
+        "palette-action",
+        session_fixture(),
+        "wait-frame 5000 s-alpha\n\
+         key enter\n\
+         wait-frame 5000 replayed world\n\
+         key alt-/\n\
+         wait-frame 3000 actions\n\
+         type split right\n\
+         wait-frame 3000 ▸ split right\n\
+         key enter\n\
+         wait-frame 3000 no session\n\
+         wait-frame 3000 ╭\n\
+         quit\n",
+    )
+}
+
+/// ⌥? shows every chord with its keys; the next key closes it.
+#[test]
+fn the_keys_overlay_lists_every_chord() -> TestResult {
+    run(
+        "keys",
+        vec![
+            Step::Expect("initialize", init_reply),
+            Step::Expect("session/list", two_session_list),
+            Step::Expect("session/list", empty_list),
+        ],
+        "wait-frame 5000 s-alpha\n\
+         key alt-?\n\
+         wait-frame 3000 stop the daemon and quit\n\
+         wait-frame 3000 ctrl+b then\n\
+         key esc\n\
+         wait-frame 3000 !ctrl+b then\n\
+         quit\n",
+    )
 }

@@ -1,11 +1,34 @@
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::client::Outbound;
+use crate::keys::CHORDS;
 use crate::model::{Mode, PaneContent, SessionId, Zone};
 
 use super::App;
 
+pub enum PaletteEntry {
+    Action { index: usize },
+    Session(SessionId),
+}
+
 impl App {
+    pub fn palette_entries(&self, query: &str) -> Vec<PaletteEntry> {
+        let needle = query.trim().to_lowercase();
+        let mut entries: Vec<PaletteEntry> = CHORDS
+            .iter()
+            .enumerate()
+            .filter(|(_, chord)| chord.action.is_some())
+            .filter(|(_, chord)| needle.is_empty() || chord.what.contains(&needle))
+            .map(|(index, _)| PaletteEntry::Action { index })
+            .collect();
+        entries.extend(
+            self.navigator_matches(query)
+                .into_iter()
+                .map(PaletteEntry::Session),
+        );
+        entries
+    }
+
     /// Sessions matching the navigator query, across every root.
     pub fn navigator_matches(&self, query: &str) -> Vec<SessionId> {
         let needle = query.to_lowercase();
@@ -19,7 +42,9 @@ impl App {
                 let Some(row) = self.state.sessions.get(*id) else {
                     return false;
                 };
-                id.0.to_lowercase().contains(&needle) || row.root.to_lowercase().contains(&needle)
+                id.0.to_lowercase().contains(&needle)
+                    || row.label().to_lowercase().contains(&needle)
+                    || row.root.to_lowercase().contains(&needle)
             })
             .cloned()
             .collect()
@@ -47,13 +72,21 @@ impl App {
                     self.dirty = true;
                     return;
                 }
-                let matches = self.navigator_matches(&query);
-                let pick = matches
-                    .get(index.min(matches.len().saturating_sub(1)))
-                    .cloned();
-                if let (Some(session), Some(pane_id)) = (pick, self.state.focused_pane_id()) {
-                    self.resume_into(outbound, pane_id, &session);
-                    self.state.zone = Zone::Panes;
+                let entries = self.palette_entries(&query);
+                match entries.get(index.min(entries.len().saturating_sub(1))) {
+                    Some(PaletteEntry::Action { index }) => {
+                        if let Some(action) = CHORDS.get(*index).and_then(|chord| chord.action) {
+                            self.apply_action(outbound, action);
+                        }
+                    }
+                    Some(PaletteEntry::Session(session)) => {
+                        let session = session.clone();
+                        if let Some(pane_id) = self.state.focused_pane_id() {
+                            self.resume_into(outbound, pane_id, &session);
+                            self.state.zone = Zone::Panes;
+                        }
+                    }
+                    None => {}
                 }
             }
             KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {

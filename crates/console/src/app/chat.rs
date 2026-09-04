@@ -41,6 +41,7 @@ impl App {
         let mut app =
             yi_tui::app::App::new(options, self.theme, yi_tui::keymap::default_keymap(), 80);
         let _ = app.take_title();
+        app.set_status_name_shown(false);
         Box::new(Chat {
             app,
             port: RemotePort::default(),
@@ -158,7 +159,6 @@ impl App {
         }
     }
 
-    /// A hole in the stream is healed by a full replay: the offset goes, the resume repeats.
     fn heal(&mut self, outbound: &Outbound, id: &SessionId) {
         self.seq.insert(id.clone(), None);
         self.resume_offsets.remove(id);
@@ -175,6 +175,7 @@ impl App {
 
     fn absorb_replay(&mut self, id: &SessionId, replay: &Replay, entries: Vec<Entry>) {
         self.seq.insert(id.clone(), None);
+        self.replayed.insert(id.clone());
         if let (Some(name), Some(row)) = (&replay.name, self.state.sessions.get_mut(id)) {
             row.name = Some(name.clone());
         }

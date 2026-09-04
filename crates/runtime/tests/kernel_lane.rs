@@ -25,6 +25,7 @@ fn service() -> Arc<KernelService> {
         host: Arc::new(registry),
         on_restore: None,
         sandbox: None,
+        snapshot_key: None,
     }))
 }
 

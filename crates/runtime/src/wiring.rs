@@ -459,6 +459,7 @@ pub fn attach_runtime(session: &mut AgentSession, mut wiring: RuntimeWiring) -> 
                 restore_notice(&crate::kernel::restore_notice_text(restore));
             })),
             sandbox: crate::workspace_sandbox(&wiring.cwd, &wiring.home, &wiring.rlm_dir),
+            snapshot_key: Some(session.store_id_hook()),
         },
     ));
     wire_advisor(session, &wiring);

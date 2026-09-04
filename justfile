@@ -1,3 +1,5 @@
+set positional-arguments
+
 default: check
 
 fmt:
@@ -27,6 +29,13 @@ test:
 
 # The lanes `check` runs, named so CI can run them as separate jobs.
 lint: fmt-check clippy
+
+# The one line for a dev loop: rebuild, stop the daemon the last build left running,
+# open the workspace. ctrl+c twice inside yi does the stop for you; ⌥q keeps it running.
+dev:
+    cargo build -p yi-cli
+    pkill -f 'yi serve' || true
+    ./target/debug/yi
 
 build-dist:
     cargo build --profile dist -p yi-cli
@@ -226,6 +235,24 @@ postmerge-evals:
 # Prefill the PR narrative's counted sections from the diff against main.
 pr-body:
     python3 scripts/pr_body.py
+
+# Finishing a branch, as verbs that check first (the yi-forge skill is the procedure):
+# ratchet the baselines alone, commit with a judged subject, push through the lane,
+# open the PR with the title job's own judge, read the gate, merge with the reason.
+ratchet *args:
+    python3 scripts/forge_pr.py ratchet "$@"
+
+commit subject *args:
+    python3 scripts/forge_pr.py commit "$@"
+
+push:
+    python3 scripts/forge_pr.py push
+
+pr *args:
+    python3 scripts/forge_pr.py pr "$@"
+
+land title *args:
+    python3 scripts/forge_pr.py land "$@"
 
 # Upload an already-built, signed release to Forgejo (release-scoped token).
 publish version:
