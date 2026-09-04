@@ -41,6 +41,14 @@ pub struct LogOptions {
     pub limit: Option<usize>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HistoryHit {
+    pub entry_id: String,
+    pub entry_type: String,
+    pub snippet: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionStats {

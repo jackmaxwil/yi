@@ -321,7 +321,8 @@ impl Compactor {
             }
         };
         let summary_text = summary.unwrap_or_default();
-        let (composed, mut details) = compose_summary(&summary_text, &prepared.file_ops);
+        let (composed, mut details) =
+            compose_summary(&summary_text, &prepared.file_ops, &prepared.view);
         let retained_tail = drop_internal(&prepared.retained_tail);
         let new_window_id = match store {
             Some(store) => yi_session::lock_session(store).next_id(),

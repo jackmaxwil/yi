@@ -202,7 +202,55 @@ fn wire_fetch(
             Ok(reply)
         })
     });
+    register_history_grep(registry, session.store_handle());
     resolver
+}
+
+/// `history.grep`: grep the attached store; shared with test harnesses that stub the host map.
+pub fn register_history_grep(
+    registry: &mut crate::kernel::HostRegistry,
+    handle: crate::goal::StoreHandle,
+) {
+    registry.register("history.grep", move |payload| {
+        let handle = Arc::clone(&handle);
+        Box::pin(async move {
+            let pattern = payload
+                .get("pattern")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|pattern| !pattern.is_empty())
+                .ok_or_else(|| "history.grep requires a \"pattern\" argument".to_owned())?
+                .to_owned();
+            let limit = payload
+                .get("limit")
+                .and_then(Value::as_u64)
+                .map_or(8, |n| n as usize);
+            let hits = tokio::task::spawn_blocking(move || {
+                let shared = handle()
+                    .ok_or_else(|| "history.grep: missing an attached session store".to_owned())?;
+                let store = yi_session::lock_session(&shared);
+                Ok::<_, String>(store.grep(&pattern, limit))
+            })
+            .await
+            .map_err(|error| format!("history.grep task failed: {error}"))??;
+            let mut reply = Map::new();
+            reply.insert(
+                "hits".to_owned(),
+                Value::Array(
+                    hits.iter()
+                        .map(|hit| {
+                            let mut item = Map::new();
+                            item.insert("entryId".to_owned(), Value::String(hit.entry_id.clone()));
+                            item.insert("type".to_owned(), Value::String(hit.entry_type.clone()));
+                            item.insert("snippet".to_owned(), Value::String(hit.snippet.clone()));
+                            Value::Object(item)
+                        })
+                        .collect(),
+                ),
+            );
+            Ok(reply)
+        })
+    });
 }
 
 /// The plan engine, its tool, and the loop coupling, composed over the live
