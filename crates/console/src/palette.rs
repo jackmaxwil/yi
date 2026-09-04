@@ -4,7 +4,7 @@ use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
-use yi_tui::colors::{Theme, name_tile, tile_style};
+use yi_tui::colors::{Theme, name_tile, tile_style_at};
 
 use crate::app::App;
 use crate::keys;
@@ -125,11 +125,12 @@ pub(crate) fn render_navigator(app: &App, frame: &mut Frame<'_>, view: &ViewStat
                     .sessions
                     .get(id)
                     .map_or_else(|| id.0.clone(), |row| row.seed().to_owned());
+                let hue = app.accent_of(&id.0, &seed);
                 (
                     "sessions",
                     vec![
                         Span::styled(marker, theme.accent_style()),
-                        Span::styled(name_tile(&seed), tile_style(&seed)),
+                        Span::styled(name_tile(&seed), tile_style_at(hue)),
                         Span::styled(
                             format!(" {} ", row_status.glyph()),
                             status_style(theme, row_status),

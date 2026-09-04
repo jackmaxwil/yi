@@ -9,7 +9,8 @@ use yi_tui::orb::kitty;
 /// Pixels per side; 8 px cells, so a two-column, one-row placement is one cell per glyph.
 pub const PX: usize = 40;
 const CELL: usize = 6;
-const MARGIN: usize = 5;
+const MARGIN: usize = 6;
+const RING: (u8, u8, u8) = (0x3b, 0x40, 0x5a);
 const FIRST_ID: u32 = 8000;
 const CAP: usize = 64;
 
@@ -92,16 +93,42 @@ pub fn grid(seed: &str) -> Grid {
 /// 40×40 RGBA on an opaque dark ground: the image covers the tile text under it whole.
 pub fn rgba(grid: &Grid, fg: (u8, u8, u8)) -> Vec<u8> {
     let mut out = Vec::with_capacity(PX.saturating_mul(PX).saturating_mul(4));
+    let edge = MARGIN.saturating_sub(2);
+    let far = PX.saturating_sub(edge).saturating_sub(1);
     for y in 0..PX {
         for x in 0..PX {
             let inside = (MARGIN..PX - MARGIN).contains(&x) && (MARGIN..PX - MARGIN).contains(&y);
             let (row, col) = ((y - MARGIN.min(y)) / CELL, (x - MARGIN.min(x)) / CELL);
+            let on_ring = (edge..=far).contains(&x)
+                && (edge..=far).contains(&y)
+                && (x == edge || x == far || y == edge || y == far)
+                && !((x == edge || x == far) && (y == edge || y == far));
             if inside && grid.on(row, col) {
                 out.extend_from_slice(&[fg.0, fg.1, fg.2, 255]);
+            } else if on_ring {
+                out.extend_from_slice(&[RING.0, RING.1, RING.2, 255]);
             } else {
-                out.extend_from_slice(&[0x1e, 0x1e, 0x2e, 255]);
+                out.extend_from_slice(&[0, 0, 0, 0]);
             }
         }
+    }
+    out
+}
+
+pub fn assign_accents(seeds: &[&str]) -> Vec<usize> {
+    let count = yi_tui::colors::ACCENT_RGB.len();
+    let mut taken = vec![false; count];
+    let mut out = Vec::with_capacity(seeds.len());
+    for seed in seeds {
+        let start = yi_tui::colors::accent_index(seed);
+        let pick = (0..count)
+            .map(|step| (start + step) % count)
+            .find(|hue| !taken.get(*hue).copied().unwrap_or(true))
+            .unwrap_or(start);
+        if let Some(slot) = taken.get_mut(pick) {
+            *slot = true;
+        }
+        out.push(pick);
     }
     out
 }
@@ -114,7 +141,7 @@ pub struct Placement {
     pub cols: u16,
     pub rows: u16,
     pub key: String,
-    pub accent: String,
+    pub accent: (u8, u8, u8),
 }
 
 /// One placement per rail row on screen; moved rows re-place, gone rows delete.
@@ -151,8 +178,12 @@ impl Avatars {
                     let Some(image) = self.pool.allocate() else {
                         continue;
                     };
-                    let accent = yi_tui::colors::name_accent_rgb(&place.accent);
-                    let _ = kitty::transmit(out, image.raw(), &rgba(&grid(&place.key), accent), PX);
+                    let _ = kitty::transmit(
+                        out,
+                        image.raw(),
+                        &rgba(&grid(&place.key), place.accent),
+                        PX,
+                    );
                     self.ids.insert(place.key.clone(), image);
                     image
                 }
@@ -212,7 +243,7 @@ mod tests {
             cols: 4,
             rows: 2,
             key: "s-alpha".to_owned(),
-            accent: "alpha".to_owned(),
+            accent: (1, 2, 3),
         };
         let mut avatars = Avatars::default();
         let mut first = Vec::new();
@@ -230,6 +261,21 @@ mod tests {
         assert!(
             String::from_utf8_lossy(&after).contains("a=p,i="),
             "placed again after a clear"
+        );
+    }
+
+    #[test]
+    fn visible_agents_never_share_a_hue() {
+        let seeds: Vec<String> = (0..14).map(|n| format!("s-{n:02}")).collect();
+        let refs: Vec<&str> = seeds.iter().map(String::as_str).collect();
+        let hues = assign_accents(&refs);
+        let distinct: std::collections::HashSet<usize> = hues.iter().copied().collect();
+        assert_eq!(distinct.len(), 14, "{hues:?}");
+        let fewer = assign_accents(&refs[..5]);
+        assert_eq!(
+            &hues[..5],
+            &fewer[..],
+            "a shorter list keeps the same hues for its head"
         );
     }
 
