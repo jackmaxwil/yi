@@ -395,8 +395,8 @@ fn two_session_list(frame: &Value) -> Vec<Value> {
     vec![ok(
         frame,
         json!({"sessions": [
-            {"sessionId": "s-alpha", "attached": false},
-            {"sessionId": "s-beta", "attached": false},
+            {"sessionId": "s-alpha", "name": "s-alpha", "attached": false},
+            {"sessionId": "s-beta", "name": "s-beta", "attached": false},
         ]}),
     )]
 }
@@ -405,7 +405,7 @@ fn ledger_list(frame: &Value) -> Vec<Value> {
     vec![ok(
         frame,
         json!({"sessions": [
-            {"sessionId": "s-beta", "cwd": "/tmp/demo-root", "attached": false,
+            {"sessionId": "s-beta", "name": "s-beta", "cwd": "/tmp/demo-root", "attached": false,
              "unseen": 2, "lastState": "idle", "lastEventMs": 1},
         ]}),
     )]
@@ -777,7 +777,7 @@ fn background_session_notifies_after_delay() -> TestResult {
             Step::Expect("session/resume", |frame| {
                 vec![ok(
                     frame,
-                    json!({"sessionId": "s-beta", "configOptions": []}),
+                    json!({"sessionId": "s-beta", "name": "s-beta", "configOptions": []}),
                 )]
             }),
             Step::Expect("_yi/seen", |frame| {
@@ -792,7 +792,7 @@ fn background_session_notifies_after_delay() -> TestResult {
                 ]
             }),
         ],
-        "wait-frame 5000 ▸·\n\
+        "wait-frame 5000 1 SA\n\
          key enter\n\
          wait-frame 5000 replayed world\n\
          key alt-v\n\
@@ -1054,7 +1054,7 @@ fn cmd_j_toggles_the_notebook_pane() -> TestResult {
 fn new_session_reply(frame: &Value) -> Vec<Value> {
     vec![ok(
         frame,
-        json!({"sessionId": "s-new", "configOptions": []}),
+        json!({"sessionId": "s-new", "name": "s-new", "configOptions": []}),
     )]
 }
 
@@ -1236,7 +1236,7 @@ fn other_root_ledger(frame: &Value) -> Vec<Value> {
     vec![ok(
         frame,
         json!({"sessions": [
-            {"sessionId": "s-gamma", "cwd": "/tmp/other-root", "attached": false,
+            {"sessionId": "s-gamma", "name": "s-gamma", "cwd": "/tmp/other-root", "attached": false,
              "unseen": 0, "lastState": "idle", "lastEventMs": 1},
         ]}),
     )]
@@ -1438,14 +1438,14 @@ fn editor_opens_types_and_saves() -> TestResult {
 #[test]
 fn editor_click_places_cursor_and_drag_selects() -> TestResult {
     let path = seed_editor_file("mouse", "abcdef\nsecond\n")?;
-    // Sidebar 26 wide, border at x=26, inner x=27, gutter "1 " puts text at x=29; row 0 at y=1.
+    // Sidebar 29 wide, border at x=29, inner x=30, gutter "1 " puts text at x=32; row 0 at y=1.
     run(
         "editor-mouse",
         session_fixture(),
         &open_editor_script(
             &path,
-            "wait-frame 3000 abcdef\nmouse down 31 1\nmouse up 31 1\ntype X\n\
-             wait-frame 3000 abXcdef\nmouse down 29 1\nmouse drag 31 1\nmouse up 31 1\n\
+            "wait-frame 3000 abcdef\nmouse down 34 1\nmouse up 34 1\ntype X\n\
+             wait-frame 3000 abXcdef\nmouse down 32 1\nmouse drag 34 1\nmouse up 34 1\n\
              key backspace\nwait-frame 3000 Xcdef\nwait-frame 3000 !abXcdef\nquit\n",
         ),
     )?;
@@ -1708,16 +1708,15 @@ fn sidebar_rows_show_names_and_ages_newest_first() -> TestResult {
             Step::Expect("session/resume", resume_named),
             Step::Expect("_yi/seen", seen_ok),
         ],
-        "wait-frame 5000 release notes\n\
-         wait-frame 3000 fix login bug\n\
+        "wait-frame 5000 1 RE · release notes\n\
+         wait-frame 3000 2 FI · fix login bug\n\
          wait-frame 3000 5m\n\
          wait-frame 3000 3h\n\
-         wait-frame 3000 !▎\n\
          key down\n\
          key up\n\
          key enter\n\
          wait-frame 5000 resumed s-beta\n\
-         wait-frame 3000 ▎\n\
+         wait-frame 3000 RE release\n\
          quit\n",
     )
 }
@@ -1764,16 +1763,18 @@ fn the_rail_is_the_default_and_cmd_b_walks_full_then_hidden() -> TestResult {
             Step::Expect("session/list", ledger_list),
         ],
         "wait-frame 5000 ●\n\
+         wait-frame 3000 1 SB ●│\n\
+         wait-frame 3000 2 SA\n\
          wait-frame 3000 !s-alpha\n\
          wait-frame 3000 !workspaces\n\
          cmd-b\n\
-         wait-frame 3000 s-alpha\n\
+         wait-frame 3000 2 SA · s-alpha\n\
          wait-frame 3000 workspaces\n\
          cmd-b\n\
          wait-frame 3000 !s-alpha\n\
-         wait-frame 3000 !▸\n\
+         wait-frame 3000 !SA\n\
          cmd-b\n\
-         wait-frame 3000 ●\n\
+         wait-frame 3000 1 SB ●│\n\
          wait-frame 3000 !s-alpha\n\
          quit\n",
         false,
@@ -1783,9 +1784,10 @@ fn the_rail_is_the_default_and_cmd_b_walks_full_then_hidden() -> TestResult {
 
 fn forty_session_list(frame: &Value) -> Vec<Value> {
     let sessions: Vec<Value> = (0..40)
-        .map(
-            |n| json!({"sessionId": format!("s-{n:02}"), "attached": false, "createdAt": 1000 + n}),
-        )
+        .map(|n| {
+            json!({"sessionId": format!("s-{n:02}"), "name": format!("s-{n:02}"),
+                       "attached": false, "createdAt": 1000 + n})
+        })
         .collect();
     vec![ok(frame, json!({"sessions": sessions}))]
 }
@@ -1980,4 +1982,64 @@ fn a_malformed_event_frame_is_counted_and_ignored() -> TestResult {
          wait-frame 5000 still alive\n\
          quit\n",
     )
+}
+
+/// ⌥2 resumes the second rail slot into the focused pane, whatever the cursor says.
+#[test]
+fn alt_digit_resumes_the_rail_slot() -> TestResult {
+    run(
+        "slot-jump",
+        vec![
+            Step::Expect("initialize", init_reply),
+            Step::Expect("session/list", named_list),
+            Step::Expect("session/list", empty_list),
+            Step::Expect("session/resume", resume_named),
+            Step::Expect("_yi/seen", seen_ok),
+        ],
+        "wait-frame 5000 2 FI · fix login bug\n\
+         key alt-2\n\
+         wait-frame 5000 resumed s-alpha\n\
+         wait-frame 3000 FI fix login\n\
+         quit\n",
+    )
+}
+
+/// The row of the session in front carries the active background; the cursor row the
+/// louder selection one. Text frames cannot show it, so the spans are read directly.
+#[test]
+fn the_focused_session_row_wears_the_active_background() -> TestResult {
+    use yi_console::app::App;
+    use yi_console::model::{PaneContent, SessionId, SessionRow, SessionStatus, Zone};
+    use yi_tui::colors::{ColorTier, Theme};
+    let theme = Theme::new(ColorTier::TrueColor, true);
+    let mut app = App::new("/tmp/demo-root".to_owned(), theme);
+    for id in ["s-alpha", "s-beta"] {
+        app.state.upsert_row(SessionRow {
+            id: SessionId(id.to_owned()),
+            root: "/tmp/demo-root".to_owned(),
+            status: SessionStatus::Idle,
+            attached: false,
+            name: Some(id.to_owned()),
+            created_ms: 1,
+            last_ms: 1,
+        });
+    }
+    if let Some(pane) = app.state.focused_pane_mut() {
+        pane.content = PaneContent::Session {
+            session: Some(SessionId("s-beta".to_owned())),
+            chat: None,
+        };
+    }
+    app.state.zone = Zone::Panes;
+    let rows = yi_console::render::sidebar_lines(&app, &theme, 10);
+    let bg_of = |id: &str| {
+        let index = app.state.order.iter().position(|row| row.0 == id);
+        rows.iter()
+            .find(|(row, _)| *row == index)
+            .and_then(|(_, line)| line.spans.first())
+            .and_then(|span| span.style.bg)
+    };
+    assert_eq!(bg_of("s-beta"), Some(theme.active_row_bg()));
+    assert_eq!(bg_of("s-alpha"), None);
+    Ok(())
 }
