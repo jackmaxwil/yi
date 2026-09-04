@@ -23,7 +23,7 @@ pub mod wrapper;
 pub use account::{Estimate, Scope, Tokens, context_tokens, estimate_context, estimate_message};
 pub use assemble::{StablePrefix, assemble};
 pub use attribution::{CHILD_USAGE_CAUSE, attribute_child_usage, own_and_total_usage};
-pub use audit::{DROPPED_CAP, identifiers};
+pub use audit::{DROPPED_CAP, PINNED_CAP, identifiers, is_constraint_line};
 pub use budget::{Bytes, SourceBudgets, Truncated, fit};
 pub use convert::convert_to_llm;
 pub use cut::{Cut, select_cut};

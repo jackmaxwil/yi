@@ -113,7 +113,13 @@ pub fn compose_summary(
         view.dropped.truncate(DROPPED_CAP);
     }
     let dropped = view.dropped.len();
-    let view_text = view.render();
+    let mut view_text = view.render();
+    for pin in &view.pinned {
+        if !view_text.contains(pin.as_str()) {
+            view_text.push('\n');
+            view_text.push_str(pin);
+        }
+    }
     let text = if view_text.is_empty() {
         format!("{summary}{files}")
     } else {
@@ -121,6 +127,7 @@ pub fn compose_summary(
     };
     let mut extra = serde_json::Map::new();
     extra.insert("dropped".to_owned(), serde_json::json!(dropped));
+    extra.insert("pinned".to_owned(), serde_json::json!(view.pinned.len()));
     (
         text,
         CompactionDetails {

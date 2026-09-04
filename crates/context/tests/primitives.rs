@@ -735,5 +735,67 @@ fn fold_degenerate_one_message_still_renders_a_kernel_line() -> TestResult {
     assert!(rendered.contains("(#only) user: hi"), "{rendered}");
     assert!(rendered.contains("[Kernel]"), "{rendered}");
     assert!(view.earlier.is_empty());
+    assert!(view.pinned.is_empty(), "{rendered}");
+    Ok(())
+}
+
+#[test]
+fn a_user_constraint_is_pinned_verbatim_when_the_brief_rolls() -> TestResult {
+    let pin = format!(
+        "Never touch vendored/lock.json (SENTINEL-K7QX). {}",
+        "pad ".repeat(80)
+    );
+    let pin = pin.trim().to_owned();
+    let mut attributed = vec![("c0".to_owned(), user(&pin))];
+    attributed.extend((0..125).map(|index| {
+        (
+            format!("u{index}"),
+            user(&format!("turn {index} about the parser")),
+        )
+    }));
+    let view = compile_view(&attributed, None, &FileOps::default());
+    let rendered = view.render();
+    assert!(
+        rendered.contains("[Pinned]") && rendered.contains(&pin),
+        "the pin must not ride [Brief] truncation or [Earlier] collapse: {rendered}"
+    );
+    assert!(
+        !view.brief.iter().any(|line| line.contains(&pin)),
+        "the untruncated pin belongs in [Pinned], not a 160-char brief line"
+    );
+    let (composed, details) = compose_summary("", &FileOps::default(), &view);
+    assert!(
+        composed.contains(&pin),
+        "compose_summary integrity: the pin is a substring of the compaction body: {composed}"
+    );
+    assert_eq!(
+        details
+            .extra
+            .get("pinned")
+            .and_then(serde_json::Value::as_u64),
+        Some(1)
+    );
+    Ok(())
+}
+
+#[test]
+fn a_previous_view_keeps_its_pins_across_a_later_fold() -> TestResult {
+    let previous = "<yi_compact_view>\n[Pinned]\n(#old) Never delete the latch\n[Kernel]\nnote\n</yi_compact_view>";
+    let view = compile_view(
+        &[("n1".to_owned(), user("must keep the second latch"))],
+        Some(previous),
+        &FileOps::default(),
+    );
+    assert!(
+        view.pinned
+            .iter()
+            .any(|line| line.contains("Never delete the latch"))
+            && view
+                .pinned
+                .iter()
+                .any(|line| line.contains("must keep the second latch")),
+        "{:?}",
+        view.pinned
+    );
     Ok(())
 }

@@ -150,6 +150,7 @@ def measure(path: Path) -> dict:
         round_row = {
             "id": entry.get("id"),
             "dropped_reported": (details.get("dropped") if isinstance(details, dict) else None),
+            "pinned_reported": (details.get("pinned") if isinstance(details, dict) else None),
             "lanes": {},
         }
         for lane, idents in lanes.items():
