@@ -481,9 +481,6 @@ fn compaction_settings() -> yi_runtime::Settings {
     let Some(cfg) = config().compaction.as_ref() else {
         return settings;
     };
-    if let Some(mode) = cfg.mode {
-        settings.mode = mode;
-    }
     if let Some(tokens) = cfg.reserve_tokens {
         settings.reserve_tokens = yi_runtime::Tokens(tokens);
     }

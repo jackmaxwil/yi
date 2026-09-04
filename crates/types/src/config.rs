@@ -38,19 +38,10 @@ pub struct UserConfig {
     pub compaction: Option<CompactionConfig>,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub enum CompactionMode {
-    #[default]
-    Summary,
-    Fold,
-}
-
-/// `compaction.mode`, plus optional token knobs so a test can trip the boundary.
+/// Optional token knobs so a test can trip the compaction boundary.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CompactionConfig {
-    pub mode: Option<CompactionMode>,
     pub reserve_tokens: Option<u64>,
     pub keep_recent_tokens: Option<u64>,
 }

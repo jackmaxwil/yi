@@ -633,15 +633,14 @@ fn a_typed_prompt_lands_user_attributed_in_the_session_file() -> TestResult {
 }
 
 #[test]
-fn fold_compaction_lands_a_view_without_an_llm_summary() -> TestResult {
-    let workspace = Workspace::new("fold-compact")?;
+fn compact_view_lands_with_kernel_and_entry_ids() -> TestResult {
+    let workspace = Workspace::new("compact-view")?;
     write_config(
         &workspace,
-        r#"{"kernel":{"prewarm":false},"compaction":{"mode":"fold","reserveTokens":2000000,"keepRecentTokens":0}}"#,
+        r#"{"kernel":{"prewarm":false},"compaction":{"reserveTokens":2000000,"keepRecentTokens":0}}"#,
     )?;
     let filler = format!("fold this window {}", "x".repeat(4000));
-    let rpc_out =
-        workspace.rpc_prompt_then_compact(&["Never touch SENTINEL-K7QX.", filler.as_str()])?;
+    let rpc_out = workspace.rpc_prompt_then_compact(&[filler.as_str()])?;
     let mut transcript = String::new();
     for project in std::fs::read_dir(workspace.0.join("home/sessions"))? {
         for entry in std::fs::read_dir(project?.path())? {
@@ -650,15 +649,15 @@ fn fold_compaction_lands_a_view_without_an_llm_summary() -> TestResult {
     }
     assert!(
         transcript.contains("<yi_compact_view>"),
-        "fold compact must write the view (rpc: {rpc_out}): {transcript}"
+        "compact must write the view (rpc: {rpc_out}): {transcript}"
     );
     assert!(
         transcript.contains("[Kernel]"),
         "the view carries the kernel persist line: {transcript}"
     );
     assert!(
-        transcript.contains("[Pinned]") && transcript.contains("Never touch SENTINEL-K7QX"),
-        "a user constraint must be pinned through compact: {transcript}"
+        !transcript.contains("[Pinned]"),
+        "user constraints are not keyword-pinned: {transcript}"
     );
     Ok(())
 }

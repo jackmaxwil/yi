@@ -609,7 +609,7 @@ its own tests:
 | P4 | **Policy** | `should_compact(tokens, window, Settings{reserve: 16_384, keep_recent: 20_000}) -> bool`; measures P3's `BodyAfterPrefix` by default (the reference leaves ~2.4× Yi's old headroom and its compactions rarely fail mid-flight) | — |
 | P5 | **Cut point** | `select_cut(branch, keep_recent) -> Cut{first_kept_entry_id, to_summarize, turn_prefix, is_split_turn}` — never at a tool result; walks back accumulating estimates | — |
 | P6 | **Serializer** | `serialize(messages) -> String` (`[User]/[Assistant]/[Tool result]`, results truncated 2,000 chars) | — |
-| P7 | **Summarizer** | `trait Summarizer { fn summarize(last_request: &LlmContext, prev: Option<&str>, directive: &str) -> Summary }` — **prefix-aligned** (§14.5): replays the last routed request byte-identically (tools included — the reference drops them and cache-misses every compaction) and appends the directive as a trailing user message; split-turn = two summaries merged. Overflow recovery: trim from the **front** and retry (prefix-preserving); on a model switch mid-history, summarize with the **outgoing** model, current-model fallback. Compaction `mode = summary` (the default) restricts the directive to `## Goal` / `## Next Steps`; `mode = fold` skips the call (D115) | — |
+| P7 | **Summarizer** | `trait Summarizer { fn summarize(last_request: &LlmContext, prev: Option<&str>, directive: &str) -> Summary }` — **prefix-aligned** (§14.5): replays the last routed request byte-identically (tools included — the reference drops them and cache-misses every compaction) and appends the directive as a trailing user message; split-turn = two summaries merged. Overflow recovery: trim from the **front** and retry (prefix-preserving); on a model switch mid-history, summarize with the **outgoing** model, current-model fallback | — |
 | P8 | **Details** | `file_ops(messages) -> Details{read_files, modified_files}` cumulative across compactions | — |
 | P9 | **Compaction entry** | `CompactionEntry{summary, first_kept_entry_id, tokens_before, details, window: {first, previous?, id, number}}` appended; nothing deleted. Window ids chain compactions (surfaced to the model), per-window one-shot latches kill repeat advisories. `Compaction::Roll` variant = summary-less window roll (same hooks, same entry) — the fallback when the summarizer itself fails | Pi |
 | P10 | **Ledger** | `HarnessState{entries: {prompt, memory, subagent}, scope: local|global}`; `load(mtime-synced)`, `format_for_prompt(limits)` | — |
@@ -621,7 +621,7 @@ its own tests:
 | P16 | **Source budgets** | `SourceBudgets{project_instructions, skills_meta, ledger, advisories, emergency_ceiling}` bytes; `fit(source, budget) -> Truncated{text, marker}`; enforced in P11 | — |
 | P17 | **Retention floor** | `retain_floor(branch, budget: 64_000) -> Vec<EntryId>` — every real user message survives compaction verbatim (role filter, newest-first token budget, oldest middle-truncated; prior summaries and contextual fragments dropped); union with P5's kept suffix. P5 keeps the working set, P17 guarantees no early user requirement is ever summarized away | — |
 | P18 | **World state** | `trait WorldStateSection { name; snapshot() -> Snapshot; render_diff(&prev) -> Option<Fragment> }` — named sections (env, permissions, ledger view), diff rendered only on change, appended at the overlay tail; per-turn re-injection is a diff or it is nothing | — |
-| P19 | **Compact view** | `compile_view(attributed, previous_view, file_ops) -> CompiledView{files, outstanding, brief, earlier, dropped, pinned}` — deterministic fold (D115): success tool results are pointers, reads of a later-edited path are `stale`, decision lines stay whole, `[Earlier]` indexes rolled brief windows as `(#first..#last)` (cap 24), `[Kernel]` carries the persist note; user constraint lines land in `[Pinned]` verbatim and stay across later folds (D116); identifiers present in the summarized span but absent from the view, the retained tail, and the P7 prose land in `[Dropped]` (`ident (#id)`, cap 40) and the count is `details.dropped`; `compose_summary` prefixes the view ahead of the P7 prose (empty in fold mode). Recall is `SessionStore::grep` behind the host verb `history.grep` (`compact.recall` in the kernel), then `history://<agent>/<entryId>` fetches the full entry | ARC (arXiv 2607.25066) |
+| P19 | **Compact view** | `compile_view(attributed, previous_view) -> CompiledView{outstanding, brief, earlier, dropped}` — extractive index (D114): user turns stay out of the brief (P17 already keeps `UserContent::Text`); assistant prose is omitted; successful tool results are pointers (`tool: name → N chars`); a read whose path a later edit touched is `stale`; `[Earlier]` indexes rolled brief windows as `(#first..#last)` (cap 24); `[Kernel]` carries the persist note; identifiers present in the summarized span but absent from the view, the retained tail, and the P7 prose land in `[Dropped]` (`ident (#id)`, cap 40) and the count is `details.dropped`; `compose_summary` prefixes the view ahead of the full P7 checkpoint. Recall is `SessionStore::grep` behind the host verb `history.grep` (`compact.recall` in the kernel), then `history://<agent>/<entryId>` fetches the full entry | ARC (arXiv 2607.25066) |
 
 Only P1, P7 and P10 perform I/O. P2–P6, P8, P9, P11, P13, P14, P17, P18, P19 are pure and property-testable.
 
@@ -1858,10 +1858,11 @@ Principles, each with its evidence:
 
 Compaction (P4–P9) is not a memory: nothing is forgotten, the model's *view* shrinks; the tree
 keeps everything and `CompactionCheck` (V5) validates the view against forward intent
-(Slipstream, arXiv 2605.08580). The view is a deterministic fold over the entry log (D115):
-pointer-only results, stale reads, decision lines, `[Earlier]` / `[Dropped]` / `[Pinned]` / `[Kernel]`.
-The LLM summary is a mode (`compaction.mode = summary`), not the method. User session constraints
-are pinned verbatim (D116), not paraphrased into Goal/Next.
+(Slipstream, arXiv 2605.08580). P19 is an extractive index over the summarized span (D114):
+pointer-only tool results, stale reads, `[Earlier]` / `[Dropped]` / `[Kernel]`, then grep by
+`(#entryId)`. User text is P17 (newest-first 64k tok, oldest middle-truncated). Constraints
+live in P7's `## Constraints & Preferences`. CompInt's `C(H)` append after compact is not
+shipped. D115 and D116 are unshipped (0.140.0).
 
 ## 17. Desktop: Afterlife
 

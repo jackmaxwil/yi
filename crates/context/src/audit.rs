@@ -5,15 +5,6 @@ use yi_types::message::AgentMessage;
 use crate::serialize::serialize_conversation;
 
 pub const DROPPED_CAP: usize = 40;
-pub const PINNED_CAP: usize = 32;
-pub const CONSTRAINT_MARKERS: &[&str] = &["must", "never", "don't", "dont", "always", "only"];
-
-pub fn is_constraint_line(text: &str) -> bool {
-    let lower = text.to_ascii_lowercase();
-    CONSTRAINT_MARKERS
-        .iter()
-        .any(|marker| lower.contains(marker))
-}
 
 pub fn identifiers(text: &str) -> BTreeSet<String> {
     let mut out = BTreeSet::new();

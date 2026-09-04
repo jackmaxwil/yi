@@ -117,7 +117,6 @@ async fn compacted_store(id: &str) -> Result<(yi_session::SharedSession, String)
         enabled: true,
         reserve_tokens: Tokens(1_000),
         keep_recent_tokens: Tokens(10),
-        ..Settings::default()
     });
     session.attach_store(Arc::clone(&store))?;
     session.prompt(&format!("{CONSTRAINT} Start the port."))?;
