@@ -92,7 +92,7 @@ fn console_creates_prompts_detaches_and_replays() -> TestResult {
              quit\n",
         )?;
         // Run 2: a fresh console reattaches and replays the stored branch.
-        // The wait is for the rail's cursor row, which exists only once the
+        // The wait is for the rail's first slot, which exists only once the
         // session list has landed: `no sessions yet` is a Full-sidebar string
         // the default rail never draws, so a wait on its absence passed at the
         // first frame and `enter` resumed nothing (the 23 s CI failure).
@@ -101,7 +101,7 @@ fn console_creates_prompts_detaches_and_replays() -> TestResult {
             &socket,
             &root,
             "wait-frame 8000 !connecting…\n\
-             wait-frame 8000 ▸\n\
+             wait-frame 8000 1 HE\n\
              key enter\n\
              wait-frame 15000 faux:\n\
              wait-frame 8000 hello daemon\n\
