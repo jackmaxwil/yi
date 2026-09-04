@@ -79,10 +79,9 @@ pub struct SessionRow {
 }
 
 impl SessionRow {
+    /// A session is named by its first prompt; until then it is what it is.
     pub fn label(&self) -> String {
-        self.name
-            .clone()
-            .unwrap_or_else(|| self.id.0.chars().take(16).collect())
+        self.name.clone().unwrap_or_else(|| "untitled".to_owned())
     }
 
     pub fn recency(&self) -> u64 {
@@ -108,8 +107,8 @@ impl SidebarMode {
 
     pub fn width(self) -> u16 {
         match self {
-            Self::Rail => 4,
-            Self::Full => 26,
+            Self::Rail => 7,
+            Self::Full => 29,
             Self::Hidden => 0,
         }
     }

@@ -148,6 +148,31 @@ console-proof script out="target/proof":
     fi
     echo "cast: $out/run.cast"
 
+# The rail's avatars and the pane's orb are kitty images: a real console under a pty
+# claiming xterm-kitty against a faux daemon must place at least one avatar (ids 8000+)
+# per rail row and one orb (ids 7800+) for the chat pane.
+console-pty out="target/proof":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    case "{{out}}" in /*|*..*) echo "out must be a relative path in the repo"; exit 1 ;; esac
+    out="$PWD/{{out}}"
+    rm -rf "$out"
+    mkdir -p "$out/home/.yi"
+    printf '{"kernel":{"prewarm":false}}' > "$out/home/.yi/config.json"
+    cargo build -q -p yi-cli
+    sock="$(mktemp -d /tmp/yi-pty.XXXXXX)/d.sock"
+    HOME="$out/home" target/debug/yi serve --socket "$sock" --model faux/faux-1 \
+      --session-dir "$out/sessions" >"$out/serve.log" 2>&1 &
+    pid=$!
+    trap 'kill $pid 2>/dev/null || true; rm -rf "$(dirname "$sock")"' EXIT
+    for _ in $(seq 1 60); do [ -S "$sock" ] && break; sleep 0.05; done
+    HOME="$out/home" python3 scripts/tui_pty.py --term xterm-kitty --seconds 6 \
+      --raw "$out/pty.raw" --send-quit -- console --socket "$sock" --cwd "$PWD" >"$out/pty.txt"
+    avatars=$(grep -ao $'\x1b_Ga=p,i=80[0-9][0-9],' "$out/pty.raw" | sort -u | wc -l | tr -d ' ')
+    orbs=$(grep -ao $'\x1b_Ga=p,i=78[0-9][0-9],' "$out/pty.raw" | sort -u | wc -l | tr -d ' ')
+    echo "avatars placed: $avatars   orbs placed: $orbs"
+    [ "$avatars" -ge 1 ] && [ "$orbs" -ge 1 ]
+
 # A drive script rendered for people: the motion and still GIFs a UI change
 # attaches to its PR, so a reviewer can judge how it looks. `agg` is dev-only
 # (brew install agg) and never enters the binary.

@@ -80,6 +80,7 @@ pub struct App {
     pub osc_flavor: OscFlavor,
     pub osc_out: Vec<String>,
     pub hits: Option<crate::render::Hits>,
+    pub avatars: crate::avatar::Avatars,
     /// Split path under an active border drag, pinned to its tab so a
     /// mid-drag tab switch can never resize a colliding path elsewhere.
     drag: Option<(usize, Vec<bool>)>,
@@ -119,6 +120,7 @@ impl App {
             osc_flavor: OscFlavor::None,
             osc_out: Vec::new(),
             hits: None,
+            avatars: crate::avatar::Avatars::default(),
             drag: None,
             resume_offsets: HashMap::new(),
             seq: HashMap::new(),

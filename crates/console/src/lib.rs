@@ -5,6 +5,7 @@
 //! `yi serve` daemon socket; the daemon owns every session, this renders.
 
 pub mod app;
+pub mod avatar;
 pub mod client;
 pub mod keys;
 pub mod kitty;
@@ -32,7 +33,7 @@ use yi_tui::drive::{Step, WaitPoll, key_event, poll_condition, typed_events};
 
 use crate::app::{App, MouseKind};
 use crate::client::{ClientEvent, Outbound};
-use crate::model::{Link, SessionStatus};
+use crate::model::{Link, SessionRow, SessionStatus};
 
 pub struct ConsoleOptions {
     pub socket: PathBuf,
@@ -243,12 +244,36 @@ fn run_interactive(
             if kitty_ok {
                 use std::io::Write;
                 place_chat_orbs(app, &mut out);
+                place_avatars(app, &mut out);
                 place_notebook_image(app, &mut out, &mut placed);
                 let _ = out.flush();
             }
         }
     }
     0
+}
+
+/// The identicon over every rail row on screen; rows that scrolled off are deleted.
+fn place_avatars(app: &mut App, out: &mut std::io::Stdout) {
+    let rows: Vec<crate::avatar::Placement> = app
+        .hits
+        .as_ref()
+        .map(|hits| {
+            hits.avatars
+                .iter()
+                .map(|(col, row, id)| {
+                    let label = app.state.sessions.get(id).map(SessionRow::label);
+                    crate::avatar::Placement {
+                        col: *col,
+                        row: *row,
+                        session: id.clone(),
+                        accent: yi_tui::colors::name_accent_rgb(label.as_deref().unwrap_or("")),
+                    }
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    app.avatars.sync(out, &rows);
 }
 
 /// One orb per chat pane, each on its own image ids; only the focused pane animates.

@@ -129,6 +129,15 @@ impl Theme {
         self.user_bg.unwrap_or(Color::DarkGray)
     }
 
+    /// The row of the session in front, a shade off the ground; the cursor row is louder.
+    pub fn active_row_bg(&self) -> Color {
+        match self.tier {
+            ColorTier::Ansi16 => Color::DarkGray,
+            _ if self.dark => Color::Rgb(0x1e, 0x1e, 0x2e),
+            _ => Color::Indexed(254),
+        }
+    }
+
     pub fn muted_style(&self) -> Style {
         match self.tier {
             ColorTier::Ansi16 => Style::default().add_modifier(Modifier::DIM),
@@ -238,12 +247,58 @@ const ACCENTS: [Color; 6] = [
     Color::Rgb(0xff, 0x96, 0x6c),
 ];
 
-/// Stable, so a session or subagent keeps one accent across renders.
-pub fn name_accent(name: &str) -> Color {
+const ACCENT_RGB: [(u8, u8, u8); 6] = [
+    (0x82, 0xaa, 0xff),
+    (0xc0, 0x99, 0xff),
+    (0x4f, 0xd6, 0xbe),
+    (0xff, 0xc7, 0x77),
+    (0xc3, 0xe8, 0x8d),
+    (0xff, 0x96, 0x6c),
+];
+
+fn accent_index(name: &str) -> usize {
     let mut hash = 0_u32;
     for byte in name.bytes() {
         hash = hash.wrapping_mul(31).wrapping_add(u32::from(byte));
     }
-    let index = (hash as usize) % ACCENTS.len();
-    ACCENTS.get(index).copied().unwrap_or(Color::Cyan)
+    (hash as usize) % ACCENTS.len()
+}
+
+/// Stable, so a session or subagent keeps one accent across renders.
+pub fn name_accent(name: &str) -> Color {
+    ACCENTS
+        .get(accent_index(name))
+        .copied()
+        .unwrap_or(Color::Cyan)
+}
+
+/// The same accent as bytes, for a raster that must agree with the text beside it.
+pub fn name_accent_rgb(name: &str) -> (u8, u8, u8) {
+    ACCENT_RGB
+        .get(accent_index(name))
+        .copied()
+        .unwrap_or((0x4f, 0xd6, 0xbe))
+}
+
+/// Two-letter tile: the first two alphanumerics, uppercased; `··` for nothing to say.
+pub fn name_tile(name: &str) -> String {
+    let letters: String = name
+        .chars()
+        .filter(char::is_ascii_alphanumeric)
+        .take(2)
+        .flat_map(char::to_uppercase)
+        .collect();
+    match letters.chars().count() {
+        0 => "··".to_owned(),
+        1 => format!("{letters}·"),
+        _ => letters,
+    }
+}
+
+/// White initials on the name's accent: the text form of the avatar, drawn everywhere.
+pub fn tile_style(name: &str) -> Style {
+    Style::default()
+        .fg(Color::White)
+        .bg(name_accent(name))
+        .add_modifier(Modifier::BOLD)
 }

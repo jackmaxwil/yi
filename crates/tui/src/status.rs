@@ -170,7 +170,14 @@ pub fn render(input: &StatusInput, width: usize, theme: &Theme) -> Line<'static>
             if i > 0 {
                 out.push(Span::styled(" · ", theme.dim_style()));
             }
-            let style = if i == right.len() - 1 && !dimmed {
+            let last = i == right.len() - 1;
+            if last && !input.session_name.is_empty() {
+                out.push(Span::styled(
+                    crate::colors::name_tile(&input.session_name),
+                    crate::colors::tile_style(&input.session_name),
+                ));
+            }
+            let style = if last && !dimmed {
                 accent_style.add_modifier(Modifier::BOLD)
             } else {
                 seg_style
