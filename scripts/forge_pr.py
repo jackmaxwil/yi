@@ -1,0 +1,534 @@
+#!/usr/bin/env python3
+"""Finish a branch on the forge with verbs a session cannot get wrong.
+
+The failure modes this replaces were all observed: baselines committed beside code
+(commit_style refuses the push), subjects past 72 characters, a `git push` killed
+mid-lane by a two-minute timeout, a PR opened against a closed issue (the `title` job
+fails and tea says nothing), a green PR that will not merge because `main` moved
+("head behind base" is only visible through the API), and a merge loop that retried
+a refusal it never read. Every verb here does the check first and prints the fix.
+
+Transport is `tea api`, because tea already holds the login and trusts the estate's
+CA; python's urllib does not. Decisions are pure functions so the selfcheck can walk
+them without a server.
+"""
+import argparse
+import json
+import pathlib
+import re
+import subprocess
+import sys
+import time
+
+ROOT = pathlib.Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "scripts"))
+sys.path.insert(0, str(ROOT / "scripts/guardrails"))
+
+BASELINES = ROOT / "scripts/guardrails/baselines"
+SUBJECT_LIMIT = 72
+POLL = 20
+WEB = "https://git.example.invalid"
+
+
+def git(*args, check=False):
+    out = subprocess.run(("git", "-C", str(ROOT)) + args, capture_output=True, text=True, check=False)
+    if check and out.returncode != 0:
+        raise SystemExit(f"git {' '.join(args)}: {out.stderr.strip()}")
+    return out.stdout.strip()
+
+
+def repo_of(url):
+    """`ssh://git@forge:2222/apex/yi.git` and `https://git/apex/yi` both name apex/yi."""
+    found = re.search(r"[:/]([^/:]+/[^/]+?)(?:\.git)?/?$", url.strip())
+    return found.group(1) if found else None
+
+
+def repo():
+    name = repo_of(git("remote", "get-url", "origin"))
+    if not name:
+        raise SystemExit("origin is not a forge repository")
+    return name
+
+
+def tea_api(method, path, payload=None):
+    """A missing resource is None, the way check_pr_metadata's transport expects."""
+    command = ["tea", "api"]
+    if method != "GET":
+        command += ["-X", method]
+    if payload is not None:
+        command += ["-d", json.dumps(payload)]
+    command.append(path.lstrip("/"))
+    out = subprocess.run(command, capture_output=True, text=True, check=False)
+    text = (out.stdout or out.stderr).strip()
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        if "404" in text:
+            return None
+        return {"message": text}
+
+
+def branch():
+    return git("rev-parse", "--abbrev-ref", "HEAD")
+
+
+def pull(number):
+    pr = tea_api("GET", f"repos/{repo()}/pulls/{number}")
+    if not pr or "number" not in pr:
+        raise SystemExit(f"#{number}: {pr.get('message') if pr else 'no such pull request'}")
+    return pr
+
+
+def pull_for_branch(name):
+    pulls = tea_api("GET", f"repos/{repo()}/pulls?state=open&limit=50") or []
+    for pr in pulls:
+        if pr.get("head", {}).get("ref") == name:
+            return pr
+    return None
+
+
+def pull_number(arg):
+    if arg:
+        return int(arg)
+    pr = pull_for_branch(branch())
+    if not pr:
+        raise SystemExit(f"no open pull request for {branch()} — just pr open \"<title>\"")
+    return pr["number"]
+
+
+# --- the pure decisions ----------------------------------------------------------
+
+
+def required_jobs(contexts):
+    """`pr / gate (test) (pull_request)` is the job named `gate (test)`."""
+    jobs = []
+    for context in contexts:
+        name = re.sub(r"^\w+ / ", "", context)
+        name = re.sub(r" \(pull_request\)$", "", name)
+        jobs.append(name)
+    return jobs
+
+
+def job_table(tasks, sha):
+    """Newest status per job for one head; a rerun outranks the run it replaced."""
+    table = {}
+    for task in sorted(tasks, key=lambda task: (task.get("run_number", 0), task.get("updated_at", ""))):
+        if task.get("head_sha", "").startswith(sha):
+            table[task["name"]] = task["status"]
+    return table
+
+
+def decide(pr, jobs, required, behind):
+    if pr.get("merged"):
+        return "merged"
+    if pr.get("state") != "open":
+        return "closed"
+    if behind:
+        return "behind"
+    failed = [job for job in required if jobs.get(job) == "failure"]
+    if "title" in failed:
+        return "failed:title"
+    if failed:
+        return f"failed:{failed[0]}"
+    if all(jobs.get(job) == "success" for job in required):
+        return "ready"
+    return "pending"
+
+
+def ratchet_subject(parts, topic):
+    """`Ratchet: test LOC 1 -> 2, tui crate 3 -> 4 for the rail`, cut to the limit
+    by dropping the topic, then the parts from the right."""
+    parts = list(parts)
+    while parts:
+        subject = "Ratchet: " + ", ".join(parts) + (f" for {topic}" if topic else "")
+        if len(subject) <= SUBJECT_LIMIT:
+            return subject
+        if topic:
+            topic = ""
+        else:
+            parts.pop()
+    return "Ratchet: baselines"
+
+
+# --- the verbs --------------------------------------------------------------------
+
+
+def subject_problems(subject):
+    from check_commit_style import subject_errors
+
+    return subject_errors(subject.strip())
+
+
+def baseline_paths():
+    return sorted(str(path.relative_to(ROOT)) for path in BASELINES.iterdir() if path.is_file())
+
+
+def dirty(paths):
+    return [path for path in paths if git("status", "--porcelain", "--", path)]
+
+
+def read_json(path):
+    try:
+        return json.loads((ROOT / path).read_text())
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def cmd_ratchet(args):
+    before = {path: read_json(path) for path in baseline_paths()}
+    for script in ("check_test_size.py", "check_crate_size.py", "check_schemas_lock.py"):
+        subprocess.run((sys.executable, str(ROOT / "scripts/guardrails" / script), "--update"), check=False)
+    if not args.no_binary:
+        out = subprocess.run(
+            (sys.executable, str(ROOT / "scripts/guardrails/check_binary_size.py")),
+            capture_output=True, text=True, check=False,
+        )
+        grown = re.search(r"dist binary (\d+) > (\d+)", out.stdout + out.stderr)
+        if grown:
+            (BASELINES / "binary_size_budget.json").write_text(f'{{"max_bytes": {grown.group(1)}}}\n')
+    changed = dirty(baseline_paths())
+    if not changed:
+        print("ratchet: every baseline already matches")
+        return 0
+    parts = []
+    for path in changed:
+        was, now = before.get(path, {}), read_json(path)
+        stem = pathlib.Path(path).stem
+        if stem == "test_size_budget":
+            parts.append(f"test LOC {was.get('budget_lines', '?')} -> {now.get('budget_lines', '?')}")
+        elif stem == "binary_size_budget":
+            parts.append(f"dist binary {was.get('max_bytes', '?')} -> {now.get('max_bytes', '?')}")
+        elif stem == "crate_size_budget":
+            for crate, limit in now.items():
+                if was.get(crate) != limit:
+                    parts.append(f"{crate} crate {was.get(crate, '?')} -> {limit}")
+        else:
+            parts.append(stem.replace("_", " "))
+    subject = ratchet_subject(parts, args.topic)
+    git("commit", "-q", "-m", subject, "--", *changed, check=True)
+    print(f"ratchet: {subject}")
+    return 0
+
+
+def cmd_commit(args):
+    errs = subject_problems(args.subject)
+    if errs:
+        for err in errs:
+            print(f"subject: {err}")
+        return 1
+    if dirty(baseline_paths()):
+        print("commit: baselines moved — ratcheting them into their own commit first")
+        cmd_ratchet(argparse.Namespace(topic=args.topic or "", no_binary=True))
+    git("add", "-A", check=True)
+    if not git("diff", "--cached", "--name-only"):
+        print("commit: nothing to commit")
+        return 0
+    message = ["-m", args.subject.strip()]
+    if args.body:
+        message += ["-m", pathlib.Path(args.body).read_text().strip()]
+    out = subprocess.run(("git", "-C", str(ROOT), "commit", "-q", *message), check=False)
+    if out.returncode != 0:
+        return out.returncode
+    print(f"committed {git('rev-parse', '--short', 'HEAD')} {args.subject.strip()}")
+    return 0
+
+
+def cmd_push(_args):
+    name = branch()
+    print(f"push: {name} through the pre-push lane (minutes; run this in the background)")
+    out = subprocess.run(("git", "-C", str(ROOT), "push", "-u", "origin", name), check=False)
+    return out.returncode
+
+
+def pushed():
+    name = branch()
+    remote = git("ls-remote", "origin", f"refs/heads/{name}").split()
+    return bool(remote) and remote[0] == git("rev-parse", "HEAD")
+
+
+def check_problems(title, body):
+    import check_pr_metadata as gate
+
+    errs = [f"title: {err}" for err in gate.subject_errors(title.strip())]
+    measured, why = gate.measure()
+    if why:
+        return errs + [why]
+    ledger_added, changelog_added, src_net = measured
+    errs += gate.body_problems(
+        tea_api, "", repo(), body, [gate.row_key(row) for row in ledger_added], changelog_added, src_net
+    )
+    return errs
+
+
+def cmd_check(args):
+    if args.number:
+        pr = pull(args.number)
+        title, body = pr["title"], pr.get("body") or ""
+    else:
+        title = args.title or ""
+        body = pathlib.Path(args.body).read_text() if args.body else ""
+    errs = check_problems(title, body)
+    for err in errs:
+        print(err)
+    print("check: " + ("the title job would fail" if errs else "the title job passes"))
+    return 1 if errs else 0
+
+
+def compose_body(args):
+    body = pathlib.Path(args.body).read_text().strip() if args.body else ""
+    cites = [f"Closes #{n}" for n in args.closes] + [f"Refs #{n}" for n in args.refs]
+    if cites:
+        body = ", ".join(cites) + ("\n\n" + body if body else "")
+    counted = subprocess.run(
+        (sys.executable, str(ROOT / "scripts/pr_body.py")), capture_output=True, text=True, check=False
+    ).stdout.strip()
+    return body + ("\n\n" + counted if counted else "")
+
+
+def cmd_open(args):
+    body = compose_body(args)
+    errs = check_problems(args.title, body)
+    if errs:
+        for err in errs:
+            print(err)
+        print("open: refused — the title job would fail; fix the above first")
+        return 1
+    if not pushed():
+        code = cmd_push(args)
+        if code:
+            return code
+    out = subprocess.run(
+        ("tea", "pr", "create", "--head", branch(), "--base", "main", "--title", args.title, "--description", body),
+        capture_output=True, text=True, check=False,
+    )
+    found = re.search(r"#(\d+)", out.stdout + out.stderr)
+    if not found:
+        print((out.stdout + out.stderr).strip())
+        return 1
+    number = int(found.group(1))
+    print(f"#{number} {WEB}/{repo()}/pulls/{number}")
+    return 0
+
+
+def cmd_edit(args):
+    payload = {}
+    if args.title:
+        errs = subject_problems(args.title)
+        if errs:
+            for err in errs:
+                print(f"title: {err}")
+            return 1
+        payload["title"] = args.title
+    if args.body:
+        payload["body"] = pathlib.Path(args.body).read_text().strip()
+    if not payload:
+        print("edit: nothing to change (--title, --body)")
+        return 1
+    tea_api("PATCH", f"repos/{repo()}/pulls/{args.number}", payload)
+    print(f"#{args.number} edited")
+    return 0
+
+
+def is_behind(pr):
+    """The forge's own refusal reason, computed here so it is seen before the merge."""
+    git("fetch", "-q", "origin", "main", pr["head"]["ref"])
+    check = subprocess.run(
+        ("git", "-C", str(ROOT), "merge-base", "--is-ancestor", "origin/main", pr["head"]["sha"]),
+        capture_output=True, check=False,
+    )
+    return check.returncode != 0
+
+
+def required():
+    protections = tea_api("GET", f"repos/{repo()}/branch_protections") or []
+    for protection in protections:
+        if protection.get("branch_name") == "main":
+            return required_jobs(protection.get("status_check_contexts") or [])
+    return ["gate (guardrails)", "gate (lint)", "gate (test)", "size-report", "title"]
+
+
+def jobs_of(pr):
+    tasks = tea_api("GET", f"repos/{repo()}/actions/tasks?limit=60") or {}
+    return job_table(tasks.get("workflow_runs", []), pr["head"]["sha"])
+
+
+def report(pr, jobs, need, verdict):
+    print(f"#{pr['number']} {pr['title']}")
+    print(f"  head {pr['head']['sha'][:8]} ({pr['head']['ref']})  state {pr['state']}"
+          + ("  merged" if pr.get("merged") else ""))
+    for job in need:
+        print(f"  {jobs.get(job, 'not run'):<10} {job}")
+    hints = {
+        "behind": f"main moved under it — just pr update {pr['number']}",
+        "failed:title": f"the title job refused — just pr check {pr['number']} prints why",
+        "pending": "the gate is still running",
+        "ready": f"green — just pr merge {pr['number']}",
+        "merged": "landed",
+        "closed": "closed without merging",
+    }
+    if verdict.startswith("failed:") and verdict != "failed:title":
+        hints[verdict] = (f"{verdict[7:]} failed — logs: `just ci-log {pr['number']}` in the infra repository; "
+                          f"push a fix, or `just pr rerun {pr['number']}` if it was the runner")
+    print(f"  {hints.get(verdict, verdict)}")
+
+
+def cmd_status(args):
+    pr = pull(pull_number(args.number))
+    jobs, need = jobs_of(pr), required()
+    verdict = decide(pr, jobs, need, is_behind(pr))
+    report(pr, jobs, need, verdict)
+    if verdict == "failed:title":
+        for err in check_problems(pr["title"], pr.get("body") or ""):
+            print(f"  {err}")
+    return 0
+
+
+def cmd_update(args):
+    number = pull_number(args.number)
+    answer = tea_api("POST", f"repos/{repo()}/pulls/{number}/update?style=merge")
+    if answer and answer.get("message"):
+        print(answer["message"])
+        return 1
+    print(f"#{number} brought up to date with main; the gate reruns")
+    return 0
+
+
+def cmd_rerun(args):
+    number = pull_number(args.number)
+    subprocess.run(("tea", "pr", "close", str(number)), capture_output=True, check=False)
+    time.sleep(2)
+    subprocess.run(("tea", "pr", "reopen", str(number)), capture_output=True, check=False)
+    print(f"#{number} closed and reopened; the gate reruns")
+    return 0
+
+
+def cmd_merge(args):
+    number = pull_number(args.number)
+    need = required()
+    deadline = time.monotonic() + args.timeout * 60
+    while True:
+        pr = pull(number)
+        jobs = jobs_of(pr)
+        verdict = decide(pr, jobs, need, is_behind(pr))
+        if verdict == "merged":
+            print(f"#{number} merged")
+            return 0
+        if verdict == "behind":
+            print(f"#{number} is behind main; updating")
+            cmd_update(argparse.Namespace(number=number))
+        elif verdict == "ready":
+            answer = tea_api("POST", f"repos/{repo()}/pulls/{number}/merge", {"Do": "merge"})
+            if answer and answer.get("message"):
+                print(f"merge refused: {answer['message']}")
+                if "behind" not in answer["message"]:
+                    return 1
+        elif verdict.startswith("failed:") or verdict == "closed":
+            report(pr, jobs, need, verdict)
+            if verdict == "failed:title":
+                for err in check_problems(pr["title"], pr.get("body") or ""):
+                    print(f"  {err}")
+            return 1
+        elif not args.wait:
+            report(pr, jobs, need, verdict)
+            return 2
+        if time.monotonic() > deadline:
+            print(f"#{number}: gave up after {args.timeout} minutes")
+            return 2
+        time.sleep(POLL)
+
+
+def cmd_land(args):
+    code = cmd_open(args)
+    if code:
+        return code
+    args.number = None
+    args.wait = True
+    return cmd_merge(args)
+
+
+def selfcheck():
+    assert repo_of("ssh://git@forge.example.invalid:2222/apex/yi.git") == "apex/yi"
+    assert repo_of("https://git.example.invalid/apex/yi") == "apex/yi"
+    assert repo_of("git@github.com:jackmaxwil/yi.git") == "jackmaxwil/yi"
+    assert required_jobs(["pr / gate (test) (pull_request)", "pr / title (pull_request)"]) == [
+        "gate (test)", "title",
+    ]
+    tasks = [
+        {"name": "title", "status": "failure", "run_number": 1, "head_sha": "abc123", "updated_at": "1"},
+        {"name": "title", "status": "success", "run_number": 2, "head_sha": "abc123", "updated_at": "2"},
+        {"name": "gate (test)", "status": "success", "run_number": 2, "head_sha": "abc123", "updated_at": "2"},
+        {"name": "gate (test)", "status": "failure", "run_number": 3, "head_sha": "other", "updated_at": "3"},
+    ]
+    jobs = job_table(tasks, "abc123")
+    assert jobs == {"title": "success", "gate (test)": "success"}, "a rerun outranks, another head is ignored"
+    need = ["gate (test)", "title"]
+    open_pr = {"state": "open", "merged": False}
+    assert decide({"merged": True}, {}, need, False) == "merged"
+    assert decide(open_pr, jobs, need, True) == "behind", "behind is judged before the jobs"
+    assert decide(open_pr, jobs, need, False) == "ready"
+    assert decide(open_pr, {"title": "success"}, need, False) == "pending"
+    assert decide(open_pr, {"title": "failure", "gate (test)": "failure"}, need, False) == "failed:title"
+    assert decide(open_pr, {"title": "success", "gate (test)": "failure"}, need, False) == "failed:gate (test)"
+    assert decide({"state": "closed", "merged": False}, {}, need, False) == "closed"
+    short = ratchet_subject(["test LOC 1 -> 2"], "the rail")
+    assert short == "Ratchet: test LOC 1 -> 2 for the rail", short
+    long = ratchet_subject(["test LOC 36636 -> 36696", "tui crate 10922 -> 10984", "dist binary 5696512 -> 5696544"], "the console pane and its avatars")
+    assert len(long) <= SUBJECT_LIMIT and long.startswith("Ratchet: test LOC"), long
+    assert ratchet_subject([], "x") == "Ratchet: baselines"
+    print("ok   forge_pr selfcheck")
+
+
+def main(argv):
+    if "--selfcheck" in argv:
+        selfcheck()
+        return 0
+    parser = argparse.ArgumentParser(prog="just")
+    verbs = parser.add_subparsers(dest="verb", required=True)
+    ratchet = verbs.add_parser("ratchet")
+    ratchet.add_argument("topic", nargs="?", default="")
+    ratchet.add_argument("--no-binary", action="store_true")
+    ratchet.set_defaults(run=cmd_ratchet)
+    commit = verbs.add_parser("commit")
+    commit.add_argument("subject")
+    commit.add_argument("--body")
+    commit.add_argument("--topic", default="")
+    commit.set_defaults(run=cmd_commit)
+    verbs.add_parser("push").set_defaults(run=cmd_push)
+    pr = verbs.add_parser("pr").add_subparsers(dest="pr_verb", required=True)
+
+    def opener(name, run):
+        sub = pr.add_parser(name) if name != "land" else verbs.add_parser(name)
+        sub.add_argument("title")
+        sub.add_argument("--body")
+        sub.add_argument("--closes", action="append", default=[])
+        sub.add_argument("--refs", action="append", default=[])
+        sub.add_argument("--timeout", type=int, default=40)
+        sub.set_defaults(run=run)
+
+    opener("open", cmd_open)
+    opener("land", cmd_land)
+    check = pr.add_parser("check")
+    check.add_argument("number", nargs="?")
+    check.add_argument("--title")
+    check.add_argument("--body")
+    check.set_defaults(run=cmd_check)
+    edit = pr.add_parser("edit")
+    edit.add_argument("number", type=int)
+    edit.add_argument("--title")
+    edit.add_argument("--body")
+    edit.set_defaults(run=cmd_edit)
+    for name, run in (("status", cmd_status), ("update", cmd_update), ("rerun", cmd_rerun)):
+        sub = pr.add_parser(name)
+        sub.add_argument("number", nargs="?")
+        sub.set_defaults(run=run)
+    merge = pr.add_parser("merge")
+    merge.add_argument("number", nargs="?")
+    merge.add_argument("--no-wait", dest="wait", action="store_false")
+    merge.add_argument("--timeout", type=int, default=40)
+    merge.set_defaults(run=cmd_merge)
+    args = parser.parse_args(argv)
+    return args.run(args)
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
