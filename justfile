@@ -1,3 +1,5 @@
+set positional-arguments
+
 default: check
 
 fmt:
@@ -238,19 +240,19 @@ pr-body:
 # ratchet the baselines alone, commit with a judged subject, push through the lane,
 # open the PR with the title job's own judge, read the gate, merge with the reason.
 ratchet *args:
-    python3 scripts/forge_pr.py ratchet {{args}}
+    python3 scripts/forge_pr.py ratchet "$@"
 
 commit subject *args:
-    python3 scripts/forge_pr.py commit "{{subject}}" {{args}}
+    python3 scripts/forge_pr.py commit "$@"
 
 push:
     python3 scripts/forge_pr.py push
 
 pr *args:
-    python3 scripts/forge_pr.py pr {{args}}
+    python3 scripts/forge_pr.py pr "$@"
 
 land title *args:
-    python3 scripts/forge_pr.py land "{{title}}" {{args}}
+    python3 scripts/forge_pr.py land "$@"
 
 # Upload an already-built, signed release to Forgejo (release-scoped token).
 publish version:

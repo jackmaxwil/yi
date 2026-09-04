@@ -9,7 +9,7 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::Paragraph;
+use ratatui::widgets::{Paragraph, Widget};
 use yi_tui::SessionPort;
 use yi_tui::colors::{Theme, name_tile, tile_style};
 use yi_tui::diffview::{self, DiffBudget};
@@ -20,6 +20,7 @@ use crate::layout::{PaneId, SplitBorder};
 use crate::model::{Link, Mode, PaneContent, SessionStatus, Zone};
 
 const NAME_WIDTH: usize = 16;
+const RAIL_ROWS: usize = 12;
 
 pub struct PaneView {
     pub scroll: Option<(usize, usize)>,
@@ -105,13 +106,8 @@ pub fn compute_view(app: &mut App, area: Rect, theme: &Theme) -> ViewState {
         width: area.width.saturating_sub(sidebar_width),
         ..area
     };
-    let banner_rows = u16::from(
-        app.state.banner.is_some()
-            || app.state.link != Link::Connected
-            || app.state.dropped_frames > 0,
-    );
-    let (transcript_area, banner) = split_off_bottom(main, banner_rows);
-    let banner = (banner_rows > 0).then_some(banner);
+    let (transcript_area, banner) = split_off_bottom(main, 1);
+    let banner = Some(banner);
     let (tab_bar, panes_area) = if app.state.tabs.len() > 1 {
         let (bar, rest) = split_off_top(transcript_area, 1);
         (Some(bar), rest)
@@ -181,8 +177,11 @@ pub fn compute_view(app: &mut App, area: Rect, theme: &Theme) -> ViewState {
             index.map(|index| (y, index))
         })
         .collect();
+    let mut seen_avatar = std::collections::HashSet::new();
     let avatars = sidebar_rows
         .iter()
+        .filter(|_| sidebar_width > 0)
+        .filter(|(_, index)| seen_avatar.insert(*index))
         .filter_map(|(y, index)| {
             let id = app.state.order.get(*index)?.clone();
             Some((sidebar.x.saturating_add(2), *y, id))
@@ -504,12 +503,11 @@ pub fn render(app: &mut App, frame: &mut Frame<'_>, view: &mut ViewState, theme:
     }
     let crowd = view.panes.len() > 1;
     let framed = view.framed;
-    let kitty = app.kitty;
     for pane in &mut view.panes {
         let inner = pane.rect.inner(pane_margin(framed));
         let dim = crowd && !pane.focused;
         if pane.chat {
-            paint_chat_pane(app, pane, inner, frame.buffer_mut(), kitty, dim);
+            paint_chat_pane(app, pane, inner, frame.buffer_mut(), dim, framed, theme);
             continue;
         }
         let body = Paragraph::new(pane.lines.clone());
@@ -551,9 +549,21 @@ fn paint_chat_pane(
     view: &mut PaneView,
     inner: Rect,
     buffer: &mut Buffer,
-    kitty: bool,
     dim: bool,
+    framed: bool,
+    theme: &Theme,
 ) {
+    let kitty = app.kitty;
+    let title = (!framed)
+        .then(|| {
+            app.state
+                .panes
+                .get(&view.id)
+                .and_then(|p| p.session())
+                .and_then(|s| app.state.sessions.get(s))
+                .map(|row| (row.seed().to_owned(), row.status, row.label()))
+        })
+        .flatten();
     let Some(pane) = app.state.panes.get_mut(&view.id) else {
         return;
     };
@@ -564,6 +574,20 @@ fn paint_chat_pane(
         return;
     };
     chat.app.set_kitty(kitty && view.focused);
+    let mut inner = inner;
+    if let Some((seed, status, label)) = title {
+        let line = Line::from(vec![
+            Span::styled(name_tile(&seed), tile_style(&seed)),
+            Span::styled(format!(" {} ", status.glyph()), status_style(theme, status)),
+            Span::styled(label, theme.accent_style().add_modifier(Modifier::BOLD)),
+        ]);
+        Widget::render(Paragraph::new(line), Rect { height: 1, ..inner }, buffer);
+        inner = Rect {
+            y: inner.y.saturating_add(1),
+            height: inner.height.saturating_sub(1),
+            ..inner
+        };
+    }
     let goal = chat.port.goal();
     let mut scroll = pane.scroll_from_bottom;
     view.scroll = yi_tui::render::paint_pane(&mut chat.app, goal, buffer, inner, &mut scroll);
@@ -603,6 +627,17 @@ fn render_banner(app: &App, frame: &mut Frame<'_>, area: Rect, theme: &Theme) {
         spans.push(Span::styled(
             format!("  dropped:{}", app.state.dropped_frames),
             theme.dim_style(),
+        ));
+    }
+    if spans.is_empty() {
+        let armed = matches!(app.state.mode, Mode::Prefix);
+        spans.push(Span::styled(
+            format!(" {}", keys::hint(armed, app.cmd_hints)),
+            if armed {
+                theme.accent_style()
+            } else {
+                theme.dim_style()
+            },
         ));
     }
     frame.render_widget(Paragraph::new(Line::from(spans)), area);
@@ -818,7 +853,13 @@ pub fn sidebar_lines(app: &App, theme: &Theme, height: u16) -> Vec<(Option<usize
     let focused = app.state.focused_session();
     let now = now_ms();
     let mut slot = 0_usize;
-    for index in app.state.visible_rows() {
+    let visible = app.state.visible_rows();
+    let shown = if rail {
+        visible.iter().copied().take(RAIL_ROWS).collect()
+    } else {
+        visible
+    };
+    for index in shown {
         let Some(id) = app.state.order.get(index) else {
             continue;
         };
@@ -860,6 +901,25 @@ pub fn sidebar_lines(app: &App, theme: &Theme, height: u16) -> Vec<(Option<usize
         } else {
             "  ".to_owned()
         };
+        if rail {
+            rows.push((
+                Some(index),
+                Line::from(vec![
+                    Span::styled(slot_text, on_row(number)),
+                    Span::styled(name_tile(row.seed()), tile_style(row.seed())),
+                    Span::styled("   ".to_owned(), on_row(Style::default())),
+                    Span::styled(
+                        row.status.glyph().to_owned(),
+                        on_row(status_style(theme, row.status)),
+                    ),
+                ]),
+            ));
+            rows.push((
+                Some(index),
+                Line::from(Span::styled(" ".repeat(8), on_row(Style::default()))),
+            ));
+            continue;
+        }
         let mut spans = vec![
             Span::styled(slot_text, on_row(number)),
             Span::styled(name_tile(row.seed()), tile_style(row.seed())),
@@ -869,10 +929,6 @@ pub fn sidebar_lines(app: &App, theme: &Theme, height: u16) -> Vec<(Option<usize
                 on_row(status_style(theme, row.status)),
             ),
         ];
-        if rail {
-            rows.push((Some(index), Line::from(spans)));
-            continue;
-        }
         let name: String = label.chars().take(NAME_WIDTH).collect();
         let pad = NAME_WIDTH.saturating_sub(name.chars().count());
         let name_style = if is_focused {

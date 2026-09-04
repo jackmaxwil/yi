@@ -306,6 +306,26 @@ pub struct KernelServiceOptions {
     pub host: Arc<dyn HostHandlers>,
     pub on_restore: Option<Arc<RestoreNoticeFn>>,
     pub sandbox: Option<yi_tools::Sandbox>,
+    pub snapshot_key: Option<Arc<dyn Fn() -> Option<String> + Send + Sync>>,
+}
+
+/// A session's snapshot files, beside the root's, prefixed with its id: the sessions
+/// directory is read flat by its consumers, so no subdirectory appears in it.
+pub fn snapshot_paths(base: &std::path::Path, key: Option<&str>) -> (PathBuf, PathBuf) {
+    let (snapshot, manifest) = (
+        yi_kernel::snapshot::snapshot_path_in(base),
+        yi_kernel::snapshot::manifest_path_in(base),
+    );
+    let prefixed = |path: PathBuf, id: &str| {
+        let name = path
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned());
+        name.map_or(path.clone(), |name| base.join(format!("{id}.{name}")))
+    };
+    match key {
+        Some(id) if !id.is_empty() => (prefixed(snapshot, id), prefixed(manifest, id)),
+        _ => (snapshot, manifest),
+    }
 }
 
 /// Boots on first cell, memoizes the manager, retries a failed start, owns busy recovery.
@@ -393,10 +413,12 @@ impl KernelService {
         }
         // Only sessions with an on-disk directory get a revivable snapshot
         // (design K10).
+        let key = self.options.snapshot_key.as_ref().and_then(|key| key());
         let snapshot = self.options.session_dir.as_deref().map(|dir| {
+            let (path, manifest_path) = snapshot_paths(dir, key.as_deref());
             yi_kernel::client::KernelSnapshotConfig {
-                path: yi_kernel::snapshot::snapshot_path_in(dir),
-                manifest_path: yi_kernel::snapshot::manifest_path_in(dir),
+                path,
+                manifest_path,
                 max_bytes: None,
                 max_variable_bytes: None,
                 debounce_ms: None,
@@ -786,6 +808,26 @@ impl KernelService {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_snapshot_is_keyed_by_its_session() {
+        let base = std::path::Path::new("/tmp/sessions");
+        let (keyed, manifest) = super::snapshot_paths(base, Some("01a0"));
+        let (bare, _) = super::snapshot_paths(base, None);
+        assert_eq!(
+            keyed.parent(),
+            Some(base),
+            "flat beside the sessions, never a subdirectory"
+        );
+        assert!(
+            keyed
+                .file_name()
+                .is_some_and(|name| name.to_string_lossy().starts_with("01a0."))
+        );
+        assert!(manifest.to_string_lossy().ends_with(".json"));
+        assert_eq!(bare, yi_kernel::snapshot::snapshot_path_in(base));
+        assert_eq!(super::snapshot_paths(base, Some("")).0, bare);
+    }
+
     use super::*;
     use std::error::Error;
 
@@ -1007,6 +1049,7 @@ mod tests {
             host: registry,
             on_restore: None,
             sandbox: None,
+            snapshot_key: None,
         });
         service.dispose().await;
         assert!(
@@ -1028,6 +1071,7 @@ mod tests {
             host: Arc::new(registry),
             on_restore: None,
             sandbox: None,
+            snapshot_key: None,
         })
     }
 

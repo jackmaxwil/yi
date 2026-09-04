@@ -207,6 +207,14 @@ impl AgentSession {
         }
     }
 
+    /// The attached store's id, read when asked: the store may attach after wiring.
+    pub fn store_id_hook(&self) -> Arc<dyn Fn() -> Option<String> + Send + Sync> {
+        let shared = Arc::clone(&self.shared);
+        Arc::new(move || {
+            store_of(&shared).map(|store| yi_session::lock_session(&store).metadata().id.clone())
+        })
+    }
+
     pub fn extensions(&self) -> Option<Arc<Mutex<crate::ext::Host>>> {
         extensions_of(&self.shared)
     }
