@@ -9,7 +9,6 @@ adapters/yi_usage.py       run command + usage parse + fingerprint (shared, pure
 adapters/yi_harbor/agent.py  harbor BaseInstalledAgent subclass
 adapters/yi_pier/agent.py    pier BaseInstalledAgent subclass (+ install spec, allowlist, extras)
 selftest.py                dry run: no docker, no API, no keys, no harness
-compaction_survival.py     identifier + constraint survival across compaction entries
 run.py                     task runner over `yi ask --json`, scored by each task's reward.sh
 record.py                  session JSONL -> behavior cassette (J3), redacted at record time
 fixtures/                  a recorded faux transcript, a v4 session file, and the runner's tasks

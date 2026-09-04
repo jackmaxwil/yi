@@ -18,7 +18,6 @@ sys.path.insert(0, str(ROOT / "adapters"))
 sys.path.insert(0, str(ROOT / "drivers"))
 sys.path.insert(0, str(ROOT))
 
-import compaction_survival  # noqa: E402
 import orient_census  # noqa: E402
 import record  # noqa: E402
 import tb21_cost  # noqa: E402
@@ -267,25 +266,9 @@ def check_orient_census():
     orient_census.selftest()
 
 
-def check_compaction_survival():
-    """Zero-spend ident survival over the committed v4 session fixture."""
-    fixture = SESSIONS / "1787544431469_fixture-a.jsonl"
-    report = compaction_survival.measure(fixture)
-    assert len(report["rounds"]) == 1, report
-    round_row = report["rounds"][0]
-    assert round_row["id"] == "e14", round_row
-    assert round_row["dropped_reported"] is None, round_row
-    assert round_row["pinned_reported"] is None, round_row
-    lanes = round_row["lanes"]
-    assert lanes["user"]["total"] >= 1, lanes  # fixture e1 carries image/png
-    assert 0.0 <= lanes["user"]["ratio"] <= 1.0, lanes
-    assert round_row["constraints"]["ratio"] == 1.0 or round_row["constraints"]["total"] == 0
-
-
 CHECKS = (
     check_cost_cap,
     check_orient_census,
-    check_compaction_survival,
     check_command,
     check_usage,
     check_no_assistant_rows,
