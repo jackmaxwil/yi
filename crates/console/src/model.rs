@@ -1,19 +1,17 @@
 use std::collections::BTreeMap;
-
-use serde_json::Value;
-use yi_tui::popup::ListPopup;
+use std::sync::mpsc::{Receiver, Sender};
 
 use ratatui::layout::Direction;
-use yi_types::acp::{AcpPermissionParams, AcpState};
+use yi_tui::app::{CommandReceiver, CommandSender};
+use yi_tui::{AskChoice, UiEvent};
+use yi_types::acp::{AcpPermissionOption, AcpPermissionParams, AcpState};
 
+use crate::app::port::RemotePort;
 use crate::layout::{PaneId, PaneIds, TileLayout};
-use crate::transcript::Transcript;
 
-/// Session identity as the wire carries it.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct SessionId(pub String);
 
-/// Outgoing JSON-RPC request id (rewritten by the daemon in flight).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct RequestId(pub u64);
 
@@ -53,7 +51,6 @@ impl SessionStatus {
         }
     }
 
-    /// Unrecognized ledger strings are Unknown, never an error.
     pub fn from_ledger(state: &str, unseen: u64) -> Self {
         match state {
             "running" => Self::Working,
@@ -70,7 +67,6 @@ impl SessionStatus {
     }
 }
 
-/// One sidebar row, merged from the worker and daemon lists.
 #[derive(Debug, Clone)]
 pub struct SessionRow {
     pub id: SessionId,
@@ -131,66 +127,12 @@ pub fn now_ms() -> u64 {
         })
 }
 
-#[derive(Debug, Clone, Default)]
-pub struct StatusInfo {
-    pub model: String,
-    pub effort: Option<String>,
-    pub cost: Option<String>,
-    pub context_used: u64,
-    pub context_window: u64,
-}
-
-impl StatusInfo {
-    pub fn absorb(&mut self, fields: &BTreeMap<String, Value>) {
-        if let Some(model) = fields.get("model").and_then(Value::as_str) {
-            self.model = model.to_owned();
-        }
-        if let Some(effort) = fields.get("effort").and_then(Value::as_str) {
-            self.effort = (effort != "off").then(|| effort.to_owned());
-        }
-        let cost = fields.get("cost").and_then(Value::as_f64).unwrap_or(0.0);
-        let unknown = fields
-            .get("costUnknown")
-            .and_then(Value::as_bool)
-            .unwrap_or(false);
-        let mark = if unknown { "+?" } else { "" };
-        self.cost = (cost > 0.0 || unknown).then(|| format!("${cost:.2}{mark}"));
-        if let Some(used) = fields.get("contextUsed").and_then(Value::as_u64) {
-            self.context_used = used;
-        }
-        if let Some(window) = fields.get("contextWindow").and_then(Value::as_u64) {
-            self.context_window = window;
-        }
-    }
-}
-
-pub enum Bottom {
-    Command(ListPopup),
-    File(ListPopup),
-}
-
-impl Bottom {
-    pub fn popup(&self) -> &ListPopup {
-        match self {
-            Self::Command(popup) | Self::File(popup) => popup,
-        }
-    }
-
-    pub fn popup_mut(&mut self) -> &mut ListPopup {
-        match self {
-            Self::Command(popup) | Self::File(popup) => popup,
-        }
-    }
-}
-
-/// Which zone owns plain keys.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Zone {
     Sidebar,
     Panes,
 }
 
-/// Connection state as the status line reports it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Link {
     Connecting,
@@ -198,15 +140,24 @@ pub enum Link {
     Disconnected { reason: String },
 }
 
-/// A pending `session/request_permission`, shown until answered.
-#[derive(Debug, Clone)]
-pub struct ActiveAsk {
-    /// Wire id of the worker-originated request, echoed back in the response.
-    pub request_id: String,
-    pub params: AcpPermissionParams,
+/// Solo's chat bound to one pane: the same `App`, fed over the daemon link.
+pub struct Chat {
+    pub app: yi_tui::app::App,
+    pub port: RemotePort,
+    pub orb: yi_tui::orb::Tick,
+    pub ask: Option<PendingAsk>,
+    pub events: (Sender<UiEvent>, Receiver<UiEvent>),
+    pub commands: (CommandSender, CommandReceiver),
 }
 
-/// One executed kernel cell as the notebook pane retains it.
+/// A permission the worker asked, answered by the chat's own popup.
+pub struct PendingAsk {
+    /// Wire id of the worker-originated request, echoed back in the response.
+    pub request_id: String,
+    pub reply: Receiver<AskChoice>,
+    pub options: Vec<AcpPermissionOption>,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct NbCell {
     pub call_id: String,
@@ -214,7 +165,6 @@ pub struct NbCell {
     pub stdout: String,
     pub result: Option<String>,
     pub error: Option<String>,
-    /// base64 PNG payloads, ready for a kitty `f=100` transmit.
     pub images: Vec<String>,
     pub running: bool,
 }
@@ -224,7 +174,7 @@ pub struct NbCell {
 pub enum PaneContent {
     Session {
         session: Option<SessionId>,
-        transcript: Transcript,
+        chat: Option<Box<Chat>>,
     },
     Markdown {
         path: String,
@@ -253,14 +203,11 @@ pub struct Editor {
     pub stale: bool,
     pub scroll_top: usize,
     pub lang: Option<String>,
-    /// Parse state at a row: a viewport below a block comment still colours inside it.
     pub primed: Option<(usize, yi_tui::highlight::Lang)>,
-    /// The cursor at the last draw; the viewport chases it only when it moves.
     pub last_cursor: (usize, usize),
 }
 
 impl Editor {
-    /// The lexer positioned at `scroll_top`, advanced over the rows above it.
     pub fn primed_lang(&mut self) -> Option<yi_tui::highlight::Lang> {
         let fresh = || self.lang.as_deref().and_then(yi_tui::highlight::lang_for);
         let (from, mut lang) = match self.primed.take() {
@@ -351,7 +298,7 @@ impl Pane {
         Self {
             content: PaneContent::Session {
                 session: None,
-                transcript: Transcript::new(),
+                chat: None,
             },
             scroll_from_bottom: 0,
         }
@@ -375,18 +322,12 @@ pub struct Tab {
     pub zoomed: bool,
 }
 
-/// Modal input state; one overlay at a time.
 pub enum Mode {
     Normal,
-    /// ctrl+b armed, next key resolves from the prefix table.
     Prefix,
-    Navigator {
-        query: String,
-        selected: usize,
-    },
+    Navigator { query: String, selected: usize },
 }
 
-/// Everything the render pass reads; `order` fixes the sidebar sequence.
 pub struct ConsoleState {
     pub root: String,
     pub link: Link,
@@ -399,10 +340,9 @@ pub struct ConsoleState {
     pub pane_ids: PaneIds,
     pub zone: Zone,
     pub mode: Mode,
-    pub ask: Option<ActiveAsk>,
-    pub status_note: Option<String>,
+    pub banner: Option<String>,
+    pub orphan_asks: Vec<(String, AcpPermissionParams)>,
     pub dropped_frames: u64,
-    pub status: BTreeMap<SessionId, StatusInfo>,
     pub quit: bool,
     pub sidebar: SidebarMode,
     pub cursor_moved: bool,
@@ -434,8 +374,8 @@ impl ConsoleState {
             pane_ids,
             zone: Zone::Sidebar,
             mode: Mode::Normal,
-            ask: None,
-            status_note: None,
+            banner: None,
+            orphan_asks: Vec::new(),
             dropped_frames: 0,
             sidebar: SidebarMode::Rail,
             cursor_moved: false,
@@ -444,7 +384,6 @@ impl ConsoleState {
             auto_side: true,
             root_filter: None,
             children: BTreeMap::new(),
-            status: BTreeMap::new(),
             quit: false,
         }
     }
@@ -480,6 +419,20 @@ impl ConsoleState {
         self.panes.values().any(|pane| pane.session() == Some(id))
     }
 
+    /// Every chat showing the session, across every tab.
+    pub fn chats_mut(&mut self, id: &SessionId) -> Vec<&mut Chat> {
+        self.panes
+            .values_mut()
+            .filter_map(|pane| match &mut pane.content {
+                PaneContent::Session {
+                    session: Some(bound),
+                    chat: Some(chat),
+                } if bound == id => Some(chat.as_mut()),
+                _ => None,
+            })
+            .collect()
+    }
+
     pub fn selected_id(&self) -> Option<&SessionId> {
         self.order.get(self.selected)
     }
@@ -502,7 +455,6 @@ impl ConsoleState {
         self.settle_cursor();
     }
 
-    /// Until the user moves it, the cursor rests on the newest row through every merge.
     pub fn settle_cursor(&mut self) {
         if !self.cursor_moved
             && let Some(first) = self.visible_rows().first()
@@ -519,7 +471,6 @@ impl ConsoleState {
         }
     }
 
-    /// Sidebar rows under the root filter, newest activity first; ties keep first-seen order.
     pub fn visible_rows(&self) -> Vec<usize> {
         let mut rows: Vec<usize> = self
             .order

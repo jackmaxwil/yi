@@ -442,3 +442,30 @@ pub fn tick(
         let _ = cmd_tx.send(crate::app::Command::ChildHistory(child_id));
     }
 }
+
+impl App {
+    pub fn set_model_selector(
+        &mut self,
+        model: yi_types::model::Model,
+        effort: yi_types::model::Effort,
+    ) {
+        self.selection.model = model;
+        self.selection.effort = effort;
+        self.scheduler.request();
+    }
+
+    pub fn set_draft_if_empty(&mut self, text: &str) {
+        if self.composer.is_empty() {
+            self.composer.set_text(text);
+            self.scheduler.request();
+        }
+    }
+
+    pub fn take_pending_editor(&mut self) -> bool {
+        std::mem::take(&mut self.pending_editor)
+    }
+
+    pub fn orb_animating(&self) -> bool {
+        self.logo_phase != self.logo_target || self.logo_target > 0.0
+    }
+}
