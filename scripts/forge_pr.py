@@ -233,6 +233,8 @@ def binary_ratchet(topic):
         capture_output=True, text=True, check=False,
     )
     grown = re.search(r"dist binary (\d+) > (\d+)", out.stdout + out.stderr)
+    verdict = next((line for line in (out.stdout + out.stderr).splitlines() if "binary_size" in line), "")
+    print(f"binary: {verdict.strip() or 'no measurement'}")
     if not grown:
         return 0
     path = BASELINES / "binary_size_budget.json"
@@ -243,8 +245,13 @@ def binary_ratchet(topic):
     return 0
 
 
-def cmd_push(_args):
+def cmd_push(args):
     name = branch()
+    if git("status", "--porcelain"):
+        print("push: the tree is dirty — just commit first")
+        return 1
+    # The lane refuses a grown binary; measuring here is the last chance before it.
+    binary_ratchet(getattr(args, "topic", "") or "")
     print(f"push: {name} through the pre-push lane (minutes; run this in the background)")
     out = subprocess.run(("git", "-C", str(ROOT), "push", "-u", "origin", name), check=False)
     return out.returncode
