@@ -41,6 +41,7 @@ impl App {
         let mut app =
             yi_tui::app::App::new(options, self.theme, yi_tui::keymap::default_keymap(), 80);
         let _ = app.take_title();
+        app.set_status_name_shown(false);
         Box::new(Chat {
             app,
             port: RemotePort::default(),

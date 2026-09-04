@@ -210,7 +210,11 @@ pub fn layout_chat(app: &mut App, goal: Option<GoalView>, total: u16) -> ChatLay
             let mark = if app.cost_unknown { "+?" } else { "" };
             format!("${:.2}{mark}", app.cost_total)
         }),
-        session_name: app.options.session_name.clone(),
+        session_name: if app.status_name_hidden {
+            String::new()
+        } else {
+            app.options.session_name.clone()
+        },
         subagents: app
             .tasks
             .values()

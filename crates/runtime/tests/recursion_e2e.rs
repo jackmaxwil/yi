@@ -937,6 +937,7 @@ async fn rlm_run_round_trips_through_a_real_kernel() -> TestResult {
         host: Arc::new(registry),
         on_restore: None,
         sandbox: None,
+        snapshot_key: None,
     }));
 
     let cancelled: yi_tools::CancelFlag = Arc::new(|| false);

@@ -97,23 +97,20 @@ impl SessionRow {
 pub enum SidebarMode {
     Rail,
     Full,
-    Hidden,
 }
 
 impl SidebarMode {
     pub fn next(self) -> Self {
         match self {
             Self::Rail => Self::Full,
-            Self::Full => Self::Hidden,
-            Self::Hidden => Self::Rail,
+            Self::Full => Self::Rail,
         }
     }
 
     pub fn width(self) -> u16 {
         match self {
-            Self::Rail => 7,
+            Self::Rail => 9,
             Self::Full => 29,
-            Self::Hidden => 0,
         }
     }
 }
