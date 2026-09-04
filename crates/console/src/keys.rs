@@ -27,6 +27,8 @@ pub enum Action {
     /// Resume the nth rail row into the focused pane.
     SelectSlot(u8),
     Quit,
+    StopDaemon,
+    Keys,
     ToggleSidebar,
     ToggleNotebook,
     ToggleDiff,
@@ -82,6 +84,7 @@ pub fn direct(key: &KeyEvent) -> Option<Action> {
         KeyCode::Char('b') => Some(Action::ToggleSidebar),
         KeyCode::Char('g') => Some(Action::ToggleDiff),
         KeyCode::Char('e') => Some(Action::OpenEditor),
+        KeyCode::Char('?') => Some(Action::Keys),
         KeyCode::Char(digit @ '1'..='9') => {
             let n = u8::try_from(u32::from(digit).saturating_sub(u32::from('0'))).ok()?;
             Some(Action::SelectSlot(n))
@@ -110,6 +113,7 @@ fn super_chord(key: &KeyEvent) -> Option<Action> {
         KeyCode::Char('s') => Some(Action::Save),
         KeyCode::Char('z' | 'Z') if shift => Some(Action::Redo),
         KeyCode::Char('z') => Some(Action::Undo),
+        KeyCode::Char('?') | KeyCode::Char('/') => Some(Action::Keys),
         KeyCode::Char(digit @ '1'..='9') => {
             let n = u8::try_from(u32::from(digit).saturating_sub(u32::from('0'))).ok()?;
             Some(Action::SelectSlot(n))
@@ -143,13 +147,91 @@ pub fn prefixed(key: &KeyEvent) -> Option<Action> {
     }
 }
 
-/// The mode-bar hint for the current input state.
+pub struct Chord {
+    pub what: &'static str,
+    pub alt: &'static str,
+    pub cmd: &'static str,
+    pub prefix: &'static str,
+    pub action: Option<Action>,
+}
+
+const fn chord(
+    what: &'static str,
+    alt: &'static str,
+    cmd: &'static str,
+    prefix: &'static str,
+    action: Option<Action>,
+) -> Chord {
+    Chord {
+        what,
+        alt,
+        cmd,
+        prefix,
+        action,
+    }
+}
+
+pub const CHORDS: [Chord; 16] = [
+    chord("command palette", "⌥/", "⌘P", "g", Some(Action::Navigator)),
+    chord("new session", "⌥n", "⌘⇧N", "o", Some(Action::NewSession)),
+    chord("jump to rail slot 1..9", "⌥1..9", "⌘1..9", "", None),
+    chord("split right", "⌥v", "⌘\\", "v", Some(Action::SplitRight)),
+    chord("split down", "⌥s", "⌘⇧\\", "s", Some(Action::SplitDown)),
+    chord("close pane", "⌥x", "⌘X", "x", Some(Action::ClosePane)),
+    chord("zoom pane", "⌥z", "⌘⇧M", "z", Some(Action::Zoom)),
+    chord("focus pane", "⌥←→↑↓", "⌥←→↑↓", "h j k l", None),
+    chord(
+        "notebook pane",
+        "⌥⇧J",
+        "⌘J",
+        "",
+        Some(Action::ToggleNotebook),
+    ),
+    chord("diff pane", "⌥g", "⌘G", "", Some(Action::ToggleDiff)),
+    chord(
+        "open a file in a pane",
+        "⌥e",
+        "⌘E",
+        "",
+        Some(Action::OpenEditor),
+    ),
+    chord(
+        "sidebar: rail or full",
+        "⌥b",
+        "⌘B",
+        "",
+        Some(Action::ToggleSidebar),
+    ),
+    chord(
+        "new tab · next · previous",
+        "⌥t ⌥] ⌥[",
+        "⌘⇧T",
+        "c n p 1..9",
+        Some(Action::NewTab),
+    ),
+    chord(
+        "leave; the daemon keeps running",
+        "⌥q",
+        "⌥q",
+        "q",
+        Some(Action::Quit),
+    ),
+    chord(
+        "stop the daemon and quit",
+        "ctrl+c ctrl+c",
+        "ctrl+c ctrl+c",
+        "",
+        Some(Action::StopDaemon),
+    ),
+    chord("all keys", "⌥?", "⌘?", "", Some(Action::Keys)),
+];
+
 pub fn hint(prefix_armed: bool, cmd: bool) -> &'static str {
     if prefix_armed {
-        "PREFIX  v split│ s split─ x close z zoom h/j/k/l focus c tab 1..9 tab g nav q quit"
+        "PREFIX  v split│ s split─ x close z zoom h/j/k/l focus c tab 1..9 tab g palette q leave"
     } else if cmd {
-        "⌘\\ split  ⌥←→↑↓ focus  ⌘⇧M zoom  ⌘X close  ⌘⇧T tab  ⌘1..9 slot  ⌘P nav  ⌘⇧N new  ⌘B side  ⌘J nb  ⌘G diff"
+        "⌘P command palette   ⌘⇧N new session   ⌘B sidebar   ⌘? keys"
     } else {
-        "⌥v/⌥s split  ⌥←→↑↓ focus  ⌥z zoom  ⌥x close  ⌥t tab  ⌥1..9 slot  ⌥/ nav  ⌥n new  ⌥b side  ctrl+b prefix"
+        "⌥/ command palette   ⌥n new session   ⌥b sidebar   ⌥? keys"
     }
 }

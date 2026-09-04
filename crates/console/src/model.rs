@@ -84,6 +84,10 @@ impl SessionRow {
         self.name.clone().unwrap_or_else(|| "untitled".to_owned())
     }
 
+    pub fn seed(&self) -> &str {
+        self.name.as_deref().unwrap_or(&self.id.0)
+    }
+
     pub fn recency(&self) -> u64 {
         self.last_ms.max(self.created_ms)
     }
@@ -93,23 +97,20 @@ impl SessionRow {
 pub enum SidebarMode {
     Rail,
     Full,
-    Hidden,
 }
 
 impl SidebarMode {
     pub fn next(self) -> Self {
         match self {
             Self::Rail => Self::Full,
-            Self::Full => Self::Hidden,
-            Self::Hidden => Self::Rail,
+            Self::Full => Self::Rail,
         }
     }
 
     pub fn width(self) -> u16 {
         match self {
-            Self::Rail => 7,
+            Self::Rail => 9,
             Self::Full => 29,
-            Self::Hidden => 0,
         }
     }
 }
@@ -325,6 +326,7 @@ pub enum Mode {
     Normal,
     Prefix,
     Navigator { query: String, selected: usize },
+    Keys,
 }
 
 pub struct ConsoleState {

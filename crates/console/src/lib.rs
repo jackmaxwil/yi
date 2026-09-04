@@ -12,7 +12,9 @@ pub mod kitty;
 pub mod layout;
 pub mod model;
 pub mod notify;
+pub mod palette;
 pub mod render;
+pub mod sidebar;
 
 use std::io::Stdout;
 use std::path::PathBuf;
@@ -33,7 +35,7 @@ use yi_tui::drive::{Step, WaitPoll, key_event, poll_condition, typed_events};
 
 use crate::app::{App, MouseKind};
 use crate::client::{ClientEvent, Outbound};
-use crate::model::{Link, SessionRow, SessionStatus};
+use crate::model::{Link, SessionStatus};
 
 pub struct ConsoleOptions {
     pub socket: PathBuf,
@@ -258,20 +260,7 @@ fn place_avatars(app: &mut App, out: &mut std::io::Stdout) {
     let rows: Vec<crate::avatar::Placement> = app
         .hits
         .as_ref()
-        .map(|hits| {
-            hits.avatars
-                .iter()
-                .map(|(col, row, id)| {
-                    let label = app.state.sessions.get(id).map(SessionRow::label);
-                    crate::avatar::Placement {
-                        col: *col,
-                        row: *row,
-                        session: id.clone(),
-                        accent: yi_tui::colors::name_accent_rgb(label.as_deref().unwrap_or("")),
-                    }
-                })
-                .collect()
-        })
+        .map(|hits| hits.avatars.clone())
         .unwrap_or_default();
     app.avatars.sync(out, &rows);
 }
