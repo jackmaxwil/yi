@@ -7,7 +7,8 @@ use crate::cut::select_cut;
 use crate::details::{FileOps, compute_file_lists, extract_file_ops, format_file_operations};
 use crate::floor::{RETENTION_FLOOR_BUDGET, retain_floor};
 use crate::policy::Settings;
-use crate::project::project;
+use crate::project::{project, project_attributed};
+use crate::view::{CompiledView, compile_view};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Preparation {
@@ -18,6 +19,7 @@ pub struct Preparation {
     pub tokens_before: Tokens,
     pub previous_summary: Option<String>,
     pub file_ops: FileOps,
+    pub view: CompiledView,
 }
 
 fn previous_compaction(branch: &[Entry]) -> (Option<String>, Option<CompactionDetails>) {
@@ -79,6 +81,10 @@ pub fn prepare_compaction(branch: &[Entry], settings: &Settings) -> Option<Prepa
     let floored = retain_floor(&summarized_away, RETENTION_FLOOR_BUDGET);
     let mut retained_tail = floored;
     retained_tail.extend_from_slice(&work[cut.first_kept_index..]);
+    let attributed = project_attributed(branch);
+    let attributed_work = &attributed[work_start..];
+    let view_slice = &attributed_work[..history_end];
+    let view = compile_view(view_slice, previous_summary.as_deref(), &file_ops);
     Some(Preparation {
         messages_to_summarize,
         turn_prefix_messages,
@@ -87,17 +93,23 @@ pub fn prepare_compaction(branch: &[Entry], settings: &Settings) -> Option<Prepa
         tokens_before,
         previous_summary,
         file_ops,
+        view,
     })
 }
 
-/// Appends the cumulative file-operation lists to a finished summary and
-/// returns the details payload for the compaction entry.
-pub fn compose_summary(summary: &str, file_ops: &FileOps) -> (String, CompactionDetails) {
+pub fn compose_summary(
+    summary: &str,
+    file_ops: &FileOps,
+    view: &CompiledView,
+) -> (String, CompactionDetails) {
     let (read_files, modified_files) = compute_file_lists(file_ops);
-    let text = format!(
-        "{summary}{}",
-        format_file_operations(&read_files, &modified_files)
-    );
+    let files = format_file_operations(&read_files, &modified_files);
+    let view_text = view.render();
+    let text = if view_text.is_empty() {
+        format!("{summary}{files}")
+    } else {
+        format!("{view_text}\n\n{summary}{files}")
+    };
     (
         text,
         CompactionDetails {

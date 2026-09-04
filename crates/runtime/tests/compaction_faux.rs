@@ -201,6 +201,116 @@ async fn compact_now_applies_immediately_when_idle() -> Result<(), Box<dyn Error
     Ok(())
 }
 
+/// The recall half of compaction: a turn the keep-recent window drops stays
+/// discoverable through `SessionStore::grep` and fetchable through
+/// `history://`, and the compact view cites its entry id.
+#[tokio::test]
+async fn a_compacted_away_turn_stays_greppable_and_fetchable() -> Result<(), Box<dyn Error>> {
+    let root = std::env::temp_dir().join(format!("yi-compact-recall-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let mut repo = JsonlRepo::new(root.clone(), "/tmp/yi-compact-recall");
+    let store = repo.create(CreateOptions {
+        id: Some("compact-recall".to_owned()),
+        ..CreateOptions::default()
+    })?;
+
+    // Seed an early turn whose tool result carries a unique needle deep in a
+    // long body: the keep-recent window drops it, and the 160-char brief line
+    // caps before the needle, so only the entry id survives in the window.
+    let needle = "NEEDLE-ZEBRA-4182";
+    let long_body = format!("{} {needle} {}", "preamble ".repeat(40), "tail ".repeat(80));
+    let needle_id = {
+        let mut guard = yi_session::lock_session(&store);
+        guard.append_message(
+            "main",
+            AgentMessage::user_input(UserContent::Text("early ask: run the probe".to_owned()), 0),
+        )?;
+        guard.append_message(
+            "main",
+            faux_assistant_message(
+                vec![yi_types::message::Content::ToolCall {
+                    id: "call-1".to_owned(),
+                    name: "probe".to_owned(),
+                    arguments: serde_json::Map::new(),
+                    thought_signature: None,
+                    namespace: None,
+                }],
+                StopReason::ToolUse,
+            ),
+        )?;
+        guard.append_message(
+            "main",
+            AgentMessage::ToolResult {
+                tool_call_id: "call-1".to_owned(),
+                tool_name: "probe".to_owned(),
+                content: vec![yi_types::message::Content::Text {
+                    text: long_body.clone(),
+                    text_signature: None,
+                }],
+                details: None,
+                usage: None,
+                added_tool_names: None,
+                is_error: false,
+                timestamp: 0,
+            },
+        )?
+    };
+
+    let provider = Arc::new(ProviderStream::new(None, None));
+    provider.queue_faux(vec![
+        reply_with_usage(&format!("big reply {}", "x".repeat(400)), 100, 5_000),
+        faux_assistant_message(
+            vec![faux_text("## Goal\nSummarized history for the recall test")],
+            StopReason::Stop,
+        ),
+        reply_with_usage("second answer", 50, 300),
+    ]);
+    let session = session_for_compaction(provider);
+    session.attach_store(Arc::clone(&store))?;
+
+    session.prompt("first live ask with enough text to matter")?;
+    session.wait_idle().await;
+    session.prompt("second live ask trips the compaction boundary")?;
+    session.wait_idle().await;
+    assert_eq!(session.store_error(), None);
+    assert_eq!(compaction_entries(&store).len(), 1);
+
+    let live = session.messages();
+    let live_text = live
+        .iter()
+        .map(serde_json::to_string)
+        .collect::<Result<Vec<_>, _>>()?
+        .join("\n");
+    assert!(
+        !live_text.contains(needle),
+        "the compacted-away needle must leave the live window: {live_text}"
+    );
+    assert!(
+        live_text.contains(&format!("(#{needle_id})")),
+        "the compact view must cite the dropped turn by entry id: {live_text}"
+    );
+
+    let hits = yi_session::lock_session(&store).grep(needle, 8);
+    assert!(
+        hits.iter().any(|hit| hit.entry_id == needle_id),
+        "store grep must find the compacted-away needle: {hits:?}"
+    );
+
+    let resolver = yi_runtime::fetch::Resolver::new(root.clone(), yi_runtime::Wall::default())
+        .with_session_handle("main", session.store_handle());
+    let url: yi_types::url::Url = format!("history://main/{needle_id}").parse()?;
+    let fetched = resolver.fetch(&url)?;
+    assert!(
+        fetched.text.contains(&long_body),
+        "history:// must serve the full compacted-away blob: {}",
+        fetched.text
+    );
+
+    drop(session);
+    std::fs::remove_dir_all(&root)?;
+    Ok(())
+}
+
 #[tokio::test]
 async fn compaction_below_threshold_is_a_no_op() -> Result<(), Box<dyn Error>> {
     let provider = Arc::new(ProviderStream::new(None, None));

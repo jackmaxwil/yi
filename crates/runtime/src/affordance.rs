@@ -45,11 +45,12 @@ pub fn grid_empty() -> Option<String> {
 
 pub fn compacted(session_file: Option<&Path>) -> String {
     match session_file {
-        Some(path) => format!(
-            "{NEXT}the window now holds a summary plus the recent turns; the full history stays in {}",
-            path.display()
+        Some(_) => format!(
+            "{NEXT}the window holds a summary plus recent turns; compact.recall(\"needle\") then rlm.fetch(\"history://<id>/<entry>\") pulls what the summary cites as (#entry)"
         ),
-        None => format!("{NEXT}the window now holds a summary plus the recent turns"),
+        None => format!(
+            "{NEXT}the window holds a summary plus recent turns; compact.recall(\"needle\") pulls entry ids the summary cites as (#entry)"
+        ),
     }
 }
 

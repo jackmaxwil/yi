@@ -14,6 +14,7 @@ pub mod prepare;
 pub mod project;
 pub mod prompts;
 pub mod serialize;
+pub mod view;
 pub mod window;
 pub mod world;
 pub mod wrapper;
@@ -29,8 +30,11 @@ pub use floor::{RETENTION_FLOOR_BUDGET, retain_floor};
 pub use ledger::HarnessState;
 pub use policy::{Settings, should_compact};
 pub use prepare::{Preparation, compose_summary, prepare_compaction};
-pub use project::project;
+pub use project::{project, project_attributed};
 pub use serialize::serialize_conversation;
+pub use view::{
+    BRIEF_LINE_CAP, BRIEF_LINE_CHARS, CompiledView, FILE_CAP, OUTSTANDING_CAP, compile_view,
+};
 pub use window::{Prefill, Window};
 pub use world::{WorldState, WorldStateSection};
 pub use wrapper::{drop_internal, internal_source, wrap_internal};

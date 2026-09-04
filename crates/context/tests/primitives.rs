@@ -2,10 +2,10 @@ use std::error::Error;
 
 use serde_json::json;
 use yi_context::{
-    Bytes, CHILD_USAGE_CAUSE, HarnessState, Prefill, Scope, Settings, Tokens, Window,
-    attribute_child_usage, context_tokens, drop_internal, estimate_context, fit, internal_source,
-    own_and_total_usage, prepare_compaction, project, retain_floor, select_cut,
-    serialize_conversation, should_compact, wrap_internal,
+    Bytes, CHILD_USAGE_CAUSE, CompiledView, FileOps, HarnessState, Prefill, Scope, Settings,
+    Tokens, Window, attribute_child_usage, compile_view, compose_summary, context_tokens,
+    drop_internal, estimate_context, fit, internal_source, own_and_total_usage, prepare_compaction,
+    project, retain_floor, select_cut, serialize_conversation, should_compact, wrap_internal,
 };
 use yi_types::entry::Entry;
 use yi_types::message::{AgentMessage, Content, Cost, StopReason, Usage, UserContent};
@@ -462,5 +462,77 @@ fn ledger_loads_reference_shaped_state_and_formats_hints() -> TestResult {
     let empty = HarnessState::load(&dir.join("missing.json"));
     assert!(empty.format_for_prompt(Bytes(4096)).is_none());
     std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
+#[test]
+fn compile_view_puts_entry_ids_on_brief_lines() -> TestResult {
+    let attributed = vec![
+        ("m1".to_owned(), user("port the parser")),
+        (
+            "m2".to_owned(),
+            assistant("working", usage(0, 0, 0), StopReason::Stop),
+        ),
+    ];
+    let view = compile_view(&attributed, None, &FileOps::default());
+    let rendered = view.render();
+    assert!(
+        rendered.contains("(#m1) user: port the parser"),
+        "a compacted-away user turn must stay addressable by id: {rendered}"
+    );
+    assert!(
+        rendered.contains("(#m2) assistant: working"),
+        "a compacted-away assistant turn must stay addressable by id: {rendered}"
+    );
+    Ok(())
+}
+
+#[test]
+fn compile_view_rolls_previous_brief_and_caps_at_120() -> TestResult {
+    let mut previous_lines = Vec::new();
+    for index in 0..100 {
+        previous_lines.push(format!("(#old{index}) user: earlier turn {index}"));
+    }
+    let previous = format!(
+        "<yi_compact_view>\n[Brief]\n{}\n</yi_compact_view>",
+        previous_lines.join("\n")
+    );
+    let attributed: Vec<(String, AgentMessage)> = (0..30)
+        .map(|index| (format!("n{index}"), user(&format!("new turn {index}"))))
+        .collect();
+    let view = compile_view(&attributed, Some(&previous), &FileOps::default());
+    assert_eq!(view.brief.len(), 120);
+    assert!(
+        !view.brief.iter().any(|line| line.contains("(#old0)")),
+        "the oldest previous line must roll off when 100+30 exceeds the cap"
+    );
+    assert!(
+        view.brief.iter().any(|line| line.contains("(#old10)")),
+        "an older id that still fits the rolling window must survive"
+    );
+    assert!(
+        view.brief
+            .iter()
+            .any(|line| line.contains("(#n29)") && line.contains("new turn 29")),
+        "the newest summarized turn must survive the cap"
+    );
+    Ok(())
+}
+
+#[test]
+fn compose_summary_prefixes_view_before_llm_prose() -> TestResult {
+    let view = CompiledView {
+        brief: vec!["(#m1) user: keep this".to_owned()],
+        ..CompiledView::default()
+    };
+    let (text, _) = compose_summary("## Goal\nPort the parser", &FileOps::default(), &view);
+    let view_at = text
+        .find("<yi_compact_view>")
+        .ok_or("view marker missing")?;
+    let goal_at = text.find("## Goal").ok_or("llm prose missing")?;
+    assert!(
+        view_at < goal_at,
+        "the host view must lead the LLM checkpoint so it is not rewritten as Goal prose: {text}"
+    );
     Ok(())
 }

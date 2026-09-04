@@ -235,6 +235,86 @@ fn create(repo: &mut dyn SessionRepo, id: &str) -> Result<yi_session::SharedSess
 }
 
 #[test]
+fn grep_finds_needles_across_entry_kinds_oldest_first() -> TestResult {
+    for_each_backend(|repo| {
+        let session = create(repo, "session")?;
+        let mut session = lock_session(&session);
+        let user = session.append_entry(message_entry("u1", "alpha needle here"), "main")?;
+        session.append_entry(message_entry("u2", "nothing relevant"), "main")?;
+        let summary = session.append_compaction(
+            "main",
+            "a summary mentioning the needle".to_owned(),
+            Vec::new(),
+            10,
+            None,
+        )?;
+
+        let hits = session.grep("needle", 8);
+        assert_eq!(
+            hits.iter()
+                .map(|hit| hit.entry_id.as_str())
+                .collect::<Vec<_>>(),
+            vec![user.id(), summary.as_str()]
+        );
+        assert_eq!(hits[0].entry_type, "message");
+        assert_eq!(hits[1].entry_type, "compaction");
+        assert_eq!(hits[0].snippet, "alpha needle here");
+
+        assert!(session.grep("   ", 8).is_empty(), "blank needle, no hits");
+        assert!(session.grep("absent", 8).is_empty());
+        assert_eq!(
+            session.grep("needle", 1).len(),
+            1,
+            "limit clamps the hit count"
+        );
+        Ok(())
+    })
+}
+
+#[test]
+fn grep_skips_thinking_and_centers_long_snippets_on_the_needle() -> TestResult {
+    for_each_backend(|repo| {
+        let session = create(repo, "session")?;
+        let mut session = lock_session(&session);
+        let mut thinking_only = assistant_message("visible text", Usage::zero());
+        if let AgentMessage::Assistant { content, .. } = &mut thinking_only {
+            content.push(Content::Thinking {
+                thinking: "needle hidden in thinking".to_owned(),
+                thinking_signature: None,
+                redacted: None,
+            });
+        }
+        session.append_entry(
+            Entry::Message {
+                id: "t1".to_owned(),
+                message: thinking_only,
+                terminate: None,
+                parent_id: None,
+                seq: 0,
+                timestamp: 0,
+            },
+            "main",
+        )?;
+        assert!(
+            session.grep("needle", 8).is_empty(),
+            "thinking blocks stay out of grep"
+        );
+
+        let long_line = format!("{} needle {}", "a".repeat(200), "b".repeat(200));
+        session.append_entry(message_entry("u9", &long_line), "main")?;
+        let hits = session.grep("needle", 8);
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].snippet.chars().count(), 160);
+        assert!(
+            hits[0].snippet.contains("needle"),
+            "a long line keeps the needle in the window: {}",
+            hits[0].snippet
+        );
+        Ok(())
+    })
+}
+
+#[test]
 fn assigns_parents_and_one_sequence_across_every_mutation() -> TestResult {
     for_each_backend(|repo| {
         let session = create(repo, "session")?;

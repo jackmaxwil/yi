@@ -621,8 +621,9 @@ its own tests:
 | P16 | **Source budgets** | `SourceBudgets{project_instructions, skills_meta, ledger, advisories, emergency_ceiling}` bytes; `fit(source, budget) -> Truncated{text, marker}`; enforced in P11 | — |
 | P17 | **Retention floor** | `retain_floor(branch, budget: 64_000) -> Vec<EntryId>` — every real user message survives compaction verbatim (role filter, newest-first token budget, oldest middle-truncated; prior summaries and contextual fragments dropped); union with P5's kept suffix. P5 keeps the working set, P17 guarantees no early user requirement is ever summarized away | — |
 | P18 | **World state** | `trait WorldStateSection { name; snapshot() -> Snapshot; render_diff(&prev) -> Option<Fragment> }` — named sections (env, permissions, ledger view), diff rendered only on change, appended at the overlay tail; per-turn re-injection is a diff or it is nothing | — |
+| P19 | **Compact view** | `compile_view(attributed, previous_view, file_ops) -> CompiledView{files, outstanding, brief}` — deterministic, stdlib-only; the brief cites every summarized turn as `(#entryId)`, caps 120 lines × 160 chars, and rolls across compactions; `compose_summary` prefixes it ahead of the P7 prose. Recall is `SessionStore::grep` behind the host verb `history.grep` (`compact.recall` in the kernel), then `history://<agent>/<entryId>` fetches the full entry | ARC (arXiv 2607.25066) |
 
-Only P1, P7 and P10 perform I/O. P2–P6, P8, P9, P11, P13, P14, P17, P18 are pure and property-testable.
+Only P1, P7 and P10 perform I/O. P2–P6, P8, P9, P11, P13, P14, P17, P18, P19 are pure and property-testable.
 
 #### 8.1.1 Layering
 
@@ -1848,7 +1849,10 @@ Principles, each with its evidence:
 - **Recall is addressable, not associative.** Truncated outputs and old entries are re-read by
   id (`read_tool_result`, entry ids, `yi sessions show`) — ARC (arXiv 2607.25066) shows
   id-addressable citation recall beating similarity retrieval (99.4 % vs 88.1 % exact-answer)
-  with no vector store. Embedding search stays out until grep measurably fails (§14.6).
+  with no vector store. Primary recall after a compaction is `compact.recall("needle")` — a
+  store grep over MM1 — followed by `rlm.fetch("history://<agent>/<entryId>")`; the P19 compact
+  view's `(#entryId)` citations are what make the ids discoverable. Embedding search stays out
+  until grep measurably fails (§14.6).
 - **Verbatim over summarized** where text is kept at all (mempalace's one good idea): MM2
   stores the user's words, not a model's paraphrase.
 
