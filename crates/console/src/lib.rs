@@ -12,7 +12,9 @@ pub mod kitty;
 pub mod layout;
 pub mod model;
 pub mod notify;
+pub mod palette;
 pub mod render;
+pub mod sidebar;
 
 use std::io::Stdout;
 use std::path::PathBuf;

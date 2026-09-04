@@ -889,6 +889,8 @@ impl App {
             Action::PageDown => self.scroll_focused(-20),
             Action::SelectSlot(n) => self.select_slot(outbound, n),
             Action::Quit => self.state.quit = true,
+            Action::StopDaemon => self.stop_daemon_and_quit(outbound),
+            Action::Keys => self.state.mode = Mode::Keys,
             Action::ToggleSidebar => self.state.sidebar = self.state.sidebar.next(),
             Action::ToggleNotebook => self.toggle_side(outbound, diffs::SideKind::Notebook),
             Action::ToggleDiff => self.toggle_side(outbound, diffs::SideKind::Diff),
@@ -994,6 +996,11 @@ impl App {
         }
         if matches!(self.state.mode, Mode::Navigator { .. }) {
             return self.handle_navigator_key(outbound, key);
+        }
+        if matches!(self.state.mode, Mode::Keys) {
+            self.state.mode = Mode::Normal;
+            self.dirty = true;
+            return;
         }
         if matches!(self.state.mode, Mode::Prefix) {
             self.state.mode = Mode::Normal;
@@ -1108,4 +1115,5 @@ mod notebook;
 pub mod port;
 
 pub use mouse::MouseKind;
+pub use navigator::PaletteEntry;
 use notebook::apply_notebook;
