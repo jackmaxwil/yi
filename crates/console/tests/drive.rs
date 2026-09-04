@@ -1292,7 +1292,7 @@ fn subagent_rows_render_under_parent() -> TestResult {
         "wait-frame 5000 s-alpha\n\
          key enter\n\
          wait-frame 5000 replayed world\n\
-         wait-frame 5000 └ grep-bot-sub-1a2b3c4 ◐\n\
+         wait-frame 5000 └ GR grep-bot-sub-1a2b ◐\n\
          quit\n",
     )
 }
@@ -2048,8 +2048,8 @@ fn the_focused_session_row_wears_the_active_background() -> TestResult {
     let bg_of = |id: &str| {
         let index = app.state.order.iter().position(|row| row.0 == id);
         rows.iter()
-            .find(|(row, _)| *row == index)
-            .and_then(|(_, line)| line.spans.first())
+            .find(|row| row.index == index)
+            .and_then(|row| row.line.spans.first())
             .and_then(|span| span.style.bg)
     };
     assert_eq!(bg_of("s-beta"), Some(theme.active_row_bg()));
@@ -2110,7 +2110,7 @@ fn unnamed_rows_take_their_tile_from_the_id() -> TestResult {
     let rows = yi_console::sidebar::sidebar_lines(&app, &theme, 10);
     let tiles: Vec<(String, Option<ratatui::style::Color>)> = rows
         .iter()
-        .filter_map(|(_, line)| line.spans.get(1))
+        .filter_map(|row| row.line.spans.get(1))
         .map(|span| (span.content.to_string(), span.style.bg))
         .collect();
     assert!(

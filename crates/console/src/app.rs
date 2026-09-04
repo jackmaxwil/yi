@@ -8,6 +8,7 @@ use ratatui::crossterm::event::{Event as CtEvent, KeyCode, KeyEvent, KeyModifier
 use ratatui::layout::Direction;
 use serde_json::{Value, json};
 use yi_tui::colors::Theme;
+use yi_tui::input::handle_terminal_event;
 use yi_tui::{Reply, UiEvent};
 use yi_types::acp::{AcpPermissionParams, AcpSessionUpdate, AcpUpdateParams};
 
@@ -964,7 +965,20 @@ impl App {
     pub fn handle_event(&mut self, outbound: &Outbound, event: CtEvent) {
         match event {
             CtEvent::Key(key) => self.handle_key(outbound, key),
-            CtEvent::Resize(_, _) => {
+            CtEvent::Resize(cols, rows) => {
+                for pane in self.state.panes.values_mut() {
+                    if let PaneContent::Session {
+                        chat: Some(chat), ..
+                    } = &mut pane.content
+                    {
+                        handle_terminal_event(
+                            &mut chat.app,
+                            &chat.commands.0,
+                            CtEvent::Resize(cols, rows),
+                        );
+                    }
+                }
+                self.avatars.forget();
                 self.dirty = true;
             }
             CtEvent::Mouse(mouse) => {
