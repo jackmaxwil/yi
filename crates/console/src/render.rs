@@ -11,7 +11,7 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Paragraph, Widget};
 use yi_tui::SessionPort;
-use yi_tui::colors::{Theme, name_tile, tile_style};
+use yi_tui::colors::{Theme, name_tile, tile_style_at};
 use yi_tui::diffview::{self, DiffBudget};
 
 use crate::app::App;
@@ -36,7 +36,7 @@ pub struct Hits {
     pub sidebar_width: u16,
     pub sidebar_rows: Vec<(u16, usize)>,
     /// (column, row, session) of every avatar cell on screen; the kitty pass places there.
-    pub avatars: Vec<(u16, u16, SessionId)>,
+    pub avatars: Vec<crate::avatar::Placement>,
     pub root_rows: Vec<(u16, usize)>,
     pub panes: Vec<(PaneId, Rect)>,
     pub splits: Vec<SplitBorder>,
@@ -169,24 +169,7 @@ pub fn compute_view(app: &mut App, area: Rect, theme: &Theme) -> ViewState {
         });
     }
 
-    let sidebar_rows: Vec<(u16, usize)> = crate::sidebar::sidebar_lines(app, theme, sidebar.height)
-        .iter()
-        .enumerate()
-        .filter_map(|(offset, (index, _))| {
-            let y = sidebar.y.checked_add(u16::try_from(offset).ok()?)?;
-            index.map(|index| (y, index))
-        })
-        .collect();
-    let mut seen_avatar = std::collections::HashSet::new();
-    let avatars = sidebar_rows
-        .iter()
-        .filter(|_| sidebar_width > 0)
-        .filter(|(_, index)| seen_avatar.insert(*index))
-        .filter_map(|(y, index)| {
-            let id = app.state.order.get(*index)?.clone();
-            Some((sidebar.x.saturating_add(2), *y, id))
-        })
-        .collect();
+    let (sidebar_rows, avatars) = sidebar_hits(app, theme, sidebar, sidebar_width);
     let root_rows = (0..root_count)
         .filter_map(|index| {
             let y = roots_area
@@ -226,6 +209,44 @@ pub fn compute_view(app: &mut App, area: Rect, theme: &Theme) -> ViewState {
         banner,
         framed,
     }
+}
+
+fn sidebar_hits(
+    app: &mut App,
+    theme: &Theme,
+    sidebar: Rect,
+    sidebar_width: u16,
+) -> (Vec<(u16, usize)>, Vec<crate::avatar::Placement>) {
+    app.assign_accents();
+    let lines = crate::sidebar::sidebar_lines(app, theme, sidebar.height);
+    let top = sidebar.y.saturating_add(crate::sidebar::rail_offset(
+        app,
+        lines.len(),
+        sidebar.height,
+    ));
+    let sidebar_rows: Vec<(u16, usize)> = lines
+        .iter()
+        .enumerate()
+        .filter_map(|(offset, row)| {
+            let y = top.checked_add(u16::try_from(offset).ok()?)?;
+            row.index.map(|index| (y, index))
+        })
+        .collect();
+    let avatars: Vec<crate::avatar::Placement> = lines
+        .into_iter()
+        .enumerate()
+        .filter(|_| sidebar_width > 0)
+        .filter_map(|(offset, row)| {
+            let y = top.checked_add(u16::try_from(offset).ok()?)?;
+            let avatar = row.avatar?;
+            Some(crate::avatar::Placement {
+                col: sidebar.x.saturating_add(avatar.col),
+                row: y,
+                ..avatar
+            })
+        })
+        .collect();
+    (sidebar_rows, avatars)
 }
 
 pub(crate) fn label_of(
@@ -604,7 +625,14 @@ fn paint_chat_pane(
                 .get(&view.id)
                 .and_then(|p| p.session())
                 .and_then(|s| app.state.sessions.get(s))
-                .map(|row| (row.seed().to_owned(), row.status, row.label()))
+                .map(|row| {
+                    (
+                        row.seed().to_owned(),
+                        row.status,
+                        row.label(),
+                        app.accent_of(&row.id.0, row.seed()),
+                    )
+                })
         })
         .flatten();
     let Some(pane) = app.state.panes.get_mut(&view.id) else {
@@ -618,9 +646,9 @@ fn paint_chat_pane(
     };
     chat.app.set_kitty(kitty && view.focused);
     let mut inner = inner;
-    if let Some((seed, status, label)) = title {
+    if let Some((seed, status, label, hue)) = title {
         let line = Line::from(vec![
-            Span::styled(name_tile(&seed), tile_style(&seed)),
+            Span::styled(name_tile(&seed), tile_style_at(hue)),
             Span::styled(format!(" {} ", status.glyph()), status_style(theme, status)),
             Span::styled(label, theme.accent_style().add_modifier(Modifier::BOLD)),
         ]);
@@ -756,11 +784,12 @@ fn render_borders(app: &App, frame: &mut Frame<'_>, view: &ViewState, theme: &Th
             .get(&pane.id)
             .and_then(|p| p.session())
             .and_then(|s| app.state.sessions.get(s))
-            .map(|row| row.seed().to_owned());
+            .map(|row| (row.seed().to_owned(), app.accent_of(&row.id.0, row.seed())));
         let mut x = r.x.saturating_add(2);
         let mut max = r.width.saturating_sub(4);
-        if let Some(seed) = &seed {
-            let tile = Span::styled(format!(" {}", name_tile(seed)), tile_style(seed));
+        if let Some((seed, hue)) = &seed {
+            let hue = *hue;
+            let tile = Span::styled(format!(" {}", name_tile(seed)), tile_style_at(hue));
             buffer.set_span(x, r.y, &tile, max);
             x = x.saturating_add(3);
             max = max.saturating_sub(3);
