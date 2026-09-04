@@ -10,6 +10,7 @@ use yi_types::schedule::DeliveryMode;
 use crate::fetch::FetchLog;
 use crate::goal::DeliverFn;
 
+// Incident: always-on skill bodies were the cost regression; two pointers is the budget.
 const POINTER_CAP: usize = 2;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -21,8 +22,6 @@ pub enum RuleScope {
     Error,
 }
 
-/// `Once` = one fire per (rule, evidence) in the session: a gate denies the first
-/// attempt and lets the informed retry through; a reminder speaks once.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RuleGap {
     Once,
@@ -35,8 +34,7 @@ pub enum RuleMode {
     Gate,
 }
 
-/// A user-authored triggered rule: the runtime is a matcher delivering the
-/// user's own words at the moment they apply, never a reviewer (D50 thread).
+/// Invariant: the body is the user's words delivered verbatim, never generated judgment.
 #[derive(Debug, Clone)]
 pub struct RuleDoc {
     pub name: String,
@@ -301,8 +299,7 @@ impl FireState {
     }
 }
 
-/// The match layer: literal substrings over tool arguments, tool results, and
-/// assistant prose. Regex waits on the C2 decision.
+/// Literal substring matcher over args, tool results, and assistant prose.
 pub struct RuleEngine {
     rules: std::sync::RwLock<Vec<RuleDoc>>,
     state: Mutex<FireState>,
@@ -334,7 +331,7 @@ fn result_scope(rule: &RuleDoc, is_error: bool) -> bool {
     match rule.scope {
         RuleScope::Result => true,
         RuleScope::Error => is_error,
-        _ => false,
+        RuleScope::Text | RuleScope::AnyTool | RuleScope::Tool(_) => false,
     }
 }
 
@@ -409,8 +406,7 @@ impl RuleEngine {
             .unwrap_or_default()
     }
 
-    /// A rule armed mid-session (V11 promotion): it replaces one of the same
-    /// name so a re-promotion does not stack duplicates.
+    /// Invariant: one name, one rule; a re-promotion replaces rather than stacks.
     pub fn insert(&self, rule: RuleDoc) {
         if let Ok(mut rules) = self.rules.write() {
             rules.retain(|existing| existing.name != rule.name);
@@ -437,8 +433,6 @@ impl RuleEngine {
         }
     }
 
-    /// Pre-execution: a matching eligible gate rule denies the call with the
-    /// rule body as evidence; matching remind rules queue for the boundary.
     pub fn check_tool(&self, tool: &str, args_json: &str) -> Option<String> {
         self.scan(tool, args_json, args_json, false, true)
     }
@@ -471,7 +465,7 @@ impl RuleEngine {
     }
 
     fn scan(
-        self: &RuleEngine,
+        &self,
         tool: &str,
         args_json: &str,
         haystack: &str,
@@ -495,7 +489,7 @@ impl RuleEngine {
             }
             let evidence = evidence_hash(rule, haystack, args_json, !pre);
             let n = state.bump(&rule.name, &evidence);
-            if n < rule.after || !state.eligible(rule, &evidence) {
+            if n < rule.after.max(1) || !state.eligible(rule, &evidence) {
                 continue;
             }
             if self.skill_already_loaded(&state, rule) {
@@ -524,6 +518,7 @@ impl RuleEngine {
         denial
     }
 
+    // Incident: `read` never writes FetchLog; `loaded` is the suppress. FetchLog is the skill:// path.
     fn skill_already_loaded(&self, state: &FireState, rule: &RuleDoc) -> bool {
         let Some(name) = skill_name(rule) else {
             return false;
@@ -563,8 +558,7 @@ impl RuleEngine {
         else {
             return;
         };
-        // The per-rule gap latch is the noise budget. The advisor guard is deliberately NOT
-        // here: its session-scoped dedupe would override a user-chosen re-arm gap.
+        // Incident: the advisor's session-scoped dedupe would override a user-chosen re-arm gap.
         for text in reminders {
             deliver(
                 AgentMessage::Custom {
@@ -579,7 +573,6 @@ impl RuleEngine {
         }
     }
 
-    /// Boundary pass: assistant prose triggers, then the turn advances.
     pub fn observe(&self, event: &AgentEvent) {
         let AgentEvent::MessageEnd {
             message:
@@ -613,7 +606,7 @@ impl RuleEngine {
                     }
                     let evidence = evidence_hash(rule, &text, "", false);
                     let n = state.bump(&rule.name, &evidence);
-                    if n < rule.after || !state.eligible(rule, &evidence) {
+                    if n < rule.after.max(1) || !state.eligible(rule, &evidence) {
                         continue;
                     }
                     if self.skill_already_loaded(&state, rule) {
