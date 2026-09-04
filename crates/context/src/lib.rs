@@ -3,6 +3,7 @@
 pub mod account;
 pub mod assemble;
 pub mod attribution;
+pub mod audit;
 pub mod budget;
 pub mod convert;
 pub mod cut;
@@ -22,6 +23,7 @@ pub mod wrapper;
 pub use account::{Estimate, Scope, Tokens, context_tokens, estimate_context, estimate_message};
 pub use assemble::{StablePrefix, assemble};
 pub use attribution::{CHILD_USAGE_CAUSE, attribute_child_usage, own_and_total_usage};
+pub use audit::{DROPPED_CAP, identifiers};
 pub use budget::{Bytes, SourceBudgets, Truncated, fit};
 pub use convert::convert_to_llm;
 pub use cut::{Cut, select_cut};

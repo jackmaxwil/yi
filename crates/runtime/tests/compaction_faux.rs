@@ -311,6 +311,93 @@ async fn a_compacted_away_turn_stays_greppable_and_fetchable() -> Result<(), Box
     Ok(())
 }
 
+/// A unique path in a summarized-away tool result lands in `[Dropped]` and
+/// remains greppable in the store.
+#[tokio::test]
+async fn a_dropped_identifier_is_listed_and_greppable() -> Result<(), Box<dyn Error>> {
+    let root = std::env::temp_dir().join(format!("yi-compact-dropped-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let mut repo = JsonlRepo::new(root.clone(), "/tmp/yi-compact-dropped");
+    let store = repo.create(CreateOptions {
+        id: Some("compact-dropped".to_owned()),
+        ..CreateOptions::default()
+    })?;
+    let ident = "crates/unique_probe/mod.rs";
+    let long_body = format!("{} {ident} {}", "preamble ".repeat(40), "tail ".repeat(80));
+    let ident_id = {
+        let mut guard = yi_session::lock_session(&store);
+        guard.append_message(
+            "main",
+            AgentMessage::user_input(UserContent::Text("early ask: run the probe".to_owned()), 0),
+        )?;
+        guard.append_message(
+            "main",
+            faux_assistant_message(
+                vec![yi_types::message::Content::ToolCall {
+                    id: "call-1".to_owned(),
+                    name: "probe".to_owned(),
+                    arguments: serde_json::Map::new(),
+                    thought_signature: None,
+                    namespace: None,
+                }],
+                StopReason::ToolUse,
+            ),
+        )?;
+        guard.append_message(
+            "main",
+            AgentMessage::ToolResult {
+                tool_call_id: "call-1".to_owned(),
+                tool_name: "probe".to_owned(),
+                content: vec![yi_types::message::Content::Text {
+                    text: long_body,
+                    text_signature: None,
+                }],
+                details: None,
+                usage: None,
+                added_tool_names: None,
+                is_error: false,
+                timestamp: 0,
+            },
+        )?
+    };
+
+    let provider = Arc::new(ProviderStream::new(None, None));
+    provider.queue_faux(vec![
+        reply_with_usage(&format!("big reply {}", "x".repeat(400)), 100, 5_000),
+        faux_assistant_message(
+            vec![faux_text("## Goal\nSummarized history without the path")],
+            StopReason::Stop,
+        ),
+        reply_with_usage("second answer", 50, 300),
+    ]);
+    let session = session_for_compaction(provider);
+    session.attach_store(Arc::clone(&store))?;
+    session.prompt("first live ask with enough text to matter")?;
+    session.wait_idle().await;
+    session.prompt("second live ask trips the compaction boundary")?;
+    session.wait_idle().await;
+    assert_eq!(session.store_error(), None);
+
+    let live_text = session
+        .messages()
+        .iter()
+        .map(serde_json::to_string)
+        .collect::<Result<Vec<_>, _>>()?
+        .join("\n");
+    assert!(
+        live_text.contains("[Dropped]") && live_text.contains(&format!("{ident} (#{ident_id})")),
+        "the compact view must list the dropped path: {live_text}"
+    );
+    let hits = yi_session::lock_session(&store).grep(ident, 8);
+    assert!(
+        hits.iter().any(|hit| hit.entry_id == ident_id),
+        "store grep must find the dropped identifier: {hits:?}"
+    );
+    drop(session);
+    std::fs::remove_dir_all(&root)?;
+    Ok(())
+}
+
 #[tokio::test]
 async fn compaction_below_threshold_is_a_no_op() -> Result<(), Box<dyn Error>> {
     let provider = Arc::new(ProviderStream::new(None, None));
