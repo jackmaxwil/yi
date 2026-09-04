@@ -312,16 +312,18 @@ fn run_with(name: &str, fixture: Vec<Step>, script: &str, autostart: bool) -> Te
 /// Runs with a frame dump and hands back the last frame, for assertions a substring
 /// cannot make.
 fn run_frames(name: &str, fixture: Vec<Step>, script: &str) -> Result<String, Box<dyn Error>> {
+    run_frames_with(name, fixture, script, SidebarMode::Full)
+}
+
+fn run_frames_with(
+    name: &str,
+    fixture: Vec<Step>,
+    script: &str,
+    sidebar: SidebarMode,
+) -> Result<String, Box<dyn Error>> {
     let dir = std::env::temp_dir().join(format!("yi-console-frames-{}-{name}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
-    run_opts(
-        name,
-        fixture,
-        script,
-        false,
-        SidebarMode::Full,
-        Some(dir.clone()),
-    )?;
+    run_opts(name, fixture, script, false, sidebar, Some(dir.clone()))?;
     let mut names: Vec<PathBuf> = std::fs::read_dir(&dir)?
         .filter_map(Result::ok)
         .map(|entry| entry.path())
@@ -2162,4 +2164,36 @@ fn the_keys_overlay_lists_every_chord() -> TestResult {
          wait-frame 3000 !ctrl+b then\n\
          quit\n",
     )
+}
+
+/// The rail docks its rows at the bottom of the sidebar; the full list reads from the top.
+#[test]
+fn the_rail_docks_at_the_bottom() -> TestResult {
+    let frame = run_frames_with(
+        "rail-dock",
+        vec![
+            Step::Expect("initialize", init_reply),
+            Step::Expect("session/list", two_session_list),
+            Step::Expect("session/list", ledger_list),
+        ],
+        "wait-frame 5000 ●\n\
+         wait 200\n\
+         quit\n",
+        SidebarMode::Rail,
+    )?;
+    let lines: Vec<&str> = frame.lines().collect();
+    let first_slot = lines
+        .iter()
+        .position(|line| line.contains("1 SB"))
+        .ok_or("the first slot must be on screen")?;
+    assert!(
+        first_slot > lines.len() / 2,
+        "the rail sits in the lower half: row {first_slot} of {}",
+        lines.len()
+    );
+    assert!(
+        !lines.first().is_some_and(|line| line.contains("1 SB")),
+        "not at the top"
+    );
+    Ok(())
 }
