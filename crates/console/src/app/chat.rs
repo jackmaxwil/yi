@@ -159,7 +159,6 @@ impl App {
         }
     }
 
-    /// A hole in the stream is healed by a full replay: the offset goes, the resume repeats.
     fn heal(&mut self, outbound: &Outbound, id: &SessionId) {
         self.seq.insert(id.clone(), None);
         self.resume_offsets.remove(id);

@@ -260,31 +260,7 @@ fn place_avatars(app: &mut App, out: &mut std::io::Stdout) {
     let rows: Vec<crate::avatar::Placement> = app
         .hits
         .as_ref()
-        .map(|hits| {
-            let (cols, rows) = if app.state.sidebar == crate::model::SidebarMode::Rail {
-                (4, 2)
-            } else {
-                (2, 1)
-            };
-            hits.avatars
-                .iter()
-                .map(|(col, row, id)| {
-                    let seed = app
-                        .state
-                        .sessions
-                        .get(id)
-                        .map_or_else(|| id.0.clone(), |row| row.seed().to_owned());
-                    crate::avatar::Placement {
-                        col: *col,
-                        row: *row,
-                        cols,
-                        rows,
-                        session: id.clone(),
-                        accent: yi_tui::colors::name_accent_rgb(&seed),
-                    }
-                })
-                .collect()
-        })
+        .map(|hits| hits.avatars.clone())
         .unwrap_or_default();
     app.avatars.sync(out, &rows);
 }
