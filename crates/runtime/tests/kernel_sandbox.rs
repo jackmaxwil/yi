@@ -45,6 +45,7 @@ fn service(cwd: PathBuf, home: PathBuf, sandbox: Sandbox) -> Arc<KernelService> 
         host: Arc::new(registry),
         on_restore: None,
         sandbox: Some(sandbox),
+        snapshot_key: None,
     }))
 }
 

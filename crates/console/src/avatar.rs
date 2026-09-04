@@ -10,7 +10,8 @@ use crate::model::SessionId;
 
 /// Pixels per side; 8 px cells, so a two-column, one-row placement is one cell per glyph.
 pub const PX: usize = 40;
-const CELL: usize = 8;
+const CELL: usize = 6;
+const MARGIN: usize = 5;
 const FIRST_ID: u32 = 8000;
 const CAP: usize = 64;
 
@@ -95,8 +96,9 @@ pub fn rgba(grid: &Grid, fg: (u8, u8, u8)) -> Vec<u8> {
     let mut out = Vec::with_capacity(PX.saturating_mul(PX).saturating_mul(4));
     for y in 0..PX {
         for x in 0..PX {
-            let (row, col) = (y / CELL, x / CELL);
-            if grid.on(row, col) {
+            let inside = (MARGIN..PX - MARGIN).contains(&x) && (MARGIN..PX - MARGIN).contains(&y);
+            let (row, col) = ((y - MARGIN.min(y)) / CELL, (x - MARGIN.min(x)) / CELL);
+            if inside && grid.on(row, col) {
                 out.extend_from_slice(&[fg.0, fg.1, fg.2, 255]);
             } else {
                 out.extend_from_slice(&[0x1e, 0x1e, 0x2e, 255]);
@@ -111,6 +113,8 @@ pub fn rgba(grid: &Grid, fg: (u8, u8, u8)) -> Vec<u8> {
 pub struct Placement {
     pub col: u16,
     pub row: u16,
+    pub cols: u16,
+    pub rows: u16,
     pub session: SessionId,
     pub accent: (u8, u8, u8),
 }
@@ -143,6 +147,7 @@ impl Avatars {
         }
         for place in rows {
             let (id, col, row) = (&place.session, place.col, place.row);
+            let (cols, rows) = (place.cols, place.rows);
             let image = match self.ids.get(id) {
                 Some(image) => *image,
                 None => {
@@ -158,7 +163,7 @@ impl Avatars {
             if self.placed.get(id) == Some(&(col, row)) {
                 continue;
             }
-            if kitty::place(out, image.raw(), col, row, 2, 1).is_ok() {
+            if kitty::place(out, image.raw(), col, row, cols, rows).is_ok() {
                 self.placed.insert(id.clone(), (col, row));
             }
         }

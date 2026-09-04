@@ -148,8 +148,8 @@ pub fn hint(prefix_armed: bool, cmd: bool) -> &'static str {
     if prefix_armed {
         "PREFIX  v split│ s split─ x close z zoom h/j/k/l focus c tab 1..9 tab g nav q quit"
     } else if cmd {
-        "⌘\\ split  ⌥←→↑↓ focus  ⌘⇧M zoom  ⌘X close  ⌘⇧T tab  ⌘1..9 slot  ⌘P nav  ⌘⇧N new  ⌘B side  ⌘J nb  ⌘G diff"
+        "⌘P nav  ⌘⇧N new  ⌘1..9 slots  ⌘\\ split  ⌘X close  ⌘B sidebar  ⌘J notebook  ⌘G diff  ⌥q leave  ctrl+c ctrl+c stop"
     } else {
-        "⌥v/⌥s split  ⌥←→↑↓ focus  ⌥z zoom  ⌥x close  ⌥t tab  ⌥1..9 slot  ⌥/ nav  ⌥n new  ⌥b side  ctrl+b prefix"
+        "⌥/ nav  ⌥n new  ⌥1..9 slots  ⌥v split  ⌥x close  ⌥b sidebar  ⌥⇧j notebook  ⌥g diff  ⌥q leave  ctrl+c ctrl+c stop"
     }
 }

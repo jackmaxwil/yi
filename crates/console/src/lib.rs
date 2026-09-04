@@ -259,6 +259,11 @@ fn place_avatars(app: &mut App, out: &mut std::io::Stdout) {
         .hits
         .as_ref()
         .map(|hits| {
+            let (cols, rows) = if app.state.sidebar == crate::model::SidebarMode::Rail {
+                (4, 2)
+            } else {
+                (2, 1)
+            };
             hits.avatars
                 .iter()
                 .map(|(col, row, id)| {
@@ -270,6 +275,8 @@ fn place_avatars(app: &mut App, out: &mut std::io::Stdout) {
                     crate::avatar::Placement {
                         col: *col,
                         row: *row,
+                        cols,
+                        rows,
                         session: id.clone(),
                         accent: yi_tui::colors::name_accent_rgb(&seed),
                     }

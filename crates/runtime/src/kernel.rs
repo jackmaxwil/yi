@@ -306,6 +306,15 @@ pub struct KernelServiceOptions {
     pub host: Arc<dyn HostHandlers>,
     pub on_restore: Option<Arc<RestoreNoticeFn>>,
     pub sandbox: Option<yi_tools::Sandbox>,
+    pub snapshot_key: Option<Arc<dyn Fn() -> Option<String> + Send + Sync>>,
+}
+
+/// Where a session's kernel snapshot lives: its own directory under the root's.
+pub fn snapshot_dir(base: &std::path::Path, key: Option<&str>) -> PathBuf {
+    match key {
+        Some(id) if !id.is_empty() => base.join("kernels").join(id),
+        _ => base.to_path_buf(),
+    }
 }
 
 /// Boots on first cell, memoizes the manager, retries a failed start, owns busy recovery.
@@ -393,7 +402,11 @@ impl KernelService {
         }
         // Only sessions with an on-disk directory get a revivable snapshot
         // (design K10).
+        let key = self.options.snapshot_key.as_ref().and_then(|key| key());
         let snapshot = self.options.session_dir.as_deref().map(|dir| {
+            let dir = snapshot_dir(dir, key.as_deref());
+            let _ = std::fs::create_dir_all(&dir);
+            let dir = dir.as_path();
             yi_kernel::client::KernelSnapshotConfig {
                 path: yi_kernel::snapshot::snapshot_path_in(dir),
                 manifest_path: yi_kernel::snapshot::manifest_path_in(dir),
@@ -786,6 +799,17 @@ impl KernelService {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_snapshot_is_keyed_by_its_session() {
+        let base = std::path::Path::new("/tmp/sessions");
+        assert_eq!(
+            super::snapshot_dir(base, Some("01a0")),
+            std::path::PathBuf::from("/tmp/sessions/kernels/01a0")
+        );
+        assert_eq!(super::snapshot_dir(base, None), base.to_path_buf());
+        assert_eq!(super::snapshot_dir(base, Some("")), base.to_path_buf());
+    }
+
     use super::*;
     use std::error::Error;
 
@@ -1007,6 +1031,7 @@ mod tests {
             host: registry,
             on_restore: None,
             sandbox: None,
+            snapshot_key: None,
         });
         service.dispose().await;
         assert!(
@@ -1028,6 +1053,7 @@ mod tests {
             host: Arc::new(registry),
             on_restore: None,
             sandbox: None,
+            snapshot_key: None,
         })
     }
 
