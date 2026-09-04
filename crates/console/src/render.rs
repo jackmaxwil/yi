@@ -3,7 +3,7 @@
 
 use std::collections::HashMap;
 
-use crate::model::{SessionId, SessionRow, SidebarMode, now_ms};
+use crate::model::{SessionId, SessionRow, SidebarMode};
 use ratatui::Frame;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
@@ -19,8 +19,8 @@ use crate::keys;
 use crate::layout::{PaneId, SplitBorder};
 use crate::model::{Link, Mode, PaneContent, SessionStatus, Zone};
 
-const NAME_WIDTH: usize = 16;
-const RAIL_ROWS: usize = 12;
+pub(crate) const NAME_WIDTH: usize = 20;
+pub(crate) const RAIL_ROWS: usize = 12;
 
 pub struct PaneView {
     pub scroll: Option<(usize, usize)>,
@@ -169,7 +169,7 @@ pub fn compute_view(app: &mut App, area: Rect, theme: &Theme) -> ViewState {
         });
     }
 
-    let sidebar_rows: Vec<(u16, usize)> = sidebar_lines(app, theme, sidebar.height)
+    let sidebar_rows: Vec<(u16, usize)> = crate::sidebar::sidebar_lines(app, theme, sidebar.height)
         .iter()
         .enumerate()
         .filter_map(|(offset, (index, _))| {
@@ -228,7 +228,7 @@ pub fn compute_view(app: &mut App, area: Rect, theme: &Theme) -> ViewState {
     }
 }
 
-fn label_of(
+pub(crate) fn label_of(
     sessions: &std::collections::BTreeMap<SessionId, SessionRow>,
     id: &SessionId,
     max: usize,
@@ -317,6 +317,21 @@ fn pane_view_content(
     }
 }
 
+fn wrap(text: &str, width: usize) -> Vec<String> {
+    let width = width.max(1);
+    let mut out = Vec::new();
+    for line in text.lines() {
+        let chars: Vec<char> = line.chars().collect();
+        if chars.is_empty() {
+            out.push(String::new());
+        }
+        for chunk in chars.chunks(width) {
+            out.push(chunk.iter().collect());
+        }
+    }
+    out
+}
+
 fn notebook_lines(
     cells: &[crate::model::NbCell],
     width: usize,
@@ -330,34 +345,59 @@ fn notebook_lines(
         ));
         return out;
     }
+    let body = width.saturating_sub(4).max(1);
     for (index, cell) in cells.iter().enumerate() {
-        let marker = if cell.running { "◐" } else { "●" };
-        out.push(Line::styled(
-            format!("{marker} In[{}]", index.saturating_add(1)),
-            theme.accent_style(),
-        ));
-        for code_line in cell.code.lines().take(12) {
-            let clipped: String = code_line.chars().take(width.max(1)).collect();
-            out.push(Line::styled(format!("  {clipped}"), theme.muted_style()));
+        let (marker, style) = if cell.running {
+            ("◐", Style::default().fg(theme.warning))
+        } else {
+            ("●", theme.accent_style())
+        };
+        out.push(Line::from(vec![
+            Span::styled(format!("{marker} "), style),
+            Span::styled(
+                format!("In [{}]", index.saturating_add(1)),
+                theme.accent_style().add_modifier(Modifier::BOLD),
+            ),
+        ]));
+        for code_line in wrap(&cell.code, body).into_iter().take(24) {
+            out.push(Line::from(vec![
+                Span::styled("  │ ", theme.dim_style()),
+                Span::styled(code_line, Style::default().fg(theme.text)),
+            ]));
         }
-        for stream_line in cell.stdout.lines().take(20) {
-            let clipped: String = stream_line.chars().take(width.max(1)).collect();
-            out.push(Line::styled(clipped, Style::default().fg(theme.text)));
+        let has_output = !cell.stdout.is_empty() || cell.result.is_some() || cell.error.is_some();
+        if has_output {
+            out.push(Line::from(Span::styled(
+                format!("  Out [{}]", index.saturating_add(1)),
+                theme.dim_style(),
+            )));
+        }
+        for stream_line in wrap(&cell.stdout, body).into_iter().take(40) {
+            out.push(Line::from(vec![
+                Span::raw("    "),
+                Span::styled(stream_line, theme.muted_style()),
+            ]));
         }
         if let Some(result) = &cell.result {
-            for result_line in result.lines().take(10) {
-                let clipped: String = result_line.chars().take(width.max(1)).collect();
-                out.push(Line::styled(clipped, Style::default().fg(theme.text)));
+            for result_line in wrap(result, body).into_iter().take(20) {
+                out.push(Line::from(vec![
+                    Span::styled("  ↳ ", theme.accent_style()),
+                    Span::styled(result_line, Style::default().fg(theme.text)),
+                ]));
             }
         }
         if let Some(error) = &cell.error {
-            let clipped: String = error.chars().take(width.max(1)).collect();
-            out.push(Line::styled(clipped, Style::default().fg(theme.error)));
+            for error_line in wrap(error, body).into_iter().take(8) {
+                out.push(Line::from(vec![
+                    Span::styled("  ✕ ", Style::default().fg(theme.error)),
+                    Span::styled(error_line, Style::default().fg(theme.error)),
+                ]));
+            }
         }
         for image in &cell.images {
             let kb = image.len().saturating_mul(3) / 4 / 1024;
             out.push(Line::styled(
-                format!("▲ [image {kb} KB png]"),
+                format!("  ▲ image · {kb} KB png"),
                 theme.accent_style(),
             ));
         }
@@ -479,7 +519,7 @@ fn short_path(path: &str) -> String {
     path.rsplit('/').next().unwrap_or(path).to_owned()
 }
 
-fn status_style(theme: &Theme, status: SessionStatus) -> Style {
+pub(crate) fn status_style(theme: &Theme, status: SessionStatus) -> Style {
     match status {
         SessionStatus::Blocked => Style::default().fg(theme.error),
         SessionStatus::Working => Style::default().fg(theme.warning),
@@ -493,10 +533,10 @@ fn status_style(theme: &Theme, status: SessionStatus) -> Style {
 
 pub fn render(app: &mut App, frame: &mut Frame<'_>, view: &mut ViewState, theme: &Theme) {
     if view.sidebar.width > 0 {
-        render_sidebar(app, frame, view.sidebar, theme);
+        crate::sidebar::render_sidebar(app, frame, view.sidebar, theme);
     }
     if view.roots.height > 0 {
-        render_roots(app, frame, view.roots, theme);
+        crate::sidebar::render_roots(app, frame, view.roots, theme);
     }
     if let Some(bar) = view.tab_bar {
         render_tab_bar(app, frame, bar, theme);
@@ -539,7 +579,10 @@ pub fn render(app: &mut App, frame: &mut Frame<'_>, view: &mut ViewState, theme:
         render_banner(app, frame, area, theme);
     }
     if matches!(app.state.mode, Mode::Navigator { .. }) {
-        render_navigator(app, frame, view, theme);
+        crate::palette::render_navigator(app, frame, view, theme);
+    }
+    if matches!(app.state.mode, Mode::Keys) {
+        crate::palette::render_keys(app, frame, view, theme);
     }
 }
 
@@ -818,316 +861,4 @@ fn render_tab_bar(app: &App, frame: &mut Frame<'_>, area: Rect, theme: &Theme) {
         spans.push(Span::styled(label, style));
     }
     frame.render_widget(Paragraph::new(Line::from(spans)), area);
-}
-
-/// Sidebar lines paired with the `order` index a row stands for; root
-/// headers carry None. One builder serves rendering and hit-testing.
-fn age(now: u64, then: u64) -> String {
-    if then == 0 {
-        return String::new();
-    }
-    let seconds = now.saturating_sub(then) / 1000;
-    match seconds {
-        0..60 => "now".to_owned(),
-        60..3600 => format!("{}m", seconds / 60),
-        3600..86_400 => format!("{}h", seconds / 3600),
-        _ => format!("{}d", seconds / 86_400),
-    }
-}
-
-fn fade(line: &mut Line<'static>, level: usize, theme: &Theme) {
-    let mut style = theme.dim_style();
-    if level > 1 {
-        style = style.add_modifier(Modifier::DIM);
-    }
-    for span in &mut line.spans {
-        span.style = span.style.patch(style);
-    }
-}
-
-pub fn sidebar_lines(app: &App, theme: &Theme, height: u16) -> Vec<(Option<usize>, Line<'static>)> {
-    let mut rows = Vec::new();
-    let rail = app.state.sidebar == SidebarMode::Rail;
-    let multi_root = !rail && app.state.roots().len() > 1;
-    let mut current_root: Option<&str> = None;
-    let focused = app.state.focused_session();
-    let now = now_ms();
-    let mut slot = 0_usize;
-    let visible = app.state.visible_rows();
-    let shown = if rail {
-        visible.iter().copied().take(RAIL_ROWS).collect()
-    } else {
-        visible
-    };
-    for index in shown {
-        let Some(id) = app.state.order.get(index) else {
-            continue;
-        };
-        let Some(row) = app.state.sessions.get(id) else {
-            continue;
-        };
-        if multi_root && current_root != Some(row.root.as_str()) {
-            current_root = Some(row.root.as_str());
-            let label = row.root.rsplit('/').next().unwrap_or(&row.root);
-            rows.push((
-                None,
-                Line::styled(
-                    format!(" {label}"),
-                    theme.accent_style().add_modifier(Modifier::BOLD),
-                ),
-            ));
-        }
-        let is_focused = focused.as_ref() == Some(id);
-        let is_cursor = index == app.state.selected && app.state.zone == Zone::Sidebar;
-        slot = slot.saturating_add(1);
-        let label = row.label();
-        let row_bg = if is_cursor {
-            Some(theme.selection_bg())
-        } else if is_focused {
-            Some(theme.active_row_bg())
-        } else {
-            None
-        };
-        let on_row = |style: Style| row_bg.map_or(style, |bg| style.bg(bg));
-        let number = if is_cursor {
-            theme.muted_style()
-        } else if is_focused {
-            Style::default().fg(theme.text)
-        } else {
-            theme.dim_style()
-        };
-        let slot_text = if slot <= 9 {
-            format!("{slot:<2}")
-        } else {
-            "  ".to_owned()
-        };
-        if rail {
-            rows.push((
-                Some(index),
-                Line::from(vec![
-                    Span::styled(slot_text, on_row(number)),
-                    Span::styled(name_tile(row.seed()), tile_style(row.seed())),
-                    Span::styled("   ".to_owned(), on_row(Style::default())),
-                    Span::styled(
-                        row.status.glyph().to_owned(),
-                        on_row(status_style(theme, row.status)),
-                    ),
-                ]),
-            ));
-            rows.push((
-                Some(index),
-                Line::from(Span::styled(" ".repeat(8), on_row(Style::default()))),
-            ));
-            continue;
-        }
-        let mut spans = vec![
-            Span::styled(slot_text, on_row(number)),
-            Span::styled(name_tile(row.seed()), tile_style(row.seed())),
-            Span::styled(" ".to_owned(), on_row(Style::default())),
-            Span::styled(
-                row.status.glyph().to_owned(),
-                on_row(status_style(theme, row.status)),
-            ),
-        ];
-        let name: String = label.chars().take(NAME_WIDTH).collect();
-        let pad = NAME_WIDTH.saturating_sub(name.chars().count());
-        let name_style = if is_focused {
-            theme.accent_style().add_modifier(Modifier::BOLD)
-        } else {
-            Style::default().fg(theme.text)
-        };
-        let tail = if row.attached { "·" } else { " " };
-        spans.push(Span::styled(" ".to_owned(), on_row(Style::default())));
-        spans.push(Span::styled(name, on_row(name_style)));
-        spans.push(Span::styled(
-            format!("{}{:>4}{tail}", " ".repeat(pad), age(now, row.recency())),
-            on_row(theme.dim_style()),
-        ));
-        rows.push((Some(index), Line::from(spans)));
-        for child in app.state.children.get(id).into_iter().flatten().take(3) {
-            let name: String = child
-                .name
-                .chars()
-                .filter(|c| !c.is_control())
-                .take(NAME_WIDTH)
-                .collect();
-            let glyph = match child.status {
-                yi_types::subagent::ChildStatus::Running => "◐",
-                yi_types::subagent::ChildStatus::Completed => "○",
-                yi_types::subagent::ChildStatus::Error => "✕",
-            };
-            rows.push((
-                None,
-                Line::styled(format!("   └ {name} {glyph}"), theme.dim_style()),
-            ));
-        }
-    }
-    let visible = usize::from(height);
-    if visible == 0 || rows.len() <= visible {
-        return rows;
-    }
-    let cursor = rows
-        .iter()
-        .position(|(index, _)| *index == Some(app.state.selected))
-        .unwrap_or(0);
-    let start = cursor.saturating_add(1).saturating_sub(visible);
-    let end = start.saturating_add(visible).min(rows.len());
-    let below = end < rows.len();
-    let mut window: Vec<(Option<usize>, Line<'static>)> =
-        rows.get(start..end).map(<[_]>::to_vec).unwrap_or_default();
-    let last = window.len().saturating_sub(1);
-    for (offset, (_, line)) in window.iter_mut().enumerate() {
-        let from_bottom = last.saturating_sub(offset);
-        let level = if start > 0 && offset < 2 {
-            2_usize.saturating_sub(offset)
-        } else if below && from_bottom < 2 {
-            2_usize.saturating_sub(from_bottom)
-        } else {
-            0
-        };
-        if level > 0 {
-            fade(line, level, theme);
-        }
-    }
-    window
-}
-
-fn render_roots(app: &App, frame: &mut Frame<'_>, area: Rect, theme: &Theme) {
-    let mut lines = vec![Line::styled(
-        " workspaces",
-        theme.accent_style().add_modifier(Modifier::BOLD),
-    )];
-    for root in app.state.roots() {
-        let worst = app
-            .state
-            .sessions
-            .values()
-            .filter(|row| row.root == root)
-            .map(|row| row.status)
-            .min_by_key(|status| *status as u8)
-            .unwrap_or(SessionStatus::Unknown);
-        let count = app
-            .state
-            .sessions
-            .values()
-            .filter(|row| row.root == root)
-            .count();
-        let marker = if app.state.root_filter.as_deref() == Some(root.as_str()) {
-            "▸"
-        } else {
-            " "
-        };
-        let label: String = root
-            .rsplit('/')
-            .next()
-            .unwrap_or(&root)
-            .chars()
-            .take(usize::from(area.width).saturating_sub(6))
-            .collect();
-        lines.push(Line::from(vec![
-            Span::styled(marker.to_owned(), theme.accent_style()),
-            Span::styled(format!("{} ", worst.glyph()), status_style(theme, worst)),
-            Span::styled(label, Style::default().fg(theme.text)),
-            Span::styled(format!(" {count}"), theme.dim_style()),
-        ]));
-    }
-    frame.render_widget(Paragraph::new(lines), area);
-}
-
-fn render_sidebar(app: &App, frame: &mut Frame<'_>, area: Rect, theme: &Theme) {
-    let mut lines: Vec<Line<'static>> = sidebar_lines(app, theme, area.height)
-        .into_iter()
-        .map(|(_, line)| line)
-        .collect();
-    if lines.is_empty() && app.state.sidebar == SidebarMode::Full {
-        let label = app
-            .state
-            .root
-            .rsplit('/')
-            .next()
-            .unwrap_or(app.state.root.as_str());
-        lines.push(Line::styled(
-            format!(" {label}"),
-            theme.accent_style().add_modifier(Modifier::BOLD),
-        ));
-        lines.push(Line::styled(" no sessions yet", theme.dim_style()));
-    }
-    frame.render_widget(Paragraph::new(lines), area);
-    if app.state.sidebar == SidebarMode::Rail {
-        let armed = app.state.zone == Zone::Sidebar || matches!(app.state.mode, Mode::Prefix);
-        let style = if armed {
-            theme.accent_style()
-        } else {
-            theme.dim_style()
-        };
-        let x = area.x.saturating_add(area.width).saturating_sub(1);
-        let buffer = frame.buffer_mut();
-        for y in area.top()..area.bottom() {
-            if let Some(cell) = buffer.cell_mut((x, y)) {
-                cell.set_symbol("│");
-                cell.set_style(style);
-            }
-        }
-    }
-}
-
-fn render_navigator(app: &App, frame: &mut Frame<'_>, view: &ViewState, theme: &Theme) {
-    let Mode::Navigator { query, selected } = &app.state.mode else {
-        return;
-    };
-    let area = view.panes_area;
-    let width = area.width.saturating_sub(8).clamp(20, 60).min(area.width);
-    let height = area.height.saturating_sub(4).clamp(4, 14).min(area.height);
-    let popup = Rect {
-        x: area.x.saturating_add(area.width.saturating_sub(width) / 2),
-        y: area.y.saturating_add(1),
-        width,
-        height,
-    };
-    frame.render_widget(ratatui::widgets::Clear, popup);
-    let block = ratatui::widgets::Block::bordered()
-        .border_type(ratatui::widgets::BorderType::Rounded)
-        .border_style(theme.accent_style())
-        .title(" palette ")
-        .style(Style::default().bg(theme.selection_bg()));
-    let mut lines = vec![Line::from(vec![
-        Span::styled("find ", theme.dim_style()),
-        Span::styled(query.clone(), theme.accent_style()),
-        Span::styled("▌", theme.accent_style()),
-    ])];
-    let matches = app.navigator_matches(query);
-    let visible = usize::from(height.saturating_sub(4));
-    let picked_index = (*selected).min(matches.len().saturating_sub(1));
-    for (index, id) in matches.iter().take(visible).enumerate() {
-        let row_status = app
-            .state
-            .sessions
-            .get(id)
-            .map_or(SessionStatus::Unknown, |row| row.status);
-        let picked = index == picked_index;
-        let marker = if picked { "▸ " } else { "  " };
-        lines.push(Line::from(vec![
-            Span::styled(marker, theme.accent_style()),
-            Span::styled(
-                format!("{} ", row_status.glyph()),
-                status_style(theme, row_status),
-            ),
-            Span::styled(
-                label_of(&app.state.sessions, id, 30),
-                if picked {
-                    theme.accent_style().add_modifier(Modifier::BOLD)
-                } else {
-                    Style::default().fg(theme.text)
-                },
-            ),
-        ]));
-    }
-    if matches.is_empty() {
-        lines.push(Line::styled("  no matches", theme.dim_style()));
-    }
-    lines.push(Line::styled(
-        keys::hint(false, app.cmd_hints),
-        theme.dim_style(),
-    ));
-    frame.render_widget(Paragraph::new(lines).block(block), popup);
 }

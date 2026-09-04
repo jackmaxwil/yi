@@ -124,7 +124,7 @@ pub struct Placement {
 pub struct Avatars {
     pool: ImageIds,
     ids: HashMap<SessionId, ImageId>,
-    placed: HashMap<SessionId, (u16, u16)>,
+    placed: HashMap<SessionId, (u16, u16, u16, u16)>,
 }
 
 impl Avatars {
@@ -160,11 +160,11 @@ impl Avatars {
                     image
                 }
             };
-            if self.placed.get(id) == Some(&(col, row)) {
+            if self.placed.get(id) == Some(&(col, row, cols, rows)) {
                 continue;
             }
             if kitty::place(out, image.raw(), col, row, cols, rows).is_ok() {
-                self.placed.insert(id.clone(), (col, row));
+                self.placed.insert(id.clone(), (col, row, cols, rows));
             }
         }
     }

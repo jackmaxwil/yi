@@ -326,6 +326,7 @@ pub enum Mode {
     Normal,
     Prefix,
     Navigator { query: String, selected: usize },
+    Keys,
 }
 
 pub struct ConsoleState {
