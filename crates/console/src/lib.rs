@@ -33,7 +33,7 @@ use yi_tui::drive::{Step, WaitPoll, key_event, poll_condition, typed_events};
 
 use crate::app::{App, MouseKind};
 use crate::client::{ClientEvent, Outbound};
-use crate::model::{Link, SessionRow, SessionStatus};
+use crate::model::{Link, SessionStatus};
 
 pub struct ConsoleOptions {
     pub socket: PathBuf,
@@ -262,12 +262,16 @@ fn place_avatars(app: &mut App, out: &mut std::io::Stdout) {
             hits.avatars
                 .iter()
                 .map(|(col, row, id)| {
-                    let label = app.state.sessions.get(id).map(SessionRow::label);
+                    let seed = app
+                        .state
+                        .sessions
+                        .get(id)
+                        .map_or_else(|| id.0.clone(), |row| row.seed().to_owned());
                     crate::avatar::Placement {
                         col: *col,
                         row: *row,
                         session: id.clone(),
-                        accent: yi_tui::colors::name_accent_rgb(label.as_deref().unwrap_or("")),
+                        accent: yi_tui::colors::name_accent_rgb(&seed),
                     }
                 })
                 .collect()

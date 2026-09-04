@@ -1,8 +1,88 @@
 # Yi
 
-Personal coding agent. Native Rust. One binary, ~5.8 MB, starts in ~2.4 ms,
+Personal coding agent. Native Rust. One binary, ~5.7 MB, starts in ~2.4 ms,
 20 direct dependencies. Built to stay small enough for one person to
 understand end to end.
+
+## Run
+
+```bash
+yi                                     # the workspace: rail of sessions, chat panes
+```
+
+```bash
+yi --solo                              # one chat, inline in the terminal
+```
+
+`yi` starts a daemon (`yi serve`) on `~/.yi/daemon.sock` if none is listening and
+opens the workspace over it. The daemon owns every session and its worker; the
+console renders. Sessions keep running while no console is attached.
+
+Two ways out:
+
+| keys | what happens |
+|---|---|
+| `⌥q` (or `ctrl+b q`, `/quit`) | the console closes; the daemon and its sessions keep running |
+| `ctrl+c` `ctrl+c` | the first press warns, the second stops the daemon and every worker, then quits |
+
+A console attached to a daemon from an older build says so in the pane: restart it
+with `ctrl+c` `ctrl+c` and run `yi` again.
+
+```bash
+yi ask --model openrouter/z-ai/glm-5.3-flash "prompt"
+```
+
+```bash
+yi ask --model faux/faux-1 --json "prompt"   # offline, scripted provider, no key
+```
+
+## The workspace
+
+The rail on the left lists sessions newest first: a slot number, the session's
+avatar, its state, and in the full sidebar (`⌥b` cycles rail → full → hidden) its
+name and age. Over kitty or Ghostty the avatar is an identicon drawn from the
+session id; everywhere else it is the same two initials on the same colour. The
+session in front wears a tinted row.
+
+| keys | |
+|---|---|
+| `⌥1..9` / `⌘1..9` | resume that rail slot into the focused pane |
+| `⌥n` | new session in the focused pane |
+| `⌥v` `⌥s` `⌥x` `⌥z` | split right, split down, close, zoom |
+| `⌥←→↑↓` | move focus between panes (solo child focus when there is one pane) |
+| `⌥t` `⌥]` `⌥[` `ctrl+b 1..9` | tabs |
+| `⌥/` | palette: `e path` opens an editor pane, `md path`, `diff path`, `nb` |
+| `⌥⇧j` `⌥g` | notebook pane, diff pane for the focused session |
+| `Tab` | sidebar ↔ panes |
+| `ctrl+b` | prefix for terminals that eat alt |
+
+A chat pane is solo's chat, the same code: composer with history and paste
+markers, `/` verbs, `@` files, `esc esc` for the entry tree, `/plantree`, the
+permission popup (`y` / `a` / `n`), the working line and orb, the status row.
+
+## Develop
+
+The loop while working on yi itself, one line:
+
+```bash
+just dev
+```
+
+which is `cargo build -p yi-cli`, stop any daemon the previous build left
+running, then `./target/debug/yi`. The stop matters: `yi` reuses a listening
+daemon, and a daemon from an older build cannot stream to a newer console.
+
+```bash
+cargo build --profile dist -p yi-cli   # shipping binary: target/dist/yi
+```
+
+```bash
+just check                             # fmt, clippy -D warnings, all guardrails
+```
+
+Proofs of the rendered UI live in `scripts/proof/`: `just tui-proof`,
+`just console-proof scripts/proof/workspace.drive`, `just console-pty` (real
+console under an xterm-kitty pty, counts the avatar and orb placements).
 
 ## Philosophy
 
@@ -32,10 +112,8 @@ instead of re-reading the whole session every turn.
 ## Token efficiency
 
 The fixed prefix every request pays — system block plus tool table — is
-measured by a test and ratcheted in CI. Today: 10,211 bytes total (system
-2,038, tools 8,173). Adding a tool or a system sentence fails the build until
-the growth is committed on purpose. No other agent budget I know of treats
-prompt bytes as a resource with a baseline file.
+measured by a test and ratcheted in CI. Adding a tool or a system sentence
+fails the build until the growth is committed on purpose.
 
 ## Speed
 
@@ -43,17 +121,17 @@ prompt bytes as a resource with a baseline file.
   and `sessions list` return before config parse or runtime construction.
 - The async runtime is a current-thread tokio, built per command. No thread
   pool warms up to print a version string.
-- Dist binary ~5.8 MB, budget 6 MiB. Every dependency added logs its measured
+- Dist binary ~5.7 MB, budget 6 MiB. Every dependency added logs its measured
   size and startup delta in `docs/size-ledger.md` before it lands.
 
 ## Memory
 
 Nothing heavy exists until used. The Jupyter kernel compiles into every
 build but boots lazily on the first `ipython` call — no Python process
-otherwise. MCP is compiled in but runtime-gated off by default. The TUI
-paints an inline viewport on the normal screen: finished output is written
-once to native scrollback and never repainted, so the UI holds a viewport,
-not a transcript.
+otherwise. MCP is compiled in but runtime-gated off by default. Solo paints an
+inline viewport on the normal screen: finished output is written once to
+native scrollback and never repainted; a workspace pane paints the same chat
+into its rectangle from the retained transcript.
 
 Sessions live on disk as an append-only entry tree, not in RAM: branch,
 rewind to any entry, resume after a crash, read with tools that are not this
@@ -66,9 +144,7 @@ Planned work lives on the forge, not in this tree: an issue is the identity of
 a piece of work, and its number is what everything else cites. A feature pull
 request names its issue and the merge closes it — nothing is marked done by
 hand. Milestone dates are not typed; they are divided out of measured
-throughput and rewritten every week. The board's five columns are queries over
-the issues they claim to hold, and are checked against them rather than
-dragged.
+throughput and rewritten every week.
 
 ## Subagents
 
@@ -85,7 +161,7 @@ holds MCP sockets or tokens; kernel Python shells out to the one-shot
 
 ## Architecture
 
-Thirteen crates, all in the default build, strict dependency order:
+Fifteen crates, all in the default build, strict dependency order:
 
 | crate | owns |
 |---|---|
@@ -98,15 +174,19 @@ Thirteen crates, all in the default build, strict dependency order:
 | `yi-tools` | the tool contract; files, search, shell, checkpoints, skills |
 | `yi-kernel` | the Jupyter client: ZeroMQ, HMAC, the host bridge |
 | `yi-runtime` | the session actor; subagents, schedules, goals, advisor |
-| `yi-acp` | the editor protocol server |
-| `yi-tui` | the terminal UI |
+| `yi-acp` | the editor protocol server, the `yi serve` daemon, the lossless `_yi/*` stream |
+| `yi-orb` | the kitty orb: frames, RGBA, the graphics escapes |
+| `yi-tui` | solo's chat: the app, its reducer, the port a host feeds it through |
+| `yi-console` | the workspace shell: rail, panes, tabs, editor and notebook panes |
 | `yi-mcp-cli` | one-shot MCP client, config-gated |
 | `yi-cli` | the composition root |
 
 The turn loop is under 1,000 lines and its public API returns no `Result` —
 failure is a value in the event stream, not an exception climbing the stack.
-Every surface (CLI, TUI, editor protocol, daemon, RPC) is a client of that
-loop rendering the same event stream; none is privileged.
+Every surface (CLI, solo, workspace, editor protocol, daemon, RPC) is a client
+of that loop rendering the same event stream; none is privileged. The daemon
+path is lossless: the worker emits every runtime event verbatim as `_yi/event`,
+so a workspace pane runs solo's reducer, not a second one.
 
 Dependency direction is an allowlist checked in CI; an undeclared edge fails
 the build. `unsafe_code` is forbidden in every crate. Newtypes cross every
@@ -118,30 +198,6 @@ checkpointed into a shadow git directory; `undo` puts it back. Permission is
 a decision with evidence: modes and rules decide, holds turn a match into a
 question with a reason, a denial carries what it saw, and one tier — home
 directory, device nodes, the workspace's own `.git` — no mode can override.
-
-## Build
-
-```bash
-cargo build --profile dist -p yi-cli   # shipping binary: target/dist/yi
-```
-
-```bash
-just check                             # fmt, clippy -D warnings, all guardrails
-```
-
-## Run
-
-```bash
-yi                                     # the TUI, on a TTY
-```
-
-```bash
-yi ask --model openrouter/z-ai/glm-5.3-flash "prompt"
-```
-
-```bash
-yi ask --model faux/faux-1 --json "prompt"   # offline, scripted provider, no key
-```
 
 ## Use
 
@@ -164,7 +220,8 @@ One file: `~/.yi/config.json`. Current keys:
   },
   "mcp": { "enabled": false },                 // MCP stays off until asked
   "bash": { "autoBackgroundMs": 0 },           // long commands auto-background
-  "keys": { "ctrl+g": "some-action" }          // TUI keymap overrides
+  "console": { "autoSide": true },             // first kernel cell / tracked edit opens a side pane
+  "keys": { "ctrl+g": "some-action" }          // solo keymap overrides
 }
 ```
 
@@ -185,6 +242,6 @@ in the same change.
   reference implementations, never from Yi's own output. A regression test
   is watched failing against the unfixed code before the fix is claimed.
 - No `unwrap`/`expect`/`panic` outside tests. A comment earns its line by
-  naming what the code cannot; three lines, hard cap.
+  naming what the code cannot; two lines, hard cap.
 - Agent instructions live in `.ruler/`; regenerate the per-tool files with
   `npx @intellectronica/ruler apply`. Never edit the generated ones.
