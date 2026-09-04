@@ -2,9 +2,9 @@ use std::error::Error;
 
 use serde_json::json;
 use yi_context::{
-    Bytes, CHILD_USAGE_CAUSE, CompiledView, FileOps, HarnessState, Prefill, Scope, Settings,
-    Tokens, Window, attribute_child_usage, compile_view, compose_summary, context_tokens,
-    drop_internal, estimate_context, fit, identifiers, internal_source, own_and_total_usage,
+    Attributed, BriefLine, Bytes, CHILD_USAGE_CAUSE, CompiledView, FileOps, HarnessState, Prefill,
+    Scope, Settings, Tokens, Window, attribute_child_usage, compile_view, compose_summary,
+    context_tokens, drop_internal, estimate_context, fit, internal_source, own_and_total_usage,
     prepare_compaction, project, retain_floor, select_cut, serialize_conversation, should_compact,
     wrap_internal,
 };
@@ -493,16 +493,27 @@ fn ledger_loads_reference_shaped_state_and_formats_hints() -> TestResult {
     Ok(())
 }
 
+fn att(id: &str, message: AgentMessage) -> Attributed {
+    Attributed {
+        id: Some(id.to_owned()),
+        message,
+    }
+}
+
+fn brief_texts(view: &CompiledView) -> Vec<String> {
+    view.brief.iter().map(BriefLine::render).collect()
+}
+
 #[test]
 fn compile_view_puts_entry_ids_on_tool_pointers_not_user_prose() -> TestResult {
     let long = "body ".repeat(80);
     let attributed = vec![
-        ("m1".to_owned(), user("port the parser")),
-        (
-            "m2".to_owned(),
+        att("m1", user("port the parser")),
+        att(
+            "m2",
             assistant("working because we must", usage(0, 0, 0), StopReason::Stop),
         ),
-        ("t1".to_owned(), tool_result(&long)),
+        att("t1", tool_result(&long)),
     ];
     let view = compile_view(&attributed, None);
     let rendered = view.render();
@@ -526,29 +537,31 @@ fn compile_view_puts_entry_ids_on_tool_pointers_not_user_prose() -> TestResult {
 
 #[test]
 fn compile_view_rolls_previous_brief_and_caps_at_120() -> TestResult {
-    let mut previous_lines = Vec::new();
-    for index in 0..100 {
-        previous_lines.push(format!("(#old{index}) tool: probe → 10 chars"));
-    }
-    let previous = format!(
-        "<yi_compact_view>\n[Brief]\n{}\n</yi_compact_view>",
-        previous_lines.join("\n")
-    );
-    let attributed: Vec<(String, AgentMessage)> = (0..30)
-        .map(|index| (format!("n{index}"), tool_result(&format!("ok {index}"))))
+    let previous = CompiledView {
+        brief: (0..100)
+            .map(|index| BriefLine {
+                id: Some(format!("old{index}")),
+                text: "tool: probe → 10 chars".to_owned(),
+            })
+            .collect(),
+        ..CompiledView::default()
+    };
+    let attributed: Vec<Attributed> = (0..30)
+        .map(|index| att(&format!("n{index}"), tool_result(&format!("ok {index}"))))
         .collect();
     let view = compile_view(&attributed, Some(&previous));
     assert_eq!(view.brief.len(), 120);
+    let lines = brief_texts(&view);
     assert!(
-        !view.brief.iter().any(|line| line.contains("(#old0)")),
+        !lines.iter().any(|line| line.contains("(#old0)")),
         "the oldest previous line must roll off when 100+30 exceeds the cap"
     );
     assert!(
-        view.brief.iter().any(|line| line.contains("(#old10)")),
+        lines.iter().any(|line| line.contains("(#old10)")),
         "an older id that still fits the rolling window must survive"
     );
     assert!(
-        view.brief.iter().any(|line| line.contains("(#n29)")),
+        lines.iter().any(|line| line.contains("(#n29)")),
         "the newest summarized tool turn must survive the cap"
     );
     Ok(())
@@ -557,7 +570,10 @@ fn compile_view_rolls_previous_brief_and_caps_at_120() -> TestResult {
 #[test]
 fn compose_summary_prefixes_view_before_llm_prose() -> TestResult {
     let view = CompiledView {
-        brief: vec!["(#m1) user: keep this".to_owned()],
+        brief: vec![BriefLine {
+            id: Some("m1".to_owned()),
+            text: "tool: read → 4 chars".to_owned(),
+        }],
         ..CompiledView::default()
     };
     let (text, _) = compose_summary("## Goal\nPort the parser", &FileOps::default(), &view);
@@ -573,91 +589,41 @@ fn compose_summary_prefixes_view_before_llm_prose() -> TestResult {
 }
 
 #[test]
-fn identifiers_keep_paths_errors_and_camel_case() -> TestResult {
-    let set = identifiers(
-        "must never crates/foo.rs E0502 #158 UniqueCamel and https://ex.test/a snake_token",
-    );
-    for needle in [
-        "crates/foo.rs",
-        "E0502",
-        "#158",
-        "UniqueCamel",
-        "https://ex.test/a",
-        "snake_token",
-    ] {
-        assert!(set.contains(needle), "{needle} missing from {set:?}");
-    }
-    assert!(!set.contains("must"), "short words are not identifiers");
-    Ok(())
-}
-
-#[test]
-fn identifiers_walk_non_ascii_without_panic() -> TestResult {
-    let set = identifiers("路径/café.rs UniqueToken");
-    assert!(set.contains("UniqueToken"));
-    Ok(())
-}
-
-#[test]
-fn compose_summary_lists_identifiers_absent_from_view_and_prose() -> TestResult {
-    let mut view = CompiledView {
-        brief: vec!["(#tool1) tool: read preamble".to_owned()],
+fn compose_summary_persists_the_view_for_the_next_round_to_roll() -> TestResult {
+    let view = CompiledView {
+        brief: vec![BriefLine {
+            id: Some("m1".to_owned()),
+            text: "tool: read → 4 chars".to_owned(),
+        }],
+        earlier: vec!["(#a..#b)".to_owned()],
         ..CompiledView::default()
     };
-    view.dropped = vec![
-        ("crates/unique_probe/mod.rs".to_owned(), "tool1".to_owned()),
-        ("MentionedIdent".to_owned(), "m2".to_owned()),
-    ];
-    let (text, details) =
-        compose_summary("## Goal\nMentionedIdent stays", &FileOps::default(), &view);
-    assert!(
-        text.contains("[Dropped]") && text.contains("crates/unique_probe/mod.rs (#tool1)"),
-        "an identifier the view and summary dropped must be listed: {text}"
-    );
-    assert!(
-        !text.contains("MentionedIdent (#m2)"),
-        "an identifier the LLM summary still names must not list as dropped: {text}"
-    );
-    assert_eq!(
-        details
-            .extra
-            .get("dropped")
-            .and_then(|value| value.as_u64()),
-        Some(1)
-    );
+    let (_, details) = compose_summary("## Goal\nPort", &FileOps::default(), &view);
+    let restored = yi_context::view_from_extra(&details.extra).ok_or("view not persisted")?;
+    assert_eq!(restored.brief, view.brief);
+    assert_eq!(restored.earlier, view.earlier);
     Ok(())
 }
 
 #[test]
-fn prepare_records_a_dropped_path_from_a_summarized_tool_result() -> TestResult {
-    let body = format!(
-        "{} crates/unique_probe/mod.rs {}",
-        "preamble ".repeat(40),
-        "tail ".repeat(80)
-    );
-    let branch = vec![
-        message_entry("m1", 1, user("read the probe")),
-        message_entry("m2", 2, tool_result(&body)),
-        message_entry("m3", 3, user("second ask")),
-        message_entry(
-            "m4",
-            4,
-            assistant("done", usage(100, 50, 40_000), StopReason::Stop),
-        ),
-    ];
-    let settings = Settings {
-        keep_recent_tokens: Tokens(100),
-        ..Settings::default()
-    };
-    let prepared = prepare_compaction(&branch, &settings).ok_or("expected preparation")?;
+fn a_successful_result_that_talks_about_errors_is_still_a_pointer() -> TestResult {
+    let body = "ran the suite: 0 failed, no error surfaced, every assertion held";
+    let view = compile_view(&[att("t1", tool_result(body))], None);
+    let rendered = view.render();
     assert!(
-        prepared
-            .view
-            .dropped
-            .iter()
-            .any(|(ident, id)| ident == "crates/unique_probe/mod.rs" && id == "m2"),
-        "the summarized tool result's path must be dropped with its entry id: {:?}",
-        prepared.view.dropped
+        rendered.contains(&format!(
+            "(#t1) tool: read → {} chars",
+            body.chars().count()
+        )),
+        "is_error, not the words in the body, decides an outstanding line: {rendered}"
+    );
+    assert!(
+        !rendered.contains("0 failed"),
+        "a successful body must not ride the brief: {rendered}"
+    );
+    assert!(
+        view.outstanding.is_empty(),
+        "nothing is outstanding: {rendered}"
     );
     Ok(())
 }
@@ -666,12 +632,12 @@ fn prepare_records_a_dropped_path_from_a_summarized_tool_result() -> TestResult 
 fn tool_result_is_a_pointer_and_a_later_edit_marks_the_read_stale() -> TestResult {
     let long = "body ".repeat(80);
     let attributed = vec![
-        ("u1".to_owned(), user("must keep the latch")),
-        ("r1".to_owned(), assistant_call("read", "src/latch.rs")),
-        ("t1".to_owned(), tool_result(&long)),
-        ("e1".to_owned(), assistant_call("edit", "src/latch.rs")),
-        (
-            "a1".to_owned(),
+        att("u1", user("must keep the latch")),
+        att("r1", assistant_call("read", "src/latch.rs")),
+        att("t1", tool_result(&long)),
+        att("e1", assistant_call("edit", "src/latch.rs")),
+        att(
+            "a1",
             assistant(
                 "First sentence is filler. We decided the latch because the kernel must never restart.",
                 usage(0, 0, 0),
@@ -713,8 +679,8 @@ fn tool_result_is_a_pointer_and_a_later_edit_marks_the_read_stale() -> TestResul
 
 #[test]
 fn earlier_index_names_the_demoted_span() -> TestResult {
-    let attributed: Vec<(String, AgentMessage)> = (0..125)
-        .map(|index| (format!("t{index}"), tool_result(&format!("ok {index}"))))
+    let attributed: Vec<Attributed> = (0..125)
+        .map(|index| att(&format!("t{index}"), tool_result(&format!("ok {index}"))))
         .collect();
     let view = compile_view(&attributed, None);
     assert_eq!(view.brief.len(), 120);
@@ -728,11 +694,44 @@ fn earlier_index_names_the_demoted_span() -> TestResult {
 
 #[test]
 fn a_user_only_span_still_renders_a_kernel_line() -> TestResult {
-    let view = compile_view(&[("only".to_owned(), user("hi"))], None);
+    let view = compile_view(&[att("only", user("hi"))], None);
     let rendered = view.render();
     assert!(!rendered.contains("(#only)"), "{rendered}");
     assert!(rendered.contains("[Kernel]"), "{rendered}");
     assert!(view.earlier.is_empty());
     assert!(view.brief.is_empty());
+    Ok(())
+}
+
+#[test]
+fn a_retained_tail_message_is_briefed_without_a_pointer_to_the_compaction() -> TestResult {
+    let branch = vec![
+        Entry::Compaction {
+            id: "c1".to_owned(),
+            summary: "earlier work".to_owned(),
+            retained_tail: vec![tool_result("tail body")],
+            tokens_before: 10,
+            usage: None,
+            details: None,
+            parent_id: None,
+            seq: 0,
+            timestamp: 1,
+        },
+        message_entry("m9", 2, tool_result("later body")),
+    ];
+    let view = compile_view(&yi_context::project_attributed(&branch), None);
+    let lines = brief_texts(&view);
+    assert!(
+        lines.iter().any(|line| line == "tool: read → 9 chars"),
+        "the tail message is briefed with no id at all: {lines:?}"
+    );
+    assert!(
+        !lines.iter().any(|line| line.contains("(#c1)")),
+        "a tail message predates the compaction and must not cite it: {lines:?}"
+    );
+    assert!(
+        lines.iter().any(|line| line.starts_with("(#m9)")),
+        "a real entry still carries its pointer: {lines:?}"
+    );
     Ok(())
 }

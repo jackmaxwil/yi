@@ -3,13 +3,12 @@ use yi_types::entry::Entry;
 use yi_types::message::AgentMessage;
 
 use crate::account::{Tokens, estimate_context};
-use crate::audit::{DROPPED_CAP, identifiers, message_text};
 use crate::cut::select_cut;
 use crate::details::{FileOps, compute_file_lists, extract_file_ops, format_file_operations};
 use crate::floor::{RETENTION_FLOOR_BUDGET, retain_floor};
 use crate::policy::Settings;
-use crate::project::{project, project_attributed};
-use crate::view::{CompiledView, compile_view};
+use crate::project::project_attributed;
+use crate::view::{CompiledView, compile_view, view_extra, view_from_extra};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Preparation {
@@ -45,7 +44,11 @@ pub fn prepare_compaction(branch: &[Entry], settings: &Settings) -> Option<Prepa
         return None;
     }
     let (previous_summary, previous_details) = previous_compaction(branch);
-    let projected = project(branch);
+    let attributed = project_attributed(branch);
+    let projected: Vec<AgentMessage> = attributed
+        .iter()
+        .map(|entry| entry.message.clone())
+        .collect();
     let tokens_before = estimate_context(&projected).tokens;
     let work_start = usize::from(matches!(
         projected.first(),
@@ -82,11 +85,13 @@ pub fn prepare_compaction(branch: &[Entry], settings: &Settings) -> Option<Prepa
     let floored = retain_floor(&summarized_away, RETENTION_FLOOR_BUDGET);
     let mut retained_tail = floored;
     retained_tail.extend_from_slice(&work[cut.first_kept_index..]);
-    let attributed = project_attributed(branch);
-    let attributed_work = &attributed[work_start..];
-    let view_slice = &attributed_work[..history_end];
-    let mut view = compile_view(view_slice, previous_summary.as_deref());
-    view.dropped = dropped_idents(view_slice, &view, &retained_tail);
+    let previous_view = previous_details
+        .as_ref()
+        .and_then(|d| view_from_extra(&d.extra));
+    let view = compile_view(
+        &attributed[work_start..][..history_end],
+        previous_view.as_ref(),
+    );
     Some(Preparation {
         messages_to_summarize,
         turn_prefix_messages,
@@ -106,21 +111,13 @@ pub fn compose_summary(
 ) -> (String, CompactionDetails) {
     let (read_files, modified_files) = compute_file_lists(file_ops);
     let files = format_file_operations(&read_files, &modified_files);
-    let mut view = view.clone();
-    view.dropped
-        .retain(|(ident, _)| !summary.contains(ident.as_str()));
-    if view.dropped.len() > DROPPED_CAP {
-        view.dropped.truncate(DROPPED_CAP);
-    }
-    let dropped = view.dropped.len();
     let view_text = view.render();
     let text = if view_text.is_empty() {
         format!("{summary}{files}")
     } else {
         format!("{view_text}\n\n{summary}{files}")
     };
-    let mut extra = serde_json::Map::new();
-    extra.insert("dropped".to_owned(), serde_json::json!(dropped));
+    let extra = view_extra(view).into_iter().collect();
     (
         text,
         CompactionDetails {
@@ -130,26 +127,4 @@ pub fn compose_summary(
             extra,
         },
     )
-}
-
-fn dropped_idents(
-    span: &[(String, AgentMessage)],
-    view: &CompiledView,
-    tail: &[AgentMessage],
-) -> Vec<(String, String)> {
-    let mut kept = identifiers(&view.render());
-    for message in tail {
-        kept.extend(identifiers(&message_text(message)));
-    }
-    let mut seen = std::collections::BTreeSet::new();
-    let mut out = Vec::new();
-    for (id, message) in span {
-        for ident in identifiers(&message_text(message)) {
-            if kept.contains(&ident) || !seen.insert(ident.clone()) {
-                continue;
-            }
-            out.push((ident, id.clone()));
-        }
-    }
-    out
 }

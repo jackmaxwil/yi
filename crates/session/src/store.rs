@@ -16,8 +16,6 @@ use crate::query::{
 };
 use crate::state::SessionState;
 
-use yi_types::message::{Content, UserContent};
-
 pub struct SessionStore {
     metadata: SessionMetadata,
     state: SessionState,
@@ -289,7 +287,7 @@ impl SessionStore {
             return Vec::new();
         }
         let limit = limit.clamp(1, 32);
-        let lowered = needle.to_lowercase();
+        let lowered_needle = needle.to_lowercase();
         let query = EntryQuery {
             order: EntryOrder::OldestFirst,
             ..EntryQuery::default()
@@ -300,14 +298,14 @@ impl SessionStore {
         entries
             .iter()
             .filter_map(|entry| {
-                let text = searchable_text(entry);
-                if text.is_empty() || !text.to_lowercase().contains(&lowered) {
+                let lowered = searchable_text(entry).to_lowercase();
+                if !lowered.contains(&lowered_needle) {
                     return None;
                 }
                 Some(HistoryHit {
                     entry_id: entry.id().to_owned(),
                     entry_type: entry.type_name().to_owned(),
-                    snippet: snippet(&text, &lowered),
+                    snippet: snippet(&lowered, &lowered_needle),
                 })
             })
             .take(limit)
@@ -368,74 +366,23 @@ const SNIPPET_CHARS: usize = 160;
 
 fn searchable_text(entry: &Entry) -> String {
     match entry {
-        Entry::Message { message, .. } => message_text(message),
+        Entry::Message { message, .. } => message.plain_text(),
         Entry::Compaction { summary, .. } | Entry::BranchSummary { summary, .. } => summary.clone(),
         _ => String::new(),
     }
 }
 
-fn message_text(message: &AgentMessage) -> String {
-    match message {
-        AgentMessage::User { content, .. } | AgentMessage::Custom { content, .. } => {
-            user_content_text(content)
-        }
-        AgentMessage::Assistant { content, .. } => content
-            .iter()
-            .filter_map(|block| match block {
-                Content::Text { text, .. } => Some(text.clone()),
-                Content::ToolCall {
-                    name, arguments, ..
-                } => Some(format!("{name} {}", Value::Object(arguments.clone()))),
-                _ => None,
-            })
-            .collect::<Vec<_>>()
-            .join("\n"),
-        AgentMessage::ToolResult { content, .. } => content
-            .iter()
-            .filter_map(|block| match block {
-                Content::Text { text, .. } => Some(text.clone()),
-                _ => None,
-            })
-            .collect::<Vec<_>>()
-            .join("\n"),
-        AgentMessage::BashExecution {
-            command, output, ..
-        } => format!("{command}\n{output}"),
-        AgentMessage::BranchSummary { summary, .. }
-        | AgentMessage::CompactionSummary { summary, .. } => summary.clone(),
-    }
-}
-
-fn user_content_text(content: &UserContent) -> String {
-    match content {
-        UserContent::Text(text) => text.clone(),
-        UserContent::Blocks(blocks) => blocks
-            .iter()
-            .filter_map(|block| match block {
-                Content::Text { text, .. } => Some(text.clone()),
-                _ => None,
-            })
-            .collect::<Vec<_>>()
-            .join("\n"),
-    }
-}
-
-fn snippet(text: &str, lowered_needle: &str) -> String {
-    let line = text
+fn snippet(lowered: &str, lowered_needle: &str) -> String {
+    let line = lowered
         .lines()
-        .find(|line| line.to_lowercase().contains(lowered_needle))
-        .or_else(|| text.lines().next())
+        .find(|line| line.contains(lowered_needle))
+        .or_else(|| lowered.lines().next())
         .unwrap_or("");
     if line.chars().count() <= SNIPPET_CHARS {
         return line.to_owned();
     }
-    let lowered = line.to_lowercase();
-    // ponytail: char index from the lowered line can drift a few chars on exotic unicode; the snippet is a hint, the fetch is the truth.
-    let char_pos = lowered.find(lowered_needle).map_or(0, |byte| {
-        lowered
-            .char_indices()
-            .take_while(|(i, _)| *i < byte)
-            .count()
+    let char_pos = line.find(lowered_needle).map_or(0, |byte| {
+        line.char_indices().take_while(|(i, _)| *i < byte).count()
     });
     let start = char_pos.saturating_sub(SNIPPET_CHARS / 2);
     line.chars().skip(start).take(SNIPPET_CHARS).collect()
