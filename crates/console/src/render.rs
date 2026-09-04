@@ -11,7 +11,7 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use yi_tui::SessionPort;
-use yi_tui::colors::{Theme, name_accent};
+use yi_tui::colors::{Theme, name_tile, tile_style};
 use yi_tui::diffview::{self, DiffBudget};
 
 use crate::app::App;
@@ -34,6 +34,8 @@ pub struct PaneView {
 pub struct Hits {
     pub sidebar_width: u16,
     pub sidebar_rows: Vec<(u16, usize)>,
+    /// (column, row, session) of every avatar cell on screen; the kitty pass places there.
+    pub avatars: Vec<(u16, u16, SessionId)>,
     pub root_rows: Vec<(u16, usize)>,
     pub panes: Vec<(PaneId, Rect)>,
     pub splits: Vec<SplitBorder>,
@@ -171,12 +173,19 @@ pub fn compute_view(app: &mut App, area: Rect, theme: &Theme) -> ViewState {
         });
     }
 
-    let sidebar_rows = sidebar_lines(app, theme, sidebar.height)
+    let sidebar_rows: Vec<(u16, usize)> = sidebar_lines(app, theme, sidebar.height)
         .iter()
         .enumerate()
         .filter_map(|(offset, (index, _))| {
             let y = sidebar.y.checked_add(u16::try_from(offset).ok()?)?;
             index.map(|index| (y, index))
+        })
+        .collect();
+    let avatars = sidebar_rows
+        .iter()
+        .filter_map(|(y, index)| {
+            let id = app.state.order.get(*index)?.clone();
+            Some((sidebar.x.saturating_add(2), *y, id))
         })
         .collect();
     let root_rows = (0..root_count)
@@ -200,6 +209,7 @@ pub fn compute_view(app: &mut App, area: Rect, theme: &Theme) -> ViewState {
     app.hits = Some(Hits {
         sidebar_width,
         sidebar_rows,
+        avatars,
         root_rows,
         panes: panes.iter().map(|pane| (pane.id, pane.rect)).collect(),
         splits: split_borders.clone(),
@@ -662,8 +672,22 @@ fn render_borders(app: &App, frame: &mut Frame<'_>, view: &ViewState, theme: &Th
             .and_then(|p| p.session())
             .and_then(|s| app.state.sessions.get(s))
             .map_or(SessionStatus::Unknown, |row| row.status);
+        let label = app
+            .state
+            .panes
+            .get(&pane.id)
+            .and_then(|p| p.session())
+            .and_then(|s| app.state.sessions.get(s))
+            .map(SessionRow::label);
+        let mut x = r.x.saturating_add(2);
+        let mut max = r.width.saturating_sub(4);
+        if let Some(label) = &label {
+            let tile = Span::styled(format!(" {}", name_tile(label)), tile_style(label));
+            buffer.set_span(x, r.y, &tile, max);
+            x = x.saturating_add(3);
+            max = max.saturating_sub(3);
+        }
         let text = format!(" {} {} ", status.glyph(), pane.title);
-        let max = r.width.saturating_sub(4);
         let text: String = text.chars().take(usize::from(max)).collect();
         let style = if pane.focused {
             theme
@@ -673,7 +697,7 @@ fn render_borders(app: &App, frame: &mut Frame<'_>, view: &ViewState, theme: &Th
             theme.dim_style()
         };
         let span = Span::styled(text, style);
-        buffer.set_span(r.x.saturating_add(2), r.y, &span, max);
+        buffer.set_span(x, r.y, &span, max);
     }
 }
 
@@ -786,13 +810,14 @@ fn fade(line: &mut Line<'static>, level: usize, theme: &Theme) {
     }
 }
 
-fn sidebar_lines(app: &App, theme: &Theme, height: u16) -> Vec<(Option<usize>, Line<'static>)> {
+pub fn sidebar_lines(app: &App, theme: &Theme, height: u16) -> Vec<(Option<usize>, Line<'static>)> {
     let mut rows = Vec::new();
     let rail = app.state.sidebar == SidebarMode::Rail;
     let multi_root = !rail && app.state.roots().len() > 1;
     let mut current_root: Option<&str> = None;
     let focused = app.state.focused_session();
     let now = now_ms();
+    let mut slot = 0_usize;
     for index in app.state.visible_rows() {
         let Some(id) = app.state.order.get(index) else {
             continue;
@@ -812,26 +837,40 @@ fn sidebar_lines(app: &App, theme: &Theme, height: u16) -> Vec<(Option<usize>, L
             ));
         }
         let is_focused = focused.as_ref() == Some(id);
-        let marker = if index == app.state.selected && app.state.zone == Zone::Sidebar {
-            "▸"
-        } else if is_focused {
-            "▎"
-        } else {
-            " "
-        };
+        let is_cursor = index == app.state.selected && app.state.zone == Zone::Sidebar;
+        slot = slot.saturating_add(1);
         let label = row.label();
+        let row_bg = if is_cursor {
+            Some(theme.selection_bg())
+        } else if is_focused {
+            Some(theme.active_row_bg())
+        } else {
+            None
+        };
+        let on_row = |style: Style| row_bg.map_or(style, |bg| style.bg(bg));
+        let number = if is_cursor {
+            theme.muted_style()
+        } else if is_focused {
+            Style::default().fg(theme.text)
+        } else {
+            theme.dim_style()
+        };
+        let slot_text = if slot <= 9 {
+            format!("{slot:<2}")
+        } else {
+            "  ".to_owned()
+        };
+        let mut spans = vec![
+            Span::styled(slot_text, on_row(number)),
+            Span::styled(name_tile(&label), tile_style(&label)),
+            Span::styled(" ".to_owned(), on_row(Style::default())),
+            Span::styled(
+                row.status.glyph().to_owned(),
+                on_row(status_style(theme, row.status)),
+            ),
+        ];
         if rail {
-            let mut glyph = Style::default().fg(name_accent(&label));
-            if is_focused {
-                glyph = glyph.add_modifier(Modifier::REVERSED);
-            }
-            rows.push((
-                Some(index),
-                Line::from(vec![
-                    Span::styled(marker.to_owned(), theme.accent_style()),
-                    Span::styled(row.status.glyph().to_owned(), glyph),
-                ]),
-            ));
+            rows.push((Some(index), Line::from(spans)));
             continue;
         }
         let name: String = label.chars().take(NAME_WIDTH).collect();
@@ -841,20 +880,13 @@ fn sidebar_lines(app: &App, theme: &Theme, height: u16) -> Vec<(Option<usize>, L
         } else {
             Style::default().fg(theme.text)
         };
-        let tail = if row.attached { "·" } else { "" };
-        let mut spans = vec![
-            Span::styled(marker.to_owned(), theme.accent_style()),
-            Span::styled(
-                format!("{} ", row.status.glyph()),
-                status_style(theme, row.status),
-            ),
-            Span::styled(name, name_style),
-            Span::styled(
-                format!("{}{:>4}{tail}", " ".repeat(pad), age(now, row.recency())),
-                theme.dim_style(),
-            ),
-        ];
-        spans.retain(|span| !span.content.is_empty());
+        let tail = if row.attached { "·" } else { " " };
+        spans.push(Span::styled(" ".to_owned(), on_row(Style::default())));
+        spans.push(Span::styled(name, on_row(name_style)));
+        spans.push(Span::styled(
+            format!("{}{:>4}{tail}", " ".repeat(pad), age(now, row.recency())),
+            on_row(theme.dim_style()),
+        ));
         rows.push((Some(index), Line::from(spans)));
         for child in app.state.children.get(id).into_iter().flatten().take(3) {
             let name: String = child
@@ -965,6 +997,22 @@ fn render_sidebar(app: &App, frame: &mut Frame<'_>, area: Rect, theme: &Theme) {
         lines.push(Line::styled(" no sessions yet", theme.dim_style()));
     }
     frame.render_widget(Paragraph::new(lines), area);
+    if app.state.sidebar == SidebarMode::Rail {
+        let armed = app.state.zone == Zone::Sidebar || matches!(app.state.mode, Mode::Prefix);
+        let style = if armed {
+            theme.accent_style()
+        } else {
+            theme.dim_style()
+        };
+        let x = area.x.saturating_add(area.width).saturating_sub(1);
+        let buffer = frame.buffer_mut();
+        for y in area.top()..area.bottom() {
+            if let Some(cell) = buffer.cell_mut((x, y)) {
+                cell.set_symbol("│");
+                cell.set_style(style);
+            }
+        }
+    }
 }
 
 fn render_navigator(app: &App, frame: &mut Frame<'_>, view: &ViewState, theme: &Theme) {
