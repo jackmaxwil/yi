@@ -1,5 +1,6 @@
 use yi_types::message::{AgentMessage, Content, UserContent};
 
+use crate::audit::DROPPED_CAP;
 use crate::details::{FileOps, compute_file_lists};
 use crate::wrapper::internal_source;
 
@@ -15,6 +16,7 @@ pub struct CompiledView {
     pub files: Vec<String>,
     pub outstanding: Vec<String>,
     pub brief: Vec<String>,
+    pub dropped: Vec<(String, String)>,
 }
 
 impl CompiledView {
@@ -41,6 +43,17 @@ impl CompiledView {
             for line in &self.brief {
                 block.push('\n');
                 block.push_str(line);
+            }
+            sections.push(block);
+        }
+        if !self.dropped.is_empty() {
+            let mut block = String::from("[Dropped]");
+            for (ident, id) in self.dropped.iter().take(DROPPED_CAP) {
+                block.push_str("\n- ");
+                block.push_str(ident);
+                block.push_str(" (#");
+                block.push_str(id);
+                block.push(')');
             }
             sections.push(block);
         }
@@ -93,6 +106,7 @@ pub fn compile_view(
         files,
         outstanding,
         brief,
+        dropped: Vec::new(),
     }
 }
 

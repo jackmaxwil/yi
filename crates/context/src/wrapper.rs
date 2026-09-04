@@ -50,8 +50,7 @@ pub fn internal_source_of_custom(custom_type: &str) -> Option<&'static str> {
     }
 }
 
-/// Removes wrapped internal-context messages — applied to the region being
-/// summarized so per-window injections die with their window.
+/// Drops wrapped internal-context messages from the summarized region so per-window injections die with it.
 pub fn drop_internal(messages: &[AgentMessage]) -> Vec<AgentMessage> {
     messages
         .iter()

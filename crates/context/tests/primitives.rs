@@ -4,8 +4,9 @@ use serde_json::json;
 use yi_context::{
     Bytes, CHILD_USAGE_CAUSE, CompiledView, FileOps, HarnessState, Prefill, Scope, Settings,
     Tokens, Window, attribute_child_usage, compile_view, compose_summary, context_tokens,
-    drop_internal, estimate_context, fit, internal_source, own_and_total_usage, prepare_compaction,
-    project, retain_floor, select_cut, serialize_conversation, should_compact, wrap_internal,
+    drop_internal, estimate_context, fit, identifiers, internal_source, own_and_total_usage,
+    prepare_compaction, project, retain_floor, select_cut, serialize_conversation, should_compact,
+    wrap_internal,
 };
 use yi_types::entry::Entry;
 use yi_types::message::{AgentMessage, Content, Cost, StopReason, Usage, UserContent};
@@ -533,6 +534,96 @@ fn compose_summary_prefixes_view_before_llm_prose() -> TestResult {
     assert!(
         view_at < goal_at,
         "the host view must lead the LLM checkpoint so it is not rewritten as Goal prose: {text}"
+    );
+    Ok(())
+}
+
+#[test]
+fn identifiers_keep_paths_errors_and_camel_case() -> TestResult {
+    let set = identifiers(
+        "must never crates/foo.rs E0502 #158 UniqueCamel and https://ex.test/a snake_token",
+    );
+    for needle in [
+        "crates/foo.rs",
+        "E0502",
+        "#158",
+        "UniqueCamel",
+        "https://ex.test/a",
+        "snake_token",
+    ] {
+        assert!(set.contains(needle), "{needle} missing from {set:?}");
+    }
+    assert!(!set.contains("must"), "short words are not identifiers");
+    Ok(())
+}
+
+#[test]
+fn identifiers_walk_non_ascii_without_panic() -> TestResult {
+    let set = identifiers("路径/café.rs UniqueToken");
+    assert!(set.contains("UniqueToken"));
+    Ok(())
+}
+
+#[test]
+fn compose_summary_lists_identifiers_absent_from_view_and_prose() -> TestResult {
+    let mut view = CompiledView {
+        brief: vec!["(#tool1) tool: read preamble".to_owned()],
+        ..CompiledView::default()
+    };
+    view.dropped = vec![
+        ("crates/unique_probe/mod.rs".to_owned(), "tool1".to_owned()),
+        ("MentionedIdent".to_owned(), "m2".to_owned()),
+    ];
+    let (text, details) =
+        compose_summary("## Goal\nMentionedIdent stays", &FileOps::default(), &view);
+    assert!(
+        text.contains("[Dropped]") && text.contains("crates/unique_probe/mod.rs (#tool1)"),
+        "an identifier the view and summary dropped must be listed: {text}"
+    );
+    assert!(
+        !text.contains("MentionedIdent (#m2)"),
+        "an identifier the LLM summary still names must not list as dropped: {text}"
+    );
+    assert_eq!(
+        details
+            .extra
+            .get("dropped")
+            .and_then(|value| value.as_u64()),
+        Some(1)
+    );
+    Ok(())
+}
+
+#[test]
+fn prepare_records_a_dropped_path_from_a_summarized_tool_result() -> TestResult {
+    let body = format!(
+        "{} crates/unique_probe/mod.rs {}",
+        "preamble ".repeat(40),
+        "tail ".repeat(80)
+    );
+    let branch = vec![
+        message_entry("m1", 1, user("read the probe")),
+        message_entry("m2", 2, tool_result(&body)),
+        message_entry("m3", 3, user("second ask")),
+        message_entry(
+            "m4",
+            4,
+            assistant("done", usage(100, 50, 40_000), StopReason::Stop),
+        ),
+    ];
+    let settings = Settings {
+        keep_recent_tokens: Tokens(100),
+        ..Settings::default()
+    };
+    let prepared = prepare_compaction(&branch, &settings).ok_or("expected preparation")?;
+    assert!(
+        prepared
+            .view
+            .dropped
+            .iter()
+            .any(|(ident, id)| ident == "crates/unique_probe/mod.rs" && id == "m2"),
+        "the summarized tool result's path must be dropped with its entry id: {:?}",
+        prepared.view.dropped
     );
     Ok(())
 }

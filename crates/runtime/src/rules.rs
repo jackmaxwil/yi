@@ -178,6 +178,11 @@ impl FireState {
         self.fired_once.insert(rule.name.clone(), true);
         self.last_fired.insert(rule.name.clone(), self.turn);
     }
+
+    fn rearm(&mut self) {
+        self.fired_once.clear();
+        self.last_fired.clear();
+    }
 }
 
 /// The match layer: literal substrings over tool arguments at the gate and
@@ -232,6 +237,13 @@ impl RuleEngine {
     pub fn set_deliver(&self, deliver: DeliverFn) {
         if let Ok(mut slot) = self.deliver.lock() {
             *slot = Some(deliver);
+        }
+    }
+
+    /// Incident: `reminder` is dropped at compaction while `fired_once` survived, so `gap: once` stayed spent.
+    pub fn rearm(&self) {
+        if let Ok(mut state) = self.state.lock() {
+            state.rearm();
         }
     }
 
