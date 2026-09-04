@@ -454,6 +454,7 @@ fn build_session(
                 .and_then(|kernel| kernel.prewarm)
                 .unwrap_or(true),
             kernels: yi_runtime::fetch::KernelServiceMap::new(),
+            compaction: compaction_settings(),
         },
     );
     Ok((session, host))
@@ -473,6 +474,23 @@ fn session_extensions(args: &Args) -> yi_runtime::ExtensionHost {
             .and_then(|spec| yi_runtime::schema::Schema::load(spec).ok())
             .map(|schema| schema.instruction()),
     })
+}
+
+fn compaction_settings() -> yi_runtime::Settings {
+    let mut settings = yi_runtime::Settings::default();
+    let Some(cfg) = config().compaction.as_ref() else {
+        return settings;
+    };
+    if let Some(mode) = cfg.mode {
+        settings.mode = mode;
+    }
+    if let Some(tokens) = cfg.reserve_tokens {
+        settings.reserve_tokens = yi_runtime::Tokens(tokens);
+    }
+    if let Some(tokens) = cfg.keep_recent_tokens {
+        settings.keep_recent_tokens = yi_runtime::Tokens(tokens);
+    }
+    settings
 }
 
 /// `plans.dir`, relative to the workspace root unless absolute. Unset leaves

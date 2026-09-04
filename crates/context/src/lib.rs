@@ -35,8 +35,10 @@ pub use prepare::{Preparation, compose_summary, prepare_compaction};
 pub use project::{project, project_attributed};
 pub use serialize::serialize_conversation;
 pub use view::{
-    BRIEF_LINE_CAP, BRIEF_LINE_CHARS, CompiledView, FILE_CAP, OUTSTANDING_CAP, compile_view,
+    BRIEF_LINE_CAP, BRIEF_LINE_CHARS, CompiledView, EARLIER_CAP, FILE_CAP, OUTSTANDING_CAP,
+    compile_view,
 };
 pub use window::{Prefill, Window};
 pub use world::{WorldState, WorldStateSection};
 pub use wrapper::{drop_internal, internal_source, wrap_internal};
+pub use yi_types::config::CompactionMode;

@@ -117,6 +117,7 @@ async fn compacted_store(id: &str) -> Result<(yi_session::SharedSession, String)
         enabled: true,
         reserve_tokens: Tokens(1_000),
         keep_recent_tokens: Tokens(10),
+        ..Settings::default()
     });
     session.attach_store(Arc::clone(&store))?;
     session.prompt(&format!("{CONSTRAINT} Start the port."))?;
@@ -154,6 +155,29 @@ fn a_compaction_summary_reaches_the_digest_as_a_pullable_line() -> TestResult {
     assert!(
         line.contains("[pull m4]"),
         "an elided summary must carry its pull handle: {line}"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_view_prefixed_summary_shows_the_goal_in_the_digest_head() -> TestResult {
+    let summary = "<yi_compact_view>\n[Kernel] Note: the IPython kernel keeps running after this summary\n</yi_compact_view>\n## Goal\nPort the parser. Files touched: src/parse.rs";
+    let line = digest::digest_line(
+        &digest::LogItem {
+            id: "m2",
+            message: &compaction_summary(summary),
+        },
+        digest::DEFAULT_USER_BUDGET,
+        digest::DEFAULT_PROSE_BUDGET,
+    )
+    .ok_or("a compaction summary must render a digest line")?;
+    assert!(
+        line.contains("Port the parser"),
+        "the 200-char head must skip the view wrapper so the judge sees Goal/Next: {line}"
+    );
+    assert!(
+        !line.contains("<yi_compact_view>"),
+        "the wrapper must not occupy the head when Goal/Next follows it: {line}"
     );
     Ok(())
 }
