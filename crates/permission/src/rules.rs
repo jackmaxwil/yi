@@ -81,6 +81,10 @@ impl ConfigRule {
     }
 }
 
+pub fn glob_matches(pattern: &str, subject: &str) -> Result<bool, String> {
+    Ok(ConfigRule::new("*", pattern, ConfigRuleAction::Allow)?.matches("*", subject))
+}
+
 /// Session rule state over the yi-types wire shape: digests are recomputed
 /// from `canonical` on load and never trusted from disk.
 #[derive(Default)]

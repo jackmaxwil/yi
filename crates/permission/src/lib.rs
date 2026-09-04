@@ -19,6 +19,6 @@ pub use review::{
 };
 pub use rules::{
     ConfigRule, ConfigRuleAction, RuleStateError, SessionRules, canonical_command_identity,
-    canonical_tool_identity,
+    canonical_tool_identity, glob_matches,
 };
 pub use safety::{Class, Parsed, Verdict, classify, parse, verdict};
