@@ -4,7 +4,7 @@ use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
-use yi_tui::colors::{Theme, name_tile, tile_style};
+use yi_tui::colors::{Theme, accent_rgb, name_tile, tile_style_at};
 
 use crate::app::App;
 use crate::avatar::Placement;
@@ -27,15 +27,23 @@ impl SidebarRow {
     }
 }
 
-fn avatar_at(col: u16, cols: u16, rows: u16, key: &str, accent: &str) -> Option<Placement> {
+fn avatar_at(col: u16, cols: u16, rows: u16, key: &str, hue: usize) -> Option<Placement> {
     Some(Placement {
         col,
         row: 0,
         cols,
         rows,
         key: key.to_owned(),
-        accent: accent.to_owned(),
+        accent: accent_rgb(hue),
     })
+}
+
+fn tile_span(app: &App, text: String, hue: usize) -> Span<'static> {
+    if app.kitty {
+        Span::raw(" ".repeat(text.chars().count()))
+    } else {
+        Span::styled(text, tile_style_at(hue))
+    }
 }
 
 fn bucket(now: u64, then: u64) -> &'static str {
@@ -127,19 +135,20 @@ pub fn sidebar_lines(app: &App, theme: &Theme, height: u16) -> Vec<SidebarRow> {
         } else {
             "  ".to_owned()
         };
+        let hue = app.accent_of(&id.0, row.seed());
         if rail {
             rows.push(SidebarRow {
                 index: Some(index),
                 line: Line::from(vec![
                     Span::styled(slot_text, on_row(number)),
-                    Span::styled(name_tile(row.seed()), tile_style(row.seed())),
+                    tile_span(app, name_tile(row.seed()), hue),
                     Span::styled("   ".to_owned(), on_row(Style::default())),
                     Span::styled(
                         row.status.glyph().to_owned(),
                         on_row(status_style(theme, row.status)),
                     ),
                 ]),
-                avatar: avatar_at(2, 4, 2, &id.0, row.seed()),
+                avatar: avatar_at(2, 4, 2, &id.0, hue),
             });
             rows.push(SidebarRow::plain(
                 Some(index),
@@ -150,7 +159,7 @@ pub fn sidebar_lines(app: &App, theme: &Theme, height: u16) -> Vec<SidebarRow> {
         }
         let mut spans = vec![
             Span::styled(slot_text, on_row(number)),
-            Span::styled(name_tile(row.seed()), tile_style(row.seed())),
+            tile_span(app, name_tile(row.seed()), hue),
             Span::styled(" ".to_owned(), on_row(Style::default())),
             Span::styled(
                 row.status.glyph().to_owned(),
@@ -178,7 +187,7 @@ pub fn sidebar_lines(app: &App, theme: &Theme, height: u16) -> Vec<SidebarRow> {
         rows.push(SidebarRow {
             index: Some(index),
             line: Line::from(spans),
-            avatar: avatar_at(2, 2, 1, &id.0, row.seed()),
+            avatar: avatar_at(2, 2, 1, &id.0, hue),
         });
         rows.extend(child_rows(app, id, theme, false));
     }
@@ -204,7 +213,8 @@ fn child_rows(
             yi_types::subagent::ChildStatus::Completed => "○",
             yi_types::subagent::ChildStatus::Error => "✕",
         };
-        let tile = Span::styled(name_tile(&child.name), tile_style(&child.name));
+        let hue = app.accent_of(child.id.as_str(), &child.name);
+        let tile = tile_span(app, name_tile(&child.name), hue);
         let (spans, col) = if rail {
             (
                 vec![
@@ -227,7 +237,7 @@ fn child_rows(
         rows.push(SidebarRow {
             index: None,
             line: Line::from(spans),
-            avatar: avatar_at(col, 2, 1, child.id.as_str(), &child.name),
+            avatar: avatar_at(col, 2, 1, child.id.as_str(), hue),
         });
     }
     rows
@@ -312,8 +322,22 @@ pub(crate) fn render_roots(app: &App, frame: &mut Frame<'_>, area: Rect, theme: 
     frame.render_widget(Paragraph::new(lines), area);
 }
 
+pub fn rail_offset(app: &App, rows: usize, height: u16) -> u16 {
+    if app.state.sidebar == SidebarMode::Rail {
+        height.saturating_sub(u16::try_from(rows).unwrap_or(u16::MAX))
+    } else {
+        0
+    }
+}
+
 pub(crate) fn render_sidebar(app: &App, frame: &mut Frame<'_>, area: Rect, theme: &Theme) {
     let rows = sidebar_lines(app, theme, area.height);
+    let offset = rail_offset(app, rows.len(), area.height);
+    let area = Rect {
+        y: area.y.saturating_add(offset),
+        height: area.height.saturating_sub(offset),
+        ..area
+    };
     let mut lines: Vec<Line<'static>> = rows.iter().map(|row| row.line.clone()).collect();
     if lines.is_empty() && app.state.sidebar == SidebarMode::Full {
         let label = app
