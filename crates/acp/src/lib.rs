@@ -157,37 +157,6 @@ struct SessionHandle {
     session: Arc<AgentSession>,
     host: Arc<SubagentHost>,
     forwarder: JoinHandle<()>,
-    ledger: Arc<std::sync::Mutex<StatusLedger>>,
-}
-
-#[derive(Default, Clone, Copy)]
-pub(crate) struct StatusLedger {
-    pub(crate) cost: f64,
-    pub(crate) cost_unknown: bool,
-    pub(crate) context_used: u64,
-}
-
-pub(crate) fn status_update(
-    session: Option<&AgentSession>,
-    ledger: StatusLedger,
-    context_window: u64,
-) -> AcpSessionUpdate {
-    let mut fields = std::collections::BTreeMap::new();
-    if let Some(session) = session {
-        fields.insert("model".to_owned(), Value::String(session.model().name));
-        fields.insert(
-            "effort".to_owned(),
-            Value::String(session.effort().to_string()),
-        );
-    }
-    fields.insert("cost".to_owned(), json!(ledger.cost));
-    fields.insert("costUnknown".to_owned(), Value::Bool(ledger.cost_unknown));
-    fields.insert("contextUsed".to_owned(), json!(ledger.context_used));
-    fields.insert("contextWindow".to_owned(), json!(context_window));
-    AcpSessionUpdate::Extension(yi_types::acp::AcpExtensionUpdate {
-        session_update: "_yi/status".to_owned(),
-        fields,
-    })
 }
 
 impl Drop for SessionHandle {
@@ -337,12 +306,7 @@ impl AcpState {
             .map_err(|error| error.to_string())?;
         let session = Arc::new(session);
         let events = session.subscribe();
-        let ledger = Arc::new(std::sync::Mutex::new(StatusLedger::default()));
         let context_window = session.model().context_window;
-        (self.sink)(&update_notification(
-            &session_id,
-            status_update(Some(&session), StatusLedger::default(), context_window),
-        ));
         let parent = Parent {
             forward: Forward {
                 session_id: session_id.clone(),
@@ -353,8 +317,6 @@ impl AcpState {
             session: Arc::clone(&session),
             host: Arc::clone(&host),
             ids: IdMap::new(context_window),
-            ledger: Arc::clone(&ledger),
-            context_window,
             children: JoinSet::new(),
             seen: HashSet::new(),
             last_goal: Value::Null,
@@ -366,7 +328,6 @@ impl AcpState {
                 session,
                 host,
                 forwarder,
-                ledger,
             },
         );
         Ok(session_id)
@@ -514,16 +475,6 @@ impl AcpState {
                 ));
             }
         }
-        let snapshot = handle
-            .ledger
-            .lock()
-            .map(|ledger| *ledger)
-            .unwrap_or_default();
-        let context_window = handle.session.model().context_window;
-        (self.sink)(&update_notification(
-            &id,
-            status_update(Some(&handle.session), snapshot, context_window),
-        ));
         self.emit_config(&id);
         let result = self.session_result(&id);
         let options = result.get("configOptions").cloned().unwrap_or(Value::Null);

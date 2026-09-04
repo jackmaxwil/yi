@@ -61,6 +61,13 @@ pub(crate) enum Bottom {
     Model(Box<crate::model::ModelPopup>),
 }
 
+pub type CommandSender = tokio::sync::mpsc::UnboundedSender<Command>;
+pub type CommandReceiver = tokio::sync::mpsc::UnboundedReceiver<Command>;
+
+pub fn command_channel() -> (CommandSender, CommandReceiver) {
+    tokio::sync::mpsc::unbounded_channel()
+}
+
 pub struct TuiOptions {
     pub model: yi_types::model::Model,
     pub session_name: String,

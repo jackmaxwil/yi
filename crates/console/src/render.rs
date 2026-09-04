@@ -5,14 +5,14 @@ use std::collections::HashMap;
 
 use crate::model::{SessionId, SessionRow, SidebarMode, now_ms};
 use ratatui::Frame;
+use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
+use yi_tui::SessionPort;
 use yi_tui::colors::{Theme, name_accent};
 use yi_tui::diffview::{self, DiffBudget};
-use yi_tui::popup::BottomView;
-use yi_tui::status::{StatusInput, working_line};
 
 use crate::app::App;
 use crate::keys;
@@ -28,14 +28,12 @@ pub struct PaneView {
     pub focused: bool,
     pub title: String,
     pub lines: Vec<Line<'static>>,
+    pub chat: bool,
 }
 
-/// Mouse hit-test table, refreshed by every compute_view.
 pub struct Hits {
     pub sidebar_width: u16,
-    /// (screen row, index into `order`) for each session line.
     pub sidebar_rows: Vec<(u16, usize)>,
-    /// (screen row, index into `roots()`) for each workspace line.
     pub root_rows: Vec<(u16, usize)>,
     pub panes: Vec<(PaneId, Rect)>,
     pub splits: Vec<SplitBorder>,
@@ -45,15 +43,12 @@ pub struct Hits {
 pub struct ViewState {
     pub sidebar: Rect,
     pub roots: Rect,
-    pub strip: Option<Rect>,
     pub editor_cursor: Option<(u16, u16)>,
     pub tab_bar: Option<Rect>,
     pub panes_area: Rect,
     pub panes: Vec<PaneView>,
     pub split_borders: Vec<SplitBorder>,
-    pub ask: Option<Rect>,
-    pub composer: Rect,
-    pub status: Rect,
+    pub banner: Option<Rect>,
     pub framed: bool,
 }
 
@@ -73,22 +68,6 @@ fn split_off_bottom(area: Rect, height: u16) -> (Rect, Rect) {
         ..area
     };
     (top, bottom)
-}
-
-fn composer_height(app: &mut App, width: u16, theme: &Theme) -> u16 {
-    let border = if app.state.zone == Zone::Panes {
-        theme.muted_style()
-    } else {
-        theme.dim_style()
-    };
-    app.composer.set_frame(border, theme.dim_style());
-    match &app.bottom {
-        Some(bottom) => {
-            let rows = bottom.popup().lines(usize::from(width), theme).len();
-            u16::try_from(rows).unwrap_or(3)
-        }
-        None => app.composer.desired_height(),
-    }
 }
 
 fn split_off_top(area: Rect, height: u16) -> (Rect, Rect) {
@@ -124,20 +103,13 @@ pub fn compute_view(app: &mut App, area: Rect, theme: &Theme) -> ViewState {
         width: area.width.saturating_sub(sidebar_width),
         ..area
     };
-    let (main, status) = split_off_bottom(main, 1);
-    let (main, composer) = split_off_bottom(main, composer_height(app, main.width, theme));
-    let (main, strip) = if strip_line(app, theme).is_some() {
-        let (rest, row) = split_off_bottom(main, 1);
-        (rest, Some(row))
-    } else {
-        (main, None)
-    };
-    let (transcript_area, ask) = if app.state.ask.is_some() {
-        let (rest, bar) = split_off_bottom(main, 5);
-        (rest, Some(bar))
-    } else {
-        (main, None)
-    };
+    let banner_rows = u16::from(
+        app.state.banner.is_some()
+            || app.state.link != Link::Connected
+            || app.state.dropped_frames > 0,
+    );
+    let (transcript_area, banner) = split_off_bottom(main, banner_rows);
+    let banner = (banner_rows > 0).then_some(banner);
     let (tab_bar, panes_area) = if app.state.tabs.len() > 1 {
         let (bar, rest) = split_off_top(transcript_area, 1);
         (Some(bar), rest)
@@ -177,6 +149,10 @@ pub fn compute_view(app: &mut App, area: Rect, theme: &Theme) -> ViewState {
             Some(pane) => pane_view_content(pane, diffs, sessions, inner, theme),
             None => ("empty".to_owned(), Vec::new(), None),
         };
+        let chat =
+            app.state.panes.get(&pane_rect.id).is_some_and(|pane| {
+                matches!(pane.content, PaneContent::Session { chat: Some(_), .. })
+            });
         if pane_rect.focused
             && panes_zone
             && let Some(PaneContent::Editor(editor)) =
@@ -191,6 +167,7 @@ pub fn compute_view(app: &mut App, area: Rect, theme: &Theme) -> ViewState {
             focused: pane_rect.focused && panes_zone,
             title,
             lines,
+            chat,
         });
     }
 
@@ -232,15 +209,12 @@ pub fn compute_view(app: &mut App, area: Rect, theme: &Theme) -> ViewState {
     ViewState {
         sidebar,
         roots: roots_area,
-        strip,
         editor_cursor,
         tab_bar,
         panes_area,
         panes,
         split_borders,
-        ask,
-        composer,
-        status,
+        banner,
         framed,
     }
 }
@@ -267,22 +241,12 @@ fn pane_view_content(
 ) -> (String, Vec<Line<'static>>, Option<(usize, usize)>) {
     let visible = usize::from(inner.height);
     match &mut pane.content {
-        PaneContent::Session {
-            session,
-            transcript,
-        } => {
-            transcript.set_width(usize::from(inner.width));
-            let all = transcript.lines(theme);
-            let max_scroll = all.len().saturating_sub(visible);
-            if pane.scroll_from_bottom > max_scroll {
-                pane.scroll_from_bottom = max_scroll;
-            }
-            let (lines, scroll) = windowed(all, pane.scroll_from_bottom, visible);
+        PaneContent::Session { session, .. } => {
             let title = session.as_ref().map_or_else(
                 || "❯ no session".to_owned(),
                 |id| format!("❯ {}", label_of(sessions, id, 14)),
             );
-            (title, lines, scroll)
+            (title, Vec::new(), None)
         }
         PaneContent::Markdown { path, source } => {
             let all = yi_tui::markdown::render(source, usize::from(inner.width), theme);
@@ -393,7 +357,6 @@ fn notebook_lines(
     out
 }
 
-/// The visible slice, plus the total and first-visible row a scroll bar is drawn from.
 fn windowed(
     all: Vec<Line<'static>>,
     from_bottom: usize,
@@ -519,7 +482,7 @@ fn status_style(theme: &Theme, status: SessionStatus) -> Style {
     }
 }
 
-pub fn render(app: &App, frame: &mut Frame<'_>, view: &ViewState, theme: &Theme) {
+pub fn render(app: &mut App, frame: &mut Frame<'_>, view: &mut ViewState, theme: &Theme) {
     if view.sidebar.width > 0 {
         render_sidebar(app, frame, view.sidebar, theme);
     }
@@ -530,27 +493,28 @@ pub fn render(app: &App, frame: &mut Frame<'_>, view: &ViewState, theme: &Theme)
         render_tab_bar(app, frame, bar, theme);
     }
     let crowd = view.panes.len() > 1;
-    for pane in &view.panes {
-        let inner = pane.rect.inner(pane_margin(view.framed));
+    let framed = view.framed;
+    let kitty = app.kitty;
+    for pane in &mut view.panes {
+        let inner = pane.rect.inner(pane_margin(framed));
+        let dim = crowd && !pane.focused;
+        if pane.chat {
+            paint_chat_pane(app, pane, inner, frame.buffer_mut(), kitty, dim);
+            continue;
+        }
         let body = Paragraph::new(pane.lines.clone());
-        let body = if crowd && !pane.focused {
+        let body = if dim {
             body.style(Style::default().add_modifier(Modifier::DIM))
         } else {
             body
         };
         frame.render_widget(body, inner);
     }
-    if let Some(strip) = view.strip {
-        render_strip(app, frame, strip, theme);
-    }
     if view.framed {
         render_borders(app, frame, view, theme);
     }
     render_thumbs(frame, view, theme);
-    if let Some(area) = view.ask {
-        render_ask(app, frame, area, theme);
-    }
-    let notebook_input = app
+    let notebook = app
         .state
         .focused_pane_id()
         .and_then(|id| app.state.panes.get(&id))
@@ -558,20 +522,80 @@ pub fn render(app: &App, frame: &mut Frame<'_>, view: &ViewState, theme: &Theme)
             PaneContent::Notebook { input, .. } => Some(input.as_ref()),
             _ => None,
         });
-    match (notebook_input, &app.bottom) {
-        (Some(input), _) => frame.render_widget(input, view.composer),
-        (None, Some(bottom)) => {
-            let lines = bottom
-                .popup()
-                .lines(usize::from(view.composer.width), theme);
-            frame.render_widget(Paragraph::new(lines), view.composer);
-        }
-        (None, None) => frame.render_widget(&app.composer.textarea, view.composer),
+    if let (Some(input), Some(pane)) = (notebook, view.panes.iter().find(|pane| pane.focused)) {
+        let inner = pane.rect.inner(pane_margin(framed));
+        let (_, row) = split_off_bottom(inner, 3);
+        frame.render_widget(input, row);
     }
-    render_status(app, frame, view.status, theme);
+    if let Some(area) = view.banner {
+        render_banner(app, frame, area, theme);
+    }
     if matches!(app.state.mode, Mode::Navigator { .. }) {
         render_navigator(app, frame, view, theme);
     }
+}
+
+/// Solo's chat into the pane's rectangle; the focused pane alone carries the orb.
+fn paint_chat_pane(
+    app: &mut App,
+    view: &mut PaneView,
+    inner: Rect,
+    buffer: &mut Buffer,
+    kitty: bool,
+    dim: bool,
+) {
+    let Some(pane) = app.state.panes.get_mut(&view.id) else {
+        return;
+    };
+    let PaneContent::Session {
+        chat: Some(chat), ..
+    } = &mut pane.content
+    else {
+        return;
+    };
+    chat.app.set_kitty(kitty && view.focused);
+    let goal = chat.port.goal();
+    let mut scroll = pane.scroll_from_bottom;
+    view.scroll = yi_tui::render::paint_pane(&mut chat.app, goal, buffer, inner, &mut scroll);
+    pane.scroll_from_bottom = scroll;
+    if dim {
+        for y in inner.top()..inner.bottom() {
+            for x in inner.left()..inner.right() {
+                if let Some(cell) = buffer.cell_mut((x, y)) {
+                    let style = cell.style().add_modifier(Modifier::DIM);
+                    cell.set_style(style);
+                }
+            }
+        }
+    }
+}
+
+fn render_banner(app: &App, frame: &mut Frame<'_>, area: Rect, theme: &Theme) {
+    let mut spans = Vec::new();
+    match &app.state.link {
+        Link::Connecting => spans.push(Span::styled(" connecting… ", theme.dim_style())),
+        Link::Connected => {}
+        Link::Disconnected { reason } => {
+            let short: String = reason.chars().take(28).collect();
+            spans.push(Span::styled(
+                format!(" ✕ disconnected: {short} "),
+                Style::default().fg(theme.error),
+            ));
+        }
+    }
+    if let Some(note) = &app.state.banner {
+        spans.push(Span::styled(
+            format!(" {note}"),
+            Style::default().fg(theme.warning),
+        ));
+    }
+    if app.state.dropped_frames > 0 {
+        spans.push(Span::styled(
+            format!("  dropped:{}", app.state.dropped_frames),
+            theme.dim_style(),
+        ));
+    }
+    frame.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
 /// Border cells with edge-bit union, so shared pane edges resolve to real
@@ -653,7 +677,6 @@ fn render_borders(app: &App, frame: &mut Frame<'_>, view: &ViewState, theme: &Th
     }
 }
 
-/// A bar on the right border, sized by the fraction of the content on screen.
 fn render_thumbs(frame: &mut Frame<'_>, view: &ViewState, theme: &Theme) {
     let buffer = frame.buffer_mut();
     for pane in &view.panes {
@@ -944,119 +967,6 @@ fn render_sidebar(app: &App, frame: &mut Frame<'_>, area: Rect, theme: &Theme) {
     frame.render_widget(Paragraph::new(lines), area);
 }
 
-fn strip_text(app: &App) -> Option<String> {
-    let session = app.state.focused_session()?;
-    let mut parts = Vec::new();
-    if let Some(diff) = app.state.diffs.get(&session)
-        && !diff.files.is_empty()
-    {
-        let names: Vec<String> = diff
-            .files
-            .iter()
-            .rev()
-            .take(4)
-            .map(|(path, _)| short_path(path))
-            .collect();
-        let more = diff.files.len().saturating_sub(names.len());
-        let tail = if more > 0 {
-            format!(" +{more}")
-        } else {
-            String::new()
-        };
-        parts.push(format!("touched {}{tail}", names.join(", ")));
-    }
-    let running = app.state.children.get(&session).map_or(0, |rows| {
-        rows.iter()
-            .filter(|row| row.status == yi_types::subagent::ChildStatus::Running)
-            .count()
-    });
-    if running > 0 {
-        parts.push(format!("◐ {running} running"));
-    }
-    if app
-        .state
-        .ask
-        .as_ref()
-        .is_some_and(|ask| ask.params.session_id == session.0)
-    {
-        parts.push("⚠ waiting on you".to_owned());
-    }
-    (!parts.is_empty()).then(|| parts.join("  ·  "))
-}
-
-fn strip_line(app: &App, theme: &Theme) -> Option<Line<'static>> {
-    let working = app
-        .state
-        .focused_session()
-        .and_then(|id| app.state.sessions.get(&id))
-        .is_some_and(|row| row.status == SessionStatus::Working);
-    let mut spans = Vec::new();
-    if let Some(note) = &app.state.status_note {
-        spans.push(Span::styled(
-            format!(" {note}"),
-            Style::default().fg(theme.warning),
-        ));
-    }
-    if let Some(text) = strip_text(app) {
-        let lead = if spans.is_empty() { " " } else { "  ·  " };
-        spans.push(Span::styled(format!("{lead}{text}"), theme.muted_style()));
-    }
-    if working {
-        let mut line = working_line(None, app.spinner, false, theme);
-        line.spans.extend(spans);
-        return Some(line);
-    }
-    (!spans.is_empty()).then(|| Line::from(spans))
-}
-
-fn render_strip(app: &App, frame: &mut Frame<'_>, area: Rect, theme: &Theme) {
-    let Some(line) = strip_line(app, theme) else {
-        return;
-    };
-    frame.render_widget(Paragraph::new(line), area);
-}
-
-fn render_ask(app: &App, frame: &mut Frame<'_>, area: Rect, theme: &Theme) {
-    let Some(ask) = &app.state.ask else { return };
-    let block = ratatui::widgets::Block::bordered()
-        .border_type(ratatui::widgets::BorderType::Rounded)
-        .border_style(Style::default().fg(theme.warning))
-        .title(" permission ");
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
-    let area = inner;
-    let title = Line::from(vec![
-        Span::styled("⚠ ", Style::default().fg(theme.warning)),
-        Span::styled(
-            ask.params.title.clone(),
-            Style::default()
-                .fg(theme.warning)
-                .add_modifier(Modifier::BOLD),
-        ),
-    ]);
-    let detail = ask
-        .params
-        .description
-        .clone()
-        .unwrap_or_else(|| "the agent asks for permission".to_owned());
-    let key_hints = Line::from(vec![
-        Span::styled("a", theme.accent_style()),
-        Span::styled(" allow once  ", theme.dim_style()),
-        Span::styled("A", theme.accent_style()),
-        Span::styled(" always  ", theme.dim_style()),
-        Span::styled("r", theme.accent_style()),
-        Span::styled(" reject", theme.dim_style()),
-    ]);
-    frame.render_widget(
-        Paragraph::new(vec![
-            title,
-            Line::styled(detail, theme.muted_style()),
-            key_hints,
-        ]),
-        area,
-    );
-}
-
 fn render_navigator(app: &App, frame: &mut Frame<'_>, view: &ViewState, theme: &Theme) {
     let Mode::Navigator { query, selected } = &app.state.mode else {
         return;
@@ -1116,73 +1026,4 @@ fn render_navigator(app: &App, frame: &mut Frame<'_>, view: &ViewState, theme: &
         theme.dim_style(),
     ));
     frame.render_widget(Paragraph::new(lines).block(block), popup);
-}
-
-fn render_status(app: &App, frame: &mut Frame<'_>, area: Rect, theme: &Theme) {
-    if matches!(app.state.mode, Mode::Prefix) {
-        let spans = vec![
-            Span::styled(
-                " PREFIX ",
-                Style::default()
-                    .fg(theme.accent)
-                    .add_modifier(Modifier::REVERSED),
-            ),
-            Span::styled(
-                format!(" {}", keys::hint(true, app.cmd_hints)),
-                theme.dim_style(),
-            ),
-        ];
-        frame.render_widget(Paragraph::new(Line::from(spans)), area);
-        return;
-    }
-    let focused = app.state.focused_session();
-    let row = focused.as_ref().and_then(|id| app.state.sessions.get(id));
-    let info = focused
-        .as_ref()
-        .and_then(|id| app.state.status.get(id))
-        .cloned()
-        .unwrap_or_default();
-    let subagents = focused
-        .as_ref()
-        .and_then(|id| app.state.children.get(id))
-        .map_or(0, |rows| {
-            rows.iter()
-                .filter(|child| child.status == yi_types::subagent::ChildStatus::Running)
-                .count()
-        });
-    let input = StatusInput {
-        model: info.model,
-        thinking: info.effort,
-        mode: None,
-        cwd: row.map_or_else(|| app.state.root.clone(), |row| row.root.clone()),
-        branch: None,
-        cost: info.cost,
-        session_name: row.map(SessionRow::label).unwrap_or_default(),
-        subagents,
-        context_used: info.context_used,
-        context_window: info.context_window,
-        focused_child: None,
-    };
-    let mut line = yi_tui::status::render(&input, usize::from(area.width), theme);
-    let link = match &app.state.link {
-        Link::Connecting => Some(Span::styled(" connecting… ", theme.dim_style())),
-        Link::Connected => None,
-        Link::Disconnected { reason } => {
-            let short: String = reason.chars().take(28).collect();
-            Some(Span::styled(
-                format!(" ✕ disconnected: {short} "),
-                Style::default().fg(theme.error),
-            ))
-        }
-    };
-    if let Some(link) = link {
-        line.spans.insert(0, link);
-    }
-    if app.state.dropped_frames > 0 {
-        line.spans.push(Span::styled(
-            format!("  dropped:{}", app.state.dropped_frames),
-            theme.dim_style(),
-        ));
-    }
-    frame.render_widget(Paragraph::new(line), area);
 }

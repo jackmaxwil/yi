@@ -7,25 +7,25 @@ use std::time::{Duration, Instant};
 use ratatui::crossterm::event::{Event as CtEvent, KeyCode, KeyEvent, KeyModifiers};
 use ratatui::layout::Direction;
 use serde_json::{Value, json};
-use yi_tui::composer::Composer;
-use yi_tui::popup::{ListPopup, walk_files};
+use yi_tui::colors::Theme;
+use yi_tui::{Reply, UiEvent};
 use yi_types::acp::{AcpPermissionParams, AcpSessionUpdate, AcpUpdateParams};
 
 use crate::client::{ClientEvent, Outbound};
 use crate::keys::{self, Action};
 use crate::layout::{NavDirection, PaneId};
 use crate::model::{
-    ActiveAsk, Bottom, ConsoleState, Link, Mode, PaneContent, RequestId, SessionId, SessionRow,
-    SessionStatus, Zone, now_ms,
+    ConsoleState, Link, Mode, PaneContent, RequestId, SessionId, SessionRow, SessionStatus, Zone,
+    now_ms,
 };
 use crate::notify::{NoteQueue, OscFlavor, escape};
+use port::EventSeq;
 
 const REQUEST_DEADLINE: Duration = Duration::from_secs(10);
 const LIST_POLL: Duration = Duration::from_secs(5);
 const SPLIT_ANIM: Duration = Duration::from_millis(140);
 const QUIT_WINDOW: Duration = Duration::from_secs(1);
 
-/// One split-open animation: the fresh split's ratio eases 0.12 -> 0.5.
 struct Anim {
     tab: usize,
     path: Vec<bool>,
@@ -51,6 +51,10 @@ pub enum RequestKind {
     KernelExecute,
     KernelCancel,
     Slash(SessionId),
+    Rewind(SessionId),
+    Plan(SessionId),
+    SetConfig,
+    Steer,
 }
 
 struct Pending {
@@ -60,14 +64,12 @@ struct Pending {
 
 pub struct App {
     pub state: ConsoleState,
-    pub composer: Composer,
-    pub bottom: Option<Bottom>,
-    pub spinner: usize,
+    pub theme: Theme,
+    pub kitty: bool,
     pending: HashMap<RequestId, Pending>,
     next_request: u64,
     next_list_poll: Instant,
     pub dirty: bool,
-    /// Split-open animations; empty under the headless harness.
     animations: Vec<Anim>,
     pub animate: bool,
     pub cmd_hints: bool,
@@ -76,9 +78,7 @@ pub struct App {
     editor_drag: bool,
     notes: NoteQueue,
     pub osc_flavor: OscFlavor,
-    /// Escapes for the real loop to write to the terminal; drained per draw.
     pub osc_out: Vec<String>,
-    /// Hit-test table from the last draw; the mouse path reads it.
     pub hits: Option<crate::render::Hits>,
     /// Split path under an active border drag, pinned to its tab so a
     /// mid-drag tab switch can never resize a colliding path elsewhere.
@@ -86,7 +86,10 @@ pub struct App {
     /// Invariant: a `replayedTo` offset is valid only while nothing later streamed for that
     /// session; any update clears it, keeping a skip-ahead resume equal to a full replay.
     resume_offsets: HashMap<SessionId, u64>,
-    interrupt_at: Option<Instant>,
+    /// The last `_yi/event` seen per session; `None` between a resume and its first event.
+    seq: HashMap<SessionId, Option<EventSeq>>,
+    /// The first ctrl+c outside a chat pane; a second inside the window quits.
+    quit_at: Option<Instant>,
 }
 
 fn frame(id: Option<u64>, method: &str, params: Value) -> Value {
@@ -97,12 +100,11 @@ fn frame(id: Option<u64>, method: &str, params: Value) -> Value {
 }
 
 impl App {
-    pub fn new(root: String) -> Self {
+    pub fn new(root: String, theme: Theme) -> Self {
         Self {
             state: ConsoleState::new(root),
-            composer: Composer::default(),
-            bottom: None,
-            spinner: 0,
+            theme,
+            kitty: false,
             pending: HashMap::new(),
             next_request: 0,
             next_list_poll: Instant::now() + LIST_POLL,
@@ -119,7 +121,8 @@ impl App {
             hits: None,
             drag: None,
             resume_offsets: HashMap::new(),
-            interrupt_at: None,
+            seq: HashMap::new(),
+            quit_at: None,
         }
     }
 
@@ -147,7 +150,10 @@ impl App {
     }
 
     fn note(&mut self, text: &str) {
-        self.state.status_note = Some(text.to_owned());
+        match self.focused_chat() {
+            Some(chat) => chat.app.notice(text),
+            None => self.state.banner = Some(text.to_owned()),
+        }
         self.dirty = true;
     }
 
@@ -175,15 +181,7 @@ impl App {
         self.tick_animations(now);
         self.tick_notes(now);
         self.check_editors(now);
-        if self.focused_status() == Some(SessionStatus::Working) {
-            self.spinner = self.spinner.wrapping_add(1);
-            self.dirty = true;
-        }
-    }
-
-    fn focused_status(&self) -> Option<SessionStatus> {
-        let id = self.state.focused_session()?;
-        self.state.sessions.get(&id).map(|row| row.status)
+        self.pump_chats(outbound);
     }
 
     fn tick_animations(&mut self, now: Instant) {
@@ -228,12 +226,15 @@ impl App {
             if !still {
                 continue;
             }
-            let short: String = note.session.0.chars().take(12).collect();
-            let (label, body) = match note.status {
-                SessionStatus::Blocked => ("blocked", "needs your approval"),
-                _ => ("done", "finished while you were away"),
+            let short = self.state.sessions.get(&note.session).map_or_else(
+                || note.session.0.chars().take(12).collect(),
+                SessionRow::label,
+            );
+            let body = match note.status {
+                SessionStatus::Blocked => "needs your approval",
+                _ => "done while you were away",
             };
-            self.note(&format!("{short} {label} — {body}"));
+            self.note(&format!("{short} {body}"));
             if let Some(seq) = escape(self.osc_flavor, &format!("yi: {short}"), body) {
                 self.osc_out.push(seq);
             }
@@ -256,7 +257,6 @@ impl App {
                 self.state.link = Link::Disconnected { reason };
                 // Cancel correctness: nothing in flight survives the socket.
                 self.pending.clear();
-                self.state.ask = None;
                 self.dirty = true;
             }
             ClientEvent::BadFrame => {
@@ -294,7 +294,7 @@ impl App {
                             .set_session_status(&session, SessionStatus::Blocked);
                         self.notes
                             .arm(&session, SessionStatus::Blocked, Instant::now());
-                        self.state.ask = Some(ActiveAsk { request_id, params });
+                        self.offer_ask(request_id, params);
                     }
                     _ => {
                         self.state.dropped_frames = self.state.dropped_frames.saturating_add(1);
@@ -357,19 +357,53 @@ impl App {
             }
             RequestKind::ListWorker => {
                 self.merge_worker_list(&result);
+                self.sync_chat_names();
                 if std::mem::take(&mut self.autostart) {
                     self.autostart_session(outbound);
                 } else if self.state.order.is_empty() {
                     self.note("no sessions for this root — alt+n starts one");
                 }
             }
-            RequestKind::ListDaemon => self.merge_daemon_list(&result),
+            RequestKind::ListDaemon => {
+                self.merge_daemon_list(&result);
+                self.sync_chat_names();
+            }
             RequestKind::Tracked(session, paths) => self.absorb_tracked(&session, &paths, &result),
-            RequestKind::KernelExecute | RequestKind::KernelCancel => {}
+            RequestKind::KernelExecute
+            | RequestKind::KernelCancel
+            | RequestKind::SetConfig
+            | RequestKind::Steer => {}
             RequestKind::Slash(session) => {
                 if let Some(text) = result.get("text").and_then(Value::as_str) {
-                    self.note_transcript(&session, text);
+                    let text = text.to_owned();
+                    self.fan_out(&session, || UiEvent::Reply(Reply::Notice(text.clone())));
                 }
+            }
+            RequestKind::Rewind(session) => {
+                if let Some(unsent) = result.get("unsent").and_then(Value::as_str) {
+                    for chat in self.state.chats_mut(&session) {
+                        chat.app.set_draft_if_empty(unsent);
+                    }
+                }
+            }
+            RequestKind::Plan(session) => {
+                let plan = result.get("plan").cloned().unwrap_or(Value::Null);
+                let subplans = result.get("subplans").cloned().unwrap_or(Value::Null);
+                let decoded =
+                    serde_json::from_value::<yi_types::plan::doc::Plan>(plan).map(|plan| {
+                        let subplans: Vec<yi_types::plan::doc::Plan> =
+                            serde_json::from_value(subplans).unwrap_or_default();
+                        (plan, subplans)
+                    });
+                self.fan_out(&session, || {
+                    UiEvent::Reply(match &decoded {
+                        Ok((plan, subplans)) => Reply::Plan {
+                            plan: plan.clone(),
+                            subplans: subplans.clone(),
+                        },
+                        Err(error) => Reply::Notice(format!("/plantree: {error}")),
+                    })
+                });
             }
             RequestKind::NewSession(pane_id) => {
                 if let Some(session_id) = result.get("sessionId").and_then(Value::as_str) {
@@ -385,6 +419,7 @@ impl App {
                         last_ms: 0,
                     });
                     self.bind_pane(pane_id, &session);
+                    self.absorb_result(&session, &result);
                     self.mark_seen(outbound, &session);
                 }
             }
@@ -395,6 +430,7 @@ impl App {
                 if let Some(replayed_to) = result.get("replayedTo").and_then(Value::as_u64) {
                     self.resume_offsets.insert(session.clone(), replayed_to);
                 }
+                self.absorb_result(&session, &result);
                 self.mark_seen(outbound, &session);
             }
             RequestKind::Prompt => {
@@ -405,29 +441,30 @@ impl App {
         self.dirty = true;
     }
 
+    /// A chat already on the session keeps its draft; the replay that follows resets the
+    /// transcript. Any other content gives way to a fresh chat.
     fn bind_pane(&mut self, pane_id: PaneId, session: &SessionId) {
-        if let Some(pane) = self.state.panes.get_mut(&pane_id) {
-            match &mut pane.content {
-                PaneContent::Session {
-                    session: slot,
-                    transcript,
-                } => {
-                    transcript.clear();
-                    *slot = Some(session.clone());
-                }
-                PaneContent::Notebook { session: slot, .. } => *slot = Some(session.clone()),
-                PaneContent::Markdown { .. }
-                | PaneContent::Diff { .. }
-                | PaneContent::SessionDiff { .. }
-                | PaneContent::Editor(_) => {
-                    pane.content = PaneContent::Session {
-                        session: Some(session.clone()),
-                        transcript: crate::transcript::Transcript::new(),
-                    };
-                }
+        let keep = matches!(
+            self.state.panes.get(&pane_id).map(|pane| &pane.content),
+            Some(PaneContent::Session { session: Some(bound), chat: Some(_) }) if bound == session
+        );
+        let fresh = (!keep).then(|| self.make_chat(pane_id, session));
+        let Some(pane) = self.state.panes.get_mut(&pane_id) else {
+            return;
+        };
+        match (&mut pane.content, fresh) {
+            (PaneContent::Notebook { session: slot, .. }, _) => *slot = Some(session.clone()),
+            (_, Some(chat)) => {
+                pane.content = PaneContent::Session {
+                    session: Some(session.clone()),
+                    chat: Some(chat),
+                };
             }
-            pane.scroll_from_bottom = 0;
+            (_, None) => {}
         }
+        pane.scroll_from_bottom = 0;
+        self.state.banner = None;
+        self.deliver_orphan_asks(session);
     }
 
     fn merge_worker_list(&mut self, result: &Value) {
@@ -515,29 +552,8 @@ impl App {
     fn reduce_update(&mut self, outbound: &Outbound, update: AcpUpdateParams) {
         let id = SessionId(update.session_id.clone());
         self.resume_offsets.remove(&id);
-        if let AcpSessionUpdate::Extension(extension) = &update.update
-            && extension.session_update == "_yi/subagent_update"
-        {
-            let fields: serde_json::Map<String, Value> = extension
-                .fields
-                .iter()
-                .map(|(key, value)| (key.clone(), value.clone()))
-                .collect();
-            if let Ok(child) =
-                serde_json::from_value::<yi_types::subagent::ChildUpdate>(Value::Object(fields))
-            {
-                let rows = self.state.children.entry(id.clone()).or_default();
-                match rows.iter().position(|row| row.id == child.id) {
-                    Some(at) => {
-                        if let Some(slot) = rows.get_mut(at) {
-                            *slot = child;
-                        }
-                    }
-                    None if rows.len() < 32 => rows.push(child),
-                    None => {}
-                }
-                self.dirty = true;
-            }
+        if let AcpSessionUpdate::Extension(extension) = &update.update {
+            self.reduce_extension(outbound, &id, extension);
         }
         if let AcpSessionUpdate::StateUpdate(state) = &update.update {
             let focused = self.state.focused_session().as_ref() == Some(&id);
@@ -550,19 +566,9 @@ impl App {
             if status == SessionStatus::Working && !was_working {
                 self.state.children.remove(&id);
             }
-            // A pane the user is looking at needs no unseen shout, and a
-            // resolved permission clears the ask bar.
+            // A pane the user is looking at needs no unseen shout.
             if focused && status == SessionStatus::DoneUnseen {
                 status = SessionStatus::Idle;
-            }
-            if status != SessionStatus::Blocked
-                && self
-                    .state
-                    .ask
-                    .as_ref()
-                    .is_some_and(|ask| ask.params.session_id == id.0)
-            {
-                self.state.ask = None;
             }
             self.state.set_session_status(&id, status);
             match status {
@@ -572,19 +578,10 @@ impl App {
                 _ => self.notes.disarm(&id),
             }
         }
-        if let AcpSessionUpdate::UsageUpdate { used, size } = &update.update {
-            let info = self.state.status.entry(id.clone()).or_default();
-            info.context_used = *used;
-            info.context_window = *size;
-        }
-        if let AcpSessionUpdate::Extension(extension) = &update.update
-            && extension.session_update == "_yi/status"
-        {
-            self.state
-                .status
-                .entry(id.clone())
-                .or_default()
-                .absorb(&extension.fields);
+        if let AcpSessionUpdate::UsageUpdate { size, .. } = &update.update {
+            for chat in self.state.chats_mut(&id) {
+                chat.app.set_context_window(*size);
+            }
         }
         self.absorb_edit(outbound, &id, &update.update);
         self.absorb_kernel(&id, &update.update);
@@ -592,21 +589,10 @@ impl App {
             if pane.session() != Some(&id) {
                 continue;
             }
-            match &mut pane.content {
-                PaneContent::Session { transcript, .. } => {
-                    if transcript.apply(&update.update) {
-                        pane.scroll_from_bottom = 0;
-                    }
-                }
-                PaneContent::Notebook { cells, .. } => {
-                    if apply_notebook(cells, &update.update) {
-                        pane.scroll_from_bottom = 0;
-                    }
-                }
-                PaneContent::Markdown { .. }
-                | PaneContent::Diff { .. }
-                | PaneContent::SessionDiff { .. }
-                | PaneContent::Editor(_) => {}
+            if let PaneContent::Notebook { cells, .. } = &mut pane.content
+                && apply_notebook(cells, &update.update)
+            {
+                pane.scroll_from_bottom = 0;
             }
         }
     }
@@ -739,21 +725,6 @@ impl App {
         );
     }
 
-    fn answer_ask(&mut self, outbound: &Outbound, option_id: &str) {
-        let Some(ask) = self.state.ask.take() else {
-            return;
-        };
-        let response = json!({
-            "jsonrpc": "2.0",
-            "id": ask.request_id,
-            "result": {"outcome": {"outcome": "selected", "optionId": option_id}},
-        });
-        if !outbound.send(&response) {
-            self.note("send failed: permission answer not delivered");
-        }
-        self.dirty = true;
-    }
-
     fn open_selected(&mut self, outbound: &Outbound) {
         if !self.connected() {
             self.note("not connected");
@@ -789,22 +760,19 @@ impl App {
             (Some(session), Some(pane_id)) => self.resume_into(outbound, pane_id, &session),
             _ => self.new_session(outbound),
         }
-        let hint = if self.cmd_hints {
-            "workspace · ⌘P palette · ⌘\\ split · ⌘J notebook · ⌘B sidebar"
-        } else {
-            "workspace · ⌥/ palette · ⌥v split · ⌥⇧J notebook · ⌥b sidebar"
-        };
-        self.note(hint);
     }
 
     fn new_session(&mut self, outbound: &Outbound) {
+        if let Some(pane_id) = self.state.focused_pane_id() {
+            self.new_session_into(outbound, pane_id);
+        }
+    }
+
+    pub(crate) fn new_session_into(&mut self, outbound: &Outbound, pane_id: PaneId) {
         if !self.connected() {
             self.note("not connected");
             return;
         }
-        let Some(pane_id) = self.state.focused_pane_id() else {
-            return;
-        };
         self.state.zone = Zone::Panes;
         let root = self.state.root.clone();
         self.send_request(
@@ -884,8 +852,7 @@ impl App {
             Action::ScrollDown => self.scroll_focused(-3),
             Action::PageUp => self.scroll_focused(20),
             Action::PageDown => self.scroll_focused(-20),
-            Action::CancelTurn => self.cancel_turn(outbound),
-            Action::Interrupt => self.interrupt(outbound),
+            Action::SelectSlot(n) => self.select_slot(outbound, n),
             Action::Quit => self.state.quit = true,
             Action::ToggleSidebar => self.state.sidebar = self.state.sidebar.next(),
             Action::ToggleNotebook => self.toggle_side(outbound, diffs::SideKind::Notebook),
@@ -898,7 +865,6 @@ impl App {
                 }
             }
         }
-        // Whatever pane the action landed on, its session counts as looked-at.
         if let Some(session) = self.state.focused_session()
             && self
                 .state
@@ -909,6 +875,22 @@ impl App {
             self.mark_seen(outbound, &session);
         }
         self.dirty = true;
+    }
+
+    fn select_slot(&mut self, outbound: &Outbound, n: u8) {
+        let session = self
+            .state
+            .visible_rows()
+            .get(usize::from(n).saturating_sub(1))
+            .and_then(|index| self.state.order.get(*index))
+            .cloned();
+        let Some(session) = session else {
+            return self.note(&format!("no session in slot {n}"));
+        };
+        if let Some(pane_id) = self.state.focused_pane_id() {
+            self.resume_into(outbound, pane_id, &session);
+            self.state.zone = Zone::Panes;
+        }
     }
 
     fn split_with_anim(&mut self, direction: Direction) {
@@ -936,7 +918,6 @@ impl App {
     }
 
     fn focus_direction(&mut self, direction: NavDirection) {
-        // A fixed virtual area: navigation needs only relative geometry.
         let area = ratatui::layout::Rect::new(0, 0, 200, 100);
         if let Some(tab) = self.state.tab_mut() {
             tab.layout.focus_direction(direction, area);
@@ -965,8 +946,7 @@ impl App {
             }
             CtEvent::Paste(text) => {
                 if self.state.zone == Zone::Panes && matches!(self.state.mode, Mode::Normal) {
-                    self.composer.handle_paste(&text);
-                    self.dirty = true;
+                    self.chat_event(CtEvent::Paste(text));
                 }
             }
             _ => {}
@@ -978,30 +958,7 @@ impl App {
             self.cmd_hints = true;
         }
         if matches!(self.state.mode, Mode::Navigator { .. }) {
-            self.handle_navigator_key(outbound, key);
-            return;
-        }
-        if self.state.zone == Zone::Panes
-            && !self.on_editor()
-            && !self.on_notebook()
-            && let Some(bottom) = self.bottom.take()
-        {
-            return self.handle_bottom_key(outbound, bottom, key);
-        }
-        let composer_empty = self.composer.is_empty();
-        // Invariant: bare approval keys fire only over an empty composer, so
-        // mid-prompt typing can never answer a permission by accident.
-        if self.state.ask.is_some() && (composer_empty || self.state.zone == Zone::Sidebar) {
-            match key.code {
-                KeyCode::Char('a') if key.modifiers.is_empty() => {
-                    return self.answer_ask(outbound, "allow_once");
-                }
-                KeyCode::Char('A') => return self.answer_ask(outbound, "allow_always"),
-                KeyCode::Char('r') if key.modifiers.is_empty() => {
-                    return self.answer_ask(outbound, "reject_once");
-                }
-                _ => {}
-            }
+            return self.handle_navigator_key(outbound, key);
         }
         if matches!(self.state.mode, Mode::Prefix) {
             self.state.mode = Mode::Normal;
@@ -1016,24 +973,45 @@ impl App {
             self.dirty = true;
             return;
         }
+        let on_chat = self.state.zone == Zone::Panes && self.on_chat();
+        let multi = self
+            .state
+            .tab()
+            .is_some_and(|tab| tab.layout.pane_ids().len() > 1);
         if let Some(action) = keys::direct(&key) {
-            // Esc cancels the turn only from the panes zone; sidebar Esc is
-            // inert rather than surprising, and on a notebook it cancels the cell.
-            if action == Action::CancelTurn && self.state.zone == Zone::Sidebar {
-                return;
+            // The chord goes to the pane exactly when the screen says so: a popup
+            // owns Tab, a lone chat owns the arrows (solo's child focus).
+            let to_pane = match action {
+                Action::ToggleZone => on_chat && self.popup_open(),
+                Action::FocusLeft | Action::FocusRight | Action::FocusUp | Action::FocusDown => {
+                    on_chat && !multi
+                }
+                Action::PageUp | Action::PageDown => self.on_editor(),
+                _ => false,
+            };
+            if !to_pane {
+                return self.apply_action(outbound, action);
             }
-            if action == Action::CancelTurn && self.on_notebook() {
-                return self.cancel_notebook_cell(outbound);
-            }
-            if self.on_editor()
-                && matches!(
-                    action,
-                    Action::CancelTurn | Action::PageUp | Action::PageDown
-                )
-            {
+            if self.on_editor() {
                 return self.editor_key(key);
             }
-            self.apply_action(outbound, action);
+            return self.chat_event(CtEvent::Key(key));
+        }
+        // ctrl+c is solo's own binding inside a chat pane; elsewhere a plain double-tap quits.
+        if key.code == KeyCode::Char('c')
+            && key.modifiers.contains(KeyModifiers::CONTROL)
+            && !on_chat
+        {
+            let now = Instant::now();
+            if self
+                .quit_at
+                .is_some_and(|at| now.saturating_duration_since(at) < QUIT_WINDOW)
+            {
+                self.state.quit = true;
+            } else {
+                self.quit_at = Some(now);
+                self.note("ctrl+c again quits");
+            }
             return;
         }
         match self.state.zone {
@@ -1064,6 +1042,7 @@ impl App {
             },
             Zone::Panes if self.on_editor() => self.editor_key(key),
             Zone::Panes if self.on_notebook() => match key.code {
+                KeyCode::Esc => self.cancel_notebook_cell(outbound),
                 KeyCode::Enter if key.modifiers.contains(KeyModifiers::SHIFT) => {
                     self.run_notebook_cell(outbound);
                 }
@@ -1076,31 +1055,7 @@ impl App {
                     self.dirty = true;
                 }
             },
-            Zone::Panes => {
-                let plain = !key
-                    .modifiers
-                    .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT);
-                match key.code {
-                    KeyCode::Enter if !key.modifiers.contains(KeyModifiers::SHIFT) => {
-                        self.submit_prompt(outbound);
-                    }
-                    KeyCode::Enter => self.composer.insert_newline(),
-                    KeyCode::Char('/') if plain && self.composer.is_empty() => {
-                        let verbs = chat::CONSOLE_VERBS
-                            .iter()
-                            .map(|verb| (*verb).to_owned())
-                            .collect();
-                        self.bottom = Some(Bottom::Command(ListPopup::new('/', verbs)));
-                    }
-                    KeyCode::Char('@') if plain => {
-                        let files = walk_files(std::path::Path::new(&self.state.root), 100);
-                        self.bottom = Some(Bottom::File(ListPopup::new('@', files)));
-                    }
-                    KeyCode::Backspace if plain => self.composer.backspace(),
-                    _ => self.composer.input(key),
-                }
-                self.dirty = true;
-            }
+            Zone::Panes => self.chat_event(CtEvent::Key(key)),
         }
     }
 }
@@ -1111,6 +1066,7 @@ mod editor;
 mod mouse;
 mod navigator;
 mod notebook;
+pub mod port;
 
 pub use mouse::MouseKind;
 use notebook::apply_notebook;
