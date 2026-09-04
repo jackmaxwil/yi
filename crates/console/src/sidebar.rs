@@ -7,8 +7,36 @@ use ratatui::widgets::Paragraph;
 use yi_tui::colors::{Theme, name_tile, tile_style};
 
 use crate::app::App;
+use crate::avatar::Placement;
 use crate::model::{Mode, SessionStatus, SidebarMode, Zone, now_ms};
 use crate::render::{NAME_WIDTH, RAIL_ROWS, status_style};
+
+pub struct SidebarRow {
+    pub index: Option<usize>,
+    pub line: Line<'static>,
+    pub avatar: Option<Placement>,
+}
+
+impl SidebarRow {
+    fn plain(index: Option<usize>, line: Line<'static>) -> Self {
+        Self {
+            index,
+            line,
+            avatar: None,
+        }
+    }
+}
+
+fn avatar_at(col: u16, cols: u16, rows: u16, key: &str, accent: &str) -> Option<Placement> {
+    Some(Placement {
+        col,
+        row: 0,
+        cols,
+        rows,
+        key: key.to_owned(),
+        accent: accent.to_owned(),
+    })
+}
 
 fn bucket(now: u64, then: u64) -> &'static str {
     if then == 0 {
@@ -32,7 +60,7 @@ fn fade(line: &mut Line<'static>, level: usize, theme: &Theme) {
     }
 }
 
-pub fn sidebar_lines(app: &App, theme: &Theme, height: u16) -> Vec<(Option<usize>, Line<'static>)> {
+pub fn sidebar_lines(app: &App, theme: &Theme, height: u16) -> Vec<SidebarRow> {
     let mut rows = Vec::new();
     let rail = app.state.sidebar == SidebarMode::Rail;
     let multi_root = !rail && app.state.roots().len() > 1;
@@ -57,7 +85,7 @@ pub fn sidebar_lines(app: &App, theme: &Theme, height: u16) -> Vec<(Option<usize
         if multi_root && current_root != Some(row.root.as_str()) {
             current_root = Some(row.root.as_str());
             let label = row.root.rsplit('/').next().unwrap_or(&row.root);
-            rows.push((
+            rows.push(SidebarRow::plain(
                 None,
                 Line::styled(
                     format!(" {label}"),
@@ -67,7 +95,7 @@ pub fn sidebar_lines(app: &App, theme: &Theme, height: u16) -> Vec<(Option<usize
         }
         if !rail && current_bucket != Some(bucket(now, row.recency())) {
             current_bucket = Some(bucket(now, row.recency()));
-            rows.push((
+            rows.push(SidebarRow::plain(
                 None,
                 Line::styled(
                     format!("  {}", bucket(now, row.recency())),
@@ -100,9 +128,9 @@ pub fn sidebar_lines(app: &App, theme: &Theme, height: u16) -> Vec<(Option<usize
             "  ".to_owned()
         };
         if rail {
-            rows.push((
-                Some(index),
-                Line::from(vec![
+            rows.push(SidebarRow {
+                index: Some(index),
+                line: Line::from(vec![
                     Span::styled(slot_text, on_row(number)),
                     Span::styled(name_tile(row.seed()), tile_style(row.seed())),
                     Span::styled("   ".to_owned(), on_row(Style::default())),
@@ -111,11 +139,13 @@ pub fn sidebar_lines(app: &App, theme: &Theme, height: u16) -> Vec<(Option<usize
                         on_row(status_style(theme, row.status)),
                     ),
                 ]),
-            ));
-            rows.push((
+                avatar: avatar_at(2, 4, 2, &id.0, row.seed()),
+            });
+            rows.push(SidebarRow::plain(
                 Some(index),
                 Line::from(Span::styled(" ".repeat(8), on_row(Style::default()))),
             ));
+            rows.extend(child_rows(app, id, theme, true));
             continue;
         }
         let mut spans = vec![
@@ -145,8 +175,12 @@ pub fn sidebar_lines(app: &App, theme: &Theme, height: u16) -> Vec<(Option<usize
         ));
         spans.extend(icon);
         spans.push(Span::styled(tail.to_owned(), on_row(theme.dim_style())));
-        rows.push((Some(index), Line::from(spans)));
-        rows.extend(child_rows(app, id, theme));
+        rows.push(SidebarRow {
+            index: Some(index),
+            line: Line::from(spans),
+            avatar: avatar_at(2, 2, 1, &id.0, row.seed()),
+        });
+        rows.extend(child_rows(app, id, theme, false));
     }
     window_rows(rows, height, app.state.selected, theme)
 }
@@ -155,50 +189,72 @@ fn child_rows(
     app: &App,
     id: &crate::model::SessionId,
     theme: &Theme,
-) -> Vec<(Option<usize>, Line<'static>)> {
+    rail: bool,
+) -> Vec<SidebarRow> {
     let mut rows = Vec::new();
     for child in app.state.children.get(id).into_iter().flatten().take(3) {
         let name: String = child
             .name
             .chars()
             .filter(|c| !c.is_control())
-            .take(NAME_WIDTH)
+            .take(NAME_WIDTH.saturating_sub(3))
             .collect();
         let glyph = match child.status {
             yi_types::subagent::ChildStatus::Running => "◐",
             yi_types::subagent::ChildStatus::Completed => "○",
             yi_types::subagent::ChildStatus::Error => "✕",
         };
-        rows.push((
-            None,
-            Line::styled(format!("   └ {name} {glyph}"), theme.dim_style()),
-        ));
+        let tile = Span::styled(name_tile(&child.name), tile_style(&child.name));
+        let (spans, col) = if rail {
+            (
+                vec![
+                    Span::styled("   ".to_owned(), theme.dim_style()),
+                    tile,
+                    Span::styled(format!(" {glyph}"), theme.dim_style()),
+                ],
+                3,
+            )
+        } else {
+            (
+                vec![
+                    Span::styled("   └ ".to_owned(), theme.dim_style()),
+                    tile,
+                    Span::styled(format!(" {name} {glyph}"), theme.dim_style()),
+                ],
+                5,
+            )
+        };
+        rows.push(SidebarRow {
+            index: None,
+            line: Line::from(spans),
+            avatar: avatar_at(col, 2, 1, child.id.as_str(), &child.name),
+        });
     }
     rows
 }
 
 /// The rows that fit, keeping the cursor on screen, faded two deep at a cut edge.
 fn window_rows(
-    rows: Vec<(Option<usize>, Line<'static>)>,
+    rows: Vec<SidebarRow>,
     height: u16,
     selected: usize,
     theme: &Theme,
-) -> Vec<(Option<usize>, Line<'static>)> {
+) -> Vec<SidebarRow> {
     let visible = usize::from(height);
     if visible == 0 || rows.len() <= visible {
         return rows;
     }
     let cursor = rows
         .iter()
-        .position(|(index, _)| *index == Some(selected))
+        .position(|row| row.index == Some(selected))
         .unwrap_or(0);
     let start = cursor.saturating_add(1).saturating_sub(visible);
     let end = start.saturating_add(visible).min(rows.len());
     let below = end < rows.len();
-    let mut window: Vec<(Option<usize>, Line<'static>)> =
-        rows.get(start..end).map(<[_]>::to_vec).unwrap_or_default();
+    let mut rows = rows;
+    let mut window: Vec<SidebarRow> = rows.drain(start..end).collect();
     let last = window.len().saturating_sub(1);
-    for (offset, (_, line)) in window.iter_mut().enumerate() {
+    for (offset, row) in window.iter_mut().enumerate() {
         let from_bottom = last.saturating_sub(offset);
         let level = if start > 0 && offset < 2 {
             2_usize.saturating_sub(offset)
@@ -208,7 +264,7 @@ fn window_rows(
             0
         };
         if level > 0 {
-            fade(line, level, theme);
+            fade(&mut row.line, level, theme);
         }
     }
     window
@@ -258,7 +314,7 @@ pub(crate) fn render_roots(app: &App, frame: &mut Frame<'_>, area: Rect, theme: 
 
 pub(crate) fn render_sidebar(app: &App, frame: &mut Frame<'_>, area: Rect, theme: &Theme) {
     let rows = sidebar_lines(app, theme, area.height);
-    let mut lines: Vec<Line<'static>> = rows.iter().map(|(_, line)| line.clone()).collect();
+    let mut lines: Vec<Line<'static>> = rows.iter().map(|row| row.line.clone()).collect();
     if lines.is_empty() && app.state.sidebar == SidebarMode::Full {
         let label = app
             .state
@@ -286,7 +342,7 @@ pub(crate) fn render_sidebar(app: &App, frame: &mut Frame<'_>, area: Rect, theme
             .and_then(|id| app.state.order.iter().position(|row| *row == id));
         let x = area.x.saturating_add(area.width).saturating_sub(1);
         let buffer = frame.buffer_mut();
-        for (offset, (index, _)) in rows.iter().enumerate() {
+        for (offset, row) in rows.iter().enumerate() {
             let Some(y) = u16::try_from(offset)
                 .ok()
                 .and_then(|o| area.y.checked_add(o))
@@ -296,7 +352,7 @@ pub(crate) fn render_sidebar(app: &App, frame: &mut Frame<'_>, area: Rect, theme
             if y >= area.bottom() {
                 break;
             }
-            let in_front = index.is_some() && *index == focused;
+            let in_front = row.index.is_some() && row.index == focused;
             if let Some(cell) = buffer.cell_mut((x, y)) {
                 cell.set_symbol(if in_front { "┃" } else { "│" });
                 cell.set_style(if in_front {
