@@ -123,6 +123,7 @@ async fn bundled_python_skills_work_through_the_kernel() -> TestResult {
         host: Arc::new(registry),
         on_restore: None,
         sandbox: None,
+        snapshot_key: None,
     }));
 
     let status_cell = cell(

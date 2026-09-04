@@ -647,6 +647,7 @@ mod tests {
                 host: Arc::new(NoHost),
                 on_restore: None,
                 sandbox: None,
+                snapshot_key: None,
             },
         ));
         map.insert("main", &service);

@@ -1006,18 +1006,16 @@ fn cmd_chords_split_close_and_hide_the_sidebar() -> TestResult {
          key enter\n\
          wait-frame 5000 replayed world\n\
          key alt-/\n\
-         wait-frame 3000 ⌥v/⌥s split\n\
+         wait-frame 3000 ⌥n new\n\
          key esc\n\
          cmd-d\n\
          wait-frame 3000 no session\n\
          cmd-p\n\
-         wait-frame 3000 ⌘⇧M zoom\n\
+         wait-frame 3000 ⌘⇧N new\n\
          key esc\n\
          cmd-x\n\
          wait-frame 3000 !no session\n\
          wait-frame 3000 s-beta\n\
-         cmd-b\n\
-         wait-frame 3000 !s-beta\n\
          cmd-b\n\
          wait-frame 3000 !s-beta\n\
          cmd-b\n\
@@ -1733,7 +1731,7 @@ fn sidebar_rows_show_names_and_ages_newest_first() -> TestResult {
          key up\n\
          key enter\n\
          wait-frame 5000 resumed s-beta\n\
-         wait-frame 3000 RE release\n\
+         wait-frame 3000 RE · release\n\
          quit\n",
     )
 }
@@ -1771,7 +1769,7 @@ fn the_first_prompt_names_the_session_row() -> TestResult {
 
 /// The CLI opens the sidebar as a rail of status glyphs; ⌘B walks rail, full, hidden.
 #[test]
-fn the_rail_is_the_default_and_cmd_b_walks_full_then_hidden() -> TestResult {
+fn the_rail_is_the_default_and_cmd_b_walks_to_full_and_back() -> TestResult {
     run_sidebar(
         "rail",
         vec![
@@ -1780,7 +1778,7 @@ fn the_rail_is_the_default_and_cmd_b_walks_full_then_hidden() -> TestResult {
             Step::Expect("session/list", ledger_list),
         ],
         "wait-frame 5000 ●\n\
-         wait-frame 3000 1 SB ●│\n\
+         wait-frame 3000 1 SB   ●│\n\
          wait-frame 3000 2 SA\n\
          wait-frame 3000 !s-alpha\n\
          wait-frame 3000 !workspaces\n\
@@ -1788,10 +1786,7 @@ fn the_rail_is_the_default_and_cmd_b_walks_full_then_hidden() -> TestResult {
          wait-frame 3000 2 SA · s-alpha\n\
          wait-frame 3000 workspaces\n\
          cmd-b\n\
-         wait-frame 3000 !s-alpha\n\
-         wait-frame 3000 !SA\n\
-         cmd-b\n\
-         wait-frame 3000 1 SB ●│\n\
+         wait-frame 3000 1 SB   ●│\n\
          wait-frame 3000 !s-alpha\n\
          quit\n",
         false,
@@ -2016,7 +2011,7 @@ fn alt_digit_resumes_the_rail_slot() -> TestResult {
         "wait-frame 5000 2 FI · fix login bug\n\
          key alt-2\n\
          wait-frame 5000 resumed s-alpha\n\
-         wait-frame 3000 FI fix login\n\
+         wait-frame 3000 FI · fix login\n\
          quit\n",
     )
 }
