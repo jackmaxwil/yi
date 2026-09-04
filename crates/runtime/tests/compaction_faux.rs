@@ -490,6 +490,53 @@ async fn fold_mode_compacts_without_a_provider_call() -> Result<(), Box<dyn Erro
 }
 
 #[tokio::test]
+async fn a_user_constraint_survives_fold_in_the_pinned_section() -> Result<(), Box<dyn Error>> {
+    let root = std::env::temp_dir().join(format!("yi-compact-pin-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let mut repo = JsonlRepo::new(root.clone(), "/tmp/yi-compact-pin");
+    let store = repo.create(CreateOptions {
+        id: Some("compact-pin".to_owned()),
+        ..CreateOptions::default()
+    })?;
+    let pin = "Never touch vendored/lock.json (SENTINEL-K7QX).";
+    {
+        let mut guard = yi_session::lock_session(&store);
+        guard.append_message(
+            "main",
+            AgentMessage::user_input(UserContent::Text(pin.to_owned()), 0),
+        )?;
+    }
+    let provider = Arc::new(ProviderStream::new(None, None));
+    provider.queue_faux(vec![
+        reply_with_usage(&format!("big reply {}", "x".repeat(400)), 100, 5_000),
+        reply_with_usage("second answer", 50, 300),
+    ]);
+    let mut session = session_for_compaction(provider);
+    session.enable_compaction_with(Settings {
+        mode: CompactionMode::Fold,
+        ..tight_settings()
+    });
+    session.attach_store(Arc::clone(&store))?;
+    session.prompt("first live ask with enough text to matter")?;
+    session.wait_idle().await;
+    session.prompt("second live ask trips the compaction boundary")?;
+    session.wait_idle().await;
+    let live_text = session
+        .messages()
+        .iter()
+        .map(serde_json::to_string)
+        .collect::<Result<Vec<_>, _>>()?
+        .join("\n");
+    assert!(
+        live_text.contains("[Pinned]") && live_text.contains(pin),
+        "fold must re-inject the user constraint verbatim: {live_text}"
+    );
+    drop(session);
+    std::fs::remove_dir_all(&root)?;
+    Ok(())
+}
+
+#[tokio::test]
 async fn compaction_below_threshold_is_a_no_op() -> Result<(), Box<dyn Error>> {
     let provider = Arc::new(ProviderStream::new(None, None));
     provider.queue_faux(vec![

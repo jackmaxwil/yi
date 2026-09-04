@@ -275,6 +275,7 @@ def check_compaction_survival():
     round_row = report["rounds"][0]
     assert round_row["id"] == "e14", round_row
     assert round_row["dropped_reported"] is None, round_row
+    assert round_row["pinned_reported"] is None, round_row
     lanes = round_row["lanes"]
     assert lanes["user"]["total"] >= 1, lanes  # fixture e1 carries image/png
     assert 0.0 <= lanes["user"]["ratio"] <= 1.0, lanes

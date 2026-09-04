@@ -2,7 +2,7 @@ use std::collections::BTreeSet;
 
 use yi_types::message::{AgentMessage, Content, UserContent};
 
-use crate::audit::DROPPED_CAP;
+use crate::audit::{DROPPED_CAP, PINNED_CAP, is_constraint_line};
 use crate::details::{FileOps, compute_file_lists, extract_file_ops_from_message};
 use crate::prompts::KERNEL_PERSIST_SUMMARY_NOTE;
 use crate::wrapper::internal_source;
@@ -23,6 +23,7 @@ pub struct CompiledView {
     pub brief: Vec<String>,
     pub earlier: Vec<String>,
     pub dropped: Vec<(String, String)>,
+    pub pinned: Vec<String>,
 }
 
 impl CompiledView {
@@ -55,6 +56,14 @@ impl CompiledView {
         if !self.earlier.is_empty() {
             let mut block = String::from("[Earlier]");
             for line in &self.earlier {
+                block.push('\n');
+                block.push_str(line);
+            }
+            sections.push(block);
+        }
+        if !self.pinned.is_empty() {
+            let mut block = String::from("[Pinned]");
+            for line in &self.pinned {
                 block.push('\n');
                 block.push_str(line);
             }
@@ -132,7 +141,46 @@ pub fn compile_view(
         brief,
         earlier,
         dropped: Vec::new(),
+        pinned: pinned_constraints(attributed, previous_view),
     }
+}
+
+fn pinned_constraints(
+    attributed: &[(String, AgentMessage)],
+    previous_view: Option<&str>,
+) -> Vec<String> {
+    let mut out = previous_view.map(previous_pinned).unwrap_or_default();
+    let mut seen: BTreeSet<String> = out.iter().cloned().collect();
+    for (id, message) in attributed {
+        if skip_message(message) {
+            continue;
+        }
+        let AgentMessage::User { content, .. } = message else {
+            continue;
+        };
+        for line in user_text(content).lines() {
+            let line = line.trim();
+            if line.is_empty() || !is_constraint_line(line) {
+                continue;
+            }
+            let pin = format!("(#{id}) {line}");
+            if seen.insert(pin.clone()) {
+                out.push(pin);
+            }
+        }
+    }
+    if out.len() > PINNED_CAP {
+        out.split_off(out.len().saturating_sub(PINNED_CAP))
+    } else {
+        out
+    }
+}
+
+fn previous_pinned(text: &str) -> Vec<String> {
+    section_lines(text, "[Pinned]")
+        .into_iter()
+        .filter(|line| line.starts_with("(#"))
+        .collect()
 }
 
 fn skip_message(message: &AgentMessage) -> bool {

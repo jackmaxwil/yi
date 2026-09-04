@@ -50,7 +50,7 @@ impl Workspace {
         Ok(command.output()?)
     }
 
-    fn rpc_prompt_then_compact(&self, message: &str) -> Result<String, Box<dyn Error>> {
+    fn rpc_prompt_then_compact(&self, messages: &[&str]) -> Result<String, Box<dyn Error>> {
         #[expect(
             clippy::disallowed_methods,
             reason = "these surfaces are the spawned binary's argv, exit code, and stdout"
@@ -69,36 +69,38 @@ impl Workspace {
             .spawn()?;
         let mut stdin = child.stdin.take().ok_or("rpc has no stdin")?;
         let stdout = child.stdout.take().ok_or("rpc has no stdout")?;
-        serde_json::to_writer(
-            &mut stdin,
-            &serde_json::json!({"id": "p", "type": "prompt", "message": message}),
-        )?;
-        stdin.write_all(b"\n")?;
-        stdin.flush()?;
         let mut reader = std::io::BufReader::new(stdout);
         let mut line = String::new();
-        loop {
-            line.clear();
-            if std::io::BufRead::read_line(&mut reader, &mut line)? == 0 {
-                return Err("prompt never ended".into());
-            }
-            if line.contains("\"agent_end\"") {
-                break;
-            }
-        }
-        loop {
+        for (index, message) in messages.iter().enumerate() {
             serde_json::to_writer(
                 &mut stdin,
-                &serde_json::json!({"id": "s", "type": "get_state"}),
+                &serde_json::json!({"id": format!("p{index}"), "type": "prompt", "message": message}),
             )?;
             stdin.write_all(b"\n")?;
             stdin.flush()?;
-            line.clear();
-            if std::io::BufRead::read_line(&mut reader, &mut line)? == 0 {
-                return Err("rpc closed before idle".into());
+            loop {
+                line.clear();
+                if std::io::BufRead::read_line(&mut reader, &mut line)? == 0 {
+                    return Err("prompt never ended".into());
+                }
+                if line.contains("\"agent_end\"") {
+                    break;
+                }
             }
-            if line.contains("\"isStreaming\":false") {
-                break;
+            loop {
+                serde_json::to_writer(
+                    &mut stdin,
+                    &serde_json::json!({"id": format!("s{index}"), "type": "get_state"}),
+                )?;
+                stdin.write_all(b"\n")?;
+                stdin.flush()?;
+                line.clear();
+                if std::io::BufRead::read_line(&mut reader, &mut line)? == 0 {
+                    return Err("rpc closed before idle".into());
+                }
+                if line.contains("\"isStreaming\":false") {
+                    break;
+                }
             }
         }
         serde_json::to_writer(
@@ -637,8 +639,9 @@ fn fold_compaction_lands_a_view_without_an_llm_summary() -> TestResult {
         &workspace,
         r#"{"kernel":{"prewarm":false},"compaction":{"mode":"fold","reserveTokens":2000000,"keepRecentTokens":0}}"#,
     )?;
-    let prompt = format!("fold this window {}", "x".repeat(4000));
-    let rpc_out = workspace.rpc_prompt_then_compact(&prompt)?;
+    let filler = format!("fold this window {}", "x".repeat(4000));
+    let rpc_out =
+        workspace.rpc_prompt_then_compact(&["Never touch SENTINEL-K7QX.", filler.as_str()])?;
     let mut transcript = String::new();
     for project in std::fs::read_dir(workspace.0.join("home/sessions"))? {
         for entry in std::fs::read_dir(project?.path())? {
@@ -652,6 +655,10 @@ fn fold_compaction_lands_a_view_without_an_llm_summary() -> TestResult {
     assert!(
         transcript.contains("[Kernel]"),
         "the view carries the kernel persist line: {transcript}"
+    );
+    assert!(
+        transcript.contains("[Pinned]") && transcript.contains("Never touch SENTINEL-K7QX"),
+        "a user constraint must be pinned through compact: {transcript}"
     );
     Ok(())
 }

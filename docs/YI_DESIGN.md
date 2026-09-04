@@ -621,7 +621,7 @@ its own tests:
 | P16 | **Source budgets** | `SourceBudgets{project_instructions, skills_meta, ledger, advisories, emergency_ceiling}` bytes; `fit(source, budget) -> Truncated{text, marker}`; enforced in P11 | — |
 | P17 | **Retention floor** | `retain_floor(branch, budget: 64_000) -> Vec<EntryId>` — every real user message survives compaction verbatim (role filter, newest-first token budget, oldest middle-truncated; prior summaries and contextual fragments dropped); union with P5's kept suffix. P5 keeps the working set, P17 guarantees no early user requirement is ever summarized away | — |
 | P18 | **World state** | `trait WorldStateSection { name; snapshot() -> Snapshot; render_diff(&prev) -> Option<Fragment> }` — named sections (env, permissions, ledger view), diff rendered only on change, appended at the overlay tail; per-turn re-injection is a diff or it is nothing | — |
-| P19 | **Compact view** | `compile_view(attributed, previous_view, file_ops) -> CompiledView{files, outstanding, brief, earlier, dropped}` — deterministic fold (D115): success tool results are pointers, reads of a later-edited path are `stale`, decision lines stay whole, `[Earlier]` indexes rolled brief windows as `(#first..#last)` (cap 24), `[Kernel]` carries the persist note; identifiers present in the summarized span but absent from the view, the retained tail, and the P7 prose land in `[Dropped]` (`ident (#id)`, cap 40) and the count is `details.dropped`; `compose_summary` prefixes the view ahead of the P7 prose (empty in fold mode). Recall is `SessionStore::grep` behind the host verb `history.grep` (`compact.recall` in the kernel), then `history://<agent>/<entryId>` fetches the full entry | ARC (arXiv 2607.25066) |
+| P19 | **Compact view** | `compile_view(attributed, previous_view, file_ops) -> CompiledView{files, outstanding, brief, earlier, dropped, pinned}` — deterministic fold (D115): success tool results are pointers, reads of a later-edited path are `stale`, decision lines stay whole, `[Earlier]` indexes rolled brief windows as `(#first..#last)` (cap 24), `[Kernel]` carries the persist note; user constraint lines land in `[Pinned]` verbatim and stay across later folds (D116); identifiers present in the summarized span but absent from the view, the retained tail, and the P7 prose land in `[Dropped]` (`ident (#id)`, cap 40) and the count is `details.dropped`; `compose_summary` prefixes the view ahead of the P7 prose (empty in fold mode). Recall is `SessionStore::grep` behind the host verb `history.grep` (`compact.recall` in the kernel), then `history://<agent>/<entryId>` fetches the full entry | ARC (arXiv 2607.25066) |
 
 Only P1, P7 and P10 perform I/O. P2–P6, P8, P9, P11, P13, P14, P17, P18, P19 are pure and property-testable.
 
@@ -1859,8 +1859,9 @@ Principles, each with its evidence:
 Compaction (P4–P9) is not a memory: nothing is forgotten, the model's *view* shrinks; the tree
 keeps everything and `CompactionCheck` (V5) validates the view against forward intent
 (Slipstream, arXiv 2605.08580). The view is a deterministic fold over the entry log (D115):
-pointer-only results, stale reads, decision lines, `[Earlier]` / `[Dropped]` / `[Kernel]`.
-The LLM summary is a mode (`compaction.mode = summary`), not the method.
+pointer-only results, stale reads, decision lines, `[Earlier]` / `[Dropped]` / `[Pinned]` / `[Kernel]`.
+The LLM summary is a mode (`compaction.mode = summary`), not the method. User session constraints
+are pinned verbatim (D116), not paraphrased into Goal/Next.
 
 ## 17. Desktop: Afterlife
 
