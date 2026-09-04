@@ -238,46 +238,51 @@ impl Theme {
     }
 }
 
-const ACCENTS: [Color; 6] = [
-    Color::Rgb(0x82, 0xaa, 0xff),
-    Color::Rgb(0xc0, 0x99, 0xff),
-    Color::Rgb(0x4f, 0xd6, 0xbe),
-    Color::Rgb(0xff, 0xc7, 0x77),
-    Color::Rgb(0xc3, 0xe8, 0x8d),
-    Color::Rgb(0xff, 0x96, 0x6c),
-];
-
-const ACCENT_RGB: [(u8, u8, u8); 6] = [
+pub const ACCENT_RGB: [(u8, u8, u8); 14] = [
     (0x82, 0xaa, 0xff),
     (0xc0, 0x99, 0xff),
     (0x4f, 0xd6, 0xbe),
     (0xff, 0xc7, 0x77),
     (0xc3, 0xe8, 0x8d),
     (0xff, 0x96, 0x6c),
+    (0xfc, 0xa7, 0xea),
+    (0x86, 0xe1, 0xfc),
+    (0xb4, 0xbd, 0xff),
+    (0xe0, 0xaf, 0x68),
+    (0x9e, 0xce, 0x6a),
+    (0xff, 0x75, 0x7f),
+    (0x73, 0xda, 0xca),
+    (0xff, 0xd7, 0xa3),
 ];
 
-fn accent_index(name: &str) -> usize {
+pub fn accent(index: usize) -> Color {
+    let (r, g, b) = accent_rgb(index);
+    Color::Rgb(r, g, b)
+}
+
+pub fn accent_rgb(index: usize) -> (u8, u8, u8) {
+    ACCENT_RGB
+        .get(index % ACCENT_RGB.len())
+        .copied()
+        .unwrap_or((0x4f, 0xd6, 0xbe))
+}
+
+pub fn accent_index(name: &str) -> usize {
     let mut hash = 0_u32;
     for byte in name.bytes() {
         hash = hash.wrapping_mul(31).wrapping_add(u32::from(byte));
     }
-    (hash as usize) % ACCENTS.len()
+    (hash as usize) % ACCENT_RGB.len()
 }
 
 /// Stable, so a session or subagent keeps one accent across renders.
 pub fn name_accent(name: &str) -> Color {
-    ACCENTS
-        .get(accent_index(name))
-        .copied()
-        .unwrap_or(Color::Cyan)
+    accent(accent_index(name))
 }
 
 /// The same accent as bytes, for a raster that must agree with the text beside it.
 pub fn name_accent_rgb(name: &str) -> (u8, u8, u8) {
-    ACCENT_RGB
-        .get(accent_index(name))
-        .copied()
-        .unwrap_or((0x4f, 0xd6, 0xbe))
+    accent_rgb(accent_index(name))
 }
 
 /// Two-letter tile: the first two alphanumerics, uppercased; `··` for nothing to say.
@@ -297,8 +302,12 @@ pub fn name_tile(name: &str) -> String {
 
 /// White initials on the name's accent: the text form of the avatar, drawn everywhere.
 pub fn tile_style(name: &str) -> Style {
+    tile_style_at(accent_index(name))
+}
+
+pub fn tile_style_at(index: usize) -> Style {
     Style::default()
-        .fg(Color::White)
-        .bg(name_accent(name))
+        .fg(Color::Rgb(0x1a, 0x1b, 0x26))
+        .bg(accent(index))
         .add_modifier(Modifier::BOLD)
 }
