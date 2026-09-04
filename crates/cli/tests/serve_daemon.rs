@@ -582,3 +582,56 @@ fn a_returning_client_sees_one_unseen_and_the_branch_verbatim() -> TestResult {
     let _ = std::fs::remove_dir_all(&dir);
     outcome
 }
+
+/// `_yi/shutdown` answers, then the daemon exits, its socket goes, and its worker dies
+/// with it — the console's double ctrl+c must leave no orphan behind.
+#[test]
+#[ignore = "tier-2 journey: `just journeys`"]
+fn shutdown_stops_the_daemon_and_its_worker() -> TestResult {
+    let dir = std::env::temp_dir().join(format!("yi-serve-shutdown-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir)?;
+    let root = dir.join("repo");
+    std::fs::create_dir_all(&root)?;
+    let (mut daemon, socket) = spawn_daemon(&dir)?;
+    let outcome = (|| -> TestResult {
+        let mut client = DaemonClient::connect(&socket)?;
+        client.request(
+            "i",
+            "initialize",
+            json!({"protocolVersion": 2, "clientInfo": {"name": "t"}}),
+        )?;
+        new_session(&mut client, "n", &root)?;
+        let reply = client.request("s", "_yi/shutdown", json!({}))?;
+        if reply.get("result").is_none() {
+            return Err(format!("shutdown must answer: {reply}").into());
+        }
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            if let Some(_status) = daemon.try_wait()? {
+                break;
+            }
+            if Instant::now() > deadline {
+                return Err("the daemon must exit after _yi/shutdown".into());
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        if socket.exists() {
+            return Err("the socket must be removed on shutdown".into());
+        }
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "the worker is a grandchild the test can only see through the process table"
+        )]
+        let workers = Command::new("pgrep")
+            .args(["-f", &format!("acp --cwd {}", root.display())])
+            .output()?;
+        if workers.status.success() {
+            return Err("the worker must die with the daemon".into());
+        }
+        Ok(())
+    })();
+    let _ = daemon.kill();
+    let _ = daemon.wait();
+    outcome
+}

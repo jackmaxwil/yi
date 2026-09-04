@@ -29,6 +29,7 @@ enum Input {
     WorkerLine(String, Value),
     WorkerReply(String, Value),
     WorkerClosed(String),
+    Shutdown,
 }
 
 /// Asks parked for a detached session; past this the worker is refused
@@ -133,6 +134,21 @@ impl Supervisor {
         };
         if let Err(mpsc::error::TrySendError::Full(_)) = sink.try_send(line) {
             let _ = self.input.send(Input::ClientClosed(client));
+        }
+    }
+
+    fn mark_seen(&mut self, client: ClientId, id: Option<Value>, frame: &Value) {
+        let Some(id) = id else { return };
+        let session_id = frame
+            .pointer("/params/sessionId")
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        match self.sessions.get_mut(session_id) {
+            Some(entry) => {
+                entry.unseen = 0;
+                self.send_client(client, result_frame(id, json!({})));
+            }
+            None => self.send_client(client, error_frame(id, -32602, "unknown sessionId")),
         }
     }
 
@@ -314,22 +330,13 @@ impl Supervisor {
                     .collect();
                 self.send_client(client, result_frame(id, json!({"sessions": sessions})));
             }
-            "_yi/seen" => {
-                let Some(id) = id else { return };
-                let session_id = frame
-                    .pointer("/params/sessionId")
-                    .and_then(Value::as_str)
-                    .unwrap_or("");
-                match self.sessions.get_mut(session_id) {
-                    Some(entry) => {
-                        entry.unseen = 0;
-                        self.send_client(client, result_frame(id, json!({})));
-                    }
-                    None => {
-                        self.send_client(client, error_frame(id, -32602, "unknown sessionId"));
-                    }
+            "_yi/shutdown" => {
+                if let Some(id) = id {
+                    self.send_client(client, result_frame(id, json!({})));
                 }
+                let _ = self.input.send(Input::Shutdown);
             }
+            "_yi/seen" => self.mark_seen(client, id, &frame),
             _ => {
                 let Some(root) = self.root_of(&frame) else {
                     if let Some(id) = id {
@@ -636,8 +643,14 @@ pub fn run_daemon(options: DaemonOptions, runtime: tokio::runtime::Runtime) -> i
                     supervisor.forward_response_to_worker(&root, frame).await;
                 }
                 Input::WorkerClosed(root) => supervisor.handle_worker_closed(root),
+                Input::Shutdown => break,
             }
         }
+        for worker in supervisor.workers.values_mut() {
+            let _ = worker.child.kill().await;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        let _ = std::fs::remove_file(&supervisor.options.socket);
         0
     })
 }
