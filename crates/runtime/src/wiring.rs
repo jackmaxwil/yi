@@ -95,6 +95,7 @@ pub struct RuntimeWiring {
     /// Invariant: created once at the composition root and carried down every child, because
     /// `kernel://<child>/var` reads another session's namespace; a per-session map cannot.
     pub kernels: Arc<crate::fetch::KernelServiceMap>,
+    pub compaction: yi_context::Settings,
 }
 
 /// Every spawned child wires itself the same way at depth+1; the depth check in
@@ -384,10 +385,7 @@ pub fn attach_runtime(session: &mut AgentSession, mut wiring: RuntimeWiring) -> 
         .unwrap_or_else(|| wiring.cwd.join(crate::plan::PLANS_DIR));
     wiring.plans_dir = Some(plans_dir.clone());
     if session.compactor().is_none() {
-        session.enable_compaction_with_summarizer(
-            yi_context::Settings::default(),
-            wiring.summarizer.clone(),
-        );
+        session.enable_compaction_with_summarizer(wiring.compaction, wiring.summarizer.clone());
     }
     crate::checkpoint::wire_turn_checkpoints(session, &wiring.home, &wiring.cwd);
     let mut registry = crate::kernel::HostRegistry::default();

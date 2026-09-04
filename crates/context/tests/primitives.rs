@@ -61,6 +61,33 @@ fn assistant(text: &str, usage_row: Usage, stop_reason: StopReason) -> AgentMess
     }
 }
 
+fn assistant_call(name: &str, path: &str) -> AgentMessage {
+    let mut arguments = serde_json::Map::new();
+    arguments.insert("path".to_owned(), json!(path));
+    AgentMessage::Assistant {
+        content: vec![Content::ToolCall {
+            id: "call-1".to_owned(),
+            name: name.to_owned(),
+            arguments,
+            thought_signature: None,
+            namespace: None,
+        }],
+        api: "faux".to_owned(),
+        provider: "faux".to_owned(),
+        model: "faux-1".to_owned(),
+        response_model: None,
+        response_id: None,
+        diagnostics: None,
+        usage: usage(0, 0, 0),
+        stop_reason: StopReason::ToolUse,
+        deferred: None,
+        error_message: None,
+        raw_stop_reason: None,
+        end_turn: None,
+        timestamp: 2,
+    }
+}
+
 fn tool_result(text: &str) -> AgentMessage {
     AgentMessage::ToolResult {
         tool_call_id: "call-1".to_owned(),
@@ -625,5 +652,88 @@ fn prepare_records_a_dropped_path_from_a_summarized_tool_result() -> TestResult 
         "the summarized tool result's path must be dropped with its entry id: {:?}",
         prepared.view.dropped
     );
+    Ok(())
+}
+
+#[test]
+fn fold_tool_result_is_a_pointer_and_a_later_edit_marks_the_read_stale() -> TestResult {
+    let long = "body ".repeat(80);
+    let attributed = vec![
+        ("u1".to_owned(), user("must keep the latch")),
+        ("r1".to_owned(), assistant_call("read", "src/latch.rs")),
+        ("t1".to_owned(), tool_result(&long)),
+        ("e1".to_owned(), assistant_call("edit", "src/latch.rs")),
+        (
+            "a1".to_owned(),
+            assistant(
+                "First sentence is filler. We decided the latch because the kernel must never restart.",
+                usage(0, 0, 0),
+                StopReason::Stop,
+            ),
+        ),
+    ];
+    let view = compile_view(&attributed, None, &FileOps::default());
+    let rendered = view.render();
+    assert!(
+        rendered.contains(&format!(
+            "(#t1) tool: read → {} chars",
+            long.chars().count()
+        )),
+        "a successful tool result is a pointer, not the body: {rendered}"
+    );
+    assert!(
+        !rendered.contains("body body body"),
+        "the result body must not ride the brief: {rendered}"
+    );
+    assert!(
+        rendered.contains("(#r1) read src/latch.rs stale"),
+        "a later edit marks the read stale: {rendered}"
+    );
+    assert!(
+        rendered.contains("(#e1) edit src/latch.rs"),
+        "an edit is a path pointer: {rendered}"
+    );
+    assert!(
+        rendered.contains("decided the latch because") && rendered.contains("must never"),
+        "a decision line is kept whole: {rendered}"
+    );
+    assert!(
+        rendered.contains("[Kernel]") && rendered.contains("IPython kernel keeps running"),
+        "both modes carry the kernel persist note in the view: {rendered}"
+    );
+    Ok(())
+}
+
+#[test]
+fn fold_earlier_index_names_the_demoted_span() -> TestResult {
+    let attributed: Vec<(String, AgentMessage)> = (0..125)
+        .map(|index| {
+            (
+                format!("u{index}"),
+                user(&format!("turn {index} about the parser")),
+            )
+        })
+        .collect();
+    let view = compile_view(&attributed, None, &FileOps::default());
+    assert_eq!(view.brief.len(), 120);
+    assert_eq!(view.earlier.len(), 1);
+    assert_eq!(
+        view.earlier[0], "turn 0 about the parser … (#u0..#u4)",
+        "demoted lines collapse to one index line with exact ids"
+    );
+    Ok(())
+}
+
+#[test]
+fn fold_degenerate_one_message_still_renders_a_kernel_line() -> TestResult {
+    let view = compile_view(
+        &[("only".to_owned(), user("hi"))],
+        None,
+        &FileOps::default(),
+    );
+    let rendered = view.render();
+    assert!(rendered.contains("(#only) user: hi"), "{rendered}");
+    assert!(rendered.contains("[Kernel]"), "{rendered}");
+    assert!(view.earlier.is_empty());
     Ok(())
 }

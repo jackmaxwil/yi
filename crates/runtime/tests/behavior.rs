@@ -346,6 +346,7 @@ async fn drive(cassette: &Value, root: &Path) -> Result<Recorded, Fatal> {
                     .and_then(Value::as_u64)
                     .unwrap_or(10),
             ),
+            ..Settings::default()
         });
     }
     session.use_tools(

@@ -9,7 +9,8 @@ use yi_ai::faux::{faux_assistant_message, faux_text, faux_tool_call};
 use yi_loop::ExecutionMode;
 use yi_runtime::fetch::{KernelServiceMap, Resolver};
 use yi_runtime::{
-    AgentSession, ProviderStream, RuntimeWiring, SessionConfig, SubagentHost, Wall, attach_runtime,
+    AgentSession, ProviderStream, RuntimeWiring, SessionConfig, Settings, SubagentHost, Wall,
+    attach_runtime,
 };
 use yi_types::message::StopReason;
 use yi_types::model::{Model, ModelCost};
@@ -113,6 +114,7 @@ async fn a_parent_reads_a_variable_out_of_its_childs_kernel() -> TestResult {
             mcp_read: None,
             sessions_dir: None,
             kernels: Arc::clone(&kernels),
+            compaction: Settings::default(),
         },
     );
 

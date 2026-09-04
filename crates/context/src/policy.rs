@@ -1,10 +1,12 @@
 use crate::account::Tokens;
+use yi_types::config::CompactionMode;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Settings {
     pub enabled: bool,
     pub reserve_tokens: Tokens,
     pub keep_recent_tokens: Tokens,
+    pub mode: CompactionMode,
 }
 
 impl Default for Settings {
@@ -13,6 +15,7 @@ impl Default for Settings {
             enabled: true,
             reserve_tokens: Tokens(16_384),
             keep_recent_tokens: Tokens(20_000),
+            mode: CompactionMode::Summary,
         }
     }
 }

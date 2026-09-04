@@ -1,6 +1,7 @@
 use std::error::Error;
+use std::io::Write;
 use std::path::PathBuf;
-use std::process::{Command, Output};
+use std::process::{Command, Output, Stdio};
 
 use serde_json::Value;
 
@@ -47,6 +48,72 @@ impl Workspace {
             .envs(env.iter().copied())
             .current_dir(self.project());
         Ok(command.output()?)
+    }
+
+    fn rpc_prompt_then_compact(&self, message: &str) -> Result<String, Box<dyn Error>> {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "these surfaces are the spawned binary's argv, exit code, and stdout"
+        )]
+        let mut child = Command::new(env!("CARGO_BIN_EXE_yi"))
+            .args(["rpc", "--model", "faux/faux-1"])
+            .arg("--session-dir")
+            .arg(self.0.join("home/sessions"))
+            .arg("--cwd")
+            .arg(self.project())
+            .env("HOME", self.0.join("home"))
+            .current_dir(self.project())
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()?;
+        let mut stdin = child.stdin.take().ok_or("rpc has no stdin")?;
+        let stdout = child.stdout.take().ok_or("rpc has no stdout")?;
+        serde_json::to_writer(
+            &mut stdin,
+            &serde_json::json!({"id": "p", "type": "prompt", "message": message}),
+        )?;
+        stdin.write_all(b"\n")?;
+        stdin.flush()?;
+        let mut reader = std::io::BufReader::new(stdout);
+        let mut line = String::new();
+        loop {
+            line.clear();
+            if std::io::BufRead::read_line(&mut reader, &mut line)? == 0 {
+                return Err("prompt never ended".into());
+            }
+            if line.contains("\"agent_end\"") {
+                break;
+            }
+        }
+        loop {
+            serde_json::to_writer(
+                &mut stdin,
+                &serde_json::json!({"id": "s", "type": "get_state"}),
+            )?;
+            stdin.write_all(b"\n")?;
+            stdin.flush()?;
+            line.clear();
+            if std::io::BufRead::read_line(&mut reader, &mut line)? == 0 {
+                return Err("rpc closed before idle".into());
+            }
+            if line.contains("\"isStreaming\":false") {
+                break;
+            }
+        }
+        serde_json::to_writer(
+            &mut stdin,
+            &serde_json::json!({"id": "c", "type": "compact"}),
+        )?;
+        stdin.write_all(b"\n")?;
+        drop(stdin);
+        let mut rest = String::new();
+        std::io::Read::read_to_string(&mut reader, &mut rest)?;
+        let status = child.wait()?;
+        if !status.success() {
+            return Err(format!("rpc exited {status:?}: {rest}").into());
+        }
+        Ok(rest)
     }
 }
 
@@ -560,5 +627,31 @@ fn a_typed_prompt_lands_user_attributed_in_the_session_file() -> TestResult {
     }
     assert!(lines.contains("prove it"), "{lines}");
     assert!(lines.contains(r#""attribution":"user""#), "{lines}");
+    Ok(())
+}
+
+#[test]
+fn fold_compaction_lands_a_view_without_an_llm_summary() -> TestResult {
+    let workspace = Workspace::new("fold-compact")?;
+    write_config(
+        &workspace,
+        r#"{"kernel":{"prewarm":false},"compaction":{"mode":"fold","reserveTokens":2000000,"keepRecentTokens":0}}"#,
+    )?;
+    let prompt = format!("fold this window {}", "x".repeat(4000));
+    let rpc_out = workspace.rpc_prompt_then_compact(&prompt)?;
+    let mut transcript = String::new();
+    for project in std::fs::read_dir(workspace.0.join("home/sessions"))? {
+        for entry in std::fs::read_dir(project?.path())? {
+            transcript.push_str(&std::fs::read_to_string(entry?.path())?);
+        }
+    }
+    assert!(
+        transcript.contains("<yi_compact_view>"),
+        "fold compact must write the view (rpc: {rpc_out}): {transcript}"
+    );
+    assert!(
+        transcript.contains("[Kernel]"),
+        "the view carries the kernel persist line: {transcript}"
+    );
     Ok(())
 }
