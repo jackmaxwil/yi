@@ -19,7 +19,7 @@ fn truncate_for_summary(text: &str, max_chars: usize) -> String {
     )
 }
 
-fn text_of(blocks: &[Content]) -> String {
+pub(crate) fn text_of(blocks: &[Content]) -> String {
     blocks
         .iter()
         .filter_map(|block| match block {

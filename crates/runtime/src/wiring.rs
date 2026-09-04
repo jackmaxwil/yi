@@ -95,7 +95,6 @@ pub struct RuntimeWiring {
     /// Invariant: created once at the composition root and carried down every child, because
     /// `kernel://<child>/var` reads another session's namespace; a per-session map cannot.
     pub kernels: Arc<crate::fetch::KernelServiceMap>,
-    pub compaction: yi_context::Settings,
 }
 
 /// Every spawned child wires itself the same way at depth+1; the depth check in
@@ -207,7 +206,6 @@ fn wire_fetch(
     resolver
 }
 
-/// `history.grep`: grep the attached store; shared with test harnesses that stub the host map.
 pub fn register_history_grep(
     registry: &mut crate::kernel::HostRegistry,
     handle: crate::goal::StoreHandle,
@@ -225,7 +223,7 @@ pub fn register_history_grep(
             let limit = payload
                 .get("limit")
                 .and_then(Value::as_u64)
-                .map_or(8, |n| n as usize);
+                .map_or(8, |n| usize::try_from(n).unwrap_or(8));
             let hits = tokio::task::spawn_blocking(move || {
                 let shared = handle()
                     .ok_or_else(|| "history.grep: missing an attached session store".to_owned())?;
@@ -385,7 +383,10 @@ pub fn attach_runtime(session: &mut AgentSession, mut wiring: RuntimeWiring) -> 
         .unwrap_or_else(|| wiring.cwd.join(crate::plan::PLANS_DIR));
     wiring.plans_dir = Some(plans_dir.clone());
     if session.compactor().is_none() {
-        session.enable_compaction_with_summarizer(wiring.compaction, wiring.summarizer.clone());
+        session.enable_compaction_with_summarizer(
+            yi_context::Settings::default(),
+            wiring.summarizer.clone(),
+        );
     }
     crate::checkpoint::wire_turn_checkpoints(session, &wiring.home, &wiring.cwd);
     let mut registry = crate::kernel::HostRegistry::default();
