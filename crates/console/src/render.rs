@@ -672,17 +672,17 @@ fn render_borders(app: &App, frame: &mut Frame<'_>, view: &ViewState, theme: &Th
             .and_then(|p| p.session())
             .and_then(|s| app.state.sessions.get(s))
             .map_or(SessionStatus::Unknown, |row| row.status);
-        let label = app
+        let seed = app
             .state
             .panes
             .get(&pane.id)
             .and_then(|p| p.session())
             .and_then(|s| app.state.sessions.get(s))
-            .map(SessionRow::label);
+            .map(|row| row.seed().to_owned());
         let mut x = r.x.saturating_add(2);
         let mut max = r.width.saturating_sub(4);
-        if let Some(label) = &label {
-            let tile = Span::styled(format!(" {}", name_tile(label)), tile_style(label));
+        if let Some(seed) = &seed {
+            let tile = Span::styled(format!(" {}", name_tile(seed)), tile_style(seed));
             buffer.set_span(x, r.y, &tile, max);
             x = x.saturating_add(3);
             max = max.saturating_sub(3);
@@ -862,7 +862,7 @@ pub fn sidebar_lines(app: &App, theme: &Theme, height: u16) -> Vec<(Option<usize
         };
         let mut spans = vec![
             Span::styled(slot_text, on_row(number)),
-            Span::styled(name_tile(&label), tile_style(&label)),
+            Span::styled(name_tile(row.seed()), tile_style(row.seed())),
             Span::styled(" ".to_owned(), on_row(Style::default())),
             Span::styled(
                 row.status.glyph().to_owned(),

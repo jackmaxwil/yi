@@ -84,6 +84,10 @@ impl SessionRow {
         self.name.clone().unwrap_or_else(|| "untitled".to_owned())
     }
 
+    pub fn seed(&self) -> &str {
+        self.name.as_deref().unwrap_or(&self.id.0)
+    }
+
     pub fn recency(&self) -> u64 {
         self.last_ms.max(self.created_ms)
     }

@@ -175,6 +175,7 @@ impl App {
 
     fn absorb_replay(&mut self, id: &SessionId, replay: &Replay, entries: Vec<Entry>) {
         self.seq.insert(id.clone(), None);
+        self.replayed.insert(id.clone());
         if let (Some(name), Some(row)) = (&replay.name, self.state.sessions.get_mut(id)) {
             row.name = Some(name.clone());
         }

@@ -28,6 +28,13 @@ test:
 # The lanes `check` runs, named so CI can run them as separate jobs.
 lint: fmt-check clippy
 
+# The one line for a dev loop: rebuild, stop the daemon the last build left running,
+# open the workspace. ctrl+c twice inside yi does the stop for you; ⌥q keeps it running.
+dev:
+    cargo build -p yi-cli
+    pkill -f 'yi serve' || true
+    ./target/debug/yi
+
 build-dist:
     cargo build --profile dist -p yi-cli
 
