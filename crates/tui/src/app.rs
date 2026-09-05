@@ -166,6 +166,8 @@ pub struct App {
     user_turns: usize,
     pub(crate) mode: TranscriptMode,
     pub(crate) kitty: bool,
+    /// Where the picker's first model row sits, set by the last paint; the logo slot column.
+    pub(crate) logo_rows: Option<(u16, u16)>,
     pub(crate) orb_placement: Option<(u16, u16)>,
     /// Incident: a resize reflows the text a kitty placement scrolls with, but
     /// [`crate::terminal::Terminal::resize_viewport`] reports only viewport-rect moves.
@@ -257,6 +259,7 @@ impl App {
             user_turns: 0,
             mode: TranscriptMode::default(),
             kitty: false,
+            logo_rows: None,
             orb_placement: None,
             orb_stale: false,
             pending_title: Some("Yi".to_owned()),
@@ -1123,6 +1126,8 @@ pub fn run_tui(
     }
 
     let mut orb_tick = orb::Tick::default();
+
+    let mut logo_tick = crate::logos::Tick::default();
     let mut last_spinner_phase = usize::MAX;
     while !app.quit {
         let timeout = app
@@ -1177,7 +1182,9 @@ pub fn run_tui(
             app.scheduler.mark_drawn(start, Instant::now());
         }
         orb::tick(&mut app, terminal.backend_mut(), &mut orb_tick);
+        crate::logos::tick(&app, terminal.backend_mut(), &mut logo_tick);
     }
+    crate::logos::delete_all(terminal.backend_mut(), &mut logo_tick);
 
     if orb_tick.shown {
         let _ = yi_orb::kitty::delete(terminal.backend_mut());

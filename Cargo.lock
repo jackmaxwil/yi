@@ -2344,6 +2344,7 @@ name = "yi-tui"
 version = "0.2.0"
 dependencies = [
  "insta",
+ "miniz_oxide",
  "pulldown-cmark",
  "ratatui",
  "serde_json",
