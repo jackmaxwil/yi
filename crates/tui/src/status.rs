@@ -103,7 +103,7 @@ fn left_segments(input: &StatusInput, path_max: usize) -> Vec<String> {
     segments.extend(input.mode.as_ref().map(|mode| format!("◉ {mode}")));
     let mut path = shrink_left(&input.cwd, path_max);
     if let Some(branch) = &input.branch {
-        path.push_str(&format!("@{branch}"));
+        path.push_str(&format!("@{}", shrink_left(branch, path_max)));
     }
     segments.push(path);
     segments.extend(input.landing.clone());
@@ -205,8 +205,8 @@ fn right_segments(input: &StatusInput, name_max: usize) -> Vec<String> {
     segments
 }
 
-/// Overflow cascade: shrink the session name, pop right segments, shrink the
-/// path, then drop left segments — the naive version left only the model.
+/// Overflow cascade: shrink the session name, pop right segments, shrink the path and the
+/// branch under one budget, then drop left segments right to left with the model last.
 pub fn render(input: &StatusInput, width: usize, theme: &Theme) -> Line<'static> {
     let accent = name_accent(&input.session_name);
     let accent_style = Style::default().fg(accent);
@@ -232,13 +232,11 @@ pub fn render(input: &StatusInput, width: usize, theme: &Theme) -> Line<'static>
     }
     let path_index = if input.mode.is_some() { 2 } else { 1 };
     while measure(&left, &right) > width && left.len() > 1 {
-        let drop = (0..left.len()).rev().find(|&i| i != path_index);
-        match drop {
-            Some(i) if left.len() > 1 => {
-                left.remove(i);
-            }
-            _ => break,
-        }
+        let drop = (1..left.len())
+            .rev()
+            .find(|&i| i != path_index)
+            .unwrap_or(path_index);
+        left.remove(drop);
     }
 
     let dimmed = input.focused_child.is_some();
