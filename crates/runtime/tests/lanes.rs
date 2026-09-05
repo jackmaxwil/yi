@@ -183,6 +183,45 @@ fn a_resumed_session_reclaims_its_slot_with_its_work_and_an_orphan_blocks_others
     Ok(())
 }
 
+/// A `pid-` session cannot be resumed and a drive that died at startup left three of them:
+/// the pool was full of slots holding nothing, and only a hand-run reap freed it.
+#[test]
+fn an_orphan_with_nothing_main_lacks_is_a_free_slot() -> TestResult {
+    let rig = Rig::new("abandoned")?;
+    let pool = rig.pool(1)?;
+    let lane = pool.claim("pid-1", ClaimBase::Main)?;
+    let slot = lane.slot();
+    drop(lane);
+    // A clean drop deletes the merged branch; a crash leaves it, so put it back as the crash would.
+    git(&rig.repo, &["branch", "-q", "yi/pid-1", "main"])?;
+    orphan(&pool, slot, "pid-1")?;
+    let taken = pool.claim("s-next", ClaimBase::Main)?;
+    assert_eq!(taken.slot(), slot);
+    assert_eq!(
+        git(taken.path(), &["symbolic-ref", "--short", "HEAD"])?,
+        "yi/s-next"
+    );
+    assert_eq!(
+        git(&rig.repo, &["branch", "--list", "yi/pid-1"])?,
+        "",
+        "nothing to keep"
+    );
+    drop(taken);
+    // Uncommitted work is work: the same shape with a stray file still blocks.
+    let lane = pool.claim("pid-2", ClaimBase::Main)?;
+    std::fs::write(lane.path().join("draft.txt"), "unsaved\n")?;
+    drop(lane);
+    git(&rig.repo, &["branch", "-q", "yi/pid-2", "main"])?;
+    orphan(&pool, slot, "pid-2")?;
+    let refused = pool.claim("s-late", ClaimBase::Main);
+    assert!(
+        matches!(refused, Err(LaneError::PoolFull { orphans: 1, .. })),
+        "{refused:?}"
+    );
+    rig.reclaim();
+    Ok(())
+}
+
 #[test]
 fn binding_the_store_id_renames_the_branch_so_a_resume_finds_it() -> TestResult {
     let rig = Rig::new("bind")?;

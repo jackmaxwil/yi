@@ -107,5 +107,6 @@ when it changes rather than editing them by hand.
 - [D127](adr/d127.md) - every ratchet moves through one verb, and an ADR is rendered from its row
 - [D128](adr/d128.md) - the model catalog is fetched, and the bundled one is its floor
 - [D129](adr/d129.md) - the model picker shows each row's mark
+- [D130](adr/d130.md) - an orphan with nothing `main` lacks is a free slot
 
 D36-D51, D72, D73 and D74 have no ADR yet; ARCHITECTURE.md is the record for those rows.
