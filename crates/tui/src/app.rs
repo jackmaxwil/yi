@@ -102,6 +102,7 @@ pub struct App {
     pub(crate) bottom: Option<Bottom>,
     pub(crate) tree: Option<TreeView>,
     pub(crate) plan_tree: Option<crate::plantree::PlanTreeView>,
+    pub(crate) plan_progress: Option<crate::hud::PlanProgress>,
     pub(crate) pending_commit: Vec<Line<'static>>,
     pub(crate) pending_open_tree: bool,
     pub(crate) pending_open_plan_tree: bool,
@@ -208,6 +209,7 @@ impl App {
             bottom: None,
             tree: None,
             plan_tree: None,
+            plan_progress: None,
             pending_commit: Vec::new(),
             pending_open_tree: false,
             pending_open_plan_tree: false,
@@ -937,6 +939,7 @@ impl App {
     pub fn hud_input(&self, goal: Option<GoalView>) -> HudInput {
         HudInput {
             goal,
+            plan: self.plan_progress.clone(),
             steering: self.steering.clone(),
             follow_up: Vec::new(),
         }

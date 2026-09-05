@@ -236,6 +236,25 @@ fn frame_scheduler_honors_floor_and_ceiling() -> TestResult {
 }
 
 #[test]
+fn hud_shows_the_checklist_count_without_a_goal() -> TestResult {
+    let input = yi_tui::hud::HudInput {
+        plan: Some(yi_tui::hud::PlanProgress {
+            done: 1,
+            total: 3,
+            running: Some("rebase".to_owned()),
+        }),
+        ..yi_tui::hud::HudInput::default()
+    };
+    let lines = yi_tui::hud::render(&input, &theme());
+    let text: String = lines
+        .iter()
+        .flat_map(|line| line.spans.iter().map(|span| span.content.to_string()))
+        .collect();
+    assert!(text.contains("Plan 1/3 · now: rebase"), "{text}");
+    Ok(())
+}
+
+#[test]
 fn hud_empty_input_renders_nothing() -> TestResult {
     let lines = yi_tui::hud::render(&yi_tui::hud::HudInput::default(), &theme());
     assert!(lines.is_empty());

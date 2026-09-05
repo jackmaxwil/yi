@@ -24,6 +24,7 @@ pub enum OpKind {
     Retry,
     Decompose,
     Supersede,
+    Set,
     View,
 }
 
@@ -150,6 +151,7 @@ pub(super) fn op_name(op: OpKind) -> &'static str {
         OpKind::Retry => "retry",
         OpKind::Decompose => "decompose",
         OpKind::Supersede => "supersede",
+        OpKind::Set => "set",
         OpKind::View => "view",
     }
 }
@@ -305,6 +307,7 @@ pub(super) fn new_todo(spec: TodoSpec) -> Todo {
         delegation: spec.delegation,
         subplan: None,
         retries: RetryCount::default(),
+        children: spec.children,
         extra: Map::new(),
     }
 }
@@ -367,7 +370,7 @@ mod tests {
 
     type TestResult = Result<(), Box<dyn std::error::Error>>;
 
-    const OPS: [OpKind; 14] = [
+    const OPS: [OpKind; 15] = [
         OpKind::Init,
         OpKind::Append,
         OpKind::Drop,
@@ -381,6 +384,7 @@ mod tests {
         OpKind::Retry,
         OpKind::Decompose,
         OpKind::Supersede,
+        OpKind::Set,
         OpKind::View,
     ];
 
@@ -490,6 +494,7 @@ mod tests {
                             | OpKind::Fail
                             | OpKind::Decompose
                             | OpKind::Supersede
+                            | OpKind::Set
                             | OpKind::View => None,
                         };
                         assert_eq!(step(&state, op), expected, "{name} x {op:?}");

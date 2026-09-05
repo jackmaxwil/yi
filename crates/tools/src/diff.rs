@@ -104,6 +104,26 @@ pub fn changed_after_lines(pre: &str, post: &str) -> Vec<u64> {
     changed
 }
 
+/// Where each line of `pre` sits in `post`: `Some(n)` for a line whose text is unchanged,
+/// `None` for one that was removed or rewritten. Index is the `pre` line minus one.
+pub fn line_map(pre: &str, post: &str) -> Vec<Option<u64>> {
+    let before = split_lines(pre);
+    let after = split_lines(post);
+    let mut map: Vec<Option<u64>> = Vec::with_capacity(before.len());
+    let mut after_line: u64 = 1;
+    for (op, _) in edit_script(&before, &after) {
+        match op {
+            Op::Keep => {
+                map.push(Some(after_line));
+                after_line = after_line.saturating_add(1);
+            }
+            Op::Remove => map.push(None),
+            Op::Add => after_line = after_line.saturating_add(1),
+        }
+    }
+    map
+}
+
 fn split_lines(text: &str) -> Vec<&str> {
     let mut lines: Vec<&str> = text.split('\n').collect();
     if lines.last() == Some(&"") {

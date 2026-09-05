@@ -583,7 +583,7 @@ impl AgentTool for SleepTool {
         }
     }
 
-    fn execution_mode(&self) -> ExecutionMode {
+    fn execution_mode(&self, _args: &Map<String, Value>) -> ExecutionMode {
         self.mode
     }
 
