@@ -562,3 +562,19 @@ fn a_typed_prompt_lands_user_attributed_in_the_session_file() -> TestResult {
     assert!(lines.contains(r#""attribution":"user""#), "{lines}");
     Ok(())
 }
+
+/// With no cache written yet, `yi catalog` reports the bundle and touches no network.
+#[test]
+fn catalog_reports_the_bundle_before_any_refresh() -> TestResult {
+    let workspace = Workspace::new("catalog-bundled")?;
+    let listed = workspace.yi(&["catalog"])?;
+    assert_eq!(listed.status.code(), Some(0), "{}", stdout(&listed));
+    let text = stdout(&listed);
+    for provider in ["anthropic", "openai", "openrouter"] {
+        assert!(text.contains(provider), "{text}");
+    }
+    assert_eq!(text.matches("bundled only").count(), 3, "{text}");
+    let wrong = workspace.yi(&["catalog", "purge"])?;
+    assert_eq!(wrong.status.code(), Some(2));
+    Ok(())
+}

@@ -1,0 +1,527 @@
+{
+ "data": [
+  {
+   "architecture": {
+    "input_modalities": [
+     "file",
+     "image",
+     "text"
+    ],
+    "instruct_type": null,
+    "modality": "text+image+file->text",
+    "output_modalities": [
+     "text"
+    ],
+    "tokenizer": "GPT"
+   },
+   "benchmarks": {
+    "artificial_analysis": {
+     "agentic_index": 51.6,
+     "coding_index": 76.9,
+     "intelligence_index": 54.7
+    },
+    "design_arena": []
+   },
+   "canonical_slug": "openai/gpt-6-astra-20260903",
+   "context_length": 1050000,
+   "created": 1788552838,
+   "default_parameters": {},
+   "description": "GPT-6 Astra is OpenAI's flagship model for demanding end-to-end work. It is suited for advanced analysis, software engineering, deep research, scientific work, and document creation, with particular strengths in long-horizon...",
+   "expiration_date": null,
+   "hugging_face_id": null,
+   "id": "openai/gpt-6-astra",
+   "knowledge_cutoff": null,
+   "links": {
+    "details": "/api/v1/models/openai/gpt-6-astra-20260903/endpoints"
+   },
+   "name": "OpenAI: GPT-6 Astra",
+   "per_request_limits": null,
+   "pricing": {
+    "completion": "0.00005",
+    "input_cache_read": "0.000001",
+    "input_cache_write": "0.0000125",
+    "overrides": [
+     {
+      "completion": "0.000075",
+      "input_cache_read": "0.000002",
+      "input_cache_write": "0.000025",
+      "min_prompt_tokens": 272000,
+      "prompt": "0.00002"
+     }
+    ],
+    "prompt": "0.00001",
+    "web_search": "0.01"
+   },
+   "reasoning": {
+    "default_effort": "medium",
+    "default_enabled": true,
+    "mandatory": true,
+    "supported_efforts": [
+     "max",
+     "xhigh",
+     "high",
+     "medium",
+     "low"
+    ]
+   },
+   "supported_parameters": [
+    "include_reasoning",
+    "max_completion_tokens",
+    "max_tokens",
+    "reasoning",
+    "reasoning_effort",
+    "response_format",
+    "seed",
+    "structured_outputs",
+    "tool_choice",
+    "tools"
+   ],
+   "supported_voices": null,
+   "top_provider": {
+    "context_length": 1050000,
+    "is_moderated": true,
+    "max_completion_tokens": 128000
+   }
+  },
+  {
+   "architecture": {
+    "input_modalities": [
+     "file",
+     "image",
+     "text"
+    ],
+    "instruct_type": null,
+    "modality": "text+image+file->text",
+    "output_modalities": [
+     "text"
+    ],
+    "tokenizer": "GPT"
+   },
+   "benchmarks": {
+    "artificial_analysis": {
+     "agentic_index": 51.6,
+     "coding_index": 76.9,
+     "intelligence_index": 54.7
+    },
+    "design_arena": []
+   },
+   "canonical_slug": "openai/gpt-6-astra-20260903",
+   "context_length": 1050000,
+   "created": 1788552838,
+   "default_parameters": {},
+   "description": "GPT-6 Astra is OpenAI's flagship model for demanding end-to-end work. It is suited for advanced analysis, software engineering, deep research, scientific work, and document creation, with particular strengths in long-horizon...",
+   "expiration_date": null,
+   "hugging_face_id": null,
+   "id": "openai/gpt-6-astra:batch",
+   "knowledge_cutoff": null,
+   "links": {
+    "details": "/api/v1/models/openai/gpt-6-astra-20260903/endpoints"
+   },
+   "name": "OpenAI: GPT-6 Astra (batch)",
+   "per_request_limits": null,
+   "pricing": {
+    "completion": "0.000025",
+    "input_cache_read": "0.0000005",
+    "input_cache_write": "0.00000625",
+    "overrides": [
+     {
+      "completion": "0.0000375",
+      "input_cache_read": "0.000001",
+      "input_cache_write": "0.0000125",
+      "min_prompt_tokens": 272000,
+      "prompt": "0.00001"
+     }
+    ],
+    "prompt": "0.000005",
+    "web_search": "0.01"
+   },
+   "reasoning": {
+    "default_effort": "medium",
+    "default_enabled": true,
+    "mandatory": true,
+    "supported_efforts": [
+     "max",
+     "xhigh",
+     "high",
+     "medium",
+     "low"
+    ]
+   },
+   "supported_parameters": [
+    "include_reasoning",
+    "max_tokens",
+    "reasoning",
+    "reasoning_effort",
+    "response_format",
+    "seed",
+    "structured_outputs",
+    "tool_choice",
+    "tools"
+   ],
+   "supported_voices": null,
+   "top_provider": {
+    "context_length": 1050000,
+    "is_moderated": true,
+    "max_completion_tokens": 128000
+   }
+  },
+  {
+   "architecture": {
+    "input_modalities": [
+     "text",
+     "image",
+     "file"
+    ],
+    "instruct_type": null,
+    "modality": "text+image+file->text",
+    "output_modalities": [
+     "text"
+    ],
+    "tokenizer": "Claude"
+   },
+   "benchmarks": {
+    "artificial_analysis": {
+     "agentic_index": 56.4,
+     "coding_index": 78,
+     "intelligence_index": 54.1
+    },
+    "design_arena": [
+     {
+      "arena": "agents",
+      "category": "agenticgamedev",
+      "elo": 1266,
+      "rank": 2,
+      "win_rate": 54.3
+     },
+     {
+      "arena": "agents",
+      "category": "androidnative",
+      "elo": 1272,
+      "rank": 3,
+      "win_rate": 54.9
+     },
+     {
+      "arena": "agents",
+      "category": "fullstack",
+      "elo": 1352,
+      "rank": 2,
+      "win_rate": 70.2
+     },
+     {
+      "arena": "agents",
+      "category": "mobileapps",
+      "elo": 1348,
+      "rank": 1,
+      "win_rate": 67.1
+     },
+     {
+      "arena": "agents",
+      "category": "webapps",
+      "elo": 1284,
+      "rank": 4,
+      "win_rate": 57.8
+     },
+     {
+      "arena": "models",
+      "category": "3d",
+      "elo": 1376,
+      "rank": 3,
+      "win_rate": 62.5
+     },
+     {
+      "arena": "models",
+      "category": "asciiart",
+      "elo": 1382,
+      "rank": 1,
+      "win_rate": 69.8
+     },
+     {
+      "arena": "models",
+      "category": "codecategories",
+      "elo": 1341,
+      "rank": 3,
+      "win_rate": 58.7
+     },
+     {
+      "arena": "models",
+      "category": "dataviz",
+      "elo": 1358,
+      "rank": 4,
+      "win_rate": 61.3
+     },
+     {
+      "arena": "models",
+      "category": "gamedev",
+      "elo": 1373,
+      "rank": 4,
+      "win_rate": 60.4
+     },
+     {
+      "arena": "models",
+      "category": "svg",
+      "elo": 1361,
+      "rank": 1,
+      "win_rate": 62.5
+     },
+     {
+      "arena": "models",
+      "category": "uicomponent",
+      "elo": 1368,
+      "rank": 2,
+      "win_rate": 61.8
+     },
+     {
+      "arena": "models",
+      "category": "website",
+      "elo": 1323,
+      "rank": 4,
+      "win_rate": 56.7
+     }
+    ]
+   },
+   "canonical_slug": "anthropic/claude-opus-5-20260723",
+   "context_length": 1000000,
+   "created": 1784912544,
+   "default_parameters": {},
+   "description": "Claude Opus 5 is Anthropic\u2019s flagship model for demanding reasoning, coding, and long-horizon agentic work. It is particularly strong at end-to-end software tasks, code review and bug finding, visual analysis...",
+   "expiration_date": null,
+   "hugging_face_id": null,
+   "id": "anthropic/claude-opus-5",
+   "knowledge_cutoff": null,
+   "links": {
+    "details": "/api/v1/models/anthropic/claude-opus-5-20260723/endpoints"
+   },
+   "name": "Claude Opus 5",
+   "per_request_limits": null,
+   "pricing": {
+    "completion": "0.000025",
+    "input_cache_read": "0.0000005",
+    "input_cache_write": "0.00000625",
+    "input_cache_write_1h": "0.00001",
+    "prompt": "0.000005",
+    "web_search": "0.01"
+   },
+   "reasoning": {
+    "default_effort": "high",
+    "default_enabled": true,
+    "mandatory": false,
+    "supported_efforts": [
+     "max",
+     "xhigh",
+     "high",
+     "medium",
+     "low"
+    ]
+   },
+   "supported_parameters": [
+    "include_reasoning",
+    "max_completion_tokens",
+    "max_tokens",
+    "reasoning",
+    "reasoning_effort",
+    "response_format",
+    "stop",
+    "structured_outputs",
+    "temperature",
+    "tool_choice",
+    "tools",
+    "verbosity"
+   ],
+   "supported_voices": null,
+   "top_provider": {
+    "context_length": 1000000,
+    "is_moderated": true,
+    "max_completion_tokens": 128000
+   }
+  },
+  {
+   "architecture": {
+    "input_modalities": [
+     "text"
+    ],
+    "instruct_type": null,
+    "modality": "text->text",
+    "output_modalities": [
+     "text"
+    ],
+    "tokenizer": "Qwen"
+   },
+   "benchmarks": {
+    "artificial_analysis": {
+     "agentic_index": 23.9,
+     "coding_index": 66,
+     "intelligence_index": null
+    },
+    "design_arena": [
+     {
+      "arena": "agents",
+      "category": "agenticgamedev",
+      "elo": 1162,
+      "rank": 18,
+      "win_rate": 46.7
+     },
+     {
+      "arena": "agents",
+      "category": "androidnative",
+      "elo": 1176,
+      "rank": 23,
+      "win_rate": 48.6
+     },
+     {
+      "arena": "agents",
+      "category": "fullstack",
+      "elo": 1205,
+      "rank": 18,
+      "win_rate": 50.4
+     },
+     {
+      "arena": "agents",
+      "category": "godotgamedev",
+      "elo": 1224,
+      "rank": 8,
+      "win_rate": 55.4
+     },
+     {
+      "arena": "agents",
+      "category": "htmlslides",
+      "elo": 1170,
+      "rank": 14,
+      "win_rate": 43.6
+     },
+     {
+      "arena": "agents",
+      "category": "mobileapps",
+      "elo": 1195,
+      "rank": 22,
+      "win_rate": 47
+     },
+     {
+      "arena": "agents",
+      "category": "python-pptxslides",
+      "elo": 1219,
+      "rank": 12,
+      "win_rate": 47.5
+     },
+     {
+      "arena": "agents",
+      "category": "webapps",
+      "elo": 1239,
+      "rank": 14,
+      "win_rate": 50.5
+     },
+     {
+      "arena": "models",
+      "category": "3d",
+      "elo": 1309,
+      "rank": 14,
+      "win_rate": 55.7
+     },
+     {
+      "arena": "models",
+      "category": "asciiart",
+      "elo": 1237,
+      "rank": 16,
+      "win_rate": 53.4
+     },
+     {
+      "arena": "models",
+      "category": "codecategories",
+      "elo": 1293,
+      "rank": 16,
+      "win_rate": 55.4
+     },
+     {
+      "arena": "models",
+      "category": "dataviz",
+      "elo": 1294,
+      "rank": 16,
+      "win_rate": 54.5
+     },
+     {
+      "arena": "models",
+      "category": "gamedev",
+      "elo": 1301,
+      "rank": 16,
+      "win_rate": 55
+     },
+     {
+      "arena": "models",
+      "category": "svg",
+      "elo": 1255,
+      "rank": 16,
+      "win_rate": 58.4
+     },
+     {
+      "arena": "models",
+      "category": "uicomponent",
+      "elo": 1294,
+      "rank": 20,
+      "win_rate": 54.9
+     },
+     {
+      "arena": "models",
+      "category": "website",
+      "elo": 1288,
+      "rank": 20,
+      "win_rate": 55.5
+     }
+    ]
+   },
+   "canonical_slug": "qwen/qwen3.7-max-20260520",
+   "context_length": 1000000,
+   "created": 1779376861,
+   "default_parameters": {
+    "frequency_penalty": null,
+    "presence_penalty": null,
+    "repetition_penalty": null,
+    "temperature": null,
+    "top_k": null,
+    "top_p": null
+   },
+   "description": "Qwen3.7-Max is the flagship model in Alibaba's Qwen3.7 series. It supports text input and output and is designed for agent-centric workloads, with particular strengths in coding, office and productivity tasks,...",
+   "expiration_date": null,
+   "hugging_face_id": null,
+   "id": "qwen/qwen3.7-max",
+   "knowledge_cutoff": null,
+   "links": {
+    "details": "/api/v1/models/qwen/qwen3.7-max-20260520/endpoints"
+   },
+   "name": "Qwen: Qwen3.7 Max",
+   "per_request_limits": null,
+   "pricing": {
+    "completion": "0.000004425",
+    "input_cache_read": "0.000000295",
+    "input_cache_write": "0.00000184375",
+    "prompt": "0.000001475"
+   },
+   "reasoning": {
+    "default_enabled": true,
+    "mandatory": false
+   },
+   "supported_parameters": [
+    "frequency_penalty",
+    "include_reasoning",
+    "logprobs",
+    "max_tokens",
+    "presence_penalty",
+    "reasoning",
+    "response_format",
+    "seed",
+    "stop",
+    "structured_outputs",
+    "temperature",
+    "tool_choice",
+    "tools",
+    "top_k",
+    "top_logprobs",
+    "top_p"
+   ],
+   "supported_voices": null,
+   "top_provider": {
+    "context_length": 1000000,
+    "is_moderated": false,
+    "max_completion_tokens": 131072
+   }
+  }
+ ]
+}

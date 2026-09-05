@@ -105,5 +105,6 @@ when it changes rather than editing them by hand.
 - [D124](adr/d124.md) - the idle warmer is contained, offline and receipted
 - [D126](adr/d126.md) - the TUI paints streamed text through a reveal cursor
 - [D127](adr/d127.md) - every ratchet moves through one verb, and an ADR is rendered from its row
+- [D128](adr/d128.md) - the model catalog is fetched, and the bundled one is its floor
 
 D36-D51, D72, D73 and D74 have no ADR yet; ARCHITECTURE.md is the record for those rows.
