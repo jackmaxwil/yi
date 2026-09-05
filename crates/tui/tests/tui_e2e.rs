@@ -735,7 +735,7 @@ fn a_short_screen_keeps_the_composer_and_status_under_a_long_tail() -> TestResul
             "the composer must survive a {height}-row screen:\n{contents}"
         );
         assert!(
-            contents.contains("0% of 128K"),
+            contents.contains("0 / 128K"),
             "the status line must survive a {height}-row screen:\n{contents}"
         );
     }

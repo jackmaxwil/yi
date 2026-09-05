@@ -1909,7 +1909,7 @@ fn the_status_row_shows_model_effort_cost_and_context() -> TestResult {
          wait-frame 3000 faux-1\n\
          wait-frame 3000 ◉ medium\n\
          wait-frame 3000 $0.12\n\
-         wait-frame 3000 1% of 200K\n\
+         wait-frame 3000 2,000 / 200K\n\
          quit\n",
     )
 }
@@ -2166,11 +2166,10 @@ fn the_keys_overlay_lists_every_chord() -> TestResult {
     )
 }
 
-/// The rail docks its rows at the bottom of the sidebar; the full list reads from the top.
 #[test]
-fn the_rail_docks_at_the_bottom() -> TestResult {
+fn the_rail_reads_from_the_top() -> TestResult {
     let frame = run_frames_with(
-        "rail-dock",
+        "rail-top",
         vec![
             Step::Expect("initialize", init_reply),
             Step::Expect("session/list", two_session_list),
@@ -2181,19 +2180,10 @@ fn the_rail_docks_at_the_bottom() -> TestResult {
          quit\n",
         SidebarMode::Rail,
     )?;
-    let lines: Vec<&str> = frame.lines().collect();
-    let first_slot = lines
-        .iter()
-        .position(|line| line.contains("1 SB"))
-        .ok_or("the first slot must be on screen")?;
+    let first = frame.lines().next().ok_or("an empty frame")?;
     assert!(
-        first_slot > lines.len() / 2,
-        "the rail sits in the lower half: row {first_slot} of {}",
-        lines.len()
-    );
-    assert!(
-        !lines.first().is_some_and(|line| line.contains("1 SB")),
-        "not at the top"
+        first.contains("1 SB"),
+        "the first slot is on the first row: {first}"
     );
     Ok(())
 }
