@@ -9,7 +9,7 @@ use yi_tui::colors::{Theme, accent_rgb, name_tile, tile_style_at};
 use crate::app::App;
 use crate::avatar::Placement;
 use crate::model::{Mode, SessionStatus, SidebarMode, Zone, now_ms};
-use crate::render::{NAME_WIDTH, RAIL_ROWS, status_style};
+use crate::render::{NAME_WIDTH, status_style};
 
 pub struct SidebarRow {
     pub index: Option<usize>,
@@ -77,13 +77,7 @@ pub fn sidebar_lines(app: &App, theme: &Theme, height: u16) -> Vec<SidebarRow> {
     let focused = app.state.focused_session();
     let now = now_ms();
     let mut slot = 0_usize;
-    let visible = app.state.visible_rows();
-    let shown = if rail {
-        visible.iter().copied().take(RAIL_ROWS).collect()
-    } else {
-        visible
-    };
-    for index in shown {
+    for index in app.state.visible_rows() {
         let Some(id) = app.state.order.get(index) else {
             continue;
         };
