@@ -226,8 +226,16 @@ def cmd_commit(args):
 
 
 def binary_ratchet(topic):
-    """Measured after the code commit: the dist binary embeds the commit, so a build from
-    the dirty tree is not the binary the lane measures (16 bytes off, twice)."""
+    """Built here, after the code commit: check_binary_size.py only stats target/dist/yi,
+    so without a build it measures the previous landing (said ok while the lane grew)."""
+    build = subprocess.run(
+        ("cargo", "build", "--profile", "dist", "-p", "yi-cli"),
+        capture_output=True, text=True, check=False,
+    )
+    if build.returncode != 0:
+        print("binary: dist build failed")
+        print(build.stderr.strip().splitlines()[-1] if build.stderr.strip() else "")
+        return 1
     out = subprocess.run(
         (sys.executable, str(ROOT / "scripts/guardrails/check_binary_size.py")),
         capture_output=True, text=True, check=False,
@@ -251,7 +259,8 @@ def cmd_push(args):
         print("push: the tree is dirty — just commit first")
         return 1
     # The lane refuses a grown binary; measuring here is the last chance before it.
-    binary_ratchet(getattr(args, "topic", "") or "")
+    if binary_ratchet(getattr(args, "topic", "") or ""):
+        return 1
     print(f"push: {name} through the pre-push lane (minutes; run this in the background)")
     out = subprocess.run(("git", "-C", str(ROOT), "push", "-u", "origin", name), check=False)
     return out.returncode
