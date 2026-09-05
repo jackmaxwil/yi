@@ -27,6 +27,7 @@ zero-padded run-id.
 | peak-ctx | pier `peak_context_tokens` (F axis) |
 | compactions | pier `summarization_count` (F axis) |
 | notes | what was being tested; regressions; anything that makes the row unfair |
+| rule-fires | labelled D54 haystack lanes (`evals/rule_fires.py`); empty until a T3 run fills it |
 
 ## Runs
 

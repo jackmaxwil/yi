@@ -1,0 +1,8 @@
+{"lane":"args","haystack":"{\"path\":\"src/borrow.rs\",\"oldText\":\"fn take(x: &i32) {}\"}","label":"should-not","note":"no compiler code in the call"}
+{"lane":"args","haystack":"{\"path\":\"src/lib.rs\",\"patch\":\"// E0502 is documented here\"}","label":"should-not","note":"needle in a patch comment is vocabulary coincidence"}
+{"lane":"result","haystack":"error[E0502]: cannot borrow `x` as mutable because it is also borrowed as immutable\n --> src/borrow.rs:4:5","label":"should","note":"structured rustc output the model did not write"}
+{"lane":"error","haystack":"error[E0502]: cannot borrow `x` as mutable because it is also borrowed as immutable","label":"should","is_error":true}
+{"lane":"error","haystack":"Permission denied (publickey)","label":"should-not","needle":"E0502","is_error":true,"note":"a real error, wrong signature"}
+{"lane":"text","haystack":"I will fix the E0502 by cloning.","label":"should-not","note":"assistant prose naming the code is not evidence"}
+{"lane":"text","haystack":"see the handbook section on E0502 in comments","label":"should-not","note":"comment/doc coincidence, the OMP regex-on-prose failure"}
+{"lane":"text","haystack":"tests pass","label":"should-not","needle":"E0502"}

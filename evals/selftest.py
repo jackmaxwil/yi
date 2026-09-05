@@ -19,6 +19,7 @@ sys.path.insert(0, str(ROOT / "drivers"))
 sys.path.insert(0, str(ROOT))
 
 import orient_census  # noqa: E402
+import rule_fires  # noqa: E402
 import record  # noqa: E402
 import tb21_cost  # noqa: E402
 import yi_usage  # noqa: E402
@@ -266,9 +267,21 @@ def check_orient_census():
     orient_census.selftest()
 
 
+def check_rule_fires():
+    """Result-lane rustc codes are invisible; comment needles already match as text."""
+    report = rule_fires.measure(FIXTURES / "rules" / "lanes.jsonl")
+    assert report["should"] == 2, report
+    assert report["recall_oracle"] == 1.0, report
+    assert report["gap"] == ["result", "error"], report
+    assert report["comment_fp"] == 2, report
+    assert report["fp_current"] == 0.5, report
+    assert report["recall_current"] == 0.0, report
+
+
 CHECKS = (
     check_cost_cap,
     check_orient_census,
+    check_rule_fires,
     check_command,
     check_usage,
     check_no_assistant_rows,
