@@ -67,6 +67,7 @@ fn spec(label: &str, after: &[&str]) -> Result<TodoSpec, Box<dyn Error>> {
             .map(|edge| TodoLabel::new(*edge))
             .collect::<Result<Vec<_>, _>>()?,
         delegation: None,
+        children: Vec::new(),
     })
 }
 
@@ -128,6 +129,7 @@ fn plan_with(edges: &[(&str, &[&str])]) -> Result<Plan, Box<dyn Error>> {
             delegation: None,
             subplan: None,
             retries: yi_types::plan::doc::RetryCount(0),
+            children: Vec::new(),
             extra: serde_json::Map::new(),
         });
     }

@@ -33,6 +33,13 @@ pub struct TodoSpec {
     pub label: TodoLabel,
     pub after: Vec<TodoLabel>,
     pub delegation: Option<Delegation>,
+    pub children: Vec<Todo>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct SetRow {
+    pub spec: TodoSpec,
+    pub state: TodoStateName,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -85,6 +92,10 @@ pub enum Op {
         reason: String,
         todos: Vec<TodoSpec>,
     },
+    Set {
+        goal: Option<GoalText>,
+        rows: Vec<SetRow>,
+    },
     View {
         full: bool,
     },
@@ -106,6 +117,7 @@ impl Op {
             | Self::Append { .. }
             | Self::Reorder { .. }
             | Self::Supersede { .. }
+            | Self::Set { .. }
             | Self::View { .. } => None,
         }
     }
@@ -125,6 +137,7 @@ impl Op {
             Self::Retry { .. } => OpKind::Retry,
             Self::Decompose { .. } => OpKind::Decompose,
             Self::Supersede { .. } => OpKind::Supersede,
+            Self::Set { .. } => OpKind::Set,
             Self::View { .. } => OpKind::View,
         }
     }
@@ -426,6 +439,17 @@ impl PlanEngine {
             Op::Supersede { reason, todos } => self.framed(plan, kind, &actor, named, |file, _| {
                 self.do_supersede(file, reason, todos)
             }),
+            Op::Set { goal, rows } => {
+                if plan.is_none() && self.resolve(None).is_err() {
+                    let goal = match goal {
+                        Some(goal) => goal,
+                        None => GoalText::new("checklist")?,
+                    };
+                    let specs = rows.iter().map(|row| row.spec.clone()).collect();
+                    self.init(goal, specs, &actor)?;
+                }
+                self.framed(plan, kind, &actor, named, |file, _| self.do_set(file, rows))
+            }
             Op::View { full } => self.view(plan, full),
         }
     }
@@ -976,6 +1000,51 @@ impl PlanEngine {
         }
         delta.extra.append(&mut subs);
         file.plan = next;
+        Ok(delta)
+    }
+
+    /// The checklist is the whole cut: a surviving label keeps its edges, delegation and
+    /// sub-plan, a new one starts plain, a missing one leaves, and every state is as written.
+    fn do_set(&self, file: &mut PlanFile, rows: Vec<SetRow>) -> Result<Delta, PlanOpError> {
+        let mut delta = Delta::default();
+        let id = file.plan.id.clone();
+        let kept: Vec<&TodoLabel> = rows.iter().map(|row| &row.spec.label).collect();
+        for todo in &file.plan.todos {
+            if !kept.contains(&&todo.label) {
+                self.reap_leaving_running(&id, todo, &mut delta)?;
+            }
+        }
+        let mut todos: Vec<Todo> = Vec::with_capacity(rows.len());
+        for row in rows {
+            let existing = file
+                .plan
+                .todos
+                .iter()
+                .find(|todo| todo.label == row.spec.label);
+            let mut todo = match existing {
+                Some(existing) => existing.clone(),
+                None => new_todo(row.spec.clone()),
+            };
+            todo.children = row.spec.children;
+            let unchanged = TodoStateName::of(&todo.state) == row.state;
+            if !unchanged {
+                todo.state = match row.state {
+                    TodoStateName::Running => TodoState::Running {
+                        by: AgentId::new(OWNER_AGENT)?,
+                    },
+                    TodoStateName::Done => TodoState::Done { output: None },
+                    TodoStateName::Pending
+                    | TodoStateName::Blocked
+                    | TodoStateName::Failed
+                    | TodoStateName::Abandoned
+                    | TodoStateName::Other(_) => TodoState::Pending,
+                };
+            }
+            todos.push(todo);
+        }
+        file.plan.todos = todos;
+        file.plan.version = file.plan.version.bump();
+        validate_plan(&file.plan)?;
         Ok(delta)
     }
 

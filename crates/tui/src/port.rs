@@ -72,6 +72,10 @@ pub trait SessionPort {
     fn select(&mut self, model: Model, effort: Effort) -> Answer;
     fn plan(&mut self) -> Answer;
     fn goal(&self) -> Option<GoalView>;
+    /// The open plan's checklist count for the HUD; a port with no plan service shows none.
+    fn plan_progress(&self) -> Option<crate::hud::PlanProgress> {
+        None
+    }
 }
 
 /// The active branch only: the whole tree is for the tree view, and a transcript built
@@ -236,6 +240,16 @@ impl SessionPort for Arc<AgentSession> {
                 let subplans = yi_runtime::plan::subplans_of(&plan, service.plans_dir());
                 Reply::Plan { plan, subplans }
             }
+        })
+    }
+
+    fn plan_progress(&self) -> Option<crate::hud::PlanProgress> {
+        let plan = self.plan_service()?.read_plan().ok()?;
+        let progress = yi_types::plan::doc::progress(&plan.todos);
+        Some(crate::hud::PlanProgress {
+            done: progress.done,
+            total: progress.total,
+            running: progress.running.map(|label| label.to_string()),
         })
     }
 

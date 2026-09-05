@@ -247,7 +247,7 @@ fn missing_tag_rejects_with_teaching_text() -> TestResult {
     assert!(edit.is_error);
     let text = output_text(&edit);
     assert!(
-        text.contains("Missing hashline snapshot tag for a.txt"),
+        text.contains("No version of a.txt was shown this session"),
         "{text}"
     );
     Ok(())
@@ -495,5 +495,124 @@ fn a_multi_hunk_edit_anchors_every_hunk_without_a_re_read() -> TestResult {
     let follow_up = fixture.edit(&format!("[a.txt#{new_tag}]\nPUT 10.=10:\n+TENTH AGAIN\n"));
     assert!(!follow_up.is_error, "{}", output_text(&follow_up));
     assert!(fixture.content("a.txt")?.contains("TENTH AGAIN"));
+    Ok(())
+}
+
+#[test]
+fn numbers_from_an_older_read_land_after_an_insert_above_them() -> TestResult {
+    let fixture = Fixture::new("rebase-moved")?;
+    fixture.write("a.txt", "one\ntwo\nthree\nfour\n")?;
+    let old_tag = fixture.tag_of("a.txt")?;
+    let first = fixture.edit(&format!("[a.txt#{old_tag}]\nPUT <1:\n+zero\n"));
+    assert!(!first.is_error, "{}", output_text(&first));
+
+    let second = fixture.edit(&format!("[a.txt#{old_tag}]\nPUT 3.=3:\n+THREE\n"));
+    let text = output_text(&second);
+    assert!(!second.is_error, "{text}");
+    assert!(text.contains("rebased #"), "{text}");
+    assert_eq!(fixture.content("a.txt")?, "zero\none\ntwo\nTHREE\nfour\n");
+    Ok(())
+}
+
+#[test]
+fn a_cited_line_that_changed_since_the_read_is_rejected_and_nothing_is_written() -> TestResult {
+    let fixture = Fixture::new("rebase-changed")?;
+    fixture.write("a.txt", "one\ntwo\nthree\nfour\n")?;
+    let old_tag = fixture.tag_of("a.txt")?;
+    let first = fixture.edit(&format!("[a.txt#{old_tag}]\nPUT 3.=3:\n+drei\n"));
+    assert!(!first.is_error, "{}", output_text(&first));
+
+    let second = fixture.edit(&format!("[a.txt#{old_tag}]\nPUT 3.=3:\n+THREE\n"));
+    let text = output_text(&second);
+    assert!(second.is_error, "{text}");
+    assert!(
+        text.contains("drei"),
+        "the rejection shows the current line: {text}"
+    );
+    assert_eq!(fixture.content("a.txt")?, "one\ntwo\ndrei\nfour\n");
+    Ok(())
+}
+
+#[test]
+fn a_header_without_a_tag_means_the_version_last_shown() -> TestResult {
+    let fixture = Fixture::new("rebase-notag")?;
+    fixture.write("a.txt", "one\ntwo\nthree\n")?;
+    let _ = fixture.tag_of("a.txt")?;
+    let edit = fixture.edit("[a.txt]\nPUT 2.=2:\n+TWO\n");
+    assert!(!edit.is_error, "{}", output_text(&edit));
+    assert_eq!(fixture.content("a.txt")?, "one\nTWO\nthree\n");
+
+    fixture.write("b.txt", "never shown\n")?;
+    let blind = fixture.edit("[b.txt]\nPUT 1.=1:\n+x\n");
+    assert!(blind.is_error, "{}", output_text(&blind));
+    Ok(())
+}
+
+#[test]
+fn a_block_op_rebases_only_when_the_whole_old_block_is_unchanged() -> TestResult {
+    let fixture = Fixture::new("rebase-block")?;
+    fixture.write("a.rs", "fn a() {\n    1\n}\nfn b() {\n    2\n}\n")?;
+    let old_tag = fixture.tag_of("a.rs")?;
+    let first = fixture.edit(&format!("[a.rs#{old_tag}]\nPUT <1:\n+// head\n"));
+    assert!(!first.is_error, "{}", output_text(&first));
+
+    let moved = fixture.edit(&format!(
+        "[a.rs#{old_tag}]\nPUT 4*:\n+fn b() {{\n+    3\n+}}\n"
+    ));
+    assert!(!moved.is_error, "{}", output_text(&moved));
+    assert_eq!(
+        fixture.content("a.rs")?,
+        "// head\nfn a() {\n    1\n}\nfn b() {\n    3\n}\n"
+    );
+
+    let stale = fixture.edit(&format!(
+        "[a.rs#{old_tag}]\nPUT 4*:\n+fn b() {{\n+    4\n+}}\n"
+    ));
+    assert!(stale.is_error, "{}", output_text(&stale));
+    Ok(())
+}
+
+#[test]
+fn a_block_op_on_a_python_file_replaces_the_indented_body() -> TestResult {
+    let fixture = Fixture::new("indent-block")?;
+    fixture.write(
+        "a.py",
+        "def a():\n    return 1\n\n\ndef b():\n    return 2\n",
+    )?;
+    let tag = fixture.tag_of("a.py")?;
+    let edit = fixture.edit(&format!(
+        "[a.py#{tag}]\nPUT 1*:\n+def a():\n+    return 10\n"
+    ));
+    assert!(!edit.is_error, "{}", output_text(&edit));
+    assert_eq!(
+        fixture.content("a.py")?,
+        "def a():\n    return 10\n\n\ndef b():\n    return 2\n"
+    );
+    Ok(())
+}
+
+#[test]
+fn an_edit_to_a_charted_file_carries_a_named_grid_layer() -> TestResult {
+    let fixture = Fixture::new("grid-layer")?;
+    fixture.write("a.rs", "fn a() {}\n")?;
+    let tag = fixture.tag_of("a.rs")?;
+    let edit = fixture.edit(&format!("[a.rs#{tag}]\nPUT 1.=1:\n+fn a() {{ 1 }}\n"));
+    let text = output_text(&edit);
+    assert!(!edit.is_error, "{text}");
+    assert!(
+        text.contains("[grid check"),
+        "the layer is named either way: {text}"
+    );
+    assert!(
+        edit.result.details["grid"].is_string(),
+        "{}",
+        edit.result.details
+    );
+
+    fixture.write("b.txt", "one\n")?;
+    let tag = fixture.tag_of("b.txt")?;
+    let plain = fixture.edit(&format!("[b.txt#{tag}]\nPUT 1.=1:\n+two\n"));
+    assert!(!output_text(&plain).contains("[grid check"));
+    assert_eq!(plain.result.details["grid"], json!("skipped"));
     Ok(())
 }

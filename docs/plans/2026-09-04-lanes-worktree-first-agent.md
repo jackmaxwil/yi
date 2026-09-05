@@ -1,6 +1,6 @@
 # Lanes: a worktree-first agent that only lands through pull requests
 
-Status: implemented on this branch as D119–D124 (0.146.0). D-numbers below were provisional
+Status: implemented on this branch as D119–D124 (0.148.0). D-numbers below were provisional
 (D116+); check collisions against open PRs before any of them is claimed.
 
 ## The one-line design
