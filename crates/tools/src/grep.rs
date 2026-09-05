@@ -4,9 +4,10 @@ use std::path::Path;
 use serde_json::{Map, Value, json};
 
 use crate::builtins::walk_files;
+use crate::hashline::normalize::{LineEnding, detect_line_ending, restore_line_endings};
+use crate::hashline::types::BlockResolverRequest;
 use crate::tool::{
-    Tool, ToolContext, ToolKind, ToolOutput, error_output, error_output_kind, require_str,
-    resolve_path, text_output,
+    Tool, ToolContext, ToolKind, ToolOutput, error_output_kind, resolve_path, text_output,
 };
 
 const PAGE_CAP: usize = 200;
@@ -20,6 +21,11 @@ const LINE_CLIP: usize = crate::hashline::patcher::SEEN_LINE_REVEAL_MAX_COLUMNS;
 /// Invariant: a grep must not flush the snapshot store's LRU and strand the
 /// tag a read just minted, so only the page's first files mint.
 const TAG_FILES_CAP: usize = 20;
+/// A block per hit is a page of code, not a page of rows.
+const BLOCK_PAGE_CAP: usize = 20;
+/// A rename past these is a refactor the model should see file by file.
+const REPLACE_FILES_CAP: usize = 50;
+const REPLACE_HITS_CAP: usize = 500;
 
 /// `type` shorthand for an include glob; a name outside the map fails loudly.
 const TYPES: [(&str, &str); 12] = [
@@ -42,28 +48,90 @@ pub struct GrepTool {
     pub hashline: Option<crate::hashline::tool::SharedHashline>,
 }
 
+fn invalid(message: String) -> Box<ToolOutput> {
+    Box::new(error_output_kind(
+        message,
+        yi_types::event::ToolErrorKind::InvalidArgs,
+    ))
+}
+
+fn patterns(input: &Map<String, Value>) -> Result<Vec<String>, Box<ToolOutput>> {
+    match input.get("pattern") {
+        Some(Value::String(one)) if !one.is_empty() => Ok(vec![one.clone()]),
+        Some(Value::Array(many)) => {
+            let list: Vec<String> = many
+                .iter()
+                .filter_map(Value::as_str)
+                .filter(|item| !item.is_empty())
+                .map(str::to_owned)
+                .collect();
+            if list.is_empty() || list.len() != many.len() {
+                return Err(invalid(
+                    "pattern array must hold non-empty strings".to_owned(),
+                ));
+            }
+            Ok(list)
+        }
+        Some(_) | None => Err(invalid(
+            "pattern is required: a regex, or an array of them".to_owned(),
+        )),
+    }
+}
+
+struct Options {
+    literal: bool,
+    ignore_case: bool,
+    multiline: bool,
+    def: bool,
+    count: bool,
+    block: bool,
+    files_only: bool,
+    replace: Option<String>,
+    apply: bool,
+}
+
+fn flag(input: &Map<String, Value>, name: &str) -> bool {
+    input.get(name).and_then(Value::as_bool).unwrap_or(false)
+}
+
+impl Options {
+    fn from(input: &Map<String, Value>) -> Self {
+        Self {
+            literal: flag(input, "literal"),
+            ignore_case: flag(input, "ignore_case"),
+            multiline: flag(input, "multiline"),
+            def: flag(input, "def"),
+            count: flag(input, "count"),
+            block: flag(input, "block"),
+            files_only: flag(input, "files_with_matches"),
+            replace: input
+                .get("replace")
+                .and_then(Value::as_str)
+                .map(str::to_owned),
+            apply: flag(input, "apply"),
+        }
+    }
+}
+
 fn build_matchers(
     input: &Map<String, Value>,
-    pattern: &str,
+    options: &Options,
 ) -> Result<(regex::Regex, Option<globset::GlobMatcher>), Box<ToolOutput>> {
-    let invalid = |message: String| {
-        Box::new(error_output_kind(
-            message,
-            yi_types::event::ToolErrorKind::InvalidArgs,
-        ))
-    };
-    let use_regex = input.get("regex").and_then(Value::as_bool).unwrap_or(false);
-    let ignore_case = input
-        .get("ignore_case")
-        .and_then(Value::as_bool)
-        .unwrap_or(false);
-    let source = if use_regex {
-        pattern.to_owned()
-    } else {
-        regex::escape(pattern)
-    };
+    let alternatives: Vec<String> = patterns(input)?
+        .into_iter()
+        .map(|pattern| {
+            if options.literal {
+                regex::escape(&pattern)
+            } else {
+                format!("(?:{pattern})")
+            }
+        })
+        .collect();
+    let source = alternatives.join("|");
     let matcher = regex::RegexBuilder::new(&source)
-        .case_insensitive(ignore_case)
+        .case_insensitive(options.ignore_case)
+        .multi_line(options.multiline)
+        .dot_matches_new_line(options.multiline)
         .build()
         .map_err(|error| invalid(format!("invalid regex pattern: {error}")))?;
     let include_source = match (
@@ -102,12 +170,42 @@ struct FileHits {
     canonical: String,
     normalized: String,
     hits: Vec<usize>,
+    ending: LineEnding,
+    bom: &'static str,
+}
+
+fn hits_in(matcher: &regex::Regex, normalized: &str, multiline: bool, def: bool) -> Vec<usize> {
+    let mut hits: Vec<usize> = if multiline {
+        let mut hits: Vec<usize> = matcher
+            .find_iter(normalized)
+            .map(|found| normalized[..found.start()].matches('\n').count())
+            .collect();
+        hits.dedup();
+        hits
+    } else {
+        normalized
+            .split('\n')
+            .enumerate()
+            .filter(|(_, line)| matcher.is_match(line))
+            .map(|(index, _)| index)
+            .collect()
+    };
+    if def {
+        let lines: Vec<&str> = normalized.split('\n').collect();
+        hits.retain(|index| {
+            lines
+                .get(*index)
+                .is_some_and(|line| crate::orient::is_decl(line))
+        });
+    }
+    hits
 }
 
 struct Collected {
     files: Vec<FileHits>,
     total: usize,
     collection_capped: bool,
+    binary_skipped: usize,
 }
 
 fn type_glob(name: &str) -> Option<&'static str> {
@@ -127,14 +225,17 @@ fn clip(line: &str) -> (String, bool) {
 }
 
 fn collect(
+    cwd: &Path,
     root: &Path,
     matcher: &regex::Regex,
     include: Option<&globset::GlobMatcher>,
+    options: &Options,
 ) -> Collected {
     let mut files: Vec<FileHits> = Vec::new();
     let mut total = 0_usize;
     let mut retained = 0_usize;
     let mut collection_capped = false;
+    let mut binary_skipped = 0_usize;
     let mut search_file = |path: &Path| -> bool {
         if let Some(include) = include {
             let relative = path.strip_prefix(root).unwrap_or(path);
@@ -146,18 +247,14 @@ fn collect(
             return true;
         };
         if bytes.iter().take(4096).any(|byte| *byte == 0) {
+            binary_skipped = binary_skipped.saturating_add(1);
             return true;
         }
         let raw = String::from_utf8_lossy(&bytes);
-        let normalized = crate::hashline::normalize::normalize_to_lf(
-            crate::hashline::normalize::strip_bom(&raw).text,
-        );
-        let mut hits: Vec<usize> = normalized
-            .split('\n')
-            .enumerate()
-            .filter(|(_, line)| matcher.is_match(line))
-            .map(|(index, _)| index)
-            .collect();
+        let stripped = crate::hashline::normalize::strip_bom(&raw);
+        let ending = detect_line_ending(stripped.text);
+        let normalized = crate::hashline::normalize::normalize_to_lf(stripped.text);
+        let mut hits = hits_in(matcher, &normalized, options.multiline, options.def);
         if hits.is_empty() {
             return true;
         }
@@ -176,7 +273,7 @@ fn collect(
             collection_capped = true;
         }
         files.push(FileHits {
-            display: path.display().to_string(),
+            display: path.strip_prefix(cwd).unwrap_or(path).display().to_string(),
             canonical: path
                 .canonicalize()
                 .unwrap_or_else(|_| path.to_path_buf())
@@ -184,6 +281,8 @@ fn collect(
                 .into_owned(),
             normalized,
             hits,
+            ending,
+            bom: stripped.bom,
         });
         !collection_capped
     };
@@ -196,6 +295,7 @@ fn collect(
         files,
         total,
         collection_capped,
+        binary_skipped,
     }
 }
 
@@ -208,9 +308,11 @@ impl GrepTool {
         page_hits: &[usize],
         context: usize,
         mint: bool,
+        block: bool,
     ) -> Vec<String> {
         enum Row {
             Gap,
+            Note(String),
             Line {
                 number: u64,
                 hit: bool,
@@ -223,8 +325,30 @@ impl GrepTool {
         let mut seen: Vec<u64> = Vec::new();
         let mut emitted: Option<usize> = None;
         for &index in page_hits {
-            let lo = index.saturating_sub(context);
-            let hi = index.saturating_add(context).min(last);
+            let span = block
+                .then(|| {
+                    crate::hashline::patcher::block_resolver(&BlockResolverRequest {
+                        path: &file.display,
+                        text: &file.normalized,
+                        line: u64::try_from(index).ok()?.checked_add(1)?,
+                    })
+                })
+                .flatten()
+                .and_then(|span| {
+                    Some((
+                        usize::try_from(span.start).ok()?.checked_sub(1)?,
+                        usize::try_from(span.end).ok()?.checked_sub(1)?,
+                    ))
+                });
+            if block && span.is_none() {
+                collected.push(Row::Note(format!(
+                    "[line {} opens no block; context shown instead]",
+                    index.saturating_add(1)
+                )));
+            }
+            let (lo, hi) =
+                span.unwrap_or((index.saturating_sub(context), index.saturating_add(context)));
+            let hi = hi.min(last);
             let start = match emitted {
                 Some(end) if lo <= end => end,
                 Some(_) => {
@@ -262,6 +386,7 @@ impl GrepTool {
                 let mut rows = vec![format!("[{}#{tag}]", file.display)];
                 rows.extend(collected.iter().map(|row| match row {
                     Row::Gap => "--".to_owned(),
+                    Row::Note(note) => note.clone(),
                     Row::Line { number, hit, text } => {
                         let sep = if *hit { ':' } else { '-' };
                         format!("{number}{sep}{text}")
@@ -273,6 +398,7 @@ impl GrepTool {
                 .iter()
                 .map(|row| match row {
                     Row::Gap => "--".to_owned(),
+                    Row::Note(note) => note.clone(),
                     Row::Line { number, hit, text } => {
                         let sep = if *hit { ':' } else { '-' };
                         format!("{}{sep}{number}{sep}{text}", file.display)
@@ -283,26 +409,176 @@ impl GrepTool {
     }
 }
 
+impl GrepTool {
+    /// Every whole-word mention of `identifier` under `root` except the line at `skip`,
+    /// rendered like a grep page so each row anchors an edit.
+    pub(crate) fn references(
+        &self,
+        root: &Path,
+        identifier: &str,
+        skip: Option<(&str, usize)>,
+        cap: usize,
+    ) -> (Vec<String>, usize) {
+        let source = format!(r"(?-u:\b){}(?-u:\b)", regex::escape(identifier));
+        let Ok(matcher) = regex::Regex::new(&source) else {
+            return (Vec::new(), 0);
+        };
+        let options = Options {
+            literal: false,
+            ignore_case: false,
+            multiline: false,
+            def: false,
+            count: false,
+            block: false,
+            files_only: false,
+            replace: None,
+            apply: false,
+        };
+        let collected = collect(root, root, &matcher, None, &options);
+        let mut rows: Vec<String> = Vec::new();
+        let mut taken = 0_usize;
+        let mut total = 0_usize;
+        for file in &collected.files {
+            let hits: Vec<usize> = file
+                .hits
+                .iter()
+                .copied()
+                .filter(|index| skip != Some((file.canonical.as_str(), *index)))
+                .collect();
+            total = total.saturating_add(hits.len());
+            if taken >= cap || hits.is_empty() {
+                continue;
+            }
+            let page: Vec<usize> = hits.into_iter().take(cap.saturating_sub(taken)).collect();
+            taken = taken.saturating_add(page.len());
+            rows.extend(self.render_file(file, &page, 0, true, false));
+        }
+        (rows, total)
+    }
+
+    /// The diff every hit would produce, written only when `apply` is set; a request past the
+    /// caps writes nothing at all.
+    fn replace(
+        &self,
+        collected: &Collected,
+        matcher: &regex::Regex,
+        replacement: &str,
+        options: &Options,
+    ) -> ToolOutput {
+        if collected.files.len() > REPLACE_FILES_CAP || collected.total > REPLACE_HITS_CAP {
+            return *invalid(format!(
+                "replace would touch {} files / {} hits; the caps are {REPLACE_FILES_CAP} / {REPLACE_HITS_CAP} — narrow with path, include or type",
+                collected.files.len(),
+                collected.total
+            ));
+        }
+        let mut rows: Vec<String> = Vec::new();
+        let mut changed = 0_usize;
+        let mut written = 0_usize;
+        let mut failures: Vec<String> = Vec::new();
+        for file in &collected.files {
+            let after: String = if options.multiline {
+                matcher
+                    .replace_all(&file.normalized, replacement)
+                    .into_owned()
+            } else {
+                file.normalized
+                    .split('\n')
+                    .map(|line| matcher.replace_all(line, replacement))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            };
+            if after == file.normalized {
+                continue;
+            }
+            changed = changed.saturating_add(1);
+            let patch = crate::diff::patch(&file.normalized, &after, Path::new(&file.display));
+            rows.push(patch.as_str().trim_end().to_owned());
+            if !options.apply {
+                continue;
+            }
+            let persisted = format!("{}{}", file.bom, restore_line_endings(&after, file.ending));
+            match fs::write(&file.canonical, persisted) {
+                Ok(()) => {
+                    written = written.saturating_add(1);
+                    if let Some(state) = &self.hashline {
+                        crate::hashline::tool::record_write_snapshot(
+                            state,
+                            Path::new(&file.canonical),
+                            &after,
+                        );
+                    }
+                }
+                Err(error) => failures.push(format!("{}: {error}", file.display)),
+            }
+        }
+        if changed == 0 {
+            rows.push("No matches found".to_owned());
+        } else if options.apply {
+            rows.push(format!("applied to {written} of {changed} files"));
+        } else {
+            rows.push(format!(
+                "[preview: {changed} files would change — pass apply=true to write]"
+            ));
+        }
+        rows.extend(failures.iter().map(|failure| format!("failed: {failure}")));
+        let mut output = text_output(rows.join("\n"));
+        output.result.details = json!({
+            "hits": collected.total,
+            "files": collected.files.len(),
+            "changed": changed,
+            "applied": written,
+        });
+        output.is_error = !failures.is_empty();
+        output
+    }
+}
+
+fn cut_notices(collected: &Collected, context_asked: usize, rows: &mut Vec<String>) {
+    if collected.collection_capped {
+        rows.push(format!(
+            "[match collection stopped at {COLLECTION_CAP} before every file was scanned — narrow with path, include, or type]"
+        ));
+    }
+    if context_asked > CONTEXT_CAP {
+        rows.push(format!(
+            "[context clamped to {CONTEXT_CAP} lines per side; asked {context_asked}]"
+        ));
+    }
+    if collected.binary_skipped > 0 {
+        rows.push(format!(
+            "[{} binary files skipped — bash: rg -a for those]",
+            collected.binary_skipped
+        ));
+    }
+}
+
 impl Tool for GrepTool {
     fn name(&self) -> &str {
         "grep"
     }
 
     fn description(&self) -> &str {
-        "Search file contents. Hits group per file under a [path#TAG] header with LINE:TEXT rows (context LINE-TEXT); tag+line anchor edits directly. Literal unless regex=true. Pages 200 hits via offset. Multiline searches: rg via bash."
+        "Search file contents with a regex (literal=true for plain text). Hits group per file under a [path#TAG] header with LINE:TEXT rows; tag+line anchor edits directly. block shows each hit's enclosing function, def keeps definition lines, count counts per file, replace previews a rewrite and apply writes it. Pages 200 hits via offset."
     }
 
     fn schema(&self) -> Value {
         json!({
             "type": "object",
             "properties": {
-                "pattern": {"type": "string", "description": "Text to find (literal unless regex=true)"},
+                "pattern": {"type": ["string", "array"], "items": {"type": "string"}, "description": "Regex (Rust syntax), or an array of them matched as alternatives"},
                 "path": {"type": "string", "description": "Directory or file to search (default: cwd)"},
-                "regex": {"type": "boolean", "description": "Rust regex syntax (default literal)"},
+                "literal": {"type": "boolean", "description": "Match the pattern as plain text"},
                 "ignore_case": {"type": "boolean", "description": "Case-insensitive"},
                 "include": {"type": "string", "description": "Relative-path glob filter"},
                 "type": {"type": "string", "description": "Type filter: rust, py, js, ts, md, toml, json, yaml, sh, html, css, c"},
                 "context": {"type": "integer", "description": "Context lines per side (max 10)"},
+                "block": {"type": "boolean", "description": "Show each hit's enclosing block instead of context lines (max 20 hits per page)"},
+                "def": {"type": "boolean", "description": "Only hits on definition lines (fn, struct, class, def, …)"},
+                "count": {"type": "boolean", "description": "Per-file hit counts, descending"},
+                "multiline": {"type": "boolean", "description": "Match across lines; a hit reports its first line"},
+                "replace": {"type": "string", "description": "Replacement text ($1 captures); previews the diff, writes nothing"},
+                "apply": {"type": "boolean", "description": "With replace: write the previewed rewrite and tag every file"},
                 "offset": {"type": "integer", "description": "Matches to skip (paging)"},
                 "files_with_matches": {"type": "boolean", "description": "Paths only, no content rows"}
             },
@@ -314,24 +590,26 @@ impl Tool for GrepTool {
         ToolKind::Read
     }
 
+    fn kind_for(&self, input: &Map<String, Value>) -> ToolKind {
+        if input.get("replace").is_some() && flag(input, "apply") {
+            ToolKind::Write
+        } else {
+            ToolKind::Read
+        }
+    }
+
     fn execute(&self, input: Map<String, Value>, context: &ToolContext) -> ToolOutput {
-        let pattern = match require_str(&input, "pattern") {
-            Ok(pattern) => pattern,
-            Err(message) => return error_output(message),
-        };
-        let files_only = input
-            .get("files_with_matches")
-            .and_then(Value::as_bool)
-            .unwrap_or(false);
-        let (matcher, include) = match build_matchers(&input, pattern) {
+        let options = Options::from(&input);
+        let files_only = options.files_only;
+        let (matcher, include) = match build_matchers(&input, &options) {
             Ok(built) => built,
             Err(output) => return *output,
         };
-        let context_lines = input
+        let context_asked = input
             .get("context")
             .and_then(Value::as_u64)
-            .map_or(0, |lines| usize::try_from(lines).unwrap_or(0))
-            .min(CONTEXT_CAP);
+            .map_or(0, |lines| usize::try_from(lines).unwrap_or(0));
+        let context_lines = context_asked.min(CONTEXT_CAP);
         let offset = input
             .get("offset")
             .and_then(Value::as_u64)
@@ -341,7 +619,15 @@ impl Tool for GrepTool {
             .and_then(Value::as_str)
             .map_or_else(|| context.cwd.clone(), |path| resolve_path(context, path));
 
-        let collected = collect(&root, &matcher, include.as_ref());
+        let collected = collect(&context.cwd, &root, &matcher, include.as_ref(), &options);
+        if let Some(replacement) = &options.replace {
+            return self.replace(&collected, &matcher, replacement, &options);
+        }
+        let page_cap = if options.block {
+            BLOCK_PAGE_CAP
+        } else {
+            PAGE_CAP
+        };
         let total_label = if collected.collection_capped {
             format!("at least {}", collected.total)
         } else {
@@ -349,7 +635,27 @@ impl Tool for GrepTool {
         };
         let mut rows: Vec<String> = Vec::new();
         let shown;
-        if files_only {
+        if options.count {
+            let mut counts: Vec<(usize, &str)> = collected
+                .files
+                .iter()
+                .map(|file| (file.hits.len(), file.display.as_str()))
+                .collect();
+            counts.sort_by(|left, right| right.0.cmp(&left.0).then(left.1.cmp(right.1)));
+            let page: Vec<&(usize, &str)> =
+                counts.iter().skip(offset).take(FILES_PAGE_CAP).collect();
+            shown = page.len();
+            rows.extend(page.iter().map(|(count, path)| format!("{count} {path}")));
+            if offset.saturating_add(shown) < counts.len() {
+                rows.push(format!(
+                    "[showing files {}-{} of {} — continue with offset={}]",
+                    offset.saturating_add(1),
+                    offset.saturating_add(shown),
+                    counts.len(),
+                    offset.saturating_add(shown)
+                ));
+            }
+        } else if files_only {
             let paths: Vec<&str> = collected
                 .files
                 .iter()
@@ -375,7 +681,7 @@ impl Tool for GrepTool {
             let mut taken = 0_usize;
             let mut tagged = 0_usize;
             for file in &collected.files {
-                if taken >= PAGE_CAP {
+                if taken >= page_cap {
                     break;
                 }
                 let skip_here = file.hits.len().min(offset.saturating_sub(skipped));
@@ -385,15 +691,20 @@ impl Tool for GrepTool {
                     .iter()
                     .copied()
                     .skip(skip_here)
-                    .take(PAGE_CAP.saturating_sub(taken))
+                    .take(page_cap.saturating_sub(taken))
                     .collect();
                 if page_hits.is_empty() {
                     continue;
                 }
                 taken = taken.saturating_add(page_hits.len());
                 let mint = tagged < TAG_FILES_CAP;
+                if tagged == TAG_FILES_CAP {
+                    rows.push(format!(
+                        "[tags minted for the first {TAG_FILES_CAP} files of this page; the rows below name their file and anchor nothing — page with offset to tag them]"
+                    ));
+                }
                 tagged = tagged.saturating_add(1);
-                rows.extend(self.render_file(file, &page_hits, context_lines, mint));
+                rows.extend(self.render_file(file, &page_hits, context_lines, mint, options.block));
             }
             shown = taken;
             if shown > 0 && offset.saturating_add(shown) < collected.total {
@@ -405,15 +716,11 @@ impl Tool for GrepTool {
                 ));
             }
         }
-        if collected.collection_capped {
-            rows.push(format!(
-                "[match collection stopped at {COLLECTION_CAP} before every file was scanned — narrow with path, include, or type]"
-            ));
-        }
+        cut_notices(&collected, context_asked, &mut rows);
         if collected.total == 0 {
             rows.push("No matches found".to_owned());
         } else if shown == 0 {
-            let (count, noun) = if files_only {
+            let (count, noun) = if files_only || options.count {
                 (collected.files.len().to_string(), "matching files")
             } else {
                 (total_label, "collected matches")

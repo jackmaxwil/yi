@@ -205,6 +205,7 @@ fn todo_specs(picks: &[SpecPick]) -> Result<Vec<TodoSpec>, TestCaseError> {
                 } else {
                     None
                 },
+                children: Vec::new(),
             })
         })
         .collect()
@@ -715,6 +716,7 @@ fn act(case: &mut Case, action: &Action) -> Result<(), TestCaseError> {
                     label: TodoLabel::new(format!("pad job {}", case.pad)).map_err(fail)?,
                     after: Vec::new(),
                     delegation: None,
+                    children: Vec::new(),
                 });
             }
             let _refused = case.apply(owner(None, Op::Append { todos }), Bump::Touch)?;

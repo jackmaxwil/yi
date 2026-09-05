@@ -163,6 +163,7 @@ fn parse_specs(value: &Value, what: &str) -> Fallible<Vec<TodoSpec>> {
                 label: TodoLabel::new(label)?,
                 after,
                 delegation,
+                children: Vec::new(),
             }),
             Some(raw) => {
                 let count = raw
@@ -173,6 +174,7 @@ fn parse_specs(value: &Value, what: &str) -> Fallible<Vec<TodoSpec>> {
                         label: TodoLabel::new(format!("{label} {serial}"))?,
                         after: after.clone(),
                         delegation: delegation.clone(),
+                        children: Vec::new(),
                     });
                 }
             }

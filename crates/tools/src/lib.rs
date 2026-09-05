@@ -17,7 +17,7 @@ mod tool;
 
 use std::sync::Arc;
 
-pub use builtins::{BashTool, GlobTool, WriteTool, list_files};
+pub use builtins::{BashTool, WriteTool, list_files};
 pub use checkpoint::{Change, ChangeKind, CheckpointError, Checkpoints, TreeId};
 pub use diff::{GitPatch, patch};
 pub use exec::{ExecTool, discover_exec_tools};
@@ -53,11 +53,12 @@ pub fn builtin_tools_with(freeform_grammar: bool) -> Vec<Arc<dyn Tool>> {
         Arc::new(WriteTool {
             hashline: Some(Arc::clone(&state)),
         }),
-        Arc::new(GlobTool),
         Arc::new(GrepTool {
+            hashline: Some(Arc::clone(&state)),
+        }),
+        Arc::new(BashTool {
             hashline: Some(state),
         }),
-        Arc::new(BashTool),
         Arc::new(GetContextTool),
     ]
 }
