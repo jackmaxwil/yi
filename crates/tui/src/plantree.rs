@@ -187,11 +187,34 @@ fn push_plan(rows: &mut Vec<Row>, plan: &Plan, depth: usize, subplans: &[Plan]) 
                 cells: vec![(format!("after: {}", after.join(", ")), Face::Dim)],
             });
         }
+        push_children(rows, todo, depth.saturating_add(2), &filter);
         for sub in subplans
             .iter()
             .filter(|sub| owned_by(sub, plan, &todo.label))
         {
             push_plan(rows, sub, depth.saturating_add(2), &[]);
+        }
+    }
+}
+
+fn push_children(rows: &mut Vec<Row>, todo: &Todo, depth: usize, filter: &str) {
+    let mut stack: Vec<(usize, bool, &Todo)> = Vec::new();
+    let last = todo.children.len().saturating_sub(1);
+    for (index, child) in todo.children.iter().enumerate().rev() {
+        stack.push((depth, index == last, child));
+    }
+    while let Some((depth, is_last, child)) = stack.pop() {
+        let label = child.label.to_string();
+        let (glyph, face) = face(&child.state, &label);
+        rows.push(Row {
+            depth,
+            is_last,
+            filter: format!("{label} {filter}"),
+            cells: vec![(format!("{glyph} "), face), (label, Face::Label)],
+        });
+        let last = child.children.len().saturating_sub(1);
+        for (index, grandchild) in child.children.iter().enumerate().rev() {
+            stack.push((depth.saturating_add(1), index == last, grandchild));
         }
     }
 }

@@ -13,7 +13,7 @@ const PROBE: Duration = Duration::from_secs(5);
 
 pub fn git_summary(cwd: &Path) -> Option<(String, usize)> {
     let args = ["status", "--porcelain", "--branch"];
-    let out = crate::worktree::capture(cwd, "git", &args, PROBE).ok()?;
+    let out = crate::lane::capture(cwd, "git", &args, PROBE).ok()?;
     let mut lines = out.lines();
     let head = lines.next()?.strip_prefix("## ")?;
     let branch = match head {
@@ -37,7 +37,7 @@ pub fn sanitize(text: &str) -> String {
 }
 
 fn local_time(cwd: &Path) -> Option<String> {
-    let out = crate::worktree::capture(cwd, "date", &["+%Y-%m-%d %H:%M %Z"], PROBE).ok()?;
+    let out = crate::lane::capture(cwd, "date", &["+%Y-%m-%d %H:%M %Z"], PROBE).ok()?;
     let time = out.trim();
     (!time.is_empty()).then(|| time.to_owned())
 }
@@ -69,7 +69,7 @@ pub fn tracked(root: &Path, paths: &[String]) -> Vec<bool> {
         return vec![false; paths.len()];
     }
     let listed: std::collections::HashSet<String> =
-        crate::worktree::capture(&root, "git", &args, PROBE)
+        crate::lane::capture(&root, "git", &args, PROBE)
             .map(|out| {
                 out.split('\0')
                     .filter(|s| !s.is_empty())
@@ -106,12 +106,16 @@ pub fn hook(
     let usage = session.usage_handle();
     let history = session.history_handle();
     let context = session.compact_status_handle();
+    let lane = session.lane_handle();
     Arc::new(move || {
         let mut lines = Vec::new();
         let git = git_summary(&cwd)
             .map(|(branch, dirty)| format!(" (git: {branch}, {dirty} modified)"))
             .unwrap_or_default();
         lines.push(format!("cwd: {}{git}", cwd.display()));
+        if let Some(line) = lane().and_then(|lane| lane.describe()) {
+            lines.push(line);
+        }
         if let Some(time) = local_time(&cwd) {
             lines.push(format!("time: {time}"));
         }

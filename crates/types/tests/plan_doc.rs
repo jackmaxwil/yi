@@ -57,6 +57,7 @@ fn todo(label: &str, after: &[&str], state: TodoState) -> Result<Todo, DocError>
         delegation: None,
         subplan: None,
         retries: RetryCount::default(),
+        children: Vec::new(),
         extra: Map::new(),
     })
 }
@@ -279,5 +280,25 @@ fn a_terminal_record_keeps_the_owners_kernel_and_refuses_a_childs() -> TestResul
             "{url}"
         );
     }
+    Ok(())
+}
+
+#[test]
+fn children_round_trip_and_stay_out_of_a_flat_row() -> TestResult {
+    let mut parent = todo("parent", &[], TodoState::Pending)?;
+    parent.children = vec![todo("child", &[], TodoState::Done { output: None })?];
+    let flat = todo("flat", &[], TodoState::Pending)?;
+    let plan = plan_with(vec![parent, flat])?;
+    let json = serde_json::to_string(&plan)?;
+    assert!(json.contains("\"children\":[{"), "{json}");
+    assert_eq!(
+        json.matches("\"children\"").count(),
+        1,
+        "an empty list is not written"
+    );
+    let back: Plan = serde_json::from_str(&json)?;
+    assert_eq!(back, plan);
+    let progress = yi_types::plan::doc::progress(&back.todos);
+    assert_eq!((progress.done, progress.total), (1, 3));
     Ok(())
 }

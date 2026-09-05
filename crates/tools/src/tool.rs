@@ -59,6 +59,12 @@ pub trait Tool: Send + Sync {
     fn schema(&self) -> Value;
     fn kind(&self) -> ToolKind;
 
+    /// The kind this particular call has when the arguments decide it (a read-only shell
+    /// command, a grep that writes); the loop overlaps and the wall screens by this one.
+    fn kind_for(&self, _input: &Map<String, Value>) -> ToolKind {
+        self.kind()
+    }
+
     /// C8: a grammar for adapters that can take the input as raw text.
     fn freeform(&self) -> Option<yi_types::model::FreeformFormat> {
         None

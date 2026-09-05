@@ -6,8 +6,27 @@ use crate::colors::Theme;
 #[derive(Debug, Clone, Default)]
 pub struct HudInput {
     pub goal: Option<GoalView>,
+    pub landing: Option<String>,
+    pub plan: Option<PlanProgress>,
     pub steering: Vec<String>,
     pub follow_up: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlanProgress {
+    pub done: usize,
+    pub total: usize,
+    pub running: Option<String>,
+}
+
+impl PlanProgress {
+    pub fn line(&self) -> String {
+        let mut line = format!("Plan {}/{}", self.done, self.total);
+        if let Some(running) = &self.running {
+            line.push_str(&format!(" · now: {running}"));
+        }
+        line
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -19,6 +38,16 @@ pub struct GoalView {
 }
 
 const TAIL_LEN: usize = 4;
+
+pub(crate) fn input(app: &crate::app::App, goal: Option<GoalView>) -> HudInput {
+    HudInput {
+        goal,
+        landing: app.landing.as_ref().map(yi_runtime::slash::landing_line),
+        plan: app.plan_progress.clone(),
+        steering: app.steering.clone(),
+        follow_up: Vec::new(),
+    }
+}
 
 /// The goal header over a dim tree spine of steering and follow-up rows.
 pub fn render(input: &HudInput, theme: &Theme) -> Vec<Line<'static>> {
@@ -38,6 +67,20 @@ pub fn render(input: &HudInput, theme: &Theme) -> Vec<Line<'static>> {
         }
         None => None,
     };
+    let header = match (header, &input.plan) {
+        (None, Some(plan)) => Some(plan.line()),
+        (Some(header), Some(plan)) => {
+            content.push(Line::from(Span::styled(plan.line(), theme.muted_style())));
+            Some(header)
+        }
+        (header, None) => header,
+    };
+    if let Some(landing) = &input.landing {
+        content.push(Line::from(Span::styled(
+            format!("Land · {landing}"),
+            theme.muted_style(),
+        )));
+    }
     for (label, items) in [
         ("Steering", &input.steering),
         ("After yield", &input.follow_up),

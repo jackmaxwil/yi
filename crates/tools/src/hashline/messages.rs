@@ -331,7 +331,13 @@ extra changes were unexpected."
 
 pub fn missing_snapshot_tag_message(section_path: &str) -> String {
     format!(
-        "Missing hashline snapshot tag for {section_path}; use `{HL_FILE_PREFIX}{section_path}{HL_FILE_HASH_SEP}tag{HL_FILE_SUFFIX}` from your latest read/search output. To create a new file, use the write tool."
+        "No version of {section_path} was shown this session; `read` or `grep` it first (the {HL_FILE_HASH_SEP}tag in the header is then optional). To create a new file, use the write tool."
+    )
+}
+
+pub fn rebased_warning(from: FileTag, to: FileTag) -> String {
+    format!(
+        "rebased {HL_FILE_HASH_SEP}{from} -> {HL_FILE_HASH_SEP}{to}: the cited lines were found unchanged in the current file and the edit landed on them"
     )
 }
 

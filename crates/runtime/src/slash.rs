@@ -11,6 +11,11 @@ pub fn run(session: &AgentSession, command: &str, args: &str) -> Option<String> 
         "goal" => goal(session),
         "permissions" => permissions(session, args),
         "compact" => compact(session, args),
+        "lanes" => lane_verb(session, "lanes", args),
+        "land" => lane_verb(session, "land", args),
+        "pr" => lane_verb(session, "pr", args),
+        "base" => lane_verb(session, "base", args),
+        "discard" => lane_verb(session, "discard", args),
         _ => return None,
     })
 }
@@ -145,5 +150,44 @@ fn compact(session: &AgentSession, args: &str) -> String {
     } else {
         compactor.schedule_with_instructions(Some(args.to_owned()));
         format!("compaction scheduled · {args}")
+    }
+}
+
+/// The lane verbs share one shape: a handle, or the `--here` refusal.
+fn lane_verb(session: &AgentSession, verb: &str, args: &str) -> String {
+    let Some(lane) = session.lane() else {
+        return format!("/{verb}: this session runs in the trunk checkout (--here); no lane");
+    };
+    let result = match verb {
+        "lanes" => lane.lanes(),
+        "land" => lane.land(args.trim().trim_matches('"')),
+        "pr" => lane.refresh().map(|landing| landing_line(&landing)),
+        "base" => lane.base(),
+        _ => lane.discard(),
+    };
+    match result {
+        Ok(text) => text,
+        Err(error) => format!("/{verb}: {error}"),
+    }
+}
+
+pub fn landing_line(landing: &yi_types::lane::Landing) -> String {
+    use yi_types::lane::Landing;
+    match landing {
+        Landing::Unlanded => "unlanded".to_owned(),
+        Landing::Pushed { branch } => format!("pushed {branch}, no pull request yet"),
+        Landing::Open { pr, jobs, behind } => {
+            let jobs = jobs
+                .iter()
+                .map(|job| format!("{} {}", job.name, job.state.glyph()))
+                .collect::<Vec<_>>()
+                .join(" · ");
+            let behind = match behind {
+                0 => String::new(),
+                n => format!(" · main +{n}"),
+            };
+            format!("PR {pr} open · {jobs}{behind}")
+        }
+        Landing::Merged { pr } => format!("PR {pr} merged"),
     }
 }

@@ -18,7 +18,7 @@ pub type ToolFuture<'a> = Pin<Box<dyn Future<Output = ToolOutcome> + Send + 'a>>
 pub trait AgentTool: Send + Sync {
     fn definition(&self) -> ToolDef;
 
-    fn execution_mode(&self) -> crate::config::ExecutionMode {
+    fn execution_mode(&self, _args: &Map<String, Value>) -> crate::config::ExecutionMode {
         crate::config::ExecutionMode::Parallel
     }
 

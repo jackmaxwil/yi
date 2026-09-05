@@ -80,6 +80,7 @@ fn draw_frame<B>(
     let reflow_theme = app.theme;
     run_reflow(app, terminal, app.width.saturating_sub(2), &reflow_theme);
     let goal = port.and_then(|port| port.goal());
+    app.plan_progress = port.and_then(|port| port.plan_progress());
     let total = u16::try_from(app.rows).unwrap_or(u16::MAX);
     let layout = layout_chat(app, goal, total);
     let resized = terminal
@@ -200,7 +201,7 @@ pub fn layout_chat(app: &mut App, goal: Option<GoalView>, total: u16) -> ChatLay
     let hud_lines = if app.hud_hidden {
         Vec::new()
     } else {
-        crate::hud::render(&app.hud_input(goal), &theme)
+        crate::hud::render(&crate::hud::input(app, goal), &theme)
     };
 
     let status_input = StatusInput {
@@ -210,6 +211,10 @@ pub fn layout_chat(app: &mut App, goal: Option<GoalView>, total: u16) -> ChatLay
         mode: (app.mode != TranscriptMode::default()).then(|| app.mode.label().to_owned()),
         cwd: app.options.cwd.clone(),
         branch: app.branch.clone(),
+        landing: app
+            .landing
+            .as_ref()
+            .and_then(crate::status::landing_segment),
         cost: (app.cost_total > 0.0 || app.cost_unknown).then(|| {
             let mark = if app.cost_unknown { "+?" } else { "" };
             format!("${:.2}{mark}", app.cost_total)

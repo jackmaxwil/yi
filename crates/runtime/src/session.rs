@@ -58,6 +58,7 @@ struct Shared {
     on_turn_end: Mutex<Option<Arc<TurnHook>>>,
     coupling: Mutex<Option<TurnCoupling>>,
     environment: Mutex<Option<Arc<EnvironmentFn>>>,
+    lane: Mutex<Option<Arc<crate::lane::land::LaneHandle>>>,
 }
 
 pub type PromptChoiceFn =
@@ -152,6 +153,7 @@ impl AgentSession {
                 signal: InterruptSignal::default(),
                 on_turn_start: Mutex::new(None),
                 environment: Mutex::new(None),
+                lane: Mutex::new(None),
                 on_turn_end: Mutex::new(None),
                 coupling: Mutex::new(None),
             }),
@@ -233,6 +235,23 @@ impl AgentSession {
         if let Ok(mut slot) = self.shared.environment.lock() {
             *slot = Some(hook);
         }
+    }
+
+    pub fn set_lane(&self, lane: Arc<crate::lane::land::LaneHandle>) {
+        if let Ok(mut slot) = self.shared.lane.lock() {
+            *slot = Some(lane);
+        }
+    }
+
+    pub fn lane(&self) -> Option<Arc<crate::lane::land::LaneHandle>> {
+        self.shared.lane.lock().ok().and_then(|slot| slot.clone())
+    }
+
+    pub fn lane_handle(
+        &self,
+    ) -> Arc<dyn Fn() -> Option<Arc<crate::lane::land::LaneHandle>> + Send + Sync> {
+        let shared = Arc::clone(&self.shared);
+        Arc::new(move || shared.lane.lock().ok().and_then(|slot| slot.clone()))
     }
 
     pub fn set_turn_start_hook(&self, hook: Arc<TurnHook>) {
@@ -1032,7 +1051,7 @@ fn start_ext(shared: &Arc<Shared>, prompt: &str) {
     dispatch_ext(shared, &event);
 }
 
-fn user_message(text: &str) -> AgentMessage {
+pub(crate) fn user_message(text: &str) -> AgentMessage {
     AgentMessage::host_user(UserContent::Text(text.to_owned()), 0)
 }
 

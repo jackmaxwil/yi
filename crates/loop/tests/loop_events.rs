@@ -130,6 +130,7 @@ fn kinds(events: &[AgentEvent]) -> Vec<&'static str> {
             AgentEvent::PermissionRequested { .. } => "permission_requested",
             AgentEvent::PermissionResolved { .. } => "permission_resolved",
             AgentEvent::ChildUpdate { .. } => "child_update",
+            AgentEvent::LandingState { .. } => "landing_state",
         })
         .collect()
 }
@@ -583,7 +584,7 @@ impl AgentTool for SleepTool {
         }
     }
 
-    fn execution_mode(&self) -> ExecutionMode {
+    fn execution_mode(&self, _args: &Map<String, Value>) -> ExecutionMode {
         self.mode
     }
 

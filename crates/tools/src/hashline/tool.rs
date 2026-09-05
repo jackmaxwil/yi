@@ -60,14 +60,15 @@ impl Tool for HashlineReadTool {
     }
 
     fn description(&self) -> &str {
-        "Read a file. Output starts with a [path#TAG] snapshot header and numbered LINE:TEXT rows; use both to anchor edits. offset/limit select one range; ranges (e.g. [[10,40],[90,120]]) reads several windows in one call."
+        "Read a file (tagged [path#TAG] header, LINE:TEXT rows that anchor edits), a directory (listing plus skeletons), or a glob (every match). find=\"text\" shows the block around the first match plus its references. A capped read ends with the file's skeleton. offset/limit or ranges ([[10,40],[90,120]]) pick windows."
     }
 
     fn schema(&self) -> Value {
         json!({
             "type": "object",
             "properties": {
-                "path": {"type": "string", "description": "File path (absolute, or relative to the working directory)"},
+                "path": {"type": "string", "description": "File, directory, or glob such as src/**/*.rs (relative to the working directory, or absolute)"},
+                "find": {"type": "string", "description": "Show the block around the first line containing this text, then its references; exclusive with offset/ranges"},
                 "offset": {"type": "integer", "description": "1-based first line to read"},
                 "limit": {"type": "integer", "description": "Max lines (default 2000; explicit values may exceed it, byte-budgeted)"},
                 "ranges": {"type": "array", "items": {"type": "array", "items": {"type": "integer"}}, "description": "1-based inclusive [start, end] windows; exclusive with offset/limit"}
@@ -85,8 +86,303 @@ impl Tool for HashlineReadTool {
             Ok(path) => path.to_owned(),
             Err(message) => return error_output(message),
         };
+        if display_path.contains(['*', '?', '[']) {
+            return self.read_glob(&display_path, context);
+        }
         let path = resolve_path(context, &display_path);
-        let raw = match std::fs::read_to_string(&path) {
+        if path.is_dir() {
+            return read_dir(&display_path, &path);
+        }
+        self.read_file(&display_path, &path, &input, context)
+    }
+}
+
+struct Found {
+    window: (usize, usize),
+    index: usize,
+    block: bool,
+    identifier: Option<String>,
+}
+
+const FIND_CONTEXT: usize = 20;
+const NEAR_MISSES: usize = 5;
+const REFS_CAP: usize = 20;
+const SKELETON_ROWS: usize = 40;
+const GLOB_FILES_CAP: usize = 200;
+const DIR_HEADS_PER_FILE: usize = 8;
+const GLOB_HEADS_PER_FILE: usize = 12;
+
+fn is_word(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || byte == b'_'
+}
+
+fn identifier_in(needle: &str, line: &str) -> Option<String> {
+    needle
+        .split(|character: char| !(character.is_ascii_alphanumeric() || character == '_'))
+        .filter(|word| word.len() >= 3 && !word.as_bytes().first().is_some_and(u8::is_ascii_digit))
+        .filter(|word| {
+            line.match_indices(word).any(|(at, _)| {
+                let before = at
+                    .checked_sub(1)
+                    .and_then(|index| line.as_bytes().get(index));
+                let after = line.as_bytes().get(at.saturating_add(word.len()));
+                !before.is_some_and(|byte| is_word(*byte))
+                    && !after.is_some_and(|byte| is_word(*byte))
+            })
+        })
+        .max_by_key(|word| word.len())
+        .map(str::to_owned)
+}
+
+/// The first line holding `needle`, widened to its block when the file's language has one,
+/// else to a fixed window; no hit lists the nearest lines by the needle's longest word.
+fn locate(
+    display_path: &str,
+    normalized: &str,
+    lines: &[&str],
+    needle: &str,
+) -> Result<Found, Box<ToolOutput>> {
+    let invalid = |message: String| {
+        Box::new(crate::tool::error_output_kind(
+            message,
+            yi_types::event::ToolErrorKind::InvalidArgs,
+        ))
+    };
+    let Some(index) = lines.iter().position(|line| line.contains(needle)) else {
+        // Nearest by the longest word's stem, so a plural or a typo still lands nearby.
+        let word = needle
+            .split(|character: char| !(character.is_ascii_alphanumeric() || character == '_'))
+            .max_by_key(|word| word.len())
+            .unwrap_or(needle)
+            .to_ascii_lowercase();
+        let stem: String = word
+            .chars()
+            .take(word.len().saturating_sub(2).max(3))
+            .collect();
+        let candidates: Vec<(usize, &&str)> = lines
+            .iter()
+            .enumerate()
+            .filter(|(_, line)| !stem.is_empty() && line.to_ascii_lowercase().contains(&stem))
+            .collect();
+        let near: Vec<String> = candidates
+            .iter()
+            .take(NEAR_MISSES)
+            .map(|(index, line)| format_numbered_line(index.saturating_add(1) as u64, line.trim()))
+            .collect();
+        let mut message = format!("no line of {display_path} contains {needle:?}");
+        if !near.is_empty() {
+            message.push_str(&format!(
+                "; nearest by {stem:?} ({} of {} lines):\n{}",
+                near.len(),
+                candidates.len(),
+                near.join("\n")
+            ));
+        }
+        return Err(invalid(message));
+    };
+    let line = u64::try_from(index).unwrap_or(u64::MAX).saturating_add(1);
+    let span = super::patcher::block_resolver(&super::types::BlockResolverRequest {
+        path: display_path,
+        text: normalized,
+        line,
+    });
+    let window = match span {
+        Some(span) => (
+            usize::try_from(span.start).unwrap_or(index + 1),
+            usize::try_from(span.end)
+                .unwrap_or(index + 1)
+                .min(lines.len()),
+        ),
+        None => (
+            index.saturating_sub(FIND_CONTEXT).saturating_add(1),
+            index
+                .saturating_add(FIND_CONTEXT)
+                .saturating_add(1)
+                .min(lines.len()),
+        ),
+    };
+    Ok(Found {
+        window,
+        index,
+        block: span.is_some(),
+        identifier: lines
+            .get(index)
+            .and_then(|line| identifier_in(needle, line)),
+    })
+}
+
+fn skeleton_rows(text: &str) -> Vec<String> {
+    let heads: Vec<(usize, &str)> = text
+        .lines()
+        .enumerate()
+        .filter(|(_, line)| crate::orient::is_decl(line) && !line.starts_with(char::is_whitespace))
+        .collect();
+    if heads.is_empty() {
+        return Vec::new();
+    }
+    let mut rows = vec![if heads.len() > SKELETON_ROWS {
+        format!(
+            "[skeleton: first {SKELETON_ROWS} of {} top-level declarations — grep def=true for all]",
+            heads.len()
+        )
+    } else {
+        format!("[skeleton: {} top-level declarations]", heads.len())
+    }];
+    rows.extend(heads.iter().take(SKELETON_ROWS).map(|(index, line)| {
+        format!(
+            "  {}  {}",
+            index.saturating_add(1),
+            crate::orient::decl_head(line)
+        )
+    }));
+    rows
+}
+
+fn skeleton_heads(text: &str, cap: usize) -> (Vec<String>, usize) {
+    let all = crate::orient::skeleton_of(text, usize::MAX);
+    let total = all.len();
+    let mut heads: Vec<String> = all.into_iter().take(cap).collect();
+    if total > cap {
+        heads.push(format!("… +{} more", total.saturating_sub(cap)));
+    }
+    (heads, total)
+}
+
+fn read_dir(display_path: &str, path: &Path) -> ToolOutput {
+    let entries = match std::fs::read_dir(path) {
+        Ok(entries) => entries,
+        Err(error) => return error_output(format!("failed to read {}: {error}", path.display())),
+    };
+    let mut dirs: Vec<String> = Vec::new();
+    let mut files: Vec<(String, u64)> = Vec::new();
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        match entry.metadata() {
+            Ok(meta) if meta.is_dir() => dirs.push(name),
+            Ok(meta) => files.push((name, meta.len())),
+            Err(_) => files.push((name, 0)),
+        }
+    }
+    dirs.sort();
+    files.sort();
+    let mut rows = vec![format!("[{}]", display_path.trim_end_matches('/'))];
+    rows.extend(dirs.iter().map(|name| format!("{name}/")));
+    rows.extend(
+        files
+            .iter()
+            .map(|(name, bytes)| format!("{name}  {bytes} B")),
+    );
+    let mut skeleton: Vec<String> = Vec::new();
+    let mut source_files = 0_usize;
+    for (name, _) in &files {
+        let source = Path::new(name)
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .is_some_and(|extension| crate::orient::SKELETON_EXTS.contains(&extension));
+        if !source {
+            continue;
+        }
+        source_files = source_files.saturating_add(1);
+        if skeleton.len() >= SKELETON_ROWS {
+            continue;
+        }
+        let Ok(text) = std::fs::read_to_string(path.join(name)) else {
+            continue;
+        };
+        let (heads, _) = skeleton_heads(&text, DIR_HEADS_PER_FILE);
+        if !heads.is_empty() {
+            skeleton.push(format!("{name}: {}", heads.join("; ")));
+        }
+    }
+    if !skeleton.is_empty() {
+        rows.push(format!(
+            "[skeleton: {} of {source_files} source files, up to {DIR_HEADS_PER_FILE} heads each — read a file for the rest]",
+            skeleton.len()
+        ));
+        rows.extend(skeleton);
+    }
+    let mut output = text_output(rows.join("\n"));
+    output.result.details = json!({ "dirs": dirs.len(), "files": files.len() });
+    output
+}
+
+impl HashlineReadTool {
+    /// Every file the glob names: whole and tagged while the byte budget lasts, a skeleton
+    /// after it, so one call shows a module's shape without a second.
+    fn read_glob(&self, pattern: &str, context: &ToolContext) -> ToolOutput {
+        let matcher = match globset::GlobBuilder::new(pattern)
+            .literal_separator(false)
+            .build()
+        {
+            Ok(glob) => glob.compile_matcher(),
+            Err(error) => return error_output(format!("invalid glob {pattern:?}: {error}")),
+        };
+        let root = context.cwd.clone();
+        let mut matches: Vec<std::path::PathBuf> = Vec::new();
+        crate::builtins::walk_files(&root, &mut |path| {
+            let relative = path.strip_prefix(&root).unwrap_or(path);
+            if matcher.is_match(relative) {
+                matches.push(path.to_path_buf());
+            }
+            matches.len() < GLOB_FILES_CAP
+        });
+        matches.sort();
+        if matches.is_empty() {
+            return error_output(format!("no file matches {pattern:?}"));
+        }
+        let mut sections = vec![if matches.len() >= GLOB_FILES_CAP {
+            format!(
+                "[first {GLOB_FILES_CAP} files matching {pattern}; the walk stopped there — narrow the glob for the rest]"
+            )
+        } else {
+            format!("[{} files match {pattern}]", matches.len())
+        }];
+        let mut spent = 0_usize;
+        let mut whole = 0_usize;
+        let mut budget_named = false;
+        for path in &matches {
+            let display = path
+                .strip_prefix(&root)
+                .unwrap_or(path)
+                .to_string_lossy()
+                .into_owned();
+            let size = std::fs::metadata(path)
+                .map_or(0, |meta| usize::try_from(meta.len()).unwrap_or(usize::MAX));
+            if spent.saturating_add(size) <= READ_BYTE_FLOOR {
+                let output = self.read_file(&display, path, &Map::new(), context);
+                spent = spent.saturating_add(size);
+                whole = whole.saturating_add(1);
+                sections.push(output_text_of(&output));
+                continue;
+            }
+            if !budget_named {
+                budget_named = true;
+                sections.push(format!(
+                    "[byte budget {READ_BYTE_FLOOR} reached after {whole} whole files; the rest are skeletons — read a file for its text]"
+                ));
+            }
+            let text = std::fs::read_to_string(path).unwrap_or_default();
+            let (heads, total) = skeleton_heads(&text, GLOB_HEADS_PER_FILE);
+            let mut rows = vec![format!(
+                "{display}  ({} lines, {total} declarations, skeleton)",
+                text.lines().count()
+            )];
+            rows.extend(heads.iter().map(|head| format!("  {head}")));
+            sections.push(rows.join("\n"));
+        }
+        let mut output = text_output(sections.join("\n\n"));
+        output.result.details = json!({ "files": matches.len(), "whole": whole });
+        output
+    }
+
+    fn read_file(
+        &self,
+        display_path: &str,
+        path: &Path,
+        input: &Map<String, Value>,
+        context: &ToolContext,
+    ) -> ToolOutput {
+        let raw = match std::fs::read_to_string(path) {
             Ok(raw) => raw,
             Err(error) => {
                 return error_output(format!("failed to read {}: {error}", path.display()));
@@ -104,9 +400,31 @@ impl Tool for HashlineReadTool {
             .get("limit")
             .and_then(Value::as_u64)
             .map(|limit| usize::try_from(limit).unwrap_or(usize::MAX));
-        let windows = match read_windows(&input, explicit_limit, line_count) {
-            Ok(windows) => windows,
-            Err(output) => return *output,
+        let explicit_window = explicit_limit.is_some()
+            || input.get("offset").is_some()
+            || input.get("ranges").is_some();
+        let needle = input.get("find").and_then(Value::as_str);
+        let found = match needle {
+            Some(_) if explicit_window => {
+                return crate::tool::error_output_kind(
+                    "pass find or offset/limit/ranges, not both".to_owned(),
+                    yi_types::event::ToolErrorKind::InvalidArgs,
+                );
+            }
+            Some(needle) => {
+                match locate(display_path, &normalized, &all_lines[..line_count], needle) {
+                    Ok(found) => Some(found),
+                    Err(output) => return *output,
+                }
+            }
+            None => None,
+        };
+        let windows = match &found {
+            Some(found) => vec![found.window],
+            None => match read_windows(input, explicit_limit, line_count) {
+                Ok(windows) => windows,
+                Err(output) => return *output,
+            },
         };
         let budget = explicit_limit.map_or(READ_BYTE_FLOOR, |limit| {
             READ_BYTE_FLOOR
@@ -156,7 +474,7 @@ impl Tool for HashlineReadTool {
 
         let canonical = path
             .canonicalize()
-            .unwrap_or_else(|_| path.clone())
+            .unwrap_or_else(|_| path.to_path_buf())
             .to_string_lossy()
             .into_owned();
         let tag = lock_state(&self.state)
@@ -164,7 +482,18 @@ impl Tool for HashlineReadTool {
             .record(&canonical, &normalized, Some(&seen));
 
         let empty = rows.is_empty();
-        let mut rendered = vec![format_hashline_header(&display_path, tag)];
+        let mut rendered = vec![format_hashline_header(display_path, tag)];
+        if let Some(found) = &found {
+            let (lo, hi) = found.window;
+            rendered.push(if found.block {
+                format!("[find: block at lines {lo}-{hi} of {line_count}]")
+            } else {
+                format!(
+                    "[find: no block resolver for this file; lines {lo}-{hi} of {line_count} around the hit at line {} — ranges= for more]",
+                    found.index.saturating_add(1)
+                )
+            });
+        }
         rendered.extend(rows);
         let first_shown = windows.first().map_or(1, |(start, _)| *start);
         if empty && byte_capped_at.is_none() {
@@ -175,12 +504,12 @@ impl Tool for HashlineReadTool {
             rendered.push(format!(
                 "[byte budget {budget} reached at line {line} of {line_count} — continue with offset={line}]"
             ));
-        } else if shown_end < line_count {
+        } else if shown_end < line_count && found.is_none() {
             rendered.push(format!(
                 "[showing lines {first_shown}-{shown_end} of {line_count} — continue with offset={}]",
                 shown_end + 1
             ));
-        } else if first_shown > 1 && shown_end >= line_count {
+        } else if first_shown > 1 && shown_end >= line_count && found.is_none() {
             rendered.push(format!(
                 "[showing lines {first_shown}-{shown_end} — end of file ({line_count} lines)]"
             ));
@@ -191,6 +520,37 @@ impl Tool for HashlineReadTool {
                 clipped.len()
             ));
         }
+        let capped = byte_capped_at.is_some()
+            || (!explicit_window && found.is_none() && shown_end < line_count);
+        if capped {
+            rendered.extend(skeleton_rows(&normalized));
+        }
+        let mut refs_total = 0_usize;
+        if let Some(Found {
+            identifier: Some(identifier),
+            index,
+            ..
+        }) = &found
+        {
+            let grep = crate::grep::GrepTool {
+                hashline: Some(Arc::clone(&self.state)),
+            };
+            let (refs, total) = grep.references(
+                &context.cwd,
+                identifier,
+                Some((&canonical, *index)),
+                REFS_CAP,
+            );
+            refs_total = total;
+            rendered.push(format!(
+                "[refs: {} of {total} for {identifier}]",
+                total.min(REFS_CAP)
+            ));
+            rendered.extend(refs);
+            if total > REFS_CAP {
+                rendered.push(format!("[the rest: grep \"\\b{identifier}\\b\"]"));
+            }
+        }
         let mut output = text_output(rendered.join("\n"));
         output.result.details = json!({
             "fileBytes": file_bytes,
@@ -199,9 +559,24 @@ impl Tool for HashlineReadTool {
             "clippedLines": clipped.len(),
             "byteCapped": byte_capped_at.is_some(),
             "windows": windows.len(),
+            "skeleton": capped,
+            "refs": refs_total,
         });
         output
     }
+}
+
+fn output_text_of(output: &ToolOutput) -> String {
+    output
+        .result
+        .content
+        .iter()
+        .map(|content| match content {
+            yi_types::message::Content::Text { text, .. } => text.as_str(),
+            _ => "",
+        })
+        .collect::<Vec<_>>()
+        .join("")
 }
 
 /// The requested line windows, 1-based inclusive, merged and clamped. `ranges` and
@@ -467,9 +842,26 @@ impl Tool for HashlineEditTool {
             );
             rendered.push(render_section_result(result, snapshots));
         }
+        let charted = results.iter().any(|result| {
+            result.op == SectionOp::Update
+                && Path::new(&result.canonical_path)
+                    .extension()
+                    .and_then(|extension| extension.to_str())
+                    .is_some_and(|extension| matches!(extension, "rs" | "py"))
+        });
+        let grid = if charted {
+            let layer = grid_check(context);
+            rendered.push(layer.render());
+            layer.name()
+        } else {
+            "skipped"
+        };
         let mut output = text_output(rendered.join("\n\n"));
         if !diff.is_empty() {
             output.result.details = crate::diff::patch_details(&GitPatch::from_text(diff));
+        }
+        if let Value::Object(details) = &mut output.result.details {
+            details.insert("grid".to_owned(), Value::String(grid.to_owned()));
         }
         // The op mix is what `yi stats` aggregates for the M3 register/move
         // economics question; counts, never content.
@@ -490,16 +882,118 @@ impl Tool for HashlineEditTool {
     }
 }
 
+/// What `grid check --quick` said after an edit to a charted file; an absent grid is a
+/// named header, never a failed edit.
+enum GridLayer {
+    Clean,
+    Findings(String),
+    Unavailable(Unavailable),
+}
+
+enum Unavailable {
+    NoBinary,
+    Timeout { ms: u64 },
+    Exit { code: i32 },
+}
+
+const GRID_CHECK_TIMEOUT_MS: u64 = 2_000;
+const GRID_CHECK_LINES: usize = 40;
+
+impl GridLayer {
+    fn name(&self) -> &'static str {
+        match self {
+            Self::Clean => "clean",
+            Self::Findings(_) => "findings",
+            Self::Unavailable(Unavailable::NoBinary) => "no-binary",
+            Self::Unavailable(Unavailable::Timeout { .. }) => "timeout",
+            Self::Unavailable(Unavailable::Exit { .. }) => "exit",
+        }
+    }
+
+    fn render(&self) -> String {
+        match self {
+            Self::Clean => "[grid check: clean]".to_owned(),
+            Self::Findings(text) => format!("[grid check]\n{text}"),
+            Self::Unavailable(Unavailable::NoBinary) => {
+                "[grid check: unavailable — no grid binary]".to_owned()
+            }
+            Self::Unavailable(Unavailable::Timeout { ms }) => {
+                format!("[grid check: unavailable — no answer in {ms} ms]")
+            }
+            Self::Unavailable(Unavailable::Exit { code }) => {
+                format!("[grid check: unavailable — exit {code}]")
+            }
+        }
+    }
+}
+
+/// Exit 3 is grid's finding; anything else means the layer is absent.
+fn grid_check(context: &ToolContext) -> GridLayer {
+    let mut spawn = crate::process::command("grid");
+    spawn.args(["check", "--quick"]).current_dir(&context.cwd);
+    let deadline =
+        std::time::Instant::now() + std::time::Duration::from_millis(GRID_CHECK_TIMEOUT_MS);
+    let parent = Arc::clone(&context.cancelled);
+    let cancelled: crate::tool::CancelFlag =
+        Arc::new(move || parent() || std::time::Instant::now() > deadline);
+    let capture =
+        match crate::process::run_captured(spawn, None, &cancelled, crate::process::OUTPUT_CAP) {
+            Ok(capture) => capture,
+            Err(_) => return GridLayer::Unavailable(Unavailable::NoBinary),
+        };
+    if capture.cancelled && !context.cancelled.as_ref()() {
+        return GridLayer::Unavailable(Unavailable::Timeout {
+            ms: GRID_CHECK_TIMEOUT_MS,
+        });
+    }
+    match capture.exit_code {
+        Some(0) => GridLayer::Clean,
+        Some(3) => {
+            let all: Vec<&str> = capture
+                .stdout
+                .lines()
+                .chain(capture.stderr.lines())
+                .filter(|line| !line.trim().is_empty())
+                .collect();
+            let mut text: Vec<String> = all
+                .iter()
+                .take(GRID_CHECK_LINES)
+                .map(|line| (*line).to_owned())
+                .collect();
+            if all.len() > GRID_CHECK_LINES {
+                text.push(format!(
+                    "[grid check: first {GRID_CHECK_LINES} of {} lines — bash: grid check --quick for all]",
+                    all.len()
+                ));
+            }
+            GridLayer::Findings(text.join("\n"))
+        }
+        Some(code) => GridLayer::Unavailable(Unavailable::Exit { code }),
+        None => GridLayer::Unavailable(Unavailable::NoBinary),
+    }
+}
+
 pub fn record_write_snapshot(state: &SharedHashline, path: &Path, content: &str) {
+    let line_count = u64::try_from(content.split('\n').count()).unwrap_or(u64::MAX);
+    let seen: Vec<u64> = (1..=line_count).collect();
+    record_view_snapshot(state, path, content, &seen);
+}
+
+/// A view of `content` the model has just seen through some other tool: the rows in `seen`
+/// may anchor an edit, the rest stay behind the seen-lines guard.
+pub fn record_view_snapshot(
+    state: &SharedHashline,
+    path: &Path,
+    content: &str,
+    seen: &[u64],
+) -> super::format::FileTag {
     let canonical = path
         .canonicalize()
         .unwrap_or_else(|_| path.to_path_buf())
         .to_string_lossy()
         .into_owned();
     let normalized = normalize_to_lf(strip_bom(content).text);
-    let line_count = normalized.split('\n').count() as u64;
-    let seen: Vec<u64> = (1..=line_count).collect();
     lock_state(state)
         .snapshots
-        .record(&canonical, &normalized, Some(&seen));
+        .record(&canonical, &normalized, Some(seen))
 }
