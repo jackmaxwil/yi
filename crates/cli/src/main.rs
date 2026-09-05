@@ -343,28 +343,44 @@ fn proxy_from_env() -> Result<Option<yi_runtime::ProxyConfig>, String> {
     )
 }
 
+/// Incident: the ACP builder mapped a refusal to "exit code 2" and the TUI showed the user
+/// exactly that; the reason travels with the code so every surface can say it.
+struct Refused {
+    code: i32,
+    reason: String,
+}
+
+fn exit_refused(refused: Refused) -> i32 {
+    eprintln!("error: {}", refused.reason);
+    refused.code
+}
+
 fn build_session(
     args: &Args,
     asker: Option<yi_runtime::Asker>,
-) -> Result<(AgentSession, std::sync::Arc<yi_runtime::SubagentHost>), i32> {
+) -> Result<(AgentSession, std::sync::Arc<yi_runtime::SubagentHost>), Refused> {
     if args.model.is_empty() {
-        eprintln!(
-            "error: no model configured (pass --model provider/id or set \"model\" in ~/.yi/config.json)"
-        );
-        return Err(2);
+        return Err(Refused {
+            code: 2,
+            reason: "no model configured (pass --model provider/id or set \"model\" in ~/.yi/config.json)".to_owned(),
+        });
     }
     let Some(model) = resolve(&args.model) else {
-        eprintln!("error: unknown model {} (use provider/id)", args.model);
-        return Err(2);
+        return Err(Refused {
+            code: 2,
+            reason: format!("unknown model {} (use provider/id)", args.model),
+        });
     };
     let faux = model.provider == "faux";
     let api_key = yi_ai_key(&model.provider);
     if api_key.is_none() && !faux {
-        eprintln!(
-            "error: no API key for provider {} (set the provider env var)",
-            model.provider
-        );
-        return Err(4);
+        return Err(Refused {
+            code: 4,
+            reason: format!(
+                "no API key for provider {} (set the provider env var)",
+                model.provider
+            ),
+        });
     }
     let interactive = {
         use std::io::IsTerminal;
@@ -377,10 +393,7 @@ fn build_session(
     } else {
         match proxy_from_env() {
             Ok(proxy) => proxy,
-            Err(message) => {
-                eprintln!("error: {message}");
-                return Err(2);
-            }
+            Err(reason) => return Err(Refused { code: 2, reason }),
         }
     };
     let provider = Arc::new(
@@ -408,8 +421,10 @@ fn build_session(
     let lane = match claim_lane(args, &home) {
         Ok(lane) => lane,
         Err(message) => {
-            eprintln!("error: lane: {message}");
-            return Err(1);
+            return Err(Refused {
+                code: 1,
+                reason: format!("lane: {message}"),
+            });
         }
     };
     let work = lane
@@ -710,7 +725,7 @@ fn run(args: &Args) -> i32 {
             interactive.then(|| std::sync::Arc::new(tty_ask) as yi_runtime::Asker);
         match build_session(args, asker) {
             Ok((session, _host)) => session,
-            Err(code) => return code,
+            Err(refused) => return exit_refused(refused),
         }
     };
     match attach_store(args, &session) {
@@ -1077,7 +1092,7 @@ fn main() {
                 let _guard = runtime.enter();
                 match build_session(&args, None) {
                     Ok((session, _host)) => session,
-                    Err(code) => std::process::exit(code),
+                    Err(refused) => std::process::exit(exit_refused(refused)),
                 }
             };
             let options = rpc::RpcOptions {
@@ -1105,7 +1120,7 @@ fn main() {
                 let runtime_handle = runtime.handle().clone();
                 std::sync::Arc::new(move |asker| {
                     let _guard = runtime_handle.enter();
-                    build_session(&build_args, asker).map_err(|code| format!("exit code {code}"))
+                    build_session(&build_args, asker).map_err(|refused| refused.reason)
                 })
             };
             let options = yi_acp::AcpOptions {
