@@ -37,6 +37,7 @@ pub struct UserConfig {
     pub console: Option<ConsoleConfig>,
     pub tui: Option<TuiConfig>,
     pub lanes: Option<crate::lane::LanesConfig>,
+    pub catalog: Option<CatalogConfig>,
 }
 
 /// `tui.pace`: the streamed reveal's speed as a percentage of the default (100); `0` paints
@@ -45,6 +46,15 @@ pub struct UserConfig {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct TuiConfig {
     pub pace: Option<u16>,
+}
+
+/// `catalog.refreshHours`: how old `~/.yi/catalog/<provider>.json` may be before a session
+/// refreshes it in the background (24); `catalog.enabled: false` never fetches.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CatalogConfig {
+    pub enabled: Option<bool>,
+    pub refresh_hours: Option<u64>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]

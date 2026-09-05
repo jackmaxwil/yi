@@ -36,7 +36,11 @@ pub use kernel::{
 };
 pub use mailbox::ParentLink;
 pub use permission::{AskOutcome, Asker, PermissionAsk, PermissionBroker};
-pub use provider::{ProviderStream, available_models, resolve_model};
+pub use provider::{
+    CATALOG_PROVIDERS, DEFAULT_REFRESH_HOURS, MODELS_DEV, ProviderStream, available_models,
+    catalog_age, catalog_cache_dir, catalog_is_stale, catalog_list_url, refresh_catalog,
+    resolve_model, set_catalog_cache_dir,
+};
 pub use rewind::{BranchStub, Rewound, rewind_to, summarize_branch};
 pub use session::{AgentSession, SessionConfig, SessionError, Status};
 pub use skills::{Skill, skills_catalog};
