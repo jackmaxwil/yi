@@ -583,6 +583,75 @@ fn a_returning_client_sees_one_unseen_and_the_branch_verbatim() -> TestResult {
     outcome
 }
 
+fn listed_row(
+    client: &mut DaemonClient,
+    session_id: &str,
+) -> Result<Option<Value>, Box<dyn Error>> {
+    let list = client.request("2", "session/list", json!({}))?;
+    Ok(list["result"]["sessions"].as_array().and_then(|rows| {
+        rows.iter()
+            .find(|row| row["sessionId"] == session_id)
+            .cloned()
+    }))
+}
+
+/// The ledger outlives the daemon: a session prompted before a shutdown is listed by the
+/// next daemon on the same socket with its name, root and unseen count, and idle.
+#[test]
+#[ignore = "tier-2 journey: `just journeys`"]
+fn the_ledger_survives_a_daemon_restart() -> TestResult {
+    let dir = std::env::temp_dir().join(format!("yi-serve-ledger-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir)?;
+    let (mut daemon, socket) = spawn_daemon(&dir)?;
+    let outcome = (|| -> TestResult {
+        let mut first = DaemonClient::connect(&socket)?;
+        first.request("1", "initialize", json!({"protocolVersion": 2}))?;
+        let session_id = new_session(&mut first, "2", &dir)?;
+        first.send(
+            "3",
+            "session/prompt",
+            json!({"sessionId": session_id, "prompt": [{"type": "text", "text": "keep me"}]}),
+        )?;
+        drop(first);
+        let mut second = DaemonClient::connect(&socket)?;
+        second.request("1", "initialize", json!({"protocolVersion": 2}))?;
+        wait_until(Instant::now() + Duration::from_secs(20), || {
+            Ok(listed_row(&mut second, &session_id)?.is_some_and(|row| row["lastState"] == "idle"))
+        })?;
+        second.request("s", "_yi/shutdown", json!({}))?;
+        wait_until(Instant::now() + Duration::from_secs(5), || {
+            Ok(!socket.exists())
+        })?;
+        let _ = daemon.wait();
+
+        let (restarted, socket) = spawn_daemon(&dir)?;
+        daemon = restarted;
+        let mut third = DaemonClient::connect(&socket)?;
+        third.request("1", "initialize", json!({"protocolVersion": 2}))?;
+        let row = listed_row(&mut third, &session_id)?
+            .ok_or("the restarted daemon must list the session")?;
+        assert_eq!(row["name"], "keep me", "the name survives: {row}");
+        assert_eq!(
+            row["cwd"],
+            dir.display().to_string(),
+            "the root survives: {row}"
+        );
+        assert_eq!(
+            row["lastState"], "idle",
+            "no worker outlived the daemon: {row}"
+        );
+        assert!(
+            row["unseen"].as_u64().is_some_and(|n| n >= 1),
+            "the unseen turn survives: {row}"
+        );
+        Ok(())
+    })();
+    let _ = daemon.kill();
+    let _ = daemon.wait();
+    outcome
+}
+
 /// `_yi/shutdown` answers, then the daemon exits, its socket goes, and its worker dies
 /// with it — the console's double ctrl+c must leave no orphan behind.
 #[test]

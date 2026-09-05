@@ -48,6 +48,17 @@ fn openai_model() -> Model {
     }
 }
 
+/// The catalog flag, not the provider, is what earns a root breakpoint.
+fn openrouter_model() -> Model {
+    Model {
+        id: "anthropic/claude-haiku-4.5".to_owned(),
+        provider: "openrouter".to_owned(),
+        base_url: "https://openrouter.ai/api/v1".to_owned(),
+        compat: Some(json!({"cacheControlFormat": "anthropic", "thinkingFormat": "openrouter"})),
+        ..openai_model()
+    }
+}
+
 fn options() -> AnthropicOptions {
     AnthropicOptions {
         thinking: Thinking::Off,
@@ -234,6 +245,25 @@ fn the_openai_cached_prefix_survives_a_turn() -> TestResult {
         &openai::build_params(&model, &context(first_turn()), &options),
         &openai::build_params(&model, &context(second_turn()), &options),
     )
+}
+
+/// An Anthropic model behind OpenRouter gets one root breakpoint that OpenRouter
+/// moves to the newest block itself, so the check is the same as OpenAI's plus
+/// the marker being present on both turns and no OpenAI-only key leaking in.
+#[test]
+fn the_openrouter_cached_prefix_survives_a_turn() -> TestResult {
+    let model = openrouter_model();
+    let options = OpenAiOptions {
+        session_id: Some("session-1".to_owned()),
+        ..OpenAiOptions::default()
+    };
+    let first = openai::build_params(&model, &context(first_turn()), &options);
+    let second = openai::build_params(&model, &context(second_turn()), &options);
+    for params in [&first, &second] {
+        assert_eq!(params["cache_control"], json!({"type": "ephemeral"}));
+        assert!(params.get("prompt_cache_key").is_none());
+    }
+    assert_prefix_survives_a_turn(&first, &second)
 }
 
 /// The invariant the whole cache layout rests on: with no attach between two

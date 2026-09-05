@@ -179,7 +179,7 @@ pub struct App {
     pub(crate) cost_unknown: bool,
     turn_started: Instant,
     turn_tools: u64,
-    turn_tokens: (u64, u64),
+    turn_tokens: crate::status::TurnTokens,
     turn_cost: f64,
     pub(crate) width: usize,
     pub(crate) rows: usize,
@@ -270,7 +270,7 @@ impl App {
             cost_unknown: false,
             turn_started: Instant::now(),
             turn_tools: 0,
-            turn_tokens: (0, 0),
+            turn_tokens: crate::status::TurnTokens::default(),
             turn_cost: 0.0,
             width,
             rows: 24,
@@ -694,15 +694,7 @@ impl App {
             } => {
                 self.cost_total += usage.cost.total.as_f64().unwrap_or(0.0);
                 self.cost_unknown |= usage.unknown;
-                let read = usage
-                    .input
-                    .saturating_add(usage.cache_read)
-                    .saturating_add(usage.cache_write);
-                let (input, output) = self.turn_tokens;
-                self.turn_tokens = (
-                    input.saturating_add(u64::try_from(read).unwrap_or(0)),
-                    output.saturating_add(u64::try_from(usage.output).unwrap_or(0)),
-                );
+                self.turn_tokens.record(usage);
                 self.turn_cost += usage.cost.total.as_f64().unwrap_or(0.0);
                 self.live_thought = thinking_of(content);
                 self.flush_thought();
@@ -891,14 +883,18 @@ impl App {
         self.esc_armed_at = None;
         self.turn_started = Instant::now();
         self.turn_tools = 0;
-        self.turn_tokens = (0, 0);
+        self.turn_tokens = crate::status::TurnTokens::default();
         self.turn_cost = 0.0;
     }
 
     /// One dim row closes a turn with what it cost, so the price of an answer is read
     /// where the answer is, not only in the status bar.
     fn commit_turn_footer(&mut self) {
-        let (input, output) = self.turn_tokens;
+        let crate::status::TurnTokens {
+            input,
+            output,
+            cached,
+        } = self.turn_tokens;
         if self.turn_tools == 0 && input == 0 && output == 0 {
             return;
         }
@@ -910,6 +906,9 @@ impl App {
             crate::status::fmt_tokens(input),
             crate::status::fmt_tokens(output),
         );
+        if cached > 0 {
+            text.push_str(&format!(" · {}% cached", cached * 100 / input.max(1)));
+        }
         if self.turn_cost > 0.0 {
             text.push_str(&format!(" · ${:.3}", self.turn_cost));
         }
