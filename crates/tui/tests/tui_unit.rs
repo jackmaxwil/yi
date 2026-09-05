@@ -274,7 +274,7 @@ fn status_context_segment_is_compact() -> TestResult {
     let row = yi_tui::status::render(&input, 80, &theme());
     let text = flat(&row);
     assert!(
-        text.contains("50% of 128K"),
+        text.contains("64,000 / 128K"),
         "compact context segment: {text}"
     );
     let wide = StatusInput {
@@ -283,7 +283,7 @@ fn status_context_segment_is_compact() -> TestResult {
     };
     let text = flat(&yi_tui::status::render(&wide, 80, &theme()));
     assert!(
-        text.contains("of 1M"),
+        text.contains("/ 1M"),
         "megatoken windows collapse to 1M: {text}"
     );
     assert!(!text.contains('┃'), "the gauge bar is gone: {text}");
