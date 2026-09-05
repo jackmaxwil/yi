@@ -20,6 +20,7 @@ pub mod hud;
 pub mod input;
 pub mod keymap;
 pub mod logo;
+pub mod logos;
 pub mod markdown;
 pub mod model;
 pub mod motion;
