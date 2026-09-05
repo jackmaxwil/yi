@@ -205,7 +205,7 @@ pub fn layout_chat(app: &mut App, goal: Option<GoalView>, total: u16) -> ChatLay
             .then(|| app.selection.effort.to_string()),
         mode: (app.mode != TranscriptMode::default()).then(|| app.mode.label().to_owned()),
         cwd: app.options.cwd.clone(),
-        branch: None,
+        branch: app.branch.clone(),
         cost: (app.cost_total > 0.0 || app.cost_unknown).then(|| {
             let mark = if app.cost_unknown { "+?" } else { "" };
             format!("${:.2}{mark}", app.cost_total)
