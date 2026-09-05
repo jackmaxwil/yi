@@ -816,25 +816,15 @@ impl App {
         self.state.zone = Zone::Panes;
     }
 
+    /// Opening is not resuming: a resume is a sidebar pick, never the boot default.
     fn autostart_session(&mut self, outbound: &Outbound) {
         let bound = self
             .state
             .panes
             .values()
             .any(|pane| pane.session().is_some());
-        if bound {
-            return;
-        }
-        self.state.zone = Zone::Panes;
-        let newest = self
-            .state
-            .visible_rows()
-            .first()
-            .and_then(|index| self.state.order.get(*index))
-            .cloned();
-        match (newest, self.state.focused_pane_id()) {
-            (Some(session), Some(pane_id)) => self.resume_into(outbound, pane_id, &session),
-            _ => self.new_session(outbound),
+        if !bound {
+            self.new_session(outbound);
         }
     }
 
