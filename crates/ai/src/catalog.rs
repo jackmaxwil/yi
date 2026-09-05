@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
 use serde_json::Value;
@@ -10,11 +11,16 @@ const ANTHROPIC_DATA: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/anthropi
 const OPENAI_DATA: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/openai.zz"));
 const OPENROUTER_DATA: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/openrouter.zz"));
 
-fn parse_catalog(packed: &[u8], models: &mut HashMap<(String, String), Model>) {
-    let Ok(data) = miniz_oxide::inflate::decompress_to_vec_zlib(packed) else {
-        return;
-    };
-    let Ok(Value::Object(by_api)) = serde_json::from_slice::<Value>(&data) else {
+pub const PROVIDERS: [&str; 3] = ["anthropic", "openai", "openrouter"];
+
+fn parse_packed(packed: &[u8], models: &mut HashMap<(String, String), Model>) {
+    if let Ok(data) = miniz_oxide::inflate::decompress_to_vec_zlib(packed) {
+        parse_catalog(&data, models);
+    }
+}
+
+pub(crate) fn parse_catalog(data: &[u8], models: &mut HashMap<(String, String), Model>) {
+    let Ok(Value::Object(by_api)) = serde_json::from_slice::<Value>(data) else {
         return;
     };
     for by_model in by_api.into_iter().filter_map(|(_, value)| match value {
@@ -34,20 +40,44 @@ pub struct Catalog {
 }
 
 static SHARED: OnceLock<Catalog> = OnceLock::new();
+static CACHE_DIR: OnceLock<PathBuf> = OnceLock::new();
 
 impl Catalog {
-    /// The bundled catalog, parsed once per process. [`Catalog::bundled`] parses
-    /// 170 KB of JSON, and model lookup runs per turn and per subagent spawn.
+    /// The bundled catalog under the cache dir's overlay, parsed once per process; model
+    /// lookup runs per turn and per subagent spawn.
     pub fn shared() -> &'static Self {
-        SHARED.get_or_init(Self::bundled)
+        SHARED.get_or_init(|| match CACHE_DIR.get() {
+            Some(dir) => Self::bundled().with_cache(dir),
+            None => Self::bundled(),
+        })
+    }
+
+    /// Set before the first lookup; `yi --version` never looks up, so it never reads a cache.
+    pub fn set_cache_dir(dir: PathBuf) {
+        let _already_set = CACHE_DIR.set(dir);
+    }
+
+    pub fn cache_dir() -> Option<&'static Path> {
+        CACHE_DIR.get().map(PathBuf::as_path)
     }
 
     pub fn bundled() -> Self {
         let mut models = HashMap::new();
-        parse_catalog(ANTHROPIC_DATA, &mut models);
-        parse_catalog(OPENAI_DATA, &mut models);
-        parse_catalog(OPENROUTER_DATA, &mut models);
+        parse_packed(ANTHROPIC_DATA, &mut models);
+        parse_packed(OPENAI_DATA, &mut models);
+        parse_packed(OPENROUTER_DATA, &mut models);
         Self { models }
+    }
+
+    /// Invariant: a cache entry overrides the bundled one by `(provider, id)` and a missing or
+    /// unreadable cache file changes nothing, so the bundled set is the floor, never shrunk.
+    pub fn with_cache(mut self, dir: &Path) -> Self {
+        for provider in PROVIDERS {
+            if let Ok(data) = std::fs::read(dir.join(format!("{provider}.json"))) {
+                parse_catalog(&data, &mut self.models);
+            }
+        }
+        self
     }
 
     pub fn get(&self, provider: &str, id: &str) -> Option<&Model> {

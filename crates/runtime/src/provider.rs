@@ -20,6 +20,20 @@ pub fn available_models() -> Vec<Model> {
     Catalog::shared().models()
 }
 
+pub fn set_catalog_cache_dir(dir: std::path::PathBuf) {
+    Catalog::set_cache_dir(dir);
+}
+
+pub fn catalog_cache_dir() -> Option<&'static std::path::Path> {
+    Catalog::cache_dir()
+}
+
+pub use yi_ai::catalog::PROVIDERS as CATALOG_PROVIDERS;
+pub use yi_ai::refresh::{
+    DEFAULT_REFRESH_HOURS, MODELS_DEV, age as catalog_age, is_stale as catalog_is_stale,
+    list_url as catalog_list_url, refresh as refresh_catalog,
+};
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ProviderApi {
     AnthropicMessages,
