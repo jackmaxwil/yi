@@ -62,6 +62,7 @@ type Stage = Option<(Model, bool)>;
 
 pub struct ModelPopup {
     stage: Stage,
+    kitty: bool,
     query: String,
     models: Vec<Model>,
     current: String,
@@ -72,7 +73,13 @@ pub struct ModelPopup {
 }
 
 impl ModelPopup {
-    pub fn new(models: Vec<Model>, current: &Model, effort: Effort, mru: &[String]) -> Self {
+    pub fn new(
+        models: Vec<Model>,
+        current: &Model,
+        effort: Effort,
+        mru: &[String],
+        kitty: bool,
+    ) -> Self {
         let mut models = models;
         models.sort_by_cached_key(|model| {
             let key = selector(model);
@@ -90,12 +97,35 @@ impl ModelPopup {
             .unwrap_or(0);
         Self {
             stage: None,
+            kitty,
             query: String::new(),
             models,
             current,
             effort,
             selected,
             chosen: None,
+        }
+    }
+
+    /// The rows on screen, top to bottom, as the picker paints them.
+    fn visible(&self) -> Vec<&Model> {
+        let start = self.selected.saturating_sub(MAX_VISIBLE.saturating_sub(1));
+        self.filtered()
+            .into_iter()
+            .skip(start)
+            .take(MAX_VISIBLE)
+            .collect()
+    }
+
+    /// One logo key per visible row while models are listed; none in the effort stage.
+    pub fn visible_keys(&self) -> Vec<String> {
+        match &self.stage {
+            None => self
+                .visible()
+                .iter()
+                .map(|model| crate::logos::key_for(&model.provider, &model.id))
+                .collect(),
+            Some(_) => Vec::new(),
         }
     }
 
@@ -158,6 +188,15 @@ impl ModelPopup {
     }
 }
 
+/// Two cells the image covers on kitty; the glyph in the key's accent everywhere else.
+fn slot(key: &str, kitty: bool, theme: &Theme) -> Span<'static> {
+    if kitty && crate::logos::index(key).is_some() {
+        return Span::styled("  ".to_owned(), Style::default().fg(theme.text));
+    }
+    let accent = crate::colors::accent(crate::colors::accent_index(key));
+    Span::styled(crate::logos::glyph(key), Style::default().fg(accent))
+}
+
 fn row(label: String, selected: bool, theme: &Theme) -> Line<'static> {
     let style = if selected {
         Style::default()
@@ -180,14 +219,19 @@ impl BottomView for ModelPopup {
                     ),
                     Span::styled("█", Style::default().fg(theme.accent)),
                 ])];
-                let cap = width.saturating_sub(4);
-                let visible = self.filtered();
+                let cap = width.saturating_sub(7);
                 let start = self.selected.saturating_sub(MAX_VISIBLE.saturating_sub(1));
-                for (at, model) in visible.iter().enumerate().skip(start).take(MAX_VISIBLE) {
+                for (at, model) in self.visible().iter().enumerate() {
                     let label = selector(model);
                     let mark = if label == self.current { '›' } else { ' ' };
                     let label: String = label.chars().take(cap).collect();
-                    out.push(row(format!(" {mark} {label}"), at == self.selected, theme));
+                    let key = crate::logos::key_for(&model.provider, &model.id);
+                    let selected = start.saturating_add(at) == self.selected;
+                    let mut line = row(" ".to_owned(), selected, theme);
+                    line.spans.push(slot(&key, self.kitty, theme));
+                    line.spans
+                        .extend(row(format!(" {mark} {label}"), selected, theme).spans);
+                    out.push(line);
                 }
                 out
             }
@@ -310,6 +354,7 @@ impl App {
             &self.selection.model,
             self.selection.effort,
             &self.selection.mru,
+            self.kitty,
         ))));
         self.scheduler.request();
     }

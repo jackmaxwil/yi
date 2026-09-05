@@ -9,6 +9,7 @@ rust-version.workspace = true
 workspace = true
 
 [dependencies]
+miniz_oxide = { workspace = true }
 yi-types = { workspace = true }
 yi-runtime = { workspace = true }
 yi-orb = { workspace = true }
@@ -19,6 +20,9 @@ syntect = { workspace = true }
 unicode-width = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true }
+
+[build-dependencies]
+miniz_oxide = { workspace = true }
 
 [dev-dependencies]
 vt100 = { workspace = true }

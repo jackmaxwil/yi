@@ -278,8 +278,10 @@ fn place_chat_orbs(app: &mut App, out: &mut std::io::Stdout) {
         };
         if Some(*id) == focused {
             yi_tui::orb::tick(&mut chat.app, out, &mut chat.orb);
+            yi_tui::logos::tick(&chat.app, out, &mut chat.logos);
         } else {
             chat.orb.hide(out);
+            yi_tui::logos::delete_all(out, &mut chat.logos);
         }
     }
 }

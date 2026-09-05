@@ -92,7 +92,7 @@ fn an_unadvertised_current_anchors_instead_of_guessing() {
 #[test]
 fn picking_a_model_opens_its_effort_list() {
     let model = reasoning("m", None);
-    let mut popup = ModelPopup::new(vec![model.clone()], &model, Effort::Medium, &[]);
+    let mut popup = ModelPopup::new(vec![model.clone()], &model, Effort::Medium, &[], false);
     assert!(text(&popup).contains("faux/m"));
     assert!(matches!(
         popup.handle_key(&key(KeyCodeValue::Enter)),
@@ -107,7 +107,7 @@ fn picking_a_model_opens_its_effort_list() {
 #[test]
 fn the_advanced_tiers_need_the_second_step() {
     let model = reasoning("m", Some(json!({"xhigh": "xhigh", "max": "max"})));
-    let mut popup = ModelPopup::new(vec![model.clone()], &model, Effort::Medium, &[]);
+    let mut popup = ModelPopup::new(vec![model.clone()], &model, Effort::Medium, &[], false);
     popup.handle_key(&key(KeyCodeValue::Enter));
     let shown = text(&popup);
     assert!(shown.contains("More reasoning"), "{shown}");
@@ -132,7 +132,7 @@ fn the_advanced_tiers_need_the_second_step() {
 #[test]
 fn a_single_rung_model_skips_the_effort_step() {
     let model = common::test_model("plain");
-    let mut popup = ModelPopup::new(vec![model.clone()], &model, Effort::Medium, &[]);
+    let mut popup = ModelPopup::new(vec![model.clone()], &model, Effort::Medium, &[], false);
     assert!(matches!(
         popup.handle_key(&key(KeyCodeValue::Enter)),
         PopupResult::Close
@@ -144,10 +144,46 @@ fn a_single_rung_model_skips_the_effort_step() {
 fn typing_filters_and_the_current_model_is_marked() {
     let a = reasoning("alpha", None);
     let b = reasoning("beta", None);
-    let mut popup = ModelPopup::new(vec![a.clone(), b], &a, Effort::Medium, &[]);
+    let mut popup = ModelPopup::new(vec![a.clone(), b], &a, Effort::Medium, &[], false);
     assert!(text(&popup).contains("› faux/alpha"));
     popup.handle_key(&key(KeyCodeValue::Char('b')));
     let shown = text(&popup);
     assert!(shown.contains("faux/beta"), "{shown}");
     assert!(!shown.contains("faux/alpha"), "{shown}");
+}
+
+fn routed(lab: &str, id: &str) -> Model {
+    let mut model = common::test_model(&format!("{lab}/{id}"));
+    model.provider = "openrouter".to_owned();
+    model
+}
+
+/// Without kitty the slot carries the lab's glyph; with it, two blank cells the image covers.
+#[test]
+fn the_slot_reads_the_glyph_where_no_image_can_be_drawn() {
+    let models = vec![
+        routed("openai", "gpt-6-astra"),
+        routed("z-ai", "glm-5"),
+        common::test_model("faux-1"),
+    ];
+    let current = common::test_model("faux-1");
+    let plain = ModelPopup::new(models.clone(), &current, Effort::Medium, &[], false);
+    let shown = text(&plain);
+    assert!(
+        shown.contains(" OP   openrouter/openai/gpt-6-astra"),
+        "{shown}"
+    );
+    assert!(shown.contains(" ZA   openrouter/z-ai/glm-5"), "{shown}");
+    assert!(shown.contains(" FA › faux/faux-1"), "{shown}");
+    let kitty = ModelPopup::new(models, &current, Effort::Medium, &[], true);
+    let shown = text(&kitty);
+    assert!(
+        shown.contains("     openrouter/openai/gpt-6-astra"),
+        "{shown}"
+    );
+    assert!(
+        shown.contains(" ZA   openrouter/z-ai/glm-5"),
+        "a placeholder lab keeps its glyph: {shown}"
+    );
+    assert_eq!(kitty.visible_keys(), vec!["faux", "openai", "z-ai"]);
 }
