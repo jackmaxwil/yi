@@ -38,7 +38,7 @@ dev:
     ./target/debug/yi
 
 build-dist:
-    cargo build --profile dist -p yi-cli
+    scripts/build_dist.sh
 
 # No build-dist dependency: the aggregator is the one place that knows whether
 # binary_size and startup will run at all, so it owns the LTO build they read
@@ -279,7 +279,7 @@ publish version:
 
 # One release tarball for the host, signed, then the smoke test on it.
 package version target=`rustc -vV | sed -n 's|host: ||p'`:
-    cargo build --profile dist -p yi-cli --target {{target}}
+    scripts/build_dist.sh --target {{target}}
     scripts/package.sh {{version}} {{target}}
     scripts/smoke.sh target/package/yi-{{version}}-{{target}}.tar.gz
 
@@ -308,7 +308,7 @@ package-musl version target='x86_64-unknown-linux-musl':
     export "$cc_var=$(pwd)/scripts/zigcc.sh"
     export "$ar_var=$(pwd)/scripts/zigar.sh"
     export ZIG_TARGET="${target%-unknown*}-${target##*-unknown-}"
-    cargo build --profile dist -p yi-cli --target "$target"
+    scripts/build_dist.sh --target "$target"
     python3 scripts/check_elf.py "target/$target/dist/yi" "$target"
     scripts/package.sh {{version}} "$target"
     echo "package-musl: smoke.sh NOT run on this host (cross binary can't execute on darwin);"
