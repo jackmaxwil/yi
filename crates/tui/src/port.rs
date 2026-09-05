@@ -431,7 +431,20 @@ pub fn tick(
     events: &std::sync::mpsc::Receiver<crate::app::UiEvent>,
     cmd_tx: &tokio::sync::mpsc::UnboundedSender<crate::app::Command>,
 ) {
-    for ui_event in events.try_iter().collect::<Vec<_>>() {
+    app.pacing.held.extend(events.try_iter());
+    while let Some(ui_event) = app.pacing.held.pop_front() {
+        // The end waits behind the reveal, and everything after it waits too, so a tool row
+        // never commits above prose the reader has not seen yet.
+        if app.reveal_behind()
+            && matches!(
+                ui_event,
+                crate::app::UiEvent::Agent(yi_types::event::AgentEvent::MessageEnd { .. })
+            )
+        {
+            app.pacing.drain();
+            app.pacing.held.push_front(ui_event);
+            break;
+        }
         match ui_event {
             crate::app::UiEvent::Agent(event) => app.reduce_agent(event),
             crate::app::UiEvent::Child { child_id, event } => app.reduce_child(&child_id, event),
@@ -445,6 +458,7 @@ pub fn tick(
             crate::app::UiEvent::Reply(reply) => app.apply(reply),
         }
     }
+    app.step_reveal(std::time::Instant::now());
     app.settle(port);
     if let Some(stub) = app.pending_summary.take() {
         let _ = cmd_tx.send(crate::app::Command::SummarizeBranch(stub));
