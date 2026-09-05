@@ -444,6 +444,7 @@ mod tests {
                     delegation: None,
                     subplan: None,
                     retries: RetryCount(0),
+                    children: Vec::new(),
                     extra: serde_json::Map::new(),
                 },
                 Todo {
@@ -455,6 +456,7 @@ mod tests {
                     delegation: None,
                     subplan: None,
                     retries: RetryCount(1),
+                    children: Vec::new(),
                     extra: serde_json::Map::new(),
                 },
             ],
@@ -775,6 +777,7 @@ mod tests {
                 delegation: None,
                 subplan: None,
                 retries: RetryCount(0),
+                children: Vec::new(),
                 extra,
             });
         }

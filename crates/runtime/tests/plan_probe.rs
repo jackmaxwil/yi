@@ -109,6 +109,7 @@ fn open(rig: &Rig, label: &str, probe: Option<&str>) -> Result<(), Box<dyn Error
                 label: TodoLabel::new(label)?,
                 after: Vec::new(),
                 delegation: None,
+                children: Vec::new(),
             }],
         },
     })?;
@@ -155,6 +156,7 @@ fn a_block_inside_a_sub_plan_is_probed_too() -> TestResult {
                 label: TodoLabel::new("deploy the widget")?,
                 after: Vec::new(),
                 delegation: None,
+                children: Vec::new(),
             }],
         },
     ))?;
@@ -174,6 +176,7 @@ fn a_block_inside_a_sub_plan_is_probed_too() -> TestResult {
                     label: TodoLabel::new("wait for staging")?,
                     after: Vec::new(),
                     delegation: None,
+                    children: Vec::new(),
                 }],
             },
         ))?

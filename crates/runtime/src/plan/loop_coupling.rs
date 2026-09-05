@@ -466,6 +466,7 @@ mod tests {
             delegation: None,
             subplan: None,
             retries: RetryCount::default(),
+            children: Vec::new(),
             extra: serde_json::Map::new(),
         })
     }

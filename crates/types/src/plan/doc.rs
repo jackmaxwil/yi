@@ -215,7 +215,47 @@ pub struct Todo {
     pub delegation: Option<Delegation>,
     pub subplan: Option<PlanId>,
     pub retries: RetryCount,
+    /// Grouping only: a child has a label and a state, never an edge, a delegation or a
+    /// sub-plan of its own, and the whole tree is replaced by one `set`.
+    pub children: Vec<Todo>,
     pub extra: Map<String, Value>,
+}
+
+/// Rows done over rows in the whole tree, and the first running label, depth-first.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Progress {
+    pub done: usize,
+    pub total: usize,
+    pub running: Option<TodoLabel>,
+}
+
+pub fn progress(todos: &[Todo]) -> Progress {
+    let mut stack: Vec<&Todo> = todos.iter().rev().collect();
+    let mut done = 0_usize;
+    let mut total = 0_usize;
+    let mut running: Option<TodoLabel> = None;
+    while let Some(todo) = stack.pop() {
+        total = total.saturating_add(1);
+        match &todo.state {
+            TodoState::Done { .. } => done = done.saturating_add(1),
+            TodoState::Running { .. } => {
+                if running.is_none() {
+                    running = Some(todo.label.clone());
+                }
+            }
+            TodoState::Pending
+            | TodoState::Blocked { .. }
+            | TodoState::Failed { .. }
+            | TodoState::Abandoned
+            | TodoState::Other(_) => {}
+        }
+        stack.extend(todo.children.iter().rev());
+    }
+    Progress {
+        done,
+        total,
+        running,
+    }
 }
 
 /// The state's name without its payload — what a duration in the ledger is
@@ -293,6 +333,8 @@ struct TodoRepr {
     subplan: Option<PlanId>,
     #[serde(default, skip_serializing_if = "RetryCount::is_zero")]
     retries: RetryCount,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    children: Vec<TodoRepr>,
     #[serde(flatten)]
     extra: Map<String, Value>,
 }
@@ -329,6 +371,7 @@ impl From<Todo> for TodoRepr {
             delegation: todo.delegation,
             subplan: todo.subplan,
             retries: todo.retries,
+            children: todo.children.into_iter().map(Self::from).collect(),
             extra: todo.extra,
         }
     }
@@ -389,6 +432,11 @@ impl TryFrom<TodoRepr> for Todo {
         if output.is_some() {
             return Err(stray("output"));
         }
+        let children = repr
+            .children
+            .into_iter()
+            .map(Self::try_from)
+            .collect::<Result<Vec<_>, _>>()?;
         Ok(Self {
             label: repr.label,
             after: repr.after,
@@ -396,6 +444,7 @@ impl TryFrom<TodoRepr> for Todo {
             delegation: repr.delegation,
             subplan: repr.subplan,
             retries: repr.retries,
+            children,
             extra: repr.extra,
         })
     }

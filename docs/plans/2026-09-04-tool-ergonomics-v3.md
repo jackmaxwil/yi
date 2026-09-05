@@ -1,7 +1,8 @@
 # Tool ergonomics v3: fewer calls, nothing stale, everything editable
 
 ```
-status:  PROPOSED
+status:  IMPLEMENTED 0.145.0 (2026-09-04), phases A–G; D117 is the record.
+         File:line references describe the tree at 3bd0ce5 and are historical.
 date:    2026-09-04
 inputs:  the five-point brainstorm (read, edit, grep, todo, batching) · this
          tree at 3bd0ce5: crates/tools/src (builtins.rs, orient.rs, grep.rs,

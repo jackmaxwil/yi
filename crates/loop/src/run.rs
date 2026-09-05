@@ -274,7 +274,7 @@ async fn execute_tool_calls(
         mode == ExecutionMode::Parallel
             && context.tools.iter().any(|tool| {
                 tool.definition().name == call.name
-                    && tool.execution_mode() == ExecutionMode::Parallel
+                    && tool.execution_mode(&call.arguments) == ExecutionMode::Parallel
             })
     };
     let mut finalized = Vec::new();

@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use serde_json::{Map, Value, json};
-use yi_tools::{BashTool, GlobTool, GrepTool, Tool, ToolContext, WriteTool, discover_exec_tools};
+use yi_tools::{BashTool, GrepTool, Tool, ToolContext, ToolKind, WriteTool, discover_exec_tools};
 use yi_types::message::Content;
 
 type TestResult = Result<(), Box<dyn Error>>;
@@ -29,6 +29,12 @@ fn args(pairs: &[(&str, Value)]) -> Map<String, Value> {
         .iter()
         .map(|(key, value)| ((*key).to_owned(), value.clone()))
         .collect()
+}
+
+fn read_tool() -> yi_tools::hashline::tool::HashlineReadTool {
+    yi_tools::hashline::tool::HashlineReadTool {
+        state: yi_tools::hashline::tool::shared_hashline_state(),
+    }
 }
 
 fn output_text(output: &yi_tools::ToolOutput) -> String {
@@ -93,7 +99,7 @@ fn read_reports_a_missing_file_as_a_tool_error() -> TestResult {
 }
 
 #[test]
-fn glob_matches_relative_patterns_and_skips_git() -> TestResult {
+fn a_glob_read_matches_relative_patterns_and_skips_git() -> TestResult {
     let dir = temp_dir("glob")?;
     fs::create_dir_all(dir.0.join("src"))?;
     fs::create_dir_all(dir.0.join(".git"))?;
@@ -102,9 +108,9 @@ fn glob_matches_relative_patterns_and_skips_git() -> TestResult {
     fs::write(dir.0.join(".git/c.rs"), "")?;
     let context = ToolContext::new(dir.0.clone());
 
-    let found = GlobTool.execute(args(&[("pattern", json!("**/*.rs"))]), &context);
+    let found = read_tool().execute(args(&[("path", json!("**/*.rs"))]), &context);
     let text = output_text(&found);
-    assert!(text.contains("a.rs"));
+    assert!(text.contains("[src/a.rs#"), "{text}");
     assert!(!text.contains("b.txt"));
     assert!(!text.contains(".git"));
     Ok(())
@@ -133,11 +139,11 @@ fn bash_reports_output_exit_code_and_stderr() -> TestResult {
     let dir = temp_dir("bash")?;
     let context = ToolContext::new(dir.0.clone());
 
-    let ok = BashTool.execute(args(&[("command", json!("echo hello"))]), &context);
+    let ok = BashTool::default().execute(args(&[("command", json!("echo hello"))]), &context);
     assert!(!ok.is_error);
     assert_eq!(output_text(&ok).trim(), "hello");
 
-    let failed = BashTool.execute(
+    let failed = BashTool::default().execute(
         args(&[("command", json!("echo oops >&2; exit 3"))]),
         &context,
     );
@@ -155,7 +161,7 @@ fn bash_kills_a_running_command_when_cancelled() -> TestResult {
     context.cancelled = Arc::new(|| true);
 
     let start = std::time::Instant::now();
-    let aborted = BashTool.execute(args(&[("command", json!("sleep 30"))]), &context);
+    let aborted = BashTool::default().execute(args(&[("command", json!("sleep 30"))]), &context);
     assert!(start.elapsed() < std::time::Duration::from_secs(10));
     assert!(aborted.is_error);
     assert!(output_text(&aborted).contains("[command aborted]"));
@@ -210,7 +216,7 @@ fn glob_skips_gitignored_paths() -> TestResult {
     assert!(!listed.contains(&"src/lib.rs".to_owned()));
 
     let context = ToolContext::new(root.clone());
-    let output = GlobTool.execute(args(&[("pattern", json!("**/*.rs"))]), &context);
+    let output = read_tool().execute(args(&[("path", json!("**/*.rs"))]), &context);
     let text = output_text(&output);
     assert!(text.contains("main.rs"));
     assert!(!text.contains("target"));
@@ -361,7 +367,7 @@ fn checkpoints_on_one_project_serialize_across_handles() -> TestResult {
 #[test]
 fn bash_output_is_reduced_and_recoverable() -> TestResult {
     let dir = temp_dir("reduce-bash")?;
-    let tool = BashTool;
+    let tool = BashTool::default();
     let mut context = ToolContext::new(dir.0.clone());
     context.recovery_dir = Some(dir.0.join("tool-output"));
     let output = tool.execute(
@@ -431,7 +437,7 @@ fn a_failing_cargo_run_keeps_its_diagnostics() -> TestResult {
 #[test]
 fn a_slow_command_backgrounds_and_can_be_polled() -> TestResult {
     let dir = temp_dir("background")?;
-    let tool = BashTool;
+    let tool = BashTool::default();
     let mut context = ToolContext::new(dir.0.clone());
     context.auto_background = Some(std::time::Duration::from_millis(200));
     let started = tool.execute(args(&[("command", json!("sleep 1; echo woke"))]), &context);
@@ -457,7 +463,7 @@ fn a_slow_command_backgrounds_and_can_be_polled() -> TestResult {
 #[test]
 fn without_auto_background_a_command_holds_the_turn() -> TestResult {
     let dir = temp_dir("no-background")?;
-    let tool = BashTool;
+    let tool = BashTool::default();
     let context = ToolContext::new(dir.0.clone());
     let output = tool.execute(
         args(&[("command", json!("sleep 0.3; echo done"))]),
@@ -469,7 +475,7 @@ fn without_auto_background_a_command_holds_the_turn() -> TestResult {
 
 #[test]
 fn an_inspecting_shell_command_is_not_flagged_irreversible() -> TestResult {
-    let tool = BashTool;
+    let tool = BashTool::default();
     for command in [
         "ls -la && git log --oneline -5 2>/dev/null",
         "cat Cargo.toml | grep name",
@@ -687,22 +693,16 @@ fn grep_v2_regex_type_filter_and_offset_paging() -> TestResult {
     let context = ToolContext::new(dir.0.clone());
     let grep = GrepTool::default();
 
-    let literal = grep.execute(args(&[("pattern", json!("fn a"))]), &context);
+    let literal = grep.execute(
+        args(&[("pattern", json!("fn alpha(")), ("literal", json!(true))]),
+        &context,
+    );
     assert!(output_text(&literal).contains("a.rs:1:fn alpha"));
 
-    let rx = grep.execute(
-        args(&[
-            ("pattern", json!("fn (alpha|beta)")),
-            ("regex", json!(true)),
-        ]),
-        &context,
-    );
+    let rx = grep.execute(args(&[("pattern", json!("fn (alpha|beta)"))]), &context);
     assert_eq!(output_text(&rx).lines().count(), 2, "{}", output_text(&rx));
 
-    let bad = grep.execute(
-        args(&[("pattern", json!("fn (")), ("regex", json!(true))]),
-        &context,
-    );
+    let bad = grep.execute(args(&[("pattern", json!("fn ("))]), &context);
     assert!(bad.is_error);
     assert_eq!(
         bad.result.details.get("errorKind").and_then(Value::as_str),
@@ -900,10 +900,270 @@ fn grep_cap_and_offset_footers_are_honest() -> TestResult {
 fn bash_details_carry_a_command_category() -> TestResult {
     let dir = temp_dir("bash-cat")?;
     let context = ToolContext::new(dir.0.clone());
-    let out = BashTool.execute(args(&[("command", json!("ls"))]), &context);
+    let out = BashTool::default().execute(args(&[("command", json!("ls"))]), &context);
     assert_eq!(
         out.result.details.get("category").and_then(Value::as_str),
         Some("list_files")
     );
     Ok(())
+}
+
+#[test]
+fn a_bash_view_of_one_file_carries_an_edit_anchor() -> TestResult {
+    let dir = temp_dir("bash-bridge")?;
+    fs::write(dir.0.join("a.txt"), "one\ntwo\nthree\n")?;
+    let context = ToolContext::new(dir.0.clone());
+    let state = yi_tools::hashline::tool::shared_hashline_state();
+    let bash = BashTool {
+        hashline: Some(std::sync::Arc::clone(&state)),
+    };
+    let viewed = bash.execute(args(&[("command", json!("cat a.txt"))]), &context);
+    let text = output_text(&viewed);
+    assert!(text.starts_with("[a.txt#"), "{text}");
+    let tag = text
+        .lines()
+        .next()
+        .and_then(|header| header.rsplit_once('#'))
+        .map(|(_, tail)| tail.trim_end_matches(']').to_owned())
+        .ok_or("no tag")?;
+    let edit = yi_tools::hashline::tool::HashlineEditTool {
+        state: std::sync::Arc::clone(&state),
+        freeform_grammar: false,
+    }
+    .execute(
+        args(&[("patch", json!(format!("[a.txt#{tag}]\nPUT 2.=2:\n+TWO\n")))]),
+        &context,
+    );
+    assert!(!edit.is_error, "{}", output_text(&edit));
+    assert_eq!(
+        fs::read_to_string(dir.0.join("a.txt"))?,
+        "one\nTWO\nthree\n"
+    );
+
+    let piped = bash.execute(args(&[("command", json!("cat a.txt | head -1"))]), &context);
+    assert!(
+        !output_text(&piped).starts_with('['),
+        "{}",
+        output_text(&piped)
+    );
+    assert_eq!(piped.result.details["bridge"], json!("compound"));
+    Ok(())
+}
+
+#[test]
+fn a_read_only_command_is_a_read_kind_call() {
+    let bash = BashTool::default();
+    let table = [
+        ("cat f", ToolKind::Read),
+        ("rg -n x crates", ToolKind::Read),
+        ("ls -la && git log -3", ToolKind::Read),
+        ("grid uses X", ToolKind::Read),
+        ("grid survey", ToolKind::Exec),
+        ("cat f > g", ToolKind::Exec),
+        ("cargo test", ToolKind::Exec),
+        ("rm f", ToolKind::Exec),
+    ];
+    for (command, kind) in table {
+        assert_eq!(
+            bash.kind_for(&args(&[("command", json!(command))])),
+            kind,
+            "{command}"
+        );
+    }
+}
+
+#[test]
+fn a_directory_reads_as_a_listing_with_skeletons() -> TestResult {
+    let dir = temp_dir("read-dir")?;
+    fs::create_dir_all(dir.0.join("src/sub"))?;
+    fs::write(dir.0.join("src/a.rs"), "pub fn alpha() {}\nstruct Beta;\n")?;
+    fs::write(dir.0.join("src/notes.txt"), "plain\n")?;
+    let context = ToolContext::new(dir.0.clone());
+    let out = read_tool().execute(args(&[("path", json!("src"))]), &context);
+    let text = output_text(&out);
+    assert!(text.starts_with("[src]\nsub/\na.rs  "), "{text}");
+    assert!(text.contains("notes.txt  6 B"), "{text}");
+    assert!(
+        text.contains("[skeleton]\na.rs: pub fn alpha() {}; struct Beta;"),
+        "{text}"
+    );
+    Ok(())
+}
+
+#[test]
+fn find_shows_the_block_and_the_references_in_one_read() -> TestResult {
+    let dir = temp_dir("read-find")?;
+    fs::write(
+        dir.0.join("lib.rs"),
+        "fn helper() {\n    1\n}\n\nfn main() {\n    helper();\n}\n",
+    )?;
+    fs::write(dir.0.join("other.rs"), "use crate::helper;\n")?;
+    let context = ToolContext::new(dir.0.clone());
+    let out = read_tool().execute(
+        args(&[("path", json!("lib.rs")), ("find", json!("fn helper"))]),
+        &context,
+    );
+    let text = output_text(&out);
+    assert!(text.starts_with("[lib.rs#"), "{text}");
+    assert!(text.contains("1:fn helper() {\n2:    1\n3:}\n"), "{text}");
+    assert!(
+        !text.contains("5:fn main"),
+        "the window is the block: {text}"
+    );
+    assert!(text.contains("[refs: 2 of 2 for helper]"), "{text}");
+    assert!(text.contains("6:    helper();"), "{text}");
+    assert!(text.contains("[other.rs#"), "{text}");
+
+    let miss = read_tool().execute(
+        args(&[("path", json!("lib.rs")), ("find", json!("fn helpers"))]),
+        &context,
+    );
+    assert!(miss.is_error);
+    assert!(
+        output_text(&miss).contains("nearest by"),
+        "{}",
+        output_text(&miss)
+    );
+    Ok(())
+}
+
+#[test]
+fn a_read_cut_by_the_line_cap_ends_with_the_skeleton() -> TestResult {
+    let dir = temp_dir("read-skeleton")?;
+    let mut big = String::new();
+    for index in 0..2_100 {
+        big.push_str(&format!("let x{index} = {index};\n"));
+    }
+    big.push_str("fn tail() {}\n");
+    fs::write(dir.0.join("big.rs"), &big)?;
+    let context = ToolContext::new(dir.0.clone());
+    let out = read_tool().execute(args(&[("path", json!("big.rs"))]), &context);
+    let text = output_text(&out);
+    assert!(text.contains("[skeleton]\n  2101  fn tail()"), "{text}");
+    let small = read_tool().execute(
+        args(&[("path", json!("big.rs")), ("limit", json!(5))]),
+        &context,
+    );
+    assert!(!output_text(&small).contains("[skeleton]"));
+    Ok(())
+}
+
+#[test]
+fn grep_def_count_and_block_modes() -> TestResult {
+    let dir = temp_dir("grep-modes")?;
+    fs::write(
+        dir.0.join("a.rs"),
+        "fn alpha() {\n    beta();\n}\nfn beta() {\n    alpha();\n    alpha();\n}\n",
+    )?;
+    let context = ToolContext::new(dir.0.clone());
+    let grep = GrepTool {
+        hashline: Some(yi_tools::hashline::tool::shared_hashline_state()),
+    };
+    let def = grep.execute(
+        args(&[("pattern", json!("alpha")), ("def", json!(true))]),
+        &context,
+    );
+    let text = output_text(&def);
+    assert!(
+        text.starts_with("[a.rs#") && text.ends_with("]\n1:fn alpha() {"),
+        "{text}"
+    );
+    let count = grep.execute(
+        args(&[("pattern", json!("alpha")), ("count", json!(true))]),
+        &context,
+    );
+    assert!(
+        output_text(&count).trim().starts_with("3 "),
+        "{}",
+        output_text(&count)
+    );
+    let block = grep.execute(
+        args(&[("pattern", json!("fn beta")), ("block", json!(true))]),
+        &context,
+    );
+    let text = output_text(&block);
+    assert!(
+        text.contains("4:fn beta() {\n5-    alpha();\n6-    alpha();\n7-}"),
+        "{text}"
+    );
+    let many = grep.execute(
+        args(&[("pattern", json!(["fn alpha", "fn beta"]))]),
+        &context,
+    );
+    let text = output_text(&many);
+    assert!(
+        text.contains("1:fn alpha() {") && text.contains("4:fn beta() {"),
+        "{text}"
+    );
+    let multi = grep.execute(
+        args(&[
+            ("pattern", json!("beta\\(\\);\\n\\}")),
+            ("multiline", json!(true)),
+        ]),
+        &context,
+    );
+    assert!(
+        output_text(&multi).contains("\n2:    beta();"),
+        "{}",
+        output_text(&multi)
+    );
+    Ok(())
+}
+
+#[test]
+fn grep_replace_previews_then_applies_and_tags() -> TestResult {
+    let dir = temp_dir("grep-replace")?;
+    fs::write(dir.0.join("a.rs"), "fn old_name() {}\n")?;
+    fs::write(dir.0.join("b.rs"), "old_name();\r\n")?;
+    let context = ToolContext::new(dir.0.clone());
+    let state = yi_tools::hashline::tool::shared_hashline_state();
+    let grep = GrepTool {
+        hashline: Some(Arc::clone(&state)),
+    };
+    let preview = grep.execute(
+        args(&[
+            ("pattern", json!("old_([a-z]+)")),
+            ("replace", json!("new_$1")),
+        ]),
+        &context,
+    );
+    let text = output_text(&preview);
+    assert!(text.contains("+fn new_name() {}"), "{text}");
+    assert!(text.contains("[preview: 2 files would change"), "{text}");
+    assert_eq!(
+        fs::read_to_string(dir.0.join("a.rs"))?,
+        "fn old_name() {}\n"
+    );
+    assert_eq!(
+        grep.kind_for(&args(&[("pattern", json!("x")), ("replace", json!("y"))])),
+        ToolKind::Read
+    );
+
+    let applied = grep.execute(preview_args(), &context);
+    assert!(
+        output_text(&applied).contains("applied to 2 of 2 files"),
+        "{}",
+        output_text(&applied)
+    );
+    assert_eq!(
+        fs::read_to_string(dir.0.join("a.rs"))?,
+        "fn new_name() {}\n"
+    );
+    assert_eq!(fs::read_to_string(dir.0.join("b.rs"))?, "new_name();\r\n");
+    assert_eq!(grep.kind_for(&preview_args()), ToolKind::Write);
+    let canonical = dir.0.join("a.rs").canonicalize()?.display().to_string();
+    let guard = state.lock().map_err(|_| "poisoned")?;
+    assert!(
+        guard.snapshots.head(&canonical).is_some(),
+        "the rewrite is tagged"
+    );
+    Ok(())
+}
+
+fn preview_args() -> Map<String, Value> {
+    args(&[
+        ("pattern", json!("old_([a-z]+)")),
+        ("replace", json!("new_$1")),
+        ("apply", json!(true)),
+    ])
 }

@@ -70,7 +70,7 @@
     {
       "kind": "toolResultContains",
       "callId": "edit-blind",
-      "needle": "Missing hashline snapshot tag"
+      "needle": "No version of notes.txt was shown this session"
     },
     {
       "kind": "toolResultContains",

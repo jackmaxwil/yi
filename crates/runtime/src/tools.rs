@@ -151,9 +151,9 @@ impl AgentTool for ToolAdapter {
         }
     }
 
-    /// Only read-kind tools overlap; a mutation keeps the transcript's order.
-    fn execution_mode(&self) -> yi_loop::config::ExecutionMode {
-        match self.tool.kind() {
+    /// Only read-kind calls overlap; a mutation keeps the transcript's order.
+    fn execution_mode(&self, args: &Map<String, Value>) -> yi_loop::config::ExecutionMode {
+        match self.tool.kind_for(args) {
             yi_tools::ToolKind::Read => yi_loop::config::ExecutionMode::Parallel,
             yi_tools::ToolKind::Write | yi_tools::ToolKind::Exec | yi_tools::ToolKind::Ledger => {
                 yi_loop::config::ExecutionMode::Sequential
