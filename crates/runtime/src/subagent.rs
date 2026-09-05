@@ -21,7 +21,7 @@ pub const PARENT_NAME: &str = "parent";
 pub(crate) struct ChildRecord {
     pub(crate) session_name: String,
     session_dir: PathBuf,
-    pub(crate) worktree: Option<crate::worktree::Worktree>,
+    pub(crate) worktree: Option<crate::lane::Lane>,
     pub(crate) status: ChildStatus,
     activity: ChildActivity,
     tool_use_count: u64,
@@ -89,6 +89,9 @@ pub struct SubagentHostOptions {
     /// Repository an isolated child branches its worktree from, and the directory a
     /// non-isolated child simply runs in — the wall is rooted here either way (B11).
     pub cwd: PathBuf,
+    /// Where the lane pool lives (`~/.yi/lanes`), and how many slots it has.
+    pub home: PathBuf,
+    pub lane_slots: u8,
     /// A child's B6 report, injected into the parent's own transcript.
     pub report: Arc<dyn Fn(AgentMessage) + Send + Sync>,
     /// Folds a child's billable usage onto the parent's last assistant message.
@@ -104,6 +107,29 @@ pub struct SubagentHost {
     /// Invariant: a reap pin names `history://<child>`, and a child's file lives
     /// under a `sub-*` directory no session repo scans, so it is kept by name here.
     pub(crate) reaped: Mutex<HashMap<String, yi_session::SharedSession>>,
+}
+
+impl SubagentHost {
+    /// A child lane branches from the parent's own HEAD, so its merge lands back in
+    /// the parent's checkout rather than on `main`.
+    fn claim_child_lane(&self, child_id: &str) -> Result<crate::lane::Lane, String> {
+        let pool = crate::lane::Pool::open(
+            &self.options.home,
+            &self.options.cwd,
+            self.options.lane_slots,
+        )
+        .map_err(|error| error.to_string())?;
+        let head = crate::lane::git(
+            &self.options.cwd,
+            &["rev-parse", "--verify", "HEAD^{commit}"],
+        )
+        .map_err(|error| error.to_string())?;
+        pool.claim(
+            child_id,
+            crate::lane::ClaimBase::Commit(head.trim().to_owned()),
+        )
+        .map_err(|error| error.to_string())
+    }
 }
 
 pub(crate) fn random_suffix() -> Result<String, String> {
@@ -504,17 +530,13 @@ impl SubagentHost {
             }
             let worktree = match isolation {
                 Isolation::None => None,
-                Isolation::Worktree => Some(crate::worktree::create(
-                    &self.options.cwd,
-                    &session_dir,
-                    &child_id,
-                )?),
+                Isolation::Worktree => Some(self.claim_child_lane(&child_id)?),
             };
             let child = (self.options.factory)(ChildBuild {
                 model: model.clone(),
                 thinking: Some(thinking.unwrap_or(parent_effort)),
                 session_dir: &session_dir,
-                cwd: worktree.as_ref().map(|tree| tree.path.as_path()),
+                cwd: worktree.as_ref().map(|lane| lane.path()),
                 link: ParentLink {
                     child_name: session_name.clone(),
                     host: Arc::downgrade(self),
@@ -525,7 +547,7 @@ impl SubagentHost {
             // when it fails, so a transcript it cannot open refuses the spawn.
             let cwd = worktree
                 .as_ref()
-                .map_or(&self.options.cwd, |tree| &tree.path);
+                .map_or(self.options.cwd.as_path(), |lane| lane.path());
             yi_session::create_flat_session(session_dir.clone(), cwd.to_string_lossy())
                 .and_then(|store| child.attach_store(store))
                 .map_err(|error| error.to_string())?;
@@ -741,7 +763,7 @@ impl SubagentHost {
         {
             return Err(format!(
                 "child \"{target}\" holds the worktree {}; merge or discard it first",
-                tree.path.display()
+                tree.path().display()
             ));
         }
         let Some(record) = children.remove(&key) else {
