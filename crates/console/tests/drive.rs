@@ -1712,6 +1712,99 @@ fn resume_named(frame: &Value) -> Vec<Value> {
     ]
 }
 
+fn two_root_ledger(frame: &Value) -> Vec<Value> {
+    vec![ok(
+        frame,
+        json!({"sessions": [
+            {"sessionId": "s-gamma", "name": "s-gamma", "cwd": "/tmp/other-root", "attached": false,
+             "unseen": 0, "lastState": "idle", "lastEventMs": now_ms()},
+        ]}),
+    )]
+}
+
+/// Rows sit under their workspace, the console's own first, newest first inside each:
+/// the newest session of all is slot 3 because it belongs to the other root.
+#[test]
+fn the_sidebar_groups_rows_by_workspace() -> TestResult {
+    run(
+        "root-groups",
+        vec![
+            Step::Expect("initialize", init_reply),
+            Step::Expect("session/list", named_list),
+            Step::Expect("session/list", two_root_ledger),
+        ],
+        "wait-frame 5000 1 RE release notes\n\
+         wait-frame 3000 2 FI fix login bug\n\
+         wait-frame 3000 3 SG s-gamma\n\
+         quit\n",
+    )
+}
+
+/// The resumed session's worker reports a turn starting, the way a prompt does.
+fn resume_then_run(frame: &Value) -> Vec<Value> {
+    let id = frame
+        .pointer("/params/sessionId")
+        .and_then(Value::as_str)
+        .unwrap_or("?")
+        .to_owned();
+    let mut frames = resume_named(frame);
+    frames.push(update(
+        &id,
+        json!({"sessionUpdate": "state_update", "state": "running"}),
+    ));
+    frames
+}
+
+/// A session that starts a turn moves to slot 1 the moment its state changes, not at
+/// the next list: the older row was slot 2 until its worker said `running`.
+#[test]
+fn a_state_transition_moves_the_row_to_the_top() -> TestResult {
+    run(
+        "transition-reorders",
+        vec![
+            Step::Expect("initialize", init_reply),
+            Step::Expect("session/list", named_list),
+            Step::Expect("session/list", empty_list),
+            Step::Expect("session/resume", resume_then_run),
+            Step::Expect("_yi/seen", seen_ok),
+        ],
+        "wait-frame 5000 1 RE release notes\n\
+         wait-frame 3000 2 FI fix login bug\n\
+         key down\n\
+         key enter\n\
+         wait-frame 5000 resumed s-alpha\n\
+         wait-frame 3000 1 FI fix login bug\n\
+         wait-frame 3000 2 RE release notes\n\
+         quit\n",
+    )
+}
+
+/// The rail lists every session, windowed to the viewport like the full sidebar: the
+/// thirteenth session is a row, not a session the rail has no slot for.
+#[test]
+fn the_rail_windows_past_twelve_sessions() -> TestResult {
+    use yi_console::model::{SessionId, SessionRow, SessionStatus};
+    let theme = yi_tui::colors::Theme::new(yi_tui::colors::ColorTier::Ansi16, true);
+    let mut app = yi_console::app::App::new("/tmp/demo-root".to_owned(), theme);
+    app.state.sidebar = SidebarMode::Rail;
+    for n in 0..14_u64 {
+        app.state.upsert_row(SessionRow {
+            id: SessionId(format!("s-{n:02}")),
+            root: "/tmp/demo-root".to_owned(),
+            status: SessionStatus::Idle,
+            attached: false,
+            name: None,
+            created_ms: 1000 + n,
+            last_ms: 0,
+        });
+    }
+    let rows = yi_console::sidebar::sidebar_lines(&app, &theme, 60);
+    let mut listed: Vec<usize> = rows.iter().filter_map(|row| row.index).collect();
+    listed.dedup();
+    assert_eq!(listed.len(), 14, "every session has a rail row: {listed:?}");
+    Ok(())
+}
+
 /// Rows carry the session's name and age, newest first, and the row behind the
 /// focused pane wears the focus bar once it opens.
 #[test]

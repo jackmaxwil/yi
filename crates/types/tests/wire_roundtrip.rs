@@ -87,6 +87,19 @@ fn goal_discovery_ledger_round_trips_with_unknown_fields() -> Result<(), Box<dyn
 }
 
 #[test]
+fn daemon_ledger_fixture_round_trips_with_unknown_fields() -> Result<(), Box<dyn std::error::Error>>
+{
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/daemon-ledger-v1.json");
+    let stored = fs::read_to_string(path)?;
+    let ledger: yi_types::acp::DaemonLedger = serde_json::from_str(&stored)?;
+    let entry = ledger.sessions.get("s-1").ok_or("the s-1 row")?;
+    assert_eq!(entry.unseen, 2);
+    assert_eq!(entry.extra.get("pinned"), Some(&serde_json::json!(true)));
+    assert_eq!(serde_json::to_string(&ledger)?, stored.trim_end());
+    Ok(())
+}
+
+#[test]
 fn task_without_a_check_still_deserializes_and_reserializes_clean()
 -> Result<(), Box<dyn std::error::Error>> {
     // A pre-check-gate plan fact must parse forever (§19), and an absent check

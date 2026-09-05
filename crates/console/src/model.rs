@@ -484,13 +484,13 @@ impl ConsoleState {
             })
             .map(|(index, _)| index)
             .collect();
+        let roots = self.roots();
         rows.sort_by_key(|index| {
-            let recency = self
-                .order
-                .get(*index)
-                .and_then(|id| self.sessions.get(id))
-                .map_or(0, SessionRow::recency);
-            std::cmp::Reverse(recency)
+            let row = self.order.get(*index).and_then(|id| self.sessions.get(id));
+            let rank = row
+                .and_then(|row| roots.iter().position(|root| *root == row.root))
+                .unwrap_or(usize::MAX);
+            (rank, std::cmp::Reverse(row.map_or(0, SessionRow::recency)))
         });
         rows
     }

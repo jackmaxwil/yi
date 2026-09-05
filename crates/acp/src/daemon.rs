@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 use std::process::Stdio;
 
@@ -7,6 +7,7 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
 use tokio::process::{Child, ChildStdin};
 use tokio::sync::mpsc;
+use yi_types::acp::{DaemonLedger, DaemonLedgerEntry};
 
 use crate::{PROTOCOL_VERSION, negotiate};
 
@@ -74,6 +75,47 @@ impl SessionEntry {
             provisional: false,
         }
     }
+
+    /// Invariant: no worker survives the daemon, so a stored `running` or
+    /// `requires_action` is a turn that died; it reloads as idle.
+    fn from_stored(stored: DaemonLedgerEntry) -> Self {
+        Self {
+            last_state: stored.last_state.map(|_| "idle".to_owned()),
+            unseen: stored.unseen,
+            last_event_ms: stored.last_event_ms,
+            name: stored.name,
+            ..Self::new(stored.cwd, None)
+        }
+    }
+
+    fn to_stored(&self) -> DaemonLedgerEntry {
+        DaemonLedgerEntry {
+            cwd: self.root.clone(),
+            unseen: self.unseen,
+            last_state: self.last_state.clone(),
+            last_event_ms: self.last_event_ms,
+            name: self.name.clone(),
+            extra: BTreeMap::new(),
+        }
+    }
+}
+
+fn ledger_path(socket: &std::path::Path) -> PathBuf {
+    socket.with_extension("ledger.json")
+}
+
+fn load_ledger(socket: &std::path::Path) -> HashMap<String, SessionEntry> {
+    std::fs::read_to_string(ledger_path(socket))
+        .ok()
+        .and_then(|text| serde_json::from_str::<DaemonLedger>(&text).ok())
+        .map(|ledger| {
+            ledger
+                .sessions
+                .into_iter()
+                .map(|(id, entry)| (id, SessionEntry::from_stored(entry)))
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 fn prompt_title(frame: &Value) -> Option<String> {
@@ -137,6 +179,25 @@ impl Supervisor {
         }
     }
 
+    fn persist(&self) {
+        let ledger = DaemonLedger {
+            sessions: self
+                .sessions
+                .iter()
+                .filter(|(_, entry)| !entry.provisional)
+                .map(|(id, entry)| (id.clone(), entry.to_stored()))
+                .collect(),
+        };
+        let path = ledger_path(&self.options.socket);
+        let tmp = path.with_extension("json.tmp");
+        let Ok(text) = serde_json::to_string(&ledger) else {
+            return;
+        };
+        if std::fs::write(&tmp, text).is_ok() {
+            let _ = std::fs::rename(&tmp, &path);
+        }
+    }
+
     fn mark_seen(&mut self, client: ClientId, id: Option<Value>, frame: &Value) {
         let Some(id) = id else { return };
         let session_id = frame
@@ -146,6 +207,7 @@ impl Supervisor {
         match self.sessions.get_mut(session_id) {
             Some(entry) => {
                 entry.unseen = 0;
+                self.persist();
                 self.send_client(client, result_frame(id, json!({})));
             }
             None => self.send_client(client, error_frame(id, -32602, "unknown sessionId")),
@@ -353,6 +415,7 @@ impl Supervisor {
                     entry.attached.insert(client);
                     if entry.name.is_none() && method == "session/prompt" {
                         entry.name = prompt_title(&frame);
+                        self.persist();
                     }
                     self.flush_parked(&session_id, client);
                 }
@@ -424,6 +487,7 @@ impl Supervisor {
                         self.sessions.insert(session_id, entry);
                     }
                 }
+                self.persist();
             }
             if let Some(map) = frame.as_object_mut() {
                 map.insert("id".to_owned(), original);
@@ -454,15 +518,20 @@ impl Supervisor {
         let Some(entry) = self.sessions.get_mut(&session_id) else {
             return;
         };
-        entry.last_event_ms = now_ms();
         let transition = state.is_some();
         if let Some(state) = state {
+            entry.last_event_ms = now_ms();
             entry.last_state = Some(state);
         }
-        if entry.attached.is_empty() {
-            if transition {
-                entry.unseen = entry.unseen.saturating_add(1);
-            }
+        let detached = entry.attached.is_empty();
+        if transition && detached {
+            entry.unseen = entry.unseen.saturating_add(1);
+        }
+        let watchers: Vec<ClientId> = entry.attached.iter().copied().collect();
+        if transition {
+            self.persist();
+        }
+        if detached {
             // Requests (frames with an id) park for the next attach; a
             // capped queue bounds a worker that asks in a loop.
             if let Some(request_id) = frame.get("id").cloned() {
@@ -486,7 +555,6 @@ impl Supervisor {
         }
         // Fan out to every watcher; for a worker-originated request the first answer wins
         // and the stale ids of the rest fall out of `worker_requests` with it.
-        let watchers: Vec<ClientId> = entry.attached.iter().copied().collect();
         let line = frame.to_string();
         for client in watchers {
             self.send_client(client, line.clone());
@@ -608,10 +676,10 @@ pub fn run_daemon(options: DaemonOptions, runtime: tokio::runtime::Runtime) -> i
         );
         let (input_tx, mut input_rx) = mpsc::unbounded_channel::<Input>();
         let mut supervisor = Supervisor {
+            sessions: load_ledger(&options.socket),
             options,
             workers: HashMap::new(),
             clients: HashMap::new(),
-            sessions: HashMap::new(),
             requests: HashMap::new(),
             worker_requests: HashMap::new(),
             parked: HashMap::new(),
