@@ -188,3 +188,36 @@ fn a_stable_paragraph_commits_only_once_it_is_shown() -> TestResult {
     );
     Ok(())
 }
+
+/// Invariant: the end of a message commits every character, however far the cursor was
+/// behind when the end arrived; the paced path and the instant path leave the same scrollback.
+#[test]
+fn the_end_of_a_message_commits_the_whole_text() -> TestResult {
+    let text = "faux: hello from yi";
+    let end = yi_types::event::AgentEvent::MessageEnd {
+        message: yi_runtime::faux::faux_assistant_message(
+            vec![yi_runtime::faux::faux_text(text)],
+            yi_types::message::StopReason::Stop,
+        ),
+    };
+    let mut paced = app_with_pace(100);
+    paced.reduce_agent(yi_types::event::AgentEvent::AgentStart);
+    paced.reduce_agent(update(text));
+    let mut now = Instant::now();
+    for _ in 0..20 {
+        now += FRAME;
+        paced.step_reveal(now);
+    }
+    paced.reduce_agent(end);
+    let committed: String = paced
+        .take_commits()
+        .iter()
+        .map(|line| line.to_string())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        committed.contains("hello from yi"),
+        "committed:\n{committed}"
+    );
+    Ok(())
+}
