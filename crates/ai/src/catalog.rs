@@ -4,12 +4,17 @@ use std::sync::OnceLock;
 use serde_json::Value;
 use yi_types::model::Model;
 
-const ANTHROPIC_DATA: &str = include_str!("../data/anthropic.json");
-const OPENAI_DATA: &str = include_str!("../data/openai.json");
-const OPENROUTER_DATA: &str = include_str!("../data/openrouter.json");
+/// Deflated by `build.rs`: 170,536 bytes of JSON became 11,845 in the binary, and only
+/// [`Catalog::bundled`] inflates them, once, behind its `OnceLock`.
+const ANTHROPIC_DATA: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/anthropic.zz"));
+const OPENAI_DATA: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/openai.zz"));
+const OPENROUTER_DATA: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/openrouter.zz"));
 
-fn parse_catalog(data: &str, models: &mut HashMap<(String, String), Model>) {
-    let Ok(Value::Object(by_api)) = serde_json::from_str::<Value>(data) else {
+fn parse_catalog(packed: &[u8], models: &mut HashMap<(String, String), Model>) {
+    let Ok(data) = miniz_oxide::inflate::decompress_to_vec_zlib(packed) else {
+        return;
+    };
+    let Ok(Value::Object(by_api)) = serde_json::from_slice::<Value>(&data) else {
         return;
     };
     for by_model in by_api.into_iter().filter_map(|(_, value)| match value {

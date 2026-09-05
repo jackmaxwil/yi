@@ -229,8 +229,8 @@ def binary_ratchet(topic):
     """Built here, after the code commit: check_binary_size.py only stats target/dist/yi,
     so without a build it measures the previous landing (said ok while the lane grew)."""
     build = subprocess.run(
-        ("cargo", "build", "--profile", "dist", "-p", "yi-cli"),
-        capture_output=True, text=True, check=False,
+        (str(ROOT / "scripts/build_dist.sh"),),
+        cwd=ROOT, capture_output=True, text=True, check=False,
     )
     if build.returncode != 0:
         print("binary: dist build failed")

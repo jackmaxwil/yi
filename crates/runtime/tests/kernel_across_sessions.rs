@@ -93,6 +93,7 @@ async fn a_parent_reads_a_variable_out_of_its_childs_kernel() -> TestResult {
             system_prompt: String::new(),
             tool_execution: ExecutionMode::Sequential,
             cwd: root.clone(),
+            lane_slots: 1,
             home: std::env::var_os("HOME")
                 .map(PathBuf::from)
                 .unwrap_or_default(),
