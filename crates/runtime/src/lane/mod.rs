@@ -420,6 +420,14 @@ impl Pool {
                     drop(guard);
                     return self.reclaim(slot, session);
                 }
+                Some(_) if self.abandoned(slot)? => {
+                    self.detach(slot, self.branch_of(slot).as_deref())?;
+                    let mut state = self.read_state(slot)?;
+                    state.session = None;
+                    self.write_state(slot, &state)?;
+                    free = Some((slot, Some(guard), false));
+                    break;
+                }
                 Some(_) => orphans = orphans.saturating_add(1),
                 None => {
                     free = Some((slot, Some(guard), false));
@@ -517,6 +525,20 @@ impl Pool {
         }
         state.lockfile = None;
         self.write_state(slot, &state)
+    }
+
+    /// Incident: three lanes left by dead `pid-` drives held nothing and still filled the pool.
+    /// An orphan with a clean tree and a branch `main` already contains has nothing to lose.
+    fn abandoned(&self, slot: SlotIndex) -> Result<bool, LaneError> {
+        let path = self.slot_path(slot);
+        if !git(&path, &["status", "--porcelain"])?.trim().is_empty() {
+            return Ok(false);
+        }
+        let Some(branch) = self.branch_of(slot) else {
+            return Ok(true);
+        };
+        let base = self.resolve(&ClaimBase::Main)?;
+        Ok(git(&self.repo, &["merge-base", "--is-ancestor", &branch, &base]).is_ok())
     }
 
     /// Invariant: an orphan's branch is the only copy of its work; it goes only once `main` has it.
