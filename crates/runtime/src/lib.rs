@@ -11,6 +11,7 @@ pub mod fetch;
 pub mod gate;
 pub mod goal;
 pub mod kernel;
+pub mod lane;
 pub mod mailbox;
 pub mod permission;
 pub mod plan;
@@ -26,7 +27,6 @@ pub mod subagent;
 pub mod tools;
 pub mod wall;
 pub mod wiring;
-pub mod worktree;
 
 pub use checkpoint::{RecordedCheckpoint, UndoOutcome, recorded, undo, wire_turn_checkpoints};
 pub use compaction::{CompactStatus, Compactor};

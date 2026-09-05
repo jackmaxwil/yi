@@ -95,6 +95,8 @@ async fn a_reaped_childs_booted_kernel_process_is_gone() -> TestResult {
         max_children: 4,
         parent_session_dir: root.clone(),
         cwd: std::env::temp_dir(),
+        home: std::env::temp_dir(),
+        lane_slots: 1,
         defaults: Arc::new(|| (faux_model(), Effort::Medium)),
         factory: Arc::new(move |build: yi_runtime::ChildBuild<'_>| {
             let provider = Arc::new(ProviderStream::new(None, None));
