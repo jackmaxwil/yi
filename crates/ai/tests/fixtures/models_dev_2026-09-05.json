@@ -1,0 +1,719 @@
+{
+ "anthropic": {
+  "doc": "https://docs.anthropic.com/en/docs/about-claude/models",
+  "env": [
+   "ANTHROPIC_API_KEY"
+  ],
+  "id": "anthropic",
+  "models": {
+   "claude-haiku-4-5": {
+    "attachment": true,
+    "cost": {
+     "cache_read": 0.1,
+     "cache_write": 1.25,
+     "input": 1,
+     "output": 5
+    },
+    "description": "Fast Claude lane for lightweight agents, office tasks, and responsive chat",
+    "family": "claude-haiku",
+    "id": "claude-haiku-4-5",
+    "knowledge": "2025-02-28",
+    "last_updated": "2025-10-15",
+    "limit": {
+     "context": 200000,
+     "output": 64000
+    },
+    "modalities": {
+     "input": [
+      "text",
+      "image",
+      "pdf"
+     ],
+     "output": [
+      "text"
+     ]
+    },
+    "name": "Claude Haiku 4.5 (latest)",
+    "open_weights": false,
+    "reasoning": true,
+    "reasoning_options": [
+     {
+      "min": 1024,
+      "type": "budget_tokens"
+     }
+    ],
+    "release_date": "2025-10-15",
+    "structured_output": true,
+    "temperature": true,
+    "tool_call": true
+   },
+   "claude-haiku-4-5-20251001": {
+    "attachment": true,
+    "cost": {
+     "cache_read": 0.1,
+     "cache_write": 1.25,
+     "input": 1,
+     "output": 5
+    },
+    "description": "Fast Claude model for responsive assistance, classification, and lightweight agents",
+    "family": "claude-haiku",
+    "id": "claude-haiku-4-5-20251001",
+    "knowledge": "2025-02-28",
+    "last_updated": "2025-10-15",
+    "limit": {
+     "context": 200000,
+     "output": 64000
+    },
+    "modalities": {
+     "input": [
+      "text",
+      "image",
+      "pdf"
+     ],
+     "output": [
+      "text"
+     ]
+    },
+    "name": "Claude Haiku 4.5",
+    "open_weights": false,
+    "reasoning": true,
+    "reasoning_options": [
+     {
+      "min": 1024,
+      "type": "budget_tokens"
+     }
+    ],
+    "release_date": "2025-10-15",
+    "structured_output": true,
+    "temperature": true,
+    "tool_call": true
+   },
+   "claude-opus-5": {
+    "attachment": true,
+    "cost": {
+     "cache_read": 0.5,
+     "cache_write": 6.25,
+     "input": 5,
+     "output": 25
+    },
+    "description": "Strongest Claude Opus model for coding, agents, and professional work",
+    "experimental": {
+     "modes": {
+      "fast": {
+       "cost": {
+        "cache_read": 1,
+        "cache_write": 12.5,
+        "input": 10,
+        "output": 50
+       },
+       "provider": {
+        "body": {
+         "speed": "fast"
+        },
+        "headers": {
+         "anthropic-beta": "fast-mode-2026-02-01"
+        }
+       }
+      }
+     }
+    },
+    "family": "claude-opus",
+    "id": "claude-opus-5",
+    "knowledge": "2026-05",
+    "last_updated": "2026-07-24",
+    "limit": {
+     "context": 1000000,
+     "output": 128000
+    },
+    "modalities": {
+     "input": [
+      "text",
+      "image",
+      "pdf"
+     ],
+     "output": [
+      "text"
+     ]
+    },
+    "name": "Claude Opus 5",
+    "open_weights": false,
+    "reasoning": true,
+    "reasoning_options": [
+     {
+      "type": "effort",
+      "values": [
+       "low",
+       "medium",
+       "high",
+       "xhigh",
+       "max"
+      ]
+     }
+    ],
+    "release_date": "2026-07-24",
+    "structured_output": true,
+    "temperature": false,
+    "tool_call": true
+   }
+  },
+  "name": "Anthropic",
+  "npm": "@ai-sdk/anthropic"
+ },
+ "openai": {
+  "doc": "https://platform.openai.com/docs/models",
+  "env": [
+   "OPENAI_API_KEY"
+  ],
+  "id": "openai",
+  "models": {
+   "gpt-5.6-sol": {
+    "attachment": true,
+    "cost": {
+     "cache_read": 0.4,
+     "cache_write": 5,
+     "context_over_200k": {
+      "cache_read": 0.8,
+      "cache_write": 10,
+      "input": 8,
+      "output": 30
+     },
+     "input": 4,
+     "output": 20,
+     "tiers": [
+      {
+       "cache_read": 0.8,
+       "cache_write": 10,
+       "input": 8,
+       "output": 30,
+       "tier": {
+        "size": 272000,
+        "type": "context"
+       }
+      }
+     ]
+    },
+    "description": "Frontier GPT-5.6 model for complex professional work, coding, and agentic workflows",
+    "experimental": {
+     "modes": {
+      "fast": {
+       "cost": {
+        "cache_read": 0.8,
+        "cache_write": 10,
+        "input": 8,
+        "output": 40
+       },
+       "provider": {
+        "body": {
+         "service_tier": "priority"
+        }
+       }
+      },
+      "pro": {
+       "provider": {
+        "body": {
+         "reasoning": {
+          "mode": "pro"
+         }
+        }
+       }
+      }
+     }
+    },
+    "family": "gpt-sol",
+    "id": "gpt-5.6-sol",
+    "knowledge": "2026-02-16",
+    "last_updated": "2026-07-09",
+    "limit": {
+     "context": 1050000,
+     "input": 922000,
+     "output": 128000
+    },
+    "modalities": {
+     "input": [
+      "text",
+      "image",
+      "pdf"
+     ],
+     "output": [
+      "text"
+     ]
+    },
+    "name": "GPT-5.6 Sol",
+    "open_weights": false,
+    "reasoning": true,
+    "reasoning_options": [
+     {
+      "type": "effort",
+      "values": [
+       "none",
+       "low",
+       "medium",
+       "high",
+       "xhigh",
+       "max"
+      ]
+     }
+    ],
+    "release_date": "2026-07-09",
+    "structured_output": true,
+    "temperature": false,
+    "tool_call": true
+   },
+   "gpt-6-astra": {
+    "attachment": true,
+    "cost": {
+     "cache_read": 1,
+     "cache_write": 12.5,
+     "context_over_200k": {
+      "cache_read": 2,
+      "cache_write": 25,
+      "input": 20,
+      "output": 75
+     },
+     "input": 10,
+     "output": 50,
+     "tiers": [
+      {
+       "cache_read": 2,
+       "cache_write": 25,
+       "input": 20,
+       "output": 75,
+       "tier": {
+        "size": 272000,
+        "type": "context"
+       }
+      }
+     ]
+    },
+    "description": "GPT-6 Astra is OpenAI's most capable model for complex reasoning, coding, computer use, research, and document creation.",
+    "experimental": {
+     "modes": {
+      "fast": {
+       "cost": {
+        "cache_read": 2,
+        "cache_write": 25,
+        "input": 20,
+        "output": 100
+       },
+       "provider": {
+        "body": {
+         "service_tier": "priority"
+        }
+       }
+      },
+      "pro": {
+       "provider": {
+        "body": {
+         "reasoning": {
+          "mode": "pro"
+         }
+        }
+       }
+      }
+     }
+    },
+    "family": "gpt-astra",
+    "id": "gpt-6-astra",
+    "last_updated": "2026-09-04",
+    "limit": {
+     "context": 1050000,
+     "input": 922000,
+     "output": 128000
+    },
+    "modalities": {
+     "input": [
+      "text",
+      "image",
+      "pdf"
+     ],
+     "output": [
+      "text"
+     ]
+    },
+    "name": "GPT-6 Astra",
+    "open_weights": false,
+    "reasoning": true,
+    "reasoning_options": [
+     {
+      "type": "effort",
+      "values": [
+       "low",
+       "medium",
+       "high",
+       "xhigh",
+       "max"
+      ]
+     }
+    ],
+    "release_date": "2026-09-04",
+    "structured_output": true,
+    "temperature": false,
+    "tool_call": true
+   }
+  },
+  "name": "OpenAI",
+  "npm": "@ai-sdk/openai"
+ },
+ "openrouter": {
+  "api": "https://openrouter.ai/api/v1",
+  "doc": "https://openrouter.ai/models",
+  "env": [
+   "OPENROUTER_API_KEY"
+  ],
+  "id": "openrouter",
+  "models": {
+   "anthropic/claude-opus-5": {
+    "attachment": true,
+    "cost": {
+     "cache_read": 0.5,
+     "cache_write": 6.25,
+     "input": 5,
+     "output": 25
+    },
+    "description": "Flagship Claude model for deep reasoning, coding, and long-horizon agents",
+    "family": "claude-opus",
+    "id": "anthropic/claude-opus-5",
+    "knowledge": "2026-05",
+    "last_updated": "2026-07-24",
+    "limit": {
+     "context": 1000000,
+     "output": 128000
+    },
+    "modalities": {
+     "input": [
+      "text",
+      "image",
+      "pdf"
+     ],
+     "output": [
+      "text"
+     ]
+    },
+    "name": "Claude Opus 5",
+    "open_weights": false,
+    "reasoning": true,
+    "reasoning_options": [
+     {
+      "type": "toggle"
+     },
+     {
+      "type": "effort",
+      "values": [
+       "low",
+       "medium",
+       "high",
+       "xhigh",
+       "max"
+      ]
+     }
+    ],
+    "release_date": "2026-07-24",
+    "structured_output": true,
+    "temperature": true,
+    "tool_call": true
+   },
+   "openai/gpt-5.6-sol": {
+    "attachment": true,
+    "cost": {
+     "cache_read": 0.2,
+     "cache_write": 2.5,
+     "context_over_200k": {
+      "cache_read": 0.4,
+      "cache_write": 5,
+      "input": 4,
+      "output": 15
+     },
+     "input": 2,
+     "output": 10,
+     "tiers": [
+      {
+       "cache_read": 0.4,
+       "cache_write": 5,
+       "input": 4,
+       "output": 15,
+       "tier": {
+        "size": 272000,
+        "type": "context"
+       }
+      }
+     ]
+    },
+    "description": "GPT model for general reasoning, writing, coding, and tool-assisted tasks",
+    "family": "gpt-sol",
+    "id": "openai/gpt-5.6-sol",
+    "knowledge": "2026-02-16",
+    "last_updated": "2026-07-09",
+    "limit": {
+     "context": 1050000,
+     "input": 922000,
+     "output": 128000
+    },
+    "modalities": {
+     "input": [
+      "text",
+      "image",
+      "pdf"
+     ],
+     "output": [
+      "text"
+     ]
+    },
+    "name": "GPT-5.6 Sol",
+    "open_weights": false,
+    "reasoning": true,
+    "reasoning_options": [
+     {
+      "type": "effort",
+      "values": [
+       "none",
+       "low",
+       "medium",
+       "high",
+       "xhigh",
+       "max"
+      ]
+     }
+    ],
+    "release_date": "2026-07-09",
+    "structured_output": true,
+    "temperature": false,
+    "tool_call": true
+   },
+   "openai/gpt-5.6-sol-pro": {
+    "attachment": true,
+    "cost": {
+     "cache_read": 0.2,
+     "cache_write": 2.5,
+     "context_over_200k": {
+      "cache_read": 0.4,
+      "cache_write": 5,
+      "input": 4,
+      "output": 15
+     },
+     "input": 2,
+     "output": 10,
+     "tiers": [
+      {
+       "cache_read": 0.4,
+       "cache_write": 5,
+       "input": 4,
+       "output": 15,
+       "tier": {
+        "size": 272000,
+        "type": "context"
+       }
+      }
+     ]
+    },
+    "description": "Frontier GPT model for professional reasoning, coding, and multimodal work",
+    "family": "gpt-sol",
+    "id": "openai/gpt-5.6-sol-pro",
+    "knowledge": "2026-02-16",
+    "last_updated": "2026-07-09",
+    "limit": {
+     "context": 1050000,
+     "input": 922000,
+     "output": 128000
+    },
+    "modalities": {
+     "input": [
+      "text",
+      "image",
+      "pdf"
+     ],
+     "output": [
+      "text"
+     ]
+    },
+    "name": "GPT-5.6 Sol Pro",
+    "open_weights": false,
+    "reasoning": true,
+    "reasoning_options": [
+     {
+      "type": "effort",
+      "values": [
+       "none",
+       "low",
+       "medium",
+       "high",
+       "xhigh",
+       "max"
+      ]
+     }
+    ],
+    "release_date": "2026-07-09",
+    "structured_output": true,
+    "temperature": false,
+    "tool_call": true
+   },
+   "openai/gpt-6-astra": {
+    "attachment": true,
+    "cost": {
+     "cache_read": 1,
+     "cache_write": 12.5,
+     "context_over_200k": {
+      "cache_read": 2,
+      "cache_write": 25,
+      "input": 20,
+      "output": 75
+     },
+     "input": 10,
+     "output": 50,
+     "tiers": [
+      {
+       "cache_read": 2,
+       "cache_write": 25,
+       "input": 20,
+       "output": 75,
+       "tier": {
+        "size": 272000,
+        "type": "context"
+       }
+      }
+     ]
+    },
+    "description": "GPT model for general reasoning, writing, coding, and tool-assisted tasks",
+    "family": "gpt-astra",
+    "id": "openai/gpt-6-astra",
+    "last_updated": "2026-09-04",
+    "limit": {
+     "context": 1050000,
+     "input": 922000,
+     "output": 128000
+    },
+    "modalities": {
+     "input": [
+      "text",
+      "image",
+      "pdf"
+     ],
+     "output": [
+      "text"
+     ]
+    },
+    "name": "GPT-6 Astra",
+    "open_weights": false,
+    "reasoning": true,
+    "reasoning_options": [
+     {
+      "type": "effort",
+      "values": [
+       "low",
+       "medium",
+       "high",
+       "xhigh",
+       "max"
+      ]
+     }
+    ],
+    "release_date": "2026-09-04",
+    "structured_output": true,
+    "temperature": false,
+    "tool_call": true
+   },
+   "openai/gpt-6-astra-pro": {
+    "attachment": true,
+    "cost": {
+     "cache_read": 1,
+     "cache_write": 12.5,
+     "context_over_200k": {
+      "cache_read": 2,
+      "cache_write": 25,
+      "input": 20,
+      "output": 75
+     },
+     "input": 10,
+     "output": 50,
+     "tiers": [
+      {
+       "cache_read": 2,
+       "cache_write": 25,
+       "input": 20,
+       "output": 75,
+       "tier": {
+        "size": 272000,
+        "type": "context"
+       }
+      }
+     ]
+    },
+    "description": "Frontier GPT model for professional reasoning, coding, and multimodal work",
+    "family": "gpt",
+    "id": "openai/gpt-6-astra-pro",
+    "last_updated": "2026-09-04",
+    "limit": {
+     "context": 1050000,
+     "output": 128000
+    },
+    "modalities": {
+     "input": [
+      "pdf",
+      "image",
+      "text"
+     ],
+     "output": [
+      "text"
+     ]
+    },
+    "name": "GPT-6 Astra Pro",
+    "open_weights": false,
+    "reasoning": true,
+    "reasoning_options": [
+     {
+      "type": "effort",
+      "values": [
+       "low",
+       "medium",
+       "high",
+       "xhigh",
+       "max"
+      ]
+     }
+    ],
+    "release_date": "2026-09-04",
+    "structured_output": true,
+    "temperature": false,
+    "tool_call": true
+   },
+   "qwen/qwen3.7-max": {
+    "attachment": false,
+    "cost": {
+     "cache_read": 0.295,
+     "cache_write": 1.84375,
+     "input": 1.475,
+     "output": 4.425
+    },
+    "description": "Qwen frontier model tuned for agent frameworks, coding assistants, and long tasks",
+    "family": "qwen",
+    "id": "qwen/qwen3.7-max",
+    "last_updated": "2026-05-21",
+    "limit": {
+     "context": 1000000,
+     "output": 131072
+    },
+    "modalities": {
+     "input": [
+      "text"
+     ],
+     "output": [
+      "text"
+     ]
+    },
+    "name": "Qwen3.7 Max",
+    "open_weights": false,
+    "reasoning": true,
+    "reasoning_options": [
+     {
+      "type": "toggle"
+     }
+    ],
+    "release_date": "2026-05-21",
+    "structured_output": true,
+    "temperature": true,
+    "tool_call": true
+   }
+  },
+  "name": "OpenRouter",
+  "npm": "@openrouter/ai-sdk-provider"
+ }
+}

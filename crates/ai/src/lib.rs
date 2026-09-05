@@ -8,6 +8,7 @@ pub mod faux;
 pub mod json_salvage;
 pub mod openai;
 pub mod openai_responses;
+pub mod refresh;
 pub mod request;
 pub mod retry;
 pub mod sse;

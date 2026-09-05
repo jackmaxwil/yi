@@ -1,6 +1,7 @@
 #![forbid(unsafe_code)]
 #![deny(clippy::string_slice)]
 
+mod catalog;
 mod lanes;
 mod plan;
 mod rpc;
@@ -228,6 +229,7 @@ fn load_config() -> Result<(), String> {
     let Some(home) = std::env::var_os("HOME") else {
         return set_config(yi_types::config::UserConfig::default());
     };
+    yi_runtime::set_catalog_cache_dir(std::path::Path::new(&home).join(".yi/catalog"));
     set_config(read_config(std::path::Path::new(&home))?)
 }
 
@@ -383,6 +385,9 @@ fn build_session(
             }
         }
     };
+    if !faux {
+        catalog::spawn_refresh(&model.provider, api_key.as_ref(), proxy.as_ref());
+    }
     let provider = Arc::new(
         ProviderStream::new(api_key, None)
             .with_long_cache(interactive)
@@ -1121,6 +1126,7 @@ fn main() {
         "trust" => std::process::exit(run_trust(&args)),
         "gate" => std::process::exit(run_gate(&args)),
         "fetch" => std::process::exit(run_fetch(&args)),
+        "catalog" => std::process::exit(catalog::run(&args)),
         "why" => std::process::exit(run_why(&args)),
         "plan" => std::process::exit(run_plan(&args)),
         "sessions" => {
