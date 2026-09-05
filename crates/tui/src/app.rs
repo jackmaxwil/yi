@@ -172,6 +172,7 @@ pub struct App {
     exit_code: i32,
     pub(crate) options: TuiOptions,
     pub(crate) status_name_hidden: bool,
+    pub(crate) branch: Option<String>,
     pub(crate) context_used: u64,
     pub(crate) cost_total: f64,
     pub(crate) cost_unknown: bool,
@@ -261,6 +262,7 @@ impl App {
             exit_code: 0,
             options,
             status_name_hidden: false,
+            branch: None,
             context_used: 0,
             cost_total: 0.0,
             cost_unknown: false,
@@ -271,6 +273,7 @@ impl App {
             width,
             rows: 24,
         };
+        app.branch = crate::status::git_branch(&app.options.cwd);
         app.scheduler.request();
         app
     }
@@ -367,6 +370,7 @@ impl App {
     fn note_context(&mut self, message: &AgentMessage) {
         if let AgentMessage::Assistant { usage, .. } = message {
             self.context_used = u64::try_from(usage.total_tokens).unwrap_or(0);
+            self.branch = crate::status::git_branch(&self.options.cwd);
         }
     }
 
