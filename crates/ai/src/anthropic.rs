@@ -34,8 +34,6 @@ pub struct AnthropicOptions {
     pub proxy: Option<crate::request::ProxyConfig>,
 }
 
-const CACHE_TTL_BETA: &str = "extended-cache-ttl-2025-04-11";
-
 fn ephemeral(long: bool) -> Value {
     if long {
         json!({"type": "ephemeral", "ttl": "1h"})
@@ -317,8 +315,8 @@ pub fn build_params(model: &Model, context: &LlmContext, options: &AnthropicOpti
     if let Some(choice) = &context.tool_choice {
         params["tool_choice"] = convert_tool_choice(choice);
     }
-    // Incident: the API refuses a forced tool beside extended thinking, so the
-    // one turn that forces a tool goes without thinking rather than 400ing.
+    // Incident: the API refuses a forced tool beside extended thinking, so that turn goes
+    // without it; the toggle costs one messages-level cache write, tools and system stay hot.
     let forced = matches!(context.tool_choice, Some(ToolChoice::Tool(_)));
     let thinking = if forced {
         &Thinking::Off
@@ -786,18 +784,14 @@ fn run_request(
     model: &Model,
     body: &Value,
     api_key: &str,
-    long_cache: bool,
     proxy: Option<&crate::request::ProxyConfig>,
     sender: &Sender<AssistantMessageEvent>,
 ) -> Result<(), String> {
     let url = format!("{}/v1/messages", model.base_url);
-    let mut headers = vec![
+    let headers = vec![
         ("x-api-key", api_key.to_owned()),
         ("anthropic-version", ANTHROPIC_VERSION.to_owned()),
     ];
-    if long_cache {
-        headers.push(("anthropic-beta", CACHE_TTL_BETA.to_owned()));
-    }
     let response = crate::request::send_with_retry(&url, &headers, body, proxy)?;
     let mut mapper = Mapper::new(model);
     let _ = sender.blocking_send(mapper.start_event());
@@ -820,27 +814,6 @@ fn run_request(
     Ok(())
 }
 
-/// An hour of cache retention is a beta on some accounts. If the API refuses it the request
-/// retries once at the default five minutes: a shorter cache is a cost, a failed turn is not.
-pub fn is_cache_retention_rejection(message: &str) -> bool {
-    let lower = message.to_lowercase();
-    lower.starts_with("http 400") && (lower.contains("ttl") || lower.contains("beta"))
-}
-
-pub fn drop_cache_retention(body: &mut Value) {
-    let Some(blocks) = body.get_mut("system").and_then(Value::as_array_mut) else {
-        return;
-    };
-    for block in blocks {
-        if let Some(control) = block
-            .get_mut("cache_control")
-            .and_then(Value::as_object_mut)
-        {
-            control.remove("ttl");
-        }
-    }
-}
-
 pub fn stream(
     model: &Model,
     context: &LlmContext,
@@ -848,23 +821,14 @@ pub fn stream(
     api_key: &str,
 ) -> Receiver<AssistantMessageEvent> {
     let (sender, receiver) = tokio::sync::mpsc::channel(256);
-    let mut body = build_params(model, context, options);
+    let body = build_params(model, context, options);
     let model = model.clone();
     let api_key = api_key.to_owned();
     let proxy = options.proxy.clone();
-    let long_cache = options.cache && options.cache_1h;
     tokio::task::spawn_blocking(move || {
-        let Err(message) =
-            run_request(&model, &body, &api_key, long_cache, proxy.as_ref(), &sender)
-        else {
+        let Err(message) = run_request(&model, &body, &api_key, proxy.as_ref(), &sender) else {
             return;
         };
-        if long_cache && is_cache_retention_rejection(&message) {
-            drop_cache_retention(&mut body);
-            if run_request(&model, &body, &api_key, false, proxy.as_ref(), &sender).is_ok() {
-                return;
-            }
-        }
         let mut mapper = Mapper::new(&model);
         let event = mapper.fail(&message);
         let _ = sender.blocking_send(event);

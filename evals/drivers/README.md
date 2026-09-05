@@ -99,3 +99,18 @@ Unlike TB2.1 there is no docker, no musl target and no harness install: the ARC
 service hosts the game environments, so the only spend is model tokens. The
 binding budget is wall clock, not USD — a Yi turn takes ~10s against a random
 agent's ~9 actions/second, and 150 actions is ~24 minutes for ~$0.52.
+
+## cache_probe.sh — two turns per OpenRouter model, cache read back
+
+`yi ask` twice per model into a fresh `--session-dir`, the second with
+`--continue`, then `cache_probe.py` prints each turn's `input / cacheRead /
+cacheWrite / cost` and hit rate, and the session's `yi stats --json` cache
+block. Exit 2 when a warm turn read nothing back or any turn was `usage.unknown`;
+1 on a missing precondition. Three one-line turns per model cost well under a
+cent, so there is no cap.
+
+```sh
+export OPENROUTER_API_KEY=...          # env-only: crates/ai/src/auth.rs:19
+cargo build -p yi-cli
+sh evals/drivers/cache_probe.sh        # CACHE_PROBE_MODELS / EVAL_BINARY / CACHE_PROBE_RUNS override
+```

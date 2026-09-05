@@ -514,8 +514,8 @@ fn telemetry_records_reach_the_session_store() -> TestResult {
     host.dispatch(
         &Event::Usage {
             input: 200,
-            cache_read: 1800,
-            cache_write: 0,
+            cache_read: 1600,
+            cache_write: 200,
         },
         Some(&store),
     );
@@ -536,7 +536,7 @@ fn telemetry_records_reach_the_session_store() -> TestResult {
     let joined = records.join("\n");
     assert!(joined.contains("\"route\""), "{joined}");
     assert!(joined.contains("one_shot"), "{joined}");
-    assert!(joined.contains("\"read_ratio\":0.9"), "{joined}");
+    assert!(joined.contains("\"read_ratio\":0.8"), "{joined}");
     assert!(joined.contains("\"turn\""), "{joined}");
     let _ = std::fs::remove_dir_all(&dir);
     Ok(())

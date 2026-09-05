@@ -274,6 +274,15 @@ fn convert_tool_choice(choice: &ToolChoice) -> Value {
     }
 }
 
+/// Extended retention is free on the models that take it; the id prefix and
+/// the catalog flag keep the parameter off the ones where a 400 has no retry.
+pub(crate) fn prompt_cache_retention(model: &Model) -> Option<&'static str> {
+    (model.base_url.contains("api.openai.com")
+        && model.id.starts_with("gpt-5.")
+        && !compat_bool(model, "supportsExplicitPromptCacheMode", false))
+    .then_some("24h")
+}
+
 pub fn build_params(model: &Model, context: &LlmContext, options: &OpenAiOptions) -> Value {
     let mut params = json!({
         "model": model.id,
@@ -288,6 +297,14 @@ pub fn build_params(model: &Model, context: &LlmContext, options: &OpenAiOptions
         && let Some(session_id) = &options.session_id
     {
         params["prompt_cache_key"] = json!(session_id);
+    }
+    if let Some(ttl) = prompt_cache_retention(model) {
+        params["prompt_cache_retention"] = json!(ttl);
+    }
+    // OpenRouter places the breakpoint on the last cacheable block itself; only
+    // the Anthropic-routed models need one, and the catalog marks them.
+    if compat_str(model, "cacheControlFormat") == Some("anthropic") {
+        params["cache_control"] = json!({"type": "ephemeral"});
     }
     if let Some(max_tokens) = options.max_tokens {
         params["max_completion_tokens"] = json!(max_tokens);
@@ -391,6 +408,13 @@ fn parse_chunk_usage(raw: &Value, model: &Model) -> Usage {
         .saturating_add(cache_read)
         .saturating_add(cache_write);
     calculate_cost(model, &mut usage);
+    // OpenRouter reports the account charge; the catalog rates only approximate it.
+    if model.provider == "openrouter"
+        && let Some(cost) = raw.get("cost").and_then(Value::as_f64)
+        && let Some(total) = serde_json::Number::from_f64(cost)
+    {
+        usage.cost.total = total;
+    }
     usage
 }
 
