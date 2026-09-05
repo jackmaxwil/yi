@@ -205,6 +205,7 @@ struct Collected {
     files: Vec<FileHits>,
     total: usize,
     collection_capped: bool,
+    binary_skipped: usize,
 }
 
 fn type_glob(name: &str) -> Option<&'static str> {
@@ -234,6 +235,7 @@ fn collect(
     let mut total = 0_usize;
     let mut retained = 0_usize;
     let mut collection_capped = false;
+    let mut binary_skipped = 0_usize;
     let mut search_file = |path: &Path| -> bool {
         if let Some(include) = include {
             let relative = path.strip_prefix(root).unwrap_or(path);
@@ -245,6 +247,7 @@ fn collect(
             return true;
         };
         if bytes.iter().take(4096).any(|byte| *byte == 0) {
+            binary_skipped = binary_skipped.saturating_add(1);
             return true;
         }
         let raw = String::from_utf8_lossy(&bytes);
@@ -292,6 +295,7 @@ fn collect(
         files,
         total,
         collection_capped,
+        binary_skipped,
     }
 }
 
@@ -308,6 +312,7 @@ impl GrepTool {
     ) -> Vec<String> {
         enum Row {
             Gap,
+            Note(String),
             Line {
                 number: u64,
                 hit: bool,
@@ -335,6 +340,12 @@ impl GrepTool {
                         usize::try_from(span.end).ok()?.checked_sub(1)?,
                     ))
                 });
+            if block && span.is_none() {
+                collected.push(Row::Note(format!(
+                    "[line {} opens no block; context shown instead]",
+                    index.saturating_add(1)
+                )));
+            }
             let (lo, hi) =
                 span.unwrap_or((index.saturating_sub(context), index.saturating_add(context)));
             let hi = hi.min(last);
@@ -375,6 +386,7 @@ impl GrepTool {
                 let mut rows = vec![format!("[{}#{tag}]", file.display)];
                 rows.extend(collected.iter().map(|row| match row {
                     Row::Gap => "--".to_owned(),
+                    Row::Note(note) => note.clone(),
                     Row::Line { number, hit, text } => {
                         let sep = if *hit { ':' } else { '-' };
                         format!("{number}{sep}{text}")
@@ -386,6 +398,7 @@ impl GrepTool {
                 .iter()
                 .map(|row| match row {
                     Row::Gap => "--".to_owned(),
+                    Row::Note(note) => note.clone(),
                     Row::Line { number, hit, text } => {
                         let sep = if *hit { ':' } else { '-' };
                         format!("{}{sep}{number}{sep}{text}", file.display)
@@ -521,6 +534,25 @@ impl GrepTool {
     }
 }
 
+fn cut_notices(collected: &Collected, context_asked: usize, rows: &mut Vec<String>) {
+    if collected.collection_capped {
+        rows.push(format!(
+            "[match collection stopped at {COLLECTION_CAP} before every file was scanned — narrow with path, include, or type]"
+        ));
+    }
+    if context_asked > CONTEXT_CAP {
+        rows.push(format!(
+            "[context clamped to {CONTEXT_CAP} lines per side; asked {context_asked}]"
+        ));
+    }
+    if collected.binary_skipped > 0 {
+        rows.push(format!(
+            "[{} binary files skipped — bash: rg -a for those]",
+            collected.binary_skipped
+        ));
+    }
+}
+
 impl Tool for GrepTool {
     fn name(&self) -> &str {
         "grep"
@@ -573,11 +605,11 @@ impl Tool for GrepTool {
             Ok(built) => built,
             Err(output) => return *output,
         };
-        let context_lines = input
+        let context_asked = input
             .get("context")
             .and_then(Value::as_u64)
-            .map_or(0, |lines| usize::try_from(lines).unwrap_or(0))
-            .min(CONTEXT_CAP);
+            .map_or(0, |lines| usize::try_from(lines).unwrap_or(0));
+        let context_lines = context_asked.min(CONTEXT_CAP);
         let offset = input
             .get("offset")
             .and_then(Value::as_u64)
@@ -666,6 +698,11 @@ impl Tool for GrepTool {
                 }
                 taken = taken.saturating_add(page_hits.len());
                 let mint = tagged < TAG_FILES_CAP;
+                if tagged == TAG_FILES_CAP {
+                    rows.push(format!(
+                        "[tags minted for the first {TAG_FILES_CAP} files of this page; the rows below name their file and anchor nothing — page with offset to tag them]"
+                    ));
+                }
                 tagged = tagged.saturating_add(1);
                 rows.extend(self.render_file(file, &page_hits, context_lines, mint, options.block));
             }
@@ -679,11 +716,7 @@ impl Tool for GrepTool {
                 ));
             }
         }
-        if collected.collection_capped {
-            rows.push(format!(
-                "[match collection stopped at {COLLECTION_CAP} before every file was scanned — narrow with path, include, or type]"
-            ));
-        }
+        cut_notices(&collected, context_asked, &mut rows);
         if collected.total == 0 {
             rows.push("No matches found".to_owned());
         } else if shown == 0 {

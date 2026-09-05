@@ -210,7 +210,13 @@ fn skeleton_lines(path: &Path) -> Vec<String> {
     let Ok(text) = std::fs::read_to_string(path) else {
         return Vec::new();
     };
-    skeleton_of(&text, SKELETON_LINES)
+    let all = skeleton_of(&text, usize::MAX);
+    let total = all.len();
+    let mut lines: Vec<String> = all.into_iter().take(SKELETON_LINES).collect();
+    if total > SKELETON_LINES {
+        lines.push(format!("[{SKELETON_LINES} of {total} heads]"));
+    }
+    lines
 }
 
 pub(crate) fn skeleton_of(text: &str, cap: usize) -> Vec<String> {
