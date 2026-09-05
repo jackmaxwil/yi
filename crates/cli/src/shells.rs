@@ -3,7 +3,7 @@
 
 use crate::{
     Args, Resume, attach_store, build_session, config, default_session_dir, effective_cwd,
-    print_resume_hint, release_lane,
+    exit_refused, print_resume_hint, release_lane,
 };
 
 #[cfg(feature = "tui")]
@@ -45,7 +45,7 @@ pub fn run_tui_command(args: &Args, initial_prompt: Option<String>) -> i32 {
         let _guard = runtime.enter();
         match build_session(args, Some(asker)) {
             Ok(built) => built,
-            Err(code) => return code,
+            Err(refused) => return exit_refused(refused),
         }
     };
     let session_name = match attach_store(args, &session) {
