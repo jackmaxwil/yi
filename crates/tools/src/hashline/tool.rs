@@ -100,6 +100,7 @@ impl Tool for HashlineReadTool {
 struct Found {
     window: (usize, usize),
     index: usize,
+    block: bool,
     identifier: Option<String>,
 }
 
@@ -108,6 +109,8 @@ const NEAR_MISSES: usize = 5;
 const REFS_CAP: usize = 20;
 const SKELETON_ROWS: usize = 40;
 const GLOB_FILES_CAP: usize = 200;
+const DIR_HEADS_PER_FILE: usize = 8;
+const GLOB_HEADS_PER_FILE: usize = 12;
 
 fn is_word(byte: u8) -> bool {
     byte.is_ascii_alphanumeric() || byte == b'_'
@@ -156,16 +159,24 @@ fn locate(
             .chars()
             .take(word.len().saturating_sub(2).max(3))
             .collect();
-        let near: Vec<String> = lines
+        let candidates: Vec<(usize, &&str)> = lines
             .iter()
             .enumerate()
             .filter(|(_, line)| !stem.is_empty() && line.to_ascii_lowercase().contains(&stem))
+            .collect();
+        let near: Vec<String> = candidates
+            .iter()
             .take(NEAR_MISSES)
-            .map(|(index, line)| format_numbered_line(index as u64 + 1, line.trim()))
+            .map(|(index, line)| format_numbered_line(index.saturating_add(1) as u64, line.trim()))
             .collect();
         let mut message = format!("no line of {display_path} contains {needle:?}");
         if !near.is_empty() {
-            message.push_str(&format!("; nearest by {stem:?}:\n{}", near.join("\n")));
+            message.push_str(&format!(
+                "; nearest by {stem:?} ({} of {} lines):\n{}",
+                near.len(),
+                candidates.len(),
+                near.join("\n")
+            ));
         }
         return Err(invalid(message));
     };
@@ -193,6 +204,7 @@ fn locate(
     Ok(Found {
         window,
         index,
+        block: span.is_some(),
         identifier: lines
             .get(index)
             .and_then(|line| identifier_in(needle, line)),
@@ -200,26 +212,40 @@ fn locate(
 }
 
 fn skeleton_rows(text: &str) -> Vec<String> {
-    let mut rows: Vec<String> = Vec::new();
-    rows.extend(
-        text.lines()
-            .enumerate()
-            .filter(|(_, line)| {
-                crate::orient::is_decl(line) && !line.starts_with(char::is_whitespace)
-            })
-            .take(SKELETON_ROWS)
-            .map(|(index, line)| {
-                format!(
-                    "  {}  {}",
-                    index.saturating_add(1),
-                    crate::orient::decl_head(line)
-                )
-            }),
-    );
-    if !rows.is_empty() {
-        rows.insert(0, "[skeleton]".to_owned());
+    let heads: Vec<(usize, &str)> = text
+        .lines()
+        .enumerate()
+        .filter(|(_, line)| crate::orient::is_decl(line) && !line.starts_with(char::is_whitespace))
+        .collect();
+    if heads.is_empty() {
+        return Vec::new();
     }
+    let mut rows = vec![if heads.len() > SKELETON_ROWS {
+        format!(
+            "[skeleton: first {SKELETON_ROWS} of {} top-level declarations — grep def=true for all]",
+            heads.len()
+        )
+    } else {
+        format!("[skeleton: {} top-level declarations]", heads.len())
+    }];
+    rows.extend(heads.iter().take(SKELETON_ROWS).map(|(index, line)| {
+        format!(
+            "  {}  {}",
+            index.saturating_add(1),
+            crate::orient::decl_head(line)
+        )
+    }));
     rows
+}
+
+fn skeleton_heads(text: &str, cap: usize) -> (Vec<String>, usize) {
+    let all = crate::orient::skeleton_of(text, usize::MAX);
+    let total = all.len();
+    let mut heads: Vec<String> = all.into_iter().take(cap).collect();
+    if total > cap {
+        heads.push(format!("… +{} more", total.saturating_sub(cap)));
+    }
+    (heads, total)
 }
 
 fn read_dir(display_path: &str, path: &Path) -> ToolOutput {
@@ -247,24 +273,32 @@ fn read_dir(display_path: &str, path: &Path) -> ToolOutput {
             .map(|(name, bytes)| format!("{name}  {bytes} B")),
     );
     let mut skeleton: Vec<String> = Vec::new();
+    let mut source_files = 0_usize;
     for (name, _) in &files {
         let source = Path::new(name)
             .extension()
             .and_then(|extension| extension.to_str())
             .is_some_and(|extension| crate::orient::SKELETON_EXTS.contains(&extension));
-        if !source || skeleton.len() >= SKELETON_ROWS {
+        if !source {
+            continue;
+        }
+        source_files = source_files.saturating_add(1);
+        if skeleton.len() >= SKELETON_ROWS {
             continue;
         }
         let Ok(text) = std::fs::read_to_string(path.join(name)) else {
             continue;
         };
-        let heads = crate::orient::skeleton_of(&text, 8);
+        let (heads, _) = skeleton_heads(&text, DIR_HEADS_PER_FILE);
         if !heads.is_empty() {
             skeleton.push(format!("{name}: {}", heads.join("; ")));
         }
     }
     if !skeleton.is_empty() {
-        rows.push("[skeleton]".to_owned());
+        rows.push(format!(
+            "[skeleton: {} of {source_files} source files, up to {DIR_HEADS_PER_FILE} heads each — read a file for the rest]",
+            skeleton.len()
+        ));
         rows.extend(skeleton);
     }
     let mut output = text_output(rows.join("\n"));
@@ -296,17 +330,16 @@ impl HashlineReadTool {
         if matches.is_empty() {
             return error_output(format!("no file matches {pattern:?}"));
         }
-        let mut sections = vec![format!(
-            "[{} files match {pattern}{}]",
-            matches.len(),
-            if matches.len() >= GLOB_FILES_CAP {
-                ", capped"
-            } else {
-                ""
-            }
-        )];
+        let mut sections = vec![if matches.len() >= GLOB_FILES_CAP {
+            format!(
+                "[first {GLOB_FILES_CAP} files matching {pattern}; the walk stopped there — narrow the glob for the rest]"
+            )
+        } else {
+            format!("[{} files match {pattern}]", matches.len())
+        }];
         let mut spent = 0_usize;
         let mut whole = 0_usize;
+        let mut budget_named = false;
         for path in &matches {
             let display = path
                 .strip_prefix(&root)
@@ -322,16 +355,19 @@ impl HashlineReadTool {
                 sections.push(output_text_of(&output));
                 continue;
             }
+            if !budget_named {
+                budget_named = true;
+                sections.push(format!(
+                    "[byte budget {READ_BYTE_FLOOR} reached after {whole} whole files; the rest are skeletons — read a file for its text]"
+                ));
+            }
             let text = std::fs::read_to_string(path).unwrap_or_default();
+            let (heads, total) = skeleton_heads(&text, GLOB_HEADS_PER_FILE);
             let mut rows = vec![format!(
-                "{display}  ({} lines, skeleton)",
+                "{display}  ({} lines, {total} declarations, skeleton)",
                 text.lines().count()
             )];
-            rows.extend(
-                crate::orient::skeleton_of(&text, 12)
-                    .iter()
-                    .map(|head| format!("  {head}")),
-            );
+            rows.extend(heads.iter().map(|head| format!("  {head}")));
             sections.push(rows.join("\n"));
         }
         let mut output = text_output(sections.join("\n\n"));
@@ -447,6 +483,17 @@ impl HashlineReadTool {
 
         let empty = rows.is_empty();
         let mut rendered = vec![format_hashline_header(display_path, tag)];
+        if let Some(found) = &found {
+            let (lo, hi) = found.window;
+            rendered.push(if found.block {
+                format!("[find: block at lines {lo}-{hi} of {line_count}]")
+            } else {
+                format!(
+                    "[find: no block resolver for this file; lines {lo}-{hi} of {line_count} around the hit at line {} — ranges= for more]",
+                    found.index.saturating_add(1)
+                )
+            });
+        }
         rendered.extend(rows);
         let first_shown = windows.first().map_or(1, |(start, _)| *start);
         if empty && byte_capped_at.is_none() {
@@ -902,13 +949,23 @@ fn grid_check(context: &ToolContext) -> GridLayer {
     match capture.exit_code {
         Some(0) => GridLayer::Clean,
         Some(3) => {
-            let text: Vec<&str> = capture
+            let all: Vec<&str> = capture
                 .stdout
                 .lines()
                 .chain(capture.stderr.lines())
                 .filter(|line| !line.trim().is_empty())
-                .take(GRID_CHECK_LINES)
                 .collect();
+            let mut text: Vec<String> = all
+                .iter()
+                .take(GRID_CHECK_LINES)
+                .map(|line| (*line).to_owned())
+                .collect();
+            if all.len() > GRID_CHECK_LINES {
+                text.push(format!(
+                    "[grid check: first {GRID_CHECK_LINES} of {} lines — bash: grid check --quick for all]",
+                    all.len()
+                ));
+            }
             GridLayer::Findings(text.join("\n"))
         }
         Some(code) => GridLayer::Unavailable(Unavailable::Exit { code }),

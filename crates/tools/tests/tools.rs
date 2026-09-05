@@ -567,7 +567,12 @@ fn grep_context_is_clamped_and_defaults_to_bare_hits() -> TestResult {
         args(&[("pattern", json!("hit")), ("context", json!(9_999))]),
         &context,
     );
-    assert_eq!(output_text(&clamped).lines().count(), 21);
+    let text = output_text(&clamped);
+    assert_eq!(text.lines().count(), 22, "{text}");
+    assert!(
+        text.ends_with("[context clamped to 10 lines per side; asked 9999]"),
+        "{text}"
+    );
     Ok(())
 }
 
@@ -984,7 +989,7 @@ fn a_directory_reads_as_a_listing_with_skeletons() -> TestResult {
     assert!(text.starts_with("[src]\nsub/\na.rs  "), "{text}");
     assert!(text.contains("notes.txt  6 B"), "{text}");
     assert!(
-        text.contains("[skeleton]\na.rs: pub fn alpha() {}; struct Beta;"),
+        text.contains("[skeleton: 1 of 1 source files, up to 8 heads each — read a file for the rest]\na.rs: pub fn alpha() {}; struct Beta;"),
         "{text}"
     );
     Ok(())
@@ -1005,7 +1010,10 @@ fn find_shows_the_block_and_the_references_in_one_read() -> TestResult {
     );
     let text = output_text(&out);
     assert!(text.starts_with("[lib.rs#"), "{text}");
-    assert!(text.contains("1:fn helper() {\n2:    1\n3:}\n"), "{text}");
+    assert!(
+        text.contains("[find: block at lines 1-3 of 7]\n1:fn helper() {\n2:    1\n3:}\n"),
+        "{text}"
+    );
     assert!(
         !text.contains("5:fn main"),
         "the window is the block: {text}"
@@ -1039,7 +1047,10 @@ fn a_read_cut_by_the_line_cap_ends_with_the_skeleton() -> TestResult {
     let context = ToolContext::new(dir.0.clone());
     let out = read_tool().execute(args(&[("path", json!("big.rs"))]), &context);
     let text = output_text(&out);
-    assert!(text.contains("[skeleton]\n  2101  fn tail()"), "{text}");
+    assert!(
+        text.contains("[skeleton: 1 top-level declarations]\n  2101  fn tail()"),
+        "{text}"
+    );
     let small = read_tool().execute(
         args(&[("path", json!("big.rs")), ("limit", json!(5))]),
         &context,
@@ -1166,4 +1177,65 @@ fn preview_args() -> Map<String, Value> {
         ("replace", json!("new_$1")),
         ("apply", json!(true)),
     ])
+}
+
+#[test]
+fn every_cut_view_names_its_cap() -> TestResult {
+    let dir = temp_dir("loud-caps")?;
+    let mut many = String::new();
+    for index in 0..45 {
+        many.push_str(&format!("fn f{index}() {{}}\n"));
+    }
+    for index in 0..2_100 {
+        many.push_str(&format!("let x{index} = 1;\n"));
+    }
+    fs::write(dir.0.join("many.rs"), &many)?;
+    fs::write(dir.0.join("notes.txt"), "alpha beta\n")?;
+    fs::write(dir.0.join("blob.bin"), b"alpha\0beta")?;
+    let context = ToolContext::new(dir.0.clone());
+
+    let capped = read_tool().execute(args(&[("path", json!("many.rs"))]), &context);
+    let text = output_text(&capped);
+    assert!(
+        text.contains("[skeleton: first 40 of 45 top-level declarations"),
+        "{text}"
+    );
+
+    let plain = read_tool().execute(
+        args(&[("path", json!("notes.txt")), ("find", json!("beta"))]),
+        &context,
+    );
+    let text = output_text(&plain);
+    assert!(
+        text.contains(
+            "[find: no block resolver for this file; lines 1-1 of 1 around the hit at line 1"
+        ),
+        "{text}"
+    );
+
+    let listing = read_tool().execute(args(&[("path", json!("."))]), &context);
+    let text = output_text(&listing);
+    assert!(text.contains("many.rs: fn f0() {}; fn f1() {};"), "{text}");
+    assert!(text.contains("… +37 more"), "{text}");
+
+    let grep = GrepTool::default();
+    let block = grep.execute(
+        args(&[
+            ("pattern", json!("alpha")),
+            ("block", json!(true)),
+            ("context", json!(99)),
+        ]),
+        &context,
+    );
+    let text = output_text(&block);
+    assert!(
+        text.contains("[line 1 opens no block; context shown instead]"),
+        "{text}"
+    );
+    assert!(
+        text.contains("[context clamped to 10 lines per side; asked 99]"),
+        "{text}"
+    );
+    assert!(text.contains("[1 binary files skipped"), "{text}");
+    Ok(())
 }
