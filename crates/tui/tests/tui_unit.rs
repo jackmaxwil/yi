@@ -280,6 +280,28 @@ fn status_cascade_keeps_path_and_model_when_narrow() -> TestResult {
     Ok(())
 }
 
+/// Incident: `@branch` was appended after the cwd had been shrunk, so a long worktree path
+/// plus a long branch held a 60-column segment the cascade kept while it evicted the model.
+#[test]
+fn status_keeps_the_model_under_a_long_path_and_branch() -> TestResult {
+    let input = StatusInput {
+        model: "faux-1".to_owned(),
+        cwd: "/Users/someone/Development/yi/.claude/worktrees/feature-4567".to_owned(),
+        branch: Some("claude/decoupled-deceleration-text-streaming-466ff9".to_owned()),
+        session_name: "01a06f8d".to_owned(),
+        context_used: 0,
+        context_window: 128_000,
+        ..StatusInput::default()
+    };
+    assert_eq!(input.cwd.chars().count(), 60);
+    assert_eq!(input.branch.as_deref().map(str::len), Some(51));
+    let text = flat(&yi_tui::status::render(&input, 80, &theme()));
+    assert!(text.contains("faux-1"), "model survives: {text}");
+    assert!(text.contains("@…"), "branch shrinks from the left: {text}");
+    assert!(text.contains("01a06f8d"), "session id survives: {text}");
+    Ok(())
+}
+
 #[test]
 fn status_context_segment_is_compact() -> TestResult {
     let input = StatusInput {
