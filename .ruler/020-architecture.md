@@ -14,7 +14,7 @@ error, stale entry = error, undeclared internal dep = error. Standing rules (YI_
   below yi-cli may depend on yi-mcp-cli.
 - subagent / mailbox / lane / wiring / goal / plan / rules / wall / schedule / advisor are
   modules inside yi-runtime, never crates. A module that outgrows the 1,200-line file ceiling
-  splits at a seam (subagent -> mailbox for B6/B13, lane for the B11 hand-back and the D117 slot pool, wiring for
+  splits at a seam (subagent -> mailbox for B6/B13, lane for the B11 hand-back and the D119 slot pool, wiring for
   `attach_runtime` and the `wire_*` helpers), never by line count; an inherent `impl` may live
   in the module that owns the seam.
 - Every dependency is declared once in [workspace.dependencies]; crate manifests add

@@ -96,11 +96,11 @@ when it changes rather than editing them by hand.
 - [D110](adr/d110.md) - the comment cap drops from three lines to two
 - [D114](adr/d114.md) - D54 matches results, paths, and skill pointers
 - [D115](adr/d115.md) - compaction's recall half is an extractive view plus store-native grep
-- [D117](adr/d117.md) - a root session is worktree-first, on a pooled lane
-- [D118](adr/d118.md) - git is the registry of lanes
-- [D119](adr/d119.md) - the hand-back ladder is by move
-- [D120](adr/d120.md) - the forge adapter is detection, not abstraction
-- [D121](adr/d121.md) - landing state is an event
-- [D122](adr/d122.md) - the idle warmer is contained, offline and receipted
+- [D119](adr/d119.md) - a root session is worktree-first, on a pooled lane
+- [D120](adr/d120.md) - git is the registry of lanes
+- [D121](adr/d121.md) - the hand-back ladder is by move
+- [D122](adr/d122.md) - the forge adapter is detection, not abstraction
+- [D123](adr/d123.md) - landing state is an event
+- [D124](adr/d124.md) - the idle warmer is contained, offline and receipted
 
 D36-D51, D72, D73 and D74 have no ADR yet; ARCHITECTURE.md is the record for those rows.

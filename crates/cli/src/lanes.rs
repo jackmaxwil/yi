@@ -1,4 +1,4 @@
-//! `yi lanes`, and the root session's claim and release (D117).
+//! `yi lanes`, and the root session's claim and release (D119).
 
 use crate::{Args, Resume, config, default_session_dir, effective_cwd, sessions};
 
@@ -20,7 +20,7 @@ fn resume_id(args: &Args) -> Option<String> {
     }
 }
 
-/// D117: a root session claims a lane unless `--here`, `lanes.enabled: false`, or
+/// D119: a root session claims a lane unless `--here`, `lanes.enabled: false`, or
 /// the cwd is not a repository. A claim that fails fails the start: no trunk fallback.
 pub(crate) fn claim_lane(
     args: &Args,
