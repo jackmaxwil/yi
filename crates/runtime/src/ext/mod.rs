@@ -15,7 +15,9 @@ pub use assemble::{PromptState, Rank, Slot, Trust};
 pub use install::{ExtOptions, install};
 pub use orchestrate::{Features, Route, features, prefilter};
 pub use pack::Pack;
-pub use project::{TrustGate, contributions, git_root, is_project_root, resource_roots};
+pub use project::{
+    TrustGate, content_hash, contributions, git_root, is_project_root, resource_roots,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StartReason {

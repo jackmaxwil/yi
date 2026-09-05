@@ -135,6 +135,8 @@ fn harness_with(options: HarnessOptions) -> Harness {
         max_children: 8,
         parent_session_dir: root.clone(),
         cwd: cwd.clone(),
+        home: root.join("home"),
+        lane_slots: 2,
         defaults: Arc::new(|| (faux_model(), yi_types::model::Effort::Medium)),
         factory: Arc::new(move |build: yi_runtime::ChildBuild<'_>| {
             if let Ok(mut slot) = cwd_sink.lock() {
@@ -716,6 +718,14 @@ async fn wait_for_status_named(harness: &Harness, name: &str) -> bool {
     false
 }
 
+fn branches(repo: &std::path::Path) -> Result<String, Box<dyn Error>> {
+    let output = yi_tools::command("git")
+        .current_dir(repo)
+        .args(["branch", "--list", "yi/*"])
+        .output()?;
+    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
 fn git_repo(label: &str) -> Result<PathBuf, Box<dyn Error>> {
     let repo = std::env::temp_dir().join(format!("yi-wt-{}-{label}", std::process::id()));
     let _ = std::fs::remove_dir_all(&repo);
@@ -798,7 +808,12 @@ async fn a_worktree_child_gets_its_own_checkout_and_hands_it_back() -> TestResul
         "written by the child\n",
         "the child's work lands in the parent's checkout"
     );
-    assert!(!tree.exists(), "a merged worktree is removed");
+    assert!(
+        branches(&repo)?
+            .lines()
+            .all(|line| !line.contains(&format!("yi/{child_id}"))),
+        "a merged branch is deleted and the slot goes back to the pool"
+    );
     assert!(
         harness.host.delete("mutator").is_ok(),
         "once merged, the slot is reapable"
@@ -841,7 +856,12 @@ async fn discarding_a_worktree_throws_the_branch_away() -> TestResult {
         .discard_worktree("spike")
         .map_err(|error| error.to_string())?;
     assert!(!repo.join("spike.txt").exists(), "nothing crosses back");
-    assert!(!tree.exists());
+    assert!(
+        branches(&repo)?
+            .lines()
+            .all(|line| !line.contains(&format!("yi/{child_id}"))),
+        "a discarded branch is deleted; the slot itself is pooled, not removed"
+    );
     assert!(
         harness
             .host

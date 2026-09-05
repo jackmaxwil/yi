@@ -35,6 +35,7 @@ pub struct UserConfig {
     pub edit: Option<EditConfig>,
     pub keys: Option<std::collections::BTreeMap<String, String>>,
     pub console: Option<ConsoleConfig>,
+    pub lanes: Option<crate::lane::LanesConfig>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]

@@ -655,6 +655,8 @@ mod tests {
             max_children: 8,
             parent_session_dir: cwd.join("children"),
             cwd,
+            home: std::env::temp_dir(),
+            lane_slots: 1,
             defaults: Arc::new(|| {
                 (
                     yi_types::model::Model {
