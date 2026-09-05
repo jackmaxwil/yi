@@ -2,11 +2,44 @@
 //! time, so the live region holds only the unstable tail and outgrowing it loses nothing.
 
 use std::cmp::Ordering;
+use std::collections::VecDeque;
+use std::time::{Duration, Instant};
 
 use ratatui::text::Line;
+use yi_types::message::Content;
 
-use super::App;
+use super::{App, UiEvent};
 use crate::cell::{Cell, TranscriptMode};
+use crate::reveal::{FRAME, Reveal};
+
+/// Both reveal cursors, their speed, and the events waiting behind them.
+pub(crate) struct Pacing {
+    pub(crate) prose: Reveal,
+    pub(crate) thought: Reveal,
+    pace: u16,
+    pub(crate) held: VecDeque<UiEvent>,
+}
+
+impl Pacing {
+    pub(crate) fn new(pace: u16) -> Self {
+        Self {
+            prose: Reveal::default(),
+            thought: Reveal::default(),
+            pace,
+            held: VecDeque::new(),
+        }
+    }
+
+    pub(crate) fn reset(&mut self) {
+        self.prose.reset();
+        self.thought.reset();
+    }
+
+    pub(crate) fn drain(&mut self) {
+        self.prose.drain();
+        self.thought.drain();
+    }
+}
 
 /// The byte of `tail` to cut at so the rest renders within `budget` rows, or `None` when it
 /// fits. No `stable_cut` boundary is guaranteed: one paragraph can outgrow the screen.
@@ -60,13 +93,15 @@ impl App {
         }
         // A cut inside a fence is prose's business: thought has no reopen to
         // carry, so a fenced block commits whole or not at all.
-        let stream = crate::markdown::stable_stream(&self.live_thought);
+        let shown = self.pacing.thought.shown();
+        let stream =
+            crate::markdown::stable_stream(self.live_thought.get(..shown).unwrap_or_default());
         let fenced = stream.reopen.is_some();
         let stable = if fenced { 0 } else { stream.cut };
         let mut cut = stable.max(self.live_thought_cut);
         let (width, theme) = (self.content_width(), self.theme);
         let forced = overflow_cut(
-            self.live_thought.get(cut..).unwrap_or_default(),
+            self.live_thought.get(cut..shown).unwrap_or_default(),
             crate::render::live_tail_rows(self.rows),
             width,
             |text| {
@@ -104,13 +139,16 @@ impl App {
     }
 
     pub(super) fn flush_thought(&mut self) {
+        self.pacing.thought.snap(self.live_thought.len());
         self.commit_thought_to(self.live_thought.len());
     }
 
     /// U13: each newly stable slice renders standalone against a byte cursor. Re-rendering
     /// the whole prefix let trailing-blank trimming duplicate list items mid-stream.
     pub(super) fn commit_stable_prefix(&mut self) {
-        let stream = crate::markdown::stable_stream(&self.live_markdown);
+        let shown = self.pacing.prose.shown();
+        let stream =
+            crate::markdown::stable_stream(self.live_markdown.get(..shown).unwrap_or_default());
         if stream.cut > self.live_cut {
             self.commit_prose(stream.cut, true);
             self.live_reopen = stream.reopen;
@@ -118,7 +156,9 @@ impl App {
         let (width, theme) = (self.content_width(), self.theme);
         let inner = width.saturating_sub(crate::cell::GUTTER.len());
         if let Some(forced) = overflow_cut(
-            self.live_markdown.get(self.live_cut..).unwrap_or_default(),
+            self.live_markdown
+                .get(self.live_cut..shown)
+                .unwrap_or_default(),
             crate::render::live_tail_rows(self.rows),
             width,
             |text| crate::markdown::render(text, inner, &theme).len(),
@@ -151,5 +191,43 @@ impl App {
             self.retain(Cell::Assistant { markdown: slice });
         }
         self.live_cut = cut;
+    }
+
+    /// A snapshot of the message so far: the arrival feeds the rate, the cursors move on
+    /// their own clock, and nothing commits before the reader has seen it.
+    pub(super) fn arrive(&mut self, content: &[Content]) {
+        let now = Instant::now();
+        self.live_markdown = crate::transcript::text_of(content);
+        self.live_thought = crate::transcript::thinking_of(content);
+        self.pacing.prose.on_arrival(self.live_markdown.len(), now);
+        self.pacing.thought.on_arrival(self.live_thought.len(), now);
+        self.step_reveal(now);
+    }
+
+    /// Moves both cursors by the time since the last tick; true when a frame is owed.
+    pub fn step_reveal(&mut self, now: Instant) -> bool {
+        let pace = self.pacing.pace;
+        let moved = self.pacing.thought.advance(&self.live_thought, now, pace)
+            | self.pacing.prose.advance(&self.live_markdown, now, pace);
+        if moved {
+            self.commit_stable_thought();
+            self.commit_stable_prefix();
+            self.scheduler.request();
+        }
+        moved
+    }
+
+    pub(crate) fn reveal_behind(&self) -> bool {
+        self.pacing.prose.behind(self.live_markdown.len())
+            || self.pacing.thought.behind(self.live_thought.len())
+    }
+
+    /// The next wake while text is still unrevealed, `Duration::MAX` once it is all shown.
+    pub(crate) fn reveal_wake(&self) -> Duration {
+        if self.reveal_behind() {
+            FRAME
+        } else {
+            Duration::MAX
+        }
     }
 }
