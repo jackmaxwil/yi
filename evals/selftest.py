@@ -268,14 +268,12 @@ def check_orient_census():
 
 
 def check_rule_fires():
-    """Result-lane rustc codes are invisible; comment needles already match as text."""
+    """The corpus is labelled; the engine that reads it is pinned in rules_e2e."""
     report = rule_fires.measure(FIXTURES / "rules" / "lanes.jsonl")
     assert report["should"] == 2, report
+    assert report["should_not"] == 6, report
     assert report["recall_oracle"] == 1.0, report
-    assert report["gap"] == ["result", "error"], report
     assert report["comment_fp"] == 2, report
-    assert report["fp_current"] == 0.5, report
-    assert report["recall_current"] == 0.0, report
 
 
 CHECKS = (

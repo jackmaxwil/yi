@@ -8,6 +8,7 @@ pub struct Skill {
     pub name: String,
     pub description: String,
     pub path: PathBuf,
+    pub frontmatter: BTreeMap<String, String>,
 }
 
 /// Project roots, then global, own format before the compatibility conventions. First root
@@ -120,6 +121,7 @@ fn read_skill(dir: &Path, manifest: &Path) -> Option<Skill> {
         description: fields.get("description").cloned().unwrap_or_default(),
         name,
         path: manifest.to_path_buf(),
+        frontmatter: fields,
     })
 }
 
