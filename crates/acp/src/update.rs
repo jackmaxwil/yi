@@ -365,17 +365,24 @@ pub fn to_updates(event: &AgentEvent, ids: &mut IdMap) -> Vec<AcpSessionUpdate> 
             vec![AcpSessionUpdate::StateUpdate(AcpState::Running)]
         }
         AgentEvent::ChildUpdate { update } => {
-            let fields = serde_json::to_value(update)
-                .ok()
-                .and_then(|value| value.as_object().cloned())
-                .map(|map| map.into_iter().collect())
-                .unwrap_or_default();
-            vec![AcpSessionUpdate::Extension(AcpExtensionUpdate {
-                session_update: "_yi/subagent_update".to_owned(),
-                fields,
-            })]
+            object_extension("_yi/subagent_update", serde_json::to_value(update))
+        }
+        AgentEvent::LandingState { landing } => {
+            object_extension("_yi/landing", serde_json::to_value(landing))
         }
     }
+}
+
+fn object_extension(name: &str, value: serde_json::Result<Value>) -> Vec<AcpSessionUpdate> {
+    let fields = value
+        .ok()
+        .and_then(|value| value.as_object().cloned())
+        .map(|map| map.into_iter().collect())
+        .unwrap_or_default();
+    vec![AcpSessionUpdate::Extension(AcpExtensionUpdate {
+        session_update: name.to_owned(),
+        fields,
+    })]
 }
 
 /// Replay (design C6): a stored branch walked into full-message updates.

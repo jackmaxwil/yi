@@ -876,7 +876,7 @@ sequenceDiagram
 | B7 | ChildUpdate | `{id, status, activity: Waiting\|Writing\|Executing, tool_use_count, token_count, answer_preview, error}` → `_yi/subagent_update` | data | — |
 | B8 | discovery | in-process: `list_dir(<artifacts>/sub-*)` — the directory *is* the registry. A `rlm-ledger` JSONL is needed only when several writer processes exist; it arrives with the daemon (phase 6) | I/O | — |
 | B9 | attribute | on child `message_end` → P14 `child_usage_attributed` on the parent's last assistant entry | I/O | — |
-| B11 | isolation | `Isolation::None \| Worktree` — `git worktree add <artifacts>/wt-<id>`; parent `merge(id)` / `discard(id)` | I/O | — |
+| B11 | isolation | `Isolation::None \| Worktree` — the child claims a pooled lane off the parent's HEAD (D117); parent `merge(id)` / `discard(id)` hand it back by move (D119) | I/O | — |
 | B10 | permission inheritance | child `PermissionMode` = parent's; child `Ask` surfaces on the parent with the child name in `title`; MCP/exec-tool view is the parent's filtered view | pure | new (every reference forces yolo here) |
 | B13 | mailbox | `send(msg)` (no turn), `followup(task)` (send **and** trigger a turn if idle; delivered at message boundaries if running), `wait(timeout clamped, clamp reported) -> which agents have updates` (payloads arrive as B6 messages), `close(id)` (releases the B2 slot), `interrupt(id)` — children as addressable peers, not fire-and-forget calls | I/O | — |
 
@@ -1440,7 +1440,7 @@ are rejected with the reason.
 | — | one deterministic malformed-tool-call repair before failing | adopt | L13 |
 | — | A running `bash` can be promoted to background without cancelling; the turn continues with a handle | adopt | T12 `promote(handle)`; I1 epoch guards the hand-off |
 | — | A subagent whose tool set is a non-empty subset of `READ_ONLY_TOOLS` is read-only; unknown tool ⇒ not read-only (fail-safe) | adopt | B2 `is_read_only(&Spec)`; read-only children skip permission prompts |
-| — | Optional `isolation: Worktree` on spawn: child gets `git worktree add` under `<artifacts>/wt-<id>`; parent merges or discards | later (phase 4c) | B11 |
+| — | Optional `isolation: Worktree` on spawn: child claims a lane from the repository's slot pool; parent merges or discards | live 0.146.0 (D117) | B11 |
 | — | per-source byte budgets with truncation markers | adopt | P16; enforced in P11 |
 | — | startup and binary-size budgets in CI | adopt | §9 `startup_ms_budget.json`, `binary_size_budget.json` |
 | Pi `evals` | Scenario eval suite (`yi ask --json` over fixture repos) run nightly, not per-PR | adopt | `evals/` workspace member, phase 3 |

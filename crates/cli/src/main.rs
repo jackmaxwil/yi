@@ -1,6 +1,7 @@
 #![forbid(unsafe_code)]
 #![deny(clippy::string_slice)]
 
+mod lanes;
 mod plan;
 mod rpc;
 mod sessions;
@@ -8,6 +9,8 @@ mod stats;
 mod why;
 
 use std::sync::Arc;
+
+use lanes::{claim_lane, configured_lanes, release_lane, run_lanes};
 
 use yi_runtime::{AgentSession, ProviderStream, SessionConfig, resolve_model};
 use yi_types::event::AgentEvent;
@@ -27,6 +30,7 @@ struct Args {
     mode: yi_runtime::PermissionMode,
     session_dir: Option<String>,
     cwd: Option<String>,
+    here: bool,
     socket: Option<String>,
     headless: bool,
     solo: bool,
@@ -60,6 +64,7 @@ fn parse_args() -> Result<Args, lexopt::Error> {
     let mut mode = yi_runtime::PermissionMode::Auto;
     let mut session_dir = None;
     let mut cwd = None;
+    let mut here = false;
     let mut socket = None;
     let mut headless = false;
     let mut solo = false;
@@ -93,6 +98,7 @@ fn parse_args() -> Result<Args, lexopt::Error> {
             Long("confirm") => mode = yi_runtime::PermissionMode::Ask,
             Long("session-dir") => session_dir = Some(parser.value()?.string()?),
             Long("cwd") => cwd = Some(parser.value()?.string()?),
+            Long("here") => here = true,
             Long("socket") => socket = Some(parser.value()?.string()?),
             Long("headless") => headless = true,
             Long("solo") => solo = true,
@@ -142,6 +148,7 @@ fn parse_args() -> Result<Args, lexopt::Error> {
         mode,
         session_dir,
         cwd,
+        here,
         socket,
         headless,
         solo,
@@ -398,18 +405,28 @@ fn build_session(
         .map(std::path::PathBuf::from)
         .unwrap_or_default();
     let session_dir = default_session_dir(args);
+    let lane = match claim_lane(args, &home) {
+        Ok(lane) => lane,
+        Err(message) => {
+            eprintln!("error: lane: {message}");
+            return Err(1);
+        }
+    };
+    let work = lane
+        .as_ref()
+        .map_or_else(|| cwd.clone(), |lane| lane.path().to_path_buf());
     let broker = std::sync::Arc::new(
         yi_runtime::PermissionBroker::new(
             args.mode,
-            cwd.clone(),
+            work.clone(),
             Vec::new(),
             asker,
             session.events_sender(),
         )
-        .with_sandbox(yi_runtime::workspace_sandbox(&cwd, &home, &session_dir)),
+        .with_sandbox(yi_runtime::workspace_sandbox(&work, &home, &session_dir)),
     );
     let tools_home = home.clone();
-    session.install_extensions(session_extensions(args));
+    session.install_extensions(session_extensions(args, &work));
     let provider = std::sync::Arc::clone(session_provider(&session));
     let freeform_grammar = config()
         .edit
@@ -422,8 +439,11 @@ fn build_session(
             provider,
             system_prompt: String::new(),
             tool_execution: yi_loop_default(),
-            cwd,
+            cwd: work.clone(),
             home: home.clone(),
+            lane_slots: configured_lanes()
+                .slots
+                .unwrap_or(yi_runtime::lane::DEFAULT_SLOTS),
             mcp_read: Some(std::sync::Arc::new(McpOneShot)),
             broker: Some(broker),
             tools: std::sync::Arc::new(move || {
@@ -446,7 +466,7 @@ fn build_session(
                 .plan
                 .as_ref()
                 .and_then(|plan| plan.stale_reminder_turns),
-            plans_dir: configured_plans_dir(&effective_cwd(args)),
+            plans_dir: configured_plans_dir(&work),
             auto_background: configured_auto_background(),
             kernel_prewarm: config()
                 .kernel
@@ -456,12 +476,18 @@ fn build_session(
             kernels: yi_runtime::fetch::KernelServiceMap::new(),
         },
     );
+    session.set_lane(yi_runtime::lane::land::LaneHandle::new(
+        lane,
+        configured_lanes().land,
+        session.events_sender(),
+        session.heartbeat_hook(),
+    ));
     Ok((session, host))
 }
 
-fn session_extensions(args: &Args) -> yi_runtime::ExtensionHost {
+fn session_extensions(args: &Args, work: &std::path::Path) -> yi_runtime::ExtensionHost {
     yi_runtime::ext::install(yi_runtime::ExtOptions {
-        cwd: effective_cwd(args),
+        cwd: work.to_path_buf(),
         home: std::env::var_os("HOME")
             .map(std::path::PathBuf::from)
             .unwrap_or_default(),
@@ -710,7 +736,8 @@ fn run(args: &Args) -> i32 {
         None => None,
     };
     let mut answer = String::new();
-    runtime.block_on(async move {
+    let lane = session.lane();
+    let code = runtime.block_on(async move {
         let mut events = session.subscribe();
         if session
             .prompt_message(yi_runtime::session::user_input(&prompt))
@@ -765,7 +792,9 @@ fn run(args: &Args) -> i32 {
             }
         }
         exit
-    })
+    });
+    release_lane(lane.as_deref());
+    code
 }
 
 /// A flag names what the user wants now, a resumed session what they wanted last time.
@@ -803,6 +832,11 @@ fn attach_store(args: &Args, session: &AgentSession) -> Result<String, String> {
     session
         .attach_store(store)
         .map_err(|error| error.to_string())?;
+    if let Some(lane) = session.lane()
+        && let Err(error) = lane.bind_session(&id)
+    {
+        eprintln!("warning: lane: {error}");
+    }
     repin(args, session);
     Ok(id)
 }
@@ -1050,7 +1084,10 @@ fn main() {
                 session_dir: default_session_dir(&args),
                 cwd: effective_cwd(&args),
             };
-            std::process::exit(rpc::run_rpc(session, &options, runtime));
+            let lane = session.lane();
+            let code = rpc::run_rpc(session, &options, runtime);
+            release_lane(lane.as_deref());
+            std::process::exit(code);
         }
         "acp" => {
             let runtime = match tokio::runtime::Builder::new_current_thread()
@@ -1080,6 +1117,7 @@ fn main() {
             std::process::exit(yi_acp::run_acp(options, runtime));
         }
         "undo" => std::process::exit(run_undo(&args)),
+        "lanes" => std::process::exit(run_lanes(&args)),
         "trust" => std::process::exit(run_trust(&args)),
         "gate" => std::process::exit(run_gate(&args)),
         "fetch" => std::process::exit(run_fetch(&args)),

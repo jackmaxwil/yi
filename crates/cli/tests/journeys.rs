@@ -335,3 +335,65 @@ fn a_hand_written_plan_lints_resolves_and_answers_why() -> TestResult {
     journey.reclaim();
     Ok(())
 }
+
+fn git_in(dir: &std::path::Path, args: &[&str]) -> Result<String, Box<dyn Error>> {
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "the journey drives the real git the binary drives"
+    )]
+    let output = Command::new("git").current_dir(dir).args(args).output()?;
+    if !output.status.success() {
+        return Err(format!("git {} failed", args.join(" ")).into());
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
+}
+
+/// D117: the ask ran on a slot outside the checkout and handed it back; the trunk never
+/// moved, and `--here` is the only way to run without a slot.
+#[test]
+fn an_ask_in_a_repository_runs_on_a_lane_and_hands_it_back() -> TestResult {
+    let journey = Journey::new("lane")?;
+    let project = journey.project();
+    git_in(&project, &["init", "-q", "-b", "main"])?;
+    git_in(&project, &["config", "user.email", "lane@journey"])?;
+    git_in(&project, &["config", "user.name", "journey"])?;
+    std::fs::write(project.join("README.md"), "trunk\n")?;
+    git_in(&project, &["add", "README.md"])?;
+    git_in(&project, &["commit", "-qm", "base"])?;
+    let head = git_in(&project, &["rev-parse", "HEAD"])?;
+
+    succeeded(&journey.yi(&["ask", "hello"])?, "ask on a lane")?;
+    let lanes = succeeded(&journey.yi(&["lanes"])?, "lanes")?;
+    assert!(
+        lanes.starts_with("lane 0: idle"),
+        "the slot came back idle: {lanes}"
+    );
+    assert!(
+        lanes.contains(&head[..12]),
+        "the slot sits at the trunk's head: {lanes}"
+    );
+    assert_eq!(
+        git_in(&project, &["symbolic-ref", "--short", "HEAD"])?,
+        "main"
+    );
+    assert_eq!(git_in(&project, &["status", "--porcelain"])?, "");
+    assert_eq!(
+        git_in(&project, &["branch", "--list", "yi/*"])?,
+        "",
+        "no branch left behind"
+    );
+    let worktrees = git_in(&project, &["worktree", "list", "--porcelain"])?;
+    assert!(
+        worktrees.contains("home/.yi/lanes/"),
+        "the slot is a worktree under the home, not the checkout: {worktrees}"
+    );
+
+    let here = Journey::new("here")?;
+    git_in(&here.project(), &["init", "-q", "-b", "main"])?;
+    succeeded(&here.yi(&["ask", "--here", "hello"])?, "ask --here")?;
+    let none = succeeded(&here.yi(&["lanes"])?, "lanes after --here")?;
+    assert_eq!(none.trim(), "no lanes yet");
+    here.reclaim();
+    journey.reclaim();
+    Ok(())
+}

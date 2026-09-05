@@ -130,6 +130,7 @@ fn kinds(events: &[AgentEvent]) -> Vec<&'static str> {
             AgentEvent::PermissionRequested { .. } => "permission_requested",
             AgentEvent::PermissionResolved { .. } => "permission_resolved",
             AgentEvent::ChildUpdate { .. } => "child_update",
+            AgentEvent::LandingState { .. } => "landing_state",
         })
         .collect()
 }
