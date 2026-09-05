@@ -76,7 +76,7 @@ elif [ -n "${CI:-}" ]; then
   echo "skip binary_size (D70: baseline is macOS arm64; CI is another target)"
   echo "skip startup (D68: a shared runner cannot measure a 5 ms budget)"
   echo "skip build-dist (D91: nothing on CI reads target/dist/yi)"
-elif cargo build --profile dist -p yi-cli; then
+elif scripts/build_dist.sh; then
   run "$PY" scripts/guardrails/check_binary_size.py
   run "$PY" scripts/guardrails/check_startup.py
 else

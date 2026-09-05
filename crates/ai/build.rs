@@ -1,0 +1,15 @@
+//! The three model catalogs are 170,536 bytes of JSON the binary carried raw; deflated
+//! here they are 11,845. `miniz_oxide` is already in the graph, via `yi-orb`.
+use std::io::Write;
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let out = std::path::PathBuf::from(std::env::var_os("OUT_DIR").ok_or("OUT_DIR unset")?);
+    for name in ["anthropic", "openai", "openrouter"] {
+        let source = format!("data/{name}.json");
+        println!("cargo::rerun-if-changed={source}");
+        let raw = std::fs::read(&source)?;
+        let packed = miniz_oxide::deflate::compress_to_vec_zlib(&raw, 9);
+        std::fs::File::create(out.join(format!("{name}.zz")))?.write_all(&packed)?;
+    }
+    Ok(())
+}
