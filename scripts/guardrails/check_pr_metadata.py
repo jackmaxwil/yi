@@ -26,7 +26,7 @@ import urllib.request
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 from _common import ROOT, FREE_BAND, fail  # noqa: E402
-from check_commit_style import subject_errors  # noqa: E402
+from check_commit_style import NAMED, subject_errors  # noqa: E402
 from pr_body import base_commit, diff_stats, git, tally  # noqa: E402
 
 ARCH = "docs/ARCHITECTURE.md"
@@ -35,6 +35,9 @@ LEDGER = "Feature ledger"
 CHANGELOG = "Changelog"
 # `Closes apex/yi#4` is the same citation as `Closes #4`; `Closes other/repo#4`
 # is a citation of someone else's register and does not count as one here.
+# Incident: every PR body for a week ended in an assistant's generated-with footer, the
+# body-side twin of the co-author trailer commit_style already refuses.
+FOOTER = re.compile(r"generated (with|by)|co-authored-by", re.I)
 CITE = re.compile(r"\b(closes|refs)\s+(?:([\w.-]+/[\w.-]+))?#(\d+)\b", re.I)
 
 
@@ -140,6 +143,15 @@ def issue_problems(transport, api, repo, number):
     return errs
 
 
+def footer_problems(body):
+    """A line that credits an assistant as author or generator is a trailer, not a body."""
+    return [
+        f"the PR body credits an assistant: {line.strip()!r} — delete the line"
+        for line in (body or "").splitlines()
+        if FOOTER.search(line) and NAMED.search(line)
+    ]
+
+
 def body_problems(transport, api, repo, body, ledger_added, changelog_added, src_net):
     """The whole body rule, pure but for `transport`."""
     reasons = []
@@ -191,6 +203,14 @@ def selfcheck():
         "labels": [{"name": "size:M"}, {"name": "area:runtime"}],
         "milestone": {"title": "Tracking"},
     }
+
+    # --- the footer
+    footer = "Closes #4\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n"
+    assert len(footer_problems(footer)) == 1 and "delete the line" in footer_problems(footer)[0]
+    assert footer_problems("Co-Authored-By: Claude <noreply@anthropic.com>") != []
+    assert footer_problems("Generated with cargo-dist; Closes #4") == [], "no assistant named"
+    assert footer_problems("Claude Code is the tool this PR wires up") == [], "prose is not a credit"
+    assert footer_problems("") == []
 
     # --- the table reader
     doc = (
@@ -298,6 +318,7 @@ def main(argv):
     if why:
         fail([why], "pr_metadata")
     ledger_added, changelog_added, src_net = measured
+    errs += footer_problems(os.environ.get("PR_BODY", ""))
     errs += body_problems(
         send,
         os.environ["FORGEJO_API_URL"],
