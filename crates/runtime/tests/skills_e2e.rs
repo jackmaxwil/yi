@@ -113,6 +113,7 @@ async fn bundled_python_skills_work_through_the_kernel() -> TestResult {
         .unwrap_or_default();
         Box::pin(async move { Ok(reply) })
     });
+    yi_runtime::wiring::register_history_grep(&mut registry, session.store_handle());
 
     let service = Arc::new(KernelService::new(KernelServiceOptions {
         cwd: std::env::temp_dir(),
@@ -154,6 +155,39 @@ async fn bundled_python_skills_work_through_the_kernel() -> TestResult {
     assert!(
         compactor.scheduled(),
         "a kernel compact.run must set the host compactor pending"
+    );
+
+    // Recall round-trip: compact.recall greps the attached store by needle.
+    let store = Arc::new(std::sync::Mutex::new(yi_session::SessionStore::in_memory(
+        yi_session::SessionMetadata {
+            id: "skills-e2e".to_owned(),
+            created_at: 0,
+            parent_session_id: None,
+            name: None,
+        },
+    )));
+    let needle_id = yi_session::lock_session(&store).append_message(
+        "main",
+        yi_types::message::AgentMessage::user_input(
+            yi_types::message::UserContent::Text("the ZEBRA-7712 needle turn".to_owned()),
+            0,
+        ),
+    )?;
+    session.attach_store(store)?;
+    let recall_cell = cell(
+        &service,
+        "h = await compact.recall('ZEBRA-7712')\nprint(h['hits'][0]['entryId'], h['hits'][0]['type'])",
+    )
+    .await
+    .map_err(|error| error.to_string())?;
+    assert!(
+        recall_cell
+            .result
+            .stdout
+            .contains(&format!("{needle_id} message")),
+        "compact.recall must return the needle entry id: {} {}",
+        recall_cell.result.stdout,
+        recall_cell.result.stderr
     );
 
     let attach_cell = cell(

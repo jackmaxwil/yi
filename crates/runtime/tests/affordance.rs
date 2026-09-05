@@ -37,8 +37,17 @@ fn a_finished_child_says_how_to_take_its_answer_as_data() {
 #[test]
 fn compaction_names_where_the_full_history_lives() {
     let with_file = affordance::compacted(Some(Path::new("/tmp/sessions/s.jsonl")));
-    assert!(with_file.contains("/tmp/sessions/s.jsonl"));
-    assert!(!affordance::compacted(None).contains("stays in"));
+    assert!(with_file.starts_with(affordance::NEXT));
+    assert!(with_file.contains("compact.recall(\"needle\")"));
+    assert!(with_file.contains("rlm.fetch(\"history://<id>/<entry>\")"));
+    assert!(with_file.contains("(#entry)"));
+    assert_eq!(with_file.lines().count(), 1, "one next line");
+    let without_file = affordance::compacted(None);
+    assert!(without_file.contains("compact.recall(\"needle\")"));
+    assert!(
+        !without_file.contains("rlm.fetch"),
+        "no session file, no fetch URL half: {without_file}"
+    );
 }
 
 /// The repair template carries the caller's own arguments, so the model reads
