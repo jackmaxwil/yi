@@ -3,7 +3,7 @@
 
 use crate::{
     Args, Resume, attach_store, build_session, config, default_session_dir, effective_cwd,
-    print_resume_hint,
+    print_resume_hint, release_lane,
 };
 
 #[cfg(feature = "tui")]
@@ -60,10 +60,14 @@ pub fn run_tui_command(args: &Args, initial_prompt: Option<String>) -> i32 {
         }
     };
     let model = session.model();
+    let work = session
+        .lane()
+        .and_then(|lane| lane.path())
+        .unwrap_or_else(|| effective_cwd(args));
     let options = yi_tui::TuiOptions {
         model: model.clone(),
         session_name: session_name.clone(),
-        cwd: effective_cwd(args).display().to_string(),
+        cwd: work.display().to_string(),
         context_window: model.context_window,
         session_dir: default_session_dir(args).display().to_string(),
         keys: configured_keys(),
@@ -103,6 +107,7 @@ pub fn run_tui_command(args: &Args, initial_prompt: Option<String>) -> i32 {
             options,
             drive,
         );
+        leave_lane(&session);
         print_resume_hint(&session, &session_name);
         return code;
     }
@@ -114,8 +119,19 @@ pub fn run_tui_command(args: &Args, initial_prompt: Option<String>) -> i32 {
         ask_rx,
         options,
     );
+    leave_lane(&session);
     print_resume_hint(&session, &session_name);
     code
+}
+
+/// The quit line says where the work is before the slot is handed back.
+#[cfg(feature = "tui")]
+fn leave_lane(session: &yi_runtime::AgentSession) {
+    let lane = session.lane();
+    if let Some(line) = lane.as_ref().and_then(|lane| lane.describe()) {
+        eprintln!("\x1b[2m{line}\x1b[0m");
+    }
+    release_lane(lane.as_deref());
 }
 
 #[cfg(feature = "tui")]

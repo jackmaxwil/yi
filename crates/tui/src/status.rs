@@ -12,6 +12,7 @@ pub struct StatusInput {
     pub mode: Option<String>,
     pub cwd: String,
     pub branch: Option<String>,
+    pub landing: Option<String>,
     pub cost: Option<String>,
     pub session_name: String,
     pub subagents: usize,
@@ -52,6 +53,31 @@ fn shrink_middle(text: &str, max: usize) -> String {
     format!("{head}…{tail}")
 }
 
+/// A signed usage delta added onto a running total; a negative or overflowing delta is 0.
+fn bump(base: u64, delta: i64) -> u64 {
+    base.saturating_add(u64::try_from(delta).unwrap_or(0))
+}
+
+/// Tokens and cache hits accumulated so far this turn.
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct TurnTokens {
+    pub(crate) input: u64,
+    pub(crate) output: u64,
+    pub(crate) cached: u64,
+}
+
+impl TurnTokens {
+    pub(crate) fn record(&mut self, usage: &yi_types::message::Usage) {
+        let read = usage
+            .input
+            .saturating_add(usage.cache_read)
+            .saturating_add(usage.cache_write);
+        self.input = bump(self.input, read);
+        self.output = bump(self.output, usage.output);
+        self.cached = bump(self.cached, usage.cache_read);
+    }
+}
+
 pub(crate) fn fmt_tokens(tokens: u64) -> String {
     if tokens >= 1_000_000 {
         let m = tokens as f64 / 1_000_000.0;
@@ -80,6 +106,7 @@ fn left_segments(input: &StatusInput, path_max: usize) -> Vec<String> {
         path.push_str(&format!("@{branch}"));
     }
     segments.push(path);
+    segments.extend(input.landing.clone());
     segments.extend(input.cost.clone());
     if input.context_window > 0 {
         segments.push(format!(
@@ -110,6 +137,24 @@ fn effort_style(level: &str, theme: &Theme) -> Style {
         "medium" => Style::default().fg(theme.cyan),
         "high" => Style::default().fg(theme.warning),
         _ => Style::default().fg(theme.error),
+    }
+}
+
+/// The status-row form: one glyph per gate job, and how far `main` moved.
+pub fn landing_segment(landing: &yi_types::lane::Landing) -> Option<String> {
+    use yi_types::lane::Landing;
+    match landing {
+        Landing::Unlanded => None,
+        Landing::Pushed { .. } => Some("pushed".to_owned()),
+        Landing::Open { pr, jobs, behind } => {
+            let glyphs: String = jobs.iter().map(|job| job.state.glyph()).collect();
+            let behind = match behind {
+                0 => String::new(),
+                n => format!(" · main +{n}"),
+            };
+            Some(format!("PR {pr} {glyphs}{behind}"))
+        }
+        Landing::Merged { pr } => Some(format!("PR {pr} merged")),
     }
 }
 

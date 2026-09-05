@@ -1,7 +1,7 @@
 Line-anchored patch language: name original lines/gaps to replace, insert, cut, or paste; then give new content. `:` headers take `+` body rows; colonless paste `PUT`, `CUT`, `REM`, `MV` take none.
 
 <headers>
-Section: `[PATH#TAG]`; `TAG`: 4-hex snapshot from latest `read`/`grep`, REQUIRED each section. New files: `write`; hashline edits existing files only.
+Section: `[PATH#TAG]` or `[PATH]`; `TAG`: 4-hex snapshot from the `read`/`grep`/`edit` output the numbers came from; omitted = the latest one shown. New files: `write`; hashline edits existing files only.
 </headers>
 
 <ops>
@@ -22,8 +22,7 @@ Only below `:` headers. Row: verbatim `+TEXT` (leading whitespace preserved); `+
 </body-rows>
 
 <rules>
-- Numbers and `#TAG`: latest `read`/`grep` `LINE:TEXT`; numbers are original, never shifted by hunks.
-- Each edit renumbers and changes `#TAG` → next numbers from edit response or fresh `read`.
+- Numbers: `LINE:TEXT` from any `read`/`grep`/`edit` output this session; the tool maps them onto the current file (`rebased` in the response). A cited line that itself changed since is rejected with the current text. Within one call numbers are original, never shifted by hunks.
 - Touch displayed lines only; undisplayed hunks REJECTED. Far from read window: re-`read`; confirm construct.
 - Elisions UNSEEN: `…`, `..`, collapsed `N-M:` rows. NEVER hunk in/across one; `read` first.
 - NEVER start/end range mid-expression or mid-block.
@@ -129,7 +128,6 @@ PUT >20 @fn:
 </anti-patterns>
 
 <critical>
-1. RE-GROUND AFTER EVERY EDIT: edits renumber and change `#TAG`; take next numbers from edit response or fresh `read`. Stale tag/surprise: STOP; re-`read`.
-2. RANGES TIGHT: changed lines only. Whole construct: `PUT N*:`.
-3. BODY FINAL CONTENT: every row starts `+`; Markdown bullet: `+- item`, not `- item`.
+1. RANGES TIGHT: changed lines only. Whole construct: `PUT N*:`.
+2. BODY FINAL CONTENT: every row starts `+`; Markdown bullet: `+- item`, not `- item`.
 </critical>

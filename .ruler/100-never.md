@@ -8,6 +8,8 @@
 - Never edit a guardrail baseline in the same commit as code.
 - Never commit while a gate is red; never commit or push unasked.
 - Never modify committed golden fixtures; add new ones beside them.
+- Never cut, clamp, page, filter, or fall back on a model-facing view without a `[…]` row at
+  the cut naming kept/total, the cap, and the next call (045-loud-caps.md).
 - Never name a Rust item in bare backticks inside a doc comment — it is an
   intra-doc link, or it is not an item.
 - Never introduce a YI_* env var without its row in

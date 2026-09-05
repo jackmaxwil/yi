@@ -290,6 +290,8 @@ mod tests {
             max_children: 8,
             parent_session_dir: root.join("children"),
             cwd: root.clone(),
+            home: std::env::temp_dir(),
+            lane_slots: 1,
             defaults: Arc::new(|| (faux_model(), yi_types::model::Effort::Medium)),
             factory: Arc::new(move |build: ChildBuild<'_>| {
                 let _ = build;
@@ -359,6 +361,7 @@ mod tests {
                 note: None,
                 extra: Map::new(),
             }),
+            children: Vec::new(),
         })
     }
 
@@ -543,6 +546,8 @@ mod tests {
             parent_session_dir: root.join("children"),
             plans_dir: root.join(crate::plan::PLANS_DIR),
             cwd: root,
+            home: std::env::temp_dir(),
+            lane_slots: 1,
             defaults: Arc::new(|| (faux_model(), yi_types::model::Effort::Medium)),
             factory: Arc::new(|_build| Err("no child in this test".to_owned())),
             notice: Arc::new(|_text: &str| {}),

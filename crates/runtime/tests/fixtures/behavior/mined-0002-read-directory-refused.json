@@ -1,6 +1,6 @@
 {
   "id": "mined-0002-read-directory-refused",
-  "description": "reading a directory path is refused with a clear tool error naming the path, not a raw OS error or a silent empty read; without a legible message the model cannot tell a directory from an unreadable file (session 01a0449e seq 7-9: the model read the error text and recovered by switching to glob on its own next turn)",
+  "description": "reading a directory path answers with its listing and skeletons in one call, never a raw OS error; the model gets the shape of the tree without a second tool (session 01a0449e seq 7-9: the model once had to switch to glob on its own next turn)",
   "provenance": {
     "kind": "mined",
     "session": "1787857665884_01a0449e-ff5a-714b-8771-cd6e67068e0b.jsonl"
@@ -28,12 +28,12 @@
     {
       "kind": "toolResultIsError",
       "callId": "read-dir",
-      "value": true
+      "value": false
     },
     {
       "kind": "toolResultContains",
       "callId": "read-dir",
-      "needle": "failed to read"
+      "needle": "[.]"
     },
     {
       "kind": "toolCallCount",

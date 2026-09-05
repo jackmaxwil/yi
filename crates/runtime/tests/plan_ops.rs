@@ -11,15 +11,15 @@ use std::sync::{Arc, Mutex};
 
 use serde_json::Map;
 use yi_runtime::plan::ops::{
-    Actor, Delegate, Op, OpRequest, Outcome, OutputResolve, PlanEngine, PlanOpError, TodoSpec,
-    dispatch_width,
+    Actor, Delegate, Op, OpRequest, Outcome, OutputResolve, PlanEngine, PlanOpError, SetRow,
+    TodoSpec, dispatch_width,
 };
 use yi_runtime::plan::store::{FRONTMATTER_CAP_BYTES, PlanStore, StoreError};
 use yi_runtime::plan::table::RETRY_CAP;
 use yi_types::plan::PlanVersion;
 use yi_types::plan::doc::{
-    AgentId, BlockedOn, Check, Delegation, GoalText, OutputSchema, PlanId, PlanState, SPAWN_CAP,
-    SpawnSpec, TodoAddr, TodoLabel, TodoState, TouchCount,
+    AgentId, BlockedOn, Check, Delegation, GoalText, OutputSchema, PlanId, PlanState, RetryCount,
+    SPAWN_CAP, SpawnSpec, Todo, TodoAddr, TodoLabel, TodoState, TodoStateName, TouchCount,
 };
 use yi_types::url::Url;
 
@@ -105,6 +105,7 @@ fn spec(text: &str) -> Result<TodoSpec, Box<dyn Error>> {
         label: label(text)?,
         after: Vec::new(),
         delegation: None,
+        children: Vec::new(),
     })
 }
 
@@ -132,6 +133,7 @@ fn delegated_spec(text: &str) -> Result<TodoSpec, Box<dyn Error>> {
         label: label(text)?,
         after: Vec::new(),
         delegation: Some(delegation()),
+        children: Vec::new(),
     })
 }
 
@@ -340,6 +342,7 @@ fn a_cycle_is_refused_at_insert() -> TestResult {
         label: label("second job")?,
         after: vec![label("first job")?],
         delegation: None,
+        children: Vec::new(),
     };
     let out = init(&engine, vec![spec("first job")?, second])?;
     let refused = engine.apply(owner(Op::AddEdge {
@@ -730,6 +733,7 @@ fn start_refuses_unmet_after_edges() -> TestResult {
         label: label("second job")?,
         after: vec![label("first job")?],
         delegation: None,
+        children: Vec::new(),
     };
     let out = init(&engine, vec![spec("first job")?, follows])?;
     let refused = engine.apply(owner(Op::Start {
@@ -977,6 +981,7 @@ fn a_declared_output_is_validated_against_its_schema() -> TestResult {
             label: label("write the report")?,
             after: Vec::new(),
             delegation: Some(declaring("local://schemas/report.json")?),
+            children: Vec::new(),
         }],
     )?;
     engine.apply(owner(Op::Start {
@@ -1009,6 +1014,7 @@ fn a_product_that_satisfies_its_schema_completes() -> TestResult {
             label: label("write the report")?,
             after: Vec::new(),
             delegation: Some(declaring("local://schemas/report.json")?),
+            children: Vec::new(),
         }],
     )?;
     engine.apply(owner(Op::Start {
@@ -1036,6 +1042,7 @@ fn a_schema_that_is_not_json_refuses_the_done_naming_the_schema() -> TestResult 
             label: label("write the report")?,
             after: Vec::new(),
             delegation: Some(declaring("local://schemas/report.json")?),
+            children: Vec::new(),
         }],
     )?;
     engine.apply(owner(Op::Start {
@@ -1129,6 +1136,7 @@ fn a_declared_output_must_resolve_at_done() -> TestResult {
             label: label("write the report")?,
             after: Vec::new(),
             delegation: Some(declared),
+            children: Vec::new(),
         }],
     )?;
     engine.apply(owner(Op::Start {
@@ -1159,5 +1167,103 @@ fn a_declared_output_must_resolve_at_done() -> TestResult {
         .todo(&label("write the report")?)
         .ok_or("todo missing")?;
     assert!(matches!(todo.state, TodoState::Done { output: Some(_) }));
+    Ok(())
+}
+
+fn row(text: &str, state: TodoStateName, children: &[&str]) -> Result<SetRow, Box<dyn Error>> {
+    let mut kids = Vec::new();
+    for child in children {
+        kids.push(Todo {
+            label: label(child)?,
+            after: Vec::new(),
+            state: TodoState::Pending,
+            delegation: None,
+            subplan: None,
+            retries: RetryCount::default(),
+            children: Vec::new(),
+            extra: Map::new(),
+        });
+    }
+    let mut spec = spec(text)?;
+    spec.children = kids;
+    Ok(SetRow { spec, state })
+}
+
+#[test]
+fn set_opens_a_plan_then_replaces_the_whole_cut_keeping_what_survives() -> TestResult {
+    let (_temp, _store, _stub, engine) = harness(4)?;
+    let first = engine.apply(owner(Op::Set {
+        goal: None,
+        rows: vec![
+            row("mapper", TodoStateName::Done, &[])?,
+            row("rebase", TodoStateName::Running, &["remap", "prompt"])?,
+            row("bridge", TodoStateName::Pending, &[])?,
+        ],
+    }))?;
+    assert_eq!(first.plan.goal.as_str(), "checklist");
+    let states: Vec<TodoStateName> = first
+        .plan
+        .todos
+        .iter()
+        .map(|todo| TodoStateName::of(&todo.state))
+        .collect();
+    assert_eq!(
+        states,
+        [
+            TodoStateName::Done,
+            TodoStateName::Running,
+            TodoStateName::Pending
+        ]
+    );
+    assert_eq!(first.plan.todos[1].children.len(), 2);
+    let progress = yi_types::plan::doc::progress(&first.plan.todos);
+    assert_eq!((progress.done, progress.total), (1, 5));
+    assert_eq!(
+        progress.running.as_ref().map(TodoLabel::as_str),
+        Some("rebase")
+    );
+
+    engine.apply(at(
+        &first.plan.id,
+        Op::AddEdge {
+            todo: label("bridge")?,
+            after: label("rebase")?,
+        },
+    ))?;
+    let second = engine.apply(owner(Op::Set {
+        goal: None,
+        rows: vec![
+            row("rebase", TodoStateName::Done, &["remap"])?,
+            row("bridge", TodoStateName::Running, &[])?,
+            row("grep", TodoStateName::Pending, &[])?,
+        ],
+    }))?;
+    assert_eq!(second.plan.id, first.plan.id, "set keeps the plan");
+    assert!(
+        second.plan.version > first.plan.version,
+        "set bumps the version"
+    );
+    let labels: Vec<&str> = second
+        .plan
+        .todos
+        .iter()
+        .map(|todo| todo.label.as_str())
+        .collect();
+    assert_eq!(
+        labels,
+        ["rebase", "bridge", "grep"],
+        "mapper left, grep arrived"
+    );
+    assert!(matches!(second.plan.todos[0].state, TodoState::Done { .. }));
+    assert_eq!(second.plan.todos[0].children.len(), 1);
+    assert_eq!(
+        second.plan.todos[1].after,
+        vec![label("rebase")?],
+        "a surviving label keeps its edge"
+    );
+    assert!(matches!(
+        second.plan.todos[1].state,
+        TodoState::Running { .. }
+    ));
     Ok(())
 }

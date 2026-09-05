@@ -36,6 +36,7 @@ pub struct UserConfig {
     pub keys: Option<std::collections::BTreeMap<String, String>>,
     pub console: Option<ConsoleConfig>,
     pub tui: Option<TuiConfig>,
+    pub lanes: Option<crate::lane::LanesConfig>,
 }
 
 /// `tui.pace`: the streamed reveal's speed as a percentage of the default (100); `0` paints
