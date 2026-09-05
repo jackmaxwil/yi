@@ -125,6 +125,27 @@ pub enum AcpSessionUpdate {
     Extension(AcpExtensionUpdate),
 }
 
+/// The daemon's session ledger on disk, keyed by session id: what a
+/// `session/list` without a cwd answers from after a restart.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct DaemonLedger {
+    pub sessions: BTreeMap<String, DaemonLedgerEntry>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DaemonLedgerEntry {
+    pub cwd: String,
+    pub unseen: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_state: Option<String>,
+    pub last_event_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(flatten)]
+    pub extra: BTreeMap<String, Value>,
+}
+
 /// Carrier for `_yi/*` extension updates and unknown future update kinds;
 /// the discriminator plus its fields re-emit verbatim (§19).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

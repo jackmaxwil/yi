@@ -20,7 +20,6 @@ use crate::layout::{PaneId, SplitBorder};
 use crate::model::{Link, Mode, PaneContent, SessionStatus, Zone};
 
 pub(crate) const NAME_WIDTH: usize = 20;
-pub(crate) const RAIL_ROWS: usize = 12;
 
 pub struct PaneView {
     pub scroll: Option<(usize, usize)>,
