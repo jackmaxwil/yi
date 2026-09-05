@@ -96,5 +96,6 @@ when it changes rather than editing them by hand.
 - [D110](adr/d110.md) - the comment cap drops from three lines to two
 - [D114](adr/d114.md) - D54 matches results, paths, and skill pointers
 - [D115](adr/d115.md) - compaction's recall half is an extractive view plus store-native grep
+- [D118](adr/d118.md) - the daemon's session ledger lives on disk beside the socket
 
 D36-D51, D72, D73 and D74 have no ADR yet; ARCHITECTURE.md is the record for those rows.

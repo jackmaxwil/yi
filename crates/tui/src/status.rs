@@ -52,6 +52,31 @@ fn shrink_middle(text: &str, max: usize) -> String {
     format!("{head}…{tail}")
 }
 
+/// A signed usage delta added onto a running total; a negative or overflowing delta is 0.
+fn bump(base: u64, delta: i64) -> u64 {
+    base.saturating_add(u64::try_from(delta).unwrap_or(0))
+}
+
+/// Tokens and cache hits accumulated so far this turn.
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct TurnTokens {
+    pub(crate) input: u64,
+    pub(crate) output: u64,
+    pub(crate) cached: u64,
+}
+
+impl TurnTokens {
+    pub(crate) fn record(&mut self, usage: &yi_types::message::Usage) {
+        let read = usage
+            .input
+            .saturating_add(usage.cache_read)
+            .saturating_add(usage.cache_write);
+        self.input = bump(self.input, read);
+        self.output = bump(self.output, usage.output);
+        self.cached = bump(self.cached, usage.cache_read);
+    }
+}
+
 pub(crate) fn fmt_tokens(tokens: u64) -> String {
     if tokens >= 1_000_000 {
         let m = tokens as f64 / 1_000_000.0;
