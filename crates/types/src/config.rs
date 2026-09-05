@@ -35,6 +35,15 @@ pub struct UserConfig {
     pub edit: Option<EditConfig>,
     pub keys: Option<std::collections::BTreeMap<String, String>>,
     pub console: Option<ConsoleConfig>,
+    pub tui: Option<TuiConfig>,
+}
+
+/// `tui.pace`: the streamed reveal's speed as a percentage of the default (100); `0` paints
+/// text the instant it arrives, as before the reveal existed.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TuiConfig {
+    pub pace: Option<u16>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]

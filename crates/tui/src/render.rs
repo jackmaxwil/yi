@@ -110,7 +110,7 @@ fn live_lines(
         // the screen is never silently blank mid-turn; prose does not displace it.
         let tail = app
             .live_thought
-            .get(app.live_thought_cut..)
+            .get(app.live_thought_cut..app.pacing.thought.shown())
             .unwrap_or_default();
         let mut rendered = crate::cell::thought_lines(
             tail,
@@ -132,7 +132,10 @@ fn live_lines(
         live_lines.extend(live_tail(rendered, app.rows));
     }
     if !app.live_markdown.is_empty() {
-        let tail = app.live_markdown.get(app.live_cut..).unwrap_or_default();
+        let tail = app
+            .live_markdown
+            .get(app.live_cut..app.pacing.prose.shown())
+            .unwrap_or_default();
         let painted = crate::transcript::paint_slice(app, tail).0;
         let rendered = crate::cell::gutter(painted, app.live_cut == 0, theme);
         live_lines.extend(live_tail(rendered, app.rows));

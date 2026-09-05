@@ -76,6 +76,8 @@ pub struct TuiOptions {
     pub session_dir: String,
     pub keys: Vec<(String, String)>,
     pub initial_prompt: Option<String>,
+    /// The streamed reveal's speed as a percentage of the default; 0 paints text on arrival.
+    pub pace: u16,
 }
 
 // U2: starting tall anchors the composer mid-screen until the first commit pushes it down,
@@ -138,6 +140,7 @@ pub struct App {
     /// The byte of `live_thought` already committed to scrollback, the mirror of
     /// `live_cut` for reasoning.
     pub(crate) live_thought_cut: usize,
+    pub(crate) pacing: stream::Pacing,
     pub(crate) live_tools: Vec<ToolCell>,
     /// Finished read-only calls waiting to commit as one `Explored` cell.
     pub(crate) explored: Vec<ToolCell>,
@@ -233,6 +236,7 @@ impl App {
             live_thought: String::new(),
             live_cut: 0,
             live_thought_cut: 0,
+            pacing: stream::Pacing::new(options.pace),
             live_tools: Vec::new(),
             explored: Vec::new(),
             last_commit_rows: 0,
@@ -488,6 +492,7 @@ impl App {
         self.live_thought.clear();
         self.live_cut = 0;
         self.live_thought_cut = 0;
+        self.pacing.reset();
         self.live_tools.clear();
     }
 
@@ -581,13 +586,7 @@ impl App {
             AgentEvent::MessageUpdate {
                 message: AgentMessage::Assistant { content, .. },
                 ..
-            } => {
-                self.live_markdown = text_of(&content);
-                self.live_thought = thinking_of(&content);
-                self.commit_stable_thought();
-                self.commit_stable_prefix();
-                self.scheduler.request();
-            }
+            } => self.arrive(&content),
             AgentEvent::MessageEnd { message } => {
                 self.note_context(&message);
                 self.reduce_message_end(&message);
@@ -713,6 +712,7 @@ impl App {
                 self.live_reopen = None;
                 self.live_lang = None;
                 self.live_thought_cut = 0;
+                self.pacing.reset();
                 if *stop_reason == StopReason::Error {
                     let text = error_message
                         .clone()
@@ -1133,7 +1133,10 @@ pub fn run_tui(
     let mut orb_tick = orb::Tick::default();
     let mut last_spinner_phase = usize::MAX;
     while !app.quit {
-        let timeout = app.scheduler.poll_timeout(Instant::now());
+        let timeout = app
+            .scheduler
+            .poll_timeout(Instant::now())
+            .min(app.reveal_wake());
         let animating = app.running
             || app
                 .tasks

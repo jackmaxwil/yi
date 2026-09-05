@@ -68,6 +68,17 @@ pub fn run_tui_command(args: &Args, initial_prompt: Option<String>) -> i32 {
         session_dir: default_session_dir(args).display().to_string(),
         keys: configured_keys(),
         initial_prompt,
+        // A headless run asserts on frames, so it paints on arrival; a recording is for a
+        // person and keeps the configured pace.
+        pace: if args.headless && args.record.is_none() {
+            0
+        } else {
+            config()
+                .tui
+                .as_ref()
+                .and_then(|tui| tui.pace)
+                .unwrap_or(100)
+        },
     };
     if args.headless {
         let script = match load_drive_script(&args.keys, yi_tui::parse_script) {
