@@ -348,7 +348,7 @@ fn git_in(dir: &std::path::Path, args: &[&str]) -> Result<String, Box<dyn Error>
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
 }
 
-/// D117: the ask ran on a slot outside the checkout and handed it back; the trunk never
+/// D119: the ask ran on a slot outside the checkout and handed it back; the trunk never
 /// moved, and `--here` is the only way to run without a slot.
 #[test]
 fn an_ask_in_a_repository_runs_on_a_lane_and_hands_it_back() -> TestResult {

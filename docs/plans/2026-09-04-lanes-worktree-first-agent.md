@@ -1,6 +1,6 @@
 # Lanes: a worktree-first agent that only lands through pull requests
 
-Status: implemented on this branch as D117–D122 (0.146.0). D-numbers below were provisional
+Status: implemented on this branch as D119–D124 (0.146.0). D-numbers below were provisional
 (D116+); check collisions against open PRs before any of them is claimed.
 
 ## The one-line design
@@ -93,24 +93,24 @@ the cold cost twice, not to make the repo's build faster.
   lane by default. `--here` opts out for the one case that needs the trunk
   (editing the trunk's own git state), and the environment block says so
   loudly when it is on.
-- **D117, the pool.** N slots per repo (default 3), fixed paths outside the
+- **D119, the pool.** N slots per repo (default 3), fixed paths outside the
   checkout so the trunk's grep and `grid survey` never see them. Claim, release,
   warm, reap are four worker verbs. Slots are created lazily; the pool is never
   larger than the number of lanes ever used at once.
-- **D118, git is the registry.** Branch `yi/<session-id>`, worktree locked
+- **D120, git is the registry.** Branch `yi/<session-id>`, worktree locked
   with `session:<id>` while live. A slot whose lock names a session that no
   longer exists on disk is an orphan, and `yi lanes` lists it; reaping deletes
   the branch only when it is merged or the session was discarded, never on a
   timer alone.
-- **D119, the hand-back ladder.** Child lane merges into the parent's branch
+- **D121, the hand-back ladder.** Child lane merges into the parent's branch
   (B11 unchanged). Root lane pushes and opens a PR through the existing
   `scripts/forge_pr.py` verbs. Only the forge merges to `main`. `git merge` into
   the trunk checkout is removed from the code path entirely.
-- **D120, the forge adapter is detection, not abstraction.** The origin URL
+- **D122, the forge adapter is detection, not abstraction.** The origin URL
   picks `tea` (Forgejo) or `gh` (GitHub). The Forgejo path is the existing
   script; the GitHub path is the same script with the three API calls swapped.
   No trait; two functions behind one match.
-- **D121, gate state is an event.** `Event::LandingState { pr, jobs, behind }`
+- **D123, gate state is an event.** `Event::LandingState { pr, jobs, behind }`
   emitted by a heartbeat that polls the forge while a PR is open. The TUI
   renders it; a red job steers the session once (latched on the job name, the
   D114 evidence latch pattern) rather than every poll.
@@ -205,10 +205,10 @@ telemetry extension so the ratchet sees them.
 
 ## Optimization areas, in the order to take them
 
-1. Stable slots and the git-only claim (D117). Measurable alone.
+1. Stable slots and the git-only claim (D119). Measurable alone.
 2. Idle warmers for the three toolchains in the table. Measurable alone.
 3. The daemon-owned fetch with a freshness window.
-4. Gate polling as an event and the HUD row (D121). Pure UX; no perf.
+4. Gate polling as an event and the HUD row (D123). Pure UX; no perf.
 5. `git maintenance run --auto` in the worker's idle time, and `core.untrackedCache` set per worktree (never through repo-level `git config`, which reconfigures every sibling session at once).
 6. Later, only if measured: `sccache` across slots for Rust; `cp -c` (APFS clonefile) of `node_modules` from a warm slot instead of `pnpm install`.
 
@@ -269,7 +269,7 @@ For the model:
 
 Reviewed against `har`, `har-threat`, `har-async`, `har-concurrent` and
 `har-layout`. Findings are ordered by risk; each names the rule, the gap in the
-proposal above, and the change that closes it. The decisions D116–D121 are
+proposal above, and the change that closes it. The decisions D116–D123 are
 amended in place below rather than renumbered.
 
 ### Findings
@@ -294,11 +294,11 @@ amended in place below rather than renumbered.
 
 ### Amended decisions
 
-- **D117** gains: the pool is bounded at N including orphans; claim is a worker verb and the only claim path; canonical repo root keys the pool.
-- **D118** is reworded: git's lock is the crash record; the worker's mutex is the registry of truth while it runs.
-- **D119** gains the typestate ladder (`Held → Settled → merged | discarded | landed`, by move) and the no-trunk-fallback posture.
-- **D121** gains the parser bound on job names and the fence-plus-latch rule for steering text.
-- **New, D122 (provisional):** the idle warmer is a contained, offline, ledgered run that only rebuilds a lockfile hash a session already built. This is the one decision that did not exist before the review, because the warmer was the one new boundary.
+- **D119** gains: the pool is bounded at N including orphans; claim is a worker verb and the only claim path; canonical repo root keys the pool.
+- **D120** is reworded: git's lock is the crash record; the worker's mutex is the registry of truth while it runs.
+- **D121** gains the typestate ladder (`Held → Settled → merged | discarded | landed`, by move) and the no-trunk-fallback posture.
+- **D123** gains the parser bound on job names and the fence-plus-latch rule for steering text.
+- **New, D124 (provisional):** the idle warmer is a contained, offline, ledgered run that only rebuilds a lockfile hash a session already built. This is the one decision that did not exist before the review, because the warmer was the one new boundary.
 
 ### Not findings
 
