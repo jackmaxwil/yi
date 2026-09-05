@@ -69,6 +69,27 @@ fn build_params_openai_shape() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+/// Retention is free where it is accepted and a dead turn where it is not, so
+/// the parameter follows the id prefix and the catalog flag, never the host alone.
+#[test]
+fn extended_retention_follows_the_id_prefix_and_the_catalog_flag() {
+    let params = build_params(&model(false), &context(), &OpenAiOptions::default());
+    assert_eq!(params["prompt_cache_retention"], "24h");
+    let mut plain = model(false);
+    plain.id = "gpt-5".to_owned();
+    let params = build_params(&plain, &context(), &OpenAiOptions::default());
+    assert!(params.get("prompt_cache_retention").is_none());
+    let mut explicit = model(false);
+    explicit.id = "gpt-5.6-luna".to_owned();
+    explicit.compat = Some(json!({"supportsExplicitPromptCacheMode": true}));
+    let params = build_params(&explicit, &context(), &OpenAiOptions::default());
+    assert!(params.get("prompt_cache_retention").is_none());
+    let mut routed = model(false);
+    routed.base_url = "https://openrouter.ai/api/v1".to_owned();
+    let params = build_params(&routed, &context(), &OpenAiOptions::default());
+    assert!(params.get("prompt_cache_retention").is_none());
+}
+
 #[test]
 fn id_normalization_handles_pipe_ids() {
     let long_id = format!("call_abc|{}", "x".repeat(400));

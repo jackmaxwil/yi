@@ -21,13 +21,92 @@ struct ToolRow {
 }
 
 #[derive(Default)]
-struct Totals {
+struct Tokens {
     turns: u64,
     input: i64,
     output: i64,
     cache_read: i64,
     cache_write: i64,
     cost: f64,
+    /// A same-model request after the first that read nothing back: the prefix broke or
+    /// never cleared the provider's minimum, and either way it was paid for twice.
+    misses: u64,
+}
+
+impl Tokens {
+    fn add(&mut self, usage: &yi_types::message::Usage, miss: bool) {
+        self.turns = self.turns.saturating_add(1);
+        self.input = self.input.saturating_add(usage.input);
+        self.output = self.output.saturating_add(usage.output);
+        self.cache_read = self.cache_read.saturating_add(usage.cache_read);
+        self.cache_write = self.cache_write.saturating_add(usage.cache_write);
+        self.cost += usage.cost.total.as_f64().unwrap_or(0.0);
+        self.misses = self.misses.saturating_add(u64::from(miss));
+    }
+
+    fn hit_rate(&self) -> f64 {
+        share(self.cache_read, self)
+    }
+
+    fn write_share(&self) -> f64 {
+        share(self.cache_write, self)
+    }
+
+    fn json(&self) -> Value {
+        json!({
+            "turns": self.turns,
+            "input": self.input,
+            "output": self.output,
+            "cacheRead": self.cache_read,
+            "cacheWrite": self.cache_write,
+            "cost": self.cost,
+            "hitRate": self.hit_rate(),
+            "writeShare": self.write_share(),
+            "misses": self.misses,
+        })
+    }
+}
+
+impl Tokens {
+    fn line(&self) -> String {
+        format!(
+            "turns {}  tokens in {} out {} cache-read {} cache-write {}  cost ${:.4}  cache-hit {:.1}% write {:.1}% misses {}",
+            self.turns,
+            self.input,
+            self.output,
+            self.cache_read,
+            self.cache_write,
+            self.cost,
+            self.hit_rate() * 100.0,
+            self.write_share() * 100.0,
+            self.misses
+        )
+    }
+}
+
+impl Totals {
+    fn cost(&self) -> f64 {
+        self.all.cost
+    }
+}
+
+fn share(part: i64, tokens: &Tokens) -> f64 {
+    let whole = tokens
+        .input
+        .saturating_add(tokens.cache_read)
+        .saturating_add(tokens.cache_write);
+    if whole > 0 {
+        part as f64 / whole as f64
+    } else {
+        0.0
+    }
+}
+
+#[derive(Default)]
+struct Totals {
+    all: Tokens,
+    by_model: BTreeMap<String, Tokens>,
+    last_model: Option<String>,
     categories: BTreeMap<String, u64>,
     edit_ops: BTreeMap<String, u64>,
 }
@@ -51,13 +130,23 @@ fn reduce_entry(entry: &Entry, tools: &mut BTreeMap<String, ToolRow>, totals: &m
         return;
     };
     match message {
-        AgentMessage::Assistant { usage, .. } => {
-            totals.turns = totals.turns.saturating_add(1);
-            totals.input = totals.input.saturating_add(usage.input);
-            totals.output = totals.output.saturating_add(usage.output);
-            totals.cache_read = totals.cache_read.saturating_add(usage.cache_read);
-            totals.cache_write = totals.cache_write.saturating_add(usage.cache_write);
-            totals.cost += usage.cost.total.as_f64().unwrap_or(0.0);
+        AgentMessage::Assistant {
+            usage,
+            provider,
+            model,
+            ..
+        } => {
+            let key = format!("{provider}/{model}");
+            let miss = usage.cache_read == 0
+                && !usage.unknown
+                && totals.last_model.as_deref() == Some(key.as_str());
+            totals.all.add(usage, miss);
+            totals
+                .by_model
+                .entry(key.clone())
+                .or_default()
+                .add(usage, miss);
+            totals.last_model = Some(key);
         }
         AgentMessage::ToolResult {
             tool_name,
@@ -166,17 +255,32 @@ pub fn run(id_arg: &str, options: &Options) -> i32 {
                 })
             })
             .collect();
+        let models: Vec<Value> = totals
+            .by_model
+            .iter()
+            .map(|(model, tokens)| {
+                let mut row = tokens.json();
+                row["model"] = json!(model);
+                row
+            })
+            .collect();
         let value = json!({
             "session": id,
             "tools": tool_rows,
-            "turns": totals.turns,
+            "turns": totals.all.turns,
             "tokens": {
-                "input": totals.input,
-                "output": totals.output,
-                "cacheRead": totals.cache_read,
-                "cacheWrite": totals.cache_write,
+                "input": totals.all.input,
+                "output": totals.all.output,
+                "cacheRead": totals.all.cache_read,
+                "cacheWrite": totals.all.cache_write,
             },
-            "cost": totals.cost,
+            "cache": {
+                "hitRate": totals.all.hit_rate(),
+                "writeShare": totals.all.write_share(),
+                "misses": totals.all.misses,
+            },
+            "models": models,
+            "cost": totals.cost(),
             "bashCategories": totals.categories,
             "editOps": totals.edit_ops,
         });
@@ -186,15 +290,12 @@ pub fn run(id_arg: &str, options: &Options) -> i32 {
         return 0;
     }
     println!("session {id}");
-    println!(
-        "turns {}  tokens in {} out {} cache-read {} cache-write {}  cost ${:.4}",
-        totals.turns,
-        totals.input,
-        totals.output,
-        totals.cache_read,
-        totals.cache_write,
-        totals.cost
-    );
+    println!("{}", totals.all.line());
+    if totals.by_model.len() > 1 {
+        for (model, tokens) in &totals.by_model {
+            println!("  {model}  {}", tokens.line());
+        }
+    }
     if tools.is_empty() {
         println!("no tool calls");
         return 0;
@@ -239,4 +340,66 @@ pub fn run(id_arg: &str, options: &Options) -> i32 {
         println!("edit ops  {}", parts.join(" "));
     }
     0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use yi_types::message::{Content, StopReason, Usage};
+
+    fn assistant(cache_read: i64, cache_write: i64) -> Entry {
+        let mut usage = Usage::zero();
+        usage.input = 1000;
+        usage.cache_read = cache_read;
+        usage.cache_write = cache_write;
+        Entry::Message {
+            id: String::new(),
+            terminate: None,
+            parent_id: None,
+            seq: 0,
+            timestamp: 0,
+            message: AgentMessage::Assistant {
+                content: vec![Content::Text {
+                    text: "ok".to_owned(),
+                    text_signature: None,
+                }],
+                api: "openai-completions".to_owned(),
+                provider: "openrouter".to_owned(),
+                model: "z-ai/glm-5.3-flash".to_owned(),
+                response_model: None,
+                response_id: None,
+                diagnostics: None,
+                usage,
+                stop_reason: StopReason::Stop,
+                deferred: None,
+                error_message: None,
+                raw_stop_reason: None,
+                end_turn: None,
+                timestamp: 0,
+            },
+        }
+    }
+
+    fn reduce(entries: &[Entry]) -> Totals {
+        let mut tools = BTreeMap::new();
+        let mut totals = Totals::default();
+        for entry in entries {
+            reduce_entry(entry, &mut tools, &mut totals);
+        }
+        totals
+    }
+
+    /// The first request is cold by definition; a warm same-model request that
+    /// reads nothing is the miss, whatever it wrote.
+    #[test]
+    fn a_warm_request_that_reads_nothing_is_a_miss() {
+        let cold_then_miss = reduce(&[assistant(0, 1000), assistant(0, 0)]);
+        assert_eq!(cold_then_miss.all.misses, 1);
+        assert_eq!(cold_then_miss.all.hit_rate(), 0.0);
+        let cold_then_hit = reduce(&[assistant(0, 1000), assistant(1000, 0)]);
+        assert_eq!(cold_then_hit.all.misses, 0);
+        assert_eq!(cold_then_hit.all.hit_rate(), 0.25);
+        assert_eq!(cold_then_hit.all.write_share(), 0.25);
+        assert_eq!(cold_then_hit.by_model.len(), 1);
+    }
 }
