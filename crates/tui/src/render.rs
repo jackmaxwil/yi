@@ -4,9 +4,10 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use ratatui::widgets::Widget;
 
-use crate::app::{App, Bottom, ORB_COLS, ORB_ROWS, elapsed_ms};
+use crate::app::{App, Bottom, ORB_COLS, ORB_ROWS};
 use crate::cell::{Cell, TaskStatus, TranscriptMode};
 use crate::hud::GoalView;
+use crate::motion::elapsed_ms;
 use crate::popup::BottomView;
 use crate::port::SessionPort;
 use crate::status::{StatusInput, working_line};

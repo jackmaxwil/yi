@@ -48,7 +48,9 @@ impl Extension for RouteTelemetry {
                 cache_read,
                 cache_write,
             } => {
-                let denominator = input.saturating_add(*cache_read);
+                let denominator = input
+                    .saturating_add(*cache_read)
+                    .saturating_add(*cache_write);
                 let ratio = if denominator > 0 {
                     f64::from(u32::try_from(*cache_read).unwrap_or(u32::MAX))
                         / f64::from(u32::try_from(denominator).unwrap_or(u32::MAX))
