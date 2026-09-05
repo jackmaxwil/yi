@@ -644,6 +644,9 @@ impl App {
                 status = SessionStatus::Idle;
             }
             self.state.set_session_status(&id, status);
+            if let Some(row) = self.state.sessions.get_mut(&id) {
+                row.last_ms = row.last_ms.max(now_ms());
+            }
             match status {
                 SessionStatus::Blocked | SessionStatus::DoneUnseen => {
                     self.notes.arm(&id, status, Instant::now());
@@ -1132,7 +1135,14 @@ impl App {
                 }
                 KeyCode::Left | KeyCode::Right => {
                     self.state.cycle_root_filter(key.code == KeyCode::Right);
-                    self.dirty = true;
+                    let text = match self.state.root_filter.as_deref() {
+                        Some(root) => format!(
+                            "showing {} only · ←/→ walks workspaces",
+                            root.rsplit('/').next().unwrap_or(root)
+                        ),
+                        None => "showing every workspace".to_owned(),
+                    };
+                    self.note(&text);
                 }
                 KeyCode::Enter => self.open_selected(outbound),
                 _ => {}
