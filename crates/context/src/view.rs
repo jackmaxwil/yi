@@ -252,6 +252,8 @@ fn assistant_tools(
     }
 }
 
+// Only `path` and `command` name a call: the map's "first string argument" was
+// order-dependent, so the same call briefed differently between runs.
 fn tool_call_brief(name: &str, arguments: &serde_json::Map<String, serde_json::Value>) -> String {
     let first = arguments
         .get("path")
