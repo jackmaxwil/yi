@@ -479,6 +479,7 @@ pub fn attach_runtime(session: &mut AgentSession, mut wiring: RuntimeWiring) -> 
     let mut tools = (wiring.tools)();
     tools.push(crate::kernel::ipython_tool(Arc::clone(&service)));
     crate::auto_review::wire(session, &wiring, &mut tools);
+    let fetch_for_rules = Arc::clone(&fetch_log);
     wire_plan_engine(
         session, &wiring, &plans_dir, &host, &mut tools, fetch_log, resolver,
     );
@@ -487,7 +488,7 @@ pub fn attach_runtime(session: &mut AgentSession, mut wiring: RuntimeWiring) -> 
             advisor.request_review(Some(crate::plan::summary_line(plan)));
         }));
     }
-    let rule_set = crate::rules::discover(&wiring.cwd, &wiring.home);
+    let rule_set = crate::rules::discover_armed(&wiring.cwd, &wiring.home);
     if !rule_set.warnings.is_empty() {
         let notice = session.notice_hook();
         for warning in &rule_set.warnings {
@@ -497,6 +498,7 @@ pub fn attach_runtime(session: &mut AgentSession, mut wiring: RuntimeWiring) -> 
     // Attached even with zero rules: the adapters capture this Arc when tools
     // are installed, so a rule promoted mid-session (V11) arms immediately.
     let engine = Arc::new(crate::rules::RuleEngine::new(rule_set.rules));
+    engine.set_fetch(fetch_for_rules);
     crate::rules::attach_rules(session, Arc::clone(&engine));
     session.set_rules_engine(Arc::clone(&engine));
     wire_compacted(session, &service, &plans_dir, engine);

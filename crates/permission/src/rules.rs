@@ -81,6 +81,26 @@ impl ConfigRule {
     }
 }
 
+/// Compiled once and asked many times: a rule's `paths:` is parsed at discovery.
+#[derive(Debug, Clone)]
+pub struct PathGlob(globset::GlobMatcher);
+
+impl PathGlob {
+    pub fn new(pattern: &str) -> Result<Self, String> {
+        Ok(Self(
+            globset::GlobBuilder::new(pattern)
+                .literal_separator(false)
+                .build()
+                .map_err(|error| format!("invalid permission pattern {pattern:?}: {error}"))?
+                .compile_matcher(),
+        ))
+    }
+
+    pub fn is_match(&self, subject: &str) -> bool {
+        self.0.is_match(subject)
+    }
+}
+
 /// Session rule state over the yi-types wire shape: digests are recomputed
 /// from `canonical` on load and never trusted from disk.
 #[derive(Default)]

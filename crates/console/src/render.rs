@@ -219,11 +219,7 @@ fn sidebar_hits(
 ) -> (Vec<(u16, usize)>, Vec<crate::avatar::Placement>) {
     app.assign_accents();
     let lines = crate::sidebar::sidebar_lines(app, theme, sidebar.height);
-    let top = sidebar.y.saturating_add(crate::sidebar::rail_offset(
-        app,
-        lines.len(),
-        sidebar.height,
-    ));
+    let top = sidebar.y;
     let sidebar_rows: Vec<(u16, usize)> = lines
         .iter()
         .enumerate()
@@ -703,7 +699,7 @@ fn render_banner(app: &App, frame: &mut Frame<'_>, area: Rect, theme: &Theme) {
     if spans.is_empty() {
         let armed = matches!(app.state.mode, Mode::Prefix);
         spans.push(Span::styled(
-            format!(" {}", keys::hint(armed, app.cmd_hints)),
+            format!("   {}", keys::hint(armed, app.cmd_hints)),
             if armed {
                 theme.accent_style()
             } else {
