@@ -28,7 +28,7 @@ fn model(reasoning: bool) -> Model {
         },
         context_window: 272_000,
         max_tokens: 128_000,
-        compat: None,
+        compat: Some(json!({"supportsExplicitPromptCacheMode": true})),
         thinking_level_map: Some(json!({"off": "none", "high": "high"})),
         headers: None,
     }
@@ -67,6 +67,37 @@ fn canned() -> Vec<Value> {
     ]
 }
 
+/// A write is billed at its own rate and is not uncached input; leaving it
+/// inside `input` overstates the cold part of the prompt by the write.
+#[test]
+fn cache_write_tokens_come_off_input() -> TestResult {
+    let model = model(true);
+    let mut mapper = EventMapper::new(&model);
+    let mut payloads = canned();
+    payloads.pop();
+    payloads.push(
+        json!({"type":"response.completed","response":{"id":"resp_1","status":"completed",
+        "usage":{"input_tokens":100,"output_tokens":20,
+                 "input_tokens_details":{"cached_tokens":60,"cache_write_tokens":10}}}}),
+    );
+    for payload in payloads {
+        let _ = mapper.push(&payload);
+    }
+    let events = mapper.finish();
+    let Some(AssistantMessageEvent::Done { message, .. }) = events.last() else {
+        return Err(format!("expected done: {:?}", events.last()).into());
+    };
+    let AgentMessage::Assistant { usage, .. } = message else {
+        return Err("not assistant".into());
+    };
+    assert_eq!(
+        (usage.input, usage.cache_read, usage.cache_write),
+        (30, 60, 10)
+    );
+    assert_eq!(usage.total_tokens, 120);
+    Ok(())
+}
+
 #[test]
 fn responses_params_are_not_chat_completions() -> TestResult {
     let options = OpenAiOptions {
@@ -81,6 +112,7 @@ fn responses_params_are_not_chat_completions() -> TestResult {
     assert_eq!(params["stream"], true);
     assert_eq!(params["max_output_tokens"], 4096);
     assert_eq!(params["prompt_cache_key"], "session-1");
+    assert!(params.get("prompt_cache_retention").is_none());
     assert_eq!(params["reasoning"]["effort"], "high");
     assert_eq!(params["include"][0], "reasoning.encrypted_content");
     assert_eq!(params["tools"][0]["type"], "function");
