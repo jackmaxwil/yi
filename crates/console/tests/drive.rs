@@ -1058,6 +1058,25 @@ fn new_session_reply(frame: &Value) -> Vec<Value> {
     )]
 }
 
+/// Opening yi is not resuming: with sessions listed and nothing bound, the first pane still
+/// gets a fresh session; a resume is a sidebar pick. Seen with a ledger whose newest row was a
+/// deleted worktree's session, which resumed into "unknown session".
+#[test]
+fn workspace_autostarts_a_new_session_even_when_sessions_are_listed() -> TestResult {
+    run_with(
+        "auto-new-rows",
+        vec![
+            Step::Expect("initialize", init_reply),
+            Step::Expect("session/list", named_list),
+            Step::Expect("session/list", empty_list),
+            Step::Expect("session/new", new_session_reply),
+        ],
+        "wait-frame 5000 s-new\n\
+         quit\n",
+        true,
+    )
+}
+
 /// Bare `yi` opens a working pane: an empty root gets a fresh session without a keypress.
 #[test]
 fn workspace_autostarts_new_session_when_root_is_empty() -> TestResult {
@@ -1070,24 +1089,6 @@ fn workspace_autostarts_new_session_when_root_is_empty() -> TestResult {
             Step::Expect("session/new", new_session_reply),
         ],
         "wait-frame 5000 s-new\n\
-         quit\n",
-        true,
-    )
-}
-
-/// A root with sessions resumes its first one instead of minting another.
-#[test]
-fn workspace_resumes_first_session_when_root_has_one() -> TestResult {
-    run_with(
-        "autostart-resume",
-        vec![
-            Step::Expect("initialize", init_reply),
-            Step::Expect("session/list", two_session_list),
-            Step::Expect("session/list", empty_list),
-            Step::Expect("session/resume", resume_alpha),
-            Step::Expect("_yi/seen", seen_ok),
-        ],
-        "wait-frame 5000 replayed world\n\
          quit\n",
         true,
     )
