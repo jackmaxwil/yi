@@ -60,6 +60,8 @@ pub struct RuntimeWiring {
     pub tool_execution: yi_loop::ExecutionMode,
     pub cwd: PathBuf,
     pub home: PathBuf,
+    /// `lanes.slots`: how many worktree slots the repo's pool holds.
+    pub lane_slots: u8,
     pub broker: Option<Arc<crate::permission::PermissionBroker>>,
     pub tools: Arc<dyn Fn() -> Vec<Arc<dyn yi_tools::Tool>> + Send + Sync>,
     pub depth: u8,
@@ -530,6 +532,8 @@ fn subagent_host(
         events: session.events_sender(),
         parent_messages: session.history_handle(),
         cwd: wiring.cwd.clone(),
+        home: wiring.home.clone(),
+        lane_slots: wiring.lane_slots,
         report: {
             let deliver = session.heartbeat_hook();
             Arc::new(move |message| {

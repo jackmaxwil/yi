@@ -182,4 +182,7 @@ pub enum AgentEvent {
     ChildUpdate {
         update: crate::subagent::ChildUpdate,
     },
+    LandingState {
+        landing: crate::lane::Landing,
+    },
 }

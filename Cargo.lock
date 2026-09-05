@@ -2202,6 +2202,7 @@ dependencies = [
 name = "yi-ai"
 version = "0.2.0"
 dependencies = [
+ "miniz_oxide",
  "serde_json",
  "tokio",
  "ureq",
