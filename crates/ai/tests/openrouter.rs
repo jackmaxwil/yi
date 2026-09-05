@@ -74,9 +74,23 @@ fn build_params_honors_the_openrouter_compat_flags() -> TestResult {
     assert!(params.get("reasoning_effort").is_none());
     assert!(params.get("store").is_none());
     assert!(params.get("prompt_cache_key").is_none());
+    assert!(
+        params.get("cache_control").is_none(),
+        "an automatic-cache route gets no breakpoint"
+    );
     let assistant = &params["messages"][2];
     assert_eq!(assistant["role"], "assistant");
     assert_eq!(assistant["reasoning_content"], "");
+    Ok(())
+}
+
+/// OpenRouter only forwards a breakpoint it is told about, and an Anthropic
+/// route without one re-bills the whole prefix every turn.
+#[test]
+fn anthropic_routed_models_get_a_root_breakpoint() -> TestResult {
+    let model = model("anthropic/claude-haiku-4.5")?;
+    let params = build_params(&model, &history_context(), &OpenAiOptions::default());
+    assert_eq!(params["cache_control"], json!({"type": "ephemeral"}));
     Ok(())
 }
 
@@ -96,7 +110,7 @@ fn chunk_mapper_captures_openrouter_reasoning_deltas_and_cached_usage() -> TestR
         json!({"id": "gen-1", "choices": [{"delta": {"reasoning": "thinking about it"}}]}),
         json!({"id": "gen-1", "choices": [{"delta": {"content": "the answer"}}]}),
         json!({"id": "gen-1", "choices": [{"delta": {}, "finish_reason": "stop"}],
-               "usage": {"prompt_tokens": 100, "completion_tokens": 20,
+               "usage": {"prompt_tokens": 100, "completion_tokens": 20, "cost": 0.000123,
                           "prompt_tokens_details": {"cached_tokens": 60}}}),
     ] {
         mapper.push_chunk(&chunk);
@@ -122,6 +136,11 @@ fn chunk_mapper_captures_openrouter_reasoning_deltas_and_cached_usage() -> TestR
     assert_eq!(usage.cache_read, 60);
     assert_eq!(usage.input, 40);
     assert_eq!(usage.output, 20);
+    assert_eq!(
+        usage.cost.total.as_f64(),
+        Some(0.000123),
+        "the account charge outranks the catalog estimate"
+    );
     Ok(())
 }
 

@@ -340,9 +340,9 @@ fn a_turn_ends_with_a_dim_footer() -> TestResult {
             response_id: None,
             diagnostics: None,
             usage: Usage {
-                input: 3100,
+                input: 1100,
                 output: 620,
-                cache_read: 0,
+                cache_read: 2000,
                 cache_write: 0,
                 cache_write1h: None,
                 reasoning: None,
@@ -372,6 +372,6 @@ fn a_turn_ends_with_a_dim_footer() -> TestResult {
         .iter()
         .find(|r| r.starts_with("  ↳ 1 tool · "))
         .ok_or_else(|| format!("no footer: {rows:?}"))?;
-    assert!(footer.contains("3K in / 620 out"), "{footer}");
+    assert!(footer.contains("3K in / 620 out · 64% cached"), "{footer}");
     Ok(())
 }
