@@ -1440,7 +1440,7 @@ are rejected with the reason.
 | — | one deterministic malformed-tool-call repair before failing | adopt | L13 |
 | — | A running `bash` can be promoted to background without cancelling; the turn continues with a handle | adopt | T12 `promote(handle)`; I1 epoch guards the hand-off |
 | — | A subagent whose tool set is a non-empty subset of `READ_ONLY_TOOLS` is read-only; unknown tool ⇒ not read-only (fail-safe) | adopt | B2 `is_read_only(&Spec)`; read-only children skip permission prompts |
-| — | Optional `isolation: Worktree` on spawn: child claims a lane from the repository's slot pool; parent merges or discards | live 0.146.0 (D119) | B11 |
+| — | Optional `isolation: Worktree` on spawn: child claims a lane from the repository's slot pool; parent merges or discards | live 0.148.0 (D119) | B11 |
 | — | per-source byte budgets with truncation markers | adopt | P16; enforced in P11 |
 | — | startup and binary-size budgets in CI | adopt | §9 `startup_ms_budget.json`, `binary_size_budget.json` |
 | Pi `evals` | Scenario eval suite (`yi ask --json` over fixture repos) run nightly, not per-PR | adopt | `evals/` workspace member, phase 3 |

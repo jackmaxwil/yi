@@ -96,6 +96,7 @@ when it changes rather than editing them by hand.
 - [D110](adr/d110.md) - the comment cap drops from three lines to two
 - [D114](adr/d114.md) - D54 matches results, paths, and skill pointers
 - [D115](adr/d115.md) - compaction's recall half is an extractive view plus store-native grep
+- [D118](adr/d118.md) - the daemon's session ledger lives on disk beside the socket
 - [D119](adr/d119.md) - a root session is worktree-first, on a pooled lane
 - [D120](adr/d120.md) - git is the registry of lanes
 - [D121](adr/d121.md) - the hand-back ladder is by move

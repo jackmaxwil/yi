@@ -1,5 +1,5 @@
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use serde_json::{Map, Value, json};
 
@@ -7,8 +7,6 @@ use crate::tool::{
     DETAIL_CAP, Tool, ToolContext, ToolKind, ToolOutput, error_output, require_str, resolve_path,
     text_output,
 };
-
-const MATCH_CAP: usize = 1_000;
 
 #[derive(Default)]
 pub struct WriteTool {
@@ -121,73 +119,6 @@ pub(crate) fn walk_files(root: &Path, visit: &mut dyn FnMut(&Path) -> bool) {
     }
 }
 
-pub struct GlobTool;
-
-impl Tool for GlobTool {
-    fn name(&self) -> &str {
-        "glob"
-    }
-
-    fn description(&self) -> &str {
-        "Find files whose path matches a glob pattern (e.g. \"**/*.rs\"), searching under path or the working directory."
-    }
-
-    fn schema(&self) -> Value {
-        json!({
-            "type": "object",
-            "properties": {
-                "pattern": {"type": "string", "description": "Glob pattern, matched against the path relative to the search root"},
-                "path": {"type": "string", "description": "Directory to search (default: the working directory)"}
-            },
-            "required": ["pattern"]
-        })
-    }
-
-    fn kind(&self) -> ToolKind {
-        ToolKind::Read
-    }
-
-    fn execute(&self, input: Map<String, Value>, context: &ToolContext) -> ToolOutput {
-        let pattern = match require_str(&input, "pattern") {
-            Ok(pattern) => pattern,
-            Err(message) => return error_output(message),
-        };
-        let matcher = match globset::GlobBuilder::new(pattern)
-            .literal_separator(false)
-            .build()
-        {
-            Ok(glob) => glob.compile_matcher(),
-            Err(error) => return error_output(format!("invalid glob pattern: {error}")),
-        };
-        let root = input
-            .get("path")
-            .and_then(Value::as_str)
-            .map_or_else(|| context.cwd.clone(), |path| resolve_path(context, path));
-        let mut matches: Vec<String> = Vec::new();
-        walk_files(&root, &mut |path| {
-            let relative = path.strip_prefix(&root).unwrap_or(path);
-            if matcher.is_match(relative) {
-                matches.push(path.display().to_string());
-            }
-            matches.len() < MATCH_CAP
-        });
-        matches.sort();
-        let capped = matches.len() >= MATCH_CAP;
-        let mut output = if matches.is_empty() {
-            text_output("No files matched")
-        } else if capped {
-            text_output(format!(
-                "{}\n[result capped at {MATCH_CAP} matches — narrow the pattern or pass path]",
-                matches.join("\n")
-            ))
-        } else {
-            text_output(matches.join("\n"))
-        };
-        output.result.details = json!({ "matches": matches.len(), "capped": capped });
-        output
-    }
-}
-
 /// Every other verb keeps the `Exec` default: the flag warns about blast
 /// radius, and this is the set with none.
 const READ_ONLY_VERBS: [&str; 24] = [
@@ -207,6 +138,12 @@ const READ_ONLY_GIT: [&str; 10] = [
     "rev-parse",
     "ls-files",
     "shortlog",
+];
+
+/// Grid's query verbs read the chart; `survey` and `edit` write.
+const READ_ONLY_GRID: [&str; 14] = [
+    "resolve", "uses", "scope", "todo", "roots", "explain", "version", "orphans", "hotspots",
+    "log", "diff", "drift", "check", "help",
 ];
 
 /// Incident: every bash call reported as irreversible, so the advisor flagged `ls -la && git
@@ -235,10 +172,11 @@ fn read_only_segment(segment: &str) -> bool {
         return true;
     };
     let verb = verb.rsplit('/').next().unwrap_or(verb);
-    if verb == "git" {
-        return words.next().is_some_and(|sub| READ_ONLY_GIT.contains(sub));
+    match verb {
+        "git" => words.next().is_some_and(|sub| READ_ONLY_GIT.contains(sub)),
+        "grid" => words.next().is_some_and(|sub| READ_ONLY_GRID.contains(sub)),
+        _ => READ_ONLY_VERBS.contains(&verb),
     }
-    READ_ONLY_VERBS.contains(&verb)
 }
 
 /// Persisted per call so a stats pass can see shell searches the grep tool
@@ -288,7 +226,86 @@ fn segment_category(segment: &str) -> Option<&'static str> {
     })
 }
 
-pub struct BashTool;
+#[derive(Default)]
+pub struct BashTool {
+    pub hashline: Option<crate::hashline::tool::SharedHashline>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SkipReason {
+    Compound,
+    NotAView,
+    NotOneFile,
+}
+
+enum Bridge {
+    Tag { typed: String, path: PathBuf },
+    Skip(SkipReason),
+}
+
+impl SkipReason {
+    fn name(self) -> &'static str {
+        match self {
+            Self::Compound => "compound",
+            Self::NotAView => "not-a-view",
+            Self::NotOneFile => "not-one-file",
+        }
+    }
+}
+
+const VIEW_VERBS: [&str; 6] = ["cat", "head", "tail", "sed", "rg", "grep"];
+
+/// One plain view of one existing file can anchor an edit: the command is a single segment,
+/// its verb prints file text, and exactly one argument names a regular file.
+fn bridge_target(command: &str, cwd: &Path) -> Bridge {
+    if command.contains(['|', ';', '\n', '>', '`'])
+        || command.contains("&&")
+        || command.contains("$(")
+    {
+        return Bridge::Skip(SkipReason::Compound);
+    }
+    let mut tokens = command
+        .split_whitespace()
+        .skip_while(|token| token.contains('='));
+    let verb = tokens
+        .next()
+        .map(|verb| verb.rsplit('/').next().unwrap_or(verb));
+    if !verb.is_some_and(|verb| VIEW_VERBS.contains(&verb)) {
+        return Bridge::Skip(SkipReason::NotAView);
+    }
+    let files: Vec<(String, PathBuf)> = tokens
+        .filter(|token| !token.starts_with('-'))
+        .map(|token| (token.to_owned(), cwd.join(token)))
+        .filter(|(_, path)| path.is_file())
+        .collect();
+    match files.as_slice() {
+        [(typed, path)] => Bridge::Tag {
+            typed: typed.clone(),
+            path: path.clone(),
+        },
+        _ => Bridge::Skip(SkipReason::NotOneFile),
+    }
+}
+
+/// Bare `cat` shows every row; any other view shows the rows whose text is in the output.
+fn viewed_lines(command: &str, content: &str, output: &str) -> Vec<u64> {
+    let bare_cat = command
+        .split_whitespace()
+        .next()
+        .is_some_and(|verb| verb.rsplit('/').next() == Some("cat"))
+        && !command
+            .split_whitespace()
+            .any(|token| token.starts_with('-'));
+    content
+        .split('\n')
+        .enumerate()
+        .filter(|(_, line)| {
+            let trimmed = line.trim();
+            bare_cat || (trimmed.len() >= 3 && output.contains(trimmed))
+        })
+        .filter_map(|(index, _)| u64::try_from(index).ok()?.checked_add(1))
+        .collect()
+}
 
 impl Tool for BashTool {
     fn name(&self) -> &str {
@@ -313,6 +330,13 @@ impl Tool for BashTool {
 
     fn kind(&self) -> ToolKind {
         ToolKind::Exec
+    }
+
+    fn kind_for(&self, input: &Map<String, Value>) -> ToolKind {
+        match input.get("command").and_then(Value::as_str) {
+            Some(command) if read_only_command(command) => ToolKind::Read,
+            Some(_) | None => ToolKind::Exec,
+        }
     }
 
     fn irreversible(&self, input: &Map<String, Value>) -> bool {
@@ -383,10 +407,31 @@ impl Tool for BashTool {
         {
             sections.push(hint);
         }
-        let text = if sections.is_empty() {
+        let mut text = if sections.is_empty() {
             "(no output)".to_owned()
         } else {
             sections.join("\n")
+        };
+        let bridge = match &self.hashline {
+            Some(state) if exit_code == 0 && !capture.cancelled => {
+                match bridge_target(command, &context.cwd) {
+                    Bridge::Tag { typed, path } => match fs::read_to_string(&path) {
+                        Ok(content) => {
+                            let seen = viewed_lines(command, &content, &capture.stdout);
+                            let tag = crate::hashline::tool::record_view_snapshot(
+                                state, &path, &content, &seen,
+                            );
+                            let header =
+                                crate::hashline::format::format_hashline_header(&typed, tag);
+                            text = format!("{header}\n{text}");
+                            "tag"
+                        }
+                        Err(_) => SkipReason::NotOneFile.name(),
+                    },
+                    Bridge::Skip(reason) => reason.name(),
+                }
+            }
+            Some(_) | None => SkipReason::NotAView.name(),
         };
         let mut output = text_output(text);
         output.result.details = json!({
@@ -396,6 +441,7 @@ impl Tool for BashTool {
             "rawBytes": reduced.raw_bytes,
             "outBytes": reduced.out_bytes,
             "category": command_category(command),
+            "bridge": bridge,
         });
         output.is_error = exit_code != 0 || capture.cancelled;
         output

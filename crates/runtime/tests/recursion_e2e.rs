@@ -1279,6 +1279,7 @@ fn write_canonical_plan(cwd: &std::path::Path, todos: &[(&str, &str)]) -> TestRe
                 }),
                 subplan: None,
                 retries: RetryCount::default(),
+                children: Vec::new(),
                 extra: Map::new(),
             })
         })

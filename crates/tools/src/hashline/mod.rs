@@ -9,6 +9,7 @@ pub mod normalize;
 pub mod parser;
 pub mod patcher;
 pub mod prefixes;
+pub mod rebase;
 pub mod snapshots;
 pub mod tokenizer;
 pub mod tool;
