@@ -37,6 +37,7 @@ impl App {
             session_dir: String::new(),
             keys: Vec::new(),
             initial_prompt: None,
+            pace: 0,
         };
         let mut app =
             yi_tui::app::App::new(options, self.theme, yi_tui::keymap::default_keymap(), 80);

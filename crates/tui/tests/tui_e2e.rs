@@ -68,6 +68,7 @@ fn options() -> TuiOptions {
         session_dir: String::new(),
         keys: Vec::new(),
         initial_prompt: None,
+        pace: 0,
     }
 }
 

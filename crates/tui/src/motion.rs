@@ -15,6 +15,10 @@ pub fn elapsed_of(phase: usize) -> u128 {
     u128::try_from(phase).unwrap_or(0).saturating_mul(TICK_MS)
 }
 
+pub(crate) fn elapsed_ms(since: std::time::Instant) -> u64 {
+    u64::try_from(since.elapsed().as_millis()).unwrap_or(0)
+}
+
 /// Starburst. Every glyph is one cell wide — a width change would reflow the
 /// row on every frame.
 pub const THINKING_FRAMES: [char; 8] = ['✻', '✼', '❉', '❊', '✺', '✹', '✸', '✶'];
