@@ -18,3 +18,6 @@ __pycache__/
 
 # a root .env may hold real keys (ARC); never trackable
 .env
+
+# paid driver output (tb21, cache-probe); transcripts hold no keys but are not law
+/runs/
