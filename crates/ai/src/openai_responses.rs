@@ -343,6 +343,9 @@ pub fn build_params(model: &Model, context: &LlmContext, options: &OpenAiOptions
     if let Some(session_id) = &options.session_id {
         params["prompt_cache_key"] = json!(session_id);
     }
+    if let Some(ttl) = crate::openai::prompt_cache_retention(model) {
+        params["prompt_cache_retention"] = json!(ttl);
+    }
     if let Some(max_tokens) = options.max_tokens {
         params["max_output_tokens"] = json!(max_tokens);
     }
@@ -364,16 +367,23 @@ pub fn build_params(model: &Model, context: &LlmContext, options: &OpenAiOptions
 fn parse_usage(raw: &Value, model: &Model) -> yi_types::message::Usage {
     let get = |value: &Value, key: &str| value.get(key).and_then(Value::as_i64).unwrap_or(0);
     let prompt = get(raw, "input_tokens");
-    let cache_read = raw
-        .get("input_tokens_details")
-        .and_then(|details| details.get("cached_tokens"))
-        .and_then(Value::as_i64)
-        .unwrap_or(0);
+    let details = raw.get("input_tokens_details");
+    let detail = |key: &str| {
+        details
+            .and_then(|value| value.get(key))
+            .and_then(Value::as_i64)
+            .unwrap_or(0)
+    };
+    let cache_read = detail("cached_tokens");
+    let cache_write = detail("cache_write_tokens");
     let output = get(raw, "output_tokens");
     let mut usage = yi_types::message::Usage::zero();
-    usage.input = prompt.saturating_sub(cache_read);
+    usage.input = prompt
+        .saturating_sub(cache_read)
+        .saturating_sub(cache_write);
     usage.output = output;
     usage.cache_read = cache_read;
+    usage.cache_write = cache_write;
     usage.reasoning = raw
         .get("output_tokens_details")
         .and_then(|details| details.get("reasoning_tokens"))
@@ -381,7 +391,8 @@ fn parse_usage(raw: &Value, model: &Model) -> yi_types::message::Usage {
     usage.total_tokens = usage
         .input
         .saturating_add(output)
-        .saturating_add(cache_read);
+        .saturating_add(cache_read)
+        .saturating_add(cache_write);
     calculate_cost(model, &mut usage);
     usage
 }
