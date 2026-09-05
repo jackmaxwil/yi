@@ -89,12 +89,13 @@ fn draw_frame<B>(
     if resized || mode_changed {
         terminal.invalidate_viewport();
     }
-    let mut orb_at = None;
+    let mut placed = Placed::default();
     let _ = terminal.draw(|frame| {
         let area = frame.area();
-        orb_at = paint_chat(app, &layout, frame.buffer_mut(), area);
+        placed = paint_chat(app, &layout, frame.buffer_mut(), area);
     });
-    app.orb_placement = orb_at;
+    app.orb_placement = placed.orb;
+    app.logo_rows = logo_rows(placed.bottom);
     app.logo_target = if layout.orb { 1.0 } else { 0.0 };
 }
 
@@ -323,14 +324,23 @@ pub fn layout_chat(app: &mut App, goal: Option<GoalView>, total: u16) -> ChatLay
     }
 }
 
-/// Paints a layout into any rectangle of a buffer; returns where the orb belongs.
-pub fn paint_chat(
-    app: &App,
-    layout: &ChatLayout,
-    buffer: &mut Buffer,
-    area: Rect,
-) -> Option<(u16, u16)> {
+/// Where the last paint put the orb and the bottom block, in cells.
+#[derive(Default)]
+pub struct Placed {
+    pub orb: Option<(u16, u16)>,
+    pub bottom: Option<(u16, u16)>,
+}
+
+/// The picker's first model row is one below its query line; the slot is its second cell.
+fn logo_rows(bottom_at: Option<(u16, u16)>) -> Option<(u16, u16)> {
+    bottom_at.map(|(col, row)| (col.saturating_add(1), row.saturating_add(1)))
+}
+
+/// Paints a layout into any rectangle of a buffer; returns where the orb and the bottom
+/// block belong.
+pub fn paint_chat(app: &App, layout: &ChatLayout, buffer: &mut Buffer, area: Rect) -> Placed {
     let mut orb_at = None;
+    let mut bottom_at = None;
     let mut y = area.top();
     let put = |buffer: &mut Buffer, lines: &[Line<'static>], y: &mut u16| {
         let height = u16::try_from(lines.len()).unwrap_or(0);
@@ -353,7 +363,10 @@ pub fn paint_chat(
     }
     put(buffer, &layout.hud, &mut y);
     match &layout.bottom {
-        Some(lines) => put(buffer, lines, &mut y),
+        Some(lines) => {
+            bottom_at = Some((area.left(), y));
+            put(buffer, lines, &mut y);
+        }
         None => {
             if y < area.bottom() {
                 let height = layout.composer_height.min(area.bottom().saturating_sub(y));
@@ -369,7 +382,10 @@ pub fn paint_chat(
         }
     }
     put(buffer, std::slice::from_ref(&layout.status), &mut y);
-    orb_at
+    Placed {
+        orb: orb_at,
+        bottom: bottom_at,
+    }
 }
 
 /// The chat inside a rectangle: the retained transcript above, the live frame below it,
@@ -408,7 +424,9 @@ pub fn paint_pane(
         area.width,
         area.height.saturating_sub(rows),
     );
-    app.orb_placement = paint_chat(app, &layout, buffer, chat_area);
+    let placed = paint_chat(app, &layout, buffer, chat_area);
+    app.orb_placement = placed.orb;
+    app.logo_rows = logo_rows(placed.bottom);
     app.logo_target = if layout.orb { 1.0 } else { 0.0 };
     let total = history.len().saturating_add(usize::from(chat_rows));
     (total > usize::from(area.height)).then_some((total, start))

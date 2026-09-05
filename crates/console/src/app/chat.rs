@@ -47,6 +47,7 @@ impl App {
             app,
             port: RemotePort::default(),
             orb: yi_tui::orb::Tick::with_ids(orb_ids(pane_id)),
+            logos: yi_tui::logos::Tick::default(),
             ask: None,
             events: std::sync::mpsc::channel(),
             commands: command_channel(),

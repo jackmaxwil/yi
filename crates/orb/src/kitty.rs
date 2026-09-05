@@ -13,7 +13,8 @@ pub fn supported() -> bool {
 
 /// TokyoNight-leaning light ink on the reference's light-dots-on-dark contract; alpha carries
 /// depth over a transparent background so the terminal's own ground shows through.
-const INK: (f64, f64, f64) = (0xc8 as f64, 0xd3 as f64, 0xf5 as f64);
+pub const INK_RGB: (u8, u8, u8) = (0xc8, 0xd3, 0xf5);
+const INK: (f64, f64, f64) = (INK_RGB.0 as f64, INK_RGB.1 as f64, INK_RGB.2 as f64);
 
 /// Paint a finished frame to RGBA on the canvas painter's contract — ink mirrored to
 /// 1 - white, lines then dots far→near — with a feathered edge for antialiasing.
@@ -151,8 +152,24 @@ pub fn place(
     cols: u16,
     rows: u16,
 ) -> std::io::Result<()> {
+    place_nth(out, id, 1, col, row, cols, rows)
+}
+
+/// One image shown on several rows needs one placement id per row: `p` names it.
+pub fn place_nth(
+    out: &mut impl Write,
+    id: u32,
+    placement: u32,
+    col: u16,
+    row: u16,
+    cols: u16,
+    rows: u16,
+) -> std::io::Result<()> {
     write!(out, "\x1b[?2026h\x1b7\x1b[{};{}H", row + 1, col + 1)?;
-    write!(out, "\x1b_Ga=p,i={id},p=1,q=2,C=1,c={cols},r={rows}\x1b\\")?;
+    write!(
+        out,
+        "\x1b_Ga=p,i={id},p={placement},q=2,C=1,c={cols},r={rows}\x1b\\"
+    )?;
     write!(out, "\x1b8\x1b[?2026l")?;
     out.flush()
 }

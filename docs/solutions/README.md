@@ -106,5 +106,6 @@ when it changes rather than editing them by hand.
 - [D126](adr/d126.md) - the TUI paints streamed text through a reveal cursor
 - [D127](adr/d127.md) - every ratchet moves through one verb, and an ADR is rendered from its row
 - [D128](adr/d128.md) - the model catalog is fetched, and the bundled one is its floor
+- [D129](adr/d129.md) - the model picker shows each row's mark
 
 D36-D51, D72, D73 and D74 have no ADR yet; ARCHITECTURE.md is the record for those rows.
