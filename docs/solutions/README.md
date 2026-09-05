@@ -103,5 +103,6 @@ when it changes rather than editing them by hand.
 - [D122](adr/d122.md) - the forge adapter is detection, not abstraction
 - [D123](adr/d123.md) - landing state is an event
 - [D124](adr/d124.md) - the idle warmer is contained, offline and receipted
+- [D127](adr/d127.md) - every ratchet moves through one verb, and an ADR is rendered from its row
 
 D36-D51, D72, D73 and D74 have no ADR yet; ARCHITECTURE.md is the record for those rows.
