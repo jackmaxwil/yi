@@ -31,6 +31,8 @@ fn entry_attributed(entry: &Entry) -> Vec<Attributed> {
                     timestamp: *timestamp,
                 },
             });
+            // Invariant: a retained-tail message carries no id. The compaction's id would
+            // send `history://` to the summary, not the turn the pointer promised.
             messages.extend(
                 retained_tail
                     .iter()
