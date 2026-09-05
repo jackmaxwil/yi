@@ -11,8 +11,8 @@ use yi_types::wire::{Fact, Mutation};
 use crate::error::SessionError;
 use crate::id::{IdGenerator, now_ms};
 use crate::query::{
-    BranchBounds, EntryQuery, ForkScope, LanePointer, LogOptions, RecordQuery, SessionMetadata,
-    SessionStats,
+    BranchBounds, EntryOrder, EntryQuery, ForkScope, HistoryHit, LanePointer, LogOptions,
+    RecordQuery, SessionMetadata, SessionStats,
 };
 use crate::state::SessionState;
 
@@ -281,6 +281,37 @@ impl SessionStore {
         self.state.find_entries(query)
     }
 
+    pub fn grep(&self, needle: &str, limit: usize) -> Vec<HistoryHit> {
+        let needle = needle.trim();
+        if needle.is_empty() {
+            return Vec::new();
+        }
+        let limit = limit.clamp(1, 32);
+        let lowered_needle = needle.to_lowercase();
+        let query = EntryQuery {
+            order: EntryOrder::OldestFirst,
+            ..EntryQuery::default()
+        };
+        let Ok(entries) = self.find_entries(&query) else {
+            return Vec::new();
+        };
+        entries
+            .iter()
+            .filter_map(|entry| {
+                let lowered = searchable_text(entry).to_lowercase();
+                if !lowered.contains(&lowered_needle) {
+                    return None;
+                }
+                Some(HistoryHit {
+                    entry_id: entry.id().to_owned(),
+                    entry_type: entry.type_name().to_owned(),
+                    snippet: snippet(&lowered, &lowered_needle),
+                })
+            })
+            .take(limit)
+            .collect()
+    }
+
     pub fn find_entries_on_branch(
         &self,
         lane: &str,
@@ -329,4 +360,30 @@ impl SessionStore {
     pub fn fork_mutations(&self, scope: &ForkScope) -> Result<Vec<Mutation>, SessionError> {
         self.state.fork_mutations(scope)
     }
+}
+
+const SNIPPET_CHARS: usize = 160;
+
+fn searchable_text(entry: &Entry) -> String {
+    match entry {
+        Entry::Message { message, .. } => message.plain_text(),
+        Entry::Compaction { summary, .. } | Entry::BranchSummary { summary, .. } => summary.clone(),
+        _ => String::new(),
+    }
+}
+
+fn snippet(lowered: &str, lowered_needle: &str) -> String {
+    let line = lowered
+        .lines()
+        .find(|line| line.contains(lowered_needle))
+        .or_else(|| lowered.lines().next())
+        .unwrap_or("");
+    if line.chars().count() <= SNIPPET_CHARS {
+        return line.to_owned();
+    }
+    let char_pos = line.find(lowered_needle).map_or(0, |byte| {
+        line.char_indices().take_while(|(i, _)| *i < byte).count()
+    });
+    let start = char_pos.saturating_sub(SNIPPET_CHARS / 2);
+    line.chars().skip(start).take(SNIPPET_CHARS).collect()
 }

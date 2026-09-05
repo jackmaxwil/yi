@@ -206,7 +206,12 @@ pub fn digest_line(item: &LogItem<'_>, user_budget: usize, prose_budget: usize) 
         AgentMessage::CompactionSummary { summary, .. } => {
             // A summary is prose with its own newlines; one digest item is one
             // line, or the pull handle strands on a line of its own.
-            let flat = summary.split_whitespace().collect::<Vec<_>>().join(" ");
+            let source = summary
+                .split_once("</yi_compact_view>")
+                .map(|(_, rest)| rest.trim())
+                .filter(|rest| !rest.is_empty())
+                .unwrap_or(summary);
+            let flat = source.split_whitespace().collect::<Vec<_>>().join(" ");
             let head: String = flat.chars().take(COMPACTION_HEAD).collect();
             let elided = if head.len() < flat.len() { "…" } else { "" };
             Some(format!(

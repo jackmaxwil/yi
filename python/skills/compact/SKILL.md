@@ -26,6 +26,12 @@ await compact.run("keep the failing test names and the migration checklist")
   `{"scheduled": True}`, or `{"scheduled": False, "reason": ...}` when there
   is nothing to compact yet. Optional `instructions` focus the summary on
   what matters for the remaining work.
+- `await compact.recall(pattern, limit=None)` — grep the full session log
+  (case-insensitive substring) for turns the summary cites as `(#entryId)`.
+  Returns `{"hits": [{"entryId", "type", "snippet"}]}`, oldest first, limit
+  clamped to 1–32 (default 8). Pull the full entry with
+  `await rlm.fetch(f"history://<session-id>/{entryId}")`. One request per
+  turn is enough.
 
 ## Rules
 

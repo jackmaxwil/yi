@@ -37,3 +37,17 @@ async def run(instructions: str | None = None) -> dict[str, Any]:
     if instructions is not None:
         payload["instructions"] = instructions
     return await host_request("compact.run", payload)
+
+
+async def recall(pattern: str, limit: int | None = None) -> dict[str, Any]:
+    """Search the full session log for turns the summary cites as (#entryId).
+
+    The compacted window holds a summary plus recent turns; the log keeps
+    everything. `recall` greps that log (case-insensitive substring) and
+    returns `{"hits": [{"entryId", "type", "snippet"}]}`, oldest first.
+    Pull the full entry with `await rlm.fetch(f"history://<session-id>/{entryId}")`.
+    """
+    payload: dict[str, Any] = {"pattern": pattern}
+    if limit is not None:
+        payload["limit"] = limit
+    return await host_request("history.grep", payload)

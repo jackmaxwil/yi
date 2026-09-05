@@ -2,10 +2,11 @@ use std::error::Error;
 
 use serde_json::json;
 use yi_context::{
-    Bytes, CHILD_USAGE_CAUSE, HarnessState, Prefill, Scope, Settings, Tokens, Window,
-    attribute_child_usage, context_tokens, drop_internal, estimate_context, fit, internal_source,
-    own_and_total_usage, prepare_compaction, project, retain_floor, select_cut,
-    serialize_conversation, should_compact, wrap_internal,
+    Attributed, BriefLine, Bytes, CHILD_USAGE_CAUSE, CompiledView, FileOps, HarnessState, Prefill,
+    Scope, Settings, Tokens, Window, attribute_child_usage, compile_view, compose_summary,
+    context_tokens, drop_internal, estimate_context, fit, internal_source, own_and_total_usage,
+    prepare_compaction, project, retain_floor, select_cut, serialize_conversation, should_compact,
+    wrap_internal,
 };
 use yi_types::entry::Entry;
 use yi_types::message::{AgentMessage, Content, Cost, StopReason, Usage, UserContent};
@@ -52,6 +53,33 @@ fn assistant(text: &str, usage_row: Usage, stop_reason: StopReason) -> AgentMess
         diagnostics: None,
         usage: usage_row,
         stop_reason,
+        deferred: None,
+        error_message: None,
+        raw_stop_reason: None,
+        end_turn: None,
+        timestamp: 2,
+    }
+}
+
+fn assistant_call(name: &str, path: &str) -> AgentMessage {
+    let mut arguments = serde_json::Map::new();
+    arguments.insert("path".to_owned(), json!(path));
+    AgentMessage::Assistant {
+        content: vec![Content::ToolCall {
+            id: "call-1".to_owned(),
+            name: name.to_owned(),
+            arguments,
+            thought_signature: None,
+            namespace: None,
+        }],
+        api: "faux".to_owned(),
+        provider: "faux".to_owned(),
+        model: "faux-1".to_owned(),
+        response_model: None,
+        response_id: None,
+        diagnostics: None,
+        usage: usage(0, 0, 0),
+        stop_reason: StopReason::ToolUse,
         deferred: None,
         error_message: None,
         raw_stop_reason: None,
@@ -462,5 +490,248 @@ fn ledger_loads_reference_shaped_state_and_formats_hints() -> TestResult {
     let empty = HarnessState::load(&dir.join("missing.json"));
     assert!(empty.format_for_prompt(Bytes(4096)).is_none());
     std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
+fn att(id: &str, message: AgentMessage) -> Attributed {
+    Attributed {
+        id: Some(id.to_owned()),
+        message,
+    }
+}
+
+fn brief_texts(view: &CompiledView) -> Vec<String> {
+    view.brief.iter().map(BriefLine::render).collect()
+}
+
+#[test]
+fn compile_view_puts_entry_ids_on_tool_pointers_not_user_prose() -> TestResult {
+    let long = "body ".repeat(80);
+    let attributed = vec![
+        att("m1", user("port the parser")),
+        att(
+            "m2",
+            assistant("working because we must", usage(0, 0, 0), StopReason::Stop),
+        ),
+        att("t1", tool_result(&long)),
+    ];
+    let view = compile_view(&attributed, None);
+    let rendered = view.render();
+    assert!(
+        !rendered.contains("port the parser"),
+        "P17 already keeps user text; the brief must not re-summarize it: {rendered}"
+    );
+    assert!(
+        !rendered.contains("working because"),
+        "assistant prose is not a keyword brief: {rendered}"
+    );
+    assert!(
+        rendered.contains(&format!(
+            "(#t1) tool: read → {} chars",
+            long.chars().count()
+        )),
+        "a compacted-away tool result stays addressable by id: {rendered}"
+    );
+    Ok(())
+}
+
+#[test]
+fn compile_view_rolls_previous_brief_and_caps_at_120() -> TestResult {
+    let previous = CompiledView {
+        brief: (0..100)
+            .map(|index| BriefLine {
+                id: Some(format!("old{index}")),
+                text: "tool: probe → 10 chars".to_owned(),
+            })
+            .collect(),
+        ..CompiledView::default()
+    };
+    let attributed: Vec<Attributed> = (0..30)
+        .map(|index| att(&format!("n{index}"), tool_result(&format!("ok {index}"))))
+        .collect();
+    let view = compile_view(&attributed, Some(&previous));
+    assert_eq!(view.brief.len(), 120);
+    let lines = brief_texts(&view);
+    assert!(
+        !lines.iter().any(|line| line.contains("(#old0)")),
+        "the oldest previous line must roll off when 100+30 exceeds the cap"
+    );
+    assert!(
+        lines.iter().any(|line| line.contains("(#old10)")),
+        "an older id that still fits the rolling window must survive"
+    );
+    assert!(
+        lines.iter().any(|line| line.contains("(#n29)")),
+        "the newest summarized tool turn must survive the cap"
+    );
+    Ok(())
+}
+
+#[test]
+fn compose_summary_prefixes_view_before_llm_prose() -> TestResult {
+    let view = CompiledView {
+        brief: vec![BriefLine {
+            id: Some("m1".to_owned()),
+            text: "tool: read → 4 chars".to_owned(),
+        }],
+        ..CompiledView::default()
+    };
+    let (text, _) = compose_summary("## Goal\nPort the parser", &FileOps::default(), &view);
+    let view_at = text
+        .find("<yi_compact_view>")
+        .ok_or("view marker missing")?;
+    let goal_at = text.find("## Goal").ok_or("llm prose missing")?;
+    assert!(
+        view_at < goal_at,
+        "the host view must lead the LLM checkpoint so it is not rewritten as Goal prose: {text}"
+    );
+    Ok(())
+}
+
+#[test]
+fn compose_summary_persists_the_view_for_the_next_round_to_roll() -> TestResult {
+    let view = CompiledView {
+        brief: vec![BriefLine {
+            id: Some("m1".to_owned()),
+            text: "tool: read → 4 chars".to_owned(),
+        }],
+        earlier: vec!["(#a..#b)".to_owned()],
+        ..CompiledView::default()
+    };
+    let (_, details) = compose_summary("## Goal\nPort", &FileOps::default(), &view);
+    let restored = yi_context::view_from_extra(&details.extra).ok_or("view not persisted")?;
+    assert_eq!(restored.brief, view.brief);
+    assert_eq!(restored.earlier, view.earlier);
+    Ok(())
+}
+
+#[test]
+fn a_successful_result_that_talks_about_errors_is_still_a_pointer() -> TestResult {
+    let body = "ran the suite: 0 failed, no error surfaced, every assertion held";
+    let view = compile_view(&[att("t1", tool_result(body))], None);
+    let rendered = view.render();
+    assert!(
+        rendered.contains(&format!(
+            "(#t1) tool: read → {} chars",
+            body.chars().count()
+        )),
+        "is_error, not the words in the body, decides an outstanding line: {rendered}"
+    );
+    assert!(
+        !rendered.contains("0 failed"),
+        "a successful body must not ride the brief: {rendered}"
+    );
+    assert!(
+        view.outstanding.is_empty(),
+        "nothing is outstanding: {rendered}"
+    );
+    Ok(())
+}
+
+#[test]
+fn tool_result_is_a_pointer_and_a_later_edit_marks_the_read_stale() -> TestResult {
+    let long = "body ".repeat(80);
+    let attributed = vec![
+        att("u1", user("must keep the latch")),
+        att("r1", assistant_call("read", "src/latch.rs")),
+        att("t1", tool_result(&long)),
+        att("e1", assistant_call("edit", "src/latch.rs")),
+        att(
+            "a1",
+            assistant(
+                "First sentence is filler. We decided the latch because the kernel must never restart.",
+                usage(0, 0, 0),
+                StopReason::Stop,
+            ),
+        ),
+    ];
+    let view = compile_view(&attributed, None);
+    let rendered = view.render();
+    assert!(
+        rendered.contains(&format!(
+            "(#t1) tool: read → {} chars",
+            long.chars().count()
+        )),
+        "a successful tool result is a pointer, not the body: {rendered}"
+    );
+    assert!(
+        !rendered.contains("body body body"),
+        "the result body must not ride the brief: {rendered}"
+    );
+    assert!(
+        rendered.contains("(#r1) read src/latch.rs stale"),
+        "a later edit marks the read stale: {rendered}"
+    );
+    assert!(
+        rendered.contains("(#e1) edit src/latch.rs"),
+        "an edit is a path pointer: {rendered}"
+    );
+    assert!(
+        !rendered.contains("decided the latch"),
+        "assistant decisions are not keyword-kept: {rendered}"
+    );
+    assert!(
+        rendered.contains("[Kernel]") && rendered.contains("IPython kernel keeps running"),
+        "the view carries the kernel persist note: {rendered}"
+    );
+    Ok(())
+}
+
+#[test]
+fn earlier_index_names_the_demoted_span() -> TestResult {
+    let attributed: Vec<Attributed> = (0..125)
+        .map(|index| att(&format!("t{index}"), tool_result(&format!("ok {index}"))))
+        .collect();
+    let view = compile_view(&attributed, None);
+    assert_eq!(view.brief.len(), 120);
+    assert_eq!(view.earlier.len(), 1);
+    assert_eq!(
+        view.earlier[0], "(#t0..#t4)",
+        "demoted lines collapse to one index line with exact ids"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_user_only_span_still_renders_a_kernel_line() -> TestResult {
+    let view = compile_view(&[att("only", user("hi"))], None);
+    let rendered = view.render();
+    assert!(!rendered.contains("(#only)"), "{rendered}");
+    assert!(rendered.contains("[Kernel]"), "{rendered}");
+    assert!(view.earlier.is_empty());
+    assert!(view.brief.is_empty());
+    Ok(())
+}
+
+#[test]
+fn a_retained_tail_message_is_briefed_without_a_pointer_to_the_compaction() -> TestResult {
+    let branch = vec![
+        Entry::Compaction {
+            id: "c1".to_owned(),
+            summary: "earlier work".to_owned(),
+            retained_tail: vec![tool_result("tail body")],
+            tokens_before: 10,
+            usage: None,
+            details: None,
+            parent_id: None,
+            seq: 0,
+            timestamp: 1,
+        },
+        message_entry("m9", 2, tool_result("later body")),
+    ];
+    let view = compile_view(&yi_context::project_attributed(&branch), None);
+    let lines = brief_texts(&view);
+    assert!(
+        lines.iter().any(|line| line == "tool: read → 9 chars"),
+        "the tail message is briefed with no id at all: {lines:?}"
+    );
+    assert!(
+        !lines.iter().any(|line| line.contains("(#c1)")),
+        "a tail message predates the compaction and must not cite it: {lines:?}"
+    );
+    assert!(
+        lines.iter().any(|line| line.starts_with("(#m9)")),
+        "a real entry still carries its pointer: {lines:?}"
+    );
     Ok(())
 }

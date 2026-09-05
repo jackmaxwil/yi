@@ -248,6 +248,41 @@ fn tool_scoped_reminder_delivers_at_the_gate_without_denying() -> TestResult {
     Ok(())
 }
 
+#[test]
+fn a_once_reminder_rearms_after_compaction() -> TestResult {
+    let (engine, delivered) = engine_with_sink(vec![rule(
+        "prefer-rg",
+        "grep -r",
+        RuleScope::Tool("bash".to_owned()),
+        RuleGap::Once,
+        RuleMode::Remind,
+    )]);
+    assert!(
+        engine
+            .check_tool("bash", r#"{"command":"grep -r foo ."}"#)
+            .is_none()
+    );
+    assert_eq!(delivered.lock().map_err(|_| "lock")?.len(), 1);
+    engine.check_tool("bash", r#"{"command":"grep -r foo ."}"#);
+    assert_eq!(
+        delivered.lock().map_err(|_| "lock")?.len(),
+        1,
+        "gap: once stays spent until compaction"
+    );
+    engine.rearm();
+    assert!(
+        engine
+            .check_tool("bash", r#"{"command":"grep -r foo ."}"#)
+            .is_none()
+    );
+    assert_eq!(
+        delivered.lock().map_err(|_| "lock")?.len(),
+        2,
+        "after rearm the same needle must remind again"
+    );
+    Ok(())
+}
+
 #[tokio::test]
 async fn gate_rule_denies_through_the_real_adapter_before_execution() -> TestResult {
     use yi_ai::faux::{faux_assistant_message, faux_text, faux_tool_call};

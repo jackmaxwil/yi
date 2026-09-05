@@ -7,7 +7,8 @@ use crate::cut::select_cut;
 use crate::details::{FileOps, compute_file_lists, extract_file_ops, format_file_operations};
 use crate::floor::{RETENTION_FLOOR_BUDGET, retain_floor};
 use crate::policy::Settings;
-use crate::project::project;
+use crate::project::project_attributed;
+use crate::view::{CompiledView, compile_view, view_extra, view_from_extra};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Preparation {
@@ -18,6 +19,7 @@ pub struct Preparation {
     pub tokens_before: Tokens,
     pub previous_summary: Option<String>,
     pub file_ops: FileOps,
+    pub view: CompiledView,
 }
 
 fn previous_compaction(branch: &[Entry]) -> (Option<String>, Option<CompactionDetails>) {
@@ -42,7 +44,11 @@ pub fn prepare_compaction(branch: &[Entry], settings: &Settings) -> Option<Prepa
         return None;
     }
     let (previous_summary, previous_details) = previous_compaction(branch);
-    let projected = project(branch);
+    let attributed = project_attributed(branch);
+    let projected: Vec<AgentMessage> = attributed
+        .iter()
+        .map(|entry| entry.message.clone())
+        .collect();
     let tokens_before = estimate_context(&projected).tokens;
     let work_start = usize::from(matches!(
         projected.first(),
@@ -79,6 +85,13 @@ pub fn prepare_compaction(branch: &[Entry], settings: &Settings) -> Option<Prepa
     let floored = retain_floor(&summarized_away, RETENTION_FLOOR_BUDGET);
     let mut retained_tail = floored;
     retained_tail.extend_from_slice(&work[cut.first_kept_index..]);
+    let previous_view = previous_details
+        .as_ref()
+        .and_then(|d| view_from_extra(&d.extra));
+    let view = compile_view(
+        &attributed[work_start..][..history_end],
+        previous_view.as_ref(),
+    );
     Some(Preparation {
         messages_to_summarize,
         turn_prefix_messages,
@@ -87,24 +100,31 @@ pub fn prepare_compaction(branch: &[Entry], settings: &Settings) -> Option<Prepa
         tokens_before,
         previous_summary,
         file_ops,
+        view,
     })
 }
 
-/// Appends the cumulative file-operation lists to a finished summary and
-/// returns the details payload for the compaction entry.
-pub fn compose_summary(summary: &str, file_ops: &FileOps) -> (String, CompactionDetails) {
+pub fn compose_summary(
+    summary: &str,
+    file_ops: &FileOps,
+    view: &CompiledView,
+) -> (String, CompactionDetails) {
     let (read_files, modified_files) = compute_file_lists(file_ops);
-    let text = format!(
-        "{summary}{}",
-        format_file_operations(&read_files, &modified_files)
-    );
+    let files = format_file_operations(&read_files, &modified_files);
+    let view_text = view.render();
+    let text = if view_text.is_empty() {
+        format!("{summary}{files}")
+    } else {
+        format!("{view_text}\n\n{summary}{files}")
+    };
+    let extra = view_extra(view).into_iter().collect();
     (
         text,
         CompactionDetails {
             read_files,
             modified_files,
             window: None,
-            extra: serde_json::Map::new(),
+            extra,
         },
     )
 }

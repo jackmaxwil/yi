@@ -95,5 +95,6 @@ when it changes rather than editing them by hand.
 - [D109](adr/d109.md) - panic and dead-artifact gates judge behaviour, not spelling
 - [D110](adr/d110.md) - the comment cap drops from three lines to two
 - [D114](adr/d114.md) - D54 matches results, paths, and skill pointers
+- [D115](adr/d115.md) - compaction's recall half is an extractive view plus store-native grep
 
 D36-D51, D72, D73 and D74 have no ADR yet; ARCHITECTURE.md is the record for those rows.

@@ -313,15 +313,18 @@ impl Compactor {
             tool_choice: None,
         };
         let summarizer = self.summarizer.as_ref().unwrap_or(model);
-        let summary = match complete_text(provider, summarizer, &request(messages), signal).await {
-            Ok(text) => Ok(text),
-            Err(_) => {
-                let trimmed = &messages[messages.len() / 4..];
-                complete_text(provider, summarizer, &request(trimmed), signal).await
-            }
-        };
-        let summary_text = summary.unwrap_or_default();
-        let (composed, mut details) = compose_summary(&summary_text, &prepared.file_ops);
+        let summary_text =
+            match complete_text(provider, summarizer, &request(messages), signal).await {
+                Ok(text) => text,
+                Err(_) => {
+                    let trimmed = &messages[messages.len() / 4..];
+                    complete_text(provider, summarizer, &request(trimmed), signal)
+                        .await
+                        .unwrap_or_default()
+                }
+            };
+        let (composed, mut details) =
+            compose_summary(&summary_text, &prepared.file_ops, &prepared.view);
         let retained_tail = drop_internal(&prepared.retained_tail);
         let new_window_id = match store {
             Some(store) => yi_session::lock_session(store).next_id(),

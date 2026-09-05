@@ -201,6 +201,165 @@ async fn compact_now_applies_immediately_when_idle() -> Result<(), Box<dyn Error
     Ok(())
 }
 
+/// Both recall tests need the same shape: a probe turn whose long tool body hides `needle`,
+/// then two live asks that trip the boundary and compact that turn away.
+struct Recalled {
+    root: std::path::PathBuf,
+    store: yi_session::SharedSession,
+    session: AgentSession,
+    needle_id: String,
+    body: String,
+}
+
+async fn seed_and_compact(tag: &str, needle: &str) -> Result<Recalled, Box<dyn Error>> {
+    let root = std::env::temp_dir().join(format!("yi-compact-{tag}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let mut repo = JsonlRepo::new(root.clone(), format!("/tmp/yi-compact-{tag}"));
+    let store = repo.create(CreateOptions {
+        id: Some(format!("compact-{tag}")),
+        ..CreateOptions::default()
+    })?;
+    // The keep-recent window drops this turn and the 160-char brief line caps before the
+    // needle, so only the entry id survives in the window.
+    let body = format!("{} {needle} {}", "preamble ".repeat(40), "tail ".repeat(80));
+    let needle_id = {
+        let mut guard = yi_session::lock_session(&store);
+        guard.append_message(
+            "main",
+            AgentMessage::user_input(UserContent::Text("early ask: run the probe".to_owned()), 0),
+        )?;
+        guard.append_message(
+            "main",
+            faux_assistant_message(
+                vec![yi_types::message::Content::ToolCall {
+                    id: "call-1".to_owned(),
+                    name: "probe".to_owned(),
+                    arguments: serde_json::Map::new(),
+                    thought_signature: None,
+                    namespace: None,
+                }],
+                StopReason::ToolUse,
+            ),
+        )?;
+        guard.append_message(
+            "main",
+            AgentMessage::ToolResult {
+                tool_call_id: "call-1".to_owned(),
+                tool_name: "probe".to_owned(),
+                content: vec![yi_types::message::Content::Text {
+                    text: body.clone(),
+                    text_signature: None,
+                }],
+                details: None,
+                usage: None,
+                added_tool_names: None,
+                is_error: false,
+                timestamp: 0,
+            },
+        )?
+    };
+
+    let provider = Arc::new(ProviderStream::new(None, None));
+    provider.queue_faux(vec![
+        reply_with_usage(&format!("big reply {}", "x".repeat(400)), 100, 5_000),
+        faux_assistant_message(
+            vec![faux_text("## Goal\nSummarized history for the recall test")],
+            StopReason::Stop,
+        ),
+        reply_with_usage("second answer", 50, 300),
+    ]);
+    let session = session_for_compaction(provider);
+    session.attach_store(Arc::clone(&store))?;
+    session.prompt("first live ask with enough text to matter")?;
+    session.wait_idle().await;
+    session.prompt("second live ask trips the compaction boundary")?;
+    session.wait_idle().await;
+    assert_eq!(session.store_error(), None);
+    Ok(Recalled {
+        root,
+        store,
+        session,
+        needle_id,
+        body,
+    })
+}
+
+/// The recall half of compaction: a turn the keep-recent window drops stays
+/// discoverable through `SessionStore::grep` and fetchable through
+/// `history://`, and the compact view cites its entry id.
+#[tokio::test]
+async fn a_compacted_away_turn_stays_greppable_and_fetchable() -> Result<(), Box<dyn Error>> {
+    let needle = "NEEDLE-ZEBRA-4182";
+    let seeded = seed_and_compact("recall", needle).await?;
+    assert_eq!(compaction_entries(&seeded.store).len(), 1);
+
+    let live_text = live_text(&seeded.session)?;
+    assert!(
+        !live_text.contains(needle),
+        "the compacted-away needle must leave the live window: {live_text}"
+    );
+    assert!(
+        live_text.contains(&format!("(#{})", seeded.needle_id)),
+        "the compact view must cite the dropped turn by entry id: {live_text}"
+    );
+
+    let hits = yi_session::lock_session(&seeded.store).grep(needle, 8);
+    assert!(
+        hits.iter().any(|hit| hit.entry_id == seeded.needle_id),
+        "store grep must find the compacted-away needle: {hits:?}"
+    );
+
+    let fetched = fetch_entry(&seeded)?;
+    assert!(
+        fetched.contains(&seeded.body),
+        "history:// must serve the full compacted-away blob: {fetched}"
+    );
+    finish(seeded)
+}
+
+/// Compact still emits the extractive view and `history://` still fetches the pointed-to entry.
+#[tokio::test]
+async fn compact_view_cites_a_tool_entry_that_history_can_fetch() -> Result<(), Box<dyn Error>> {
+    let ident = "crates/fold_probe/mod.rs";
+    let seeded = seed_and_compact("view", ident).await?;
+    let live_text = live_text(&seeded.session)?;
+    assert!(
+        live_text.contains("<yi_compact_view>")
+            && live_text.contains(&format!("(#{})", seeded.needle_id)),
+        "compact must emit the view with entry pointers: {live_text}"
+    );
+    let fetched = fetch_entry(&seeded)?;
+    assert!(
+        fetched.contains(ident),
+        "history:// must fetch the pointed-to entry: {fetched}"
+    );
+    finish(seeded)
+}
+
+fn live_text(session: &AgentSession) -> Result<String, Box<dyn Error>> {
+    Ok(session
+        .messages()
+        .iter()
+        .map(serde_json::to_string)
+        .collect::<Result<Vec<_>, _>>()?
+        .join("\n"))
+}
+
+fn fetch_entry(seeded: &Recalled) -> Result<String, Box<dyn Error>> {
+    let resolver =
+        yi_runtime::fetch::Resolver::new(seeded.root.clone(), yi_runtime::Wall::default())
+            .with_session_handle("main", seeded.session.store_handle());
+    let url: yi_types::url::Url = format!("history://main/{}", seeded.needle_id).parse()?;
+    Ok(resolver.fetch(&url)?.text)
+}
+
+fn finish(seeded: Recalled) -> Result<(), Box<dyn Error>> {
+    let root = seeded.root.clone();
+    drop(seeded);
+    std::fs::remove_dir_all(&root)?;
+    Ok(())
+}
+
 #[tokio::test]
 async fn compaction_below_threshold_is_a_no_op() -> Result<(), Box<dyn Error>> {
     let provider = Arc::new(ProviderStream::new(None, None));
