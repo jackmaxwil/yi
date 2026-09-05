@@ -30,6 +30,7 @@ pub mod port;
 pub mod pycell;
 pub mod reflow;
 pub mod render;
+pub mod reveal;
 pub mod status;
 pub mod table;
 pub mod term;
