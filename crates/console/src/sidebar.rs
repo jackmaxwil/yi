@@ -322,22 +322,8 @@ pub(crate) fn render_roots(app: &App, frame: &mut Frame<'_>, area: Rect, theme: 
     frame.render_widget(Paragraph::new(lines), area);
 }
 
-pub fn rail_offset(app: &App, rows: usize, height: u16) -> u16 {
-    if app.state.sidebar == SidebarMode::Rail {
-        height.saturating_sub(u16::try_from(rows).unwrap_or(u16::MAX))
-    } else {
-        0
-    }
-}
-
 pub(crate) fn render_sidebar(app: &App, frame: &mut Frame<'_>, area: Rect, theme: &Theme) {
     let rows = sidebar_lines(app, theme, area.height);
-    let offset = rail_offset(app, rows.len(), area.height);
-    let area = Rect {
-        y: area.y.saturating_add(offset),
-        height: area.height.saturating_sub(offset),
-        ..area
-    };
     let mut lines: Vec<Line<'static>> = rows.iter().map(|row| row.line.clone()).collect();
     if lines.is_empty() && app.state.sidebar == SidebarMode::Full {
         let label = app

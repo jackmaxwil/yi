@@ -10,7 +10,6 @@ use yi_tui::orb::kitty;
 pub const PX: usize = 40;
 const CELL: usize = 6;
 const MARGIN: usize = 6;
-const RING: (u8, u8, u8) = (0x3b, 0x40, 0x5a);
 const FIRST_ID: u32 = 8000;
 const CAP: usize = 64;
 
@@ -93,20 +92,12 @@ pub fn grid(seed: &str) -> Grid {
 /// 40×40 RGBA on an opaque dark ground: the image covers the tile text under it whole.
 pub fn rgba(grid: &Grid, fg: (u8, u8, u8)) -> Vec<u8> {
     let mut out = Vec::with_capacity(PX.saturating_mul(PX).saturating_mul(4));
-    let edge = MARGIN.saturating_sub(2);
-    let far = PX.saturating_sub(edge).saturating_sub(1);
     for y in 0..PX {
         for x in 0..PX {
             let inside = (MARGIN..PX - MARGIN).contains(&x) && (MARGIN..PX - MARGIN).contains(&y);
             let (row, col) = ((y - MARGIN.min(y)) / CELL, (x - MARGIN.min(x)) / CELL);
-            let on_ring = (edge..=far).contains(&x)
-                && (edge..=far).contains(&y)
-                && (x == edge || x == far || y == edge || y == far)
-                && !((x == edge || x == far) && (y == edge || y == far));
             if inside && grid.on(row, col) {
                 out.extend_from_slice(&[fg.0, fg.1, fg.2, 255]);
-            } else if on_ring {
-                out.extend_from_slice(&[RING.0, RING.1, RING.2, 255]);
             } else {
                 out.extend_from_slice(&[0, 0, 0, 0]);
             }

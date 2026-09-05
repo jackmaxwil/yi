@@ -82,10 +82,66 @@ fn left_segments(input: &StatusInput, path_max: usize) -> Vec<String> {
     segments.push(path);
     segments.extend(input.cost.clone());
     if input.context_window > 0 {
-        let pct = input.context_used * 100 / input.context_window;
-        segments.push(format!("{pct}% of {}", fmt_tokens(input.context_window)));
+        segments.push(format!(
+            "{} / {}",
+            fmt_exact(input.context_used),
+            fmt_tokens(input.context_window)
+        ));
     }
     segments
+}
+
+fn fmt_exact(tokens: u64) -> String {
+    let digits = tokens.to_string();
+    let mut out = String::with_capacity(digits.len() + digits.len() / 3);
+    for (i, ch) in digits.chars().enumerate() {
+        if i > 0 && (digits.len() - i).is_multiple_of(3) {
+            out.push(',');
+        }
+        out.push(ch);
+    }
+    out
+}
+
+fn effort_style(level: &str, theme: &Theme) -> Style {
+    match level {
+        "off" => theme.dim_style(),
+        "minimal" | "low" => theme.muted_style(),
+        "medium" => Style::default().fg(theme.cyan),
+        "high" => Style::default().fg(theme.warning),
+        _ => Style::default().fg(theme.error),
+    }
+}
+
+pub fn git_branch(cwd: &str) -> Option<String> {
+    let mut dir = std::path::PathBuf::from(cwd);
+    let git = loop {
+        let candidate = dir.join(".git");
+        if candidate.exists() {
+            break candidate;
+        }
+        if !dir.pop() {
+            return None;
+        }
+    };
+    let git_dir = if git.is_file() {
+        let pointer = std::fs::read_to_string(&git).ok()?;
+        let target = pointer.trim().strip_prefix("gitdir: ")?;
+        let path = std::path::PathBuf::from(target);
+        if path.is_absolute() {
+            path
+        } else {
+            git.parent()?.join(path)
+        }
+    } else {
+        git
+    };
+    let head = std::fs::read_to_string(git_dir.join("HEAD")).ok()?;
+    let head = head.trim();
+    match head.strip_prefix("ref: refs/heads/") {
+        Some(name) => Some(name.to_owned()),
+        None => Some(head.chars().take(8).collect()),
+    }
 }
 
 fn right_segments(input: &StatusInput, name_max: usize) -> Vec<String> {
@@ -162,6 +218,17 @@ pub fn render(input: &StatusInput, width: usize, theme: &Theme) -> Line<'static>
         } else {
             seg_style
         };
+        if i == 0
+            && let Some((model, level)) = seg.split_once(" · ◉ ")
+        {
+            spans.push(Span::styled(format!(" {model} "), style));
+            spans.push(Span::styled("· ", theme.dim_style()));
+            spans.push(Span::styled(
+                format!("◉ {level} "),
+                effort_style(level, theme),
+            ));
+            continue;
+        }
         spans.push(Span::styled(format!(" {seg} "), style));
     }
     let right_spans: Vec<Span<'static>> = {
