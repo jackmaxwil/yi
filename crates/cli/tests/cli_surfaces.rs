@@ -50,6 +50,44 @@ impl Workspace {
     }
 }
 
+impl Workspace {
+    /// One `yi acp` process fed every frame at once; the contract is the response stream.
+    fn acp(&self, args: &[&str], frames: &[Value]) -> Result<Vec<Value>, Box<dyn Error>> {
+        use std::io::Write;
+        use std::process::Stdio;
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "these surfaces are the spawned binary's argv, exit code, and stdout"
+        )]
+        let mut child = Command::new(env!("CARGO_BIN_EXE_yi"))
+            .arg("acp")
+            .args(args)
+            .arg("--session-dir")
+            .arg(self.0.join("home/sessions"))
+            .arg("--cwd")
+            .arg(self.project())
+            .env("HOME", self.0.join("home"))
+            .current_dir(self.project())
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()?;
+        {
+            let mut stdin = child.stdin.take().ok_or("acp has no stdin")?;
+            for frame in frames {
+                serde_json::to_writer(&mut stdin, frame)?;
+                stdin.write_all(b"\n")?;
+            }
+        }
+        let output = child.wait_with_output()?;
+        let mut responses = Vec::new();
+        for line in stdout(&output).lines() {
+            responses.push(serde_json::from_str::<Value>(line)?);
+        }
+        Ok(responses)
+    }
+}
+
 fn stdout(output: &Output) -> String {
     String::from_utf8_lossy(&output.stdout).into_owned()
 }
@@ -560,5 +598,30 @@ fn a_typed_prompt_lands_user_attributed_in_the_session_file() -> TestResult {
     }
     assert!(lines.contains("prove it"), "{lines}");
     assert!(lines.contains(r#""attribution":"user""#), "{lines}");
+    Ok(())
+}
+
+/// An ACP client shows the user whatever `session/new` says; "exit code 2" is not a reason.
+#[test]
+fn an_unknown_model_names_itself_over_acp() -> TestResult {
+    let workspace = Workspace::new("acp-unknown-model")?;
+    let frames = workspace.acp(
+        &["--model", "openrouter/openai/gpt-6-astra"],
+        &[
+            serde_json::json!({"jsonrpc": "2.0", "id": "1", "method": "initialize",
+                "params": {"protocolVersion": 2}}),
+            serde_json::json!({"jsonrpc": "2.0", "id": "2", "method": "session/new",
+                "params": {"cwd": workspace.project(), "mcpServers": []}}),
+        ],
+    )?;
+    let reply = frames
+        .iter()
+        .find(|frame| frame["id"] == "2")
+        .ok_or_else(|| format!("no reply to session/new in {frames:?}"))?;
+    let message = reply["error"]["message"].as_str().unwrap_or_default();
+    assert!(
+        message.contains("unknown model openrouter/openai/gpt-6-astra"),
+        "the reason must reach the client, got: {reply}"
+    );
     Ok(())
 }
