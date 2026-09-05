@@ -12,6 +12,7 @@ pub struct StatusInput {
     pub mode: Option<String>,
     pub cwd: String,
     pub branch: Option<String>,
+    pub landing: Option<String>,
     pub cost: Option<String>,
     pub session_name: String,
     pub subagents: usize,
@@ -105,6 +106,7 @@ fn left_segments(input: &StatusInput, path_max: usize) -> Vec<String> {
         path.push_str(&format!("@{branch}"));
     }
     segments.push(path);
+    segments.extend(input.landing.clone());
     segments.extend(input.cost.clone());
     if input.context_window > 0 {
         segments.push(format!(
@@ -135,6 +137,24 @@ fn effort_style(level: &str, theme: &Theme) -> Style {
         "medium" => Style::default().fg(theme.cyan),
         "high" => Style::default().fg(theme.warning),
         _ => Style::default().fg(theme.error),
+    }
+}
+
+/// The status-row form: one glyph per gate job, and how far `main` moved.
+pub fn landing_segment(landing: &yi_types::lane::Landing) -> Option<String> {
+    use yi_types::lane::Landing;
+    match landing {
+        Landing::Unlanded => None,
+        Landing::Pushed { .. } => Some("pushed".to_owned()),
+        Landing::Open { pr, jobs, behind } => {
+            let glyphs: String = jobs.iter().map(|job| job.state.glyph()).collect();
+            let behind = match behind {
+                0 => String::new(),
+                n => format!(" · main +{n}"),
+            };
+            Some(format!("PR {pr} {glyphs}{behind}"))
+        }
+        Landing::Merged { pr } => Some(format!("PR {pr} merged")),
     }
 }
 

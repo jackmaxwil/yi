@@ -16,7 +16,6 @@ use crate::colors::{Theme, detect_dark, detect_tier};
 use crate::composer::Composer;
 use crate::focus::set_focus;
 use crate::frame::FrameScheduler;
-use crate::hud::{GoalView, HudInput};
 use crate::input::handle_terminal_event;
 use crate::keymap::{Keymap, default_keymap};
 use crate::orb;
@@ -174,6 +173,7 @@ pub struct App {
     pub(crate) options: TuiOptions,
     pub(crate) status_name_hidden: bool,
     pub(crate) branch: Option<String>,
+    pub(crate) landing: Option<yi_types::lane::Landing>,
     pub(crate) context_used: u64,
     pub(crate) cost_total: f64,
     pub(crate) cost_unknown: bool,
@@ -265,6 +265,7 @@ impl App {
             options,
             status_name_hidden: false,
             branch: None,
+            landing: None,
             context_used: 0,
             cost_total: 0.0,
             cost_unknown: false,
@@ -595,6 +596,7 @@ impl App {
                 self.reduce_message_end(&message);
             }
             AgentEvent::ChildUpdate { update } => self.reduce_child_update(&update),
+            AgentEvent::LandingState { landing } => self.landing = Some(landing),
             AgentEvent::ToolExecutionStart {
                 tool_call_id,
                 tool_name,
@@ -933,15 +935,6 @@ impl App {
 
     pub fn set_focus(&mut self, target: Option<String>) {
         set_focus(self, target);
-    }
-
-    pub fn hud_input(&self, goal: Option<GoalView>) -> HudInput {
-        HudInput {
-            goal,
-            plan: self.plan_progress.clone(),
-            steering: self.steering.clone(),
-            follow_up: Vec::new(),
-        }
     }
 }
 
