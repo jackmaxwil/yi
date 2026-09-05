@@ -242,6 +242,10 @@ pr-body:
 ratchet *args:
     python3 scripts/forge_pr.py ratchet "$@"
 
+# One ADR from its decision-log row, plus the index line.
+adr number:
+    python3 scripts/adr.py {{number}}
+
 commit subject *args:
     python3 scripts/forge_pr.py commit "$@"
 

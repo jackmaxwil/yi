@@ -176,12 +176,12 @@ def read_json(path):
 
 def cmd_ratchet(args):
     before = {path: read_json(path) for path in baseline_paths()}
-    for script in ("check_test_size.py", "check_crate_size.py", "check_schemas_lock.py"):
+    for script in ("check_test_size.py", "check_crate_size.py", "check_comments.py", "check_schemas_lock.py"):
         subprocess.run((sys.executable, str(ROOT / "scripts/guardrails" / script), "--update"), check=False)
     changed = dirty(baseline_paths())
     if not changed:
         print("ratchet: every baseline already matches")
-        return 0
+        return binary_ratchet(args.topic) if not args.no_binary else 0
     parts = []
     for path in changed:
         was, now = before.get(path, {}), read_json(path)
@@ -199,7 +199,7 @@ def cmd_ratchet(args):
     subject = ratchet_subject(parts, args.topic)
     git("commit", "-q", "-m", subject, "--", *changed, check=True)
     print(f"ratchet: {subject}")
-    return 0
+    return binary_ratchet(args.topic) if not args.no_binary else 0
 
 
 def cmd_commit(args):
@@ -512,6 +512,7 @@ def main(argv):
     verbs = parser.add_subparsers(dest="verb", required=True)
     ratchet = verbs.add_parser("ratchet")
     ratchet.add_argument("topic", nargs="?", default="")
+    ratchet.add_argument("--no-binary", action="store_true", help="skip the dist build")
     ratchet.set_defaults(run=cmd_ratchet)
     commit = verbs.add_parser("commit")
     commit.add_argument("subject")
