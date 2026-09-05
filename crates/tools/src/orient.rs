@@ -15,7 +15,7 @@ const HEAT_COMMITS: usize = 200;
 const ISSUE_ROWS: usize = 10;
 const ISSUES_PATH: &str = ".yi/mining/issues.jsonl";
 
-const SKELETON_EXTS: [&str; 6] = ["rs", "py", "ts", "tsx", "js", "go"];
+pub(crate) const SKELETON_EXTS: [&str; 6] = ["rs", "py", "ts", "tsx", "js", "go"];
 
 const DECL_HEADS: [&str; 15] = [
     "pub ",
@@ -210,11 +210,31 @@ fn skeleton_lines(path: &Path) -> Vec<String> {
     let Ok(text) = std::fs::read_to_string(path) else {
         return Vec::new();
     };
+    let all = skeleton_of(&text, usize::MAX);
+    let total = all.len();
+    let mut lines: Vec<String> = all.into_iter().take(SKELETON_LINES).collect();
+    if total > SKELETON_LINES {
+        lines.push(format!("[{SKELETON_LINES} of {total} heads]"));
+    }
+    lines
+}
+
+pub(crate) fn skeleton_of(text: &str, cap: usize) -> Vec<String> {
     text.lines()
         .filter(|line| DECL_HEADS.iter().any(|head| line.starts_with(head)))
-        .map(|line| line.trim_end().trim_end_matches('{').trim_end().to_owned())
-        .take(SKELETON_LINES)
+        .map(decl_head)
+        .take(cap)
         .collect()
+}
+
+pub(crate) fn decl_head(line: &str) -> String {
+    line.trim_end().trim_end_matches('{').trim_end().to_owned()
+}
+
+/// A definition line at any indentation: a method inside an impl or a class counts.
+pub(crate) fn is_decl(line: &str) -> bool {
+    let trimmed = line.trim_start();
+    DECL_HEADS.iter().any(|head| trimmed.starts_with(head))
 }
 
 fn git_heat(context: &ToolContext) -> LayerBody {

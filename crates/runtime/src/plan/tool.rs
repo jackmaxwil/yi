@@ -8,12 +8,13 @@ use yi_types::plan::doc::{
 };
 use yi_types::url::Url;
 
-use super::ops::{Actor, Op, OpRequest, Outcome, PlanEngine, PlanOpError, TodoSpec};
+use super::ops::{Actor, Op, OpRequest, Outcome, PlanEngine, PlanOpError, SetRow, TodoSpec};
 use super::table::{OpKind, op_name};
 
 const WINDOW: usize = 8;
 
-const ALL_OPS: [OpKind; 14] = [
+const ALL_OPS: [OpKind; 15] = [
+    OpKind::Set,
     OpKind::Init,
     OpKind::Append,
     OpKind::Drop,
@@ -54,6 +55,135 @@ pub enum ArgError {
     },
     #[error("{} todo {index} is not an object", op_name(*op))]
     TodoShape { op: OpKind, index: usize },
+    #[error(
+        "set line {line} is not a checklist row (`- [ ] label`, `- [>] label`, `- [x] label`; two spaces nest): {text:?}"
+    )]
+    Checklist { line: usize, text: String },
+    #[error("set list is empty")]
+    EmptyList,
+    #[error("set list nests deeper than {max} levels at line {line}")]
+    TooDeep { line: usize, max: usize },
+}
+
+const CHECKLIST_DEPTH: usize = 6;
+
+/// `- [ ]` pending, `- [>]` running, `- [x]` done; indentation nests, two spaces or a tab
+/// per level. Children carry their state directly; top rows become `set` rows.
+fn parse_checklist(list: &str) -> Result<Vec<SetRow>, ArgError> {
+    let mut roots: Vec<Todo> = Vec::new();
+    let mut states: Vec<TodoStateName> = Vec::new();
+    // Path from a root to the row being read, as indexes into `roots` then `children`.
+    let mut path: Vec<(usize, usize)> = Vec::new();
+    for (number, raw) in list.lines().enumerate() {
+        let line = number.saturating_add(1);
+        if raw.trim().is_empty() {
+            continue;
+        }
+        let indent = raw
+            .bytes()
+            .take_while(|byte| matches!(byte, b' ' | b'\t'))
+            .map(|byte| if byte == b'\t' { 2 } else { 1 })
+            .sum::<usize>()
+            / 2;
+        let body = raw.trim_start();
+        let (state, label) = ["- [ ] ", "- [>] ", "- [x] ", "- [X] "]
+            .iter()
+            .find_map(|marker| body.strip_prefix(marker).map(|label| (*marker, label)))
+            .map(|(marker, label)| {
+                let state = match marker {
+                    "- [>] " => TodoStateName::Running,
+                    "- [x] " | "- [X] " => TodoStateName::Done,
+                    _ => TodoStateName::Pending,
+                };
+                (state, label.trim())
+            })
+            .ok_or_else(|| ArgError::Checklist {
+                line,
+                text: raw.to_owned(),
+            })?;
+        if indent > CHECKLIST_DEPTH {
+            return Err(ArgError::TooDeep {
+                line,
+                max: CHECKLIST_DEPTH,
+            });
+        }
+        let label = TodoLabel::new(label).map_err(|cause| ArgError::Checklist {
+            line,
+            text: cause.to_string(),
+        })?;
+        let todo = Todo {
+            label,
+            after: Vec::new(),
+            state: match &state {
+                TodoStateName::Running => TodoState::Running {
+                    by: yi_types::plan::doc::AgentId::new(super::ops::OWNER_AGENT).map_err(
+                        |cause| ArgError::Checklist {
+                            line,
+                            text: cause.to_string(),
+                        },
+                    )?,
+                },
+                TodoStateName::Done => TodoState::Done { output: None },
+                TodoStateName::Pending
+                | TodoStateName::Blocked
+                | TodoStateName::Failed
+                | TodoStateName::Abandoned
+                | TodoStateName::Other(_) => TodoState::Pending,
+            },
+            delegation: None,
+            subplan: None,
+            retries: yi_types::plan::doc::RetryCount::default(),
+            children: Vec::new(),
+            extra: serde_json::Map::new(),
+        };
+        let depth = indent.min(path.len());
+        path.truncate(depth);
+        if depth == 0 {
+            roots.push(todo);
+            states.push(state);
+            path.push((roots.len().saturating_sub(1), 0));
+            continue;
+        }
+        let Some((root_index, _)) = path.first().copied() else {
+            return Err(ArgError::Checklist {
+                line,
+                text: raw.to_owned(),
+            });
+        };
+        let mut parent = roots
+            .get_mut(root_index)
+            .ok_or_else(|| ArgError::Checklist {
+                line,
+                text: raw.to_owned(),
+            })?;
+        for (_, child_index) in path.iter().skip(1) {
+            parent = parent
+                .children
+                .get_mut(*child_index)
+                .ok_or_else(|| ArgError::Checklist {
+                    line,
+                    text: raw.to_owned(),
+                })?;
+        }
+        parent.children.push(todo);
+        path.push((0, parent.children.len().saturating_sub(1)));
+    }
+    if roots.is_empty() {
+        return Err(ArgError::EmptyList);
+    }
+    Ok(roots
+        .into_iter()
+        .zip(states)
+        .map(|(todo, state)| SetRow {
+            spec: TodoSpec {
+                label: todo.label,
+                after: Vec::new(),
+                delegation: None,
+                children: todo.children,
+            },
+            state,
+        })
+        .collect())
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -128,6 +258,7 @@ fn todo_specs(args: &Map<String, Value>, op: OpKind) -> Result<Vec<TodoSpec>, Ar
             label: need(spec, op, "label")?,
             after: opt(spec, op, "after")?.unwrap_or_default(),
             delegation: opt(spec, op, "delegation")?,
+            children: Vec::new(),
         });
     }
     Ok(specs)
@@ -192,6 +323,10 @@ fn parse_op(args: &Map<String, Value>) -> Result<Op, ArgError> {
         OpKind::Supersede => Op::Supersede {
             reason: need(args, kind, "reason")?,
             todos: todo_specs(args, kind)?,
+        },
+        OpKind::Set => Op::Set {
+            goal: opt(args, kind, "goal")?,
+            rows: parse_checklist(&need::<String>(args, kind, "list")?)?,
         },
         OpKind::View => Op::View {
             full: opt(args, kind, "full")?.unwrap_or(false),
@@ -292,6 +427,12 @@ fn header(plan: &Plan, out: &mut Vec<String>) {
         }
     }
     out.push(counts(&plan.todos));
+    let progress = yi_types::plan::doc::progress(&plan.todos);
+    let mut line = format!("progress {}/{}", progress.done, progress.total);
+    if let Some(running) = progress.running {
+        line.push_str(&format!(" · now: {running}"));
+    }
+    out.push(line);
 }
 
 fn body(outcome: &Outcome, full: bool, out: &mut Vec<String>) {
@@ -412,7 +553,7 @@ impl Tool for PlanTool {
 
 /// Invariant: the request-prefix gate prices this tool through these two
 /// items rather than a live [`PlanTool`], so what is measured is what ships.
-pub const DESCRIPTION: &str = "The plan ledger. One op per call against the open plan: declare the whole cut before working it, then step todos through it. A todo is a unit of decision, not of iteration -- thirty probes inside one kernel cell are one todo. Batch ops with real work; never call it alone.";
+pub const DESCRIPTION: &str = "The plan ledger. op=set with a markdown checklist (`- [ ] todo`, `- [>] running`, `- [x] done`, two spaces nest) is the whole list in one call: send it again to change anything. The other ops step single todos, hand one to a child, or park it. A todo is a unit of decision, not of iteration. Batch ops with real work; never call it alone.";
 
 /// Invariant: a flat object, because one provider rebuilds the schema from `properties` and
 /// `required` alone, so a root `oneOf` would vanish there. No live state: cached prefix.
@@ -423,8 +564,9 @@ pub fn schema() -> Value {
                 "op": {
                     "type": "string",
                     "enum": ALL_OPS.iter().map(|op| op_name(*op)).collect::<Vec<_>>(),
-                    "description": "init goal+todos; append/drop/reorder/add_edge edit the cut; start/done/fail step a todo; block/unblock park one; retry a failed one; decompose a running one into a sub-plan; supersede replaces the whole cut; view echoes it"
+                    "description": "set replaces the whole list from a checklist; init goal+todos; append/drop/reorder/add_edge edit the cut; start/done/fail step a todo; block/unblock park one; retry a failed one; decompose a running one into a sub-plan; supersede replaces the whole cut; view echoes it"
                 },
+                "list": {"type": "string", "description": "set: the checklist, one `- [ ] label` per line (`[>]` running, `[x]` done), nested by two-space indent"},
                 "plan": {"type": "string", "description": "Sub-plan id; omit for the root plan"},
                 "goal": {"type": "string", "description": "init: the whole deliverable in one line"},
                 "todos": {
@@ -518,6 +660,7 @@ mod tests {
             delegation: None,
             subplan: None,
             retries: yi_types::plan::doc::RetryCount::default(),
+            children: Vec::new(),
             extra: Map::new(),
         })
     }
@@ -555,6 +698,34 @@ mod tests {
         let full = render(&outcome, true);
         assert!(full.contains("- pending ship"), "{full}");
         assert!(!full.contains("not shown"), "{full}");
+        Ok(())
+    }
+
+    #[test]
+    fn a_checklist_parses_into_nested_rows_with_states() -> Fallible {
+        let rows = parse_checklist(
+            "- [x] mapper\n- [>] rebase\n  - [x] remap\n  - [ ] prompt\n    - [ ] rule one\n- [ ] bridge\n",
+        )?;
+        let labels: Vec<&str> = rows.iter().map(|row| row.spec.label.as_str()).collect();
+        assert_eq!(labels, ["mapper", "rebase", "bridge"]);
+        assert_eq!(rows[0].state, TodoStateName::Done);
+        assert_eq!(rows[1].state, TodoStateName::Running);
+        assert_eq!(rows[1].spec.children.len(), 2);
+        assert_eq!(
+            rows[1].spec.children[1].children[0].label.as_str(),
+            "rule one"
+        );
+        assert!(matches!(
+            rows[1].spec.children[0].state,
+            TodoState::Done { .. }
+        ));
+
+        let bad = parse_checklist("- mapper\n");
+        assert!(bad.is_err());
+        let mut input = Map::new();
+        input.insert("op".to_owned(), Value::String("set".to_owned()));
+        input.insert("list".to_owned(), Value::String("- [ ] a\n".to_owned()));
+        assert!(matches!(parse_op(&input)?, Op::Set { .. }));
         Ok(())
     }
 }

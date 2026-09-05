@@ -50,6 +50,37 @@ pub fn brace_block_resolver(text: &str, line: u64) -> Option<BlockSpan> {
     None
 }
 
+/// The block opening at `line` runs through every following line indented deeper than it,
+/// trailing blank lines excluded. A line with nothing deeper below it opens nothing.
+pub fn indent_block_resolver(text: &str, line: u64) -> Option<BlockSpan> {
+    let lines: Vec<&str> = text.split('\n').collect();
+    let anchor_index = usize::try_from(line.checked_sub(1)?).ok()?;
+    let anchor = lines.get(anchor_index)?;
+    if anchor.trim().is_empty() {
+        return None;
+    }
+    let depth = indent_width(anchor);
+    let mut end: Option<usize> = None;
+    for (index, candidate) in lines.iter().enumerate().skip(anchor_index.checked_add(1)?) {
+        if candidate.trim().is_empty() {
+            continue;
+        }
+        if indent_width(candidate) <= depth {
+            break;
+        }
+        end = Some(index);
+    }
+    let end = u64::try_from(end?.checked_add(1)?).ok()?;
+    Some(BlockSpan { start: line, end })
+}
+
+fn indent_width(line: &str) -> usize {
+    line.bytes()
+        .take_while(|byte| matches!(byte, b' ' | b'\t'))
+        .map(|byte| if byte == b'\t' { 4 } else { 1 })
+        .sum()
+}
+
 /// Delimiters inside string/char literals and line comments do not count. A lexical pass, not
 /// a parser: multi-line strings and block comments fail closed via unbalanced depth.
 fn strip_line_noise(line: &str) -> Vec<u8> {
@@ -100,6 +131,7 @@ pub struct ResolvedBlocks {
 
 pub fn resolve_block_edits(
     edits: Vec<Edit>,
+    path: &str,
     text: &str,
     resolver: Option<&BlockResolver>,
 ) -> Result<ResolvedBlocks, String> {
@@ -130,7 +162,7 @@ pub fn resolve_block_edits(
         };
         let span = resolver.and_then(|resolve| {
             resolve(&super::types::BlockResolverRequest {
-                path: "",
+                path,
                 text,
                 line: anchor.line,
             })

@@ -359,6 +359,7 @@ mod tests {
                 note: None,
                 extra: Map::new(),
             }),
+            children: Vec::new(),
         })
     }
 

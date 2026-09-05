@@ -1,20 +1,21 @@
 use std::path::{Path, PathBuf};
 
 use super::apply::apply_edits;
-use super::blocks::{brace_block_resolver, resolve_block_edits};
+use super::blocks::{brace_block_resolver, indent_block_resolver, resolve_block_edits};
 use super::clipboard::{OnEmptyPaste, fork_clipboard, start_clipboard_batch};
 use super::format::{FileTag, compute_file_hash, format_hashline_header};
 use super::input::{Patch, PatchSection};
 use super::messages::{
     HEADTAIL_DRIFT_WARNING, RevealedLine, UnseenLinesReveal, missing_snapshot_tag_message,
-    path_recovered_from_tag_message, unseen_lines_message,
+    path_recovered_from_tag_message, rebased_warning, unseen_lines_message,
 };
 use super::mismatch::MismatchError;
 use super::normalize::{
     LineEnding, detect_line_ending, normalize_to_lf, restore_line_endings, strip_bom,
 };
-use super::snapshots::SnapshotStore;
-use super::types::{ApplyResult, BlockResolverRequest, Clipboard, Edit, FileOp};
+use super::rebase::{LineMap, remap_edits};
+use super::snapshots::{Snapshot, SnapshotStore};
+use super::types::{ApplyResult, BlockResolverRequest, BlockSpan, Clipboard, Edit, FileOp};
 
 /// Upper bound on unseen anchor lines revealed inline in a rejection; larger ranges keep the
 /// re-read guidance so the model cannot piecewise-reveal its way past the guard.
@@ -97,6 +98,18 @@ fn has_anchor_scoped_edit(edits: &[Edit]) -> bool {
             )
         }
     })
+}
+
+/// Chosen by extension: indentation-scoped languages have no closer to scan for.
+pub fn block_resolver(request: &BlockResolverRequest<'_>) -> Option<BlockSpan> {
+    let extension = Path::new(request.path)
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .unwrap_or_default();
+    match extension {
+        "py" | "pyi" | "yaml" | "yml" => indent_block_resolver(request.text, request.line),
+        _ => brace_block_resolver(request.text, request.line),
+    }
 }
 
 impl<'a> Patcher<'a> {
@@ -208,13 +221,19 @@ impl<'a> Patcher<'a> {
         let parsed = section.parse()?;
         let mut parse_warnings = parsed.warnings.clone();
         let file_op = parsed.file_op.clone();
-        let Some(expected_text) = section.file_hash.as_deref() else {
-            return Err(missing_snapshot_tag_message(&section.path));
-        };
 
         let mut target = section.clone();
         let mut canonical_path = self.canonical_path(&target.path);
         let mut read = self.try_read(&target.path);
+        // No tag names the version this session last showed for the path.
+        let expected_text = match section.file_hash.as_deref() {
+            Some(text) => text.to_owned(),
+            None => match self.snapshots.head(&canonical_path) {
+                Some(head) => head.hash.to_string(),
+                None => return Err(missing_snapshot_tag_message(&section.path)),
+            },
+        };
+        let expected_text = expected_text.as_str();
 
         // Path recovery: the authored path doesn't exist, but its filename plus snapshot tag
         // may name a file read this session — a bare filename or wrong dir. Rebind and warn.
@@ -424,15 +443,20 @@ impl<'a> Patcher<'a> {
     fn assert_seen_lines(
         &mut self,
         section: &PatchSection,
-        expected: FileTag,
         normalized: &str,
     ) -> Result<(), String> {
-        let Some(snapshot) = self
-            .snapshots
-            .by_content(&self.canonical_path(&section.path), normalized)
-        else {
+        let canonical = self.canonical_path(&section.path);
+        let Some(snapshot) = self.snapshots.by_content(&canonical, normalized).cloned() else {
             return Ok(());
         };
+        self.assert_seen_lines_in(section, &snapshot)
+    }
+
+    fn assert_seen_lines_in(
+        &mut self,
+        section: &PatchSection,
+        snapshot: &Snapshot,
+    ) -> Result<(), String> {
         let Some(seen) = &snapshot.seen_lines else {
             return Ok(());
         };
@@ -451,10 +475,13 @@ impl<'a> Patcher<'a> {
         let mut revealed: Vec<RevealedLine> = Vec::new();
         let mut column_truncated = false;
         for &line in unseen.iter().take(SEEN_LINE_REVEAL_CAP) {
-            if line < 1 || line > source_lines.len() as u64 {
+            let Some(source) = usize::try_from(line)
+                .ok()
+                .and_then(|index| index.checked_sub(1))
+                .and_then(|index| source_lines.get(index))
+            else {
                 continue;
-            }
-            let source = source_lines[(line - 1) as usize];
+            };
             if source.chars().count() > SEEN_LINE_REVEAL_MAX_COLUMNS {
                 let clipped: String = source.chars().take(SEEN_LINE_REVEAL_MAX_COLUMNS).collect();
                 revealed.push(RevealedLine {
@@ -465,7 +492,7 @@ impl<'a> Patcher<'a> {
             } else {
                 revealed.push(RevealedLine {
                     line,
-                    text: source.to_owned(),
+                    text: (*source).to_owned(),
                 });
             }
         }
@@ -476,17 +503,47 @@ impl<'a> Patcher<'a> {
             let lines: Vec<u64> = revealed.iter().map(|revealed| revealed.line).collect();
             let canonical = self.canonical_path(&section.path);
             self.snapshots
-                .record_seen_lines(&canonical, expected, &lines);
+                .record_seen_lines(&canonical, snapshot.hash, &lines);
         }
         Err(unseen_lines_message(
             &section.path,
             &unseen,
-            expected,
+            snapshot.hash,
             &UnseenLinesReveal {
                 lines: revealed,
                 truncated,
             },
         ))
+    }
+
+    /// Anchors from an older version of the file move through the diff onto the current
+    /// text, or the section is rejected with the current lines under the cited numbers.
+    fn rebase_edits(
+        &mut self,
+        section: &PatchSection,
+        canonical_path: &str,
+        normalized: &str,
+        edits: Vec<Edit>,
+        expected_text: &str,
+        old: &Snapshot,
+    ) -> Result<Vec<Edit>, String> {
+        if self.enforce_seen_lines {
+            self.assert_seen_lines_in(section, old)?;
+        }
+        let map = LineMap::between(&old.text, normalized);
+        let old_block = |line: u64| {
+            block_resolver(&BlockResolverRequest {
+                path: &section.path,
+                text: &old.text,
+                line,
+            })
+        };
+        match remap_edits(edits, &map, &old_block) {
+            Ok(edits) => Ok(edits),
+            Err(_unmapped) => Err(self
+                .mismatch_error(section, canonical_path, normalized, expected_text, true)?
+                .display_message()),
+        }
     }
 
     fn apply_with_validation(
@@ -501,55 +558,49 @@ impl<'a> Patcher<'a> {
         let expected = FileTag::parse(expected_text);
         let live_hash = compute_file_hash(normalized);
         let live_matches = expected == Some(live_hash);
+        let mut warnings: Vec<String> = Vec::new();
 
-        let has_blocks = edits.iter().any(|edit| matches!(edit, Edit::Block { .. }));
-        let (resolved, mut resolve_warnings) = if has_blocks {
-            if !live_matches {
+        let edits = if live_matches || expected.is_none() {
+            if expected.is_some() && self.enforce_seen_lines {
+                self.assert_seen_lines(section, normalized)?;
+            }
+            edits
+        } else if !has_anchor_scoped_edit(&edits) {
+            // Head/tail-only inserts are position-stable: a stale tag is non-fatal for them.
+            warnings.push(HEADTAIL_DRIFT_WARNING.to_owned());
+            edits
+        } else {
+            let old = expected.and_then(|tag| self.snapshots.by_hash(canonical_path, tag).cloned());
+            let Some(old) = old else {
                 return Err(self
                     .mismatch_error(section, canonical_path, normalized, expected_text, false)?
                     .display_message());
-            }
-            let resolver = |request: &BlockResolverRequest<'_>| {
-                brace_block_resolver(request.text, request.line)
             };
-            let resolved = resolve_block_edits(edits, normalized, Some(&resolver))?;
+            let edits = self.rebase_edits(
+                section,
+                canonical_path,
+                normalized,
+                edits,
+                expected_text,
+                &old,
+            )?;
+            warnings.push(rebased_warning(old.hash, live_hash));
+            edits
+        };
+
+        let has_blocks = edits.iter().any(|edit| matches!(edit, Edit::Block { .. }));
+        let (resolved, mut resolve_warnings) = if has_blocks {
+            let resolved =
+                resolve_block_edits(edits, &section.path, normalized, Some(&block_resolver))?;
             (resolved.edits, resolved.warnings)
         } else {
             (edits, Vec::new())
         };
-
-        if live_matches || expected.is_none() {
-            if let Some(expected) = expected
-                && self.enforce_seen_lines
-            {
-                self.assert_seen_lines(section, expected, normalized)?;
-            }
-            let mut result = apply_edits(normalized, resolved, clipboard, OnEmptyPaste::Throw)?;
-            resolve_warnings.append(&mut result.warnings);
-            result.warnings = resolve_warnings;
-            return Ok(result);
-        }
-        // Head/tail-only inserts are position-stable: a stale tag is non-fatal
-        // for them; anchored mismatches cannot be safely relocated and reject.
-        if !has_anchor_scoped_edit(&resolved) {
-            let mut result = apply_edits(normalized, resolved, clipboard, OnEmptyPaste::Throw)?;
-            let mut warnings = vec![HEADTAIL_DRIFT_WARNING.to_owned()];
-            warnings.append(&mut resolve_warnings);
-            warnings.append(&mut result.warnings);
-            result.warnings = warnings;
-            return Ok(result);
-        }
-        let hash_recognized =
-            expected.is_some_and(|tag| self.snapshots.by_hash(canonical_path, tag).is_some());
-        Err(self
-            .mismatch_error(
-                section,
-                canonical_path,
-                normalized,
-                expected_text,
-                hash_recognized,
-            )?
-            .display_message())
+        let mut result = apply_edits(normalized, resolved, clipboard, OnEmptyPaste::Throw)?;
+        warnings.append(&mut resolve_warnings);
+        warnings.append(&mut result.warnings);
+        result.warnings = warnings;
+        Ok(result)
     }
 
     fn mismatch_error(

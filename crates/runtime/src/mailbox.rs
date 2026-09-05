@@ -629,6 +629,7 @@ mod tests {
                 }),
                 subplan: None,
                 retries: RetryCount::default(),
+                children: Vec::new(),
                 extra: Map::new(),
             }],
         );

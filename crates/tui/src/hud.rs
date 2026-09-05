@@ -6,8 +6,26 @@ use crate::colors::Theme;
 #[derive(Debug, Clone, Default)]
 pub struct HudInput {
     pub goal: Option<GoalView>,
+    pub plan: Option<PlanProgress>,
     pub steering: Vec<String>,
     pub follow_up: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlanProgress {
+    pub done: usize,
+    pub total: usize,
+    pub running: Option<String>,
+}
+
+impl PlanProgress {
+    pub fn line(&self) -> String {
+        let mut line = format!("Plan {}/{}", self.done, self.total);
+        if let Some(running) = &self.running {
+            line.push_str(&format!(" · now: {running}"));
+        }
+        line
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -37,6 +55,14 @@ pub fn render(input: &HudInput, theme: &Theme) -> Vec<Line<'static>> {
             Some(header)
         }
         None => None,
+    };
+    let header = match (header, &input.plan) {
+        (None, Some(plan)) => Some(plan.line()),
+        (Some(header), Some(plan)) => {
+            content.push(Line::from(Span::styled(plan.line(), theme.muted_style())));
+            Some(header)
+        }
+        (header, None) => header,
     };
     for (label, items) in [
         ("Steering", &input.steering),

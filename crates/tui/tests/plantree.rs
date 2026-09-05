@@ -49,6 +49,7 @@ fn todo(label: &str, state: TodoState, after: &[&str]) -> Result<Todo, Box<dyn E
         delegation: None,
         subplan: None,
         retries: RetryCount(0),
+        children: Vec::new(),
         extra: serde_json::Map::new(),
     })
 }
@@ -318,5 +319,35 @@ fn a_sub_plan_nests_under_the_todo_that_owns_it() -> TestResult {
         lines.iter().any(|line| line.contains("read the span")),
         "the sub-plan's own todos render: {lines:?}"
     );
+    Ok(())
+}
+
+#[test]
+fn children_render_under_their_parent_one_level_deeper() -> TestResult {
+    let mut parent = todo("rebase", TodoState::Pending, &[])?;
+    let mut child = todo("remap", TodoState::Done { output: None }, &[])?;
+    child.children = vec![todo("rule one", TodoState::Pending, &[])?];
+    parent.children = vec![child, todo("prompt", TodoState::Pending, &[])?];
+    let plan = Plan::opening(
+        PlanId::new("nested")?,
+        GoalText::new("nest")?,
+        PlanTier::Root,
+        vec![parent],
+    );
+    let view = PlanTreeView::new(&plan, &[]);
+    let lines = flat(&view.lines(100, &theme(), 40));
+    let text = lines.join("\n");
+    assert!(text.contains("remap"), "{text}");
+    assert!(text.contains("rule one"), "{text}");
+    let indent = |needle: &str| {
+        lines
+            .iter()
+            .find(|line| line.contains(needle))
+            .map(|line| line.find(needle).unwrap_or(0))
+            .unwrap_or(0)
+    };
+    assert!(indent("rebase") < indent("remap"), "{text}");
+    assert!(indent("remap") < indent("rule one"), "{text}");
+    assert_eq!(indent("remap"), indent("prompt"), "{text}");
     Ok(())
 }
