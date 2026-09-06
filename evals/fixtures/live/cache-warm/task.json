@@ -1,0 +1,12 @@
+{
+  "id": "cache-warm",
+  "kind": "cache",
+  "timeoutSec": 120,
+  "settleSec": 3,
+  "turns": [
+    "Reply with the single word ready.",
+    "Reply with the single word again.",
+    "Reply with the single word done."
+  ],
+  "note": "one session, three requests: the warm turns must read the cached prefix"
+}

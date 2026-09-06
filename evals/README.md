@@ -251,7 +251,9 @@ python3 evals/run.py --live --binary target/debug/yi \
 
 Scenarios live under `fixtures/live/<id>/` in the task shape (`task.json`,
 `prompt.txt`, `repo/`, `reward.sh`); a `"kind": "refusal"` scenario names the
-argv the binary must refuse and the stderr it must print. Every scenario ends
+argv the binary must refuse and the stderr it must print; a `"kind": "cache"`
+scenario asks one session its `turns` in order (`--continue` after the first)
+and passes only when the warm turns read cached tokens. Every scenario ends
 `pass`, `fail` or `inconclusive` — timeout, no key, provider trouble, budget —
 and only `fail` is red. The run's HOME is fresh and has `telemetry.enabled`, so
 `run.json` carries `yi stats telemetry` over every sidecar beside the statuses
