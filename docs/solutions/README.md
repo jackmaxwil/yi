@@ -112,5 +112,6 @@ when it changes rather than editing them by hand.
 - [D132](adr/d132.md) - a run's numbers are spans Yi writes itself
 - [D133](adr/d133.md) - the CI is the first user
 - [D134](adr/d134.md) - every error carries a class from one closed vocabulary
+- [D135](adr/d135.md) - landing is one verb and baselines merge themselves
 
 D36-D51, D72, D73 and D74 have no ADR yet; ARCHITECTURE.md is the record for those rows.
