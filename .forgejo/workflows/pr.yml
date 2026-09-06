@@ -39,8 +39,8 @@ jobs:
       # the image can go stale on.
       - run: rustup show
       # The runner's cache server is on, so rust-cache works here as it does on
-      # GitHub: one key per lane, shared with postmerge, which is what puts a
-      # warm cache on main for a branch's first push to inherit.
+      # GitHub: one key per lane, and postmerge's `warm` job saves every lane's
+      # key on main, which is what a branch's first push inherits.
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: ${{ matrix.lane }}
