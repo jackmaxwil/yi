@@ -31,6 +31,7 @@ sys.path.insert(0, str(ROOT / "adapters"))
 import yi_usage  # noqa: E402
 
 TASKS = ROOT / "fixtures" / "tasks"
+LIVE = TASKS.parent / "live"
 REWARD_TIMEOUT_SEC = 120
 
 
@@ -92,7 +93,7 @@ def score(task_dir, workspace):
     return 1 if done.returncode == 0 else 0
 
 
-def run_task(task_dir, binary, model):
+def run_task(task_dir, binary, model, out=None):
     """One rollout: copy the repo, ask, write the answer file, score."""
     spec = json.loads((task_dir / "task.json").read_text())
     prompt = (task_dir / "prompt.txt").read_text().strip()
@@ -103,8 +104,10 @@ def run_task(task_dir, binary, model):
         # clean-tree reward scores them, and the agent can read its own events.
         workspace = Path(directory) / "repo"
         shutil.copytree(task_dir / "repo", workspace)
-        sessions = Path(directory) / ".yi-sessions"
-        events = Path(directory) / "events.jsonl"
+        keep = Path(out) / spec["id"] if out else Path(directory)
+        keep.mkdir(parents=True, exist_ok=True)
+        sessions = keep / "sessions"
+        events = keep / "events.jsonl"
         command = [
             binary,
             "ask",
@@ -189,6 +192,100 @@ def run_home():
     return _RUN_HOME[0]
 
 
+INCONCLUSIVE_MARKS = ("HTTP 5", "timed out", "rate limit", "overloaded", "connection")
+
+
+def status_of(row, spec, events_text=""):
+    """pass, fail or inconclusive: only the last is the weather, never the code."""
+    if row.get("timedOut"):
+        return "inconclusive", "timeout"
+    if row.get("exit") == 4:
+        return "inconclusive", "no key"
+    if row["reward"] == 1:
+        return "pass", ""
+    lowered = events_text.lower()
+    for mark in INCONCLUSIVE_MARKS:
+        if mark.lower() in lowered:
+            return "inconclusive", f"provider: {mark}"
+    if row.get("costUsd") is None and row.get("costUnknownTurns"):
+        return "inconclusive", "provider reported no usage"
+    return "fail", f"reward {row['reward']}, want 1"
+
+
+def refusal_check(spec, binary, out):
+    """A refusal scenario asks the binary something it must refuse, and reads the reason."""
+    command = [binary, *spec["args"]]
+    done = subprocess.run(command, capture_output=True, text=True, timeout=60,
+                          env={**os.environ, "HOME": run_home()})
+    want_exit = spec.get("expectExit", 2)
+    want_text = spec.get("expectStderr", "")
+    ok = done.returncode == want_exit and want_text in done.stderr
+    status = "pass" if ok else "fail"
+    detail = "" if ok else f"exit {done.returncode}, stderr {done.stderr.strip()[:120]!r}"
+    return {"task": spec["id"], "reward": 1 if ok else 0, "exit": done.returncode,
+            "status": status, "detail": detail, "wallSec": 0}
+
+
+def doctor_after(binary):
+    """`yi doctor --json` under the run's HOME after every scenario: a red row is a class."""
+    done = subprocess.run([binary, "doctor", "--json"], capture_output=True, text=True,
+                          timeout=60, env={**os.environ, "HOME": run_home()})
+    try:
+        rows = json.loads(done.stdout or "[]")
+    except json.JSONDecodeError:
+        return ["doctor: unreadable output"]
+    return [f"Invariant::{row['name']}" for row in rows if row.get("status") == "fail"]
+
+
+def run_live(args):
+    """The live lane: real model, capped in code, deterministic verdicts (D133)."""
+    out = Path(args.out) if args.out else Path(tempfile.mkdtemp(prefix="yi-live-"))
+    out.mkdir(parents=True, exist_ok=True)
+    home = Path(run_home())
+    (home / ".yi").mkdir(parents=True, exist_ok=True)
+    (home / ".yi" / "config.json").write_text(json.dumps({"telemetry": {"enabled": True}}))
+    specs = sorted(path.parent for path in LIVE.glob("*/task.json"))
+    if args.task:
+        specs = [spec for spec in specs if spec.name in set(args.task)]
+    suite = f"live@{_capture(['git', '-C', str(ROOT), 'rev-parse', '--short', 'HEAD'])}"
+    fingerprint = yi_usage.config_fingerprint(_capture([args.binary, "--version"]), args.model, "live", suite)
+    rows, spent, budget_hit = [], 0.0, False
+    for task_dir in specs:
+        spec = json.loads((task_dir / "task.json").read_text())
+        if budget_hit:
+            rows.append({"task": spec["id"], "status": "inconclusive", "detail": "budget", "reward": 0})
+            continue
+        if spec.get("kind") == "refusal":
+            row = refusal_check(spec, args.binary, out)
+        else:
+            spec, row = run_task(task_dir, args.binary, args.model, out=out)
+            events_text = (out / spec["id"] / "events.jsonl").read_text(errors="replace")
+            row["status"], row["detail"] = status_of(row, spec, events_text)
+            spent += row.get("costUsd") or 0.0
+        classes = doctor_after(args.binary)
+        if classes and row["status"] == "pass":
+            row["status"], row["detail"] = "fail", "; ".join(classes)
+        row["classes"] = classes
+        row["configFp"] = fingerprint
+        rows.append(row)
+        if spent > args.cap_usd:
+            budget_hit = True
+    rollup = {}
+    done = subprocess.run([args.binary, "stats", "--json", "telemetry", str(out)],
+                          capture_output=True, text=True, env={**os.environ, "HOME": str(home)})
+    if done.returncode == 0:
+        try:
+            rollup = json.loads(done.stdout)
+        except json.JSONDecodeError:
+            rollup = {}
+    counts = {status: sum(1 for row in rows if row["status"] == status) for status in ("pass", "fail", "inconclusive")}
+    record = {"suite": suite, "model": args.model, "configFp": fingerprint, "capUsd": args.cap_usd,
+              "spentUsd": round(spent, 6), "budgetHit": budget_hit, "counts": counts, "rows": rows, "telemetry": rollup}
+    (out / "run.json").write_text(json.dumps(record, indent=1, sort_keys=True))
+    print(json.dumps({"out": str(out), "counts": counts, "spentUsd": record["spentUsd"]}, sort_keys=True))
+    return 1 if counts["fail"] else 0
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description="run the yi task-eval fixtures")
     parser.add_argument("--binary", default="target/debug/yi")
@@ -200,6 +297,12 @@ def main(argv=None):
     # A lever that leaves --binary and --model alone still has to read back as a
     # different run, so the label rides the fingerprint's mode field.
     parser.add_argument("--variant", default="")
+    parser.add_argument("--live", action="store_true",
+                        help="the live lane: a real model against evals/fixtures/live, capped")
+    parser.add_argument("--cap-usd", type=float, default=1.0)
+    parser.add_argument("--out", help="keep sessions, events and run.json here (live)")
+    parser.add_argument("--allow-faux", action="store_true",
+                        help="let --live run faux: proves the lane's plumbing offline, never a model")
     args = parser.parse_args(argv)
     if args.home:
         if not os.path.isabs(args.home):
@@ -208,6 +311,14 @@ def main(argv=None):
             return 2
         _RUN_HOME.append(args.home)
 
+    if args.live:
+        if args.model.startswith("faux/") and not args.allow_faux:
+            print("--live needs a real model: faux proves nothing here (--allow-faux for the plumbing)", file=sys.stderr)
+            return 2
+        if not Path(args.binary).is_file():
+            print(f"no binary at {args.binary} (cargo build -p yi-cli)", file=sys.stderr)
+            return 2
+        return run_live(args)
     errors = []
     if args.dry and not args.model.startswith("faux/"):
         errors.append(f"--dry is faux-only, not {args.model}: a gate spends no API budget")
