@@ -1154,6 +1154,19 @@ fn tracked_no(frame: &Value) -> Vec<Value> {
     vec![ok(frame, json!({"tracked": [false]}))]
 }
 
+/// The tracked round trip is the sequencing point for the editor-reload tests: the console
+/// asks only once it has absorbed the agent's edit, so this answer cannot precede that.
+fn tracked_no_then_answer(frame: &Value) -> Vec<Value> {
+    let mut frames = tracked_no(frame);
+    frames.extend(turn(
+        "s-alpha",
+        30,
+        "check the reload",
+        &assistant("the edit landed"),
+    ));
+    frames
+}
+
 /// The first edit to a tracked file opens the session's diff pane beside it, the transcript
 /// shows the patch inline, and focus stays on the chat pane.
 #[test]
@@ -1400,9 +1413,19 @@ fn seed_editor_file(name: &str, body: &str) -> Result<PathBuf, Box<dyn Error>> {
 }
 
 fn open_editor_script(path: &std::path::Path, rest: &str) -> String {
+    editor_script(path, "", rest)
+}
+
+/// Splits first so the chat pane survives beside the editor and the transcript still shows
+/// what the agent did.
+fn split_editor_script(path: &std::path::Path, rest: &str) -> String {
+    editor_script(path, "key alt-v\n", rest)
+}
+
+fn editor_script(path: &std::path::Path, split: &str, rest: &str) -> String {
     format!(
         "wait-frame 5000 s-alpha\nkey enter\nwait-frame 5000 replayed world\n\
-         key alt-/\ntype e {}\nkey enter\nwait-frame 3000 ✎ \n{rest}",
+         {split}key alt-/\ntype e {}\nkey enter\nwait-frame 3000 ✎ \n{rest}",
         path.display()
     )
 }
@@ -1470,18 +1493,19 @@ fn agent_rewrites_reload_file() -> Vec<Value> {
 #[test]
 fn agent_edit_reloads_clean_editor_silently() -> TestResult {
     let path = seed_editor_file("reload", "old\n")?;
-    // The daemon list poll (every 5 s) is the sequencing point: the agent's rewrite lands
-    // after the editor has read the original.
+    // The daemon list poll (every 5 s) holds the rewrite back until the editor has read the
+    // original; the answer pushed after `_yi/tracked` is what says the console absorbed it.
     let mut fixture = session_fixture();
     fixture.push(Step::Expect("session/list", empty_list));
     fixture.push(Step::Push(agent_rewrites_reload_file));
-    fixture.push(Step::Expect("_yi/tracked", tracked_no));
+    fixture.push(Step::Expect("_yi/tracked", tracked_no_then_answer));
     run(
         "editor-reload",
         fixture,
-        &open_editor_script(
+        &split_editor_script(
             &path,
-            "wait-frame 3000 1 old\nwait-frame 9000 rewritten by the agent\n\
+            "wait-frame 3000 1 old\nwait-frame 9000 1 rewritten by the agent\n\
+             wait-frame 9000 the edit landed\n\
              wait-frame 2000 !file changed on disk\nquit\n",
         ),
     )?;
@@ -1508,15 +1532,17 @@ fn dirty_editor_shows_reload_bar_and_r_reloads() -> TestResult {
     let mut fixture = session_fixture();
     fixture.push(Step::Expect("session/list", empty_list));
     fixture.push(Step::Push(agent_rewrites_dirty_file));
-    fixture.push(Step::Expect("_yi/tracked", tracked_no));
+    fixture.push(Step::Expect("_yi/tracked", tracked_no_then_answer));
     run(
         "editor-dirty",
         fixture,
-        &open_editor_script(
+        &split_editor_script(
             &path,
-            "wait-frame 3000 1 old\nkey end\ntype er draft\nwait-frame 3000 older draft\n\
-             wait-frame 9000 file changed on disk\nkey r\n\
-             wait-frame 3000 rewritten underneath\nwait-frame 3000 !file changed on disk\nquit\n",
+            "wait-frame 3000 1 old\nkey end\ntype er draft\nwait-frame 3000 1 older draft\n\
+             wait-frame 9000 the edit landed\n\
+             wait-frame 3000 file changed on disk\nkey r\n\
+             wait-frame 3000 1 rewritten underneath\n\
+             wait-frame 3000 !file changed on disk\nquit\n",
         ),
     )?;
     let _ = std::fs::remove_file(&path);
