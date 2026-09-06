@@ -26,7 +26,9 @@ def send(method, url, payload):
             "Accept": "application/json",
         },
     )
-    with urllib.request.urlopen(req) as response:
+    # Incident: a request that never answered held the live job's last step for the
+    # runner's whole clock, three runs in a row; a hang is a failure with a traceback now.
+    with urllib.request.urlopen(req, timeout=30) as response:
         return json.load(response)
 
 
