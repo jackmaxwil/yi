@@ -642,6 +642,190 @@ fn catalog_reports_the_bundle_before_any_refresh() -> TestResult {
     Ok(())
 }
 
+/// A relative HOME planted a lane worktree beside the repository once; every surface refuses it.
+#[test]
+fn a_relative_home_is_refused_at_boot() -> TestResult {
+    let workspace = Workspace::new("relative-home")?;
+    let refused = workspace.yi_env(&["catalog"], &[("HOME", "../elsewhere")])?;
+    assert_eq!(refused.status.code(), Some(2));
+    let complaint = String::from_utf8_lossy(&refused.stderr);
+    assert!(complaint.contains("HOME is relative"), "{complaint}");
+    Ok(())
+}
+
+/// A headless drive is a harness: it claims no lane in a repository unless told `--lanes`,
+/// so a run its harness kills leaves no orphan behind.
+#[test]
+fn a_headless_drive_claims_no_lane_unless_asked() -> TestResult {
+    let workspace = Workspace::new("drive-no-lane")?;
+    let project = workspace.project();
+    for args in [
+        &["init", "-q"][..],
+        &[
+            "-c",
+            "user.email=t@t",
+            "-c",
+            "user.name=t",
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            "root",
+        ][..],
+    ] {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "the journey needs a real repository"
+        )]
+        let done = Command::new("git")
+            .args(args)
+            .current_dir(&project)
+            .output()?;
+        assert!(
+            done.status.success(),
+            "{}",
+            String::from_utf8_lossy(&done.stderr)
+        );
+    }
+    let script = workspace.0.join("quit.keys");
+    std::fs::write(&script, "quit\n")?;
+    let frames = workspace.0.join("frames");
+    std::fs::create_dir_all(&frames)?;
+    let keys = script.to_string_lossy().into_owned();
+    let dir = frames.to_string_lossy().into_owned();
+    let lanes = workspace.0.join("home/.yi/lanes");
+    let quiet = workspace.yi(&[
+        "tui",
+        "--headless",
+        "--keys",
+        &keys,
+        "--frames",
+        &dir,
+        "--model",
+        "faux/faux-1",
+    ])?;
+    assert_eq!(
+        quiet.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&quiet.stderr)
+    );
+    assert!(!lanes.exists(), "a drive without --lanes claimed a lane");
+    let claiming = workspace.yi(&[
+        "tui",
+        "--headless",
+        "--lanes",
+        "--keys",
+        &keys,
+        "--frames",
+        &dir,
+        "--model",
+        "faux/faux-1",
+    ])?;
+    assert_eq!(
+        claiming.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&claiming.stderr)
+    );
+    assert!(lanes.exists(), "--lanes should claim one");
+    Ok(())
+}
+
+fn doctor_lines(output: &Output) -> Vec<String> {
+    stdout(output).lines().map(str::to_owned).collect()
+}
+
+/// A dead socket file is the one repair `doctor --fix` makes without asking; a ledger row
+/// whose root is gone is reported and left to the daemon that owns the file.
+#[test]
+fn doctor_reports_and_repairs_what_it_may() -> TestResult {
+    let workspace = Workspace::new("doctor")?;
+    let yi_dir = workspace.0.join("home/.yi");
+    std::fs::create_dir_all(&yi_dir)?;
+    std::fs::write(yi_dir.join("daemon.sock"), b"")?;
+    std::fs::write(
+        yi_dir.join("daemon.ledger.json"),
+        r#"{"sessions":{"s-gone":{"cwd":"/nonexistent/yi-gone-root","unseen":0,"lastEventMs":1}}}"#,
+    )?;
+    let seen = workspace.yi(&["doctor"])?;
+    assert_eq!(seen.status.code(), Some(1), "{}", stdout(&seen));
+    let lines = doctor_lines(&seen);
+    assert!(
+        lines
+            .iter()
+            .any(|l| l.starts_with("FAIL  daemon-socket") && l.contains("dead socket file")),
+        "{lines:?}"
+    );
+    assert!(
+        lines
+            .iter()
+            .any(|l| l.starts_with("FAIL  daemon-ledger") && l.contains("s-gone")),
+        "{lines:?}"
+    );
+    assert!(
+        lines.iter().any(|l| l.starts_with("ok    home")),
+        "{lines:?}"
+    );
+    let fixed = workspace.yi(&["doctor", "--fix"])?;
+    let lines = doctor_lines(&fixed);
+    assert!(
+        lines.iter().any(|l| l.starts_with("fixed daemon-socket")),
+        "{lines:?}"
+    );
+    assert!(
+        !yi_dir.join("daemon.sock").exists(),
+        "the dead socket file is gone"
+    );
+    assert!(
+        lines.iter().any(|l| l.starts_with("FAIL  daemon-ledger")),
+        "a gone root is not doctor's to prune: {lines:?}"
+    );
+    assert_eq!(fixed.status.code(), Some(1));
+    let json = workspace.yi(&["doctor", "--json"])?;
+    let rows: Value = serde_json::from_str(&stdout(&json))?;
+    let names: Vec<&str> = rows
+        .as_array()
+        .ok_or("array")?
+        .iter()
+        .filter_map(|r| r["name"].as_str())
+        .collect();
+    assert_eq!(
+        names,
+        [
+            "home",
+            "config",
+            "catalog",
+            "daemon-socket",
+            "daemon-ledger",
+            "lanes"
+        ]
+    );
+    Ok(())
+}
+
+/// A config that will not parse is what `doctor` exists to say; it must not die of it first.
+#[test]
+fn doctor_runs_over_a_broken_config_and_names_the_key() -> TestResult {
+    let workspace = Workspace::new("doctor-config")?;
+    write_config(&workspace, r#"{"modle":"x"}"#)?;
+    let seen = workspace.yi(&["doctor"])?;
+    assert_eq!(
+        seen.status.code(),
+        Some(1),
+        "{}",
+        String::from_utf8_lossy(&seen.stderr)
+    );
+    let lines = doctor_lines(&seen);
+    assert!(
+        lines
+            .iter()
+            .any(|l| l.starts_with("FAIL  config") && l.contains("modle")),
+        "{lines:?}"
+    );
+    Ok(())
+}
+
 /// With `telemetry.enabled`, a turn leaves one span file beside the session file, and
 /// `yi stats telemetry <dir>` rolls every sidecar under a directory into one record.
 #[test]
