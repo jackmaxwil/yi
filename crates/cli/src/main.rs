@@ -7,6 +7,7 @@ mod plan;
 mod rpc;
 mod sessions;
 mod stats;
+mod tty;
 mod why;
 
 use std::sync::Arc;
@@ -317,22 +318,6 @@ fn effective_cwd(args: &Args) -> std::path::PathBuf {
     )
 }
 
-fn tty_ask(ask: &yi_runtime::PermissionAsk<'_>) -> yi_runtime::AskOutcome {
-    use std::io::Write;
-    eprintln!("\n{}\n{}", ask.title, ask.text());
-    eprint!("Allow? [y]es once / [a]lways / [N]o: ");
-    let _ = std::io::stderr().flush();
-    let mut line = String::new();
-    if std::io::stdin().read_line(&mut line).is_err() {
-        return yi_runtime::AskOutcome::Reject;
-    }
-    match line.trim().to_lowercase().as_str() {
-        "y" | "yes" => yi_runtime::AskOutcome::AllowOnce,
-        "a" | "always" => yi_runtime::AskOutcome::AllowAlways,
-        _ => yi_runtime::AskOutcome::Reject,
-    }
-}
-
 fn env_either(upper: &str, lower: &str) -> Option<String> {
     std::env::var(upper).or_else(|_| std::env::var(lower)).ok()
 }
@@ -401,10 +386,17 @@ fn build_session(
     if !faux {
         catalog::spawn_refresh(&model.provider, api_key.as_ref(), proxy.as_ref());
     }
+    let telemetry = config()
+        .telemetry
+        .as_ref()
+        .and_then(|telemetry| telemetry.enabled)
+        .unwrap_or(false)
+        .then(|| Arc::new(yi_runtime::Telemetry::default()));
     let provider = Arc::new(
         ProviderStream::new(api_key, None)
             .with_long_cache(interactive)
-            .with_proxy(proxy),
+            .with_proxy(proxy)
+            .with_telemetry(telemetry.clone()),
     );
     if faux {
         provider.queue_faux(vec![yi_ai_faux_reply(&args.prompt)]);
@@ -418,6 +410,9 @@ fn build_session(
         },
         provider,
     );
+    if let Some(telemetry) = telemetry {
+        session.set_telemetry(telemetry);
+    }
     let cwd = effective_cwd(args);
     let home = std::env::var_os("HOME")
         .map(std::path::PathBuf::from)
@@ -727,7 +722,7 @@ fn run(args: &Args) -> i32 {
     let session = {
         let _guard = runtime.enter();
         let asker: Option<yi_runtime::Asker> =
-            interactive.then(|| std::sync::Arc::new(tty_ask) as yi_runtime::Asker);
+            interactive.then(|| std::sync::Arc::new(tty::tty_ask) as yi_runtime::Asker);
         match build_session(args, asker) {
             Ok((session, _host)) => session,
             Err(refused) => return exit_refused(refused),

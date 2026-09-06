@@ -38,6 +38,7 @@ pub struct UserConfig {
     pub tui: Option<TuiConfig>,
     pub lanes: Option<crate::lane::LanesConfig>,
     pub catalog: Option<CatalogConfig>,
+    pub telemetry: Option<TelemetryConfig>,
 }
 
 /// `tui.pace`: the streamed reveal's speed as a percentage of the default (100); `0` paints
@@ -46,6 +47,14 @@ pub struct UserConfig {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct TuiConfig {
     pub pace: Option<u16>,
+}
+
+/// `telemetry.enabled`: write one span per request, tool call, turn and compaction to
+/// `<session file>.telemetry.jsonl`; off by default, on for every CI run.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TelemetryConfig {
+    pub enabled: Option<bool>,
 }
 
 /// `catalog.refreshHours`: how old `~/.yi/catalog/<provider>.json` may be before a session

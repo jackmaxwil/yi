@@ -24,6 +24,7 @@ pub mod session;
 pub mod skills;
 pub mod slash;
 pub mod subagent;
+pub mod telemetry;
 pub mod tools;
 pub mod wall;
 pub mod wiring;
@@ -47,6 +48,7 @@ pub use skills::{Skill, skills_catalog};
 pub use subagent::{
     ChildBuild, ChildStatus, ChildUpdate, ChildView, SubagentHost, SubagentHostOptions,
 };
+pub use telemetry::Telemetry;
 pub use tools::ToolAdapter;
 pub use wall::Wall;
 pub use wiring::{RuntimeWiring, attach_runtime};

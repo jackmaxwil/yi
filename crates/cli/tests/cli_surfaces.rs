@@ -641,3 +641,63 @@ fn catalog_reports_the_bundle_before_any_refresh() -> TestResult {
     assert_eq!(wrong.status.code(), Some(2));
     Ok(())
 }
+
+/// With `telemetry.enabled`, a turn leaves one span file beside the session file, and
+/// `yi stats telemetry <dir>` rolls every sidecar under a directory into one record.
+#[test]
+fn telemetry_writes_spans_beside_the_session_and_stats_rolls_them_up() -> TestResult {
+    let workspace = Workspace::new("telemetry")?;
+    write_config(&workspace, r#"{"telemetry":{"enabled":true}}"#)?;
+    let answered = ask(&workspace, "span me", &[])?;
+    assert_eq!(
+        answered.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&answered.stderr)
+    );
+    let sessions = workspace.0.join("home/sessions");
+    let mut sidecars = Vec::new();
+    fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+        if let Ok(entries) = std::fs::read_dir(dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    walk(&path, out)
+                } else if path.to_string_lossy().ends_with(".telemetry.jsonl") {
+                    out.push(path)
+                }
+            }
+        }
+    }
+    walk(&sessions, &mut sidecars);
+    assert_eq!(
+        sidecars.len(),
+        1,
+        "one sidecar beside the session file: {sidecars:?}"
+    );
+    let text = std::fs::read_to_string(&sidecars[0])?;
+    let spans: Vec<Value> = text
+        .lines()
+        .map(serde_json::from_str)
+        .collect::<Result<_, _>>()?;
+    assert!(
+        spans.iter().any(|s| s["span"] == "request"
+            && s["provider"] == "faux"
+            && s.get("ttftMs").is_some()),
+        "{text}"
+    );
+    assert!(spans.iter().any(|s| s["span"] == "turn"), "{text}");
+    let dir = sessions.to_string_lossy().into_owned();
+    let rolled = workspace.yi(&["stats", "--json", "telemetry", &dir])?;
+    assert_eq!(
+        rolled.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&rolled.stderr)
+    );
+    let record: Value = serde_json::from_str(&stdout(&rolled))?;
+    assert_eq!(record["requests"], 1, "{record}");
+    assert_eq!(record["turns"], 1, "{record}");
+    assert_eq!(record["files"], 1, "{record}");
+    Ok(())
+}
