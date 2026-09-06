@@ -1,0 +1,88 @@
+{
+  "schema_version": "ATIF-v1.7",
+  "session_id": "tool-turn",
+  "agent": {
+    "name": "yi",
+    "version": "0.169.0",
+    "model_name": "claude-opus-4-5"
+  },
+  "steps": [
+    {
+      "step_id": 1,
+      "timestamp": "2025-12-06T05:46:40.001000Z",
+      "source": "user",
+      "message": "run the bash tool twice and report both exit codes"
+    },
+    {
+      "step_id": 2,
+      "timestamp": "2025-12-06T05:46:40.004000Z",
+      "source": "agent",
+      "model_name": "claude-opus-4-5",
+      "message": "running the tool",
+      "reasoning_content": "let me look",
+      "tool_calls": [
+        {
+          "tool_call_id": "call-1",
+          "function_name": "bash",
+          "arguments": {
+            "zeta": 1,
+            "alpha": "x",
+            "nested": {
+              "b": 2,
+              "a": [
+                1,
+                null,
+                true
+              ]
+            }
+          }
+        },
+        {
+          "tool_call_id": "call-2",
+          "function_name": "bash",
+          "arguments": {
+            "command": "false"
+          }
+        }
+      ],
+      "metrics": {
+        "prompt_tokens": 10200,
+        "completion_tokens": 340,
+        "cached_tokens": 9000,
+        "cost_usd": 0.007432
+      },
+      "observation": {
+        "results": [
+          {
+            "source_call_id": "call-1",
+            "content": "exit 0"
+          },
+          {
+            "source_call_id": "call-2",
+            "content": "exit 1: false"
+          }
+        ]
+      }
+    },
+    {
+      "step_id": 3,
+      "timestamp": "2025-12-06T05:46:40.007000Z",
+      "source": "agent",
+      "model_name": "claude-opus-4-5",
+      "message": "the first command exited 0, the second exited 1",
+      "metrics": {
+        "prompt_tokens": 12100,
+        "completion_tokens": 12,
+        "cached_tokens": 10700,
+        "cost_usd": 0.002601
+      }
+    }
+  ],
+  "final_metrics": {
+    "total_prompt_tokens": 22300,
+    "total_completion_tokens": 352,
+    "total_cached_tokens": 19700,
+    "total_cost_usd": 0.010033,
+    "total_steps": 3
+  }
+}

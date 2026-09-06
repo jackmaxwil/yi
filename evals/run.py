@@ -27,7 +27,9 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT / "adapters"))
+sys.path.insert(0, str(ROOT))
 
+import atif  # noqa: E402
 import yi_usage  # noqa: E402
 
 TASKS = ROOT / "fixtures" / "tasks"
@@ -153,7 +155,18 @@ def run_task(task_dir, binary, model, out=None):
             # The per-task record evals/axes.py reads beside the sessions (plan S2):
             # a campaign could not tell which task failed without re-running the suite.
             (keep / "row.json").write_text(json.dumps(row, sort_keys=True))
+            write_trajectory(sessions, keep / "trajectory.json", model)
     return spec, row
+
+
+def write_trajectory(sessions, target, model):
+    """The session file as ATIF-v1.7 beside the events (plan S4, E10)."""
+    lines = []
+    for path in sorted(Path(sessions).rglob("*.jsonl")):
+        if not path.name.endswith(".telemetry.jsonl"):
+            lines.extend(path.read_text(errors="replace").splitlines())
+    if lines:
+        target.write_text(json.dumps(atif.convert(lines, model=model), indent=2) + "\n")
 
 
 def _total(rows, key):

@@ -26,6 +26,7 @@ import orient_census  # noqa: E402
 import rule_fires  # noqa: E402
 import record  # noqa: E402
 import tb21_cost  # noqa: E402
+import atif  # noqa: E402
 import axes  # noqa: E402
 import yi_usage  # noqa: E402
 
@@ -172,6 +173,26 @@ def check_axes():
         empty = Path(directory)
         with contextlib.redirect_stderr(io.StringIO()):
             assert axes.main([str(empty)]) == 2, "no sessions must not read as a measured run"
+
+
+def check_atif():
+    """E10: the session file converts to an ATIF-v1.7 trajectory, byte-stable and harbor-shaped."""
+    lines = (FIXTURES / "session-record" / "tool-turn.jsonl").read_text().splitlines()
+    trajectory = atif.convert(lines, "0.169.0")
+    expected = json.loads((FIXTURES / "atif" / "tool-turn.trajectory.json").read_text())
+    assert trajectory == expected, "trajectory drifted from evals/fixtures/atif/tool-turn.trajectory.json"
+    assert trajectory["schema_version"] == "ATIF-v1.7"
+    steps = trajectory["steps"]
+    assert [s["source"] for s in steps] == ["user", "agent", "agent"], steps
+    assert steps[1]["metrics"] == {"prompt_tokens": 10200, "completion_tokens": 340, "cached_tokens": 9000, "cost_usd": 0.007432}, steps[1]["metrics"]
+    assert [r["source_call_id"] for r in steps[1]["observation"]["results"]] == ["call-1", "call-2"]
+    assert trajectory["final_metrics"]["total_steps"] == 3
+    for step in steps:
+        for call in step.get("tool_calls") or []:
+            assert set(call) <= {"tool_call_id", "function_name", "arguments", "extra"}, call
+    unknown = [json.dumps({"kind": "header", "id": "u"}), json.dumps({"kind": "entry", "lane": "main", "type": "message",
+               "message": {"role": "assistant", "content": [{"type": "text", "text": "hi"}], "usage": {"unknown": True}}})]
+    assert "total_cost_usd" not in atif.convert(unknown)["final_metrics"], "an unknown-usage turn must not price the trajectory"
 
 
 def check_driver_ceiling():
@@ -335,6 +356,7 @@ CHECKS = (
     check_fingerprint,
     check_driver_ceiling,
     check_axes,
+    check_atif,
     check_record,
     check_record_redacts,
     check_record_refuses,
