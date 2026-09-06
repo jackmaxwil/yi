@@ -223,7 +223,10 @@ fn a_json_blob_is_pretty_printed_before_capping() -> TestResult {
 fn an_over_wide_line_folds_to_two_rows_and_a_size() -> TestResult {
     let rows = verbose_rows(&"x".repeat(600));
     let wide = rows.iter().filter(|r| r.contains("xxxx")).count();
-    assert_eq!(wide, 2, "one digest row and one body row survive: {rows:?}");
+    assert_eq!(
+        wide, 4,
+        "two rows each for the digest and the body row: {rows:?}"
+    );
     assert_eq!(
         rows.iter().filter(|r| r.contains("… 1 KB")).count(),
         2,

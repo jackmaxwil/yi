@@ -136,6 +136,7 @@ pub fn compute_view(app: &mut App, area: Rect, theme: &Theme) -> ViewState {
             .is_some_and(|pane| matches!(pane.content, PaneContent::Session { .. }));
     let framed = !lone_chat || app.state.tab().is_some_and(|tab| tab.zoomed);
     let panes_zone = app.state.zone == Zone::Panes;
+    let close_hint = if app.cmd_hints { "⌘J" } else { "⌥⇧J" };
     let mut panes = Vec::new();
     let mut editor_cursor = None;
     for pane_rect in pane_rects {
@@ -143,7 +144,7 @@ pub fn compute_view(app: &mut App, area: Rect, theme: &Theme) -> ViewState {
         let diffs = &app.state.diffs;
         let sessions = &app.state.sessions;
         let (title, lines, scroll) = match app.state.panes.get_mut(&pane_rect.id) {
-            Some(pane) => pane_view_content(pane, diffs, sessions, inner, theme),
+            Some(pane) => pane_view_content(pane, diffs, sessions, inner, theme, close_hint),
             None => ("empty".to_owned(), Vec::new(), None),
         };
         let chat =
@@ -263,6 +264,7 @@ fn pane_view_content(
     sessions: &std::collections::BTreeMap<SessionId, SessionRow>,
     inner: Rect,
     theme: &Theme,
+    close_hint: &str,
 ) -> (String, Vec<Line<'static>>, Option<(usize, usize)>) {
     let visible = usize::from(inner.height);
     match &mut pane.content {
@@ -326,7 +328,7 @@ fn pane_view_content(
                 || "▤ notebook".to_owned(),
                 |id| format!("▤ nb:{}", label_of(sessions, id, 11)),
             );
-            let all = notebook_lines(cells, usize::from(inner.width), theme);
+            let all = notebook_lines(cells, usize::from(inner.width), theme, close_hint);
             let (lines, scroll) = windowed(all, pane.scroll_from_bottom, visible);
             (title, lines, scroll)
         }
@@ -352,11 +354,16 @@ fn notebook_lines(
     cells: &[crate::model::NbCell],
     width: usize,
     theme: &Theme,
+    close: &str,
 ) -> Vec<Line<'static>> {
     let mut out = Vec::new();
     if cells.is_empty() {
         out.push(Line::styled(
             "no kernel cells yet — they appear as the agent computes",
+            theme.dim_style(),
+        ));
+        out.push(Line::styled(
+            format!("{close} closes · an idle notebook closes itself"),
             theme.dim_style(),
         ));
         return out;
@@ -365,40 +372,49 @@ fn notebook_lines(
     for (index, cell) in cells.iter().enumerate() {
         let (marker, style) = if cell.running {
             ("◐", Style::default().fg(theme.warning))
+        } else if cell.error.is_some() {
+            ("●", Style::default().fg(theme.error))
         } else {
-            ("●", theme.accent_style())
+            ("●", Style::default().fg(theme.success))
         };
         out.push(Line::from(vec![
             Span::styled(format!("{marker} "), style),
             Span::styled(
                 format!("In [{}]", index.saturating_add(1)),
-                theme.accent_style().add_modifier(Modifier::BOLD),
+                style.add_modifier(Modifier::BOLD),
             ),
         ]));
-        for code_line in wrap(&cell.code, body).into_iter().take(24) {
-            out.push(Line::from(vec![
-                Span::styled("  │ ", theme.dim_style()),
-                Span::styled(code_line, Style::default().fg(theme.text)),
-            ]));
+        let mut lang = yi_tui::highlight::lang_for("python");
+        let base = Style::default().fg(theme.text);
+        for code_line in cell.code.lines().take(24) {
+            let mut spans = vec![Span::styled("  │ ", theme.dim_style())];
+            match lang.as_mut() {
+                Some(lang) => spans.extend(yi_tui::highlight::spans(code_line, lang, theme, base)),
+                None => spans.push(Span::styled(code_line.to_owned(), base)),
+            }
+            out.extend(yi_tui::wrap::wrap_line(&Line::from(spans), width, "  │ "));
         }
         let has_output = !cell.stdout.is_empty() || cell.result.is_some() || cell.error.is_some();
         if has_output {
             out.push(Line::from(Span::styled(
                 format!("  Out [{}]", index.saturating_add(1)),
-                theme.dim_style(),
+                theme.muted_style(),
             )));
         }
         for stream_line in wrap(&cell.stdout, body).into_iter().take(40) {
             out.push(Line::from(vec![
                 Span::raw("    "),
-                Span::styled(stream_line, theme.muted_style()),
+                Span::styled(stream_line, Style::default().fg(theme.text)),
             ]));
         }
         if let Some(result) = &cell.result {
             for result_line in wrap(result, body).into_iter().take(20) {
                 out.push(Line::from(vec![
                     Span::styled("  ↳ ", theme.accent_style()),
-                    Span::styled(result_line, Style::default().fg(theme.text)),
+                    Span::styled(
+                        result_line,
+                        theme.accent_style().add_modifier(Modifier::BOLD),
+                    ),
                 ]));
             }
         }
@@ -622,6 +638,7 @@ fn paint_chat_pane(
                 .and_then(|s| app.state.sessions.get(s))
                 .map(|row| {
                     (
+                        row.id.0.clone(),
                         row.seed().to_owned(),
                         row.status,
                         row.label(),
@@ -630,6 +647,9 @@ fn paint_chat_pane(
                 })
         })
         .flatten();
+    let tile = title
+        .as_ref()
+        .map(|(id, seed, _, _, hue)| title_tile(app, id, seed, *hue, inner.x, inner.y));
     let Some(pane) = app.state.panes.get_mut(&view.id) else {
         return;
     };
@@ -641,9 +661,9 @@ fn paint_chat_pane(
     };
     chat.app.set_kitty(kitty && view.focused);
     let mut inner = inner;
-    if let Some((seed, status, label, hue)) = title {
+    if let (Some((_, _, status, label, _)), Some(tile)) = (title, tile) {
         let line = Line::from(vec![
-            Span::styled(name_tile(&seed), tile_style_at(hue)),
+            tile,
             Span::styled(format!(" {} ", status.glyph()), status_style(theme, status)),
             Span::styled(label, theme.accent_style().add_modifier(Modifier::BOLD)),
         ]);
@@ -709,9 +729,28 @@ fn render_banner(app: &App, frame: &mut Frame<'_>, area: Rect, theme: &Theme) {
     frame.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
+fn title_tile(app: &mut App, id: &str, seed: &str, hue: usize, x: u16, y: u16) -> Span<'static> {
+    let text = name_tile(seed);
+    if !app.kitty {
+        return Span::styled(text, tile_style_at(hue));
+    }
+    if let Some(hits) = app.hits.as_mut() {
+        hits.avatars.push(crate::avatar::Placement {
+            col: x,
+            row: y,
+            cols: 2,
+            rows: 1,
+            key: format!("{id}#{x},{y}"),
+            seed: id.to_owned(),
+            accent: yi_tui::colors::accent_rgb(hue),
+        });
+    }
+    Span::raw(" ".repeat(text.chars().count()))
+}
+
 /// Border cells with edge-bit union, so shared pane edges resolve to real
 /// junctions instead of doubled lines.
-fn render_borders(app: &App, frame: &mut Frame<'_>, view: &ViewState, theme: &Theme) {
+fn render_borders(app: &mut App, frame: &mut Frame<'_>, view: &ViewState, theme: &Theme) {
     #[derive(Default, Clone, Copy)]
     struct EdgeCell {
         up: bool,
@@ -779,13 +818,19 @@ fn render_borders(app: &App, frame: &mut Frame<'_>, view: &ViewState, theme: &Th
             .get(&pane.id)
             .and_then(|p| p.session())
             .and_then(|s| app.state.sessions.get(s))
-            .map(|row| (row.seed().to_owned(), app.accent_of(&row.id.0, row.seed())));
+            .map(|row| {
+                (
+                    row.id.0.clone(),
+                    row.seed().to_owned(),
+                    app.accent_of(&row.id.0, row.seed()),
+                )
+            });
         let mut x = r.x.saturating_add(2);
         let mut max = r.width.saturating_sub(4);
-        if let Some((seed, hue)) = &seed {
-            let hue = *hue;
-            let tile = Span::styled(format!(" {}", name_tile(seed)), tile_style_at(hue));
-            buffer.set_span(x, r.y, &tile, max);
+        if let Some((id, seed, hue)) = &seed {
+            let tile = title_tile(app, id, seed, *hue, x.saturating_add(1), r.y);
+            buffer.set_span(x, r.y, &Span::raw(" "), max);
+            buffer.set_span(x.saturating_add(1), r.y, &tile, max.saturating_sub(1));
             x = x.saturating_add(3);
             max = max.saturating_sub(3);
         }

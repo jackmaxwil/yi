@@ -61,6 +61,12 @@ pub const STEPS: &[Step] = &[
         op: OpKind::Done,
         to: TodoStateName::Done,
     },
+    // Finished in the breath it was picked up: the ledger records outcomes, not ceremony.
+    Step {
+        from: TodoStateName::Pending,
+        op: OpKind::Done,
+        to: TodoStateName::Done,
+    },
     Step {
         from: TodoStateName::Running,
         op: OpKind::Fail,
@@ -459,7 +465,10 @@ mod tests {
             step(&TodoState::Done { output: None }, OpKind::AddEdge),
             Some(TodoStateName::Done)
         );
-        assert_eq!(step(&TodoState::Pending, OpKind::Done), None);
+        assert_eq!(
+            step(&TodoState::Pending, OpKind::Done),
+            Some(TodoStateName::Done)
+        );
         assert_eq!(step(&TodoState::Pending, OpKind::Retry), None);
         assert_eq!(step(&running, OpKind::Start), None);
         assert_eq!(step(&running, OpKind::AddEdge), None);

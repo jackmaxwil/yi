@@ -123,19 +123,19 @@ fn the_head_line_is_byte_identical_in_every_mode() -> TestResult {
         }),
         ToolStatus::Done,
     );
-    let expected = "  ✓ ⊙ python · df = pd.read_csv(\"data.csv\") · ↑ 2 ↓ 2 lines · 340ms";
+    let expected = "⊙ python · df = pd.read_csv(\"data.csv\")";
     assert_eq!(head(&cell, 0), expected);
-    for mode in [
-        TranscriptMode::Normal,
-        TranscriptMode::Thinking,
-        TranscriptMode::Verbose,
-    ] {
-        let rendered = text(&Cell::Tool(cell.clone()).lines(120, &theme(), mode, 0));
-        assert_eq!(
-            rendered.first().map(String::as_str),
-            Some(expected),
-            "{mode:?}"
-        );
+    let first = |mode| {
+        text(&Cell::Tool(cell.clone()).lines(120, &theme(), mode, 0))
+            .first()
+            .cloned()
+            .unwrap_or_default()
+    };
+    let normal = first(TranscriptMode::Normal);
+    assert!(normal.contains("⊙ python  df = pd.read_csv"), "{normal}");
+    assert!(normal.ends_with("↑ 2 ↓ 2 lines  340ms"), "{normal}");
+    for mode in [TranscriptMode::Thinking, TranscriptMode::Verbose] {
+        assert_eq!(first(mode), normal, "{mode:?}");
     }
     Ok(())
 }
@@ -210,8 +210,12 @@ fn kernel_side_file_edits_render_as_diffs() -> TestResult {
         "{joined}"
     );
     assert!(
-        rendered.iter().any(|row| row.trim_start().starts_with('-'))
-            && rendered.iter().any(|row| row.trim_start().starts_with('+')),
+        rendered
+            .iter()
+            .any(|row| row.trim_start_matches(['│', ' ']).starts_with('-'))
+            && rendered
+                .iter()
+                .any(|row| row.trim_start_matches(['│', ' ']).starts_with('+')),
         "{joined}"
     );
     Ok(())
@@ -293,9 +297,8 @@ fn a_loud_failed_cell_is_bounded_and_its_lines_counted() -> TestResult {
         "{normal:?}"
     );
     assert!(
-        head(&cell, 0).contains("↓ 49 lines"),
-        "the count includes the traceback: {}",
-        head(&cell, 0)
+        normal.first().is_some_and(|row| row.contains("↓ 49 lines")),
+        "the count includes the traceback: {normal:?}"
     );
     let verbose = text(&Cell::Tool(cell).lines(120, &theme(), TranscriptMode::Verbose, 0));
     assert!(verbose.len() > 50, "verbose stays whole: {}", verbose.len());

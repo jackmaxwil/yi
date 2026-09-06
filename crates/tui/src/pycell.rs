@@ -11,7 +11,7 @@ use crate::wrap::wrap_line;
 const PREVIEW_CAP: usize = 64;
 const PROMPT: &str = "› ";
 const CONTINUATION: &str = "  ";
-const BODY_INDENT: &str = "    ";
+const BODY_INDENT: &str = "";
 /// A base64 payload is never the line that says what a cell did.
 const BLOB_RUN: usize = 32;
 
@@ -151,16 +151,6 @@ fn line_count(text: &str) -> usize {
     text.trim_end_matches('\n').split('\n').count()
 }
 
-fn elapsed_label(ms: u64) -> String {
-    if ms >= 60_000 {
-        format!("{}m {}s", ms / 60_000, (ms % 60_000) / 1000)
-    } else if ms >= 1000 {
-        format!("{}.{}s", ms / 1000, (ms % 1000) / 100)
-    } else {
-        format!("{ms}ms")
-    }
-}
-
 /// `%%bash` is a shell cell whose output is a shell's; naming it python because
 /// the kernel is a Python one tells the reader the wrong thing about the code.
 fn chip(code: &str) -> &'static str {
@@ -175,46 +165,57 @@ fn chip(code: &str) -> &'static str {
 /// width when the body opens moves every row under it.
 pub fn head(cell: &ToolCell, spinner_phase: usize) -> String {
     let code = string(&cell.details, "code");
-    let glyph = match cell.status {
-        ToolStatus::Running => spinner_frame(spinner_phase),
-        ToolStatus::Awaiting => '△',
-        ToolStatus::Done => '✓',
-        ToolStatus::Failed | ToolStatus::Denied => '✗',
+    let lead = match cell.status {
+        ToolStatus::Running => format!("{} ", spinner_frame(spinner_phase)),
+        ToolStatus::Awaiting => "△ ".to_owned(),
+        _ => String::new(),
     };
     let mut parts = vec![chip(&code).to_owned()];
     let preview = preview(&code);
     if !preview.is_empty() {
         parts.push(preview);
     }
+    format!("{lead}⊙ {}", parts.join(" · "))
+}
+
+fn chips(cell: &ToolCell, theme: &Theme) -> Vec<crate::card::Chip> {
+    use crate::card::Chip;
+    let code = string(&cell.details, "code");
+    let mut chips = Vec::new();
     let inputs = line_count(&code);
     let outputs = line_count(&string(&cell.details, "stdout"))
         .saturating_add(line_count(&string(&cell.details, "stderr")))
         .saturating_add(line_count(&string(&cell.details, "result")))
         .saturating_add(line_count(&traceback_of(&cell.details)));
     if inputs > 0 {
-        parts.push(if outputs > 0 {
-            format!("↑ {inputs} ↓ {outputs} lines")
+        let value = if outputs > 0 {
+            format!("↑ {inputs} ↓ {outputs}")
         } else {
-            format!("↑ {inputs} lines")
-        });
+            format!("↑ {inputs}")
+        };
+        chips.push(Chip::new(value, "lines", Style::default().fg(theme.text)));
     }
     let duration = cell
         .details
         .get("durationMs")
         .and_then(Value::as_u64)
         .unwrap_or(cell.elapsed_ms);
-    if duration > 0 {
-        parts.push(elapsed_label(duration));
-    }
+    chips.extend(Chip::elapsed(duration, theme));
     let ename = cell
         .details
         .pointer("/error/ename")
         .and_then(Value::as_str)
         .unwrap_or_default();
     if !ename.is_empty() {
-        parts.push(ename.to_owned());
+        chips.push(Chip::new(
+            ename.to_owned(),
+            "",
+            Style::default()
+                .fg(theme.error)
+                .add_modifier(Modifier::BOLD),
+        ));
     }
-    format!("  {glyph} ⊙ {}", parts.join(" · "))
+    chips
 }
 
 fn gutter_lines(code: &str, width: usize, theme: &Theme) -> Vec<Line<'static>> {
@@ -318,33 +319,51 @@ pub fn lines(
 ) -> Vec<Line<'static>> {
     let failed = matches!(cell.status, ToolStatus::Failed | ToolStatus::Denied);
     let expanded = mode == TranscriptMode::Verbose;
-    let mut out = wrap_line(
-        &Line::from(Span::styled(
-            head(cell, spinner_phase),
-            match cell.status {
-                ToolStatus::Running => Style::default().fg(theme.text),
-                ToolStatus::Awaiting => Style::default().fg(theme.warning),
-                ToolStatus::Done => theme.muted_style(),
-                ToolStatus::Failed => Style::default().fg(theme.error),
-                ToolStatus::Denied => theme.muted_style().add_modifier(Modifier::CROSSED_OUT),
-            },
-        )),
-        width,
-        "    ",
-    );
+    let style = match cell.status {
+        ToolStatus::Awaiting => Style::default().fg(theme.warning),
+        ToolStatus::Failed => Style::default().fg(theme.error),
+        ToolStatus::Denied => theme.muted_style().add_modifier(Modifier::CROSSED_OUT),
+        ToolStatus::Running | ToolStatus::Done => Style::default().fg(theme.text),
+    };
+    let text = head(cell, spinner_phase);
+    let (lead, rest) = text.split_at(text.find('⊙').unwrap_or(0));
+    let (name, rest) = rest.split_once(" · ").unwrap_or((rest, ""));
+    let mut spans = vec![
+        Span::styled(lead.to_owned(), theme.accent_style()),
+        Span::styled(
+            name.to_owned(),
+            Style::default()
+                .fg(crate::card::tool_hue(theme, "ipython"))
+                .add_modifier(Modifier::BOLD),
+        ),
+    ];
+    if !rest.is_empty() {
+        spans.push(Span::styled(format!("  {rest}"), style));
+    }
+    let inner = crate::card::body_width(width);
+    let mut out = Vec::new();
     let budget = if expanded {
         DiffBudget::FULL
     } else {
         DiffBudget::NORMAL
     };
-    out.extend(diff_lines(&cell.details, width, theme, budget));
+    out.extend(diff_lines(&cell.details, inner, theme, budget));
+    let card = |body| {
+        crate::card::card(
+            Line::from(spans.clone()),
+            &chips(cell, theme),
+            body,
+            width,
+            theme,
+            cell.status,
+        )
+    };
     if !expanded && !failed {
-        return out;
+        return card(out);
     }
     let code = string(&cell.details, "code");
     if !code.is_empty() {
-        out.push(Line::default());
-        out.extend(gutter_lines(&code, width, theme));
+        out.extend(gutter_lines(&code, inner, theme));
     }
     let raw_stdout = string(&cell.details, "stdout");
     let (stdout, trailing) = split_traceback(&raw_stdout);
@@ -362,8 +381,8 @@ pub fn lines(
         let bounded = (!expanded).then(|| crate::transcript::preview_lines(&text, 5, 5).join("\n"));
         let shown = bounded.as_deref().unwrap_or(&text);
         if !text.trim().is_empty() {
-            out.extend(stream_lines(shown, style, width));
+            out.extend(stream_lines(shown, style, inner));
         }
     }
-    out
+    card(out)
 }

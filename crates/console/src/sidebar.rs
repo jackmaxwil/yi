@@ -34,6 +34,7 @@ fn avatar_at(col: u16, cols: u16, rows: u16, key: &str, hue: usize) -> Option<Pl
         cols,
         rows,
         key: key.to_owned(),
+        seed: key.to_owned(),
         accent: accent_rgb(hue),
     })
 }
@@ -68,9 +69,12 @@ fn fade(line: &mut Line<'static>, level: usize, theme: &Theme) {
     }
 }
 
+pub const RAIL_CAP: usize = 9;
+
 pub fn sidebar_lines(app: &App, theme: &Theme, height: u16) -> Vec<SidebarRow> {
     let mut rows = Vec::new();
     let rail = app.state.sidebar == SidebarMode::Rail;
+    let mut beyond = 0_usize;
     let multi_root = !rail && app.state.roots().len() > 1;
     let mut current_root: Option<&str> = None;
     let mut current_bucket: Option<&str> = None;
@@ -108,6 +112,10 @@ pub fn sidebar_lines(app: &App, theme: &Theme, height: u16) -> Vec<SidebarRow> {
         let is_focused = focused.as_ref() == Some(id);
         let is_cursor = index == app.state.selected && app.state.zone == Zone::Sidebar;
         slot = slot.saturating_add(1);
+        if rail && slot > RAIL_CAP {
+            beyond = beyond.saturating_add(1);
+            continue;
+        }
         let label = row.label();
         let row_bg = if is_cursor {
             Some(theme.selection_bg())
@@ -184,6 +192,12 @@ pub fn sidebar_lines(app: &App, theme: &Theme, height: u16) -> Vec<SidebarRow> {
             avatar: avatar_at(2, 2, 1, &id.0, hue),
         });
         rows.extend(child_rows(app, id, theme, false));
+    }
+    if beyond > 0 {
+        rows.push(SidebarRow::plain(
+            None,
+            Line::styled(format!("  +{beyond}"), theme.dim_style()),
+        ));
     }
     window_rows(rows, height, app.state.selected, theme)
 }

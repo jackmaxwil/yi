@@ -32,7 +32,13 @@ pub fn age_label(elapsed_ms: u64) -> String {
 
 pub fn session_title(text: &str) -> Option<String> {
     let line = text.lines().map(str::trim).find(|line| !line.is_empty())?;
-    let words: Vec<&str> = line.split_whitespace().collect();
+    let words: Vec<&str> = line
+        .split_whitespace()
+        .filter(|word| !word.starts_with('@'))
+        .collect();
+    if words.is_empty() {
+        return session_title(text.split_once('\n').map_or("", |(_, rest)| rest));
+    }
     Some(words.join(" ").chars().take(48).collect())
 }
 
