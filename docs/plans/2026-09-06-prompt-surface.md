@@ -1,7 +1,10 @@
 # The prompt surface: one exhaustive prompt, a todo tool that never lets go, and the instrument that finds where either fails
 
 ```
-status:  proposed 2026-09-06, v3. v1 proposed a keyword-routed task class
+status:  proposed 2026-09-06, v4. v3's §5.3 coupling was pressure-tested
+         against Yi's own loop (`crates/loop/src/run.rs:545-620`) and seven
+         reference agents (§5.7); v4 rewrites §5.3 with the bounds that
+         survived. v3 note: v1 proposed a keyword-routed task class
          and two prompt registers by model tier; both were rejected the
          same day (a hard-coded verb list is not a design; Yi has one prompt
          path). v2 put the guidance into the fragments Yi already ships. v3
@@ -17,7 +20,9 @@ evidence: docs/plans/2026-09-06-prompt-surface/ — session-autopsy.md (the
          built, every claim with file:line), anthropic.md, openai.md,
          grok-pi-others.md (the leak corpus read against a coding agent's
          needs), yi-prompt-ideation.md (the brainstorm; its A1 router and A4
-         tiers are the rejected v1 items and stay as history).
+         tiers are the rejected v1 items and stay as history),
+         prior-art-{codex-jcode,opencode-fx-strix,pi-prime-dsh}.md (todo and
+         continuation mechanisms in seven reference agents, file:line).
 corpus:  ref/prompts/system_prompts_leaks (shallow clone, gitignored under
          ref/; read for contract, nothing ported). ref/agents/omp
          `packages/coding-agent/src/{tools/todo.ts, session/todo-tracker.ts,
@@ -734,40 +739,137 @@ list is its own and the parent's is not visible to it (OMP's rule, kept).
 A parent that delegated a todo to a child sees the child's completion
 through the plan's dispatch, not through the child's list.
 
-### 5.3 Loop coupling (moves from `plan/loop_coupling.rs` to `todo/coupling.rs`)
+### 5.3 Loop coupling: nudge and interception, as bounded after the pressure test
 
-The three couplings the plan carries today re-home on the todo list and
-lose their caps where the caps let work stop:
+The three couplings the plan tool carries today (`plan/loop_coupling.rs`)
+re-home on the todo list. v3 stated them in one paragraph each; §5.7
+found thirteen ways to break that version. This is the version with the
+bounds. Every number below is a constant in `todo/coupling.rs::gate`,
+named once, never rendered into model-facing text (jcode: a threshold
+the model can read is a threshold it targets).
 
-- **Eager init.** `gate::eager_init` (multi-step prompt by enumeration,
-  conjunctions, sentence count, length; a question never) forces
-  `tool_choice: todo` on the first request of the turn with a hidden
-  prelude: "Before substantive work, initialize the todo list with one
-  `init` or `set` op covering the whole request; then continue in the same
-  turn." A prompt that is not multi-step gets the prelude without the
-  force. The gate is a threshold over counts, not a keyword list (law 1;
-  the conjunction and interrogative constants are the plan tool's, fitted
-  on task shape).
-- **Mid-run nudge.** Twelve mutating calls since the last todo touch emit
-  one hidden reminder; two per cycle. Unchanged.
-- **Stop interception.** A terminal assistant turn with open items the
-  model could still work (`StopPosture::Continue` over the todo list:
-  Pending or Running, not Blocked on the user, not asking a question)
-  appends a visible ledger message listing the open items and re-drives
-  the turn. The cap rises from 2 to `todo.reminders_max` (default 5),
-  and a reminder is not re-sent while the previous one has produced no
-  todo touch (OMP's `reminderAwaitingProgress`), so a stuck model gets at
-  most one nudge per unit of progress and the loop cannot spin. Blocked
-  on external reuses the plan probe's cadence ladder (D100); Blocked on
-  user ends the turn with the question.
-- **Post-compaction.** The `<yi_compact_view>` (D115) gains a `[Todos]`
-  section rendering the live list, and the eager prelude re-fires once
-  after a compaction when items are open.
-- **Environment line.** `todos: a of b done · running: <label> · n blocked`
-  every turn (§4.3).
+**What counts as work.** Not tool calls. `mutating_tool_names` today counts
+every bash call (kind Exec) and excludes `ipython`, so twelve `git log`
+calls read as work and a refactor done through the kernel reads as
+nothing. Work = changes landed: one per `Change` record an `edit`/`write`
+result carries, one per bash call the permission classifier classed
+mutating, one per kernel cell whose host-verb log shows a write. Errors
+never count.
+
+**Mid-run nudge.** A threshold crossing, not a nag: when work since the
+last state-changing todo op crosses `NUDGE_WORK` (12), one hidden message
+(`custom{todo_nudge}`, `display: false`, the steer queue) names the open
+items and asks the model to step what it finished, batched with the next
+real call. Re-armed only by a state-changing op; at most
+`NUDGE_CAP_PER_CYCLE` (2). `view` is not a state change. The text names
+categories and labels, never the count that fired it (codex's
+once-per-crossing rollout reminder; jcode moved everything else to a
+turn-end digest because write-time nagging slowed agents that were
+progressing, and that finding is the reason the cap is two, not five).
+
+**Stop interception.** The loop consults `intercept_stop` only when the
+turn ended with no tool calls and no queued steering (`run.rs:606-612`).
+The interceptor fires when the list has an item the model could still
+work: `StopPosture::Continue` over the todo list, meaning Pending or
+Running, not Blocked on the user, not Blocked on an external probe, no
+child of this session still running (prime: hold while children are
+unsettled). What suppresses it is a state, never a sentence: a `Blocked
+{on: User}` item, or an `ask_user` call in the turn. A trailing `?` does
+not suppress (v3's `asking_user` heuristic: "Anything else?" ended the
+turn with five items open).
+
+The interception is a ladder, one rung per re-drive, the rung chosen by
+whether the open set's fingerprint (sorted open labels and states)
+changed since the last rung:
+
+| rung | when | message (`custom{todo_intercept}`) | visible |
+|---|---|---|---|
+| 1 | first stop with open items | the open items; "continue, or step what is finished; do not restate your answer" | yes, one line |
+| 2 | fingerprint unchanged after rung 1 | "…or `block` an item on the user with the question, or `drop` it with a reason; no other stop is clean" | hidden |
+| 3 | fingerprint unchanged after rung 2 | "the turn ends now; write the closing message naming each open item and why; call no tools" (dsh's closing-message interception: a hard stop leaves a bare tool card) | hidden |
+| — | after rung 3, or on any cap | the host appends the open list to the final message as ground truth and emits `AgentSettled` | yes |
+
+A fingerprint change (real progress) resets the rung to 1. Bounds,
+all mechanical, each with its incident in §5.7:
+
+- `INTERCEPT_CAP_PER_CYCLE` (6): total re-drives per cycle regardless of
+  progress; progress resets the rung, never the total (jcode's cap 5 came
+  from "the same continuation every ~5 s").
+- The counter persists in the session (`custom{todo_intercept}` carries
+  it) and rehydrates on resume, so a resume cannot mint a fresh budget
+  (strix).
+- A cycle resets on every driven prompt, user- or host-attributed (v3
+  reset only on `Attribution::User`, so a goal run past the cap never got
+  another interception).
+- Terminal stops are never re-driven: `Error`, `Aborted` (the loop already
+  returns before the interceptor, `run.rs:546`), `Length` with no calls
+  (dsh: `max-tokens` disarms; "no abnormal outcome requests an automatic
+  retry"), and a turn a tool terminated (no tool sets `terminate` today;
+  the guard and its test land anyway).
+- Two consecutive provider errors on re-driven requests disarm the
+  interceptor for the cycle, sticky (jcode's breaker).
+- Exactly one automatic follow-up per turn end, in a fixed order: todo
+  interception, then the goal continuation (G4 runs on `AgentEnd`, so it
+  is after by construction), then heartbeats. Human steering pending
+  means no automatic message at all (`run.rs:608`; prime's rollback rule).
+- Every decision is a record: `ext_record todo_intercept {rung, reason,
+  fingerprint, cycle_total}` (jcode: a queued-but-never-dispatched poke
+  was indistinguishable from a silent model).
+
+**Empty stop.** A turn that ends with no text and no calls (`Stop` with
+empty content) is re-driven once with "the turn produced no output; give
+the final answer or the next call", cap `EMPTY_STOP_CAP` (3, OMP's
+`EMPTY_STOP_MAX_RETRIES`). Deterministic; the model-judged "unexpected
+stop" classifier OMP pairs with it is not built (law 1).
+
+**Restate spam.** A re-driven model tends to repeat its last paragraph
+(strix made "yield without saying anything" a legal call). Rung 1's text
+forbids the restatement; the TUI renders every pre-final assistant
+message of a re-driven turn as commentary and only the last as the final;
+and the closing rung asks for the closing message once.
+
+**Eager init.** Prior art has no forced tool choice anywhere except OMP,
+where it is opt-in (`todo.eager` default `default`; "always" forces). Yi
+ships prelude-first: `gate::eager_init` (the existing count-based
+multi-step gate; a question never) attaches a hidden prelude asking for a
+list "with your first reads, in the same message"; `todo.eager: force`
+adds the `tool_choice` and is off by default. The harness (§8.3) measures
+`multi_step_without_todo` under each and the default follows the number.
+A forced call with bad arguments gets one "todo failed; the user cannot
+see progress; fix the payload" reminder (OMP's `todo-error-reminder`).
+The prelude also fires on a new user prompt while items are open, with
+"reconcile first: drop with a reason what no longer applies".
+
+**Bookkeeping cannot launder a loop.** Todo ops are excluded from the
+repeat-call haystack (dsh excludes `todo_write` from its [3,5,8]
+reminder); an identical todo op three times in a row is itself a tool
+error; `done` on a parent with open children is refused with the labels.
+
+**`done` carries evidence.** An optional `evidence` string on `done`
+(the check that passed, quoted) is recorded in `custom{todo}`; the
+runtime does not judge it (law 1), the miner flags `done_without_check`
+(§8.1) and the `verify` skill reads it.
+
+**User edits race the model.** Ops carry the list's `touched` counter
+(`TouchCount`, the plan's); a stale op errors "list changed by the user;
+`view` first". One engine, one writer at a time.
+
+**Plan-delegated todos are mirrors.** A todo lifted into the plan renders
+in the list as a read-only row whose state derives from the plan; only
+the plan steps it; the interceptor treats a mirrored Running row as a
+child running (no re-drive). One table, no drift.
+
+**Post-compaction.** The `<yi_compact_view>` (D115) gains a `[Todos]`
+section rendering the live list; the prelude re-fires once after a
+compaction when items are open; the interception counter is not reset
+by compaction.
+
+**Environment line.** `todos: a of b done · running: <label> · n blocked`
+every turn (§4.3).
 
 The plan tool keeps its own `intercept_stop` for delegated work (children
-running, probes pending); the two interceptors compose, todo first.
+running, probes pending); the todo interceptor runs first and a Quiet
+verdict from either is not overridden by the other.
 
 ### 5.4 User surfaces
 
@@ -775,38 +877,38 @@ running, probes pending); the two interceptors compose, todo first.
   (OMP's `AnchoredLiveContainer`, read for contract): a bold `Todos a/b`
   header, then phases and items with the HUD's glyph vocabulary
   (`hud.rs`), nested by `tree.rs`'s gutter runes, at most eight rows
-  collapsed with `+N more`, expanded by a key, closed items fading after
-  `todo.clear_delay` (display only; the list is untouched). It replaces
+  collapsed with `+N more`, expanded by a key, shown only while an item is
+  open and for `todo.clear_delay` after the last closes (opencode's
+  sidebar rule; the list itself is never mutated by display). It replaces
   the `Plan n/m · now:` header line; the plan DAG keeps `/plantree`. D104
   rejected an inline checkbox list *for the plan DAG* because a flat list
   cannot carry edges; a todo list carries no edges, so the donors' flat
-  rendering is right here and D104 is not revised, it is scoped.
+  rendering is right here and D104 is scoped, not revised. Re-driven
+  turns render pre-final answers dim as commentary; `AgentSettled` marks
+  the final.
 - **`/todo`** slash verb: `/todo` shows the list; `/todo done <label>`,
   `/todo drop <label> <reason>`, `/todo rm <label>`, `/todo add <label>`
   step it; `/todo edit` opens the checklist in `$EDITOR` and diffs the
   result into ops. Every user edit appends `custom{todo}` with
-  `actor: user` and a visible message to the model naming the edit, so
-  the model never works from a stale list.
+  `actor: user` and a visible message to the model naming the edit.
 - **Console:** `_yi/todo` port request answered with the list; the rail's
-  session row shows `a/b`, and the chat pane renders the same block above
-  the composer. The screenshots that provoked this plan show a console
-  with nowhere for this to appear; that is F14.
-- **ACP:** a `todo` session update carrying the list after every change,
-  so an editor client renders it; the wire shape is `TodoList` itself
-  (additive, `yi-types`, schemas.lock).
+  session row shows `a/b`; the chat pane renders the same block above the
+  composer.
+- **ACP:** a `todo` session update carrying the list after every change;
+  the wire shape is `TodoList` itself (additive, `yi-types`, schemas.lock).
 - **CLI:** `yi todo` prints the list for a session; `yi todo report` walks
-  the `custom{todo}` entries into an outcome ledger (done per turn, time
-  in Running, reminders fired), the same query shape as `yi plan report`.
+  the `custom{todo}` and `custom{todo_intercept}` entries into an outcome
+  ledger (done per turn, time in Running, rungs reached, cap-outs).
 
 ### 5.5 What moves out of the plan tool
 
 `Op::Set` no longer allocates a plan named "checklist" (`ops.rs:442-455`);
 `set` on a plan requires a plan. The checklist parser is promoted to
 `yi_types` and shared. `gate::eager_init`, `NudgeState` and the stop
-interception move to the todo coupling; the plan keeps the delegation
-half (children, probes, `Blocked{on: Child}`). `hud.rs`'s `PlanProgress`
-becomes the todo block. Nothing else in the plan engine changes; D97,
-D103 and D104 stand for plans.
+interception move to the todo coupling and take the §5.3 bounds with
+them; the plan keeps the delegation half (children, probes, `Blocked{on:
+Child}`). `hud.rs`'s `PlanProgress` becomes the todo block. Nothing else
+in the plan engine changes; D97, D103 and D104 stand for plans.
 
 ### 5.6 Draft D138 — todos are a session tool, plans are a delegation ledger
 
@@ -817,13 +919,52 @@ user's directive was a dedicated todo tool, and it was given again on
 depth, persists as `custom{todo}` session entries, nests one level, is
 rendered live in the TUI, the console and over ACP, is editable by the
 user through `/todo`, and drives eager init, the mid-run nudge and the
-stop interception; `plan` keeps checks, edges, sub-plans, delegation and
-its git-tracked file. Why: a three-step task should not create a
-git-tracked file; the user could not see open work while the agent
-worked; the interception that stops a turn from ending with open work
-was bound to a store that usually did not exist. Reversible-via: delete
-`crates/runtime/src/todo/`, `yi_types::todo`, the TUI block and the port
-request; the plan tool's `Op::Set` regains its "checklist" allocation.
+stop interception under the §5.3 bounds (fingerprinted rung ladder, cap
+6 per cycle, persisted counter, terminal stops never re-driven, one
+follow-up per turn end, host-authored remainder); `plan` keeps checks,
+edges, sub-plans, delegation and its git-tracked file. Why: a three-step
+task should not create a git-tracked file; the user could not see open
+work while the agent worked; the interception that stops a turn from
+ending with open work was bound to a store that usually did not exist
+and, as written, could be escaped with a question mark. Reversible-via:
+delete `crates/runtime/src/todo/`, `yi_types::todo`, the TUI block and
+the port request; the plan tool's `Op::Set` regains its "checklist"
+allocation and the coupling returns to `plan/loop_coupling.rs`.
+
+### 5.7 Pressure test and prior art
+
+The v3 coupling was attacked from Yi's own loop code and from seven
+reference agents (`prior-art-*.md` in the evidence pack; excise blocks
+honoured; test directories never opened). What broke, and what each
+reference had already learned:
+
+| # | break in v3 | evidence | fix in §5.3 |
+|---|---|---|---|
+| 1 | "work" counted bash calls of any kind and no kernel work | `plan/loop_coupling.rs::mutating_tool_names`; doctrine promotes kernel work | work = changes landed |
+| 2 | a trailing `?` suppressed interception | `asking_user` ends-with-`?`; OMP's regex tower for the same guess | only `Blocked{User}` or `ask_user` suppresses |
+| 3 | "progress" included `view` | OMP resets on any todo result | state-changing ops only |
+| 4 | cap reset only on user prompts, dead for goal runs | `reset_cycle` on `Attribution::User` | reset on every driven prompt |
+| 5 | flat repeated reminder | jcode "same continuation every ~5 s"; strix names attempt and exits | fingerprinted rung ladder, host remainder |
+| 6 | interception after a terminating tool or a `Length` stop | `run.rs:561-570`; dsh "no abnormal outcome requests an automatic retry" | terminal stops never re-driven |
+| 7 | two ledgers, two interceptors, drift | plan `intercept_stop` + todo | mirror rows, todo first, Quiet not overridden |
+| 8 | forced `tool_choice` costs a round trip, cannot batch, silently no-ops on some providers | no reference forces a choice; OMP opt-in; prime forces *availability* only | prelude-first, force opt-in, measured |
+| 9 | the model can `done` everything to silence the interceptor | opencode "completed only after verification, never on intent" is prompt-only everywhere | `evidence` on `done`, `done_without_check` fingerprint, `verify` skill |
+| 10 | user `/todo` edit races a model op | jcode: no user edits at all; dsh whole-list replace | `touched` counter, stale op errors |
+| 11 | stale items from the previous request | OMP strips closed items on resume only | reconcile prelude on new prompts |
+| 12 | re-driven answers read as two conclusions | strix restate-spam, `respond_to_user("")`; jcode final-response handoff | commentary rendering, closing rung, `AgentSettled` |
+| 13 | a child intercepted past the parent's wait | prime holds continuation while children unsettled | mirror row reads as child running |
+| 14 | no empty-stop guard in Yi's loop | OMP `EMPTY_STOP_MAX_RETRIES = 3` | empty-stop re-drive, cap 3 |
+| 15 | a resume mints a fresh reminder budget | strix persists the recovery counter | counter in `custom{todo_intercept}` |
+| 16 | bookkeeping calls launder a repeat-call loop | dsh excludes `todo_write` from its reminder | todo ops excluded; identical op ×3 is an error |
+| 17 | a queued interception indistinguishable from a silent model | jcode `AUTO_POKE_DECISION` | `ext_record todo_intercept` |
+| 18 | thresholds in model-facing text | jcode hides every gate bar | names and labels only |
+
+What the references do not have, and Yi keeps: none of the seven reads
+the todo list back at stop time (opencode, strix, dsh, pi, prime, codex
+enforce "before ending your turn, update the list" in prose only; jcode
+pokes on an incomplete set but only in its TUI, not headless). The
+interception is new ground, which is why every bound above is a constant
+with a named incident and a fingerprint that measures it.
 
 ## 6. Skills: mechanics, triggers, and the methodology each carries
 
@@ -948,7 +1089,11 @@ words; each an incident from the autopsy or from law 7:
 | `gate_without_change` | a bash call matching the gate vocabulary in a turn with zero `edit`/`write` calls before it and zero `read` of a source file |
 | `stopped_with_open_todos` | a terminal assistant turn whose last `custom{todo}` snapshot has a Pending or Running item and no `custom{ledger_prompt}` interception followed |
 | `multi_step_without_todo` | a turn with ≥ 3 mutating calls or edits in ≥ 2 files and no `todo` call |
-| `todo_stale` | ≥ 12 mutating calls since the last `todo` result |
+| `todo_stale` | changes landed since the last state-changing `todo` op ≥ `NUDGE_WORK` with no nudge recorded |
+| `done_without_check` | a `done` op on an item whose Running span contains no successful test or gate result and no `evidence` |
+| `intercept_capped` | a cycle that reached `INTERCEPT_CAP_PER_CYCLE`, with the rungs and the final open set |
+| `blocked_on_user_without_question` | a `block on: user` in a turn whose final message has no `?` and no `ask_user` call |
+| `gate_rerun_unchanged_tree` | a gate command run twice with no change landed between (prime's recorded incident) |
 | `asked_twice` | a user message whose normalized token set overlaps ≥ 0.8 with an earlier user message in the session (flagged; the pair is shown) |
 | `closing_offer` | a final message whose last line ends with `?` addressed to the user, or contains an offer form; flagged, never scored |
 | `flag_error` | a tool result with exit 2 and `unexpected argument` |
@@ -1002,9 +1147,13 @@ provoking prompt, glm-5.3-flash, plus `just check` green by exit code.
   and 1; `custom{todo}` rehydrates on resume; the TUI block renders every
   state glyph in a headless drive with a frame dump; `/todo done` appends
   a user-attributed entry the model sees; the stop interception re-drives
-  a scripted turn that ends with an open item and stops after
-  `reminders_max` with the items listed; `Op::Set` on the plan tool no
-  longer allocates a plan. Kill: none; this is the directive.
+  a scripted turn that ends with an open item, climbs the ladder on an
+  unchanged fingerprint, resets on a state change, stops at the cap with
+  the host remainder appended and `AgentSettled` emitted; a `?`-ending
+  answer with open items is re-driven; an `Aborted`, `Error` or empty
+  `Length` stop is not; the counter survives a resume; `Op::Set` on the
+  plan tool no longer allocates a plan. Each bound is proven by neutering
+  it and watching its test fail. Kill: none; this is the directive.
 - **S2 — identity + doctrine + mode** (§3, §7.3 rung 1; D137). Done: the
   fragments as drafted, reviewed paragraph by paragraph against their
   named incident; `request_budget` updated in its own commit; the re-run
@@ -1094,6 +1243,11 @@ provoking prompt, glm-5.3-flash, plus `just check` green by exit code.
 - **Prompt registers by model tier** (v1 §6.1; rejected 2026-09-06). One
   path; a rule is written once, exactly.
 - **Todos inside the plan document** (2026-08-31; superseded by D138).
+- **An LLM classifying "unexpected stops"** (OMP's tiny-model YES/NO
+  classifier): the todo-state interception is the deterministic
+  substitute and the reason it exists.
+- **Mid-run nagging on every threshold** (jcode's retracted write-time
+  gates): once per crossing, cap 2.
 - **An LLM judging whether a todo is really done** (law 1). The runtime
   steps what the model says; the doctrine, the `verify` skill and the
   miner catch a lie.
@@ -1117,9 +1271,10 @@ provoking prompt, glm-5.3-flash, plus `just check` green by exit code.
 
 1. §7.3 rung 3: trust the user's own repositories by default, or keep
    `yi trust` explicit and only name it in the prompt?
-2. §5.3: `todo.reminders_max` default 5, or unbounded while each reminder
-   produces a todo touch (OMP's `reminderAwaitingProgress` alone bounds
-   the loop)? The stricter reading of law 7 is unbounded-with-progress.
+2. §5.3: `INTERCEPT_CAP_PER_CYCLE` 6 (jcode 5, OMP 3, strix 3). The
+   pressure test settled that unbounded-with-progress is unsafe (`start`
+   A, stop, `start` B, stop is progress); the number itself is the user's
+   and moves with the ledger.
 3. §5.4: should the console's rail row show `a/b` for every session, or
    only the focused one?
 4. §3.2 length: the doctrine draft is ≈ 17 KB. Is there a section the
