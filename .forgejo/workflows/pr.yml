@@ -111,9 +111,12 @@ jobs:
         with:
           fetch-depth: 0
       - run: rustup show
+      # Caches are readable across pull requests only when main saved them, and postmerge
+      # saves `test`: the same dev-profile build this step needs. A key of its own stayed cold
+      # on every PR, and three cold builds in a row were cancelled by the runner's clock.
       - uses: Swatinem/rust-cache@v2
         with:
-          shared-key: live
+          shared-key: test
           cache-on-failure: true
       - run: cargo build -p yi-cli
       - name: run the live suite, or say why not
