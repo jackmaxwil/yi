@@ -79,12 +79,20 @@ fn tool_defs() -> Vec<ToolDef> {
             parameters: tool.schema(),
             freeform: None,
         })
-        .chain(std::iter::once(ToolDef {
-            name: "plan".to_owned(),
-            description: yi_runtime::plan::tool::DESCRIPTION.to_owned(),
-            parameters: yi_runtime::plan::tool::schema(),
-            freeform: None,
-        }))
+        .chain([
+            ToolDef {
+                name: "plan".to_owned(),
+                description: yi_runtime::plan::tool::DESCRIPTION.to_owned(),
+                parameters: yi_runtime::plan::tool::schema(),
+                freeform: None,
+            },
+            ToolDef {
+                name: yi_runtime::todo::tool::NAME.to_owned(),
+                description: yi_runtime::todo::tool::DESCRIPTION.to_owned(),
+                parameters: yi_runtime::todo::tool::schema(),
+                freeform: None,
+            },
+        ])
         .collect()
 }
 

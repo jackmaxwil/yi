@@ -441,9 +441,8 @@ impl PlanEngine {
             }),
             Op::Set { goal, rows } => {
                 if plan.is_none() && self.resolve(None).is_err() {
-                    let goal = match goal {
-                        Some(goal) => goal,
-                        None => GoalText::new("checklist")?,
+                    let Some(goal) = goal else {
+                        return Err(PlanOpError::NoPlan);
                     };
                     let specs = rows.iter().map(|row| row.spec.clone()).collect();
                     self.init(goal, specs, &actor)?;
