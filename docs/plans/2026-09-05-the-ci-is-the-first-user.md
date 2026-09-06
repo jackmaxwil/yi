@@ -353,7 +353,9 @@ its gate seen red before it is trusted, as the test doctrine requires.
    2026-09-05), so the provider reports them; what remains to confirm at the
    first run is that the usage object carries the cached-token count D116's
    formula reads. If it does not, the cache column is `n/a` for the flash
-   suite and the weekly matrix carries it.
+   suite and the weekly matrix carries it. The first run read zero cached
+   tokens over five requests; the `cache-warm` scenario (three turns in one
+   session) makes that a scenario verdict instead of a silent zero.
 2. Whether the runner's egress can be allow-listed at the host or only by the
    job; the wall (`deny_url`) covers the binary, not the harness.
 3. Where the ops host keeps the SQLite rollup, and whether Grafana already
