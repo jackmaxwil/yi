@@ -76,6 +76,10 @@ pub trait SessionPort {
     fn plan_progress(&self) -> Option<crate::hud::PlanProgress> {
         None
     }
+    /// The session's live todo list for the HUD block; a port with no store shows none.
+    fn todo_list(&self) -> Option<yi_types::todo::TodoList> {
+        None
+    }
 }
 
 /// The active branch only: the whole tree is for the tree view, and a transcript built
@@ -251,6 +255,10 @@ impl SessionPort for Arc<AgentSession> {
             total: progress.total,
             running: progress.running.map(|label| label.to_string()),
         })
+    }
+
+    fn todo_list(&self) -> Option<yi_types::todo::TodoList> {
+        AgentSession::todos(self.as_ref()).map(|store| store.list())
     }
 
     fn goal(&self) -> Option<GoalView> {

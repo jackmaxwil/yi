@@ -143,6 +143,12 @@ impl App {
                 }
                 self.dirty = true;
             }
+            Decoded::Todo(todos) => {
+                for chat in self.state.chats_mut(id) {
+                    chat.port.set_todos(todos.clone());
+                }
+                self.dirty = true;
+            }
             Decoded::Config(config) => self.apply_config(id, &config, true),
             Decoded::Child(child) => {
                 let rows = self.state.children.entry(id.clone()).or_default();

@@ -8,6 +8,7 @@ pub struct HudInput {
     pub goal: Option<GoalView>,
     pub landing: Option<String>,
     pub plan: Option<PlanProgress>,
+    pub todos: Option<yi_types::todo::TodoList>,
     pub steering: Vec<String>,
     pub follow_up: Vec<String>,
 }
@@ -38,12 +39,34 @@ pub struct GoalView {
 }
 
 const TAIL_LEN: usize = 4;
+pub const TODO_ROWS: usize = 8;
+
+/// The block shows only while an item is open; closed lists leave the HUD to the goal.
+pub fn todo_rows(list: Option<&yi_types::todo::TodoList>) -> Option<(String, Vec<Line<'static>>)> {
+    let list = list?;
+    let progress = list.progress();
+    if progress.open.saturating_add(progress.blocked) == 0 {
+        return None;
+    }
+    let all = yi_runtime::todo::text::checklist(list);
+    let hidden = all.len().saturating_sub(TODO_ROWS);
+    let mut rows: Vec<Line<'static>> = all
+        .into_iter()
+        .take(TODO_ROWS)
+        .map(|row| Line::from(Span::raw(format!("  {row}"))))
+        .collect();
+    if hidden > 0 {
+        rows.push(Line::from(Span::raw(format!("  +{hidden} more"))));
+    }
+    Some((yi_runtime::todo::text::header(list), rows))
+}
 
 pub(crate) fn input(app: &crate::app::App, goal: Option<GoalView>) -> HudInput {
     HudInput {
         goal,
         landing: app.landing.as_ref().map(yi_runtime::slash::landing_line),
         plan: app.plan_progress.clone(),
+        todos: app.todos.clone(),
         steering: app.steering.clone(),
         follow_up: Vec::new(),
     }
@@ -74,6 +97,18 @@ pub fn render(input: &HudInput, theme: &Theme) -> Vec<Line<'static>> {
             Some(header)
         }
         (header, None) => header,
+    };
+    let header = match (header, todo_rows(input.todos.as_ref())) {
+        (header, None) => header,
+        (None, Some((title, rows))) => {
+            content.extend(rows);
+            Some(title)
+        }
+        (Some(header), Some((title, rows))) => {
+            content.push(Line::from(Span::styled(title, theme.muted_style())));
+            content.extend(rows);
+            Some(header)
+        }
     };
     if let Some(landing) = &input.landing {
         content.push(Line::from(Span::styled(
