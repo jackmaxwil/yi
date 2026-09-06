@@ -1,7 +1,22 @@
 # The prompt surface: one exhaustive prompt, a todo tool that never lets go, and the instrument that finds where either fails
 
 ```
-status:  proposed 2026-09-06, v4. v3's §5.3 coupling was pressure-tested
+status:  implemented 2026-09-06 through S6 on branch
+         claude/prompt-surface-impl-aa6dee1 (0.164.0 D137 todo tool,
+         0.165.0 D138 comprehensive prompt, 0.166.0 D139 catalog ladder and
+         $name, 0.167.0 runtime facts, 0.168.0 instrument, 0.169.0 skills and
+         harness). Deviations from the text: the checklist parser was not
+         promoted to yi-types (the todo list has its own, the plan keeps its
+         own); AgentSettled and the commentary rendering of re-driven turns
+         are not built (the TUI block is the remainder the user sees);
+         trust rung 3 is not taken; the todo ladder's rung 3 asks for the
+         closing message and the block on screen is the host remainder;
+         `todo.eager` is a constant (prelude) rather than config. Three live
+         runs of the provoking prompt on glm-5.3-flash gated S2, S3 and S4:
+         calls 12 -> 14 -> 10 -> 21, gate runs 7 -> 0 -> 0 -> 0, source
+         reads 0 -> 2 -> 1 -> 7, todo ops 0 -> 5 -> 0 -> 9, the skill pointer
+         fired and was read in the S4 run, and every answer named what it
+         read. Was: proposed 2026-09-06, v4. v3's §5.3 coupling was pressure-tested
          against Yi's own loop (`crates/loop/src/run.rs:545-620`) and seven
          reference agents (§5.7); v4 rewrites §5.3 with the bounds that
          survived. v3 note: v1 proposed a keyword-routed task class
