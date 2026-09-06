@@ -2,6 +2,8 @@
 #![deny(clippy::string_slice)]
 
 mod catalog;
+mod doctor;
+mod fetch;
 mod lanes;
 mod plan;
 mod rpc;
@@ -32,6 +34,7 @@ struct Args {
     session_dir: Option<String>,
     cwd: Option<String>,
     here: bool,
+    fix: bool,
     socket: Option<String>,
     headless: bool,
     solo: bool,
@@ -66,8 +69,10 @@ fn parse_args() -> Result<Args, lexopt::Error> {
     let mut session_dir = None;
     let mut cwd = None;
     let mut here = false;
+    let mut fix = false;
     let mut socket = None;
     let mut headless = false;
+    let mut lanes = false;
     let mut solo = false;
     let mut keys = None;
     let mut frames = None;
@@ -100,8 +105,10 @@ fn parse_args() -> Result<Args, lexopt::Error> {
             Long("session-dir") => session_dir = Some(parser.value()?.string()?),
             Long("cwd") => cwd = Some(parser.value()?.string()?),
             Long("here") => here = true,
+            Long("fix") => fix = true,
             Long("socket") => socket = Some(parser.value()?.string()?),
             Long("headless") => headless = true,
+            Long("lanes") => lanes = true,
             Long("solo") => solo = true,
             Long("keys") => keys = Some(parser.value()?.string()?),
             Long("frames") => frames = Some(parser.value()?.string()?),
@@ -122,6 +129,8 @@ fn parse_args() -> Result<Args, lexopt::Error> {
             _ => return Err(argument.unexpected()),
         }
     }
+    // A drive is a harness: it claims no lane unless the scenario is about lanes.
+    let here = here || (headless && !lanes);
     // Drive-only flags are silently inert outside the headless loop, which
     // reads downstream as a capture that produced nothing.
     if !headless
@@ -150,6 +159,7 @@ fn parse_args() -> Result<Args, lexopt::Error> {
         session_dir,
         cwd,
         here,
+        fix,
         socket,
         headless,
         solo,
@@ -229,6 +239,14 @@ fn load_config() -> Result<(), String> {
     let Some(home) = std::env::var_os("HOME") else {
         return set_config(yi_types::config::UserConfig::default());
     };
+    // Incident: a relative HOME put the lane's worktree beside the repo and the checkout
+    // that followed failed to spawn, naming the wrong step.
+    if !std::path::Path::new(&home).is_absolute() {
+        return Err(format!(
+            "HOME is relative ({}); yi needs an absolute HOME",
+            home.to_string_lossy()
+        ));
+    }
     yi_runtime::set_catalog_cache_dir(std::path::Path::new(&home).join(".yi/catalog"));
     set_config(read_config(std::path::Path::new(&home))?)
 }
@@ -585,38 +603,6 @@ fn run_plan(args: &Args) -> i32 {
         json: args.json,
     };
     plan::run(&args.prompt, &options)
-}
-
-fn run_fetch(args: &Args) -> i32 {
-    let target = args.prompt.trim();
-    if target.is_empty() {
-        eprintln!("usage: yi fetch <url>");
-        return 2;
-    }
-    let url: yi_types::url::Url = match target.parse() {
-        Ok(url) => url,
-        Err(error) => {
-            eprintln!("error: {error}");
-            return 2;
-        }
-    };
-    let workspace = effective_cwd(args);
-    let mut resolver =
-        yi_runtime::fetch::Resolver::new(workspace.clone(), yi_runtime::Wall::default());
-    if let Some(dir) = configured_plans_dir(&workspace) {
-        resolver = resolver.with_plans_dir(dir);
-    }
-    resolver = resolver.with_mcp_read(Arc::new(McpOneShot));
-    match resolver.fetch(&url) {
-        Ok(fetched) => {
-            print!("{}", fetched.text);
-            0
-        }
-        Err(error) => {
-            eprintln!("error: {error}");
-            1
-        }
-    }
 }
 
 fn run_trust(args: &Args) -> i32 {
@@ -1046,11 +1032,8 @@ fn run_serve_command(args: &Args, version: &str) -> i32 {
 mod shells;
 use shells::{daemon_socket, run_console_command, run_tui_command};
 
-fn main() {
-    if let Err(error) = load_config() {
-        eprintln!("error: {error}");
-        std::process::exit(2);
-    }
+/// `yi mcp` answers before argument parsing: it takes the raw argv the one-shot CLI owns.
+fn mcp_fast_path() {
     if std::env::args().nth(1).as_deref() == Some("mcp") {
         if !mcp_enabled() {
             eprintln!(
@@ -1065,6 +1048,15 @@ fn main() {
             .and_then(|mcp| mcp.token_store.as_deref());
         std::process::exit(yi_mcp_cli::run(&raw, token_store));
     }
+}
+
+fn main() {
+    doctor::early();
+    if let Err(error) = load_config() {
+        eprintln!("error: {error}");
+        std::process::exit(2);
+    }
+    mcp_fast_path();
     let args = match parse_args() {
         Ok(args) => args,
         Err(error) => {
@@ -1140,8 +1132,9 @@ fn main() {
         "lanes" => std::process::exit(run_lanes(&args)),
         "trust" => std::process::exit(run_trust(&args)),
         "gate" => std::process::exit(run_gate(&args)),
-        "fetch" => std::process::exit(run_fetch(&args)),
+        "fetch" => std::process::exit(fetch::run(&args)),
         "catalog" => std::process::exit(catalog::run(&args)),
+        "doctor" => std::process::exit(doctor::run(&args)),
         "why" => std::process::exit(run_why(&args)),
         "plan" => std::process::exit(run_plan(&args)),
         "sessions" => {
