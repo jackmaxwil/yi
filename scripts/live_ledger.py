@@ -17,8 +17,14 @@ BANDS = {"ttftP50Ms": 3000, "toolSuccessMin": 0.95}
 RATCHETS = {"ttftP50Ms": 0.25, "hitRateDrop": 0.10, "costPerScenario": 0.30}
 
 
+import os
+
+GIT_ENV = {**os.environ, "GIT_TERMINAL_PROMPT": "0"}
+
+
 def git(*args, check=True):
-    return subprocess.run(["git", *args], capture_output=True, text=True, check=check).stdout
+    """No prompt and no patience: a credential question on a runner is a hang."""
+    return subprocess.run(["git", *args], capture_output=True, text=True, check=check, env=GIT_ENV, timeout=120).stdout
 
 
 def history():
@@ -107,7 +113,7 @@ def append(run_path, sha):
     name = f"runs/{time.strftime('%Y%m%dT%H%M%SZ', time.gmtime())}-{sha[:7]}.json"
     with tempfile.TemporaryDirectory(prefix="yi-telemetry-") as tmp:
         exists = subprocess.run(["git", "fetch", "--no-tags", "origin", f"{BRANCH}:refs/remotes/origin/{BRANCH}"],
-                                capture_output=True).returncode == 0
+                                capture_output=True, env=GIT_ENV, timeout=120).returncode == 0
         if exists:
             git("worktree", "add", "-q", "--detach", tmp, f"origin/{BRANCH}")
         else:
@@ -119,7 +125,7 @@ def append(run_path, sha):
         target.write_text(json.dumps(record, indent=1, sort_keys=True))
         subprocess.run(["git", "-C", tmp, "add", name], check=True)
         subprocess.run(["git", "-C", tmp, "-c", "user.name=yi-ci", "-c", "user.email=ci@yi", "commit", "-q", "-m", f"live: {name}"], check=True)
-        pushed = subprocess.run(["git", "-C", tmp, "push", "-q", "origin", f"HEAD:refs/heads/{BRANCH}"], capture_output=True, text=True)
+        pushed = subprocess.run(["git", "-C", tmp, "push", "-q", "origin", f"HEAD:refs/heads/{BRANCH}"], capture_output=True, text=True, env=GIT_ENV, timeout=120)
         git("worktree", "remove", "--force", tmp, check=False)
     print(name, "pushed" if pushed.returncode == 0 else f"not pushed: {pushed.stderr.strip()[:200]}")
     return 0
