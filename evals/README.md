@@ -148,14 +148,17 @@ real smoke test for this binary.
 ## Running a suite
 
 ```
-export ANTHROPIC_API_KEY=...            # passed through under its own name
+export OPENROUTER_API_KEY=...           # passed through under its own name
 export EVAL_BINARY=target/x86_64-unknown-linux-musl/dist/yi
 PYTHONPATH=evals/adapters harbor run \
   --agent yi_harbor.agent:Yi \
-  -d terminal-bench/terminal-bench-2-1 \
-  --model anthropic/claude-opus-4-5 --n-attempts 3
+  -d terminal-bench/terminal-bench@sha256:39d9f44b40420cde8fdcc087579c0d72a7e14fa3656d603c3f0d22fb35e27732 \
+  -i terminal-bench/html-js-filter \
+  --model openrouter/z-ai/glm-5.3-flash -k 1 -o runs/tbv4
 ```
 
+`evals/drivers/tbv4_baseline.sh` is that command over the six-task subset
+with the caps and the one-hour multiplier (`evals/drivers/README.md`).
 `-d scale-ai/swe-atlas-qna` is the same command with another dataset. pier is
 the same shape with `pier run --agent yi_pier.agent:Yi`.
 

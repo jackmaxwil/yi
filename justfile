@@ -314,6 +314,9 @@ package-musl version target='x86_64-unknown-linux-musl':
     export "$cc_var=$(pwd)/scripts/zigcc.sh"
     export "$ar_var=$(pwd)/scripts/zigar.sh"
     export ZIG_TARGET="${target%-unknown*}-${target##*-unknown-}"
+    # Incident: rustc's self-contained musl crt (rcrt1.o) and zig's crt1.o both
+    # define _start_c; zig supplies the crt, so rustc must not.
+    export RUSTFLAGS="${RUSTFLAGS:-} -C link-self-contained=no"
     scripts/build_dist.sh --target "$target"
     python3 scripts/check_elf.py "target/$target/dist/yi" "$target"
     scripts/package.sh {{version}} "$target"
