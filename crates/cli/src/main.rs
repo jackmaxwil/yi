@@ -353,10 +353,11 @@ fn proxy_from_env() -> Result<Option<yi_runtime::ProxyConfig>, String> {
 struct Refused {
     code: i32,
     reason: String,
+    class: yi_types::telemetry::ErrorClass,
 }
 
 fn exit_refused(refused: Refused) -> i32 {
-    eprintln!("error: {}", refused.reason);
+    eprintln!("error: {} [{}]", refused.reason, refused.class);
     refused.code
 }
 
@@ -368,12 +369,14 @@ fn build_session(
         return Err(Refused {
             code: 2,
             reason: "no model configured (pass --model provider/id or set \"model\" in ~/.yi/config.json)".to_owned(),
+            class: yi_types::telemetry::ErrorClass::RefusalConfig,
         });
     }
     let Some(model) = resolve(&args.model) else {
         return Err(Refused {
             code: 2,
             reason: format!("unknown model {} (use provider/id)", args.model),
+            class: yi_types::telemetry::ErrorClass::RefusalUnknownModel,
         });
     };
     let faux = model.provider == "faux";
@@ -385,6 +388,7 @@ fn build_session(
                 "no API key for provider {} (set the provider env var)",
                 model.provider
             ),
+            class: yi_types::telemetry::ErrorClass::RefusalNoKey,
         });
     }
     let interactive = {
@@ -398,7 +402,13 @@ fn build_session(
     } else {
         match proxy_from_env() {
             Ok(proxy) => proxy,
-            Err(reason) => return Err(Refused { code: 2, reason }),
+            Err(reason) => {
+                return Err(Refused {
+                    code: 2,
+                    reason,
+                    class: yi_types::telemetry::ErrorClass::RefusalConfig,
+                });
+            }
         }
     };
     if !faux {
@@ -442,6 +452,7 @@ fn build_session(
             return Err(Refused {
                 code: 1,
                 reason: format!("lane: {message}"),
+                class: yi_types::telemetry::ErrorClass::RefusalLane,
             });
         }
     };
@@ -1112,7 +1123,8 @@ fn main() {
                 let runtime_handle = runtime.handle().clone();
                 std::sync::Arc::new(move |asker| {
                     let _guard = runtime_handle.enter();
-                    build_session(&build_args, asker).map_err(|refused| refused.reason)
+                    build_session(&build_args, asker)
+                        .map_err(|refused| format!("{} [{}]", refused.reason, refused.class))
                 })
             };
             let options = yi_acp::AcpOptions {

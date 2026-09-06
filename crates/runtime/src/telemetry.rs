@@ -11,7 +11,7 @@ use tokio::sync::mpsc::Receiver;
 use yi_types::event::{AgentEvent, AssistantMessageEvent};
 use yi_types::message::{AgentMessage, Usage};
 use yi_types::model::Model;
-use yi_types::telemetry::{Span, SpanKind};
+use yi_types::telemetry::{ErrorClass, Span, SpanKind};
 
 #[derive(Default)]
 pub struct Telemetry {
@@ -23,6 +23,20 @@ pub struct Telemetry {
 
 fn ms(duration: Duration) -> u64 {
     u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
+}
+
+fn text_of(message: &AgentMessage) -> String {
+    match message {
+        AgentMessage::Assistant { content, .. } => content
+            .iter()
+            .filter_map(|part| match part {
+                yi_types::message::Content::Text { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join(" "),
+        _ => String::new(),
+    }
 }
 
 fn usage_of(message: &AgentMessage) -> Option<&Usage> {
@@ -104,9 +118,10 @@ impl Telemetry {
                 }
                 let ended = match &event {
                     AssistantMessageEvent::Done { message, .. } => Some((usage_of(message), None)),
-                    AssistantMessageEvent::Error { error, .. } => {
-                        Some((usage_of(error), Some("provider")))
-                    }
+                    AssistantMessageEvent::Error { error, .. } => Some((
+                        usage_of(error),
+                        Some(ErrorClass::from_provider_text(&text_of(error))),
+                    )),
                     _ => None,
                 };
                 if let Some((usage, class)) = ended {
@@ -119,7 +134,7 @@ impl Telemetry {
                     if let Some(usage) = usage {
                         fill_usage(&mut span, usage);
                     }
-                    span.class = class.map(str::to_owned);
+                    span.class = class.map(|class| class.to_string());
                     telemetry.write(&span);
                 }
                 if sender.send(event).await.is_err() {
@@ -148,7 +163,14 @@ impl Telemetry {
                     .get("durationMs")
                     .and_then(serde_json::Value::as_u64);
                 span.ok = Some(!is_error);
-                span.class = is_error.then(|| "tool".to_owned());
+                span.class = is_error.then(|| {
+                    let kind = result
+                        .details
+                        .get("errorKind")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or("tool_error");
+                    ErrorClass::Tool(kind.to_owned()).to_string()
+                });
                 self.write(&span);
             }
             AgentEvent::TurnEnd {

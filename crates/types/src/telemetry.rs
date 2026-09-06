@@ -83,3 +83,69 @@ impl Span {
         }
     }
 }
+
+/// The closed vocabulary every error carries, rendered `kind:detail` into a span's `class`
+/// and counted by the live lane; a class absent from the last runs is a finding.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ErrorClass {
+    Tool(String),
+    Provider(String),
+    TransportHttp(u16),
+    TransportTimeout,
+    TransportProxy,
+    TransportBody,
+    RefusalUnknownModel,
+    RefusalNoKey,
+    RefusalPoolFull,
+    RefusalConfig,
+    RefusalWalled,
+    RefusalLane,
+    Invariant(String),
+    Harness(String),
+    Other(String),
+}
+
+impl ErrorClass {
+    /// A provider's error text names its transport class when it can; the rest is the provider.
+    pub fn from_provider_text(text: &str) -> Self {
+        let lower = text.to_lowercase();
+        if let Some(rest) = lower.split("http ").nth(1)
+            && let Some(code) = rest.split(|c: char| !c.is_ascii_digit()).next()
+            && let Ok(status) = code.parse::<u16>()
+        {
+            return Self::TransportHttp(status);
+        }
+        if lower.contains("timed out") || lower.contains("timeout") {
+            return Self::TransportTimeout;
+        }
+        if lower.contains("proxy") {
+            return Self::TransportProxy;
+        }
+        if lower.contains("body over") {
+            return Self::TransportBody;
+        }
+        Self::Provider("error".to_owned())
+    }
+}
+
+impl std::fmt::Display for ErrorClass {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Tool(kind) => write!(f, "tool:{kind}"),
+            Self::Provider(kind) => write!(f, "provider:{kind}"),
+            Self::TransportHttp(status) => write!(f, "transport:http_{status}"),
+            Self::TransportTimeout => f.write_str("transport:timeout"),
+            Self::TransportProxy => f.write_str("transport:proxy"),
+            Self::TransportBody => f.write_str("transport:body"),
+            Self::RefusalUnknownModel => f.write_str("refusal:unknown_model"),
+            Self::RefusalNoKey => f.write_str("refusal:no_key"),
+            Self::RefusalPoolFull => f.write_str("refusal:pool_full"),
+            Self::RefusalConfig => f.write_str("refusal:config"),
+            Self::RefusalWalled => f.write_str("refusal:walled"),
+            Self::RefusalLane => f.write_str("refusal:lane"),
+            Self::Invariant(row) => write!(f, "invariant:{row}"),
+            Self::Harness(what) => write!(f, "harness:{what}"),
+            Self::Other(what) => write!(f, "other:{what}"),
+        }
+    }
+}
