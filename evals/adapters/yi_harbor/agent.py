@@ -4,7 +4,9 @@ Register out of tree:
     PYTHONPATH=evals/adapters harbor run --agent yi_harbor.agent:Yi -d <suite>
 """
 
+import json
 import os
+import sys
 from pathlib import Path
 
 from harbor.agents.model_connection import ModelConnectionSpec
@@ -15,10 +17,16 @@ from harbor.models.agent.context import AgentContext
 from yi_usage import (
     ADAPTER_VERSION,
     EVENTS_FILENAME,
+    SESSIONS_SUBDIR,
     config_fingerprint,
     parse_events,
     run_command,
 )
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+import atif  # noqa: E402
+
+TRAJECTORY_FILENAME = "trajectory.json"
 
 REMOTE_BINARY = "/usr/local/bin/yi"
 # The run's numbers (D132) need telemetry on in the agent user's HOME; the
@@ -56,6 +64,8 @@ class Yi(BaseInstalledAgent):
     MODEL_CONNECTION = ModelConnectionSpec(passthrough=True)
     # harbor sets _resume around run() only when this is declared (base.py:965-971).
     SUPPORTS_RESUME = True
+    # E10: the trajectory the hub viewer and any judge read (plan S4).
+    SUPPORTS_ATIF = True
 
     @staticmethod
     def name():
@@ -97,7 +107,22 @@ class Yi(BaseInstalledAgent):
             env=dict(self.model_connection.env),
         )
 
+    def write_trajectory(self):
+        """The synced session file as ATIF, beside the event stream in logs_dir."""
+        sessions = sorted((self.logs_dir / SESSIONS_SUBDIR).rglob("*.jsonl"))
+        sessions = [path for path in sessions if not path.name.endswith(".telemetry.jsonl")]
+        if not sessions:
+            return None
+        lines = []
+        for path in sessions:
+            lines.extend(path.read_text(errors="replace").splitlines())
+        trajectory = atif.convert(lines, self.version() or "unknown", self.model_name)
+        target = self.logs_dir / TRAJECTORY_FILENAME
+        target.write_text(json.dumps(trajectory, indent=2) + "\n")
+        return target
+
     def populate_context_post_run(self, context: AgentContext) -> None:
+        self.write_trajectory()
         usage = parse_events(self.logs_dir / EVENTS_FILENAME)
         cache_read = usage["cacheRead"]
         # harbor's convention (pi.py:260): the input column includes cache reads.

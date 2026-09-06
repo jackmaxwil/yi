@@ -83,6 +83,22 @@ Exit 2 when a trial is unmeasurable (a turn without usage, no assistant
 message, no session at all). `evals/fixtures/axes/` holds one trial of each
 shape and `expected.jsonl` pins the rows byte-for-byte (`check_axes`).
 
+## ATIF (E10)
+
+```
+python3 evals/atif.py <session.jsonl> --agent-version $(yi --version | cut -d' ' -f2) > trajectory.json
+```
+
+The session file as an ATIF-v1.7 trajectory (harbor RFC 0001): one step per
+user and assistant message on the main lane, the tool results that follow an
+assistant message as its observation, metrics in harbor's convention (prompt
+tokens include cache reads), final metrics summed and left unpriced when any
+turn reported no usage. The harbor adapter writes `/logs/agent/trajectory.json`
+after every run (`SUPPORTS_ATIF`), and `run.py --out` writes one beside
+`events.jsonl`, so `harbor view` and the hub's judge can read a Yi trial.
+`evals/fixtures/atif/tool-turn.trajectory.json` pins the conversion
+(`check_atif`).
+
 ## Cassette recorder
 
 ```
