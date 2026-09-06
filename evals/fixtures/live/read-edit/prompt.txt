@@ -1,0 +1,1 @@
+Read README.md, then create NOTE.md containing one line that quotes the exact text of its first heading. Do nothing else.

@@ -1,0 +1,8 @@
+{
+  "id": "unknown-model",
+  "kind": "refusal",
+  "args": ["ask", "--here", "--model", "openrouter/nobody/no-such-model", "hi"],
+  "expectExit": 2,
+  "expectStderr": "unknown model openrouter/nobody/no-such-model",
+  "note": "a refusal names itself on the surface that refused (D127)"
+}
