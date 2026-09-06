@@ -1,0 +1,10 @@
+assess analyze the yi repo comprehensively. rate it out of 10
+assess audit crates/loop for panics on reachable paths and rate the crate's correctness discipline
+diagnose why does `cargo nextest run -p yi-acp` fail with PermissionDenied inside a Yi session, and what would fix it
+diagnose explain why a folded `description: >` in a SKILL.md used to catalogue as `>`
+change add a `yi todo report` subcommand that prints how many todos each session closed, with a test seen red first
+change the reducer's `[N lines omitted]` marker should name the omitted line range; change it and its test
+change fix these three: the grid skill trigger is too broad, the gate skill lacks a doctest line, and `yi todo` has no `--json` example in its usage
+change write a regression test that a `$name` mention in a prompt yields a skill pointer, then make it pass if it does not
+monitor watch `just check` in this tree and tell me when it finishes and whether it was green
+ambiguous the todo list feels off
