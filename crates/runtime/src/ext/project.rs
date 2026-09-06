@@ -20,7 +20,7 @@ pub fn resource_roots(cwd: &Path, home: &Path, kind: &str) -> Vec<PathBuf> {
 }
 
 pub fn is_project_root(root: &Path, cwd: &Path, home: &Path) -> bool {
-    root.starts_with(cwd) && !root.starts_with(home)
+    root.starts_with(cwd) && cwd != home
 }
 
 /// Trust-on-first-use, pinned to the granted content: an edit after the grant reads as
@@ -155,10 +155,16 @@ impl ProjectResources {
 
     fn instructions(&self, out: &mut Vec<Effect>) {
         let root = git_root(&self.cwd).unwrap_or_else(|| self.cwd.clone());
+        let mut seen = Vec::new();
         for path in Self::instruction_files(&self.cwd) {
             let Ok(content) = std::fs::read_to_string(&path) else {
                 continue;
             };
+            let hash = content_hash(&content);
+            if seen.contains(&hash) {
+                continue;
+            }
+            seen.push(hash);
             let source = display_source(&path, &root);
             let trust = self.gate.trust_of(&root, &source, &content);
             out.push(Effect::AttachExternal {

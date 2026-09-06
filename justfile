@@ -323,5 +323,6 @@ package-musl version target='x86_64-unknown-linux-musl':
 # Catalog skills (§14.1) install into the global root; the fragments an
 # extension attaches are compiled in.
 install-skills:
-    mkdir -p ~/.yi/skills
-    cp -R skills/. ~/.yi/skills/
+    mkdir -p ~/.yi/skills/yi
+    rsync -a --delete skills/yi/ ~/.yi/skills/yi/
+    @for stale in caveman ponytail superpowers diagram-design; do [ -d ~/.yi/skills/$stale ] && echo "stale bundle, remove by hand: ~/.yi/skills/$stale" || true; done

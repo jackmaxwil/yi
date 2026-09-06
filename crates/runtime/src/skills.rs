@@ -125,26 +125,43 @@ fn read_skill(dir: &Path, manifest: &Path) -> Option<Skill> {
     })
 }
 
-/// The `key: value` subset of YAML that skill frontmatter actually uses;
-/// anything else in the block is ignored rather than guessed at.
+/// The `key: value` subset of YAML that skill frontmatter actually uses, plus
+/// `>` and `|` blocks; anything else in the block is ignored rather than guessed at.
 pub(crate) fn frontmatter(source: &str) -> BTreeMap<String, String> {
     let mut fields = BTreeMap::new();
-    let mut lines = source.lines();
+    let mut lines = source.lines().peekable();
     if lines.next().map(str::trim) != Some("---") {
         return fields;
     }
-    for line in lines {
+    while let Some(line) = lines.next() {
         if line.trim() == "---" {
             break;
+        }
+        if line.starts_with(char::is_whitespace) {
+            continue;
         }
         let Some((key, value)) = line.split_once(':') else {
             continue;
         };
         let value = value.trim().trim_matches('"').trim_matches('\'').trim();
+        let value = match value.trim_end_matches('-') {
+            fold @ (">" | "|") => {
+                let mut block = Vec::new();
+                while let Some(next) = lines.peek() {
+                    if !next.starts_with(char::is_whitespace) || next.trim() == "---" {
+                        break;
+                    }
+                    block.push(next.trim().to_owned());
+                    lines.next();
+                }
+                block.join(if fold == ">" { " " } else { "\n" })
+            }
+            _ => value.to_owned(),
+        };
         if value.is_empty() {
             continue;
         }
-        fields.insert(key.trim().to_owned(), value.to_owned());
+        fields.insert(key.trim().to_owned(), value);
     }
     fields
 }
