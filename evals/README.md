@@ -258,3 +258,12 @@ and only `fail` is red. The run's HOME is fresh and has `telemetry.enabled`, so
 and `yi doctor`'s red rows as `Invariant::<row>` classes. The CI job `live`
 posts `scripts/live_report.py run.json` as one PR comment; without the
 `OPENROUTER_API_KEY` secret it posts inconclusive and says why.
+
+### Verdicts and history
+
+`scripts/live_ledger.py baseline` reads the last ten `run.json` records from the
+`telemetry` branch — medians of ttft p50, cache hit rate and cost per scenario,
+plus every error class seen. `judge run.json baseline.json` names each band the
+run breaks and each ratchet it loses; `live_report.py` prints the verdict at the
+top of the PR comment. Postmerge runs the suite on main and `append`s the record
+to the branch, so a PR is always judged against what main did last.
