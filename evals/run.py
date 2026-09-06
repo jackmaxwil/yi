@@ -16,6 +16,7 @@ is budgeted and user-run (README, "Budget discipline"; plan law 3).
 
 import argparse
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -110,6 +111,7 @@ def run_task(task_dir, binary, model):
             "--model",
             model,
             "--json",
+            "--here",
             "--yolo",
             "--cwd",
             str(workspace),
@@ -128,6 +130,7 @@ def run_task(task_dir, binary, model):
                     stdout=sink,
                     stderr=subprocess.DEVNULL,
                     stdin=subprocess.DEVNULL,
+                    env={**os.environ, "HOME": run_home()},
                     timeout=spec.get("timeoutSec", 600),
                 )
                 exit_code = done.returncode
@@ -176,9 +179,21 @@ def ledger_row(rows, model, fingerprint, suite, note="evals/run.py"):
     )
 
 
+_RUN_HOME = []
+
+
+def run_home():
+    """A fresh absolute HOME per process: a run is a harness, never the caller's ~/.yi."""
+    if not _RUN_HOME:
+        _RUN_HOME.append(tempfile.mkdtemp(prefix="yi-evals-home-"))
+    return _RUN_HOME[0]
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description="run the yi task-eval fixtures")
     parser.add_argument("--binary", default="target/debug/yi")
+    parser.add_argument("--home", help="HOME for every run; default a fresh temporary "
+                                       "directory, never the caller's")
     parser.add_argument("--model", default="faux/faux-1")
     parser.add_argument("--dry", action="store_true")
     parser.add_argument("--task", action="append", metavar="ID")
@@ -186,6 +201,12 @@ def main(argv=None):
     # different run, so the label rides the fingerprint's mode field.
     parser.add_argument("--variant", default="")
     args = parser.parse_args(argv)
+    if args.home:
+        if not os.path.isabs(args.home):
+            errors_early = f"--home must be absolute, not {args.home!r}"
+            print(errors_early, file=sys.stderr)
+            return 2
+        _RUN_HOME.append(args.home)
 
     errors = []
     if args.dry and not args.model.startswith("faux/"):
