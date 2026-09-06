@@ -110,5 +110,6 @@ when it changes rather than editing them by hand.
 - [D130](adr/d130.md) - an orphan with nothing `main` lacks is a free slot
 - [D131](adr/d131.md) - a harness run is isolated and the invariants check themselves
 - [D132](adr/d132.md) - a run's numbers are spans Yi writes itself
+- [D133](adr/d133.md) - the CI is the first user
 
 D36-D51, D72, D73 and D74 have no ADR yet; ARCHITECTURE.md is the record for those rows.

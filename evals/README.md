@@ -241,3 +241,20 @@ compaction entry exercises `summarization_count`.
   golden's exact argument key order (`zeta`, `alpha`, `nested`) and its real
   `input` 1200 / `totalTokens` 10750, then both tool results and a closing
   assistant. It pins the toolCall→`toolCalls` and toolResult→stub mapping.
+
+## Live lane (D133)
+
+```
+python3 evals/run.py --live --binary target/debug/yi \
+    --model openrouter/deepseek/deepseek-v4-flash-0731 --cap-usd 1 --out live-out
+```
+
+Scenarios live under `fixtures/live/<id>/` in the task shape (`task.json`,
+`prompt.txt`, `repo/`, `reward.sh`); a `"kind": "refusal"` scenario names the
+argv the binary must refuse and the stderr it must print. Every scenario ends
+`pass`, `fail` or `inconclusive` — timeout, no key, provider trouble, budget —
+and only `fail` is red. The run's HOME is fresh and has `telemetry.enabled`, so
+`run.json` carries `yi stats telemetry` over every sidecar beside the statuses
+and `yi doctor`'s red rows as `Invariant::<row>` classes. The CI job `live`
+posts `scripts/live_report.py run.json` as one PR comment; without the
+`OPENROUTER_API_KEY` secret it posts inconclusive and says why.
