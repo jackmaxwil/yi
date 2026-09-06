@@ -226,6 +226,44 @@ def refusal_check(spec, binary, out):
             "status": status, "detail": detail, "wallSec": 0}
 
 
+def cache_check(spec, binary, model, out):
+    """A cache scenario asks one session several times; the warm turns must read the cache."""
+    keep = out / spec["id"]
+    keep.mkdir(parents=True, exist_ok=True)
+    sessions = keep / "sessions"
+    started = time.monotonic()
+    turns, events_text, exit_code, timed_out = [], "", None, False
+    with tempfile.TemporaryDirectory(prefix="yi-eval-") as workspace:
+        for index, prompt in enumerate(spec["turns"]):
+            events = keep / f"events-{index}.jsonl"
+            command = [binary, "ask", "--model", model, "--json", "--here", "--yolo", "--cwd", workspace,
+                       "--session-dir", str(sessions), *(["--continue"] if index else []), prompt]
+            with events.open("w") as sink:
+                try:
+                    done = subprocess.run(command, stdout=sink, stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL,
+                                          env={**os.environ, "HOME": run_home()}, timeout=spec.get("timeoutSec", 120))
+                    exit_code = done.returncode
+                except subprocess.TimeoutExpired:
+                    timed_out = True
+                    break
+            events_text += events.read_text(errors="replace")
+            turns.append(yi_usage.parse_events(events))
+            # DeepSeek builds its prefix cache after the response, not during it.
+            if index + 1 < len(spec["turns"]):
+                time.sleep(spec.get("settleSec", 3))
+    warm_read = sum(turn["cacheRead"] or 0 for turn in turns[1:])
+    row = {"task": spec["id"], "reward": 1 if warm_read else 0, "exit": exit_code, "timedOut": timed_out,
+           "wallSec": round(time.monotonic() - started, 2), "requests": len(turns)}
+    for key in (*yi_usage.TOKEN_KEYS, "nAssistantMessages", "costUnknownTurns"):
+        row[key] = sum(turn.get(key) or 0 for turn in turns)
+    costs = [turn.get("costUsd") for turn in turns]
+    row["costUsd"] = None if not turns or None in costs else sum(costs)
+    row["status"], row["detail"] = status_of(row, spec, events_text)
+    if row["status"] == "fail":
+        row["detail"] = f"warm turns read 0 cached tokens over {len(turns)} requests ({row['input']} input)"
+    return row
+
+
 def doctor_after(binary):
     """`yi doctor --json` under the run's HOME after every scenario: a red row is a class."""
     done = subprocess.run([binary, "doctor", "--json"], capture_output=True, text=True,
@@ -257,6 +295,9 @@ def run_live(args):
             continue
         if spec.get("kind") == "refusal":
             row = refusal_check(spec, args.binary, out)
+        elif spec.get("kind") == "cache":
+            row = cache_check(spec, args.binary, args.model, out)
+            spent += row.get("costUsd") or 0.0
         else:
             spec, row = run_task(task_dir, args.binary, args.model, out=out)
             events_text = (out / spec["id"] / "events.jsonl").read_text(errors="replace")
