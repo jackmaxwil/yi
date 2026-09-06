@@ -225,7 +225,10 @@ fn reduce_inline<'e>(b: &mut Builder, event: Event<'e>) -> Option<Event<'e>> {
     match event {
         Event::Start(Tag::Emphasis) => b.push_style(|s| s.add_modifier(Modifier::ITALIC)),
         Event::End(TagEnd::Emphasis) => b.pop_style(),
-        Event::Start(Tag::Strong) => b.push_style(|s| s.add_modifier(Modifier::BOLD)),
+        Event::Start(Tag::Strong) => {
+            let accent = b.theme.accent;
+            b.push_style(move |s| s.fg(accent).add_modifier(Modifier::BOLD));
+        }
         Event::End(TagEnd::Strong) => b.pop_style(),
         Event::Start(Tag::Strikethrough) => {
             b.push_style(|s| s.add_modifier(Modifier::CROSSED_OUT));

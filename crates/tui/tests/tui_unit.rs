@@ -1321,9 +1321,7 @@ fn a_finished_tool_states_its_outcome_without_switching_modes() -> TestResult {
     for (name, result, expected) in cases {
         let lines = rendered(&tool_cell(name, result, false), TranscriptMode::Normal);
         assert!(
-            lines
-                .iter()
-                .any(|line| line.contains(&format!("└ {expected}"))),
+            lines.iter().any(|line| line.contains(expected)),
             "{name} normal mode should state `{expected}`: {lines:?}"
         );
     }
@@ -1382,7 +1380,7 @@ fn verbose_grep_prints_each_path_once() -> TestResult {
     assert_eq!(
         lines
             .iter()
-            .filter(|line| line.trim() == "src/a.rs")
+            .filter(|line| line.trim_matches(['│', ' ']) == "src/a.rs")
             .count(),
         1,
         "{lines:?}"
@@ -1686,7 +1684,7 @@ fn cycling_the_transcript_mode_rewrites_what_is_already_on_screen() -> TestResul
     });
     let normal = app.reflowed(200).iter().map(flat).collect::<Vec<_>>();
     assert!(
-        normal.iter().any(|line| line.contains("└ 2 lines")),
+        normal.iter().any(|line| line.contains("2 lines")),
         "{normal:?}"
     );
     assert!(

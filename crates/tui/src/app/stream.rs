@@ -167,8 +167,8 @@ impl App {
         }
     }
 
-    /// `spaced` is false for a forced cut: inside a paragraph a blank line reads as a break
-    /// the text does not have — unless it opens the block, which is a break and needs air.
+    /// `spaced` is false for a forced cut: the block after it continues a paragraph, so it
+    /// gets no blank line above it; a stable cut ends one, so the next block needs air.
     pub(super) fn commit_prose(&mut self, cut: usize, spaced: bool) {
         if cut <= self.live_cut {
             return;
@@ -179,18 +179,33 @@ impl App {
             .get(self.live_cut..cut)
             .unwrap_or_default()
             .to_owned();
-        let first = self.live_cut == 0;
-        let (rendered, lang) = crate::transcript::paint_slice(self, &slice);
+        let (lines, lang) = self.prose_block(&slice);
         self.live_lang = lang;
-        if !rendered.is_empty() {
-            if (spaced || first) && self.live_reopen.is_none() {
-                self.pending_commit.push(Line::default());
-            }
-            self.pending_commit
-                .extend(crate::cell::gutter(rendered, first, &self.theme));
+        if !lines.is_empty() {
+            self.pending_commit.extend(lines);
             self.retain(Cell::Assistant { markdown: slice });
         }
         self.live_cut = cut;
+        self.live_spaced = spaced;
+    }
+
+    /// Incident: live and commit each rendered the slice and only the commit put a blank
+    /// line above it, so every stable cut pushed text the reader had seen down a row.
+    pub(crate) fn prose_block(
+        &self,
+        slice: &str,
+    ) -> (Vec<Line<'static>>, Option<crate::highlight::Lang>) {
+        let (rendered, lang) = crate::transcript::paint_slice(self, slice);
+        let mut lines = Vec::with_capacity(rendered.len().saturating_add(1));
+        if !rendered.is_empty() && self.live_spaced && self.live_reopen.is_none() {
+            lines.push(Line::default());
+        }
+        lines.extend(crate::cell::gutter(
+            rendered,
+            self.live_cut == 0,
+            &self.theme,
+        ));
+        (lines, lang)
     }
 
     /// A snapshot of the message so far: the arrival feeds the rate, the cursors move on

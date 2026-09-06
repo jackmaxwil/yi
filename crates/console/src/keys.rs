@@ -230,8 +230,8 @@ pub fn hint(prefix_armed: bool, cmd: bool) -> &'static str {
     if prefix_armed {
         "PREFIX  v split│ s split─ x close z zoom h/j/k/l focus c tab 1..9 tab g palette q leave"
     } else if cmd {
-        "⌘P command palette   ⌘⇧N new session   ⌘B sidebar   ⌘? keys"
+        "⌘P command palette   ⌘⇧N new session   ⌘B sidebar   ⌘J notebook   ⌘G diff   ⌘? keys"
     } else {
-        "⌥/ command palette   ⌥n new session   ⌥b sidebar   ⌥? keys"
+        "⌥/ command palette   ⌥n new session   ⌥b sidebar   ⌥⇧J notebook   ⌥g diff   ⌥? keys"
     }
 }

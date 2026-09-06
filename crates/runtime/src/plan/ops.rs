@@ -171,7 +171,7 @@ pub enum PlanOpError {
     UnknownLabel { plan: PlanId, label: TodoLabel },
     #[error("only the plan owner may {op:?}; propose to the owner instead")]
     NotOwner { op: OpKind },
-    #[error("{op:?} is illegal for todo {label:?} in state {from}")]
+    #[error("{} is illegal for todo {label} in state {from}", op_name(*op))]
     IllegalStep {
         label: TodoLabel,
         from: TodoStateName,
