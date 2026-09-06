@@ -105,6 +105,7 @@ pub struct App {
     pub(crate) tree: Option<TreeView>,
     pub(crate) plan_tree: Option<crate::plantree::PlanTreeView>,
     pub(crate) plan_progress: Option<crate::hud::PlanProgress>,
+    pub(crate) todos: Option<yi_types::todo::TodoList>,
     pub(crate) pending_commit: Vec<Line<'static>>,
     pub(crate) pending_open_tree: bool,
     pub(crate) pending_open_plan_tree: bool,
@@ -119,8 +120,6 @@ pub struct App {
     pub(crate) pending_stop: Option<String>,
     pub(crate) pending_focus: Option<String>,
     pub selection: crate::model::Selection,
-    /// Rebuilds the rows above the viewport from the retained transcript, over
-    /// the resize-reflow path.
     pending_repaint: bool,
     pub(crate) pending_prompt_mark: bool,
     /// U34: 0 = the `Yi` wordmark at rest, 1 = the working orb. The dots travel between the
@@ -215,6 +214,7 @@ impl App {
             tree: None,
             plan_tree: None,
             plan_progress: None,
+            todos: None,
             pending_commit: Vec::new(),
             pending_open_tree: false,
             pending_open_plan_tree: false,

@@ -257,3 +257,24 @@ pub fn run_console_command(_args: &Args) -> i32 {
     eprintln!("error: this build has no console (rebuild with the `tui` feature)");
     2
 }
+
+pub(crate) fn session_extensions(
+    args: &crate::Args,
+    work: &std::path::Path,
+    context_window: u64,
+) -> yi_runtime::ExtensionHost {
+    yi_runtime::ext::install(yi_runtime::ExtOptions {
+        context_window,
+        cwd: work.to_path_buf(),
+        home: std::env::var_os("HOME")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_default(),
+        mode: args.mode,
+        user_system: args.system.clone(),
+        schema_instruction: args
+            .schema
+            .as_deref()
+            .and_then(|spec| yi_runtime::schema::Schema::load(spec).ok())
+            .map(|schema| schema.instruction()),
+    })
+}

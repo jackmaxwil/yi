@@ -5,11 +5,12 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
 use serde_json::{Map, Value};
-use yi_runtime::plan::loop_coupling::{NudgeState, StopPosture, gate, stop_posture};
+use yi_runtime::plan::loop_coupling::{StopPosture, gate, stop_posture};
 use yi_runtime::plan::ops::{
     Actor, Delegate, Op, OpRequest, Outcome, PlanEngine, PlanOpError, TodoSpec, dispatch_width,
 };
 use yi_runtime::plan::store::{PlanFile, PlanStore};
+use yi_runtime::todo::coupling::Cycle;
 use yi_types::plan::doc::{
     AgentId, BlockedOn, Delegation, GoalText, Plan, PlanId, PlanState, PlanTier, TodoAddr,
     TodoLabel, TodoState,
@@ -706,7 +707,7 @@ fn check_expect(
 fn check_work_step(
     ctx: &str,
     step: &Map<String, Value>,
-    nudge: &mut NudgeState,
+    nudge: &mut Cycle,
     failures: &mut Vec<String>,
 ) -> Fallible<()> {
     reject_unknown(step, &["work", "expect"], ctx)?;
@@ -725,7 +726,7 @@ fn check_work_step(
                     failures.push(format!("{ctx} nudge: expected {want}, got {fired}"));
                 }
             }
-            "nudgesThisCycle" => cmp_u64(ctx, key, value, u64::from(nudge.fired()), failures)?,
+            "nudgesThisCycle" => cmp_u64(ctx, key, value, u64::from(nudge.nudges), failures)?,
             other => return Err(format!("{ctx} unknown work assertion {other:?}").into()),
         }
     }
@@ -831,7 +832,7 @@ fn run_fixture(stem: &str) -> Fallible<()> {
             !eager
         ));
     }
-    let mut nudge = NudgeState::default();
+    let mut nudge = Cycle::default();
     let engine = build_engine(doc, &store, &stub, &mut failures)?;
     let steps = require(doc, "steps", "fixture")?
         .as_array()
@@ -874,7 +875,7 @@ fn run_fixture(stem: &str) -> Fallible<()> {
         stub.fail_reap.store(false, Ordering::SeqCst);
         stub.set_produced(None);
         if result.is_ok() {
-            nudge.touch();
+            nudge.touched();
         }
         if !is_init && result.is_err() {
             refused_non_init = true;

@@ -57,24 +57,77 @@ pub fn skills_catalog(cwd: &Path, home: &Path, budget: Bytes) -> Option<Truncate
     catalog_text(&discover(cwd, home), budget)
 }
 
-pub fn catalog_text(skills: &[Skill], budget: Bytes) -> Option<Truncated> {
-    if skills.is_empty() {
-        return None;
+pub const CATALOG_FLOOR: Bytes = Bytes(8_192);
+pub const CATALOG_CEILING: Bytes = Bytes(32_768);
+const DESCRIPTION_CLIPS: [usize; 2] = [120, 60];
+
+pub fn catalog_budget(context_window: u64) -> Bytes {
+    let bytes = usize::try_from(context_window.saturating_mul(4) / 50).unwrap_or(usize::MAX);
+    Bytes(bytes.clamp(CATALOG_FLOOR.0, CATALOG_CEILING.0))
+}
+
+fn clip(text: &str, limit: usize) -> String {
+    if text.chars().count() <= limit {
+        return text.to_owned();
     }
+    let mut out: String = text.chars().take(limit.saturating_sub(1)).collect();
+    out.push('…');
+    out
+}
+
+fn render_catalog(skills: &[Skill], described: usize, limit: Option<usize>) -> String {
     let mut body = String::from(
-        "<skills>\nSkills you can follow. Read the file with `read` before acting on one.\n",
+        "<skills>\nSkills you can follow. Read the file with `read` before acting on one; `$name` in a message asks for one by name.\n",
     );
-    for skill in skills {
+    for skill in skills.iter().take(described) {
         body.push_str("- ");
         body.push_str(&skill.name);
         body.push_str(": ");
-        body.push_str(&skill.description);
+        body.push_str(&limit.map_or_else(
+            || skill.description.clone(),
+            |limit| clip(&skill.description, limit),
+        ));
         body.push_str(" (");
         body.push_str(&skill.path.display().to_string());
         body.push_str(")\n");
     }
+    let rest: Vec<&str> = skills
+        .iter()
+        .skip(described)
+        .map(|skill| skill.name.as_str())
+        .collect();
+    if !rest.is_empty() {
+        body.push_str(&format!("+{} more: {}\n", rest.len(), rest.join(", ")));
+    }
     body.push_str("</skills>");
-    Some(fit(&body, budget))
+    body
+}
+
+pub fn catalog_text(skills: &[Skill], budget: Bytes) -> Option<Truncated> {
+    if skills.is_empty() {
+        return None;
+    }
+    for limit in std::iter::once(None).chain(DESCRIPTION_CLIPS.iter().copied().map(Some)) {
+        let body = render_catalog(skills, skills.len(), limit);
+        if body.len() <= budget.0 {
+            return Some(Truncated {
+                text: body,
+                truncated: false,
+            });
+        }
+    }
+    let mut described = skills.len();
+    while described > 0 {
+        described = described.saturating_sub(1);
+        let body = render_catalog(skills, described, Some(60));
+        if body.len() <= budget.0 {
+            return Some(Truncated {
+                text: body,
+                truncated: true,
+            });
+        }
+    }
+    Some(fit(&render_catalog(skills, 0, Some(60)), budget))
 }
 
 fn scan(root: &Path) -> Vec<Skill> {
@@ -125,26 +178,43 @@ fn read_skill(dir: &Path, manifest: &Path) -> Option<Skill> {
     })
 }
 
-/// The `key: value` subset of YAML that skill frontmatter actually uses;
-/// anything else in the block is ignored rather than guessed at.
+/// The `key: value` subset of YAML that skill frontmatter actually uses, plus
+/// `>` and `|` blocks; anything else in the block is ignored rather than guessed at.
 pub(crate) fn frontmatter(source: &str) -> BTreeMap<String, String> {
     let mut fields = BTreeMap::new();
-    let mut lines = source.lines();
+    let mut lines = source.lines().peekable();
     if lines.next().map(str::trim) != Some("---") {
         return fields;
     }
-    for line in lines {
+    while let Some(line) = lines.next() {
         if line.trim() == "---" {
             break;
+        }
+        if line.starts_with(char::is_whitespace) {
+            continue;
         }
         let Some((key, value)) = line.split_once(':') else {
             continue;
         };
         let value = value.trim().trim_matches('"').trim_matches('\'').trim();
+        let value = match value.trim_end_matches('-') {
+            fold @ (">" | "|") => {
+                let mut block = Vec::new();
+                while let Some(next) = lines.peek() {
+                    if !next.starts_with(char::is_whitespace) || next.trim() == "---" {
+                        break;
+                    }
+                    block.push(next.trim().to_owned());
+                    lines.next();
+                }
+                block.join(if fold == ">" { " " } else { "\n" })
+            }
+            _ => value.to_owned(),
+        };
         if value.is_empty() {
             continue;
         }
-        fields.insert(key.trim().to_owned(), value.to_owned());
+        fields.insert(key.trim().to_owned(), value);
     }
     fields
 }

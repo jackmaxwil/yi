@@ -11,6 +11,7 @@ use yi_types::entry::Entry;
 use yi_types::event::AgentEvent;
 use yi_types::model::{Effort, Model};
 use yi_types::subagent::ChildUpdate;
+use yi_types::todo::TodoList;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum PortRequest {
@@ -37,6 +38,7 @@ pub struct RemotePort {
     entries: Vec<Entry>,
     leaf: Option<String>,
     goal: Option<GoalView>,
+    todos: Option<TodoList>,
 }
 
 impl RemotePort {
@@ -48,10 +50,17 @@ impl RemotePort {
         }
         self.leaf = replay.leaf.clone();
         self.goal = replay.goal.clone();
+        if replay.todos.is_some() {
+            self.todos = replay.todos.clone();
+        }
     }
 
     pub fn set_goal(&mut self, goal: Option<GoalView>) {
         self.goal = goal;
+    }
+
+    pub fn set_todos(&mut self, todos: Option<TodoList>) {
+        self.todos = todos;
     }
 }
 
@@ -101,6 +110,10 @@ impl SessionPort for RemotePort {
     fn goal(&self) -> Option<GoalView> {
         self.goal.clone()
     }
+
+    fn todo_list(&self) -> Option<TodoList> {
+        self.todos.clone()
+    }
 }
 
 /// A `_yi/replay` frame's envelope; the entries decode separately so a bad one is counted.
@@ -110,6 +123,7 @@ pub struct Replay {
     pub leaf: Option<String>,
     pub name: Option<String>,
     pub goal: Option<GoalView>,
+    pub todos: Option<TodoList>,
     pub context_window: Option<u64>,
     pub child: Option<String>,
 }
@@ -130,6 +144,7 @@ pub enum Decoded {
     Gap,
     Replay(Box<Replay>, Vec<Entry>),
     Goal(Option<GoalView>),
+    Todo(Option<TodoList>),
     Config(Config),
     Child(ChildUpdate),
     Other,
@@ -199,12 +214,18 @@ pub fn decode(extension: &AcpExtensionUpdate) -> Result<Decoded, Malformed> {
                 leaf: string(&fields, "leafId"),
                 name: string(&fields, "name"),
                 goal: fields.get("goal").and_then(goal_view),
+                todos: fields
+                    .get("todos")
+                    .and_then(|value| serde_json::from_value::<TodoList>(value.clone()).ok()),
                 context_window: fields.get("contextWindow").and_then(Value::as_u64),
                 child: string(&fields, "childId"),
             };
             Ok(Decoded::Replay(Box::new(replay), entries))
         }
         "_yi/goal" => Ok(Decoded::Goal(fields.get("goal").and_then(goal_view))),
+        "_yi/todo" => Ok(Decoded::Todo(fields.get("list").and_then(|value| {
+            serde_json::from_value::<TodoList>(value.clone()).ok()
+        }))),
         "_yi/config" => {
             let options = fields.get("configOptions").cloned().unwrap_or(Value::Null);
             let options =
@@ -243,4 +264,32 @@ pub fn option_for(choice: AskChoice, options: &[AcpPermissionOption]) -> String 
             AskChoice::AllowOnce | AskChoice::AllowAlways => "allow_once".to_owned(),
             AskChoice::Reject => "reject_once".to_owned(),
         })
+}
+
+#[cfg(test)]
+mod todo_tests {
+    use super::*;
+    use yi_types::acp::AcpExtensionUpdate;
+
+    #[test]
+    fn a_todo_update_decodes_to_the_list_and_a_null_clears_it() -> Result<(), String> {
+        let list = serde_json::json!({"phases": [{"name": "Tasks", "items": [{"label": "a", "state": "running"}]}]});
+        let update = AcpExtensionUpdate {
+            session_update: "_yi/todo".to_owned(),
+            fields: std::iter::once(("list".to_owned(), list)).collect(),
+        };
+        match decode(&update).map_err(|_| "malformed".to_owned())? {
+            Decoded::Todo(Some(list)) => assert_eq!(list.progress().open, 1),
+            _ => return Err("not a todo update".to_owned()),
+        }
+        let cleared = AcpExtensionUpdate {
+            session_update: "_yi/todo".to_owned(),
+            fields: std::iter::once(("list".to_owned(), Value::Null)).collect(),
+        };
+        assert!(matches!(
+            decode(&cleared).map_err(|_| "malformed".to_owned())?,
+            Decoded::Todo(None)
+        ));
+        Ok(())
+    }
 }

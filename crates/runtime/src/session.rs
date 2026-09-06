@@ -60,6 +60,7 @@ struct Shared {
     environment: Mutex<Option<Arc<EnvironmentFn>>>,
     lane: Mutex<Option<Arc<crate::lane::land::LaneHandle>>>,
     telemetry: Mutex<Option<Arc<crate::telemetry::Telemetry>>>,
+    todos: Mutex<Option<Arc<crate::todo::TodoStore>>>,
 }
 
 pub type PromptChoiceFn =
@@ -157,6 +158,7 @@ impl AgentSession {
                 lane: Mutex::new(None),
 
                 telemetry: Mutex::new(None),
+                todos: Mutex::new(None),
                 on_turn_end: Mutex::new(None),
                 coupling: Mutex::new(None),
             }),
@@ -238,6 +240,33 @@ impl AgentSession {
         if let Ok(mut slot) = self.shared.environment.lock() {
             *slot = Some(hook);
         }
+    }
+
+    pub fn set_todos(&self, todos: Arc<crate::todo::TodoStore>) {
+        if let Ok(mut slot) = self.shared.todos.lock() {
+            *slot = Some(todos);
+        }
+    }
+
+    pub fn todos_handle(
+        &self,
+    ) -> Arc<dyn Fn() -> Option<Arc<crate::todo::TodoStore>> + Send + Sync> {
+        let shared = Arc::clone(&self.shared);
+        Arc::new(move || {
+            shared
+                .todos
+                .lock()
+                .ok()
+                .and_then(|slot| slot.as_ref().map(Arc::clone))
+        })
+    }
+
+    pub fn todos(&self) -> Option<Arc<crate::todo::TodoStore>> {
+        self.shared
+            .todos
+            .lock()
+            .ok()
+            .and_then(|slot| slot.as_ref().map(Arc::clone))
     }
 
     pub fn set_lane(&self, lane: Arc<crate::lane::land::LaneHandle>) {

@@ -320,3 +320,134 @@ fn a_bundle_layout_is_walked_one_level_deeper() -> TestResult {
     let _ = std::fs::remove_dir_all(&root);
     Ok(())
 }
+
+#[test]
+fn a_folded_description_reads_as_its_sentence() -> TestResult {
+    let root = std::env::temp_dir().join(format!("yi-skills-folded-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let home = root.join("home");
+    std::fs::create_dir_all(home.join(".yi/skills"))?;
+    skill_dir(
+        &home.join(".yi/skills"),
+        "review",
+        "---\nname: review\ndescription: >\n  Verify finished work against its acceptance criteria with a cold-context\n  reviewer. Use before declaring a goal or large task complete: not a\n  code-style review.\n---\n\n# Review\n",
+    )?;
+    skill_dir(
+        &home.join(".yi/skills"),
+        "literal",
+        "---\nname: literal\ndescription: |\n  first line\n  second line\n---\nbody\n",
+    )?;
+    let catalog =
+        yi_runtime::skills_catalog(&home, &home, yi_runtime::Bytes(16_384)).ok_or("no catalog")?;
+    assert!(
+        catalog.text.contains(
+            "review: Verify finished work against its acceptance criteria with a cold-context reviewer. Use before declaring a goal or large task complete: not a code-style review."
+        ),
+        "{}",
+        catalog.text
+    );
+    assert!(
+        catalog.text.contains("literal: first line\nsecond line"),
+        "{}",
+        catalog.text
+    );
+    assert!(!catalog.text.contains("review: >"), "{}", catalog.text);
+    std::fs::remove_dir_all(&root)?;
+    Ok(())
+}
+
+#[test]
+fn a_project_under_home_keeps_its_skills_project_scoped() -> TestResult {
+    let home = std::env::temp_dir().join(format!("yi-skills-under-home-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&home);
+    let project = home.join("Development/project");
+    std::fs::create_dir_all(home.join(".yi/skills"))?;
+    std::fs::create_dir_all(project.join(".agents/skills"))?;
+    skill_dir(
+        &home.join(".yi/skills"),
+        "global-one",
+        "---\nname: global-one\ndescription: Global.\n---\nbody\n",
+    )?;
+    skill_dir(
+        &project.join(".agents/skills"),
+        "repo-one",
+        "---\nname: repo-one\ndescription: Repository.\n---\nbody\n",
+    )?;
+    let (global, project_skills) = yi_runtime::skills::discover_split(&project, &home);
+    assert_eq!(
+        global
+            .iter()
+            .map(|skill| skill.name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["global-one"]
+    );
+    assert_eq!(
+        project_skills
+            .iter()
+            .map(|skill| skill.name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["repo-one"]
+    );
+    std::fs::remove_dir_all(&home)?;
+    Ok(())
+}
+
+#[test]
+fn the_catalog_ladder_keeps_every_name_and_clips_descriptions_first() -> TestResult {
+    let root = std::env::temp_dir().join(format!("yi-skills-ladder-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let home = root.join("home");
+    std::fs::create_dir_all(home.join(".yi/skills"))?;
+    let long = "x".repeat(300);
+    for index in 0..40 {
+        skill_dir(
+            &home.join(".yi/skills"),
+            &format!("skill-{index:02}"),
+            &format!("---\nname: skill-{index:02}\ndescription: {long}\n---\nbody\n"),
+        )?;
+    }
+    let full =
+        yi_runtime::skills_catalog(&home, &home, yi_runtime::Bytes(1 << 20)).ok_or("no catalog")?;
+    assert!(!full.truncated);
+    assert_eq!(full.text.matches(&long).count(), 40);
+
+    let clipped =
+        yi_runtime::skills_catalog(&home, &home, yi_runtime::Bytes(8_192)).ok_or("no catalog")?;
+    assert!(
+        !clipped.text.contains(&long),
+        "descriptions clip before names go"
+    );
+    for index in 0..40 {
+        assert!(
+            clipped.text.contains(&format!("skill-{index:02}")),
+            "every name survives the budget: {}",
+            clipped.text
+        );
+    }
+    assert!(clipped.text.len() <= 8_192);
+    assert!(!clipped.text.contains("[... truncated"), "{}", clipped.text);
+
+    let tight =
+        yi_runtime::skills_catalog(&home, &home, yi_runtime::Bytes(2_048)).ok_or("no catalog")?;
+    assert!(tight.truncated);
+    assert!(tight.text.contains("more: "), "{}", tight.text);
+    assert!(
+        tight.text.contains("skill-39"),
+        "the last name rides the more line: {}",
+        tight.text
+    );
+    assert_eq!(
+        yi_runtime::skills::catalog_budget(128_000),
+        yi_runtime::Bytes(10_240)
+    );
+    assert_eq!(
+        yi_runtime::skills::catalog_budget(1_300_000),
+        yi_runtime::skills::CATALOG_CEILING
+    );
+    assert_eq!(
+        yi_runtime::skills::catalog_budget(8_000),
+        yi_runtime::skills::CATALOG_FLOOR
+    );
+    std::fs::remove_dir_all(&root)?;
+    Ok(())
+}

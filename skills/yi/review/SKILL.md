@@ -6,6 +6,8 @@ description: >
   user asks for a completion review, or when the orchestrate skill's final
   verification step calls for a fresh look. Not a code-style review — this
   checks that the claimed end state is actually true.
+trigger: review the work, verify the goal, acceptance criteria, cold review
+scope: text
 ---
 
 # Review
@@ -64,3 +66,14 @@ One line per acceptance item: `task-id · verdict · decisive evidence
 checked and why. Contradicted and unverifiable items reopen tasks
 (`plan.edit reopen`, `plan.update ... blocked`) — they never narrow the
 claim.
+
+## The todo audit
+
+Before the verdict, read the session's todo list (`yi todo` prints the
+newest, or `view` from inside the session). For every item marked done,
+find the evidence it quotes and check it against the tree: a `done` with
+no evidence, or with evidence the tree does not bear out, is a finding
+before any other. An item still running or pending at the end of a turn
+that claimed completion is the first line of the report. The assessment
+rules apply to every number you quote: the command, the scope, and the
+matches read.
