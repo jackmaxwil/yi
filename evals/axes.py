@@ -87,7 +87,7 @@ def telemetry(path):
     if not sidecar.is_file():
         sidecar = path.with_suffix(".telemetry.jsonl")
     spans, _ = yi_usage.json_lines(sidecar)
-    ttft = [s["ttft_ms"] for s in spans if s.get("span") == "request" and isinstance(s.get("ttft_ms"), int)]
+    ttft = [s["ttftMs"] for s in spans if s.get("span") == "request" and isinstance(s.get("ttftMs"), int)]
     tools = [s for s in spans if s.get("span") == "tool"]
     failed = sum(1 for s in tools if s.get("ok") is False)
     return {
