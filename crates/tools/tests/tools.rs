@@ -1239,3 +1239,51 @@ fn every_cut_view_names_its_cap() -> TestResult {
     assert!(text.contains("[1 binary files skipped"), "{text}");
     Ok(())
 }
+
+/// A chain that stopped is named as such: the model read a stopped `&&` as a
+/// truncation and cited numbers from segments that never ran.
+#[test]
+fn a_stopped_chain_says_so_beside_the_exit_code() -> TestResult {
+    let tool = BashTool::default();
+    let context = ToolContext::new(std::env::temp_dir());
+    let output = tool.execute(
+        Map::from_iter([(
+            "command".to_owned(),
+            json!("echo first && false && echo never"),
+        )]),
+        &context,
+    );
+    let text: String = output
+        .result
+        .content
+        .iter()
+        .map(|content| match content {
+            Content::Text { text, .. } => text.clone(),
+            _ => String::new(),
+        })
+        .collect();
+    assert!(text.contains("exit code: 1"), "{text}");
+    assert!(
+        text.contains("[chain stopped at exit 1: the segments after the failing one did not run]"),
+        "{text}"
+    );
+    assert!(!text.contains("never"), "{text}");
+    let plain = tool.execute(
+        Map::from_iter([("command".to_owned(), json!("false"))]),
+        &context,
+    );
+    let plain: String = plain
+        .result
+        .content
+        .iter()
+        .map(|content| match content {
+            Content::Text { text, .. } => text.clone(),
+            _ => String::new(),
+        })
+        .collect();
+    assert!(
+        !plain.contains("chain stopped"),
+        "a single command has no chain: {plain}"
+    );
+    Ok(())
+}

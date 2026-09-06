@@ -443,9 +443,9 @@ async fn with_no_reviewer_named_the_decision_is_byte_identical_to_today() -> Tes
     Ok(())
 }
 
-/// The whole gate in one place: with the role unnamed nothing is constructed,
-/// `ask_user` is absent, and the system prompt pays no bytes for it. Naming it
-/// is what turns all three on.
+/// The whole gate in one place: with the role unnamed no reviewer is constructed and
+/// the system prompt pays no bytes for the review sentence; `ask_user` is always there,
+/// in question mode, and gains its `request` mode when the role is named.
 #[tokio::test]
 async fn the_role_is_the_only_switch_for_the_reviewer_the_tool_and_the_sentence() -> TestResult {
     for named in [false, true] {
@@ -482,7 +482,10 @@ async fn the_role_is_the_only_switch_for_the_reviewer_the_tool_and_the_sentence(
             .extensions()
             .and_then(|host| host.lock().ok().map(|host| host.system_prompt()))
             .unwrap_or_default();
-        assert_eq!(registered, named, "ask_user registration follows the role");
+        assert!(
+            registered,
+            "ask_user is registered whether or not a role is named"
+        );
         assert_eq!(
             harness.broker.has_reviewer(),
             named,
@@ -513,4 +516,43 @@ fn the_review_fragment_names_the_tool_that_answers_a_denial() {
         !yi_runtime::mode_fragment(PermissionMode::Auto).contains("ask_user"),
         "the sentence rides its own slot, so an unnamed role pays no bytes"
     );
+}
+
+/// A question to the user ends the turn on its own: the model does not have to
+/// guess at a stopping sentence, and the todo interception reads the call, not the prose.
+#[test]
+fn a_question_ends_the_turn_and_lists_its_options() -> TestResult {
+    use yi_tools::Tool;
+    let tool = yi_runtime::auto_review::AskUserTool::new(None);
+    let mut input = serde_json::Map::new();
+    input.insert(
+        "question".to_owned(),
+        serde_json::json!("Which base branch should the lane land on?"),
+    );
+    input.insert(
+        "options".to_owned(),
+        serde_json::json!(["main", "release/1.2"]),
+    );
+    input.insert("default".to_owned(), serde_json::json!("main"));
+    tool.validate(&input)?;
+    let output = tool.execute(input, &yi_tools::ToolContext::new(std::env::temp_dir()));
+    assert!(!output.is_error);
+    assert_eq!(output.result.terminate, Some(true));
+    let text = match output.result.content.first() {
+        Some(yi_types::message::Content::Text { text, .. }) => text.clone(),
+        _ => String::new(),
+    };
+    assert!(
+        text.starts_with("Question for the user: Which base branch"),
+        "{text}"
+    );
+    assert!(text.contains("  1. main\n  2. release/1.2"), "{text}");
+    assert!(text.contains("Default if unanswered: main"), "{text}");
+    let mut request = serde_json::Map::new();
+    request.insert("request".to_owned(), serde_json::json!(1));
+    assert!(
+        tool.validate(&request).is_err(),
+        "request mode needs auto-review; without it the model is told to ask a question"
+    );
+    Ok(())
 }
