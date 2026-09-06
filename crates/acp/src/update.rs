@@ -49,6 +49,7 @@ pub struct ReplayFrame<'a> {
     pub leaf: Option<&'a str>,
     pub name: Option<&'a str>,
     pub goal: Option<&'a Goal>,
+    pub todos: Option<&'a yi_types::todo::TodoList>,
     pub context_window: u64,
     pub child: Option<&'a ChildId>,
 }
@@ -72,6 +73,13 @@ pub fn replay_update(frame: &ReplayFrame<'_>) -> AcpSessionUpdate {
             frame
                 .name
                 .map_or(Value::Null, |name| Value::String(name.to_owned())),
+        ),
+        (
+            "todos",
+            frame
+                .todos
+                .and_then(|todos| serde_json::to_value(todos).ok())
+                .unwrap_or(Value::Null),
         ),
         (
             "goal",

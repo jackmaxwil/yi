@@ -305,6 +305,17 @@ impl AcpState {
             .attach_store(Arc::clone(store))
             .map_err(|error| error.to_string())?;
         let session = Arc::new(session);
+        if let Some(todos) = session.todos() {
+            let sink = Arc::clone(&self.sink);
+            let id = session_id.clone();
+            todos.on_change(Arc::new(move |list| {
+                let update = extension(
+                    "_yi/todo",
+                    [("list", serde_json::to_value(list).unwrap_or(Value::Null))],
+                );
+                (sink)(&update_notification(&id, update));
+            }));
+        }
         let events = session.subscribe();
         let context_window = session.model().context_window;
         let parent = Parent {
@@ -589,9 +600,8 @@ impl AcpState {
             "session/set_config_option" => self.set_config_option(params),
             "_yi/heartbeat" | "_yi/goal" | "_yi/tracked" | "_yi/kernel_execute"
             | "_yi/kernel_cancel" | "_yi/slash" => self.handle_extension(method, params),
-            "_yi/steer" | "_yi/rewind" | "_yi/plan" | "_yi/child_replay" | "_yi/child_abort" => {
-                self.handle_control(method, params)
-            }
+            "_yi/steer" | "_yi/rewind" | "_yi/plan" | "_yi/todo" | "_yi/child_replay"
+            | "_yi/child_abort" => self.handle_control(method, params),
             other => Err((METHOD_NOT_FOUND, format!("unknown method {other}"))),
         }
     }
@@ -621,6 +631,10 @@ impl AcpState {
                     "unsent": rewound.unsent,
                     "summarizing": summarizing,
                 }))
+            }
+            "_yi/todo" => {
+                let list = handle.session.todos().map(|store| store.list());
+                Ok(json!({"list": list}))
             }
             "_yi/plan" => {
                 let service = handle
@@ -843,6 +857,7 @@ impl AcpState {
             let leaf = session.leaf_id("main").ok().flatten();
             (entries, leaf, session.goal())
         };
+        let todos = yi_runtime::todo::latest_record(store).map(|record| record.list);
         let name = session_name(store);
         let total = u64::try_from(entries.len()).unwrap_or(u64::MAX);
         let skip = usize::try_from(from.min(total)).unwrap_or(usize::MAX);
@@ -860,6 +875,7 @@ impl AcpState {
                 leaf: if last { leaf.as_deref() } else { None },
                 name: name.as_deref(),
                 goal: goal.as_ref(),
+                todos: todos.as_ref(),
                 context_window,
                 child,
             };
@@ -873,6 +889,7 @@ impl AcpState {
                 leaf: leaf.as_deref(),
                 name: name.as_deref(),
                 goal: goal.as_ref(),
+                todos: todos.as_ref(),
                 context_window,
                 child,
             };

@@ -208,7 +208,9 @@ background, terminal). No 70-field bag.
 Builtins: `read` (hashline header), `edit` (hashline), `write`, `glob`, `grep`, `bash`,
 `ipython`, `subagent`, `agent_message`, `ask_user`, `get_context` — one layered, clamped
 orientation packet (grid roots, symbol neighborhood, skeletons, change heat, gate commands,
-prior mining issues) behind an honest completeness header.
+prior mining issues) behind an honest completeness header — and `todo` (D137): the session's
+task list at every depth, persisted as `custom{todo}` entries, rendered live to the user, and
+the instrument the loop reads to refuse a turn that ends with an item still open.
 
 The registry is **closed**: one `const` list; adding a tool edits this section in the same
 commit. Tool parameters are typed — never `action: String`, never a synonym-alias table

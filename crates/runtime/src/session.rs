@@ -248,6 +248,19 @@ impl AgentSession {
         }
     }
 
+    pub fn todos_handle(
+        &self,
+    ) -> Arc<dyn Fn() -> Option<Arc<crate::todo::TodoStore>> + Send + Sync> {
+        let shared = Arc::clone(&self.shared);
+        Arc::new(move || {
+            shared
+                .todos
+                .lock()
+                .ok()
+                .and_then(|slot| slot.as_ref().map(Arc::clone))
+        })
+    }
+
     pub fn todos(&self) -> Option<Arc<crate::todo::TodoStore>> {
         self.shared
             .todos

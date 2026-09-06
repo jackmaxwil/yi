@@ -107,6 +107,7 @@ pub fn hook(
     let history = session.history_handle();
     let context = session.compact_status_handle();
     let lane = session.lane_handle();
+    let todos = session.todos_handle();
     Arc::new(move || {
         let mut lines = Vec::new();
         let git = git_summary(&cwd)
@@ -115,6 +116,14 @@ pub fn hook(
         lines.push(format!("cwd: {}{git}", cwd.display()));
         if let Some(line) = lane().and_then(|lane| lane.describe()) {
             lines.push(line);
+        }
+        if let Some(list) = todos().map(|store| store.list())
+            && list.progress().total > 0
+        {
+            lines.push(format!(
+                "todos: {}",
+                crate::todo::text::header(&list).trim_start_matches("Todos ")
+            ));
         }
         if let Some(time) = local_time(&cwd) {
             lines.push(format!("time: {time}"));

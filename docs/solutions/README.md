@@ -114,5 +114,6 @@ when it changes rather than editing them by hand.
 - [D134](adr/d134.md) - every error carries a class from one closed vocabulary
 - [D135](adr/d135.md) - landing is one verb and baselines merge themselves
 - [D136](adr/d136.md) - a tool call is a card, and the outcome is read from its chrome
+- [D137](adr/d137.md) - todos are a session tool and plans are a delegation ledger
 
 D36-D51, D72, D73 and D74 have no ADR yet; ARCHITECTURE.md is the record for those rows.
