@@ -23,8 +23,8 @@ import tempfile
 import time
 from pathlib import Path
 
-EXTRACTOR_VERSION = 3
-SCHEMA_VERSION = 1
+EXTRACTOR_VERSION = 4
+SCHEMA_VERSION = 2
 
 # Tool names from the crates/tools registry that cannot change the tree; the
 # first call outside this set is the session's first productive action.
@@ -250,6 +250,160 @@ def call_is_read_only(name, arguments):
     return False
 
 
+GATE_WORDS = ("cargo nextest", "cargo test", "just check", "cargo clippy")
+OFFER_WORDS = ("let me know", "would you like", "want me to", "if you want", "shall i")
+SIGNAL_NAMES = (
+    "gate_without_change", "stopped_with_open_todos", "multi_step_without_todo", "todo_stale",
+    "asked_twice", "closing_offer", "flag_error", "empty_filter", "pointer_never_read",
+    "chain_stop", "self_capped", "sandbox_denial_as_finding", "count_claim", "answer_shape",
+    "cache_miss_streak", "done_without_check", "intercept_capped",
+    "blocked_on_user_without_question", "waiting_without_block", "gate_rerun_unchanged_tree",
+)
+
+
+def _tokens(text):
+    return set(re.findall(r"[a-z0-9]{3,}", (text or "").lower()))
+
+
+def _open_items(record):
+    items = []
+    for phase in (record.get("list") or {}).get("phases") or []:
+        for item in phase.get("items") or []:
+            items.append(item)
+            items.extend(item.get("children") or [])
+    return items
+
+
+def signals(entries):
+    """Deterministic per-session facts the doctrine names; each key is an incident count
+    (0 when it never happened), computed from the JSONL and nothing the model said about it."""
+    out = {name: 0 for name in SIGNAL_NAMES}
+    calls, results, users, assistants = {}, [], [], []
+    todo_records, intercepts, custom_intercept = [], [], []
+    for entry in entries:
+        if entry.get("type") == "custom":
+            kind = entry.get("customType")
+            if kind == "todo":
+                todo_records.append(entry.get("data") or {})
+            elif kind == "todo_intercept":
+                custom_intercept.append(entry.get("data") or {})
+            continue
+        if entry.get("type") != "message":
+            continue
+        message = entry.get("message") or {}
+        role = message.get("role")
+        if role == "user":
+            users.append(text_of(message.get("content")))
+        elif role == "custom" and message.get("customType") == "todo_intercept":
+            intercepts.append(message)
+        elif role == "assistant":
+            turn = {"text": "", "calls": [], "usage": message.get("usage") or {}, "stop": message.get("stopReason")}
+            for block in message.get("content") or []:
+                if not isinstance(block, dict):
+                    continue
+                if block.get("type") == "text":
+                    turn["text"] += block.get("text") or ""
+                elif block.get("type") == "toolCall":
+                    call = {"id": block.get("id"), "tool": block.get("name"), "args": block.get("arguments") or {}, "turn": len(assistants)}
+                    calls[call["id"]] = call
+                    turn["calls"].append(call)
+            assistants.append(turn)
+        elif role == "toolResult":
+            results.append({"id": message.get("toolCallId"), "tool": message.get("toolName"), "text": text_of(message.get("content")), "error": bool(message.get("isError"))})
+    ordered = [c for t in assistants for c in t["calls"]]
+    result_of = {r["id"]: r for r in results}
+    final = assistants[-1]["text"] if assistants else ""
+    edits_before = 0
+    source_reads = 0
+    landed_since_todo = 0
+    last_gate = None
+    for call in ordered:
+        tool, args = call["tool"], call["args"]
+        command = args.get("command") or "" if isinstance(args, dict) else ""
+        if tool == "read" and str(args.get("path", "")).endswith(".rs"):
+            source_reads += 1
+        gate = tool == "bash" and any(word in command for word in GATE_WORDS)
+        if gate:
+            if edits_before == 0 and source_reads == 0:
+                out["gate_without_change"] += 1
+            if last_gate == command:
+                out["gate_rerun_unchanged_tree"] += 1
+            last_gate = command
+        mutating = tool in ("edit", "write") or (tool == "bash" and not gate and command and not read_only_command(command))
+        if mutating:
+            edits_before += 1
+            landed_since_todo += 1
+            last_gate = None
+        if tool == "todo":
+            if (args.get("op") if isinstance(args, dict) else None) != "view":
+                landed_since_todo = 0
+        result = result_of.get(call["id"])
+        if result is None:
+            continue
+        if "unexpected argument" in result["text"]:
+            out["flag_error"] += 1
+        if "0 tests run" in result["text"]:
+            out["empty_filter"] += 1
+        if tool == "bash" and "&&" in command and ("exit code:" in result["text"] or "[chain stopped" in result["text"]):
+            out["chain_stop"] += 1
+        if tool == "bash" and isinstance(args, dict) and args.get("max_output_lines") and "lines omitted" not in result["text"]:
+            out["self_capped"] += 1
+        if "PermissionDenied" in result["text"] and "PermissionDenied" in final:
+            out["sandbox_denial_as_finding"] += 1
+        for pointer in re.findall(r"\[full output: ([^\]]+)\]", result["text"]):
+            later = [c for c in ordered if c["tool"] == "read" and str((c["args"] or {}).get("path", "")) == pointer.strip()]
+            if not later:
+                out["pointer_never_read"] += 1
+    if landed_since_todo >= 12:
+        out["todo_stale"] = 1
+    mutating_calls = sum(1 for c in ordered if c["tool"] in ("edit", "write") or (c["tool"] == "bash" and (c["args"] or {}).get("command") and not read_only_command(c["args"]["command"])))
+    if mutating_calls >= 3 and not any(c["tool"] == "todo" for c in ordered):
+        out["multi_step_without_todo"] = 1
+    if todo_records:
+        last = todo_records[-1]
+        open_items = [i for i in _open_items(last) if i.get("state") in ("pending", "running")]
+        if open_items and assistants and assistants[-1]["stop"] == "stop":
+            out["stopped_with_open_todos"] = 1
+        running = any(i.get("state") == "running" for i in _open_items(last))
+        blocked_user = any(i.get("state") == "blocked" and i.get("on") == "user" for i in _open_items(last))
+        last_line = final.strip().splitlines()[-1] if final.strip() else ""
+        asked = last_line.endswith("?") or any(c["tool"] == "ask_user" for c in assistants[-1]["calls"]) if assistants else False
+        if running and not blocked_user and asked:
+            out["waiting_without_block"] = 1
+        if blocked_user and not asked:
+            out["blocked_on_user_without_question"] = 1
+        for record in todo_records:
+            if record.get("op") == "done":
+                label = record.get("label")
+                items = [i for i in _open_items(record) if i.get("label") == label]
+                if items and not items[0].get("evidence"):
+                    out["done_without_check"] += 1
+    if any(r.get("reason") == "let go" for r in custom_intercept):
+        out["intercept_capped"] = 1
+    for a, b in zip(users, users[1:]):
+        ta, tb = _tokens(a), _tokens(b)
+        if ta and tb and len(ta & tb) / len(ta | tb) >= 0.8:
+            out["asked_twice"] += 1
+    if final.strip():
+        tail = final.strip().splitlines()[-1].lower()
+        if tail.endswith("?") or any(word in tail for word in OFFER_WORDS):
+            out["closing_offer"] = 1
+    seen = " ".join(r["text"] for r in results)
+    for number in set(re.findall(r"(?<![\w.])\d{3,}(?![\w.])", final)):
+        if number not in seen and number not in "".join(users):
+            out["count_claim"] += 1
+    out["answer_shape"] = len(final)
+    streak = best = 0
+    for turn in assistants[1:]:
+        if int((turn["usage"] or {}).get("cacheRead") or 0) == 0:
+            streak += 1
+            best = max(best, streak)
+        else:
+            streak = 0
+    out["cache_miss_streak"] = best
+    return out
+
+
 def extract_session(path, header, entries, census):
     sid = header.get("id", path.name)
     tokens = dict(input=0, output=0, cacheRead=0, cacheWrite=0, costUsd=0.0)
@@ -392,6 +546,7 @@ def extract_session(path, header, entries, census):
         },
         # Reserved: escalation-ladder rows land here when S3 emits them.
         "premise": {},
+        "signals": signals(entries),
         "wins": bool(last_stop == "stop" and failures == 0 and interrupts == 0),
     }
     if len(set(models)) > 1:
@@ -623,6 +778,14 @@ def report(result, sessions_dir, out_dir):
         f"repeated calls: {sum(r['repeatedCalls'] for r in mu)}; "
         f"compactions: {sum(r['compactions'] for r in mu)}"
     )
+    out.append("")
+    out.append("signals (sessions with at least one)")
+    for name in SIGNAL_NAMES:
+        if name == "answer_shape":
+            continue
+        hit = sum(1 for r in worked if (r.get("signals") or {}).get(name))
+        if hit:
+            out.append(f"  {name:<34}{hit}/{len(worked)}")
     out.append("")
     out.append(f"extractor v{EXTRACTOR_VERSION}, schema v{SCHEMA_VERSION}")
     return "\n".join(out)
@@ -893,6 +1056,19 @@ def selfcheck():
         assert row["childTokens"]["costUsd"] == 0.0247, row["childTokens"]
         assert row["tokens"]["costUsd"] == 0.011, row["tokens"]
 
+        planted = next(r for r in result["mu"] if r["sessionId"] == "fixture-planted-0001")
+        assert not any(planted["signals"][n] for n in SIGNAL_NAMES if n not in ("answer_shape", "cache_miss_streak", "multi_step_without_todo")), planted["signals"]
+        signal_row = next(r for r in result["mu"] if r["sessionId"] == "fixture-signals")
+        for name in SIGNAL_NAMES:
+            if name == "blocked_on_user_without_question":
+                continue
+            assert signal_row["signals"][name], f"signal {name} did not fire on its fixture"
+        blocked_row = next(r for r in result["mu"] if r["sessionId"] == "fixture-signals-blocked")
+        assert blocked_row["signals"]["blocked_on_user_without_question"] == 1, blocked_row["signals"]
+        assert blocked_row["signals"]["waiting_without_block"] == 0, blocked_row["signals"]
+        signal_text = report(result, fixtures, first)
+        assert "gate_without_change" in signal_text and "asked_twice" in signal_text, signal_text
+
         types_src = Path(__file__).resolve().parents[3] / "crates/types/tests/fixtures/v4-golden.jsonl"
         golden_in = Path(tmp) / "golden-in"
         golden_in.mkdir()
@@ -904,7 +1080,7 @@ def selfcheck():
         assert gold["childTokens"]["input"] == 0, gold["childTokens"]
     print(
         "ok   selfcheck: redaction, determinism, corrupt tolerance, lifecycle,"
-        " dedupe, orientation, rust mirrors, model slice, childTokens, v4 golden"
+        " dedupe, orientation, rust mirrors, model slice, childTokens, v4 golden, signals"
     )
     return 0
 

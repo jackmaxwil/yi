@@ -1190,10 +1190,18 @@ fn row(text: &str, state: TodoStateName, children: &[&str]) -> Result<SetRow, Bo
 }
 
 #[test]
-fn set_opens_a_plan_then_replaces_the_whole_cut_keeping_what_survives() -> TestResult {
+fn set_needs_a_goal_to_open_a_plan_then_replaces_the_whole_cut() -> TestResult {
     let (_temp, _store, _stub, engine) = harness(4)?;
-    let first = engine.apply(owner(Op::Set {
+    let refused = engine.apply(owner(Op::Set {
         goal: None,
+        rows: vec![row("mapper", TodoStateName::Pending, &[])?],
+    }));
+    assert!(
+        matches!(refused, Err(PlanOpError::NoPlan)),
+        "a goal-less set with no plan open is the todo tool's job, not a plan named checklist"
+    );
+    let first = engine.apply(owner(Op::Set {
+        goal: Some(GoalText::new("checklist")?),
         rows: vec![
             row("mapper", TodoStateName::Done, &[])?,
             row("rebase", TodoStateName::Running, &["remap", "prompt"])?,

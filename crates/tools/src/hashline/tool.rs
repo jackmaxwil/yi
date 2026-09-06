@@ -60,7 +60,7 @@ impl Tool for HashlineReadTool {
     }
 
     fn description(&self) -> &str {
-        "Read a file (tagged [path#TAG] header, LINE:TEXT rows that anchor edits), a directory (listing plus skeletons), or a glob (every match). find=\"text\" shows the block around the first match plus its references. A capped read ends with the file's skeleton. offset/limit or ranges ([[10,40],[90,120]]) pick windows."
+        "Read a file (tagged [path#TAG] header, LINE:TEXT rows that anchor edits), a directory (listing plus skeletons), or a glob (every match). find=\"text\" shows the block around the first match plus its references. A capped read ends with the file's skeleton. offset/limit or ranges ([[10,40],[90,120]]) pick windows. Do not re-read a file you just edited: the edit result carries the new anchors, and a failed edit says so. Prefer one read of a large range to many small ones."
     }
 
     fn schema(&self) -> Value {

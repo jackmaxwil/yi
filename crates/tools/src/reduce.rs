@@ -169,7 +169,11 @@ fn cap_lines(text: &str, cap: usize) -> String {
         .min(lines.len().saturating_sub(head));
     let dropped = lines.len().saturating_sub(head).saturating_sub(tail);
     let mut out: Vec<&str> = lines.get(..head).unwrap_or_default().to_vec();
-    let marker = format!("[{dropped} lines omitted]");
+    let marker = format!(
+        "[{dropped} lines omitted: {}-{}]",
+        head.saturating_add(1),
+        head.saturating_add(dropped)
+    );
     out.push(&marker);
     out.extend(
         lines

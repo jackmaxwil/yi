@@ -22,5 +22,6 @@ pub mod record;
 pub mod schedule;
 pub mod subagent;
 pub mod telemetry;
+pub mod todo;
 pub mod url;
 pub mod wire;

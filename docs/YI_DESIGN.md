@@ -208,7 +208,9 @@ background, terminal). No 70-field bag.
 Builtins: `read` (hashline header), `edit` (hashline), `write`, `glob`, `grep`, `bash`,
 `ipython`, `subagent`, `agent_message`, `ask_user`, `get_context` — one layered, clamped
 orientation packet (grid roots, symbol neighborhood, skeletons, change heat, gate commands,
-prior mining issues) behind an honest completeness header.
+prior mining issues) behind an honest completeness header — and `todo` (D137): the session's
+task list at every depth, persisted as `custom{todo}` entries, rendered live to the user, and
+the instrument the loop reads to refuse a turn that ends with an item still open.
 
 The registry is **closed**: one `const` list; adding a tool edits this section in the same
 commit. Tool parameters are typed — never `action: String`, never a synonym-alias table
@@ -280,8 +282,9 @@ Skill mechanics (D30; the surveyed implementation's real path is <1.5k of 21k li
   a `skills.list`/`skills.read` apparatus exists only for remote environments. Saves two
   tool schemas in the preamble.
 - **Catalog budget = P16 `skills_meta`**, default 2 % of the model context window, with the
-  degradation ladder: full lines → shrink descriptions → drop descriptions → omit skills, each
-  step warned. Resolves the 65-bundled-skills vs 8 KB-preamble conflict: the catalog is
+  degradation ladder (D139): full lines → descriptions clipped to 120 then 60 characters →
+  the names past the budget on one `+N more:` line; no skill is ever omitted, and the budget
+  is clamped between 8 and 32 KB. Resolves the 65-bundled-skills vs 8 KB-preamble conflict: the catalog is
   budgeted separately from the §9 preamble assert, bodies are never resident. A budget with a
   carve-out is not a budget — the cap applies to every source equally.
 - **`$name` explicit mention** in user text bypasses matching and injects the body directly;

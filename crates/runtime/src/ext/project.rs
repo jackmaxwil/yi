@@ -20,7 +20,7 @@ pub fn resource_roots(cwd: &Path, home: &Path, kind: &str) -> Vec<PathBuf> {
 }
 
 pub fn is_project_root(root: &Path, cwd: &Path, home: &Path) -> bool {
-    root.starts_with(cwd) && !root.starts_with(home)
+    root.starts_with(cwd) && cwd != home
 }
 
 /// Trust-on-first-use, pinned to the granted content: an edit after the grant reads as
@@ -121,6 +121,7 @@ pub struct ProjectResources {
     home: PathBuf,
     gate: TrustGate,
     budget: yi_context::Bytes,
+    catalog: yi_context::Bytes,
 }
 
 impl ProjectResources {
@@ -131,7 +132,14 @@ impl ProjectResources {
             home,
             gate,
             budget: yi_context::SourceBudgets::default().project_instructions,
+            catalog: yi_context::SourceBudgets::default().skills_meta,
         }
+    }
+
+    #[must_use]
+    pub fn with_context_window(mut self, context_window: u64) -> Self {
+        self.catalog = crate::skills::catalog_budget(context_window);
+        self
     }
 
     pub fn instruction_files(cwd: &Path) -> Vec<PathBuf> {
@@ -155,10 +163,16 @@ impl ProjectResources {
 
     fn instructions(&self, out: &mut Vec<Effect>) {
         let root = git_root(&self.cwd).unwrap_or_else(|| self.cwd.clone());
+        let mut seen = Vec::new();
         for path in Self::instruction_files(&self.cwd) {
             let Ok(content) = std::fs::read_to_string(&path) else {
                 continue;
             };
+            let hash = content_hash(&content);
+            if seen.contains(&hash) {
+                continue;
+            }
+            seen.push(hash);
             let source = display_source(&path, &root);
             let trust = self.gate.trust_of(&root, &source, &content);
             out.push(Effect::AttachExternal {
@@ -171,9 +185,7 @@ impl ProjectResources {
 
     fn catalogs(&self, out: &mut Vec<Effect>) {
         let (global, project) = crate::skills::discover_split(&self.cwd, &self.home);
-        if let Some(catalog) =
-            crate::skills::catalog_text(&global, yi_context::SourceBudgets::default().skills_meta)
-        {
+        if let Some(catalog) = crate::skills::catalog_text(&global, self.catalog) {
             out.push(Effect::AttachFragment {
                 slot: Slot::new(Rank::Catalog, "skills"),
                 text: catalog.text,
@@ -183,9 +195,7 @@ impl ProjectResources {
             return;
         }
         let root = git_root(&self.cwd).unwrap_or_else(|| self.cwd.clone());
-        let Some(catalog) =
-            crate::skills::catalog_text(&project, yi_context::SourceBudgets::default().skills_meta)
-        else {
+        let Some(catalog) = crate::skills::catalog_text(&project, self.catalog) else {
             return;
         };
         let trust = self.gate.trust_of(&root, "skills", &catalog.text);

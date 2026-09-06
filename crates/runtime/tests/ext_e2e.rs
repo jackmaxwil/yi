@@ -28,6 +28,7 @@ fn started(cwd: &Path, home: &Path) -> Host {
         mode: yi_runtime::PermissionMode::Auto,
         user_system: String::new(),
         schema_instruction: None,
+        context_window: 128_000,
     });
     host.start(None, false);
     host
@@ -167,6 +168,7 @@ fn the_slot_table_survives_a_resume() -> TestResult {
         mode: yi_runtime::PermissionMode::Auto,
         user_system: String::new(),
         schema_instruction: None,
+        context_window: 128_000,
     });
     resumed.start(Some(&store), true);
     assert!(
@@ -562,5 +564,27 @@ fn a_repository_that_says_nothing_gets_no_yard() -> TestResult {
     );
     assert!(host.state().yard_is_empty());
     let _ = std::fs::remove_dir_all(&dir);
+    Ok(())
+}
+
+#[test]
+fn identical_instruction_files_ride_the_yard_once() -> TestResult {
+    let dir = temp_dir("agents-dedupe")?;
+    let home = dir.join("home");
+    let project = dir.join("project");
+    std::fs::create_dir_all(&home)?;
+    std::fs::create_dir_all(&project)?;
+    repo(&project)?;
+    std::fs::write(project.join("AGENTS.md"), "Always run just check.\n")?;
+    std::fs::write(project.join("CLAUDE.md"), "Always run just check.\n")?;
+    let host = started(&project, &home);
+    let assembled = host.system_prompt();
+    assert_eq!(
+        assembled.matches("Always run just check.").count(),
+        1,
+        "{assembled}"
+    );
+    assert!(assembled.contains("source=\"AGENTS.md\""), "{assembled}");
+    assert!(!assembled.contains("source=\"CLAUDE.md\""), "{assembled}");
     Ok(())
 }

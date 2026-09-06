@@ -1854,3 +1854,88 @@ fn the_chat_paints_into_a_rectangle_and_stays_inside_it() -> TestResult {
     );
     Ok(())
 }
+
+/// The todo block is the user's window into open work: a headless frame shows the
+/// header and the rows while an item is open, above the composer, without a keypress.
+#[test]
+fn the_hud_shows_open_todos_in_a_headless_frame() -> TestResult {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    let dir = std::env::temp_dir().join(format!("yi-tui-todos-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir)?;
+    let session = Arc::new(faux_session("noted"));
+    let store = Arc::new(std::sync::Mutex::new(
+        yi_runtime::session_store::SessionStore::in_memory(
+            yi_runtime::session_store::SessionMetadata {
+                id: "todos".to_owned(),
+                created_at: 0,
+                parent_session_id: None,
+                name: None,
+            },
+        ),
+    ));
+    session.attach_store(store)?;
+    let todos = yi_runtime::todo::TodoStore::new(session.store_handle(), "main");
+    todos.apply(
+        yi_runtime::todo::Op::Set {
+            list: "## Fix\n- [ ] read the code\n- [ ] write the fix\n  - [ ] parser\n".to_owned(),
+        },
+        None,
+    )?;
+    session.set_todos(todos);
+    let host = Arc::new(SubagentHost::new(SubagentHostOptions {
+        depth: 0,
+        max_depth: 1,
+        max_children: 4,
+        parent_session_dir: dir.clone(),
+        cwd: dir.clone(),
+        home: std::env::temp_dir(),
+        lane_slots: 1,
+        defaults: Arc::new(|| (faux_model(), yi_types::model::Effort::Medium)),
+        factory: Arc::new(|_build| Ok(faux_session("child answer"))),
+        notice: Arc::new(|_notice| {}),
+        events: tokio::sync::broadcast::channel(64).0,
+        parent_messages: Arc::new(Vec::new),
+        report: Arc::new(|_message| {}),
+        attribute: Arc::new(|_usage| {}),
+        store: Arc::new(|| None),
+        plans_dir: dir.join(".yi/plans"),
+    }));
+    let (_ask_tx, ask_rx) = std::sync::mpsc::channel();
+    let script = yi_tui::parse_script("type hi\nkey enter\nwait-idle 10000\nquit\n")?;
+    let code = yi_tui::run_headless(
+        runtime,
+        Arc::clone(&session),
+        host,
+        ask_rx,
+        options(),
+        yi_tui::DriveOptions {
+            script,
+            frames_dir: Some(dir.clone()),
+            record: None,
+            snap: None,
+            deadline_secs: 60,
+            width: 80,
+            height: 24,
+        },
+    );
+    assert_eq!(code, 0, "drive script must run clean");
+    let mut frames: Vec<_> = std::fs::read_dir(&dir)?
+        .filter_map(|entry| entry.ok().map(|e| e.path()))
+        .filter(|path| path.extension().is_some_and(|ext| ext == "txt"))
+        .collect();
+    frames.sort();
+    let last = std::fs::read_to_string(frames.last().ok_or("no frames dumped")?)?;
+    let _ = std::fs::remove_dir_all(&dir);
+    for needle in [
+        "Todos 0/3 · running: read the code",
+        "- [>] read the code",
+        "- [ ] write the fix",
+        "  - [ ] parser",
+    ] {
+        assert!(last.contains(needle), "frame lacks {needle:?}:\n{last}");
+    }
+    Ok(())
+}

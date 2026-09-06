@@ -81,6 +81,7 @@ fn draw_frame<B>(
     run_reflow(app, terminal, app.width.saturating_sub(2), &reflow_theme);
     let goal = port.and_then(|port| port.goal());
     app.plan_progress = port.and_then(|port| port.plan_progress());
+    app.todos = port.and_then(|port| port.todo_list());
     let total = u16::try_from(app.rows).unwrap_or(u16::MAX);
     let layout = layout_chat(app, goal, total);
     let resized = terminal

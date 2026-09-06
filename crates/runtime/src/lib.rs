@@ -25,6 +25,7 @@ pub mod skills;
 pub mod slash;
 pub mod subagent;
 pub mod telemetry;
+pub mod todo;
 pub mod tools;
 pub mod wall;
 pub mod wiring;

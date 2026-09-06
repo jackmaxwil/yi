@@ -1,6 +1,8 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use crate::subagent::ChildStatus;
+
 use serde_json::{Map, Value};
 use yi_types::model::Model;
 
@@ -35,6 +37,7 @@ fn child_factory(wiring: RuntimeWiring) -> Arc<ChildFactory> {
                 .map_or(yi_permission::PermissionMode::Auto, |broker| broker.mode()),
             user_system: String::new(),
             schema_instruction: None,
+            context_window: child.model().context_window,
         }));
         attach_runtime(
             &mut child,
@@ -304,20 +307,48 @@ fn wire_plan_engine(
         Arc::clone(&engine),
         actor,
     )));
-    if wiring.depth == 0 {
+    let todo_actor = wiring
+        .parent_link
+        .as_ref()
+        .map_or_else(|| "main".to_owned(), |link| link.child_name.clone());
+    let todos = crate::todo::TodoStore::new(session.store_handle(), todo_actor);
+    tools.push(Arc::new(crate::todo::tool::TodoTool::new(Arc::clone(
+        &todos,
+    ))));
+    session.set_todos(Arc::clone(&todos));
+    let inner = (wiring.depth == 0).then(|| {
         crate::plan::probe::spawn(Arc::new(crate::plan::probe::ProbeLadder::new(
             engine,
             plans_dir.to_path_buf(),
             probe_deliver,
         )));
-        crate::plan::loop_coupling::install(
+        crate::plan::loop_coupling::coupling(
             session,
             crate::plan::loop_coupling::CouplingOptions {
                 plans_dir: plans_dir.to_path_buf(),
-                mutating_tools: crate::plan::loop_coupling::mutating_tool_names(tools),
             },
-        );
-    }
+        )
+    });
+    let children = Arc::clone(host);
+    crate::todo::coupling::install(
+        session,
+        todos,
+        crate::todo::coupling::Options {
+            eager: crate::todo::coupling::Eager::Prelude,
+            children_running: Arc::new(move || {
+                children
+                    .children
+                    .lock()
+                    .map(|children| {
+                        children
+                            .values()
+                            .any(|child| child.status == ChildStatus::Running)
+                    })
+                    .unwrap_or(false)
+            }),
+            inner,
+        },
+    );
 }
 
 fn wire_advisor(session: &AgentSession, wiring: &RuntimeWiring) {

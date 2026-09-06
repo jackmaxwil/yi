@@ -130,13 +130,34 @@ impl Reviewer {
 /// Registered only when the role names a reviewer: a denial that names a
 /// request the model cannot answer is worse than no reviewer at all.
 pub struct AskUserTool {
-    broker: Arc<crate::permission::PermissionBroker>,
+    broker: Option<Arc<crate::permission::PermissionBroker>>,
 }
 
 impl AskUserTool {
-    pub fn new(broker: Arc<crate::permission::PermissionBroker>) -> Self {
+    pub fn new(broker: Option<Arc<crate::permission::PermissionBroker>>) -> Self {
         Self { broker }
     }
+}
+
+fn question_text(input: &Map<String, Value>) -> Option<String> {
+    let question = input.get("question").and_then(Value::as_str)?.trim();
+    if question.is_empty() {
+        return None;
+    }
+    let mut text = format!("Question for the user: {question}");
+    let options: Vec<&str> = input
+        .get("options")
+        .and_then(Value::as_array)
+        .map(|items| items.iter().filter_map(Value::as_str).collect())
+        .unwrap_or_default();
+    for (index, option) in options.iter().enumerate() {
+        text.push_str(&format!("\n  {}. {option}", index.saturating_add(1)));
+    }
+    if let Some(default) = input.get("default").and_then(Value::as_str) {
+        text.push_str(&format!("\nDefault if unanswered: {default}"));
+    }
+    text.push_str("\nThe turn ends here; the user's next message is the answer.");
+    Some(text)
 }
 
 impl yi_tools::Tool for AskUserTool {
@@ -145,19 +166,21 @@ impl yi_tools::Tool for AskUserTool {
     }
 
     fn description(&self) -> &str {
-        "Put one auto-reviewer denial to the user. Pass the request number the denial named. The user sees the original call and answers once; a denial you do not escalate stays denied, and re-issuing the same call never changes it."
+        "Ask the user something only they can decide, and end the turn on it. Pass `question` with two to four `options` and a `default` when one exists; never write a multiple-choice question as prose. Block the todo it waits on first. With auto-review on, `request` (the number a denial quoted) puts that denial to the user instead; a denial you do not escalate stays denied."
     }
 
     fn schema(&self) -> Value {
         json!({
             "type": "object",
             "properties": {
+                "question": {"type": "string", "description": "What only the user can decide, in one sentence"},
+                "options": {"type": "array", "items": {"type": "string"}, "description": "Two to four choices, the recommended one first"},
+                "default": {"type": "string", "description": "The option you proceed on if the user does not answer"},
                 "request": {
                     "type": "integer",
-                    "description": "The request number quoted in the denial."
+                    "description": "The request number quoted in an auto-review denial."
                 }
-            },
-            "required": ["request"]
+            }
         })
     }
 
@@ -166,9 +189,18 @@ impl yi_tools::Tool for AskUserTool {
     }
 
     fn validate(&self, input: &Map<String, Value>) -> Result<(), String> {
-        match input.get("request").and_then(Value::as_u64) {
-            Some(_) => Ok(()),
-            None => Err("ask_user needs `request`, the number the denial quoted".to_owned()),
+        match (
+            input.get("request").and_then(Value::as_u64),
+            question_text(input),
+        ) {
+            (Some(_), _) if self.broker.is_some() => Ok(()),
+            (Some(_), _) => {
+                Err("ask_user `request` needs auto-review on; ask a `question` instead".to_owned())
+            }
+            (None, Some(_)) => Ok(()),
+            (None, None) => Err(
+                "ask_user needs a `question` (or `request`, the number a denial quoted)".to_owned(),
+            ),
         }
     }
 
@@ -177,10 +209,19 @@ impl yi_tools::Tool for AskUserTool {
         input: Map<String, Value>,
         context: &yi_tools::ToolContext,
     ) -> yi_tools::ToolOutput {
-        let Some(request) = input.get("request").and_then(Value::as_u64) else {
-            return yi_tools::text_output("ask_user needs `request`, the number the denial quoted");
+        if let (Some(request), Some(broker)) =
+            (input.get("request").and_then(Value::as_u64), &self.broker)
+        {
+            return yi_tools::text_output(broker.resolve_request(request, &context.call_id));
+        }
+        let Some(text) = question_text(&input) else {
+            return yi_tools::error_output(
+                "ask_user needs a `question` (or `request`, the number a denial quoted)",
+            );
         };
-        yi_tools::text_output(self.broker.resolve_request(request, &context.call_id))
+        let mut output = yi_tools::text_output(text);
+        output.result.terminate = Some(true);
+        output
     }
 }
 
@@ -221,11 +262,12 @@ pub fn wire_role(
     tools: &mut Vec<Arc<dyn yi_tools::Tool>>,
 ) {
     let (Some(model), Some(broker)) = (role, broker) else {
+        tools.push(Arc::new(AskUserTool::new(None)));
         return;
     };
     broker.set_reviewer(Arc::new(Reviewer::new(Arc::clone(provider), model)));
     // P3: tools freeze after SessionStart, so registration is here or nowhere.
-    tools.push(Arc::new(AskUserTool::new(Arc::clone(&broker))));
+    tools.push(Arc::new(AskUserTool::new(Some(Arc::clone(&broker)))));
     if let Some(host) = session.extensions()
         && let Ok(mut host) = host.lock()
     {
