@@ -54,9 +54,10 @@ jobs:
         with:
           fetch-depth: 0
       - run: rustup show
+      # `test` is the key postmerge saves on main; a key of its own stays cold (see pr.yml).
       - uses: Swatinem/rust-cache@v2
         with:
-          shared-key: live
+          shared-key: test
           cache-on-failure: true
       - run: cargo build -p yi-cli
       - name: three flash runs, appended for variance
