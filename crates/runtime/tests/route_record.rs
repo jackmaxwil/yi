@@ -34,6 +34,7 @@ fn host_for(cwd: &std::path::Path) -> Host {
         mode: yi_runtime::PermissionMode::Auto,
         user_system: String::new(),
         schema_instruction: None,
+        context_window: 128_000,
     })
 }
 

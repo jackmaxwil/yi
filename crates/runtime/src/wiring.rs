@@ -37,6 +37,7 @@ fn child_factory(wiring: RuntimeWiring) -> Arc<ChildFactory> {
                 .map_or(yi_permission::PermissionMode::Auto, |broker| broker.mode()),
             user_system: String::new(),
             schema_instruction: None,
+            context_window: child.model().context_window,
         }));
         attach_runtime(
             &mut child,

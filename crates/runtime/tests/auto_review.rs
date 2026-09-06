@@ -467,6 +467,7 @@ async fn the_role_is_the_only_switch_for_the_reviewer_the_tool_and_the_sentence(
             mode: PermissionMode::Auto,
             user_system: String::new(),
             schema_instruction: None,
+            context_window: 128_000,
         }));
         let mut tools: Vec<Arc<dyn yi_tools::Tool>> = Vec::new();
         yi_runtime::auto_review::wire_role(

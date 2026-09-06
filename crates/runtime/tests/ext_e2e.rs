@@ -28,6 +28,7 @@ fn started(cwd: &Path, home: &Path) -> Host {
         mode: yi_runtime::PermissionMode::Auto,
         user_system: String::new(),
         schema_instruction: None,
+        context_window: 128_000,
     });
     host.start(None, false);
     host
@@ -167,6 +168,7 @@ fn the_slot_table_survives_a_resume() -> TestResult {
         mode: yi_runtime::PermissionMode::Auto,
         user_system: String::new(),
         schema_instruction: None,
+        context_window: 128_000,
     });
     resumed.start(Some(&store), true);
     assert!(

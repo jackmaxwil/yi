@@ -471,7 +471,11 @@ fn build_session(
         .with_sandbox(yi_runtime::workspace_sandbox(&work, &home, &session_dir)),
     );
     let tools_home = home.clone();
-    session.install_extensions(session_extensions(args, &work));
+    session.install_extensions(shells::session_extensions(
+        args,
+        &work,
+        session.model().context_window,
+    ));
     let provider = std::sync::Arc::clone(session_provider(&session));
     let freeform_grammar = config()
         .edit
@@ -528,22 +532,6 @@ fn build_session(
         session.heartbeat_hook(),
     ));
     Ok((session, host))
-}
-
-fn session_extensions(args: &Args, work: &std::path::Path) -> yi_runtime::ExtensionHost {
-    yi_runtime::ext::install(yi_runtime::ExtOptions {
-        cwd: work.to_path_buf(),
-        home: std::env::var_os("HOME")
-            .map(std::path::PathBuf::from)
-            .unwrap_or_default(),
-        mode: args.mode,
-        user_system: args.system.clone(),
-        schema_instruction: args
-            .schema
-            .as_deref()
-            .and_then(|spec| yi_runtime::schema::Schema::load(spec).ok())
-            .map(|schema| schema.instruction()),
-    })
 }
 
 /// `plans.dir`, relative to the workspace root unless absolute. Unset leaves

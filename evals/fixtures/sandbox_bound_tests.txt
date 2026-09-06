@@ -1,0 +1,4 @@
+yi-acp daemon::tests::*  binds a unix socket; the sandbox denies bind
+yi-tools::sandbox *  invokes macOS Seatbelt inside a Seatbelt sandbox
+yi-console::drive *  spawns the daemon and binds its socket
+yi-runtime::skills_e2e bundled_python_skills_work_through_the_kernel  the kernel venv reaches no network inside the sandbox

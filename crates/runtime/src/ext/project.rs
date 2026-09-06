@@ -121,6 +121,7 @@ pub struct ProjectResources {
     home: PathBuf,
     gate: TrustGate,
     budget: yi_context::Bytes,
+    catalog: yi_context::Bytes,
 }
 
 impl ProjectResources {
@@ -131,7 +132,14 @@ impl ProjectResources {
             home,
             gate,
             budget: yi_context::SourceBudgets::default().project_instructions,
+            catalog: yi_context::SourceBudgets::default().skills_meta,
         }
+    }
+
+    #[must_use]
+    pub fn with_context_window(mut self, context_window: u64) -> Self {
+        self.catalog = crate::skills::catalog_budget(context_window);
+        self
     }
 
     pub fn instruction_files(cwd: &Path) -> Vec<PathBuf> {
@@ -177,9 +185,7 @@ impl ProjectResources {
 
     fn catalogs(&self, out: &mut Vec<Effect>) {
         let (global, project) = crate::skills::discover_split(&self.cwd, &self.home);
-        if let Some(catalog) =
-            crate::skills::catalog_text(&global, yi_context::SourceBudgets::default().skills_meta)
-        {
+        if let Some(catalog) = crate::skills::catalog_text(&global, self.catalog) {
             out.push(Effect::AttachFragment {
                 slot: Slot::new(Rank::Catalog, "skills"),
                 text: catalog.text,
@@ -189,9 +195,7 @@ impl ProjectResources {
             return;
         }
         let root = git_root(&self.cwd).unwrap_or_else(|| self.cwd.clone());
-        let Some(catalog) =
-            crate::skills::catalog_text(&project, yi_context::SourceBudgets::default().skills_meta)
-        else {
+        let Some(catalog) = crate::skills::catalog_text(&project, self.catalog) else {
             return;
         };
         let trust = self.gate.trust_of(&root, "skills", &catalog.text);

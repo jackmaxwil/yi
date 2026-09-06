@@ -402,6 +402,7 @@ fn frozen_block(cwd: &std::path::Path, home: &std::path::Path) -> Result<String,
         mode: PermissionMode::Ask,
         user_system: String::new(),
         schema_instruction: None,
+        context_window: 128_000,
     });
     host.start(None, false);
     Ok(host
