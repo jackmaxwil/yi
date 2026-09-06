@@ -146,4 +146,5 @@ jobs:
           python3 scripts/live_ledger.py judge live-out/run.json live-baseline.json > live-verdict.json || true
           python3 scripts/live_report.py live-out/run.json live-verdict.json live-baseline.json > live-body.md
           cat live-body.md
-          python3 scripts/forgejo_pr_comment.py live-body.md
+          # The report is above either way; a comment that will not post is said, not waited on.
+          python3 scripts/forgejo_pr_comment.py live-body.md || echo "live: comment not posted"
