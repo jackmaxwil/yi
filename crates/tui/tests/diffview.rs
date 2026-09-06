@@ -213,10 +213,16 @@ fn an_edit_cell_renders_its_diff_in_normal_mode() -> TestResult {
             .any(|row| row.contains("let total = a - b;")),
         "{rendered:?}"
     );
-    let digest = rendered
-        .iter()
-        .find(|row| row.contains("first change at line 2"))
-        .ok_or("no digest row")?;
-    assert!(digest.ends_with("+1 -1"), "{digest}");
+    assert!(
+        rendered
+            .iter()
+            .any(|row| row.contains("first change at line 2")),
+        "{rendered:?}"
+    );
+    let head = rendered.first().ok_or("no head row")?;
+    assert!(
+        head.ends_with("+1  −1"),
+        "the counts ride the head row: {head}"
+    );
     Ok(())
 }

@@ -189,8 +189,8 @@ fn a_bash_cell_shows_the_command_and_its_exit() -> TestResult {
     let joined = rendered.join("\n");
     assert!(joined.contains("$ cargo test --workspace"), "{joined}");
     assert!(!joined.contains("bash cargo"), "{joined}");
-    assert!(joined.contains("· exit 1"), "{joined}");
-    assert!(joined.contains("· 1s"), "{joined}");
+    assert!(joined.contains("⏎ 1"), "{joined}");
+    assert!(joined.contains("1s"), "{joined}");
     let flag = lines
         .iter()
         .flat_map(|line| line.spans.iter())
@@ -417,11 +417,12 @@ fn a_grep_hit_is_left_plain() -> TestResult {
     Ok(())
 }
 
+/// The card paints a ground under body rows; plain means no colour or weight of its own.
 fn plain(spans: &[(String, Style)], text: &str) -> bool {
     let base = Style::default().fg(theme().text);
-    spans
-        .iter()
-        .any(|(content, style)| content == text && *style == base)
+    spans.iter().any(|(content, style)| {
+        content == text && style.fg == base.fg && style.add_modifier.is_empty()
+    })
 }
 
 /// A read with `ranges` prints two windows and says what it skipped between

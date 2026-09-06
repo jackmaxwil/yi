@@ -98,6 +98,9 @@ pub struct App {
     quit_at: Option<Instant>,
     /// When `_yi/shutdown` went out; the reply or two seconds ends the console.
     shutdown_at: Option<Instant>,
+    /// Auto-opened notebook panes by their last kernel activity; an idle one closes itself.
+    pub(crate) auto_notebooks: HashMap<PaneId, Instant>,
+    pub window_title: String,
 }
 
 fn frame(id: Option<u64>, method: &str, params: Value) -> Value {
@@ -135,6 +138,8 @@ impl App {
             replayed: std::collections::HashSet::new(),
             quit_at: None,
             shutdown_at: None,
+            auto_notebooks: HashMap::new(),
+            window_title: String::new(),
         }
     }
 
@@ -226,6 +231,7 @@ impl App {
             self.send_request(outbound, RequestKind::ListDaemon, "session/list", json!({}));
         }
         self.tick_animations(now);
+        self.close_idle_notebooks(now);
         self.tick_notes(now);
         self.check_editors(now);
         self.pump_chats(outbound);
@@ -661,7 +667,7 @@ impl App {
         }
         self.absorb_edit(outbound, &id, &update.update);
         self.absorb_kernel(&id, &update.update);
-        for pane in self.state.panes.values_mut() {
+        for (pane_id, pane) in &mut self.state.panes {
             if pane.session() != Some(&id) {
                 continue;
             }
@@ -669,6 +675,9 @@ impl App {
                 && apply_notebook(cells, &update.update)
             {
                 pane.scroll_from_bottom = 0;
+                if let Some(seen) = self.auto_notebooks.get_mut(pane_id) {
+                    *seen = Instant::now();
+                }
             }
         }
     }

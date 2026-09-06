@@ -243,6 +243,13 @@ fn need<T: FromArg>(
     opt(args, op, field)?.ok_or(ArgError::Missing { op, field })
 }
 
+fn label(args: &Map<String, Value>, op: OpKind) -> Result<TodoLabel, ArgError> {
+    match opt(args, op, "label")? {
+        Some(label) => Ok(label),
+        None => need(args, op, "todo").map_err(|_| ArgError::Missing { op, field: "label" }),
+    }
+}
+
 fn todo_specs(args: &Map<String, Value>, op: OpKind) -> Result<Vec<TodoSpec>, ArgError> {
     let field = "todos";
     let raw: &Vec<Value> = args
@@ -284,15 +291,15 @@ fn parse_op(args: &Map<String, Value>) -> Result<Op, ArgError> {
             todos: todo_specs(args, kind)?,
         },
         OpKind::Drop => Op::Drop {
-            label: need(args, kind, "label")?,
+            label: label(args, kind)?,
         },
         OpKind::Block => Op::Block {
-            label: need(args, kind, "label")?,
+            label: label(args, kind)?,
             on: need(args, kind, "on")?,
             note: need(args, kind, "note")?,
         },
         OpKind::Unblock => Op::Unblock {
-            label: need(args, kind, "label")?,
+            label: label(args, kind)?,
         },
         OpKind::Reorder => Op::Reorder {
             labels: need(args, kind, "labels")?,
@@ -302,22 +309,22 @@ fn parse_op(args: &Map<String, Value>) -> Result<Op, ArgError> {
             after: need(args, kind, "after")?,
         },
         OpKind::Start => Op::Start {
-            label: need(args, kind, "label")?,
+            label: label(args, kind)?,
         },
         OpKind::Done => Op::Done {
-            label: need(args, kind, "label")?,
+            label: label(args, kind)?,
             output: opt(args, kind, "output")?,
         },
         OpKind::Fail => Op::Fail {
-            label: need(args, kind, "label")?,
+            label: label(args, kind)?,
             cause: need(args, kind, "cause")?,
         },
         OpKind::Retry => Op::Retry {
-            label: need(args, kind, "label")?,
+            label: label(args, kind)?,
             delegation: opt::<Delegation>(args, kind, "delegation")?.map(Box::new),
         },
         OpKind::Decompose => Op::Decompose {
-            label: need(args, kind, "label")?,
+            label: label(args, kind)?,
             todos: todo_specs(args, kind)?,
         },
         OpKind::Supersede => Op::Supersede {
@@ -461,9 +468,14 @@ fn body(outcome: &Outcome, full: bool, out: &mut Vec<String>) {
     }
 }
 
-fn render(outcome: &Outcome, full: bool) -> String {
+fn render(outcome: &Outcome, full: bool, stepped: Option<&TodoLabel>) -> String {
     let mut out = Vec::new();
     header(&outcome.plan, &mut out);
+    if let Some(todo) =
+        stepped.and_then(|label| outcome.plan.todos.iter().find(|todo| todo.label == *label))
+    {
+        out.push(todo_line(todo));
+    }
     if full {
         out.push(format!("goal: {}", outcome.plan.goal));
         out.push(format!(
@@ -511,8 +523,9 @@ impl PlanTool {
     fn run(&self, args: &Map<String, Value>) -> Result<String, PlanToolError> {
         let request = request(&self.actor, args)?;
         let full = matches!(request.op, Op::View { full: true });
+        let stepped = request.op.label().cloned();
         let outcome = self.engine.apply(request)?;
-        Ok(render(&outcome, full))
+        Ok(render(&outcome, full, stepped.as_ref()))
     }
 }
 
@@ -688,14 +701,14 @@ mod tests {
             reaped: Vec::new(),
             subplan: None,
         };
-        let windowed = render(&outcome, false);
+        let windowed = render(&outcome, false, None);
         assert!(
             windowed.contains("3 todos: 1 pending, 1 running, 1 done"),
             "{windowed}"
         );
         assert!(windowed.contains("- running build by kid"), "{windowed}");
         assert!(windowed.contains("2 more todos not shown"), "{windowed}");
-        let full = render(&outcome, true);
+        let full = render(&outcome, true, None);
         assert!(full.contains("- pending ship"), "{full}");
         assert!(!full.contains("not shown"), "{full}");
         Ok(())

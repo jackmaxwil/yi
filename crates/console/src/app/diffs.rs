@@ -1,3 +1,5 @@
+use std::time::{Duration, Instant};
+
 use ratatui::layout::Direction;
 use serde_json::{Value, json};
 use yi_types::acp::AcpSessionUpdate;
@@ -8,6 +10,8 @@ use crate::layout::PaneId;
 use crate::model::{FileDiff, PaneContent, SessionId};
 
 use super::{App, RequestKind};
+
+pub(crate) const NOTEBOOK_IDLE: Duration = Duration::from_secs(20);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum SideKind {
@@ -141,15 +145,64 @@ impl App {
         let Some(home) = home else {
             return;
         };
-        self.open_side(home, Some(session.clone()), kind);
+        let opened = self.open_side(home, Some(session.clone()), kind);
+        if let (SideKind::Notebook, Some(opened)) = (kind, opened) {
+            self.auto_notebooks.insert(opened, Instant::now());
+        }
         self.state.side_opened.insert(session.clone());
     }
 
-    fn open_side(&mut self, home: PaneId, session: Option<SessionId>, kind: SideKind) {
+    pub(super) fn close_idle_notebooks(&mut self, now: Instant) {
+        let focused = self.state.focused_pane_id();
+        let due: Vec<PaneId> = self
+            .auto_notebooks
+            .iter()
+            .filter(|(_, seen)| now.saturating_duration_since(**seen) >= NOTEBOOK_IDLE)
+            .map(|(id, _)| *id)
+            .collect();
+        for id in due {
+            let session = match self.state.panes.get(&id).map(|pane| &pane.content) {
+                Some(PaneContent::Notebook { session, cells, .. }) => {
+                    if cells.iter().any(|cell| cell.running) {
+                        continue;
+                    }
+                    session.clone()
+                }
+                _ => None,
+            };
+            self.auto_notebooks.remove(&id);
+            if Some(id) == focused {
+                continue;
+            }
+            let on_tab = self
+                .state
+                .tab()
+                .is_some_and(|tab| tab.layout.pane_ids().contains(&id));
+            if !on_tab {
+                continue;
+            }
+            if let Some(tab) = self.state.tab_mut() {
+                tab.layout.focus_pane(id);
+            }
+            self.state.close_focused_pane();
+            if let Some(session) = session {
+                self.state.side_opened.remove(&session);
+            }
+            self.dirty = true;
+        }
+    }
+
+    fn open_side(
+        &mut self,
+        home: PaneId,
+        session: Option<SessionId>,
+        kind: SideKind,
+    ) -> Option<PaneId> {
         if let Some(tab) = self.state.tab_mut() {
             tab.layout.focus_pane(home);
         }
         self.split_with_anim(Direction::Horizontal);
+        let opened = self.state.focused_pane_id().filter(|id| *id != home);
         if let Some(pane) = self.state.focused_pane_mut() {
             pane.content = match (kind, session) {
                 (SideKind::Diff, Some(session)) => PaneContent::SessionDiff { session },
@@ -165,6 +218,7 @@ impl App {
             tab.layout.focus_pane(home);
         }
         self.dirty = true;
+        opened
     }
 
     pub(super) fn toggle_side(&mut self, outbound: &Outbound, kind: SideKind) {
@@ -197,5 +251,75 @@ impl App {
         if let (Some(side), Some(tab)) = (side, self.state.tab_mut()) {
             tab.layout.focus_pane(side);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::NbCell;
+
+    fn app_with_session() -> (App, SessionId) {
+        let theme = yi_tui::colors::Theme::new(yi_tui::colors::ColorTier::TrueColor, true);
+        let mut app = App::new("/repo".to_owned(), theme);
+        let session = SessionId("s-alpha".to_owned());
+        let home = app.state.focused_pane_id().expect("a pane");
+        if let Some(pane) = app.state.panes.get_mut(&home) {
+            pane.content = PaneContent::Session {
+                session: Some(session.clone()),
+                chat: None,
+            };
+        }
+        (app, session)
+    }
+
+    #[test]
+    fn an_idle_auto_notebook_closes_and_the_next_cell_reopens_it() {
+        let (mut app, session) = app_with_session();
+        let home = app.state.focused_pane_id().expect("home");
+        app.maybe_open_side(&session, SideKind::Notebook);
+        assert_eq!(app.state.panes.len(), 2, "opened beside the chat");
+        let opened = *app.auto_notebooks.keys().next().expect("tracked");
+        let later = Instant::now() + NOTEBOOK_IDLE;
+        if let Some(PaneContent::Notebook { cells, .. }) = app
+            .state
+            .panes
+            .get_mut(&opened)
+            .map(|pane| &mut pane.content)
+        {
+            cells.push(NbCell {
+                running: true,
+                ..NbCell::default()
+            });
+        }
+        app.close_idle_notebooks(later);
+        assert_eq!(app.state.panes.len(), 2, "a running cell holds it open");
+        if let Some(PaneContent::Notebook { cells, .. }) = app
+            .state
+            .panes
+            .get_mut(&opened)
+            .map(|pane| &mut pane.content)
+        {
+            cells.clear();
+        }
+        app.close_idle_notebooks(later);
+        assert_eq!(app.state.panes.len(), 1, "closed once idle");
+        assert_eq!(app.state.focused_pane_id(), Some(home), "focus back home");
+        assert!(app.auto_notebooks.is_empty());
+        app.maybe_open_side(&session, SideKind::Notebook);
+        assert_eq!(app.state.panes.len(), 2, "the next cell opens it again");
+    }
+
+    #[test]
+    fn a_focused_auto_notebook_becomes_the_users() {
+        let (mut app, session) = app_with_session();
+        app.maybe_open_side(&session, SideKind::Notebook);
+        let opened = *app.auto_notebooks.keys().next().expect("tracked");
+        if let Some(tab) = app.state.tab_mut() {
+            tab.layout.focus_pane(opened);
+        }
+        app.close_idle_notebooks(Instant::now() + NOTEBOOK_IDLE);
+        assert_eq!(app.state.panes.len(), 2, "stays open");
+        assert!(app.auto_notebooks.is_empty(), "no longer tracked");
     }
 }

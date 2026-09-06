@@ -139,9 +139,7 @@ fn live_lines(
             .live_markdown
             .get(app.live_cut..app.pacing.prose.shown())
             .unwrap_or_default();
-        let painted = crate::transcript::paint_slice(app, tail).0;
-        let rendered = crate::cell::gutter(painted, app.live_cut == 0, theme);
-        live_lines.extend(live_tail(rendered, app.rows));
+        live_lines.extend(live_tail(app.prose_block(tail).0, app.rows));
     }
     // The run is held back from scrollback until it closes, so the live region
     // is the only place it can be seen while it is still growing.
