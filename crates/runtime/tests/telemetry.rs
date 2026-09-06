@@ -139,7 +139,7 @@ fn a_tool_end_event_becomes_a_tool_span_with_the_loops_duration() -> TestResult 
         tool_name: "bash".to_owned(),
         result: ToolResult {
             content: Vec::new(),
-            details: serde_json::json!({"durationMs": 7}),
+            details: serde_json::json!({"durationMs": 7, "errorKind": "denied"}),
             usage: None,
             added_tool_names: None,
             terminate: None,
@@ -153,7 +153,45 @@ fn a_tool_end_event_becomes_a_tool_span_with_the_loops_duration() -> TestResult 
     assert_eq!(spans[0].ok, Some(true));
     assert!(spans[0].class.is_none());
     assert_eq!(spans[1].ok, Some(false));
-    assert_eq!(spans[1].class.as_deref(), Some("tool"));
+    assert_eq!(
+        spans[1].class.as_deref(),
+        Some("tool:denied"),
+        "the loop's kind is the class"
+    );
     let _ = std::fs::remove_dir_all(&root);
     Ok(())
+}
+
+/// The provider's error text names its transport class; the vocabulary is closed and printable.
+#[test]
+fn error_classes_render_a_closed_vocabulary() {
+    use yi_types::telemetry::ErrorClass;
+    assert_eq!(
+        ErrorClass::from_provider_text("HTTP 503: overloaded").to_string(),
+        "transport:http_503"
+    );
+    assert_eq!(
+        ErrorClass::from_provider_text("request timed out after 60s").to_string(),
+        "transport:timeout"
+    );
+    assert_eq!(
+        ErrorClass::from_provider_text("invalid proxy x").to_string(),
+        "transport:proxy"
+    );
+    assert_eq!(
+        ErrorClass::from_provider_text("model went away").to_string(),
+        "provider:error"
+    );
+    assert_eq!(
+        ErrorClass::Tool("denied".to_owned()).to_string(),
+        "tool:denied"
+    );
+    assert_eq!(
+        ErrorClass::RefusalUnknownModel.to_string(),
+        "refusal:unknown_model"
+    );
+    assert_eq!(
+        ErrorClass::Invariant("lanes".to_owned()).to_string(),
+        "invariant:lanes"
+    );
 }
