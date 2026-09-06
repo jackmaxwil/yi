@@ -116,5 +116,6 @@ when it changes rather than editing them by hand.
 - [D136](adr/d136.md) - a tool call is a card, and the outcome is read from its chrome
 - [D137](adr/d137.md) - todos are a session tool and plans are a delegation ledger
 - [D138](adr/d138.md) - the prompt is comprehensive and its ceiling is the ratchet
+- [D139](adr/d139.md) - the skills catalog is a ladder and a skill answers to its name
 
 D36-D51, D72, D73 and D74 have no ADR yet; ARCHITECTURE.md is the record for those rows.

@@ -57,24 +57,77 @@ pub fn skills_catalog(cwd: &Path, home: &Path, budget: Bytes) -> Option<Truncate
     catalog_text(&discover(cwd, home), budget)
 }
 
-pub fn catalog_text(skills: &[Skill], budget: Bytes) -> Option<Truncated> {
-    if skills.is_empty() {
-        return None;
+pub const CATALOG_FLOOR: Bytes = Bytes(8_192);
+pub const CATALOG_CEILING: Bytes = Bytes(32_768);
+const DESCRIPTION_CLIPS: [usize; 2] = [120, 60];
+
+pub fn catalog_budget(context_window: u64) -> Bytes {
+    let bytes = usize::try_from(context_window.saturating_mul(4) / 50).unwrap_or(usize::MAX);
+    Bytes(bytes.clamp(CATALOG_FLOOR.0, CATALOG_CEILING.0))
+}
+
+fn clip(text: &str, limit: usize) -> String {
+    if text.chars().count() <= limit {
+        return text.to_owned();
     }
+    let mut out: String = text.chars().take(limit.saturating_sub(1)).collect();
+    out.push('…');
+    out
+}
+
+fn render_catalog(skills: &[Skill], described: usize, limit: Option<usize>) -> String {
     let mut body = String::from(
-        "<skills>\nSkills you can follow. Read the file with `read` before acting on one.\n",
+        "<skills>\nSkills you can follow. Read the file with `read` before acting on one; `$name` in a message asks for one by name.\n",
     );
-    for skill in skills {
+    for skill in skills.iter().take(described) {
         body.push_str("- ");
         body.push_str(&skill.name);
         body.push_str(": ");
-        body.push_str(&skill.description);
+        body.push_str(&limit.map_or_else(
+            || skill.description.clone(),
+            |limit| clip(&skill.description, limit),
+        ));
         body.push_str(" (");
         body.push_str(&skill.path.display().to_string());
         body.push_str(")\n");
     }
+    let rest: Vec<&str> = skills
+        .iter()
+        .skip(described)
+        .map(|skill| skill.name.as_str())
+        .collect();
+    if !rest.is_empty() {
+        body.push_str(&format!("+{} more: {}\n", rest.len(), rest.join(", ")));
+    }
     body.push_str("</skills>");
-    Some(fit(&body, budget))
+    body
+}
+
+pub fn catalog_text(skills: &[Skill], budget: Bytes) -> Option<Truncated> {
+    if skills.is_empty() {
+        return None;
+    }
+    for limit in std::iter::once(None).chain(DESCRIPTION_CLIPS.iter().copied().map(Some)) {
+        let body = render_catalog(skills, skills.len(), limit);
+        if body.len() <= budget.0 {
+            return Some(Truncated {
+                text: body,
+                truncated: false,
+            });
+        }
+    }
+    let mut described = skills.len();
+    while described > 0 {
+        described = described.saturating_sub(1);
+        let body = render_catalog(skills, described, Some(60));
+        if body.len() <= budget.0 {
+            return Some(Truncated {
+                text: body,
+                truncated: true,
+            });
+        }
+    }
+    Some(fit(&render_catalog(skills, 0, Some(60)), budget))
 }
 
 fn scan(root: &Path) -> Vec<Skill> {

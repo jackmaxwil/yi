@@ -115,15 +115,27 @@ fn skill_rules(cwd: &Path, home: &Path) -> Vec<Result<Option<RuleDoc>, String>> 
 
 /// Discovery already parsed the frontmatter, so an armed skill costs no second read.
 fn skill_as_rule(skill: &crate::skills::Skill) -> Result<Option<RuleDoc>, String> {
-    if !skill.frontmatter.contains_key("trigger") {
-        return Ok(None);
-    }
-    let mut rule = fields_to_rule(
-        &skill.path,
-        &skill.frontmatter,
-        &format!("skill://{}", skill.name),
-    )?;
+    let mention = format!("${}", skill.name);
+    let body = format!("skill://{}", skill.name);
+    let mut rule = if skill.frontmatter.contains_key("trigger") {
+        fields_to_rule(&skill.path, &skill.frontmatter, &body)?
+    } else {
+        RuleDoc {
+            name: skill.name.clone(),
+            body,
+            path: skill.path.clone(),
+            needles: Vec::new(),
+            scope: RuleScope::Text,
+            gap: RuleGap::AfterTurns(1),
+            mode: RuleMode::Remind,
+            paths: Vec::new(),
+            after: 1,
+        }
+    };
     rule.name = skill.name.clone();
+    if !rule.needles.contains(&mention) {
+        rule.needles.push(mention);
+    }
     Ok(Some(rule))
 }
 

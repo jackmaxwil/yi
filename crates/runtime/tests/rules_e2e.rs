@@ -718,3 +718,35 @@ fn after_three_counts_one_needle_through_a_changing_result() -> TestResult {
     );
     Ok(())
 }
+
+#[test]
+fn a_dollar_name_in_the_prompt_points_at_the_skill_with_or_without_a_trigger() -> TestResult {
+    let (home, cwd) = scratch("skill-mention")?;
+    std::fs::create_dir_all(cwd.join(".yi/skills/assess"))?;
+    std::fs::create_dir_all(cwd.join(".yi/skills/quiet"))?;
+    std::fs::write(
+        cwd.join(".yi/skills/assess/SKILL.md"),
+        "---\nname: assess\ntrigger: rate it\nscope: text\n---\nHow to assess.\n",
+    )?;
+    std::fs::write(
+        cwd.join(".yi/skills/quiet/SKILL.md"),
+        "---\nname: quiet\ndescription: No trigger at all.\n---\nBody.\n",
+    )?;
+    let set = discover_armed(&cwd, &home);
+    let assess = set
+        .rules
+        .iter()
+        .find(|rule| rule.name == "assess")
+        .ok_or("assess did not compile")?;
+    assert!(assess.needles.contains(&"rate it".to_owned()));
+    assert!(assess.needles.contains(&"$assess".to_owned()));
+    let quiet = set
+        .rules
+        .iter()
+        .find(|rule| rule.name == "quiet")
+        .ok_or("a skill without a trigger still answers to its name")?;
+    assert_eq!(quiet.needles, vec!["$quiet".to_owned()]);
+    assert_eq!(quiet.scope, RuleScope::Text);
+    assert_eq!(quiet.body, "skill://quiet");
+    Ok(())
+}

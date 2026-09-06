@@ -98,6 +98,7 @@ fn poisoned_project_text_stays_in_the_yard() -> TestResult {
         mode: PermissionMode::Auto,
         user_system: String::new(),
         schema_instruction: None,
+        context_window: 128_000,
     });
     host.start(None, false);
     let assembled = host.system_prompt();
