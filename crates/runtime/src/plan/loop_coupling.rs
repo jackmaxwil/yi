@@ -1,10 +1,8 @@
-use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use yi_loop::TurnSnapshot;
-use yi_types::message::{AgentMessage, Attribution, Content, UserContent};
-use yi_types::model::{ForcedTool, ToolChoice};
+use yi_types::message::{AgentMessage, Content, UserContent};
 use yi_types::plan::doc::{BlockedOn, Plan, PlanState, TodoState};
 
 use super::ops::OWNER_AGENT;
@@ -77,39 +75,6 @@ pub mod gate {
             .saturating_add(extra_sentences)
             .saturating_add(long)
             >= MULTI_STEP_SCORE
-    }
-}
-
-/// Divergence between work done and ledger stepped, as an event count, never a timer — a
-/// different quantity from [`super::DEFAULT_STALE_TURNS`], which counts quiet turns.
-#[derive(Debug, Default)]
-pub struct NudgeState {
-    counted: u32,
-    fired: u32,
-}
-
-impl NudgeState {
-    pub fn reset_cycle(&mut self) {
-        self.counted = 0;
-        self.fired = 0;
-    }
-
-    pub fn touch(&mut self) {
-        self.counted = 0;
-    }
-
-    pub fn work(&mut self, mutating_calls: u32) -> bool {
-        self.counted = self.counted.saturating_add(mutating_calls);
-        if self.counted >= gate::NUDGE_THRESHOLD && self.fired < gate::NUDGE_CAP_PER_CYCLE {
-            self.fired = self.fired.saturating_add(1);
-            self.counted = 0;
-            return true;
-        }
-        false
-    }
-
-    pub fn fired(&self) -> u32 {
-        self.fired
     }
 }
 
@@ -193,37 +158,6 @@ pub fn ledger_message(text: String, display: bool) -> AgentMessage {
     }
 }
 
-#[derive(Debug, Default, PartialEq, Eq)]
-pub struct TurnWork {
-    pub mutating: u32,
-    pub ledger_touched: bool,
-}
-
-/// One count per host tool call that mutated; kernel-internal work is however
-/// many probes one `ipython` cell ran, so it never spends the nudge budget.
-pub fn classify_turn(results: &[AgentMessage], mutating_tools: &HashSet<String>) -> TurnWork {
-    let mut work = TurnWork::default();
-    for result in results {
-        let AgentMessage::ToolResult {
-            tool_name,
-            is_error,
-            ..
-        } = result
-        else {
-            continue;
-        };
-        if *is_error {
-            continue;
-        }
-        if tool_name == LEDGER_TOOL {
-            work.ledger_touched = true;
-        } else if mutating_tools.contains(tool_name) {
-            work.mutating = work.mutating.saturating_add(1);
-        }
-    }
-    work
-}
-
 fn asking_user(message: &AgentMessage) -> bool {
     let AgentMessage::Assistant { content, .. } = message else {
         return false;
@@ -240,34 +174,11 @@ fn asking_user(message: &AgentMessage) -> bool {
 
 #[derive(Default)]
 struct Cycle {
-    nudge: NudgeState,
     interceptions: u32,
 }
 
 pub struct CouplingOptions {
     pub plans_dir: PathBuf,
-    /// Write and Exec tools, minus kernel-internal `ipython` and the ledger.
-    pub mutating_tools: HashSet<String>,
-}
-
-pub fn mutating_tool_names(tools: &[Arc<dyn yi_tools::Tool>]) -> HashSet<String> {
-    tools
-        .iter()
-        .filter(|tool| {
-            matches!(
-                tool.kind(),
-                yi_tools::ToolKind::Write | yi_tools::ToolKind::Exec
-            ) && tool.name() != "ipython"
-        })
-        .map(|tool| tool.name().to_owned())
-        .collect()
-}
-
-fn nudge_text() -> String {
-    format!(
-        "{} mutating tool calls since the last plan-ledger touch. Reconcile the ledger with what actually happened — batch the op with your next real work, never as a solo ledger call.",
-        gate::NUDGE_THRESHOLD
-    )
 }
 
 fn stop_text(plan: &Plan) -> String {
@@ -277,55 +188,22 @@ fn stop_text(plan: &Plan) -> String {
     )
 }
 
-fn on_prompt_hook(cycle: Arc<Mutex<Cycle>>) -> Arc<PromptChoiceFn> {
-    Arc::new(move |prompt: &AgentMessage| {
-        let AgentMessage::User {
-            content,
-            attribution: Attribution::User,
-            ..
-        } = prompt
-        else {
-            return None;
-        };
-        if let Ok(mut cycle) = cycle.lock() {
-            cycle.nudge.reset_cycle();
-            cycle.interceptions = 0;
-        }
-        let UserContent::Text(text) = content else {
-            return None;
-        };
-        if !gate::eager_init(text) {
-            return None;
-        }
-        ForcedTool::new(LEDGER_TOOL).ok().map(ToolChoice::Tool)
-    })
-}
-
-pub fn install(session: &AgentSession, options: CouplingOptions) {
-    let CouplingOptions {
-        plans_dir,
-        mutating_tools,
-    } = options;
+pub fn coupling(session: &AgentSession, options: CouplingOptions) -> TurnCoupling {
+    let CouplingOptions { plans_dir } = options;
     let cycle = Arc::new(Mutex::new(Cycle::default()));
-    let deliver = session.advisory_hook();
     let store: StoreHandle = session.store_handle();
-
-    let on_turn = {
+    let on_prompt: Arc<PromptChoiceFn> = {
         let cycle = Arc::clone(&cycle);
-        let deliver = Arc::clone(&deliver);
-        Arc::new(move |snapshot: &TurnSnapshot| {
-            let work = classify_turn(snapshot.tool_results, &mutating_tools);
-            let Ok(mut cycle) = cycle.lock() else {
-                return;
-            };
-            if work.ledger_touched {
-                cycle.nudge.touch();
-            } else if work.mutating > 0 && cycle.nudge.work(work.mutating) {
-                deliver(ledger_message(nudge_text(), false));
+        Arc::new(move |prompt: &AgentMessage| {
+            if matches!(prompt, AgentMessage::User { .. })
+                && let Ok(mut cycle) = cycle.lock()
+            {
+                cycle.interceptions = 0;
             }
-        }) as Arc<TurnObserveFn>
+            None
+        })
     };
-
+    let on_turn: Arc<TurnObserveFn> = Arc::new(|_snapshot: &TurnSnapshot| {});
     let intercept_stop = {
         let cycle = Arc::clone(&cycle);
         Arc::new(move |snapshot: &TurnSnapshot| -> Option<AgentMessage> {
@@ -351,12 +229,15 @@ pub fn install(session: &AgentSession, options: CouplingOptions) {
             Some(ledger_message(stop_text(&plan), true))
         }) as Arc<InterceptStopFn>
     };
-
-    session.set_turn_coupling(TurnCoupling {
-        on_prompt: on_prompt_hook(cycle),
+    TurnCoupling {
+        on_prompt,
         on_turn,
         intercept_stop,
-    });
+    }
+}
+
+pub fn install(session: &AgentSession, options: CouplingOptions) {
+    session.set_turn_coupling(coupling(session, options));
 }
 
 #[cfg(test)]
@@ -400,62 +281,6 @@ mod tests {
     #[test]
     fn enumerated_items_alone_read_as_multi_step() {
         assert!(gate::eager_init("do these:\n- fix the build\n- ship it"));
-    }
-
-    #[test]
-    fn the_nudge_fires_at_the_threshold_and_caps_at_twice() {
-        let mut nudge = NudgeState::default();
-        assert!(!nudge.work(gate::NUDGE_THRESHOLD - 1));
-        assert!(nudge.work(1), "the threshold call fires");
-        assert_eq!(nudge.fired(), 1);
-        nudge.touch();
-        assert!(!nudge.work(1), "a touch resets the count");
-        assert!(nudge.work(gate::NUDGE_THRESHOLD), "second firing");
-        assert!(
-            !nudge.work(gate::NUDGE_THRESHOLD * 3),
-            "capped at {} per cycle",
-            gate::NUDGE_CAP_PER_CYCLE
-        );
-        nudge.reset_cycle();
-        assert!(nudge.work(gate::NUDGE_THRESHOLD), "a new cycle re-arms");
-    }
-
-    fn result(name: &str, is_error: bool) -> AgentMessage {
-        AgentMessage::ToolResult {
-            tool_call_id: "call".to_owned(),
-            tool_name: name.to_owned(),
-            content: Vec::new(),
-            details: None,
-            usage: None,
-            added_tool_names: None,
-            is_error,
-            timestamp: 0,
-        }
-    }
-
-    #[test]
-    fn kernel_internal_work_and_errors_never_count() {
-        let mutating: HashSet<String> = ["write", "edit", "bash"]
-            .into_iter()
-            .map(str::to_owned)
-            .collect();
-        let work = classify_turn(
-            &[
-                result("ipython", false),
-                result("read", false),
-                result("write", false),
-                result("write", true),
-                result("plan", false),
-            ],
-            &mutating,
-        );
-        assert_eq!(
-            work,
-            TurnWork {
-                mutating: 1,
-                ledger_touched: true
-            }
-        );
     }
 
     fn todo(label: &str, state: TodoState) -> Fallible2<Todo> {

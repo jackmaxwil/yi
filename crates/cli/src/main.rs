@@ -9,6 +9,7 @@ mod plan;
 mod rpc;
 mod sessions;
 mod stats;
+mod todo;
 mod tty;
 mod why;
 
@@ -1144,6 +1145,7 @@ fn main() {
         "doctor" => std::process::exit(doctor::run(&args)),
         "why" => std::process::exit(run_why(&args)),
         "plan" => std::process::exit(run_plan(&args)),
+        "todo" => std::process::exit(todo::run(&args)),
         "sessions" => {
             let options = sessions::Options {
                 session_dir: default_session_dir(&args),
