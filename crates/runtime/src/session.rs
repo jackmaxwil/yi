@@ -59,6 +59,7 @@ struct Shared {
     coupling: Mutex<Option<TurnCoupling>>,
     environment: Mutex<Option<Arc<EnvironmentFn>>>,
     lane: Mutex<Option<Arc<crate::lane::land::LaneHandle>>>,
+    telemetry: Mutex<Option<Arc<crate::telemetry::Telemetry>>>,
 }
 
 pub type PromptChoiceFn =
@@ -154,6 +155,8 @@ impl AgentSession {
                 on_turn_start: Mutex::new(None),
                 environment: Mutex::new(None),
                 lane: Mutex::new(None),
+
+                telemetry: Mutex::new(None),
                 on_turn_end: Mutex::new(None),
                 coupling: Mutex::new(None),
             }),
@@ -384,6 +387,20 @@ impl AgentSession {
         self.compactor.clone()
     }
 
+    pub fn set_telemetry(&self, telemetry: Arc<crate::telemetry::Telemetry>) {
+        if let Ok(mut slot) = self.shared.telemetry.lock() {
+            *slot = Some(telemetry);
+        }
+    }
+
+    pub fn telemetry(&self) -> Option<Arc<crate::telemetry::Telemetry>> {
+        self.shared
+            .telemetry
+            .lock()
+            .ok()
+            .and_then(|slot| slot.clone())
+    }
+
     pub fn subscribe(&self) -> broadcast::Receiver<AgentEvent> {
         self.shared.events.subscribe()
     }
@@ -461,6 +478,13 @@ impl AgentSession {
         &self,
         store: yi_session::SharedSession,
     ) -> Result<usize, yi_session::SessionError> {
+        let sidecar = {
+            let session = yi_session::lock_session(&store);
+            session
+                .file_path()
+                .cloned()
+                .map(|file| (file, session.metadata().id.clone()))
+        };
         let entries = {
             let session = yi_session::lock_session(&store);
             session.find_entries_on_branch(
@@ -483,6 +507,9 @@ impl AgentSession {
         }
         if let Ok(mut slot) = self.shared.store.lock() {
             *slot = Some(store);
+        }
+        if let (Some(telemetry), Some((file, id))) = (self.telemetry(), sidecar) {
+            telemetry.bind(&file, &id);
         }
         self.restore_settings(&entries);
         Ok(count)
@@ -817,6 +844,14 @@ impl AgentSession {
                         );
                     }
                     persist_message(&emit_shared, message);
+                }
+                if let Some(telemetry) = emit_shared
+                    .telemetry
+                    .lock()
+                    .ok()
+                    .and_then(|slot| slot.clone())
+                {
+                    telemetry.on_event(&event);
                 }
                 let _ = emit_shared.events.send(event);
             };

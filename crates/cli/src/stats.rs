@@ -197,6 +197,9 @@ pub struct Options {
 }
 
 pub fn run(id_arg: &str, options: &Options) -> i32 {
+    if let Some(dir) = id_arg.trim().strip_prefix("telemetry") {
+        return telemetry_rollup(std::path::Path::new(dir.trim()), options.json);
+    }
     let mut repo = JsonlRepo::new(options.session_dir.clone(), options.cwd.clone());
     let id = if id_arg.trim().is_empty() {
         match crate::sessions::latest_id(&mut repo) {
@@ -402,4 +405,142 @@ mod tests {
         assert_eq!(cold_then_hit.all.write_share(), 0.25);
         assert_eq!(cold_then_hit.by_model.len(), 1);
     }
+}
+
+#[derive(Default)]
+struct ToolSpans {
+    calls: u64,
+    errors: u64,
+    ms: Vec<u64>,
+}
+
+fn telemetry_files(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            telemetry_files(&path, out);
+        } else if path.to_string_lossy().ends_with(".telemetry.jsonl") {
+            out.push(path);
+        }
+    }
+}
+
+/// `yi stats telemetry <dir>`: every sidecar under `dir` rolled into one record — the numbers
+/// a run is judged by (plan 2026-09-05 §3.E), the same formulas as a session's own stats.
+fn telemetry_rollup(dir: &std::path::Path, json_out: bool) -> i32 {
+    use yi_types::telemetry::{Span, SpanKind};
+    let mut files = Vec::new();
+    telemetry_files(dir, &mut files);
+    files.sort();
+    if files.is_empty() {
+        eprintln!("error: no *.telemetry.jsonl under {}", dir.display());
+        return 1;
+    }
+    let (mut ttft, mut total, mut requests, mut turns) = (Vec::new(), Vec::new(), 0_u64, 0_u64);
+    let mut tokens = Tokens::default();
+    let mut cost = 0.0_f64;
+    let mut tools: BTreeMap<String, ToolSpans> = BTreeMap::new();
+    let mut classes: BTreeMap<String, u64> = BTreeMap::new();
+    let mut spans = 0_u64;
+    for file in &files {
+        let Ok(text) = std::fs::read_to_string(file) else {
+            continue;
+        };
+        for line in text.lines().filter(|line| !line.trim().is_empty()) {
+            let Ok(span) = serde_json::from_str::<Span>(line) else {
+                continue;
+            };
+            spans = spans.saturating_add(1);
+            if let Some(class) = &span.class {
+                *classes.entry(class.clone()).or_default() += 1;
+            }
+            match span.span {
+                SpanKind::Request => {
+                    requests = requests.saturating_add(1);
+                    ttft.extend(span.ttft_ms);
+                    total.extend(span.total_ms);
+                    tokens.input = tokens.input.saturating_add(span.input.unwrap_or(0));
+                    tokens.output = tokens.output.saturating_add(span.output.unwrap_or(0));
+                    tokens.cache_read = tokens
+                        .cache_read
+                        .saturating_add(span.cache_read.unwrap_or(0));
+                    tokens.cache_write = tokens
+                        .cache_write
+                        .saturating_add(span.cache_write.unwrap_or(0));
+                    cost += span.cost_usd.unwrap_or(0.0);
+                }
+                SpanKind::Tool => {
+                    let row = tools
+                        .entry(span.tool.clone().unwrap_or_default())
+                        .or_default();
+                    row.calls = row.calls.saturating_add(1);
+                    if span.ok == Some(false) {
+                        row.errors = row.errors.saturating_add(1);
+                    }
+                    row.ms.extend(span.ms);
+                }
+                SpanKind::Turn => turns = turns.saturating_add(1),
+                SpanKind::Compaction | SpanKind::Other(_) => {}
+            }
+        }
+    }
+    ttft.sort_unstable();
+    total.sort_unstable();
+    for row in tools.values_mut() {
+        row.ms.sort_unstable();
+    }
+    let tool_rows: Vec<Value> = tools
+        .iter()
+        .map(|(name, row)| {
+            json!({"tool": name, "calls": row.calls, "errors": row.errors,
+                   "p50Ms": percentile(&row.ms, 0.5), "p95Ms": percentile(&row.ms, 0.95)})
+        })
+        .collect();
+    let record = json!({
+        "files": files.len(),
+        "spans": spans,
+        "requests": requests,
+        "turns": turns,
+        "ttftP50Ms": percentile(&ttft, 0.5),
+        "ttftP95Ms": percentile(&ttft, 0.95),
+        "totalP50Ms": percentile(&total, 0.5),
+        "tokens": tokens.json(),
+        "hitRate": tokens.hit_rate(),
+        "costUsd": cost,
+        "tools": tool_rows,
+        "classes": classes,
+    });
+    if json_out {
+        println!("{record}");
+        return 0;
+    }
+    println!(
+        "{} file(s), {} span(s): {} request(s), {} turn(s)",
+        files.len(),
+        spans,
+        requests,
+        turns
+    );
+    println!(
+        "ttft p50 {} ms · p95 {} ms · total p50 {} ms · cache hit {:.1}% · cost ${cost:.4}",
+        percentile(&ttft, 0.5),
+        percentile(&ttft, 0.95),
+        percentile(&total, 0.5),
+        tokens.hit_rate() * 100.0
+    );
+    for (name, row) in &tools {
+        println!(
+            "  {name:<12} {:>4} call(s) {:>3} error(s) p50 {} ms",
+            row.calls,
+            row.errors,
+            percentile(&row.ms, 0.5)
+        );
+    }
+    for (class, count) in &classes {
+        println!("  class {class}: {count}");
+    }
+    0
 }

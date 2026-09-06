@@ -1,4 +1,4 @@
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use tokio::sync::mpsc::Receiver;
 use yi_ai::anthropic::{self, AnthropicOptions, Thinking};
@@ -78,6 +78,7 @@ pub struct ProviderStream {
     pub faux: Mutex<FauxProvider>,
     long_cache: bool,
     proxy: Option<yi_ai::request::ProxyConfig>,
+    telemetry: Option<Arc<crate::telemetry::Telemetry>>,
 }
 
 impl ProviderStream {
@@ -88,6 +89,7 @@ impl ProviderStream {
             faux: Mutex::new(FauxProvider::default()),
             long_cache: false,
             proxy: None,
+            telemetry: None,
         }
     }
 
@@ -102,6 +104,11 @@ impl ProviderStream {
     #[must_use]
     pub fn with_proxy(mut self, proxy: Option<yi_ai::request::ProxyConfig>) -> Self {
         self.proxy = proxy;
+        self
+    }
+
+    pub fn with_telemetry(mut self, telemetry: Option<Arc<crate::telemetry::Telemetry>>) -> Self {
+        self.telemetry = telemetry;
         self
     }
 
@@ -121,6 +128,22 @@ impl ProviderStream {
 
 impl StreamFn for ProviderStream {
     fn stream(
+        &self,
+        model: &Model,
+        context: &LlmContext,
+        effort: Effort,
+        signal: &InterruptSignal,
+    ) -> Receiver<AssistantMessageEvent> {
+        let receiver = self.stream_raw(model, context, effort, signal);
+        match &self.telemetry {
+            Some(telemetry) => telemetry.wrap(model, receiver),
+            None => receiver,
+        }
+    }
+}
+
+impl ProviderStream {
+    fn stream_raw(
         &self,
         model: &Model,
         context: &LlmContext,
