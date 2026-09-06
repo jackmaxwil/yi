@@ -16,6 +16,7 @@ Example:
 """
 
 import argparse
+import tempfile
 import fcntl
 import os
 import pty
@@ -50,13 +51,25 @@ def main() -> int:
     parser.add_argument("--term", default="xterm-256color",
                         help="TERM for the child; use xterm-kitty to exercise "
                              "the kitty graphics path")
+    parser.add_argument("--home", help="HOME for the child; default a fresh "
+                                       "temporary directory, never the caller's")
+    parser.add_argument("--lanes", action="store_true",
+                        help="let the child claim a lane; without it --here is "
+                             "passed so a killed run leaves no orphan")
     parser.add_argument("args", nargs=argparse.REMAINDER)
     options = parser.parse_args()
     yi_args = [a for a in options.args if a != "--"]
+    home = options.home or tempfile.mkdtemp(prefix="yi-pty-home-")
+    if not os.path.isabs(home):
+        parser.error(f"--home must be absolute, not {home!r}: a relative HOME plants "
+                     "a worktree beside the repository")
+    if not options.lanes and "--here" not in yi_args:
+        yi_args = [*yi_args, "--here"]
 
     pid, fd = pty.fork()
     if pid == 0:
         os.environ["TERM"] = options.term
+        os.environ["HOME"] = home
         os.execvp(options.binary, [options.binary, *yi_args])
 
     fcntl.ioctl(fd, termios.TIOCSWINSZ,

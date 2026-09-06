@@ -108,5 +108,6 @@ when it changes rather than editing them by hand.
 - [D128](adr/d128.md) - the model catalog is fetched, and the bundled one is its floor
 - [D129](adr/d129.md) - the model picker shows each row's mark
 - [D130](adr/d130.md) - an orphan with nothing `main` lacks is a free slot
+- [D131](adr/d131.md) - a harness run is isolated and the invariants check themselves
 
 D36-D51, D72, D73 and D74 have no ADR yet; ARCHITECTURE.md is the record for those rows.
