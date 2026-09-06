@@ -32,6 +32,22 @@ jobs:
       # install steps the GitHub file needs are both gone.
       - run: just postmerge
       - run: just postmerge-evals
+      # The live suite on main is the lane's memory: one run per merge, appended to the
+      # telemetry branch the PR verdicts read their baseline from. No secret, no run.
+      - name: live suite on main, appended to the telemetry branch
+        env:
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "${OPENROUTER_API_KEY:-}" ]; then
+            echo "live: no OPENROUTER_API_KEY secret; nothing appended"
+            exit 0
+          fi
+          cargo build -p yi-cli
+          mkdir -p live-out
+          python3 evals/run.py --live --binary target/debug/yi \
+            --model openrouter/deepseek/deepseek-v4-flash-0731 --cap-usd 1 --out live-out || true
+          python3 scripts/live_ledger.py append live-out/run.json "${GITHUB_SHA}"
       # The issues this merge closed are annotated whether or not the away game
       # above went green: they are closed either way, and a version that never
       # reached them is a gap in the trail nothing later fills.
