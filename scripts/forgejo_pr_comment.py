@@ -26,8 +26,6 @@ def send(method, url, payload):
             "Accept": "application/json",
         },
     )
-    # Incident: a request that never answered held the live job's last step for the
-    # runner's whole clock, three runs in a row; a hang is a failure with a traceback now.
     with urllib.request.urlopen(req, timeout=30) as response:
         return json.load(response)
 
@@ -35,32 +33,26 @@ def send(method, url, payload):
 def upsert(transport, api, repo, pr, body):
     """PATCH the comment whose body starts with the marker, else POST a new one.
 
-    Paged rather than one big GET: a busy PR pushes the marker off the first
-    page, and a miss there does not fail — it silently posts a duplicate.
+    Incident: Forgejo 15 answers one issue's comments as the whole list and ignores
+    `page`, so paging until an empty batch looped for the runner's whole clock on
+    every PR that had comments but no marker yet — the live job, twice.
     """
     marker = body.splitlines()[0]
     issue = f"{api}/repos/{repo}/issues/{pr}/comments"
-    page = 1
-    while True:
-        batch = transport("GET", f"{issue}?limit=50&page={page}", None)
-        if not batch:
-            return transport("POST", issue, {"body": body})
-        for comment in batch:
-            if (comment.get("body") or "").startswith(marker):
-                url = f"{api}/repos/{repo}/issues/comments/{comment['id']}"
-                return transport("PATCH", url, {"body": body})
-        page += 1
+    for comment in transport("GET", issue, None):
+        if (comment.get("body") or "").startswith(marker):
+            url = f"{api}/repos/{repo}/issues/comments/{comment['id']}"
+            return transport("PATCH", url, {"body": body})
+    return transport("POST", issue, {"body": body})
 
 
 def selfcheck():
-    def recorder(pages):
+    def recorder(comments):
         calls = []
 
         def transport(method, url, payload):
             calls.append((method, url, payload))
-            if method != "GET":
-                return {"id": 1}
-            return pages.pop(0) if pages else []
+            return comments if method == "GET" else {"id": 1}
 
         return transport, calls
 
@@ -70,13 +62,13 @@ def selfcheck():
 
     # Nothing carries the marker — and a comment with a null body is a shape the
     # API really returns, not a hypothetical.
-    transport, calls = recorder([[{"id": 7, "body": "nice"}, {"id": 8, "body": None}]])
+    transport, calls = recorder([{"id": 7, "body": "nice"}, {"id": 8, "body": None}])
     upsert(transport, api, repo, pr, body)
     assert calls[-1][0] == "POST", calls
     assert calls[-1][1] == f"{api}/repos/{repo}/issues/{pr}/comments", calls[-1][1]
 
-    # The marker's comment is edited in place wherever the paging finds it.
-    transport, calls = recorder([[{"id": 7, "body": "nice"}], [{"id": 9, "body": body}]])
+    # The marker's comment is edited in place wherever it sits in the list.
+    transport, calls = recorder([{"id": 7, "body": "nice"}, {"id": 9, "body": body}])
     upsert(transport, api, repo, pr, body)
     assert calls[-1][0] == "PATCH", calls
     assert calls[-1][1] == f"{api}/repos/{repo}/issues/comments/9", calls[-1][1]
@@ -86,7 +78,7 @@ def selfcheck():
     # Which is also why the marker is the whole first line and that line is a
     # fixed echo in the workflow — reword it and every open PR orphans one.
     stale = body.replace("- x", "- y")
-    transport, calls = recorder([[{"id": 9, "body": stale}]])
+    transport, calls = recorder([{"id": 9, "body": stale}])
     upsert(transport, api, repo, pr, body)
     assert [c[0] for c in calls] == ["GET", "PATCH"], calls
     assert calls[-1][2] == {"body": body}, calls[-1][2]
