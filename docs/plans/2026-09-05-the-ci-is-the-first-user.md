@@ -1,8 +1,8 @@
 # The CI is the first user
 
-Status: in progress. Step 1 (§3.A–B) landed as D131 (0.156.0); the live-lane
-decision below is provisional D132; check the number against open PRs before it
-is claimed. It amends plan law 3 of docs/plans/2026-08-29-governance.md (§4 here)
+Status: in progress. Step 1 (§3.A–B) landed as D131 (0.156.0) and step 2 (§3.E)
+as D132 (0.157.0); the live-lane decision below is provisional D133; check the
+number against open PRs before it is claimed. It amends plan law 3 of docs/plans/2026-08-29-governance.md (§4 here)
 and leaves law 2 untouched.
 
 Provenance: the eleven escapes of 2026-09-05, all found by the user opening yi
@@ -240,7 +240,7 @@ model exercises only openai-completions), three runs of the live suite for
 variance, the dependency audit. Per PR, the matrix also runs when the diff
 touches `crates/ai/src/anthropic.rs` or `openai_responses.rs`.
 
-## 4. The decision (provisional D132)
+## 4. The decision (provisional D133)
 
 Plan law 3 reads: paid runs are opt-in, user-run, never in any gate. This plan
 keeps that sentence for every tier it names and adds one tier beside T3:
