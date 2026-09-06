@@ -1,0 +1,4 @@
+{"span":"request","session":"s","ttftMs":1200}
+{"span":"request","session":"s","ttftMs":800}
+{"span":"tool","session":"s","tool":"bash","ok":true}
+{"span":"tool","session":"s","tool":"bash","ok":false}
