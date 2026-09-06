@@ -320,3 +320,74 @@ fn a_bundle_layout_is_walked_one_level_deeper() -> TestResult {
     let _ = std::fs::remove_dir_all(&root);
     Ok(())
 }
+
+#[test]
+fn a_folded_description_reads_as_its_sentence() -> TestResult {
+    let root = std::env::temp_dir().join(format!("yi-skills-folded-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let home = root.join("home");
+    std::fs::create_dir_all(home.join(".yi/skills"))?;
+    skill_dir(
+        &home.join(".yi/skills"),
+        "review",
+        "---\nname: review\ndescription: >\n  Verify finished work against its acceptance criteria with a cold-context\n  reviewer. Use before declaring a goal or large task complete: not a\n  code-style review.\n---\n\n# Review\n",
+    )?;
+    skill_dir(
+        &home.join(".yi/skills"),
+        "literal",
+        "---\nname: literal\ndescription: |\n  first line\n  second line\n---\nbody\n",
+    )?;
+    let catalog =
+        yi_runtime::skills_catalog(&home, &home, yi_runtime::Bytes(16_384)).ok_or("no catalog")?;
+    assert!(
+        catalog.text.contains(
+            "review: Verify finished work against its acceptance criteria with a cold-context reviewer. Use before declaring a goal or large task complete: not a code-style review."
+        ),
+        "{}",
+        catalog.text
+    );
+    assert!(
+        catalog.text.contains("literal: first line\nsecond line"),
+        "{}",
+        catalog.text
+    );
+    assert!(!catalog.text.contains("review: >"), "{}", catalog.text);
+    std::fs::remove_dir_all(&root)?;
+    Ok(())
+}
+
+#[test]
+fn a_project_under_home_keeps_its_skills_project_scoped() -> TestResult {
+    let home = std::env::temp_dir().join(format!("yi-skills-under-home-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&home);
+    let project = home.join("Development/project");
+    std::fs::create_dir_all(home.join(".yi/skills"))?;
+    std::fs::create_dir_all(project.join(".agents/skills"))?;
+    skill_dir(
+        &home.join(".yi/skills"),
+        "global-one",
+        "---\nname: global-one\ndescription: Global.\n---\nbody\n",
+    )?;
+    skill_dir(
+        &project.join(".agents/skills"),
+        "repo-one",
+        "---\nname: repo-one\ndescription: Repository.\n---\nbody\n",
+    )?;
+    let (global, project_skills) = yi_runtime::skills::discover_split(&project, &home);
+    assert_eq!(
+        global
+            .iter()
+            .map(|skill| skill.name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["global-one"]
+    );
+    assert_eq!(
+        project_skills
+            .iter()
+            .map(|skill| skill.name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["repo-one"]
+    );
+    std::fs::remove_dir_all(&home)?;
+    Ok(())
+}
