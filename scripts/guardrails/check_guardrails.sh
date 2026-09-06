@@ -45,6 +45,7 @@ run "$PY" scripts/pr_body.py --selfcheck
 # posts a duplicate rather than failing; only this flag exercises the routing.
 run "$PY" scripts/forgejo_pr_comment.py --selfcheck
 run "$PY" scripts/live_report.py --selfcheck
+run "$PY" scripts/live_ledger.py --selfcheck
 # Milestone dates are written from this script's arithmetic, and a rate that
 # divides wrong writes a plausible date nobody can catch by eye; only this flag
 # exercises the window, the weighting and the PATCH routing.

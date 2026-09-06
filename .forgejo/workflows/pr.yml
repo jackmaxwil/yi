@@ -137,6 +137,10 @@ jobs:
           FORGEJO_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          python3 scripts/live_report.py live-out/run.json > live-body.md
+          # The baseline is the last runs on the telemetry branch; the verdict names every
+          # band and ratchet the run breaks. Advisory: the comment says RED, the job stays green.
+          python3 scripts/live_ledger.py baseline > live-baseline.json || echo '{}' > live-baseline.json
+          python3 scripts/live_ledger.py judge live-out/run.json live-baseline.json > live-verdict.json || true
+          python3 scripts/live_report.py live-out/run.json live-verdict.json live-baseline.json > live-body.md
           cat live-body.md
           python3 scripts/forgejo_pr_comment.py live-body.md

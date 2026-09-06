@@ -7,13 +7,18 @@ import json, pathlib, sys
 MARKER = "Live lane — the real binary against a real model, judged by verifiers and `yi doctor`."
 
 
-def render(record):
+def render(record, verdict=None, baseline=None):
     counts = record.get("counts", {})
     telemetry = record.get("telemetry", {})
     lines = [MARKER, ""]
     if record.get("skipped"):
         lines.append(f"**inconclusive** — {record['skipped']}")
         return "\n".join(lines) + "\n"
+    if verdict is not None:
+        lines.append("**RED** — " + "; ".join(verdict.get("findings", [])) if verdict.get("red")
+                     else "**green** — every band and ratchet holds"
+                     + (f" against {baseline['runs']} run(s) of history" if baseline and baseline.get("runs") else " (no history yet)"))
+        lines.append("")
     lines.append(
         f"`{record.get('model', '?')}` · {counts.get('pass', 0)} pass · {counts.get('fail', 0)} fail · "
         f"{counts.get('inconclusive', 0)} inconclusive · spent ${record.get('spentUsd', 0):.4f} of "
@@ -49,6 +54,10 @@ def selfcheck():
     assert text.startswith(MARKER + "\n"), "the marker is the first line"
     assert "| a | pass |  | $0.0100 |" in text and "| b | inconclusive | budget |  |" in text, text
     assert "cache hit 50.0%" in text and "`Invariant::lanes` ×1" in text, text
+    red = render({"model": "m", "counts": {}, "rows": []}, {"red": True, "findings": ["band: ttft p50 3500 ms > 3000 ms"]}, {"runs": 3})
+    assert "**RED** — band: ttft" in red, red
+    green = render({"model": "m", "counts": {}, "rows": []}, {"red": False, "findings": []}, {})
+    assert "**green**" in green and "no history yet" in green, green
     skipped = render({"skipped": "no OPENROUTER_API_KEY secret"})
     assert skipped.startswith(MARKER) and "**inconclusive**" in skipped
     print("ok   live_report selfcheck")
@@ -58,7 +67,12 @@ if __name__ == "__main__":
     if "--selfcheck" in sys.argv:
         selfcheck()
         sys.exit(0)
-    if len(sys.argv) != 2:
-        print("usage: live_report.py <run.json>", file=sys.stderr)
+    if len(sys.argv) not in (2, 4):
+        print("usage: live_report.py <run.json> [<verdict.json> <baseline.json>]", file=sys.stderr)
         sys.exit(2)
-    sys.stdout.write(render(json.loads(pathlib.Path(sys.argv[1]).read_text())))
+    record = json.loads(pathlib.Path(sys.argv[1]).read_text())
+    verdict = baseline = None
+    if len(sys.argv) == 4:
+        verdict = json.loads(pathlib.Path(sys.argv[2]).read_text())
+        baseline = json.loads(pathlib.Path(sys.argv[3]).read_text()) if pathlib.Path(sys.argv[3]).is_file() else {}
+    sys.stdout.write(render(record, verdict, baseline))
