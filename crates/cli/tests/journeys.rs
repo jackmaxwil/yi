@@ -397,3 +397,40 @@ fn an_ask_in_a_repository_runs_on_a_lane_and_hands_it_back() -> TestResult {
     journey.reclaim();
     Ok(())
 }
+
+/// An orphaned lane with nothing to keep is what `doctor --fix` reaps; the pool reads idle after.
+#[test]
+#[ignore = "tier-2 journey: `just journeys`"]
+fn doctor_fix_reaps_an_orphaned_lane() -> TestResult {
+    let journey = Journey::new("doctor-lane")?;
+    let project = journey.project();
+    git_in(&project, &["init", "-q", "-b", "main"])?;
+    git_in(&project, &["config", "user.email", "lane@journey"])?;
+    git_in(&project, &["config", "user.name", "journey"])?;
+    std::fs::write(project.join("README.md"), "trunk\n")?;
+    git_in(&project, &["add", "README.md"])?;
+    git_in(&project, &["commit", "-qm", "base"])?;
+    succeeded(&journey.yi(&["ask", "claim once"])?, "ask")?;
+    let pool = std::fs::read_dir(journey.root.join("home/.yi/lanes"))?
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .find(|p| p.is_dir())
+        .ok_or("no pool dir")?;
+    let state_path = pool.join("0.json");
+    let mut state: serde_json::Value = serde_json::from_slice(&std::fs::read(&state_path)?)?;
+    state["session"] = serde_json::Value::String("pid-1".to_owned());
+    std::fs::write(&state_path, serde_json::to_vec(&state)?)?;
+    git_in(&project, &["branch", "-q", "yi/pid-1", "HEAD"])?;
+    git_in(&pool.join("0"), &["checkout", "-q", "yi/pid-1"])?;
+    let seen = journey.yi(&["doctor"])?;
+    assert_eq!(seen.status.code(), Some(1));
+    assert!(
+        String::from_utf8_lossy(&seen.stdout).contains("FAIL  lanes"),
+        "{}",
+        String::from_utf8_lossy(&seen.stdout)
+    );
+    let fixed = journey.yi(&["doctor", "--fix"])?;
+    let text = String::from_utf8_lossy(&fixed.stdout);
+    assert!(text.contains("fixed lanes"), "{text}");
+    assert!(String::from_utf8_lossy(&journey.yi(&["lanes"])?.stdout).contains("idle"));
+    Ok(())
+}
