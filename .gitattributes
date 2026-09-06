@@ -1,0 +1,2 @@
+scripts/guardrails/baselines/*.json merge=baseline
+scripts/guardrails/baselines/schemas.lock merge=baseline
