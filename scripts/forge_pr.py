@@ -463,7 +463,83 @@ def cmd_merge(args):
         time.sleep(POLL)
 
 
+def growth_line():
+    out = subprocess.run((sys.executable, str(ROOT / "scripts/guardrails/check_growth.py")),
+                         capture_output=True, text=True, check=False)
+    return out.stdout + out.stderr
+
+
+def repriced_memo(row, measured):
+    """The memo's number follows the measurement; its prose stays the author's."""
+    return re.sub(r"growth \+\d+:", f"growth +{measured}:", row, count=1)
+
+
+def reprice_growth():
+    """After a merge the memo trails the tree; `check_growth` says by how much, and only the
+    number moves. Returns the commit subject, or None when nothing was owed."""
+    text = growth_line()
+    if text.strip().startswith("ok"):
+        return None
+    measured = re.search(r"measurement is ([+-]\d+)", text) or re.search(r"^\s*([+-]\d+) is past", text, re.M)
+    if not measured:
+        return None
+    number = measured.group(1).lstrip("+")
+    arch = (ROOT / "docs/ARCHITECTURE.md").read_text()
+    version = re.search(r"^version:\s*(\S+)", arch, re.M).group(1)
+    log = ROOT / "docs/CHANGELOG.md"
+    lines = log.read_text().splitlines()
+    for i, line in enumerate(lines):
+        if line.startswith(f"| {version} |") and "growth +" in line:
+            lines[i] = repriced_memo(line, number)
+            log.write_text("\n".join(lines) + "\n")
+            subject = f"Price the {version} row at the growth the merge measures"
+            git("commit", "-q", "-m", subject, "--", "docs/CHANGELOG.md", check=True)
+            return subject
+    return None
+
+
+def render_missing_adrs():
+    """A decision row without its ADR is a landing law; `just adr` writes it from the row."""
+    arch = (ROOT / "docs/ARCHITECTURE.md").read_text()
+    written = []
+    for number in re.findall(r"^\| D(\d+) \|", arch, re.M):
+        path = ROOT / "docs/solutions/adr" / f"d{number}.md"
+        if not path.exists():
+            subprocess.run((sys.executable, str(ROOT / "scripts/adr.py"), number), check=True)
+            written.append(number)
+    if written:
+        git("add", "docs/solutions", check=True)
+        git("commit", "-q", "-m", "Record " + ", ".join(f"D{n}" for n in written) + " from the decision log", check=True)
+    return written
+
+
+def refresh_from_main():
+    """Merge origin/main in, let the baseline driver take the conflicts it owns, re-measure."""
+    git("fetch", "--no-tags", "origin", "main", check=True)
+    subprocess.run(("git", "-C", str(ROOT), "config", "merge.baseline.driver",
+                    f"{sys.executable} scripts/merge_baseline.py %O %A %B"), check=False)
+    if subprocess.run(("git", "-C", str(ROOT), "merge-base", "--is-ancestor", "origin/main", "HEAD")).returncode == 0:
+        print("land: up to date with origin/main")
+        return 0
+    merged = subprocess.run(("git", "-C", str(ROOT), "merge", "--no-edit", "origin/main"), capture_output=True, text=True)
+    if merged.returncode != 0:
+        left = git("diff", "--name-only", "--diff-filter=U")
+        print("land: origin/main merged with conflicts a person resolves:")
+        for path in left.splitlines():
+            print(f"  {path}")
+        return 1
+    print("land: merged origin/main")
+    return 0
+
+
 def cmd_land(args):
+    if refresh_from_main():
+        return 1
+    cmd_ratchet(argparse.Namespace(topic=args.title, no_binary=False))
+    if subject := reprice_growth():
+        print(f"land: {subject}")
+    if written := render_missing_adrs():
+        print("land: ADRs rendered for " + ", ".join(f"D{n}" for n in written))
     code = cmd_open(args)
     if code:
         return code
@@ -501,6 +577,9 @@ def selfcheck():
     long = ratchet_subject(["test LOC 36636 -> 36696", "tui crate 10922 -> 10984", "dist binary 5696512 -> 5696544"], "the console pane and its avatars")
     assert len(long) <= SUBJECT_LIMIT and long.startswith("Ratchet: test LOC"), long
     assert ratchet_subject([], "x") == "Ratchet: baselines"
+    row = "| 0.150.0 | d | x. growth +1026: measured under D119; prose. |"
+    assert repriced_memo(row, "4315") == "| 0.150.0 | d | x. growth +4315: measured under D119; prose. |"
+    assert repriced_memo("| 0.1.0 | d | no memo |", "9") == "| 0.1.0 | d | no memo |"
     print("ok   forge_pr selfcheck")
 
 
