@@ -23,7 +23,7 @@ import tempfile
 import time
 from pathlib import Path
 
-EXTRACTOR_VERSION = 4
+EXTRACTOR_VERSION = 5
 SCHEMA_VERSION = 2
 
 # Tool names from the crates/tools registry that cannot change the tree; the
@@ -250,7 +250,8 @@ def call_is_read_only(name, arguments):
     return False
 
 
-GATE_WORDS = ("cargo nextest", "cargo test", "just check", "cargo clippy")
+GATE_WORDS = ("cargo nextest", "cargo test", "just check", "cargo clippy",
+              "pytest", "npm test", "bun test", "make test", "go test")
 OFFER_WORDS = ("let me know", "would you like", "want me to", "if you want", "shall i")
 SIGNAL_NAMES = (
     "gate_without_change", "stopped_with_open_todos", "multi_step_without_todo", "todo_stale",
@@ -258,6 +259,7 @@ SIGNAL_NAMES = (
     "chain_stop", "self_capped", "sandbox_denial_as_finding", "count_claim", "answer_shape",
     "cache_miss_streak", "done_without_check", "intercept_capped",
     "blocked_on_user_without_question", "waiting_without_block", "gate_rerun_unchanged_tree",
+    "intercept_count", "intercept_max_rung", "regression_seen_red",
 )
 
 
@@ -317,6 +319,7 @@ def signals(entries):
     source_reads = 0
     landed_since_todo = 0
     last_gate = None
+    red_gates, landed_since_red = set(), False
     for call in ordered:
         tool, args = call["tool"], call["args"]
         command = args.get("command") or "" if isinstance(args, dict) else ""
@@ -334,12 +337,19 @@ def signals(entries):
             edits_before += 1
             landed_since_todo += 1
             last_gate = None
+            landed_since_red = bool(red_gates)
         if tool == "todo":
             if (args.get("op") if isinstance(args, dict) else None) != "view":
                 landed_since_todo = 0
         result = result_of.get(call["id"])
         if result is None:
             continue
+        if gate:
+            red = result["error"] or "exit code:" in result["text"]
+            if red:
+                red_gates.add(command)
+            elif command in red_gates and landed_since_red:
+                out["regression_seen_red"] = 1
         if "unexpected argument" in result["text"]:
             out["flag_error"] += 1
         if "0 tests run" in result["text"]:
@@ -380,6 +390,8 @@ def signals(entries):
                     out["done_without_check"] += 1
     if any(r.get("reason") == "let go" for r in custom_intercept):
         out["intercept_capped"] = 1
+    out["intercept_count"] = sum(1 for r in custom_intercept if r.get("reason") == "open")
+    out["intercept_max_rung"] = max((int(r.get("rung") or 0) for r in custom_intercept), default=0)
     for a, b in zip(users, users[1:]):
         ta, tb = _tokens(a), _tokens(b)
         if ta and tb and len(ta & tb) / len(ta | tb) >= 0.8:
