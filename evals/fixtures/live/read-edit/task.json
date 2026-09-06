@@ -1,0 +1,6 @@
+{
+  "id": "read-edit",
+  "timeoutSec": 180,
+  "requires": ["read", "edit"],
+  "note": "the outcome is the contract; the tool list is the diagnostic"
+}

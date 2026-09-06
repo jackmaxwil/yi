@@ -1,0 +1,6 @@
+{
+  "id": "bash-marker",
+  "timeoutSec": 180,
+  "requires": ["bash"],
+  "note": "a shell command with a visible effect"
+}

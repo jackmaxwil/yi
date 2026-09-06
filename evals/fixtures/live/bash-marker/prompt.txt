@@ -1,0 +1,1 @@
+Run the shell command `touch MARKER-4417` in the working directory, then stop.

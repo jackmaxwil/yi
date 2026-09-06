@@ -100,3 +100,43 @@ jobs:
           # the Forgejo API. One comment per PR — a fresh one per push turns the
           # thread into a changelog nobody reads.
           python3 scripts/forgejo_pr_comment.py comment.md
+
+  # The live lane (D133): the real binary against a real model, judged only by verifiers,
+  # `yi doctor` and bands; capped in code. Advisory until its inconclusive rate has earned
+  # a required status. Without the OPENROUTER_API_KEY secret it reports inconclusive.
+  live:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - run: rustup show
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: live
+          cache-on-failure: true
+      - run: cargo build -p yi-cli
+      - name: run the live suite, or say why not
+        env:
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+        run: |
+          set -euo pipefail
+          mkdir -p live-out
+          if [ -z "${OPENROUTER_API_KEY:-}" ]; then
+            echo '{"skipped": "no OPENROUTER_API_KEY secret on this repository"}' > live-out/run.json
+            echo "inconclusive: no OPENROUTER_API_KEY secret"
+          else
+            python3 evals/run.py --live --binary target/debug/yi \
+              --model openrouter/deepseek/deepseek-v4-flash-0731 --cap-usd 1 --out live-out || true
+          fi
+      - name: post the live report
+        env:
+          FORGEJO_API_URL: ${{ github.api_url }}
+          FORGEJO_REPOSITORY: ${{ github.repository }}
+          FORGEJO_PR: ${{ github.event.pull_request.number }}
+          FORGEJO_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          python3 scripts/live_report.py live-out/run.json > live-body.md
+          cat live-body.md
+          python3 scripts/forgejo_pr_comment.py live-body.md
