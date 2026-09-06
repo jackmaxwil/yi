@@ -58,3 +58,24 @@ jobs:
           FORGEJO_REPOSITORY: ${{ github.repository }}
           FORGEJO_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: python3 scripts/forge_tracking.py --comment-closed
+
+  # Incident: pr.yml promised "one key per lane, shared with postmerge", but postmerge saved
+  # only `test`, so `lint` and `guardrails` built cold on every pull request and a cold
+  # `live` build was cancelled by the runner's clock three times in a row. A branch can read
+  # only the caches main saved, so main saves every lane's key here, warm for the next push.
+  warm:
+    strategy:
+      fail-fast: false
+      matrix:
+        lane: [lint, guardrails]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - run: rustup show
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ${{ matrix.lane }}
+          cache-on-failure: true
+      - run: just lane ${{ matrix.lane }}
