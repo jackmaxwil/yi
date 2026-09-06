@@ -149,6 +149,10 @@ def run_task(task_dir, binary, model, out=None):
         }
         row.update(yi_usage.parse_events(events))
         row.update(yi_usage.session_extras(sessions))
+        if out:
+            # The per-task record evals/axes.py reads beside the sessions (plan S2):
+            # a campaign could not tell which task failed without re-running the suite.
+            (keep / "row.json").write_text(json.dumps(row, sort_keys=True))
     return spec, row
 
 
@@ -341,7 +345,7 @@ def main(argv=None):
     parser.add_argument("--live", action="store_true",
                         help="the live lane: a real model against evals/fixtures/live, capped")
     parser.add_argument("--cap-usd", type=float, default=1.0)
-    parser.add_argument("--out", help="keep sessions, events and run.json here (live)")
+    parser.add_argument("--out", help="keep sessions, events, row.json and run.json here")
     parser.add_argument("--allow-faux", action="store_true",
                         help="let --live run faux: proves the lane's plumbing offline, never a model")
     args = parser.parse_args(argv)
@@ -384,7 +388,7 @@ def main(argv=None):
     )
     rows = []
     for task in tasks:
-        spec, row = run_task(task, args.binary, args.model)
+        spec, row = run_task(task, args.binary, args.model, out=args.out)
         row["configFp"] = fingerprint
         rows.append(row)
         want = spec.get("dryReward")
