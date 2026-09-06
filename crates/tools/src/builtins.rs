@@ -313,7 +313,7 @@ impl Tool for BashTool {
     }
 
     fn description(&self) -> &str {
-        "Run a shell command with sh -c in the working directory and return its output and exit code."
+        "Run a shell command with sh -c in the working directory and return its output and exit code. cwd persists between calls; shell state does not. `a && b` stops at the first nonzero segment and `x | head` exits 141, so later segments silently never run: a chain that stopped is reported, a truncation is not the cause. Output over 30,000 bytes per stream is cut with [output truncated]; over 2,048 bytes it is reduced ([N lines omitted: A-B]) and the full text is at [full output: path], which read opens; max_output_lines raises the reducer's budget and -v/--verbose bypass it. wait is clamped 5-300 s; a longer command becomes a job you check by calling bash with no command. In auto mode a command the gate cannot prove runs contained where a sandbox exists (no network, no socket bind, writes only under cwd and tmp); a PermissionDenied there says nothing about the code."
     }
 
     fn schema(&self) -> Value {
@@ -398,6 +398,11 @@ impl Tool for BashTool {
         let exit_code = capture.exit_code.unwrap_or(-1);
         if exit_code != 0 {
             sections.push(format!("exit code: {exit_code}"));
+            if command.contains("&&") {
+                sections.push(format!(
+                    "[chain stopped at exit {exit_code}: the segments after the failing one did not run]"
+                ));
+            }
         }
         if context.sandbox.is_some()
             && let Some(hint) = crate::sandbox::denial_hint(
