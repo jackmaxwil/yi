@@ -35,3 +35,54 @@ jobs:
           FORGEJO_REPOSITORY: ${{ github.repository }}
           FORGEJO_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: python3 scripts/forge_tracking.py --hygiene
+      # The bundled floor against the world (plan 2026-09-05 §3.G): drift is an issue, not a red.
+      - name: catalog drift against models.dev and the providers
+        env:
+          FORGEJO_API_URL: ${{ github.api_url }}
+          FORGEJO_REPOSITORY: ${{ github.repository }}
+          FORGEJO_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python3 scripts/catalog_drift.py --issue || true
+
+  # The adapter matrix and the variance run: the flash suite exercises one adapter, so the
+  # other two run weekly at tight caps, and three flash runs give the baseline its spread.
+  # Every leg skips with its reason when its secret is absent.
+  live-weekly:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - run: rustup show
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: live
+          cache-on-failure: true
+      - run: cargo build -p yi-cli
+      - name: three flash runs, appended for variance
+        env:
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "${OPENROUTER_API_KEY:-}" ]; then echo "skip: no OPENROUTER_API_KEY"; exit 0; fi
+          for n in 1 2 3; do
+            python3 evals/run.py --live --binary target/debug/yi \
+              --model openrouter/deepseek/deepseek-v4-flash-0731 --cap-usd 1 --out "live-$n" || true
+            python3 scripts/live_ledger.py append "live-$n/run.json" "${GITHUB_SHA}-w$n"
+          done
+      - name: the anthropic adapter
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "${ANTHROPIC_API_KEY:-}" ]; then echo "skip: no ANTHROPIC_API_KEY"; exit 0; fi
+          python3 evals/run.py --live --binary target/debug/yi --model anthropic/claude-haiku-4-5 --cap-usd 0.5 --out live-anthropic || true
+          python3 scripts/live_report.py live-anthropic/run.json
+      - name: the openai-responses adapter
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "${OPENAI_API_KEY:-}" ]; then echo "skip: no OPENAI_API_KEY"; exit 0; fi
+          python3 evals/run.py --live --binary target/debug/yi --model openai/gpt-5.4-nano --cap-usd 0.5 --out live-openai || true
+          python3 scripts/live_report.py live-openai/run.json
