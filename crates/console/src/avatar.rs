@@ -11,7 +11,6 @@ pub const PX: usize = 40;
 const CELL: usize = 6;
 const MARGIN: usize = 6;
 const FIRST_ID: u32 = 8000;
-const CAP: usize = 64;
 
 /// A kitty image id the console issued; never a bare number crossing a seam.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -132,6 +131,7 @@ pub struct Placement {
     pub cols: u16,
     pub rows: u16,
     pub key: String,
+    pub seed: String,
     pub accent: (u8, u8, u8),
 }
 
@@ -152,13 +152,12 @@ impl Avatars {
             .filter(|key| !wanted.contains(&key.as_str()))
             .cloned()
             .collect();
+        // Incident: the delete frees the image data and the id stayed in the ledger, so a row
+        // that scrolled back in placed a freed image and showed nothing.
         for key in gone {
             self.placed.remove(&key);
-            if let Some(image) = self.ids.get(&key) {
+            if let Some(image) = self.ids.remove(&key) {
                 let _ = kitty::delete_id(out, image.raw());
-            }
-            if self.ids.len() > CAP {
-                self.ids.remove(&key);
             }
         }
         for place in rows {
@@ -172,7 +171,7 @@ impl Avatars {
                     let _ = kitty::transmit(
                         out,
                         image.raw(),
-                        &rgba(&grid(&place.key), place.accent),
+                        &rgba(&grid(&place.seed), place.accent),
                         PX,
                     );
                     self.ids.insert(place.key.clone(), image);
@@ -197,12 +196,14 @@ impl Avatars {
     }
 
     pub fn hide_all(&mut self, out: &mut impl Write) {
-        for (key, image) in &self.ids {
-            if self.placed.contains_key(key) {
+        for key in self.placed.keys() {
+            if let Some(image) = self.ids.get(key) {
                 let _ = kitty::delete_id(out, image.raw());
             }
         }
-        self.placed.clear();
+        for key in std::mem::take(&mut self.placed).into_keys() {
+            self.ids.remove(&key);
+        }
     }
 }
 
@@ -234,6 +235,7 @@ mod tests {
             cols: 4,
             rows: 2,
             key: "s-alpha".to_owned(),
+            seed: "s-alpha".to_owned(),
             accent: (1, 2, 3),
         };
         let mut avatars = Avatars::default();
@@ -253,6 +255,35 @@ mod tests {
             String::from_utf8_lossy(&after).contains("a=p,i="),
             "placed again after a clear"
         );
+    }
+
+    #[test]
+    fn a_row_that_scrolls_back_in_transmits_again() {
+        let place = Placement {
+            col: 2,
+            row: 0,
+            cols: 4,
+            rows: 2,
+            key: "s-alpha".to_owned(),
+            seed: "s-alpha".to_owned(),
+            accent: (1, 2, 3),
+        };
+        let mut avatars = Avatars::default();
+        avatars.sync(&mut Vec::new(), std::slice::from_ref(&place));
+        let mut gone = Vec::new();
+        avatars.sync(&mut gone, &[]);
+        assert!(
+            String::from_utf8_lossy(&gone).contains("a=d,d=I"),
+            "deleted"
+        );
+        let mut back = Vec::new();
+        avatars.sync(&mut back, std::slice::from_ref(&place));
+        let back = String::from_utf8_lossy(&back);
+        assert!(
+            back.contains("a=t"),
+            "transmitted again, not placed over freed data"
+        );
+        assert!(back.contains("a=p,i="), "placed");
     }
 
     #[test]

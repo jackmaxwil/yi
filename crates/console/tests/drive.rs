@@ -1783,7 +1783,7 @@ fn a_state_transition_moves_the_row_to_the_top() -> TestResult {
 /// The rail lists every session, windowed to the viewport like the full sidebar: the
 /// thirteenth session is a row, not a session the rail has no slot for.
 #[test]
-fn the_rail_windows_past_twelve_sessions() -> TestResult {
+fn the_rail_stops_at_its_numbered_slots() -> TestResult {
     use yi_console::model::{SessionId, SessionRow, SessionStatus};
     let theme = yi_tui::colors::Theme::new(yi_tui::colors::ColorTier::Ansi16, true);
     let mut app = yi_console::app::App::new("/tmp/demo-root".to_owned(), theme);
@@ -1802,7 +1802,16 @@ fn the_rail_windows_past_twelve_sessions() -> TestResult {
     let rows = yi_console::sidebar::sidebar_lines(&app, &theme, 60);
     let mut listed: Vec<usize> = rows.iter().filter_map(|row| row.index).collect();
     listed.dedup();
-    assert_eq!(listed.len(), 14, "every session has a rail row: {listed:?}");
+    assert_eq!(
+        listed.len(),
+        yi_console::sidebar::RAIL_CAP,
+        "the rail holds its numbered slots: {listed:?}"
+    );
+    let tail = rows
+        .last()
+        .map(|row| row.line.to_string())
+        .unwrap_or_default();
+    assert_eq!(tail.trim(), "+5", "the rest are counted, not listed");
     Ok(())
 }
 

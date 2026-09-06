@@ -238,6 +238,7 @@ fn run_interactive(
             if drawn.is_err() {
                 return 1;
             }
+            set_window_title(app);
             for sequence in app.osc_out.drain(..) {
                 use std::io::Write;
                 let _ = out.write_all(sequence.as_bytes());
@@ -253,6 +254,18 @@ fn run_interactive(
         }
     }
     0
+}
+
+fn set_window_title(app: &mut App) {
+    let title = app
+        .state
+        .focused_session()
+        .and_then(|id| app.state.sessions.get(&id))
+        .map_or_else(|| "yi".to_owned(), |row| format!("yi · {}", row.label()));
+    if title != app.window_title {
+        app.osc_out.push(format!("\x1b]2;{title}\x07"));
+        app.window_title = title;
+    }
 }
 
 /// The identicon over every rail row on screen; rows that scrolled off are deleted.

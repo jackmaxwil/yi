@@ -309,13 +309,11 @@ pub(crate) fn elapsed_label(ms: u64) -> String {
     }
 }
 
-fn status_glyph(status: ToolStatus, spinner_phase: usize) -> char {
-    match status {
-        ToolStatus::Running => spinner_frame(spinner_phase),
-        ToolStatus::Awaiting => '△',
-        ToolStatus::Done => '✓',
-        ToolStatus::Failed | ToolStatus::Denied => '✗',
-    }
+/// `412 lines`, `3 hits`: a digest that is a count and its noun, nothing else.
+fn counted(digest: &str) -> Option<(&str, &str)> {
+    let (count, noun) = digest.split_once(' ')?;
+    let numeric = !count.is_empty() && count.bytes().all(|b| b.is_ascii_digit());
+    (numeric && !noun.is_empty() && !noun.contains(' ')).then_some((count, noun))
 }
 
 /// Read-only calls group under one bullet: a run of eight is one act of
@@ -341,50 +339,34 @@ impl ToolCell {
             return crate::pycell::lines(self, width, theme, mode, spinner_phase);
         }
         let expanded = mode == TranscriptMode::Verbose;
+        let failed = matches!(self.status, ToolStatus::Failed | ToolStatus::Denied);
         let style = match self.status {
-            ToolStatus::Running => Style::default().fg(theme.text),
             ToolStatus::Awaiting => Style::default().fg(theme.warning),
-            ToolStatus::Done => theme.muted_style(),
             ToolStatus::Failed => Style::default().fg(theme.error),
             ToolStatus::Denied => theme.muted_style().add_modifier(Modifier::CROSSED_OUT),
+            ToolStatus::Running | ToolStatus::Done => Style::default().fg(theme.text),
         };
-        let mut tail = String::new();
-        if self.calls > 1 {
-            tail.push_str(&format!(" ×{}", self.calls));
-        }
-        if let Some(intent) = &self.intent
-            && self.status == ToolStatus::Running
-        {
-            tail.push_str(&format!(" · {intent}"));
-        }
-        if self.elapsed_ms > 0 {
-            tail.push_str(&format!(" · {}", elapsed_label(self.elapsed_ms)));
-        }
-        let glyph = match self.status {
-            ToolStatus::Done => Style::default().fg(theme.success),
-            ToolStatus::Failed | ToolStatus::Denied => Style::default().fg(theme.error),
-            _ => style,
+        let mut spans = match self.status {
+            ToolStatus::Running => vec![Span::styled(
+                format!("{} ", spinner_frame(spinner_phase)),
+                theme.accent_style(),
+            )],
+            ToolStatus::Awaiting => vec![Span::styled("△ ", style)],
+            _ => Vec::new(),
         };
-        let mut spans = vec![Span::styled(
-            format!("  {} ", status_glyph(self.status, spinner_phase)),
-            glyph,
-        )];
         spans.extend(self.summary_spans(theme, style));
-        spans.push(Span::styled(tail, theme.dim_style()));
-        let mut lines = wrap_line(&Line::from(spans), width, "    ");
+        let (chips, digest) = self.chips(theme);
+        let inner = crate::card::body_width(width);
+        let mut body = Vec::new();
         // A failure's body is never mode-gated: a reader who cannot see why a
         // call failed cannot act on it, whatever mode the cell rendered under.
-        let failed = matches!(self.status, ToolStatus::Failed | ToolStatus::Denied);
-        if let Some(digest) = &self.digest {
+        if let Some(digest) = digest {
             let detail = if failed {
                 Style::default().fg(theme.error)
             } else {
-                theme.dim_style()
+                theme.muted_style()
             };
-            let mut spans = vec![Span::styled(format!("    └ {digest}"), detail)];
-            spans.extend(self.stats_spans(theme));
-            spans.extend(self.exit_span(theme));
-            lines.extend(capped(&Line::from(spans), width, "      ", theme));
+            body.extend(capped(&Line::styled(digest, detail), inner, "  ", theme));
         }
         if let Some(patch) = self.patch() {
             let budget = if expanded {
@@ -392,15 +374,62 @@ impl ToolCell {
             } else {
                 DiffBudget::NORMAL
             };
-            lines.extend(diffview::render(patch, width, theme, budget));
-            return lines;
-        }
-        if expanded {
+            body.extend(diffview::render(patch, inner, theme, budget));
+        } else if expanded {
             for line in self.body(theme) {
-                lines.extend(capped(&line, width, "        ", theme));
+                body.extend(capped(&line, inner, "     ", theme));
             }
         }
-        lines
+        crate::card::card(Line::from(spans), &chips, body, width, theme, self.status)
+    }
+
+    /// The counts of the outcome as chips, and the digest that is prose rather than a count,
+    /// which goes to the body instead.
+    fn chips(&self, theme: &Theme) -> (Vec<crate::card::Chip>, Option<String>) {
+        use crate::card::Chip;
+        let mut chips = Vec::new();
+        if self.calls > 1 {
+            chips.push(Chip::new(
+                format!("×{}", self.calls),
+                "",
+                theme.muted_style(),
+            ));
+        }
+        if let Some(intent) = &self.intent
+            && self.status == ToolStatus::Running
+        {
+            chips.push(Chip::new(intent.clone(), "", theme.muted_style()));
+        }
+        let mut prose = None;
+        if let Some(digest) = &self.digest {
+            match counted(digest) {
+                Some((count, noun)) => {
+                    chips.push(Chip::new(count, noun, Style::default().fg(theme.text)));
+                }
+                None => prose = Some(digest.clone()),
+            }
+        }
+        let count = |key: &str| self.details.get(key).and_then(Value::as_u64).unwrap_or(0);
+        let (added, removed) = (count("added"), count("removed"));
+        if added > 0 || removed > 0 {
+            chips.push(Chip::new(
+                format!("+{added}"),
+                "",
+                Style::default().fg(theme.success),
+            ));
+            chips.push(Chip::new(
+                format!("−{removed}"),
+                "",
+                Style::default().fg(theme.error),
+            ));
+        }
+        if self.status != ToolStatus::Running
+            && let Some(code) = self.details.get("exitCode").and_then(Value::as_i64)
+        {
+            chips.push(Chip::exit(code, theme));
+        }
+        chips.extend(Chip::elapsed(self.elapsed_ms, theme));
+        (chips, prose)
     }
 
     fn patch(&self) -> Option<&str> {
@@ -413,50 +442,27 @@ impl ToolCell {
         let command = self.summary.strip_prefix("$ ");
         let Some((mut lang, command)) = crate::highlight::lang_for("bash").zip(command) else {
             let name = Style::default()
-                .fg(theme.warning)
+                .fg(crate::card::tool_hue(theme, &self.name))
                 .add_modifier(Modifier::BOLD);
             return match self.summary.split_once(self.name.as_str()) {
-                Some((glyph, rest)) => vec![
-                    Span::styled(format!("{glyph}{}", self.name), name),
-                    Span::styled(rest.to_owned(), style),
-                ],
+                Some((glyph, rest)) => {
+                    let mut spans = vec![Span::styled(format!("{glyph}{}", self.name), name)];
+                    // A path is read by its basename; the directories are context, so dim.
+                    match rest.rsplit_once('/') {
+                        Some((dir, base)) if !rest.contains(' ') && !base.is_empty() => {
+                            spans.push(Span::styled(format!("{dir}/"), theme.dim_style()));
+                            spans.push(Span::styled(base.to_owned(), style));
+                        }
+                        _ => spans.push(Span::styled(rest.to_owned(), style)),
+                    }
+                    spans
+                }
                 None => vec![Span::styled(self.summary.clone(), style)],
             };
         };
         let mut spans = vec![Span::styled("$ ".to_owned(), theme.dim_style())];
         spans.extend(crate::highlight::spans(command, &mut lang, theme, style));
         spans
-    }
-
-    /// A nonzero exit is the whole outcome of a command that printed nothing,
-    /// and the transcript otherwise hides it.
-    fn exit_span(&self, theme: &Theme) -> Vec<Span<'static>> {
-        if self.status == ToolStatus::Running {
-            return Vec::new();
-        }
-        let Some(code) = self.details.get("exitCode").and_then(Value::as_i64) else {
-            return Vec::new();
-        };
-        let style = if code == 0 {
-            theme.dim_style()
-        } else {
-            Style::default().fg(theme.error)
-        };
-        vec![Span::styled(format!(" · exit {code}"), style)]
-    }
-
-    /// `+12 -3` in the diff's own colours, on the line that already names the
-    /// target — the counts a reader wants before deciding to read the body.
-    fn stats_spans(&self, theme: &Theme) -> Vec<Span<'static>> {
-        let count = |key: &str| self.details.get(key).and_then(Value::as_u64).unwrap_or(0);
-        let (added, removed) = (count("added"), count("removed"));
-        if added == 0 && removed == 0 {
-            return Vec::new();
-        }
-        vec![
-            Span::styled(format!(" +{added}"), Style::default().fg(theme.success)),
-            Span::styled(format!(" -{removed}"), Style::default().fg(theme.error)),
-        ]
     }
 
     /// Typed, not a raw dump: a read hangs off a line-number gutter and a search
@@ -481,18 +487,18 @@ impl ToolCell {
             let row = if searchy { grep_row(raw) } else { None };
             if let Some((path, number, body)) = row {
                 if last_path.as_deref() != Some(path) {
-                    out.push(Line::from(Span::styled(format!("      {path}"), dim)));
+                    out.push(Line::from(Span::styled(path.to_owned(), dim)));
                     last_path = Some(path.to_owned());
                 }
                 out.push(Line::from(vec![
-                    Span::styled(format!("      {number:>4} "), dim),
+                    Span::styled(format!("{number:>4} "), dim),
                     Span::styled(body.to_owned(), text),
                 ]));
                 continue;
             }
             match numbered(raw) {
                 Some((number, body)) => {
-                    let mut spans = vec![Span::styled(format!("      {number:>4} "), dim)];
+                    let mut spans = vec![Span::styled(format!("{number:>4} "), dim)];
                     // The parse describes only the rows fed to it from line 1, so a preview
                     // opening mid-file leaves it describing text the reader never saw.
                     if number.parse::<u64>().ok() != Some(expect) {
@@ -515,7 +521,7 @@ impl ToolCell {
                 // The hashline header repeats the path the head line already
                 // names, and the verb line is the digest above it.
                 None if anchored && !raw.starts_with('…') => {}
-                None => out.push(Line::from(Span::styled(format!("      {raw}"), dim))),
+                None => out.push(Line::from(Span::styled(raw.to_owned(), dim))),
             }
         }
         out
@@ -548,7 +554,13 @@ impl ToolCell {
                 .filter(|line| !line.starts_with('[') && strip_hashline(line) != *line)
                 .count()
         };
+        let entries = || {
+            text.lines()
+                .filter(|line| line.ends_with('/') || line.ends_with(" B"))
+                .count()
+        };
         let digest = match name {
+            "read" if numbered() == 0 && entries() > 0 => count_label(entries(), "entry"),
             "read" => count_label(numbered(), "line"),
             // `[path#TAG]` then `updated; first change at line N` — the verb
             // and the anchor the model just earned, in the tool's own words.
@@ -846,12 +858,18 @@ const VERB_WIDTH: usize = 6;
 /// A run of read-only calls, one row each under a single bullet: the verb in
 /// accent, its subject, and the digest the call earned.
 fn explored_lines(rows: &[ToolCell], width: usize, theme: &Theme) -> Vec<Line<'static>> {
-    let mut out = vec![Line::from(Span::styled(
-        format!("  ✱ Explored ×{}", rows.len()),
-        theme.muted_style(),
-    ))];
-    for (index, row) in rows.iter().take(EXPLORED_CAP).enumerate() {
-        let lead = if index == 0 { "    └ " } else { "      " };
+    let head = Line::from(vec![
+        Span::styled(
+            "✱ Explored",
+            Style::default()
+                .fg(crate::card::tool_hue(theme, "read"))
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(format!(" ×{}", rows.len()), theme.muted_style()),
+    ]);
+    let inner = crate::card::body_width(width);
+    let mut out = Vec::new();
+    for row in rows.iter().take(EXPLORED_CAP) {
         let verb = explore_verb(&row.name).unwrap_or("Ran");
         // The summary opens with the tool's own glyph and name, which the verb
         // column now says; what is left is the subject.
@@ -862,25 +880,24 @@ fn explored_lines(rows: &[ToolCell], width: usize, theme: &Theme) -> Vec<Line<'s
             .unwrap_or(row.summary.as_str())
             .to_owned();
         let mut spans = vec![
-            Span::styled(lead.to_owned(), theme.dim_style()),
             Span::styled(
                 format!("{verb:<VERB_WIDTH$} "),
                 Style::default().fg(theme.accent),
             ),
-            Span::styled(subject, theme.muted_style()),
+            Span::styled(subject, Style::default().fg(theme.text)),
         ];
         if let Some(digest) = &row.digest {
-            spans.push(Span::styled(format!(" · {digest}"), theme.dim_style()));
+            spans.push(Span::styled(format!("  {digest}"), theme.dim_style()));
         }
-        out.extend(wrap_line(&Line::from(spans), width, "        "));
+        out.extend(wrap_line(&Line::from(spans), inner, "        "));
     }
     if let Some(extra) = rows.len().checked_sub(EXPLORED_CAP).filter(|n| *n > 0) {
         out.push(Line::from(Span::styled(
-            format!("      … {extra} more"),
+            format!("… {extra} more"),
             theme.dim_style(),
         )));
     }
-    out
+    crate::card::card(head, &[], out, width, theme, ToolStatus::Done)
 }
 
 /// Advisories arrive as `<advisory …>text</advisory>` markup; the tags are

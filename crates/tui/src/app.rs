@@ -138,6 +138,7 @@ pub struct App {
     pub(crate) live_lang: Option<crate::highlight::Lang>,
     pub(crate) live_thought: String,
     pub(crate) live_cut: usize,
+    pub(crate) live_spaced: bool,
     /// The byte of `live_thought` already committed to scrollback, the mirror of
     /// `live_cut` for reasoning.
     pub(crate) live_thought_cut: usize,
@@ -201,6 +202,8 @@ pub fn next_spinner_wake(elapsed_ms: u128) -> Duration {
 
 mod stream;
 
+const MEASURE: usize = 100;
+
 impl App {
     pub fn new(options: TuiOptions, theme: Theme, keymap: Keymap, width: usize) -> Self {
         let mut app = Self {
@@ -234,6 +237,7 @@ impl App {
             live_markdown: String::new(),
             live_reopen: None,
             live_lang: None,
+            live_spaced: true,
             live_thought: String::new(),
             live_cut: 0,
             live_thought_cut: 0,
@@ -354,8 +358,19 @@ impl App {
         handle_terminal_event(self, cmd_tx, ct_event);
     }
 
+    fn reset_live(&mut self) {
+        self.live_markdown.clear();
+        self.live_thought.clear();
+        self.live_cut = 0;
+        self.live_thought_cut = 0;
+        self.live_reopen = None;
+        self.live_lang = None;
+        self.live_spaced = true;
+        self.pacing.reset();
+    }
+
     pub(crate) fn content_width(&self) -> usize {
-        self.width.saturating_sub(2)
+        self.width.saturating_sub(2).min(MEASURE)
     }
 
     /// The mode decides how every cell renders, including those above the viewport, so the
@@ -489,13 +504,7 @@ impl App {
     pub(crate) fn reset_transcript(&mut self) {
         self.history.clear();
         self.pending_commit.clear();
-        self.live_markdown.clear();
-        self.live_reopen = None;
-        self.live_lang = None;
-        self.live_thought.clear();
-        self.live_cut = 0;
-        self.live_thought_cut = 0;
-        self.pacing.reset();
+        self.reset_live();
         self.live_tools.clear();
     }
 
@@ -702,13 +711,7 @@ impl App {
                 self.live_markdown = text_of(content);
                 self.commit_prose(self.live_markdown.len(), true);
                 self.scheduler.request();
-                self.live_markdown.clear();
-                self.live_thought.clear();
-                self.live_cut = 0;
-                self.live_reopen = None;
-                self.live_lang = None;
-                self.live_thought_cut = 0;
-                self.pacing.reset();
+                self.reset_live();
                 if *stop_reason == StopReason::Error {
                     let text = error_message
                         .clone()

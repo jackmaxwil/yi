@@ -189,8 +189,8 @@ fn a_diff_body_lands_on_a_real_screen_below_a_viewport_offset() -> TestResult {
         "both sides of the change must reach the screen: {contents}"
     );
     assert!(
-        contents.contains("+1 -1"),
-        "the stats ride the digest row: {contents}"
+        contents.contains("+1  −1"),
+        "the stats ride the head row: {contents}"
     );
     Ok(())
 }
@@ -1345,7 +1345,7 @@ fn a_child_that_finishes_inside_its_spawning_cell_lands_under_it() -> TestResult
     let committed = flat_lines(&app.take_commits());
     let cell = committed
         .iter()
-        .position(|line| line.contains("⊙ python · h = await rlm.run('trace')"))
+        .position(|line| line.contains("⊙ python  h = await rlm.run('trace')"))
         .ok_or_else(|| format!("no kernel cell row: {committed:?}"))?;
     let task = committed
         .iter()
