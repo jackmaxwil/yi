@@ -285,13 +285,31 @@ whole request, from investigation through implementation to verification,
 not only the next step. Nest sub-steps under a todo when a step has parts
 the user should see progress on; two levels are enough.
 
-Step the list as you go: `start` the item you are working, `done` the item
-you finished the moment you finish it, `block` an item that waits on the
-user or an external condition and say what would unblock it, `drop` an
-item that turned out not to apply and say why. One item is running at a
-time. A todo call rides with real work in the same message; never a turn
-whose only call is a todo op. Keep labels stable; if you have lost the
-exact text, `view` the list, never guess.
+Every item is in exactly one state, and you move it with one op:
+
+- pending → running: `start <label>`, when you begin it. One item runs
+  at a time; starting another returns the first to pending.
+- running → done: `done <label>`, the moment its check passed, with the
+  check quoted as `evidence`. Never on intent, never before the check.
+- running or pending → blocked: `block <label> on user|external|child`
+  with a `note` saying exactly what would unblock it. Use it the moment
+  you cannot proceed without something you do not control: the user's
+  answer, a service, a child's result. A question to the user without a
+  blocked item is not a clean stop; block the item, then ask.
+- blocked → pending: `unblock <label>` when the answer or the result
+  arrived; then `start` it.
+- any → abandoned: `drop <label> <reason>` when the item no longer
+  applies. The reason is the user's record of why.
+- new work: `append`, under a parent when it is a part of one.
+
+You always can and always should make these transitions yourself; the
+runtime never guesses a state for you, and it returns you to the list
+when you stop with an item still pending or running. If you are waiting,
+the item is blocked, not running. If it is finished, it is done, not
+running. If it is out of scope, it is dropped with a reason, not
+forgotten. A todo call rides with real work in the same message; never a
+turn whose only call is a todo op. Keep labels stable; if you have lost
+the exact text, `view` the list, never guess.
 
 Done means done: an item is stepped to `done` after its check passed, not
 after its edit was written. When the turn ends with an item open that you
@@ -718,6 +736,14 @@ rebuilds the schema from `properties` alone):
 | `rm` | `label` or `phase` or neither | remove |
 | `view` | — | echo; read-only, no normalization |
 
+The tool's description carries the transition table above verbatim, and
+every successful result echoes the list followed by one `next:` line per
+open item naming its legal ops with the label filled in (`next: done
+"wire the stop interception" · block "wire the stop interception" on
+user · drop "wire the stop interception"`), so the model never has to
+recall the syntax (0.62.0 §7's affordance contract). An illegal transition
+is refused with the legal ones listed.
+
 Invariants, enforced in the tool and named in its error text (the error is
 the teacher): labels verbatim and unique, addressed by content never by
 index; at most one Running item after normalization, the earliest Pending
@@ -784,8 +810,8 @@ changed since the last rung:
 
 | rung | when | message (`custom{todo_intercept}`) | visible |
 |---|---|---|---|
-| 1 | first stop with open items | the open items; "continue, or step what is finished; do not restate your answer" | yes, one line |
-| 2 | fingerprint unchanged after rung 1 | "…or `block` an item on the user with the question, or `drop` it with a reason; no other stop is clean" | hidden |
+| 1 | first stop with open items | the open items, each with its legal ops filled in (`done "…"` · `block "…" on user` · `drop "…"`); "continue the running item, or move each item to the state that is true: done with its evidence, blocked with what would unblock it, dropped with a reason; do not restate your answer" | yes, one line |
+| 2 | fingerprint unchanged after rung 1 | the same items and ops; "no item moved; a clean stop needs every open item blocked on someone else with the blocker named, or dropped with a reason; if you are waiting on the user, `block` on user and ask in the same message" | hidden |
 | 3 | fingerprint unchanged after rung 2 | "the turn ends now; write the closing message naming each open item and why; call no tools" (dsh's closing-message interception: a hard stop leaves a bare tool card) | hidden |
 | — | after rung 3, or on any cap | the host appends the open list to the final message as ground truth and emits `AgentSettled` | yes |
 
@@ -1093,6 +1119,7 @@ words; each an incident from the autopsy or from law 7:
 | `done_without_check` | a `done` op on an item whose Running span contains no successful test or gate result and no `evidence` |
 | `intercept_capped` | a cycle that reached `INTERCEPT_CAP_PER_CYCLE`, with the rungs and the final open set |
 | `blocked_on_user_without_question` | a `block on: user` in a turn whose final message has no `?` and no `ask_user` call |
+| `waiting_without_block` | a final message that asks the user something (`?` in the last line or an `ask_user` call) while an item is Running and none is Blocked on the user |
 | `gate_rerun_unchanged_tree` | a gate command run twice with no change landed between (prime's recorded incident) |
 | `asked_twice` | a user message whose normalized token set overlaps ≥ 0.8 with an earlier user message in the session (flagged; the pair is shown) |
 | `closing_offer` | a final message whose last line ends with `?` addressed to the user, or contains an offer form; flagged, never scored |
@@ -1152,8 +1179,10 @@ provoking prompt, glm-5.3-flash, plus `just check` green by exit code.
   the host remainder appended and `AgentSettled` emitted; a `?`-ending
   answer with open items is re-driven; an `Aborted`, `Error` or empty
   `Length` stop is not; the counter survives a resume; `Op::Set` on the
-  plan tool no longer allocates a plan. Each bound is proven by neutering
-  it and watching its test fail. Kill: none; this is the directive.
+  plan tool no longer allocates a plan; a model that only knows
+  `start`/`done` is shown the exact `block` call by the third message (the
+  fixture in §11). Each bound is proven by neutering it and watching its
+  test fail. Kill: none; this is the directive.
 - **S2 — identity + doctrine + mode** (§3, §7.3 rung 1; D137). Done: the
   fragments as drafted, reviewed paragraph by paragraph against their
   named incident; `request_budget` updated in its own commit; the re-run
@@ -1209,9 +1238,16 @@ provoking prompt, glm-5.3-flash, plus `just check` green by exit code.
   not force on a prompt ending in `?` or opening with an interrogative;
   the prelude without force is a suggestion the Todos section scopes
   ("three or more distinct steps").
-- Stop interception versus a real question: a final message whose last
-  line is a question to the user is not intercepted (`asking_user`);
-  `ask_user` is the preferred channel and is not intercepted either.
+- Stop interception versus a real question: a final message that asks the
+  user something while an item is still Running is re-driven once; rung 1
+  names `block "<label>" on user`; the scripted model blocks and asks in
+  the same message; the turn ends clean. The same turn with the item
+  already blocked, or with an `ask_user` call, is never intercepted.
+- A model that does not know it may block: the tool description, the
+  result's `next:` line and rung 1 all carry `block "<label>" on user`
+  with the label filled in; a fixture session drives a model that only
+  ever calls `start`/`done` and asserts the third message it sees contains
+  the exact `block` call it needs.
 - Interception cap: five reminders with no todo touch between them end
   the turn with the open items listed in the final message; the miner
   records it.
@@ -1271,10 +1307,9 @@ provoking prompt, glm-5.3-flash, plus `just check` green by exit code.
 
 1. §7.3 rung 3: trust the user's own repositories by default, or keep
    `yi trust` explicit and only name it in the prompt?
-2. §5.3: `INTERCEPT_CAP_PER_CYCLE` 6 (jcode 5, OMP 3, strix 3). The
-   pressure test settled that unbounded-with-progress is unsafe (`start`
-   A, stop, `start` B, stop is progress); the number itself is the user's
-   and moves with the ledger.
+2. Settled 2026-09-06: `INTERCEPT_CAP_PER_CYCLE` = 6 (jcode 5, OMP 3,
+   strix 3); unbounded-with-progress rejected (`start` A, stop, `start` B,
+   stop is progress). The number moves only with the ledger.
 3. §5.4: should the console's rail row show `a/b` for every session, or
    only the focused one?
 4. §3.2 length: the doctrine draft is ≈ 17 KB. Is there a section the
