@@ -14,7 +14,7 @@ fn refresh_hours() -> Option<u64> {
     )
 }
 
-fn clock() -> std::time::SystemTime {
+pub(crate) fn clock() -> std::time::SystemTime {
     std::time::UNIX_EPOCH + std::time::Duration::from_millis(yi_runtime::session_store::now_ms())
 }
 
