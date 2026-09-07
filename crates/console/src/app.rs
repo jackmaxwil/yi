@@ -82,6 +82,9 @@ pub struct App {
     pub osc_flavor: OscFlavor,
     pub osc_out: Vec<String>,
     pub hits: Option<crate::render::Hits>,
+    /// The live drag over the frame, and the text the last draw read under it.
+    pub selection: Option<crate::select::Selection>,
+    pub selected: String,
     pub avatars: crate::avatar::Avatars,
     pub accents: HashMap<String, usize>,
     /// Split path under an active border drag, pinned to its tab so a
@@ -129,6 +132,8 @@ impl App {
             notes: NoteQueue::default(),
             osc_flavor: OscFlavor::None,
             osc_out: Vec::new(),
+            selection: None,
+            selected: String::new(),
             hits: None,
             avatars: crate::avatar::Avatars::default(),
             accents: HashMap::new(),
@@ -1003,7 +1008,12 @@ impl App {
 
     pub fn handle_event(&mut self, outbound: &Outbound, event: CtEvent) {
         match event {
-            CtEvent::Key(key) => self.handle_key(outbound, key),
+            CtEvent::Key(key) => {
+                if self.selection.take().is_some() {
+                    self.dirty = true;
+                }
+                self.handle_key(outbound, key);
+            }
             CtEvent::Resize(cols, rows) => {
                 for pane in self.state.panes.values_mut() {
                     if let PaneContent::Session {

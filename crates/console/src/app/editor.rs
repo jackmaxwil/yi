@@ -149,14 +149,28 @@ impl Editor {
         self.jump(row, col);
     }
 
-    pub(super) fn release(&mut self) {
-        if self
-            .text
-            .selection_range()
-            .is_some_and(|(start, end)| start == end)
-        {
+    /// The drag ends: an empty one leaves no selection, a real one is the copy, and the
+    /// selection stays live so a following keystroke still replaces it.
+    pub(super) fn release(&mut self) -> Option<String> {
+        let ((start_row, start_col), (end_row, end_col)) = self.text.selection_range()?;
+        if (start_row, start_col) == (end_row, end_col) {
             self.text.cancel_selection();
+            return None;
         }
+        let lines = self.text.lines();
+        let width = end_col.saturating_sub(start_col);
+        if start_row == end_row {
+            let line = lines.get(start_row)?;
+            return Some(line.chars().skip(start_col).take(width).collect());
+        }
+        let mut text: String = lines.get(start_row)?.chars().skip(start_col).collect();
+        for row in start_row.saturating_add(1)..end_row {
+            text.push('\n');
+            text.push_str(lines.get(row)?);
+        }
+        text.push('\n');
+        text.extend(lines.get(end_row)?.chars().take(end_col));
+        Some(text)
     }
 }
 

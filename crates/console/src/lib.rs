@@ -14,6 +14,7 @@ pub mod model;
 pub mod notify;
 pub mod palette;
 pub mod render;
+pub mod select;
 pub mod sidebar;
 
 use std::io::Stdout;
@@ -124,6 +125,13 @@ fn draw<B: Backend>(
     terminal.draw(|frame| {
         let mut view = render::compute_view(app, frame.area(), theme);
         render::render(app, frame, &mut view, theme);
+        let area = frame.area();
+        app.selected = match app.selection {
+            Some(selection) => {
+                crate::select::paint(frame.buffer_mut(), area, selection, theme.selection_bg())
+            }
+            None => String::new(),
+        };
         if let Some(cursor) = view.editor_cursor {
             frame.set_cursor_position(cursor);
         }
