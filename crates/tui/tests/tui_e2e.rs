@@ -353,11 +353,10 @@ fn streamed(body: &str) -> yi_types::event::AgentEvent {
         timestamp: 0,
     };
     yi_types::event::AgentEvent::MessageUpdate {
-        message: message.clone(),
-        assistant_message_event: yi_types::event::AssistantMessageEvent::TextDelta {
-            content_index: 0,
-            delta: String::new(),
-            partial: message,
+        // A delta is a delta (D145): a test hands the reducer a whole message as `Done`.
+        assistant_message_event: yi_types::event::AssistantMessageEvent::Done {
+            reason: yi_types::message::StopReason::Stop,
+            message,
         },
     }
 }
@@ -646,11 +645,10 @@ fn reasoning_stays_on_screen_once_the_prose_starts() -> TestResult {
     let thought = "Weighed the first option.\n\nStill weighing the second";
     for message in [partial(thought, ""), partial(thought, "The answer.")] {
         app.reduce_agent(yi_types::event::AgentEvent::MessageUpdate {
-            message: message.clone(),
-            assistant_message_event: yi_types::event::AssistantMessageEvent::TextDelta {
-                content_index: 0,
-                delta: String::new(),
-                partial: message,
+            // A delta is a delta (D145): a test hands the reducer a whole message as `Done`.
+            assistant_message_event: yi_types::event::AssistantMessageEvent::Done {
+                reason: yi_types::message::StopReason::Stop,
+                message,
             },
         });
         yi_tui::render::draw(&mut app, &mut terminal, None);
@@ -1238,11 +1236,10 @@ fn a_flushed_thought_leaves_no_empty_count_row_in_the_live_region() -> TestResul
         StopReason::Stop,
     );
     app.reduce_agent(yi_types::event::AgentEvent::MessageUpdate {
-        message: message.clone(),
-        assistant_message_event: yi_types::event::AssistantMessageEvent::TextDelta {
-            content_index: 0,
-            delta: String::new(),
-            partial: message,
+        // A delta is a delta (D145): a test hands the reducer a whole message as `Done`.
+        assistant_message_event: yi_types::event::AssistantMessageEvent::Done {
+            reason: yi_types::message::StopReason::Stop,
+            message,
         },
     });
     yi_tui::render::draw(&mut app, &mut terminal, None);

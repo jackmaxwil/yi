@@ -489,10 +489,7 @@ impl EventMapper {
             text_signature: None,
         });
         self.text_index = Some(content_index);
-        events.push(AssistantMessageEvent::TextStart {
-            content_index,
-            partial: self.output.clone(),
-        });
+        events.push(AssistantMessageEvent::TextStart { content_index });
         Some(content_index)
     }
 
@@ -508,10 +505,7 @@ impl EventMapper {
             redacted: None,
         });
         self.thinking_index = Some(content_index);
-        events.push(AssistantMessageEvent::ThinkingStart {
-            content_index,
-            partial: self.output.clone(),
-        });
+        events.push(AssistantMessageEvent::ThinkingStart { content_index });
         Some(content_index)
     }
 
@@ -601,10 +595,7 @@ impl EventMapper {
             partial_args: String::new(),
             freeform: false,
         });
-        events.push(AssistantMessageEvent::ToolCallStart {
-            content_index,
-            partial: self.output.clone(),
-        });
+        events.push(AssistantMessageEvent::ToolCallStart { content_index });
         Some(self.tools.len().saturating_sub(1))
     }
 
@@ -624,7 +615,6 @@ impl EventMapper {
         events.push(AssistantMessageEvent::TextDelta {
             content_index,
             delta: delta.to_owned(),
-            partial: self.output.clone(),
         });
     }
 
@@ -644,7 +634,6 @@ impl EventMapper {
         events.push(AssistantMessageEvent::ThinkingDelta {
             content_index,
             delta: delta.to_owned(),
-            partial: self.output.clone(),
         });
     }
 
@@ -689,7 +678,6 @@ impl EventMapper {
         events.push(AssistantMessageEvent::ToolCallDelta {
             content_index,
             delta: chunk.to_owned(),
-            partial: self.output.clone(),
         });
     }
 
@@ -718,7 +706,6 @@ impl EventMapper {
                 events.push(AssistantMessageEvent::ToolCallEnd {
                     content_index,
                     tool_call,
-                    partial: self.output.clone(),
                 });
             }
         }
@@ -924,13 +911,11 @@ impl EventMapper {
                 Content::Text { text, .. } => events.push(AssistantMessageEvent::TextEnd {
                     content_index,
                     content: text.clone(),
-                    partial: self.output.clone(),
                 }),
                 Content::Thinking { thinking, .. } => {
                     events.push(AssistantMessageEvent::ThinkingEnd {
                         content_index,
                         content: thinking.clone(),
-                        partial: self.output.clone(),
                     });
                 }
                 Content::ToolCall { .. } => {
@@ -942,7 +927,6 @@ impl EventMapper {
                         events.push(AssistantMessageEvent::ToolCallEnd {
                             content_index,
                             tool_call: block.clone(),
-                            partial: self.output.clone(),
                         });
                     }
                 }

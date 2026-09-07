@@ -144,11 +144,10 @@ fn update(text: &str) -> yi_types::event::AgentEvent {
         yi_types::message::StopReason::Stop,
     );
     yi_types::event::AgentEvent::MessageUpdate {
-        message: message.clone(),
-        assistant_message_event: yi_types::event::AssistantMessageEvent::TextDelta {
-            content_index: 0,
-            delta: String::new(),
-            partial: message,
+        // A delta is a delta (D145): a test hands the reducer a whole message as `Done`.
+        assistant_message_event: yi_types::event::AssistantMessageEvent::Done {
+            reason: yi_types::message::StopReason::Stop,
+            message,
         },
     }
 }

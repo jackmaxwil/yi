@@ -427,10 +427,6 @@ impl Mapper {
         calculate_cost(&model, self.usage_mut());
     }
 
-    fn partial(&self) -> AgentMessage {
-        self.output.clone()
-    }
-
     pub fn push(&mut self, payload: &Value) -> Vec<AssistantMessageEvent> {
         let mut events = Vec::new();
         match payload.get("type").and_then(Value::as_str) {
@@ -495,10 +491,7 @@ impl Mapper {
                     });
                     self.partial_json.push(None);
                     self.api_indices.push(api_index);
-                    events.push(AssistantMessageEvent::TextStart {
-                        content_index,
-                        partial: self.partial(),
-                    });
+                    events.push(AssistantMessageEvent::TextStart { content_index });
                 }
                 Some("thinking") => {
                     self.content_mut().push(Content::Thinking {
@@ -518,10 +511,7 @@ impl Mapper {
                     });
                     self.partial_json.push(None);
                     self.api_indices.push(api_index);
-                    events.push(AssistantMessageEvent::ThinkingStart {
-                        content_index,
-                        partial: self.partial(),
-                    });
+                    events.push(AssistantMessageEvent::ThinkingStart { content_index });
                 }
                 Some("redacted_thinking") => {
                     self.content_mut().push(Content::Thinking {
@@ -534,10 +524,7 @@ impl Mapper {
                     });
                     self.partial_json.push(None);
                     self.api_indices.push(api_index);
-                    events.push(AssistantMessageEvent::ThinkingStart {
-                        content_index,
-                        partial: self.partial(),
-                    });
+                    events.push(AssistantMessageEvent::ThinkingStart { content_index });
                 }
                 Some("tool_use") => {
                     let arguments = block
@@ -562,10 +549,7 @@ impl Mapper {
                     });
                     self.partial_json.push(Some(String::new()));
                     self.api_indices.push(api_index);
-                    events.push(AssistantMessageEvent::ToolCallStart {
-                        content_index,
-                        partial: self.partial(),
-                    });
+                    events.push(AssistantMessageEvent::ToolCallStart { content_index });
                 }
                 _ => {
                     self.partial_json.push(None);
@@ -593,7 +577,6 @@ impl Mapper {
                     events.push(AssistantMessageEvent::TextDelta {
                         content_index,
                         delta: chunk.to_owned(),
-                        partial: self.partial(),
                     });
                 }
                 Some("thinking_delta") => {
@@ -606,7 +589,6 @@ impl Mapper {
                     events.push(AssistantMessageEvent::ThinkingDelta {
                         content_index,
                         delta: chunk.to_owned(),
-                        partial: self.partial(),
                     });
                 }
                 Some("input_json_delta") => {
@@ -629,7 +611,6 @@ impl Mapper {
                     events.push(AssistantMessageEvent::ToolCallDelta {
                         content_index,
                         delta: chunk.to_owned(),
-                        partial: self.partial(),
                     });
                 }
                 Some("signature_delta") => {
@@ -661,14 +642,12 @@ impl Mapper {
                     events.push(AssistantMessageEvent::TextEnd {
                         content_index,
                         content: text,
-                        partial: self.partial(),
                     });
                 }
                 Some(Content::Thinking { thinking, .. }) => {
                     events.push(AssistantMessageEvent::ThinkingEnd {
                         content_index,
                         content: thinking,
-                        partial: self.partial(),
                     });
                 }
                 Some(Content::ToolCall { .. }) => {
@@ -688,7 +667,6 @@ impl Mapper {
                         events.push(AssistantMessageEvent::ToolCallEnd {
                             content_index,
                             tool_call: block,
-                            partial: self.partial(),
                         });
                     }
                 }

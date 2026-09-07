@@ -234,26 +234,6 @@ pub fn test_model(id: &str) -> yi_types::model::Model {
     }
 }
 
-/// The partial every streaming event carries; `Done`/`Error` carry the whole
-/// message instead.
-fn partial_of(event: &yi_types::event::AssistantMessageEvent) -> yi_types::message::AgentMessage {
-    use yi_types::event::AssistantMessageEvent as Event;
-    match event {
-        Event::Start { partial }
-        | Event::TextStart { partial, .. }
-        | Event::TextDelta { partial, .. }
-        | Event::TextEnd { partial, .. }
-        | Event::ThinkingStart { partial, .. }
-        | Event::ThinkingDelta { partial, .. }
-        | Event::ThinkingEnd { partial, .. }
-        | Event::ToolCallStart { partial, .. }
-        | Event::ToolCallDelta { partial, .. }
-        | Event::ToolCallEnd { partial, .. } => partial.clone(),
-        Event::Done { message, .. } => message.clone(),
-        Event::Error { error, .. } => error.clone(),
-    }
-}
-
 /// Replay a recorded session as the event stream the reducer sees live: each
 /// assistant entry re-streamed through `stream_with_deltas`, each tool result
 /// paired with the call it answers, and every turn a typed prompt opens is
@@ -315,7 +295,6 @@ pub fn replay_stream(
                 });
                 for event in yi_runtime::faux::stream_with_deltas(&message) {
                     app.reduce_agent(AgentEvent::MessageUpdate {
-                        message: partial_of(&event),
                         assistant_message_event: event,
                     });
                 }

@@ -92,6 +92,7 @@ pub(crate) const ORB_ROWS: u16 = 3;
 pub(crate) const ORB_PX: usize = 192;
 pub struct TaskState {
     pub(crate) cell: TaskCell,
+    pub(crate) streaming: Option<AgentMessage>,
     pub(crate) started: Instant,
     /// When the child reached a terminal state, so the strike can sweep.
     pub(crate) finished: Option<Instant>,
@@ -131,6 +132,7 @@ pub struct App {
     pub(crate) logo_target: f64,
     pub(crate) history: crate::history::History,
     pub(crate) reflow: crate::reflow::ReflowState,
+    pub(crate) streaming: Option<AgentMessage>,
     pub(crate) live_markdown: String,
     /// Fence-open line active at `live_cut`: any slice rendered from there
     /// reopens the fence so its rows still render as code.
@@ -234,6 +236,7 @@ impl App {
             logo_target: 0.0,
             history: crate::history::History::default(),
             reflow: crate::reflow::ReflowState::default(),
+            streaming: None,
             live_markdown: String::new(),
             live_reopen: None,
             live_lang: None,
@@ -564,6 +567,9 @@ impl App {
                 self.scheduler.request();
             }
             AgentEvent::MessageStart { message } => {
+                if let AgentMessage::Assistant { .. } = &message {
+                    return self.streaming = Some(message);
+                }
                 let attribution = message.attribution();
                 let AgentMessage::User { content, .. } = message else {
                     return;
@@ -597,10 +603,10 @@ impl App {
                 }
             }
             AgentEvent::MessageUpdate {
-                message: AgentMessage::Assistant { content, .. },
-                ..
-            } => self.arrive(&content),
+                assistant_message_event,
+            } => self.fold_stream(&assistant_message_event),
             AgentEvent::MessageEnd { message } => {
+                self.streaming = None;
                 self.note_context(&message);
                 self.reduce_message_end(&message);
             }
@@ -739,13 +745,7 @@ impl App {
     }
 
     pub fn reduce_child(&mut self, child_id: &str, event: AgentEvent) {
-        if let AgentEvent::MessageUpdate {
-            message: AgentMessage::Assistant { content, .. },
-            ..
-        } = &event
-            && let Some(state) = self.tasks.get_mut(child_id)
-        {
-            state.cell.answer = Some(crate::cell::tail_bounded(text_of(content)));
+        if stream::fold_child(&mut self.tasks, child_id, &event) {
             self.scheduler.request();
         }
         if let AgentEvent::ToolExecutionStart {
@@ -816,6 +816,7 @@ impl App {
             self.tasks.insert(
                 id.clone(),
                 TaskState {
+                    streaming: None,
                     cell: TaskCell {
                         child_id: id.clone(),
                         description: update.name.clone(),

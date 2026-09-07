@@ -117,7 +117,6 @@ pub fn stream_with_deltas(message: &AgentMessage) -> Vec<AssistantMessageEvent> 
                 built.push(faux_thinking(""));
                 events.push(AssistantMessageEvent::ThinkingStart {
                     content_index: index,
-                    partial: partial(&built),
                 });
                 let mut accumulated = String::new();
                 for chunk in chunks(thinking) {
@@ -126,20 +125,17 @@ pub fn stream_with_deltas(message: &AgentMessage) -> Vec<AssistantMessageEvent> 
                     events.push(AssistantMessageEvent::ThinkingDelta {
                         content_index: index,
                         delta: chunk,
-                        partial: partial(&built),
                     });
                 }
                 events.push(AssistantMessageEvent::ThinkingEnd {
                     content_index: index,
                     content: thinking.clone(),
-                    partial: partial(&built),
                 });
             }
             Content::Text { text, .. } => {
                 built.push(faux_text(""));
                 events.push(AssistantMessageEvent::TextStart {
                     content_index: index,
-                    partial: partial(&built),
                 });
                 let mut accumulated = String::new();
                 for chunk in chunks(text) {
@@ -148,13 +144,11 @@ pub fn stream_with_deltas(message: &AgentMessage) -> Vec<AssistantMessageEvent> 
                     events.push(AssistantMessageEvent::TextDelta {
                         content_index: index,
                         delta: chunk,
-                        partial: partial(&built),
                     });
                 }
                 events.push(AssistantMessageEvent::TextEnd {
                     content_index: index,
                     content: text.clone(),
-                    partial: partial(&built),
                 });
             }
             Content::ToolCall {
@@ -166,21 +160,18 @@ pub fn stream_with_deltas(message: &AgentMessage) -> Vec<AssistantMessageEvent> 
                 built.push(faux_tool_call(id, name, Map::new()));
                 events.push(AssistantMessageEvent::ToolCallStart {
                     content_index: index,
-                    partial: partial(&built),
                 });
                 let serialized = Value::Object(arguments.clone()).to_string();
                 for chunk in chunks(&serialized) {
                     events.push(AssistantMessageEvent::ToolCallDelta {
                         content_index: index,
                         delta: chunk,
-                        partial: partial(&built),
                     });
                 }
                 built[index] = block.clone();
                 events.push(AssistantMessageEvent::ToolCallEnd {
                     content_index: index,
                     tool_call: block.clone(),
-                    partial: partial(&built),
                 });
             }
             Content::Image { .. } => {}
