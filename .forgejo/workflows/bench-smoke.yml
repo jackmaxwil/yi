@@ -1,0 +1,35 @@
+# The positive half of the runner isolation proof: the `bench` runner is the
+# one whose job may drive a Docker daemon (its own dind sidecar; the infra repository
+# roles/ci_runner_vm), and this is the job that shows it can. It runs when a
+# workflow under .forgejo changes, and on demand, and it builds nothing.
+name: bench-smoke
+
+on:
+  pull_request:
+    paths: [".forgejo/workflows/**"]
+  workflow_dispatch:
+
+jobs:
+  the-bench-runner-drives-its-own-daemon:
+    runs-on: bench
+    timeout-minutes: 10
+    steps:
+      - name: DOCKER_HOST names the runner's own dind
+        run: |
+          set -euo pipefail
+          echo "DOCKER_HOST=${DOCKER_HOST:-unset}"
+          case "${DOCKER_HOST:-}" in tcp://bench-dind:2375) ;; *) echo "not the bench runner"; exit 1;; esac
+      - name: A job can pull and run a container there
+        run: |
+          set -euo pipefail
+          curl -fsSL https://download.docker.com/linux/static/stable/x86_64/docker-27.5.1.tgz -o /tmp/docker.tgz
+          tar -xzf /tmp/docker.tgz -C /usr/local/bin --strip-components=1 docker/docker
+          docker version --format 'server {{.Server.Version}}'
+          docker run --rm alpine:3.20 sh -c 'echo "hello from $(uname -m) inside the bench dind"'
+      - name: The job still holds no privileged capabilities
+        run: |
+          python3 - <<'PY'
+          cap = int(open("/proc/self/status").read().split("CapEff:")[1].split()[0], 16)
+          assert not cap & (1 << 21), "job holds CAP_SYS_ADMIN"
+          print(f"CapEff {cap:#x}: bounded")
+          PY
