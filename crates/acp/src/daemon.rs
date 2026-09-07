@@ -104,10 +104,21 @@ fn ledger_path(socket: &std::path::Path) -> PathBuf {
     socket.with_extension("ledger.json")
 }
 
+/// Invariant: the ledger is written whole through a rename (D118), so a reader sees one
+/// version or none; the read is bounded because the file is a peer's to grow.
+const LEDGER_MAX_BYTES: u64 = 1 << 20;
+
+pub fn read_ledger(socket: &std::path::Path) -> Option<DaemonLedger> {
+    use std::io::Read;
+    let mut text = String::new();
+    std::fs::File::open(ledger_path(socket))
+        .and_then(|file| file.take(LEDGER_MAX_BYTES).read_to_string(&mut text))
+        .ok()?;
+    serde_json::from_str::<DaemonLedger>(&text).ok()
+}
+
 fn load_ledger(socket: &std::path::Path) -> HashMap<String, SessionEntry> {
-    std::fs::read_to_string(ledger_path(socket))
-        .ok()
-        .and_then(|text| serde_json::from_str::<DaemonLedger>(&text).ok())
+    read_ledger(socket)
         .map(|ledger| {
             ledger
                 .sessions

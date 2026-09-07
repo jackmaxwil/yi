@@ -2,22 +2,28 @@
 
 use std::collections::BTreeSet;
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use serde_json::Value;
+use yi_types::acp::DaemonLedger;
 use yi_types::event::AgentEvent;
 use yi_types::lane::{JobState, Landing, LandingJob, PrNumber};
 use yi_types::message::AgentMessage;
 use yi_types::schedule::DeliveryMode;
 
-use super::{ClaimBase, Lane, LaneError, Pool, SlotView, git};
+use super::{ClaimBase, Holder, Lane, LaneError, Pool, SlotView, TreeState, git};
 
 /// Invariant: a job name is forge-chosen text, bounded before a prompt or a latch key.
 const JOB_NAME_MAX: usize = 64;
+/// Invariant: the forge chooses how many checks a rollup has; the row and the prompt do not.
+const JOBS_MAX: usize = 32;
 const POLL_EVERY: std::time::Duration = std::time::Duration::from_secs(60);
 const POLL_FOR: std::time::Duration = std::time::Duration::from_secs(2 * 60 * 60);
 const FORGE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
 const PUSH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30 * 60);
+/// Invariant: a conflict steer names files, bounded, inside a fence; never the whole diff.
+const CONFLICT_FILES_MAX: usize = 20;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Forge {
@@ -100,6 +106,53 @@ fn open_pr(forge: Forge, lane: &Lane, title: &str) -> Result<PrNumber, LaneError
         .ok_or_else(|| LaneError::Forge(format!("no pull request number in: {output}")))
 }
 
+/// The open pull request whose head is `branch`, from `tea pr ls --output tsv`
+/// (`index<TAB>head` per line) or `gh pr list --json number` (`[{"number": N}]`).
+pub fn open_pr_in(text: &str, branch: &str) -> Option<PrNumber> {
+    if let Ok(Value::Array(rows)) = serde_json::from_str::<Value>(text) {
+        return rows
+            .first()
+            .and_then(|row| row.get("number"))
+            .and_then(Value::as_u64)
+            .and_then(|n| u32::try_from(n).ok())
+            .map(PrNumber);
+    }
+    text.lines().find_map(|line| {
+        let mut cells = line.split('\t').map(str::trim);
+        let index = cells.next()?.parse::<u32>().ok()?;
+        (cells.next()? == branch).then_some(PrNumber(index))
+    })
+}
+
+fn lookup_pr(forge: Forge, lane: &Lane) -> Result<Option<PrNumber>, LaneError> {
+    let branch = lane.branch().to_string();
+    let text = match forge {
+        Forge::Forgejo => forge_call(
+            lane.path(),
+            "tea",
+            &[
+                "pr",
+                "ls",
+                "--state=open",
+                "--fields=index,head",
+                "--output=tsv",
+            ],
+        )?,
+        Forge::GitHub => forge_call(
+            lane.path(),
+            "gh",
+            &[
+                "pr",
+                "list",
+                "--state=open",
+                &format!("--head={branch}"),
+                "--json=number",
+            ],
+        )?,
+    };
+    Ok(open_pr_in(&text, &branch))
+}
+
 fn job_state(status: &str, conclusion: Option<&str>) -> JobState {
     match (status, conclusion) {
         ("pending" | "QUEUED" | "PENDING" | "WAITING" | "REQUESTED", _) => JobState::Queued,
@@ -112,9 +165,10 @@ fn job_state(status: &str, conclusion: Option<&str>) -> JobState {
     }
 }
 
-fn parse_jobs(entries: &[Value]) -> Vec<LandingJob> {
-    entries
+pub fn parse_jobs(entries: &[Value]) -> Vec<LandingJob> {
+    let mut jobs: Vec<LandingJob> = entries
         .iter()
+        .take(JOBS_MAX)
         .filter_map(|entry| {
             let name = entry
                 .get("name")
@@ -131,7 +185,14 @@ fn parse_jobs(entries: &[Value]) -> Vec<LandingJob> {
                 state: job_state(status, conclusion),
             })
         })
-        .collect()
+        .collect();
+    if let Some(more) = entries.len().checked_sub(JOBS_MAX).filter(|more| *more > 0) {
+        jobs.push(LandingJob {
+            name: format!("+{more} more"),
+            state: JobState::Other("unlisted".to_owned()),
+        });
+    }
+    jobs
 }
 
 fn poll_forge(forge: Forge, url: &str, lane: &Lane, pr: PrNumber) -> Result<Landing, LaneError> {
@@ -202,29 +263,47 @@ pub type SteerFn = dyn Fn(AgentMessage, DeliveryMode) + Send + Sync;
 
 pub struct LaneHandle {
     lane: Mutex<Option<Lane>>,
+    /// The pool the cwd's repository has, lane or not, so `/lanes` reads from the trunk too.
+    pool: Option<Pool>,
     landing: Mutex<Landing>,
     land_command: Option<Vec<String>>,
     events: tokio::sync::broadcast::Sender<AgentEvent>,
     steer: Arc<SteerFn>,
     /// Invariant: one steer per red job name, never one per poll.
     latched: Mutex<BTreeSet<String>>,
+    /// Invariant: one poller per handle; a second `/land` while one runs is refused.
+    polling: AtomicBool,
 }
 
 impl LaneHandle {
     pub fn new(
         lane: Option<Lane>,
+        pool: Option<Pool>,
         land_command: Option<Vec<String>>,
         events: tokio::sync::broadcast::Sender<AgentEvent>,
         steer: Arc<SteerFn>,
     ) -> Arc<Self> {
+        let pool = pool.or_else(|| lane.as_ref().map(|lane| lane.pool().clone()));
         Arc::new(Self {
             lane: Mutex::new(lane),
+            pool,
             landing: Mutex::new(Landing::Unlanded),
             land_command,
             events,
             steer,
             latched: Mutex::new(BTreeSet::new()),
+            polling: AtomicBool::new(false),
         })
+    }
+
+    fn take_poller(&self) -> bool {
+        self.polling
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Relaxed)
+            .is_ok()
+    }
+
+    fn release_poller(&self) {
+        self.polling.store(false, Ordering::Release);
     }
 
     fn with_lane<R>(&self, f: impl FnOnce(&Lane) -> Result<R, LaneError>) -> Result<R, LaneError> {
@@ -240,15 +319,25 @@ impl LaneHandle {
         }
     }
 
+    /// The quit line: slot, branch, path, and the pull request when there is one.
     pub fn describe(&self) -> Option<String> {
         let guard = self.lane.lock().ok()?;
         let lane = guard.as_ref()?;
-        let base: String = lane.base().unwrap_or_default().chars().take(12).collect();
+        let landing = match self.landing() {
+            Landing::Open { pr, .. } => format!(" · PR {pr} open"),
+            Landing::Merged { pr } => format!(" · PR {pr} merged"),
+            Landing::Unlanded | Landing::Pushed { .. } => String::new(),
+        };
         Some(format!(
-            "lane {} · branch {} off {base} · land with /land \"Title\"",
+            "lane {} · {} · {}{landing}",
             lane.slot(),
-            lane.branch()
+            lane.branch(),
+            tilde(lane.path())
         ))
+    }
+
+    pub fn slot(&self) -> Option<super::SlotIndex> {
+        self.lane.lock().ok()?.as_ref().map(Lane::slot)
     }
 
     pub fn path(&self) -> Option<std::path::PathBuf> {
@@ -280,6 +369,11 @@ impl LaneHandle {
             return Err(LaneError::Forge("/land needs a title".to_owned()));
         }
         let branch = self.with_lane(|lane| Ok(lane.branch().to_string()))?;
+        if !self.take_poller() {
+            return Err(LaneError::Forge(
+                "landing in progress; the status row follows it".to_owned(),
+            ));
+        }
         let handle = Arc::clone(self);
         std::thread::spawn(move || {
             if let Err(error) = handle.land_blocking(&title) {
@@ -288,10 +382,58 @@ impl LaneHandle {
                     DeliveryMode::Steer,
                 );
             }
+            handle.release_poller();
         });
         Ok(format!(
             "landing {branch}: pushing in the background; the status row follows it"
         ))
+    }
+
+    /// A resumed session finds its pull request on the forge instead of opening a second
+    /// one: off the start path, on the land thread's shape, reaching the row as an event.
+    pub fn reattach(self: &Arc<Self>) {
+        if self.path().is_none() || !self.take_poller() {
+            return;
+        }
+        let handle = Arc::clone(self);
+        std::thread::spawn(move || {
+            if matches!(handle.refresh(), Ok(Landing::Open { .. })) {
+                handle.poll_until_merged();
+            }
+            handle.release_poller();
+        });
+    }
+
+    /// Invariant: a merge, never a rebase on a branch that may be pushed. A conflict
+    /// aborts, verifies the tree is clean again, and names the files; nothing is pushed.
+    fn merge_main(&self) -> Result<(), LaneError> {
+        self.with_lane(|lane| {
+            let _ = git(lane.pool().repo(), &["fetch", "-q", "origin", "main"]);
+            if git(lane.path(), &["merge", "--no-edit", "origin/main"]).is_ok() {
+                return Ok(());
+            }
+            let files: Vec<String> = git(
+                lane.path(),
+                &["diff", "--name-only", "--diff-filter=U"],
+            )
+            .unwrap_or_default()
+            .lines()
+            .take(CONFLICT_FILES_MAX)
+            .map(|line| crate::environment::sanitize(line.trim()))
+            .collect();
+            git(lane.path(), &["merge", "--abort"])?;
+            if !git(lane.path(), &["status", "--porcelain"])?.trim().is_empty() {
+                return Err(LaneError::Forge(format!(
+                    "merge of origin/main left the tree dirty in {}; resolve by hand",
+                    lane.path().display()
+                )));
+            }
+            Err(LaneError::Forge(format!(
+                "origin/main conflicts with this branch; nothing pushed. Conflicts:\n```\n{}\n```\nresolve in {}, commit, and /land again",
+                files.join("\n"),
+                lane.path().display()
+            )))
+        })
     }
 
     fn land_blocking(self: &Arc<Self>, title: &str) -> Result<(), LaneError> {
@@ -317,6 +459,7 @@ impl LaneHandle {
             })?,
             None => {
                 let (forge, _) = self.with_lane(|lane| detect(lane.pool().repo()))?;
+                self.merge_main()?;
                 self.with_lane(|lane| {
                     let branch = lane.branch().to_string();
                     super::capture(
@@ -342,6 +485,11 @@ impl LaneHandle {
             jobs: Vec::new(),
             behind: 0,
         });
+        self.poll_until_merged();
+        Ok(())
+    }
+
+    fn poll_until_merged(&self) {
         let started = std::time::Instant::now();
         while started.elapsed() < POLL_FOR {
             std::thread::sleep(POLL_EVERY);
@@ -357,12 +505,23 @@ impl LaneHandle {
                 }
             }
         }
-        Ok(())
     }
 
+    /// Unlanded asks the forge for an open pull request on this branch first; a forge
+    /// that cannot answer leaves it unlanded rather than failing the read.
     pub fn refresh(&self) -> Result<Landing, LaneError> {
-        let Landing::Open { pr, .. } = self.landing() else {
-            return Ok(self.landing());
+        let pr = match self.landing() {
+            Landing::Open { pr, .. } => pr,
+            Landing::Unlanded => {
+                let found = self
+                    .with_lane(|lane| detect(lane.pool().repo()))
+                    .and_then(|(forge, _)| self.with_lane(|lane| lookup_pr(forge, lane)));
+                match found {
+                    Ok(Some(pr)) => pr,
+                    Ok(None) | Err(_) => return Ok(Landing::Unlanded),
+                }
+            }
+            other => return Ok(other),
         };
         let (forge, url) = self.with_lane(|lane| detect(lane.pool().repo()))?;
         let landing = self.with_lane(|lane| poll_forge(forge, &url, lane, pr))?;
@@ -385,16 +544,12 @@ impl LaneHandle {
         Ok(landing)
     }
 
-    /// Invariant: a merge, never a rebase on a branch that may be pushed.
-    pub fn base(&self) -> Result<String, LaneError> {
-        self.with_lane(|lane| {
-            let _ = git(lane.pool().repo(), &["fetch", "-q", "origin", "main"]);
-            git(lane.path(), &["merge", "--no-edit", "origin/main"])
-        })
-    }
-
     pub fn lanes(&self) -> Result<String, LaneError> {
-        self.with_lane(|lane| lane.pool().list().map(|views| format_lanes(&views)))
+        let pool = self
+            .pool
+            .as_ref()
+            .ok_or_else(|| LaneError::Forge("not inside a git repository".to_owned()))?;
+        pool.list().map(|views| format_lanes(&views, None))
     }
 
     pub fn discard(&self) -> Result<String, LaneError> {
@@ -435,38 +590,154 @@ impl LaneHandle {
     }
 }
 
-pub fn format_lanes(views: &[SlotView]) -> String {
+pub fn format_lanes(views: &[SlotView], ledger: Option<&DaemonLedger>) -> String {
     if views.is_empty() {
         return "no lanes yet".to_owned();
     }
     views
         .iter()
-        .map(|view| match view {
-            SlotView::Idle { slot, base, warm } => format!(
-                "lane {slot}: idle{} at {}",
-                if *warm { ", warm" } else { "" },
-                base.as_deref()
-                    .map_or("(unset)".to_owned(), |sha| sha.chars().take(12).collect())
-            ),
-            SlotView::Held {
-                slot,
-                session,
-                branch,
-            } => format!(
-                "lane {slot}: held by {session} on {}",
-                branch.as_deref().unwrap_or("(detached)")
-            ),
-            SlotView::Orphan {
-                slot,
-                session,
-                branch,
-            } => format!(
-                "lane {slot}: left by {session} on {} — `yi lanes reap {slot}`",
-                branch.as_deref().unwrap_or("(detached)")
-            ),
-        })
+        .map(|view| lane_line(view, ledger))
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+/// `$HOME` as `~`, so a slot path reads at a glance.
+pub fn tilde(path: &Path) -> String {
+    let text = path.to_string_lossy();
+    std::env::var_os("HOME")
+        .and_then(|home| {
+            let home = home.to_string_lossy();
+            text.strip_prefix(home.as_ref())
+                .map(|rest| format!("~{rest}"))
+        })
+        .unwrap_or_else(|| text.into_owned())
+}
+
+const NAME_MAX: usize = 32;
+
+/// Text from the ledger or the forge, printable and bounded before it shares a line.
+fn plain(text: &str, max: usize) -> String {
+    text.chars()
+        .filter(|c| c.is_ascii_graphic() || *c == ' ')
+        .take(max)
+        .collect()
+}
+
+fn who(holder: &Holder, ledger: Option<&DaemonLedger>) -> String {
+    let entry = ledger.and_then(|ledger| ledger.sessions.get(&holder.session));
+    match entry {
+        Some(entry) => {
+            let name = entry
+                .name
+                .as_deref()
+                .map(|name| plain(name, NAME_MAX))
+                .filter(|name| !name.is_empty())
+                .unwrap_or_else(|| "unnamed".to_owned());
+            format!(
+                "{} ({name}, {})",
+                holder.session,
+                tilde(Path::new(&entry.cwd))
+            )
+        }
+        None => holder.session.clone(),
+    }
+}
+
+fn age_label(age: std::time::Duration) -> String {
+    let secs = age.as_secs();
+    match secs {
+        s if s < 3_600 => format!("{} min", s / 60),
+        s if s < 48 * 3_600 => format!("{} h", s / 3_600),
+        s => format!("{} d", s / 86_400),
+    }
+}
+
+fn tree_label(tree: &TreeState) -> String {
+    match tree {
+        TreeState::Unread { step } => format!("tree unread ({step} timed out)"),
+        TreeState::Known {
+            modified,
+            untracked,
+            ahead,
+            behind,
+        } => {
+            let mut parts = Vec::new();
+            if *modified > 0 {
+                parts.push(format!("{modified} modified"));
+            }
+            if *untracked > 0 {
+                parts.push(format!("{untracked} untracked"));
+            }
+            if parts.is_empty() {
+                parts.push("clean".to_owned());
+            }
+            parts.push(format!("{ahead} ahead, {behind} behind"));
+            parts.join(", ")
+        }
+    }
+}
+
+/// What a reap costs, said before anyone types it.
+fn verdict(tree: &TreeState) -> &'static str {
+    match tree {
+        TreeState::Unread { .. } => "reap keeps the branch; the tree is unread",
+        tree if tree.is_empty() => "the next claim takes it",
+        TreeState::Known {
+            modified,
+            untracked,
+            ahead,
+            ..
+        } => match (*ahead > 0, modified.saturating_add(*untracked) > 0) {
+            (true, true) => "reap keeps the branch; the uncommitted paths are lost",
+            (true, false) => "reap keeps the branch",
+            (false, true) => "reap deletes the merged branch; the uncommitted paths are lost",
+            (false, false) => "the next claim takes it",
+        },
+    }
+}
+
+fn holder_line(holder: &Holder, ledger: Option<&DaemonLedger>) -> String {
+    let mut text = format!(
+        "{} on {} · {}",
+        who(holder, ledger),
+        holder
+            .branch
+            .as_ref()
+            .map_or_else(|| "(detached)".to_owned(), ToString::to_string),
+        tree_label(&holder.tree)
+    );
+    if let Some(age) = holder.age {
+        text.push_str(&format!(" · {}", age_label(age)));
+    }
+    text
+}
+
+pub fn lane_line(view: &SlotView, ledger: Option<&DaemonLedger>) -> String {
+    match view {
+        SlotView::Idle {
+            slot,
+            path,
+            base,
+            warm,
+        } => format!(
+            "lane {slot}: idle{} at {} · {}",
+            if *warm { ", warm" } else { "" },
+            base.as_deref()
+                .map_or("(unset)".to_owned(), |sha| sha.chars().take(12).collect()),
+            tilde(path)
+        ),
+        SlotView::Held { slot, path, holder } => format!(
+            "lane {slot}: held by {} · {}",
+            holder_line(holder, ledger),
+            tilde(path)
+        ),
+        SlotView::Orphan { slot, path, holder } => format!(
+            "lane {slot}: left by {} · {} — {}",
+            holder_line(holder, ledger),
+            tilde(path),
+            verdict(&holder.tree)
+        ),
+    }
 }
 
 pub fn claim_root(pool: &Pool, session: &str) -> Result<Lane, LaneError> {

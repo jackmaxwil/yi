@@ -5,8 +5,12 @@
 use std::error::Error;
 use std::path::{Path, PathBuf};
 
-use yi_runtime::lane::land::{bounded_name, format_lanes, owner_repo, pr_number};
-use yi_runtime::lane::{BranchName, ClaimBase, LaneError, Pool, SlotIndex, SlotView, toolchain};
+use yi_runtime::lane::land::{
+    LaneHandle, bounded_name, format_lanes, open_pr_in, owner_repo, parse_jobs, pr_number,
+};
+use yi_runtime::lane::{
+    BranchName, ClaimBase, Head, LaneError, Pool, SlotIndex, SlotView, TreeState, head, toolchain,
+};
 use yi_types::lane::PrNumber;
 
 type TestResult = Result<(), Box<dyn Error>>;
@@ -88,7 +92,7 @@ fn a_claim_branches_a_slot_and_leaves_the_trunk_untouched() -> TestResult {
     );
     let held = pool.list()?;
     assert!(
-        matches!(&held[..], [SlotView::Held { session, .. }] if session == "s-one"),
+        matches!(&held[..], [SlotView::Held { holder, .. }] if holder.session == "s-one"),
         "{held:?}"
     );
     lane.release()?;
@@ -161,7 +165,7 @@ fn a_resumed_session_reclaims_its_slot_with_its_work_and_an_orphan_blocks_others
     );
     orphan(&pool, slot, "s-crash")?;
     assert!(
-        matches!(&pool.list()?[..], [SlotView::Orphan { session, .. }] if session == "s-crash")
+        matches!(&pool.list()?[..], [SlotView::Orphan { holder, .. }] if holder.session == "s-crash")
     );
     let refused = pool.claim("s-other", ClaimBase::Main);
     assert!(
@@ -266,7 +270,7 @@ fn reap_frees_an_orphan_and_keeps_its_unmerged_branch() -> TestResult {
         "yi/s-left"
     );
     assert!(matches!(&pool.list()?[..], [SlotView::Idle { .. }]));
-    let text = format_lanes(&pool.list()?);
+    let text = format_lanes(&pool.list()?, None);
     assert!(text.starts_with("lane 0: idle"), "{text}");
     rig.reclaim();
     Ok(())
@@ -366,4 +370,259 @@ fn the_warmer_refuses_a_lockfile_no_session_synced() -> TestResult {
     );
     rig.reclaim();
     Ok(())
+}
+
+/// The one HEAD reader: a branch, a detached sha, and a refusal for anything else.
+#[test]
+fn head_reads_a_branch_a_detached_sha_and_refuses_garbage() -> TestResult {
+    let rig = Rig::new("head")?;
+    assert!(
+        matches!(head(&rig.repo)?, Head::Branch(branch) if branch.as_str() == "main"),
+        "on main"
+    );
+    git(&rig.repo, &["checkout", "-q", "--detach"])?;
+    let sha = git(&rig.repo, &["rev-parse", "HEAD"])?;
+    let Head::Detached(detached) = head(&rig.repo)? else {
+        return Err("detached HEAD read as a branch".into());
+    };
+    assert_eq!(detached.as_str(), sha);
+    assert_eq!(detached.short(), &sha[..8]);
+    std::fs::write(rig.repo.join(".git/HEAD"), "ref: refs/heads/-flag\n")?;
+    assert!(head(&rig.repo).is_err(), "a flag-shaped ref is refused");
+    std::fs::write(rig.repo.join(".git/HEAD"), "garbage\n")?;
+    assert!(
+        head(&rig.repo).is_err(),
+        "neither a ref nor a sha is refused"
+    );
+    rig.reclaim();
+    Ok(())
+}
+
+/// The listing says what a reap would lose before anyone types it: an untracked path
+/// on a merged branch is named, and a clean merged slot is the next claim's.
+#[test]
+fn a_listing_says_what_a_reap_would_lose() -> TestResult {
+    let rig = Rig::new("verdict")?;
+    let pool = rig.pool(2)?;
+    let dirty = pool.claim("s-dirty", ClaimBase::Main)?;
+    std::fs::write(dirty.path().join("scratch.txt"), "only copy\n")?;
+    let dirty_slot = dirty.slot();
+    drop(dirty);
+    // A merged branch goes at release; the crash left it, so it is put back as the crash would.
+    git(
+        &pool.dir().join(dirty_slot.to_string()),
+        &["branch", "-q", "yi/s-dirty", "HEAD"],
+    )?;
+    orphan(&pool, dirty_slot, "s-dirty")?;
+    let clean = pool.claim("s-clean", ClaimBase::Main)?;
+    let clean_slot = clean.slot();
+    drop(clean);
+    git(
+        &pool.dir().join(clean_slot.to_string()),
+        &["branch", "-q", "yi/s-clean", "HEAD"],
+    )?;
+    orphan(&pool, clean_slot, "s-clean")?;
+    let views = pool.list()?;
+    let [
+        SlotView::Orphan { holder: first, .. },
+        SlotView::Orphan { holder: second, .. },
+    ] = &views[..]
+    else {
+        return Err(format!("two orphans: {views:?}").into());
+    };
+    assert_eq!(
+        first.tree,
+        TreeState::Known {
+            modified: 0,
+            untracked: 1,
+            ahead: 0,
+            behind: 0
+        }
+    );
+    assert!(second.tree.is_empty(), "{:?}", second.tree);
+    assert!(first.age.is_some(), "the branch's reflog gives its age");
+    let text = format_lanes(&views, None);
+    let mut lines = text.lines();
+    let (Some(one), Some(two)) = (lines.next(), lines.next()) else {
+        return Err(text.into());
+    };
+    assert!(
+        one.contains("1 untracked") && one.contains("uncommitted paths are lost"),
+        "{one}"
+    );
+    assert!(
+        one.contains(&pool.dir().to_string_lossy().to_string()),
+        "the path is on the line: {one}"
+    );
+    assert!(
+        two.contains("clean") && two.ends_with("the next claim takes it"),
+        "{two}"
+    );
+    rig.reclaim();
+    Ok(())
+}
+
+/// The ledger names a holder the way the person named the session, and says which root.
+#[test]
+fn the_ledger_names_a_holder() -> TestResult {
+    let rig = Rig::new("ledger")?;
+    let pool = rig.pool(1)?;
+    let lane = pool.claim("01a0-session", ClaimBase::Main)?;
+    let mut ledger = yi_types::acp::DaemonLedger {
+        sessions: Default::default(),
+    };
+    ledger.sessions.insert(
+        "01a0-session".to_owned(),
+        yi_types::acp::DaemonLedgerEntry {
+            cwd: "/work/yi".to_owned(),
+            unseen: 0,
+            last_state: Some("idle".to_owned()),
+            last_event_ms: 0,
+            name: Some("fix the auth\x1b[31m bug".to_owned()),
+            extra: Default::default(),
+        },
+    );
+    let text = format_lanes(&pool.list()?, Some(&ledger));
+    assert!(
+        text.contains("held by 01a0-session (fix the auth[31m bug, /work/yi) on yi/01a0-session"),
+        "{text}"
+    );
+    lane.release()?;
+    rig.reclaim();
+    Ok(())
+}
+
+/// The prompt's answer lands only on the slot it was asked about.
+#[test]
+fn reap_left_by_refuses_a_slot_that_moved() -> TestResult {
+    let rig = Rig::new("moved")?;
+    let pool = rig.pool(1)?;
+    let lane = pool.claim("s-first", ClaimBase::Main)?;
+    let slot = lane.slot();
+    drop(lane);
+    git(
+        &pool.dir().join(slot.to_string()),
+        &["branch", "-q", "yi/s-second", "HEAD"],
+    )?;
+    orphan(&pool, slot, "s-second")?;
+    let refused = pool.reap_left_by(slot, "s-first");
+    assert!(
+        matches!(refused, Err(LaneError::SlotChanged { .. })),
+        "{refused:?}"
+    );
+    assert!(pool.reap_left_by(slot, "s-second").is_ok());
+    rig.reclaim();
+    Ok(())
+}
+
+/// A rollup with more checks than the row can carry is cut at the parser, not the row.
+#[test]
+fn a_rollup_is_bounded_at_the_parser() {
+    let entries: Vec<serde_json::Value> = (0..300)
+        .map(|n| serde_json::json!({"name": format!("check-{n}"), "status": "success"}))
+        .collect();
+    let jobs = parse_jobs(&entries);
+    assert_eq!(jobs.len(), 33);
+    assert_eq!(jobs[32].name, "+268 more");
+}
+
+type Steers = std::sync::mpsc::Receiver<String>;
+
+fn handle_for(
+    lane: yi_runtime::lane::Lane,
+    land_command: Option<Vec<String>>,
+) -> (std::sync::Arc<LaneHandle>, Steers) {
+    let (events, _keep) = tokio::sync::broadcast::channel(16);
+    let (tx, rx) = std::sync::mpsc::channel();
+    let steer: std::sync::Arc<yi_runtime::lane::land::SteerFn> =
+        std::sync::Arc::new(move |message, _| {
+            let _ = tx.send(format!("{message:?}"));
+        });
+    (
+        LaneHandle::new(Some(lane), None, land_command, events, steer),
+        rx,
+    )
+}
+
+/// Two `/land` calls are one poller; the second is refused while the first runs.
+#[test]
+fn two_lands_share_one_poller() -> TestResult {
+    let rig = Rig::new("poller")?;
+    let pool = rig.pool(1)?;
+    let lane = pool.claim("s-poll", ClaimBase::Main)?;
+    let slow = vec!["sh".to_owned(), "-c".to_owned(), "sleep 1".to_owned()];
+    let (handle, _steers) = handle_for(lane, Some(slow));
+    handle.land("Title")?;
+    let refused = handle.land("Title");
+    assert!(
+        matches!(&refused, Err(error) if error.to_string().contains("landing in progress")),
+        "{refused:?}"
+    );
+    std::thread::sleep(std::time::Duration::from_millis(1_800));
+    assert!(
+        handle.land("Title").is_ok(),
+        "the poller is free once the first ends"
+    );
+    std::thread::sleep(std::time::Duration::from_millis(1_500));
+    handle.release()?;
+    rig.reclaim();
+    Ok(())
+}
+
+/// A base that conflicts stops the landing before the push: the steer names the file,
+/// the tree is clean again, and the forge never sees the branch.
+#[test]
+fn a_conflicting_base_pushes_nothing() -> TestResult {
+    let rig = Rig::new("conflict")?;
+    let bare = rig.root.join("origin.git");
+    std::fs::create_dir_all(&bare)?;
+    git(&bare, &["init", "-q", "--bare", "-b", "main"])?;
+    git(
+        &rig.repo,
+        &["remote", "add", "origin", &bare.to_string_lossy()],
+    )?;
+    git(&rig.repo, &["push", "-q", "-u", "origin", "main"])?;
+    let pool = rig.pool(1)?;
+    let lane = pool.claim("s-land", ClaimBase::Main)?;
+    std::fs::write(lane.path().join("README.md"), "lane\n")?;
+    git(lane.path(), &["commit", "-qam", "lane edit"])?;
+    std::fs::write(rig.repo.join("README.md"), "trunk\n")?;
+    git(&rig.repo, &["commit", "-qam", "trunk edit"])?;
+    git(&rig.repo, &["push", "-q", "origin", "main"])?;
+    let lane_path = lane.path().to_path_buf();
+    let (handle, steers) = handle_for(lane, None);
+    handle.land("Title")?;
+    let steer = steers.recv_timeout(std::time::Duration::from_secs(60))?;
+    assert!(
+        steer.contains("conflicts") && steer.contains("README.md"),
+        "{steer}"
+    );
+    assert_eq!(
+        git(&lane_path, &["status", "--porcelain"])?,
+        "",
+        "the merge was aborted"
+    );
+    assert_eq!(
+        git(&bare, &["branch", "--list", "yi/*"])?,
+        "",
+        "nothing was pushed"
+    );
+    assert_eq!(handle.landing(), yi_types::lane::Landing::Unlanded);
+    handle.release()?;
+    rig.reclaim();
+    Ok(())
+}
+
+/// The forge's open list is read back to a typed number by head branch, on either forge.
+#[test]
+fn an_open_pull_request_is_found_by_head() {
+    let tsv = "12\tyi/other\n191\tyi/01a0\n";
+    assert_eq!(open_pr_in(tsv, "yi/01a0"), Some(PrNumber(191)));
+    assert_eq!(open_pr_in(tsv, "yi/none"), None);
+    assert_eq!(
+        open_pr_in(r#"[{"number": 7}]"#, "yi/01a0"),
+        Some(PrNumber(7))
+    );
+    assert_eq!(open_pr_in("[]", "yi/01a0"), None);
+    assert_eq!(open_pr_in("garbage", "yi/01a0"), None);
 }
