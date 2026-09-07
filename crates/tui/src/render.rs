@@ -210,11 +210,11 @@ pub fn layout_chat(app: &mut App, goal: Option<GoalView>, total: u16) -> ChatLay
             .then(|| app.selection.effort.to_string()),
         mode: (app.mode != TranscriptMode::default()).then(|| app.mode.label().to_owned()),
         cwd: app.options.cwd.clone(),
+        lane: app.options.lane.clone(),
         branch: app.branch.clone(),
-        landing: app
-            .landing
-            .as_ref()
-            .and_then(crate::status::landing_segment),
+        landing: app.landing.as_ref().and_then(|landing| {
+            crate::status::landing_segment(landing, app.landing_at.map(|at| at.elapsed()))
+        }),
         cost: (app.cost_total > 0.0 || app.cost_unknown).then(|| {
             let mark = if app.cost_unknown { "+?" } else { "" };
             format!("${:.2}{mark}", app.cost_total)

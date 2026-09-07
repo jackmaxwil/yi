@@ -11,21 +11,11 @@ use crate::wiring::RuntimeWiring;
 
 const PROBE: Duration = Duration::from_secs(5);
 
+/// The branch from the one HEAD reader, and the changed-path count from `git status`.
 pub fn git_summary(cwd: &Path) -> Option<(String, usize)> {
-    let args = ["status", "--porcelain", "--branch"];
-    let out = crate::lane::capture(cwd, "git", &args, PROBE).ok()?;
-    let mut lines = out.lines();
-    let head = lines.next()?.strip_prefix("## ")?;
-    let branch = match head {
-        head if head.contains("(no branch)") => "detached",
-        head => head
-            .strip_prefix("No commits yet on ")
-            .unwrap_or(head)
-            .split("...")
-            .next()
-            .unwrap_or(head),
-    };
-    Some((sanitize(branch), lines.count()))
+    let head = crate::lane::head(cwd).ok()?;
+    let out = crate::lane::capture(cwd, "git", &["status", "--porcelain"], PROBE).ok()?;
+    Some((sanitize(&head.label()), out.lines().count()))
 }
 
 pub fn sanitize(text: &str) -> String {
@@ -114,8 +104,14 @@ pub fn hook(
             .map(|(branch, dirty)| format!(" (git: {branch}, {dirty} modified)"))
             .unwrap_or_default();
         lines.push(format!("cwd: {}{git}", cwd.display()));
-        if let Some(line) = lane().and_then(|lane| lane.describe()) {
-            lines.push(line);
+        // The model commits; the person lands. It sees the landing, never a verb.
+        if let Some(landing) = lane().map(|lane| lane.landing())
+            && matches!(
+                landing,
+                yi_types::lane::Landing::Open { .. } | yi_types::lane::Landing::Merged { .. }
+            )
+        {
+            lines.push(format!("landing: {}", crate::slash::landing_line(&landing)));
         }
         if let Some(list) = todos().map(|store| store.list())
             && list.progress().total > 0

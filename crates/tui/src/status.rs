@@ -11,6 +11,8 @@ pub struct StatusInput {
     pub thinking: Option<String>,
     pub mode: Option<String>,
     pub cwd: String,
+    /// `repo ⎇ lane N`: shown instead of `path@branch` when the session is on a lane.
+    pub lane: Option<String>,
     pub branch: Option<String>,
     pub landing: Option<String>,
     pub cost: Option<String>,
@@ -101,11 +103,17 @@ fn left_segments(input: &StatusInput, path_max: usize) -> Vec<String> {
     }
     segments.push(model);
     segments.extend(input.mode.as_ref().map(|mode| format!("◉ {mode}")));
-    let mut path = shrink_left(&input.cwd, path_max);
-    if let Some(branch) = &input.branch {
-        path.push_str(&format!("@{}", shrink_left(branch, path_max)));
-    }
-    segments.push(path);
+    let place = match &input.lane {
+        Some(lane) => lane.clone(),
+        None => {
+            let mut path = shrink_left(&input.cwd, path_max);
+            if let Some(branch) = &input.branch {
+                path.push_str(&format!("@{}", shrink_left(branch, path_max)));
+            }
+            path
+        }
+    };
+    segments.push(place);
     segments.extend(input.landing.clone());
     segments.extend(input.cost.clone());
     if input.context_window > 0 {
@@ -140,8 +148,29 @@ fn effort_style(level: &str, theme: &Theme) -> Style {
     }
 }
 
-/// The status-row form: one glyph per gate job, and how far `main` moved.
-pub fn landing_segment(landing: &yi_types::lane::Landing) -> Option<String> {
+/// A landing older than two poll periods says so; a fresh one is silent about its age.
+const LANDING_FRESH: std::time::Duration = std::time::Duration::from_secs(120);
+
+fn age_suffix(age: Option<std::time::Duration>) -> String {
+    match age {
+        Some(age) if age >= LANDING_FRESH => {
+            let secs = age.as_secs();
+            if secs < 3_600 {
+                format!(" · {} min ago", secs / 60)
+            } else {
+                format!(" · {} h ago", secs / 3_600)
+            }
+        }
+        _ => String::new(),
+    }
+}
+
+/// The status-row form: one glyph per gate job, how far `main` moved, and how old the
+/// reading is once the poll may have stopped.
+pub fn landing_segment(
+    landing: &yi_types::lane::Landing,
+    age: Option<std::time::Duration>,
+) -> Option<String> {
     use yi_types::lane::Landing;
     match landing {
         Landing::Unlanded => None,
@@ -152,40 +181,9 @@ pub fn landing_segment(landing: &yi_types::lane::Landing) -> Option<String> {
                 0 => String::new(),
                 n => format!(" · main +{n}"),
             };
-            Some(format!("PR {pr} {glyphs}{behind}"))
+            Some(format!("PR {pr} {glyphs}{behind}{}", age_suffix(age)))
         }
         Landing::Merged { pr } => Some(format!("PR {pr} merged")),
-    }
-}
-
-pub fn git_branch(cwd: &str) -> Option<String> {
-    let mut dir = std::path::PathBuf::from(cwd);
-    let git = loop {
-        let candidate = dir.join(".git");
-        if candidate.exists() {
-            break candidate;
-        }
-        if !dir.pop() {
-            return None;
-        }
-    };
-    let git_dir = if git.is_file() {
-        let pointer = std::fs::read_to_string(&git).ok()?;
-        let target = pointer.trim().strip_prefix("gitdir: ")?;
-        let path = std::path::PathBuf::from(target);
-        if path.is_absolute() {
-            path
-        } else {
-            git.parent()?.join(path)
-        }
-    } else {
-        git
-    };
-    let head = std::fs::read_to_string(git_dir.join("HEAD")).ok()?;
-    let head = head.trim();
-    match head.strip_prefix("ref: refs/heads/") {
-        Some(name) => Some(name.to_owned()),
-        None => Some(head.chars().take(8).collect()),
     }
 }
 

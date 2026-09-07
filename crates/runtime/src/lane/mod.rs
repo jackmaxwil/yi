@@ -86,6 +86,107 @@ impl std::fmt::Display for BranchName {
     }
 }
 
+/// Invariant: forty hex digits, checked once; a sha reaches git argv only through this.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Sha(String);
+
+impl Sha {
+    pub fn parse(text: &str) -> Option<Self> {
+        let text = text.trim();
+        (text.len() == 40 && text.bytes().all(|b| b.is_ascii_hexdigit()))
+            .then(|| Self(text.to_owned()))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    pub fn short(&self) -> &str {
+        self.0.get(..8).unwrap_or(&self.0)
+    }
+}
+
+/// What `.git/HEAD` names: the one reader the status row, the environment block
+/// and the pool share, a file read with no git process behind it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Head {
+    Branch(BranchName),
+    Detached(Sha),
+}
+
+impl Head {
+    pub fn branch(&self) -> Option<&BranchName> {
+        match self {
+            Self::Branch(branch) => Some(branch),
+            Self::Detached(_) => None,
+        }
+    }
+
+    /// The branch name, or the short sha when detached: one spelling on every surface.
+    pub fn label(&self) -> String {
+        match self {
+            Self::Branch(branch) => branch.to_string(),
+            Self::Detached(sha) => sha.short().to_owned(),
+        }
+    }
+}
+
+const HEAD_MAX_BYTES: u64 = 256;
+
+fn read_bounded(path: &Path) -> Result<String, LaneError> {
+    use std::io::Read;
+    let mut text = String::new();
+    File::open(path)
+        .and_then(|file| file.take(HEAD_MAX_BYTES).read_to_string(&mut text))
+        .map_err(io_error(path))?;
+    Ok(text)
+}
+
+/// The git dir of `cwd`'s checkout: a `.git` directory, or the worktree's `gitdir:` pointer.
+fn git_dir(cwd: &Path) -> Result<PathBuf, LaneError> {
+    let mut dir = cwd.to_path_buf();
+    let dot_git = loop {
+        let candidate = dir.join(".git");
+        if candidate.exists() {
+            break candidate;
+        }
+        if !dir.pop() {
+            return Err(LaneError::NotARepo(cwd.to_path_buf()));
+        }
+    };
+    if !dot_git.is_file() {
+        return Ok(dot_git);
+    }
+    let pointer = read_bounded(&dot_git)?;
+    let target = pointer
+        .trim()
+        .strip_prefix("gitdir: ")
+        .ok_or(LaneError::Head {
+            path: dot_git.clone(),
+            reason: "no gitdir pointer",
+        })?;
+    let target = PathBuf::from(target);
+    let target = if target.is_absolute() {
+        target
+    } else {
+        dot_git.parent().unwrap_or(cwd).join(target)
+    };
+    target.canonicalize().map_err(io_error(&target))
+}
+
+pub fn head(cwd: &Path) -> Result<Head, LaneError> {
+    let path = git_dir(cwd)?.join("HEAD");
+    let text = read_bounded(&path)?;
+    let text = text.trim();
+    if let Some(name) = text.strip_prefix("ref: refs/heads/") {
+        return BranchName::parse(name).map(Head::Branch);
+    }
+    Sha::parse(text).map(Head::Detached).ok_or(LaneError::Head {
+        path,
+        reason: "neither a branch ref nor a commit sha",
+    })
+}
+
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum LaneError {
@@ -95,6 +196,12 @@ pub enum LaneError {
     SlotBusy { slot: SlotIndex, session: String },
     #[error("lane {slot} was left by session {session}; `yi lanes reap {slot}` frees it")]
     Orphan { slot: SlotIndex, session: String },
+    #[error("lane {slot} changed under the prompt: expected {expected}, found {found:?}")]
+    SlotChanged {
+        slot: SlotIndex,
+        expected: String,
+        found: String,
+    },
     #[error("branch {text:?} is not a git ref: {reason}")]
     Branch { text: String, reason: &'static str },
     #[error("lockfile {hash} was never synced by a session, so the warmer refuses it")]
@@ -119,6 +226,8 @@ pub enum LaneError {
     },
     #[error("{0} is not inside a git repository")]
     NotARepo(PathBuf),
+    #[error("{path}: HEAD unreadable: {reason}")]
+    Head { path: PathBuf, reason: &'static str },
     #[error("lane {slot}'s warmer (pid {pid}) did not exit within {waited_ms} ms")]
     WarmerStuck {
         slot: SlotIndex,
@@ -194,22 +303,63 @@ pub enum ClaimBase {
     Commit(String),
 }
 
+/// What a slot's tree holds against `main`, or which read did not answer in time.
+/// Invariant: `Unread` never renders as clean; a listing that cannot see a tree says so.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TreeState {
+    Known {
+        modified: u32,
+        untracked: u32,
+        ahead: u32,
+        behind: u32,
+    },
+    Unread {
+        step: &'static str,
+    },
+}
+
+impl TreeState {
+    /// Nothing in the tree and nothing `main` lacks: the next claim takes the slot (D130).
+    pub fn is_empty(&self) -> bool {
+        matches!(
+            self,
+            Self::Known {
+                modified: 0,
+                untracked: 0,
+                ahead: 0,
+                ..
+            }
+        )
+    }
+}
+
+/// The session on a held or left slot, and what its tree holds.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Holder {
+    pub session: String,
+    pub branch: Option<BranchName>,
+    pub tree: TreeState,
+    /// Since the branch was created, from its reflog; `None` when detached or unread.
+    pub age: Option<std::time::Duration>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SlotView {
     Idle {
         slot: SlotIndex,
+        path: PathBuf,
         base: Option<String>,
         warm: bool,
     },
     Held {
         slot: SlotIndex,
-        session: String,
-        branch: Option<String>,
+        path: PathBuf,
+        holder: Holder,
     },
     Orphan {
         slot: SlotIndex,
-        session: String,
-        branch: Option<String>,
+        path: PathBuf,
+        holder: Holder,
     },
 }
 
@@ -219,6 +369,84 @@ impl SlotView {
             Self::Idle { slot, .. } | Self::Held { slot, .. } | Self::Orphan { slot, .. } => *slot,
         }
     }
+
+    pub fn path(&self) -> &Path {
+        match self {
+            Self::Idle { path, .. } | Self::Held { path, .. } | Self::Orphan { path, .. } => path,
+        }
+    }
+}
+
+/// One deadline for a whole listing: every read past it is `Unread`, never a wait.
+const LIST_BUDGET: std::time::Duration = std::time::Duration::from_millis(3_000);
+
+fn probe_git(cwd: &Path, args: &[&str], deadline: std::time::Instant) -> Result<String, String> {
+    capture(
+        cwd,
+        "git",
+        args,
+        deadline.saturating_duration_since(std::time::Instant::now()),
+    )
+}
+
+fn count(text: &str) -> Option<u32> {
+    text.trim().parse::<u32>().ok()
+}
+
+fn tree_state(path: &Path, base: Option<&Sha>, deadline: std::time::Instant) -> TreeState {
+    let Ok(status) = probe_git(path, &["status", "--porcelain"], deadline) else {
+        return TreeState::Unread { step: "status" };
+    };
+    let (mut modified, mut untracked) = (0_u32, 0_u32);
+    for line in status.lines() {
+        if line.starts_with("??") {
+            untracked = untracked.saturating_add(1);
+        } else {
+            modified = modified.saturating_add(1);
+        }
+    }
+    let Some(base) = base else {
+        return TreeState::Unread { step: "main" };
+    };
+    let spec = format!("{}...HEAD", base.as_str());
+    let counts = probe_git(
+        path,
+        &["rev-list", "--left-right", "--count", &spec],
+        deadline,
+    );
+    let Ok(counts) = counts else {
+        return TreeState::Unread { step: "rev-list" };
+    };
+    let mut parts = counts.split_whitespace();
+    match (parts.next().and_then(count), parts.next().and_then(count)) {
+        (Some(behind), Some(ahead)) => TreeState::Known {
+            modified,
+            untracked,
+            ahead,
+            behind,
+        },
+        _ => TreeState::Unread { step: "rev-list" },
+    }
+}
+
+/// The branch's creation from its reflog's oldest entry (`…@{<unix>}: branch: Created`).
+fn age_of(
+    path: &Path,
+    branch: &BranchName,
+    deadline: std::time::Instant,
+) -> Option<std::time::Duration> {
+    let refname = format!("refs/heads/{}", branch.as_str());
+    let text = probe_git(path, &["reflog", "show", "--date=unix", &refname], deadline).ok()?;
+    let last = text.lines().last()?;
+    let created = last
+        .split_once("@{")?
+        .1
+        .split_once('}')?
+        .0
+        .parse::<u64>()
+        .ok()?;
+    let now = crate::session_store::now_ms().checked_div(1_000)?;
+    now.checked_sub(created).map(std::time::Duration::from_secs)
 }
 
 #[derive(Debug, Clone)]
@@ -244,8 +472,9 @@ impl Pool {
         let repo = root.canonicalize().map_err(io_error(root))?;
         let hash = crate::ext::content_hash(&repo.to_string_lossy());
         let short: String = hash.chars().take(16).collect();
+        // Invariant: opening the pool writes nothing; a `--here` start or a listing
+        // leaves no directory behind. The first claim or reap creates it.
         let dir = home.join(".yi/lanes").join(short);
-        std::fs::create_dir_all(&dir).map_err(io_error(&dir))?;
         Ok(Self {
             repo,
             dir,
@@ -300,6 +529,7 @@ impl Pool {
 
     /// Invariant: the kernel drops this flock with the process; a crash cannot wedge the pool.
     fn lock(&self) -> Result<File, LaneError> {
+        std::fs::create_dir_all(&self.dir).map_err(io_error(&self.dir))?;
         let path = self.dir.join("pool.lock");
         let file = File::create(&path).map_err(io_error(&path))?;
         file.lock().map_err(io_error(&path))?;
@@ -321,37 +551,64 @@ impl Pool {
     }
 
     fn branch_of(&self, slot: SlotIndex) -> Option<String> {
-        git(
-            &self.slot_path(slot),
-            &["symbolic-ref", "--short", "-q", "HEAD"],
-        )
-        .ok()
-        .map(|text| text.trim().to_owned())
-        .filter(|text| !text.is_empty())
+        head(&self.slot_path(slot))
+            .ok()
+            .and_then(|head| head.branch().map(ToString::to_string))
     }
 
     pub fn list(&self) -> Result<Vec<SlotView>, LaneError> {
+        let deadline = std::time::Instant::now()
+            .checked_add(LIST_BUDGET)
+            .unwrap_or_else(std::time::Instant::now);
+        // Invariant: a listing never fetches; `behind` counts against the `main` last seen.
+        let base = probe_git(
+            &self.repo,
+            &["rev-parse", "--verify", "-q", "origin/main^{commit}"],
+            deadline,
+        )
+        .or_else(|_| {
+            probe_git(
+                &self.repo,
+                &["rev-parse", "--verify", "-q", "main^{commit}"],
+                deadline,
+            )
+        })
+        .ok()
+        .and_then(|text| Sha::parse(&text));
         let mut views = Vec::new();
         for n in 0..self.slots {
             let slot = SlotIndex(n);
-            if !self.slot_path(slot).is_dir() {
+            let path = self.slot_path(slot);
+            if !path.is_dir() {
                 continue;
             }
             let state = self.read_state(slot)?;
-            let (_guard, holder) = self.probe(slot)?;
-            views.push(match (holder, state.session) {
+            let (_guard, live) = self.probe(slot)?;
+            let holder = |session: String| {
+                let branch = head(&path).ok().and_then(|head| head.branch().cloned());
+                Holder {
+                    session,
+                    tree: tree_state(&path, base.as_ref(), deadline),
+                    age: branch
+                        .as_ref()
+                        .and_then(|branch| age_of(&path, branch, deadline)),
+                    branch,
+                }
+            };
+            views.push(match (live, state.session) {
                 (Some(session), _) => SlotView::Held {
                     slot,
-                    session,
-                    branch: self.branch_of(slot),
+                    holder: holder(session),
+                    path,
                 },
                 (None, Some(session)) => SlotView::Orphan {
                     slot,
-                    session,
-                    branch: self.branch_of(slot),
+                    holder: holder(session),
+                    path,
                 },
                 (None, None) => SlotView::Idle {
                     slot,
+                    path,
                     warm: state.warm.as_ref().is_some_and(|warm| {
                         state.base.as_deref() == Some(warm.base.as_str())
                             && state.lockfile.as_deref() == Some(warm.lockfile.as_str())
@@ -534,19 +791,43 @@ impl Pool {
         if !git(&path, &["status", "--porcelain"])?.trim().is_empty() {
             return Ok(false);
         }
-        let Some(branch) = self.branch_of(slot) else {
-            return Ok(true);
+        // Invariant: an unreadable HEAD is not a free slot; only a detached one is.
+        let branch = match head(&path) {
+            Ok(Head::Detached(_)) => return Ok(true),
+            Ok(Head::Branch(branch)) => branch,
+            Err(_) => return Ok(false),
         };
+        let branch = branch.as_str();
         let base = self.resolve(&ClaimBase::Main)?;
-        Ok(git(&self.repo, &["merge-base", "--is-ancestor", &branch, &base]).is_ok())
+        Ok(git(&self.repo, &["merge-base", "--is-ancestor", branch, &base]).is_ok())
     }
 
     /// Invariant: an orphan's branch is the only copy of its work; it goes only once `main` has it.
     pub fn reap(&self, slot: SlotIndex) -> Result<String, LaneError> {
+        self.reap_if(slot, None)
+    }
+
+    /// The prompt's answer: the slot is freed only if the session named at the
+    /// prompt is still the one on it, so an answer never lands on a slot that moved.
+    pub fn reap_left_by(&self, slot: SlotIndex, session: &str) -> Result<String, LaneError> {
+        self.reap_if(slot, Some(session))
+    }
+
+    fn reap_if(&self, slot: SlotIndex, expected: Option<&str>) -> Result<String, LaneError> {
         let _pool = self.lock()?;
         let (guard, holder) = self.probe(slot)?;
         if let Some(session) = holder {
             return Err(LaneError::SlotBusy { slot, session });
+        }
+        if let Some(expected) = expected {
+            let found = self.read_state(slot)?.session.unwrap_or_default();
+            if found != expected {
+                return Err(LaneError::SlotChanged {
+                    slot,
+                    expected: expected.to_owned(),
+                    found,
+                });
+            }
         }
         let branch = self.branch_of(slot);
         let kept = self.detach(slot, branch.as_deref())?;
