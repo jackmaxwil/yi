@@ -1,0 +1,6 @@
+{
+  "id": "seen-red",
+  "dryReward": 0,
+  "timeoutSec": 600,
+  "note": "faux writes no test and no fix"
+}

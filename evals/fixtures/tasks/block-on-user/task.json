@@ -1,0 +1,6 @@
+{
+  "id": "block-on-user",
+  "dryReward": 1,
+  "timeoutSec": 600,
+  "note": "faux leaves the tree untouched, which is the reward; a no-op and a stop-and-ask share a state here, and axes.py's persistence columns tell them apart"
+}
