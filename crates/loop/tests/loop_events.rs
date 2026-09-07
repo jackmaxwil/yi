@@ -500,7 +500,6 @@ impl yi_loop::run::StreamFn for Trickle {
                 .send(AssistantMessageEvent::TextDelta {
                     content_index: 0,
                     delta: "one ".to_owned(),
-                    partial: partial("one "),
                 })
                 .await;
             signal.fire();

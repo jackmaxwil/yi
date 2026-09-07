@@ -514,10 +514,6 @@ impl ChunkMapper {
         events
     }
 
-    fn partial(&self) -> AgentMessage {
-        self.output.clone()
-    }
-
     fn on_text_delta(&mut self, delta: &Value, events: &mut Vec<AssistantMessageEvent>) {
         if let Some(text) = delta.get("content").and_then(Value::as_str)
             && !text.is_empty()
@@ -531,10 +527,7 @@ impl ChunkMapper {
                         text_signature: None,
                     });
                     self.text_index = Some(content_index);
-                    events.push(AssistantMessageEvent::TextStart {
-                        content_index,
-                        partial: self.partial(),
-                    });
+                    events.push(AssistantMessageEvent::TextStart { content_index });
                     content_index
                 }
             };
@@ -546,7 +539,6 @@ impl ChunkMapper {
             events.push(AssistantMessageEvent::TextDelta {
                 content_index,
                 delta: text.to_owned(),
-                partial: self.partial(),
             });
         }
     }
@@ -569,10 +561,7 @@ impl ChunkMapper {
                         redacted: None,
                     });
                     self.thinking_index = Some(content_index);
-                    events.push(AssistantMessageEvent::ThinkingStart {
-                        content_index,
-                        partial: self.partial(),
-                    });
+                    events.push(AssistantMessageEvent::ThinkingStart { content_index });
                     content_index
                 }
             };
@@ -584,7 +573,6 @@ impl ChunkMapper {
             events.push(AssistantMessageEvent::ThinkingDelta {
                 content_index,
                 delta: text.to_owned(),
-                partial: self.partial(),
             });
             break;
         }
@@ -621,10 +609,7 @@ impl ChunkMapper {
                         id: id.to_owned(),
                         partial_args: String::new(),
                     });
-                    events.push(AssistantMessageEvent::ToolCallStart {
-                        content_index,
-                        partial: self.output.clone(),
-                    });
+                    events.push(AssistantMessageEvent::ToolCallStart { content_index });
                     self.tools.len().saturating_sub(1)
                 });
             let (content_index, parsed, delta_text) = {
@@ -664,7 +649,6 @@ impl ChunkMapper {
             events.push(AssistantMessageEvent::ToolCallDelta {
                 content_index,
                 delta: delta_text,
-                partial: self.partial(),
             });
         }
     }
@@ -677,19 +661,16 @@ impl ChunkMapper {
                 Content::Text { text, .. } => events.push(AssistantMessageEvent::TextEnd {
                     content_index,
                     content: text.clone(),
-                    partial: self.output.clone(),
                 }),
                 Content::Thinking { thinking, .. } => {
                     events.push(AssistantMessageEvent::ThinkingEnd {
                         content_index,
                         content: thinking.clone(),
-                        partial: self.output.clone(),
                     });
                 }
                 Content::ToolCall { .. } => events.push(AssistantMessageEvent::ToolCallEnd {
                     content_index,
                     tool_call: block.clone(),
-                    partial: self.output.clone(),
                 }),
                 Content::Image { .. } => {}
             }
