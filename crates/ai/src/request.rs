@@ -221,6 +221,65 @@ pub fn pump_sse(
     Ok(())
 }
 
+/// D146: a body that died before its first event is sent once more; the first error returns.
+pub fn pump_sse_with_resend(
+    send: impl Fn() -> Result<ureq::Response, String>,
+    mut on_event: impl FnMut(SseEvent) -> Result<bool, String>,
+) -> Result<Option<String>, String> {
+    let mut first_error: Option<String> = None;
+    loop {
+        let response = send()?;
+        let mut delivered = false;
+        let pumped = pump_sse(response, |event| {
+            delivered = true;
+            on_event(event)
+        });
+        match pumped {
+            Ok(()) => return Ok(first_error),
+            // Incident: `Bad address (os error 14)` killed a trial's third request
+            // before any byte arrived (ledger 0017, issue #256).
+            Err(text) if resend_dead_stream(delivered, first_error.is_some()) => {
+                first_error = Some(text);
+            }
+            Err(text) => {
+                return Err(match first_error {
+                    Some(first) => format!("{text} (resent once after: {first})"),
+                    None => text,
+                });
+            }
+        }
+    }
+}
+
+pub fn resend_dead_stream(delivered: bool, resent: bool) -> bool {
+    !delivered && !resent
+}
+
+pub fn note_resend(output: &mut AgentMessage, first_error: &str) {
+    if let AgentMessage::Assistant {
+        diagnostics,
+        timestamp,
+        ..
+    } = output
+    {
+        let mut details = serde_json::Map::new();
+        details.insert("resends".to_owned(), Value::from(1u32));
+        diagnostics.get_or_insert_with(Vec::new).push(
+            yi_types::message::AssistantMessageDiagnostic {
+                diagnostic_type: "stream_resent".to_owned(),
+                timestamp: *timestamp,
+                error: Some(yi_types::message::DiagnosticErrorInfo {
+                    name: None,
+                    message: first_error.to_owned(),
+                    stack: None,
+                    code: None,
+                }),
+                details: Some(details),
+            },
+        );
+    }
+}
+
 pub fn fail_message(output: &mut AgentMessage, text: &str) -> crate::EventOut {
     if let AgentMessage::Assistant {
         stop_reason,

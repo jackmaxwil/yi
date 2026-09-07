@@ -702,25 +702,26 @@ fn run_request(
     proxy: Option<&crate::request::ProxyConfig>,
     sender: &Sender<AssistantMessageEvent>,
 ) -> Result<(), String> {
-    let response = crate::request::openai_bearer_post(
-        &format!("{}/chat/completions", model.base_url),
-        api_key,
-        body,
-        proxy,
-    )?;
+    let url = format!("{}/chat/completions", model.base_url);
     let mut mapper = ChunkMapper::new(model);
     let _ = sender.blocking_send(mapper.start_event());
-    crate::request::pump_sse(response, |sse| {
-        if sse.data == "[DONE]" {
-            return Ok(true);
-        }
-        if let Ok(payload) = parse_json_with_repair(&sse.data) {
-            for event in mapper.push_chunk(&payload) {
-                let _ = sender.blocking_send(event);
+    let resent = crate::request::pump_sse_with_resend(
+        || crate::request::openai_bearer_post(&url, api_key, body, proxy),
+        |sse| {
+            if sse.data == "[DONE]" {
+                return Ok(true);
             }
-        }
-        Ok(true)
-    })?;
+            if let Ok(payload) = parse_json_with_repair(&sse.data) {
+                for event in mapper.push_chunk(&payload) {
+                    let _ = sender.blocking_send(event);
+                }
+            }
+            Ok(true)
+        },
+    )?;
+    if let Some(first_error) = resent {
+        crate::request::note_resend(&mut mapper.output, &first_error);
+    }
     for event in mapper.finish() {
         let _ = sender.blocking_send(event);
     }

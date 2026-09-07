@@ -94,6 +94,9 @@ pub enum ErrorClass {
     TransportTimeout,
     TransportProxy,
     TransportBody,
+    TransportOs(i32),
+    TransportTls,
+    TransportClosed,
     RefusalUnknownModel,
     RefusalNoKey,
     RefusalPoolFull,
@@ -124,6 +127,29 @@ impl ErrorClass {
         if lower.contains("body over") {
             return Self::TransportBody;
         }
+        // Incident: `Bad address (os error 14)`, a dead TLS handshake and a stream closed
+        // mid-body all read `provider:error` on ledger row 0017 (issue #256).
+        if let Some(rest) = lower.split("os error ").nth(1)
+            && let Some(code) = rest.split(|c: char| !c.is_ascii_digit()).next()
+            && let Ok(number) = code.parse::<i32>()
+        {
+            return Self::TransportOs(number);
+        }
+        if lower.contains("tls") || lower.contains("certificate") {
+            return Self::TransportTls;
+        }
+        if [
+            "connection closed",
+            "stream closed",
+            "connection reset",
+            "connection failed",
+            "broken pipe",
+        ]
+        .iter()
+        .any(|needle| lower.contains(needle))
+        {
+            return Self::TransportClosed;
+        }
         Self::Provider("error".to_owned())
     }
 }
@@ -137,6 +163,9 @@ impl std::fmt::Display for ErrorClass {
             Self::TransportTimeout => f.write_str("transport:timeout"),
             Self::TransportProxy => f.write_str("transport:proxy"),
             Self::TransportBody => f.write_str("transport:body"),
+            Self::TransportOs(code) => write!(f, "transport:os_{code}"),
+            Self::TransportTls => f.write_str("transport:tls"),
+            Self::TransportClosed => f.write_str("transport:closed"),
             Self::RefusalUnknownModel => f.write_str("refusal:unknown_model"),
             Self::RefusalNoKey => f.write_str("refusal:no_key"),
             Self::RefusalPoolFull => f.write_str("refusal:pool_full"),
