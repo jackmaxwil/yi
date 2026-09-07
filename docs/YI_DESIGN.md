@@ -1751,6 +1751,7 @@ while every real-model run stays deliberate and ledgered in docs/eval-ledger.md.
 | E7 | multi-KB single-argv prompt accepted (X1) | instruction arrives as one shell-quoted argv |
 | E8 | `--yolo` non-interactive flag (X1/M1) | every harness passes its agent's bypass flag; a permission prompt = hang to timeout |
 | E9 | emit **all** telemetry fields or none | AA excludes missing values from averages — partial instrumentation flatters silently |
+| E10-E15 | the v4 gates: ATIF per trial, five trials and no multiplier for any leaderboard-shaped claim, the budget is in the instruction, pin by digest, self-reported cost is the only cost, and the adapter ships CA roots (`SSL_CERT_FILE`) because the platform verifier bundles none and `oven/bun` ships none | docs/plans/2026-09-06-tbv4-evals/tbv4-design.md §10; ledger 0017 |
 
 ### 15.3 Optimization levers (harness-level, ranked)
 
