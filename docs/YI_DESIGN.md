@@ -1747,10 +1747,11 @@ while every real-model run stays deliberate and ledgered in docs/eval-ledger.md.
 | E3 | eval profile ships configured-deny rules on `/logs/verifier`, `/tests`, and task test files | verifier trusts files the agent can pre-write; TB2.1's judge zeroes it as harness-cheating (a top agent lost 8.99 % this way) |
 | E4 | QnA answer-file discipline: draft `answer.txt` early, refine in place | agent timeout is **not** fatal — the verifier runs anyway; a draft converts a timeout from 0 into a chance |
 | E5 | usage wire in Pi camelCase (A5) | harbor's parser sums `usage.cacheRead`/`cost.total`; snake_case reads as zeros |
-| E6 | adapter never filters the event stream through `grep -v` | under `pipefail`, zero surviving lines ⇒ grep exit 1 ⇒ trial fails (Pi's own adapter has this bug) |
+| E6 | adapter never filters the event stream through a bare `grep -v`; the `message_update` filter is guarded (`\|\| [ $? -eq 1 ]`) and tee's stdout goes to `/dev/null` | under `pipefail`, zero surviving lines ⇒ grep exit 1 ⇒ trial fails (Pi's own adapter has this bug); and unfiltered, one 131k-token turn streamed 43.8 GB of snapshots into harbor's buffered stdout and the OS killed the run (ledger 0017, issue #254) |
 | E7 | multi-KB single-argv prompt accepted (X1) | instruction arrives as one shell-quoted argv |
 | E8 | `--yolo` non-interactive flag (X1/M1) | every harness passes its agent's bypass flag; a permission prompt = hang to timeout |
 | E9 | emit **all** telemetry fields or none | AA excludes missing values from averages — partial instrumentation flatters silently |
+| E10-E15 | the v4 gates: ATIF per trial, five trials and no multiplier for any leaderboard-shaped claim, the budget is in the instruction, pin by digest, self-reported cost is the only cost, and the adapter ships CA roots (`SSL_CERT_FILE`) because the platform verifier bundles none and `oven/bun` ships none | docs/plans/2026-09-06-tbv4-evals/tbv4-design.md §10; ledger 0017 |
 
 ### 15.3 Optimization levers (harness-level, ranked)
 

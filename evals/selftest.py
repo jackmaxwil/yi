@@ -51,7 +51,11 @@ def check_command():
     argv = shlex.split(command)
     assert "--json" in argv, "E1: the adapter must run the JSON event stream"
     assert "--yolo" in argv, "E8: a permission prompt hangs the trial to timeout"
-    assert "grep" not in command, "E6: a filtered stream exits 1 under pipefail"
+    # E6: a bare `grep -v` exits 1 when nothing survives and pipefail scores the
+    # trial 0; the delta filter is guarded, and tee's stdout is not harbor's to hold.
+    assert "grep -v" in command and "|| [ $? -eq 1 ]" in command, "E6: the delta filter must be guarded"
+    assert command.rstrip().endswith(">/dev/null"), "harbor must not buffer the event stream"
+    assert "message_update" in command, "the deltas are what made one trial 43.8 GB"
     assert argv.count(INSTRUCTION) == 1, "E7: instruction must be one quoted argv"
     assert yi_usage.REMOTE_SESSION_DIR in argv, "session dir must be collected"
     assert yi_usage.REMOTE_SESSION_DIR.startswith("/logs/"), "sessions live under /logs"
