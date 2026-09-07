@@ -77,15 +77,26 @@ def final_answer(events_path):
 
 
 def score(task_dir, workspace):
-    """TB2.1 binary reward: reward.sh exits 0, or the task scored nothing.
+    """Binary reward: reward.sh exits 0, or the task scored nothing.
 
     cwd is the workspace copy, never the fixture: a reward that reads the
-    fixture tree scores the seed instead of the rollout.
+    fixture tree scores the seed instead of the rollout. A task in harbor's
+    layout runs its own tests/test.sh with APP, TESTS and LOGS pointed at the
+    copy, the verifier image and a scratch dir, so one script serves both
+    runners (plan S3).
     """
+    verifier = task_dir / "tests" / "test.sh"
+    if verifier.is_file():
+        command = ["bash", str(verifier)]
+        env = {**os.environ, "APP": str(workspace), "TESTS": str(verifier.parent),
+               "LOGS": str(Path(workspace).parent / "verifier")}
+    else:
+        command, env = ["sh", str(task_dir / "reward.sh")], None
     try:
         done = subprocess.run(
-            ["sh", str(task_dir / "reward.sh")],
+            command,
             cwd=str(workspace),
+            env=env,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             timeout=REWARD_TIMEOUT_SEC,
@@ -98,14 +109,16 @@ def score(task_dir, workspace):
 def run_task(task_dir, binary, model, out=None):
     """One rollout: copy the repo, ask, write the answer file, score."""
     spec = json.loads((task_dir / "task.json").read_text())
-    prompt = (task_dir / "prompt.txt").read_text().strip()
+    harbor_layout = (task_dir / "instruction.md").is_file()
+    prompt = (task_dir / ("instruction.md" if harbor_layout else "prompt.txt")).read_text().strip()
+    seed = task_dir / ("environment/app" if harbor_layout else "repo")
     started = time.monotonic()
     with tempfile.TemporaryDirectory(prefix="yi-eval-") as directory:
         # Invariant: the graded tree holds the task's own files plus answer.txt.
         # The stream and the session dir are siblings, never inside it: a diff or
         # clean-tree reward scores them, and the agent can read its own events.
         workspace = Path(directory) / "repo"
-        shutil.copytree(task_dir / "repo", workspace)
+        shutil.copytree(seed, workspace)
         keep = Path(out) / spec["id"] if out else Path(directory)
         keep.mkdir(parents=True, exist_ok=True)
         sessions = keep / "sessions"
@@ -206,6 +219,9 @@ def run_home():
     """A fresh absolute HOME per process: a run is a harness, never the caller's ~/.yi."""
     if not _RUN_HOME:
         _RUN_HOME.append(tempfile.mkdtemp(prefix="yi-evals-home-"))
+        config = Path(_RUN_HOME[0]) / ".yi" / "config.json"
+        config.parent.mkdir(parents=True, exist_ok=True)
+        config.write_text(json.dumps({"telemetry": {"enabled": True}}))
     return _RUN_HOME[0]
 
 

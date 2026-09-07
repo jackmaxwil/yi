@@ -1,0 +1,5 @@
+{
+  "service": "billing-gateway",
+  "request_timeout": 3000,
+  "retries": 2
+}
