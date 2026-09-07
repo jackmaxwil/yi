@@ -7,6 +7,8 @@ so a broken adapter fails here instead of scoring a real rollout 0.
     python3 evals/selftest.py
 """
 
+import contextlib
+import io
 import json
 import os
 import shlex
@@ -24,6 +26,7 @@ import orient_census  # noqa: E402
 import rule_fires  # noqa: E402
 import record  # noqa: E402
 import tb21_cost  # noqa: E402
+import axes  # noqa: E402
 import yi_usage  # noqa: E402
 
 FIXTURES = ROOT / "fixtures"
@@ -146,6 +149,29 @@ def check_fingerprint():
     assert first != hour, "a one-hour row and a full-length row must never share a fingerprint"
     pinned = yi_usage.config_fingerprint("0.2.0", "anthropic/claude-opus-4-5", "yolo", "sha256:39d9f44b")
     assert first != pinned, "a different dataset digest is a different config"
+
+
+def check_axes():
+    """The five-axis scorer reads all three run shapes and its rows are byte-stable."""
+    fixture = FIXTURES / "axes"
+    expected = (fixture / "expected.jsonl").read_text()
+    with tempfile.TemporaryDirectory() as directory:
+        out = Path(directory) / "rows.jsonl"
+        buffer = io.StringIO()
+        with contextlib.redirect_stdout(buffer):
+            code = axes.main([str(fixture), "--json", str(out), "--suite", "fixtures", "--model", "faux/faux-1"])
+        assert code == 0, buffer.getvalue()
+        assert out.read_text() == expected, "axes rows drifted from evals/fixtures/axes/expected.jsonl"
+        row = buffer.getvalue().strip().splitlines()[-1]
+    assert "| 1/2 | k=1 |" in row, row
+    assert row.endswith("| 1 / 1(3) / 2 | 3 / 1 / 1 / 1 | 68 / 1 / 17 / 1.0s |"), row
+    rows = [json.loads(line) for line in expected.splitlines()]
+    kinds = sorted(r["kind"] for r in rows)
+    assert kinds == ["harbor", "journey", "run"], kinds
+    with tempfile.TemporaryDirectory() as directory:
+        empty = Path(directory)
+        with contextlib.redirect_stderr(io.StringIO()):
+            assert axes.main([str(empty)]) == 2, "no sessions must not read as a measured run"
 
 
 def check_driver_ceiling():
@@ -308,6 +334,7 @@ CHECKS = (
     check_session_extras,
     check_fingerprint,
     check_driver_ceiling,
+    check_axes,
     check_record,
     check_record_redacts,
     check_record_refuses,

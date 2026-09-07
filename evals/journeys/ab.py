@@ -2,7 +2,7 @@
 """Run the journey prompts against a real model under one prompt ref and score the
 session files with the extractor. One JSONL per prompt lands under --out/<ref>/;
 the signals table is the number a prompt change is judged by."""
-import argparse, os, pathlib, subprocess, sys, tempfile
+import argparse, os, pathlib, shutil, subprocess, sys, tempfile
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 PROMPTS = pathlib.Path(__file__).resolve().parent / "prompts" / "prompts.txt"
@@ -44,6 +44,8 @@ def main(argv=None):
     if slug is None:
         print("no session directory was written; check the key and the model", file=sys.stderr)
         return 1
+    # The session files are the record evals/axes.py scores; the temp HOME is not kept.
+    shutil.copytree(slug, out / "sessions", dirs_exist_ok=True)
     extractor = ROOT / "skills/yi/session-mining/extract.py"
     return subprocess.run(
         [sys.executable, str(extractor), "--sessions", str(slug), "--out", str(out / "mining")],
