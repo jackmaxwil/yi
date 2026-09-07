@@ -117,5 +117,6 @@ when it changes rather than editing them by hand.
 - [D137](adr/d137.md) - todos are a session tool and plans are a delegation ledger
 - [D138](adr/d138.md) - the prompt is comprehensive and its ceiling is the ratchet
 - [D139](adr/d139.md) - the skills catalog is a ladder and a skill answers to its name
+- [D140](adr/d140.md) - evals measure five axes from the run's own record and Terminal-Bench v4 is...
 
 D36-D51, D72, D73 and D74 have no ADR yet; ARCHITECTURE.md is the record for those rows.
