@@ -18,7 +18,7 @@ jobs:
         run: |
           set -euo pipefail
           echo "DOCKER_HOST=${DOCKER_HOST:-unset}"
-          case "${DOCKER_HOST:-}" in tcp://bench-dind:2375) ;; *) echo "not the bench runner"; exit 1;; esac
+          case "${DOCKER_HOST:-}" in tcp://host.docker.internal:2375) ;; *) echo "not the bench runner"; exit 1;; esac
       - name: A job can pull and run a container there
         run: |
           set -euo pipefail
