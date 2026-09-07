@@ -36,14 +36,21 @@ def main(argv=None):
         ran += 1
         target = out / f"{ran:02}-{klass}.jsonl"
         with target.open("w") as sink:
-            subprocess.run(
-                [args.binary, "ask", "--here", "--model", args.model, "--json", prompt],
-                cwd=args.cwd, env=env, stdout=sink, stderr=subprocess.STDOUT,
-                timeout=args.timeout, check=False,
-            )
-        print(f"ran {klass}: {target.name} ({target.stat().st_size} bytes)", file=sys.stderr)
+            try:
+                subprocess.run(
+                    [args.binary, "ask", "--here", "--model", args.model, "--json", prompt],
+                    cwd=args.cwd, env=env, stdout=sink, stderr=subprocess.STDOUT,
+                    timeout=args.timeout, check=False,
+                )
+                verdict = "ran"
+            except subprocess.TimeoutExpired:
+                # A timeout is a result, never a retry (plan law 5); the partial stream is on disk.
+                verdict = f"timed out after {args.timeout}s"
+        print(f"{verdict} {klass}: {target.name} ({target.stat().st_size} bytes)", file=sys.stderr)
     sessions = pathlib.Path(home) / ".yi" / "sessions"
-    slug = next(sessions.iterdir(), None) if sessions.is_dir() else None
+    # Incident: iterdir handed back `rlm-<pid>/`, a kernel-state directory with no
+    # session in it, and the four change-class sessions were never scored.
+    slug = next((d for d in sorted(sessions.iterdir()) if any(d.glob("*.jsonl"))), None) if sessions.is_dir() else None
     if slug is None:
         print("no session directory was written; check the key and the model", file=sys.stderr)
         return 1

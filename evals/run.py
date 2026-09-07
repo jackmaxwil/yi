@@ -76,7 +76,7 @@ def final_answer(events_path):
     return text
 
 
-def score(task_dir, workspace):
+def score(task_dir, workspace, keep=None):
     """Binary reward: reward.sh exits 0, or the task scored nothing.
 
     cwd is the workspace copy, never the fixture: a reward that reads the
@@ -92,13 +92,16 @@ def score(task_dir, workspace):
                "LOGS": str(Path(workspace).parent / "verifier")}
     else:
         command, env = ["sh", str(task_dir / "reward.sh")], None
+    # Incident: a seen-red rollout scored 0 with a final answer that quoted red
+    # then green, and nothing kept the verifier's own words; --out keeps them.
+    log = (Path(keep) / "verifier.log").open("w") if keep else subprocess.DEVNULL
     try:
         done = subprocess.run(
             command,
             cwd=str(workspace),
             env=env,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+            stdout=log,
+            stderr=subprocess.STDOUT,
             timeout=REWARD_TIMEOUT_SEC,
         )
     except subprocess.TimeoutExpired:
@@ -157,7 +160,7 @@ def run_task(task_dir, binary, model, out=None):
         (workspace / "answer.txt").write_text(final_answer(events))
         row = {
             "task": spec["id"],
-            "reward": score(task_dir, workspace),
+            "reward": score(task_dir, workspace, keep if out else None),
             "exit": exit_code,
             "timedOut": timed_out,
             "wallSec": round(time.monotonic() - started, 2),
