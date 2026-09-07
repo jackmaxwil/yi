@@ -36,12 +36,19 @@ def run_command(model_name, instruction, resume=False):
     if not model_name or "/" not in model_name:
         raise ValueError("model name must be 'provider/model'")
     resume_flag = "--continue " if resume else ""
+    # Incident: a 131k-token turn streamed 130,496 `message_update` snapshots,
+    # 43.8 GB on one trial; harbor buffers the command's stdout, and the OS
+    # killed it. The deltas are dropped through a guarded filter (E6: a bare
+    # `grep -v` exits 1 when nothing survives, and pipefail scores that 0),
+    # message_end carries every field the parse reads, and tee's stdout goes
+    # to /dev/null so harbor holds nothing in memory.
     return (
         "yi ask --json --yolo "
         f"--model {shlex.quote(model_name)} "
         f"--session-dir {REMOTE_SESSION_DIR} "
         f"{resume_flag}{shlex.quote(instruction)} "
-        f"2>&1 </dev/null | stdbuf -oL tee {REMOTE_EVENTS_PATH}"
+        "2>&1 </dev/null | { grep -v '\"type\":\"message_update\"' || [ $? -eq 1 ]; } "
+        f"| stdbuf -oL tee {REMOTE_EVENTS_PATH} >/dev/null"
     )
 
 
@@ -57,24 +64,26 @@ def _add_tokens(totals, usage):
 def json_lines(path):
     """Yield parsed objects and a malformed count; a bad line never aborts."""
     malformed = 0
+    parsed = []
     try:
-        text = Path(path).read_text(errors="replace")
+        handle = Path(path).open(errors="replace")
     except OSError:
         return [], 0
-    parsed = []
-    for line in text.splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            value = json.loads(line)
-        except json.JSONDecodeError:
-            malformed += 1
-            continue
-        if isinstance(value, dict):
-            parsed.append(value)
-        else:
-            malformed += 1
+    # Streamed, never read whole: the cost probe was killed reading a 43 GB file.
+    with handle:
+        for line in handle:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                value = json.loads(line)
+            except json.JSONDecodeError:
+                malformed += 1
+                continue
+            if isinstance(value, dict):
+                parsed.append(value)
+            else:
+                malformed += 1
     return parsed, malformed
 
 
