@@ -1,6 +1,6 @@
 # Where the work is: worktree and branch visibility in yi
 
-Status: built as D141 and D142 (0.174.0), in the order §5 names: the branch
+Status: built as D143 and D144 (0.175.0), in the order §5 names: the branch
 reader, then the lane line, then the two verbs, with §6's amendments. Departures
 from §4, and why: `yi doctor` still fails on every left slot and still names
 `yi lanes reap N`, because its `--fix` is the script-side answer and a row that
@@ -349,7 +349,7 @@ console session's lane carries its store id and the ledger join works.
   outage cannot touch it.
 - Duplicates: replaces the current line, the quit line's `describe`, and the
   doctor's reap hint with one renderer.
-- ADR: **D141**, "a lane line says path, holder, tree state and age from git
+- ADR: **D143**, "a lane line says path, holder, tree state and age from git
   and the ledger, never from a new file".
 
 **I. Landing reattaches from the forge and shows its age.** On `LaneHandle::new`
@@ -411,7 +411,7 @@ Two verbs. Everything else is a state the row shows or a question yi asks.
 | where am I | nothing: the status row reads `yi ⎇ lane 1`, or `PR #191 ●●⟳ · 3 h ago` once landing | `/pr` |
 | ship it | `/land "Title"` | `/base` (fetch and merge `origin/main` before the push; a conflict stops with the file list and no push), `/pr` (`/land` with no title prints the landing line instead of `needs a title`), and the green-merge it already does |
 | throw it away | `/discard` | unchanged; a destructive verb keeps its own word |
-| what is in the pool | `/lanes` in a session, `yi lanes` in a shell; one renderer (D141) | `yi doctor`'s reap hint |
+| what is in the pool | `/lanes` in a session, `yi lanes` in a shell; one renderer (D143) | `yi doctor`'s reap hint |
 | a stuck slot | nothing: a claim on a full pool asks, in the terminal, before the TUI opens | `yi lanes reap N`, `yi doctor --fix` for the interactive case |
 
 The claim prompt, using today's pool:
@@ -467,7 +467,7 @@ actually needs it; nothing in the repo lands a goal today.
 - The reap hint in `format_lanes` and in the doctor row; the listing states
   the loss, the prompt takes the answer.
 - The lane line for the model (`environment.rs:117-119`, `land.rs:243-252`);
-  `describe` survives only as the quit line, in the D141 form.
+  `describe` survives only as the quit line, in the D143 form.
 - Two rows in the ARCHITECTURE feature table's verb list and the matching
   `commands.rs` slash table (`crates/tui/src/commands.rs:13` pins that the
   table covers every runtime verb, so the deletion is one edit and one test).
@@ -482,36 +482,36 @@ actually needs it; nothing in the repo lands a goal today.
   the fetch before push rides the 120 s bound and a failed fetch skips the
   merge with a note rather than blocking the push.
 - Maintains: net negative in `slash.rs` and `land.rs`; +30 in `main.rs` for
-  the prompt; the D141 renderer is shared.
+  the prompt; the D143 renderer is shared.
 - The person who learned `/pr` and `/base` types them once and reads
   `/pr: try /land` and `/base: /land merges main in first`; two lines in
   `lane_verb`, removed after a release.
-- ADR: **D142**, "two lane verbs: `/land` ships and reports, `/discard` throws
+- ADR: **D144**, "two lane verbs: `/land` ships and reports, `/discard` throws
   away; the pool asks at claim; the model gets the tree state and the
   landing, never a verb".
 
 ## 5. Shortlist
 
-1. **D142: two verbs.** Problem: nine words before the first landing, and one
+1. **D144: two verbs.** Problem: nine words before the first landing, and one
    of them addressed to a reader who cannot use it. Shape: `/land` absorbs
    `/base` and `/pr`; the full-pool claim prompts; the model's lane line goes,
    a landing line comes. Replaces `/pr`, `/base`, `yi lanes reap N` as an
    advertised verb, and `describe` in the environment block.
-2. **D141: one lane line.** As in §3.2. Prerequisite for the claim prompt (the
+2. **D143: one lane line.** As in §3.2. Prerequisite for the claim prompt (the
    prompt prints the same lines) and for the ledger join; carries the ACP
    `bind_session` fix.
-3. **One branch reader.** As in §3.2. Deletion, no ADR; first, because D141
+3. **One branch reader.** As in §3.2. Deletion, no ADR; first, because D143
    reads HEAD per slot through it.
 
-Order of work: the branch reader, then D141, then D142. The landing reattach
-and age from §3.2 (I) ride inside D142, since `/land` with no title is the
+Order of work: the branch reader, then D143, then D144. The landing reattach
+and age from §3.2 (I) ride inside D144, since `/land` with no title is the
 `/pr` it replaces and must show the forge's truth on resume.
 
 ## 6. HAR review (2026-09-06)
 
 Reviewed §3.2, §4 and §5 against `har`, `har-threat`, `har-async` and
 `har-concurrent`. Findings are ordered by risk. Each names the rule, the gap in
-the proposal, and the change that closes it. D141 and D142 are amended in place
+the proposal, and the change that closes it. D143 and D144 are amended in place
 in §6.2; nothing is renumbered.
 
 ### 6.1 Findings
@@ -535,9 +535,9 @@ in §6.2; nothing is renumbered.
 
 ### 6.2 Amended decisions
 
-- **D141** gains: `TreeState::Unread` as a first-class state that never renders as clean; a single deadline per listing; the reader returns `Head`; the ledger join is the CLI's, behind `format_lanes(.., Option<&DaemonLedger>)`; `JOBS_MAX` at the forge parser.
-- **D142** gains: the claim prompt asks outside the pool lock and re-verifies under it; the prompt writes an action-ledger row; `/land`'s base step states its three failure exits; one poller per handle; the reattach and the no-title status run off the port call; the ACP worker claims with its store id.
-- The ordering in §5 stands: the branch reader first, because finding 5 changes its return type and D141 builds on that type.
+- **D143** gains: `TreeState::Unread` as a first-class state that never renders as clean; a single deadline per listing; the reader returns `Head`; the ledger join is the CLI's, behind `format_lanes(.., Option<&DaemonLedger>)`; `JOBS_MAX` at the forge parser.
+- **D144** gains: the claim prompt asks outside the pool lock and re-verifies under it; the prompt writes an action-ledger row; `/land`'s base step states its three failure exits; one poller per handle; the reattach and the no-title status run off the port call; the ACP worker claims with its store id.
+- The ordering in §5 stands: the branch reader first, because finding 5 changes its return type and D143 builds on that type.
 
 ### 6.3 Control tests, one per finding that has a control
 

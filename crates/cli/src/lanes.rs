@@ -26,7 +26,7 @@ pub(crate) type Claimed = (
 );
 
 /// D119: a root session claims a lane unless `--here`, `lanes.enabled: false` or no
-/// repository; a full pool at an interactive start asks, outside the pool lock (D142).
+/// repository; a full pool at an interactive start asks, outside the pool lock (D144).
 pub(crate) fn claim_lane(
     args: &Args,
     home: &std::path::Path,
