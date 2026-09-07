@@ -182,6 +182,22 @@ fn error_classes_render_a_closed_vocabulary() {
         ErrorClass::from_provider_text("model went away").to_string(),
         "provider:error"
     );
+    // Ledger row 0017's three dead streams, each its own class (issue #256).
+    assert_eq!(
+        ErrorClass::from_provider_text("Bad address (os error 14)").to_string(),
+        "transport:os_14"
+    );
+    assert_eq!(
+        ErrorClass::from_provider_text(
+            "https://openrouter.ai/api/v1/chat/completions: Connection Failed: tls connection init failed: invalid peer certificate: UnknownIssuer"
+        )
+        .to_string(),
+        "transport:tls"
+    );
+    assert_eq!(
+        ErrorClass::from_provider_text("API Error: stream closed before completion").to_string(),
+        "transport:closed"
+    );
     assert_eq!(
         ErrorClass::Tool("denied".to_owned()).to_string(),
         "tool:denied"
