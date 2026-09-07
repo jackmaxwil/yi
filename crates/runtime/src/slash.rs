@@ -2,7 +2,17 @@
 
 use crate::{AgentSession, PermissionMode};
 
-pub const SESSION_VERBS: [&str; 5] = ["advisor", "plan", "goal", "permissions", "compact"];
+/// The verbs a host advertises; `/pr` and `/base` still answer, as pointers to `/land`.
+pub const SESSION_VERBS: [&str; 8] = [
+    "advisor",
+    "plan",
+    "goal",
+    "permissions",
+    "compact",
+    "lanes",
+    "land",
+    "discard",
+];
 
 pub fn run(session: &AgentSession, command: &str, args: &str) -> Option<String> {
     Some(match command {
@@ -153,16 +163,19 @@ fn compact(session: &AgentSession, args: &str) -> String {
     }
 }
 
-/// The lane verbs share one shape: a handle, or the `--here` refusal.
+/// Two verbs: `/land` ships (and with no title, reports), `/discard` throws away.
+/// `/lanes` reads the pool from a lane or the trunk; `/pr` and `/base` point at `/land`.
 fn lane_verb(session: &AgentSession, verb: &str, args: &str) -> String {
     let Some(lane) = session.lane() else {
-        return format!("/{verb}: this session runs in the trunk checkout (--here); no lane");
+        return format!("/{verb}: not inside a git repository");
     };
+    let title = args.trim().trim_matches('"');
     let result = match verb {
         "lanes" => lane.lanes(),
-        "land" => lane.land(args.trim().trim_matches('"')),
-        "pr" => lane.refresh().map(|landing| landing_line(&landing)),
-        "base" => lane.base(),
+        "land" if title.is_empty() => lane.refresh().map(|landing| landing_line(&landing)),
+        "land" => lane.land(title),
+        "pr" => return "/pr: `/land` with no title shows the landing".to_owned(),
+        "base" => return "/base: `/land` merges main in before it pushes".to_owned(),
         _ => lane.discard(),
     };
     match result {

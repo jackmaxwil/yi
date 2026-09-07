@@ -64,6 +64,7 @@ fn options() -> TuiOptions {
         model: faux_model(),
         session_name: "e2e".to_owned(),
         cwd: "/tmp".to_owned(),
+        lane: None,
         context_window: 128_000,
         session_dir: String::new(),
         keys: Vec::new(),

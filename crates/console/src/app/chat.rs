@@ -33,6 +33,7 @@ impl App {
             model: yi_tui::model::model_or_stub("", ""),
             session_name: row.map_or_else(|| session.0.clone(), SessionRow::label),
             cwd: row.map_or_else(|| self.state.root.clone(), |row| row.root.clone()),
+            lane: None,
             context_window: 0,
             session_dir: String::new(),
             keys: Vec::new(),
@@ -449,6 +450,12 @@ impl App {
                 RequestKind::Steer,
                 "_yi/child_replay",
                 json!({"sessionId": id, "childId": child}),
+            ),
+            Command::Slash(line) => self.send_request(
+                outbound,
+                RequestKind::Slash(session.clone()),
+                "_yi/slash",
+                json!({"sessionId": id, "line": line}),
             ),
             // The worker summarises what it rewound; shutdown is the console's own.
             Command::SummarizeBranch(_) | Command::Shutdown => {}

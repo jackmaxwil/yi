@@ -1,8 +1,8 @@
 /// Invariant: the popup offers exactly what [`crate::input::handle_slash`] routes.
 #[rustfmt::skip]
-pub(crate) const SLASH_COMMANDS: [&str; 14] = [
+pub(crate) const SLASH_COMMANDS: [&str; 17] = [
     "new", "undo", "quit", "tree", "editor", "advisor", "plan", "plantree", "goal", "agents",
-    "model", "permissions", "compact", "sessions",
+    "model", "permissions", "compact", "sessions", "lanes", "land", "discard",
 ];
 
 #[cfg(test)]

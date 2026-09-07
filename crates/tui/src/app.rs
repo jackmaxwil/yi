@@ -47,6 +47,7 @@ pub enum Command {
     /// E1: the rewind itself is synchronous on the render thread; the
     /// summarizer call it earns is not.
     SummarizeBranch(yi_runtime::BranchStub),
+    Slash(String),
     StopChild(String),
     ChildHistory(String),
     Abort,
@@ -72,6 +73,7 @@ pub struct TuiOptions {
     pub model: yi_types::model::Model,
     pub session_name: String,
     pub cwd: String,
+    pub lane: Option<String>,
     pub context_window: u64,
     pub session_dir: String,
     pub keys: Vec<(String, String)>,
@@ -84,7 +86,7 @@ pub struct TuiOptions {
 // so the viewport opens at an empty live region's height and grows upward from the cursor.
 const MIN_VIEWPORT_ROWS: u16 = 4;
 
-const SPINNER_PERIOD_MS: u128 = 80;
+pub(crate) const SPINNER_PERIOD_MS: u128 = 80;
 pub(crate) const ORB_COLS: u16 = 6;
 pub(crate) const ORB_ROWS: u16 = 3;
 pub(crate) const ORB_PX: usize = 192;
@@ -115,6 +117,7 @@ pub struct App {
     pub(crate) pending_undo: bool,
     /// A slash line the event loop runs against the session (A5 dispatch).
     pub(crate) pending_command: Option<String>,
+    pub(crate) pending_slash: Option<String>,
     pub(crate) pending_clear: bool,
     pub(crate) pending_summary: Option<yi_runtime::BranchStub>,
     pub(crate) pending_stop: Option<String>,
@@ -180,6 +183,8 @@ pub struct App {
     pub(crate) status_name_hidden: bool,
     pub(crate) branch: Option<String>,
     pub(crate) landing: Option<yi_types::lane::Landing>,
+    /// When the landing last arrived; the row's age is this clock, not a wire field.
+    pub(crate) landing_at: Option<Instant>,
     pub(crate) context_used: u64,
     pub(crate) cost_total: f64,
     pub(crate) cost_unknown: bool,
@@ -191,13 +196,7 @@ pub struct App {
     pub(crate) rows: usize,
 }
 
-/// The glyph steps on `elapsed / SPINNER_PERIOD_MS`, so a fixed wake interval
-/// beats against that period and the spinner advances unevenly.
-pub fn next_spinner_wake(elapsed_ms: u128) -> Duration {
-    let into_step = elapsed_ms % SPINNER_PERIOD_MS;
-    let remaining = SPINNER_PERIOD_MS.saturating_sub(into_step);
-    Duration::from_millis(u64::try_from(remaining).unwrap_or(1).max(1))
-}
+pub use crate::frame::next_spinner_wake;
 
 mod stream;
 
@@ -223,6 +222,7 @@ impl App {
             pending_editor: false,
             pending_undo: false,
             pending_command: None,
+            pending_slash: None,
             pending_clear: false,
             pending_summary: None,
             pending_stop: None,
@@ -274,6 +274,7 @@ impl App {
             status_name_hidden: false,
             branch: None,
             landing: None,
+            landing_at: None,
             context_used: 0,
             cost_total: 0.0,
             cost_unknown: false,
@@ -284,7 +285,7 @@ impl App {
             width,
             rows: 24,
         };
-        app.branch = crate::status::git_branch(&app.options.cwd);
+        app.branch = crate::port::git_branch(&app.options.cwd);
         app.scheduler.request();
         app
     }
@@ -392,7 +393,7 @@ impl App {
     fn note_context(&mut self, message: &AgentMessage) {
         if let AgentMessage::Assistant { usage, .. } = message {
             self.context_used = u64::try_from(usage.total_tokens).unwrap_or(0);
-            self.branch = crate::status::git_branch(&self.options.cwd);
+            self.branch = crate::port::git_branch(&self.options.cwd);
         }
     }
 
@@ -604,7 +605,10 @@ impl App {
                 self.reduce_message_end(&message);
             }
             AgentEvent::ChildUpdate { update } => self.reduce_child_update(&update),
-            AgentEvent::LandingState { landing } => self.landing = Some(landing),
+            AgentEvent::LandingState { landing } => {
+                self.landing = Some(landing);
+                self.landing_at = Some(Instant::now());
+            }
             AgentEvent::ToolExecutionStart {
                 tool_call_id,
                 tool_name,
@@ -1031,21 +1035,16 @@ pub(crate) fn spawn_runtime_bridge(
                                 yi_runtime::summarize_branch(&session, stub).await
                             });
                         }
+                        Command::Slash(line) => {
+                            crate::port::slash_off_thread(&driver_session, line, &reply_tx);
+                        }
                         Command::StopChild(child_id) => {
-                            if let Some(child) = driver_host
-                                .children_view()
-                                .into_iter()
-                                .find(|child| child.update.id.as_str() == child_id)
-                            {
+                            if let Some(child) = crate::port::child_of(&driver_host, &child_id) {
                                 child.session.abort();
                             }
                         }
                         Command::ChildHistory(child_id) => {
-                            if let Some(child) = driver_host
-                                .children_view()
-                                .into_iter()
-                                .find(|child| child.update.id.as_str() == child_id)
-                            {
+                            if let Some(child) = crate::port::child_of(&driver_host, &child_id) {
                                 let entries = crate::port::branch_of(&child.session);
                                 let _ = reply_tx.send(UiEvent::Reply(
                                     crate::port::Reply::ChildHistory { child_id, entries },

@@ -26,6 +26,8 @@ impl AcpClient {
             reason = "the protocol contract is the spawned binary's stdio; tests must drive the real process"
         )]
         let mut child = Command::new(env!("CARGO_BIN_EXE_yi"))
+            // Invariant: a harness never claims from the person's pool.
+            .env("HOME", dir.join("home"))
             .args([
                 "acp",
                 "--model",
@@ -550,6 +552,7 @@ fn yi_event_stream_is_lossless_for_a_faux_turn() -> TestResult {
         model: faux_model(),
         session_name: "lossless".to_owned(),
         cwd: dir.display().to_string(),
+        lane: None,
         context_window: 200_000,
         session_dir: dir.display().to_string(),
         keys: Vec::new(),
@@ -693,4 +696,70 @@ fn resume_replays_the_branch_verbatim_and_rewind_reloads_it() -> TestResult {
         "the replay after a rewind names the same leaf the result does"
     );
     client.finish()
+}
+
+fn git_in(dir: &std::path::Path, args: &[&str]) -> Result<String, Box<dyn Error>> {
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "the fixture is a real repository"
+    )]
+    let output = Command::new("git").current_dir(dir).args(args).output()?;
+    if !output.status.success() {
+        return Err(format!("git {args:?}: {}", String::from_utf8_lossy(&output.stderr)).into());
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
+}
+
+/// One worker serves a root; two sessions on it are two lanes under two branches, because
+/// the claim carries the store id rather than the worker's pid.
+#[test]
+fn two_sessions_on_one_worker_hold_two_lanes() -> Result<(), Box<dyn Error>> {
+    let dir = temp_dir("two-lanes")?;
+    std::fs::create_dir_all(dir.join("home"))?;
+    git_in(&dir, &["init", "-q", "-b", "main"])?;
+    git_in(
+        &dir,
+        &[
+            "-c",
+            "user.email=t@t",
+            "-c",
+            "user.name=t",
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            "base",
+        ],
+    )?;
+    let mut client = AcpClient::spawn(&dir)?;
+    client.request("1", "initialize", json!({"protocolVersion": 2}))?;
+    let mut ids = Vec::new();
+    for id in ["2", "3"] {
+        let frames = client.request(
+            id,
+            "session/new",
+            json!({"cwd": dir.display().to_string(), "mcpServers": []}),
+        )?;
+        let last = frames.last().ok_or("no response")?;
+        assert!(
+            last.get("error").is_none(),
+            "session/new {id} failed: {last}"
+        );
+        ids.push(
+            last["result"]["sessionId"]
+                .as_str()
+                .ok_or("no sessionId")?
+                .to_owned(),
+        );
+    }
+    let worktrees = git_in(&dir, &["worktree", "list", "--porcelain"])?;
+    for id in &ids {
+        assert!(
+            worktrees.contains(&format!("branch refs/heads/yi/{id}")),
+            "session {id} has its own lane branch:\n{worktrees}"
+        );
+    }
+    client.finish()?;
+    let _ = std::fs::remove_dir_all(&dir);
+    Ok(())
 }
