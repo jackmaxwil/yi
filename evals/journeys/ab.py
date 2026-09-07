@@ -22,6 +22,9 @@ def main(argv=None):
     out.mkdir(parents=True, exist_ok=True)
     (pathlib.Path(args.out) / ".gitignore").write_text("*\n")
     home = tempfile.mkdtemp(prefix="yi-journey-home-")
+    config = pathlib.Path(home) / ".yi" / "config.json"
+    config.parent.mkdir(parents=True, exist_ok=True)
+    config.write_text('{"telemetry":{"enabled":true}}')
     env = dict(os.environ, HOME=home)
     ran = 0
     for line in PROMPTS.read_text().splitlines():

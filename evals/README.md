@@ -41,6 +41,12 @@ python3 evals/run.py --dry --binary target/debug/yi --model faux/faux-1
 A task is a directory under `fixtures/tasks/<id>/`: `task.json`
 (`id`, `dryReward`, `timeoutSec`), `prompt.txt`, `repo/` copied verbatim into a
 throwaway workspace, and `reward.sh` run there with the workspace as its cwd.
+A task in harbor's layout (`task.toml`, `instruction.md`, `environment/app/`,
+`tests/test.sh`, `solution/solve.sh`; `five-items`, `seen-red`, `block-on-user`)
+runs here too: the instruction is the prompt, `environment/app` is the seed,
+and `tests/test.sh` is the reward with `APP`, `TESTS` and `LOGS` pointed at the
+copy, the task's own `tests/` and a scratch dir, so `harbor run -p
+evals/fixtures/tasks/<id>` and this runner score the same script.
 The workspace is `<tmp>/repo`, and the runner's own files sit beside it as
 `<tmp>/events.jsonl` and `<tmp>/.yi-sessions` — never inside the graded tree,
 where a `git diff` or clean-tree reward would score them as part of the
