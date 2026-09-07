@@ -8,7 +8,9 @@ so a broken adapter fails here instead of scoring a real rollout 0.
 """
 
 import json
+import os
 import shlex
+import subprocess
 import sys
 import tempfile
 from pathlib import Path
@@ -140,6 +142,22 @@ def check_fingerprint():
     assert len(first) == 12, first
     other = yi_usage.config_fingerprint("0.2.0", "openai/gpt-5", "yolo", "tb21@a3f")
     assert first != other, "a different model is a different config"
+    hour = yi_usage.config_fingerprint("0.2.0", "anthropic/claude-opus-4-5", "yolo+t0.125", "tb21@a3f")
+    assert first != hour, "a one-hour row and a full-length row must never share a fingerprint"
+    pinned = yi_usage.config_fingerprint("0.2.0", "anthropic/claude-opus-4-5", "yolo", "sha256:39d9f44b")
+    assert first != pinned, "a different dataset digest is a different config"
+
+
+def check_driver_ceiling():
+    """The v4 driver refuses a multiplier past one hour before it needs anything installed."""
+    script = ROOT / "drivers" / "tbv4_baseline.sh"
+    env = {"PATH": os.environ.get("PATH", ""), "TBV4_TIMEOUT_MULT": "0.5"}
+    done = subprocess.run(["sh", str(script)], capture_output=True, text=True, env=env, timeout=60)
+    assert done.returncode == 1, done
+    assert "0.125 ceiling" in done.stderr, done.stderr
+    env["TBV4_TIMEOUT_MULT"] = "0.125"
+    done = subprocess.run(["sh", str(script)], capture_output=True, text=True, env=env, timeout=60)
+    assert done.returncode == 1 and "OPENROUTER_API_KEY" in done.stderr, done.stderr
 
 
 def check_record():
@@ -248,8 +266,11 @@ def check_cost_cap():
         (runs / "trial" / "yi.jsonl").write_text(priced + "\n")
         assert tb21_cost.main([str(runs), "--hard", "25"]) == 2, "hard cap slept"
         assert tb21_cost.main([str(runs), "--soft", "20"]) == 2, "soft cap slept"
+        # A task that ran and left no transcript prices at nothing, which is not $0.
+        assert tb21_cost.main([str(runs), "--min-files", "1"]) == 0, "one transcript, one expected"
+        assert tb21_cost.main([str(runs), "--min-files", "2"]) == 2, "a missing transcript walked under the cap"
 
-    def unreadable(_runs_dir):
+    def unreadable(_runs_dir, _min_files=0):
         raise OSError("the runs directory could not be read")
 
     original, tb21_cost.spent = tb21_cost.spent, unreadable
@@ -286,6 +307,7 @@ CHECKS = (
     check_unknown_usage_is_not_a_free_turn,
     check_session_extras,
     check_fingerprint,
+    check_driver_ceiling,
     check_record,
     check_record_redacts,
     check_record_refuses,

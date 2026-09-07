@@ -3,54 +3,57 @@
 Stdlib Python and POSIX sh. Each driver preflights its preconditions **by name**
 and refuses with the missing one; no driver ever echoes a key value.
 
-## tb21_baseline.sh — Terminal-Bench 2.1, six-task subset
+## tbv4_baseline.sh — Terminal-Bench v4, six-task subset
 
-Subset spans difficulty at the ≤900s agent timeout: `overfull-hbox` (easy, 360s),
-`fix-git` (easy), `regex-log` (medium), `db-wal-recovery` (medium),
-`password-recovery` (hard), `write-compressor` (hard). Everything ≥1200s is
-excluded — wall clock, not USD, is the binding budget at these prices.
+The dataset is pinned by digest (`terminal-bench/terminal-bench@sha256:39d9f44b…`,
+the leaderboard's `DATASET_REF`), never `@latest`. The subset is one cheap
+task per domain, chosen by `expert_time_estimate_hours` and `cpus` from the
+task metadata: `html-js-filter` (Security), `photonic-waveguide-routing`
+(Software), `music-harmony` (Media), `bun-sourcemap-leak` (Software),
+`foodstuff-beta-activity` (Science), `cargo-flight-dispatch` (Operations).
+No GPU task, no multi-container task. Every v4 task gives the agent
+28,800 s; `TBV4_TIMEOUT_MULT` (default and ceiling `0.125`, one hour) bounds a
+trial, and the driver refuses a larger value before it checks anything else.
+The model is `openrouter/z-ai/glm-5.3-flash` and nothing else
+(docs/plans/2026-09-06-tbv4-evals.md §8).
 
-Four preconditions, all red on this machine as of run 0001:
+Preconditions, all preflighted by name:
 
 ```sh
-export OPENROUTER_API_KEY=...          # env-only: crates/ai/src/auth.rs:19
+export OPENROUTER_API_KEY=...          # env-only: crates/ai/src/auth.rs
 open -a Docker                         # daemon must answer `docker info`
-pip install harbor                     # the `harbor` CLI
-just package-musl <version>            # needs `rustup target add x86_64-unknown-linux-musl`
-sh evals/drivers/tb21_baseline.sh
+uv tool install harbor                 # the `harbor` CLI (0.22.0 at the time of writing)
+rustup target add x86_64-unknown-linux-musl
+just package-musl <version>            # zig supplies the crt; see the recipe
+sh evals/drivers/tbv4_baseline.sh
 ```
+
+`TBV4_TASKS`, `TBV4_ATTEMPTS` (harbor's `-k`), `TBV4_CONCURRENCY` (`-n`),
+`TBV4_RUNS_DIR` (default `runs/tbv4`, the directory harbor is told to write
+with `-o`) and the caps `TBV4_SOFT_CAP` / `TBV4_HARD_CAP` override. The
+driver exports `EVAL_SUITE_REV` (the digest) and `EVAL_TIMEOUT_MULT` so the
+adapter's config fingerprint names both: a one-hour row and a full-length
+row never share one.
 
 Caps: soft $20 (refuses to start another task), hard $25 (stops the stream),
 both read from the summed `usage.cost.total` of every synced `yi.jsonl` by
-`tb21_cost.py`. Override with `TB21_SOFT_CAP` / `TB21_HARD_CAP` / `TB21_RUNS_DIR`.
-A cap stop exits **2**, a finished suite exits 0, a missing precondition exits 1
-— the three outcomes a caller must tell apart, since a suite that burned its
-slice and a suite that ran to the end used to share exit 0.
-The cap comparison lives in `tb21_cost.py --soft/--hard`, not in the shell, and
-its **exit code** is the gate: the shell used to compare the probe's stdout, so
-a probe that failed left the spend empty and the failed comparison read as
-under-cap — the one automated guard on the slice, failing open. A spend that
-cannot be computed now raises out of the probe, and any non-zero probe exit
-stops the stream. `evals/selftest.py` (`check_cost_cap`) holds that line.
-"Cannot be computed" includes a run carrying a D79 `usage.unknown` turn: a
-stream that died before its usage chunk prices at zero, so summing it would let
-an unmeasurable run walk under the cap forever. `parse_events` reports those as
-`costUnknownTurns` and refuses a `costUsd`; the probe stops on them, the ledger
-row's cost cell reads `?` rather than `-`, and
-`check_unknown_usage_is_not_a_free_turn` holds that line.
-A timeout is a result, never a retry; an image that fails to build gets one
-rebuild and is then recorded as an environment failure in the row's notes.
+`tb21_cost.py`. A cap stop exits **2**, a finished suite exits 0, a missing
+precondition exits 1.
+The cap comparison lives in `tb21_cost.py --soft/--hard`, and its **exit
+code** is the gate: a spend that cannot be computed raises out of the probe,
+and any non-zero probe exit stops the stream. "Cannot be computed" includes a
+run carrying a D79 `usage.unknown` turn, and — since the TB2.1 driver read
+`runs/` while harbor wrote `jobs/`, so the probe summed nothing and the cap
+never tripped — a runs directory holding fewer transcripts than tasks run:
+the driver passes `--min-files <tasks so far>` and the probe exits 2 when a
+task left no `yi.jsonl` behind. `evals/selftest.py` (`check_cost_cap`,
+`check_driver_ceiling`) holds those lines.
+A timeout is a result, never a retry; attempts are harbor's, never a
+runner-level retry.
 
-The same driver runs a **campaign slice**: `TB21_TASKS` pins the task list and
-`TB21_ATTEMPTS` sets harbor's `--n-attempts`, so a T1 frontier pair at k=2 is
-
-```sh
-TB21_TASKS="password-recovery write-compressor" TB21_ATTEMPTS=2 \
-    sh evals/drivers/tb21_baseline.sh
-```
-
-Attempts are harbor's, never a runner-level retry: a timeout inside an attempt
-still stands as a result.
+The trials land under `runs/tbv4/<job>/<task>__<id>/` with `result.json`,
+`agent/yi.jsonl`, `agent/yi/sessions/*.jsonl` and the telemetry sidecar the
+adapter turns on at install. `evals/axes.py` (plan S2) reads that directory.
 
 ## T1 frontier — no targets, $0 spent (campaign 3)
 

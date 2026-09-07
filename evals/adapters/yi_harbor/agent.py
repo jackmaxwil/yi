@@ -21,11 +21,26 @@ from yi_usage import (
 )
 
 REMOTE_BINARY = "/usr/local/bin/yi"
+# The run's numbers (D132) need telemetry on in the agent user's HOME; the
+# adapter writes the one config line at install, never the caller's ~/.yi.
+TELEMETRY_CONFIG = '{"telemetry":{"enabled":true}}'
+CONFIG_COMMAND = (
+    "mkdir -p ~/.yi && printf '%s' " + repr(TELEMETRY_CONFIG) + " > ~/.yi/config.json"
+)
+SUITE_REV_ENV = "EVAL_SUITE_REV"
+TIMEOUT_MULT_ENV = "EVAL_TIMEOUT_MULT"
 # One static musl binary, one step: dodges pier's 360 s setup cap and keeps the
 # network allowlist at the provider host (15.3 lever 8).
 BINARY_URL_ENV = "EVAL_BINARY_URL"
 BINARY_PATH_ENV = "EVAL_BINARY"
 VERSION_CHECK = f"{REMOTE_BINARY} --version"
+
+
+def mode_label():
+    """`yolo`, plus the timeout multiplier when the driver set one: a one-hour
+    row and an eight-hour row must never share a fingerprint (plan §4)."""
+    mult = os.environ.get(TIMEOUT_MULT_ENV)
+    return f"yolo+t{mult}" if mult else "yolo"
 
 
 def install_command(url):
@@ -39,6 +54,8 @@ class Yi(BaseInstalledAgent):
     # passthrough: Yi reads ANTHROPIC_API_KEY / OPENAI_API_KEY / OPENROUTER_API_KEY
     # under their own names (crates/ai/src/auth.rs), so harbor must not rename them.
     MODEL_CONNECTION = ModelConnectionSpec(passthrough=True)
+    # harbor sets _resume around run() only when this is declared (base.py:965-971).
+    SUPPORTS_RESUME = True
 
     @staticmethod
     def name():
@@ -51,6 +68,7 @@ class Yi(BaseInstalledAgent):
         url = os.environ.get(BINARY_URL_ENV)
         if url:
             await self.exec_as_root(environment, command=install_command(url))
+            await self.exec_as_agent(environment, command=CONFIG_COMMAND)
             return
         local = os.environ.get(BINARY_PATH_ENV)
         if not local:
@@ -63,6 +81,7 @@ class Yi(BaseInstalledAgent):
             environment,
             command=f"set -euo pipefail; chmod +x {REMOTE_BINARY} && {VERSION_CHECK}",
         )
+        await self.exec_as_agent(environment, command=CONFIG_COMMAND)
 
     async def run(
         self,
@@ -72,7 +91,9 @@ class Yi(BaseInstalledAgent):
     ) -> None:
         await self.exec_as_agent(
             environment,
-            command=run_command(self.model_name, self.render_instruction(instruction)),
+            command=run_command(
+                self.model_name, self.render_instruction(instruction), resume=self._resume
+            ),
             env=dict(self.model_connection.env),
         )
 
@@ -90,6 +111,7 @@ class Yi(BaseInstalledAgent):
             "adapterVersion": ADAPTER_VERSION,
             "malformedLines": usage["malformedLines"],
             "configFingerprint": config_fingerprint(
-                self.version(), self.model_name, "yolo", None
+                self.version(), self.model_name, mode_label(), os.environ.get(SUITE_REV_ENV)
             ),
+            "timeoutMultiplier": os.environ.get(TIMEOUT_MULT_ENV),
         }

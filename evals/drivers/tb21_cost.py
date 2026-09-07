@@ -22,9 +22,17 @@ class Unmeasurable(Exception):
     it into a total that looks safe."""
 
 
-def spent(runs_dir):
+def spent(runs_dir, min_files=0):
     total = 0.0
-    for path in sorted(Path(runs_dir).rglob("yi.jsonl")):
+    paths = sorted(Path(runs_dir).rglob("yi.jsonl"))
+    # Incident: the driver read a directory harbor never wrote, so the probe
+    # summed nothing and the cap never tripped. A task that ran and left no
+    # transcript is unmeasurable, never $0.
+    if len(paths) < min_files:
+        raise Unmeasurable(
+            f"{runs_dir}: {len(paths)} transcript(s) found, {min_files} expected"
+        )
+    for path in paths:
         usage = yi_usage.parse_events(path)
         # D79: a turn whose stream died before its usage chunk prices at zero,
         # so summing it lets an unmeasurable run walk under the cap forever.
@@ -41,9 +49,11 @@ def main(argv=None):
     parser.add_argument("runs_dir", nargs="?", default="runs")
     parser.add_argument("--soft", type=float, help="refuse to start another task at")
     parser.add_argument("--hard", type=float, help="stop the stream at")
+    parser.add_argument("--min-files", type=int, default=0,
+                        help="transcripts the runs dir must hold, or the spend is unmeasurable")
     args = parser.parse_args(argv)
     try:
-        total = spent(args.runs_dir)
+        total = spent(args.runs_dir, args.min_files)
     except Unmeasurable as unreadable:
         print(f"STOP: spend cannot be measured -- {unreadable}", file=sys.stderr)
         return 2
