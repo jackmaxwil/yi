@@ -521,32 +521,56 @@ fn yi_event_stream_is_lossless_for_a_faux_turn() -> TestResult {
         "the assistant message end with its usage is on the stream: {kinds:?}"
     );
 
-    let snapshots: Vec<String> = decoded
-        .iter()
-        .filter_map(|event| match event {
+    // A delta is a delta (D145): the stream carries no snapshot, so the
+    // reader folds the deltas itself and the text must arrive in order.
+    let mut streaming: Option<yi_types::message::AgentMessage> = None;
+    let mut folded: Vec<String> = Vec::new();
+    for event in &decoded {
+        match event {
+            yi_types::event::AgentEvent::MessageStart {
+                message: message @ yi_types::message::AgentMessage::Assistant { .. },
+            } => streaming = Some(message.clone()),
             yi_types::event::AgentEvent::MessageUpdate {
-                message: yi_types::message::AgentMessage::Assistant { content, .. },
-                ..
-            } => Some(
-                content
-                    .iter()
-                    .filter_map(|block| match block {
-                        yi_types::message::Content::Text { text, .. } => Some(text.as_str()),
-                        _ => None,
-                    })
-                    .collect::<String>(),
-            ),
-            _ => None,
-        })
-        .collect();
-    for pair in snapshots.windows(2) {
+                assistant_message_event,
+            } => {
+                if let Some(message) = streaming.as_mut() {
+                    yi_types::event::apply(message, assistant_message_event);
+                    if let yi_types::message::AgentMessage::Assistant { content, .. } = message {
+                        folded.push(
+                            content
+                                .iter()
+                                .filter_map(|block| match block {
+                                    yi_types::message::Content::Text { text, .. } => {
+                                        Some(text.as_str())
+                                    }
+                                    _ => None,
+                                })
+                                .collect::<String>(),
+                        );
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    for pair in folded.windows(2) {
         assert!(
             pair[1].starts_with(&pair[0]),
-            "each snapshot extends the last: {:?} then {:?}",
+            "each folded delta extends the last: {:?} then {:?}",
             pair[0],
             pair[1]
         );
     }
+    let bytes_on_wire: usize = decoded
+        .iter()
+        .filter(|event| matches!(event, yi_types::event::AgentEvent::MessageUpdate { .. }))
+        .map(|event| serde_json::to_string(event).map(|s| s.len()).unwrap_or(0))
+        .sum();
+    let final_len = folded.last().map(String::len).unwrap_or(0);
+    assert!(
+        bytes_on_wire < final_len * 8 + 4096,
+        "the update stream is linear in the answer: {bytes_on_wire} bytes for {final_len} chars"
+    );
 
     let options = yi_tui::TuiOptions {
         model: faux_model(),

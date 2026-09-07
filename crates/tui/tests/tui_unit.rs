@@ -438,11 +438,10 @@ fn streamed(full: &str) -> yi_tui::app::App {
         }
         let message = assistant(full.get(..end.min(full.len())).unwrap_or(full));
         app.reduce_agent(yi_types::event::AgentEvent::MessageUpdate {
-            message: message.clone(),
-            assistant_message_event: yi_types::event::AssistantMessageEvent::TextDelta {
-                content_index: 0,
-                delta: String::new(),
-                partial: message,
+            // A delta is a delta (D145): a test hands the reducer a whole message as `Done`.
+            assistant_message_event: yi_types::event::AssistantMessageEvent::Done {
+                reason: yi_types::message::StopReason::Stop,
+                message,
             },
         });
         end += 17;
@@ -942,11 +941,10 @@ fn streaming_commits_each_list_item_exactly_once() -> TestResult {
     for end in [10, 34, 60, full.len()] {
         let message = assistant(full.get(..end).unwrap_or(full));
         app.reduce_agent(yi_types::event::AgentEvent::MessageUpdate {
-            message: message.clone(),
-            assistant_message_event: yi_types::event::AssistantMessageEvent::TextDelta {
-                content_index: 0,
-                delta: String::new(),
-                partial: message,
+            // A delta is a delta (D145): a test hands the reducer a whole message as `Done`.
+            assistant_message_event: yi_types::event::AssistantMessageEvent::Done {
+                reason: yi_types::message::StopReason::Stop,
+                message,
             },
         });
     }
@@ -1492,11 +1490,10 @@ fn streamed_thought_in(
     };
     let update =
         |partial: yi_types::message::AgentMessage| yi_types::event::AgentEvent::MessageUpdate {
-            message: partial.clone(),
-            assistant_message_event: yi_types::event::AssistantMessageEvent::TextDelta {
-                content_index: 0,
-                delta: String::new(),
-                partial,
+            // A delta is a delta (D145): a test hands the reducer a whole message as `Done`.
+            assistant_message_event: yi_types::event::AssistantMessageEvent::Done {
+                reason: yi_types::message::StopReason::Stop,
+                message: partial,
             },
         };
     app.reduce_agent(yi_types::event::AgentEvent::AgentStart);

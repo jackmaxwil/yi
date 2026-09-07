@@ -4,6 +4,8 @@ use serde_json::Value;
 
 use crate::message::{AgentMessage, Content, StopReason};
 
+/// A delta is a delta (D145): only `Start` carries the message; every other
+/// event carries its own bytes, and [`apply`] folds them into one accumulator.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum AssistantMessageEvent {
@@ -13,49 +15,41 @@ pub enum AssistantMessageEvent {
     TextStart {
         #[serde(rename = "contentIndex")]
         content_index: usize,
-        partial: AgentMessage,
     },
     TextDelta {
         #[serde(rename = "contentIndex")]
         content_index: usize,
         delta: String,
-        partial: AgentMessage,
     },
     TextEnd {
         #[serde(rename = "contentIndex")]
         content_index: usize,
         content: String,
-        partial: AgentMessage,
     },
     ThinkingStart {
         #[serde(rename = "contentIndex")]
         content_index: usize,
-        partial: AgentMessage,
     },
     ThinkingDelta {
         #[serde(rename = "contentIndex")]
         content_index: usize,
         delta: String,
-        partial: AgentMessage,
     },
     ThinkingEnd {
         #[serde(rename = "contentIndex")]
         content_index: usize,
         content: String,
-        partial: AgentMessage,
     },
     #[serde(rename = "toolcall_start")]
     ToolCallStart {
         #[serde(rename = "contentIndex")]
         content_index: usize,
-        partial: AgentMessage,
     },
     #[serde(rename = "toolcall_delta")]
     ToolCallDelta {
         #[serde(rename = "contentIndex")]
         content_index: usize,
         delta: String,
-        partial: AgentMessage,
     },
     #[serde(rename = "toolcall_end")]
     ToolCallEnd {
@@ -63,7 +57,6 @@ pub enum AssistantMessageEvent {
         content_index: usize,
         #[serde(rename = "toolCall")]
         tool_call: Content,
-        partial: AgentMessage,
     },
     Done {
         reason: StopReason,
@@ -73,6 +66,109 @@ pub enum AssistantMessageEvent {
         reason: StopReason,
         error: AgentMessage,
     },
+}
+
+/// Folds one event into the message in place: `*Start` pushes a block, deltas grow it,
+/// `*End` settles it, and a whole message (`Start`, `Done`, `Error`) replaces it.
+pub fn apply(message: &mut AgentMessage, event: &AssistantMessageEvent) {
+    let content = match message {
+        AgentMessage::Assistant { content, .. } => content,
+        _ => match event {
+            AssistantMessageEvent::Start { partial } => {
+                *message = partial.clone();
+                return;
+            }
+            _ => return,
+        },
+    };
+    match event {
+        AssistantMessageEvent::Start { partial } => *message = partial.clone(),
+        AssistantMessageEvent::Done { message: done, .. } => *message = done.clone(),
+        AssistantMessageEvent::Error { error, .. } => *message = error.clone(),
+        AssistantMessageEvent::TextStart { content_index } => place(
+            content,
+            *content_index,
+            Content::Text {
+                text: String::new(),
+                text_signature: None,
+            },
+        ),
+        AssistantMessageEvent::ThinkingStart { content_index } => place(
+            content,
+            *content_index,
+            Content::Thinking {
+                thinking: String::new(),
+                thinking_signature: None,
+                redacted: None,
+            },
+        ),
+        AssistantMessageEvent::ToolCallStart { content_index } => place(
+            content,
+            *content_index,
+            Content::ToolCall {
+                id: String::new(),
+                name: String::new(),
+                arguments: serde_json::Map::new(),
+                thought_signature: None,
+                namespace: None,
+            },
+        ),
+        AssistantMessageEvent::TextDelta {
+            content_index,
+            delta,
+        } => {
+            if let Some(Content::Text { text, .. }) = content.get_mut(*content_index) {
+                text.push_str(delta);
+            }
+        }
+        AssistantMessageEvent::ThinkingDelta {
+            content_index,
+            delta,
+        } => {
+            if let Some(Content::Thinking { thinking, .. }) = content.get_mut(*content_index) {
+                thinking.push_str(delta);
+            }
+        }
+        AssistantMessageEvent::TextEnd {
+            content_index,
+            content: full,
+        } => {
+            if let Some(Content::Text { text, .. }) = content.get_mut(*content_index) {
+                *text = full.clone();
+            }
+        }
+        AssistantMessageEvent::ThinkingEnd {
+            content_index,
+            content: full,
+        } => {
+            if let Some(Content::Thinking { thinking, .. }) = content.get_mut(*content_index) {
+                *thinking = full.clone();
+            }
+        }
+        AssistantMessageEvent::ToolCallEnd {
+            content_index,
+            tool_call,
+        } => place(content, *content_index, tool_call.clone()),
+        AssistantMessageEvent::ToolCallDelta { .. } => {}
+    }
+}
+
+/// Puts `block` at `index`, growing the vector so an out-of-order start
+/// (a provider that numbers blocks past the ones it sent) still lands.
+fn place(content: &mut Vec<Content>, index: usize, block: Content) {
+    if index < content.len() {
+        if let Some(slot) = content.get_mut(index) {
+            *slot = block;
+        }
+        return;
+    }
+    while content.len() < index {
+        content.push(Content::Text {
+            text: String::new(),
+            text_signature: None,
+        });
+    }
+    content.push(block);
 }
 
 /// The closed failure taxonomy in a tool result's `details.errorKind`, which
@@ -115,10 +211,6 @@ pub struct ToolResult {
     pub terminate: Option<bool>,
 }
 
-#[expect(
-    clippy::large_enum_variant,
-    reason = "wire DTOs mirror the JSON; variants are parse-then-drop, boxing buys nothing"
-)]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum AgentEvent {
@@ -136,7 +228,6 @@ pub enum AgentEvent {
         message: AgentMessage,
     },
     MessageUpdate {
-        message: AgentMessage,
         #[serde(rename = "assistantMessageEvent")]
         assistant_message_event: AssistantMessageEvent,
     },

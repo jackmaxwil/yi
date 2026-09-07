@@ -6,9 +6,10 @@ use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
 use ratatui::text::Line;
-use yi_types::message::Content;
+use yi_types::event::{AgentEvent, AssistantMessageEvent, apply};
+use yi_types::message::{AgentMessage, Content};
 
-use super::{App, UiEvent};
+use super::{App, TaskState, UiEvent};
 use crate::cell::{Cell, TranscriptMode};
 use crate::reveal::{FRAME, Reveal};
 
@@ -208,6 +209,16 @@ impl App {
         (lines, lang)
     }
 
+    /// D145: a whole message (`Start`, `Done`, `Error`) opens or settles the stream;
+    /// a delta grows the message `MessageStart` opened.
+    pub(super) fn fold_stream(&mut self, event: &AssistantMessageEvent) {
+        fold(&mut self.streaming, event);
+        if let Some(AgentMessage::Assistant { content, .. }) = &self.streaming {
+            let content = content.clone();
+            self.arrive(&content);
+        }
+    }
+
     /// A snapshot of the message so far: the arrival feeds the rate, the cursors move on
     /// their own clock, and nothing commits before the reader has seen it.
     pub(super) fn arrive(&mut self, content: &[Content]) {
@@ -244,5 +255,50 @@ impl App {
         } else {
             Duration::MAX
         }
+    }
+}
+
+fn fold(streaming: &mut Option<AgentMessage>, event: &AssistantMessageEvent) {
+    match event {
+        AssistantMessageEvent::Start { partial: whole }
+        | AssistantMessageEvent::Done { message: whole, .. }
+        | AssistantMessageEvent::Error { error: whole, .. } => *streaming = Some(whole.clone()),
+        delta => {
+            if let Some(message) = streaming.as_mut() {
+                apply(message, delta);
+            }
+        }
+    }
+}
+
+/// A child's stream folds into its cell's answer; true when the cell changed.
+pub(super) fn fold_child(
+    tasks: &mut std::collections::HashMap<String, TaskState>,
+    child_id: &str,
+    event: &AgentEvent,
+) -> bool {
+    let Some(state) = tasks.get_mut(child_id) else {
+        return false;
+    };
+    match event {
+        AgentEvent::MessageStart {
+            message: message @ AgentMessage::Assistant { .. },
+        } => {
+            state.streaming = Some(message.clone());
+            false
+        }
+        AgentEvent::MessageUpdate {
+            assistant_message_event,
+        } => {
+            fold(&mut state.streaming, assistant_message_event);
+            if let Some(AgentMessage::Assistant { content, .. }) = &state.streaming {
+                state.cell.answer = Some(crate::cell::tail_bounded(crate::transcript::text_of(
+                    content,
+                )));
+                return true;
+            }
+            false
+        }
+        _ => false,
     }
 }

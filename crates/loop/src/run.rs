@@ -421,25 +421,11 @@ async fn stream_assistant_response<S: StreamFn>(
             }
             other => {
                 if added_partial {
-                    let partial = match other {
-                        AssistantMessageEvent::TextStart { partial, .. }
-                        | AssistantMessageEvent::TextDelta { partial, .. }
-                        | AssistantMessageEvent::TextEnd { partial, .. }
-                        | AssistantMessageEvent::ThinkingStart { partial, .. }
-                        | AssistantMessageEvent::ThinkingDelta { partial, .. }
-                        | AssistantMessageEvent::ThinkingEnd { partial, .. }
-                        | AssistantMessageEvent::ToolCallStart { partial, .. }
-                        | AssistantMessageEvent::ToolCallDelta { partial, .. }
-                        | AssistantMessageEvent::ToolCallEnd { partial, .. } => partial.clone(),
-                        AssistantMessageEvent::Start { partial } => partial.clone(),
-                        AssistantMessageEvent::Done { message, .. } => message.clone(),
-                        AssistantMessageEvent::Error { error, .. } => error.clone(),
-                    };
+                    // A delta is a delta (D145): the message grows in place, once.
                     if let Some(last) = context.messages.last_mut() {
-                        *last = partial.clone();
+                        yi_types::event::apply(last, other);
                     }
                     emit(AgentEvent::MessageUpdate {
-                        message: partial,
                         assistant_message_event: event.clone(),
                     });
                 }
