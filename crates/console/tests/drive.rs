@@ -142,11 +142,9 @@ fn stream(session: &str, seq: u64, reply: &AgentMessage) -> Vec<Value> {
             session,
             seq + 1,
             &AgentEvent::MessageUpdate {
-                message: reply.clone(),
                 assistant_message_event: AssistantMessageEvent::TextDelta {
                     content_index: 0,
                     delta: text,
-                    partial: reply.clone(),
                 },
             },
         ),

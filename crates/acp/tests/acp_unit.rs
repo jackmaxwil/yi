@@ -48,11 +48,9 @@ fn text_deltas_become_message_chunks_with_a_stable_message_id() -> TestResult {
         &mut ids,
     );
     let delta = |text: &str| AgentEvent::MessageUpdate {
-        message: assistant_partial(),
         assistant_message_event: AssistantMessageEvent::TextDelta {
             content_index: 0,
             delta: text.to_owned(),
-            partial: assistant_partial(),
         },
     };
     let first = to_updates(&delta("hel"), &mut ids); // codespell:ignore hel
@@ -83,7 +81,6 @@ fn agent_lifecycle_maps_to_state_updates_with_stop_reason() -> TestResult {
     );
     to_updates(
         &AgentEvent::MessageUpdate {
-            message: assistant_partial(),
             assistant_message_event: AssistantMessageEvent::Done {
                 reason: StopReason::Aborted,
                 message: assistant_partial(),
@@ -384,11 +381,9 @@ fn every_event() -> Vec<AgentEvent> {
             message: user.clone(),
         },
         AgentEvent::MessageUpdate {
-            message: assistant_partial(),
             assistant_message_event: AssistantMessageEvent::TextDelta {
                 content_index: 0,
                 delta: "faux: ".to_owned(),
-                partial: assistant_partial(),
             },
         },
         AgentEvent::MessageEnd {
