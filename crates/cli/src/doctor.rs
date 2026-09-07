@@ -141,8 +141,11 @@ fn ledger_roots_exist(site: &Site) -> Finding {
 }
 
 fn lanes_consistent(site: &Site) -> Finding {
-    use yi_runtime::lane::{LaneError, Pool, SlotView};
-    let pool = match Pool::open(&site.home, &site.cwd, yi_runtime::lane::DEFAULT_SLOTS) {
+    use yi_runtime::lane::{LaneError, Pool, SlotView, land::lane_line};
+    let slots = crate::lanes::configured_lanes()
+        .slots
+        .unwrap_or(yi_runtime::lane::DEFAULT_SLOTS);
+    let pool = match Pool::open(&site.home, &site.cwd, slots) {
         Ok(pool) => pool,
         Err(LaneError::NotARepo(_)) => return ok("not a repository"),
         Err(error) => return fail(error.to_string()),
@@ -154,18 +157,16 @@ fn lanes_consistent(site: &Site) -> Finding {
     let mut fixed = Vec::new();
     let mut left = Vec::new();
     for view in &views {
-        let SlotView::Orphan { slot, session, .. } = view else {
+        let SlotView::Orphan { slot, .. } = view else {
             continue;
         };
         if site.fix {
             match pool.reap(*slot) {
                 Ok(note) => fixed.push(note),
-                Err(error) => left.push(format!("lane {slot} left by {session}: {error}")),
+                Err(error) => left.push(format!("{}: {error}", lane_line(view, None))),
             }
         } else {
-            left.push(format!(
-                "lane {slot} left by {session}; `yi lanes reap {slot}`"
-            ));
+            left.push(format!("{}; `yi lanes reap {slot}`", lane_line(view, None)));
         }
     }
     if !left.is_empty() {

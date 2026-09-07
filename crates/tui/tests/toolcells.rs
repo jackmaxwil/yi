@@ -23,6 +23,7 @@ fn app() -> App {
             model: common::test_model("faux-1"),
             session_name: "cells".to_owned(),
             cwd: "/tmp".to_owned(),
+            lane: None,
             context_window: 128_000,
             session_dir: String::new(),
             keys: Vec::new(),

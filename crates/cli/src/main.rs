@@ -365,6 +365,7 @@ fn exit_refused(refused: Refused) -> i32 {
 fn build_session(
     args: &Args,
     asker: Option<yi_runtime::Asker>,
+    session_id: Option<&str>,
 ) -> Result<(AgentSession, std::sync::Arc<yi_runtime::SubagentHost>), Refused> {
     if args.model.is_empty() {
         return Err(Refused {
@@ -447,8 +448,8 @@ fn build_session(
         .map(std::path::PathBuf::from)
         .unwrap_or_default();
     let session_dir = default_session_dir(args);
-    let lane = match claim_lane(args, &home) {
-        Ok(lane) => lane,
+    let (lane, pool) = match claim_lane(args, &home, session_id) {
+        Ok(claimed) => claimed,
         Err(message) => {
             return Err(Refused {
                 code: 1,
@@ -527,6 +528,7 @@ fn build_session(
     );
     session.set_lane(yi_runtime::lane::land::LaneHandle::new(
         lane,
+        pool,
         configured_lanes().land,
         session.events_sender(),
         session.heartbeat_hook(),
@@ -709,7 +711,7 @@ fn run(args: &Args) -> i32 {
         let _guard = runtime.enter();
         let asker: Option<yi_runtime::Asker> =
             interactive.then(|| std::sync::Arc::new(tty::tty_ask) as yi_runtime::Asker);
-        match build_session(args, asker) {
+        match build_session(args, asker, None) {
             Ok((session, _host)) => session,
             Err(refused) => return exit_refused(refused),
         }
@@ -833,10 +835,11 @@ fn attach_store(args: &Args, session: &AgentSession) -> Result<String, String> {
     session
         .attach_store(store)
         .map_err(|error| error.to_string())?;
-    if let Some(lane) = session.lane()
-        && let Err(error) = lane.bind_session(&id)
-    {
-        eprintln!("warning: lane: {error}");
+    if let Some(lane) = session.lane() {
+        if let Err(error) = lane.bind_session(&id) {
+            eprintln!("warning: lane: {error}");
+        }
+        lane.reattach();
     }
     repin(args, session);
     Ok(id)
@@ -1082,7 +1085,7 @@ fn main() {
             };
             let session = {
                 let _guard = runtime.enter();
-                match build_session(&args, None) {
+                match build_session(&args, None, None) {
                     Ok((session, _host)) => session,
                     Err(refused) => std::process::exit(exit_refused(refused)),
                 }
@@ -1110,9 +1113,9 @@ fn main() {
             let build_args = args.clone();
             let build: yi_acp::SessionBuilder = {
                 let runtime_handle = runtime.handle().clone();
-                std::sync::Arc::new(move |asker| {
+                std::sync::Arc::new(move |asker, session| {
                     let _guard = runtime_handle.enter();
-                    build_session(&build_args, asker)
+                    build_session(&build_args, asker, session)
                         .map_err(|refused| format!("{} [{}]", refused.reason, refused.class))
                 })
             };

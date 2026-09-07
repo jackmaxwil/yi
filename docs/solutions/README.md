@@ -118,5 +118,8 @@ when it changes rather than editing them by hand.
 - [D138](adr/d138.md) - the prompt is comprehensive and its ceiling is the ratchet
 - [D139](adr/d139.md) - the skills catalog is a ladder and a skill answers to its name
 - [D140](adr/d140.md) - evals measure five axes from the run's own record and Terminal-Bench v4 is...
+- [D143](adr/d143.md) - one lane line says where the work is, from git and the ledger, never from a...
+- [D144](adr/d144.md) - two lane verbs, and the pool asks at claim
+- [D141](adr/d141.md) - the console owns text selection because it owns the mouse
 
 D36-D51, D72, D73 and D74 have no ADR yet; ARCHITECTURE.md is the record for those rows.

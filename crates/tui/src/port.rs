@@ -82,6 +82,41 @@ pub trait SessionPort {
     }
 }
 
+/// The status row's branch, from the runtime's HEAD reader: a file read, never a git process.
+pub(crate) fn git_branch(cwd: &str) -> Option<String> {
+    yi_runtime::lane::head(std::path::Path::new(cwd))
+        .ok()
+        .map(|head| head.label())
+}
+
+pub(crate) fn child_of(
+    host: &yi_runtime::SubagentHost,
+    child_id: &str,
+) -> Option<yi_runtime::ChildView> {
+    host.children_view()
+        .into_iter()
+        .find(|child| child.update.id.as_str() == child_id)
+}
+
+/// A lane verb may wait on git or the forge, so it runs on its own thread and comes back
+/// as a notice; the render thread never waits on it.
+pub(crate) fn slash_off_thread(
+    session: &Arc<AgentSession>,
+    line: String,
+    reply_tx: &std::sync::mpsc::Sender<crate::app::UiEvent>,
+) {
+    let session = Arc::clone(session);
+    let reply_tx = reply_tx.clone();
+    std::thread::spawn(move || {
+        let (command, args) = line
+            .split_once(char::is_whitespace)
+            .map_or((line.as_str(), ""), |(head, rest)| (head, rest.trim()));
+        let text = yi_runtime::slash::run(&session, command, args)
+            .unwrap_or_else(|| format!("unknown command: /{command}"));
+        let _ = reply_tx.send(crate::app::UiEvent::Reply(Reply::Notice(text)));
+    });
+}
+
 /// The active branch only: the whole tree is for the tree view, and a transcript built
 /// from it leaves rewound turns on screen.
 pub fn branch_of(session: &AgentSession) -> Vec<Entry> {
@@ -470,6 +505,9 @@ pub fn tick(
     app.settle(port);
     if let Some(stub) = app.pending_summary.take() {
         let _ = cmd_tx.send(crate::app::Command::SummarizeBranch(stub));
+    }
+    if let Some(line) = app.pending_slash.take() {
+        let _ = cmd_tx.send(crate::app::Command::Slash(line));
     }
     if let Some(child_id) = app.pending_stop.take() {
         let _ = cmd_tx.send(crate::app::Command::StopChild(child_id));
