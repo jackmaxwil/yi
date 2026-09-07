@@ -46,7 +46,8 @@ A task in harbor's layout (`task.toml`, `instruction.md`, `environment/app/`,
 runs here too: the instruction is the prompt, `environment/app` is the seed,
 and `tests/test.sh` is the reward with `APP`, `TESTS` and `LOGS` pointed at the
 copy, the task's own `tests/` and a scratch dir, so `harbor run -p
-evals/fixtures/tasks/<id>` and this runner score the same script.
+evals/fixtures/tasks/<id>` and this runner score the same script (a host without
+pytest borrows one through `uvx`).
 The workspace is `<tmp>/repo`, and the runner's own files sit beside it as
 `<tmp>/events.jsonl` and `<tmp>/.yi-sessions` — never inside the graded tree,
 where a `git diff` or clean-tree reward would score them as part of the

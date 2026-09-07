@@ -29,7 +29,8 @@ PY
 docker info >/dev/null 2>&1 || fail "docker daemon is not running"
 command -v harbor >/dev/null 2>&1 || fail "harbor is not installed (uv tool install harbor)"
 [ -x "$BINARY" ] || fail "no musl binary at $BINARY (just package-musl <version>)"
-"$BINARY" --version >/dev/null 2>&1 || fail "$BINARY does not answer --version"
+# A cross binary cannot run on this host (justfile package-musl says so); the container's
+# `yi --version` at install is the smoke, and the adapter refuses there.
 
 export EVAL_BINARY="$BINARY"
 export EVAL_SUITE_REV="${DATASET#*@}"
