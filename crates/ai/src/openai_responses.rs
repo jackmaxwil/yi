@@ -950,37 +950,38 @@ fn run_request(
     proxy: Option<&crate::request::ProxyConfig>,
     sender: &Sender<AssistantMessageEvent>,
 ) -> Result<(), String> {
-    let response = crate::request::openai_bearer_post(
-        &format!("{}/responses", model.base_url),
-        api_key,
-        body,
-        proxy,
-    )?;
+    let url = format!("{}/responses", model.base_url);
     let mut mapper = EventMapper::new(model);
     let _ = sender.blocking_send(mapper.start_event());
-    crate::request::pump_sse(response, |sse| {
-        if sse.data == "[DONE]" {
-            return Ok(true);
-        }
-        let Ok(mut payload) = parse_json_with_repair(&sse.data) else {
-            return Ok(true);
-        };
-        if payload.get("type").is_none()
-            && let Some(kind) = sse.event.as_deref().filter(|kind| !kind.is_empty())
-        {
-            payload["type"] = json!(kind);
-        }
-        for item in mapper.push(&payload) {
-            let _ = sender.blocking_send(item);
-        }
-        if mapper.failed || mapper.completed {
-            for item in mapper.finish() {
+    let resent = crate::request::pump_sse_with_resend(
+        || crate::request::openai_bearer_post(&url, api_key, body, proxy),
+        |sse| {
+            if sse.data == "[DONE]" {
+                return Ok(true);
+            }
+            let Ok(mut payload) = parse_json_with_repair(&sse.data) else {
+                return Ok(true);
+            };
+            if payload.get("type").is_none()
+                && let Some(kind) = sse.event.as_deref().filter(|kind| !kind.is_empty())
+            {
+                payload["type"] = json!(kind);
+            }
+            for item in mapper.push(&payload) {
                 let _ = sender.blocking_send(item);
             }
-            return Ok(false);
-        }
-        Ok(true)
-    })?;
+            if mapper.failed || mapper.completed {
+                for item in mapper.finish() {
+                    let _ = sender.blocking_send(item);
+                }
+                return Ok(false);
+            }
+            Ok(true)
+        },
+    )?;
+    if let Some(first_error) = resent {
+        crate::request::note_resend(&mut mapper.output, &first_error);
+    }
     for item in mapper.finish() {
         let _ = sender.blocking_send(item);
     }

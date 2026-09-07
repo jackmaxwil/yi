@@ -770,24 +770,29 @@ fn run_request(
         ("x-api-key", api_key.to_owned()),
         ("anthropic-version", ANTHROPIC_VERSION.to_owned()),
     ];
-    let response = crate::request::send_with_retry(&url, &headers, body, proxy)?;
     let mut mapper = Mapper::new(model);
     let _ = sender.blocking_send(mapper.start_event());
-    crate::request::pump_sse(response, |sse| {
-        let kind = sse.event.as_deref().unwrap_or("");
-        if kind == "error" {
-            return Err(sse.data);
-        }
-        if !ANTHROPIC_MESSAGE_EVENTS.contains(&kind) {
-            return Ok(true);
-        }
-        let payload = parse_json_with_repair(&sse.data)
-            .map_err(|error| format!("Could not parse Anthropic SSE event {kind}: {error}"))?;
-        for event in mapper.push(&payload) {
-            let _ = sender.blocking_send(event);
-        }
-        Ok(true)
-    })?;
+    let resent = crate::request::pump_sse_with_resend(
+        || crate::request::send_with_retry(&url, &headers, body, proxy),
+        |sse| {
+            let kind = sse.event.as_deref().unwrap_or("");
+            if kind == "error" {
+                return Err(sse.data);
+            }
+            if !ANTHROPIC_MESSAGE_EVENTS.contains(&kind) {
+                return Ok(true);
+            }
+            let payload = parse_json_with_repair(&sse.data)
+                .map_err(|error| format!("Could not parse Anthropic SSE event {kind}: {error}"))?;
+            for event in mapper.push(&payload) {
+                let _ = sender.blocking_send(event);
+            }
+            Ok(true)
+        },
+    )?;
+    if let Some(first_error) = resent {
+        crate::request::note_resend(&mut mapper.output, &first_error);
+    }
     let _ = sender.blocking_send(mapper.finish());
     Ok(())
 }
