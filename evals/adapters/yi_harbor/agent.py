@@ -35,6 +35,11 @@ TELEMETRY_CONFIG = '{"telemetry":{"enabled":true}}'
 CONFIG_COMMAND = (
     "mkdir -p ~/.yi && printf '%s' " + repr(TELEMETRY_CONFIG) + " > ~/.yi/config.json"
 )
+# Incident: `oven/bun` ships no CA roots, and the platform verifier (YI_DESIGN
+# 13.3: no bundled store) refused OpenRouter's certificate ("UnknownIssuer") on
+# the first request; harbor's own certifi bundle rides along and SSL_CERT_FILE
+# names it, which rustls-native-certs honours on Linux.
+REMOTE_CA_BUNDLE = "/logs/agent/yi/ca.pem"
 SUITE_REV_ENV = "EVAL_SUITE_REV"
 TIMEOUT_MULT_ENV = "EVAL_TIMEOUT_MULT"
 # One static musl binary, one step: dodges pier's 360 s setup cap and keeps the
@@ -79,6 +84,7 @@ class Yi(BaseInstalledAgent):
         if url:
             await self.exec_as_root(environment, command=install_command(url))
             await self.exec_as_agent(environment, command=CONFIG_COMMAND)
+            await self.upload_ca_bundle(environment)
             return
         local = os.environ.get(BINARY_PATH_ENV)
         if not local:
@@ -92,6 +98,15 @@ class Yi(BaseInstalledAgent):
             command=f"set -euo pipefail; chmod +x {REMOTE_BINARY} && {VERSION_CHECK}",
         )
         await self.exec_as_agent(environment, command=CONFIG_COMMAND)
+        await self.upload_ca_bundle(environment)
+
+    async def upload_ca_bundle(self, environment: BaseEnvironment) -> None:
+        try:
+            import certifi
+        except ImportError:
+            return
+        await self.exec_as_agent(environment, command=f"mkdir -p {Path(REMOTE_CA_BUNDLE).parent}")
+        await environment.upload_file(Path(certifi.where()), REMOTE_CA_BUNDLE)
 
     async def run(
         self,
@@ -104,7 +119,7 @@ class Yi(BaseInstalledAgent):
             command=run_command(
                 self.model_name, self.render_instruction(instruction), resume=self._resume
             ),
-            env=dict(self.model_connection.env),
+            env={**self.model_connection.env, "SSL_CERT_FILE": REMOTE_CA_BUNDLE},
         )
 
     def write_trajectory(self):
