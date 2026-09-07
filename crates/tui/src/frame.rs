@@ -63,3 +63,11 @@ impl FrameScheduler {
             .max(Duration::from_millis(1))
     }
 }
+
+/// The glyph steps on `elapsed / SPINNER_PERIOD_MS`, so a fixed wake interval
+/// beats against that period and the spinner advances unevenly.
+pub fn next_spinner_wake(elapsed_ms: u128) -> Duration {
+    let period = crate::app::SPINNER_PERIOD_MS;
+    let remaining = period.saturating_sub(elapsed_ms % period);
+    Duration::from_millis(u64::try_from(remaining).unwrap_or(1).max(1))
+}

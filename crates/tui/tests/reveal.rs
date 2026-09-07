@@ -125,6 +125,7 @@ fn app_with_pace(pace: u16) -> yi_tui::app::App {
             model: common::test_model("faux-1"),
             session_name: "reveal".to_owned(),
             cwd: "/tmp".to_owned(),
+            lane: None,
             context_window: 128_000,
             session_dir: String::new(),
             keys: Vec::new(),

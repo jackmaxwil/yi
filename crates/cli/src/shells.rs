@@ -43,7 +43,7 @@ pub fn run_tui_command(args: &Args, initial_prompt: Option<String>) -> i32 {
         });
     let (session, host) = {
         let _guard = runtime.enter();
-        match build_session(args, Some(asker)) {
+        match build_session(args, Some(asker), None) {
             Ok(built) => built,
             Err(refused) => return exit_refused(refused),
         }
@@ -64,10 +64,20 @@ pub fn run_tui_command(args: &Args, initial_prompt: Option<String>) -> i32 {
         .lane()
         .and_then(|lane| lane.path())
         .unwrap_or_else(|| effective_cwd(args));
+    // The row names the checkout and the slot; the slot path is a hash nobody reads.
+    let lane = session.lane().and_then(|lane| lane.slot()).map(|slot| {
+        let root = effective_cwd(args);
+        let repo = root
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        format!("{repo} ⎇ lane {slot}")
+    });
     let options = yi_tui::TuiOptions {
         model: model.clone(),
         session_name: session_name.clone(),
         cwd: work.display().to_string(),
+        lane,
         context_window: model.context_window,
         session_dir: default_session_dir(args).display().to_string(),
         keys: configured_keys(),

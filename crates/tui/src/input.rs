@@ -256,6 +256,9 @@ pub(crate) fn handle_slash(app: &mut App, line: &str) {
                 format!("{command} {args}")
             });
         }
+        "lanes" | "land" | "discard" | "pr" | "base" => {
+            app.pending_slash = Some(line.trim().to_owned());
+        }
         _ => app.commit_cell(&Cell::Notice {
             text: format!("unknown command: /{command}"),
         }),

@@ -209,7 +209,7 @@ fn brief_text(
                 format!("bash: {command} → {} chars", output.chars().count())
             }
         }
-        AgentMessage::BranchSummary { summary, .. } => format!("branch: {summary}"),
+        AgentMessage::BranchSummary { summary, .. } => format!("earlier attempt: {summary}"),
         _ => return None,
     };
     Some(one_line(&body))

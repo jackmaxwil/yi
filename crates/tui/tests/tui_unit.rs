@@ -302,6 +302,54 @@ fn status_keeps_the_model_under_a_long_path_and_branch() -> TestResult {
     Ok(())
 }
 
+/// A lane session's row names the checkout and the slot, not the pool's hash path.
+#[test]
+fn status_names_the_lane_instead_of_the_slot_path() -> TestResult {
+    let input = StatusInput {
+        model: "faux-1".to_owned(),
+        cwd: "/Users/someone/.yi/lanes/897d6e9162485667/1".to_owned(),
+        lane: Some("yi ⎇ lane 1".to_owned()),
+        branch: Some("yi/01a06f8d-1234".to_owned()),
+        session_name: "01a06f8d".to_owned(),
+        context_window: 128_000,
+        ..StatusInput::default()
+    };
+    let text = flat(&yi_tui::status::render(&input, 80, &theme()));
+    assert!(text.contains("yi ⎇ lane 1"), "{text}");
+    assert!(
+        !text.contains("897d6e9162485667"),
+        "the hash stays off the row: {text}"
+    );
+    assert!(
+        !text.contains("@yi/"),
+        "the branch repeats the session id: {text}"
+    );
+    Ok(())
+}
+
+/// A landing older than the poll period carries its age; a fresh one does not.
+#[test]
+fn landing_segment_ages_once_the_poll_may_have_stopped() {
+    use yi_types::lane::{JobState, Landing, LandingJob, PrNumber};
+    let landing = Landing::Open {
+        pr: PrNumber(191),
+        jobs: vec![LandingJob {
+            name: "lint".to_owned(),
+            state: JobState::Green,
+        }],
+        behind: 4,
+    };
+    let fresh = yi_tui::status::landing_segment(&landing, Some(std::time::Duration::from_secs(10)));
+    assert_eq!(fresh.as_deref(), Some("PR #191 ● · main +4"));
+    let old =
+        yi_tui::status::landing_segment(&landing, Some(std::time::Duration::from_secs(3 * 3600)));
+    assert_eq!(old.as_deref(), Some("PR #191 ● · main +4 · 3 h ago"));
+    assert_eq!(
+        yi_tui::status::landing_segment(&Landing::Unlanded, None),
+        None
+    );
+}
+
 #[test]
 fn status_context_segment_is_compact() -> TestResult {
     let input = StatusInput {
@@ -365,6 +413,7 @@ fn streamed(full: &str) -> yi_tui::app::App {
             model: common::test_model("faux-1"),
             session_name: "s".to_owned(),
             cwd: "/tmp".to_owned(),
+            lane: None,
             context_window: 128_000,
             session_dir: String::new(),
             keys: Vec::new(),
@@ -857,6 +906,7 @@ fn streaming_commits_each_list_item_exactly_once() -> TestResult {
             model: common::test_model("faux-1"),
             session_name: "s".to_owned(),
             cwd: "/tmp".to_owned(),
+            lane: None,
             context_window: 128_000,
             session_dir: String::new(),
             keys: Vec::new(),
@@ -1419,6 +1469,7 @@ fn streamed_thought_in(
             model: common::test_model("faux-1"),
             session_name: "s".to_owned(),
             cwd: "/tmp".to_owned(),
+            lane: None,
             context_window: 128_000,
             session_dir: String::new(),
             keys: Vec::new(),

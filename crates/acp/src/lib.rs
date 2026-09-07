@@ -37,8 +37,12 @@ const INVALID_PARAMS: i64 = -32602;
 const METHOD_NOT_FOUND: i64 = -32601;
 const INTERNAL_ERROR: i64 = -32603;
 
-pub type SessionBuilder =
-    Arc<dyn Fn(Option<Asker>) -> Result<(AgentSession, Arc<SubagentHost>), String> + Send + Sync>;
+/// Builds a session for a store id, so a lane is claimed under the id that resumes it.
+pub type SessionBuilder = Arc<
+    dyn Fn(Option<Asker>, Option<&str>) -> Result<(AgentSession, Arc<SubagentHost>), String>
+        + Send
+        + Sync,
+>;
 
 const REPLAY_CHUNK: usize = 512;
 
@@ -300,10 +304,13 @@ impl AcpState {
             Arc::clone(&self.sink),
             Arc::clone(&self.pending),
         );
-        let (session, host) = (self.build)(Some(asker))?;
+        let (session, host) = (self.build)(Some(asker), Some(&session_id))?;
         session
             .attach_store(Arc::clone(store))
             .map_err(|error| error.to_string())?;
+        if let Some(lane) = session.lane() {
+            lane.reattach();
+        }
         let session = Arc::new(session);
         if let Some(todos) = session.todos() {
             let sink = Arc::clone(&self.sink);
