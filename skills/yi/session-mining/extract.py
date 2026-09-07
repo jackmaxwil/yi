@@ -252,6 +252,7 @@ def call_is_read_only(name, arguments):
 
 GATE_WORDS = ("cargo nextest", "cargo test", "just check", "cargo clippy",
               "pytest", "npm test", "bun test", "make test", "go test")
+RED_SUMMARY = re.compile(r"\b[1-9]\d* failed\b|test result: FAILED|FAILED")
 OFFER_WORDS = ("let me know", "would you like", "want me to", "if you want", "shall i")
 SIGNAL_NAMES = (
     "gate_without_change", "stopped_with_open_todos", "multi_step_without_todo", "todo_stale",
@@ -345,10 +346,14 @@ def signals(entries):
         if result is None:
             continue
         if gate:
-            red = result["error"] or "exit code:" in result["text"]
+            # A gate piped through `tail` reports tail's exit; the runner's own
+            # summary line ("1 failed", "test result: FAILED") is the other witness.
+            red = result["error"] or "exit code:" in result["text"] or bool(RED_SUMMARY.search(result["text"]))
             if red:
                 red_gates.add(command)
-            elif command in red_gates and landed_since_red:
+            elif red_gates and landed_since_red:
+                # Incident: a rollout ran its new test red, edited, then ran the whole
+                # suite green; the exact-command match scored that as never seen red.
                 out["regression_seen_red"] = 1
         if "unexpected argument" in result["text"]:
             out["flag_error"] += 1
@@ -1075,6 +1080,8 @@ def selfcheck():
             if name == "blocked_on_user_without_question":
                 continue
             assert signal_row["signals"][name], f"signal {name} did not fire on its fixture"
+        piped_row = next(r for r in result["mu"] if r["sessionId"] == "fixture-signals-piped")
+        assert piped_row["signals"]["regression_seen_red"] == 1, "a red run piped through tail must still be seen red"
         blocked_row = next(r for r in result["mu"] if r["sessionId"] == "fixture-signals-blocked")
         assert blocked_row["signals"]["blocked_on_user_without_question"] == 1, blocked_row["signals"]
         assert blocked_row["signals"]["waiting_without_block"] == 0, blocked_row["signals"]
