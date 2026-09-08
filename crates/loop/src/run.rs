@@ -384,15 +384,28 @@ pub const STREAM_RETRY_CUSTOM_TYPE: &str = "stream_retry";
 pub const STREAM_RETRY_TEXT: &str = "The provider dropped the stream before any output reached the transcript; the same turn runs again.";
 pub const STREAM_RETRY_AT: u32 = 1;
 
+/// A stream that was generating (usage says so) or died on the wire, and showed nothing;
+/// a synthesized error with zero usage never went to a provider and is not retried.
 fn nothing_delivered(message: &AgentMessage) -> bool {
-    let AgentMessage::Assistant { content, .. } = message else {
+    let AgentMessage::Assistant {
+        content,
+        usage,
+        error_message,
+        ..
+    } = message
+    else {
         return false;
     };
-    !content.iter().any(|block| match block {
-        Content::Text { text, .. } => !text.trim().is_empty(),
-        Content::ToolCall { .. } => true,
-        _ => false,
-    })
+    let generating = usage.output > 0 || usage.reasoning.unwrap_or(0) > 0;
+    let wire = error_message.as_deref().is_some_and(|text| {
+        yi_types::telemetry::ErrorClass::from_provider_text(text).is_transport()
+    });
+    (generating || wire)
+        && !content.iter().any(|block| match block {
+            Content::Text { text, .. } => !text.trim().is_empty(),
+            Content::ToolCall { .. } => true,
+            _ => false,
+        })
 }
 
 /// A dropped stream that showed nothing is the one error a rerun cannot duplicate.
