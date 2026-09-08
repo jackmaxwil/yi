@@ -123,5 +123,6 @@ when it changes rather than editing them by hand.
 - [D141](adr/d141.md) - the console owns text selection because it owns the mouse
 - [D145](adr/d145.md) - a delta is a delta
 - [D146](adr/d146.md) - a dead stream is sent once more, and it says so
+- [D142](adr/d142.md) - bash has a clock and refuses an unbounded root walk
 
 D36-D51, D72, D73 and D74 have no ADR yet; ARCHITECTURE.md is the record for those rows.
