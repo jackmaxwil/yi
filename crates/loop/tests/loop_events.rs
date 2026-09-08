@@ -247,6 +247,89 @@ async fn tool_turn_executes_and_continues() {
 }
 
 #[tokio::test]
+async fn a_turn_repeated_verbatim_is_steered_once_then_ended() {
+    let mut arguments = Map::new();
+    arguments.insert("word".to_owned(), json!("again"));
+    let same = || {
+        faux_assistant_message(
+            vec![faux_tool_call("c", "echo", arguments.clone())],
+            StopReason::ToolUse,
+        )
+    };
+    let stream = Scripted::new((0..10).map(|_| same()).collect());
+    let mut context = LoopContext {
+        system_prompt: String::new(),
+        messages: Vec::new(),
+        tools: vec![Arc::new(EchoTool)],
+    };
+    let config = LoopConfig::new(faux_model());
+    let signal = InterruptSignal::default();
+    let (_events, mut emit) = collector();
+    let collected = run_loop(
+        &mut context,
+        vec![user("go")],
+        &config,
+        &signal,
+        &mut emit,
+        &stream,
+    )
+    .await;
+    let breaks = collected
+        .iter()
+        .filter(|message| {
+            matches!(message, AgentMessage::Custom { custom_type, .. } if custom_type == yi_loop::REPEAT_BREAK_CUSTOM_TYPE)
+        })
+        .count();
+    assert_eq!(breaks, 1, "one steer at the third identical batch");
+    let answers = collected
+        .iter()
+        .filter(|message| matches!(message, AgentMessage::Assistant { .. }))
+        .count();
+    assert_eq!(
+        answers,
+        yi_loop::REPEAT_STOP_AT as usize,
+        "the sixth identical batch ends the run"
+    );
+
+    let mut poll = Map::new();
+    poll.insert("job".to_owned(), json!(1));
+    let polls = Scripted::new(
+        (0..8)
+            .map(|_| {
+                faux_assistant_message(
+                    vec![faux_tool_call("p", "bash", poll.clone())],
+                    StopReason::ToolUse,
+                )
+            })
+            .chain(std::iter::once(faux_assistant_message(
+                vec![faux_text("done")],
+                StopReason::Stop,
+            )))
+            .collect(),
+    );
+    let mut context = LoopContext {
+        system_prompt: String::new(),
+        messages: Vec::new(),
+        tools: vec![Arc::new(EchoTool)],
+    };
+    let (_events, mut emit) = collector();
+    let collected = run_loop(
+        &mut context,
+        vec![user("wait")],
+        &config,
+        &signal,
+        &mut emit,
+        &polls,
+    )
+    .await;
+    let answers = collected
+        .iter()
+        .filter(|message| matches!(message, AgentMessage::Assistant { .. }))
+        .count();
+    assert_eq!(answers, 9, "a job poll repeats as long as it likes");
+}
+
+#[tokio::test]
 async fn a_length_stop_with_no_tool_call_is_re_driven_once() {
     let stream = Scripted::new(vec![
         faux_assistant_message(vec![faux_text("thinking, thinking")], StopReason::Length),

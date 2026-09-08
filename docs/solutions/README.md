@@ -129,5 +129,6 @@ when it changes rather than editing them by hand.
 - [D149](adr/d149.md) - done needs its check, and a number is computed in the kernel
 - [D150](adr/d150.md) - the real clock is in the environment block
 - [D151](adr/d151.md) - a number without a source is sent back once
+- [D152](adr/d152.md) - a turn repeated verbatim is sent back once, then ended
 
 D36-D51, D72, D73 and D74 have no ADR yet; ARCHITECTURE.md is the record for those rows.
