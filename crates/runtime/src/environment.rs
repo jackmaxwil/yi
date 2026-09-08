@@ -72,6 +72,39 @@ pub fn tracked(root: &Path, paths: &[String]) -> Vec<bool> {
         .collect()
 }
 
+pub const FILES_SHOWN: usize = 20;
+
+/// The cwd's top level, sorted, hidden names skipped, capped: the oracle beside the spec.
+pub fn files_line(cwd: &Path) -> Option<String> {
+    let entries = std::fs::read_dir(cwd).ok()?;
+    let mut names: Vec<String> = entries
+        .flatten()
+        .filter_map(|entry| {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if name.starts_with('.') {
+                return None;
+            }
+            let dir = entry.file_type().ok()?.is_dir();
+            Some(if dir {
+                format!("{}/", sanitize(&name))
+            } else {
+                sanitize(&name)
+            })
+        })
+        .collect();
+    if names.is_empty() {
+        return None;
+    }
+    names.sort();
+    let total = names.len();
+    names.truncate(FILES_SHOWN);
+    let mut line = format!("files: {}", names.join(" "));
+    if total > FILES_SHOWN {
+        line.push_str(&format!(" …(+{})", total.saturating_sub(FILES_SHOWN)));
+    }
+    Some(line)
+}
+
 pub fn deadline_line(total: Duration, elapsed: Duration) -> String {
     format!(
         "deadline: {}s of {}s",
@@ -114,6 +147,9 @@ pub fn hook(
             .map(|(branch, dirty)| format!(" (git: {branch}, {dirty} modified)"))
             .unwrap_or_default();
         lines.push(format!("cwd: {}{git}", cwd.display()));
+        if let Some(files) = files_line(&cwd) {
+            lines.push(files);
+        }
         // The model commits; the person lands. It sees the landing, never a verb.
         if let Some(landing) = lane().map(|lane| lane.landing())
             && matches!(

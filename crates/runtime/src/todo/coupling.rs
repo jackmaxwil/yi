@@ -18,6 +18,7 @@ pub const SEED_ACTOR: &str = "prompt";
 
 pub mod gate {
     pub const NUDGE_WORK: u32 = 12;
+    pub const QUIET_TURNS: u32 = 3;
     pub const FIRST_LIST_WORK: u32 = 3;
     pub const NUDGE_CAP_PER_CYCLE: u32 = 2;
     pub const INTERCEPT_CAP_PER_CYCLE: u32 = 6;
@@ -42,6 +43,11 @@ pub struct Cycle {
     pub empties: u32,
     pub first_listed: bool,
     pub unsourced: bool,
+    pub quiet_turns: u32,
+    pub closed_nudged: Option<String>,
+    pub prompt_claims_impossible: bool,
+    pub impossible: bool,
+    pub artifact: bool,
 }
 
 impl Cycle {
@@ -61,6 +67,22 @@ impl Cycle {
 
     pub fn touched(&mut self) {
         self.work = 0;
+    }
+
+    /// A closed list and three turns that changed nothing earn one nudge per closed set.
+    pub fn quiet(&mut self, quiet: bool, closed_key: &str) -> bool {
+        self.quiet_turns = if quiet {
+            self.quiet_turns.saturating_add(1)
+        } else {
+            0
+        };
+        if self.quiet_turns < gate::QUIET_TURNS || self.closed_nudged.as_deref() == Some(closed_key)
+        {
+            return false;
+        }
+        self.closed_nudged = Some(closed_key.to_owned());
+        self.quiet_turns = 0;
+        true
     }
 
     pub fn first_list(&mut self, landed: u32) -> bool {
@@ -216,6 +238,188 @@ pub fn seeded_text(list: &TodoList) -> String {
     format!(
         "The todo list was seeded from the request's numbered lines. `append` investigation and verification items, `start` the first, and batch each op with real work.\n{}",
         text::checklist(list).join("\n")
+    )
+}
+
+pub const CLOSED_LIST_TEXT: &str = "Every item is done and nothing has changed for three turns. Either `append` what remains and `start` it, or write the final answer; call no other tools.";
+
+pub const IMPOSSIBLE_WORDS: [&str; 7] = [
+    "not feasible",
+    "infeasible",
+    "cannot be done",
+    "impossible",
+    "no valid",
+    "no route",
+    "no solution",
+];
+
+pub const IMPOSSIBLE_TEXT: &str = "Name each constraint you assumed that the task did not state, and relax each one once before reporting that it cannot be done.";
+
+pub fn claims_impossible(text: &str) -> bool {
+    let lower = text.to_lowercase();
+    IMPOSSIBLE_WORDS.iter().any(|word| lower.contains(word))
+}
+
+const QUIET_TOOLS: [&str; 5] = ["read", "grep", "glob", "todo", "get_context"];
+
+/// A turn is quiet when every call reads: the read tools, or bash the gate proves safe.
+pub fn quiet_turn(message: &AgentMessage, results: &[AgentMessage]) -> bool {
+    let commands = commands_of(message);
+    let mut any = false;
+    for result in results {
+        let AgentMessage::ToolResult {
+            tool_call_id,
+            tool_name,
+            ..
+        } = result
+        else {
+            continue;
+        };
+        any = true;
+        let quiet = match tool_name.as_str() {
+            "bash" => commands
+                .iter()
+                .any(|(id, command)| id == tool_call_id && !mutating_command(command)),
+            name => QUIET_TOOLS.contains(&name),
+        };
+        if !quiet {
+            return false;
+        }
+    }
+    any
+}
+
+const DATA_EXTENSIONS: [&str; 6] = ["txt", "json", "csv", "md", "yaml", "xml"];
+
+fn data_path(path: &str) -> bool {
+    std::path::Path::new(path)
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| DATA_EXTENSIONS.contains(&extension))
+}
+
+/// Numerals with three or more significant digits, decimals included, not inside a word.
+pub fn figures_of(text: &str) -> Vec<String> {
+    let bound = |c: Option<char>| c.is_none_or(|c| !(c.is_alphanumeric() || c == '_' || c == '.'));
+    let chars: Vec<char> = text.chars().collect();
+    let mut out: Vec<String> = Vec::new();
+    let mut at = 0;
+    while at < chars.len() {
+        let start = at;
+        let mut digits = 0_usize;
+        let mut dots = 0_usize;
+        while let Some(&c) = chars.get(at) {
+            if c.is_ascii_digit() {
+                digits = digits.saturating_add(1);
+            } else if c == '.'
+                && dots == 0
+                && chars
+                    .get(at.saturating_add(1))
+                    .is_some_and(char::is_ascii_digit)
+            {
+                dots = 1;
+            } else {
+                break;
+            }
+            at = at.saturating_add(1);
+        }
+        if digits >= 3
+            && at > start
+            && bound(start.checked_sub(1).and_then(|i| chars.get(i).copied()))
+            && bound(chars.get(at).copied())
+        {
+            let figure: String = chars.get(start..at).unwrap_or_default().iter().collect();
+            if !out.contains(&figure) {
+                out.push(figure);
+            }
+        }
+        at = at.saturating_add(1);
+    }
+    out
+}
+
+/// Figures written to data files this prompt cycle that no tool result or user message shows.
+fn artifact_figures(store: &StoreHandle) -> Vec<(String, Vec<String>)> {
+    let Some(session) = store() else {
+        return Vec::new();
+    };
+    let entries = yi_session::lock_session(&session)
+        .find_entries(&yi_session::EntryQuery {
+            entry_type: Some("message"),
+            order: yi_session::EntryOrder::OldestFirst,
+            ..yi_session::EntryQuery::default()
+        })
+        .unwrap_or_default();
+    let mut seen = String::new();
+    let mut written: Vec<(String, String)> = Vec::new();
+    for entry in entries {
+        let yi_types::entry::Entry::Message { message, .. } = entry else {
+            continue;
+        };
+        match message {
+            AgentMessage::User {
+                content: UserContent::Text(text),
+                attribution: Attribution::User,
+                ..
+            } => {
+                written.clear();
+                seen.push_str(&text);
+                seen.push('\n');
+            }
+            AgentMessage::User {
+                content: UserContent::Text(text),
+                ..
+            } => {
+                seen.push_str(&text);
+                seen.push('\n');
+            }
+            AgentMessage::ToolResult { content, .. } => {
+                for block in content {
+                    if let Content::Text { text, .. } = block {
+                        seen.push_str(&text);
+                        seen.push('\n');
+                    }
+                }
+            }
+            AgentMessage::Assistant { content, .. } => {
+                for block in content {
+                    let Content::ToolCall {
+                        name, arguments, ..
+                    } = block
+                    else {
+                        continue;
+                    };
+                    if name != "write" {
+                        continue;
+                    }
+                    let path = arguments.get("path").and_then(serde_json::Value::as_str);
+                    let body = arguments.get("content").and_then(serde_json::Value::as_str);
+                    if let (Some(path), Some(body)) = (path, body)
+                        && data_path(path)
+                    {
+                        written.push((path.to_owned(), body.to_owned()));
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    written
+        .into_iter()
+        .filter_map(|(path, body)| {
+            let figures: Vec<String> = figures_of(&body)
+                .into_iter()
+                .filter(|figure| !seen.contains(figure.as_str()))
+                .collect();
+            (!figures.is_empty()).then_some((path, figures))
+        })
+        .collect()
+}
+
+pub fn artifact_text(path: &str, figures: &[String]) -> String {
+    format!(
+        "The file {path} carries numbers no tool result produced: {}. Compute each in a tool and paste its output, or remove it.",
+        figures.join(", ")
     )
 }
 
@@ -468,6 +672,51 @@ fn rehydrate(store: &StoreHandle) -> Cycle {
     cycle
 }
 
+/// The three claims a clean stop can make that the record does not support, each sent
+/// back once per prompt: impossibility the task never named, a figure in an answer file
+/// no tool produced, a number in the text no result shows.
+fn claim_redrive(
+    cycle: &mut Cycle,
+    todos: &TodoStore,
+    store: &StoreHandle,
+    text: &str,
+) -> Option<AgentMessage> {
+    let fingerprint = todos.list().fingerprint();
+    if !cycle.impossible && !cycle.prompt_claims_impossible && claims_impossible(text) {
+        cycle.impossible = true;
+        record_intercept(store, 0, "impossible", &fingerprint, cycle.intercepts);
+        return Some(custom(
+            INTERCEPT_CUSTOM_TYPE,
+            IMPOSSIBLE_TEXT.to_owned(),
+            false,
+        ));
+    }
+    if !cycle.artifact
+        && let Some((path, figures)) = artifact_figures(store).into_iter().next()
+    {
+        cycle.artifact = true;
+        record_intercept(store, 0, "artifact", &fingerprint, cycle.intercepts);
+        return Some(custom(
+            INTERCEPT_CUSTOM_TYPE,
+            artifact_text(&path, &figures),
+            false,
+        ));
+    }
+    if !cycle.unsourced && !numbers_of(text).is_empty() {
+        let numbers = unsourced(text, &seen_text(store));
+        if !numbers.is_empty() {
+            cycle.unsourced = true;
+            record_intercept(store, 0, "unsourced", &fingerprint, cycle.intercepts);
+            return Some(custom(
+                INTERCEPT_CUSTOM_TYPE,
+                unsourced_text(&numbers),
+                false,
+            ));
+        }
+    }
+    None
+}
+
 pub fn coupling(session: &AgentSession, todos: Arc<TodoStore>, options: Options) -> TurnCoupling {
     let Options {
         eager,
@@ -495,6 +744,9 @@ pub fn coupling(session: &AgentSession, todos: Arc<TodoStore>, options: Options)
             else {
                 return inner.as_ref().and_then(|inner| inner(prompt));
             };
+            if let Ok(mut cycle) = cycle.lock() {
+                cycle.prompt_claims_impossible = claims_impossible(text);
+            }
             let list = todos.list();
             let open = list.progress().open.saturating_add(list.progress().blocked) > 0;
             if eager == Eager::Off || (!open && !eager_init(text)) {
@@ -532,10 +784,23 @@ pub fn coupling(session: &AgentSession, todos: Arc<TodoStore>, options: Options)
                 cycle.touched();
                 return;
             }
+            let list = todos.list();
+            let progress = list.progress();
+            if progress.total > 0 && progress.open.saturating_add(progress.blocked) == 0 {
+                let quiet = quiet_turn(snapshot.message, snapshot.tool_results);
+                let key = format!("{}/{}", progress.done, progress.total);
+                if cycle.quiet(quiet, &key) {
+                    deliver(custom(
+                        NUDGE_CUSTOM_TYPE,
+                        CLOSED_LIST_TEXT.to_owned(),
+                        false,
+                    ));
+                }
+                return;
+            }
             if landed == 0 {
                 return;
             }
-            let list = todos.list();
             if list.progress().total == 0 {
                 if cycle.first_list(landed) {
                     deliver(custom(NUDGE_CUSTOM_TYPE, first_list_text(), false));
@@ -570,18 +835,8 @@ pub fn coupling(session: &AgentSession, todos: Arc<TodoStore>, options: Options)
                 }
                 return None;
             }
-            if !cycle.unsourced && !numbers_of(&text).is_empty() {
-                let numbers = unsourced(&text, &seen_text(&store));
-                if !numbers.is_empty() {
-                    cycle.unsourced = true;
-                    let fingerprint = todos.list().fingerprint();
-                    record_intercept(&store, 0, "unsourced", &fingerprint, cycle.intercepts);
-                    return Some(custom(
-                        INTERCEPT_CUSTOM_TYPE,
-                        unsourced_text(&numbers),
-                        false,
-                    ));
-                }
+            if let Some(message) = claim_redrive(&mut cycle, &todos, &store, &text) {
+                return Some(message);
             }
             let list = todos.list();
             let posture = stop_posture(&list, children_running());
