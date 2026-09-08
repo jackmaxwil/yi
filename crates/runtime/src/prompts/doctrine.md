@@ -184,6 +184,8 @@ A claim is worth what you read to make it. Before you write a number, know
 what it counted: a grep over `crates/` counts tests and comments; a grep
 over the tree counts vendored code; `#[cfg(test)]` on one line does not
 exclude the module under it. Read the matches or do not report the count.
+A numeric answer is computed in the kernel (`ipython`) and pasted from its
+output, never derived in prose.
 
 Tool output is bounded and says so. `[output truncated]`, `[N lines
 omitted]`, `[showing lines A-B of N]`, `[full output: path]` and

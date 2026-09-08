@@ -119,6 +119,10 @@ pub enum TodoError {
     #[error("{label:?} still has open children: {open}; finish or drop them first")]
     ParentOpen { label: String, open: String },
     #[error(
+        "done needs evidence: the command you ran and the line of its output that proves {label:?}"
+    )]
+    NoEvidence { label: String },
+    #[error(
         "line {line} is not a checklist row (`- [ ] label`; `[>]` running, `[x]` done, `[-]` dropped, `[!]` blocked; `## Phase` heads a phase; two spaces nest one level): {text:?}"
     )]
     Checklist { line: usize, text: String },
@@ -504,6 +508,9 @@ fn step(list: &mut TodoList, op: Op) -> Result<(), TodoError> {
             Ok(())
         }
         Op::Done { target, evidence } => {
+            let evidence = evidence
+                .map(|text| text.trim().to_owned())
+                .filter(|text| !text.is_empty());
             if let Target::Label(label) = &target {
                 let item = require(list, label)?;
                 let open: Vec<String> = item
@@ -522,6 +529,11 @@ fn step(list: &mut TodoList, op: Op) -> Result<(), TodoError> {
             each_target(list, &target, |item| {
                 if matches!(item.state, TodoStateName::Other(_)) {
                     return Err(illegal("done", item));
+                }
+                if evidence.is_none() {
+                    return Err(TodoError::NoEvidence {
+                        label: item.label.to_string(),
+                    });
                 }
                 close(item, TodoStateName::Done, None, evidence.clone());
                 Ok(())

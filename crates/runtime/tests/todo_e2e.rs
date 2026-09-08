@@ -227,6 +227,54 @@ fn a_stale_touched_counter_is_refused_so_a_user_edit_survives() -> TestResult {
 }
 
 #[test]
+fn done_without_evidence_is_refused_and_says_what_evidence_is() -> TestResult {
+    let (session, _root) = session("evidence")?;
+    let store = store_for(&session);
+    store.apply(
+        Op::Set {
+            list: "- [>] a\n- [ ] b\n".to_owned(),
+        },
+        None,
+    )?;
+    for evidence in [None, Some("   ".to_owned())] {
+        let error = store
+            .apply(
+                Op::Done {
+                    target: Target::Label(label("a")?),
+                    evidence,
+                },
+                None,
+            )
+            .err()
+            .ok_or("done with no evidence must be refused")?;
+        assert!(
+            matches!(error, TodoError::NoEvidence { ref label } if label == "a"),
+            "{error}"
+        );
+        assert!(
+            error
+                .to_string()
+                .starts_with("done needs evidence: the command you ran"),
+            "{error}"
+        );
+    }
+    assert_eq!(store.progress().open, 2, "a refusal moves nothing");
+    store.apply(
+        Op::Done {
+            target: Target::All,
+            evidence: Some("pytest: 3 passed".to_owned()),
+        },
+        None,
+    )?;
+    assert_eq!(
+        store.progress().open,
+        0,
+        "one evidence closes the whole list"
+    );
+    Ok(())
+}
+
+#[test]
 fn the_tool_result_teaches_the_next_move_with_the_label_filled_in() -> TestResult {
     let (session, _root) = session("tool")?;
     let tool = TodoTool::new(store_for(&session));
