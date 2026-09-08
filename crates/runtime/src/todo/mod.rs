@@ -2,7 +2,8 @@ use std::sync::{Arc, Mutex};
 
 use yi_types::plan::doc::{DocError, TodoLabel, TodoStateName};
 use yi_types::todo::{
-    BlockedOn, PhaseName, TODO_ENTRY_TYPE, TodoItem, TodoList, TodoPhase, TodoProgress, TodoRecord,
+    BlockedOn, PhaseName, TODO_ENTRY_TYPE, TodoId, TodoItem, TodoList, TodoPhase, TodoProgress,
+    TodoRecord,
 };
 
 use crate::goal::StoreHandle;
@@ -12,6 +13,7 @@ pub mod text;
 pub mod tool;
 
 pub const DEFAULT_PHASE: &str = "Tasks";
+pub const PREFIX_MIN: usize = 8;
 
 pub type ChangeHook = Arc<dyn Fn(&TodoList) + Send + Sync>;
 
@@ -28,12 +30,12 @@ pub enum Op {
         list: String,
     },
     Init {
-        phases: Vec<(PhaseName, Vec<TodoLabel>)>,
+        phases: Vec<(PhaseName, Vec<TodoItem>)>,
     },
     Append {
         phase: Option<PhaseName>,
         under: Option<TodoLabel>,
-        items: Vec<TodoLabel>,
+        items: Vec<TodoItem>,
     },
     Start {
         label: TodoLabel,
@@ -105,6 +107,8 @@ impl Op {
 pub enum TodoError {
     #[error("no todo labelled {label:?}; the list holds: {known}")]
     NoSuchLabel { label: String, known: String },
+    #[error("{needle:?} is a prefix of more than one todo: {candidates}; name one by id")]
+    Ambiguous { needle: String, candidates: String },
     #[error("no phase named {phase:?}; the list holds: {known}")]
     NoSuchPhase { phase: String, known: String },
     #[error("todo {label:?} is already in the list; labels are unique")]
@@ -199,6 +203,7 @@ impl TodoStore {
         };
         if let Ok(mut state) = self.state.lock() {
             state.list = record.list;
+            mint(&mut state.list);
             state.touched = record.touched;
         }
     }
@@ -233,6 +238,7 @@ impl TodoStore {
         let label = op.label().cloned();
         let name = op.name();
         step(&mut list, op)?;
+        mint(&mut list);
         normalize(&mut list);
         state.list = list.clone();
         state.touched = state.touched.saturating_add(1);
@@ -299,11 +305,15 @@ pub fn latest_record(session: &yi_session::SharedSession) -> Option<TodoRecord> 
     })
 }
 
+fn named(item: &TodoItem) -> String {
+    match &item.id {
+        Some(id) => format!("{id} {:?}", item.label.as_str()),
+        None => format!("{:?}", item.label.as_str()),
+    }
+}
+
 fn known_labels(list: &TodoList) -> String {
-    let labels: Vec<String> = list
-        .items()
-        .map(|item| format!("{:?}", item.label.as_str()))
-        .collect();
+    let labels: Vec<String> = list.items().map(named).collect();
     if labels.is_empty() {
         "nothing".to_owned()
     } else {
@@ -338,12 +348,91 @@ fn find_mut<'a>(list: &'a mut TodoList, label: &TodoLabel) -> Option<&'a mut Tod
     None
 }
 
-fn require<'a>(list: &'a mut TodoList, label: &TodoLabel) -> Result<&'a mut TodoItem, TodoError> {
+fn nth_mut(list: &mut TodoList, index: usize) -> Option<&mut TodoItem> {
+    let mut at = 0_usize;
+    for phase in &mut list.phases {
+        for item in &mut phase.items {
+            if at == index {
+                return Some(item);
+            }
+            at = at.saturating_add(1);
+            for child in &mut item.children {
+                if at == index {
+                    return Some(child);
+                }
+                at = at.saturating_add(1);
+            }
+        }
+    }
+    None
+}
+
+/// Exact label, then exact label or id with surrounding backticks stripped, then a unique
+/// case-insensitive label prefix of [`PREFIX_MIN`] chars or more.
+fn locate(list: &TodoList, needle: &str) -> Result<usize, TodoError> {
+    let items: Vec<&TodoItem> = list.items().collect();
+    if let Some(index) = items.iter().position(|item| item.label.as_str() == needle) {
+        return Ok(index);
+    }
+    let bare = needle.trim().trim_matches('`').trim();
+    if let Some(index) = items.iter().position(|item| {
+        item.label.as_str() == bare || item.id.as_ref().is_some_and(|id| id.as_str() == bare)
+    }) {
+        return Ok(index);
+    }
+    let prefix = bare.to_lowercase();
+    let hits: Vec<usize> = if bare.chars().count() >= PREFIX_MIN {
+        items
+            .iter()
+            .enumerate()
+            .filter(|(_, item)| item.label.as_str().to_lowercase().starts_with(&prefix))
+            .map(|(index, _)| index)
+            .collect()
+    } else {
+        Vec::new()
+    };
+    match hits.as_slice() {
+        [one] => Ok(*one),
+        [] => Err(TodoError::NoSuchLabel {
+            label: needle.to_owned(),
+            known: known_labels(list),
+        }),
+        many => Err(TodoError::Ambiguous {
+            needle: needle.to_owned(),
+            candidates: many
+                .iter()
+                .filter_map(|index| items.get(*index))
+                .map(|item| named(item))
+                .collect::<Vec<_>>()
+                .join(", "),
+        }),
+    }
+}
+
+fn resolve<'a>(list: &'a mut TodoList, needle: &TodoLabel) -> Result<&'a mut TodoItem, TodoError> {
+    let index = locate(list, needle.as_str())?;
     let known = known_labels(list);
-    find_mut(list, label).ok_or_else(|| TodoError::NoSuchLabel {
-        label: label.to_string(),
+    nth_mut(list, index).ok_or(TodoError::NoSuchLabel {
+        label: needle.to_string(),
         known,
     })
+}
+
+/// Every id-less item gets `t{next_id}`; an id a `set` row carried moves the counter past it.
+pub fn mint(list: &mut TodoList) {
+    let top = list
+        .items()
+        .filter_map(|item| item.id.as_ref()?.number())
+        .max()
+        .unwrap_or(0);
+    let mut next = list.next_id.max(top.saturating_add(1)).max(1);
+    list.for_each_mut(|item| {
+        if item.id.is_none() {
+            item.id = Some(TodoId::minted(next));
+            next = next.saturating_add(1);
+        }
+    });
+    list.next_id = next;
 }
 
 fn phase_mut<'a>(list: &'a mut TodoList, name: &PhaseName) -> Result<&'a mut TodoPhase, TodoError> {
@@ -395,7 +484,7 @@ where
     F: FnMut(&mut TodoItem) -> Result<(), TodoError>,
 {
     match target {
-        Target::Label(label) => act(require(list, label)?),
+        Target::Label(label) => act(resolve(list, label)?),
         Target::Phase(name) => {
             for item in &mut phase_mut(list, name)?.items {
                 act(item)?;
@@ -406,15 +495,13 @@ where
             Ok(())
         }
         Target::All => {
-            for phase in &mut list.phases {
-                for item in &mut phase.items {
-                    act(item)?;
-                    for child in &mut item.children {
-                        act(child)?;
-                    }
+            let mut first = Ok(());
+            list.for_each_mut(|item| {
+                if first.is_ok() {
+                    first = act(item);
                 }
-            }
-            Ok(())
+            });
+            first
         }
     }
 }
@@ -423,20 +510,17 @@ fn add_items(
     list: &mut TodoList,
     phase: Option<PhaseName>,
     under: Option<TodoLabel>,
-    items: Vec<TodoLabel>,
+    items: Vec<TodoItem>,
 ) -> Result<(), TodoError> {
-    for label in &items {
-        if find_mut(list, label).is_some() {
+    for item in &items {
+        if find_mut(list, &item.label).is_some() {
             return Err(TodoError::Duplicate {
-                label: label.to_string(),
+                label: item.label.to_string(),
             });
         }
     }
     if let Some(parent) = under {
-        let parent = require(list, &parent)?;
-        parent
-            .children
-            .extend(items.into_iter().map(TodoItem::pending));
+        resolve(list, &parent)?.children.extend(items);
         return Ok(());
     }
     let name = match phase {
@@ -454,9 +538,7 @@ fn add_items(
             extra: serde_json::Map::new(),
         });
     }
-    phase_mut(list, &name)?
-        .items
-        .extend(items.into_iter().map(TodoItem::pending));
+    phase_mut(list, &name)?.items.extend(items);
     Ok(())
 }
 
@@ -469,7 +551,10 @@ fn step(list: &mut TodoList, op: Op) -> Result<(), TodoError> {
             Ok(())
         }
         Op::Init { phases } => {
-            let mut fresh = TodoList::default();
+            let mut fresh = TodoList {
+                next_id: list.next_id,
+                ..TodoList::default()
+            };
             for (name, items) in phases {
                 add_items(&mut fresh, Some(name), None, items)?;
             }
@@ -490,21 +575,12 @@ fn step(list: &mut TodoList, op: Op) -> Result<(), TodoError> {
             add_items(list, phase, under, items)
         }
         Op::Start { label } => {
-            let item = require(list, &label)?;
+            let item = resolve(list, &label)?;
             item.state = TodoStateName::Running;
             item.on = None;
             item.note = None;
-            let target = label;
-            for other in list
-                .phases
-                .iter_mut()
-                .flat_map(|phase| phase.items.iter_mut())
-            {
-                demote(other, &target);
-                for child in &mut other.children {
-                    demote(child, &target);
-                }
-            }
+            let target = item.label.clone();
+            list.for_each_mut(|other| demote(other, &target));
             Ok(())
         }
         Op::Done { target, evidence } => {
@@ -512,7 +588,7 @@ fn step(list: &mut TodoList, op: Op) -> Result<(), TodoError> {
                 .map(|text| text.trim().to_owned())
                 .filter(|text| !text.is_empty());
             if let Target::Label(label) = &target {
-                let item = require(list, label)?;
+                let item = resolve(list, label)?;
                 let open: Vec<String> = item
                     .children
                     .iter()
@@ -547,7 +623,7 @@ fn step(list: &mut TodoList, op: Op) -> Result<(), TodoError> {
             Ok(())
         }),
         Op::Block { label, on, note } => {
-            let item = require(list, &label)?;
+            let item = resolve(list, &label)?;
             if item.is_closed() {
                 return Err(illegal("block", item));
             }
@@ -557,7 +633,7 @@ fn step(list: &mut TodoList, op: Op) -> Result<(), TodoError> {
             Ok(())
         }
         Op::Unblock { label } => {
-            let item = require(list, &label)?;
+            let item = resolve(list, &label)?;
             if item.state != TodoStateName::Blocked {
                 return Err(illegal("unblock", item));
             }
@@ -567,8 +643,8 @@ fn step(list: &mut TodoList, op: Op) -> Result<(), TodoError> {
             Ok(())
         }
         Op::Rm { target } => match target {
-            Target::Label(label) => {
-                require(list, &label)?;
+            Target::Label(needle) => {
+                let label = resolve(list, &needle)?.label.clone();
                 for phase in &mut list.phases {
                     phase.items.retain(|item| item.label != label);
                     for item in &mut phase.items {

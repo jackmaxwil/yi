@@ -13,7 +13,9 @@ use yi_runtime::{AgentSession, ProviderStream, SessionConfig};
 use yi_types::message::{AgentMessage, Attribution, StopReason, UserContent};
 use yi_types::model::{Model, ModelCost, ToolChoice};
 use yi_types::plan::doc::TodoLabel;
-use yi_types::todo::{BlockedOn, PhaseName, TODO_INTERCEPT_ENTRY_TYPE, TodoInterceptRecord};
+use yi_types::todo::{
+    BlockedOn, PhaseName, TODO_INTERCEPT_ENTRY_TYPE, TodoInterceptRecord, TodoItem,
+};
 
 type TestResult = Result<(), Box<dyn Error>>;
 
@@ -84,7 +86,10 @@ fn open_list(todos: &TodoStore) -> Result<(), Box<dyn Error>> {
         Op::Init {
             phases: vec![(
                 PhaseName::new("Tasks")?,
-                vec![TodoLabel::new("first")?, TodoLabel::new("second")?],
+                vec![
+                    TodoItem::from_text("first")?,
+                    TodoItem::from_text("second")?,
+                ],
             )],
         },
         None,
@@ -294,9 +299,12 @@ fn a_stop_with_open_todos_is_re_driven_up_the_ladder_then_let_go() -> TestResult
     let (kind, display, text) = custom_type(&first);
     assert_eq!(kind, INTERCEPT_CUSTOM_TYPE);
     assert!(display, "rung 1 is the one the user sees");
-    assert!(text.contains("done \"first\" evidence="), "{text}");
-    assert!(text.contains("block \"first\" on user note="), "{text}");
-    assert!(text.contains("start \"second\""), "{text}");
+    assert!(
+        text.contains("[running] first: done t1 evidence="),
+        "{text}"
+    );
+    assert!(text.contains("block t1 on user note="), "{text}");
+    assert!(text.contains("[pending] second: start t2"), "{text}");
     let second = (hooks.intercept_stop)(&snapshot(&message)).ok_or("rung 2")?;
     let (_, display, text) = custom_type(&second);
     assert!(!display);
