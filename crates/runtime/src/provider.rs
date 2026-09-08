@@ -142,6 +142,14 @@ impl StreamFn for ProviderStream {
     }
 }
 
+/// Per-turn output cap on the OpenAI-style paths: a model's catalog ceiling (131k on flash) let
+/// one reasoning turn run to the limit with no tool call and end the trial.
+pub const OUTPUT_CEILING: u64 = 32_768;
+
+pub fn output_cap(model: &Model) -> u64 {
+    model.max_tokens.min(OUTPUT_CEILING)
+}
+
 impl ProviderStream {
     fn stream_raw(
         &self,
@@ -163,6 +171,7 @@ impl ProviderStream {
             }
             ProviderApi::OpenAiCompletions => {
                 let options = OpenAiOptions {
+                    max_tokens: Some(output_cap(model)),
                     reasoning_effort: (effort != Effort::Off).then_some(effort),
                     session_id: self.session_id.clone(),
                     proxy: self.proxy.clone(),
@@ -172,6 +181,7 @@ impl ProviderStream {
             }
             ProviderApi::OpenAiResponses => {
                 let options = OpenAiOptions {
+                    max_tokens: Some(output_cap(model)),
                     reasoning_effort: (effort != Effort::Off).then_some(effort),
                     session_id: self.session_id.clone(),
                     proxy: self.proxy.clone(),
@@ -198,6 +208,18 @@ impl ProviderStream {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_output_cap_clamps_the_catalog_never_raises_it() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let mut model = resolve_model("openrouter", "z-ai/glm-5.3-flash")
+            .ok_or("bundled catalog missing z-ai/glm-5.3-flash")?;
+        assert_eq!(model.max_tokens, 131_072);
+        assert_eq!(output_cap(&model), OUTPUT_CEILING);
+        model.max_tokens = 16_384;
+        assert_eq!(output_cap(&model), 16_384);
+        Ok(())
+    }
 
     #[test]
     fn luna_routes_to_responses_not_faux() -> Result<(), Box<dyn std::error::Error>> {
