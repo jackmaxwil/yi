@@ -2,20 +2,23 @@ use std::sync::{Arc, Mutex};
 
 use yi_types::message::{AgentMessage, Attribution, Content, StopReason, UserContent};
 use yi_types::model::{ForcedTool, ToolChoice};
-use yi_types::plan::doc::TodoStateName;
+use yi_types::plan::doc::{TODO_LABEL_MAX, TodoLabel, TodoStateName};
+use yi_types::todo::PhaseName;
 use yi_types::todo::{BlockedOn, TODO_INTERCEPT_ENTRY_TYPE, TodoInterceptRecord, TodoList};
 
-use super::{TodoStore, text, tool};
+use super::{DEFAULT_PHASE, Op, TodoStore, text, tool};
 use crate::goal::StoreHandle;
-use crate::plan::loop_coupling::gate::eager_init;
+use crate::plan::loop_coupling::gate::{ENUMERATED_ITEMS_MIN, eager_init, enumerated};
 use crate::session::{AgentSession, InterceptStopFn, PromptChoiceFn, TurnCoupling, TurnObserveFn};
 
 pub const NUDGE_CUSTOM_TYPE: &str = "todo_nudge";
 pub const PRELUDE_CUSTOM_TYPE: &str = "todo_prelude";
 pub const INTERCEPT_CUSTOM_TYPE: &str = "todo_intercept";
+pub const SEED_ACTOR: &str = "prompt";
 
 pub mod gate {
     pub const NUDGE_WORK: u32 = 12;
+    pub const FIRST_LIST_WORK: u32 = 3;
     pub const NUDGE_CAP_PER_CYCLE: u32 = 2;
     pub const INTERCEPT_CAP_PER_CYCLE: u32 = 6;
     pub const EMPTY_STOP_CAP: u32 = 3;
@@ -37,6 +40,7 @@ pub struct Cycle {
     pub last_fingerprint: Option<String>,
     pub intercepts: u32,
     pub empties: u32,
+    pub first_listed: bool,
 }
 
 impl Cycle {
@@ -56,6 +60,16 @@ impl Cycle {
 
     pub fn touched(&mut self) {
         self.work = 0;
+    }
+
+    pub fn first_list(&mut self, landed: u32) -> bool {
+        self.work = self.work.saturating_add(landed);
+        if self.first_listed || self.work < gate::FIRST_LIST_WORK {
+            return false;
+        }
+        self.first_listed = true;
+        self.work = 0;
+        true
     }
 
     pub fn intercept(&mut self, fingerprint: &str) -> Option<u8> {
@@ -156,6 +170,50 @@ pub fn prelude_text(list: &TodoList) -> String {
     }
     format!(
         "The todo list still holds {open} open item(s) from before. Reconcile first: `drop` with a reason what no longer applies, keep what does, and `append` this request's items; then continue.\n{}",
+        text::checklist(list).join("\n")
+    )
+}
+
+pub fn first_list_text() -> String {
+    format!(
+        "{} changes have landed with no todo list. `init` the list naming what remains, batched with your next call.",
+        gate::FIRST_LIST_WORK
+    )
+}
+
+/// A numbered request is the list: one pending item per enumerated line, cut to the label
+/// max, under the default phase, so the model starts from the user's own items.
+pub fn seed(todos: &TodoStore, prompt: &str) -> bool {
+    let mut labels: Vec<TodoLabel> = Vec::new();
+    for line in prompt.lines().filter_map(enumerated) {
+        let text: String = line.trim().chars().take(TODO_LABEL_MAX).collect();
+        let Ok(label) = TodoLabel::new(text.trim_end()) else {
+            continue;
+        };
+        if !labels.contains(&label) {
+            labels.push(label);
+        }
+    }
+    if labels.len() < ENUMERATED_ITEMS_MIN {
+        return false;
+    }
+    let Ok(phase) = PhaseName::new(DEFAULT_PHASE) else {
+        return false;
+    };
+    todos
+        .apply_as(
+            Op::Init {
+                phases: vec![(phase, labels)],
+            },
+            None,
+            SEED_ACTOR,
+        )
+        .is_ok()
+}
+
+pub fn seeded_text(list: &TodoList) -> String {
+    format!(
+        "The todo list was seeded from the request's numbered lines. `append` investigation and verification items, `start` the first, and batch each op with real work.\n{}",
         text::checklist(list).join("\n")
     )
 }
@@ -362,7 +420,14 @@ pub fn coupling(session: &AgentSession, todos: Arc<TodoStore>, options: Options)
             if eager == Eager::Off || (!open && !eager_init(text)) {
                 return inner.as_ref().and_then(|inner| inner(prompt));
             }
-            deliver(custom(PRELUDE_CUSTOM_TYPE, prelude_text(&list), false));
+            let seeded = !open && seed(&todos, text);
+            let list = todos.list();
+            let prelude = if seeded {
+                seeded_text(&list)
+            } else {
+                prelude_text(&list)
+            };
+            deliver(custom(PRELUDE_CUSTOM_TYPE, prelude, false));
             if eager == Eager::Force && !open {
                 return ForcedTool::new(tool::NAME).ok().map(ToolChoice::Tool);
             }
@@ -387,8 +452,15 @@ pub fn coupling(session: &AgentSession, todos: Arc<TodoStore>, options: Options)
                 cycle.touched();
                 return;
             }
+            if landed == 0 {
+                return;
+            }
             let list = todos.list();
-            if landed > 0 && list.progress().open > 0 && cycle.work(landed) {
+            if list.progress().total == 0 {
+                if cycle.first_list(landed) {
+                    deliver(custom(NUDGE_CUSTOM_TYPE, first_list_text(), false));
+                }
+            } else if list.progress().open > 0 && cycle.work(landed) {
                 deliver(custom(NUDGE_CUSTOM_TYPE, nudge_text(&list), false));
             }
         })
