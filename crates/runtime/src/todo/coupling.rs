@@ -2,20 +2,23 @@ use std::sync::{Arc, Mutex};
 
 use yi_types::message::{AgentMessage, Attribution, Content, StopReason, UserContent};
 use yi_types::model::{ForcedTool, ToolChoice};
-use yi_types::plan::doc::TodoStateName;
+use yi_types::plan::doc::{TODO_LABEL_MAX, TodoLabel, TodoStateName};
+use yi_types::todo::PhaseName;
 use yi_types::todo::{BlockedOn, TODO_INTERCEPT_ENTRY_TYPE, TodoInterceptRecord, TodoList};
 
-use super::{TodoStore, text, tool};
+use super::{DEFAULT_PHASE, Op, TodoStore, text, tool};
 use crate::goal::StoreHandle;
-use crate::plan::loop_coupling::gate::eager_init;
+use crate::plan::loop_coupling::gate::{ENUMERATED_ITEMS_MIN, eager_init, enumerated};
 use crate::session::{AgentSession, InterceptStopFn, PromptChoiceFn, TurnCoupling, TurnObserveFn};
 
 pub const NUDGE_CUSTOM_TYPE: &str = "todo_nudge";
 pub const PRELUDE_CUSTOM_TYPE: &str = "todo_prelude";
 pub const INTERCEPT_CUSTOM_TYPE: &str = "todo_intercept";
+pub const SEED_ACTOR: &str = "prompt";
 
 pub mod gate {
     pub const NUDGE_WORK: u32 = 12;
+    pub const FIRST_LIST_WORK: u32 = 3;
     pub const NUDGE_CAP_PER_CYCLE: u32 = 2;
     pub const INTERCEPT_CAP_PER_CYCLE: u32 = 6;
     pub const EMPTY_STOP_CAP: u32 = 3;
@@ -37,6 +40,8 @@ pub struct Cycle {
     pub last_fingerprint: Option<String>,
     pub intercepts: u32,
     pub empties: u32,
+    pub first_listed: bool,
+    pub unsourced: bool,
 }
 
 impl Cycle {
@@ -56,6 +61,16 @@ impl Cycle {
 
     pub fn touched(&mut self) {
         self.work = 0;
+    }
+
+    pub fn first_list(&mut self, landed: u32) -> bool {
+        self.work = self.work.saturating_add(landed);
+        if self.first_listed || self.work < gate::FIRST_LIST_WORK {
+            return false;
+        }
+        self.first_listed = true;
+        self.work = 0;
+        true
     }
 
     pub fn intercept(&mut self, fingerprint: &str) -> Option<u8> {
@@ -160,6 +175,50 @@ pub fn prelude_text(list: &TodoList) -> String {
     )
 }
 
+pub fn first_list_text() -> String {
+    format!(
+        "{} changes have landed with no todo list. `init` the list naming what remains, batched with your next call.",
+        gate::FIRST_LIST_WORK
+    )
+}
+
+/// A numbered request is the list: one pending item per enumerated line, cut to the label
+/// max, under the default phase, so the model starts from the user's own items.
+pub fn seed(todos: &TodoStore, prompt: &str) -> bool {
+    let mut labels: Vec<TodoLabel> = Vec::new();
+    for line in prompt.lines().filter_map(enumerated) {
+        let text: String = line.trim().chars().take(TODO_LABEL_MAX).collect();
+        let Ok(label) = TodoLabel::new(text.trim_end()) else {
+            continue;
+        };
+        if !labels.contains(&label) {
+            labels.push(label);
+        }
+    }
+    if labels.len() < ENUMERATED_ITEMS_MIN {
+        return false;
+    }
+    let Ok(phase) = PhaseName::new(DEFAULT_PHASE) else {
+        return false;
+    };
+    todos
+        .apply_as(
+            Op::Init {
+                phases: vec![(phase, labels)],
+            },
+            None,
+            SEED_ACTOR,
+        )
+        .is_ok()
+}
+
+pub fn seeded_text(list: &TodoList) -> String {
+    format!(
+        "The todo list was seeded from the request's numbered lines. `append` investigation and verification items, `start` the first, and batch each op with real work.\n{}",
+        text::checklist(list).join("\n")
+    )
+}
+
 pub fn nudge_text(list: &TodoList) -> String {
     format!(
         "Work has landed since the todo list last moved. Step what you finished (`done` with its evidence), `start` what you are on, and batch the op with your next real call.\n{}",
@@ -180,6 +239,85 @@ pub fn intercept_text(rung: u8, list: &TodoList) -> String {
             "The turn ends now. Write the closing message naming each open item and why it is not done; call no tools.\n{moves}"
         ),
     }
+}
+
+/// Digit runs of three or more with no word character or dot on either side: the same
+/// numerals the session miner's `count_claim` reads, so the two never disagree.
+pub fn numbers_of(text: &str) -> Vec<String> {
+    let bound = |c: Option<char>| c.is_none_or(|c| !(c.is_alphanumeric() || c == '_' || c == '.'));
+    let chars: Vec<char> = text.chars().collect();
+    let mut out: Vec<String> = Vec::new();
+    let mut at = 0;
+    while at < chars.len() {
+        let start = at;
+        while chars.get(at).is_some_and(char::is_ascii_digit) {
+            at = at.saturating_add(1);
+        }
+        let run = at.saturating_sub(start);
+        if run >= 3
+            && bound(start.checked_sub(1).and_then(|i| chars.get(i).copied()))
+            && bound(chars.get(at).copied())
+        {
+            let number: String = chars.get(start..at).unwrap_or_default().iter().collect();
+            if !out.contains(&number) {
+                out.push(number);
+            }
+        }
+        at = at.saturating_add(1);
+    }
+    out
+}
+
+/// Every tool result and user message the session has persisted, joined for a substring test.
+fn seen_text(store: &StoreHandle) -> String {
+    let Some(session) = store() else {
+        return String::new();
+    };
+    let entries = yi_session::lock_session(&session)
+        .find_entries(&yi_session::EntryQuery {
+            entry_type: Some("message"),
+            ..yi_session::EntryQuery::default()
+        })
+        .unwrap_or_default();
+    let mut seen = String::new();
+    for entry in entries {
+        let yi_types::entry::Entry::Message { message, .. } = entry else {
+            continue;
+        };
+        match message {
+            AgentMessage::ToolResult { content, .. } => {
+                for block in content {
+                    if let Content::Text { text, .. } = block {
+                        seen.push_str(&text);
+                        seen.push('\n');
+                    }
+                }
+            }
+            AgentMessage::User {
+                content: UserContent::Text(text),
+                ..
+            } => {
+                seen.push_str(&text);
+                seen.push('\n');
+            }
+            _ => {}
+        }
+    }
+    seen
+}
+
+pub fn unsourced(text: &str, seen: &str) -> Vec<String> {
+    numbers_of(text)
+        .into_iter()
+        .filter(|number| !seen.contains(number.as_str()))
+        .collect()
+}
+
+pub fn unsourced_text(numbers: &[String]) -> String {
+    format!(
+        "Each number in the answer needs its source: quote the tool result it came from, or remove it. Numbers without a source: {}.",
+        numbers.join(", ")
+    )
 }
 
 pub const EMPTY_STOP_TEXT: &str =
@@ -362,7 +500,14 @@ pub fn coupling(session: &AgentSession, todos: Arc<TodoStore>, options: Options)
             if eager == Eager::Off || (!open && !eager_init(text)) {
                 return inner.as_ref().and_then(|inner| inner(prompt));
             }
-            deliver(custom(PRELUDE_CUSTOM_TYPE, prelude_text(&list), false));
+            let seeded = !open && seed(&todos, text);
+            let list = todos.list();
+            let prelude = if seeded {
+                seeded_text(&list)
+            } else {
+                prelude_text(&list)
+            };
+            deliver(custom(PRELUDE_CUSTOM_TYPE, prelude, false));
             if eager == Eager::Force && !open {
                 return ForcedTool::new(tool::NAME).ok().map(ToolChoice::Tool);
             }
@@ -387,8 +532,15 @@ pub fn coupling(session: &AgentSession, todos: Arc<TodoStore>, options: Options)
                 cycle.touched();
                 return;
             }
+            if landed == 0 {
+                return;
+            }
             let list = todos.list();
-            if landed > 0 && list.progress().open > 0 && cycle.work(landed) {
+            if list.progress().total == 0 {
+                if cycle.first_list(landed) {
+                    deliver(custom(NUDGE_CUSTOM_TYPE, first_list_text(), false));
+                }
+            } else if list.progress().open > 0 && cycle.work(landed) {
                 deliver(custom(NUDGE_CUSTOM_TYPE, nudge_text(&list), false));
             }
         })
@@ -407,7 +559,8 @@ pub fn coupling(session: &AgentSession, todos: Arc<TodoStore>, options: Options)
             let Ok(mut cycle) = cycle.lock() else {
                 return None;
             };
-            if text_of(snapshot.message).trim().is_empty() {
+            let text = text_of(snapshot.message);
+            if text.trim().is_empty() {
                 if cycle.empty_stop() {
                     return Some(custom(
                         INTERCEPT_CUSTOM_TYPE,
@@ -416,6 +569,19 @@ pub fn coupling(session: &AgentSession, todos: Arc<TodoStore>, options: Options)
                     ));
                 }
                 return None;
+            }
+            if !cycle.unsourced && !numbers_of(&text).is_empty() {
+                let numbers = unsourced(&text, &seen_text(&store));
+                if !numbers.is_empty() {
+                    cycle.unsourced = true;
+                    let fingerprint = todos.list().fingerprint();
+                    record_intercept(&store, 0, "unsourced", &fingerprint, cycle.intercepts);
+                    return Some(custom(
+                        INTERCEPT_CUSTOM_TYPE,
+                        unsourced_text(&numbers),
+                        false,
+                    ));
+                }
             }
             let list = todos.list();
             let posture = stop_posture(&list, children_running());

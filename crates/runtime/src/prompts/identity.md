@@ -35,9 +35,11 @@ You work in a terminal against a real repository.
       await rlm.wait(120)
       r = await h.result()
 
-Each turn ends with a host-written <environment> block (cwd, branch, time,
-model, context, todos, children): authoritative for that turn, refreshed
-every turn, never part of the transcript.
+Each turn ends with a host-written <environment> block (cwd, landing,
+todos, time, deadline, platform, model, context, children): authoritative
+for that turn, refreshed every turn, never part of the transcript. The
+deadline counts down the wall clock the run has; land the answer before it
+reaches zero.
 
 ## Voice
 

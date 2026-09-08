@@ -123,5 +123,11 @@ when it changes rather than editing them by hand.
 - [D141](adr/d141.md) - the console owns text selection because it owns the mouse
 - [D145](adr/d145.md) - a delta is a delta
 - [D146](adr/d146.md) - a dead stream is sent once more, and it says so
+- [D142](adr/d142.md) - bash has a clock and refuses an unbounded root walk
+- [D147](adr/d147.md) - a turn that thinks past the output limit is sent back to act
+- [D148](adr/d148.md) - a numbered request is the list, and the list exists before the third change
+- [D149](adr/d149.md) - done needs its check, and a number is computed in the kernel
+- [D150](adr/d150.md) - the real clock is in the environment block
+- [D151](adr/d151.md) - a number without a source is sent back once
 
 D36-D51, D72, D73 and D74 have no ADR yet; ARCHITECTURE.md is the record for those rows.
