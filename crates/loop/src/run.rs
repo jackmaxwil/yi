@@ -1,10 +1,10 @@
 use std::sync::Arc;
 
-use serde_json::{Map, Value};
+use serde_json::{Map, Value, json};
 use tokio::sync::mpsc::Receiver;
 use yi_types::event::{AgentEvent, AssistantMessageEvent, ToolResult};
 use yi_types::message::{AgentMessage, Content, StopReason, Usage};
-use yi_types::model::{Effort, LlmContext, Model, ToolChoice, ToolDef};
+use yi_types::model::{Effort, ForcedTool, LlmContext, Model, ToolChoice, ToolDef};
 
 use crate::config::{ExecutionMode, LoopConfig, TurnSnapshot};
 use crate::interrupt::InterruptSignal;
@@ -354,15 +354,30 @@ fn fail_truncated_calls(
 pub const LENGTH_REDRIVE_CUSTOM_TYPE: &str = "length_redrive";
 pub const LENGTH_REDRIVE_TEXT: &str = "The reply hit the output limit before any tool call. Act on the next item now: make the tool call, then explain; the thinking is not the work.";
 
-/// A turn that spent its whole output budget thinking is sent back once to act instead.
-fn length_redrive() -> AgentMessage {
+pub const LENGTH_FORCE_TEXT: &str =
+    "You are running a search by hand. Write the program that does it and run it.";
+pub const LENGTH_STOP_AT: u32 = 3;
+
+/// A turn that spent its whole output budget thinking is sent back to act instead.
+fn length_redrive(rung: u32, forced: bool) -> AgentMessage {
     AgentMessage::Custom {
         custom_type: LENGTH_REDRIVE_CUSTOM_TYPE.to_owned(),
-        content: yi_types::message::UserContent::Text(LENGTH_REDRIVE_TEXT.to_owned()),
+        content: yi_types::message::UserContent::Text(format!(
+            "{LENGTH_REDRIVE_TEXT} {LENGTH_FORCE_TEXT}"
+        )),
         display: false,
-        details: None,
+        details: Some(json!({"rung": rung, "forced": forced})),
         timestamp: 0,
     }
+}
+
+/// Bash rather than the kernel: the kernel may be absent, and a heredoc is a program.
+fn length_force(tools: &[Arc<dyn AgentTool>]) -> Option<ToolChoice> {
+    tools
+        .iter()
+        .any(|tool| tool.definition().name == "bash")
+        .then(|| ForcedTool::new("bash").ok().map(ToolChoice::Tool))
+        .flatten()
 }
 
 pub const REPEAT_BREAK_CUSTOM_TYPE: &str = "repeat_break";
@@ -533,7 +548,7 @@ pub async fn run_loop<S: StreamFn>(
     let mut current_model = config.model.clone();
     let mut current_effort = config.effort;
     let mut first_turn = true;
-    let mut length_redriven = false;
+    let mut length_stops: u32 = 0;
     let mut last_batch: Option<String> = None;
     let mut repeats: u32 = 0;
     let mut tool_choice = config.first_turn_tool_choice.clone();
@@ -659,13 +674,16 @@ pub async fn run_loop<S: StreamFn>(
             if repeats == REPEAT_STEER_AT {
                 pending.push(repeat_break());
             }
-            if !has_more_tool_calls
-                && pending.is_empty()
-                && reason == StopReason::Length
-                && !length_redriven
-            {
-                length_redriven = true;
-                pending.push(length_redrive());
+            if !has_more_tool_calls && pending.is_empty() && reason == StopReason::Length {
+                length_stops = length_stops.saturating_add(1);
+                if length_stops >= LENGTH_STOP_AT {
+                    emit(AgentEvent::AgentEnd {
+                        messages: collected.clone(),
+                    });
+                    return collected;
+                }
+                tool_choice = length_force(&context.tools);
+                pending.push(length_redrive(length_stops, tool_choice.is_some()));
             } else if !has_more_tool_calls
                 && pending.is_empty()
                 && let Some(intercept) = &config.intercept_stop

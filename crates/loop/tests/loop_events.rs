@@ -11,7 +11,7 @@ use yi_loop::tool::{AgentTool, ToolFuture, ToolOutcome, error_tool_result};
 use yi_loop::{ExecutionMode, LoopConfig, LoopContext, run_loop};
 use yi_types::event::{AgentEvent, AssistantMessageEvent};
 use yi_types::message::{AgentMessage, StopReason};
-use yi_types::model::{LlmContext, Model, ModelCost, ToolDef};
+use yi_types::model::{LlmContext, Model, ModelCost, ToolChoice, ToolDef};
 
 fn faux_model() -> Model {
     let zero = || serde_json::Number::from(0u64);
@@ -44,13 +44,22 @@ fn user(text: &str) -> AgentMessage {
 
 struct Scripted {
     responses: Mutex<Vec<AgentMessage>>,
+    choices: Mutex<Vec<Option<ToolChoice>>>,
 }
 
 impl Scripted {
     fn new(responses: Vec<AgentMessage>) -> Self {
         Self {
             responses: Mutex::new(responses),
+            choices: Mutex::new(Vec::new()),
         }
+    }
+
+    fn choices(&self) -> Vec<Option<ToolChoice>> {
+        self.choices
+            .lock()
+            .map(|choices| choices.clone())
+            .unwrap_or_default()
     }
 }
 
@@ -58,10 +67,13 @@ impl yi_loop::run::StreamFn for Scripted {
     fn stream(
         &self,
         _model: &Model,
-        _context: &LlmContext,
+        context: &LlmContext,
         _effort: yi_types::model::Effort,
         _signal: &InterruptSignal,
     ) -> Receiver<AssistantMessageEvent> {
+        if let Ok(mut choices) = self.choices.lock() {
+            choices.push(context.tool_choice.clone());
+        }
         let (sender, receiver) = tokio::sync::mpsc::channel(64);
         let events = match self.responses.lock() {
             Ok(mut queue) if !queue.is_empty() => stream_with_deltas(&queue.remove(0)),
@@ -107,6 +119,33 @@ impl AgentTool for EchoTool {
             let _ = &mut result;
             ToolOutcome {
                 result,
+                is_error: false,
+            }
+        })
+    }
+}
+
+struct BashTool;
+
+impl AgentTool for BashTool {
+    fn definition(&self) -> ToolDef {
+        ToolDef {
+            name: "bash".to_owned(),
+            description: "runs a program".to_owned(),
+            parameters: json!({"type": "object"}),
+            freeform: None,
+        }
+    }
+
+    fn execute<'a>(
+        &'a self,
+        _tool_call_id: &'a str,
+        _args: Map<String, Value>,
+        _signal: &'a InterruptSignal,
+    ) -> ToolFuture<'a> {
+        Box::pin(async move {
+            ToolOutcome {
+                result: error_tool_result("bash: unused"),
                 is_error: false,
             }
         })
@@ -329,42 +368,102 @@ async fn a_turn_repeated_verbatim_is_steered_once_then_ended() {
     assert_eq!(answers, 9, "a job poll repeats as long as it likes");
 }
 
-#[tokio::test]
-async fn a_length_stop_with_no_tool_call_is_re_driven_once() {
-    let stream = Scripted::new(vec![
+fn three_bare_length_stops() -> Scripted {
+    Scripted::new(vec![
         faux_assistant_message(vec![faux_text("thinking, thinking")], StopReason::Length),
         faux_assistant_message(vec![faux_text("still thinking")], StopReason::Length),
+        faux_assistant_message(vec![faux_text("and still")], StopReason::Length),
         faux_assistant_message(vec![faux_text("never reached")], StopReason::Stop),
-    ]);
+    ])
+}
+
+async fn drive_length_ladder(
+    stream: &Scripted,
+    tools: Vec<Arc<dyn AgentTool>>,
+) -> (Vec<Value>, usize, Vec<AgentEvent>) {
     let mut context = LoopContext {
         system_prompt: String::new(),
         messages: Vec::new(),
-        tools: vec![Arc::new(EchoTool)],
+        tools,
     };
     let config = LoopConfig::new(faux_model());
     let signal = InterruptSignal::default();
-    let (_events, mut emit) = collector();
+    let (events, mut emit) = collector();
     let collected = run_loop(
         &mut context,
         vec![user("go")],
         &config,
         &signal,
         &mut emit,
-        &stream,
+        stream,
     )
     .await;
-    let redrives: Vec<&AgentMessage> = collected
+    let details: Vec<Value> = collected
         .iter()
-        .filter(|message| {
-            matches!(message, AgentMessage::Custom { custom_type, .. } if custom_type == yi_loop::LENGTH_REDRIVE_CUSTOM_TYPE)
+        .filter_map(|message| match message {
+            AgentMessage::Custom {
+                custom_type,
+                content,
+                details,
+                ..
+            } if custom_type == yi_loop::LENGTH_REDRIVE_CUSTOM_TYPE => {
+                let text = match content {
+                    yi_types::message::UserContent::Text(text) => text.clone(),
+                    yi_types::message::UserContent::Blocks(_) => String::new(),
+                };
+                assert!(text.ends_with(yi_loop::LENGTH_FORCE_TEXT));
+                details.clone()
+            }
+            _ => None,
         })
         .collect();
-    assert_eq!(redrives.len(), 1, "one re-drive per prompt");
     let answers = collected
         .iter()
         .filter(|message| matches!(message, AgentMessage::Assistant { .. }))
         .count();
-    assert_eq!(answers, 2, "the second length stop ends the loop");
+    let events = events
+        .lock()
+        .map(|events| events.clone())
+        .unwrap_or_default();
+    (details, answers, events)
+}
+
+#[tokio::test]
+async fn a_bare_length_stop_forces_bash_then_ends_on_the_third() {
+    let stream = three_bare_length_stops();
+    let (details, answers, events) =
+        drive_length_ladder(&stream, vec![Arc::new(EchoTool), Arc::new(BashTool)]).await;
+    assert_eq!(
+        details,
+        vec![
+            json!({"rung": 1, "forced": true}),
+            json!({"rung": 2, "forced": true})
+        ]
+    );
+    assert_eq!(answers, 3, "the third bare length stop ends the run");
+    let forced = ToolChoice::Tool(yi_types::model::ForcedTool::new("bash").expect("valid name"));
+    assert_eq!(
+        stream.choices(),
+        vec![None, Some(forced.clone()), Some(forced)],
+        "the two re-driven turns are forced to bash"
+    );
+    assert_eq!(kinds(&events).last(), Some(&"agent_end"));
+}
+
+#[tokio::test]
+async fn without_a_bash_tool_the_message_rides_unforced() {
+    let stream = three_bare_length_stops();
+    let (details, answers, events) = drive_length_ladder(&stream, vec![Arc::new(EchoTool)]).await;
+    assert_eq!(
+        details,
+        vec![
+            json!({"rung": 1, "forced": false}),
+            json!({"rung": 2, "forced": false})
+        ]
+    );
+    assert_eq!(answers, 3);
+    assert_eq!(stream.choices(), vec![None, None, None]);
+    assert_eq!(kinds(&events).last(), Some(&"agent_end"));
 }
 
 #[tokio::test]
