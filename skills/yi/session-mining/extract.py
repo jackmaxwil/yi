@@ -261,7 +261,7 @@ SIGNAL_NAMES = (
     "cache_miss_streak", "done_without_check", "intercept_capped",
     "blocked_on_user_without_question", "waiting_without_block", "gate_rerun_unchanged_tree",
     "intercept_count", "intercept_max_rung", "regression_seen_red",
-    "bash_timeouts", "broad_search_refused",
+    "bash_timeouts", "broad_search_refused", "length_redrive",
 )
 
 
@@ -300,6 +300,8 @@ def signals(entries):
             users.append(text_of(message.get("content")))
         elif role == "custom" and message.get("customType") == "todo_intercept":
             intercepts.append(message)
+        elif role == "custom" and message.get("customType") == "length_redrive":
+            out["length_redrive"] += 1
         elif role == "assistant":
             turn = {"text": "", "calls": [], "usage": message.get("usage") or {}, "stop": message.get("stopReason")}
             for block in message.get("content") or []:

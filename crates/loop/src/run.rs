@@ -351,6 +351,20 @@ fn fail_truncated_calls(
         .collect()
 }
 
+pub const LENGTH_REDRIVE_CUSTOM_TYPE: &str = "length_redrive";
+pub const LENGTH_REDRIVE_TEXT: &str = "The reply hit the output limit before any tool call. Act on the next item now: make the tool call, then explain; the thinking is not the work.";
+
+/// A turn that spent its whole output budget thinking is sent back once to act instead.
+fn length_redrive() -> AgentMessage {
+    AgentMessage::Custom {
+        custom_type: LENGTH_REDRIVE_CUSTOM_TYPE.to_owned(),
+        content: yi_types::message::UserContent::Text(LENGTH_REDRIVE_TEXT.to_owned()),
+        display: false,
+        details: None,
+        timestamp: 0,
+    }
+}
+
 struct TurnRequest<'a> {
     model: &'a Model,
     effort: Effort,
@@ -483,6 +497,7 @@ pub async fn run_loop<S: StreamFn>(
     let mut current_model = config.model.clone();
     let mut current_effort = config.effort;
     let mut first_turn = true;
+    let mut length_redriven = false;
     let mut tool_choice = config.first_turn_tool_choice.clone();
     let mut pending: Vec<AgentMessage> = config
         .get_steering_messages
@@ -591,6 +606,13 @@ pub async fn run_loop<S: StreamFn>(
                 .as_ref()
                 .map_or_else(Vec::new, |get| get());
             if !has_more_tool_calls
+                && pending.is_empty()
+                && reason == StopReason::Length
+                && !length_redriven
+            {
+                length_redriven = true;
+                pending.push(length_redrive());
+            } else if !has_more_tool_calls
                 && pending.is_empty()
                 && let Some(intercept) = &config.intercept_stop
                 && let Some(message) = intercept(&snapshot)
