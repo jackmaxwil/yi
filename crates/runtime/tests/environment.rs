@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use yi_ai::faux::{faux_assistant_message, faux_text};
 use yi_loop::ExecutionMode;
-use yi_runtime::environment::{append, git_summary, render, sanitize};
+use yi_runtime::environment::{append, deadline_line, git_summary, render, sanitize};
 use yi_runtime::{AgentSession, ProviderStream, SessionConfig};
 use yi_types::message::{AgentMessage, ENVIRONMENT_TAG, StopReason, UserContent};
 use yi_types::model::{Model, ModelCost};
@@ -162,4 +162,17 @@ fn tracked_reports_only_paths_git_knows() -> TestResult {
     );
     let _ = std::fs::remove_dir_all(&dir);
     Ok(())
+}
+
+#[test]
+fn the_deadline_line_counts_down_and_stops_at_zero() {
+    use std::time::Duration;
+    assert_eq!(
+        deadline_line(Duration::from_secs(3600), Duration::from_secs(60)),
+        "deadline: 3540s of 3600s"
+    );
+    assert_eq!(
+        deadline_line(Duration::from_secs(3600), Duration::from_secs(4000)),
+        "deadline: 0s of 3600s"
+    );
 }

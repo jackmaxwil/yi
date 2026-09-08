@@ -141,7 +141,6 @@ fn parse_args() -> Result<Args, lexopt::Error> {
             ("--frames", frames.is_some()),
             ("--record", record.is_some()),
             ("--snap", snap.is_some()),
-            ("--deadline", deadline.is_some()),
         ]
         .into_iter()
         .find_map(|(name, present)| present.then_some(name))
@@ -518,6 +517,7 @@ fn build_session(
                 .and_then(|plan| plan.stale_reminder_turns),
             plans_dir: configured_plans_dir(&work),
             auto_background: configured_auto_background(),
+            deadline: args.deadline.map(std::time::Duration::from_secs),
             kernel_prewarm: config()
                 .kernel
                 .as_ref()
@@ -1067,7 +1067,9 @@ fn main() {
         "version" => println!("yi {version}"),
         "ask" => {
             if args.prompt.is_empty() {
-                eprintln!("usage: yi ask [--model provider/id] [--json] <prompt>");
+                eprintln!(
+                    "usage: yi ask [--model provider/id] [--json] [--deadline secs] <prompt>"
+                );
                 std::process::exit(2);
             }
             std::process::exit(run(&args));
