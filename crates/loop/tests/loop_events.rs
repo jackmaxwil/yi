@@ -511,8 +511,14 @@ async fn length_stop_fails_every_tool_call() {
 
 fn dropped_stream() -> AgentMessage {
     let mut error = faux_assistant_message(Vec::new(), StopReason::Error);
-    if let AgentMessage::Assistant { error_message, .. } = &mut error {
+    if let AgentMessage::Assistant {
+        error_message,
+        usage,
+        ..
+    } = &mut error
+    {
         *error_message = Some("boom (upstream Wafer)".to_owned());
+        usage.reasoning = Some(9163);
     }
     error
 }
@@ -581,6 +587,55 @@ async fn a_dropped_stream_that_showed_nothing_is_retried_once() {
         .filter(|message| matches!(message, AgentMessage::Assistant { .. }))
         .count();
     assert_eq!(answers, 2, "a second dropped stream ends the run");
+
+    let synthetic = Scripted::new(vec![faux_assistant_message(Vec::new(), StopReason::Error)]);
+    let mut context = LoopContext {
+        system_prompt: String::new(),
+        messages: Vec::new(),
+        tools: Vec::new(),
+    };
+    let (_events, mut emit) = collector();
+    let collected = run_loop(
+        &mut context,
+        vec![user("hi")],
+        &config,
+        &signal,
+        &mut emit,
+        &synthetic,
+    )
+    .await;
+    assert!(
+        !collected.iter().any(|message| matches!(message, AgentMessage::Custom { custom_type, .. } if custom_type == yi_loop::STREAM_RETRY_CUSTOM_TYPE)),
+        "an error with zero usage never reached a provider and is not retried"
+    );
+
+    let mut wire = faux_assistant_message(Vec::new(), StopReason::Error);
+    if let AgentMessage::Assistant { error_message, .. } = &mut wire {
+        *error_message = Some("Error while decoding chunks".to_owned());
+    }
+    let cut = Scripted::new(vec![
+        wire,
+        faux_assistant_message(vec![faux_text("recovered")], StopReason::Stop),
+    ]);
+    let mut context = LoopContext {
+        system_prompt: String::new(),
+        messages: Vec::new(),
+        tools: Vec::new(),
+    };
+    let (_events, mut emit) = collector();
+    let collected = run_loop(
+        &mut context,
+        vec![user("hi")],
+        &config,
+        &signal,
+        &mut emit,
+        &cut,
+    )
+    .await;
+    assert!(
+        collected.iter().any(|message| matches!(message, AgentMessage::Custom { custom_type, .. } if custom_type == yi_loop::STREAM_RETRY_CUSTOM_TYPE)),
+        "a wire failure with zero usage is a dropped stream and is retried"
+    );
 }
 
 #[tokio::test]

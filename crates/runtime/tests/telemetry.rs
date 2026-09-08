@@ -199,6 +199,12 @@ fn error_classes_render_a_closed_vocabulary() {
         "transport:closed"
     );
     assert_eq!(
+        ErrorClass::from_provider_text("Error while decoding chunks").to_string(),
+        "transport:closed"
+    );
+    assert!(ErrorClass::TransportClosed.is_transport());
+    assert!(!ErrorClass::Provider("error".to_owned()).is_transport());
+    assert_eq!(
         ErrorClass::Tool("denied".to_owned()).to_string(),
         "tool:denied"
     );
