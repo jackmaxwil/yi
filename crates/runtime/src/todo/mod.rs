@@ -105,7 +105,9 @@ impl Op {
 
 #[derive(Debug, thiserror::Error)]
 pub enum TodoError {
-    #[error("no todo labelled {label:?}; the list holds: {known}")]
+    #[error(
+        "no todo {label:?} (a set or init renumbers; read the ids from its result); the list holds: {known}"
+    )]
     NoSuchLabel { label: String, known: String },
     #[error("{needle:?} is a prefix of more than one todo: {candidates}; name one by id")]
     Ambiguous { needle: String, candidates: String },
@@ -547,14 +549,17 @@ fn step(list: &mut TodoList, op: Op) -> Result<(), TodoError> {
         Op::View => Ok(()),
         Op::Set { list: source } => {
             let parsed = text::parse(&source)?;
-            *list = text::merge(list, parsed);
+            let merged = text::merge(list, parsed);
+            // A list that kept no label is a new list: its ids start at t1 like an init's.
+            let survived = merged.items().any(|item| item.id.is_some());
+            *list = merged;
+            if !survived {
+                list.next_id = 0;
+            }
             Ok(())
         }
         Op::Init { phases } => {
-            let mut fresh = TodoList {
-                next_id: list.next_id,
-                ..TodoList::default()
-            };
+            let mut fresh = TodoList::default();
             for (name, items) in phases {
                 add_items(&mut fresh, Some(name), None, items)?;
             }

@@ -192,6 +192,32 @@ fn bash_times_out_kills_the_command_and_says_how_to_raise_the_limit() -> TestRes
 }
 
 #[test]
+fn a_child_that_leaves_the_group_cannot_hold_the_timeout_open() -> TestResult {
+    let dir = temp_dir("bash-escapee")?;
+    let context = ToolContext::new(dir.0.clone());
+    let start = std::time::Instant::now();
+    let output = BashTool::default().execute(
+        args(&[
+            ("command", json!("python3 -c \"import subprocess,os; subprocess.Popen(['sleep','30'], start_new_session=True); os._exit(0)\"; sleep 30")),
+            ("timeout_secs", json!(1)),
+        ]),
+        &context,
+    );
+    assert!(
+        start.elapsed() < std::time::Duration::from_secs(12),
+        "{:?}",
+        start.elapsed()
+    );
+    assert!(output.is_error);
+    assert!(
+        output_text(&output).contains("[timed out after 1s"),
+        "{}",
+        output_text(&output)
+    );
+    Ok(())
+}
+
+#[test]
 fn a_shorter_auto_background_wins_over_the_timeout() -> TestResult {
     let dir = temp_dir("bash-auto-bg")?;
     let mut context = ToolContext::new(dir.0.clone());
