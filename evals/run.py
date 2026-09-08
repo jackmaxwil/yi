@@ -138,6 +138,8 @@ def run_task(task_dir, binary, model, out=None):
             str(workspace),
             "--session-dir",
             str(sessions),
+            "--deadline",
+            str(spec.get("timeoutSec", 600)),
             prompt,
         ]
         timed_out = False

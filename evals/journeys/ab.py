@@ -38,7 +38,8 @@ def main(argv=None):
         with target.open("w") as sink:
             try:
                 subprocess.run(
-                    [args.binary, "ask", "--here", "--model", args.model, "--json", prompt],
+                    [args.binary, "ask", "--here", "--model", args.model, "--json",
+                     "--deadline", str(args.timeout), prompt],
                     cwd=args.cwd, env=env, stdout=sink, stderr=subprocess.STDOUT,
                     timeout=args.timeout, check=False,
                 )

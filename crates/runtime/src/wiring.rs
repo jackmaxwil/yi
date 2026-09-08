@@ -88,6 +88,8 @@ pub struct RuntimeWiring {
     pub wall: crate::wall::Wall,
     /// D13 `bash.autoBackgroundMs`; None keeps every command in the turn.
     pub auto_background: Option<std::time::Duration>,
+    /// `--deadline`: the wall clock the run has, shown counting down in the environment block.
+    pub deadline: Option<std::time::Duration>,
     /// `kernel.prewarm` (default true): boot the kernel in the background at
     /// session open. Children never prewarm — they spawn to run a cell now.
     pub kernel_prewarm: bool,

@@ -63,6 +63,9 @@ def check_command():
     assert "--continue" in shlex.split(
         yi_usage.run_command("anthropic/claude-opus-4-5", "hi", resume=True)
     ), "resume must pass --continue"
+    assert "--deadline" not in argv, "the deadline is the driver's to name"
+    timed = shlex.split(yi_usage.run_command("anthropic/claude-opus-4-5", "hi", deadline_sec=3600))
+    assert timed[timed.index("--deadline") + 1] == "3600", "the model must learn its wall clock"
     for bad in ("", "claude-opus-4-5"):
         try:
             yi_usage.run_command(bad, "hi")

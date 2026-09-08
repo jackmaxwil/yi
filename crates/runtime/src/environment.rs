@@ -72,6 +72,14 @@ pub fn tracked(root: &Path, paths: &[String]) -> Vec<bool> {
         .collect()
 }
 
+pub fn deadline_line(total: Duration, elapsed: Duration) -> String {
+    format!(
+        "deadline: {}s of {}s",
+        total.saturating_sub(elapsed).as_secs(),
+        total.as_secs()
+    )
+}
+
 pub fn render(lines: &[String]) -> String {
     format!("{ENVIRONMENT_TAG}\n{}\n</environment>", lines.join("\n"))
 }
@@ -98,6 +106,8 @@ pub fn hook(
     let context = session.compact_status_handle();
     let lane = session.lane_handle();
     let todos = session.todos_handle();
+    let deadline = wiring.deadline;
+    let started = std::time::Instant::now();
     Arc::new(move || {
         let mut lines = Vec::new();
         let git = git_summary(&cwd)
@@ -123,6 +133,9 @@ pub fn hook(
         }
         if let Some(time) = local_time(&cwd) {
             lines.push(format!("time: {time}"));
+        }
+        if let Some(total) = deadline {
+            lines.push(deadline_line(total, started.elapsed()));
         }
         let shell = std::env::var("SHELL")
             .ok()
