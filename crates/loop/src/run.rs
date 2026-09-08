@@ -365,6 +365,42 @@ fn length_redrive() -> AgentMessage {
     }
 }
 
+pub const REPEAT_BREAK_CUSTOM_TYPE: &str = "repeat_break";
+pub const REPEAT_BREAK_TEXT: &str = "The same tool calls have run the last three turns with the same result. Nothing is changing. Write the final answer now; call no tools.";
+pub const REPEAT_STEER_AT: u32 = 3;
+pub const REPEAT_STOP_AT: u32 = 6;
+
+/// A turn's tool batch by name and arguments; a bash job poll (no `command`) is a legitimate
+/// repeat and yields nothing, so a run waiting on a job never trips the breaker.
+fn batch_signature(message: &AgentMessage) -> Option<String> {
+    let calls = extract_tool_calls(message);
+    if calls.is_empty()
+        || calls
+            .iter()
+            .all(|call| call.name == "bash" && !call.arguments.contains_key("command"))
+    {
+        return None;
+    }
+    Some(
+        calls
+            .iter()
+            .map(|call| format!("{}:{}", call.name, Value::Object(call.arguments.clone())))
+            .collect::<Vec<_>>()
+            .join("\n"),
+    )
+}
+
+/// A turn that repeats the previous one verbatim is sent back once, then ended.
+fn repeat_break() -> AgentMessage {
+    AgentMessage::Custom {
+        custom_type: REPEAT_BREAK_CUSTOM_TYPE.to_owned(),
+        content: yi_types::message::UserContent::Text(REPEAT_BREAK_TEXT.to_owned()),
+        display: false,
+        details: None,
+        timestamp: 0,
+    }
+}
+
 struct TurnRequest<'a> {
     model: &'a Model,
     effort: Effort,
@@ -498,6 +534,8 @@ pub async fn run_loop<S: StreamFn>(
     let mut current_effort = config.effort;
     let mut first_turn = true;
     let mut length_redriven = false;
+    let mut last_batch: Option<String> = None;
+    let mut repeats: u32 = 0;
     let mut tool_choice = config.first_turn_tool_choice.clone();
     let mut pending: Vec<AgentMessage> = config
         .get_steering_messages
@@ -555,6 +593,13 @@ pub async fn run_loop<S: StreamFn>(
                 return collected;
             }
 
+            let batch = batch_signature(&message);
+            repeats = match (&batch, &last_batch) {
+                (Some(now), Some(before)) if now == before => repeats.saturating_add(1),
+                (Some(_), _) => 1,
+                (None, _) => 0,
+            };
+            last_batch = batch;
             let calls = extract_tool_calls(&message);
             let mut tool_results: Vec<AgentMessage> = Vec::new();
             has_more_tool_calls = false;
@@ -601,10 +646,19 @@ pub async fn run_loop<S: StreamFn>(
                 });
                 return collected;
             }
+            if repeats >= REPEAT_STOP_AT {
+                emit(AgentEvent::AgentEnd {
+                    messages: collected.clone(),
+                });
+                return collected;
+            }
             pending = config
                 .get_steering_messages
                 .as_ref()
                 .map_or_else(Vec::new, |get| get());
+            if repeats == REPEAT_STEER_AT {
+                pending.push(repeat_break());
+            }
             if !has_more_tool_calls
                 && pending.is_empty()
                 && reason == StopReason::Length
