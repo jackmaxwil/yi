@@ -1342,3 +1342,94 @@ fn a_stopped_chain_says_so_beside_the_exit_code() -> TestResult {
     );
     Ok(())
 }
+
+fn on_path(program: &str) -> bool {
+    std::env::var_os("PATH")
+        .is_some_and(|path| std::env::split_paths(&path).any(|dir| dir.join(program).is_file()))
+}
+
+#[test]
+fn an_edit_that_breaks_python_says_so_in_its_result() -> TestResult {
+    if !on_path("python3") {
+        return Ok(());
+    }
+    let dir = temp_dir("syntax-py")?;
+    let context = ToolContext::new(dir.0.clone());
+    let state = yi_tools::hashline::tool::shared_hashline_state();
+    let write = WriteTool {
+        hashline: Some(Arc::clone(&state)),
+    };
+    let written = write.execute(
+        args(&[
+            ("path", json!("a.py")),
+            ("content", json!("def f():\n    return 1\n")),
+        ]),
+        &context,
+    );
+    let text = output_text(&written);
+    assert!(text.ends_with("\nsyntax: ok"), "{text}");
+    assert_eq!(written.result.details["syntax"], json!("syntax: ok"));
+
+    let read = yi_tools::hashline::tool::HashlineReadTool {
+        state: Arc::clone(&state),
+    }
+    .execute(args(&[("path", json!("a.py"))]), &context);
+    let tag = output_text(&read)
+        .lines()
+        .next()
+        .and_then(|header| header.rsplit_once('#'))
+        .map(|(_, tail)| tail.trim_end_matches(']').to_owned())
+        .ok_or("no tag")?;
+    let edit = yi_tools::hashline::tool::HashlineEditTool {
+        state: Arc::clone(&state),
+        freeform_grammar: false,
+    }
+    .execute(
+        args(&[(
+            "patch",
+            json!(format!("[a.py#{tag}]\nPUT 1.=1:\n+def f(:\n")),
+        )]),
+        &context,
+    );
+    assert!(!edit.is_error, "{}", output_text(&edit));
+    let text = output_text(&edit);
+    assert!(text.contains("syntax: error line"), "{text}");
+    assert!(
+        edit.result.details["syntax"]
+            .as_str()
+            .is_some_and(|line| line.starts_with("syntax: error line")),
+        "{}",
+        edit.result.details
+    );
+    Ok(())
+}
+
+#[test]
+fn a_write_of_bad_json_reports_the_line() -> TestResult {
+    let dir = temp_dir("syntax-json")?;
+    let context = ToolContext::new(dir.0.clone());
+    let written = WriteTool::default().execute(
+        args(&[
+            ("path", json!("a.json")),
+            ("content", json!("{\n  \"a\": 1,\n  \"b\": oops\n}\n")),
+        ]),
+        &context,
+    );
+    let text = output_text(&written);
+    assert!(text.contains("syntax: error line 3:"), "{text}");
+    Ok(())
+}
+
+#[test]
+fn a_file_with_no_checker_gets_no_verdict() -> TestResult {
+    let dir = temp_dir("syntax-none")?;
+    let context = ToolContext::new(dir.0.clone());
+    let written = WriteTool::default().execute(
+        args(&[("path", json!("a.zzz")), ("content", json!("anything\n"))]),
+        &context,
+    );
+    let text = output_text(&written);
+    assert!(!text.contains("syntax:"), "{text}");
+    assert_eq!(written.result.details["syntax"], Value::Null);
+    Ok(())
+}
