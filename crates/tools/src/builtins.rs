@@ -179,6 +179,85 @@ fn read_only_segment(segment: &str) -> bool {
     }
 }
 
+const BROAD_ROOTS: [&str; 10] = [
+    "/", "/*", "~", "$HOME", "${HOME}", "/home", "/opt", "/root", "/usr", "/var",
+];
+
+fn broad_root(token: &str) -> bool {
+    let trimmed = if token.len() > 1 {
+        token.trim_end_matches('/')
+    } else {
+        token
+    };
+    BROAD_ROOTS.contains(&trimmed)
+}
+
+/// A search that walks a whole tree with no bound is refused before it spawns: the gate calls
+/// `find /` safe, and one rollout spent its whole attempt inside `find / -name slug.py`.
+pub(crate) fn broad_search(command: &str) -> Option<String> {
+    command
+        .split(['|', ';', '\n'])
+        .flat_map(|part| part.split("&&"))
+        .find_map(broad_segment)
+}
+
+// ponytail: whitespace tokens, no `timeout`/`nice` passthrough; add when a rollout shows one.
+fn broad_segment(segment: &str) -> Option<String> {
+    let words: Vec<&str> = segment
+        .split_whitespace()
+        .filter(|word| !word.contains('>'))
+        .skip_while(|word| word.contains('='))
+        .collect();
+    let (verb, rest) = words.split_first()?;
+    let verb = verb.rsplit('/').next().unwrap_or(verb);
+    let short = |letter: char| {
+        rest.iter()
+            .any(|word| word.starts_with('-') && !word.starts_with("--") && word.contains(letter))
+    };
+    let long = |name: &str| rest.iter().any(|word| word.starts_with(name));
+    let (walks, bound, hint) = match verb {
+        "find" => (
+            true,
+            rest.iter()
+                .any(|word| matches!(*word, "-maxdepth" | "-prune" | "-quit")),
+            "add -maxdepth N",
+        ),
+        "grep" => (
+            short('r') || short('R') || long("--recursive") || long("--dereference-recursive"),
+            false,
+            "drop -r",
+        ),
+        "rg" => (
+            true,
+            long("--max-depth") || long("--maxdepth"),
+            "add --max-depth N",
+        ),
+        "du" => (true, short('d') || long("--max-depth"), "add -d N"),
+        "ls" => (short('R') || long("--recursive"), false, "drop -R"),
+        _ => return None,
+    };
+    if !walks || bound {
+        return None;
+    }
+    let pattern_named = rest
+        .iter()
+        .any(|word| matches!(*word, "-e" | "--regexp" | "-f"));
+    let skip = usize::from(matches!(verb, "grep" | "rg") && !pattern_named);
+    let root = rest
+        .iter()
+        .filter(|word| !word.starts_with('-'))
+        .skip(skip)
+        .find(|word| broad_root(word))?;
+    let scope = if matches!(*root, "/" | "/*") {
+        "the whole filesystem".to_owned()
+    } else {
+        format!("all of {root}")
+    };
+    Some(format!(
+        "[refused: `{verb} {root}` walks {scope}; search from the cwd, {hint}, or name the directory you expect]"
+    ))
+}
+
 /// Persisted per call so a stats pass can see shell searches the grep tool
 /// should have served.
 pub(crate) fn command_category(command: &str) -> &'static str {
@@ -313,7 +392,7 @@ impl Tool for BashTool {
     }
 
     fn description(&self) -> &str {
-        "Run a shell command with sh -c in the working directory and return its output and exit code. cwd persists between calls; shell state does not. `a && b` stops at the first nonzero segment and `x | head` exits 141, so later segments silently never run: a chain that stopped is reported, a truncation is not the cause. Output over 30,000 bytes per stream is cut with [output truncated]; over 2,048 bytes it is reduced ([N lines omitted: A-B]) and the full text is at [full output: path], which read opens; max_output_lines raises the reducer's budget and -v/--verbose bypass it. wait is clamped 5-300 s; a longer command becomes a job you check by calling bash with no command. In auto mode a command the gate cannot prove runs contained where a sandbox exists (no network, no socket bind, writes only under cwd and tmp); a PermissionDenied there says nothing about the code."
+        "Run a shell command with sh -c in the working directory and return its output and exit code. cwd persists between calls; shell state does not. `a && b` stops at the first nonzero segment and `x | head` exits 141, so later segments silently never run: a chain that stopped is reported, a truncation is not the cause. Output over 30,000 bytes per stream is cut with [output truncated]; over 2,048 bytes it is reduced ([N lines omitted: A-B]) and the full text is at [full output: path], which read opens; max_output_lines raises the reducer's budget and -v/--verbose bypass it. wait is clamped 5-300 s; a longer command becomes a job you check by calling bash with no command. A command is killed at timeout_secs (default 120 s, ceiling 600 s); raise it for a build or a test suite. An unbounded walk of / or ~ (find /, grep -r … /, rg … /, du /, ls -R /) is refused before it runs: search from the cwd, bound it (-maxdepth, --max-depth, -d), or name the directory. In auto mode a command the gate cannot prove runs contained where a sandbox exists (no network, no socket bind, writes only under cwd and tmp); a PermissionDenied there says nothing about the code."
     }
 
     fn schema(&self) -> Value {
@@ -323,6 +402,7 @@ impl Tool for BashTool {
                 "command": {"type": "string", "description": "Shell command to run. Omit it to check on a background job instead."},
                 "job": {"type": "integer", "description": "Background job to check on; defaults to the most recent"},
                 "wait": {"type": "integer", "description": "Seconds to wait for that job, clamped to 5-300"},
+                "timeout_secs": {"type": "integer", "description": "Wall-clock limit in seconds, default 120, ceiling 600; raise it for a build or a test suite. Past it the command is killed and reported as timed out."},
                 "max_output_lines": {"type": "integer", "description": "Per-call reducer line budget, for when the full output matters"}
             }
         })
@@ -354,14 +434,20 @@ impl Tool for BashTool {
         if command.trim().is_empty() {
             return poll_job(&input);
         }
-        let capture = match crate::jobs::run_or_background(
+        if let Some(refusal) = broad_search(command) {
+            return error_output(refusal);
+        }
+        let timeout = crate::jobs::clamp_timeout(input.get("timeout_secs").and_then(Value::as_u64));
+        let (capture, timed_out) = match crate::jobs::run_or_background(
             command,
             &context.cwd,
             &context.cancelled,
             context.auto_background,
+            timeout,
             context.sandbox.as_ref(),
         ) {
-            Ok(crate::jobs::Run::Finished(capture)) => *capture,
+            Ok(crate::jobs::Run::Finished(capture)) => (*capture, false),
+            Ok(crate::jobs::Run::TimedOut(capture)) => (*capture, true),
             Ok(crate::jobs::Run::Backgrounded(id)) => {
                 let mut output = text_output(format!(
                     "Backgrounded as job {id}. Call bash with no command (optionally job={id}) to check on it."
@@ -392,7 +478,13 @@ impl Tool for BashTool {
         if capture.truncated {
             sections.push("[output truncated]".to_owned());
         }
-        if capture.cancelled {
+        if timed_out {
+            sections.push(format!(
+                "[timed out after {}s; pass timeout_secs up to {} for a longer run, or narrow the command]",
+                timeout.as_secs(),
+                crate::jobs::MAX_TIMEOUT_SECS
+            ));
+        } else if capture.cancelled {
             sections.push("[command aborted]".to_owned());
         }
         let exit_code = capture.exit_code.unwrap_or(-1);
@@ -443,6 +535,7 @@ impl Tool for BashTool {
             "exitCode": exit_code,
             "truncated": capture.truncated,
             "cancelled": capture.cancelled,
+            "timedOut": timed_out,
             "rawBytes": reduced.raw_bytes,
             "outBytes": reduced.out_bytes,
             "category": command_category(command),
@@ -509,4 +602,70 @@ pub fn list_files(root: &Path, cap: usize) -> Vec<String> {
     });
     out.sort();
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::broad_search;
+
+    #[test]
+    fn broad_search_refuses_root_walks_and_passes_bounded_ones() {
+        let refused = [
+            "find / -name slug.py",
+            "find / -name x 2>/dev/null",
+            "find ~ -type f",
+            "find $HOME -name x",
+            "find /usr/ -name x",
+            "find -L / -name x",
+            "grep -rn slug /",
+            "grep -R slug /home",
+            "grep --recursive -e slug /",
+            "rg slug /",
+            "rg -t py slug /opt",
+            "du -sh /",
+            "du /var",
+            "ls -R /",
+            "ls -lR ~/",
+            "cd x && find / -name y",
+        ];
+        for command in refused {
+            assert!(
+                broad_search(command).is_some(),
+                "{command} should be refused"
+            );
+        }
+        assert_eq!(
+            broad_search("find / -name slug.py").as_deref(),
+            Some(
+                "[refused: `find /` walks the whole filesystem; search from the cwd, add -maxdepth N, or name the directory you expect]"
+            )
+        );
+        assert_eq!(
+            broad_search("du /var").as_deref(),
+            Some(
+                "[refused: `du /var` walks all of /var; search from the cwd, add -d N, or name the directory you expect]"
+            )
+        );
+        let allowed = [
+            "find . -name x",
+            "find crates -name x",
+            "find /app -name x",
+            "find / -maxdepth 2 -name x",
+            "find / -name x -quit",
+            "grep slug /",
+            "grep -rn slug .",
+            "grep -r / src",
+            "rg slug",
+            "rg --max-depth 2 slug /",
+            "du -d 1 /",
+            "du -sh /var/log",
+            "ls -R",
+            "ls -la /",
+            "locate slug.py",
+            "cat /etc/hosts | grep -r x .",
+        ];
+        for command in allowed {
+            assert!(broad_search(command).is_none(), "{command} should run");
+        }
+    }
 }

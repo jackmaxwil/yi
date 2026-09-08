@@ -247,6 +247,44 @@ async fn tool_turn_executes_and_continues() {
 }
 
 #[tokio::test]
+async fn a_length_stop_with_no_tool_call_is_re_driven_once() {
+    let stream = Scripted::new(vec![
+        faux_assistant_message(vec![faux_text("thinking, thinking")], StopReason::Length),
+        faux_assistant_message(vec![faux_text("still thinking")], StopReason::Length),
+        faux_assistant_message(vec![faux_text("never reached")], StopReason::Stop),
+    ]);
+    let mut context = LoopContext {
+        system_prompt: String::new(),
+        messages: Vec::new(),
+        tools: vec![Arc::new(EchoTool)],
+    };
+    let config = LoopConfig::new(faux_model());
+    let signal = InterruptSignal::default();
+    let (_events, mut emit) = collector();
+    let collected = run_loop(
+        &mut context,
+        vec![user("go")],
+        &config,
+        &signal,
+        &mut emit,
+        &stream,
+    )
+    .await;
+    let redrives: Vec<&AgentMessage> = collected
+        .iter()
+        .filter(|message| {
+            matches!(message, AgentMessage::Custom { custom_type, .. } if custom_type == yi_loop::LENGTH_REDRIVE_CUSTOM_TYPE)
+        })
+        .collect();
+    assert_eq!(redrives.len(), 1, "one re-drive per prompt");
+    let answers = collected
+        .iter()
+        .filter(|message| matches!(message, AgentMessage::Assistant { .. }))
+        .count();
+    assert_eq!(answers, 2, "the second length stop ends the loop");
+}
+
+#[tokio::test]
 async fn length_stop_fails_every_tool_call() {
     let mut arguments = Map::new();
     arguments.insert("word".to_owned(), json!("truncated"));

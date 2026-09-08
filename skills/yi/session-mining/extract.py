@@ -261,6 +261,7 @@ SIGNAL_NAMES = (
     "cache_miss_streak", "done_without_check", "intercept_capped",
     "blocked_on_user_without_question", "waiting_without_block", "gate_rerun_unchanged_tree",
     "intercept_count", "intercept_max_rung", "regression_seen_red",
+    "bash_timeouts", "broad_search_refused", "length_redrive", "unsourced_redrive",
 )
 
 
@@ -299,6 +300,8 @@ def signals(entries):
             users.append(text_of(message.get("content")))
         elif role == "custom" and message.get("customType") == "todo_intercept":
             intercepts.append(message)
+        elif role == "custom" and message.get("customType") == "length_redrive":
+            out["length_redrive"] += 1
         elif role == "assistant":
             turn = {"text": "", "calls": [], "usage": message.get("usage") or {}, "stop": message.get("stopReason")}
             for block in message.get("content") or []:
@@ -363,6 +366,10 @@ def signals(entries):
             out["chain_stop"] += 1
         if tool == "bash" and isinstance(args, dict) and args.get("max_output_lines") and "lines omitted" not in result["text"]:
             out["self_capped"] += 1
+        if tool == "bash" and "[timed out after" in result["text"]:
+            out["bash_timeouts"] += 1
+        if tool == "bash" and result["text"].startswith("[refused: "):
+            out["broad_search_refused"] += 1
         if "PermissionDenied" in result["text"] and "PermissionDenied" in final:
             out["sandbox_denial_as_finding"] += 1
         for pointer in re.findall(r"\[full output: ([^\]]+)\]", result["text"]):
@@ -397,6 +404,7 @@ def signals(entries):
         out["intercept_capped"] = 1
     out["intercept_count"] = sum(1 for r in custom_intercept if r.get("reason") == "open")
     out["intercept_max_rung"] = max((int(r.get("rung") or 0) for r in custom_intercept), default=0)
+    out["unsourced_redrive"] = sum(1 for r in custom_intercept if r.get("reason") == "unsourced")
     for a, b in zip(users, users[1:]):
         ta, tb = _tokens(a), _tokens(b)
         if ta and tb and len(ta & tb) / len(ta | tb) >= 0.8:
@@ -1080,6 +1088,7 @@ def selfcheck():
             if name == "blocked_on_user_without_question":
                 continue
             assert signal_row["signals"][name], f"signal {name} did not fire on its fixture"
+        assert signal_row["signals"]["intercept_count"] == 1 and signal_row["signals"]["intercept_max_rung"] == 3, "a re-drive reason must not count as an open intercept"
         piped_row = next(r for r in result["mu"] if r["sessionId"] == "fixture-signals-piped")
         assert piped_row["signals"]["regression_seen_red"] == 1, "a red run piped through tail must still be seen red"
         blocked_row = next(r for r in result["mu"] if r["sessionId"] == "fixture-signals-blocked")
