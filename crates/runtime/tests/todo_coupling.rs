@@ -5,10 +5,10 @@ use serde_json::{Map, Value, json};
 use yi_ai::faux::{faux_assistant_message, faux_text, faux_tool_call};
 use yi_loop::{ExecutionMode, TurnSnapshot};
 use yi_runtime::todo::coupling::{
-    Cycle, EMPTY_STOP_TEXT, Eager, INTERCEPT_CUSTOM_TYPE, Options, StopPosture, coupling, gate,
-    landed, stop_posture,
+    Cycle, EMPTY_STOP_TEXT, Eager, INTERCEPT_CUSTOM_TYPE, Options, SEED_ACTOR, StopPosture,
+    coupling, gate, landed, stop_posture,
 };
-use yi_runtime::todo::{Op, Target, TodoStore};
+use yi_runtime::todo::{Op, Target, TodoStore, latest_record};
 use yi_runtime::{AgentSession, ProviderStream, SessionConfig};
 use yi_types::message::{AgentMessage, Attribution, StopReason, UserContent};
 use yi_types::model::{Model, ModelCost, ToolChoice};
@@ -465,6 +465,131 @@ fn a_multi_step_prompt_gets_the_prelude_and_force_is_opt_in() -> TestResult {
         Some(ToolChoice::Tool(tool)) => assert_eq!(String::from(tool), "todo"),
         other => return Err(format!("force must name the todo tool, got {other:?}").into()),
     }
+    Ok(())
+}
+
+fn prelude_hooks(r: &Rig) -> yi_runtime::session::TurnCoupling {
+    coupling(
+        &r.session,
+        Arc::clone(&r.todos),
+        Options {
+            eager: Eager::Prelude,
+            children_running: Arc::new(|| false),
+            inner: None,
+        },
+    )
+}
+
+fn labels(todos: &TodoStore) -> Vec<String> {
+    todos
+        .list()
+        .items()
+        .map(|item| item.label.to_string())
+        .collect()
+}
+
+#[test]
+fn a_numbered_prompt_seeds_one_pending_item_per_line() -> TestResult {
+    let r = rig("seed")?;
+    let hooks = prelude_hooks(&r);
+    let prompt =
+        user("Do these:\n1. add the parser\n2) wire the CLI\n- write the test\n1. add the parser");
+    assert!((hooks.on_prompt)(&prompt).is_none(), "seeding never forces");
+    assert_eq!(
+        labels(&r.todos),
+        vec!["add the parser", "wire the CLI", "write the test"],
+        "one item per line, duplicates once"
+    );
+    assert_eq!(r.todos.progress().open, 3);
+    assert_eq!(
+        latest_record(&r.store).map(|record| record.actor),
+        Some(SEED_ACTOR.to_owned()),
+        "the record names the prompt as the actor"
+    );
+    assert_eq!(r.session.pending_count(), 1, "the seeded prelude is queued");
+
+    let prose = user("Fix the parser, then add the test, and land it on the branch.");
+    let fresh = rig("seed-prose")?;
+    let hooks = prelude_hooks(&fresh);
+    assert!((hooks.on_prompt)(&prose).is_none());
+    assert_eq!(fresh.todos.progress().total, 0, "prose seeds nothing");
+    assert_eq!(
+        fresh.session.pending_count(),
+        1,
+        "the plain prelude still rides"
+    );
+    Ok(())
+}
+
+#[test]
+fn an_open_list_is_never_reseeded() -> TestResult {
+    let r = rig("reseed")?;
+    open_list(&r.todos)?;
+    let hooks = prelude_hooks(&r);
+    let prompt = user("Now:\n1. something else\n2. and another");
+    assert!((hooks.on_prompt)(&prompt).is_none());
+    assert_eq!(labels(&r.todos), vec!["first", "second"]);
+    Ok(())
+}
+
+#[test]
+fn a_line_over_the_label_max_is_cut_not_dropped() -> TestResult {
+    let r = rig("seed-long")?;
+    let hooks = prelude_hooks(&r);
+    let long = "word ".repeat(40);
+    let prompt = user(&format!("1. {long}\n2. short"));
+    assert!((hooks.on_prompt)(&prompt).is_none());
+    let labels = labels(&r.todos);
+    assert_eq!(labels.len(), 2);
+    let first = labels.first().ok_or("no first label")?;
+    assert!(first.chars().count() <= yi_types::plan::doc::TODO_LABEL_MAX);
+    assert!(first.starts_with("word word"));
+    Ok(())
+}
+
+#[test]
+fn the_first_list_nudge_fires_once_after_three_changes_on_an_empty_list() -> TestResult {
+    let mut cycle = Cycle::default();
+    assert!(!cycle.first_list(gate::FIRST_LIST_WORK - 1));
+    assert!(cycle.first_list(1));
+    assert!(
+        !cycle.first_list(gate::FIRST_LIST_WORK * 3),
+        "once per cycle"
+    );
+    cycle.reset();
+    assert!(
+        cycle.first_list(gate::FIRST_LIST_WORK),
+        "a new prompt re-arms it"
+    );
+
+    let r = rig("first-list")?;
+    let hooks = prelude_hooks(&r);
+    let message = faux_assistant_message(
+        vec![
+            faux_tool_call("c1", "edit", Map::new()),
+            faux_tool_call("c2", "edit", Map::new()),
+            faux_tool_call("c3", "write", Map::new()),
+        ],
+        StopReason::ToolUse,
+    );
+    let results = vec![
+        result("c1", "edit", false),
+        result("c2", "edit", false),
+        result("c3", "write", false),
+    ];
+    let snapshot = TurnSnapshot {
+        message: &message,
+        tool_results: &results,
+    };
+    assert_eq!(r.session.pending_count(), 0);
+    (hooks.on_turn)(&snapshot);
+    assert_eq!(
+        r.session.pending_count(),
+        1,
+        "three changes with no list earn one nudge"
+    );
+    (hooks.on_turn)(&snapshot);
+    assert_eq!(r.session.pending_count(), 1, "and only one");
     Ok(())
 }
 
