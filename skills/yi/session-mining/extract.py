@@ -262,7 +262,7 @@ SIGNAL_NAMES = (
     "blocked_on_user_without_question", "waiting_without_block", "gate_rerun_unchanged_tree",
     "intercept_count", "intercept_max_rung", "regression_seen_red",
     "bash_timeouts", "broad_search_refused", "length_redrive", "unsourced_redrive",
-    "repeat_break",
+    "repeat_break", "length_forced", "closed_list_nudge", "impossible_redrive", "artifact_redrive",
 )
 
 
@@ -303,6 +303,10 @@ def signals(entries):
             intercepts.append(message)
         elif role == "custom" and message.get("customType") == "length_redrive":
             out["length_redrive"] += 1
+            if (message.get("details") or {}).get("forced"):
+                out["length_forced"] += 1
+        elif role == "custom" and message.get("customType") == "todo_nudge" and str(message.get("content", "")).startswith("Every item is done"):
+            out["closed_list_nudge"] += 1
         elif role == "custom" and message.get("customType") == "repeat_break":
             out["repeat_break"] += 1
         elif role == "assistant":
@@ -392,7 +396,10 @@ def signals(entries):
         running = any(i.get("state") == "running" for i in _open_items(last))
         blocked_user = any(i.get("state") == "blocked" and i.get("on") == "user" for i in _open_items(last))
         last_line = final.strip().splitlines()[-1] if final.strip() else ""
-        asked = last_line.endswith("?") or any(c["tool"] == "ask_user" for c in assistants[-1]["calls"]) if assistants else False
+        # Incident: three rollouts asked the key name mid-paragraph and ended on the follow-up
+        # sentence; the final line alone read every one as never asked (issue #275).
+        last_para = final.strip().split("\n\n")[-1] if final.strip() else ""
+        asked = ("?" in last_para or any(c["tool"] == "ask_user" for c in assistants[-1]["calls"])) if assistants else False
         if running and not blocked_user and asked:
             out["waiting_without_block"] = 1
         if blocked_user and not asked:
@@ -408,6 +415,8 @@ def signals(entries):
     out["intercept_count"] = sum(1 for r in custom_intercept if r.get("reason") == "open")
     out["intercept_max_rung"] = max((int(r.get("rung") or 0) for r in custom_intercept), default=0)
     out["unsourced_redrive"] = sum(1 for r in custom_intercept if r.get("reason") == "unsourced")
+    out["impossible_redrive"] = sum(1 for r in custom_intercept if r.get("reason") == "impossible")
+    out["artifact_redrive"] = sum(1 for r in custom_intercept if r.get("reason") == "artifact")
     for a, b in zip(users, users[1:]):
         ta, tb = _tokens(a), _tokens(b)
         if ta and tb and len(ta & tb) / len(ta | tb) >= 0.8:
@@ -1092,10 +1101,12 @@ def selfcheck():
                 continue
             assert signal_row["signals"][name], f"signal {name} did not fire on its fixture"
         assert signal_row["signals"]["intercept_count"] == 1 and signal_row["signals"]["intercept_max_rung"] == 3, "a re-drive reason must not count as an open intercept"
+        assert signal_row["signals"]["length_forced"] == 1 and signal_row["signals"]["length_redrive"] == 2, signal_row["signals"]
         piped_row = next(r for r in result["mu"] if r["sessionId"] == "fixture-signals-piped")
         assert piped_row["signals"]["regression_seen_red"] == 1, "a red run piped through tail must still be seen red"
         blocked_row = next(r for r in result["mu"] if r["sessionId"] == "fixture-signals-blocked")
         assert blocked_row["signals"]["blocked_on_user_without_question"] == 1, blocked_row["signals"]
+        assert blocked_row["signals"]["waiting_without_block"] == 0 and "?" not in (blocked_row.get("final") or ""), "the blocked fixture asks nothing in its last paragraph"
         assert blocked_row["signals"]["waiting_without_block"] == 0, blocked_row["signals"]
         signal_text = report(result, fixtures, first)
         assert "gate_without_change" in signal_text and "asked_twice" in signal_text, signal_text
