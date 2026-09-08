@@ -168,6 +168,61 @@ fn bash_kills_a_running_command_when_cancelled() -> TestResult {
     Ok(())
 }
 
+#[test]
+fn bash_times_out_kills_the_command_and_says_how_to_raise_the_limit() -> TestResult {
+    let dir = temp_dir("bash-timeout")?;
+    let context = ToolContext::new(dir.0.clone());
+    let start = std::time::Instant::now();
+    let output = BashTool::default().execute(
+        args(&[("command", json!("sleep 5")), ("timeout_secs", json!(1))]),
+        &context,
+    );
+    assert!(start.elapsed() < std::time::Duration::from_secs(3));
+    assert!(output.is_error);
+    let text = output_text(&output);
+    assert!(
+        text.contains(
+            "[timed out after 1s; pass timeout_secs up to 600 for a longer run, or narrow the command]"
+        ),
+        "{text}"
+    );
+    assert!(!text.contains("[command aborted]"));
+    assert_eq!(output.result.details["timedOut"], json!(true));
+    Ok(())
+}
+
+#[test]
+fn a_shorter_auto_background_wins_over_the_timeout() -> TestResult {
+    let dir = temp_dir("bash-auto-bg")?;
+    let mut context = ToolContext::new(dir.0.clone());
+    context.auto_background = Some(std::time::Duration::from_millis(200));
+    let output = BashTool::default().execute(
+        args(&[("command", json!("sleep 2")), ("timeout_secs", json!(1))]),
+        &context,
+    );
+    assert!(!output.is_error);
+    assert!(output_text(&output).contains("Backgrounded as job"));
+    Ok(())
+}
+
+#[test]
+fn bash_refuses_a_root_walk_before_spawning() -> TestResult {
+    let dir = temp_dir("bash-root-walk")?;
+    let context = ToolContext::new(dir.0.clone());
+    let start = std::time::Instant::now();
+    let output = BashTool::default().execute(
+        args(&[("command", json!("find / -name slug.py"))]),
+        &context,
+    );
+    assert!(start.elapsed() < std::time::Duration::from_secs(1));
+    assert!(output.is_error);
+    assert_eq!(
+        output_text(&output),
+        "[refused: `find /` walks the whole filesystem; search from the cwd, add -maxdepth N, or name the directory you expect]"
+    );
+    Ok(())
+}
+
 #[cfg(unix)]
 #[test]
 fn discovers_and_runs_an_exec_tool_via_the_schema_contract() -> TestResult {
