@@ -18,6 +18,23 @@ pub struct OpenAiOptions {
     pub reasoning_effort: Option<Effort>,
     pub session_id: Option<String>,
     pub proxy: Option<crate::request::ProxyConfig>,
+    pub routing: Option<Value>,
+}
+
+/// OpenRouter's default load balancing weights by price and once routed to an upstream at
+/// ten tokens a second that dropped the stream at fifteen minutes; throughput is deterministic.
+pub const DEFAULT_ROUTING: &str = r#"{"sort":"throughput"}"#;
+
+pub fn routing_params(model: &Model, options: &OpenAiOptions) -> Option<Value> {
+    if !model.base_url.contains("openrouter.ai") {
+        return None;
+    }
+    Some(
+        options
+            .routing
+            .clone()
+            .unwrap_or_else(|| serde_json::from_str(DEFAULT_ROUTING).unwrap_or(Value::Null)),
+    )
 }
 
 fn fnv1a(input: &str) -> u64 {
@@ -306,6 +323,9 @@ pub fn build_params(model: &Model, context: &LlmContext, options: &OpenAiOptions
     if compat_str(model, "cacheControlFormat") == Some("anthropic") {
         params["cache_control"] = json!({"type": "ephemeral"});
     }
+    if let Some(routing) = routing_params(model, options) {
+        params["provider"] = routing;
+    }
     if let Some(max_tokens) = options.max_tokens {
         params["max_completion_tokens"] = json!(max_tokens);
     }
@@ -361,6 +381,37 @@ fn apply_reasoning_params(model: &Model, options: &OpenAiOptions, params: &mut V
         && let Some(mapped) = mapped_effort(model, effort)
     {
         params["reasoning_effort"] = json!(mapped);
+    }
+}
+
+/// OpenRouter's mid-stream error rides at the chunk's top level beside the upstream's name.
+fn error_chunk_text(chunk: &Value, error: &Value) -> String {
+    let field = |key: &str| {
+        error.get(key).map(|value| {
+            value
+                .as_str()
+                .map_or_else(|| value.to_string(), str::to_owned)
+        })
+    };
+    let message = field("message").unwrap_or_else(|| "provider error".to_owned());
+    let mut tail: Vec<String> = Vec::new();
+    if let Some(upstream) = chunk.get("provider").and_then(Value::as_str) {
+        tail.push(format!("upstream {upstream}"));
+    }
+    if let Some(code) = field("code") {
+        tail.push(format!("code {code}"));
+    }
+    if let Some(kind) = error
+        .get("metadata")
+        .and_then(|m| m.get("error_type"))
+        .and_then(Value::as_str)
+    {
+        tail.push(kind.to_owned());
+    }
+    if tail.is_empty() {
+        message
+    } else {
+        format!("{message} ({})", tail.join(", "))
     }
 }
 
@@ -477,6 +528,19 @@ impl ChunkMapper {
                 *output_usage = usage;
             }
         }
+        if let Some(error) = chunk.get("error").filter(|error| error.is_object())
+            && let AgentMessage::Assistant {
+                stop_reason: output_stop,
+                raw_stop_reason,
+                error_message: output_error,
+                ..
+            } = &mut self.output
+        {
+            *output_stop = StopReason::Error;
+            *raw_stop_reason = Some("error".to_owned());
+            *output_error = Some(error_chunk_text(chunk, error));
+            self.has_finish_reason = true;
+        }
         let Some(choice) = chunk
             .get("choices")
             .and_then(Value::as_array)
@@ -495,7 +559,7 @@ impl ChunkMapper {
             {
                 *output_stop = stop_reason;
                 *raw_stop_reason = Some(reason.to_owned());
-                if error_message.is_some() {
+                if error_message.is_some() && output_error.is_none() {
                     *output_error = error_message;
                 }
             }

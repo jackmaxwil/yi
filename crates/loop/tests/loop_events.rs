@@ -509,9 +509,83 @@ async fn length_stop_fails_every_tool_call() {
     assert!(kinds(&events).contains(&"tool_execution_end"));
 }
 
+fn dropped_stream() -> AgentMessage {
+    let mut error = faux_assistant_message(Vec::new(), StopReason::Error);
+    if let AgentMessage::Assistant { error_message, .. } = &mut error {
+        *error_message = Some("boom (upstream Wafer)".to_owned());
+    }
+    error
+}
+
+#[tokio::test]
+async fn a_dropped_stream_that_showed_nothing_is_retried_once() {
+    let stream = Scripted::new(vec![
+        dropped_stream(),
+        faux_assistant_message(vec![faux_text("recovered")], StopReason::Stop),
+    ]);
+    let mut context = LoopContext {
+        system_prompt: String::new(),
+        messages: Vec::new(),
+        tools: Vec::new(),
+    };
+    let config = LoopConfig::new(faux_model());
+    let signal = InterruptSignal::default();
+    let (_events, mut emit) = collector();
+    let collected = run_loop(
+        &mut context,
+        vec![user("hi")],
+        &config,
+        &signal,
+        &mut emit,
+        &stream,
+    )
+    .await;
+    let retries = collected
+        .iter()
+        .filter(|message| {
+            matches!(message, AgentMessage::Custom { custom_type, details, .. }
+                if custom_type == yi_loop::STREAM_RETRY_CUSTOM_TYPE
+                && details.as_ref().and_then(|d| d["error"].as_str()) == Some("boom (upstream Wafer)"))
+        })
+        .count();
+    assert_eq!(
+        retries, 1,
+        "the dropped stream rides once as a hidden retry"
+    );
+    assert!(matches!(
+        collected.last(),
+        Some(AgentMessage::Assistant {
+            stop_reason: StopReason::Stop,
+            ..
+        })
+    ));
+
+    let twice = Scripted::new(vec![dropped_stream(), dropped_stream()]);
+    let mut context = LoopContext {
+        system_prompt: String::new(),
+        messages: Vec::new(),
+        tools: Vec::new(),
+    };
+    let (_events, mut emit) = collector();
+    let collected = run_loop(
+        &mut context,
+        vec![user("hi")],
+        &config,
+        &signal,
+        &mut emit,
+        &twice,
+    )
+    .await;
+    let answers = collected
+        .iter()
+        .filter(|message| matches!(message, AgentMessage::Assistant { .. }))
+        .count();
+    assert_eq!(answers, 2, "a second dropped stream ends the run");
+}
+
 #[tokio::test]
 async fn error_stop_ends_turn_without_tools() {
-    let mut error = faux_assistant_message(Vec::new(), StopReason::Error);
+    let mut error = faux_assistant_message(vec![faux_text("half an answer")], StopReason::Error);
     if let AgentMessage::Assistant { error_message, .. } = &mut error {
         *error_message = Some("boom".to_owned());
     }

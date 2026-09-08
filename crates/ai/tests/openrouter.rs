@@ -193,3 +193,71 @@ fn a_null_non_off_level_clamps_instead_of_being_sent_verbatim() -> TestResult {
     assert_eq!(params["reasoning"], json!({"effort": "high"}));
     Ok(())
 }
+
+#[test]
+fn openrouter_requests_sort_by_throughput_unless_the_config_says_otherwise() -> TestResult {
+    let model = target_model()?;
+    let context = history_context();
+    let params = build_params(&model, &context, &OpenAiOptions::default());
+    assert_eq!(params["provider"], json!({"sort": "throughput"}));
+    let options = OpenAiOptions {
+        routing: Some(json!({"sort": "price", "ignore": ["wafer"]})),
+        ..OpenAiOptions::default()
+    };
+    let params = build_params(&model, &context, &options);
+    assert_eq!(
+        params["provider"],
+        json!({"sort": "price", "ignore": ["wafer"]})
+    );
+    let cleared = OpenAiOptions {
+        routing: Some(json!({})),
+        ..OpenAiOptions::default()
+    };
+    assert_eq!(
+        build_params(&model, &context, &cleared)["provider"],
+        json!({})
+    );
+    let mut elsewhere = model;
+    elsewhere.base_url = "https://api.openai.com/v1".to_owned();
+    assert!(
+        build_params(&elsewhere, &context, &OpenAiOptions::default())
+            .get("provider")
+            .is_none()
+    );
+    Ok(())
+}
+
+#[test]
+fn a_mid_stream_error_chunk_names_the_upstream_and_the_code() -> TestResult {
+    let model = target_model()?;
+    let mut mapper = ChunkMapper::new(&model);
+    let _ =
+        mapper.push_chunk(&json!({"id": "gen-1", "choices": [{"delta": {"reasoning": "hmm"}}]}));
+    let events = mapper.push_chunk(&json!({
+        "id": "gen-1", "provider": "Wafer",
+        "error": {"code": 502, "message": "upstream closed the stream", "metadata": {"error_type": "provider_timeout", "provider_code": "E_TIMEOUT"}},
+        "choices": [{"index": 0, "delta": {"content": ""}, "finish_reason": "error", "native_finish_reason": null}]
+    }));
+    let _ = events;
+    let done = mapper.finish();
+    let message = match done.last() {
+        Some(yi_types::event::AssistantMessageEvent::Error { error, .. }) => error.clone(),
+        Some(yi_types::event::AssistantMessageEvent::Done { message, .. }) => message.clone(),
+        other => return Err(format!("no terminal event: {other:?}").into()),
+    };
+    let AgentMessage::Assistant {
+        stop_reason,
+        error_message,
+        ..
+    } = message
+    else {
+        return Err("not an assistant message".into());
+    };
+    assert_eq!(stop_reason, StopReason::Error);
+    let text = error_message.ok_or("an error chunk carries its message")?;
+    assert_eq!(
+        text,
+        "upstream closed the stream (upstream Wafer, code 502, provider_timeout)"
+    );
+    Ok(())
+}
