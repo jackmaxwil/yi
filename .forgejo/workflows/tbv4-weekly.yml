@@ -1,0 +1,77 @@
+# The pass axis's weekly cadence (docs/plans/2026-09-06-tbv4-evals.md, S5;
+# D140): the six-task Terminal-Bench v4 subset at k=3 on flash, one hour per
+# trial, under the same caps the operator's runs use. It lands on the `bench`
+# runner, the one whose job may drive a Docker daemon (its own dind), because
+# harbor builds a container per task. Nothing here judges: the five-axis rows
+# are posted on issue #100 as the ledger's inbox, and pasting a row into
+# docs/eval-ledger.md stays a human act (plan law 2).
+name: tbv4-weekly
+
+on:
+  schedule:
+    - cron: "17 3 * * 1"
+  workflow_dispatch:
+
+jobs:
+  tbv4:
+    runs-on: bench
+    timeout-minutes: 600
+    steps:
+      - uses: actions/checkout@v4
+      - name: Docker CLI for harbor, against the runner's own daemon
+        run: |
+          set -euo pipefail
+          test -n "${DOCKER_HOST:-}" || { echo "no DOCKER_HOST: this job needs the bench runner"; exit 1; }
+          curl -fsSL https://download.docker.com/linux/static/stable/x86_64/docker-27.5.1.tgz -o /tmp/docker.tgz
+          tar -xzf /tmp/docker.tgz -C /usr/local/bin --strip-components=1 docker/docker
+          docker version --format '{{.Server.Version}}'
+      - name: harbor and the musl target
+        run: |
+          set -euo pipefail
+          uv tool install harbor
+          apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends musl-tools >/dev/null
+          rustup target add x86_64-unknown-linux-musl
+      - name: the static binary the adapter uploads
+        run: |
+          set -euo pipefail
+          export CC_x86_64_unknown_linux_musl=musl-gcc
+          export CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=musl-gcc
+          scripts/build_dist.sh --target x86_64-unknown-linux-musl
+          python3 scripts/check_elf.py target/x86_64-unknown-linux-musl/dist/yi x86_64-unknown-linux-musl
+      - name: the six-task subset at k=3
+        env:
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          EVAL_BINARY: target/x86_64-unknown-linux-musl/dist/yi
+          TBV4_ATTEMPTS: "3"
+          TBV4_RUNS_DIR: runs/tbv4
+        run: |
+          set -uo pipefail
+          if [ -z "${OPENROUTER_API_KEY:-}" ]; then echo "no OPENROUTER_API_KEY secret; nothing runs"; exit 0; fi
+          export PATH="$HOME/.local/bin:$PATH"
+          sh evals/drivers/tbv4_baseline.sh; echo "driver exit $?"
+          python3 evals/axes.py runs/tbv4 --suite tbv4@39d9f44b --model openrouter/z-ai/glm-5.3-flash \
+            --note "tbv4-weekly k=3 t0.125 ${GITHUB_SHA}" --json runs/tbv4/rows.jsonl | tail -1 > runs/tbv4/ledger-row.md || true
+      - name: the row, posted where the ledger reads it
+        env:
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          test -s runs/tbv4/ledger-row.md || { echo "no row to post"; exit 0; }
+          python3 - <<'PY'
+          import json, os, urllib.request
+          row = open("runs/tbv4/ledger-row.md").read().strip()
+          body = f"tbv4-weekly ({os.environ['GITHUB_SHA'][:8]}): paste into docs/eval-ledger.md with the next run-id.\n\n```\n{row}\n```"
+          req = urllib.request.Request(
+              f"{os.environ['GITHUB_SERVER_URL']}/api/v1/repos/{os.environ['GITHUB_REPOSITORY']}/issues/100/comments",
+              data=json.dumps({"body": body}).encode(), method="POST",
+              headers={"Authorization": f"token {os.environ['TOKEN']}", "Content-Type": "application/json"})
+          with urllib.request.urlopen(req) as response:
+              print(response.status)
+          PY
+      - uses: actions/upload-artifact@v3
+        if: always()
+        with:
+          name: tbv4-rows
+          path: |
+            runs/tbv4/rows.jsonl
+            runs/tbv4/ledger-row.md
