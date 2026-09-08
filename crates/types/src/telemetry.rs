@@ -144,6 +144,7 @@ impl ErrorClass {
             "connection reset",
             "connection failed",
             "broken pipe",
+            "decoding chunks",
         ]
         .iter()
         .any(|needle| lower.contains(needle))
@@ -151,6 +152,22 @@ impl ErrorClass {
             return Self::TransportClosed;
         }
         Self::Provider("error".to_owned())
+    }
+}
+
+impl ErrorClass {
+    /// The wire failed, not the provider's answer: a rerun cannot duplicate anything.
+    pub fn is_transport(&self) -> bool {
+        matches!(
+            self,
+            Self::TransportHttp(_)
+                | Self::TransportTimeout
+                | Self::TransportProxy
+                | Self::TransportBody
+                | Self::TransportOs(_)
+                | Self::TransportTls
+                | Self::TransportClosed
+        )
     }
 }
 

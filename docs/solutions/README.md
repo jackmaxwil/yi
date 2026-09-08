@@ -136,5 +136,6 @@ when it changes rather than editing them by hand.
 - [D156](adr/d156.md) - the kernel ships with the binary
 - [D157](adr/d157.md) - the runtime says what is there and asks when nothing moves
 - [D158](adr/d158.md) - a claim the record does not support is sent back once, three ways
+- [D159](adr/d159.md) - an OpenRouter request routes by throughput, a mid-stream error keeps its...
 
 D36-D51, D72, D73 and D74 have no ADR yet; ARCHITECTURE.md is the record for those rows.

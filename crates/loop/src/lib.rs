@@ -11,6 +11,7 @@ pub use config::{ExecutionMode, LoopConfig, NextTurn, TurnSnapshot};
 pub use repair::repair_tool_name;
 pub use run::{
     LENGTH_FORCE_TEXT, LENGTH_REDRIVE_CUSTOM_TYPE, LENGTH_REDRIVE_TEXT, LoopContext,
-    REPEAT_BREAK_CUSTOM_TYPE, REPEAT_BREAK_TEXT, REPEAT_STEER_AT, REPEAT_STOP_AT, run_loop,
+    REPEAT_BREAK_CUSTOM_TYPE, REPEAT_BREAK_TEXT, REPEAT_STEER_AT, REPEAT_STOP_AT, STREAM_RETRY_AT,
+    STREAM_RETRY_CUSTOM_TYPE, STREAM_RETRY_TEXT, run_loop,
 };
 pub use tool::{AgentTool, ToolOutcome};
