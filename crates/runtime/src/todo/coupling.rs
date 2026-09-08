@@ -41,6 +41,7 @@ pub struct Cycle {
     pub intercepts: u32,
     pub empties: u32,
     pub first_listed: bool,
+    pub unsourced: bool,
 }
 
 impl Cycle {
@@ -238,6 +239,85 @@ pub fn intercept_text(rung: u8, list: &TodoList) -> String {
             "The turn ends now. Write the closing message naming each open item and why it is not done; call no tools.\n{moves}"
         ),
     }
+}
+
+/// Digit runs of three or more with no word character or dot on either side: the same
+/// numerals the session miner's `count_claim` reads, so the two never disagree.
+pub fn numbers_of(text: &str) -> Vec<String> {
+    let bound = |c: Option<char>| c.is_none_or(|c| !(c.is_alphanumeric() || c == '_' || c == '.'));
+    let chars: Vec<char> = text.chars().collect();
+    let mut out: Vec<String> = Vec::new();
+    let mut at = 0;
+    while at < chars.len() {
+        let start = at;
+        while chars.get(at).is_some_and(char::is_ascii_digit) {
+            at = at.saturating_add(1);
+        }
+        let run = at.saturating_sub(start);
+        if run >= 3
+            && bound(start.checked_sub(1).and_then(|i| chars.get(i).copied()))
+            && bound(chars.get(at).copied())
+        {
+            let number: String = chars.get(start..at).unwrap_or_default().iter().collect();
+            if !out.contains(&number) {
+                out.push(number);
+            }
+        }
+        at = at.saturating_add(1);
+    }
+    out
+}
+
+/// Every tool result and user message the session has persisted, joined for a substring test.
+fn seen_text(store: &StoreHandle) -> String {
+    let Some(session) = store() else {
+        return String::new();
+    };
+    let entries = yi_session::lock_session(&session)
+        .find_entries(&yi_session::EntryQuery {
+            entry_type: Some("message"),
+            ..yi_session::EntryQuery::default()
+        })
+        .unwrap_or_default();
+    let mut seen = String::new();
+    for entry in entries {
+        let yi_types::entry::Entry::Message { message, .. } = entry else {
+            continue;
+        };
+        match message {
+            AgentMessage::ToolResult { content, .. } => {
+                for block in content {
+                    if let Content::Text { text, .. } = block {
+                        seen.push_str(&text);
+                        seen.push('\n');
+                    }
+                }
+            }
+            AgentMessage::User {
+                content: UserContent::Text(text),
+                ..
+            } => {
+                seen.push_str(&text);
+                seen.push('\n');
+            }
+            _ => {}
+        }
+    }
+    seen
+}
+
+pub fn unsourced(text: &str, seen: &str) -> Vec<String> {
+    numbers_of(text)
+        .into_iter()
+        .filter(|number| !seen.contains(number.as_str()))
+        .collect()
+}
+
+pub fn unsourced_text(numbers: &[String]) -> String {
+    format!(
+        "Each number in the answer needs its source: quote the tool result it came from, or remove it. Numbers without a source: {}.",
+        numbers.join(", ")
+    )
 }
 
 pub const EMPTY_STOP_TEXT: &str =
@@ -479,7 +559,8 @@ pub fn coupling(session: &AgentSession, todos: Arc<TodoStore>, options: Options)
             let Ok(mut cycle) = cycle.lock() else {
                 return None;
             };
-            if text_of(snapshot.message).trim().is_empty() {
+            let text = text_of(snapshot.message);
+            if text.trim().is_empty() {
                 if cycle.empty_stop() {
                     return Some(custom(
                         INTERCEPT_CUSTOM_TYPE,
@@ -488,6 +569,19 @@ pub fn coupling(session: &AgentSession, todos: Arc<TodoStore>, options: Options)
                     ));
                 }
                 return None;
+            }
+            if !cycle.unsourced && !numbers_of(&text).is_empty() {
+                let numbers = unsourced(&text, &seen_text(&store));
+                if !numbers.is_empty() {
+                    cycle.unsourced = true;
+                    let fingerprint = todos.list().fingerprint();
+                    record_intercept(&store, 0, "unsourced", &fingerprint, cycle.intercepts);
+                    return Some(custom(
+                        INTERCEPT_CUSTOM_TYPE,
+                        unsourced_text(&numbers),
+                        false,
+                    ));
+                }
             }
             let list = todos.list();
             let posture = stop_posture(&list, children_running());
