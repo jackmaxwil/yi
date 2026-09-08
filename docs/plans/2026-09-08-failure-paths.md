@@ -1,7 +1,10 @@
 # Close the failure paths: what the mined sessions say and the levers that answer them
 
 ```
-status:  planned 2026-09-08. Evidence is the mined session record of
+status:  implemented 2026-09-08 as 0.187.0, D153-D158, one PR (stages S1-S7;
+         the evals selftest for the kernel root under a trial HOME waits for
+         the next paid row, where the doctor row proves it). Written the same
+         day as planned. Evidence is the mined session record of
          ledger row 0021 (the six-task v4 subset at k=3 after D142 and
          D147-D152) against row 0018 (the same subset before them), plus
          two OpenRouter probes run the same day. Nothing here is built.
