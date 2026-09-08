@@ -22,12 +22,14 @@ fn workspace(tag: &str) -> Result<(PathBuf, PathBuf), Box<dyn Error>> {
 
 fn run(command: &str, cwd: &Path, sandbox: Option<&Sandbox>) -> Result<(i32, String), String> {
     let cancelled: CancelFlag = Arc::new(|| false);
-    match run_or_background(command, cwd, &cancelled, None, sandbox)? {
+    let timeout = std::time::Duration::from_secs(120);
+    match run_or_background(command, cwd, &cancelled, None, timeout, sandbox)? {
         Run::Finished(capture) => Ok((
             capture.exit_code.unwrap_or(-1),
             format!("{}{}", capture.stdout, capture.stderr),
         )),
         Run::Backgrounded(_) => Err("nothing here backgrounds".to_owned()),
+        Run::TimedOut(_) => Err("nothing here runs two minutes".to_owned()),
     }
 }
 
