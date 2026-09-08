@@ -96,6 +96,43 @@ async fn the_environment_block_never_enters_the_persisted_transcript() -> TestRe
     Ok(())
 }
 
+#[tokio::test]
+async fn the_environment_block_is_read_once_per_request_not_per_prompt() -> TestResult {
+    let provider = Arc::new(ProviderStream::new(None, None));
+    let mut call: serde_json::Map<String, serde_json::Value> = serde_json::Map::new();
+    call.insert("command".to_owned(), serde_json::json!("true"));
+    provider.queue_faux(vec![
+        yi_ai::faux::faux_assistant_message(
+            vec![yi_ai::faux::faux_tool_call("c1", "bash", call)],
+            StopReason::ToolUse,
+        ),
+        faux_assistant_message(vec![faux_text("done")], StopReason::Stop),
+    ]);
+    let session = AgentSession::new(
+        SessionConfig {
+            system_prompt: "sys".to_owned(),
+            model: faux_model(),
+            thinking_level: None,
+            tool_execution: ExecutionMode::Sequential,
+        },
+        provider,
+    );
+    let reads = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let counter = Arc::clone(&reads);
+    session.set_environment(Arc::new(move || {
+        let n = counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Some(render(&[format!("read: {n}")]))
+    }));
+    session.prompt("run true")?;
+    session.wait_idle().await;
+    assert_eq!(
+        reads.load(std::sync::atomic::Ordering::SeqCst),
+        2,
+        "two requests in one prompt read the facts twice"
+    );
+    Ok(())
+}
+
 #[test]
 fn the_environment_block_omits_unavailable_facts() -> TestResult {
     let block = render(&["cwd: /x".to_owned(), "model: m".to_owned()]);
@@ -171,11 +208,11 @@ fn the_deadline_line_counts_down_and_stops_at_zero() {
     use std::time::Duration;
     assert_eq!(
         deadline_line(Duration::from_secs(3600), Duration::from_secs(60)),
-        "deadline: 3540s of 3600s"
+        "deadline: 3540s left of 3600s"
     );
     assert_eq!(
         deadline_line(Duration::from_secs(3600), Duration::from_secs(4000)),
-        "deadline: 0s of 3600s"
+        "deadline: 0s left of 3600s"
     );
 }
 

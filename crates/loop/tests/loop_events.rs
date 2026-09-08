@@ -451,6 +451,70 @@ async fn a_bare_length_stop_forces_bash_then_ends_on_the_third() {
 }
 
 #[tokio::test]
+async fn a_tool_call_between_length_stops_starts_the_count_over() {
+    let mut arguments = Map::new();
+    arguments.insert("word".to_owned(), json!("x"));
+    let work = || {
+        faux_assistant_message(
+            vec![faux_tool_call("c", "echo", arguments.clone())],
+            StopReason::ToolUse,
+        )
+    };
+    let spiral = || faux_assistant_message(vec![faux_text("")], StopReason::Length);
+    let stream = Scripted::new(vec![
+        spiral(),
+        work(),
+        spiral(),
+        work(),
+        spiral(),
+        work(),
+        faux_assistant_message(vec![faux_text("done")], StopReason::Stop),
+    ]);
+    let mut context = LoopContext {
+        system_prompt: String::new(),
+        messages: Vec::new(),
+        tools: vec![Arc::new(EchoTool)],
+    };
+    let config = LoopConfig::new(faux_model());
+    let signal = InterruptSignal::default();
+    let (_events, mut emit) = collector();
+    let collected = run_loop(
+        &mut context,
+        vec![user("go")],
+        &config,
+        &signal,
+        &mut emit,
+        &stream,
+    )
+    .await;
+    let rungs: Vec<i64> = collected
+        .iter()
+        .filter_map(|message| match message {
+            AgentMessage::Custom {
+                custom_type,
+                details,
+                ..
+            } if custom_type == yi_loop::LENGTH_REDRIVE_CUSTOM_TYPE => {
+                details.as_ref().and_then(|d| d["rung"].as_i64())
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        rungs,
+        vec![1, 1, 1],
+        "each spiral after work is a first stop"
+    );
+    assert!(matches!(
+        collected.last(),
+        Some(AgentMessage::Assistant {
+            stop_reason: StopReason::Stop,
+            ..
+        })
+    ));
+}
+
+#[tokio::test]
 async fn without_a_bash_tool_the_message_rides_unforced() {
     let stream = three_bare_length_stops();
     let (details, answers, events) = drive_length_ladder(&stream, vec![Arc::new(EchoTool)]).await;

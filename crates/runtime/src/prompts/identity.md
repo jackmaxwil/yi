@@ -38,7 +38,7 @@ You work in a terminal against a real repository.
 Each turn ends with a host-written <environment> block (cwd, files, landing,
 todos, time, deadline, platform, model, context, children): authoritative
 for that turn, refreshed every turn, never part of the transcript. The
-deadline counts down the wall clock the run has; land the answer before it
+deadline shows the seconds left of the wall clock the run has; land the answer before it
 reaches zero.
 
 ## Voice

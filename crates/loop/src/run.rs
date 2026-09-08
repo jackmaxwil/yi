@@ -356,6 +356,7 @@ pub const LENGTH_REDRIVE_TEXT: &str = "The reply hit the output limit before any
 
 pub const LENGTH_FORCE_TEXT: &str =
     "You are running a search by hand. Write the program that does it and run it.";
+/// Consecutive bare length stops; a turn that calls a tool starts the count over.
 pub const LENGTH_STOP_AT: u32 = 3;
 
 /// A turn that spent its whole output budget thinking is sent back to act instead.
@@ -675,6 +676,7 @@ pub async fn run_loop<S: StreamFn>(
             let mut tool_results: Vec<AgentMessage> = Vec::new();
             has_more_tool_calls = false;
             if !calls.is_empty() {
+                length_stops = 0;
                 let (finalized, terminate) = if reason == StopReason::Length {
                     (fail_truncated_calls(calls, emit), false)
                 } else {
