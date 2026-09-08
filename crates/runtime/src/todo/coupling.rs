@@ -2,9 +2,11 @@ use std::sync::{Arc, Mutex};
 
 use yi_types::message::{AgentMessage, Attribution, Content, StopReason, UserContent};
 use yi_types::model::{ForcedTool, ToolChoice};
-use yi_types::plan::doc::{TODO_LABEL_MAX, TodoLabel, TodoStateName};
+use yi_types::plan::doc::TodoStateName;
 use yi_types::todo::PhaseName;
-use yi_types::todo::{BlockedOn, TODO_INTERCEPT_ENTRY_TYPE, TodoInterceptRecord, TodoList};
+use yi_types::todo::{
+    BlockedOn, TODO_INTERCEPT_ENTRY_TYPE, TodoInterceptRecord, TodoItem, TodoList,
+};
 
 use super::{DEFAULT_PHASE, Op, TodoStore, text, tool};
 use crate::goal::StoreHandle;
@@ -173,15 +175,15 @@ pub fn custom(custom_type: &str, text: String, display: bool) -> AgentMessage {
 fn open_moves(list: &TodoList) -> String {
     let mut lines = Vec::new();
     for item in list.items().filter(|item| !item.is_closed()) {
-        let label = item.label.as_str();
+        let name = text::name(item);
         let moves = match item.state {
             TodoStateName::Running => format!(
-                "done {label:?} evidence=<the check that passed> · block {label:?} on user note=<what would unblock it> · drop {label:?} reason=<why>"
+                "done {name} evidence=<the check that passed> · block {name} on user note=<what would unblock it> · drop {name} reason=<why>"
             ),
-            TodoStateName::Pending => format!("start {label:?} · drop {label:?} reason=<why>"),
-            _ => format!("unblock {label:?} · drop {label:?} reason=<why>"),
+            TodoStateName::Pending => format!("start {name} · drop {name} reason=<why>"),
+            _ => format!("unblock {name} · drop {name} reason=<why>"),
         };
-        lines.push(format!("- [{}] {label}: {moves}", item.state));
+        lines.push(format!("- [{}] {}: {moves}", item.state, item.label));
     }
     lines.join("\n")
 }
@@ -205,19 +207,18 @@ pub fn first_list_text() -> String {
 }
 
 /// A numbered request is the list: one pending item per enumerated line, cut to the label
-/// max, under the default phase, so the model starts from the user's own items.
+/// max with the line as its note, under the default phase.
 pub fn seed(todos: &TodoStore, prompt: &str) -> bool {
-    let mut labels: Vec<TodoLabel> = Vec::new();
+    let mut items: Vec<TodoItem> = Vec::new();
     for line in prompt.lines().filter_map(enumerated) {
-        let text: String = line.trim().chars().take(TODO_LABEL_MAX).collect();
-        let Ok(label) = TodoLabel::new(text.trim_end()) else {
+        let Ok(item) = TodoItem::from_text(line) else {
             continue;
         };
-        if !labels.contains(&label) {
-            labels.push(label);
+        if !items.iter().any(|seen| seen.label == item.label) {
+            items.push(item);
         }
     }
-    if labels.len() < ENUMERATED_ITEMS_MIN {
+    if items.len() < ENUMERATED_ITEMS_MIN {
         return false;
     }
     let Ok(phase) = PhaseName::new(DEFAULT_PHASE) else {
@@ -226,7 +227,7 @@ pub fn seed(todos: &TodoStore, prompt: &str) -> bool {
     todos
         .apply_as(
             Op::Init {
-                phases: vec![(phase, labels)],
+                phases: vec![(phase, items)],
             },
             None,
             SEED_ACTOR,
@@ -236,7 +237,7 @@ pub fn seed(todos: &TodoStore, prompt: &str) -> bool {
 
 pub fn seeded_text(list: &TodoList) -> String {
     format!(
-        "The todo list was seeded from the request's numbered lines. `append` investigation and verification items, `start` the first, and batch each op with real work.\n{}",
+        "The todo list was seeded from the request's numbered lines; a long line is cut to its label with the line kept as the note. `append` investigation and verification items, `start` the first, and batch each op with real work.\n{}",
         text::checklist(list).join("\n")
     )
 }

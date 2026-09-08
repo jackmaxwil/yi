@@ -1,5 +1,5 @@
 use yi_types::plan::doc::{TodoLabel, TodoStateName};
-use yi_types::todo::{BlockedOn, PhaseName, TodoItem, TodoList, TodoPhase};
+use yi_types::todo::{BlockedOn, PhaseName, TodoId, TodoItem, TodoList, TodoPhase};
 
 use super::{DEFAULT_PHASE, TodoError};
 
@@ -39,8 +39,16 @@ fn row(raw: &str, line: usize) -> Result<(usize, TodoItem), TodoError> {
     let mark = chars.next().ok_or_else(bad)?;
     let rest = chars.as_str().strip_prefix("] ").ok_or_else(bad)?;
     let state = state_of(mark).ok_or_else(bad)?;
-    let label = TodoLabel::new(rest.trim())?;
-    let mut item = TodoItem::pending(label);
+    let text = rest.trim();
+    let (id, text) = match text
+        .split_once(' ')
+        .and_then(|(token, tail)| TodoId::parse(token).map(|id| (id, tail)))
+    {
+        Some((id, tail)) => (Some(id), tail),
+        None => (None, text),
+    };
+    let mut item = TodoItem::from_text(text)?;
+    item.id = id;
     item.state = state;
     if item.state == TodoStateName::Blocked {
         item.on = Some(BlockedOn::User);
@@ -106,6 +114,7 @@ pub fn parse(source: &str) -> Result<TodoList, TodoError> {
 }
 
 pub fn merge(old: &TodoList, mut new: TodoList) -> TodoList {
+    new.next_id = old.next_id;
     for phase in &mut new.phases {
         for item in &mut phase.items {
             carry(old, item);
@@ -118,13 +127,39 @@ pub fn merge(old: &TodoList, mut new: TodoList) -> TodoList {
 }
 
 fn carry(old: &TodoList, row: &mut TodoItem) {
-    if let Some(prior) = old.items().find(|prior| prior.label == row.label)
-        && prior.state == row.state
-    {
+    let Some(prior) = old.items().find(|prior| prior.label == row.label) else {
+        return;
+    };
+    if row.id.is_none() {
+        row.id = prior.id.clone();
+    }
+    if prior.state == row.state {
         row.on = prior.on.clone();
-        row.note = prior.note.clone();
+        row.note = row.note.take().or_else(|| prior.note.clone());
         row.evidence = prior.evidence.clone();
     }
+}
+
+pub fn name(item: &TodoItem) -> String {
+    match &item.id {
+        Some(id) => id.to_string(),
+        None => format!("{:?}", item.label.as_str()),
+    }
+}
+
+fn row_text(item: &TodoItem) -> String {
+    let id = item
+        .id
+        .as_ref()
+        .map(|id| format!("{id} "))
+        .unwrap_or_default();
+    let cut = if item.is_cut() { "…" } else { "" };
+    format!(
+        "{} {id}{}{cut}{}",
+        marker(&item.state),
+        item.label,
+        suffix(item)
+    )
 }
 
 fn suffix(item: &TodoItem) -> String {
@@ -157,19 +192,9 @@ pub fn checklist(list: &TodoList) -> Vec<String> {
             out.push(format!("## {}", phase.name));
         }
         for item in &phase.items {
-            out.push(format!(
-                "- {} {}{}",
-                marker(&item.state),
-                item.label,
-                suffix(item)
-            ));
+            out.push(format!("- {}", row_text(item)));
             for child in &item.children {
-                out.push(format!(
-                    "  - {} {}{}",
-                    marker(&child.state),
-                    child.label,
-                    suffix(child)
-                ));
+                out.push(format!("  - {}", row_text(child)));
             }
         }
     }
@@ -177,13 +202,13 @@ pub fn checklist(list: &TodoList) -> Vec<String> {
 }
 
 fn moves(item: &TodoItem) -> String {
-    let label = item.label.as_str();
+    let name = name(item);
     match item.state {
         TodoStateName::Running => {
-            format!("done {label:?} · block {label:?} on user · drop {label:?} <reason>")
+            format!("done {name} evidence=<check> · block {name} on user · drop {name} <reason>")
         }
-        TodoStateName::Pending => format!("start {label:?} · drop {label:?} <reason>"),
-        TodoStateName::Blocked => format!("unblock {label:?} · drop {label:?} <reason>"),
+        TodoStateName::Pending => format!("start {name} · drop {name} <reason>"),
+        TodoStateName::Blocked => format!("unblock {name} · drop {name} <reason>"),
         _ => String::new(),
     }
 }
