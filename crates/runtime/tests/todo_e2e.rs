@@ -373,6 +373,45 @@ fn a_checklist_round_trips_through_render() -> TestResult {
 }
 
 #[test]
+fn a_set_that_keeps_no_label_restarts_the_ids_at_t1() -> TestResult {
+    let (session, _root) = session("restart")?;
+    let store = store_for(&session);
+    store.apply(
+        Op::Set {
+            list: "- [ ] alpha\n- [ ] beta\n".to_owned(),
+        },
+        None,
+    )?;
+    store.apply(
+        Op::Set {
+            list: "- [x] read everything\n- [>] fix it\n- [ ] verify\n".to_owned(),
+        },
+        None,
+    )?;
+    let ids: Vec<String> = store
+        .list()
+        .items()
+        .filter_map(|item| item.id.as_ref().map(ToString::to_string))
+        .collect();
+    assert_eq!(ids, vec!["t1", "t2", "t3"], "a replaced list is a new list");
+    let error = store
+        .apply(
+            Op::Done {
+                target: Target::Label(label("t9")?),
+                evidence: Some("x".to_owned()),
+            },
+            None,
+        )
+        .err()
+        .ok_or("t9 is not in the list")?;
+    assert!(
+        error.to_string().contains("a set or init renumbers"),
+        "{error}"
+    );
+    Ok(())
+}
+
+#[test]
 fn an_id_names_an_item_across_a_set() -> TestResult {
     let (session, _root) = session("ids")?;
     let store = store_for(&session);

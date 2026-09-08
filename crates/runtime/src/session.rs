@@ -987,15 +987,10 @@ async fn wire_environment(config: &mut LoopConfig, shared: &Arc<Shared>) {
     let Some(hook) = hook else {
         return;
     };
-    let Some(block) = tokio::task::spawn_blocking(move || hook())
-        .await
-        .ok()
-        .flatten()
-    else {
-        return;
-    };
+    // Incident: one block per prompt froze `files:`, `deadline:` and `todos:` for an hour of
+    // tool calls, so the model read its own files as deleted; the facts are read per request.
     config.transform_context = Some(Box::new(move |messages| {
-        Some(crate::environment::append(messages, &block))
+        hook().map(|block| crate::environment::append(messages, &block))
     }));
 }
 
