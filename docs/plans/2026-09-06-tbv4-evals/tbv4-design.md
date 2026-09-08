@@ -268,3 +268,19 @@ egress-control probe fixed for non-Linux clients; `harbor check` and
 `AgentContext`, or the reward files. Re-verify A.12's line numbers after
 `uv tool install harbor` lands a newer release than 0.22.0; the spans this
 document cites are for the clone we hold.
+
+## 12. Per-provider limitation: music-harmony through OpenRouter (2026-09-08)
+
+The task requires Roman numerals in MusicXML `<function>` elements and its
+verifier reads only that element. Through `openrouter/z-ai/glm-5.3-flash`
+the model receives the tag as `[PROMPT_INJECTION]`: the persisted user
+message carries the literal `<function>`, neither harbor's package nor this
+tree holds that string, and every attempt on ledger rows 0018 and 0021
+quoted it back (issue #280). The baseline's best attempt had three rule
+violations and failed only on "no Roman numeral annotations found", so the
+pass axis cannot move on this task whatever the harness does. The six-task
+slice swaps it for `heat-pump-warranty` (local files, plain-text rules, a
+CSV of decisions, no XML-like tag in the instruction); the config
+fingerprint changes with the task list and the first row on the new slice
+says so. music-harmony stays runnable by name through `TBV4_TASKS` for a
+provider that passes the tag through.

@@ -806,6 +806,7 @@ impl Tool for HashlineEditTool {
         let hash = input_hash(&patch_text);
         let mut rendered: Vec<String> = Vec::new();
         let mut diff = String::new();
+        let mut syntax: Option<String> = None;
         for result in &results {
             if result.op == SectionOp::Noop {
                 let entry = noop
@@ -840,7 +841,17 @@ impl Tool for HashlineEditTool {
                 )
                 .as_str(),
             );
-            rendered.push(render_section_result(result, snapshots));
+            let mut section = render_section_result(result, snapshots);
+            if result.op != SectionOp::Delete
+                && let Some(line) = crate::syntax::verdict(Path::new(&result.canonical_path))
+            {
+                section.push('\n');
+                section.push_str(&line);
+                if syntax.as_deref().is_none_or(|kept| kept == "syntax: ok") {
+                    syntax = Some(line);
+                }
+            }
+            rendered.push(section);
         }
         let charted = results.iter().any(|result| {
             result.op == SectionOp::Update
@@ -862,6 +873,10 @@ impl Tool for HashlineEditTool {
         }
         if let Value::Object(details) = &mut output.result.details {
             details.insert("grid".to_owned(), Value::String(grid.to_owned()));
+            details.insert(
+                "syntax".to_owned(),
+                syntax.map_or(Value::Null, Value::String),
+            );
         }
         // The op mix is what `yi stats` aggregates for the M3 register/move
         // economics question; counts, never content.

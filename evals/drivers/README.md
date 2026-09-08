@@ -9,7 +9,8 @@ The dataset is pinned by digest (`terminal-bench/terminal-bench@sha256:39d9f44bโ
 the leaderboard's `DATASET_REF`), never `@latest`. The subset is one cheap
 task per domain, chosen by `expert_time_estimate_hours` and `cpus` from the
 task metadata: `html-js-filter` (Security), `photonic-waveguide-routing`
-(Software), `music-harmony` (Media), `bun-sourcemap-leak` (Software),
+(Software), `heat-pump-warranty` (Operations; it replaced `music-harmony` on
+2026-09-08, tbv4-design.md ยง12), `bun-sourcemap-leak` (Software),
 `foodstuff-beta-activity` (Science), `cargo-flight-dispatch` (Operations).
 No GPU task, no multi-container task. Every v4 task gives the agent
 28,800 s; `TBV4_TIMEOUT_MULT` (default and ceiling `0.125`, one hour) bounds a
