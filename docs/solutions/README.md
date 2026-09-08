@@ -127,5 +127,6 @@ when it changes rather than editing them by hand.
 - [D147](adr/d147.md) - a turn that thinks past the output limit is sent back to act
 - [D148](adr/d148.md) - a numbered request is the list, and the list exists before the third change
 - [D149](adr/d149.md) - done needs its check, and a number is computed in the kernel
+- [D150](adr/d150.md) - the real clock is in the environment block
 
 D36-D51, D72, D73 and D74 have no ADR yet; ARCHITECTURE.md is the record for those rows.
