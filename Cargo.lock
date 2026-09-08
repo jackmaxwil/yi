@@ -2248,6 +2248,7 @@ name = "yi-kernel"
 version = "0.2.0"
 dependencies = [
  "hmac",
+ "miniz_oxide",
  "serde_json",
  "sha2",
  "thiserror 2.0.20",
