@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
-use crate::plan::doc::{DocError, TodoLabel, TodoStateName};
+use crate::plan::doc::{DocError, TODO_LABEL_MAX, TodoLabel, TodoStateName};
 
 pub const TODO_ENTRY_TYPE: &str = "todo";
 pub const TODO_INTERCEPT_ENTRY_TYPE: &str = "todo_intercept";
@@ -77,11 +77,45 @@ impl BlockedOn {
     }
 }
 
+/// A per-session item id, `t<n>`; minted by the store, never reused, additive so old
+/// sessions rehydrate without one.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct TodoId(String);
+
+impl TodoId {
+    pub fn minted(number: u64) -> Self {
+        Self(format!("t{number}"))
+    }
+
+    pub fn parse(token: &str) -> Option<Self> {
+        let digits = token.strip_prefix('t')?;
+        (!digits.is_empty() && digits.bytes().all(|byte| byte.is_ascii_digit()))
+            .then(|| Self(token.to_owned()))
+    }
+
+    pub fn number(&self) -> Option<u64> {
+        self.0.get(1..)?.parse().ok()
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for TodoId {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.0)
+    }
+}
+
 /// One todo: `note` is the blocker, the drop reason or the fail cause, `evidence`
 /// the check quoted at `done`; a child carries the same fields one level down.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TodoItem {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<TodoId>,
     pub label: TodoLabel,
     pub state: TodoStateName,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -99,6 +133,7 @@ pub struct TodoItem {
 impl TodoItem {
     pub fn pending(label: TodoLabel) -> Self {
         Self {
+            id: None,
             label,
             state: TodoStateName::Pending,
             on: None,
@@ -107,6 +142,25 @@ impl TodoItem {
             children: Vec::new(),
             extra: Map::new(),
         }
+    }
+
+    /// Text over the label max is cut to a label and kept whole as the note.
+    pub fn from_text(text: &str) -> Result<Self, DocError> {
+        let text = text.trim();
+        if text.chars().count() <= TODO_LABEL_MAX {
+            return Ok(Self::pending(TodoLabel::new(text)?));
+        }
+        let cut: String = text.chars().take(TODO_LABEL_MAX).collect();
+        let mut item = Self::pending(TodoLabel::new(cut.trim_end())?);
+        item.note = Some(text.to_owned());
+        Ok(item)
+    }
+
+    pub fn is_cut(&self) -> bool {
+        let label = self.label.as_str();
+        self.note
+            .as_deref()
+            .is_some_and(|note| note.len() > label.len() && note.starts_with(label))
     }
 
     pub fn is_open(&self) -> bool {
@@ -138,6 +192,8 @@ pub struct TodoPhase {
 pub struct TodoList {
     #[serde(default)]
     pub phases: Vec<TodoPhase>,
+    #[serde(default)]
+    pub next_id: u64,
     #[serde(flatten)]
     pub extra: Map<String, Value>,
 }
@@ -158,6 +214,17 @@ impl TodoList {
                 .iter()
                 .flat_map(|item| std::iter::once(item).chain(item.children.iter()))
         })
+    }
+
+    pub fn for_each_mut(&mut self, mut act: impl FnMut(&mut TodoItem)) {
+        for phase in &mut self.phases {
+            for item in &mut phase.items {
+                act(item);
+                for child in &mut item.children {
+                    act(child);
+                }
+            }
+        }
     }
 
     pub fn progress(&self) -> TodoProgress {
