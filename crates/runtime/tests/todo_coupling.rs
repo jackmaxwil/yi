@@ -231,7 +231,7 @@ fn posture_reads_states_never_sentences() -> TestResult {
     r.todos.apply(
         Op::Done {
             target: Target::All,
-            evidence: None,
+            evidence: Some("both blocked; nothing left to check".to_owned()),
         },
         None,
     )?;
