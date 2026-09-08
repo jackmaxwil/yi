@@ -78,6 +78,7 @@ pub struct ProviderStream {
     pub faux: Mutex<FauxProvider>,
     long_cache: bool,
     proxy: Option<yi_ai::request::ProxyConfig>,
+    routing: Option<serde_json::Value>,
     telemetry: Option<Arc<crate::telemetry::Telemetry>>,
 }
 
@@ -89,6 +90,7 @@ impl ProviderStream {
             faux: Mutex::new(FauxProvider::default()),
             long_cache: false,
             proxy: None,
+            routing: None,
             telemetry: None,
         }
     }
@@ -102,6 +104,11 @@ impl ProviderStream {
     }
 
     #[must_use]
+    pub fn with_routing(mut self, routing: Option<serde_json::Value>) -> Self {
+        self.routing = routing;
+        self
+    }
+
     pub fn with_proxy(mut self, proxy: Option<yi_ai::request::ProxyConfig>) -> Self {
         self.proxy = proxy;
         self
@@ -175,6 +182,7 @@ impl ProviderStream {
                     reasoning_effort: (effort != Effort::Off).then_some(effort),
                     session_id: self.session_id.clone(),
                     proxy: self.proxy.clone(),
+                    routing: self.routing.clone(),
                     ..OpenAiOptions::default()
                 };
                 openai::stream(model, context, &options, self.key())
@@ -185,6 +193,7 @@ impl ProviderStream {
                     reasoning_effort: (effort != Effort::Off).then_some(effort),
                     session_id: self.session_id.clone(),
                     proxy: self.proxy.clone(),
+                    routing: self.routing.clone(),
                     ..OpenAiOptions::default()
                 };
                 openai_responses::stream(model, context, &options, self.key())

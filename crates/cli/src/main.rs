@@ -425,6 +425,7 @@ fn build_session(
         ProviderStream::new(api_key, None)
             .with_long_cache(interactive)
             .with_proxy(proxy)
+            .with_routing(config().routing.clone())
             .with_telemetry(telemetry.clone()),
     );
     if faux {

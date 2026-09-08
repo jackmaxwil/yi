@@ -380,6 +380,32 @@ fn length_force(tools: &[Arc<dyn AgentTool>]) -> Option<ToolChoice> {
         .flatten()
 }
 
+pub const STREAM_RETRY_CUSTOM_TYPE: &str = "stream_retry";
+pub const STREAM_RETRY_TEXT: &str = "The provider dropped the stream before any output reached the transcript; the same turn runs again.";
+pub const STREAM_RETRY_AT: u32 = 1;
+
+fn nothing_delivered(message: &AgentMessage) -> bool {
+    let AgentMessage::Assistant { content, .. } = message else {
+        return false;
+    };
+    !content.iter().any(|block| match block {
+        Content::Text { text, .. } => !text.trim().is_empty(),
+        Content::ToolCall { .. } => true,
+        _ => false,
+    })
+}
+
+/// A dropped stream that showed nothing is the one error a rerun cannot duplicate.
+fn stream_retry(error: Option<&str>) -> AgentMessage {
+    AgentMessage::Custom {
+        custom_type: STREAM_RETRY_CUSTOM_TYPE.to_owned(),
+        content: yi_types::message::UserContent::Text(STREAM_RETRY_TEXT.to_owned()),
+        display: false,
+        details: Some(serde_json::json!({"error": error})),
+        timestamp: 0,
+    }
+}
+
 pub const REPEAT_BREAK_CUSTOM_TYPE: &str = "repeat_break";
 pub const REPEAT_BREAK_TEXT: &str = "The same tool calls have run the last three turns with the same result. Nothing is changing. Write the final answer now; call no tools.";
 pub const REPEAT_STEER_AT: u32 = 3;
@@ -549,6 +575,7 @@ pub async fn run_loop<S: StreamFn>(
     let mut current_effort = config.effort;
     let mut first_turn = true;
     let mut length_stops: u32 = 0;
+    let mut stream_retries: u32 = 0;
     let mut last_batch: Option<String> = None;
     let mut repeats: u32 = 0;
     let mut tool_choice = config.first_turn_tool_choice.clone();
@@ -597,6 +624,22 @@ pub async fn run_loop<S: StreamFn>(
             collected.push(message.clone());
 
             let reason = stop_reason_of(&message);
+            if reason == StopReason::Error
+                && stream_retries < STREAM_RETRY_AT
+                && nothing_delivered(&message)
+            {
+                stream_retries = stream_retries.saturating_add(1);
+                emit(AgentEvent::TurnEnd {
+                    message: message.clone(),
+                    tool_results: Vec::new(),
+                });
+                let error = match &message {
+                    AgentMessage::Assistant { error_message, .. } => error_message.as_deref(),
+                    _ => None,
+                };
+                pending.push(stream_retry(error));
+                continue;
+            }
             if reason == StopReason::Error || reason == StopReason::Aborted {
                 emit(AgentEvent::TurnEnd {
                     message,

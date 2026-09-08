@@ -39,6 +39,9 @@ pub struct UserConfig {
     pub lanes: Option<crate::lane::LanesConfig>,
     pub catalog: Option<CatalogConfig>,
     pub telemetry: Option<TelemetryConfig>,
+    /// `routing`: OpenRouter's `provider` object, sent verbatim; absent means
+    /// `{"sort": "throughput"}`, and `{}` restores OpenRouter's load balancing.
+    pub routing: Option<serde_json::Value>,
 }
 
 /// `tui.pace`: the streamed reveal's speed as a percentage of the default (100); `0` paints

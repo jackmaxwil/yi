@@ -263,6 +263,7 @@ SIGNAL_NAMES = (
     "intercept_count", "intercept_max_rung", "regression_seen_red",
     "bash_timeouts", "broad_search_refused", "length_redrive", "unsourced_redrive",
     "repeat_break", "length_forced", "closed_list_nudge", "impossible_redrive", "artifact_redrive",
+    "stream_retry",
 )
 
 
@@ -309,6 +310,8 @@ def signals(entries):
             out["closed_list_nudge"] += 1
         elif role == "custom" and message.get("customType") == "repeat_break":
             out["repeat_break"] += 1
+        elif role == "custom" and message.get("customType") == "stream_retry":
+            out["stream_retry"] += 1
         elif role == "assistant":
             turn = {"text": "", "calls": [], "usage": message.get("usage") or {}, "stop": message.get("stopReason")}
             for block in message.get("content") or []:
