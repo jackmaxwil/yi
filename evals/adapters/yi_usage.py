@@ -26,7 +26,11 @@ SESSIONS_SUBDIR = "yi/sessions"
 TOKEN_KEYS = ("input", "output", "cacheRead", "cacheWrite")
 
 
-def run_command(model_name, instruction, resume=False):
+# Every Terminal-Bench v4 task's [agent] timeout; the trial's share is the multiplier's.
+TASK_TIMEOUT_SEC = 28800
+
+
+def run_command(model_name, instruction, resume=False, deadline_sec=None):
     """Build the single shell command a trial runs.
 
     E6: no `grep` stage -- under harbor's `set -o pipefail` a fully filtered
@@ -36,6 +40,7 @@ def run_command(model_name, instruction, resume=False):
     if not model_name or "/" not in model_name:
         raise ValueError("model name must be 'provider/model'")
     resume_flag = "--continue " if resume else ""
+    deadline_flag = f"--deadline {int(deadline_sec)} " if deadline_sec else ""
     # Incident: a 131k-token turn streamed 130,496 `message_update` snapshots,
     # 43.8 GB on one trial; harbor buffers the command's stdout, and the OS
     # killed it. The deltas are dropped through a guarded filter (E6: a bare
@@ -46,7 +51,7 @@ def run_command(model_name, instruction, resume=False):
         "yi ask --json --yolo "
         f"--model {shlex.quote(model_name)} "
         f"--session-dir {REMOTE_SESSION_DIR} "
-        f"{resume_flag}{shlex.quote(instruction)} "
+        f"{deadline_flag}{resume_flag}{shlex.quote(instruction)} "
         "2>&1 </dev/null | { grep -v '\"type\":\"message_update\"' || [ $? -eq 1 ]; } "
         f"| stdbuf -oL tee {REMOTE_EVENTS_PATH} >/dev/null"
     )

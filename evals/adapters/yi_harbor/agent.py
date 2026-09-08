@@ -21,6 +21,7 @@ from yi_usage import (
     config_fingerprint,
     parse_events,
     run_command,
+    TASK_TIMEOUT_SEC,
 )
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
@@ -117,10 +118,17 @@ class Yi(BaseInstalledAgent):
         await self.exec_as_agent(
             environment,
             command=run_command(
-                self.model_name, self.render_instruction(instruction), resume=self._resume
+                self.model_name,
+                self.render_instruction(instruction),
+                resume=self._resume,
+                deadline_sec=self.deadline_sec(),
             ),
             env={**self.model_connection.env, "SSL_CERT_FILE": REMOTE_CA_BUNDLE},
         )
+
+    def deadline_sec(self):
+        """Harbor never tells the agent its timeout; the driver's multiplier does."""
+        return int(TASK_TIMEOUT_SEC * float(os.environ.get(TIMEOUT_MULT_ENV) or 1))
 
     def write_trajectory(self):
         """The synced session file as ATIF, beside the event stream in logs_dir."""
