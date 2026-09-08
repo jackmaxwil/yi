@@ -6,7 +6,7 @@ use yi_ai::faux::{faux_assistant_message, faux_text, faux_tool_call};
 use yi_loop::{ExecutionMode, TurnSnapshot};
 use yi_runtime::todo::coupling::{
     Cycle, EMPTY_STOP_TEXT, Eager, INTERCEPT_CUSTOM_TYPE, Options, SEED_ACTOR, StopPosture,
-    coupling, gate, landed, stop_posture,
+    coupling, gate, landed, numbers_of, stop_posture,
 };
 use yi_runtime::todo::{Op, Target, TodoStore, latest_record};
 use yi_runtime::{AgentSession, ProviderStream, SessionConfig};
@@ -590,6 +590,59 @@ fn the_first_list_nudge_fires_once_after_three_changes_on_an_empty_list() -> Tes
     );
     (hooks.on_turn)(&snapshot);
     assert_eq!(r.session.pending_count(), 1, "and only one");
+    Ok(())
+}
+
+#[test]
+fn numbers_match_the_extractor_regex() {
+    assert_eq!(numbers_of("1,234 files"), vec!["234"]);
+    assert!(numbers_of("v1.2.345").is_empty());
+    assert!(numbers_of("abc123 and 123abc").is_empty());
+    assert!(numbers_of("12 of 99").is_empty());
+    assert_eq!(numbers_of("ran 4567 tests, 4567 again"), vec!["4567"]);
+    assert_eq!(numbers_of("(1088) and 2500. then 777"), vec!["1088", "777"]);
+}
+
+#[test]
+fn an_unsourced_number_is_re_driven_once_per_cycle() -> TestResult {
+    let r = rig("unsourced")?;
+    let mut seen = result("c1", "bash", false);
+    if let AgentMessage::ToolResult { content, .. } = &mut seen {
+        *content = vec![faux_text("42 passed, 1088 lines")];
+    }
+    yi_session::lock_session(&r.store).append_message("main", seen)?;
+    let hooks = prelude_hooks(&r);
+    fn snapshot(message: &AgentMessage) -> TurnSnapshot<'_> {
+        TurnSnapshot {
+            message,
+            tool_results: &[],
+        }
+    }
+    let claim = stop("There are 1088 lines and 2500 tests.");
+    let first = (hooks.intercept_stop)(&snapshot(&claim)).ok_or("an unsourced number re-drives")?;
+    let (kind, display, text) = custom_type(&first);
+    assert_eq!(kind, INTERCEPT_CUSTOM_TYPE);
+    assert!(!display);
+    assert!(text.contains("2500") && !text.contains("1088"), "{text}");
+    assert_eq!(
+        intercept_records(&r.store)
+            .last()
+            .map(|record| (record.reason.clone(), record.rung)),
+        Some(("unsourced".to_owned(), 0))
+    );
+    assert!(
+        (hooks.intercept_stop)(&snapshot(&claim)).is_none(),
+        "once per cycle, and an empty list has nothing else to say"
+    );
+
+    let fresh = rig("sourced")?;
+    yi_session::lock_session(&fresh.store).append_message("main", user("how many of the 4567?"))?;
+    let hooks = prelude_hooks(&fresh);
+    let sourced = stop("4567, as you said.");
+    assert!(
+        (hooks.intercept_stop)(&snapshot(&sourced)).is_none(),
+        "a number the user wrote is sourced"
+    );
     Ok(())
 }
 

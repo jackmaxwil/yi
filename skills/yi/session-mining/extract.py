@@ -261,7 +261,7 @@ SIGNAL_NAMES = (
     "cache_miss_streak", "done_without_check", "intercept_capped",
     "blocked_on_user_without_question", "waiting_without_block", "gate_rerun_unchanged_tree",
     "intercept_count", "intercept_max_rung", "regression_seen_red",
-    "bash_timeouts", "broad_search_refused", "length_redrive",
+    "bash_timeouts", "broad_search_refused", "length_redrive", "unsourced_redrive",
 )
 
 
@@ -404,6 +404,7 @@ def signals(entries):
         out["intercept_capped"] = 1
     out["intercept_count"] = sum(1 for r in custom_intercept if r.get("reason") == "open")
     out["intercept_max_rung"] = max((int(r.get("rung") or 0) for r in custom_intercept), default=0)
+    out["unsourced_redrive"] = sum(1 for r in custom_intercept if r.get("reason") == "unsourced")
     for a, b in zip(users, users[1:]):
         ta, tb = _tokens(a), _tokens(b)
         if ta and tb and len(ta & tb) / len(ta | tb) >= 0.8:
@@ -1087,6 +1088,7 @@ def selfcheck():
             if name == "blocked_on_user_without_question":
                 continue
             assert signal_row["signals"][name], f"signal {name} did not fire on its fixture"
+        assert signal_row["signals"]["intercept_count"] == 1 and signal_row["signals"]["intercept_max_rung"] == 3, "a re-drive reason must not count as an open intercept"
         piped_row = next(r for r in result["mu"] if r["sessionId"] == "fixture-signals-piped")
         assert piped_row["signals"]["regression_seen_red"] == 1, "a red run piped through tail must still be seen red"
         blocked_row = next(r for r in result["mu"] if r["sessionId"] == "fixture-signals-blocked")
