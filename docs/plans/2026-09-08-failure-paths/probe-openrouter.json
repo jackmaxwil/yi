@@ -1,0 +1,76 @@
+{
+ "reasoning_enabled_false": {
+  "error": "{\"error\":{\"message\":\"Reasoning is mandatory for this endpoint and cannot be disabled.\",\"code\":400,\"metadata\":{\"provider_name\":null}}}"
+ },
+ "reasoning_exclude": {
+  "finish": "length",
+  "completion": 1500,
+  "reasoning_tokens": 1500,
+  "reasoning_field_chars": 0,
+  "content_chars": 0,
+  "tool_calls": [],
+  "cost": 0.00075144
+ },
+ "reasoning_max_tokens_0": {
+  "error": "{\"error\":{\"message\":\"Reasoning is mandatory for this endpoint and cannot be disabled.\",\"code\":400,\"metadata\":{\"provider_name\":null}}}"
+ },
+ "thinking_disabled_native": {
+  "finish": "error",
+  "completion": 166,
+  "reasoning_tokens": 166,
+  "reasoning_field_chars": 650,
+  "content_chars": 0,
+  "tool_calls": [],
+  "cost": 0
+ },
+ "reasoning_effort_low": {
+  "finish": "stop",
+  "completion": 827,
+  "reasoning_tokens": 113,
+  "reasoning_field_chars": 515,
+  "content_chars": 2533,
+  "tool_calls": [],
+  "cost": 0.0004201
+ },
+ "forced_bash": {
+  "finish": "tool_calls",
+  "completion": 44,
+  "reasoning_tokens": 31,
+  "reasoning_field_chars": 122,
+  "content_chars": 0,
+  "tool_calls": [
+   [
+    "bash",
+    "{\"command\": \"ls -la; pwd\"}"
+   ]
+  ],
+  "cost": 2.48e-05
+ },
+ "required": {
+  "finish": "tool_calls",
+  "completion": 271,
+  "reasoning_tokens": 174,
+  "reasoning_field_chars": 802,
+  "content_chars": 0,
+  "tool_calls": [
+   [
+    "bash",
+    "{\"command\": \"ls -la; echo ---; find . -maxdepth 3 -type f | head -50\"}"
+   ],
+   [
+    "bash",
+    "{\"command\": \"ls /tmp /home 2>/dev/null; echo ---; find / -maxdepth 2 -iname '*net*' -o -maxdepth 2 -"
+   ]
+  ],
+  "cost": 0.00016295
+ },
+ "auto_tools": {
+  "finish": "length",
+  "completion": 1500,
+  "reasoning_tokens": 1500,
+  "reasoning_field_chars": 6399,
+  "content_chars": 0,
+  "tool_calls": [],
+  "cost": 0.0003888
+ }
+}
