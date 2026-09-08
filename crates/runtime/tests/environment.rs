@@ -3,7 +3,9 @@ use std::sync::Arc;
 
 use yi_ai::faux::{faux_assistant_message, faux_text};
 use yi_loop::ExecutionMode;
-use yi_runtime::environment::{append, deadline_line, git_summary, render, sanitize};
+use yi_runtime::environment::{
+    FILES_SHOWN, append, deadline_line, files_line, git_summary, render, sanitize,
+};
 use yi_runtime::{AgentSession, ProviderStream, SessionConfig};
 use yi_types::message::{AgentMessage, ENVIRONMENT_TAG, StopReason, UserContent};
 use yi_types::model::{Model, ModelCost};
@@ -175,4 +177,27 @@ fn the_deadline_line_counts_down_and_stops_at_zero() {
         deadline_line(Duration::from_secs(3600), Duration::from_secs(4000)),
         "deadline: 0s of 3600s"
     );
+}
+
+#[test]
+fn the_files_line_lists_the_top_level_and_caps_at_twenty() -> TestResult {
+    let dir = std::env::temp_dir().join(format!("yi-env-files-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("a-sub"))?;
+    for i in 0..24 {
+        std::fs::write(dir.join(format!("f{i:02}.txt")), "x")?;
+    }
+    std::fs::write(dir.join(".hidden"), "x")?;
+    let line = files_line(&dir).ok_or("a populated dir has a files line")?;
+    assert!(line.starts_with("files: a-sub/ f00.txt f01.txt"), "{line}");
+    assert!(
+        line.ends_with(" …(+5)"),
+        "25 names, {FILES_SHOWN} shown: {line}"
+    );
+    assert!(!line.contains(".hidden"));
+    let empty = dir.join("empty");
+    std::fs::create_dir_all(&empty)?;
+    assert!(files_line(&empty).is_none(), "an empty dir has no line");
+    let _ = std::fs::remove_dir_all(&dir);
+    Ok(())
 }
