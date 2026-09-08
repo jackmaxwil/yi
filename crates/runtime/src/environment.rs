@@ -107,7 +107,7 @@ pub fn files_line(cwd: &Path) -> Option<String> {
 
 pub fn deadline_line(total: Duration, elapsed: Duration) -> String {
     format!(
-        "deadline: {}s of {}s",
+        "deadline: {}s left of {}s",
         total.saturating_sub(elapsed).as_secs(),
         total.as_secs()
     )

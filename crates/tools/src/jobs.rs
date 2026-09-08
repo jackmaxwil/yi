@@ -383,13 +383,23 @@ pub fn run_or_background(
         Err(RecvTimeoutError::Timeout) if background.is_some() => Ok(Run::Backgrounded(id)),
         Err(RecvTimeoutError::Timeout) => {
             let _a_job_that_settled_meanwhile_is_fine = registry().kill(id);
-            match receiver.recv() {
+            // Incident: `timeout 3000 python3 …` left the shell's group and held the pipes
+            // for 43 minutes; the kill gets five seconds, then the turn moves on.
+            match receiver.recv_timeout(KILL_GRACE) {
                 Ok(Ok(capture)) => {
                     registry().mark_reported(id);
                     Ok(Run::TimedOut(Box::new(capture)))
                 }
                 Ok(Err(message)) => Err(message),
-                Err(gone) => Err(gone.to_string()),
+                Err(_) => Ok(Run::TimedOut(Box::new(CommandCapture {
+                    stdout: String::new(),
+                    stderr: format!(
+                        "[the process outlived the kill and keeps running as job {id}; its output arrives as a job result]"
+                    ),
+                    exit_code: None,
+                    cancelled: true,
+                    truncated: false,
+                }))),
             }
         }
         Err(RecvTimeoutError::Disconnected) => {
@@ -404,6 +414,7 @@ pub fn clamp_wait(seconds: u64) -> Duration {
 }
 
 pub const DEFAULT_TIMEOUT_SECS: u64 = 120;
+const KILL_GRACE: Duration = Duration::from_secs(5);
 /// One sixth of a one-hour attempt: room for a cold build or a whole suite, and twice the
 /// wait clamp, so anything longer is already a job.
 pub const MAX_TIMEOUT_SECS: u64 = 600;
