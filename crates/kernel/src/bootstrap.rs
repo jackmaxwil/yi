@@ -1,4 +1,4 @@
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use sha2::{Digest, Sha256};
 use yi_types::kernel::BootstrapVersion;
@@ -31,6 +31,9 @@ const BOOTSTRAP_VERSION_FILE: &str = ".bootstrap-version";
 const BOOTSTRAP_LOCK_NAME: &str = ".bootstrap.lock";
 const BOOTSTRAP_LOCK_RETRY_MS: u64 = 100;
 const BOOTSTRAP_LOCK_STALE_WITHOUT_PID_MS: u128 = 30_000;
+/// `python/yi_runtime` and `python/skills`, deflated by `build.rs`.
+const PYTHON_EMBED: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/python.zz"));
+const PYTHON_STAMP_FILE: &str = ".stamp";
 
 pub type ProgressFn = dyn Fn(&str) + Send + Sync;
 
@@ -51,40 +54,152 @@ impl BootstrapOptions {
 }
 
 fn has_python_sources(root: &Path) -> bool {
-    root.join("python").join("yi_runtime").is_dir()
+    root.join("yi_runtime").is_dir()
 }
 
-/// Root holding `python/yi_runtime` and `python/skills`: walk up from the exe, then `~/.yi`,
-/// then the compile-time path, which alone baked in the *build machine's* checkout.
+fn fnv1a(bytes: &[u8]) -> u64 {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in bytes {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    hash
+}
+
+/// Length plus hash of the deflated archive: a rebuilt runtime changes it and re-unpacks.
+fn embed_stamp() -> String {
+    format!("{}:{:016x}", PYTHON_EMBED.len(), fnv1a(PYTHON_EMBED))
+}
+
+fn home_tree_current(root: &Path) -> bool {
+    has_python_sources(root)
+        && std::fs::read_to_string(root.join(PYTHON_STAMP_FILE))
+            .is_ok_and(|stamp| stamp.trim() == embed_stamp())
+}
+
+fn take(bytes: &[u8]) -> Result<(&[u8], &[u8]), String> {
+    let (len, rest) = bytes
+        .split_first_chunk::<4>()
+        .ok_or("truncated python archive")?;
+    let len = usize::try_from(u32::from_le_bytes(*len)).map_err(|error| error.to_string())?;
+    rest.split_at_checked(len)
+        .ok_or_else(|| "truncated python archive".to_owned())
+}
+
+fn unpack_entries(mut rest: &[u8], into: &Path) -> Result<(), String> {
+    while !rest.is_empty() {
+        let (path, after) = take(rest)?;
+        let (content, after) = take(after)?;
+        rest = after;
+        let relative = std::str::from_utf8(path).map_err(|error| error.to_string())?;
+        let relative = Path::new(relative);
+        if !relative
+            .components()
+            .all(|component| matches!(component, Component::Normal(_)))
+        {
+            return Err(format!(
+                "python archive entry escapes its root: {relative:?}"
+            ));
+        }
+        let target = into.join(relative);
+        if let Some(parent) = target.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|error| format!("{}: {error}", parent.display()))?;
+        }
+        std::fs::write(&target, content)
+            .map_err(|error| format!("{}: {error}", target.display()))?;
+    }
+    Ok(())
+}
+
+/// The old tree is moved aside, never written into, so a symlink there is refused rather
+/// than followed and a reader sees the previous tree or the whole new one.
+fn replace_dir(staging: &Path, target: &Path) -> Result<(), String> {
+    let describe = |error: std::io::Error| format!("{}: {error}", target.display());
+    match std::fs::symlink_metadata(target) {
+        Ok(meta) if meta.file_type().is_symlink() => {
+            return Err(format!(
+                "{} is a symlink; not replacing it",
+                target.display()
+            ));
+        }
+        Ok(_) => {
+            let old = target.with_extension(format!("old-{}", std::process::id()));
+            std::fs::rename(target, &old).map_err(describe)?;
+            let _ = std::fs::remove_dir_all(&old);
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(describe(error)),
+    }
+    std::fs::rename(staging, target).map_err(describe)
+}
+
+/// Writes the embedded runtime to `<home>/.yi/python`, whole or not at all: a sibling temp
+/// dir is filled and stamped, then renamed over whatever was there.
+pub fn unpack_embedded_python(home: &Path) -> Result<PathBuf, String> {
+    let data = miniz_oxide::inflate::decompress_to_vec_zlib(PYTHON_EMBED)
+        .map_err(|error| format!("embedded python archive: {error}"))?;
+    let parent = home.join(".yi");
+    std::fs::create_dir_all(&parent).map_err(|error| format!("{}: {error}", parent.display()))?;
+    let target = parent.join("python");
+    let staging = parent.join(format!("python.tmp-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&staging);
+    let result = unpack_entries(&data, &staging)
+        .and_then(|()| {
+            std::fs::write(staging.join(PYTHON_STAMP_FILE), embed_stamp())
+                .map_err(|error| format!("{}: {error}", staging.display()))
+        })
+        .and_then(|()| replace_dir(&staging, &target));
+    if result.is_err() {
+        let _ = std::fs::remove_dir_all(&staging);
+    }
+    result.map(|()| target)
+}
+
+/// Directory holding `yi_runtime` and `skills`: `python/` in the tree above the exe, then
+/// `~/.yi/python` unpacked from the embed, then the compile-time path (the build machine's).
 fn resolve_python_root(exe: Option<&Path>, home: Option<&Path>, fallback: PathBuf) -> PathBuf {
     let mut dir = exe.and_then(Path::parent);
     // deps/ -> debug/ -> target/ -> root is three; the spare levels cost a
     // stat each and keep nested target dirs (worktrees, `--target`) working.
     for _ in 0..6 {
         let Some(candidate) = dir else { break };
-        if has_python_sources(candidate) {
-            return candidate.to_path_buf();
+        let python = candidate.join("python");
+        if has_python_sources(&python) {
+            return python;
         }
         dir = candidate.parent();
     }
-    match home.map(|home| home.join(".yi")) {
-        Some(root) if has_python_sources(&root) => root,
-        _ => fallback,
+    let Some(home) = home else { return fallback };
+    let root = home.join(".yi").join("python");
+    if home_tree_current(&root) {
+        return root;
+    }
+    match unpack_embedded_python(home) {
+        Ok(root) => root,
+        Err(error) => {
+            eprintln!(
+                "warning: python runtime not unpacked under {}: {error}",
+                home.display()
+            );
+            fallback
+        }
     }
 }
 
-fn python_root() -> PathBuf {
+pub fn python_root() -> PathBuf {
     resolve_python_root(
         std::env::current_exe().ok().as_deref(),
         std::env::var_os("HOME").map(PathBuf::from).as_deref(),
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("..")
-            .join(".."),
+            .join("..")
+            .join("python"),
     )
 }
 
 pub fn default_runtime_source_dir() -> PathBuf {
-    python_root().join("python").join("yi_runtime")
+    python_root().join("yi_runtime")
 }
 
 /// (import name, directory under python/skills). Install order is declared
@@ -97,7 +212,7 @@ pub const PYTHON_SKILLS: [(&str, &str); 4] = [
 ];
 
 pub fn default_skills_source_dir() -> PathBuf {
-    python_root().join("python").join("skills")
+    python_root().join("skills")
 }
 
 fn env_path(name: &str) -> Option<PathBuf> {
@@ -696,26 +811,84 @@ mod tests {
         let home = base.join("home");
         let sources = |root: &Path| root.join("python").join("yi_runtime");
         std::fs::create_dir_all(sources(&tree)).map_err(|error| error.to_string())?;
+        let installed = home.join(".yi").join("python");
         std::fs::create_dir_all(sources(&home.join(".yi"))).map_err(|error| error.to_string())?;
+        std::fs::write(installed.join(PYTHON_STAMP_FILE), embed_stamp())
+            .map_err(|error| error.to_string())?;
         let fallback = base.join("build-tree");
         let exe = tree.join("bin").join("yi");
 
         assert_eq!(
             resolve_python_root(Some(&exe), Some(&home), fallback.clone()),
-            tree,
+            tree.join("python"),
             "an unpacked tarball resolves through bin/yi, not through HOME"
         );
         // The installed binary sits on PATH with no tree above it.
         let on_path = home.join("bin").join("yi");
         assert_eq!(
             resolve_python_root(Some(&on_path), Some(&home), fallback.clone()),
-            home.join(".yi"),
-            "an installed binary falls back to ~/.yi"
+            installed,
+            "an installed binary falls back to ~/.yi/python"
         );
         assert_eq!(
             resolve_python_root(Some(&on_path), None, fallback.clone()),
             fallback,
             "with nothing to find, the compile-time path is the last resort"
+        );
+        let _ = std::fs::remove_dir_all(&base);
+        Ok(())
+    }
+
+    #[test]
+    fn the_embed_is_unpacked_under_home_when_no_tree_is_found() -> Result<(), String> {
+        let base = std::env::temp_dir().join(format!("yi-python-embed-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let home = base.join("home");
+        std::fs::create_dir_all(&home).map_err(|error| error.to_string())?;
+        let exe = base.join("bin").join("yi");
+        let fallback = base.join("build-tree");
+        let resolve = || resolve_python_root(Some(&exe), Some(&home), fallback.clone());
+
+        let root = resolve();
+        assert_eq!(root, home.join(".yi").join("python"));
+        assert!(root.join("yi_runtime").join("src").join("rlm").is_dir());
+        assert!(root.join("skills").is_dir());
+        assert_ne!(
+            root, fallback,
+            "the compile-time path never serves an installed binary"
+        );
+        let marker = root.join("marker");
+        std::fs::write(&marker, "").map_err(|error| error.to_string())?;
+        assert_eq!(resolve(), root);
+        assert!(
+            marker.exists(),
+            "a matching stamp must leave the tree alone"
+        );
+        std::fs::write(root.join(PYTHON_STAMP_FILE), "stale").map_err(|error| error.to_string())?;
+        assert_eq!(resolve(), root);
+        assert!(!marker.exists(), "a stale stamp must re-unpack the tree");
+        assert!(root.join("yi_runtime").join("pyproject.toml").is_file());
+        let _ = std::fs::remove_dir_all(&base);
+        Ok(())
+    }
+
+    #[test]
+    fn the_exe_tree_wins_over_the_embed() -> Result<(), String> {
+        let base = std::env::temp_dir().join(format!("yi-python-exe-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let tree = base.join("yi-target");
+        let home = base.join("home");
+        std::fs::create_dir_all(tree.join("python").join("yi_runtime"))
+            .map_err(|error| error.to_string())?;
+        std::fs::create_dir_all(&home).map_err(|error| error.to_string())?;
+        let exe = tree.join("bin").join("yi");
+        assert_eq!(
+            resolve_python_root(Some(&exe), Some(&home), base.join("build-tree")),
+            tree.join("python")
+        );
+        assert!(
+            !home.join(".yi").exists(),
+            "nothing is unpacked while the exe tree serves"
         );
         let _ = std::fs::remove_dir_all(&base);
         Ok(())
