@@ -10,9 +10,13 @@ workspace = true
 
 [dependencies]
 yi-types = { workspace = true }
+miniz_oxide = { workspace = true }
 serde_json = { workspace = true }
 hmac = { workspace = true }
 sha2 = { workspace = true }
 tokio = { workspace = true }
 zeromq = { workspace = true }
 thiserror = { workspace = true }
+
+[build-dependencies]
+miniz_oxide = { workspace = true }

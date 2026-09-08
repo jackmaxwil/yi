@@ -40,10 +40,11 @@ struct Site {
 type Check = fn(&Site) -> Finding;
 
 /// The rows, in the order a reader wants them: what the process is, then what it owns.
-const ROWS: [(&str, Check); 6] = [
+const ROWS: [(&str, Check); 7] = [
     ("home", home_absolute),
     ("config", config_parses),
     ("catalog", catalog_age),
+    ("python-runtime", python_runtime_present),
     ("daemon-socket", socket_alive_or_absent),
     ("daemon-ledger", ledger_roots_exist),
     ("lanes", lanes_consistent),
@@ -87,6 +88,28 @@ fn catalog_age(site: &Site) -> Finding {
             stale.join(", ")
         ))
     }
+}
+
+/// Invariant: the root the kernel installs from holds a tree (#278: a binary away from its
+/// checkout resolved to the build machine's path). `--fix` unpacks the embed under ~/.yi.
+fn python_runtime_present(site: &Site) -> Finding {
+    let root = yi_runtime::python_root();
+    if root.join("yi_runtime").is_dir() || root.join("skills").is_dir() {
+        return ok(root.display().to_string());
+    }
+    if site.fix {
+        return match yi_runtime::unpack_embedded_python(&site.home) {
+            Ok(root) => Finding {
+                status: Status::Fixed,
+                detail: format!("embedded runtime unpacked to {}", root.display()),
+            },
+            Err(error) => fail(error),
+        };
+    }
+    fail(format!(
+        "{} holds neither yi_runtime nor skills; `yi doctor --fix` unpacks the embed",
+        root.display()
+    ))
 }
 
 fn socket_path(site: &Site) -> PathBuf {
