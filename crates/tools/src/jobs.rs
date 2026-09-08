@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::mpsc::RecvTimeoutError;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
@@ -299,6 +300,7 @@ fn evict(jobs: &mut HashMap<u64, Job>) {
 pub enum Run {
     Finished(Box<CommandCapture>),
     Backgrounded(JobId),
+    TimedOut(Box<CommandCapture>),
 }
 
 fn start(
@@ -354,13 +356,14 @@ pub fn spawn_job(
     start(shell_command, cwd, cancelled, sandbox, Reaper::Handle).0
 }
 
-/// A command outliving `auto_background` keeps running as a job instead of holding the turn.
-/// `None`, the default, disables it: silently detaching is its own kind of surprise.
+/// A command outliving `auto_background` keeps running as a job instead of holding the turn
+/// (`None` disables it: silently detaching surprises); past `timeout` it is killed instead.
 pub fn run_or_background(
     shell_command: &str,
     cwd: &Path,
     cancelled: &CancelFlag,
     auto_background: Option<Duration>,
+    timeout: Duration,
     sandbox: Option<&crate::sandbox::Sandbox>,
 ) -> Result<Run, String> {
     let (id, receiver) = start(
@@ -370,25 +373,49 @@ pub fn run_or_background(
         sandbox,
         Reaper::Poller { reported: false },
     );
-    let waited = match auto_background {
-        Some(limit) => receiver
-            .recv_timeout(limit)
-            .map_err(|error| error.to_string()),
-        None => receiver.recv().map_err(|error| error.to_string()),
-    };
-    match waited {
+    let background = auto_background.filter(|limit| *limit <= timeout);
+    match receiver.recv_timeout(background.unwrap_or(timeout)) {
         Ok(Ok(capture)) => {
             registry().mark_reported(id);
             Ok(Run::Finished(Box::new(capture)))
         }
         Ok(Err(message)) => Err(message),
-        Err(_still_running) => Ok(Run::Backgrounded(id)),
+        Err(RecvTimeoutError::Timeout) if background.is_some() => Ok(Run::Backgrounded(id)),
+        Err(RecvTimeoutError::Timeout) => {
+            let _a_job_that_settled_meanwhile_is_fine = registry().kill(id);
+            match receiver.recv() {
+                Ok(Ok(capture)) => {
+                    registry().mark_reported(id);
+                    Ok(Run::TimedOut(Box::new(capture)))
+                }
+                Ok(Err(message)) => Err(message),
+                Err(gone) => Err(gone.to_string()),
+            }
+        }
+        Err(RecvTimeoutError::Disconnected) => {
+            Err("command thread ended without a result".to_owned())
+        }
     }
 }
 
 /// Clamped so a poll can neither spin nor hang the turn.
 pub fn clamp_wait(seconds: u64) -> Duration {
     Duration::from_secs(seconds.clamp(5, 300))
+}
+
+pub const DEFAULT_TIMEOUT_SECS: u64 = 120;
+/// One sixth of a one-hour attempt: room for a cold build or a whole suite, and twice the
+/// wait clamp, so anything longer is already a job.
+pub const MAX_TIMEOUT_SECS: u64 = 600;
+
+/// Absent or zero is the default; the ceiling holds whatever the model asks.
+pub fn clamp_timeout(seconds: Option<u64>) -> Duration {
+    Duration::from_secs(
+        seconds
+            .filter(|seconds| *seconds > 0)
+            .unwrap_or(DEFAULT_TIMEOUT_SECS)
+            .min(MAX_TIMEOUT_SECS),
+    )
 }
 
 #[cfg(test)]
@@ -431,6 +458,23 @@ mod tests {
             JobState::Settled(outcome) => Some(outcome),
             JobState::Running => None,
         })
+    }
+
+    #[test]
+    fn timeout_secs_defaults_and_clamps() {
+        assert_eq!(
+            clamp_timeout(None),
+            Duration::from_secs(DEFAULT_TIMEOUT_SECS)
+        );
+        assert_eq!(
+            clamp_timeout(Some(0)),
+            Duration::from_secs(DEFAULT_TIMEOUT_SECS)
+        );
+        assert_eq!(clamp_timeout(Some(30)), Duration::from_secs(30));
+        assert_eq!(
+            clamp_timeout(Some(10_000)),
+            Duration::from_secs(MAX_TIMEOUT_SECS)
+        );
     }
 
     #[test]

@@ -261,6 +261,7 @@ SIGNAL_NAMES = (
     "cache_miss_streak", "done_without_check", "intercept_capped",
     "blocked_on_user_without_question", "waiting_without_block", "gate_rerun_unchanged_tree",
     "intercept_count", "intercept_max_rung", "regression_seen_red",
+    "bash_timeouts", "broad_search_refused",
 )
 
 
@@ -363,6 +364,10 @@ def signals(entries):
             out["chain_stop"] += 1
         if tool == "bash" and isinstance(args, dict) and args.get("max_output_lines") and "lines omitted" not in result["text"]:
             out["self_capped"] += 1
+        if tool == "bash" and "[timed out after" in result["text"]:
+            out["bash_timeouts"] += 1
+        if tool == "bash" and result["text"].startswith("[refused: "):
+            out["broad_search_refused"] += 1
         if "PermissionDenied" in result["text"] and "PermissionDenied" in final:
             out["sandbox_denial_as_finding"] += 1
         for pointer in re.findall(r"\[full output: ([^\]]+)\]", result["text"]):
