@@ -796,6 +796,7 @@ fn doctor_reports_and_repairs_what_it_may() -> TestResult {
             "home",
             "config",
             "catalog",
+            "python-runtime",
             "daemon-socket",
             "daemon-ledger",
             "lanes"
