@@ -130,5 +130,11 @@ when it changes rather than editing them by hand.
 - [D150](adr/d150.md) - the real clock is in the environment block
 - [D151](adr/d151.md) - a number without a source is sent back once
 - [D152](adr/d152.md) - a turn repeated verbatim is sent back once, then ended
+- [D153](adr/d153.md) - a bare length stop forces the next turn to act
+- [D154](adr/d154.md) - every edit and write result says whether the file still parses
+- [D155](adr/d155.md) - a todo item has an id and a label matches by unique prefix
+- [D156](adr/d156.md) - the kernel ships with the binary
+- [D157](adr/d157.md) - the runtime says what is there and asks when nothing moves
+- [D158](adr/d158.md) - a claim the record does not support is sent back once, three ways
 
 D36-D51, D72, D73 and D74 have no ADR yet; ARCHITECTURE.md is the record for those rows.

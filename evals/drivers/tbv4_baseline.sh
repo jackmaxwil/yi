@@ -7,7 +7,7 @@ set -u
 # Pinned by digest (E13): leaderboard/src/leaderboard/core/hub.py:27 of the
 # terminal-bench clone; `@latest` would move under a row.
 DATASET="terminal-bench/terminal-bench@sha256:39d9f44b40420cde8fdcc087579c0d72a7e14fa3656d603c3f0d22fb35e27732"
-TASKS="${TBV4_TASKS:-html-js-filter photonic-waveguide-routing music-harmony bun-sourcemap-leak foodstuff-beta-activity cargo-flight-dispatch}"
+TASKS="${TBV4_TASKS:-html-js-filter photonic-waveguide-routing heat-pump-warranty bun-sourcemap-leak foodstuff-beta-activity cargo-flight-dispatch}"
 ATTEMPTS="${TBV4_ATTEMPTS:-1}"
 CONCURRENCY="${TBV4_CONCURRENCY:-2}"
 # One hour of the task's 28,800 s (plan §8, decision 2); the ceiling is the

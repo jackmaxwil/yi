@@ -46,7 +46,8 @@ whole request, from investigation through implementation to verification,
 not only the next step. Nest sub-steps under a todo when a step has parts
 the user should see progress on; two levels are enough.
 
-Every item is in exactly one state, and you move it with one op:
+Every item is in exactly one state, and you move it with one op, naming
+it by its id (`t3`) or its label:
 
 - pending → running: `start <label>`, when you begin it. One item runs
   at a time; starting another returns the first to pending.
