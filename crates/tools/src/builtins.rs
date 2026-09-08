@@ -77,16 +77,24 @@ impl Tool for WriteTool {
                 if let Some(state) = &self.hashline {
                     crate::hashline::tool::record_write_snapshot(state, &path, content);
                 }
-                let mut output = text_output(format!(
-                    "Wrote {} bytes to {}",
-                    content.len(),
-                    path.display()
-                ));
+                let syntax = crate::syntax::verdict(&path);
+                let mut text = format!("Wrote {} bytes to {}", content.len(), path.display());
+                if let Some(line) = &syntax {
+                    text.push('\n');
+                    text.push_str(line);
+                }
+                let mut output = text_output(text);
                 if let Some(before) = &before {
                     let patch = crate::diff::patch(before, content, &path);
                     if !patch.is_empty() {
                         output.result.details = crate::diff::patch_details(&patch);
                     }
+                }
+                if let Value::Object(details) = &mut output.result.details {
+                    details.insert(
+                        "syntax".to_owned(),
+                        syntax.map_or(Value::Null, Value::String),
+                    );
                 }
                 output
             }

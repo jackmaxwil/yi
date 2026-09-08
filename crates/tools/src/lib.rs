@@ -13,6 +13,7 @@ mod orient;
 mod process;
 pub mod reduce;
 pub mod sandbox;
+mod syntax;
 mod tool;
 
 use std::sync::Arc;
