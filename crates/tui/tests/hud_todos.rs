@@ -19,7 +19,7 @@ fn list(items: Vec<TodoItem>) -> Result<TodoList, Box<dyn Error>> {
             items,
             extra: serde_json::Map::new(),
         }],
-        extra: serde_json::Map::new(),
+        ..TodoList::default()
     })
 }
 
