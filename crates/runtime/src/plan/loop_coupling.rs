@@ -15,8 +15,6 @@ pub const LEDGER_CUSTOM_TYPE: &str = "ledger_prompt";
 /// Every threshold the loop coupling reads is named here and nowhere else,
 /// fitted on task-shape features alone, never on a benchmark identity.
 pub mod gate {
-    /// Mutating tool calls since the last ledger touch that earn one nudge.
-    pub const NUDGE_THRESHOLD: u32 = 12;
     pub const NUDGE_CAP_PER_CYCLE: u32 = 2;
     pub const STOP_CAP_PER_CYCLE: u32 = 2;
     pub const MULTI_STEP_SCORE: usize = 2;
@@ -35,13 +33,15 @@ pub mod gate {
             .to_ascii_lowercase()
     }
 
-    fn enumerated(line: &str) -> bool {
+    /// The text of a list line (`- `, `* `, `1.`, `1)`), or None for prose.
+    pub fn enumerated(line: &str) -> Option<&str> {
         let lead = line.trim_start();
-        lead.starts_with("- ")
-            || lead.starts_with("* ")
-            || lead.split_once(['.', ')']).is_some_and(|(head, _)| {
-                !head.is_empty() && head.bytes().all(|b| b.is_ascii_digit())
-            })
+        if let Some(rest) = lead.strip_prefix("- ").or_else(|| lead.strip_prefix("* ")) {
+            return Some(rest);
+        }
+        lead.split_once(['.', ')'])
+            .filter(|(head, _)| !head.is_empty() && head.bytes().all(|b| b.is_ascii_digit()))
+            .map(|(_, rest)| rest)
     }
 
     /// True for multi-step work: the verdict is advisory to the loop and never
@@ -58,7 +58,7 @@ pub mod gate {
         {
             return false;
         }
-        if trimmed.lines().filter(|line| enumerated(line)).count() >= ENUMERATED_ITEMS_MIN {
+        if trimmed.lines().filter_map(enumerated).count() >= ENUMERATED_ITEMS_MIN {
             return true;
         }
         let conjunctions = words
