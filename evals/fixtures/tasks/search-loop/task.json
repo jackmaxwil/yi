@@ -1,0 +1,6 @@
+{
+  "id": "search-loop",
+  "dryReward": 0,
+  "timeoutSec": 600,
+  "note": "faux writes no solution; the checker in the workspace is the oracle a spiral never runs"
+}
