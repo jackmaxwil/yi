@@ -45,6 +45,7 @@ struct Args {
     record: Option<String>,
     snap: Option<String>,
     deadline: Option<u64>,
+    no_gates: bool,
     resume: Resume,
     schema: Option<String>,
     prompt: String,
@@ -81,6 +82,7 @@ fn parse_args() -> Result<Args, lexopt::Error> {
     let mut record = None;
     let mut snap = None;
     let mut deadline = None;
+    let mut no_gates = false;
     let mut continue_leaf = false;
     let mut session = None;
     let mut schema = None;
@@ -117,6 +119,7 @@ fn parse_args() -> Result<Args, lexopt::Error> {
             Long("record") => record = Some(parser.value()?.string()?),
             Long("snap") => snap = Some(parser.value()?.string()?),
             Long("deadline") => deadline = Some(parser.value()?.parse()?),
+            Long("no-gates") => no_gates = true,
             Long("continue") => continue_leaf = true,
             Long("session") => session = Some(parser.value()?.string()?),
             Long("schema") => schema = Some(parser.value()?.string()?),
@@ -169,6 +172,7 @@ fn parse_args() -> Result<Args, lexopt::Error> {
         record,
         snap,
         deadline,
+        no_gates,
         resume: match (session, continue_leaf) {
             (Some(id), _) => Resume::Named(id),
             (None, true) => Resume::Leaf,
@@ -519,6 +523,7 @@ fn build_session(
             plans_dir: configured_plans_dir(&work),
             auto_background: configured_auto_background(),
             deadline: args.deadline.map(std::time::Duration::from_secs),
+            gates: yi_types::config::Gates::resolve(args.no_gates, config().gates.as_ref()),
             kernel_prewarm: config()
                 .kernel
                 .as_ref()
@@ -1069,7 +1074,7 @@ fn main() {
         "ask" => {
             if args.prompt.is_empty() {
                 eprintln!(
-                    "usage: yi ask [--model provider/id] [--json] [--deadline secs] <prompt>"
+                    "usage: yi ask [--model provider/id] [--json] [--deadline secs] [--no-gates] <prompt>"
                 );
                 std::process::exit(2);
             }

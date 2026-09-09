@@ -42,6 +42,49 @@ pub struct UserConfig {
     /// `routing`: OpenRouter's `provider` object, sent verbatim; absent deprioritises
     /// upstreams under 20 tok/s or over 10 s p50 latency, and `{}` sends nothing.
     pub routing: Option<serde_json::Value>,
+    /// D162: the two soft gates at a clean stop; `false` turns one off.
+    pub gates: Option<GatesConfig>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct GatesConfig {
+    pub artifact: Option<bool>,
+    pub closure: Option<bool>,
+}
+
+/// The gates as wired: on unless the config or `--no-gates` says otherwise.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Gates {
+    pub artifact: bool,
+    pub closure: bool,
+}
+
+impl Default for Gates {
+    fn default() -> Self {
+        Self {
+            artifact: true,
+            closure: true,
+        }
+    }
+}
+
+impl Gates {
+    pub const OFF: Self = Self {
+        artifact: false,
+        closure: false,
+    };
+
+    /// `--no-gates` wins over the config; an unset key is on.
+    pub fn resolve(off: bool, config: Option<&GatesConfig>) -> Self {
+        if off {
+            return Self::OFF;
+        }
+        Self {
+            artifact: config.and_then(|gates| gates.artifact).unwrap_or(true),
+            closure: config.and_then(|gates| gates.closure).unwrap_or(true),
+        }
+    }
 }
 
 /// `tui.pace`: the streamed reveal's speed as a percentage of the default (100); `0` paints
