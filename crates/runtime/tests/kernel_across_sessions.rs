@@ -128,11 +128,23 @@ async fn a_parent_reads_a_variable_out_of_its_childs_kernel() -> TestResult {
         host.list()
     );
 
-    let resolver = Resolver::new(root.clone(), Wall::default()).with_kernel_variables(kernels);
+    let family = root.join("family");
+    let resolver = Arc::new(
+        Resolver::new(root.clone(), Wall::default())
+            .with_kernel_variables(kernels)
+            .with_family_dir(family.clone()),
+    );
     let url: yi_types::url::Url = "kernel://helper/answer".parse()?;
-    let fetched = tokio::task::spawn_blocking(move || resolver.fetch(&url)).await??;
+    let reader = Arc::clone(&resolver);
+    let fetched = tokio::task::spawn_blocking(move || reader.fetch(&url)).await??;
     assert_eq!(fetched.text, "42");
     assert_eq!(fetched.served_by, "kernel-namespace helper");
+    // D164: the same variable as an object, dilled by the child's own kernel.
+    let object: yi_types::url::Url = "kernel://helper/answer".parse()?;
+    let dumper = Arc::clone(&resolver);
+    let (path, bytes) = tokio::task::spawn_blocking(move || dumper.dump_kernel(&object)).await??;
+    assert_eq!(path, family.join("helper.answer.dill"));
+    assert!(bytes > 0 && path.is_file(), "{path:?} {bytes}");
     let _ = std::fs::remove_dir_all(&root);
     Ok(())
 }

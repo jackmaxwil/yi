@@ -22,6 +22,7 @@ fn service() -> Arc<KernelService> {
             .map(PathBuf::from)
             .unwrap_or_default(),
         session_dir: None,
+        family_dir: None,
         host: Arc::new(registry),
         on_restore: None,
         sandbox: None,
