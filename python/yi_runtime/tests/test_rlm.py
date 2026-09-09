@@ -9,6 +9,9 @@ from __future__ import annotations
 
 import asyncio
 import pathlib
+import tempfile
+import shutil
+import os
 import time
 import unittest
 from unittest import mock
@@ -119,3 +122,51 @@ class ResultSignatureTests(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class BlackboardTests(unittest.IsolatedAsyncioTestCase):
+    """D164: put/get/ls over RLM_FAMILY_DIR, and a kernel:// object fetch."""
+
+    def setUp(self) -> None:
+        self.family = pathlib.Path(tempfile.mkdtemp(prefix="yi-family-"))
+        self.env = mock.patch.dict(
+            os.environ,
+            {"RLM_FAMILY_DIR": str(self.family), "RLM_SESSION_DIR": "/x/rlm-1/sub-abc"},
+        )
+        self.env.start()
+
+    def tearDown(self) -> None:
+        self.env.stop()
+        shutil.rmtree(self.family, ignore_errors=True)
+
+    def test_put_get_and_ls_round_trip_with_a_sidecar(self) -> None:
+        sidecar = rlm.put("shard_auth", {"findings": [1, 2, 3]})
+        self.assertEqual(sidecar["owner"], "sub-abc")
+        self.assertEqual(sidecar["type"], "dict")
+        self.assertTrue((self.family / "shard_auth.dill").is_file())
+        self.assertEqual(rlm.get("shard_auth"), {"findings": [1, 2, 3]})
+        self.assertEqual([entry["name"] for entry in rlm.ls()], ["shard_auth"])
+        with self.assertRaises(KeyError):
+            rlm.get("nothing")
+        with self.assertRaises(ValueError):
+            rlm.put("../escape", 1)
+
+    async def test_a_kernel_object_fetch_undills_the_path_the_host_names(self) -> None:
+        target = self.family / "main.df.dill"
+        with open(target, "wb") as handle:
+            rlm._serializer().dump([4, 5], handle)
+        calls: list[dict] = []
+
+        async def fake_host_request(kind, payload):
+            calls.append(payload)
+            return {"path": str(target), "bytes": target.stat().st_size}
+
+        with mock.patch.object(rlm, "host_request", fake_host_request):
+            self.assertEqual(await rlm.fetch("kernel://main/df"), [4, 5])
+        self.assertEqual(calls, [{"url": "kernel://main/df", "object": True}])
+
+        async def text_host_request(kind, payload):
+            return {"text": "[4, 5]"}
+
+        with mock.patch.object(rlm, "host_request", text_host_request):
+            self.assertEqual(await rlm.fetch("kernel://main/df", as_text=True), "[4, 5]")

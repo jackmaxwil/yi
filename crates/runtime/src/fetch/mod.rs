@@ -66,6 +66,19 @@ pub trait KernelVariables: Send + Sync {
         agent: &str,
         variable: &VariableName,
     ) -> Result<Option<String>, VariableReadError>;
+
+    /// D164: the variable dilled to `path` by its own kernel; `Some(bytes)` when it exists.
+    fn dump(
+        &self,
+        agent: &str,
+        variable: &VariableName,
+        path: &std::path::Path,
+    ) -> Result<Option<u64>, VariableReadError>;
+}
+
+/// D164: where a family member's files live, for `tree://<agent>/<path>`.
+pub trait MemberTrees: Send + Sync {
+    fn cwd_of(&self, agent: &str) -> Option<PathBuf>;
 }
 
 /// Invariant: an entry is a weak handle on a session's own service, so the map a root shares
@@ -125,6 +138,24 @@ impl KernelVariables for KernelServiceMap {
                 detail: format!("kernel:// needs a tokio runtime: {error}"),
             })?;
         handle.block_on(service.read_variable(variable))
+    }
+
+    /// Invariant: parks the calling thread on the shared runtime, so it is reachable only
+    /// through [`Resolver::fetch`]'s spawn_blocking contract, never from an async task.
+    fn dump(
+        &self,
+        agent: &str,
+        variable: &VariableName,
+        path: &std::path::Path,
+    ) -> Result<Option<u64>, VariableReadError> {
+        let Some(service) = self.service(agent) else {
+            return Err(VariableReadError::NotRunning);
+        };
+        let handle =
+            tokio::runtime::Handle::try_current().map_err(|error| VariableReadError::Cell {
+                detail: format!("kernel:// needs a tokio runtime: {error}"),
+            })?;
+        handle.block_on(service.dump_variable(variable, path))
     }
 }
 
@@ -223,6 +254,8 @@ pub struct Resolver {
     mcp_read: Option<Arc<dyn McpResourceRead>>,
     kernel_variables: Option<Arc<dyn KernelVariables>>,
     transcripts: Option<Arc<dyn Transcripts>>,
+    family_dir: Option<PathBuf>,
+    member_trees: Option<Arc<dyn MemberTrees>>,
     log: Arc<FetchLog>,
 }
 
@@ -239,6 +272,8 @@ impl Resolver {
             mcp_read: None,
             kernel_variables: None,
             transcripts: None,
+            family_dir: None,
+            member_trees: None,
             log: Arc::new(FetchLog::new()),
         }
     }
@@ -297,6 +332,24 @@ impl Resolver {
         self
     }
 
+    pub fn with_family_dir(mut self, dir: PathBuf) -> Self {
+        self.family_dir = Some(dir);
+        self
+    }
+
+    pub fn with_member_trees(mut self, trees: Arc<dyn MemberTrees>) -> Self {
+        self.member_trees = Some(trees);
+        self
+    }
+
+    pub(super) fn family_dir(&self) -> Option<&std::path::Path> {
+        self.family_dir.as_deref()
+    }
+
+    pub(super) fn member_trees(&self) -> Option<&Arc<dyn MemberTrees>> {
+        self.member_trees.as_ref()
+    }
+
     pub fn log(&self) -> &Arc<FetchLog> {
         &self.log
     }
@@ -338,6 +391,8 @@ impl Resolver {
             Scheme::Checkpoint => self.resolve_checkpoint(url),
             Scheme::Mcp => self.resolve_mcp(url),
             Scheme::User => self.resolve_user(url),
+            Scheme::External(scheme) if scheme == "family" => self.resolve_family(url),
+            Scheme::External(scheme) if scheme == "tree" => self.resolve_tree(url),
             Scheme::External(scheme) => Err(FetchError::External {
                 url: url.to_string(),
                 scheme: scheme.clone(),
@@ -644,6 +699,7 @@ mod tests {
                 cwd: dir.clone(),
                 home: dir,
                 session_dir: None,
+                family_dir: None,
                 host: Arc::new(NoHost),
                 on_restore: None,
                 sandbox: None,

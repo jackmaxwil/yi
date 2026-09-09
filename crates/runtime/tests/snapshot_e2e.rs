@@ -30,6 +30,7 @@ fn service(session_dir: &std::path::Path, notices: &Arc<Mutex<Vec<String>>>) -> 
             .map(PathBuf::from)
             .unwrap_or_default(),
         session_dir: Some(session_dir.to_path_buf()),
+        family_dir: None,
         host: Arc::new(registry),
         on_restore: Some(Arc::new(move |restore| {
             if let Ok(mut queue) = notices.lock() {
