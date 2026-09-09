@@ -88,6 +88,7 @@ fn host(answer: Option<&'static str>) -> (Arc<SubagentHost>, PathBuf) {
         attribute: Arc::new(|_| {}),
         store: Arc::new(|| None),
         plans_dir: std::env::temp_dir().join(".yi/plans"),
+        family_live: Arc::new(|| 0),
     }));
     (host, root)
 }

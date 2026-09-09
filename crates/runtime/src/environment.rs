@@ -3,7 +3,6 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use yi_types::message::{AgentMessage, ENVIRONMENT_TAG, UserContent};
-use yi_types::subagent::ChildStatus;
 
 use crate::session::{AgentSession, EnvironmentFn};
 use crate::subagent::SubagentHost;
@@ -227,23 +226,8 @@ pub fn hook(
         if let Some(state) = kernel() {
             lines.push(format!("kernel: {state}"));
         }
-        let running: Vec<String> = host
-            .children
-            .lock()
-            .map(|children| {
-                children
-                    .values()
-                    .filter(|child| child.status == ChildStatus::Running)
-                    .map(|child| sanitize(&child.session_name))
-                    .collect()
-            })
-            .unwrap_or_default();
-        if !running.is_empty() {
-            lines.push(format!(
-                "children: {} running ({})",
-                running.len(),
-                running.join(", ")
-            ));
+        if let Some(line) = crate::family::children_line(&host.states()) {
+            lines.push(line);
         }
         Some(render(&lines))
     })

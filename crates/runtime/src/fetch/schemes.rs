@@ -27,8 +27,38 @@ fn render_history(
         message,
     };
     let store = yi_session::lock_session(session);
-    match entry_id {
-        Some(id) => {
+    // `tail/N` is the last N entries compact, `since/S` everything after sequence S (D165).
+    let window = entry_id
+        .and_then(|selector| selector.split_once('/'))
+        .filter(|(kind, _)| matches!(*kind, "tail" | "since"))
+        .and_then(|(kind, raw)| raw.parse::<u64>().ok().map(|number| (kind, number)));
+    match (entry_id, window) {
+        (_, Some((kind, number))) => {
+            let entries = store
+                .find_entries(&EntryQuery {
+                    order: EntryOrder::OldestFirst,
+                    ..EntryQuery::default()
+                })
+                .map_err(|error| backend(error.to_string()))?;
+            let kept: Vec<String> = match kind {
+                "tail" => entries
+                    .iter()
+                    .rev()
+                    .take(usize::try_from(number).unwrap_or(usize::MAX))
+                    .collect::<Vec<_>>()
+                    .into_iter()
+                    .rev()
+                    .map(crate::family::compact_entry)
+                    .collect(),
+                _ => entries
+                    .iter()
+                    .filter(|entry| entry.seq() > number)
+                    .map(crate::family::compact_entry)
+                    .collect(),
+            };
+            Ok((kept.join("\n"), format!("session-{kind}")))
+        }
+        (Some(id), None) => {
             let entry = store.entry(id).ok_or_else(|| FetchError::NotFound {
                 url: url.to_string(),
                 what: format!("entry {id}"),
@@ -37,7 +67,7 @@ fn render_history(
                 serde_json::to_string_pretty(&entry).map_err(|error| backend(error.to_string()))?;
             Ok((text, "session-entry".to_owned()))
         }
-        None => {
+        (None, None) => {
             let entries = store
                 .find_entries(&EntryQuery {
                     order: EntryOrder::OldestFirst,
@@ -151,7 +181,8 @@ impl Resolver {
         if let Some(session) = self.transcript_of(path) {
             return render_history(url, &session, None);
         }
-        if let Some((agent, entry)) = path.rsplit_once('/')
+        // The agent is the first segment: what follows is an entry id or a D165 window.
+        if let Some((agent, entry)) = path.split_once('/')
             && let Some(session) = self.transcript_of(agent)
         {
             return render_history(url, &session, Some(entry));
@@ -809,6 +840,13 @@ mod tests {
         let resolver = Resolver::new(workspace, Wall::default()).with_session("main", shared);
         let entry: Url = format!("history://main/{id}").parse()?;
         assert_eq!(resolver.fetch(&entry)?.served_by, "session-entry");
+        let tail: Url = "history://main/tail/1".parse()?;
+        let served = resolver.fetch(&tail)?;
+        assert_eq!(served.served_by, "session-tail");
+        assert_eq!(served.text.lines().count(), 1, "{}", served.text);
+        assert!(served.text.starts_with('#'), "{}", served.text);
+        let since: Url = "history://main/since/0".parse()?;
+        assert_eq!(resolver.fetch(&since)?.served_by, "session-since");
         let transcript: Url = "history://main".parse()?;
         assert_eq!(resolver.fetch(&transcript)?.served_by, "session-transcript");
         let other: Url = "history://sibling".parse()?;
