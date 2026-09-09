@@ -1,0 +1,24 @@
+# The suite under the profile that ships, with panic forced back to unwind,
+# which nothing else covers because the shipping profile aborts. It ran on
+# every push to main until #304 measured it at seven of postmerge's eight
+# minutes; nothing gates on it, so it runs nightly and on demand.
+name: dist-suite
+
+on:
+  schedule:
+    - cron: "23 4 * * *"
+  workflow_dispatch:
+
+jobs:
+  dist-suite:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup show
+      # Its own key: the dist profile shares no artifact with the `test` lane.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: dist-suite
+          cache-on-failure: true
+      - run: just dist-suite
