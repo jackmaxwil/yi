@@ -532,6 +532,25 @@ impl yi_loop::run::StreamFn for Spiral {
             Ok(mut queue) if !queue.is_empty() => stream_with_deltas(&queue.remove(0)),
             _ => Vec::new(),
         };
+        // 32-char deltas: well over 256 events sit between the cut and the `Done`, as they
+        // do behind a real channel of 256 (#325).
+        let events: Vec<AssistantMessageEvent> = events
+            .into_iter()
+            .flat_map(|event| match event {
+                AssistantMessageEvent::ThinkingDelta {
+                    content_index,
+                    delta,
+                } => delta
+                    .as_bytes()
+                    .chunks(32)
+                    .map(|piece| AssistantMessageEvent::ThinkingDelta {
+                        content_index,
+                        delta: String::from_utf8_lossy(piece).into_owned(),
+                    })
+                    .collect::<Vec<_>>(),
+                other => vec![other],
+            })
+            .collect();
         tokio::spawn(async move {
             for event in events {
                 if sender.send(event).await.is_err() {
