@@ -189,13 +189,19 @@ pub fn send_with_retry(
 
 pub fn pump_sse(
     response: ureq::Response,
+    stop: Option<&std::sync::atomic::AtomicBool>,
     mut on_event: impl FnMut(SseEvent) -> Result<bool, String>,
 ) -> Result<(), String> {
     let mut reader = response.into_reader();
     let mut decoder = crate::sse::SseDecoder::default();
     let mut buffer = [0u8; 8192];
     let mut pending: Vec<u8> = Vec::new();
+    // D163: the loop's cut is read between events; dropping the reader closes the connection.
+    let cut = || stop.is_some_and(|flag| flag.load(std::sync::atomic::Ordering::SeqCst));
     loop {
+        if cut() {
+            return Ok(());
+        }
         let read =
             std::io::Read::read(&mut reader, &mut buffer).map_err(|error| error.to_string())?;
         if read == 0 {
@@ -208,7 +214,7 @@ pub fn pump_sse(
         let chunk = chunk.to_owned();
         pending.clear();
         for event in decoder.feed(&chunk) {
-            if !on_event(event)? {
+            if cut() || !on_event(event)? {
                 return Ok(());
             }
         }
@@ -223,6 +229,7 @@ pub fn pump_sse(
 
 /// D146: a body that died before its first event is sent once more; the first error returns.
 pub fn pump_sse_with_resend(
+    stop: Option<&std::sync::atomic::AtomicBool>,
     send: impl Fn() -> Result<ureq::Response, String>,
     mut on_event: impl FnMut(SseEvent) -> Result<bool, String>,
 ) -> Result<Option<String>, String> {
@@ -230,7 +237,7 @@ pub fn pump_sse_with_resend(
     loop {
         let response = send()?;
         let mut delivered = false;
-        let pumped = pump_sse(response, |event| {
+        let pumped = pump_sse(response, stop, |event| {
             delivered = true;
             on_event(event)
         });
@@ -325,6 +332,40 @@ pub fn openai_bearer_post(
         body,
         proxy,
     )
+}
+
+/// What one request needs beside its body: the key, the proxy, and the loop's cut flag.
+#[derive(Clone, Copy)]
+pub struct Wire<'a> {
+    pub api_key: &'a str,
+    pub proxy: Option<&'a ProxyConfig>,
+    pub stop: Option<&'a std::sync::atomic::AtomicBool>,
+}
+
+/// The OpenAI-style stream shape, shared by the completions and responses paths: one
+/// blocking request on a spawned thread, its failure mapped to a terminal event.
+pub fn spawn_stream(
+    fail: impl FnOnce(&Model, &str) -> crate::EventOut + Send + 'static,
+    model: &Model,
+    body: Value,
+    api_key: &str,
+    proxy: Option<ProxyConfig>,
+    stop: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+    run: impl FnOnce(&Model, &Value, Wire<'_>, &Sender<crate::EventOut>) -> Result<(), String>
+    + Send
+    + 'static,
+) -> Receiver<crate::EventOut> {
+    let (model, api_key) = (model.clone(), api_key.to_owned());
+    spawn_provider_stream(move |sender| {
+        let wire = Wire {
+            api_key: &api_key,
+            proxy: proxy.as_ref(),
+            stop: stop.as_deref(),
+        };
+        if let Err(message) = run(&model, &body, wire, sender) {
+            let _ = sender.blocking_send(fail(&model, &message));
+        }
+    })
 }
 
 pub fn spawn_provider_stream(

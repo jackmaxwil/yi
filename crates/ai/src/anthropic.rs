@@ -32,6 +32,8 @@ pub struct AnthropicOptions {
     /// Interactive sessions hold the stable prefix for an hour.
     pub cache_1h: bool,
     pub proxy: Option<crate::request::ProxyConfig>,
+    /// The loop's cut of this request (D163): set, the pump stops at the next event.
+    pub stop: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
 }
 
 fn ephemeral(long: bool) -> Value {
@@ -761,10 +763,14 @@ const ANTHROPIC_MESSAGE_EVENTS: [&str; 6] = [
 fn run_request(
     model: &Model,
     body: &Value,
-    api_key: &str,
-    proxy: Option<&crate::request::ProxyConfig>,
+    wire: crate::request::Wire<'_>,
     sender: &Sender<AssistantMessageEvent>,
 ) -> Result<(), String> {
+    let crate::request::Wire {
+        api_key,
+        proxy,
+        stop,
+    } = wire;
     let url = format!("{}/v1/messages", model.base_url);
     let headers = vec![
         ("x-api-key", api_key.to_owned()),
@@ -773,6 +779,7 @@ fn run_request(
     let mut mapper = Mapper::new(model);
     let _ = sender.blocking_send(mapper.start_event());
     let resent = crate::request::pump_sse_with_resend(
+        stop,
         || crate::request::send_with_retry(&url, &headers, body, proxy),
         |sse| {
             let kind = sse.event.as_deref().unwrap_or("");
@@ -808,8 +815,18 @@ pub fn stream(
     let model = model.clone();
     let api_key = api_key.to_owned();
     let proxy = options.proxy.clone();
+    let stop = options.stop.clone();
     tokio::task::spawn_blocking(move || {
-        let Err(message) = run_request(&model, &body, &api_key, proxy.as_ref(), &sender) else {
+        let Err(message) = run_request(
+            &model,
+            &body,
+            crate::request::Wire {
+                api_key: &api_key,
+                proxy: proxy.as_ref(),
+                stop: stop.as_deref(),
+            },
+            &sender,
+        ) else {
             return;
         };
         let mut mapper = Mapper::new(&model);
