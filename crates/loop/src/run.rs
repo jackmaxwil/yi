@@ -408,23 +408,23 @@ fn cut_message(partial: Option<&AgentMessage>, model: &Model, chars: usize) -> A
 }
 
 /// After the cut the provider settles the turn (up to about thirty seconds) and sends its
-/// `Done`; a stream that closes or keeps talking instead leaves the estimate.
+/// `Done`; a stream that closes instead leaves the estimate. The deadline is the only bound:
+/// the channel holds 256 events and a fast upstream has that many deltas queued ahead of the
+/// `Done` at the moment of the cut, and the pump stops reading at the flag.
 const CUT_DRAIN: std::time::Duration = std::time::Duration::from_secs(45);
-const CUT_DRAIN_EVENTS: usize = 256;
 
 /// The provider's `Done` after a cut, if it comes within the bound; its usage is settled.
 async fn drain_to_done(
     receiver: &mut tokio::sync::mpsc::Receiver<AssistantMessageEvent>,
 ) -> Option<AgentMessage> {
     let deadline = tokio::time::Instant::now() + CUT_DRAIN;
-    for _ in 0..CUT_DRAIN_EVENTS {
+    loop {
         match tokio::time::timeout_at(deadline, receiver.recv()).await {
             Ok(Some(AssistantMessageEvent::Done { message, .. })) => return Some(message),
             Ok(Some(AssistantMessageEvent::Error { .. }) | None) | Err(_) => return None,
             Ok(Some(_)) => {}
         }
     }
-    None
 }
 
 pub const STREAM_RETRY_CUSTOM_TYPE: &str = "stream_retry";
