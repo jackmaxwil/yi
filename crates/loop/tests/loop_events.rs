@@ -543,17 +543,81 @@ impl yi_loop::run::StreamFn for Spiral {
     }
 }
 
-/// Row 0023's photonic attempts reasoned to the 32k cap with no tool call; the loop now cuts
-/// the request at the reasoning budget, keeps a bare length stop with no thinking block, and
-/// re-drives.
+/// D163 amended: the provider settles a cut turn from the generation record and its `Done`
+/// carries the measured usage; the cut message keeps it instead of the chars/4 estimate.
 #[tokio::test]
-async fn a_reasoning_spiral_is_cut_at_the_char_budget_and_re_driven() {
-    let spiral = faux_assistant_message(
+async fn a_cut_turn_keeps_the_usage_the_provider_settled() {
+    let mut spiral = faux_assistant_message(
         vec![faux_thinking(
             &"the router must rise at y=2, no, y=3, ".repeat(2_000),
         )],
         StopReason::Stop,
     );
+    if let AgentMessage::Assistant { usage, .. } = &mut spiral {
+        usage.input = 7_642;
+        usage.output = 12_000;
+        usage.reasoning = Some(12_000);
+        usage.cost.total = serde_json::Number::from_f64(0.0035).unwrap();
+        usage.unknown = false;
+    }
+    let answer = faux_assistant_message(vec![faux_text("done")], StopReason::Stop);
+    let stream = Spiral {
+        responses: Mutex::new(vec![spiral, answer]),
+    };
+    let mut context = LoopContext {
+        system_prompt: String::new(),
+        messages: Vec::new(),
+        tools: vec![Arc::new(EchoTool)],
+    };
+    let config = LoopConfig::new(faux_model());
+    let signal = InterruptSignal::default();
+    let (_events, mut emit) = collector();
+    let collected = run_loop(
+        &mut context,
+        vec![user("go")],
+        &config,
+        &signal,
+        &mut emit,
+        &stream,
+    )
+    .await;
+    let cut = collected
+        .iter()
+        .find(|message| matches!(message, AgentMessage::Assistant { .. }))
+        .expect("the cut turn is kept");
+    if let AgentMessage::Assistant {
+        content,
+        stop_reason,
+        usage,
+        ..
+    } = cut
+    {
+        assert_eq!(*stop_reason, StopReason::Length);
+        assert!(content.is_empty(), "{content:?}");
+        assert_eq!(
+            (usage.input, usage.output, usage.reasoning),
+            (7_642, 12_000, Some(12_000))
+        );
+        assert_eq!(usage.cost.total.as_f64(), Some(0.0035));
+        assert!(!usage.unknown, "{usage:?}");
+    }
+}
+
+/// Row 0023's photonic attempts reasoned to the 32k cap with no tool call; the loop now cuts
+/// the request at the reasoning budget, keeps a bare length stop with no thinking block, and
+/// re-drives.
+#[tokio::test]
+async fn a_reasoning_spiral_is_cut_at_the_char_budget_and_re_driven() {
+    let mut spiral = faux_assistant_message(
+        vec![faux_thinking(
+            &"the router must rise at y=2, no, y=3, ".repeat(2_000),
+        )],
+        StopReason::Stop,
+    );
+    // a stream that closes with no usage chunk: the estimate stands, marked unknown
+    if let AgentMessage::Assistant { usage, .. } = &mut spiral {
+        usage.unknown = true;
+    }
     let answer = faux_assistant_message(vec![faux_text("done")], StopReason::Stop);
     let stream = Spiral {
         responses: Mutex::new(vec![spiral, answer]),
@@ -593,6 +657,10 @@ async fn a_reasoning_spiral_is_cut_at_the_char_budget_and_re_driven() {
             "the runaway thinking is not kept: {content:?}"
         );
         assert!(usage.reasoning.unwrap_or(0) >= 12_000, "{usage:?}");
+        assert!(
+            usage.unknown,
+            "an estimate is never a measurement: {usage:?}"
+        );
     }
     let redrive = collected
         .iter()

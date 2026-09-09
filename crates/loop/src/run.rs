@@ -389,10 +389,33 @@ fn cut_message(partial: Option<&AgentMessage>, model: &Model, chars: usize) -> A
     {
         content.retain(|block| !matches!(block, Content::Thinking { .. }));
         *stop_reason = StopReason::Length;
-        usage.reasoning = Some(i64::try_from(chars / 4).unwrap_or(i64::MAX));
+        // a settled usage is the measurement; the estimate stands only while it is unknown
+        if usage.unknown {
+            usage.reasoning = Some(i64::try_from(chars / 4).unwrap_or(i64::MAX));
+        }
         *error_message = None;
     }
     message
+}
+
+/// After the cut the provider settles the turn and sends its `Done`; a stream that closes
+/// or keeps talking instead leaves the estimate.
+const CUT_DRAIN: std::time::Duration = std::time::Duration::from_secs(15);
+const CUT_DRAIN_EVENTS: usize = 256;
+
+/// The provider's `Done` after a cut, if it comes within the bound; its usage is settled.
+async fn drain_to_done(
+    receiver: &mut tokio::sync::mpsc::Receiver<AssistantMessageEvent>,
+) -> Option<AgentMessage> {
+    let deadline = tokio::time::Instant::now() + CUT_DRAIN;
+    for _ in 0..CUT_DRAIN_EVENTS {
+        match tokio::time::timeout_at(deadline, receiver.recv()).await {
+            Ok(Some(AssistantMessageEvent::Done { message, .. })) => return Some(message),
+            Ok(Some(AssistantMessageEvent::Error { .. }) | None) | Err(_) => return None,
+            Ok(Some(_)) => {}
+        }
+    }
+    None
 }
 
 pub const STREAM_RETRY_CUSTOM_TYPE: &str = "stream_retry";
@@ -565,8 +588,11 @@ async fn stream_assistant_response<S: StreamFn>(
         }
     }
     if let Some(chars) = cut {
+        let settled = drain_to_done(&mut receiver).await;
         final_message = Some(cut_message(
-            added_partial.then(|| context.messages.last()).flatten(),
+            settled
+                .as_ref()
+                .or_else(|| added_partial.then(|| context.messages.last()).flatten()),
             model,
             chars,
         ));
