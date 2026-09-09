@@ -575,6 +575,32 @@ fn the_artifact_steer_fires_once_on_the_third_tool_turn_with_nothing_on_disk() -
     Ok(())
 }
 
+/// D168: a turn cut at the reasoning budget makes no tool call and still counts toward the
+/// steer, so a spiral that starts on turn two is told what to write on turn three.
+#[test]
+fn cut_turns_count_toward_the_artifact_steer() -> TestResult {
+    let dir = scratch("steer-cut")?;
+    let r = rig("steer-cut")?;
+    let hooks = hooks_in(&r, dir.clone(), Gates::default());
+    (hooks.on_prompt)(&user("Write a router at `route.py` that reads the board."));
+    let (message, results) = tool_turn("c1", "read", Map::new());
+    (hooks.on_turn)(&snap(&message, &results));
+    let cut = faux_assistant_message(Vec::new(), StopReason::Length);
+    (hooks.on_turn)(&snap(&cut, &[]));
+    assert_eq!(
+        r.session.pending_count(),
+        0,
+        "one tool turn and one cut say nothing"
+    );
+    (hooks.on_turn)(&snap(&cut, &[]));
+    assert_eq!(
+        r.session.pending_count(),
+        1,
+        "the third turn, a cut, earns the steer"
+    );
+    Ok(())
+}
+
 #[test]
 fn a_clean_stop_with_a_missing_artifact_is_refused_once_then_waived() -> TestResult {
     let dir = scratch("artifact-stop")?;
