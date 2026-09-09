@@ -75,9 +75,11 @@ def check_command():
 
 
 def check_install():
-    """S2: the adapter builds the kernel venv at install and refuses an image it cannot boot on."""
+    """S2: the adapter builds the kernel venv at install and reports an image it cannot boot on;
+    #329: it runs the trial anyway, since a Bun image has no python and bash still scores."""
     source = (ROOT / "adapters" / "yi_harbor" / "agent.py").read_text()
     assert "doctor --fix --json" in source and "warm_kernel" in source, "install must warm the kernel"
+    assert "cannot boot in this image" not in source, "a dead kernel is reported, not a refusal"
     green = json.dumps([{"name": "kernel-toolchain", "status": "ok", "detail": "uv /usr/bin/uv"},
                         {"name": "kernel-boot", "status": "fixed", "detail": "built 20000 ms"}])
     assert yi_usage.kernel_problems(green) == []
