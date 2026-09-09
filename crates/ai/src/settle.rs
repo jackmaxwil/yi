@@ -31,7 +31,8 @@ pub fn usage_from_generation(data: &Value) -> Option<Usage> {
     Some(usage)
 }
 
-/// The record is written when the upstream sees the drop: retried over about ten seconds.
+/// The record appears about ten seconds after the drop (a 404 at 2, 5 and 8 s, present at
+/// 10 s, measured 2026-09-09): tried at 3, 8, 16 and 28 s, so a slow upstream still lands.
 pub fn generation_usage(
     model: &Model,
     api_key: &str,
@@ -44,7 +45,7 @@ pub fn generation_usage(
     let base = model.base_url.trim_end_matches('/');
     let url = format!("{base}/generation?id={id}");
     let headers = [("authorization", format!("Bearer {api_key}"))];
-    for wait_ms in [500_u64, 1_500, 3_000, 5_000] {
+    for wait_ms in [3_000_u64, 5_000, 8_000, 12_000] {
         std::thread::sleep(std::time::Duration::from_millis(wait_ms));
         if let Ok(body) = crate::request::get_json(&url, &headers, proxy, 64 * 1024)
             && let Some(usage) = body.get("data").and_then(usage_from_generation)
