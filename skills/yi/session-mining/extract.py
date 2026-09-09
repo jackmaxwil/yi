@@ -265,7 +265,7 @@ SIGNAL_NAMES = (
     "repeat_break", "length_forced", "closed_list_nudge", "impossible_redrive", "artifact_redrive",
     "stream_retry", "kernel_dead", "module_missing", "reduced_results",
     "artifact_steer", "artifact_refused", "closure_refused", "gate_waived", "evidence_shape_refused",
-    "spiral_cut",
+    "spiral_cut", "kernel_cells", "shell_cells", "children_spawned", "readers_spawned",
 )
 
 
@@ -386,6 +386,15 @@ def signals(entries):
             out["bash_timeouts"] += 1
         if tool == "bash" and result["text"].startswith("[refused: "):
             out["broad_search_refused"] += 1
+        if tool == "ipython":
+            code = str((args or {}).get("code", "")) if isinstance(args, dict) else ""
+            out["kernel_cells"] += 1
+            if code.lstrip().startswith("%%bash"):
+                out["shell_cells"] += 1
+            if "rlm.run(" in code or "rlm(" in code:
+                out["children_spawned"] += 1
+                if "deny_write" in code:
+                    out["readers_spawned"] += 1
         if tool == "ipython" and (result["text"].startswith("uv is required") or result["text"].startswith("no uv and no python3")):
             out["kernel_dead"] += 1
         if tool == "ipython" and "is not installed in the kernel. Run `%pip install" in result["text"]:
@@ -1114,7 +1123,7 @@ def selfcheck():
         assert row["tokens"]["costUsd"] == 0.011, row["tokens"]
 
         planted = next(r for r in result["mu"] if r["sessionId"] == "fixture-planted-0001")
-        assert not any(planted["signals"][n] for n in SIGNAL_NAMES if n not in ("answer_shape", "cache_miss_streak", "multi_step_without_todo")), planted["signals"]
+        assert not any(planted["signals"][n] for n in SIGNAL_NAMES if n not in ("answer_shape", "cache_miss_streak", "multi_step_without_todo", "kernel_cells", "children_spawned")), planted["signals"]
         signal_row = next(r for r in result["mu"] if r["sessionId"] == "fixture-signals")
         for name in SIGNAL_NAMES:
             if name in ("blocked_on_user_without_question", "evidence_shape_refused"):
