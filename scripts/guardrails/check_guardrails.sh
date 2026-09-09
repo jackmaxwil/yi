@@ -53,7 +53,7 @@ run "$PY" scripts/catalog_drift.py --selfcheck
 # exercises the window, the weighting and the PATCH routing.
 run "$PY" scripts/forge_tracking.py --selfcheck
 # The PR metadata gate only ever runs in CI (040), so the tree's own check of it
-# is this flag: a fake transport walks every branch — each issue defect, each tea
+# is this flag: a fake transport walks every branch — each issue defect, each fgj
 # fix line, and the exempt path that must ask the forge nothing at all.
 run "$PY" scripts/guardrails/check_pr_metadata.py --selfcheck
 # The landing verbs decide from the forge's answers — behind, failed, ready — and a
