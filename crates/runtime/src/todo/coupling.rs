@@ -56,6 +56,8 @@ pub struct Cycle {
     pub artifact: bool,
     pub turn: u32,
     pub tool_turns: u32,
+    /// Turns cut at the reasoning budget, which make no tool call yet count toward the steer.
+    pub cut_turns: u32,
     pub artifacts: Vec<PathBuf>,
     pub artifact_steered: bool,
     pub artifact_refused: bool,
@@ -973,6 +975,12 @@ fn track_turn(
     if called_tool {
         cycle.tool_turns = cycle.tool_turns.saturating_add(1);
     }
+    let cut_turn = !called_tool
+        && matches!(message, AgentMessage::Assistant { stop_reason, .. }
+            if *stop_reason == yi_types::message::StopReason::Length);
+    if cut_turn {
+        cycle.cut_turns = cycle.cut_turns.saturating_add(1);
+    }
     if landed > 0 {
         cycle.last_write = cycle.turn;
     }
@@ -984,8 +992,8 @@ fn track_turn(
         cycle.last_check = cycle.turn;
     }
     let due = gates.artifact
-        && called_tool
-        && cycle.tool_turns == gate::ARTIFACT_STEER_TURN
+        && (called_tool || cut_turn)
+        && cycle.tool_turns.saturating_add(cycle.cut_turns) >= gate::ARTIFACT_STEER_TURN
         && !cycle.artifact_steered
         && !cycle.artifacts.is_empty()
         && cycle.artifacts.iter().all(|path| !path.exists());
