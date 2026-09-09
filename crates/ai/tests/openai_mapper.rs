@@ -259,3 +259,35 @@ fn a_cut_stream_finishes_as_a_length_done_with_its_id() -> Result<(), Box<dyn Er
     assert!(usage.unknown, "no usage chunk came; the record settles it");
     Ok(())
 }
+
+/// #331: a stream that dies after its chunks reported usage keeps that usage on the error
+/// turn, so the loop's retry rule and the ledger both read what the drop cost.
+#[test]
+fn a_stream_that_dies_mid_turn_keeps_the_usage_it_reported() -> Result<(), Box<dyn Error>> {
+    let model = model(true);
+    let mut mapper = ChunkMapper::new(&model);
+    let _ = mapper.start_event();
+    let _ = mapper.push_chunk(&json!({
+        "id": "gen-dead-1",
+        "choices": [{"index": 0, "delta": {"reasoning": "the router must rise"}}],
+        "usage": {"prompt_tokens": 500, "completion_tokens": 40, "completion_tokens_details": {"reasoning_tokens": 40}}
+    }));
+    let event = mapper.fail("Network connection lost. (upstream Wafer, code 502)");
+    let AssistantMessageEvent::Error { reason, error } = event else {
+        return Err("expected an error event".into());
+    };
+    assert_eq!(reason, StopReason::Error);
+    let AgentMessage::Assistant {
+        usage,
+        response_id,
+        error_message,
+        ..
+    } = error
+    else {
+        return Err("not assistant".into());
+    };
+    assert_eq!(response_id.as_deref(), Some("gen-dead-1"));
+    assert_eq!((usage.input, usage.output, usage.unknown), (500, 40, false));
+    assert!(error_message.as_deref().unwrap_or("").contains("502"));
+    Ok(())
+}
