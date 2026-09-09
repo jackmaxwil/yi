@@ -230,3 +230,32 @@ fn a_present_usage_object_is_known() -> Result<(), Box<dyn Error>> {
     assert!(!usage.unknown, "a reported zero is a known free turn");
     Ok(())
 }
+
+/// D163: a stream dropped at the reasoning budget has no finish reason; marked cut, the mapper
+/// ends it as a length `Done` that keeps the generation id, never as an error.
+#[test]
+fn a_cut_stream_finishes_as_a_length_done_with_its_id() -> Result<(), Box<dyn Error>> {
+    let model = model(true);
+    let mut mapper = ChunkMapper::new(&model);
+    let mut events = vec![mapper.start_event()];
+    events.extend(mapper.push_chunk(&json!({
+        "id": "gen-cut-1",
+        "choices": [{"index": 0, "delta": {"reasoning": "the router must rise at y=2, no, y=3, "}}]
+    })));
+    mapper.cut();
+    events.extend(mapper.finish());
+    let last = events.last().ok_or("empty")?;
+    let AssistantMessageEvent::Done { reason, message } = last else {
+        return Err(format!("a cut ends as done, not an error: {last:?}").into());
+    };
+    assert_eq!(*reason, StopReason::Length);
+    let AgentMessage::Assistant {
+        response_id, usage, ..
+    } = message
+    else {
+        return Err("not assistant".into());
+    };
+    assert_eq!(response_id.as_deref(), Some("gen-cut-1"));
+    assert!(usage.unknown, "no usage chunk came; the record settles it");
+    Ok(())
+}
