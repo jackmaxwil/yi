@@ -195,11 +195,16 @@ fn a_null_non_off_level_clamps_instead_of_being_sent_verbatim() -> TestResult {
 }
 
 #[test]
-fn openrouter_requests_sort_by_throughput_unless_the_config_says_otherwise() -> TestResult {
+fn openrouter_requests_deprioritise_slow_upstreams_unless_the_config_says_otherwise() -> TestResult
+{
     let model = target_model()?;
     let context = history_context();
     let params = build_params(&model, &context, &OpenAiOptions::default());
-    assert_eq!(params["provider"], json!({"sort": "throughput"}));
+    assert_eq!(
+        params["provider"],
+        json!({"preferred_min_throughput": {"p50": 20}, "preferred_max_latency": {"p50": 10}})
+    );
+    assert!(params["provider"].get("sort").is_none());
     let options = OpenAiOptions {
         routing: Some(json!({"sort": "price", "ignore": ["wafer"]})),
         ..OpenAiOptions::default()

@@ -39,8 +39,8 @@ pub struct UserConfig {
     pub lanes: Option<crate::lane::LanesConfig>,
     pub catalog: Option<CatalogConfig>,
     pub telemetry: Option<TelemetryConfig>,
-    /// `routing`: OpenRouter's `provider` object, sent verbatim; absent means
-    /// `{"sort": "throughput"}`, and `{}` restores OpenRouter's load balancing.
+    /// `routing`: OpenRouter's `provider` object, sent verbatim; absent deprioritises
+    /// upstreams under 20 tok/s or over 10 s p50 latency, and `{}` sends nothing.
     pub routing: Option<serde_json::Value>,
 }
 

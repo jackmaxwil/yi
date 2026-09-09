@@ -220,7 +220,7 @@ One file: `~/.yi/config.json`. Current keys:
   },
   "mcp": { "enabled": false },                 // MCP stays off until asked
   "bash": { "autoBackgroundMs": 0 },           // long commands auto-background
-  "routing": { "sort": "throughput" },        // OpenRouter provider object, verbatim; {} = its load balancing
+  "routing": { "preferred_min_throughput": { "p50": 20 } }, // OpenRouter provider object, verbatim; {} = none
   "console": { "autoSide": true },             // first kernel cell / tracked edit opens a side pane
   "tui": { "pace": 100 },                      // streamed-text reveal speed, percent; 0 paints on arrival
   "keys": { "ctrl+g": "some-action" }          // solo keymap overrides
