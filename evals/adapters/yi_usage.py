@@ -35,11 +35,17 @@ KERNEL_ROWS = ("kernel-toolchain", "kernel-boot")
 
 def kernel_problems(doctor_json):
     """The kernel rows of `yi doctor --json` that are red, as `name: detail` lines; the
-    adapter refuses an image the kernel cannot boot on instead of running bash-only."""
+    adapter refuses an image the kernel cannot boot on instead of running bash-only.
+    harbor hands the adapter one combined stream, so `--fix`'s progress lines (stderr)
+    precede the rows: the array is read from the first line that opens one."""
+    text = str(doctor_json or "")
+    start = next((i for i, line in enumerate(text.splitlines()) if line.startswith("[")), None)
     try:
-        rows = json.loads(doctor_json)
-    except (TypeError, ValueError):
-        return [f"doctor output is not JSON: {str(doctor_json)[:200]!r}"]
+        rows = json.loads("\n".join(text.splitlines()[start:])) if start is not None else None
+    except ValueError:
+        rows = None
+    if not isinstance(rows, list):
+        return [f"doctor output is not JSON: {text[:200]!r}"]
     by_name = {row.get("name"): row for row in rows if isinstance(row, dict)}
     problems = []
     for name in KERNEL_ROWS:

@@ -81,6 +81,7 @@ def check_install():
     green = json.dumps([{"name": "kernel-toolchain", "status": "ok", "detail": "uv /usr/bin/uv"},
                         {"name": "kernel-boot", "status": "fixed", "detail": "built 20000 ms"}])
     assert yi_usage.kernel_problems(green) == []
+    assert yi_usage.kernel_problems("\u203a setting up python kernel (one-time)\u2026\n\u2713 ready\n" + green) == []
     red = json.dumps([{"name": "kernel-toolchain", "status": "fail", "detail": "no uv and no python3"}])
     problems = yi_usage.kernel_problems(red)
     assert problems == ["kernel-toolchain: no uv and no python3", "kernel-boot: row missing"], problems
