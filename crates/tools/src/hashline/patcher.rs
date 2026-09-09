@@ -6,8 +6,9 @@ use super::clipboard::{OnEmptyPaste, fork_clipboard, start_clipboard_batch};
 use super::format::{FileTag, compute_file_hash, format_hashline_header};
 use super::input::{Patch, PatchSection};
 use super::messages::{
-    HEADTAIL_DRIFT_WARNING, RevealedLine, UnseenLinesReveal, missing_snapshot_tag_message,
-    path_recovered_from_tag_message, rebased_warning, unseen_lines_message,
+    HEADTAIL_DRIFT_WARNING, RevealedLine, UnseenLinesReveal, anchored_lines,
+    format_anchored_context, missing_snapshot_tag_message, path_recovered_from_tag_message,
+    rebased_warning, unseen_lines_message,
 };
 use super::mismatch::MismatchError;
 use super::normalize::{
@@ -230,7 +231,12 @@ impl<'a> Patcher<'a> {
             Some(text) => text.to_owned(),
             None => match self.snapshots.head(&canonical_path) {
                 Some(head) => head.hash.to_string(),
-                None => return Err(missing_snapshot_tag_message(&section.path)),
+                None => {
+                    return Err(match read.as_deref() {
+                        Some(text) => self.missing_snapshot(section, &canonical_path, text)?,
+                        None => missing_snapshot_tag_message(&section.path, None),
+                    });
+                }
             },
         };
         let expected_text = expected_text.as_str();
@@ -434,6 +440,31 @@ impl<'a> Patcher<'a> {
             warnings,
             move_dest: None,
         })
+    }
+
+    /// A path never shown gets its tag minted from disk and its anchored lines shown (and
+    /// marked seen), so the retry needs no read.
+    fn missing_snapshot(
+        &mut self,
+        section: &PatchSection,
+        canonical_path: &str,
+        text: &str,
+    ) -> Result<String, String> {
+        let normalized = normalize_to_lf(text);
+        let anchors = section.collect_anchor_lines()?;
+        let file_lines: Vec<String> = normalized.split('\n').map(str::to_owned).collect();
+        let shown = anchored_lines(
+            &anchors,
+            u64::try_from(file_lines.len()).unwrap_or(u64::MAX),
+        );
+        let tag = self
+            .snapshots
+            .record(canonical_path, &normalized, Some(&shown));
+        let rows = format_anchored_context(&anchors, &file_lines);
+        Ok(missing_snapshot_tag_message(
+            &section.path,
+            Some((tag, &rows)),
+        ))
     }
 
     fn try_read(&self, path: &str) -> Option<String> {
