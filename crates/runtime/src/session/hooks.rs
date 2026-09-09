@@ -25,6 +25,16 @@ impl AgentSession {
 
     /// Incident: snapshotting these left `rlm.run` and `model.info` on the
     /// startup model once the TUI could switch.
+    pub fn kernel_state_handle(&self) -> Arc<dyn Fn() -> Option<String> + Send + Sync> {
+        let kernel = Arc::clone(&self.kernel);
+        Arc::new(move || {
+            kernel
+                .lock()
+                .ok()
+                .and_then(|slot| slot.as_ref().map(|service| service.state()))
+        })
+    }
+
     pub fn settings_handle(&self) -> Arc<dyn Fn() -> (Model, Effort) + Send + Sync> {
         let shared = Arc::clone(&self.shared);
         Arc::new(move || {

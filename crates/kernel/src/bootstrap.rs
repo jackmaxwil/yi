@@ -42,7 +42,34 @@ pub struct BootstrapOptions {
     pub home: PathBuf,
     pub runtime_source_dir: PathBuf,
     pub skills_source_dir: PathBuf,
+    /// `None` discovers the toolchain; a test names one to build without `uv`.
+    pub toolchain: Option<Toolchain>,
+    /// `None` keys the venv under `home` (or `YI_KERNEL_VENV`); a test isolates one.
+    pub venv_dir: Option<PathBuf>,
 }
+
+/// What builds the venv: `uv` when present, else the machine's own python3 3.11+.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Toolchain {
+    Uv(PathBuf),
+    System(PathBuf),
+}
+
+impl Toolchain {
+    pub fn describe(&self) -> String {
+        match self {
+            Self::Uv(uv) => format!("uv {}", uv.display()),
+            Self::System(python) => {
+                let version = output(python, &["-c", PYTHON_VERSION_PRINT]).unwrap_or_default();
+                format!("python3 {} {} (no uv)", version.trim(), python.display())
+            }
+        }
+    }
+}
+
+const SYSTEM_PYTHON_CHECK: &str = "import sys, venv, ensurepip; assert sys.version_info >= (3, 11)";
+const PYTHON_VERSION_PRINT: &str = "import sys; print('%d.%d' % sys.version_info[:2])";
+const SYSTEM_PYTHONS: [&str; 4] = ["python3", "python3.13", "python3.12", "python3.11"];
 
 impl BootstrapOptions {
     fn progress(&self, message: &str) {
@@ -252,13 +279,17 @@ fn xdg_kernel_venv_dir(home: &Path) -> PathBuf {
     data_home.join("yi").join(venv_name(RUNTIME_READY_CHECK))
 }
 
-fn resolve_writable_venv_dir(home: &Path) -> Result<PathBuf, String> {
-    let primary = kernel_venv_dir(home);
+fn resolve_writable_venv_dir(options: &BootstrapOptions) -> Result<PathBuf, String> {
+    let home = &options.home;
+    let primary = options
+        .venv_dir
+        .clone()
+        .unwrap_or_else(|| kernel_venv_dir(home));
     let parent = primary.parent().unwrap_or(&primary);
     match std::fs::create_dir_all(parent) {
         Ok(()) => Ok(primary),
         Err(primary_error) => {
-            if env_path("YI_KERNEL_VENV").is_some() {
+            if options.venv_dir.is_some() || env_path("YI_KERNEL_VENV").is_some() {
                 return Err(format!(
                     "couldn't create kernel venv parent directory for {}: {primary_error}",
                     primary.display()
@@ -284,6 +315,34 @@ fn resolve_writable_venv_dir(home: &Path) -> Result<PathBuf, String> {
 )]
 fn command(program: &Path) -> std::process::Command {
     std::process::Command::new(program)
+}
+
+fn output(program: &Path, args: &[&str]) -> Result<String, String> {
+    let mut cmd = command(program);
+    cmd.args(args).stdin(std::process::Stdio::null());
+    let out = cmd
+        .output()
+        .map_err(|error| format!("{}: {error}", program.display()))?;
+    if out.status.success() {
+        Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+    } else {
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        let tail: String = stderr
+            .chars()
+            .rev()
+            .take(600)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect();
+        Err(format!(
+            "{} {} failed with {}: {}",
+            program.display(),
+            args.join(" "),
+            out.status,
+            tail.trim()
+        ))
+    }
 }
 
 fn run(program: &Path, args: &[&str], inherit: bool) -> Result<(), String> {
@@ -355,17 +414,34 @@ fn find_executable(name: &str) -> Option<PathBuf> {
     None
 }
 
-fn ensure_uv(options: &BootstrapOptions) -> Result<PathBuf, String> {
+/// The first python3 on PATH that is 3.11+ and carries `venv` and `ensurepip`.
+pub fn find_system_python() -> Option<PathBuf> {
+    // Incident: a python whose `ensurepip` imports but cannot bootstrap pip (Debian without
+    // python3-venv, a CI runner's build) failed `-m venv` halfway; the module run is the probe.
+    SYSTEM_PYTHONS
+        .iter()
+        .filter_map(|name| find_executable(name))
+        .find(|python| {
+            run(python, &["-c", SYSTEM_PYTHON_CHECK], false).is_ok()
+                && run(python, &["-m", "ensurepip", "--version"], false).is_ok()
+        })
+}
+
+/// uv, else the machine's python3 3.11+ with venv, else the uv installer when asked for.
+pub fn find_toolchain(options: &BootstrapOptions) -> Result<Toolchain, String> {
     if let Some(uv) = find_executable("uv") {
-        return Ok(uv);
+        return Ok(Toolchain::Uv(uv));
     }
     let local_uv = options.home.join(".local").join("bin").join("uv");
     if is_executable(&local_uv) {
-        return Ok(local_uv);
+        return Ok(Toolchain::Uv(local_uv));
+    }
+    if let Some(python) = find_system_python() {
+        return Ok(Toolchain::System(python));
     }
     if std::env::var_os("YI_INSTALL_UV").as_deref() != Some(std::ffi::OsStr::new("1")) {
         return Err(format!(
-            "uv is required to set up the Python kernel. Install uv yourself: {UV_INSTALL_COMMAND}, or set YI_INSTALL_UV=1 to let yi run that installer."
+            "no uv and no python3 3.11+ with venv on PATH. Install uv ({UV_INSTALL_COMMAND}), or python3-venv, or set YI_INSTALL_UV=1 to let yi run that installer."
         ));
     }
     options.progress("› installing uv (one-time)…");
@@ -375,10 +451,69 @@ fn ensure_uv(options: &BootstrapOptions) -> Result<PathBuf, String> {
         )
     })?;
     if is_executable(&local_uv) {
-        return Ok(local_uv);
+        return Ok(Toolchain::Uv(local_uv));
     }
     find_executable("uv")
+        .map(Toolchain::Uv)
         .ok_or_else(|| "uv install completed but binary not found at ~/.local/bin/uv".to_owned())
+}
+
+fn create_venv(toolchain: &Toolchain, venv_text: &str) -> Result<(), String> {
+    match toolchain {
+        Toolchain::Uv(uv) => {
+            // The interpreter that exists; a managed CPython only when none does.
+            let system = find_system_python();
+            if system.is_none() {
+                run(uv, &["python", "install", PYTHON_VERSION], false)?;
+            }
+            let python = system.map_or_else(
+                || PYTHON_VERSION.to_owned(),
+                |path| path.to_string_lossy().into_owned(),
+            );
+            output(
+                uv,
+                &[
+                    "venv",
+                    venv_text,
+                    "--python",
+                    &python,
+                    "--system-site-packages",
+                ],
+            )
+            .map(drop)
+        }
+        Toolchain::System(python) => {
+            output(python, &["-m", "venv", "--system-site-packages", venv_text]).map(drop)
+        }
+    }
+}
+
+fn pip_install(toolchain: &Toolchain, python: &Path, packages: &[&str]) -> Result<(), String> {
+    let python_text = python.to_string_lossy().into_owned();
+    let mut args: Vec<&str> = match toolchain {
+        Toolchain::Uv(_) => vec![
+            "pip",
+            "install",
+            "--python",
+            &python_text,
+            "--compile-bytecode",
+        ],
+        Toolchain::System(_) => vec!["-m", "pip", "install", "--quiet"],
+    };
+    args.extend(packages);
+    match toolchain {
+        Toolchain::Uv(uv) => output(uv, &args).map(drop),
+        Toolchain::System(_) => output(python, &args).map(drop),
+    }
+}
+
+fn missing_extra_packages(python: &Path) -> Vec<&'static str> {
+    DEFAULT_RLM_EXTRA_UV_ARGS
+        .iter()
+        .zip(DEFAULT_RLM_EXTRA_IMPORT_NAMES.iter())
+        .filter(|(_, import_name)| !python_imports(python, import_name))
+        .map(|(package, _)| *package)
+        .collect()
 }
 
 pub fn resolve_runtime_identity(source_dir: &Path) -> Result<String, String> {
@@ -564,8 +699,12 @@ fn acquire_bootstrap_lock(venv: &Path) -> Result<BootstrapLock, String> {
 
 fn kernel_ready(python: &Path, venv: &Path, runtime_identity: &str) -> bool {
     bootstrap_version_current(read_bootstrap_version(venv).as_ref(), runtime_identity)
-        && python_imports(python, "ipykernel")
-        && has_runtime(python)
+        && run(
+            python,
+            &["-c", &format!("import ipykernel; {RUNTIME_READY_CHECK}")],
+            false,
+        )
+        .is_ok()
 }
 
 fn bootstrap_venv(
@@ -576,55 +715,76 @@ fn bootstrap_venv(
     if let Some(parent) = venv.parent() {
         std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
     }
-    let uv = ensure_uv(options)?;
+    let toolchain = match &options.toolchain {
+        Some(toolchain) => toolchain.clone(),
+        None => find_toolchain(options)?,
+    };
     let python = venv.join("bin").join("python");
-    let venv_text = venv.to_string_lossy().into_owned();
-    let python_text = python.to_string_lossy().into_owned();
+    create_venv(&toolchain, &venv.to_string_lossy())?;
     let runtime_dir = options.runtime_source_dir.to_string_lossy().into_owned();
-    run(&uv, &["python", "install", PYTHON_VERSION], false)?;
-    run(
-        &uv,
-        &["venv", &venv_text, "--python", PYTHON_VERSION, "--seed"],
-        false,
+    pip_install(
+        &toolchain,
+        &python,
+        &[
+            IPYKERNEL_REQUIREMENT,
+            STATE_SNAPSHOT_REQUIREMENT,
+            &runtime_dir,
+        ],
     )?;
-    let mut install = vec![
-        "pip",
-        "install",
-        "--python",
-        &python_text,
-        IPYKERNEL_REQUIREMENT,
-        STATE_SNAPSHOT_REQUIREMENT,
-        &runtime_dir,
-    ];
-    install.extend(DEFAULT_RLM_EXTRA_UV_ARGS);
-    run(&uv, &install, false)?;
-    for (import_name, subdir) in PYTHON_SKILLS {
-        let skill_dir = options.skills_source_dir.join(subdir);
-        if !skill_dir.is_dir() {
+    let skills: Vec<String> = PYTHON_SKILLS
+        .iter()
+        .filter_map(|(import_name, subdir)| {
+            let skill_dir = options.skills_source_dir.join(subdir);
+            if skill_dir.is_dir() {
+                return Some(skill_dir.to_string_lossy().into_owned());
+            }
             options.progress(&format!(
                 "Warning: Python skill {import_name} source missing at {}; skipping",
                 skill_dir.display()
             ));
-            continue;
-        }
-        let skill_text = skill_dir.to_string_lossy().into_owned();
-        if let Err(error) = run(
-            &uv,
-            &["pip", "install", "--python", &python_text, &skill_text],
-            false,
-        ) {
-            // A broken skill degrades to its unavailable wrapper in the
-            // bootstrap cell; it must never fail the whole venv.
-            options.progress(&format!(
-                "Warning: Python skill {import_name} failed to install and will be unavailable: {error}"
-            ));
-        }
+            None
+        })
+        .collect();
+    let skill_refs: Vec<&str> = skills.iter().map(String::as_str).collect();
+    // A broken skill or extra degrades to its unavailable wrapper; it must never
+    // fail the whole venv, and an extra the image already carries is not fetched.
+    if !skill_refs.is_empty()
+        && let Err(error) = pip_install(&toolchain, &python, &skill_refs)
+    {
+        options.progress(&format!(
+            "Warning: Python skills failed to install and will be unavailable: {error}"
+        ));
+    }
+    let extras = missing_extra_packages(&python);
+    if !extras.is_empty()
+        && let Err(error) = pip_install(&toolchain, &python, &extras)
+    {
+        options.progress(&format!(
+            "Warning: default packages ({}) failed to install: {error}",
+            extras.join(", ")
+        ));
     }
     write_bootstrap_version(venv, runtime_identity)
 }
 
 pub fn kernel_python(venv: &Path) -> PathBuf {
     venv.join("bin").join("python")
+}
+
+/// The kernel python when nothing has to be built: `YI_KERNEL_PYTHON`, or a venv whose
+/// version file and import probe both agree.
+pub fn ready_kernel_python(options: &BootstrapOptions) -> Option<PathBuf> {
+    if let Some(python) = env_path("YI_KERNEL_PYTHON") {
+        return (python_imports(&python, "ipykernel") && has_runtime(&python)).then_some(python);
+    }
+    let venv = resolve_writable_venv_dir(options).ok()?;
+    let python = venv.join("bin").join("python");
+    let identity = resolve_python_identity(
+        &options.runtime_source_dir,
+        Some(&options.skills_source_dir),
+    )
+    .ok()?;
+    kernel_ready(&python, &venv, &identity).then_some(python)
 }
 
 pub fn ensure_kernel_python(options: &BootstrapOptions) -> Result<PathBuf, String> {
@@ -657,7 +817,7 @@ pub fn ensure_kernel_python(options: &BootstrapOptions) -> Result<PathBuf, Strin
         ));
     }
 
-    let venv = resolve_writable_venv_dir(&options.home)?;
+    let venv = resolve_writable_venv_dir(options)?;
     let python = venv.join("bin").join("python");
     let runtime_identity = resolve_python_identity(
         &options.runtime_source_dir,

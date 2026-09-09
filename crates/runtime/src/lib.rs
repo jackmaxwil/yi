@@ -11,6 +11,7 @@ pub mod fetch;
 pub mod gate;
 pub mod goal;
 pub mod kernel;
+mod kernel_doctor;
 pub mod lane;
 pub mod mailbox;
 pub mod permission;
@@ -36,6 +37,7 @@ pub use ext::{ExtOptions, Host as ExtensionHost, Trust, TrustGate};
 pub use kernel::{
     HostRegistry, KernelService, KernelServiceOptions, ipython_tool, restore_notice_text,
 };
+pub use kernel_doctor::{doctor_boot, doctor_toolchain};
 pub use mailbox::ParentLink;
 pub use permission::{AskOutcome, Asker, PermissionAsk, PermissionBroker};
 pub use provider::{

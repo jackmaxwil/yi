@@ -333,6 +333,7 @@ pub struct KernelService {
     options: KernelServiceOptions,
     sandbox: tokio::sync::Mutex<Option<yi_tools::Sandbox>>,
     manager: tokio::sync::Mutex<Option<Arc<KernelManager>>>,
+    last_error: Mutex<Option<String>>,
 }
 
 impl KernelService {
@@ -341,6 +342,21 @@ impl KernelService {
             sandbox: tokio::sync::Mutex::new(options.sandbox.clone()),
             options,
             manager: tokio::sync::Mutex::new(None),
+            last_error: Mutex::new(None),
+        }
+    }
+
+    /// The environment line's fact: `ready`, `booting`, `idle`, or the last boot error.
+    pub fn state(&self) -> String {
+        let Ok(slot) = self.manager.try_lock() else {
+            return "booting".to_owned();
+        };
+        if slot.as_ref().is_some_and(|manager| manager.is_running()) {
+            return "ready".to_owned();
+        }
+        match self.last_error.lock().ok().and_then(|error| error.clone()) {
+            Some(error) => format!("unavailable: {}", error.lines().next().unwrap_or_default()),
+            None => "idle (boots on the first ipython call)".to_owned(),
         }
     }
 
@@ -400,6 +416,14 @@ impl KernelService {
     }
 
     async fn ensure(&self) -> Result<Arc<KernelManager>, String> {
+        let outcome = self.ensure_inner().await;
+        if let Ok(mut slot) = self.last_error.lock() {
+            *slot = outcome.as_ref().err().cloned();
+        }
+        outcome
+    }
+
+    async fn ensure_inner(&self) -> Result<Arc<KernelManager>, String> {
         let wrap = self.kernel_wrap(self.sandbox.lock().await.as_ref());
         let mut slot = self.manager.lock().await;
         if let Some(manager) = slot.as_ref()
