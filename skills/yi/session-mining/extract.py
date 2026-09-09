@@ -264,7 +264,7 @@ SIGNAL_NAMES = (
     "bash_timeouts", "broad_search_refused", "length_redrive", "unsourced_redrive",
     "repeat_break", "length_forced", "closed_list_nudge", "impossible_redrive", "artifact_redrive",
     "stream_retry", "kernel_dead", "module_missing", "reduced_results",
-    "artifact_steer", "artifact_refused", "closure_refused", "gate_waived",
+    "artifact_steer", "artifact_refused", "closure_refused", "gate_waived", "evidence_shape_refused",
 )
 
 
@@ -387,6 +387,8 @@ def signals(entries):
             out["kernel_dead"] += 1
         if tool == "ipython" and "is not installed in the kernel. Run `%pip install" in result["text"]:
             out["module_missing"] += 1
+        if tool == "todo" and ("done needs evidence shaped" in result["text"] or "`set` cannot close" in result["text"]):
+            out["evidence_shape_refused"] += 1
         if "PermissionDenied" in result["text"] and "PermissionDenied" in final:
             out["sandbox_denial_as_finding"] += 1
         if tool == "bash" and "lines omitted:" in result["text"]:
@@ -1112,7 +1114,7 @@ def selfcheck():
         assert not any(planted["signals"][n] for n in SIGNAL_NAMES if n not in ("answer_shape", "cache_miss_streak", "multi_step_without_todo")), planted["signals"]
         signal_row = next(r for r in result["mu"] if r["sessionId"] == "fixture-signals")
         for name in SIGNAL_NAMES:
-            if name == "blocked_on_user_without_question":
+            if name in ("blocked_on_user_without_question", "evidence_shape_refused"):
                 continue
             assert signal_row["signals"][name], f"signal {name} did not fire on its fixture"
         assert signal_row["signals"]["intercept_count"] == 1 and signal_row["signals"]["intercept_max_rung"] == 3, "a re-drive reason must not count as an open intercept"
@@ -1121,6 +1123,7 @@ def selfcheck():
         assert piped_row["signals"]["regression_seen_red"] == 1, "a red run piped through tail must still be seen red"
         blocked_row = next(r for r in result["mu"] if r["sessionId"] == "fixture-signals-blocked")
         assert blocked_row["signals"]["blocked_on_user_without_question"] == 1, blocked_row["signals"]
+        assert blocked_row["signals"]["evidence_shape_refused"] == 1, blocked_row["signals"]
         assert blocked_row["signals"]["waiting_without_block"] == 0 and "?" not in (blocked_row.get("final") or ""), "the blocked fixture asks nothing in its last paragraph"
         assert blocked_row["signals"]["waiting_without_block"] == 0, blocked_row["signals"]
         signal_text = report(result, fixtures, first)
