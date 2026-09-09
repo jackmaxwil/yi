@@ -250,6 +250,37 @@ fn missing_tag_rejects_with_teaching_text() -> TestResult {
         text.contains("No version of a.txt was shown this session"),
         "{text}"
     );
+    assert!(
+        text.contains("[a.txt#") && text.contains("*1:alpha"),
+        "{text}"
+    );
+    let header = text
+        .split("[a.txt#")
+        .nth(1)
+        .and_then(|rest| rest.split(']').next())
+        .ok_or("minted tag")?;
+    let retry = fixture.edit(&format!("[a.txt#{header}]\nPUT 1.=1:\n+new\n"));
+    assert!(!retry.is_error, "{}", output_text(&retry));
+    assert_eq!(
+        fs::read_to_string(fixture.context.cwd.join("a.txt"))?,
+        "new\n"
+    );
+    Ok(())
+}
+
+/// The loop classifies a rejection by the message prefix; the pin keeps the two agreeing.
+#[test]
+fn a_rejected_edit_classifies_as_stale_tag() -> TestResult {
+    let fixture = Fixture::new("stale-kind")?;
+    fixture.write("a.txt", "alpha\n")?;
+    let _ = fixture.tag_of("a.txt")?;
+    let edit = fixture.edit("[a.txt#0000]\nPUT 1.=1:\n+new\n");
+    assert!(edit.is_error);
+    assert_eq!(
+        edit.result.details["errorKind"], "stale_tag",
+        "{:?}",
+        edit.result.details
+    );
     Ok(())
 }
 
