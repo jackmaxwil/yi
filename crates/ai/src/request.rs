@@ -196,7 +196,7 @@ pub fn pump_sse(
     let mut decoder = crate::sse::SseDecoder::default();
     let mut buffer = [0u8; 8192];
     let mut pending: Vec<u8> = Vec::new();
-    // D163: the loop's cut is read between events; dropping the reader closes the connection.
+    // the loop's cut is read between events; dropping the reader closes the connection (D163).
     let cut = || stop.is_some_and(|flag| flag.load(std::sync::atomic::Ordering::SeqCst));
     loop {
         if cut() {
@@ -227,7 +227,7 @@ pub fn pump_sse(
     Ok(())
 }
 
-/// D146: a body that died before its first event is sent once more; the first error returns.
+/// a body that died before its first event is sent once more; the first error returns (D146).
 pub fn pump_sse_with_resend(
     stop: Option<&std::sync::atomic::AtomicBool>,
     send: impl Fn() -> Result<ureq::Response, String>,

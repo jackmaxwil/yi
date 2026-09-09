@@ -90,7 +90,7 @@ pub struct RuntimeWiring {
     pub auto_background: Option<std::time::Duration>,
     /// `--deadline`: the wall clock the run has, shown counting down in the environment block.
     pub deadline: Option<std::time::Duration>,
-    /// D162: the artifact and closure gates at a clean stop; `--no-gates` turns both off.
+    /// the artifact and closure gates at a clean stop; `--no-gates` turns both off (D162).
     pub gates: yi_types::config::Gates,
     /// `kernel.prewarm` (default true): boot the kernel in the background at
     /// session open. Children never prewarm — they spawn to run a cell now.
@@ -107,7 +107,7 @@ pub struct RuntimeWiring {
 }
 
 impl RuntimeWiring {
-    /// D164: the root session's `family/` directory, shared by every member; a child's
+    /// the root session's `family/` directory, shared by every member; a child's (D164)
     /// `rlm_dir` sits under the root's as `sub-*`, so the root is the first non-`sub-` ancestor.
     pub fn family_dir(&self) -> PathBuf {
         let mut dir = self.rlm_dir.as_path();
@@ -217,7 +217,7 @@ fn wire_fetch(
             let url: yi_types::url::Url = raw
                 .parse()
                 .map_err(|error: yi_types::url::UrlError| format!("{raw}: {error}"))?;
-            // D164: a family member asks for the object; the owner dills it to the family dir.
+            // a family member asks for the object; the owner dills it to the family dir (D164).
             if payload.get("object").and_then(Value::as_bool) == Some(true) {
                 let dump = Arc::clone(&resolver);
                 let (path, bytes) = tokio::task::spawn_blocking(move || dump.dump_kernel(&url))
@@ -615,6 +615,10 @@ fn subagent_host(
         attribute: session.attribution_handle(),
         store: session.store_handle(),
         plans_dir: plans_dir.to_path_buf(),
+        family_live: {
+            let kernels = Arc::clone(&wiring.kernels);
+            Arc::new(move || kernels.live())
+        },
     }))
 }
 

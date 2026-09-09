@@ -696,6 +696,7 @@ mod tests {
             attribute: Arc::new(|_usage| {}),
             store: Arc::new(move || Some(store.clone())),
             plans_dir,
+            family_live: Arc::new(|| 0),
         }));
         Ok((host, reports))
     }
