@@ -652,9 +652,9 @@ class BashHandle:
         )
 
     def __del__(self) -> None:
-        if self._report is not None or self._spawn is None:
+        spawn = getattr(self, "_spawn", None)
+        if getattr(self, "_report", None) is not None or spawn is None:
             return
-        spawn = self._spawn
 
         async def _reap() -> None:
             try:
