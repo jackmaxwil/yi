@@ -1,3 +1,4 @@
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use yi_types::message::{AgentMessage, Attribution, Content, StopReason, UserContent};
@@ -20,6 +21,9 @@ pub const SEED_ACTOR: &str = "prompt";
 
 pub mod gate {
     pub const NUDGE_WORK: u32 = 12;
+    /// The tool turn after which a named artifact still absent earns one steer.
+    pub const ARTIFACT_STEER_TURN: u32 = 3;
+    pub const ARTIFACT_CAP: usize = 8;
     pub const QUIET_TURNS: u32 = 3;
     pub const FIRST_LIST_WORK: u32 = 3;
     pub const NUDGE_CAP_PER_CYCLE: u32 = 2;
@@ -50,6 +54,194 @@ pub struct Cycle {
     pub prompt_claims_impossible: bool,
     pub impossible: bool,
     pub artifact: bool,
+    pub turn: u32,
+    pub tool_turns: u32,
+    pub artifacts: Vec<PathBuf>,
+    pub artifact_steered: bool,
+    pub artifact_refused: bool,
+    pub artifact_waived: bool,
+    pub checker: Option<Checker>,
+    pub last_write: u32,
+    pub last_check: u32,
+    pub closure_refused: bool,
+    pub closure_waived: bool,
+}
+
+/// The workspace's own check: the command to run and the text a bash command carries when it
+/// ran it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Checker {
+    pub command: String,
+    pub needle: String,
+}
+
+pub const ARTIFACT_EXTENSIONS: [&str; 17] = [
+    ".py", ".js", ".ts", ".json", ".csv", ".txt", ".md", ".yaml", ".yml", ".xml", ".html", ".sh",
+    ".rs", ".go", ".c", ".cpp", ".java",
+];
+pub const PRODUCT_WORDS: [&str; 10] = [
+    "write", "create", "save", "produce", "output", "to", "at", "in", "called", "named",
+];
+
+/// Paths the prompt names as products: a token with a separator or a known extension, after
+/// a product word or in backticks, that does not exist yet (one that exists is an input).
+pub fn artifact_candidates(text: &str, cwd: &Path) -> Vec<PathBuf> {
+    let punctuation = |c: char| matches!(c, '`' | '\'' | '"' | '(' | ')' | ',' | ';' | ':');
+    let strip = |token: &str| {
+        token
+            .trim_end_matches(|c: char| punctuation(c) || c == '.')
+            .trim_start_matches(punctuation)
+            .to_owned()
+    };
+    let mut out: Vec<PathBuf> = Vec::new();
+    let mut previous = String::new();
+    for token in text.split_whitespace() {
+        let word = strip(token);
+        let backticked = token.starts_with('`');
+        let path_like =
+            word.contains('/') || ARTIFACT_EXTENSIONS.iter().any(|ext| word.ends_with(ext));
+        let named = PRODUCT_WORDS.contains(&previous.to_lowercase().as_str()) || backticked;
+        previous = word.clone();
+        if !path_like || !named || word.contains("://") || !word.chars().any(char::is_alphabetic) {
+            continue;
+        }
+        let path = Path::new(&word);
+        let resolved = if path.is_absolute() {
+            path.to_path_buf()
+        } else {
+            cwd.join(path)
+        };
+        if resolved.exists() || out.contains(&resolved) {
+            continue;
+        }
+        out.push(resolved);
+        if out.len() >= gate::ARTIFACT_CAP {
+            break;
+        }
+    }
+    out
+}
+
+fn checker_at(dir: &Path, prefix: &str, name: &str) -> Option<Checker> {
+    let lower = name.to_lowercase();
+    let script = |runner: &str| Checker {
+        command: format!("{runner} {prefix}{name}"),
+        needle: name.to_owned(),
+    };
+    let py_test =
+        lower.starts_with("test") && lower.ends_with(".py") || lower.ends_with("_test.py");
+    if py_test
+        || (lower.starts_with("check") || lower.starts_with("verify")) && lower.ends_with(".py")
+    {
+        return Some(script("python3"));
+    }
+    if (lower.starts_with("check") || lower.starts_with("verify") || lower.starts_with("run_tests"))
+        && lower.ends_with(".sh")
+    {
+        return Some(script("sh"));
+    }
+    let content = |file: &str| std::fs::read_to_string(dir.join(file)).unwrap_or_default();
+    match lower.as_str() {
+        "makefile" => {
+            let text = content(name);
+            ["test", "check"]
+                .into_iter()
+                .find(|target| {
+                    text.lines()
+                        .any(|line| line.starts_with(&format!("{target}:")))
+                })
+                .map(|target| Checker {
+                    command: format!("make {target}"),
+                    needle: format!("make {target}"),
+                })
+        }
+        "pytest.ini" => Some(Checker {
+            command: "pytest".to_owned(),
+            needle: "pytest".to_owned(),
+        }),
+        "pyproject.toml" if content(name).contains("[tool.pytest") => Some(Checker {
+            command: "pytest".to_owned(),
+            needle: "pytest".to_owned(),
+        }),
+        "package.json" if content(name).contains("\"test\":") => Some(Checker {
+            command: "npm test".to_owned(),
+            needle: "npm test".to_owned(),
+        }),
+        "cargo.toml" => Some(Checker {
+            command: "cargo test".to_owned(),
+            needle: "cargo test".to_owned(),
+        }),
+        _ => None,
+    }
+}
+
+/// The workspace's checker, top level first then one directory down; a script beats a
+/// runner marker so the task's own `check.py` wins over a `pyproject.toml`.
+pub fn find_checker(cwd: &Path) -> Option<Checker> {
+    let mut found: Vec<(u8, Checker)> = Vec::new();
+    let mut visit = |dir: &Path, prefix: &str| {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        let mut names: Vec<String> = entries
+            .filter_map(Result::ok)
+            .filter(|entry| entry.path().is_file())
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        for name in names {
+            if let Some(checker) = checker_at(dir, prefix, &name) {
+                let rank = u8::from(
+                    !checker.command.starts_with("python3 ") && !checker.command.starts_with("sh "),
+                );
+                found.push((rank, checker));
+            }
+        }
+    };
+    visit(cwd, "");
+    if let Ok(entries) = std::fs::read_dir(cwd) {
+        let mut dirs: Vec<PathBuf> = entries
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .filter(|path| {
+                path.is_dir()
+                    && !path
+                        .file_name()
+                        .is_some_and(|n| n.to_string_lossy().starts_with('.'))
+            })
+            .collect();
+        dirs.sort();
+        for dir in dirs {
+            let prefix = format!(
+                "{}/",
+                dir.file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_default()
+            );
+            visit(&dir, &prefix);
+        }
+    }
+    found.sort_by_key(|(rank, _)| *rank);
+    found.into_iter().next().map(|(_, checker)| checker)
+}
+
+pub fn artifact_steer_text(paths: &[PathBuf]) -> String {
+    let names: Vec<String> = paths.iter().map(|p| format!("`{}`", p.display())).collect();
+    format!(
+        "None of {} exists yet. Write a first version now, even a stub that runs, and improve it in place.",
+        names.join(", ")
+    )
+}
+
+pub fn artifact_stop_text(path: &Path) -> String {
+    format!("`{}` does not exist. Write it, then stop.", path.display())
+}
+
+pub fn closure_stop_text(checker: &Checker) -> String {
+    format!(
+        "Run `{}` and quote its result before stopping.",
+        checker.command
+    )
 }
 
 impl Cycle {
@@ -624,6 +816,8 @@ pub struct Options {
     pub eager: Eager,
     pub children_running: Arc<dyn Fn() -> bool + Send + Sync>,
     pub inner: Option<TurnCoupling>,
+    pub cwd: PathBuf,
+    pub gates: yi_types::config::Gates,
 }
 
 fn record_intercept(store: &StoreHandle, rung: u8, reason: &str, fingerprint: &str, total: u32) {
@@ -718,55 +912,154 @@ fn claim_redrive(
     None
 }
 
+/// The two soft gates at a clean stop, a missing artifact and an unrun checker: each
+/// refuses one stop per prompt and lets the second through with a record.
+fn gate_redrive(
+    cycle: &mut Cycle,
+    gates: yi_types::config::Gates,
+    todos: &TodoStore,
+    store: &StoreHandle,
+) -> Option<AgentMessage> {
+    let fingerprint = todos.list().fingerprint();
+    if gates.artifact
+        && let Some(missing) = cycle.artifacts.iter().find(|path| !path.exists()).cloned()
+    {
+        if !cycle.artifact_refused {
+            cycle.artifact_refused = true;
+            record_intercept(store, 0, "artifact_missing", &fingerprint, cycle.intercepts);
+            return Some(custom(
+                INTERCEPT_CUSTOM_TYPE,
+                artifact_stop_text(&missing),
+                false,
+            ));
+        }
+        if !cycle.artifact_waived {
+            cycle.artifact_waived = true;
+            record_intercept(store, 0, "artifact_waived", &fingerprint, cycle.intercepts);
+        }
+    }
+    if gates.closure
+        && let Some(checker) = cycle.checker.clone()
+        && cycle.last_write > cycle.last_check
+    {
+        if !cycle.closure_refused {
+            cycle.closure_refused = true;
+            record_intercept(store, 0, "closure_unrun", &fingerprint, cycle.intercepts);
+            return Some(custom(
+                INTERCEPT_CUSTOM_TYPE,
+                closure_stop_text(&checker),
+                false,
+            ));
+        }
+        if !cycle.closure_waived {
+            cycle.closure_waived = true;
+            record_intercept(store, 0, "closure_waived", &fingerprint, cycle.intercepts);
+        }
+    }
+    None
+}
+
+/// Turn bookkeeping for the gates: the turn and tool-turn counters, the last write and the
+/// last checker run; returns whether the artifact steer is due this turn.
+fn track_turn(
+    cycle: &mut Cycle,
+    gates: yi_types::config::Gates,
+    message: &AgentMessage,
+    landed: u32,
+) -> bool {
+    cycle.turn = cycle.turn.saturating_add(1);
+    let called_tool = matches!(message, AgentMessage::Assistant { content, .. }
+        if content.iter().any(|block| matches!(block, Content::ToolCall { .. })));
+    if called_tool {
+        cycle.tool_turns = cycle.tool_turns.saturating_add(1);
+    }
+    if landed > 0 {
+        cycle.last_write = cycle.turn;
+    }
+    if let Some(checker) = &cycle.checker
+        && commands_of(message)
+            .iter()
+            .any(|(_, command)| command.contains(&checker.needle))
+    {
+        cycle.last_check = cycle.turn;
+    }
+    let due = gates.artifact
+        && called_tool
+        && cycle.tool_turns == gate::ARTIFACT_STEER_TURN
+        && !cycle.artifact_steered
+        && !cycle.artifacts.is_empty()
+        && cycle.artifacts.iter().all(|path| !path.exists());
+    if due {
+        cycle.artifact_steered = true;
+    }
+    due
+}
+
+fn prompt_hook(
+    cycle: Arc<Mutex<Cycle>>,
+    todos: Arc<TodoStore>,
+    deliver: Arc<dyn Fn(AgentMessage) + Send + Sync>,
+    inner: Option<Arc<PromptChoiceFn>>,
+    eager: Eager,
+    cwd: PathBuf,
+) -> Arc<PromptChoiceFn> {
+    Arc::new(move |prompt: &AgentMessage| {
+        if let Ok(mut cycle) = cycle.lock() {
+            cycle.reset();
+        }
+        let AgentMessage::User {
+            content: UserContent::Text(text),
+            attribution: Attribution::User,
+            ..
+        } = prompt
+        else {
+            return inner.as_ref().and_then(|inner| inner(prompt));
+        };
+        if let Ok(mut cycle) = cycle.lock() {
+            cycle.prompt_claims_impossible = claims_impossible(text);
+            cycle.artifacts = artifact_candidates(text, &cwd);
+            cycle.checker = find_checker(&cwd);
+        }
+        let list = todos.list();
+        let open = list.progress().open.saturating_add(list.progress().blocked) > 0;
+        if eager == Eager::Off || (!open && !eager_init(text)) {
+            return inner.as_ref().and_then(|inner| inner(prompt));
+        }
+        let seeded = !open && seed(&todos, text);
+        let list = todos.list();
+        let prelude = if seeded {
+            seeded_text(&list)
+        } else {
+            prelude_text(&list)
+        };
+        deliver(custom(PRELUDE_CUSTOM_TYPE, prelude, false));
+        if eager == Eager::Force && !open {
+            return ForcedTool::new(tool::NAME).ok().map(ToolChoice::Tool);
+        }
+        inner.as_ref().and_then(|inner| inner(prompt))
+    })
+}
+
 pub fn coupling(session: &AgentSession, todos: Arc<TodoStore>, options: Options) -> TurnCoupling {
     let Options {
         eager,
         children_running,
         inner,
+        cwd,
+        gates,
     } = options;
     let store = session.store_handle();
     let cycle = Arc::new(Mutex::new(rehydrate(&store)));
     let deliver = session.advisory_hook();
 
-    let on_prompt: Arc<PromptChoiceFn> = {
-        let cycle = Arc::clone(&cycle);
-        let todos = Arc::clone(&todos);
-        let deliver = Arc::clone(&deliver);
-        let inner = inner.as_ref().map(|inner| Arc::clone(&inner.on_prompt));
-        Arc::new(move |prompt: &AgentMessage| {
-            if let Ok(mut cycle) = cycle.lock() {
-                cycle.reset();
-            }
-            let AgentMessage::User {
-                content: UserContent::Text(text),
-                attribution: Attribution::User,
-                ..
-            } = prompt
-            else {
-                return inner.as_ref().and_then(|inner| inner(prompt));
-            };
-            if let Ok(mut cycle) = cycle.lock() {
-                cycle.prompt_claims_impossible = claims_impossible(text);
-            }
-            let list = todos.list();
-            let open = list.progress().open.saturating_add(list.progress().blocked) > 0;
-            if eager == Eager::Off || (!open && !eager_init(text)) {
-                return inner.as_ref().and_then(|inner| inner(prompt));
-            }
-            let seeded = !open && seed(&todos, text);
-            let list = todos.list();
-            let prelude = if seeded {
-                seeded_text(&list)
-            } else {
-                prelude_text(&list)
-            };
-            deliver(custom(PRELUDE_CUSTOM_TYPE, prelude, false));
-            if eager == Eager::Force && !open {
-                return ForcedTool::new(tool::NAME).ok().map(ToolChoice::Tool);
-            }
-            inner.as_ref().and_then(|inner| inner(prompt))
-        })
-    };
+    let on_prompt: Arc<PromptChoiceFn> = prompt_hook(
+        Arc::clone(&cycle),
+        Arc::clone(&todos),
+        Arc::clone(&deliver),
+        inner.as_ref().map(|inner| Arc::clone(&inner.on_prompt)),
+        eager,
+        cwd,
+    );
 
     let on_turn: Arc<TurnObserveFn> = {
         let cycle = Arc::clone(&cycle);
@@ -781,6 +1074,13 @@ pub fn coupling(session: &AgentSession, todos: Arc<TodoStore>, options: Options)
             let Ok(mut cycle) = cycle.lock() else {
                 return;
             };
+            if track_turn(&mut cycle, gates, snapshot.message, landed) {
+                deliver(custom(
+                    NUDGE_CUSTOM_TYPE,
+                    artifact_steer_text(&cycle.artifacts),
+                    false,
+                ));
+            }
             if touched {
                 cycle.touched();
                 return;
@@ -837,6 +1137,12 @@ pub fn coupling(session: &AgentSession, todos: Arc<TodoStore>, options: Options)
                 return None;
             }
             if let Some(message) = claim_redrive(&mut cycle, &todos, &store, &text) {
+                return Some(message);
+            }
+            if !called(snapshot.tool_results, "ask_user")
+                && !children_running()
+                && let Some(message) = gate_redrive(&mut cycle, gates, &todos, &store)
+            {
                 return Some(message);
             }
             let list = todos.list();
