@@ -90,6 +90,8 @@ pub struct RuntimeWiring {
     pub auto_background: Option<std::time::Duration>,
     /// `--deadline`: the wall clock the run has, shown counting down in the environment block.
     pub deadline: Option<std::time::Duration>,
+    /// D162: the artifact and closure gates at a clean stop; `--no-gates` turns both off.
+    pub gates: yi_types::config::Gates,
     /// `kernel.prewarm` (default true): boot the kernel in the background at
     /// session open. Children never prewarm — they spawn to run a cell now.
     pub kernel_prewarm: bool,
@@ -337,6 +339,8 @@ fn wire_plan_engine(
         todos,
         crate::todo::coupling::Options {
             eager: crate::todo::coupling::Eager::Prelude,
+            cwd: wiring.cwd.clone(),
+            gates: wiring.gates,
             children_running: Arc::new(move || {
                 children
                     .children
