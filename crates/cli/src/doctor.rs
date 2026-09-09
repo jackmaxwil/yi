@@ -40,11 +40,13 @@ struct Site {
 type Check = fn(&Site) -> Finding;
 
 /// The rows, in the order a reader wants them: what the process is, then what it owns.
-const ROWS: [(&str, Check); 7] = [
+const ROWS: [(&str, Check); 9] = [
     ("home", home_absolute),
     ("config", config_parses),
     ("catalog", catalog_age),
     ("python-runtime", python_runtime_present),
+    ("kernel-toolchain", kernel_toolchain),
+    ("kernel-boot", kernel_boot),
     ("daemon-socket", socket_alive_or_absent),
     ("daemon-ledger", ledger_roots_exist),
     ("lanes", lanes_consistent),
@@ -110,6 +112,25 @@ fn python_runtime_present(site: &Site) -> Finding {
         "{} holds neither yi_runtime nor skills; `yi doctor --fix` unpacks the embed",
         root.display()
     ))
+}
+
+fn kernel_toolchain(site: &Site) -> Finding {
+    match yi_runtime::doctor_toolchain(&site.home) {
+        Ok(detail) => ok(detail),
+        Err(error) => fail(error),
+    }
+}
+
+/// Builds under `--fix` (the trial adapter's install step), then boots a real kernel and times it.
+fn kernel_boot(site: &Site) -> Finding {
+    match yi_runtime::doctor_boot(&site.home, site.fix) {
+        Ok((true, detail)) => Finding {
+            status: Status::Fixed,
+            detail,
+        },
+        Ok((false, detail)) => ok(detail),
+        Err(error) => fail(error),
+    }
 }
 
 fn socket_path(site: &Site) -> PathBuf {

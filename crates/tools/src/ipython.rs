@@ -51,7 +51,7 @@ impl Tool for IpythonTool {
             "properties": {
                 "code": {
                     "type": "string",
-                    "description": "Python scratchpad code or `%%bash` shell cells to execute in the agent kernel. The kernel runs in Yi's own virtualenv, not the target project's: reach the project's environment through a `%%bash` cell that invokes the project's own interpreter or runner (`uv run`, `.venv/bin/python`, `cargo`, `npm`), and keep direct kernel imports for scratch work that does not depend on project packages."
+                    "description": "Python scratchpad code or `%%bash` shell cells to execute in the agent kernel. The kernel is Yi's own venv over the machine's site-packages: what `python3` here imports, a cell imports; a project's own venv is reached through a `%%bash` cell that runs its interpreter or runner (`uv run`, `.venv/bin/python`, `cargo`, `npm`)."
                 }
             },
             "required": ["code"]
@@ -87,6 +87,13 @@ impl Tool for IpythonTool {
     }
 }
 
+/// The distribution a `ModuleNotFoundError` names, top-level only: `a.b` installs as `a`.
+fn missing_module(evalue: &str) -> Option<&str> {
+    let rest = evalue.strip_prefix("No module named '")?;
+    let name = rest.split('\'').next()?.split('.').next()?;
+    (!name.is_empty()).then_some(name)
+}
+
 pub fn cell_output(code: &str, outcome: KernelCellOutcome) -> ToolOutput {
     let result = outcome.result;
     let mut sections = Vec::new();
@@ -105,6 +112,13 @@ pub fn cell_output(code: &str, outcome: KernelCellOutcome) -> ToolOutput {
         } else {
             error.traceback.join("\n")
         });
+        if error.ename == "ModuleNotFoundError"
+            && let Some(name) = missing_module(&error.evalue)
+        {
+            sections.push(format!(
+                "`{name}` is not installed in the kernel. Run `%pip install {name}` in a cell; `pip` in bash installs into a different Python."
+            ));
+        }
     }
     if result.status == ExecuteStatus::Aborted {
         sections.push("[cell aborted]".to_owned());
@@ -147,4 +161,19 @@ pub fn cell_output(code: &str, outcome: KernelCellOutcome) -> ToolOutput {
     output.is_error =
         result.status == ExecuteStatus::Error || result.status == ExecuteStatus::Aborted;
     output
+}
+
+#[cfg(test)]
+mod tests {
+    use super::missing_module;
+
+    #[test]
+    fn a_missing_module_names_its_distribution() {
+        assert_eq!(missing_module("No module named 'xlrd'"), Some("xlrd"));
+        assert_eq!(
+            missing_module("No module named 'yaml.loader'"),
+            Some("yaml")
+        );
+        assert_eq!(missing_module("name 'x' is not defined"), None);
+    }
 }

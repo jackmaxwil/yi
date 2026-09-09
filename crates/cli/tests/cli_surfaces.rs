@@ -732,6 +732,10 @@ fn a_headless_drive_claims_no_lane_unless_asked() -> TestResult {
     Ok(())
 }
 
+/// A python that cannot boot: the two kernel rows report it and `--fix` builds nothing,
+/// so the doctor tests never pay a venv build in a temp HOME.
+const NO_KERNEL: &[(&str, &str)] = &[("YI_KERNEL_PYTHON", "/nonexistent/python3")];
+
 fn doctor_lines(output: &Output) -> Vec<String> {
     stdout(output).lines().map(str::to_owned).collect()
 }
@@ -748,7 +752,7 @@ fn doctor_reports_and_repairs_what_it_may() -> TestResult {
         yi_dir.join("daemon.ledger.json"),
         r#"{"sessions":{"s-gone":{"cwd":"/nonexistent/yi-gone-root","unseen":0,"lastEventMs":1}}}"#,
     )?;
-    let seen = workspace.yi(&["doctor"])?;
+    let seen = workspace.yi_env(&["doctor"], NO_KERNEL)?;
     assert_eq!(seen.status.code(), Some(1), "{}", stdout(&seen));
     let lines = doctor_lines(&seen);
     assert!(
@@ -767,7 +771,7 @@ fn doctor_reports_and_repairs_what_it_may() -> TestResult {
         lines.iter().any(|l| l.starts_with("ok    home")),
         "{lines:?}"
     );
-    let fixed = workspace.yi(&["doctor", "--fix"])?;
+    let fixed = workspace.yi_env(&["doctor", "--fix"], NO_KERNEL)?;
     let lines = doctor_lines(&fixed);
     assert!(
         lines.iter().any(|l| l.starts_with("fixed daemon-socket")),
@@ -782,7 +786,7 @@ fn doctor_reports_and_repairs_what_it_may() -> TestResult {
         "a gone root is not doctor's to prune: {lines:?}"
     );
     assert_eq!(fixed.status.code(), Some(1));
-    let json = workspace.yi(&["doctor", "--json"])?;
+    let json = workspace.yi_env(&["doctor", "--json"], NO_KERNEL)?;
     let rows: Value = serde_json::from_str(&stdout(&json))?;
     let names: Vec<&str> = rows
         .as_array()
@@ -797,6 +801,8 @@ fn doctor_reports_and_repairs_what_it_may() -> TestResult {
             "config",
             "catalog",
             "python-runtime",
+            "kernel-toolchain",
+            "kernel-boot",
             "daemon-socket",
             "daemon-ledger",
             "lanes"
@@ -810,7 +816,7 @@ fn doctor_reports_and_repairs_what_it_may() -> TestResult {
 fn doctor_runs_over_a_broken_config_and_names_the_key() -> TestResult {
     let workspace = Workspace::new("doctor-config")?;
     write_config(&workspace, r#"{"modle":"x"}"#)?;
-    let seen = workspace.yi(&["doctor"])?;
+    let seen = workspace.yi_env(&["doctor"], NO_KERNEL)?;
     assert_eq!(
         seen.status.code(),
         Some(1),

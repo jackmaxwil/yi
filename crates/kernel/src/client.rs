@@ -714,6 +714,8 @@ impl KernelManager {
                 home,
                 runtime_source_dir: runtime,
                 skills_source_dir: crate::bootstrap::default_skills_source_dir(),
+                toolchain: None,
+                venv_dir: None,
             };
             ensure_kernel_python(&options)
         })

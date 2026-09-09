@@ -263,7 +263,7 @@ SIGNAL_NAMES = (
     "intercept_count", "intercept_max_rung", "regression_seen_red",
     "bash_timeouts", "broad_search_refused", "length_redrive", "unsourced_redrive",
     "repeat_break", "length_forced", "closed_list_nudge", "impossible_redrive", "artifact_redrive",
-    "stream_retry",
+    "stream_retry", "kernel_dead", "module_missing",
 )
 
 
@@ -380,6 +380,10 @@ def signals(entries):
             out["bash_timeouts"] += 1
         if tool == "bash" and result["text"].startswith("[refused: "):
             out["broad_search_refused"] += 1
+        if tool == "ipython" and (result["text"].startswith("uv is required") or result["text"].startswith("no uv and no python3")):
+            out["kernel_dead"] += 1
+        if tool == "ipython" and "is not installed in the kernel. Run `%pip install" in result["text"]:
+            out["module_missing"] += 1
         if "PermissionDenied" in result["text"] and "PermissionDenied" in final:
             out["sandbox_denial_as_finding"] += 1
         for pointer in re.findall(r"\[full output: ([^\]]+)\]", result["text"]):
