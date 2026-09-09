@@ -115,7 +115,9 @@ class Yi(BaseInstalledAgent):
             return
         problems = kernel_problems(stdout)
         if problems:
-            raise RuntimeError("the kernel cannot boot in this image: " + "; ".join(problems))
+            # the trial runs anyway: the environment block tells the model the kernel is
+            # unavailable and the row counts `kernel_dead` (#329)
+            print("kernel: " + "; ".join(problems), file=sys.stderr)
 
     async def upload_ca_bundle(self, environment: BaseEnvironment) -> None:
         try:
