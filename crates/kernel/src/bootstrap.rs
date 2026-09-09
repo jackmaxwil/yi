@@ -416,10 +416,15 @@ fn find_executable(name: &str) -> Option<PathBuf> {
 
 /// The first python3 on PATH that is 3.11+ and carries `venv` and `ensurepip`.
 pub fn find_system_python() -> Option<PathBuf> {
+    // Incident: a python whose `ensurepip` imports but cannot bootstrap pip (Debian without
+    // python3-venv, a CI runner's build) failed `-m venv` halfway; the module run is the probe.
     SYSTEM_PYTHONS
         .iter()
         .filter_map(|name| find_executable(name))
-        .find(|python| run(python, &["-c", SYSTEM_PYTHON_CHECK], false).is_ok())
+        .find(|python| {
+            run(python, &["-c", SYSTEM_PYTHON_CHECK], false).is_ok()
+                && run(python, &["-m", "ensurepip", "--version"], false).is_ok()
+        })
 }
 
 /// uv, else the machine's python3 3.11+ with venv, else the uv installer when asked for.
