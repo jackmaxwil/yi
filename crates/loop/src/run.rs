@@ -4,10 +4,11 @@ use serde_json::{Map, Value, json};
 use tokio::sync::mpsc::Receiver;
 use yi_types::event::{AgentEvent, AssistantMessageEvent, ToolResult};
 use yi_types::message::{AgentMessage, Content, StopReason, Usage};
-use yi_types::model::{Effort, ForcedTool, LlmContext, Model, ToolChoice, ToolDef};
+use yi_types::model::{Effort, LlmContext, Model, ToolChoice, ToolDef};
 
 use crate::config::{ExecutionMode, LoopConfig, TurnSnapshot};
 use crate::interrupt::InterruptSignal;
+use crate::reasoning::ReasoningBudget;
 use crate::tool::{AgentTool, ToolOutcome, error_tool_result};
 
 pub struct LoopContext {
@@ -352,33 +353,46 @@ fn fail_truncated_calls(
 }
 
 pub const LENGTH_REDRIVE_CUSTOM_TYPE: &str = "length_redrive";
-pub const LENGTH_REDRIVE_TEXT: &str = "The reply hit the output limit before any tool call. Act on the next item now: make the tool call, then explain; the thinking is not the work.";
-
-pub const LENGTH_FORCE_TEXT: &str =
-    "You are running a search by hand. Write the program that does it and run it.";
+pub const LENGTH_REDRIVE_TEXT: &str = "The reply hit the output limit before any tool call. Pick the most boring viable option and act on it now: make the tool call, then explain.";
 /// Consecutive bare length stops; a turn that calls a tool starts the count over.
 pub const LENGTH_STOP_AT: u32 = 3;
 
-/// A turn that spent its whole output budget thinking is sent back to act instead.
-fn length_redrive(rung: u32, forced: bool) -> AgentMessage {
+/// A turn that spent its whole output budget thinking, or was cut at the reasoning budget, is
+/// sent back to act instead.
+fn length_redrive(rung: u32, cut: Option<usize>) -> AgentMessage {
+    let details = match cut {
+        Some(chars) => json!({"rung": rung, "cut": true, "reasoningChars": chars}),
+        None => json!({"rung": rung, "cut": false}),
+    };
     AgentMessage::Custom {
         custom_type: LENGTH_REDRIVE_CUSTOM_TYPE.to_owned(),
-        content: yi_types::message::UserContent::Text(format!(
-            "{LENGTH_REDRIVE_TEXT} {LENGTH_FORCE_TEXT}"
-        )),
+        content: yi_types::message::UserContent::Text(LENGTH_REDRIVE_TEXT.to_owned()),
         display: false,
-        details: Some(json!({"rung": rung, "forced": forced})),
+        details: Some(details),
         timestamp: 0,
     }
 }
 
-/// Bash rather than the kernel: the kernel may be absent, and a heredoc is a program.
-fn length_force(tools: &[Arc<dyn AgentTool>]) -> Option<ToolChoice> {
-    tools
-        .iter()
-        .any(|tool| tool.definition().name == "bash")
-        .then(|| ForcedTool::new("bash").ok().map(ToolChoice::Tool))
-        .flatten()
+/// The cut turn as the record keeps it: a bare length stop with no thinking block, so the
+/// runaway never rides a later request as cached input, and the char count as its usage.
+fn cut_message(partial: Option<&AgentMessage>, model: &Model, chars: usize) -> AgentMessage {
+    let mut message = partial
+        .cloned()
+        .unwrap_or_else(|| synthesized_error_message(model, ""));
+    if let AgentMessage::Assistant {
+        content,
+        stop_reason,
+        usage,
+        error_message,
+        ..
+    } = &mut message
+    {
+        content.retain(|block| !matches!(block, Content::Thinking { .. }));
+        *stop_reason = StopReason::Length;
+        usage.reasoning = Some(i64::try_from(chars / 4).unwrap_or(i64::MAX));
+        *error_message = None;
+    }
+    message
 }
 
 pub const STREAM_RETRY_CUSTOM_TYPE: &str = "stream_retry";
@@ -469,7 +483,7 @@ async fn stream_assistant_response<S: StreamFn>(
     signal: &InterruptSignal,
     emit: &mut (dyn FnMut(AgentEvent) + Send),
     stream: &S,
-) -> AgentMessage {
+) -> (AgentMessage, Option<usize>) {
     let TurnRequest {
         model,
         effort,
@@ -494,9 +508,12 @@ async fn stream_assistant_response<S: StreamFn>(
         tool_choice,
     };
 
+    signal.clear_cut();
     let mut receiver = stream.stream(model, &llm_context, effort, signal);
     let mut added_partial = false;
     let mut final_message: Option<AgentMessage> = None;
+    let mut budget = ReasoningBudget::default();
+    let mut cut: Option<usize> = None;
     loop {
         // The provider's stream takes no cancellation input, so this is a streaming answer's
         // only interrupt checkpoint; without it a tool-less turn ran to completion first.
@@ -525,6 +542,12 @@ async fn stream_assistant_response<S: StreamFn>(
                 break;
             }
             other => {
+                match other {
+                    AssistantMessageEvent::ThinkingDelta { delta, .. } => cut = budget.push(delta),
+                    AssistantMessageEvent::TextStart { .. }
+                    | AssistantMessageEvent::ToolCallStart { .. } => budget.disarm(),
+                    _ => {}
+                }
                 if added_partial {
                     // A delta is a delta (D145): the message grows in place, once.
                     if let Some(last) = context.messages.last_mut() {
@@ -534,8 +557,19 @@ async fn stream_assistant_response<S: StreamFn>(
                         assistant_message_event: event.clone(),
                     });
                 }
+                if cut.is_some() {
+                    signal.cut();
+                    break;
+                }
             }
         }
+    }
+    if let Some(chars) = cut {
+        final_message = Some(cut_message(
+            added_partial.then(|| context.messages.last()).flatten(),
+            model,
+            chars,
+        ));
     }
     let final_message = final_message.unwrap_or_else(|| {
         if signal.is_fired() {
@@ -560,7 +594,7 @@ async fn stream_assistant_response<S: StreamFn>(
     emit(AgentEvent::MessageEnd {
         message: final_message.clone(),
     });
-    final_message
+    (final_message, cut)
 }
 
 pub async fn run_loop<S: StreamFn>(
@@ -622,7 +656,7 @@ pub async fn run_loop<S: StreamFn>(
             {
                 context.messages = compacted;
             }
-            let message = stream_assistant_response(
+            let (message, cut) = stream_assistant_response(
                 context,
                 config,
                 TurnRequest {
@@ -740,8 +774,7 @@ pub async fn run_loop<S: StreamFn>(
                     });
                     return collected;
                 }
-                tool_choice = length_force(&context.tools);
-                pending.push(length_redrive(length_stops, tool_choice.is_some()));
+                pending.push(length_redrive(length_stops, cut));
             } else if !has_more_tool_calls
                 && pending.is_empty()
                 && let Some(intercept) = &config.intercept_stop
