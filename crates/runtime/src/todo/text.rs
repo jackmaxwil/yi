@@ -205,7 +205,9 @@ fn moves(item: &TodoItem) -> String {
     let name = name(item);
     match item.state {
         TodoStateName::Running => {
-            format!("done {name} evidence=<check> · block {name} on user · drop {name} <reason>")
+            format!(
+                "done {name} evidence=`<command>` <output line> · block {name} on user · drop {name} <reason>"
+            )
         }
         TodoStateName::Pending => format!("start {name} · drop {name} <reason>"),
         TodoStateName::Blocked => format!("unblock {name} · drop {name} <reason>"),

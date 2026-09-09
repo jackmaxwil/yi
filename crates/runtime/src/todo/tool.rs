@@ -27,7 +27,7 @@ pub fn schema() -> Value {
             "under": {"type": "string", "description": "append: the parent label the items nest under"},
             "id": {"type": "string", "description": "start/done/drop/block/unblock/rm: the item's id, e.g. t3; or use label"},
             "label": {"type": "string", "description": "start/done/drop/block/unblock/rm: the item, verbatim"},
-            "evidence": {"type": "string", "description": "done: the check that passed, quoted"},
+            "evidence": {"type": "string", "description": "done: the command in backticks and the output line that proves it"},
             "reason": {"type": "string", "description": "drop: why the item no longer applies"},
             "on": {"type": "string", "enum": ["user", "external", "child"], "description": "block: who it waits on"},
             "note": {"type": "string", "description": "block: what would unblock it"},
