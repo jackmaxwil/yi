@@ -74,6 +74,19 @@ def check_command():
         raise AssertionError(f"model name {bad!r} must be rejected")
 
 
+def check_install():
+    """S2: the adapter builds the kernel venv at install and refuses an image it cannot boot on."""
+    source = (ROOT / "adapters" / "yi_harbor" / "agent.py").read_text()
+    assert "doctor --fix --json" in source and "warm_kernel" in source, "install must warm the kernel"
+    green = json.dumps([{"name": "kernel-toolchain", "status": "ok", "detail": "uv /usr/bin/uv"},
+                        {"name": "kernel-boot", "status": "fixed", "detail": "built 20000 ms"}])
+    assert yi_usage.kernel_problems(green) == []
+    red = json.dumps([{"name": "kernel-toolchain", "status": "fail", "detail": "no uv and no python3"}])
+    problems = yi_usage.kernel_problems(red)
+    assert problems == ["kernel-toolchain: no uv and no python3", "kernel-boot: row missing"], problems
+    assert yi_usage.kernel_problems("not json")[0].startswith("doctor output is not JSON")
+
+
 def check_usage():
     """E5: the parse reads Pi camelCase usage off a real recorded transcript."""
     usage = yi_usage.parse_events(EVENTS)
@@ -356,6 +369,7 @@ CHECKS = (
     check_orient_census,
     check_rule_fires,
     check_command,
+    check_install,
     check_usage,
     check_no_assistant_rows,
     check_unknown_usage_is_not_a_free_turn,

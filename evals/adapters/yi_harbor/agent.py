@@ -4,7 +4,6 @@ Register out of tree:
     PYTHONPATH=evals/adapters harbor run --agent yi_harbor.agent:Yi -d <suite>
 """
 
-import json
 import os
 import sys
 from pathlib import Path
@@ -19,6 +18,7 @@ from yi_usage import (
     EVENTS_FILENAME,
     SESSIONS_SUBDIR,
     config_fingerprint,
+    kernel_problems,
     parse_events,
     run_command,
     TASK_TIMEOUT_SEC,
@@ -48,6 +48,9 @@ TIMEOUT_MULT_ENV = "EVAL_TIMEOUT_MULT"
 BINARY_URL_ENV = "EVAL_BINARY_URL"
 BINARY_PATH_ENV = "EVAL_BINARY"
 VERSION_CHECK = f"{REMOTE_BINARY} --version"
+# The kernel venv is built at install, inside the agent-setup cap and off the hour;
+# a v4 image without python3 is an install error here, never a bash-only run.
+DOCTOR_COMMAND = f"{REMOTE_BINARY} doctor --fix --json || true"
 
 
 def mode_label():
@@ -86,6 +89,7 @@ class Yi(BaseInstalledAgent):
             await self.exec_as_root(environment, command=install_command(url))
             await self.exec_as_agent(environment, command=CONFIG_COMMAND)
             await self.upload_ca_bundle(environment)
+            await self.warm_kernel(environment)
             return
         local = os.environ.get(BINARY_PATH_ENV)
         if not local:
@@ -100,6 +104,16 @@ class Yi(BaseInstalledAgent):
         )
         await self.exec_as_agent(environment, command=CONFIG_COMMAND)
         await self.upload_ca_bundle(environment)
+        await self.warm_kernel(environment)
+
+    async def warm_kernel(self, environment: BaseEnvironment) -> None:
+        result = await self.exec_as_agent(environment, command=DOCTOR_COMMAND)
+        stdout = getattr(result, "stdout", None)
+        if stdout is None:
+            return
+        problems = kernel_problems(stdout)
+        if problems:
+            raise RuntimeError("the kernel cannot boot in this image: " + "; ".join(problems))
 
     async def upload_ca_bundle(self, environment: BaseEnvironment) -> None:
         try:

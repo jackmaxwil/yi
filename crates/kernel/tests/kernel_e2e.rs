@@ -3,7 +3,8 @@ use std::sync::Arc;
 
 use serde_json::{Map, Value};
 use yi_kernel::bootstrap::{
-    BootstrapOptions, default_runtime_source_dir, default_skills_source_dir, ensure_kernel_python,
+    BootstrapOptions, Toolchain, default_runtime_source_dir, default_skills_source_dir,
+    ensure_kernel_python, find_system_python, has_runtime,
 };
 use yi_kernel::client::{
     AbortFlag, ExecuteOptions, HostFuture, HostHandlers, KernelManager, KernelOptions,
@@ -45,6 +46,8 @@ fn manager_with_snapshot(snapshot: Option<KernelSnapshotConfig>) -> Result<Kerne
         home: home(),
         runtime_source_dir: default_runtime_source_dir(),
         skills_source_dir: default_skills_source_dir(),
+        toolchain: None,
+        venv_dir: None,
     })?;
     KernelManager::new(KernelOptions {
         python: Some(python),
@@ -284,5 +287,53 @@ async fn prune_removes_oversized_variables_and_list_names_reports() -> TestResul
 
     kernel.dispose().await;
     let _ = std::fs::remove_dir_all(&dir);
+    Ok(())
+}
+
+/// The v4 trial images ship python3 and no uv; the venv must build from python3 alone and the
+/// kernel it boots must import `rlm`, or delegation is unreachable for the whole hour.
+#[tokio::test]
+async fn the_kernel_boots_on_system_python_when_uv_is_absent() -> TestResult {
+    let Some(python3) = find_system_python() else {
+        return Ok(());
+    };
+    let scratch = std::env::temp_dir().join(format!("yi-system-venv-{}", std::process::id()));
+    let python = tokio::task::spawn_blocking({
+        let scratch = scratch.clone();
+        move || {
+            ensure_kernel_python(&BootstrapOptions {
+                on_progress: Some(Box::new(|message| eprintln!("{message}"))),
+                home: home(),
+                runtime_source_dir: default_runtime_source_dir(),
+                skills_source_dir: default_skills_source_dir(),
+                toolchain: Some(Toolchain::System(python3)),
+                venv_dir: Some(scratch.join("venv")),
+            })
+        }
+    })
+    .await??;
+    assert!(has_runtime(&python), "{}", python.display());
+    let kernel = KernelManager::new(KernelOptions {
+        python: Some(python),
+        cwd: None,
+        env: Vec::new(),
+        username: "yi".to_owned(),
+        home: home(),
+        runtime_source_dir: default_runtime_source_dir(),
+        host: Some(Arc::new(EchoHost)),
+        on_progress: None,
+        snapshot: None,
+        wrap: None,
+    })?;
+    let result = kernel
+        .execute(
+            "import rlm; print(callable(rlm.run))",
+            ExecuteOptions::default(),
+        )
+        .await?;
+    kernel.dispose().await;
+    let _ = std::fs::remove_dir_all(&scratch);
+    assert_eq!(result.status, ExecuteStatus::Ok, "{result:?}");
+    assert_eq!(result.stdout.trim(), "True");
     Ok(())
 }

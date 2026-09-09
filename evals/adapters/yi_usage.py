@@ -30,6 +30,27 @@ TOKEN_KEYS = ("input", "output", "cacheRead", "cacheWrite")
 TASK_TIMEOUT_SEC = 28800
 
 
+KERNEL_ROWS = ("kernel-toolchain", "kernel-boot")
+
+
+def kernel_problems(doctor_json):
+    """The kernel rows of `yi doctor --json` that are red, as `name: detail` lines; the
+    adapter refuses an image the kernel cannot boot on instead of running bash-only."""
+    try:
+        rows = json.loads(doctor_json)
+    except (TypeError, ValueError):
+        return [f"doctor output is not JSON: {str(doctor_json)[:200]!r}"]
+    by_name = {row.get("name"): row for row in rows if isinstance(row, dict)}
+    problems = []
+    for name in KERNEL_ROWS:
+        row = by_name.get(name)
+        if row is None:
+            problems.append(f"{name}: row missing")
+        elif row.get("status") not in ("ok", "fixed"):
+            problems.append(f"{name}: {row.get('detail')}")
+    return problems
+
+
 def run_command(model_name, instruction, resume=False, deadline_sec=None):
     """Build the single shell command a trial runs.
 
