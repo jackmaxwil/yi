@@ -21,9 +21,10 @@ pub struct OpenAiOptions {
     pub routing: Option<Value>,
 }
 
-/// OpenRouter's default load balancing weights by price and once routed to an upstream at
-/// ten tokens a second that dropped the stream at fifteen minutes; throughput is deterministic.
-pub const DEFAULT_ROUTING: &str = r#"{"sort":"throughput"}"#;
+/// A `sort` disables OpenRouter's price weighting and Auto Exacto and doubled row 0023's cost;
+/// the deprioritisers push a slow upstream to the back of the list at catalog price.
+pub const DEFAULT_ROUTING: &str =
+    r#"{"preferred_min_throughput":{"p50":20},"preferred_max_latency":{"p50":10}}"#;
 
 pub fn routing_params(model: &Model, options: &OpenAiOptions) -> Option<Value> {
     if !model.base_url.contains("openrouter.ai") {
