@@ -6,7 +6,7 @@ use std::error::Error;
 use std::path::{Path, PathBuf};
 
 use yi_runtime::lane::land::{
-    LaneHandle, bounded_name, format_lanes, open_pr_in, owner_repo, parse_jobs, pr_number,
+    LaneHandle, bounded_name, format_lanes, host_of, open_pr_in, owner_repo, parse_jobs, pr_number,
 };
 use yi_runtime::lane::{
     BranchName, ClaimBase, Head, LaneError, Pool, SlotIndex, SlotView, TreeState, head, toolchain,
@@ -613,12 +613,30 @@ fn a_conflicting_base_pushes_nothing() -> TestResult {
     Ok(())
 }
 
+/// `fgj api` takes the host spelled out, read from the origin in either spelling.
+#[test]
+fn the_origin_host_is_read_from_ssh_and_https_urls() {
+    assert_eq!(
+        host_of("ssh://git@forge.example.invalid:2222/apex/yi.git").as_deref(),
+        Some("forge.example.invalid")
+    );
+    assert_eq!(
+        host_of("git@forge.example.invalid:apex/yi.git").as_deref(),
+        Some("forge.example.invalid")
+    );
+    assert_eq!(
+        host_of("https://git.example.invalid/apex/yi").as_deref(),
+        Some("git.example.invalid")
+    );
+    assert_eq!(host_of(""), None);
+}
+
 /// The forge's open list is read back to a typed number by head branch, on either forge.
 #[test]
 fn an_open_pull_request_is_found_by_head() {
-    let tsv = "12\tyi/other\n191\tyi/01a0\n";
-    assert_eq!(open_pr_in(tsv, "yi/01a0"), Some(PrNumber(191)));
-    assert_eq!(open_pr_in(tsv, "yi/none"), None);
+    let fgj = r#"[{"number": 12, "head": {"ref": "yi/other"}}, {"number": 191, "head": {"ref": "yi/01a0"}}]"#;
+    assert_eq!(open_pr_in(fgj, "yi/01a0"), Some(PrNumber(191)));
+    assert_eq!(open_pr_in(fgj, "yi/none"), None);
     assert_eq!(
         open_pr_in(r#"[{"number": 7}]"#, "yi/01a0"),
         Some(PrNumber(7))
