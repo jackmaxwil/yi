@@ -128,7 +128,7 @@ pub struct AgentSession {
     plan: Mutex<Option<Arc<crate::plan::PlanService>>>,
     rules: Mutex<Option<Arc<crate::rules::RuleEngine>>>,
     wall: Mutex<crate::wall::Wall>,
-    kernel: Mutex<Option<Arc<crate::kernel::KernelService>>>,
+    kernel: Arc<Mutex<Option<Arc<crate::kernel::KernelService>>>>,
 }
 
 impl AgentSession {
@@ -174,7 +174,7 @@ impl AgentSession {
             plan: Mutex::new(None),
             rules: Mutex::new(None),
             wall: Mutex::new(crate::wall::Wall::default()),
-            kernel: Mutex::new(None),
+            kernel: Arc::new(Mutex::new(None)),
         }
     }
 

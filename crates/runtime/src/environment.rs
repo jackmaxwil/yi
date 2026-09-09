@@ -140,6 +140,7 @@ pub fn hook(
     let lane = session.lane_handle();
     let todos = session.todos_handle();
     let deadline = wiring.deadline;
+    let kernel = session.kernel_state_handle();
     let started = std::time::Instant::now();
     Arc::new(move || {
         let mut lines = Vec::new();
@@ -222,6 +223,9 @@ pub fn hook(
                 line.push_str(&format!(" · session ${cost:.2}"));
             }
             lines.push(format!("context: {line}"));
+        }
+        if let Some(state) = kernel() {
+            lines.push(format!("kernel: {state}"));
         }
         let running: Vec<String> = host
             .children
