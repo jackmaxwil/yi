@@ -14,7 +14,7 @@ const GREP_LINES: usize = 60;
 
 // Output this small is already cheap, and a reducer that rewrites it only
 // costs the model a marker and a path to nowhere useful.
-const REDUCE_FLOOR: usize = 2_048;
+pub const REDUCE_FLOOR: usize = 8_192;
 
 /// The user asked for the whole thing; reducing answers a different question.
 const RAW_FLAGS: [&str; 6] = ["-v", "--verbose", "--nocapture", "--porcelain", "-la", "-C"];
@@ -39,7 +39,7 @@ pub fn reduce(
             recovery: None,
         };
     }
-    let stripped = strip_ansi(&raw);
+    let stripped = compress(&strip_ansi(&raw));
     let budget = max_lines.unwrap_or(HEAD_LINES + TAIL_LINES);
     let filtered = match program(command) {
         Some("cargo") => cargo(&stripped, exit_code, budget),
@@ -134,6 +134,79 @@ fn generic(text: &str, budget: usize) -> String {
     cap_lines(&deduped, budget)
 }
 
+/// Lossy before omission: the last frame of `\r` progress, collapsed whitespace, a repeated
+/// line counted on its first occurrence (ponytail: global, per-block if a rollout cares).
+pub fn compress(text: &str) -> String {
+    let mut kept: Vec<(String, usize)> = Vec::new();
+    let mut first_seen: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    let mut last_progress: Option<usize> = None;
+    let mut blank_run = false;
+    for raw in text.lines() {
+        let line = raw.rsplit('\r').next().unwrap_or(raw).trim_end();
+        if line.is_empty() {
+            if !blank_run {
+                kept.push((String::new(), 0));
+            }
+            blank_run = true;
+            continue;
+        }
+        blank_run = false;
+        if line.len() >= 8
+            && let Some(&index) = first_seen.get(line)
+        {
+            if let Some((_, count)) = kept.get_mut(index) {
+                *count = count.saturating_add(1);
+            }
+            continue;
+        }
+        if is_progress(line) {
+            if let Some((stale, _)) = last_progress.and_then(|index| kept.get_mut(index)) {
+                stale.clear();
+            }
+            last_progress = Some(kept.len());
+        }
+        first_seen.insert(line.to_owned(), kept.len());
+        kept.push((line.to_owned(), 0));
+    }
+    let lines: Vec<String> = kept
+        .into_iter()
+        .enumerate()
+        .filter(|(index, (line, _))| !line.is_empty() || last_progress != Some(*index))
+        .map(|(_, (line, count))| {
+            if count > 0 {
+                format!("{line} [×{}]", count.saturating_add(1))
+            } else {
+                line
+            }
+        })
+        .collect();
+    lines.join("\n")
+}
+
+/// A percentage (`42%`) or a bar (`[===>`, `━━`) marks a line its successor overwrites.
+fn is_progress(line: &str) -> bool {
+    if line.contains("[==") || line.contains("[##") || line.contains("━━") {
+        return true;
+    }
+    let bytes = line.as_bytes();
+    bytes.iter().enumerate().any(|(at, &byte)| {
+        byte == b'%' && {
+            let digits = bytes
+                .get(..at)
+                .unwrap_or_default()
+                .iter()
+                .rev()
+                .take_while(|b| b.is_ascii_digit())
+                .count();
+            (1..=3).contains(&digits)
+                && at
+                    .checked_sub(digits.saturating_add(1))
+                    .and_then(|before| bytes.get(before))
+                    .is_none_or(|b| !b.is_ascii_alphanumeric())
+        }
+    })
+}
+
 fn collapse_repeats(text: &str) -> String {
     let mut out: Vec<String> = Vec::new();
     let mut previous: Option<&str> = None;
@@ -158,15 +231,32 @@ fn collapse_repeats(text: &str) -> String {
 
 fn cap_lines(text: &str, cap: usize) -> String {
     let lines: Vec<&str> = text.lines().collect();
-    if lines.len() <= cap {
+    // Incident: a fixed HEAD/TAIL split let GREP_LINES 60 emit 120 lines; the byte
+    // budget widens both ends instead (a 700-line dump at 40 chars shows 200).
+    let head_budget = REDUCE_FLOOR.saturating_mul(2) / 3;
+    let fits = |lines: &mut dyn Iterator<Item = &&str>, budget: usize| {
+        let mut spent = 0_usize;
+        lines
+            .take_while(|line| {
+                spent = spent.saturating_add(line.len()).saturating_add(1);
+                spent <= budget
+            })
+            .count()
+    };
+    let head = (cap.saturating_mul(2) / 3)
+        .max(fits(&mut lines.iter(), head_budget))
+        .max(1)
+        .min(lines.len());
+    let tail = cap
+        .saturating_sub(cap.saturating_mul(2) / 3)
+        .max(fits(
+            &mut lines.iter().rev(),
+            REDUCE_FLOOR.saturating_sub(head_budget),
+        ))
+        .min(lines.len().saturating_sub(head));
+    if lines.len() <= head.saturating_add(tail) {
         return text.to_owned();
     }
-    // Incident: the split was the fixed HEAD_LINES/TAIL_LINES, so a smaller
-    // cap emitted more than it named (GREP_LINES 60 emitted 120).
-    let head = (cap.saturating_mul(2) / 3).max(1).min(lines.len());
-    let tail = cap
-        .saturating_sub(head)
-        .min(lines.len().saturating_sub(head));
     let dropped = lines.len().saturating_sub(head).saturating_sub(tail);
     let mut out: Vec<&str> = lines.get(..head).unwrap_or_default().to_vec();
     let marker = format!(
