@@ -75,7 +75,7 @@ STRIDE letters that apply; the letters not listed were walked and have no instan
 | the origin URL | `land::detect`, `owner_repo` | picks the adapter only; never interpolated into a shell | S |
 | lock reasons and slot state read back from disk | `Pool::list`, `probe` | storage is not sanitization: the flock, not the text, says held; the session id only names a branch through `BranchName` | T, R |
 | the lockfile and the repository's build config the warmer executes | `toolchain::warm` | offline, Seatbelt-contained, `nice 19`, only a hash a session already synced; receipted in `SlotState` | E, R, D |
-| `git`/`tea`/`gh` output rendered in a cell | `capture` | 30 000-byte cap; the forge token stays in `tea`'s own config and is never read | I |
+| `git`/`fgj`/`gh` output rendered in a cell | `capture` | 30 000-byte cap; the forge token stays in `fgj`'s own config and is never read | I |
 
 ## Feature ledger
 
