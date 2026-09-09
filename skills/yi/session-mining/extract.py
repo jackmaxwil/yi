@@ -265,6 +265,7 @@ SIGNAL_NAMES = (
     "repeat_break", "length_forced", "closed_list_nudge", "impossible_redrive", "artifact_redrive",
     "stream_retry", "kernel_dead", "module_missing", "reduced_results",
     "artifact_steer", "artifact_refused", "closure_refused", "gate_waived", "evidence_shape_refused",
+    "spiral_cut",
 )
 
 
@@ -307,6 +308,8 @@ def signals(entries):
             out["length_redrive"] += 1
             if (message.get("details") or {}).get("forced"):
                 out["length_forced"] += 1
+            if (message.get("details") or {}).get("cut"):
+                out["spiral_cut"] += 1
         elif role == "custom" and message.get("customType") == "todo_nudge" and str(message.get("content", "")).startswith("Every item is done"):
             out["closed_list_nudge"] += 1
         elif role == "custom" and message.get("customType") == "todo_nudge" and str(message.get("content", "")).startswith("None of "):

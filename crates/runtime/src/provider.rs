@@ -163,7 +163,7 @@ impl ProviderStream {
         model: &Model,
         context: &LlmContext,
         effort: Effort,
-        _signal: &InterruptSignal,
+        signal: &InterruptSignal,
     ) -> Receiver<AssistantMessageEvent> {
         match provider_api(&model.api) {
             ProviderApi::AnthropicMessages => {
@@ -172,6 +172,7 @@ impl ProviderStream {
                     cache: true,
                     cache_1h: self.long_cache,
                     proxy: self.proxy.clone(),
+                    stop: Some(signal.cut_flag()),
                     ..AnthropicOptions::default()
                 };
                 anthropic::stream(model, context, &options, self.key())
@@ -183,6 +184,7 @@ impl ProviderStream {
                     session_id: self.session_id.clone(),
                     proxy: self.proxy.clone(),
                     routing: self.routing.clone(),
+                    stop: Some(signal.cut_flag()),
                     ..OpenAiOptions::default()
                 };
                 openai::stream(model, context, &options, self.key())
@@ -194,6 +196,7 @@ impl ProviderStream {
                     session_id: self.session_id.clone(),
                     proxy: self.proxy.clone(),
                     routing: self.routing.clone(),
+                    stop: Some(signal.cut_flag()),
                     ..OpenAiOptions::default()
                 };
                 openai_responses::stream(model, context, &options, self.key())
