@@ -16,6 +16,8 @@ pub const DEFAULT_MAX_DEPTH: u8 = 1;
 // A completed child holds its slot until closed: the cap forces the parent to
 // reap with rlm.delete_subagent instead of leaking children (design B2).
 pub const DEFAULT_MAX_CHILDREN: usize = 8;
+/// live sessions across the whole family, so a deeper fan-out cannot multiply (D165).
+pub const FAMILY_CAP: usize = 16;
 pub const PARENT_NAME: &str = "parent";
 
 pub(crate) struct ChildRecord {
@@ -99,6 +101,8 @@ pub struct SubagentHostOptions {
     /// The plan a discovery's named ancestor task is resolved against.
     pub store: crate::goal::StoreHandle,
     pub plans_dir: PathBuf,
+    /// how many sessions the family holds live right now (the shared kernel map) (D165).
+    pub family_live: Arc<dyn Fn() -> usize + Send + Sync>,
 }
 
 pub struct SubagentHost {
@@ -485,6 +489,11 @@ impl SubagentHost {
                 "fork=all inherits the parent's model and thinking; drop the override".to_owned(),
             );
         }
+        if (self.options.family_live)() >= FAMILY_CAP {
+            return Err(format!(
+                "the family holds {FAMILY_CAP} live sessions; reap one with rlm.delete_subagent before spawning"
+            ));
+        }
         if self.options.depth >= self.options.max_depth {
             return Err(format!(
                 "RLM recursion depth limit reached (RLM_DEPTH={}, RLM_MAX_DEPTH={})",
@@ -681,9 +690,14 @@ impl SubagentHost {
         self.publish(&child_id);
         // Terminal notices reach the parent as user-role host status, never as
         // something that can read as user instructions from the child.
-        let notice = match &error {
-            Some(error) => format!("[subagent {session_name} ({child_id}) failed]\n{error}"),
-            None => {
+        // a child that ended on `ask_user` is asking its parent, not finishing (D165).
+        let question = crate::family::pending_question(&session.messages());
+        let notice = match (&error, question) {
+            (Some(error), _) => format!("[subagent {session_name} ({child_id}) failed]\n{error}"),
+            (None, Some(question)) => format!(
+                "[subagent {session_name} ({child_id}) asks: {question}]\nanswer with rlm.send(\"{session_name}\", \"…\", followup=True)"
+            ),
+            (None, None) => {
                 let answer = last_assistant_text(&session.messages())
                     .map(|text| preview(&text))
                     .unwrap_or_else(|| "(no final answer text)".to_owned());
@@ -699,6 +713,68 @@ impl SubagentHost {
             }
         };
         (self.options.notice)(&notice);
+    }
+
+    /// every child's state as its own records show it (D165).
+    pub fn states(&self) -> Vec<crate::family::MemberView> {
+        let now = yi_session::now_ms();
+        self.children
+            .lock()
+            .map(|children| {
+                let mut views: Vec<crate::family::MemberView> = children
+                    .values()
+                    .map(|record| {
+                        let recent = record
+                            .session
+                            .store()
+                            .map(|store| crate::family::recent_entries(&store))
+                            .unwrap_or_default();
+                        let (state, note, idle_s) = crate::family::state_from_records(
+                            record.status,
+                            record.error.as_deref(),
+                            &record.session.messages(),
+                            &recent,
+                            now,
+                        );
+                        crate::family::MemberView {
+                            name: record.session_name.clone(),
+                            state,
+                            note,
+                            tools: record.tool_use_count,
+                            tokens: record.token_count,
+                            idle_s,
+                            worktree: record
+                                .worktree
+                                .as_ref()
+                                .map(|lane| lane.path().to_string_lossy().into_owned()),
+                        }
+                    })
+                    .collect();
+                views.sort_by(|left, right| left.name.cmp(&right.name));
+                views
+            })
+            .unwrap_or_default()
+    }
+
+    pub fn status(&self) -> Map<String, Value> {
+        let members: Vec<Value> = self
+            .states()
+            .into_iter()
+            .map(|view| {
+                json!({
+                    "name": view.name,
+                    "state": view.state.as_str(),
+                    "note": view.note,
+                    "tools": view.tools,
+                    "tokens": view.tokens,
+                    "idle_s": view.idle_s,
+                    "worktree": view.worktree,
+                })
+            })
+            .collect();
+        let mut reply = Map::new();
+        reply.insert("members".to_owned(), Value::Array(members));
+        reply
     }
 
     pub fn list(&self) -> Map<String, Value> {
@@ -740,7 +816,7 @@ impl SubagentHost {
         children.get(&key)?.session.store()
     }
 
-    /// D164: a member's checkout for `tree://<agent>/<path>`: the parent's own cwd, or the
+    /// a member's checkout for `tree://<agent>/<path>`: the parent's own cwd, or the (D164)
     /// worktree an isolated child holds.
     pub fn cwd_of(&self, target: &str) -> Option<PathBuf> {
         if target == "main" {
@@ -893,6 +969,11 @@ impl SubagentHost {
         let host = Arc::clone(self);
         registry.register("rlm.list_subagents", move |_payload| {
             let reply = host.list();
+            Box::pin(async move { Ok(reply) })
+        });
+        let host = Arc::clone(self);
+        registry.register("rlm.status", move |_payload| {
+            let reply = host.status();
             Box::pin(async move { Ok(reply) })
         });
         let host = Arc::clone(self);

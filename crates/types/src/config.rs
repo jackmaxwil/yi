@@ -42,8 +42,23 @@ pub struct UserConfig {
     /// `routing`: OpenRouter's `provider` object, sent verbatim; absent deprioritises
     /// upstreams under 20 tok/s or over 10 s p50 latency, and `{}` sends nothing.
     pub routing: Option<serde_json::Value>,
-    /// D162: the two soft gates at a clean stop; `false` turns one off.
+    /// the two soft gates at a clean stop; `false` turns one off (D162).
     pub gates: Option<GatesConfig>,
+    /// `rlm.maxDepth`, how deep a family may nest (default 1, ceiling 3) (D165).
+    pub rlm: Option<RlmConfig>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RlmConfig {
+    pub max_depth: Option<u8>,
+}
+
+impl RlmConfig {
+    /// The nesting depth a family may reach: the configured value clamped to 1..=3.
+    pub fn depth(&self) -> u8 {
+        self.max_depth.unwrap_or(1).clamp(1, 3)
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]

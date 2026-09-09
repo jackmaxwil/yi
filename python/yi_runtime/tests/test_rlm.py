@@ -170,3 +170,20 @@ class BlackboardTests(unittest.IsolatedAsyncioTestCase):
 
         with mock.patch.object(rlm, "host_request", text_host_request):
             self.assertEqual(await rlm.fetch("kernel://main/df", as_text=True), "[4, 5]")
+
+
+class StatusTests(unittest.IsolatedAsyncioTestCase):
+    async def test_status_reads_the_member_list_and_filters_by_name(self) -> None:
+        members = [
+            {"name": "a", "state": "running", "note": None},
+            {"name": "d", "state": "needs_you", "note": "which port?"},
+        ]
+
+        async def fake_host_request(kind, payload):
+            self.assertEqual(kind, "rlm.status")
+            return {"members": members}
+
+        with mock.patch.object(rlm, "host_request", fake_host_request):
+            self.assertEqual(await rlm.status(), members)
+            self.assertEqual(await rlm.status("d"), [members[1]])
+

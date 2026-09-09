@@ -67,7 +67,7 @@ pub trait KernelVariables: Send + Sync {
         variable: &VariableName,
     ) -> Result<Option<String>, VariableReadError>;
 
-    /// D164: the variable dilled to `path` by its own kernel; `Some(bytes)` when it exists.
+    /// the variable dilled to `path` by its own kernel; `Some(bytes)` when it exists (D164).
     fn dump(
         &self,
         agent: &str,
@@ -76,7 +76,7 @@ pub trait KernelVariables: Send + Sync {
     ) -> Result<Option<u64>, VariableReadError>;
 }
 
-/// D164: where a family member's files live, for `tree://<agent>/<path>`.
+/// where a family member's files live, for `tree://<agent>/<path>` (D164).
 pub trait MemberTrees: Send + Sync {
     fn cwd_of(&self, agent: &str) -> Option<PathBuf>;
 }
@@ -93,6 +93,14 @@ pub struct KernelServiceMap {
 impl KernelServiceMap {
     pub fn new() -> Arc<Self> {
         Arc::new(Self::default())
+    }
+
+    /// Every session whose kernel service is still held somewhere: the family cap counts these (D165).
+    pub fn live(&self) -> usize {
+        self.lock()
+            .values()
+            .filter(|service| service.strong_count() > 0)
+            .count()
     }
 
     pub fn insert(&self, agent: impl Into<String>, service: &Arc<crate::kernel::KernelService>) {

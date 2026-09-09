@@ -308,6 +308,7 @@ mod tests {
             attribute: Arc::new(|_usage| {}),
             store: Arc::new(|| None),
             plans_dir: root.join(crate::plan::PLANS_DIR),
+            family_live: Arc::new(|| 0),
         }));
         let delivered: Arc<Mutex<Vec<AgentMessage>>> = Arc::new(Mutex::new(Vec::new()));
         let deliver_sink = Arc::clone(&delivered);
@@ -545,6 +546,7 @@ mod tests {
             max_children: 8,
             parent_session_dir: root.join("children"),
             plans_dir: root.join(crate::plan::PLANS_DIR),
+            family_live: Arc::new(|| 0),
             cwd: root,
             home: std::env::temp_dir(),
             lane_slots: 1,

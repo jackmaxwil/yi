@@ -14,6 +14,7 @@ mod tty;
 mod why;
 
 use std::sync::Arc;
+use yi_types::config::RlmConfig;
 
 use lanes::{claim_lane, configured_lanes, release_lane, run_lanes};
 
@@ -508,7 +509,7 @@ fn build_session(
                 tools
             }),
             depth: 0,
-            max_depth: 1,
+            max_depth: config().rlm.as_ref().map_or(1, RlmConfig::depth),
             rlm_dir: default_session_dir(args).join(format!("rlm-{}", std::process::id())),
             sessions_dir: Some(default_session_dir(args)),
             summarizer: summarizer_model(args),

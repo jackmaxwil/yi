@@ -305,7 +305,7 @@ pub struct KernelServiceOptions {
     pub cwd: PathBuf,
     pub home: PathBuf,
     pub session_dir: Option<PathBuf>,
-    /// D164: the family's shared directory for objects and the blackboard.
+    /// the family's shared directory for objects and the blackboard (D164).
     pub family_dir: Option<PathBuf>,
     pub host: Arc<dyn HostHandlers>,
     pub on_restore: Option<Arc<RestoreNoticeFn>>,
