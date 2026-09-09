@@ -238,7 +238,7 @@ fn posture_reads_states_never_sentences() -> TestResult {
     r.todos.apply(
         Op::Done {
             target: Target::All,
-            evidence: Some("both blocked; nothing left to check".to_owned()),
+            evidence: Some("`ls` both blocked; nothing left to check".to_owned()),
         },
         None,
     )?;
@@ -337,7 +337,7 @@ fn a_stop_with_open_todos_is_re_driven_up_the_ladder_then_let_go() -> TestResult
     r.todos.apply(
         Op::Done {
             target: Target::Label(TodoLabel::new("first")?),
-            evidence: Some("test green".to_owned()),
+            evidence: Some("`cargo test` test result: ok".to_owned()),
         },
         None,
     )?;
@@ -839,7 +839,7 @@ fn a_closed_list_and_three_quiet_turns_ask_for_the_answer_or_more_items() -> Tes
     r.todos.apply(
         Op::Done {
             target: Target::All,
-            evidence: Some("pytest: 2 passed".to_owned()),
+            evidence: Some("`pytest -q` 2 passed in 0.1s".to_owned()),
         },
         None,
     )?;
