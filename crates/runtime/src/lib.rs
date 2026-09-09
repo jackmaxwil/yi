@@ -12,6 +12,7 @@ pub mod gate;
 pub mod goal;
 pub mod kernel;
 mod kernel_doctor;
+mod kernel_variables;
 pub mod lane;
 pub mod mailbox;
 pub mod permission;

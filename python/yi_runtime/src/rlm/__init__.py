@@ -6,6 +6,9 @@ import asyncio
 import json
 import os
 import sys
+import pathlib
+import time
+import re
 import types
 from dataclasses import dataclass
 from pathlib import Path
@@ -442,7 +445,7 @@ def _kernel_local_name(url: str) -> str | None:
     return variable
 
 
-async def fetch(url: str) -> Any:
+async def fetch(url: str, *, as_text: bool = False) -> Any:
     """Read one addressable URL; a URL names a noun, so a fetch never writes.
 
     ``kernel://<var>`` and ``kernel://main/<var>`` in the plan owner's kernel
@@ -462,11 +465,101 @@ async def fetch(url: str) -> Any:
         if name not in namespace:
             raise KeyError(f"{url} names {name!r}, which is not bound in this kernel")
         return namespace[name]
-    reply = await host_request("fetch", {"url": url})
+    # D164: another member's kernel:// returns the object itself (its kernel dills it into
+    # the family dir); text on request, or when the host has no family dir to dill into.
+    want_object = url.startswith("kernel://") and not as_text
+    reply = await host_request("fetch", {"url": url, "object": want_object})
+    path = reply.get("path")
+    if want_object and isinstance(path, str):
+        with open(path, "rb") as handle:
+            return _serializer().load(handle)
     text = reply.get("text")
     if not isinstance(text, str):
         raise RuntimeError(f"fetch of {url} returned no text")
     return text
+
+
+def _serializer() -> Any:
+    try:
+        import dill
+
+        return dill
+    except ImportError:
+        import pickle
+
+        return pickle
+
+
+FAMILY_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
+
+
+def _family_dir() -> pathlib.Path:
+    raw = os.environ.get("RLM_FAMILY_DIR", "")
+    if not raw:
+        raise RuntimeError("no family directory: RLM_FAMILY_DIR is unset in this kernel")
+    return pathlib.Path(raw)
+
+
+def _member_name() -> str:
+    session_dir = os.environ.get("RLM_SESSION_DIR", "")
+    base = os.path.basename(session_dir.rstrip("/"))
+    return base if base.startswith("sub-") else "main"
+
+
+def put(name: str, obj: Any) -> dict[str, Any]:
+    """Publish one object on the family blackboard (D164) and return its sidecar.
+
+    The object is dilled to ``<family>/<name>.dill`` with a ``<name>.json`` sidecar
+    ``{name, owner, at, bytes, type, serializer}``; any member reads it back with
+    ``get(name)`` and the host serves the sidecar at ``family://<name>``. A large
+    result comes home this way, never through the transcript.
+    """
+    if not isinstance(name, str) or not FAMILY_NAME.match(name):
+        raise ValueError("a blackboard name is a plain file-safe token, e.g. 'shard_auth'")
+    directory = _family_dir()
+    directory.mkdir(parents=True, exist_ok=True)
+    serializer = _serializer()
+    target = directory / f"{name}.dill"
+    tmp = directory / f"{name}.dill.tmp-{os.getpid()}"
+    with open(tmp, "wb") as handle:
+        serializer.dump(obj, handle)
+    os.replace(tmp, target)
+    sidecar = {
+        "name": name,
+        "owner": _member_name(),
+        "at": time.time(),
+        "bytes": target.stat().st_size,
+        "type": type(obj).__name__,
+        "serializer": serializer.__name__,
+    }
+    (directory / f"{name}.json").write_text(json.dumps(sidecar))
+    return sidecar
+
+
+def get(name: str) -> Any:
+    """Read one blackboard object back; ``KeyError`` names a missing entry."""
+    if not isinstance(name, str) or not FAMILY_NAME.match(name):
+        raise ValueError("a blackboard name is a plain file-safe token, e.g. 'shard_auth'")
+    target = _family_dir() / f"{name}.dill"
+    if not target.exists():
+        raise KeyError(f"no blackboard entry {name!r}; rlm.ls() lists what members put")
+    with open(target, "rb") as handle:
+        return _serializer().load(handle)
+
+
+def ls() -> list[dict[str, Any]]:
+    """Every blackboard sidecar, oldest first."""
+    directory = _family_dir()
+    if not directory.is_dir():
+        return []
+    entries = []
+    for sidecar in directory.glob("*.json"):
+        try:
+            entries.append(json.loads(sidecar.read_text()))
+        except (OSError, ValueError):
+            continue
+    entries.sort(key=lambda entry: entry.get("at", 0))
+    return entries
 
 
 class BashHandle:
@@ -648,8 +741,17 @@ class _RLMCallable:
     async def run(self, prompt: str, **kwargs: Any) -> RLMSpawnHandle:
         return await run(prompt, **kwargs)
 
-    async def fetch(self, url: str) -> Any:
-        return await fetch(url)
+    async def fetch(self, url: str, *, as_text: bool = False) -> Any:
+        return await fetch(url, as_text=as_text)
+
+    def put(self, name: str, obj: Any) -> dict[str, Any]:
+        return put(name, obj)
+
+    def get(self, name: str) -> Any:
+        return get(name)
+
+    def ls(self) -> list[dict[str, Any]]:
+        return ls()
 
     def bash(self, command: str) -> BashHandle:
         return bash(command)

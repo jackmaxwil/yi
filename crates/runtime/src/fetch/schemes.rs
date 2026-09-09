@@ -177,6 +177,127 @@ impl Resolver {
             .map(Transcript::session)
     }
 
+    /// The one error shape both kernel paths return (D164).
+    fn kernel_error(
+        url: &Url,
+        agent: &str,
+        variable: &VariableName,
+        error: VariableReadError,
+    ) -> FetchError {
+        match error {
+            VariableReadError::NotRunning => FetchError::NotFound {
+                url: url.to_string(),
+                what: format!("a running kernel for agent {agent}"),
+            },
+            error @ VariableReadError::NotAnIdentifier { .. } => FetchError::BadAddress {
+                url: url.to_string(),
+                detail: error.to_string(),
+            },
+            error @ (VariableReadError::Cell { .. } | VariableReadError::Unreadable { .. }) => {
+                FetchError::Backend {
+                    url: url.to_string(),
+                    message: format!("{error} ({variable})"),
+                }
+            }
+        }
+    }
+
+    /// `family://<name>`: the blackboard entry's sidecar (D164), written by `rlm.put`.
+    pub(super) fn resolve_family(&self, url: &Url) -> Result<Served, FetchError> {
+        let name = url.path();
+        let clean = !name.is_empty()
+            && name
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.'));
+        if !clean {
+            return Err(FetchError::BadAddress {
+                url: url.to_string(),
+                detail: "a family address is family://<name> with a plain file-safe name"
+                    .to_owned(),
+            });
+        }
+        let Some(dir) = self.family_dir() else {
+            return Err(unsupported(url, "this session has no family directory"));
+        };
+        std::fs::read_to_string(dir.join(format!("{name}.json")))
+            .map(|text| (text, "family-blackboard".to_owned()))
+            .map_err(|_| FetchError::NotFound {
+                url: url.to_string(),
+                what: format!("blackboard entry {name} (rlm.put writes one)"),
+            })
+    }
+
+    /// `tree://<agent>/<path>`: a file in a family member's own checkout, read-only and walled
+    /// by the reader's `deny_read` (D164).
+    pub(super) fn resolve_tree(&self, url: &Url) -> Result<Served, FetchError> {
+        let Some((agent, rel)) = url.path().split_once('/') else {
+            return Err(FetchError::BadAddress {
+                url: url.to_string(),
+                detail: "a tree address is tree://<agent>/<path>".to_owned(),
+            });
+        };
+        let Some(trees) = self.member_trees() else {
+            return Err(unsupported(
+                url,
+                "this session has no family to read trees of",
+            ));
+        };
+        let Some(root) = trees.cwd_of(agent) else {
+            return Err(FetchError::NotFound {
+                url: url.to_string(),
+                what: format!("agent {agent} with a checkout"),
+            });
+        };
+        let root = lexical_normalize(&root);
+        let path = lexical_normalize(&root.join(rel));
+        if !path.starts_with(&root) {
+            return Err(FetchError::OutsideWorkspace {
+                url: url.to_string(),
+                path,
+            });
+        }
+        if let Some(refusal) = self.wall().check_read_path(&path) {
+            return Err(FetchError::Denied {
+                url: url.to_string(),
+                refusal,
+            });
+        }
+        std::fs::read_to_string(&path)
+            .map(|text| (text, format!("member-tree {agent}")))
+            .map_err(|_| FetchError::NotFound {
+                url: url.to_string(),
+                what: format!("{rel} in the checkout of {agent}"),
+            })
+    }
+
+    /// The object behind `kernel://<agent>/<var>`, dilled by its own kernel into the family
+    /// dir (D164): the path and its size.
+    pub fn dump_kernel(&self, url: &Url) -> Result<(PathBuf, u64), FetchError> {
+        let bad = |detail: String| FetchError::BadAddress {
+            url: url.to_string(),
+            detail,
+        };
+        let Some((agent, raw)) = url.path().split_once('/') else {
+            return Err(bad("an object address is kernel://<agent>/<var>".to_owned()));
+        };
+        let variable = VariableName::parse(raw).map_err(|error| bad(error.to_string()))?;
+        let Some(kernels) = self.kernel_variables() else {
+            return Err(unsupported(url, KERNEL_MISSING));
+        };
+        let Some(dir) = self.family_dir() else {
+            return Err(unsupported(url, "this session has no family directory"));
+        };
+        let path = dir.join(format!("{agent}.{variable}.dill"));
+        match kernels.dump(agent, &variable, &path) {
+            Ok(Some(bytes)) => Ok((path, bytes)),
+            Ok(None) => Err(FetchError::NotFound {
+                url: url.to_string(),
+                what: format!("variable {variable} in the {agent} namespace"),
+            }),
+            Err(error) => Err(Self::kernel_error(url, agent, &variable, error)),
+        }
+    }
+
     pub(super) fn resolve_kernel(&self, url: &Url) -> Result<Served, FetchError> {
         let bad = |detail: String| FetchError::BadAddress {
             url: url.to_string(),
@@ -204,17 +325,7 @@ impl Resolver {
                 url: url.to_string(),
                 what: format!("variable {variable} in the {agent} namespace"),
             }),
-            Err(VariableReadError::NotRunning) => Err(FetchError::NotFound {
-                url: url.to_string(),
-                what: format!("a running kernel for agent {agent}"),
-            }),
-            Err(error @ VariableReadError::NotAnIdentifier { .. }) => Err(bad(error.to_string())),
-            Err(
-                error @ (VariableReadError::Cell { .. } | VariableReadError::Unreadable { .. }),
-            ) => Err(FetchError::Backend {
-                url: url.to_string(),
-                message: error.to_string(),
-            }),
+            Err(error) => Err(Self::kernel_error(url, agent, &variable, error)),
         }
     }
 
@@ -407,6 +518,76 @@ mod tests {
                 _ => Ok(None),
             }
         }
+
+        fn dump(
+            &self,
+            agent: &str,
+            variable: &VariableName,
+            path: &std::path::Path,
+        ) -> Result<Option<u64>, VariableReadError> {
+            match (agent, variable.as_str()) {
+                ("ghost", _) => Err(VariableReadError::NotRunning),
+                (_, "answer") => {
+                    std::fs::create_dir_all(path.parent().unwrap_or(path)).ok();
+                    std::fs::write(path, b"pickled").ok();
+                    Ok(Some(7))
+                }
+                _ => Ok(None),
+            }
+        }
+    }
+
+    struct StubTrees(PathBuf);
+
+    impl crate::fetch::MemberTrees for StubTrees {
+        fn cwd_of(&self, agent: &str) -> Option<PathBuf> {
+            (agent == "worker").then(|| self.0.clone())
+        }
+    }
+
+    #[test]
+    fn a_family_entry_a_member_tree_and_a_kernel_object_resolve() -> TestResult {
+        let workspace = scratch("family-ws")?;
+        let family = scratch("family-dir")?;
+        let tree = scratch("family-tree")?;
+        std::fs::write(
+            family.join("shard.json"),
+            r#"{"owner":"read-auth","bytes":12}"#,
+        )?;
+        std::fs::create_dir_all(tree.join("src"))?;
+        std::fs::write(tree.join("src/x.rs"), "fn x() {}\n")?;
+        let mut wall = Wall::default();
+        wall.deny_read.push(tree.join("src/secret.rs"));
+        std::fs::write(tree.join("src/secret.rs"), "hush\n")?;
+        let resolver = Resolver::new(workspace, wall)
+            .with_family_dir(family.clone())
+            .with_member_trees(Arc::new(StubTrees(tree.clone())))
+            .with_kernel_variables(Arc::new(StubKernel));
+        let entry: Url = "family://shard".parse()?;
+        assert_eq!(resolver.fetch(&entry)?.served_by, "family-blackboard");
+        let missing: Url = "family://nothing".parse()?;
+        assert!(matches!(
+            resolver.fetch(&missing),
+            Err(FetchError::NotFound { .. })
+        ));
+        let file: Url = "tree://worker/src/x.rs".parse()?;
+        let served = resolver.fetch(&file)?;
+        assert_eq!(served.text, "fn x() {}\n");
+        assert_eq!(served.served_by, "member-tree worker");
+        let walled: Url = "tree://worker/src/secret.rs".parse()?;
+        assert!(matches!(
+            resolver.fetch(&walled),
+            Err(FetchError::Denied { .. })
+        ));
+        let escape: Url = "tree://worker/../elsewhere".parse()?;
+        assert!(matches!(
+            resolver.fetch(&escape),
+            Err(FetchError::OutsideWorkspace { .. })
+        ));
+        let object: Url = "kernel://main/answer".parse()?;
+        let (path, bytes) = resolver.dump_kernel(&object)?;
+        assert_eq!((path, bytes), (family.join("main.answer.dill"), 7));
+        Ok(())
     }
 
     struct StubMcp(Result<String, String>);

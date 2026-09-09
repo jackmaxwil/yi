@@ -42,6 +42,7 @@ fn service(cwd: PathBuf, home: PathBuf, sandbox: Sandbox) -> Arc<KernelService> 
         cwd,
         home,
         session_dir: None,
+        family_dir: None,
         host: Arc::new(registry),
         on_restore: None,
         sandbox: Some(sandbox),

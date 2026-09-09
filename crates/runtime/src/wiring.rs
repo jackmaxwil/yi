@@ -106,6 +106,22 @@ pub struct RuntimeWiring {
     pub kernels: Arc<crate::fetch::KernelServiceMap>,
 }
 
+impl RuntimeWiring {
+    /// D164: the root session's `family/` directory, shared by every member; a child's
+    /// `rlm_dir` sits under the root's as `sub-*`, so the root is the first non-`sub-` ancestor.
+    pub fn family_dir(&self) -> PathBuf {
+        let mut dir = self.rlm_dir.as_path();
+        while dir
+            .file_name()
+            .is_some_and(|name| name.to_string_lossy().starts_with("sub-"))
+            && let Some(parent) = dir.parent()
+        {
+            dir = parent;
+        }
+        dir.join("family")
+    }
+}
+
 /// Every spawned child wires itself the same way at depth+1; the depth check in
 /// [`SubagentHost::spawn`] is what terminates the recursion.
 fn wire_schedule(
@@ -179,7 +195,9 @@ fn wire_fetch(
         .with_session_handle(agent, session.store_handle())
         .with_log(log)
         .with_kernel_variables(kernels)
-        .with_transcripts(transcripts);
+        .with_transcripts(transcripts)
+        .with_family_dir(wiring.family_dir())
+        .with_member_trees(Arc::clone(host) as Arc<dyn crate::fetch::MemberTrees>);
     if let Ok(show) = crate::fetch::open_checkpoint_show(&wiring.home, &wiring.cwd) {
         resolver = resolver.with_checkpoint_show(show);
     }
@@ -199,6 +217,22 @@ fn wire_fetch(
             let url: yi_types::url::Url = raw
                 .parse()
                 .map_err(|error: yi_types::url::UrlError| format!("{raw}: {error}"))?;
+            // D164: a family member asks for the object; the owner dills it to the family dir.
+            if payload.get("object").and_then(Value::as_bool) == Some(true) {
+                let dump = Arc::clone(&resolver);
+                let (path, bytes) = tokio::task::spawn_blocking(move || dump.dump_kernel(&url))
+                    .await
+                    .map_err(|error| format!("fetch task failed: {error}"))?
+                    .map_err(|error| error.to_string())?;
+                let mut reply = Map::new();
+                reply.insert("url".to_owned(), Value::String(raw));
+                reply.insert(
+                    "path".to_owned(),
+                    Value::String(path.to_string_lossy().into_owned()),
+                );
+                reply.insert("bytes".to_owned(), Value::from(bytes));
+                return Ok(reply);
+            }
             let fetched = tokio::task::spawn_blocking(move || resolver.fetch(&url))
                 .await
                 .map_err(|error| format!("fetch task failed: {error}"))?
@@ -494,6 +528,7 @@ pub fn attach_runtime(session: &mut AgentSession, mut wiring: RuntimeWiring) -> 
             cwd: wiring.cwd.clone(),
             home: wiring.home.clone(),
             session_dir: Some(wiring.rlm_dir.clone()),
+            family_dir: Some(wiring.family_dir()),
             host: Arc::new(registry),
             on_restore: Some(Arc::new(move |restore| {
                 restore_notice(&crate::kernel::restore_notice_text(restore));

@@ -740,6 +740,21 @@ impl SubagentHost {
         children.get(&key)?.session.store()
     }
 
+    /// D164: a member's checkout for `tree://<agent>/<path>`: the parent's own cwd, or the
+    /// worktree an isolated child holds.
+    pub fn cwd_of(&self, target: &str) -> Option<PathBuf> {
+        if target == "main" {
+            return Some(self.options.cwd.clone());
+        }
+        let children = self.children.lock().ok()?;
+        let key = Self::key_of(&children, target).ok()?;
+        let child = children.get(&key)?;
+        Some(child.worktree.as_ref().map_or_else(
+            || self.options.cwd.clone(),
+            |lane| lane.path().to_path_buf(),
+        ))
+    }
+
     pub fn kept_transcript(&self, target: &str) -> Option<yi_session::SharedSession> {
         self.reaped.lock().ok()?.get(target).cloned()
     }
@@ -943,5 +958,11 @@ impl SubagentHost {
             .unwrap_or_default();
             Box::pin(async move { Ok(reply) })
         });
+    }
+}
+
+impl crate::fetch::MemberTrees for SubagentHost {
+    fn cwd_of(&self, agent: &str) -> Option<PathBuf> {
+        SubagentHost::cwd_of(self, agent)
     }
 }
