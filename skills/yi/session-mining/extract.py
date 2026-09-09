@@ -263,7 +263,7 @@ SIGNAL_NAMES = (
     "intercept_count", "intercept_max_rung", "regression_seen_red",
     "bash_timeouts", "broad_search_refused", "length_redrive", "unsourced_redrive",
     "repeat_break", "length_forced", "closed_list_nudge", "impossible_redrive", "artifact_redrive",
-    "stream_retry", "kernel_dead", "module_missing",
+    "stream_retry", "kernel_dead", "module_missing", "reduced_results",
 )
 
 
@@ -386,6 +386,8 @@ def signals(entries):
             out["module_missing"] += 1
         if "PermissionDenied" in result["text"] and "PermissionDenied" in final:
             out["sandbox_denial_as_finding"] += 1
+        if tool == "bash" and "lines omitted:" in result["text"]:
+            out["reduced_results"] += 1
         for pointer in re.findall(r"\[full output: ([^\]]+)\]", result["text"]):
             later = [c for c in ordered if c["tool"] == "read" and str((c["args"] or {}).get("path", "")) == pointer.strip()]
             if not later:
