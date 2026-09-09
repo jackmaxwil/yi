@@ -144,5 +144,6 @@ when it changes rather than editing them by hand.
 - [D164](adr/d164.md) - a family shares one address space for objects, files and transcripts, and...
 - [D165](adr/d165.md) - a parent reads its children's state as a fact of the environment, and every...
 - [D166](adr/d166.md) - the working model is in the prompt, placed by the laws
+- [D167](adr/d167.md) - the forge CLI is `fgj`
 
 D36-D51, D72, D73 and D74 have no ADR yet; ARCHITECTURE.md is the record for those rows.
