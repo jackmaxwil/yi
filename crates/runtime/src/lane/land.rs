@@ -42,6 +42,28 @@ pub fn detect(repo: &Path) -> Result<(Forge, String), LaneError> {
     Ok((forge, url))
 }
 
+/// The origin's host, which `fgj api` needs spelled out; ssh or https, port dropped.
+pub fn host_of(url: &str) -> Option<String> {
+    let trimmed = url.trim();
+    let rest = match trimmed.split_once("://") {
+        Some((_, rest)) => rest,
+        None => trimmed,
+    };
+    let rest = rest.rsplit_once('@').map_or(rest, |(_, rest)| rest);
+    let host = rest.split(['/', ':']).next()?;
+    (!host.is_empty()).then(|| host.to_owned())
+}
+
+/// `--repo` and `--hostname` for fgj: a lane is a worktree, whose `.git` is a file fgj
+/// cannot read, so the target is spelled out from the origin on every call.
+fn fgj_scope(url: &str) -> Result<[String; 2], LaneError> {
+    let unreadable = || LaneError::Forge(format!("unreadable origin: {url}"));
+    Ok([
+        format!("--repo={}", owner_repo(url).ok_or_else(unreadable)?),
+        format!("--hostname={}", host_of(url).ok_or_else(unreadable)?),
+    ])
+}
+
 pub fn owner_repo(url: &str) -> Option<String> {
     let trimmed = url.trim().trim_end_matches('/');
     let trimmed = trimmed.strip_suffix(".git").unwrap_or(trimmed);
@@ -80,22 +102,27 @@ pub fn pr_number(text: &str) -> Option<PrNumber> {
     None
 }
 
-fn open_pr(forge: Forge, lane: &Lane, title: &str) -> Result<PrNumber, LaneError> {
+fn open_pr(forge: Forge, url: &str, lane: &Lane, title: &str) -> Result<PrNumber, LaneError> {
     let head = format!("--head={}", lane.branch());
     let title = format!("--title={title}");
     let output = match forge {
-        Forge::Forgejo => forge_call(
-            lane.path(),
-            "tea",
-            &[
-                "pr",
-                "create",
-                &head,
-                "--base=main",
-                &title,
-                "--description=",
-            ],
-        )?,
+        Forge::Forgejo => {
+            let [repo, host] = fgj_scope(url)?;
+            forge_call(
+                lane.path(),
+                "fgj",
+                &[
+                    "pr",
+                    "create",
+                    &repo,
+                    &host,
+                    &head,
+                    "--base=main",
+                    &title,
+                    "--body=",
+                ],
+            )?
+        }
         Forge::GitHub => forge_call(
             lane.path(),
             "gh",
@@ -106,38 +133,34 @@ fn open_pr(forge: Forge, lane: &Lane, title: &str) -> Result<PrNumber, LaneError
         .ok_or_else(|| LaneError::Forge(format!("no pull request number in: {output}")))
 }
 
-/// The open pull request whose head is `branch`, from `tea pr ls --output tsv`
-/// (`index<TAB>head` per line) or `gh pr list --json number` (`[{"number": N}]`).
+/// The open PR whose head is `branch`: fgj rows carry `head.ref`, gh rows were filtered.
 pub fn open_pr_in(text: &str, branch: &str) -> Option<PrNumber> {
-    if let Ok(Value::Array(rows)) = serde_json::from_str::<Value>(text) {
-        return rows
-            .first()
-            .and_then(|row| row.get("number"))
-            .and_then(Value::as_u64)
-            .and_then(|n| u32::try_from(n).ok())
-            .map(PrNumber);
-    }
-    text.lines().find_map(|line| {
-        let mut cells = line.split('\t').map(str::trim);
-        let index = cells.next()?.parse::<u32>().ok()?;
-        (cells.next()? == branch).then_some(PrNumber(index))
-    })
+    let Ok(Value::Array(rows)) = serde_json::from_str::<Value>(text) else {
+        return None;
+    };
+    rows.iter()
+        .find(|row| {
+            row.pointer("/head/ref")
+                .and_then(Value::as_str)
+                .is_none_or(|head| head == branch)
+        })
+        .and_then(|row| row.get("number"))
+        .and_then(Value::as_u64)
+        .and_then(|n| u32::try_from(n).ok())
+        .map(PrNumber)
 }
 
-fn lookup_pr(forge: Forge, lane: &Lane) -> Result<Option<PrNumber>, LaneError> {
+fn lookup_pr(forge: Forge, url: &str, lane: &Lane) -> Result<Option<PrNumber>, LaneError> {
     let branch = lane.branch().to_string();
     let text = match forge {
-        Forge::Forgejo => forge_call(
-            lane.path(),
-            "tea",
-            &[
-                "pr",
-                "ls",
-                "--state=open",
-                "--fields=index,head",
-                "--output=tsv",
-            ],
-        )?,
+        Forge::Forgejo => {
+            let [repo, host] = fgj_scope(url)?;
+            forge_call(
+                lane.path(),
+                "fgj",
+                &["pr", "list", &repo, &host, "--state=open", "--json"],
+            )?
+        }
         Forge::GitHub => forge_call(
             lane.path(),
             "gh",
@@ -217,10 +240,11 @@ fn poll_forge(forge: Forge, url: &str, lane: &Lane, pr: PrNumber) -> Result<Land
         Forge::Forgejo => {
             let slug = owner_repo(url)
                 .ok_or_else(|| LaneError::Forge(format!("unreadable origin: {url}")))?;
+            let [_, host] = fgj_scope(url)?;
             let text = forge_call(
                 lane.path(),
-                "tea",
-                &["api", &format!("/repos/{slug}/pulls/{}", pr.0)],
+                "fgj",
+                &["api", &host, &format!("repos/{slug}/pulls/{}", pr.0)],
             )?;
             let view: Value =
                 serde_json::from_str(&text).map_err(|error| LaneError::Forge(error.to_string()))?;
@@ -233,8 +257,12 @@ fn poll_forge(forge: Forge, url: &str, lane: &Lane, pr: PrNumber) -> Result<Land
                 .ok_or_else(|| LaneError::Forge("pull request without a head sha".to_owned()))?;
             let text = forge_call(
                 lane.path(),
-                "tea",
-                &["api", &format!("/repos/{slug}/commits/{sha}/statuses")],
+                "fgj",
+                &[
+                    "api",
+                    &host,
+                    &format!("repos/{slug}/commits/{sha}/statuses"),
+                ],
             )?;
             let statuses: Value =
                 serde_json::from_str(&text).map_err(|error| LaneError::Forge(error.to_string()))?;
@@ -251,10 +279,17 @@ fn poll_forge(forge: Forge, url: &str, lane: &Lane, pr: PrNumber) -> Result<Land
     Ok(Landing::Open { pr, jobs, behind })
 }
 
-fn merge_pr(forge: Forge, lane: &Lane, pr: PrNumber) -> Result<String, LaneError> {
+fn merge_pr(forge: Forge, url: &str, lane: &Lane, pr: PrNumber) -> Result<String, LaneError> {
     let number = pr.0.to_string();
     match forge {
-        Forge::Forgejo => forge_call(lane.path(), "tea", &["pr", "merge", &number]),
+        Forge::Forgejo => {
+            let [repo, host] = fgj_scope(url)?;
+            forge_call(
+                lane.path(),
+                "fgj",
+                &["pr", "merge", &repo, &host, &number, "--merge-method=merge"],
+            )
+        }
         Forge::GitHub => forge_call(lane.path(), "gh", &["pr", "merge", &number, "--merge"]),
     }
 }
@@ -441,8 +476,8 @@ impl LaneHandle {
             && !jobs.is_empty()
             && jobs.iter().all(|job| job.state == JobState::Green)
         {
-            let (forge, _) = self.with_lane(|lane| detect(lane.pool().repo()))?;
-            self.with_lane(|lane| merge_pr(forge, lane, pr))?;
+            let (forge, url) = self.with_lane(|lane| detect(lane.pool().repo()))?;
+            self.with_lane(|lane| merge_pr(forge, &url, lane, pr))?;
             self.set_landing(Landing::Merged { pr });
             return Ok(());
         }
@@ -458,7 +493,7 @@ impl LaneHandle {
                 Ok(pr_number(&output))
             })?,
             None => {
-                let (forge, _) = self.with_lane(|lane| detect(lane.pool().repo()))?;
+                let (forge, url) = self.with_lane(|lane| detect(lane.pool().repo()))?;
                 self.merge_main()?;
                 self.with_lane(|lane| {
                     let branch = lane.branch().to_string();
@@ -472,7 +507,7 @@ impl LaneHandle {
                 })?;
                 let branch = self.with_lane(|lane| Ok(lane.branch().to_string()))?;
                 self.set_landing(Landing::Pushed { branch });
-                Some(self.with_lane(|lane| open_pr(forge, lane, title))?)
+                Some(self.with_lane(|lane| open_pr(forge, &url, lane, title))?)
             }
         };
         let Some(pr) = pr else {
@@ -515,7 +550,7 @@ impl LaneHandle {
             Landing::Unlanded => {
                 let found = self
                     .with_lane(|lane| detect(lane.pool().repo()))
-                    .and_then(|(forge, _)| self.with_lane(|lane| lookup_pr(forge, lane)));
+                    .and_then(|(forge, url)| self.with_lane(|lane| lookup_pr(forge, &url, lane)));
                 match found {
                     Ok(Some(pr)) => pr,
                     Ok(None) | Err(_) => return Ok(Landing::Unlanded),
