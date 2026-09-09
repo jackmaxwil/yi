@@ -200,6 +200,7 @@ fn harness_with(options: HarnessOptions) -> Harness {
         }),
         store: Arc::new(move || Some(store_handle.clone())),
         plans_dir: cwd.join(".yi/plans"),
+        family_live: Arc::new(|| 0),
     }));
     Harness {
         host,

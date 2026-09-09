@@ -7,6 +7,7 @@ pub mod checkpoint;
 pub mod compaction;
 pub mod environment;
 pub mod ext;
+pub mod family;
 pub mod fetch;
 pub mod gate;
 pub mod goal;
