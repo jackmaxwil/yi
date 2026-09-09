@@ -398,9 +398,9 @@ fn cut_message(partial: Option<&AgentMessage>, model: &Model, chars: usize) -> A
     message
 }
 
-/// After the cut the provider settles the turn and sends its `Done`; a stream that closes
-/// or keeps talking instead leaves the estimate.
-const CUT_DRAIN: std::time::Duration = std::time::Duration::from_secs(15);
+/// After the cut the provider settles the turn (up to about thirty seconds) and sends its
+/// `Done`; a stream that closes or keeps talking instead leaves the estimate.
+const CUT_DRAIN: std::time::Duration = std::time::Duration::from_secs(45);
 const CUT_DRAIN_EVENTS: usize = 256;
 
 /// The provider's `Done` after a cut, if it comes within the bound; its usage is settled.
