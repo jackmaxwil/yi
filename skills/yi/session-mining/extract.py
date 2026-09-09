@@ -264,6 +264,7 @@ SIGNAL_NAMES = (
     "bash_timeouts", "broad_search_refused", "length_redrive", "unsourced_redrive",
     "repeat_break", "length_forced", "closed_list_nudge", "impossible_redrive", "artifact_redrive",
     "stream_retry", "kernel_dead", "module_missing", "reduced_results",
+    "artifact_steer", "artifact_refused", "closure_refused", "gate_waived",
 )
 
 
@@ -308,6 +309,8 @@ def signals(entries):
                 out["length_forced"] += 1
         elif role == "custom" and message.get("customType") == "todo_nudge" and str(message.get("content", "")).startswith("Every item is done"):
             out["closed_list_nudge"] += 1
+        elif role == "custom" and message.get("customType") == "todo_nudge" and str(message.get("content", "")).startswith("None of "):
+            out["artifact_steer"] += 1
         elif role == "custom" and message.get("customType") == "repeat_break":
             out["repeat_break"] += 1
         elif role == "custom" and message.get("customType") == "stream_retry":
@@ -426,6 +429,9 @@ def signals(entries):
     out["unsourced_redrive"] = sum(1 for r in custom_intercept if r.get("reason") == "unsourced")
     out["impossible_redrive"] = sum(1 for r in custom_intercept if r.get("reason") == "impossible")
     out["artifact_redrive"] = sum(1 for r in custom_intercept if r.get("reason") == "artifact")
+    out["artifact_refused"] = sum(1 for r in custom_intercept if r.get("reason") == "artifact_missing")
+    out["closure_refused"] = sum(1 for r in custom_intercept if r.get("reason") == "closure_unrun")
+    out["gate_waived"] = sum(1 for r in custom_intercept if r.get("reason") in ("artifact_waived", "closure_waived"))
     for a, b in zip(users, users[1:]):
         ta, tb = _tokens(a), _tokens(b)
         if ta and tb and len(ta & tb) / len(ta | tb) >= 0.8:

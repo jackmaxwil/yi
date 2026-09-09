@@ -221,6 +221,7 @@ One file: `~/.yi/config.json`. Current keys:
   "mcp": { "enabled": false },                 // MCP stays off until asked
   "bash": { "autoBackgroundMs": 0 },           // long commands auto-background
   "routing": { "preferred_min_throughput": { "p50": 20 } }, // OpenRouter provider object, verbatim; {} = none
+  "gates": { "artifact": true, "closure": true },  // the two soft stop gates (D162); --no-gates on yi ask
   "console": { "autoSide": true },             // first kernel cell / tracked edit opens a side pane
   "tui": { "pace": 100 },                      // streamed-text reveal speed, percent; 0 paints on arrival
   "keys": { "ctrl+g": "some-action" }          // solo keymap overrides
