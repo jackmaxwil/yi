@@ -284,7 +284,7 @@ def check_problems(title, body):
         return errs + [why]
     ledger_added, changelog_added, src_net = measured
     errs += gate.body_problems(
-        tea_api, "", repo(), body, [gate.row_key(row) for row in ledger_added], changelog_added, src_net
+        fgj_api, "", repo(), body, [gate.row_key(row) for row in ledger_added], changelog_added, src_net
     )
     return errs
 
