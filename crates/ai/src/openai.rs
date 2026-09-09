@@ -771,6 +771,26 @@ impl ChunkMapper {
     }
 }
 
+/// A turn whose stream never reached its usage chunk, settled from the generation record
+/// when a chunk carried the id and the usage is still unknown (D163).
+fn settle_from_record(
+    output: &mut AgentMessage,
+    model: &Model,
+    api_key: &str,
+    proxy: Option<&crate::request::ProxyConfig>,
+) {
+    if let AgentMessage::Assistant {
+        usage,
+        response_id: Some(id),
+        ..
+    } = output
+        && usage.unknown
+        && let Some(settled) = crate::settle::generation_usage(model, api_key, proxy, id)
+    {
+        *usage = settled;
+    }
+}
+
 fn run_request(
     model: &Model,
     body: &Value,
@@ -785,7 +805,7 @@ fn run_request(
     let url = format!("{}/chat/completions", model.base_url);
     let mut mapper = ChunkMapper::new(model);
     let _ = sender.blocking_send(mapper.start_event());
-    let resent = crate::request::pump_sse_with_resend(
+    let pumped = crate::request::pump_sse_with_resend(
         stop,
         || crate::request::openai_bearer_post(&url, api_key, body, proxy),
         |sse| {
@@ -799,7 +819,18 @@ fn run_request(
             }
             Ok(true)
         },
-    )?;
+    );
+    let resent = match pumped {
+        Ok(resent) => resent,
+        // a stream that died after its first chunk was billed for what it generated: the
+        // error turn is settled from the record (D79, #331); one that died before any chunk
+        // has no record and stays unknown
+        Err(message) => {
+            settle_from_record(&mut mapper.output, model, api_key, proxy);
+            let _ = sender.blocking_send(mapper.fail(&message));
+            return Ok(());
+        }
+    };
     if let Some(first_error) = resent {
         crate::request::note_resend(&mut mapper.output, &first_error);
     }
@@ -807,16 +838,7 @@ fn run_request(
     // stop and is settled from the generation record (D163)
     if stop.is_some_and(|flag| flag.load(std::sync::atomic::Ordering::SeqCst)) {
         mapper.cut();
-        if let AgentMessage::Assistant {
-            usage,
-            response_id: Some(id),
-            ..
-        } = &mut mapper.output
-            && usage.unknown
-            && let Some(settled) = crate::settle::generation_usage(model, api_key, proxy, id)
-        {
-            *usage = settled;
-        }
+        settle_from_record(&mut mapper.output, model, api_key, proxy);
     }
     for event in mapper.finish() {
         let _ = sender.blocking_send(event);
