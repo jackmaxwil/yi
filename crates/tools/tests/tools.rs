@@ -559,7 +559,8 @@ fn a_verbose_command_is_left_alone() -> TestResult {
 #[test]
 fn a_failing_cargo_run_keeps_its_diagnostics() -> TestResult {
     let mut raw = String::new();
-    for n in 1..200 {
+    // Past the 8 KiB floor: 200 lines rode whole once the floor rose from 2 KiB.
+    for n in 1..400 {
         raw.push_str(&format!("   Compiling crate-{n} v0.1.0\n"));
     }
     raw.push_str("error[E0425]: cannot find value `nope` in this scope\n");
