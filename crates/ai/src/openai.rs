@@ -19,6 +19,8 @@ pub struct OpenAiOptions {
     pub session_id: Option<String>,
     pub proxy: Option<crate::request::ProxyConfig>,
     pub routing: Option<Value>,
+    /// The loop's cut of this request (D163): set, the pump stops at the next event.
+    pub stop: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
 }
 
 /// A `sort` disables OpenRouter's price weighting and Auto Exacto and doubled row 0023's cost;
@@ -763,14 +765,19 @@ impl ChunkMapper {
 fn run_request(
     model: &Model,
     body: &Value,
-    api_key: &str,
-    proxy: Option<&crate::request::ProxyConfig>,
+    wire: crate::request::Wire<'_>,
     sender: &Sender<AssistantMessageEvent>,
 ) -> Result<(), String> {
+    let crate::request::Wire {
+        api_key,
+        proxy,
+        stop,
+    } = wire;
     let url = format!("{}/chat/completions", model.base_url);
     let mut mapper = ChunkMapper::new(model);
     let _ = sender.blocking_send(mapper.start_event());
     let resent = crate::request::pump_sse_with_resend(
+        stop,
         || crate::request::openai_bearer_post(&url, api_key, body, proxy),
         |sse| {
             if sse.data == "[DONE]" {
@@ -799,14 +806,13 @@ pub fn stream(
     options: &OpenAiOptions,
     api_key: &str,
 ) -> Receiver<AssistantMessageEvent> {
-    let body = build_params(model, context, options);
-    let (model, proxy) = (model.clone(), options.proxy.clone());
-    let api_key = api_key.to_owned();
-    crate::request::spawn_provider_stream(move |sender| {
-        if let Err(message) = run_request(&model, &body, &api_key, proxy.as_ref(), sender) {
-            let mut mapper = ChunkMapper::new(&model);
-            let event = mapper.fail(&message);
-            let _ = sender.blocking_send(event);
-        }
-    })
+    crate::request::spawn_stream(
+        |model, message| ChunkMapper::new(model).fail(message),
+        model,
+        build_params(model, context, options),
+        api_key,
+        options.proxy.clone(),
+        options.stop.clone(),
+        run_request,
+    )
 }

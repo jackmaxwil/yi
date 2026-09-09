@@ -3,8 +3,8 @@ use std::sync::{Arc, Mutex};
 use serde_json::{Map, Value, json};
 use tokio::sync::mpsc::Receiver;
 use yi_ai::faux::{
-    FAUX_API, FAUX_MODEL_ID, FAUX_PROVIDER, faux_assistant_message, faux_text, faux_tool_call,
-    stream_with_deltas, zero_usage,
+    FAUX_API, FAUX_MODEL_ID, FAUX_PROVIDER, faux_assistant_message, faux_text, faux_thinking,
+    faux_tool_call, stream_with_deltas, zero_usage,
 };
 use yi_loop::interrupt::InterruptSignal;
 use yi_loop::tool::{AgentTool, ToolFuture, ToolOutcome, error_tool_result};
@@ -411,7 +411,7 @@ async fn drive_length_ladder(
                     yi_types::message::UserContent::Text(text) => text.clone(),
                     yi_types::message::UserContent::Blocks(_) => String::new(),
                 };
-                assert!(text.ends_with(yi_loop::LENGTH_FORCE_TEXT));
+                assert_eq!(text, yi_loop::LENGTH_REDRIVE_TEXT);
                 details.clone()
             }
             _ => None,
@@ -429,23 +429,22 @@ async fn drive_length_ladder(
 }
 
 #[tokio::test]
-async fn a_bare_length_stop_forces_bash_then_ends_on_the_third() {
+async fn a_bare_length_stop_is_re_driven_twice_then_ends_on_the_third() {
     let stream = three_bare_length_stops();
     let (details, answers, events) =
         drive_length_ladder(&stream, vec![Arc::new(EchoTool), Arc::new(BashTool)]).await;
     assert_eq!(
         details,
         vec![
-            json!({"rung": 1, "forced": true}),
-            json!({"rung": 2, "forced": true})
+            json!({"rung": 1, "cut": false}),
+            json!({"rung": 2, "cut": false})
         ]
     );
     assert_eq!(answers, 3, "the third bare length stop ends the run");
-    let forced = ToolChoice::Tool(yi_types::model::ForcedTool::new("bash").expect("valid name"));
     assert_eq!(
         stream.choices(),
-        vec![None, Some(forced.clone()), Some(forced)],
-        "the two re-driven turns are forced to bash"
+        vec![None, None, None],
+        "no turn is forced to a tool (D163 removed the forced bash)"
     );
     assert_eq!(kinds(&events).last(), Some(&"agent_end"));
 }
@@ -514,20 +513,101 @@ async fn a_tool_call_between_length_stops_starts_the_count_over() {
     ));
 }
 
+/// A stream that hands every delta over in order, however many: the scripted stream's
+/// try_send into a channel of 64 would drop a 60k-char thinking block on the floor.
+struct Spiral {
+    responses: Mutex<Vec<AgentMessage>>,
+}
+
+impl yi_loop::run::StreamFn for Spiral {
+    fn stream(
+        &self,
+        _model: &Model,
+        _context: &LlmContext,
+        _effort: yi_types::model::Effort,
+        _signal: &InterruptSignal,
+    ) -> Receiver<AssistantMessageEvent> {
+        let (sender, receiver) = tokio::sync::mpsc::channel(64);
+        let events = match self.responses.lock() {
+            Ok(mut queue) if !queue.is_empty() => stream_with_deltas(&queue.remove(0)),
+            _ => Vec::new(),
+        };
+        tokio::spawn(async move {
+            for event in events {
+                if sender.send(event).await.is_err() {
+                    break;
+                }
+            }
+        });
+        receiver
+    }
+}
+
+/// Row 0023's photonic attempts reasoned to the 32k cap with no tool call; the loop now cuts
+/// the request at the reasoning budget, keeps a bare length stop with no thinking block, and
+/// re-drives.
 #[tokio::test]
-async fn without_a_bash_tool_the_message_rides_unforced() {
-    let stream = three_bare_length_stops();
-    let (details, answers, events) = drive_length_ladder(&stream, vec![Arc::new(EchoTool)]).await;
-    assert_eq!(
-        details,
-        vec![
-            json!({"rung": 1, "forced": false}),
-            json!({"rung": 2, "forced": false})
-        ]
+async fn a_reasoning_spiral_is_cut_at_the_char_budget_and_re_driven() {
+    let spiral = faux_assistant_message(
+        vec![faux_thinking(
+            &"the router must rise at y=2, no, y=3, ".repeat(2_000),
+        )],
+        StopReason::Stop,
     );
-    assert_eq!(answers, 3);
-    assert_eq!(stream.choices(), vec![None, None, None]);
-    assert_eq!(kinds(&events).last(), Some(&"agent_end"));
+    let answer = faux_assistant_message(vec![faux_text("done")], StopReason::Stop);
+    let stream = Spiral {
+        responses: Mutex::new(vec![spiral, answer]),
+    };
+    let mut context = LoopContext {
+        system_prompt: String::new(),
+        messages: Vec::new(),
+        tools: vec![Arc::new(EchoTool)],
+    };
+    let config = LoopConfig::new(faux_model());
+    let signal = InterruptSignal::default();
+    let (_events, mut emit) = collector();
+    let collected = run_loop(
+        &mut context,
+        vec![user("go")],
+        &config,
+        &signal,
+        &mut emit,
+        &stream,
+    )
+    .await;
+    let answers: Vec<&AgentMessage> = collected
+        .iter()
+        .filter(|message| matches!(message, AgentMessage::Assistant { .. }))
+        .collect();
+    assert_eq!(answers.len(), 2, "{collected:?}");
+    if let AgentMessage::Assistant {
+        content,
+        stop_reason,
+        usage,
+        ..
+    } = answers[0]
+    {
+        assert_eq!(*stop_reason, StopReason::Length);
+        assert!(
+            content.is_empty(),
+            "the runaway thinking is not kept: {content:?}"
+        );
+        assert!(usage.reasoning.unwrap_or(0) >= 12_000, "{usage:?}");
+    }
+    let redrive = collected
+        .iter()
+        .find_map(|message| match message {
+            AgentMessage::Custom {
+                custom_type,
+                details,
+                ..
+            } if custom_type == yi_loop::LENGTH_REDRIVE_CUSTOM_TYPE => details.clone(),
+            _ => None,
+        })
+        .expect("one re-drive");
+    assert_eq!(redrive["rung"], 1);
+    assert_eq!(redrive["cut"], true);
+    assert!(redrive["reasoningChars"].as_u64().unwrap_or(0) >= yi_loop::REASONING_CHAR_CAP as u64);
 }
 
 #[tokio::test]

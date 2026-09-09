@@ -1,5 +1,5 @@
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 
 use tokio::sync::Notify;
 use yi_types::message::AgentMessage;
@@ -9,9 +9,23 @@ pub struct InterruptSignal {
     fired: AtomicBool,
     epoch: AtomicU64,
     wake: Notify,
+    /// The loop's own cut of one request (D163): the provider pump reads it between events.
+    cut: Arc<AtomicBool>,
 }
 
 impl InterruptSignal {
+    pub fn cut(&self) {
+        self.cut.store(true, Ordering::SeqCst);
+    }
+
+    pub fn clear_cut(&self) {
+        self.cut.store(false, Ordering::SeqCst);
+    }
+
+    pub fn cut_flag(&self) -> Arc<AtomicBool> {
+        Arc::clone(&self.cut)
+    }
+
     pub fn fire(&self) {
         self.fired.store(true, Ordering::SeqCst);
         self.epoch.fetch_add(1, Ordering::SeqCst);
