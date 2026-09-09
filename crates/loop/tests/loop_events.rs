@@ -543,6 +543,80 @@ impl yi_loop::run::StreamFn for Spiral {
     }
 }
 
+/// D168: a cut is not a length strike. Four consecutive cuts re-drive four times, the second
+/// and later ones naming the write, and the run reaches the answer; three bare length stops
+/// still end it (the test above this one).
+#[tokio::test]
+async fn consecutive_cuts_re_drive_past_the_third_and_name_the_write() {
+    let spiral = || {
+        let mut message = faux_assistant_message(
+            vec![faux_thinking(
+                &"the router must rise at y=2, no, y=3, ".repeat(2_000),
+            )],
+            StopReason::Stop,
+        );
+        if let AgentMessage::Assistant { usage, .. } = &mut message {
+            usage.unknown = true;
+        }
+        message
+    };
+    let answer = faux_assistant_message(vec![faux_text("done")], StopReason::Stop);
+    let stream = Spiral {
+        responses: Mutex::new(vec![spiral(), spiral(), spiral(), spiral(), answer]),
+    };
+    let mut context = LoopContext {
+        system_prompt: String::new(),
+        messages: Vec::new(),
+        tools: vec![Arc::new(EchoTool)],
+    };
+    let config = LoopConfig::new(faux_model());
+    let signal = InterruptSignal::default();
+    let (_events, mut emit) = collector();
+    let collected = run_loop(
+        &mut context,
+        vec![user("go")],
+        &config,
+        &signal,
+        &mut emit,
+        &stream,
+    )
+    .await;
+    let answers = collected
+        .iter()
+        .filter(|message| matches!(message, AgentMessage::Assistant { .. }))
+        .count();
+    assert_eq!(answers, 5, "four cuts and the answer: {collected:?}");
+    let redrives: Vec<(u64, String)> = collected
+        .iter()
+        .filter_map(|message| match message {
+            AgentMessage::Custom {
+                custom_type,
+                details: Some(details),
+                content: yi_types::message::UserContent::Text(text),
+                ..
+            } if custom_type == yi_loop::LENGTH_REDRIVE_CUSTOM_TYPE => Some((
+                details
+                    .get("rung")
+                    .and_then(serde_json::Value::as_u64)
+                    .unwrap_or(0),
+                text.clone(),
+            )),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        redrives.iter().map(|(rung, _)| *rung).collect::<Vec<_>>(),
+        vec![1, 2, 3, 4]
+    );
+    assert_eq!(redrives[0].1, yi_loop::LENGTH_REDRIVE_TEXT);
+    assert!(
+        redrives[1..]
+            .iter()
+            .all(|(_, text)| text.contains("write the first version")),
+        "{redrives:?}"
+    );
+}
+
 /// D163 amended: the provider settles a cut turn from the generation record and its `Done`
 /// carries the measured usage; the cut message keeps it instead of the chars/4 estimate.
 #[tokio::test]
