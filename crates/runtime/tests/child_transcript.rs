@@ -223,6 +223,7 @@ async fn a_kernel_cell_spawns_a_child_whose_typed_answer_and_transcript_land() -
             .map(PathBuf::from)
             .unwrap_or_default(),
         session_dir: Some(root.clone()),
+        family_dir: None,
         host: Arc::new(registry),
         on_restore: None,
         sandbox: None,

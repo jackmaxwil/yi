@@ -9,6 +9,8 @@ use yi_kernel::client::{
 use yi_tools::ToolOutput;
 use yi_tools::{CancelFlag, KernelBridge, KernelCellOutcome};
 
+use crate::kernel_variables::{dump_variable_code, parse_variable_reply, read_variable_code};
+
 /// Binds `rlm` and `mcp` in the namespace, or a loud placeholder when the
 /// runtime package is missing. [`rlm_bootstrap_code`] appends bundled skills.
 pub const RLM_BOOTSTRAP_CODE: &str = r#"
@@ -303,6 +305,8 @@ pub struct KernelServiceOptions {
     pub cwd: PathBuf,
     pub home: PathBuf,
     pub session_dir: Option<PathBuf>,
+    /// D164: the family's shared directory for objects and the blackboard.
+    pub family_dir: Option<PathBuf>,
     pub host: Arc<dyn HostHandlers>,
     pub on_restore: Option<Arc<RestoreNoticeFn>>,
     pub sandbox: Option<yi_tools::Sandbox>,
@@ -391,6 +395,12 @@ impl KernelService {
             env.push((
                 "RLM_SESSION_DIR".to_owned(),
                 session_dir.to_string_lossy().into_owned(),
+            ));
+        }
+        if let Some(family_dir) = &self.options.family_dir {
+            env.push((
+                "RLM_FAMILY_DIR".to_owned(),
+                family_dir.to_string_lossy().into_owned(),
             ));
         }
         env.push((
@@ -654,8 +664,8 @@ impl KernelBridge for KernelService {
     }
 }
 
-const VARIABLE_MARKER: &str = "__yi_kernel_var__";
-const VARIABLE_MAX_CHARS: usize = 8_192;
+pub(crate) const VARIABLE_MARKER: &str = "__yi_kernel_var__";
+pub(crate) const VARIABLE_MAX_CHARS: usize = 8_192;
 const VARIABLE_NAME_MAX_BYTES: usize = 128;
 
 /// Invariant: an ASCII Python identifier, never a dotted path: the name is
@@ -705,64 +715,10 @@ pub enum VariableReadError {
 }
 
 #[derive(Debug, PartialEq, Eq)]
-enum VariableReply {
+pub(crate) enum VariableReply {
     Missing,
     Value { text: String, chars: usize },
     Unreadable { python: String },
-}
-
-fn py_literal(value: &str) -> String {
-    Value::String(value.to_owned()).to_string()
-}
-
-fn read_variable_code(name: &VariableName) -> String {
-    format!(
-        r#"def _yi_read_variable():
-    import builtins as _b, json
-    ip = None
-    try:
-        ip = get_ipython()  # noqa: F821 (injected by IPython)
-    except _b.Exception:
-        ip = None
-    ns = ip.user_ns if ip is not None else _b.globals()
-    name = {name}
-    if name not in ns:
-        _b.print({marker} + json.dumps({{"found": False}}))
-        return
-    try:
-        text = _b.repr(ns[name])
-        payload = json.dumps({{"found": True, "chars": _b.len(text), "text": text[:{limit}]}})
-    except _b.BaseException as exc:
-        payload = json.dumps({{"found": True, "error": _b.repr(exc)}})
-    _b.print({marker} + payload)
-
-
-try:
-    _yi_read_variable()
-finally:
-    del _yi_read_variable"#,
-        name = py_literal(name.as_str()),
-        marker = py_literal(VARIABLE_MARKER),
-        limit = VARIABLE_MAX_CHARS,
-    )
-}
-
-fn parse_variable_reply(stdout: &str) -> Option<VariableReply> {
-    let index = stdout.rfind(VARIABLE_MARKER)?;
-    let rest = &stdout[index.saturating_add(VARIABLE_MARKER.len())..];
-    let value: Value = serde_json::from_str(rest.lines().next()?.trim()).ok()?;
-    if !value.get("found")?.as_bool()? {
-        return Some(VariableReply::Missing);
-    }
-    if let Some(python) = value.get("error").and_then(Value::as_str) {
-        return Some(VariableReply::Unreadable {
-            python: python.to_owned(),
-        });
-    }
-    Some(VariableReply::Value {
-        text: value.get("text")?.as_str()?.to_owned(),
-        chars: usize::try_from(value.get("chars")?.as_u64()?).ok()?,
-    })
 }
 
 fn render_value(text: String, chars: usize) -> String {
@@ -779,6 +735,27 @@ impl KernelService {
         &self,
         name: &VariableName,
     ) -> Result<Option<String>, VariableReadError> {
+        self.variable_cell(name, read_variable_code(name))
+            .await
+            .map(|reply| reply.map(|(text, chars)| render_value(text, chars)))
+    }
+
+    /// The variable dilled to `path` (D164): `Some(bytes)` when it exists.
+    pub async fn dump_variable(
+        &self,
+        name: &VariableName,
+        path: &std::path::Path,
+    ) -> Result<Option<u64>, VariableReadError> {
+        self.variable_cell(name, dump_variable_code(name, path))
+            .await
+            .map(|reply| reply.map(|(_, chars)| u64::try_from(chars).unwrap_or(u64::MAX)))
+    }
+
+    async fn variable_cell(
+        &self,
+        name: &VariableName,
+        code: String,
+    ) -> Result<Option<(String, usize)>, VariableReadError> {
         let manager = self
             .manager_if_running()
             .await
@@ -796,7 +773,7 @@ impl KernelService {
         };
         let outcome = manager
             .execute(
-                &read_variable_code(name),
+                &code,
                 ExecuteOptions {
                     abort: Some(abort),
                     internal: true,
@@ -825,7 +802,7 @@ impl KernelService {
                 name: name.clone(),
                 python,
             }),
-            Some(VariableReply::Value { text, chars }) => Ok(Some(render_value(text, chars))),
+            Some(VariableReply::Value { text, chars }) => Ok(Some((text, chars))),
         }
     }
 }
@@ -1070,6 +1047,7 @@ mod tests {
             cwd: std::env::temp_dir(),
             home: std::env::temp_dir(),
             session_dir: None,
+            family_dir: None,
             host: registry,
             on_restore: None,
             sandbox: None,
@@ -1092,6 +1070,7 @@ mod tests {
                 .map(PathBuf::from)
                 .unwrap_or_default(),
             session_dir: None,
+            family_dir: None,
             host: Arc::new(registry),
             on_restore: None,
             sandbox: None,
