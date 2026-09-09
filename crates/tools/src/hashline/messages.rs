@@ -5,8 +5,8 @@ use super::types::BlockSpan;
 
 pub const MISMATCH_CONTEXT: u64 = 2;
 
-pub fn format_anchored_context(anchor_lines: &[u64], file_lines: &[String]) -> Vec<String> {
-    let total = file_lines.len() as u64;
+/// The lines a refusal shows around each anchor: the same set it marks as seen.
+pub fn anchored_lines(anchor_lines: &[u64], total: u64) -> Vec<u64> {
     let mut display: Vec<u64> = Vec::new();
     for &line in anchor_lines {
         if line < 1 || line > total {
@@ -21,6 +21,14 @@ pub fn format_anchored_context(anchor_lines: &[u64], file_lines: &[String]) -> V
         }
     }
     display.sort_unstable();
+    display
+}
+
+pub fn format_anchored_context(anchor_lines: &[u64], file_lines: &[String]) -> Vec<String> {
+    let display = anchored_lines(
+        anchor_lines,
+        u64::try_from(file_lines.len()).unwrap_or(u64::MAX),
+    );
     let mut rows = Vec::new();
     let mut previous: Option<u64> = None;
     for line_num in display {
@@ -329,10 +337,21 @@ extra changes were unexpected."
     )
 }
 
-pub fn missing_snapshot_tag_message(section_path: &str) -> String {
-    format!(
-        "No version of {section_path} was shown this session; `read` or `grep` it first (the {HL_FILE_HASH_SEP}tag in the header is then optional). To create a new file, use the write tool."
-    )
+pub fn missing_snapshot_tag_message(
+    section_path: &str,
+    minted: Option<(FileTag, &[String])>,
+) -> String {
+    match minted {
+        Some((tag, rows)) => format!(
+            "No version of {section_path} was shown this session. It reads now as \
+{HL_FILE_PREFIX}{section_path}{HL_FILE_HASH_SEP}{tag}{HL_FILE_SUFFIX} at the lines this edit names:\n{}\n\
+Re-issue the edit with that header (a straight retry now succeeds), or `read` it for more.",
+            rows.join("\n")
+        ),
+        None => format!(
+            "No version of {section_path} was shown this session; `read` or `grep` it first (the {HL_FILE_HASH_SEP}tag in the header is then optional). To create a new file, use the write tool."
+        ),
+    }
 }
 
 pub fn rebased_warning(from: FileTag, to: FileTag) -> String {
