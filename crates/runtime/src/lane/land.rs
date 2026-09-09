@@ -54,6 +54,16 @@ pub fn host_of(url: &str) -> Option<String> {
     (!host.is_empty()).then(|| host.to_owned())
 }
 
+/// `--repo` and `--hostname` for fgj: a lane is a worktree, whose `.git` is a file fgj
+/// cannot read, so the target is spelled out from the origin on every call.
+fn fgj_scope(url: &str) -> Result<[String; 2], LaneError> {
+    let unreadable = || LaneError::Forge(format!("unreadable origin: {url}"));
+    Ok([
+        format!("--repo={}", owner_repo(url).ok_or_else(unreadable)?),
+        format!("--hostname={}", host_of(url).ok_or_else(unreadable)?),
+    ])
+}
+
 pub fn owner_repo(url: &str) -> Option<String> {
     let trimmed = url.trim().trim_end_matches('/');
     let trimmed = trimmed.strip_suffix(".git").unwrap_or(trimmed);
@@ -92,15 +102,27 @@ pub fn pr_number(text: &str) -> Option<PrNumber> {
     None
 }
 
-fn open_pr(forge: Forge, lane: &Lane, title: &str) -> Result<PrNumber, LaneError> {
+fn open_pr(forge: Forge, url: &str, lane: &Lane, title: &str) -> Result<PrNumber, LaneError> {
     let head = format!("--head={}", lane.branch());
     let title = format!("--title={title}");
     let output = match forge {
-        Forge::Forgejo => forge_call(
-            lane.path(),
-            "fgj",
-            &["pr", "create", &head, "--base=main", &title, "--body="],
-        )?,
+        Forge::Forgejo => {
+            let [repo, host] = fgj_scope(url)?;
+            forge_call(
+                lane.path(),
+                "fgj",
+                &[
+                    "pr",
+                    "create",
+                    &repo,
+                    &host,
+                    &head,
+                    "--base=main",
+                    &title,
+                    "--body=",
+                ],
+            )?
+        }
         Forge::GitHub => forge_call(
             lane.path(),
             "gh",
@@ -128,14 +150,17 @@ pub fn open_pr_in(text: &str, branch: &str) -> Option<PrNumber> {
         .map(PrNumber)
 }
 
-fn lookup_pr(forge: Forge, lane: &Lane) -> Result<Option<PrNumber>, LaneError> {
+fn lookup_pr(forge: Forge, url: &str, lane: &Lane) -> Result<Option<PrNumber>, LaneError> {
     let branch = lane.branch().to_string();
     let text = match forge {
-        Forge::Forgejo => forge_call(
-            lane.path(),
-            "fgj",
-            &["pr", "list", "--state=open", "--json"],
-        )?,
+        Forge::Forgejo => {
+            let [repo, host] = fgj_scope(url)?;
+            forge_call(
+                lane.path(),
+                "fgj",
+                &["pr", "list", &repo, &host, "--state=open", "--json"],
+            )?
+        }
         Forge::GitHub => forge_call(
             lane.path(),
             "gh",
@@ -215,11 +240,7 @@ fn poll_forge(forge: Forge, url: &str, lane: &Lane, pr: PrNumber) -> Result<Land
         Forge::Forgejo => {
             let slug = owner_repo(url)
                 .ok_or_else(|| LaneError::Forge(format!("unreadable origin: {url}")))?;
-            let host = format!(
-                "--hostname={}",
-                host_of(url)
-                    .ok_or_else(|| LaneError::Forge(format!("unreadable origin: {url}")))?
-            );
+            let [_, host] = fgj_scope(url)?;
             let text = forge_call(
                 lane.path(),
                 "fgj",
@@ -258,14 +279,17 @@ fn poll_forge(forge: Forge, url: &str, lane: &Lane, pr: PrNumber) -> Result<Land
     Ok(Landing::Open { pr, jobs, behind })
 }
 
-fn merge_pr(forge: Forge, lane: &Lane, pr: PrNumber) -> Result<String, LaneError> {
+fn merge_pr(forge: Forge, url: &str, lane: &Lane, pr: PrNumber) -> Result<String, LaneError> {
     let number = pr.0.to_string();
     match forge {
-        Forge::Forgejo => forge_call(
-            lane.path(),
-            "fgj",
-            &["pr", "merge", &number, "--merge-method=merge"],
-        ),
+        Forge::Forgejo => {
+            let [repo, host] = fgj_scope(url)?;
+            forge_call(
+                lane.path(),
+                "fgj",
+                &["pr", "merge", &repo, &host, &number, "--merge-method=merge"],
+            )
+        }
         Forge::GitHub => forge_call(lane.path(), "gh", &["pr", "merge", &number, "--merge"]),
     }
 }
@@ -452,8 +476,8 @@ impl LaneHandle {
             && !jobs.is_empty()
             && jobs.iter().all(|job| job.state == JobState::Green)
         {
-            let (forge, _) = self.with_lane(|lane| detect(lane.pool().repo()))?;
-            self.with_lane(|lane| merge_pr(forge, lane, pr))?;
+            let (forge, url) = self.with_lane(|lane| detect(lane.pool().repo()))?;
+            self.with_lane(|lane| merge_pr(forge, &url, lane, pr))?;
             self.set_landing(Landing::Merged { pr });
             return Ok(());
         }
@@ -469,7 +493,7 @@ impl LaneHandle {
                 Ok(pr_number(&output))
             })?,
             None => {
-                let (forge, _) = self.with_lane(|lane| detect(lane.pool().repo()))?;
+                let (forge, url) = self.with_lane(|lane| detect(lane.pool().repo()))?;
                 self.merge_main()?;
                 self.with_lane(|lane| {
                     let branch = lane.branch().to_string();
@@ -483,7 +507,7 @@ impl LaneHandle {
                 })?;
                 let branch = self.with_lane(|lane| Ok(lane.branch().to_string()))?;
                 self.set_landing(Landing::Pushed { branch });
-                Some(self.with_lane(|lane| open_pr(forge, lane, title))?)
+                Some(self.with_lane(|lane| open_pr(forge, &url, lane, title))?)
             }
         };
         let Some(pr) = pr else {
@@ -526,7 +550,7 @@ impl LaneHandle {
             Landing::Unlanded => {
                 let found = self
                     .with_lane(|lane| detect(lane.pool().repo()))
-                    .and_then(|(forge, _)| self.with_lane(|lane| lookup_pr(forge, lane)));
+                    .and_then(|(forge, url)| self.with_lane(|lane| lookup_pr(forge, &url, lane)));
                 match found {
                     Ok(Some(pr)) => pr,
                     Ok(None) | Err(_) => return Ok(Landing::Unlanded),

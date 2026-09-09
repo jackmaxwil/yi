@@ -51,6 +51,11 @@ def repo():
     return name
 
 
+def scope():
+    """`-R` and `--hostname` on every fgj verb: a worktree's `.git` is a file fgj cannot read."""
+    return ("-R", repo(), "--hostname", HOST)
+
+
 def fgj_api(method, path, payload=None):
     """A missing resource is None, the way check_pr_metadata's transport expects.
 
@@ -327,7 +332,7 @@ def cmd_open(args):
         if code:
             return code
     out = subprocess.run(
-        ("fgj", "pr", "create", "--head", branch(), "--base", "main", "--title", args.title, "--body", body),
+        ("fgj", "pr", "create", *scope(), "--head", branch(), "--base", "main", "--title", args.title, "--body", body),
         capture_output=True, text=True, check=False,
     )
     found = re.search(r"#(\d+)", out.stdout + out.stderr)
@@ -424,9 +429,9 @@ def cmd_update(args):
 
 def cmd_rerun(args):
     number = pull_number(args.number)
-    subprocess.run(("fgj", "pr", "close", str(number)), capture_output=True, check=False)
+    subprocess.run(("fgj", "pr", "close", *scope(), str(number)), capture_output=True, check=False)
     time.sleep(2)
-    subprocess.run(("fgj", "pr", "reopen", str(number)), capture_output=True, check=False)
+    subprocess.run(("fgj", "pr", "reopen", *scope(), str(number)), capture_output=True, check=False)
     print(f"#{number} closed and reopened; the gate reruns")
     return 0
 
