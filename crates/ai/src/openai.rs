@@ -760,6 +760,15 @@ impl ChunkMapper {
     pub fn fail(&mut self, message: &str) -> AssistantMessageEvent {
         crate::request::fail_message(&mut self.output, message)
     }
+
+    /// The stream was dropped at the reasoning budget (D163): no finish reason will come, and
+    /// a cut is a length stop by definition, so `finish` ends it as a `Done`, not an error.
+    pub fn cut(&mut self) {
+        self.has_finish_reason = true;
+        if let AgentMessage::Assistant { stop_reason, .. } = &mut self.output {
+            *stop_reason = StopReason::Length;
+        }
+    }
 }
 
 fn run_request(
@@ -794,17 +803,20 @@ fn run_request(
     if let Some(first_error) = resent {
         crate::request::note_resend(&mut mapper.output, &first_error);
     }
-    // a cut dropped the stream before its usage chunk: settle the turn from the record (D163)
-    if stop.is_some_and(|flag| flag.load(std::sync::atomic::Ordering::SeqCst))
-        && let AgentMessage::Assistant {
+    // a cut dropped the stream before its finish and usage chunks: the turn ends as a length
+    // stop and is settled from the generation record (D163)
+    if stop.is_some_and(|flag| flag.load(std::sync::atomic::Ordering::SeqCst)) {
+        mapper.cut();
+        if let AgentMessage::Assistant {
             usage,
             response_id: Some(id),
             ..
         } = &mut mapper.output
-        && usage.unknown
-        && let Some(settled) = crate::settle::generation_usage(model, api_key, proxy, id)
-    {
-        *usage = settled;
+            && usage.unknown
+            && let Some(settled) = crate::settle::generation_usage(model, api_key, proxy, id)
+        {
+            *usage = settled;
+        }
     }
     for event in mapper.finish() {
         let _ = sender.blocking_send(event);
