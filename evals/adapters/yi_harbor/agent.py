@@ -4,6 +4,8 @@ Register out of tree:
     PYTHONPATH=evals/adapters harbor run --agent yi_harbor.agent:Yi -d <suite>
 """
 
+
+import json
 import os
 import sys
 from pathlib import Path

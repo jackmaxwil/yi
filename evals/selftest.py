@@ -88,6 +88,21 @@ def check_install():
     assert yi_usage.kernel_problems("not json")[0].startswith("doctor output is not JSON")
 
 
+def check_adapter_imports():
+    """#317: a stdlib module an adapter names as `mod.attr` is imported at the top; py_compile
+    cannot see a NameError, and the one in `write_trajectory` cost two full trials."""
+    import ast
+    for path in sorted((ROOT / "adapters").rglob("*.py")):
+        tree = ast.parse(path.read_text())
+        imported = {alias.asname or alias.name.split(".")[0]
+                    for node in ast.walk(tree) if isinstance(node, (ast.Import, ast.ImportFrom))
+                    for alias in node.names}
+        used = {node.value.id for node in ast.walk(tree)
+                if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name)}
+        missing = sorted(used & {"json", "os", "sys", "re", "time", "subprocess", "shutil", "pathlib"} - imported)
+        assert not missing, f"{path.relative_to(ROOT)} uses {missing} without importing"
+
+
 def check_usage():
     """E5: the parse reads Pi camelCase usage off a real recorded transcript."""
     usage = yi_usage.parse_events(EVENTS)
@@ -371,6 +386,7 @@ CHECKS = (
     check_rule_fires,
     check_command,
     check_install,
+    check_adapter_imports,
     check_usage,
     check_no_assistant_rows,
     check_unknown_usage_is_not_a_free_turn,
