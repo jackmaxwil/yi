@@ -49,26 +49,98 @@ out in prose.
 ## Delegate what parallelizes
 
 Do simple and sequential tasks yourself; delegation has real overhead.
-Delegate when tasks are independent (no shared files, no dep edges) and each
-is big enough to justify a child session. Prefer a shallow, wide fan-out with
-few children active at once over deep nesting. Parallel mutators need
-separate worktrees.
+Readers first: a fan-out of walled readers over disjoint areas is what a
+large task reaches for before any plan exists. Writers when tasks are
+independent (no shared files, no dep edges) and each is big enough to
+justify a child session; parallel writers need separate worktrees.
 
-A child brief is decision-complete: the task's title, acceptance, and check
-verbatim; exact files in and out of scope; binding constraints; how to report
-(terse outcome first, blockers as facts). A child is a persistent session,
-not a stateless call: it can send you a line mid-run, and you can message it
-again after it reports.
+A reader brief is one question, the places to look, what not to conclude,
+and the findings shape. Every claim carries the quoted line; open the
+cited line yourself before building on it.
 
-    h = await rlm.run(brief, isolation='worktree')
-    await rlm.wait(120)
-    r = await h.result(schema=TASK_SCHEMA)
-    await rlm.merge_worktree(h.name)
+    FINDINGS = {"type": "object", "required": ["findings"],
+                "properties": {"findings": {"type": "array", "items": {
+                    "type": "object", "required": ["path", "line", "claim", "evidence"],
+                    "properties": {"path": {"type": "string"}, "line": {"type": "integer"},
+                                   "claim": {"type": "string"}, "evidence": {"type": "string"}}}}}}
+    areas = {"auth": "crates/auth/**", "storage": "crates/store/**", "cli": "crates/cli/**"}
+    readers, findings = {}, {}
+    for name, scope in areas.items():
+        readers[name] = await rlm.run(
+            f"Read {scope} only. Question: where is a session token minted, stored and checked? "
+            f"Report JSON matching FINDINGS: one finding per site, `evidence` is the quoted line.",
+            name=f"read-{name}", deny_write=["."])
+    while readers:
+        for name in (await rlm.wait(120))["updated"]:
+            r = await readers.pop(name).result(schema=FINDINGS)
+            findings[name] = r["json"]["findings"]
+            await rlm.delete_subagent(name)
 
-`fork` only hands a child a thread it must continue; a fresh brief beats
-inherited context for independent work. Pass `deny_write` on the acceptance
-instrument so a child reports a mismatch instead of editing the standard.
-While children run, keep working the tasks you kept.
+A writer brief is decision-complete: the task's title, acceptance, and
+check verbatim; exact files in and out of scope; binding constraints; how
+to report (a JSON shape with named keys; blockers as facts, not
+questions). A child is a persistent session, not a stateless call: it can
+send you a line mid-run, and you can message it again after it reports.
+
+    SCHEMA = {"type": "object", "required": ["outcome", "files", "check"],
+              "properties": {"outcome": {"type": "string"},
+                             "files": {"type": "array", "items": {"type": "string"}},
+                             "check": {"type": "string"}}}
+    brief = """Port crates/foo to the new API.
+    Acceptance: `cargo test -p foo` exits 0.
+    Scope: crates/foo/** only; do not touch crates/bar.
+    Report as JSON: {"outcome": one line, "files": changed paths, "check": the command you ran and its last line}."""
+    h = await rlm.run(brief, name="foo", isolation="worktree", context_keys=["api_notes"])
+    moved = await rlm.wait(120)
+    r = await h.result(schema=SCHEMA, timeout=900)
+    await rlm.merge_worktree("foo")
+    await rlm.delete_subagent("foo")
+
+Fan out by spawning all, then one `rlm.wait` loop until every handle
+resolves, eight at a time, reaping readers as they land. `fork` only hands
+a child a thread it must continue; a fresh brief beats inherited context
+for independent work. Pass `deny_write` on the acceptance instrument so a
+child reports a mismatch instead of editing the standard. While children
+run, keep working the tasks you kept.
+
+Context reaches a child four ways: `context_keys` for what you computed
+(the brief), `kernel://main/<var>` for what is live, `family://<name>`
+for what was `put`, `tree://<name>/<path>` for a file in a worktree.
+
+When a child fails or `rlm.status()` says `stuck`, read its tail
+(`history://<name>/tail/20`), fix the brief, and respawn; never repair
+inside a child's tree by hand. A cold reviewer is a reader whose brief is
+only the acceptance list and the checks. The caps: depth one unless the
+config raises it, eight children per parent, sixteen live per family.
+
+## Patterns
+
+- Map-reduce: readers per shard `put` their findings; you reduce with
+  pandas in your kernel (`shards = [rlm.get(n) for n in names]`).
+- Hypothesis tournament: N children with `check=`; `result()` is withheld
+  while red; take the first green and `interrupt` the rest.
+- Best-of-N: N writers in worktrees on one todo at different `thinking`
+  levels or models; run the check in each through `tree://`; merge the
+  winner, discard the rest.
+- Persistent specialist: one child kept all session as the test runner or
+  the reference reader; `await rlm.send(name, q, followup=True)` reuses
+  its warmed context.
+- Live pair review: write into a kernel variable; a reader fetches
+  `kernel://main/draft` on each `send` and answers with findings.
+- What-if fork: `fork=8` into a worktree for the risky refactor while you
+  continue the safe one; discard on red.
+- Watchdog reader: a child polls `history://main/tail/20` every 60 s and
+  sends one line when your tail repeats a tool batch three times.
+- Swarm with a blackboard: siblings `put` under their names and `get`
+  each other's before starting a shard; `status()` says who still runs.
+- Verifier isolation: the reviewer gets `deny_read` on your `history://`
+  and `deny_write` everywhere.
+- Resume a stuck child: `interrupt`, then respawn with `fork` of its tail
+  plus your one-line correction.
+- Long-running probe: `check=` watches an external system; `needs_you`
+  fires when it asks; your todo sits `blocked on child`.
+- Cost-shaped fan-out: `find_models` picks the cheapest for readers,
+  yours for writers; `status()` tokens are the fact you report.
 
 ## Collect as data
 
