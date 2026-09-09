@@ -356,17 +356,26 @@ pub const LENGTH_REDRIVE_CUSTOM_TYPE: &str = "length_redrive";
 pub const LENGTH_REDRIVE_TEXT: &str = "The reply hit the output limit before any tool call. Pick the most boring viable option and act on it now: make the tool call, then explain.";
 /// Consecutive bare length stops; a turn that calls a tool starts the count over.
 pub const LENGTH_STOP_AT: u32 = 3;
+/// Consecutive reasoning cuts (D168): a cut costs about a third of a cent once settled, so
+/// the strike that forfeits the hour was the expensive part; twelve in a row still end it.
+pub const CUT_STOP_AT: u32 = 12;
+pub const CUT_REDRIVE_TEXT: &str = "The reply was cut at the reasoning budget again. Stop deriving: write the first version of the file the task names now, even a stub that runs, in one `write` call, and reason after it exists.";
 
 /// A turn that spent its whole output budget thinking, or was cut at the reasoning budget, is
-/// sent back to act instead.
+/// sent back to act instead; from the second consecutive cut it is told what to write.
 fn length_redrive(rung: u32, cut: Option<usize>) -> AgentMessage {
     let details = match cut {
         Some(chars) => json!({"rung": rung, "cut": true, "reasoningChars": chars}),
         None => json!({"rung": rung, "cut": false}),
     };
+    let text = if cut.is_some() && rung >= 2 {
+        CUT_REDRIVE_TEXT
+    } else {
+        LENGTH_REDRIVE_TEXT
+    };
     AgentMessage::Custom {
         custom_type: LENGTH_REDRIVE_CUSTOM_TYPE.to_owned(),
-        content: yi_types::message::UserContent::Text(LENGTH_REDRIVE_TEXT.to_owned()),
+        content: yi_types::message::UserContent::Text(text.to_owned()),
         display: false,
         details: Some(details),
         timestamp: 0,
@@ -649,6 +658,7 @@ pub async fn run_loop<S: StreamFn>(
     let mut current_effort = config.effort;
     let mut first_turn = true;
     let mut length_stops: u32 = 0;
+    let mut cut_stops: u32 = 0;
     let mut stream_retries: u32 = 0;
     let mut last_batch: Option<String> = None;
     let mut repeats: u32 = 0;
@@ -737,6 +747,7 @@ pub async fn run_loop<S: StreamFn>(
             has_more_tool_calls = false;
             if !calls.is_empty() {
                 length_stops = 0;
+                cut_stops = 0;
                 let (finalized, terminate) = if reason == StopReason::Length {
                     (fail_truncated_calls(calls, emit), false)
                 } else {
@@ -793,14 +804,21 @@ pub async fn run_loop<S: StreamFn>(
                 pending.push(repeat_break());
             }
             if !has_more_tool_calls && pending.is_empty() && reason == StopReason::Length {
-                length_stops = length_stops.saturating_add(1);
-                if length_stops >= LENGTH_STOP_AT {
+                // a cut is not a length strike: it has its own, longer count (D168)
+                let rung = if cut.is_some() {
+                    cut_stops = cut_stops.saturating_add(1);
+                    cut_stops
+                } else {
+                    length_stops = length_stops.saturating_add(1);
+                    length_stops
+                };
+                if length_stops >= LENGTH_STOP_AT || cut_stops >= CUT_STOP_AT {
                     emit(AgentEvent::AgentEnd {
                         messages: collected.clone(),
                     });
                     return collected;
                 }
-                pending.push(length_redrive(length_stops, cut));
+                pending.push(length_redrive(rung, cut));
             } else if !has_more_tool_calls
                 && pending.is_empty()
                 && let Some(intercept) = &config.intercept_stop
