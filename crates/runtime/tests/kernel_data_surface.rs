@@ -67,7 +67,7 @@ async def main():
     assert (await h.tail()) == ""
 
     async def fetch_stub(request_type, payload=None):
-        assert request_type == "fetch" and payload == {"url": "plan://p"}
+        assert request_type == "fetch" and payload == {"url": "plan://p", "object": False}
         return {"text": "doc", "hash": "h", "servedBy": "plan-file"}
     rlm_module.host_request = fetch_stub
     assert (await rlm_module.fetch("plan://p")) == "doc"

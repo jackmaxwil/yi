@@ -1,6 +1,7 @@
-# The T2 lane's away game: the suite under the profile that ships, with panic
-# forced back to unwind, which nothing else covers because the shipping profile
-# aborts. Too slow to block a PR, so it runs after the merge.
+# The T2 lane's away game: the journeys after the merge, the faux evals, the
+# live suite that feeds the telemetry ledger, and the cache save every pull
+# request restores. The dist-profile suite that used to run here moved to
+# `dist-suite.yml` (#304): seven of this job's eight minutes, gating nothing.
 #
 # No macOS arm: the estate has no macOS runner, and `just prepush` is where the
 # platform Yi is developed on gets covered.
@@ -20,10 +21,10 @@ jobs:
         with:
           fetch-depth: 0
       - run: rustup show
-      # `test` is the PR gate's heaviest lane and the one whose profile this
-      # job also builds, so a cache saved here — on refs/heads/main, the one
-      # scope every pull request can read — is what makes a branch's first
-      # push warm rather than cold.
+      # `test` is the PR gate's heaviest lane and the journeys build the same
+      # dev profile, so a cache saved here — on refs/heads/main, the one scope
+      # every pull request can read — is what makes a branch's first push warm
+      # rather than cold.
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: test

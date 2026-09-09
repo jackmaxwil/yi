@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
-# Full tier, plus the release gate when the push carries a version tag. git feeds
+# Main's protection, plus the release gate when the push carries a version tag. The
+# lanes run on the forge (`pr.yml`), the gate branch protection reads; running them
+# here too was a duplicate verdict at six to eight minutes a push (#307). git feeds
 # the refs being pushed on stdin as "<local ref> <local sha> <remote ref> <remote sha>".
 set -euo pipefail
 cd "$(git rev-parse --show-toplevel)"
@@ -34,7 +36,6 @@ while read -r local_ref local_sha remote_ref remote_sha; do
   esac
 done
 
-just prepush
 if [ -n "$tag" ]; then
   echo "pre-push: $tag is a release tag"
   just prerelease "${tag#v}"
