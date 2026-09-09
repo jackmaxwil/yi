@@ -794,6 +794,18 @@ fn run_request(
     if let Some(first_error) = resent {
         crate::request::note_resend(&mut mapper.output, &first_error);
     }
+    // a cut dropped the stream before its usage chunk: settle the turn from the record (D163)
+    if stop.is_some_and(|flag| flag.load(std::sync::atomic::Ordering::SeqCst))
+        && let AgentMessage::Assistant {
+            usage,
+            response_id: Some(id),
+            ..
+        } = &mut mapper.output
+        && usage.unknown
+        && let Some(settled) = crate::settle::generation_usage(model, api_key, proxy, id)
+    {
+        *usage = settled;
+    }
     for event in mapper.finish() {
         let _ = sender.blocking_send(event);
     }
