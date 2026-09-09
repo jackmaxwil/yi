@@ -4,11 +4,11 @@
 The failure modes this replaces were all observed: baselines committed beside code
 (commit_style refuses the push), subjects past 72 characters, a `git push` killed
 mid-lane by a two-minute timeout, a PR opened against a closed issue (the `title` job
-fails and tea says nothing), a green PR that will not merge because `main` moved
+fails and the CLI says nothing), a green PR that will not merge because `main` moved
 ("head behind base" is only visible through the API), and a merge loop that retried
 a refusal it never read. Every verb here does the check first and prints the fix.
 
-Transport is `tea api`, because tea already holds the login and trusts the estate's
+Transport is `fgj api`, because fgj already holds the login and trusts the estate's
 CA; python's urllib does not. Decisions are pure functions so the selfcheck can walk
 them without a server.
 """
@@ -28,6 +28,7 @@ BASELINES = ROOT / "scripts/guardrails/baselines"
 SUBJECT_LIMIT = 72
 POLL = 20
 WEB = "https://git.example.invalid"
+HOST = WEB.removeprefix("https://")
 
 
 def git(*args, check=False):
@@ -50,21 +51,28 @@ def repo():
     return name
 
 
-def tea_api(method, path, payload=None):
-    """A missing resource is None, the way check_pr_metadata's transport expects."""
-    command = ["tea", "api"]
-    if method != "GET":
-        command += ["-X", method]
+def scope():
+    """`-R` and `--hostname` on every fgj verb: a worktree's `.git` is a file fgj cannot read."""
+    return ("-R", repo(), "--hostname", HOST)
+
+
+def fgj_api(method, path, payload=None):
+    """A missing resource is None, the way check_pr_metadata's transport expects.
+
+    fgj prints the response body on stdout whatever the status and `HTTP <code>` on
+    stderr with exit 1 when it is not 2xx, so a 404 is read from stderr, not parsed."""
+    command = ["fgj", "api", "--hostname", HOST, "-X", method, path.lstrip("/")]
+    body = None
     if payload is not None:
-        command += ["-d", json.dumps(payload)]
-    command.append(path.lstrip("/"))
-    out = subprocess.run(command, capture_output=True, text=True, check=False)
+        command += ["--input", "-"]
+        body = json.dumps(payload)
+    out = subprocess.run(command, input=body, capture_output=True, text=True, check=False)
+    if out.returncode and "HTTP 404" in out.stderr:
+        return None
     text = (out.stdout or out.stderr).strip()
     try:
         return json.loads(text)
     except json.JSONDecodeError:
-        if "404" in text:
-            return None
         return {"message": text}
 
 
@@ -73,14 +81,14 @@ def branch():
 
 
 def pull(number):
-    pr = tea_api("GET", f"repos/{repo()}/pulls/{number}")
+    pr = fgj_api("GET", f"repos/{repo()}/pulls/{number}")
     if not pr or "number" not in pr:
         raise SystemExit(f"#{number}: {pr.get('message') if pr else 'no such pull request'}")
     return pr
 
 
 def pull_for_branch(name):
-    pulls = tea_api("GET", f"repos/{repo()}/pulls?state=open&limit=50") or []
+    pulls = fgj_api("GET", f"repos/{repo()}/pulls?state=open&limit=50") or []
     for pr in pulls:
         if pr.get("head", {}).get("ref") == name:
             return pr
@@ -281,7 +289,7 @@ def check_problems(title, body):
         return errs + [why]
     ledger_added, changelog_added, src_net = measured
     errs += gate.body_problems(
-        tea_api, "", repo(), body, [gate.row_key(row) for row in ledger_added], changelog_added, src_net
+        fgj_api, "", repo(), body, [gate.row_key(row) for row in ledger_added], changelog_added, src_net
     )
     return errs
 
@@ -324,7 +332,7 @@ def cmd_open(args):
         if code:
             return code
     out = subprocess.run(
-        ("tea", "pr", "create", "--head", branch(), "--base", "main", "--title", args.title, "--description", body),
+        ("fgj", "pr", "create", *scope(), "--head", branch(), "--base", "main", "--title", args.title, "--body", body),
         capture_output=True, text=True, check=False,
     )
     found = re.search(r"#(\d+)", out.stdout + out.stderr)
@@ -350,7 +358,7 @@ def cmd_edit(args):
     if not payload:
         print("edit: nothing to change (--title, --body)")
         return 1
-    tea_api("PATCH", f"repos/{repo()}/pulls/{args.number}", payload)
+    fgj_api("PATCH", f"repos/{repo()}/pulls/{args.number}", payload)
     print(f"#{args.number} edited")
     return 0
 
@@ -366,7 +374,7 @@ def is_behind(pr):
 
 
 def required():
-    protections = tea_api("GET", f"repos/{repo()}/branch_protections") or []
+    protections = fgj_api("GET", f"repos/{repo()}/branch_protections") or []
     for protection in protections:
         if protection.get("branch_name") == "main":
             return required_jobs(protection.get("status_check_contexts") or [])
@@ -374,7 +382,7 @@ def required():
 
 
 def jobs_of(pr):
-    tasks = tea_api("GET", f"repos/{repo()}/actions/tasks?limit=60") or {}
+    tasks = fgj_api("GET", f"repos/{repo()}/actions/tasks?limit=60") or {}
     return job_table(tasks.get("workflow_runs", []), pr["head"]["sha"])
 
 
@@ -411,7 +419,7 @@ def cmd_status(args):
 
 def cmd_update(args):
     number = pull_number(args.number)
-    answer = tea_api("POST", f"repos/{repo()}/pulls/{number}/update?style=merge")
+    answer = fgj_api("POST", f"repos/{repo()}/pulls/{number}/update?style=merge")
     if answer and answer.get("message"):
         print(answer["message"])
         return 1
@@ -421,9 +429,9 @@ def cmd_update(args):
 
 def cmd_rerun(args):
     number = pull_number(args.number)
-    subprocess.run(("tea", "pr", "close", str(number)), capture_output=True, check=False)
+    subprocess.run(("fgj", "pr", "close", *scope(), str(number)), capture_output=True, check=False)
     time.sleep(2)
-    subprocess.run(("tea", "pr", "reopen", str(number)), capture_output=True, check=False)
+    subprocess.run(("fgj", "pr", "reopen", *scope(), str(number)), capture_output=True, check=False)
     print(f"#{number} closed and reopened; the gate reruns")
     return 0
 
@@ -443,7 +451,7 @@ def cmd_merge(args):
             print(f"#{number} is behind main; updating")
             cmd_update(argparse.Namespace(number=number))
         elif verdict == "ready":
-            answer = tea_api("POST", f"repos/{repo()}/pulls/{number}/merge", {"Do": "merge"})
+            answer = fgj_api("POST", f"repos/{repo()}/pulls/{number}/merge", {"Do": "merge"})
             if answer and answer.get("message"):
                 print(f"merge refused: {answer['message']}")
                 if "behind" not in answer["message"]:

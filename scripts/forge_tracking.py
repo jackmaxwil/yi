@@ -162,28 +162,28 @@ def hygiene(transport, api, repo, window, today):
             misses.append(
                 (
                     f"#{number} carries {len(sizes)} size labels ({', '.join(sizes)})",
-                    f"tea issues edit {number} --remove-labels {','.join(sizes[1:])} --repo {repo}",
+                    f"fgj issue edit {number} {' '.join('--remove-label ' + s for s in sizes[1:])} -R {repo}",
                 )
             )
         elif not sizes:
             misses.append(
                 (
                     f"#{number} has no size label",
-                    f"tea issues edit {number} --add-labels size:M --repo {repo}",
+                    f"fgj issue edit {number} --add-label size:M -R {repo}",
                 )
             )
         if not [name for name in names if name.startswith("area:")]:
             misses.append(
                 (
                     f"#{number} has no area label",
-                    f"tea issues edit {number} --add-labels area:runtime --repo {repo}",
+                    f"fgj issue edit {number} --add-label area:runtime -R {repo}",
                 )
             )
         if not issue.get("milestone"):
             misses.append(
                 (
                     f"#{number} has no milestone",
-                    f'tea issues edit {number} --milestone "<title>" --repo {repo}',
+                    f"fgj api -X PATCH repos/{repo}/issues/{number} -F milestone=<id>  # ids: fgj api repos/{repo}/milestones",
                 )
             )
     closed, rows = measure(transport, api, repo, window, today)
@@ -210,7 +210,7 @@ def hygiene(transport, api, repo, window, today):
         notes.append("no pinned issue titled Tracking; the estate timer has not landed")
         return misses, notes
     number = pinned["number"]
-    read = f"tea issues {number} --comments --repo {repo}"
+    read = f"fgj issue view {number} -R {repo}; fgj api repos/{repo}/issues/{number}/comments"
     first = ((pinned.get("body") or "").strip().splitlines() or [""])[0]
     match = VERDICT_RE.match(first)
     if not match or match.group(1) != "green":
@@ -323,7 +323,7 @@ def selfcheck():
     assert any("derives 2026-04-12" in r for r in reported), reported
     assert not [r for r in reported if r.startswith("#20")], reported
     assert notes == ["no pinned issue titled Tracking; the estate timer has not landed"], notes
-    assert misses[1][1] == "tea issues edit 21 --add-labels area:runtime --repo apex/yi", misses
+    assert misses[1][1] == "fgj issue edit 21 --add-label area:runtime -R apex/yi", misses
 
     # The pinned verdict is read against the estate timer's real contract
     # (the infra repository scripts/forgejo_tracking_check.py, verdict_body()):

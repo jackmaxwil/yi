@@ -109,13 +109,13 @@ def issue_problems(transport, api, repo, number):
     if not issue:
         return [
             f"#{number} is not an issue on {repo}",
-            "  tea issues ls          # cite one that exists, or open it",
+            "  fgj issue list          # cite one that exists, or open it",
         ]
     errs = []
     if issue.get("state") != "open":
         errs += [
             f"#{number} is {issue.get('state')}; a merge cannot close it again",
-            f"  tea issues reopen {number}   # or cite the issue this work is really under",
+            f"  fgj issue reopen {number}   # or cite the issue this work is really under",
         ]
     labels = [label.get("name", "") for label in issue.get("labels") or []]
     sizes = sorted(name for name in labels if name.startswith("size:"))
@@ -123,22 +123,22 @@ def issue_problems(transport, api, repo, number):
     if not sizes:
         errs += [
             f"#{number} carries no `size:` label; exactly one is mandatory",
-            f"  tea issues edit {number} --add-labels size:M",
+            f"  fgj issue edit {number} --add-label size:M",
         ]
     elif len(sizes) > 1:
         errs += [
             f"#{number} carries {len(sizes)} size labels ({', '.join(sizes)}); exactly one is",
-            f"  tea issues edit {number} --remove-labels {','.join(sizes[1:])}",
+            f"  fgj issue edit {number} {' '.join('--remove-label ' + s for s in sizes[1:])}",
         ]
     if not areas:
         errs += [
             f"#{number} carries no `area:` label",
-            f"  tea issues edit {number} --add-labels area:runtime",
+            f"  fgj issue edit {number} --add-label area:runtime",
         ]
     if not issue.get("milestone"):
         errs += [
             f"#{number} has no milestone, and a milestone is what a due date is computed over",
-            f'  tea issues edit {number} --milestone "<name>"',
+            f"  fgj api --hostname git.example.invalid -X PATCH repos/{repo}/issues/{number} -F milestone=<id>",
         ]
     return errs
 
@@ -167,9 +167,9 @@ def body_problems(transport, api, repo, body, ledger_added, changelog_added, src
         return [
             "the PR body names no issue, and " + "; ".join(reasons),
             "  add `Closes #N` (this PR finishes it) or `Refs #N` (this PR is part of it)",
-            "  tea issues ls          # it is probably already open",
-            '  tea issues create --title "<imperative sentence>" \\',
-            '      --labels size:M,area:runtime --milestone "<name>"',
+            "  fgj issue list          # it is probably already open",
+            '  fgj issue create -t "<imperative sentence>" -l size:M -l area:runtime',
+            "  fgj api --hostname git.example.invalid -X PATCH repos/<owner/repo>/issues/<n> -F milestone=<id>",
         ]
     errs = []
     for number in numbers:
@@ -246,7 +246,7 @@ def selfcheck():
     transport, seen = forge({})
     errs = body_problems(transport, api, repo, "no citation here", ["plan panel"], [], 0)
     assert "feature-ledger row `plan panel`" in errs[0], errs
-    assert any("tea issues create" in e for e in errs), errs
+    assert any("fgj issue create" in e for e in errs), errs
     assert seen == [], "an uncited body has nothing to ask the forge about"
     errs = body_problems(transport, api, repo, "", [], [], FREE_BAND + 1)
     assert f"+{FREE_BAND + 1}, past the free band" in errs[0], errs
@@ -260,23 +260,23 @@ def selfcheck():
     assert seen == [("GET", f"{api}/repos/{repo}/issues/4")], seen
     assert body_problems(transport, api, repo, "Refs #4", ["row"], [], 0) == []
 
-    # --- each issue defect, each with the tea command that fixes it
+    # --- each issue defect, each with the fgj command that fixes it
     def only(issue, body="Closes #4"):
         transport, _ = forge({4: issue})
         return body_problems(transport, api, repo, body, ["row"], [], 0)
 
     errs = only(None)
-    assert "not an issue" in errs[0] and "tea issues ls" in errs[1], errs
+    assert "not an issue" in errs[0] and "fgj issue list" in errs[1], errs
     errs = only(dict(good, state="closed"))
-    assert "is closed" in errs[0] and "tea issues reopen 4" in errs[1], errs
+    assert "is closed" in errs[0] and "fgj issue reopen 4" in errs[1], errs
     errs = only(dict(good, labels=[{"name": "area:runtime"}]))
-    assert "no `size:` label" in errs[0] and "--add-labels size:M" in errs[1], errs
+    assert "no `size:` label" in errs[0] and "--add-label size:M" in errs[1], errs
     errs = only(dict(good, labels=[{"name": "size:S"}, {"name": "size:L"}, {"name": "area:tui"}]))
-    assert "2 size labels" in errs[0] and "--remove-labels size:S" in errs[1], errs
+    assert "2 size labels" in errs[0] and "--remove-label size:S" in errs[1], errs
     errs = only(dict(good, labels=[{"name": "size:M"}]))
     assert "no `area:` label" in errs[0], errs
     errs = only(dict(good, milestone=None))
-    assert "no milestone" in errs[0] and "--milestone" in errs[1], errs
+    assert "no milestone" in errs[0] and "milestone=<id>" in errs[1], errs
     # Every cited number is judged, not just the first.
     transport, seen = forge({4: good, 5: dict(good, milestone=None)})
     errs = body_problems(transport, api, repo, "Refs #4, closes #5", ["row"], [], 0)
