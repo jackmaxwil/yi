@@ -45,7 +45,7 @@ Read, in this order, and do not skip one because it looks long:
 5. The gate recipe: the `justfile`, `Makefile`, CI workflow or `package.json`
    scripts. Quote the gate command; do not run it.
 6. The last merged pull requests and their CI state where a forge is
-   reachable (`tea pr ls --state merged --limit 5` on Forgejo; `gh pr list
+   reachable (`fgj pr list --state closed -R owner/name` on Forgejo; `gh pr list
    --state merged --limit 5` on GitHub). That line is the gate record you
    cite instead of a local run.
 
