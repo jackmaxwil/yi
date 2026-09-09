@@ -482,6 +482,62 @@ fn bash_output_is_reduced_and_recoverable() -> TestResult {
     Ok(())
 }
 
+/// The reducer once cut at 2 KiB and pointed at a spill file no rollout read (77 pointers,
+/// 0 reads across rows 0018-0023); under the floor the whole output rides the result.
+#[test]
+fn a_result_under_eight_kib_is_never_reduced() -> TestResult {
+    let dir = temp_dir("reduce-floor")?;
+    let tool = BashTool::default();
+    let mut context = ToolContext::new(dir.0.clone());
+    context.recovery_dir = Some(dir.0.join("tool-output"));
+    let output = tool.execute(
+        args(&[(
+            "command",
+            json!("for i in $(seq 1 400); do echo row-$i; done"),
+        )]),
+        &context,
+    );
+    let text = output_text(&output);
+    assert!(
+        text.contains("row-1\n") && text.contains("row-400"),
+        "{text}"
+    );
+    assert!(
+        !text.contains("lines omitted") && !text.contains("[full output:"),
+        "{text}"
+    );
+    Ok(())
+}
+
+/// Duplicates and progress frames compress before the middle is cut, and the cut is a byte
+/// budget: the tail rows a 700-line dump once hid are in the result.
+#[test]
+fn progress_and_duplicate_lines_compress_before_the_middle_is_cut() -> TestResult {
+    let dir = temp_dir("reduce-compress")?;
+    let tool = BashTool::default();
+    let mut context = ToolContext::new(dir.0.clone());
+    context.recovery_dir = Some(dir.0.join("tool-output"));
+    let command = "for i in $(seq 1 200); do echo 'duplicate row'; done; printf 'progress 1%%\\rprogress 50%%\\rprogress 100%%\\n'; for i in $(seq 1 1500); do echo row-$i; done";
+    let output = tool.execute(args(&[("command", json!(command))]), &context);
+    let text = output_text(&output);
+    assert!(text.contains("duplicate row [×200]"), "{text}");
+    assert!(
+        text.contains("progress 100%") && !text.contains("progress 1%"),
+        "{text}"
+    );
+    assert!(text.contains("row-1500"), "the tail survives: {text}");
+    let shown = text.lines().filter(|line| line.starts_with("row-")).count();
+    assert!(
+        shown > 500,
+        "a byte budget shows more than 120 lines: {shown}"
+    );
+    assert!(
+        text.contains("lines omitted:") && text.contains("[full output:"),
+        "{text}"
+    );
+    Ok(())
+}
+
 #[test]
 fn a_lossy_reduction_without_a_tee_returns_raw() -> TestResult {
     let raw: String = (1..4_000).map(|n| format!("line-{n}\n")).collect();
