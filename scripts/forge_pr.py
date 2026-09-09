@@ -261,7 +261,7 @@ def cmd_push(args):
     # The lane refuses a grown binary; measuring here is the last chance before it.
     if binary_ratchet(getattr(args, "topic", "") or ""):
         return 1
-    print(f"push: {name} through the pre-push lane (minutes; run this in the background)")
+    print(f"push: {name}; the forge gate runs the lanes — `just pr status N` reads the verdict")
     out = subprocess.run(("git", "-C", str(ROOT), "push", "-u", "origin", name), check=False)
     return out.returncode
 

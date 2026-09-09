@@ -222,8 +222,14 @@ tui-proof script out="target/proof":
     fi
     echo "cast: $out/run.cast"
 
-# Tier 4, after a merge: the suite against the profile that ships, unwind forced.
+# Tier 4, after a merge: the journeys. The dist-profile suite left this recipe for
+# `dist-suite` (#304): a release build of the workspace and its tests that no cache
+# warms was seven of the postmerge job's eight minutes, and it gates nothing.
 postmerge: journeys
+
+# The suite against the profile that ships, unwind forced, which nothing else
+# covers because the shipping profile aborts. Nightly in CI (`dist-suite.yml`).
+dist-suite:
     CARGO_PROFILE_DIST_PANIC=unwind cargo test --workspace --profile dist
 
 # Tier 4 sibling: the task-eval runner over its fixtures, faux only. Offline and
