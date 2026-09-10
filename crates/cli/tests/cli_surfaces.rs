@@ -653,6 +653,25 @@ fn a_relative_home_is_refused_at_boot() -> TestResult {
     Ok(())
 }
 
+/// Rows 0023, 0025 and 0026 ran three builds that all said `yi 0.2.0`; the version a build
+/// reports is the `version:` line of docs/ARCHITECTURE.md it was built from.
+#[test]
+fn version_prints_the_architecture_version() -> TestResult {
+    let map = std::fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../docs/ARCHITECTURE.md"
+    ))?;
+    let version = map
+        .lines()
+        .find_map(|line| line.strip_prefix("version:"))
+        .and_then(|rest| rest.split_whitespace().next())
+        .ok_or("docs/ARCHITECTURE.md has no version line")?;
+    let workspace = Workspace::new("version")?;
+    let printed = workspace.yi(&["--version"])?;
+    assert_eq!(stdout(&printed).trim(), format!("yi {version}"));
+    Ok(())
+}
+
 /// A headless drive is a harness: it claims no lane in a repository unless told `--lanes`,
 /// so a run its harness kills leaves no orphan behind.
 #[test]
