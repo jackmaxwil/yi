@@ -82,13 +82,15 @@ python3 evals/axes.py evals/fixtures/axes --json /tmp/rows.jsonl
 One JSON row per v4 session file found under the directory, its context the
 nearest ancestor holding a harbor `result.json` (reward, wall, timeout) or a
 run.py `row.json`, else a journey; then the `docs/eval-ledger.md` row with
-the `persistence`, `rigor` and `experience` triples on the right. Every column
-is named with its source in `docs/plans/2026-09-06-tbv4-evals/axes.md`; the
+the `persistence`, `rigor` and `experience` triples, `timeouts` and `partials`
+on the right. Every column is named with its source in
+`docs/plans/2026-09-06-tbv4-evals/axes.md`; the
 signals come from `skills/yi/session-mining/extract.py` by import, the
 telemetry columns from the `.telemetry.jsonl` sidecar beside each session.
 Exit 2 when a trial is unmeasurable (a turn without usage, no assistant
 message, no session at all). `evals/fixtures/axes/` holds one trial of each
-shape and `expected.jsonl` pins the rows byte-for-byte (`check_axes`).
+shape, plus a harbor trial that timed out with its verifier past its ceiling,
+and `expected.jsonl` pins the rows byte-for-byte (`check_axes`).
 
 ## ATIF (E10)
 
