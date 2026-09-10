@@ -807,7 +807,7 @@ fn run_request(
     let _ = sender.blocking_send(mapper.start_event());
     let pumped = crate::request::pump_sse_with_resend(
         stop,
-        || crate::request::openai_bearer_post(&url, api_key, body, proxy),
+        || crate::request::openai_bearer_post(&url, model, api_key, body, proxy),
         |sse| {
             if sse.data == "[DONE]" {
                 return Ok(true);
