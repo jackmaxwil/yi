@@ -162,6 +162,13 @@ def check_eval_config():
         source = (ROOT / name).read_text()
         assert "eval_config(" in source and '"enabled"' not in source, f"{name} writes its own config"
         assert "routing_label(" in source, f"{name}'s fingerprint cannot tell two routings apart"
+    # The fixtures lane leaves a caller's --home config alone, so a label there names a routing never sent.
+    with tempfile.TemporaryDirectory() as home:
+        done = subprocess.run(
+            [sys.executable, str(ROOT / "run.py"), "--home", home, "--binary", str(Path(home) / "no-yi")],
+            capture_output=True, text=True, env={**os.environ, yi_usage.ROUTING_ENV: "{}"},
+        )
+    assert done.returncode == 2 and yi_usage.ROUTING_ENV in done.stderr, (done.returncode, done.stdout)
 
 
 def check_no_assistant_rows():
