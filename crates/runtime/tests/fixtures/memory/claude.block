@@ -4,12 +4,15 @@ When a hook matches the task, open the note: await memory.read("name"), the
 name being the link's file without .md. A note that names a file or flag is
 checked before it is acted on; ⚠ marks a line whose path is gone; [[name]] in
 a note names another note. After a user correction, an incident, or a verified
-success (never every turn) save one; the same name updates, and
-await memory.forget("name") deletes a wrong one:
+success (never every turn) save the part the code, the changelog and git do not
+hold; the same name updates, and await memory.forget("name") deletes a wrong
+one. type is user (who they are, what they prefer), feedback (a correction
+after a failure), project (how this repo works) or reference (a pointer
+elsewhere):
 await memory.save("""---
 name: kebab-slug
 description: the situation, then the rule, one line
-type: user | feedback | project | reference
+type: feedback
 ---
 The fact.
 

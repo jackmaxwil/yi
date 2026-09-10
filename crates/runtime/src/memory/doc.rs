@@ -3,6 +3,8 @@ use std::fmt;
 const HOOK_CAP: usize = 240;
 const BODY_CAP: usize = 8 * 1024;
 const NAME_CAP: usize = 80;
+const NAME_WORDS: usize = 5;
+pub(super) const PLACEHOLDER: &str = "the situation, then the rule, one line";
 const KNOWN: [&str; 4] = ["name", "description", "type", "scope"];
 const SUGGEST_KEY_CAP: usize = 32;
 
@@ -131,6 +133,8 @@ pub enum DocError {
     Frontmatter(Trouble),
     #[error("no description: add `description:` or start the body with one line")]
     NoDescription,
+    #[error("the description is the template's placeholder; write the situation and the rule")]
+    Placeholder,
     #[error("description is {len} characters, the cap is {max}")]
     HookTooLong { len: usize, max: usize },
     #[error("body is {len} bytes, the cap is {max}")]
@@ -141,11 +145,11 @@ pub enum DocError {
     BadType(String),
     #[error("scope is {0:?}; it must be repo or global")]
     BadScope(String),
-    #[error("name {0:?} makes no file name; use kebab-case")]
+    #[error("name {0:?} is reserved or makes no file name; pick another kebab-case name")]
     BadName(String),
     #[error("the note carries a memory or yard fence; save the fact, not a recalled block")]
     LoopGuard,
-    #[error("the note looks like it holds a {0}; save where to find it, not the value")]
+    #[error("the note looks like it holds {0}; save where to find it, not the value")]
     Secret(&'static str),
 }
 
@@ -538,16 +542,16 @@ fn key_run(token: &str, prefix: &str, min: usize) -> bool {
 
 fn secret_in(text: &str) -> Option<&'static str> {
     if text.contains("PRIVATE KEY-----") {
-        return Some("private key");
+        return Some("a private key");
     }
     text.split(|c: char| c.is_whitespace() || matches!(c, '"' | '\'' | '`' | '='))
         .find_map(|token| {
             if key_run(token, "sk-", 16) {
-                Some("API key")
+                Some("an API key")
             } else if key_run(token, "ghp_", 20) || key_run(token, "github_pat_", 20) {
-                Some("GitHub token")
+                Some("a GitHub token")
             } else if key_run(token, "AKIA", 16) {
-                Some("AWS key")
+                Some("an AWS key")
             } else {
                 None
             }
@@ -593,6 +597,9 @@ pub fn draft(markdown: &str, overlay: &[(String, String)]) -> Result<Draft, DocE
     if hook.is_empty() {
         return Err(DocError::NoDescription);
     }
+    if hook == PLACEHOLDER {
+        return Err(DocError::Placeholder);
+    }
     let len = hook.chars().count();
     if len > HOOK_CAP {
         return Err(DocError::HookTooLong { len, max: HOOK_CAP });
@@ -609,8 +616,19 @@ pub fn draft(markdown: &str, overlay: &[(String, String)]) -> Result<Draft, DocE
         None => Scope::Repo,
     };
     let name = match text_of(&front, "name") {
-        Some(text) => MemoryName::slug(text)?,
-        None => MemoryName::slug(&hook)?,
+        Some(text) => {
+            let name = MemoryName::slug(text)?;
+            if name.as_str() != text.trim() {
+                warnings.push(format!("name `{}` saved as `{name}`", text.trim()));
+            }
+            name
+        }
+        None => {
+            let words: Vec<&str> = hook.split_whitespace().take(NAME_WORDS).collect();
+            let name = MemoryName::slug(&words.join(" "))?;
+            warnings.push(format!("no name given; saved as `{name}`"));
+            name
+        }
     };
     let extra: Vec<(String, Field)> = front
         .into_iter()
@@ -812,6 +830,8 @@ mod tests {
             draft(&gotcha, &[]),
             Err(DocError::BadType("gotcha".to_owned()))
         );
+        let unedited = TEMPLATE.replace("Buildhost /tmp is RAM; never scratch there", PLACEHOLDER);
+        assert_eq!(draft(&unedited, &[]), Err(DocError::Placeholder));
         let untyped = TEMPLATE.replace("type: feedback\n", "");
         assert_eq!(draft(&untyped, &[]), Err(DocError::NoType));
         let unclosed = TEMPLATE.replace("description: Buildhost", "description: \"Buildhost");
@@ -840,6 +860,21 @@ mod tests {
         .unwrap();
         assert_eq!(draft.memory.name.as_str(), "the-forge-cli-is-fgj");
         assert_eq!(draft.memory.hook, "The forge CLI is fgj.");
+        assert_eq!(
+            draft.warnings,
+            vec!["no name given; saved as `the-forge-cli-is-fgj`"]
+        );
+        let long = super::draft(
+            "The forge CLI is fgj; pass -R apex/yi from any worktree.",
+            &[("type".to_owned(), "reference".to_owned())],
+        )
+        .unwrap();
+        assert_eq!(long.memory.name.as_str(), "the-forge-cli-is-fgj");
+        let traversal = TEMPLATE.replace("name: buildhost-tmp-is-ram", "name: ../../etc/passwd");
+        assert_eq!(
+            super::draft(&traversal, &[]).unwrap().warnings,
+            vec!["name `../../etc/passwd` saved as `etc-passwd`"]
+        );
     }
 
     #[test]
@@ -847,7 +882,7 @@ mod tests {
         let fenced = TEMPLATE.replace("48 GB", "<memory name=\"x\">");
         assert_eq!(draft(&fenced, &[]), Err(DocError::LoopGuard));
         let keyed = TEMPLATE.replace("48 GB", "sk-ant-api03-abcdefghijklmnop");
-        assert_eq!(draft(&keyed, &[]), Err(DocError::Secret("API key")));
+        assert_eq!(draft(&keyed, &[]), Err(DocError::Secret("an API key")));
         let task = TEMPLATE.replace("48 GB", "task-oriented sk-short");
         assert!(draft(&task, &[]).is_ok());
     }
