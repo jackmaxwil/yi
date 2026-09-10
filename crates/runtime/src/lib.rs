@@ -88,6 +88,18 @@ pub use yi_permission::{
 };
 pub use yi_session as session_store;
 pub use yi_tools::{
-    Change, ChangeKind, builtin_tools, builtin_tools_with, discover_exec_tools, edit_file,
-    list_files,
+    Change, ChangeKind, Converter, Documents, builtin_tools, builtin_tools_with,
+    discover_exec_tools, edit_file, list_files,
 };
+
+pub fn documents(home: &std::path::Path) -> Documents {
+    let venv_home = home.to_path_buf();
+    Documents {
+        home: home.to_path_buf(),
+        converter: std::sync::Arc::new(move || {
+            let (python, formats) = yi_kernel::bootstrap::document_converter(&venv_home);
+            Converter { python, formats }
+        }),
+        timeout: yi_tools::DEFAULT_TIMEOUT,
+    }
+}

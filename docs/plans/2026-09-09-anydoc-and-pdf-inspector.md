@@ -1,9 +1,9 @@
 # anydoc and pdf-inspector: `read` on every format, without the crate
 
 ```
-status:  PROPOSED. Phase 1 is admitted on its own measurements; phases 2-3
-         are gated on a trigger stated in §9 that today's evidence does not
-         yet pull.
+status:  IMPLEMENTED in 0.207.0 (D171, #368), all three phases. The §9
+         trigger for phases 2-3 was not met and was waived by the owner on
+         2026-09-10. Where the build departs from this text, §12 says how.
 date:    2026-09-09
 inputs:  github.com/firecrawl/anydoc (crates.io `anydoc` 0.2.4, PyPI
          `firecrawl-anydoc` 0.2.4, MIT) · github.com/firecrawl/pdf-inspector
@@ -516,7 +516,7 @@ tree walk (§4.4), and images/audio/video (§8).
 
 ## 11. Records this change owes
 
-- `D140` in YI_DESIGN §14.6, amending the demotion row: the crate stays
+- `D171` in YI_DESIGN §14.6, amending the demotion row: the crate stays
   refused, with this document's +3.42 MiB against 401 KB as the reason, and the
   wheels are recorded as what replaces it. §1.1 is **not** edited — nothing is
   admitted that needs an out.
@@ -528,3 +528,136 @@ tree walk (§4.4), and images/audio/video (§8).
   is what `read`'s description is derived from, and a wheel change rebuilds
   both together.
 - Phase 2 carries a growth memo against the `yi-tools` budget.
+
+## 12. As built
+
+Seven departures from the text above, each for a reason found while building or dogfooding it:
+
+- **The converter reaches `read` through the tool set, not `ToolContext`.** The description
+  has to name the formats when the tool is constructed, before any call carries a context, so
+  `builtin_tools_with` takes a `Documents` (python, recorded formats, home) and the read, edit
+  and write tools share it through the hashline state. The dependency direction of §4.3 holds:
+  `yi-runtime` reads the venv record and `yi-tools` never learns where the list came from.
+- **The venv's directory is keyed by the extras as well as the ready check.** Two new extras
+  change `extra_args`, and every session still running main's code would have seen a mismatch
+  and rebuilt the shared venv, the back-and-forth the directory key was introduced to stop.
+- **The clause is worded for what actually triggers it.** A UTF-8 `.csv` is read as text and
+  never converted, so the description says "a file that is not UTF-8 text is converted to
+  Markdown when it is one of: …", then that the copy is read-only and `edit`/`write` refuse
+  the original.
+- **Phase 1's error signal ships as `details.convertedFrom`** on a converted read: the gate
+  it was meant to count toward was waived, and the extension on every conversion is the same
+  count, already in the session record.
+- **Phase 3 has no source-grep test.** The testing doctrine (`.ruler/080-testing.md`) forbids
+  asserting on source text. The refusal is proven behaviourally instead: a scanned PDF from a
+  real producer (Quartz, via `sips`) comes back as the local refusal and leaves no copy, and
+  the only `ocr` value the converter can pass is the literal `"reject"`.
+- **RTF is offered by its marker, not only by the UTF-8 failure.** RTF is 7-bit text, so the
+  non-UTF-8 trigger never fired on it and the model got raw `{\rtf1…` markup (an 820,000-line
+  file on this machine). A file whose text starts `{\rtf` now goes to the converter too, and
+  falls back to the raw text if nothing converts. This is a content marker, not an extension.
+- **A partly scanned PDF converts its text pages.** anydoc's `reject` refuses a whole PDF if
+  one page lacks a text layer, and a real 11-page PDF with one such page came back as a
+  refusal. `pdf_inspector.process_pdf`, the local non-OCR path, now supplies the text pages
+  under a first line naming the pages left out. Only a PDF with no text page is refused.
+
+Dogfood, 2026-09-10: 141 documents sampled from `~/Downloads`, `~/Desktop` and
+`~/Development`, covering every extension in §8, were read through the built tools. 118
+converted, cold in a median of about 55-110 ms (1.1 s at most) and 0 ms from the copy. 18
+were refused with a stated reason, and 5 were read as text because they were text (two UTF-8
+csv files, a web2py template named `.pdf`, a spreadsheet saved as text, and a Word lock file
+`~$…docx`). `find=`, windows, and the `edit`/`write` refusals behaved on copies of real files.
+
+### Round two, 2026-09-10: the exhaustive review
+
+After the first dogfood the owner asked for every open issue in the tools, exhaustively;
+47 came back, and the same day all but four were fixed on the same branch. What changed,
+by the review's numbering:
+
+- **Bugs 1-9.** Each conversion attempt stages under its own name (a 3-thread probe had
+  40 of 60 parallel first reads fail on one shared name). The two wheels are optional for a
+  `YI_KERNEL_PYTHON`. Copies are read-only, the Markdown's own hash is in the copy's name, and
+  a mismatch converts again; `edit` and `write` refuse the copy dir. Refusals read the bytes,
+  not the cache: any existing binary document or NUL-bearing file is refused, an RTF or a
+  decoded text file is not. A glob charges the Markdown to its budget and shows a document it
+  cannot fit as `(<kind> converted to N lines of Markdown)`. The cache key hashes the bytes,
+  so no timestamp tick can serve a stale copy. Staging files older than an hour are swept.
+  File names go to the converter as `OsStr`.
+- **Files 10-16.** The ceiling is 256 MiB, 1 GiB with `pages=`. A converter limit names
+  pandas in ipython for a spreadsheet. Latin-1 and UTF-16 text is decoded and shown. A NUL-
+  bearing non-document (a Word lock file) is refused as binary. The RTF marker is read past a
+  byte-order mark and leading whitespace. The no-text refusal no longer calls a logo "scanned".
+  An image is named as one, with the `attach_image` skill as the way to show it.
+- **Output 17-26.** No clipping on a copy. Spreadsheets lose empty rows and cell padding and
+  gain a `[sheets: name RxC, …]` line. A capped read of Markdown ends with a heading outline;
+  `find=` on Markdown returns the heading section (the resolver also serves `PUT N*` on `.md`
+  files). PDFs carry `[page N]` markers. The header keeps the original's path, so the note is
+  one short line and no path outside the working tree reaches the model. csv is shown as text.
+  Converter errors are plain words, not exception names.
+- **Speed 27-31.** A file whose head carries none of the four container markers never spawns
+  Python. Copies older than 30 days or past 256 MiB in total are evicted on a miss. Old venvs
+  are not pruned (29): another session on another commit may be using one.
+- **Discoverability 32-38.** identity.md names the capability; the description lists the
+  aliases the wheel confirms (`docx (docm)`, `xlsx (xls, xlsm, xlsb)`), the limits and the
+  read-only rule, and is asked again on every request so a venv built mid-session shows up;
+  `bash` names `read` when a command reaches for `pdftotext`, `pandoc` or `textutil`; the
+  not-built message says the venv builds at session start. No live model run was made (32).
+- **Ergonomics 39-41.** `pages="3-5,9"` on a PDF. A multi-file edit that names a document
+  still fails whole (40): a partial patch is worse than a refused one. The header path fixes
+  41: re-reading the copy by the path the model saw was an ask, since it sits outside the tree.
+- **Security 42-44.** The cache dir is 0700 and its copies expire; the sandbox's one writable
+  root is the cache dir; on Linux the converter runs in a user and network namespace when
+  `unshare -Urn` is allowed (a probe, once per process), else as before.
+- **Tests 45-47.** Concurrency, ceiling, timeout, cancellation, Unicode and (Linux) non-UTF-8
+  names, tamper, unread-document writes, decoding, glob budget, sheets, outline and section
+  each have a test, and each was seen red under a mutation. Reads carry `converted: {from,
+  cache, ms}` and `sourceBytes`, and a refusal carries its reason in `details`. The probe's
+  hash rides in the venv record, so a changed probe re-asks the wheel instead of serving an
+  old list (the drift test caught exactly that on this branch).
+
+Not done: upstream extraction quirks (22), stray image lines (23), venv pruning (29), the
+live eval (32).
+
+Dogfood, round two, same 141 files: 118 converted (cold median about 110 ms; 5.3 s at most,
+on a 239 MB Latin-1 csv now decoded rather than refused), 17 refused with a stated reason,
+2 decoded, 4 read as the text they were. Thirty PDFs carry page markers; fifteen sheets carry
+a summary line; the 127 MB portfolio now converts; the Word lock file is named as binary.
+
+### Round three, 2026-09-10: playing Yi
+
+The owner asked for a dogfood "as if you were Yi agent": 38 tool calls in one live session
+(`read`, `edit`, `write`, `grep`, `bash`, the `ipython` kernel) on the math-eval-grader and
+gsea-proteomics terminal-bench tasks and a coursework folder, each call chosen from the output
+of the last. The refusals held; three things gave wrong answers or dead ends:
+
+- **PDF table detection misattributes cells.** The schedule PDF paired CPSC 380 with CPSC 370's
+  slot, and an answer key split `(5, -10)` across cells (a naive parse of `read`'s text scored
+  47/48). The library's own Markdown makes the same error; its reading-order text does not. The
+  owner's call: plain text for PDF tables, with a hint that the conversion is lossy. A page with
+  a detected table now reads full width in reading order (a row stays whole), a columned page
+  reads left column then right (split at the gutter the fewest text runs cross; a "table" of two
+  cells on a columned page is its columns), both under `[page N: … flattened to plain text in
+  reading order; cell and column boundaries are lost]`, with the page's headings restored.
+- **The spreadsheet hint named a route the venv could not take**: pandas without `openpyxl`.
+  `openpyxl` joins the extras, and a test runs `pandas.read_excel` in the venv.
+- **`grep` could not see inside a document** and returned 28 KB of RTF markup instead. It now
+  searches a document through the Markdown `read` shows (a cached copy always, up to 20 new
+  conversions per call, never in `replace` mode) and names what it could not search.
+
+And the costs: running headers are left out once (a line at the edge of 40% of pages and never
+inside one); decks read slide by slide (each slide converted alone from a re-zipped deck, since
+anydoc keeps no slide boundary); a one-page PDF carries no marker; sheets lose empty columns,
+take a real header row, name themselves from the workbook, and point a sheet past 500 rows at
+pandas; a copy's first look is 12 KB with its outline first; the outline keeps the shallowest
+levels that fit, sampled across the text, repeated titles once; `find=` folds typographic quotes
+and dashes; a copy adds no code refs (they grepped the raw source); a glob converts only while
+it has room and names a refusal; source hashes are kept per process for files settled two
+seconds; the kernel mutes pip's version notice; the ipython description names the libraries.
+
+Replayed on the same files: the answer keys parse 48/48 from `read`'s text alone, the schedule
+answer is right, the proteomics workbook opens in pandas on the first try, `grep` finds "Faraday
+pail" in the lab report and names the scanned worksheet it could not search, the epub's outline
+names chapters 2 to 11, the book's first look is 16 KB instead of 57 KB, and a document `find`
+takes 26 ms instead of 1.3 s. Still upstream: equations fragment, and a column the library does
+not detect still interleaves.
+

@@ -18,6 +18,8 @@ import asyncio
 import os as _yi_os
 
 _yi_os.environ["NO_COLOR"] = "1"
+_yi_os.environ["PIP_NO_COLOR"] = "1"
+_yi_os.environ["PIP_DISABLE_PIP_VERSION_CHECK"] = "1"
 get_ipython().colors = "nocolor"
 
 try:
