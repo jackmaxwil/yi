@@ -623,3 +623,41 @@ on a 239 MB Latin-1 csv now decoded rather than refused), 17 refused with a stat
 2 decoded, 4 read as the text they were. Thirty PDFs carry page markers; fifteen sheets carry
 a summary line; the 127 MB portfolio now converts; the Word lock file is named as binary.
 
+### Round three, 2026-09-10: playing Yi
+
+The owner asked for a dogfood "as if you were Yi agent": 38 tool calls in one live session
+(`read`, `edit`, `write`, `grep`, `bash`, the `ipython` kernel) on the math-eval-grader and
+gsea-proteomics terminal-bench tasks and a coursework folder, each call chosen from the output
+of the last. The refusals held; three things gave wrong answers or dead ends:
+
+- **PDF table detection misattributes cells.** The schedule PDF paired CPSC 380 with CPSC 370's
+  slot, and an answer key split `(5, -10)` across cells (a naive parse of `read`'s text scored
+  47/48). The library's own Markdown makes the same error; its reading-order text does not. The
+  owner's call: plain text for PDF tables, with a hint that the conversion is lossy. A page with
+  a detected table now reads full width in reading order (a row stays whole), a columned page
+  reads left column then right (split at the gutter the fewest text runs cross; a "table" of two
+  cells on a columned page is its columns), both under `[page N: … flattened to plain text in
+  reading order; cell and column boundaries are lost]`, with the page's headings restored.
+- **The spreadsheet hint named a route the venv could not take**: pandas without `openpyxl`.
+  `openpyxl` joins the extras, and a test runs `pandas.read_excel` in the venv.
+- **`grep` could not see inside a document** and returned 28 KB of RTF markup instead. It now
+  searches a document through the Markdown `read` shows (a cached copy always, up to 20 new
+  conversions per call, never in `replace` mode) and names what it could not search.
+
+And the costs: running headers are left out once (a line at the edge of 40% of pages and never
+inside one); decks read slide by slide (each slide converted alone from a re-zipped deck, since
+anydoc keeps no slide boundary); a one-page PDF carries no marker; sheets lose empty columns,
+take a real header row, name themselves from the workbook, and point a sheet past 500 rows at
+pandas; a copy's first look is 12 KB with its outline first; the outline keeps the shallowest
+levels that fit, sampled across the text, repeated titles once; `find=` folds typographic quotes
+and dashes; a copy adds no code refs (they grepped the raw source); a glob converts only while
+it has room and names a refusal; source hashes are kept per process for files settled two
+seconds; the kernel mutes pip's version notice; the ipython description names the libraries.
+
+Replayed on the same files: the answer keys parse 48/48 from `read`'s text alone, the schedule
+answer is right, the proteomics workbook opens in pandas on the first try, `grep` finds "Faraday
+pail" in the lab report and names the scanned worksheet it could not search, the epub's outline
+names chapters 2 to 11, the book's first look is 16 KB instead of 57 KB, and a document `find`
+takes 26 ms instead of 1.3 s. Still upstream: equations fragment, and a column the library does
+not detect still interleaves.
+

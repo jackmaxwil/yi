@@ -336,7 +336,7 @@ fn a_partly_scanned_pdf_reads_its_text_pages_and_names_the_rest() -> TestResult 
         json!({"path": "mixed.pdf", "pages": "1"}),
     )?);
     assert!(
-        only.contains("[mixed.pdf: pages 1 of the pdf converted"),
+        only.contains("[mixed.pdf: page 1 of the pdf converted"),
         "{only}"
     );
     assert!(!only.contains("page 2"), "{only}");
@@ -669,7 +669,7 @@ fn a_glob_reads_documents_whole_and_counts_their_markdown() -> TestResult {
 }
 
 #[test]
-fn a_spreadsheet_loses_its_empty_rows_and_padding() -> TestResult {
+fn a_spreadsheet_loses_its_empty_rows_columns_and_padding() -> TestResult {
     let (scratch, tools) = setup("sheet")?;
     std::fs::copy(
         Path::new(FIXTURES).join("roster.xlsx"),
@@ -680,13 +680,287 @@ fn a_spreadsheet_loses_its_empty_rows_and_padding() -> TestResult {
         &scratch.cwd,
         json!({"path": "roster.xlsx"}),
     )?);
-    assert!(body.contains("[sheets: Roster 4x3, Notes 2x2]"), "{body}");
+    assert!(body.contains("[sheets: Roster 3x3, Notes 1x2]"), "{body}");
     assert!(
-        body.contains("| Zoë | Enrolled 1.00 | A |"),
-        "padding squeezed: {body}"
+        body.contains(":| Name | Status Units | Grade |") && body.contains(":| --- | --- | --- |"),
+        "the empty column is dropped and the name row rises into the empty header: {body}"
     );
-    assert!(!body.contains("|  |  |  |"), "empty rows dropped: {body}");
+    assert!(body.contains("| Zoë | Enrolled 1.00 | A |"), "{body}");
+    assert!(
+        !body.contains(":|  |  |  |") && body.contains(":| Jack | Dropped 0.00 |  |\n"),
+        "empty rows and the empty column dropped: {body}"
+    );
     assert!(body.contains("| Café budget | €1 240 |"), "{body}");
+    Ok(())
+}
+
+#[test]
+fn a_large_sheet_points_at_a_pandas_route_that_works() -> TestResult {
+    let (scratch, tools) = setup("ledger")?;
+    let ledger = scratch.cwd.join("ledger.xlsx");
+    std::fs::copy(Path::new(FIXTURES).join("ledger.xlsx"), &ledger)?;
+    let body = text(&call(
+        &tool(&tools, "read")?,
+        &scratch.cwd,
+        json!({"path": "ledger.xlsx", "limit": 3}),
+    )?);
+    assert!(
+        body.contains(
+            "[sheets: Ledger 600x2 — for analysis, pandas.read_excel in ipython reads it whole]"
+        ),
+        "{body}"
+    );
+    let real_home = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .ok_or("HOME is unset")?;
+    let python = (yi_runtime::documents(&real_home).converter)().python;
+    let probe = yi_tools::command(&python)
+        .arg("-c")
+        .arg("import sys, pandas; print(pandas.read_excel(sys.argv[1]).shape)")
+        .arg(&ledger)
+        .output()?;
+    assert_eq!(
+        String::from_utf8_lossy(&probe.stdout).trim(),
+        "(600, 2)",
+        "the kernel venv can do what the hint says: {}",
+        String::from_utf8_lossy(&probe.stderr)
+    );
+    Ok(())
+}
+
+#[test]
+fn a_pdf_table_and_columns_arrive_as_reading_order_text_under_a_note() -> TestResult {
+    let (scratch, tools) = setup("layout")?;
+    std::fs::copy(
+        Path::new(FIXTURES).join("layout.pdf"),
+        scratch.cwd.join("layout.pdf"),
+    )?;
+    let body = text(&call(
+        &tool(&tools, "read")?,
+        &scratch.cwd,
+        json!({"path": "layout.pdf"}),
+    )?);
+    assert!(
+        body.contains("[page 1: a table flattened to plain text in reading order; cell and column boundaries are lost]"),
+        "{body}"
+    );
+    assert!(
+        body.contains("CPSC 380 Operating Systems Mon Wed 5:30PM to 6:45PM Keck Center 156"),
+        "each row stays whole, so no course takes its neighbour's slot: {body}"
+    );
+    assert!(body.contains("[page 2: two columns flattened"), "{body}");
+    assert!(
+        body.contains("# Two columns"),
+        "headings survive the flattening: {body}"
+    );
+    let (left, right) = (
+        body.find("L12 ").ok_or("no L12")?,
+        body.find("R1 ").ok_or("no R1")?,
+    );
+    assert!(
+        left < right,
+        "the left column is read to its end before the right: {body}"
+    );
+    Ok(())
+}
+
+#[test]
+fn running_headers_are_left_out_once_and_body_lines_kept() -> TestResult {
+    let (scratch, tools) = setup("running")?;
+    std::fs::copy(
+        Path::new(FIXTURES).join("running.pdf"),
+        scratch.cwd.join("running.pdf"),
+    )?;
+    let read = tool(&tools, "read")?;
+    call(&read, &scratch.cwd, json!({"path": "running.pdf"}))?;
+    let copy = std::fs::read_dir(scratch.home.join(".yi").join("converted"))?
+        .next()
+        .ok_or("no copy")??
+        .path();
+    let markdown = std::fs::read_to_string(copy)?;
+    assert!(
+        markdown.starts_with("[running headers and footers left out: pages.txt"),
+        "{markdown}"
+    );
+    assert_eq!(markdown.matches("pages.txt").count(), 1, "{markdown}");
+    assert_eq!(
+        markdown.matches("Line of body text number").count(),
+        400,
+        "numbered body lines share a shape with each other, not with the header"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_one_page_pdf_carries_no_page_marker() -> TestResult {
+    let (scratch, tools) = setup("single")?;
+    std::fs::copy(
+        Path::new(FIXTURES).join("single.pdf"),
+        scratch.cwd.join("single.pdf"),
+    )?;
+    let body = text(&call(
+        &tool(&tools, "read")?,
+        &scratch.cwd,
+        json!({"path": "single.pdf"}),
+    )?);
+    assert!(body.contains("(5, -10)"), "{body}");
+    assert!(!body.contains("[page 1]"), "{body}");
+    Ok(())
+}
+
+#[test]
+fn a_deck_reads_slide_by_slide_with_its_notes() -> TestResult {
+    let (scratch, tools) = setup("deck")?;
+    std::fs::copy(
+        Path::new(FIXTURES).join("deck.pptx"),
+        scratch.cwd.join("deck.pptx"),
+    )?;
+    let body = text(&call(
+        &tool(&tools, "read")?,
+        &scratch.cwd,
+        json!({"path": "deck.pptx"}),
+    )?);
+    let at = |marker: &str| body.find(marker).ok_or(format!("no {marker}: {body}"));
+    let (one, two, three) = (at("[slide 1]")?, at("[slide 2]")?, at("[slide 3]")?);
+    let note = at("Speaker note: mention the lease")?;
+    assert!(one < two && two < note && note < three, "{body}");
+    assert!(body.contains("Łukasz moves to nights"), "{body}");
+    Ok(())
+}
+
+#[test]
+fn a_long_document_opens_with_its_outline_and_a_short_first_look() -> TestResult {
+    let (scratch, tools) = setup("long")?;
+    std::fs::copy(
+        Path::new(FIXTURES).join("notes.docx"),
+        scratch.cwd.join("notes.docx"),
+    )?;
+    let output = call(
+        &tool(&tools, "read")?,
+        &scratch.cwd,
+        json!({"path": "notes.docx"}),
+    )?;
+    let body = text(&output);
+    let third = body.lines().nth(2).unwrap_or_default();
+    assert!(
+        third.starts_with("[outline: 30 of 360 headings (levels 1-1, one in 2)"),
+        "the outline comes before the text: {third}"
+    );
+    assert!(
+        body.contains("# Chapter 59") && !body.contains("  8: ## Section"),
+        "chapters from the whole book, not the first sections: {body}"
+    );
+    assert!(
+        body.len() < 20 * 1024,
+        "a first look, not 50 KB: {}",
+        body.len()
+    );
+    assert!(body.contains("continue with offset="), "{body}");
+    Ok(())
+}
+
+#[test]
+fn find_matches_typographic_quotes_and_adds_no_code_refs() -> TestResult {
+    let (scratch, tools) = setup("typography")?;
+    std::fs::copy(
+        Path::new(FIXTURES).join("notes.docx"),
+        scratch.cwd.join("notes.docx"),
+    )?;
+    std::fs::write(
+        scratch.cwd.join("faraday.py"),
+        "Faraday = 1\nprint(Faraday)\n",
+    )?;
+    let output = call(
+        &tool(&tools, "read")?,
+        &scratch.cwd,
+        json!({"path": "notes.docx", "find": "Faraday's law"}),
+    )?;
+    let body = text(&output);
+    assert!(
+        !output.is_error,
+        "a straight quote finds the document's ’: {body}"
+    );
+    assert!(
+        body.contains("## Section 47.3"),
+        "the heading section: {body}"
+    );
+    assert!(
+        !body.contains("[refs:"),
+        "a document's find names no code: {body}"
+    );
+    assert_eq!(output.result.details["refs"], json!(0));
+    Ok(())
+}
+
+#[test]
+fn grep_searches_documents_through_their_markdown_and_never_rewrites_them() -> TestResult {
+    let (scratch, tools) = setup("grep")?;
+    let docx = scratch.cwd.join("brief.docx");
+    std::fs::copy(Path::new(FIXTURES).join("brief.docx"), &docx)?;
+    std::fs::copy(
+        Path::new(FIXTURES).join("brief.rtf"),
+        scratch.cwd.join("brief.rtf"),
+    )?;
+    let grep = tool(&tools, "grep")?;
+    let found = text(&call(&grep, &scratch.cwd, json!({"pattern": "Espresso"}))?);
+    assert!(
+        found.contains("[brief.docx#") && found.contains("[brief.rtf#"),
+        "{found}"
+    );
+    assert!(
+        found.contains("| Espresso machine | Zoë | ordered |"),
+        "{found}"
+    );
+    assert!(
+        found.contains("[2 document(s) searched through the Markdown read shows"),
+        "{found}"
+    );
+    assert!(!found.contains("binary files skipped"), "{found}");
+    let markup = text(&call(&grep, &scratch.cwd, json!({"pattern": "fonttbl"}))?);
+    assert!(
+        markup.contains("No matches found"),
+        "RTF markup is not searched: {markup}"
+    );
+    let before = std::fs::read(&docx)?;
+    call(
+        &grep,
+        &scratch.cwd,
+        json!({"pattern": "Espresso", "replace": "Tea", "apply": true}),
+    )?;
+    assert_eq!(
+        std::fs::read(&docx)?,
+        before,
+        "replace never reaches a document"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_glob_lists_what_it_does_not_convert_and_why() -> TestResult {
+    let (scratch, tools) = setup("listing")?;
+    for name in ["a1.txt", "a2.txt"] {
+        std::fs::write(scratch.cwd.join(name), "x".repeat(25_599) + "\n")?;
+    }
+    std::fs::copy(
+        Path::new(FIXTURES).join("brief.docx"),
+        scratch.cwd.join("b.docx"),
+    )?;
+    std::fs::copy(
+        Path::new(FIXTURES).join("scanned.pdf"),
+        scratch.cwd.join("c.pdf"),
+    )?;
+    let read = tool(&tools, "read")?;
+    let listed = text(&call(&read, &scratch.cwd, json!({"path": "*"}))?);
+    assert!(
+        listed.contains("b.docx  (document, 10 KB, not converted here — read it for the text)"),
+        "a full budget converts nothing more: {listed}"
+    );
+    assert_eq!(copies(&scratch.home), 0, "{listed}");
+    let scanned = text(&call(&read, &scratch.cwd, json!({"path": "c*"}))?);
+    assert!(
+        scanned.contains("c.pdf  (not readable: no text layer on any of the 1 PDF page(s)"),
+        "{scanned}"
+    );
     Ok(())
 }
 
