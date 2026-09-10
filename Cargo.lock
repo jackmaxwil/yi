@@ -2206,6 +2206,7 @@ dependencies = [
  "serde_json",
  "tokio",
  "ureq",
+ "yi-oauth",
  "yi-types",
 ]
 
@@ -2279,6 +2280,15 @@ dependencies = [
  "tokio",
  "ureq",
  "yi-types",
+]
+
+[[package]]
+name = "yi-oauth"
+version = "0.2.0"
+dependencies = [
+ "serde_json",
+ "sha2",
+ "ureq",
 ]
 
 [[package]]

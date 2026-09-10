@@ -953,13 +953,14 @@ fn run_request(
         api_key,
         proxy,
         stop,
+        extra,
     } = wire;
     let url = format!("{}/responses", model.base_url);
     let mut mapper = EventMapper::new(model);
     let _ = sender.blocking_send(mapper.start_event());
     let resent = crate::request::pump_sse_with_resend(
         stop,
-        || crate::request::openai_bearer_post(&url, model, api_key, body, proxy),
+        || crate::request::openai_bearer_post(&url, model, api_key, body, proxy, extra),
         |sse| {
             if sse.data == "[DONE]" {
                 return Ok(true);
@@ -1003,9 +1004,12 @@ pub fn stream(
         |model, message| EventMapper::new(model).fail(message),
         model,
         build_params(model, context, options),
-        api_key,
-        options.proxy.clone(),
-        options.stop.clone(),
+        crate::request::WireOwned {
+            api_key: api_key.to_owned(),
+            proxy: options.proxy.clone(),
+            stop: options.stop.clone(),
+            extra: options.extra_headers.clone(),
+        },
         run_request,
     )
 }

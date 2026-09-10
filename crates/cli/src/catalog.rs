@@ -59,6 +59,11 @@ pub(crate) fn run(args: &Args) -> i32 {
         return 2;
     };
     let mut words = args.prompt.split_whitespace();
+    let width = yi_runtime::CATALOG_PROVIDERS
+        .iter()
+        .map(|provider| provider.len())
+        .max()
+        .unwrap_or_default();
     match words.next() {
         None => {
             for provider in yi_runtime::CATALOG_PROVIDERS {
@@ -66,7 +71,7 @@ pub(crate) fn run(args: &Args) -> i32 {
                     || "bundled only".to_owned(),
                     |age| format!("{}h old", age.as_secs() / 3600),
                 );
-                println!("{provider:<11} {age}");
+                println!("{provider:<width$} {age}");
             }
             0
         }
@@ -84,8 +89,14 @@ pub(crate) fn run(args: &Args) -> i32 {
                 if only.is_some_and(|name| name != provider) {
                     continue;
                 }
+                // A provider with no list adapter is bundled by design; there is
+                // nothing to fetch, and the run has not failed.
+                if yi_runtime::catalog_list_url(provider).is_none() {
+                    println!("{provider:<width$} bundled only");
+                    continue;
+                }
                 if let Some(refusal) = walled(provider) {
-                    eprintln!("{provider:<11} {refusal}");
+                    eprintln!("{provider:<width$} {refusal}");
                     code = 1;
                     continue;
                 }
@@ -96,9 +107,9 @@ pub(crate) fn run(args: &Args) -> i32 {
                     key.as_ref().map(|k| k.expose()),
                     proxy.as_ref(),
                 ) {
-                    Ok(count) => println!("{provider:<11} {count} models"),
+                    Ok(count) => println!("{provider:<width$} {count} models"),
                     Err(error) => {
-                        eprintln!("{provider:<11} {error}");
+                        eprintln!("{provider:<width$} {error}");
                         code = 1;
                     }
                 }

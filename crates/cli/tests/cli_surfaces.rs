@@ -650,10 +650,13 @@ fn catalog_reports_the_bundle_before_any_refresh() -> TestResult {
     let listed = workspace.yi(&["catalog"])?;
     assert_eq!(listed.status.code(), Some(0), "{}", stdout(&listed));
     let text = stdout(&listed);
-    for provider in ["anthropic", "openai", "openrouter"] {
+    for provider in ["anthropic", "openai", "openrouter", "openai-codex", "google"] {
         assert!(text.contains(provider), "{text}");
     }
-    assert_eq!(text.matches("bundled only").count(), 3, "{text}");
+    // Every listed row is bundled-only before any refresh; the row count comes from the
+    // binary's own output so a new provider fails on presence, not on a stale count.
+    let rows = text.lines().filter(|line| !line.trim().is_empty()).count();
+    assert_eq!(text.matches("bundled only").count(), rows, "{text}");
     let wrong = workspace.yi(&["catalog", "purge"])?;
     assert_eq!(wrong.status.code(), Some(2));
     Ok(())
