@@ -117,9 +117,10 @@ def run_task(task_dir, binary, model, out=None):
     seed = task_dir / ("environment/app" if harbor_layout else "repo")
     started = time.monotonic()
     with tempfile.TemporaryDirectory(prefix="yi-eval-") as directory:
-        # Invariant: the graded tree holds the task's own files plus answer.txt.
-        # The stream and the session dir are siblings, never inside it: a diff or
-        # clean-tree reward scores them, and the agent can read its own events.
+        # Invariant: the graded tree holds the task's own files plus answer.txt
+        # when the rollout answered. The stream and the session dir are siblings,
+        # never inside it: a diff or clean-tree reward scores them, and the agent
+        # can read its own events.
         workspace = Path(directory) / "repo"
         shutil.copytree(seed, workspace)
         keep = Path(out) / spec["id"] if out else Path(directory)
@@ -159,7 +160,11 @@ def run_task(task_dir, binary, model, out=None):
                 exit_code = done.returncode
             except subprocess.TimeoutExpired:
                 timed_out = True
-        (workspace / "answer.txt").write_text(final_answer(events))
+        answer = final_answer(events)
+        # Incident: row 0012's binary exited 4 before any request, and the empty
+        # answer.txt written for it passed clean-workspace; no answer, no file.
+        if answer:
+            (workspace / "answer.txt").write_text(answer)
         row = {
             "task": spec["id"],
             "reward": score(task_dir, workspace, keep if out else None),
