@@ -53,6 +53,26 @@ fn input_hash(input: &str) -> u64 {
 
 const READ_DESCRIPTION: &str = "Read a file (tagged [path#TAG] header, LINE:TEXT rows that anchor edits), a directory (listing plus skeletons), or a glob (every match). find=\"text\" shows the block around the first match plus its references. A capped read ends with the file's skeleton. offset/limit or ranges ([[10,40],[90,120]]) pick windows. Do not re-read a file you just edited: the edit result carries the new anchors, and a failed edit says so. Prefer one read of a large range to many small ones.";
 
+/// How one text is shown. `on_disk`: the text is the file itself, so clipping guards its anchors
+/// and code refs apply; a document's copy is neither, and gets a shorter `first_look`.
+pub(super) struct View<'a> {
+    pub resolve_as: &'a str,
+    pub note: Option<String>,
+    pub on_disk: bool,
+    pub first_look: usize,
+}
+
+impl<'a> View<'a> {
+    pub(super) fn source(path: &'a str) -> Self {
+        Self {
+            resolve_as: path,
+            note: None,
+            on_disk: true,
+            first_look: READ_BYTE_FLOOR,
+        }
+    }
+}
+
 pub struct HashlineReadTool {
     pub state: SharedHashline,
     /// The formats last described and the text built from them; the text is leaked because the
@@ -180,7 +200,11 @@ fn locate(
             yi_types::event::ToolErrorKind::InvalidArgs,
         ))
     };
-    let Some(index) = lines.iter().position(|line| line.contains(needle)) else {
+    let folded = fold_typography(needle);
+    let Some(index) = lines
+        .iter()
+        .position(|line| line.contains(needle) || fold_typography(line).contains(&folded))
+    else {
         // Nearest by the longest word's stem, so a plural or a typo still lands nearby.
         let word = needle
             .split(|character: char| !(character.is_ascii_alphanumeric() || character == '_'))
@@ -241,6 +265,19 @@ fn locate(
             .get(index)
             .and_then(|line| identifier_in(needle, line)),
     })
+}
+
+/// Documents set ’ “ – where a model types ' " -, so `find` compares the two spellings as one.
+fn fold_typography(text: &str) -> String {
+    text.chars()
+        .map(|character| match character {
+            '\u{2018}' | '\u{2019}' | '\u{201a}' | '\u{201b}' | '\u{2032}' => '\'',
+            '\u{201c}' | '\u{201d}' | '\u{201e}' | '\u{201f}' | '\u{2033}' => '"',
+            '\u{2010}'..='\u{2015}' | '\u{2212}' => '-',
+            '\u{a0}' | '\u{202f}' => ' ',
+            other => other,
+        })
+        .collect()
 }
 
 fn skeleton_rows(text: &str) -> Vec<String> {
@@ -379,11 +416,13 @@ impl HashlineReadTool {
                 .to_string_lossy()
                 .into_owned();
             let bytes = std::fs::read(path).unwrap_or_default();
-            let document = self.copy_of(path, &bytes, None, context);
-            let size = document.as_ref().map_or(bytes.len(), |copy| {
-                std::fs::metadata(&copy.path)
-                    .map_or(0, |meta| usize::try_from(meta.len()).unwrap_or(usize::MAX))
-            });
+            let document = self.listed_document(path, &bytes, spent < READ_BYTE_FLOOR, context);
+            let size = match &document {
+                Some(super::documents::Listed::Copy(copy)) => std::fs::metadata(&copy.path)
+                    .map_or(0, |meta| usize::try_from(meta.len()).unwrap_or(usize::MAX)),
+                Some(_) => usize::MAX,
+                None => bytes.len(),
+            };
             if spent.saturating_add(size) <= READ_BYTE_FLOOR {
                 let output = self.read_file(&display, path, &Map::new(), context);
                 spent = spent.saturating_add(size);
@@ -394,16 +433,11 @@ impl HashlineReadTool {
             if !budget_named {
                 budget_named = true;
                 sections.push(format!(
-                    "[byte budget {READ_BYTE_FLOOR} reached after {whole} whole files; the rest are skeletons — read a file for its text]"
+                    "[byte budget {READ_BYTE_FLOOR} reached after {whole} whole files; files that do not fit are listed, not shown — read one for its text]"
                 ));
             }
-            if let Some(copy) = document {
-                let lines =
-                    std::fs::read_to_string(&copy.path).map_or(0, |text| text.lines().count());
-                sections.push(format!(
-                    "{display}  ({} converted to {lines} lines of Markdown — read it for the text)",
-                    copy.kind
-                ));
+            if let Some(document) = document {
+                sections.push(format!("{display}  ({})", document.describe(bytes.len())));
                 continue;
             }
             let text = String::from_utf8(bytes).unwrap_or_default();
@@ -420,21 +454,21 @@ impl HashlineReadTool {
         output
     }
 
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "one render, its text, its window and its notes"
-    )]
     pub(super) fn render_file(
         &self,
         display_path: &str,
         path: &Path,
-        resolve_as: &str,
         raw: &str,
-        note: Option<String>,
-        clip: bool,
+        view: View<'_>,
         input: &Map<String, Value>,
         context: &ToolContext,
     ) -> ToolOutput {
+        let View {
+            resolve_as,
+            note,
+            on_disk,
+            first_look,
+        } = view;
         let file_bytes = raw.len();
         let normalized = normalize_to_lf(strip_bom(raw).text);
         let all_lines: Vec<&str> = normalized.split('\n').collect();
@@ -479,7 +513,12 @@ impl HashlineReadTool {
                 Err(output) => return *output,
             },
         };
-        let budget = explicit_limit.map_or(READ_BYTE_FLOOR, |limit| {
+        let floor = if explicit_window || found.is_some() {
+            READ_BYTE_FLOOR
+        } else {
+            first_look
+        };
+        let budget = explicit_limit.map_or(floor, |limit| {
             READ_BYTE_FLOOR
                 .max(limit.saturating_mul(256))
                 .min(READ_BYTE_CEIL)
@@ -508,7 +547,7 @@ impl HashlineReadTool {
                     byte_capped_at = Some(number);
                     break 'windows;
                 }
-                let (text, was_clipped) = if clip && line.chars().count() > READ_LINE_CLIP {
+                let (text, was_clipped) = if on_disk && line.chars().count() > READ_LINE_CLIP {
                     let cut: String = line.chars().take(READ_LINE_CLIP).collect();
                     (format!("{cut}\u{2026}"), true)
                 } else {
@@ -543,7 +582,7 @@ impl HashlineReadTool {
                 format!("[find: block at lines {lo}-{hi} of {line_count}]")
             } else {
                 format!(
-                    "[find: no block resolver for this file; lines {lo}-{hi} of {line_count} around the hit at line {} — ranges= for more]",
+                    "[find: no enclosing block; lines {lo}-{hi} of {line_count} around the hit at line {} — ranges= for more]",
                     found.index.saturating_add(1)
                 )
             });
@@ -576,7 +615,11 @@ impl HashlineReadTool {
         }
         let capped = byte_capped_at.is_some()
             || (!explicit_window && found.is_none() && shown_end < line_count);
-        if capped {
+        if capped && !on_disk {
+            let at = rendered.len().min(2);
+            let outline = super::documents::outline_rows(&normalized);
+            rendered.splice(at..at, outline);
+        } else if capped {
             rendered.extend(if resolve_as.ends_with(".md") {
                 super::documents::outline_rows(&normalized)
             } else {
@@ -589,6 +632,7 @@ impl HashlineReadTool {
             index,
             ..
         }) = &found
+            && on_disk
         {
             let grep = crate::grep::GrepTool {
                 hashline: Some(Arc::clone(&self.state)),

@@ -206,6 +206,56 @@ struct Collected {
     total: usize,
     collection_capped: bool,
     binary_skipped: usize,
+    documents_searched: usize,
+    documents_unsearched: Vec<String>,
+}
+
+/// A search converts at most this many documents it has no copy of; the rest are counted.
+const DOCUMENTS_CONVERTED_PER_SEARCH: usize = 20;
+const DOCUMENT_SEARCH_MAX: usize = 16 * 1024 * 1024;
+
+/// Documents are searched through the Markdown `read` shows, so a hit's line number is one
+/// `read` can open. Never in replace mode: nothing writes text back into a document.
+struct DocumentSearch<'a> {
+    documents: crate::Documents,
+    cancelled: &'a crate::tool::CancelFlag,
+    converted: usize,
+}
+
+impl DocumentSearch<'_> {
+    /// The Markdown, or why there is none: a refusal's own first clause, or that it was not
+    /// converted in this search.
+    fn markdown(&mut self, path: &Path, bytes: &[u8]) -> Result<String, String> {
+        let source = crate::document::Source {
+            path,
+            bytes,
+            pages: None,
+        };
+        let copy = match crate::document::peek(&self.documents, &source) {
+            Some(copy) => copy,
+            None if self.converted < DOCUMENTS_CONVERTED_PER_SEARCH
+                && bytes.len() <= DOCUMENT_SEARCH_MAX =>
+            {
+                self.converted = self.converted.saturating_add(1);
+                match crate::document::convert(&self.documents, &source, self.cancelled) {
+                    crate::document::Converted::Markdown(copy) => copy,
+                    crate::document::Converted::Refused(reason) => {
+                        let short = reason.split([';', ',']).next().unwrap_or(&reason);
+                        let short = short.split(" (").next().unwrap_or(short);
+                        return Err(short.trim().chars().take(80).collect());
+                    }
+                    crate::document::Converted::Unavailable(_) => {
+                        return Err("no converter yet".to_owned());
+                    }
+                    crate::document::Converted::NotADocument => {
+                        return Err("not a document the converter reads".to_owned());
+                    }
+                }
+            }
+            None => return Err("not converted yet".to_owned()),
+        };
+        fs::read_to_string(copy.path).map_err(|error| error.to_string())
+    }
 }
 
 fn type_glob(name: &str) -> Option<&'static str> {
@@ -230,12 +280,15 @@ fn collect(
     matcher: &regex::Regex,
     include: Option<&globset::GlobMatcher>,
     options: &Options,
+    mut documents: Option<DocumentSearch<'_>>,
 ) -> Collected {
     let mut files: Vec<FileHits> = Vec::new();
     let mut total = 0_usize;
     let mut retained = 0_usize;
     let mut collection_capped = false;
     let mut binary_skipped = 0_usize;
+    let mut documents_searched = 0_usize;
+    let mut documents_unsearched: Vec<String> = Vec::new();
     let mut search_file = |path: &Path| -> bool {
         if let Some(include) = include {
             let relative = path.strip_prefix(root).unwrap_or(path);
@@ -246,11 +299,27 @@ fn collect(
         let Ok(bytes) = fs::read(path) else {
             return true;
         };
-        if crate::document::has_nul(&bytes) {
+        let converted = match documents.as_mut() {
+            Some(search) if crate::document::could_be_document(&bytes) => {
+                match search.markdown(path, &bytes) {
+                    Ok(markdown) => {
+                        documents_searched = documents_searched.saturating_add(1);
+                        Some(markdown)
+                    }
+                    Err(why) => {
+                        let name = path.strip_prefix(cwd).unwrap_or(path).display();
+                        documents_unsearched.push(format!("{name} ({why})"));
+                        return true;
+                    }
+                }
+            }
+            _ => None,
+        };
+        if converted.is_none() && crate::document::has_nul(&bytes) {
             binary_skipped = binary_skipped.saturating_add(1);
             return true;
         }
-        let raw = String::from_utf8_lossy(&bytes);
+        let raw = converted.unwrap_or_else(|| String::from_utf8_lossy(&bytes).into_owned());
         let stripped = crate::hashline::normalize::strip_bom(&raw);
         let ending = detect_line_ending(stripped.text);
         let normalized = crate::hashline::normalize::normalize_to_lf(stripped.text);
@@ -296,6 +365,8 @@ fn collect(
         total,
         collection_capped,
         binary_skipped,
+        documents_searched,
+        documents_unsearched,
     }
 }
 
@@ -434,7 +505,7 @@ impl GrepTool {
             replace: None,
             apply: false,
         };
-        let collected = collect(root, root, &matcher, None, &options);
+        let collected = collect(root, root, &matcher, None, &options, None);
         let mut rows: Vec<String> = Vec::new();
         let mut taken = 0_usize;
         let mut total = 0_usize;
@@ -545,11 +616,49 @@ fn cut_notices(collected: &Collected, context_asked: usize, rows: &mut Vec<Strin
             "[context clamped to {CONTEXT_CAP} lines per side; asked {context_asked}]"
         ));
     }
+    if collected.documents_searched > 0 {
+        rows.push(format!(
+            "[{} document(s) searched through the Markdown read shows; line numbers are read's]",
+            collected.documents_searched
+        ));
+    }
+    if !collected.documents_unsearched.is_empty() {
+        let named: Vec<&str> = collected
+            .documents_unsearched
+            .iter()
+            .take(3)
+            .map(String::as_str)
+            .collect();
+        rows.push(format!(
+            "[{} document(s) not searched: {}{} — a search converts {DOCUMENTS_CONVERTED_PER_SEARCH}; read one to convert it]",
+            collected.documents_unsearched.len(),
+            named.join("; "),
+            if collected.documents_unsearched.len() > 3 { "; …" } else { "" }
+        ));
+    }
     if collected.binary_skipped > 0 {
         rows.push(format!(
-            "[{} binary files skipped — bash: rg -a for those]",
+            "[{} binary files skipped (not text, not a document) — bash: rg -a for those]",
             collected.binary_skipped
         ));
+    }
+}
+
+impl GrepTool {
+    fn document_search<'a>(
+        &self,
+        options: &Options,
+        context: &'a ToolContext,
+    ) -> Option<DocumentSearch<'a>> {
+        if options.replace.is_some() {
+            return None;
+        }
+        let documents = crate::hashline::tool::documents(self.hashline.as_ref()?)?;
+        Some(DocumentSearch {
+            documents,
+            cancelled: &context.cancelled,
+            converted: 0,
+        })
     }
 }
 
@@ -559,7 +668,7 @@ impl Tool for GrepTool {
     }
 
     fn description(&self) -> &str {
-        "Search file contents with a regex (literal=true for plain text). Hits group per file under a [path#TAG] header with LINE:TEXT rows; tag+line anchor edits directly. block shows each hit's enclosing function, def keeps definition lines, count counts per file, replace previews a rewrite and apply writes it. Pages 200 hits via offset."
+        "Search file contents with a regex (literal=true for plain text); office documents and PDFs are searched through the Markdown read shows. Hits group per file under a [path#TAG] header with LINE:TEXT rows; tag+line anchor edits directly. block shows each hit's enclosing function, def keeps definition lines, count counts per file, replace previews a rewrite and apply writes it. Pages 200 hits via offset."
     }
 
     fn schema(&self) -> Value {
@@ -619,7 +728,14 @@ impl Tool for GrepTool {
             .and_then(Value::as_str)
             .map_or_else(|| context.cwd.clone(), |path| resolve_path(context, path));
 
-        let collected = collect(&context.cwd, &root, &matcher, include.as_ref(), &options);
+        let collected = collect(
+            &context.cwd,
+            &root,
+            &matcher,
+            include.as_ref(),
+            &options,
+            self.document_search(&options, context),
+        );
         if let Some(replacement) = &options.replace {
             return self.replace(&collected, &matcher, replacement, &options);
         }

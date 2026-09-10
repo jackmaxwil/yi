@@ -1343,9 +1343,7 @@ fn every_cut_view_names_its_cap() -> TestResult {
     );
     let text = output_text(&plain);
     assert!(
-        text.contains(
-            "[find: no block resolver for this file; lines 1-1 of 1 around the hit at line 1"
-        ),
+        text.contains("[find: no enclosing block; lines 1-1 of 1 around the hit at line 1"),
         "{text}"
     );
 

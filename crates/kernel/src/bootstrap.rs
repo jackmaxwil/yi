@@ -7,7 +7,7 @@ pub const BOOTSTRAP_SCHEMA: u64 = 1;
 const PYTHON_VERSION: &str = "3.11";
 const IPYKERNEL_REQUIREMENT: &str = "ipykernel";
 const STATE_SNAPSHOT_REQUIREMENT: &str = "dill";
-pub const DEFAULT_RLM_EXTRA_UV_ARGS: [&str; 14] = [
+pub const DEFAULT_RLM_EXTRA_UV_ARGS: [&str; 15] = [
     "requests",
     "httpx",
     "pyyaml",
@@ -22,8 +22,9 @@ pub const DEFAULT_RLM_EXTRA_UV_ARGS: [&str; 14] = [
     "tyro",
     "firecrawl-anydoc>=0.2.4,<0.3",
     "pdf-inspector>=1.19,<2",
+    "openpyxl",
 ];
-const DEFAULT_RLM_EXTRA_IMPORT_NAMES: [&str; 14] = [
+const DEFAULT_RLM_EXTRA_IMPORT_NAMES: [&str; 15] = [
     "requests",
     "httpx",
     "yaml",
@@ -38,6 +39,7 @@ const DEFAULT_RLM_EXTRA_IMPORT_NAMES: [&str; 14] = [
     "tyro",
     "anydoc",
     "pdf_inspector",
+    "openpyxl",
 ];
 /// csv is left out because read shows it as the text it is; the alias candidates are checked live.
 const DOCUMENT_FORMATS_PROBE: &str = r#"import json, typing, anydoc
