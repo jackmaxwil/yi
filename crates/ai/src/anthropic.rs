@@ -34,6 +34,9 @@ pub struct AnthropicOptions {
     pub proxy: Option<crate::request::ProxyConfig>,
     /// The loop's cut of this request (D163): set, the pump stops at the next event.
     pub stop: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+    /// Bearer instead of `x-api-key`: a stored OAuth credential, not a key.
+    pub oauth: bool,
+    pub extra_headers: Vec<(String, String)>,
 }
 
 fn ephemeral(long: bool) -> Value {
@@ -764,21 +767,29 @@ fn run_request(
     model: &Model,
     body: &Value,
     wire: crate::request::Wire<'_>,
+    oauth: bool,
     sender: &Sender<AssistantMessageEvent>,
 ) -> Result<(), String> {
     let crate::request::Wire {
         api_key,
         proxy,
         stop,
+        extra,
     } = wire;
     let url = format!("{}/v1/messages", model.base_url);
-    let headers = crate::request::headers_for(
-        model,
+    let base = if oauth {
+        vec![
+            ("authorization", format!("Bearer {api_key}")),
+            ("anthropic-version", ANTHROPIC_VERSION.to_owned()),
+        ]
+    } else {
         vec![
             ("x-api-key", api_key.to_owned()),
             ("anthropic-version", ANTHROPIC_VERSION.to_owned()),
-        ],
-    );
+        ]
+    };
+    let headers =
+        crate::request::merge_headers(crate::request::headers_for(model, base), extra.to_vec());
     let mut mapper = Mapper::new(model);
     let _ = sender.blocking_send(mapper.start_event());
     let resent = crate::request::pump_sse_with_resend(
@@ -819,6 +830,8 @@ pub fn stream(
     let api_key = api_key.to_owned();
     let proxy = options.proxy.clone();
     let stop = options.stop.clone();
+    let oauth = options.oauth;
+    let extra_headers = options.extra_headers.clone();
     tokio::task::spawn_blocking(move || {
         let Err(message) = run_request(
             &model,
@@ -827,7 +840,9 @@ pub fn stream(
                 api_key: &api_key,
                 proxy: proxy.as_ref(),
                 stop: stop.as_deref(),
+                extra: &extra_headers,
             },
+            oauth,
             &sender,
         ) else {
             return;

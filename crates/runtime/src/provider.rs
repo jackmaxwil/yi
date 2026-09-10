@@ -80,6 +80,9 @@ pub struct ProviderStream {
     proxy: Option<yi_ai::request::ProxyConfig>,
     routing: Option<serde_json::Value>,
     telemetry: Option<Arc<crate::telemetry::Telemetry>>,
+    oauth: bool,
+    org: Option<String>,
+    headers: Vec<(String, String)>,
 }
 
 impl ProviderStream {
@@ -92,7 +95,20 @@ impl ProviderStream {
             proxy: None,
             routing: None,
             telemetry: None,
+            oauth: false,
+            org: None,
+            headers: Vec::new(),
         }
+    }
+
+    /// The resolved credential's shape and the login profile's headers (D172):
+    /// a stored OAuth token streams as Bearer and carries whatever that file holds.
+    #[must_use]
+    pub fn with_auth(mut self, resolved: &yi_ai::auth::Resolved) -> Self {
+        self.oauth = resolved.kind == yi_ai::auth::AuthKind::Oauth;
+        self.org = resolved.org.clone();
+        self.headers = resolved.headers.clone();
+        self
     }
 
     /// An interactive session keeps its stable prefix for an hour; a headless
@@ -123,6 +139,19 @@ impl ProviderStream {
         if let Ok(mut faux) = self.faux.lock() {
             faux.append_responses(responses);
         }
+    }
+
+    /// The profile's headers plus anything only the live credential knows, so a
+    /// backend that keys on the account id gets it without a catalog entry.
+    fn openai_extra(&self, model: &Model) -> Vec<(String, String)> {
+        let mut extra = self.headers.clone();
+        if model.provider == "openai-codex" {
+            extra.push(("originator".to_owned(), "yi".to_owned()));
+            if let Some(org) = &self.org {
+                extra.push(("chatgpt-account-id".to_owned(), org.clone()));
+            }
+        }
+        extra
     }
 
     fn key(&self) -> &str {
@@ -173,6 +202,8 @@ impl ProviderStream {
                     cache_1h: self.long_cache,
                     proxy: self.proxy.clone(),
                     stop: Some(signal.cut_flag()),
+                    oauth: self.oauth,
+                    extra_headers: self.headers.clone(),
                     ..AnthropicOptions::default()
                 };
                 anthropic::stream(model, context, &options, self.key())
@@ -185,6 +216,7 @@ impl ProviderStream {
                     proxy: self.proxy.clone(),
                     routing: self.routing.clone(),
                     stop: Some(signal.cut_flag()),
+                    extra_headers: self.openai_extra(model),
                     ..OpenAiOptions::default()
                 };
                 openai::stream(model, context, &options, self.key())
@@ -197,6 +229,7 @@ impl ProviderStream {
                     proxy: self.proxy.clone(),
                     routing: self.routing.clone(),
                     stop: Some(signal.cut_flag()),
+                    extra_headers: self.openai_extra(model),
                     ..OpenAiOptions::default()
                 };
                 openai_responses::stream(model, context, &options, self.key())

@@ -1,6 +1,7 @@
 "yi-types" = []
 "yi-loop" = ["yi-types"]
-"yi-ai" = ["yi-types"]
+"yi-ai" = ["yi-types", "yi-oauth"]
+"yi-oauth" = []
 "yi-orb" = []
 "yi-session" = ["yi-types"]
 "yi-context" = ["yi-types"]

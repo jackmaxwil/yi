@@ -10,8 +10,16 @@ use yi_types::model::Model;
 const ANTHROPIC_DATA: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/anthropic.zz"));
 const OPENAI_DATA: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/openai.zz"));
 const OPENROUTER_DATA: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/openrouter.zz"));
+const CODEX_DATA: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/openai-codex.zz"));
+const GOOGLE_DATA: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/google.zz"));
 
-pub const PROVIDERS: [&str; 3] = ["anthropic", "openai", "openrouter"];
+pub const PROVIDERS: [&str; 5] = [
+    "anthropic",
+    "openai",
+    "openrouter",
+    "openai-codex",
+    "google",
+];
 
 fn parse_packed(packed: &[u8], models: &mut HashMap<(String, String), Model>) {
     if let Ok(data) = miniz_oxide::inflate::decompress_to_vec_zlib(packed) {
@@ -66,6 +74,8 @@ impl Catalog {
         parse_packed(ANTHROPIC_DATA, &mut models);
         parse_packed(OPENAI_DATA, &mut models);
         parse_packed(OPENROUTER_DATA, &mut models);
+        parse_packed(CODEX_DATA, &mut models);
+        parse_packed(GOOGLE_DATA, &mut models);
         Self { models }
     }
 
