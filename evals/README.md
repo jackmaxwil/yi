@@ -72,6 +72,12 @@ Drop `--dry` and the runner prints one JSON row per task plus a ready-to-paste
 `docs/eval-ledger.md` row with its config fingerprint. Pasting it stays a human
 act, and a real-model suite is user-run and budgeted (plan law 3).
 
+`EVAL_ROUTING`, OpenRouter's provider object as JSON, goes verbatim into the
+run HOME's `routing` config key for `evals/run.py` and the harbor adapter
+(`yi_usage.eval_config`, the one writer) and rides the fingerprint's mode as
+`+routing{…}`, so a routing A/B needs no rebuild; anything but a JSON object is
+refused.
+
 ## Axes (D140)
 
 ```
@@ -82,8 +88,8 @@ python3 evals/axes.py evals/fixtures/axes --json /tmp/rows.jsonl
 One JSON row per v4 session file found under the directory, its context the
 nearest ancestor holding a harbor `result.json` (reward, wall, timeout) or a
 run.py `row.json`, else a journey; then the `docs/eval-ledger.md` row with
-the `persistence`, `rigor` and `experience` triples, `timeouts` and `partials`
-on the right. Every column is named with its source in
+the `persistence`, `rigor` and `experience` triples, `timeouts`, `partials`
+and `upstreams` on the right. Every column is named with its source in
 `docs/plans/2026-09-06-tbv4-evals/axes.md`; the
 signals come from `skills/yi/session-mining/extract.py` by import, the
 telemetry columns from the `.telemetry.jsonl` sidecar beside each session.
@@ -232,7 +238,11 @@ SWE-Atlas QnA is graded **only** from `/logs/agent/answer.txt` inside
 `<<FINAL_ANSWER>>` tags, and the verifier runs even after an agent timeout
 (E4) — so drafting the answer file early and refining it in place is worth
 real points. That is task and prompt discipline: the adapter never injects
-instruction text of its own.
+instruction text of its own. The one exception is the budget: every v4
+instruction ends `You have 28800 seconds to complete this task.`, the task's
+whole `[agent]` timeout, and the harbor adapter's `render_instruction` rewrites
+the number to the trial's own share (`EVAL_TIMEOUT_MULT` × 28800, the value
+`--deadline` carries).
 
 ## Budget discipline
 
