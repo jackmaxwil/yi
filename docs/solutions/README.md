@@ -146,5 +146,6 @@ when it changes rather than editing them by hand.
 - [D166](adr/d166.md) - the working model is in the prompt, placed by the laws
 - [D167](adr/d167.md) - the forge CLI is `fgj`
 - [D168](adr/d168.md) - a reasoning cut is not a length strike
+- [D171](adr/d171.md) - `read` converts a file that is not UTF-8 through the kernel venv, never...
 
 D36-D51, D72, D73 and D74 have no ADR yet; ARCHITECTURE.md is the record for those rows.

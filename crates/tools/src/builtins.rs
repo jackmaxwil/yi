@@ -59,6 +59,13 @@ impl Tool for WriteTool {
             Ok(content) => content,
             Err(message) => return error_output(message),
         };
+        let documents = self
+            .hashline
+            .as_ref()
+            .and_then(crate::hashline::tool::documents);
+        if let Some(refusal) = crate::document::source_refusal(documents.as_ref(), &path) {
+            return error_output(refusal);
+        }
         if let Some(parent) = path.parent()
             && let Err(error) = fs::create_dir_all(parent)
         {

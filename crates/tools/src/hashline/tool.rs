@@ -32,6 +32,7 @@ pub struct HashlineState {
     pub snapshots: SnapshotStore,
     noop: std::collections::HashMap<String, (u64, u32)>,
     clipboard: Clipboard,
+    pub documents: Option<crate::Documents>,
 }
 
 pub type SharedHashline = Arc<Mutex<HashlineState>>;
@@ -50,8 +51,23 @@ fn input_hash(input: &str) -> u64 {
     u64::from(xxhash_rust::xxh32::xxh32(input.as_bytes(), 0))
 }
 
+const READ_DESCRIPTION: &str = "Read a file (tagged [path#TAG] header, LINE:TEXT rows that anchor edits), a directory (listing plus skeletons), or a glob (every match). find=\"text\" shows the block around the first match plus its references. A capped read ends with the file's skeleton. offset/limit or ranges ([[10,40],[90,120]]) pick windows. Do not re-read a file you just edited: the edit result carries the new anchors, and a failed edit says so. Prefer one read of a large range to many small ones.";
+
 pub struct HashlineReadTool {
     pub state: SharedHashline,
+    description: String,
+}
+
+impl HashlineReadTool {
+    pub fn new(state: SharedHashline) -> Self {
+        let description =
+            crate::document::describe(READ_DESCRIPTION, lock_state(&state).documents.as_ref());
+        Self { state, description }
+    }
+}
+
+pub(crate) fn documents(state: &SharedHashline) -> Option<crate::Documents> {
+    lock_state(state).documents.clone()
 }
 
 impl Tool for HashlineReadTool {
@@ -60,7 +76,7 @@ impl Tool for HashlineReadTool {
     }
 
     fn description(&self) -> &str {
-        "Read a file (tagged [path#TAG] header, LINE:TEXT rows that anchor edits), a directory (listing plus skeletons), or a glob (every match). find=\"text\" shows the block around the first match plus its references. A capped read ends with the file's skeleton. offset/limit or ranges ([[10,40],[90,120]]) pick windows. Do not re-read a file you just edited: the edit result carries the new anchors, and a failed edit says so. Prefer one read of a large range to many small ones."
+        &self.description
     }
 
     fn schema(&self) -> Value {
@@ -382,14 +398,75 @@ impl HashlineReadTool {
         input: &Map<String, Value>,
         context: &ToolContext,
     ) -> ToolOutput {
-        let raw = match std::fs::read_to_string(path) {
-            Ok(raw) => raw,
-            Err(error) => {
-                return error_output(format!("failed to read {}: {error}", path.display()));
+        match std::fs::read_to_string(path) {
+            Ok(raw) => self.render_file(display_path, path, &raw, None, input, context),
+            Err(error) => self.read_document(display_path, path, &error, input, context),
+        }
+    }
+
+    /// The converter, never an extension list, decides whether a non-UTF-8 file is a document.
+    fn read_document(
+        &self,
+        display_path: &str,
+        path: &Path,
+        error: &std::io::Error,
+        input: &Map<String, Value>,
+        context: &ToolContext,
+    ) -> ToolOutput {
+        let failed = format!("failed to read {}: {error}", path.display());
+        let Some(documents) = documents(&self.state) else {
+            return error_output(failed);
+        };
+        if error.kind() != std::io::ErrorKind::InvalidData {
+            return error_output(failed);
+        }
+        let copy = match crate::document::convert(&documents, path, &context.cancelled) {
+            crate::document::Converted::Markdown(copy) => copy,
+            crate::document::Converted::NotADocument => return error_output(failed),
+            crate::document::Converted::Unavailable(line) => {
+                return error_output(format!("{failed}\n{line}"));
+            }
+            crate::document::Converted::Refused(reason) => {
+                return error_output(format!("failed to read {}: {reason}", path.display()));
             }
         };
+        let raw = match std::fs::read_to_string(&copy) {
+            Ok(raw) => raw,
+            Err(error) => {
+                return error_output(format!("failed to read {}: {error}", copy.display()));
+            }
+        };
+        let note = format!(
+            "[{display_path} converted to Markdown; editing this copy does not change {display_path}]"
+        );
+        let mut output = self.render_file(
+            &copy.to_string_lossy(),
+            &copy,
+            &raw,
+            Some(note),
+            input,
+            context,
+        );
+        if let Some(details) = output.result.details.as_object_mut() {
+            let extension = path
+                .extension()
+                .map(|ext| ext.to_string_lossy().into_owned());
+            details.insert("convertedFrom".to_owned(), json!(extension));
+        }
+        output
+    }
+
+    fn render_file(
+        &self,
+        display_path: &str,
+        path: &Path,
+        raw: &str,
+        note: Option<String>,
+        input: &Map<String, Value>,
+        context: &ToolContext,
+    ) -> ToolOutput {
         let file_bytes = raw.len();
-        let normalized = normalize_to_lf(strip_bom(&raw).text);
+        let normalized = normalize_to_lf(strip_bom(raw).text);
         let all_lines: Vec<&str> = normalized.split('\n').collect();
         let line_count = if normalized.ends_with('\n') {
             all_lines.len().saturating_sub(1)
@@ -483,6 +560,7 @@ impl HashlineReadTool {
 
         let empty = rows.is_empty();
         let mut rendered = vec![format_hashline_header(display_path, tag)];
+        rendered.extend(note);
         if let Some(found) = &found {
             let (lo, hi) = found.window;
             rendered.push(if found.block {
@@ -781,11 +859,21 @@ impl Tool for HashlineEditTool {
         if patch.sections.is_empty() {
             return error_output("Patch input did not produce any sections.");
         }
+        let documents = documents(&self.state);
+        if let Some(refusal) = patch.sections.iter().find_map(|section| {
+            crate::document::source_refusal(
+                documents.as_ref(),
+                &resolve_path(context, &section.path),
+            )
+        }) {
+            return error_output(refusal);
+        }
         let mut state = lock_state(&self.state);
         let HashlineState {
             snapshots,
             noop,
             clipboard,
+            ..
         } = &mut *state;
         let mut host_clipboard = std::mem::take(clipboard);
         let mut patcher = Patcher::new(snapshots, context.cwd.clone());
