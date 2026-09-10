@@ -86,7 +86,7 @@ fn read_names_exactly_the_formats_the_installed_wheel_converts() -> TestResult {
     let probe = yi_tools::command(&python)
         .args([
             "-c",
-            "import json, typing, anydoc; print(json.dumps(list(typing.get_args(anydoc.Format))))",
+            "import json, typing, anydoc; print(json.dumps([kind for kind in typing.get_args(anydoc.Format) if kind != 'csv']))",
         ])
         .output()?;
     let live: Vec<String> = serde_json::from_slice(&probe.stdout)?;
@@ -99,7 +99,24 @@ fn read_names_exactly_the_formats_the_installed_wheel_converts() -> TestResult {
         .split("converted to Markdown: ")
         .nth(1)
         .and_then(|rest| rest.split('.').next())
-        .map(|list| list.split(", ").map(str::to_owned).collect())
+        .map(|list| {
+            let mut depth = 0_u32;
+            let canonical: String = list
+                .chars()
+                .filter(|character| {
+                    depth = match character {
+                        '(' => depth.saturating_add(1),
+                        ')' => depth.saturating_sub(1),
+                        _ => depth,
+                    };
+                    depth == 0 && *character != ')'
+                })
+                .collect();
+            canonical
+                .split(", ")
+                .map(|entry| entry.trim().to_owned())
+                .collect()
+        })
         .unwrap_or_default();
     assert!(!live.is_empty(), "the venv carries the converter");
     assert_eq!(claimed, live);

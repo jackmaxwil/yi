@@ -22,7 +22,7 @@ use std::sync::Arc;
 pub use builtins::{BashTool, WriteTool, list_files};
 pub use checkpoint::{Change, ChangeKind, CheckpointError, Checkpoints, TreeId};
 pub use diff::{GitPatch, patch};
-pub use document::Documents;
+pub use document::{Converter, DEFAULT_TIMEOUT, Documents, document_ceiling};
 pub use exec::{ExecTool, discover_exec_tools};
 pub use grep::GrepTool;
 pub use ipython::cell_output;

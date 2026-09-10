@@ -39,9 +39,26 @@ const DEFAULT_RLM_EXTRA_IMPORT_NAMES: [&str; 14] = [
     "anydoc",
     "pdf_inspector",
 ];
-const DOCUMENT_FORMATS_PROBE: &str =
-    "import json, typing, anydoc; print(json.dumps(list(typing.get_args(anydoc.Format))))";
+/// csv is left out because read shows it as the text it is; the alias candidates are checked live.
+const DOCUMENT_FORMATS_PROBE: &str = r#"import json, typing, anydoc
+kinds = [kind for kind in typing.get_args(anydoc.Format) if kind != "csv"]
+aliases = {}
+for ext in ("docm", "dot", "dotx", "dotm", "xls", "xlsm", "xlsb", "xlt", "xltx", "xltm", "pps", "ppsx", "ppsm", "pot", "potx", "potm", "pptm", "fodt", "fods", "fodp"):
+    kind = anydoc.format_from_extension(ext)
+    if kind in kinds and ext != kind:
+        aliases.setdefault(kind, []).append(ext)
+print(json.dumps([kind + (f" ({', '.join(aliases[kind])})" if kind in aliases else "") for kind in kinds]))"#;
+/// The converter wheels are the only extras a `YI_KERNEL_PYTHON` may lack: without them read
+/// shows a document as bytes and nothing else changes.
+const OPTIONAL_IMPORT_NAMES: [&str; 2] = ["anydoc", "pdf_inspector"];
 const DOCUMENT_FORMATS_KEY: &str = "documentFormats";
+/// The probe's own hash rides in the record, so a reworded probe re-asks the wheel on the next
+/// readiness check instead of serving a list the code no longer produces (no rebuild needed).
+const DOCUMENT_PROBE_KEY: &str = "documentProbe";
+
+fn document_probe_hash() -> String {
+    format!("{:016x}", fnv1a(DOCUMENT_FORMATS_PROBE.as_bytes()))
+}
 const UV_INSTALL_COMMAND: &str = "curl -LsSf https://astral.sh/uv/install.sh | sh";
 pub const RUNTIME_READY_CHECK: &str = "import inspect; import rlm; from rlm import McpIntegration; import rlm.mcp as mcp; from rlm.harness import HarnessEntry; _harness_methods = [\"create_memory\",\"update_memory\",\"delete_memory\",\"create_skill\",\"update_skill\",\"delete_skill\",\"create_subagent\",\"update_subagent\",\"delete_subagent\",\"create_prompt_note\",\"update_prompt_note\",\"delete_prompt_note\",\"record_refinement\"]; assert callable(mcp.list_tools); assert callable(mcp.call_tool); assert hasattr(rlm, 'run'); assert callable(rlm); assert hasattr(rlm, 'rlm'); assert callable(rlm.rlm); assert callable(rlm.host_request); assert callable(rlm.find_models); assert callable(rlm.rlm.find_models); assert hasattr(rlm, 'harness'); assert hasattr(rlm, 'get_harness_state'); assert hasattr(rlm.rlm, 'harness'); assert hasattr(rlm.rlm, 'get_harness_state'); assert all(callable(getattr(_harness, _method, None)) for _harness in (rlm.harness, rlm.rlm.harness) for _method in _harness_methods); assert 'reference' in HarnessEntry.__dataclass_fields__; assert 'scope' in HarnessEntry.__dataclass_fields__; assert 'reference' in inspect.signature(rlm.harness.create_skill).parameters; assert 'reference' in inspect.signature(rlm.harness.update_skill).parameters; assert 'global_' in inspect.signature(rlm.harness.create_memory).parameters; assert 'global_' in inspect.signature(rlm.get_harness_state).parameters; assert inspect.iscoroutinefunction(rlm.fetch); assert callable(rlm.rlm.fetch); assert callable(rlm.bash); assert not inspect.iscoroutinefunction(rlm.bash); assert callable(rlm.rlm.bash); assert not inspect.iscoroutinefunction(rlm.rlm.bash); assert hasattr(rlm.BashHandle, '__await__'); assert not hasattr(rlm, 'background'); assert not hasattr(rlm.rlm, 'background'); from pathlib import Path as _P; assert rlm.RLMSubagent(rlm_child_id='c', active_session_id=None, session_id=None, session_name='kid', session_dir=_P('.'), status='idle').name == 'kid'";
 const BOOTSTRAP_VERSION_FILE: &str = ".bootstrap-version";
@@ -407,6 +424,7 @@ pub fn has_runtime(python: &Path) -> bool {
 fn missing_extra_imports(python: &Path) -> Vec<String> {
     DEFAULT_RLM_EXTRA_IMPORT_NAMES
         .iter()
+        .filter(|name| !OPTIONAL_IMPORT_NAMES.contains(name))
         .filter(|name| !python_imports(python, name))
         .map(|name| (*name).to_owned())
         .collect()
@@ -633,7 +651,8 @@ fn document_formats_of(python: &Path) -> Vec<String> {
 
 pub fn document_converter(home: &Path) -> (PathBuf, Vec<String>) {
     if let Some(python) = env_path("YI_KERNEL_PYTHON") {
-        return (python, Vec::new());
+        let formats = document_formats_of(&python);
+        return (python, formats);
     }
     let primary = kernel_venv_dir(home);
     let venv = [primary.clone(), xdg_kernel_venv_dir(home)]
@@ -653,6 +672,10 @@ fn write_bootstrap_version(
     document_formats: Vec<String>,
 ) -> Result<(), String> {
     let mut extra = serde_json::Map::new();
+    extra.insert(
+        DOCUMENT_PROBE_KEY.to_owned(),
+        serde_json::Value::from(document_probe_hash()),
+    );
     if !document_formats.is_empty() {
         extra.insert(
             DOCUMENT_FORMATS_KEY.to_owned(),
@@ -758,13 +781,23 @@ fn acquire_bootstrap_lock(venv: &Path) -> Result<BootstrapLock, String> {
 }
 
 fn kernel_ready(python: &Path, venv: &Path, runtime_identity: &str) -> bool {
-    bootstrap_version_current(read_bootstrap_version(venv).as_ref(), runtime_identity)
-        && run(
-            python,
-            &["-c", &format!("import ipykernel; {RUNTIME_READY_CHECK}")],
-            false,
-        )
-        .is_ok()
+    let version = read_bootstrap_version(venv);
+    if !bootstrap_version_current(version.as_ref(), runtime_identity) {
+        return false;
+    }
+    let live = run(
+        python,
+        &["-c", &format!("import ipykernel; {RUNTIME_READY_CHECK}")],
+        false,
+    )
+    .is_ok();
+    let probe = serde_json::Value::from(document_probe_hash());
+    if live && version.is_some_and(|version| version.extra.get(DOCUMENT_PROBE_KEY) != Some(&probe))
+    {
+        let _record_refreshed =
+            write_bootstrap_version(venv, runtime_identity, document_formats_of(python));
+    }
+    live
 }
 
 fn bootstrap_venv(
@@ -824,7 +857,13 @@ fn bootstrap_venv(
             extras.join(", ")
         ));
     }
-    write_bootstrap_version(venv, runtime_identity, document_formats_of(&python))
+    let document_formats = document_formats_of(&python);
+    if document_formats.is_empty() && python_imports(&python, "anydoc") {
+        options.progress(
+            "Warning: anydoc reports no formats; read will not list documents until it does",
+        );
+    }
+    write_bootstrap_version(venv, runtime_identity, document_formats)
 }
 
 pub fn kernel_python(venv: &Path) -> PathBuf {
@@ -967,6 +1006,20 @@ mod tests {
             venv_name("check", &["pandas"]),
             venv_name("check", &["pandas", "firecrawl-anydoc"]),
             "two commits whose extras differ must not share one venv"
+        );
+    }
+
+    #[test]
+    fn a_kernel_python_may_lack_the_converter_wheels() {
+        let Some(python) = find_system_python() else {
+            return;
+        };
+        let missing = missing_extra_imports(&python);
+        assert!(
+            !missing
+                .iter()
+                .any(|name| OPTIONAL_IMPORT_NAMES.contains(&name.as_str())),
+            "the converter wheels are optional: {missing:?}"
         );
     }
 

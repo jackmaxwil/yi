@@ -568,3 +568,58 @@ were refused with a stated reason, and 5 were read as text because they were tex
 csv files, a web2py template named `.pdf`, a spreadsheet saved as text, and a Word lock file
 `~$…docx`). `find=`, windows, and the `edit`/`write` refusals behaved on copies of real files.
 
+### Round two, 2026-09-10: the exhaustive review
+
+After the first dogfood the owner asked for every open issue in the tools, exhaustively;
+47 came back, and the same day all but four were fixed on the same branch. What changed,
+by the review's numbering:
+
+- **Bugs 1-9.** Each conversion attempt stages under its own name (a 3-thread probe had
+  40 of 60 parallel first reads fail on one shared name). The two wheels are optional for a
+  `YI_KERNEL_PYTHON`. Copies are read-only, the Markdown's own hash is in the copy's name, and
+  a mismatch converts again; `edit` and `write` refuse the copy dir. Refusals read the bytes,
+  not the cache: any existing binary document or NUL-bearing file is refused, an RTF or a
+  decoded text file is not. A glob charges the Markdown to its budget and shows a document it
+  cannot fit as `(<kind> converted to N lines of Markdown)`. The cache key hashes the bytes,
+  so no timestamp tick can serve a stale copy. Staging files older than an hour are swept.
+  File names go to the converter as `OsStr`.
+- **Files 10-16.** The ceiling is 256 MiB, 1 GiB with `pages=`. A converter limit names
+  pandas in ipython for a spreadsheet. Latin-1 and UTF-16 text is decoded and shown. A NUL-
+  bearing non-document (a Word lock file) is refused as binary. The RTF marker is read past a
+  byte-order mark and leading whitespace. The no-text refusal no longer calls a logo "scanned".
+  An image is named as one, with the `attach_image` skill as the way to show it.
+- **Output 17-26.** No clipping on a copy. Spreadsheets lose empty rows and cell padding and
+  gain a `[sheets: name RxC, …]` line. A capped read of Markdown ends with a heading outline;
+  `find=` on Markdown returns the heading section (the resolver also serves `PUT N*` on `.md`
+  files). PDFs carry `[page N]` markers. The header keeps the original's path, so the note is
+  one short line and no path outside the working tree reaches the model. csv is shown as text.
+  Converter errors are plain words, not exception names.
+- **Speed 27-31.** A file whose head carries none of the four container markers never spawns
+  Python. Copies older than 30 days or past 256 MiB in total are evicted on a miss. Old venvs
+  are not pruned (29): another session on another commit may be using one.
+- **Discoverability 32-38.** identity.md names the capability; the description lists the
+  aliases the wheel confirms (`docx (docm)`, `xlsx (xls, xlsm, xlsb)`), the limits and the
+  read-only rule, and is asked again on every request so a venv built mid-session shows up;
+  `bash` names `read` when a command reaches for `pdftotext`, `pandoc` or `textutil`; the
+  not-built message says the venv builds at session start. No live model run was made (32).
+- **Ergonomics 39-41.** `pages="3-5,9"` on a PDF. A multi-file edit that names a document
+  still fails whole (40): a partial patch is worse than a refused one. The header path fixes
+  41: re-reading the copy by the path the model saw was an ask, since it sits outside the tree.
+- **Security 42-44.** The cache dir is 0700 and its copies expire; the sandbox's one writable
+  root is the cache dir; on Linux the converter runs in a user and network namespace when
+  `unshare -Urn` is allowed (a probe, once per process), else as before.
+- **Tests 45-47.** Concurrency, ceiling, timeout, cancellation, Unicode and (Linux) non-UTF-8
+  names, tamper, unread-document writes, decoding, glob budget, sheets, outline and section
+  each have a test, and each was seen red under a mutation. Reads carry `converted: {from,
+  cache, ms}` and `sourceBytes`, and a refusal carries its reason in `details`. The probe's
+  hash rides in the venv record, so a changed probe re-asks the wheel instead of serving an
+  old list (the drift test caught exactly that on this branch).
+
+Not done: upstream extraction quirks (22), stray image lines (23), venv pruning (29), the
+live eval (32).
+
+Dogfood, round two, same 141 files: 118 converted (cold median about 110 ms; 5.3 s at most,
+on a 239 MB Latin-1 csv now decoded rather than refused), 17 refused with a stated reason,
+2 decoded, 4 read as the text they were. Thirty PDFs carry page markers; fifteen sheets carry
+a summary line; the 127 MB portfolio now converts; the Word lock file is named as binary.
+

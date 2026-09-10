@@ -1,6 +1,7 @@
 pub mod apply;
 pub mod blocks;
 pub mod clipboard;
+mod documents;
 pub mod format;
 pub mod input;
 pub mod messages;
