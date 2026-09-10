@@ -7,7 +7,7 @@ inputs:  docs/plans/2026-09-09-anydoc-and-pdf-inspector.md §12 (as built, round
          two, round three) · PR #369, PR #371, issue #368 · this tree at 2d1d7aa:
          crates/tools/src/{document.rs,ipython.rs,hashline/tool.rs,grep.rs,lib.rs},
          crates/kernel/src/bootstrap.rs, crates/runtime/src/{wiring.rs,kernel.rs,
-         auto_review.rs,provider.rs,lib.rs}, crates/runtime/tests/{documents.rs,
+         auto_review.rs,provider.rs,lib.rs,session.rs,tools.rs}, crates/cli/src/main.rs, crates/runtime/tests/{documents.rs,
          behavior.rs,request_budget.rs,prompt_drift.rs,kernel_lane.rs},
          crates/runtime/tests/fixtures/{documents,behavior}/ ·
          scripts/{pr_body.py,forge_pr.py}, scripts/guardrails/{check_pr_metadata.py,
@@ -18,7 +18,9 @@ inputs:  docs/plans/2026-09-09-anydoc-and-pdf-inspector.md §12 (as built, round
          harnesses the D171 session ran (never committed; their source reached this
          document through the brief that commissioned it) · open PRs #365, #372, #374,
          #375 · measurements run for this document on this machine, 2026-09-10
-ruling:  the method is a skill and one dev verb, not a gate. Dogfooding needs a
+ruling:  this covers every tool a session registers; D171 is the worked
+         example, not the boundary. The method is a skill and one dev verb,
+         not a gate. Dogfooding needs a
          reader of outputs, so it cannot run in CI, and no gate may pretend it
          did. What a gate can do deterministically is notice that the surface
          a model reads has changed — a lock over the tool table a session
@@ -59,7 +61,7 @@ ruling:  the method is a skill and one dev verb, not a gate. Dogfooding needs a
    it afterwards.
 7. **Whether a body edit re-runs the `title` job is not written down anywhere.** `pr.yml`
    says `on: pull_request:` with no `types:`, so it depends on the forge's defaults. §13,
-   question 6 says how to measure it.
+   question 6 records one observation.
 
 ## 1. What D171 showed, measured
 
@@ -98,6 +100,23 @@ each explained at its step:
 - truth is written down before playing (step 3);
 - the play path becomes a checked-in replay (step 16);
 - there is a stopping rule (step 18).
+
+**Scope: every tool a session registers.** That is `read`, `edit`, `write`, `grep`, `bash`
+and `get_context` (`yi_tools::builtin_tools_with`); `ipython`, `ask_user`, `plan` and
+`todo` (added by `attach_runtime`); every exec tool discovered under `.yi/tools`; and every
+kernel extra a hint can name. D171 is the worked example because it is the one that was
+run. Nothing below is specific to documents except where a document is the example. From
+tool to tool, only two things change: where the corpus comes from and where the truth lives.
+
+| tool | corpus (step 4) | truth (step 2) | census or play |
+|---|---|---|---|
+| `read`, `grep` | files from the owner's folders and checkouts, stratified by kind × size | the same content in another format; `rg`; a second engine | both |
+| `get_context` | the owner's checkouts | the `grid` CLI and `rg`, for what it says is where | both |
+| `bash` | commands mined from `~/.yi/sessions` that `BashTool::kind_for` classes as read-only, run in a scratch copy of the checkout | the same command in a plain shell, unreduced | both |
+| `ipython` | cells mined from `~/.yi/sessions` | the venv's `python3` running the same cell | both |
+| `edit`, `write` | real files copied from checkouts, edited in play | `git diff` of the copy; the file's bytes afterwards | play only: an edit depends on the read before it |
+| `plan`, `todo`, `ask_user` | task sequences taken from real sessions | the store state each call claims to leave behind | play only: each call depends on session state |
+| exec tools | each tool's own `--schema` | running the script directly on the same stdin | both |
 
 **A. Frame the claims.**
 
@@ -194,6 +213,13 @@ asks.
 time it is a claim derived and tested in the `prompt_drift` style. Pre-merge, the
 fresh-agent eval is live, paid and run by a person, and is **not** mandated (§12).
 
+The classes are not about documents. Two incidents on record from outside D171 fall into
+them:
+- `identity.md` described `grep` as literal-only for weeks after it became a regex search.
+  That is class 1 in a prompt, and it is why `prompt_drift.rs` exists.
+- One landing shipped seven silent caps across glob, grep and `find`. A view that looks
+  whole and is not is class 1 again, and it is why `045-loud-caps.md` exists.
+
 ## 4. The harnesses
 
 ### 4.1 Where they live: an example and a script, behind `just dogfood`
@@ -213,8 +239,8 @@ Three places were weighed:
   - The example links the real crates, the way the scratch test files did, and it is
     compiled on every PR because `just lint` runs `cargo clippy --workspace --all-targets
     -- -D warnings`, and `--all-targets` includes examples. Nothing runs it in CI.
-  - The script does the parts that need no Rust: sampling, issuing calls, reporting,
-    replaying, cleaning.
+  - The script does the parts that need no Rust: sampling, mining, issuing calls,
+    reporting, replaying, cleaning.
   - The recipe is one line, `dogfood *args: python3 scripts/dogfood.py "$@"`, the same
     shape as `pr *args`.
 
@@ -253,6 +279,10 @@ the directory is created when harness state is first saved). This design isolate
   rewrites its `.bootstrap-version` when the probe hash changes (`bootstrap.rs:797-799`),
   and imports can write bytecode caches into it. That is what any session on this build
   would do to the same venv.
+- **The session's own directories are scratch too.** Every path the player hands
+  `RuntimeWiring` (`rlm_dir`, `sessions_dir`, `plans_dir`) points inside `<run>`, and no
+  lane is claimed, so the player writes no session file, plan or lane where the owner's
+  sessions live.
 - The example is run as `target/debug/examples/dogfood`, never through `cargo run`. With
   a changed HOME, cargo and rustup would lose `~/.cargo` and `~/.rustup`.
 - **A mutation that changes the extras** is run with `--venv <run>/venv`. The throwaway
@@ -279,8 +309,19 @@ the directory is created when harness state is first saved). This design isolate
 (default 3) per cell, copies them to `<run>/in/`, and writes `manifest.tsv`
 (`n<TAB>copy<TAB>bytes<TAB>ext`). The original path is never written into the run.
 
-`just dogfood census <run> <tool> '<template>'` runs any tool the play session registers,
-once cold and once warm, on each manifest row. The template is the tool's input JSON with
+`just dogfood mine <run> <tool> [--per-cell N]` builds the corpus for a tool whose input is
+not a file:
+- It reads `~/.yi/sessions/*.jsonl` for calls to `<tool>`, drops duplicate inputs,
+  stratifies by result size and `is_error`, and writes `inputs.jsonl`, one input per line.
+- Session files hold the owner's prompts and outputs, so the mined inputs stay in the run
+  directory under the same rules as copies.
+- A `bash` input is kept only when the tool's own `kind_for` classes it as `ToolKind::Read`
+  (`builtins.rs:449`, the permission layer's read-only verbs, called rather than copied),
+  and it runs in a scratch copy of the checkout. A mined `rm` never runs.
+
+`just dogfood census <run> <tool> '<template>'` runs any tool in the player's table (§4.4),
+once cold and once warm, on each manifest row, or on each line of `inputs.jsonl` when the
+run has one. The template is the tool's input JSON with
 `"{path}"` where the copy's path goes:
 
 - `'{"path": "{path}"}'` for `read`;
@@ -295,20 +336,37 @@ and a refusal's reason key only on refusals. `just dogfood report <run>` prints 
 the count, p50/max of cold ms, warm ms and bytes, and the manifest numbers of the three
 slowest and three largest rows. Those are the outliers to read.
 
-**How a tool author plugs a new tool in:** register it where the player builds its table,
-`dogfood.rs`'s one tool constructor, which calls the same `builtin_tools_with` and
-`ipython_tool` a session does. A tool added to those is in the census with no further
-change. A tool a session registers but the player does not (`plan`, `todo`, `ask_user`) is
-out of reach until that constructor adds it.
+**How a tool author plugs a new tool in:** they don't need to. The player takes its table
+from the session wiring the CLI uses (§4.4), so a tool the session registers is in the
+census and in play the moment it is registered. A stateful tool (`edit`, `write`, `plan`,
+`todo`, `ask_user`) is dogfooded in play only, because each call depends on the one before
+it.
 
 ### 4.4 The player
 
-`just dogfood play <run> <cwd>` runs in the background. `dogfood play` holds
-`builtin_tools_with(false, Some(documents))` plus `yi_runtime::kernel::ipython_tool(service)`
-(Appendix A of the D171 session, with the isolation of §4.2) and serves calls:
+`just dogfood play <run> <cwd>` runs in the background. `dogfood play` builds a session the
+way the CLI does and plays against every tool that session registers. The D171 harness
+held only `builtin_tools_with` plus `ipython_tool`; this one reaches all of them:
 
-- Before the first call it writes `tools.md`: each tool's name, description and JSON
-  schema, then `identity_fragment()` and `doctrine_fragment()`. The player reads what a
+- **One tool list.** `yi_runtime::session_tools(freeform_grammar, documents, exec_dir)` is
+  new. It is the closure `crates/cli/src/main.rs:504-511` passes as `RuntimeWiring.tools`
+  (the builtins with documents, plus the `.yi/tools` exec tools), moved into yi-runtime so
+  that the CLI, the player and the surface lock (§5) all call it.
+- **The rest comes from `attach_runtime`,** exactly as for the CLI: `ipython`, `ask_user`,
+  `plan`, `todo`. The player reads the result back through a new three-line
+  `AgentSession::tools()` getter (the field is private, `session.rs:112`).
+- **Every call goes through a model's path.** The player calls each `AgentTool::execute`,
+  so it passes the same `ToolAdapter` a model's call does: user rules, the wall, the
+  permission broker and its sandbox, and the extension hooks (`tools.rs:186-260`).
+- **The broker is built as `build_session` builds it** (`main.rs:469-477`), in the
+  permission mode given by `--mode`. Headless `yi ask` passes no asker (`main.rs:720-721`),
+  and by default the player does the same, so a call that would ask is decided as `yi ask`
+  decides it. With `--ask`, each question goes to `a/NNN.ask` instead and waits for the
+  player's answer, so a permission prompt is dogfooded like any other output.
+- **The kernel is the session's own,** with `kernel_prewarm` off and the isolation of §4.2.
+
+- Before the first call it writes `tools.md`: each registered tool's `definition()` (name,
+  description, JSON schema), then `identity_fragment()` and `doctrine_fragment()`. The player reads what a
   model reads, parameter docs included, which the scratch version left out.
 - `just dogfood call <run> <tool> '<json>' [lines]` replaces `call.sh`. It writes
   `q/NNN.json` from a counter file rather than `ls | grep -c` (a partial write counted as a
@@ -324,10 +382,12 @@ out of reach until that constructor adds it.
 
 ### 4.5 What the harness cannot see, and the trigger to fix it
 
-It calls tools, not a loop. It bypasses the permission broker, `bash`'s sandbox and wall,
-the loop's result shaping and compaction, and it has no system prompt beyond what
-`tools.md` shows. Every D171 finding was at tool level, so this is enough for the method
-today.
+It drives tools, not a loop. Because it uses the session's own adapters (§4.4), it now
+meets the user rules, the wall, the permission broker and its sandbox, and the extension
+hooks, all of which the D171 harness bypassed. What it still lacks is the provider loop:
+nothing the loop does between calls (compaction, steering, retries), and no system prompt
+beyond what `tools.md` shows. Every D171 finding was at tool level, so this is enough for
+the method today.
 
 A loop-level player needs the provider to wait for the player's next message.
 `AgentSession::new` takes a concrete `Arc<ProviderStream>` (`session.rs:135`), and
@@ -352,7 +412,12 @@ Two triggers were weighed:
   applied to what the model reads, and it notices the change wherever the bytes came from.
 
 **The table is the session's table.** `request_budget.rs::tool_defs` changes to the tools a
-real session registers, built without a kernel, a provider or a broker:
+real session registers. The preferred build is the player's: `attach_runtime` over
+`session_tools(false, Some(Documents::fixed(…)), None)`, then the definitions from
+`session.tools()`. That makes the lock the registered table by construction, including any
+tool `attach_runtime` gains later. If `attach_runtime` cannot run in a T0 test (it would
+need no lane and no store, and that is not verified, §13), the fallback is this hand-built
+list, built without a kernel, a provider or a broker:
 
 - `yi_tools::builtin_tools_with(false, Some(Documents::fixed(home, Converter { python,
   formats })))`, where `formats` is a constant copy of a recorded `documentFormats` list
@@ -471,7 +536,17 @@ that check's own reason (040):
 | added, all three with rows | `[]` |
 | a table under the next section, not this one | error (the section ends at the next `## `) |
 
-## 7. The tier-2 document journey
+## 7. The tier-2 journeys, starting with documents
+
+**One cassette per tool family.** `fixtures/journeys/` is not a documents directory.
+Documents come first only because D171 is the first change to have run the method. Each
+later full-method change adds `<family>-questions.json` from its own play session (step
+16), built on fixtures of its own and scored the same way. Two examples:
+- a `bash` family: a reducer's summary checked against the unreduced output of the same
+  command;
+- an `edit` family: the file's bytes after a scripted edit sequence.
+
+The rest of this section is the first cassette.
 
 **Where it lives.** It is a second test function in `crates/runtime/tests/behavior.rs`,
 marked `#[ignore = "tier-2 journey: \`just journeys\`"]`, which replays every cassette
@@ -595,6 +670,7 @@ be proven that way was cut.
 | journey questions 1, 4, 5 | the three mutations of §7 | yes |
 | journey question 3 | make the empty-row filter stop at the first empty row → Łukasz's row, which sits after two empty rows, is gone from `read`'s result while pandas still shows it | yes |
 | journey question 2 | question 1's mutation, if `single.pdf`'s page is detected as a table: `(5,` and `-10)` land in separate cells. Confirm at implementation, or cut the question | provisional |
+| the player's table is the CLI's | by construction: both call `session_tools` and `attach_runtime`, and the lock pins the names; phase 2's play session calls every name in `tools.md` once | yes |
 | harness keeps compiling | rename a `pub fn` the example calls → lint lane red (`clippy --all-targets`) | yes |
 | `dogfood.py --selfcheck` | sampler: a tree of known sizes keeps the smallest and largest per extension; `<run>` guard: `/x` and `a/../b` refused; counter: two calls get two numbers | yes |
 | 080 rules B1–B4 | not gates; bound by `## Seen red` | yes, as rules |
@@ -608,6 +684,7 @@ be proven that way was cut.
 
 | item | where | lines (estimate) |
 |---|---|---|
+| `session_tools` moved out of `main.rs`; `AgentSession::tools()` getter | `crates/runtime/src/{lib.rs,session.rs}`, `crates/cli/src/main.rs` | +12 src, −6 src |
 | widened tool table, stub bridge, `TOOL_SURFACE` lines | `crates/runtime/tests/request_budget.rs` | +45 test |
 | lock read, `--update`, selfcheck | `scripts/guardrails/check_request_budget.py` | +45 py |
 | `surface_problems`, section parser, selfcheck | `scripts/guardrails/check_pr_metadata.py` | +70 py |
@@ -615,13 +692,14 @@ be proven that way was cut.
 | call into the gate, `compose_body` dedupe, the lock in `cmd_ratchet` | `scripts/forge_pr.py` | +15 py |
 | `workspaceFiles`, `session: documents`, three assertion kinds, the journey function | `crates/runtime/tests/behavior.rs` | +110 test |
 | the cassette | `crates/runtime/tests/fixtures/journeys/documents-questions.json` | ~160 JSON |
-| census, play, venv modes | `crates/runtime/examples/dogfood.rs` | ~200, priced as test LOC |
-| sample, call, stop, replay, report, clean, selfcheck | `scripts/dogfood.py` | ~220 py |
+| census, play (session wiring, broker, `--ask`), venv modes | `crates/runtime/examples/dogfood.rs` | ~240, priced as test LOC |
+| sample, mine, call, stop, replay, report, clean, selfcheck | `scripts/dogfood.py` | ~260 py |
 | recipe, glob, selfcheck line | `justfile`, `check_test_size.py`, `check_guardrails.sh` | +4 |
 | rules, skill | `.ruler/080-testing.md`, `.ruler/skills/yi-dogfood/SKILL.md` | +20, ~70 |
 
-- **src LOC: 0** in every phase, so no growth memo is owed.
-- **Test LOC:** about +355, plus the existing example once the glob widens, each through
+- **src LOC:** about +6 net, in phase 1, well inside the +150 free band, so no growth memo
+  is owed.
+- **Test LOC:** about +395, plus the existing example once the glob widens, each through
   `just ratchet`.
 - **Request budget:** the `tools` and `total` baselines rise by what sessions already pay,
   at least 1.9 KB counted from the source strings, with the exact figure being the
@@ -670,18 +748,27 @@ be proven that way was cut.
 4. **Milestone.** The issue sits under "Release and repository plumbing". "Forge plumbing"
    would also fit.
 5. **The journey's runner time**, which only a postmerge run on the forge can measure.
-6. **Does a body edit re-run the `title` job?** Not verified here. To measure it: edit an
-   open PR's body with `forge_pr.py pr edit` and count the `title` runs for its head in
-   `/actions/tasks` before and after. If an edit does not re-run the job, the gate reads the
+6. **Does a body edit re-run the `title` job?** One observation, on this plan's own PR
+   (#377). It was opened with `--refs` and no body, and at about 20:05Z the body was
+   replaced with `forge_pr.py pr edit`. After the gate finished, `/actions/tasks` still
+   showed a single `title` run (8127) for the head. There is no control run, so this is not
+   yet settled. If an edit does not re-run the job, the gate reads the
    body the PR was opened with, and a fixed body needs `just pr rerun`. §6's `compose_body`
    fix makes opening with the full body the normal path either way.
+7. **Can `attach_runtime` be driven from an example or a T0 test as it stands?**
+   `build_session` also claims a lane and attaches a store, and the player needs neither.
+   Verify this in phase 1. If it cannot, the lock falls back to the hand-built table (§5)
+   and the player adds `plan` and `todo` by hand, over `session.store_handle()`.
 
 ## 14. Phases
 
-All three phases are T0, T1 and T2 changes with no src lines. They are one issue, #376, in
-three PRs, merged in order.
+All three phases are T0, T1 and T2 changes. The only src change is phase 1's move of
+`session_tools` and the `AgentSession::tools()` getter, about +6 net lines. They are one
+issue, #376, in three PRs, merged in order.
 
 **Phase 1: the mandate** (`Refs #376`). What lands:
+- `yi_runtime::session_tools`, called by `main.rs` in place of its closure, and
+  `AgentSession::tools()`;
 - the widened `request_budget.rs` table and the `TOOL_SURFACE` lines;
 - `check_request_budget.py` with the lock, `--selfcheck`, and a line in
   `check_guardrails.sh`;
@@ -714,8 +801,9 @@ Phase 1 also adds `check_request_budget.py --update` to `cmd_ratchet`'s list, wi
 
 Proof: a census over `crates/runtime/tests/fixtures/documents/` reproduces the outcome
 documents.rs asserts for each fixture: `scanned.pdf` refused, `mixed.pdf` converted with its
-image page named, the other nine converted. A five-call play session is then replayed and
-gives an identical table.
+image page named, the other nine converted. A play session that calls every registered tool
+at least once, `plan`, `todo` and `ask_user` included, is then replayed and gives an
+identical table.
 
 **Phase 3: the journey** (`Closes #376`). What lands:
 - the `behavior.rs` extensions and the cassette;
@@ -740,7 +828,7 @@ gives an identical table.
   line from the row.
 - **Feature ledger**: no row. Nothing user-visible changes; the gate and the journey are
   process.
-- **Growth memo**: none. The src delta is 0.
+- **Growth memo**: none. The net src delta is about +6, inside the free band.
 
 ---
 
@@ -749,7 +837,7 @@ gives an identical table.
 ```markdown
 ---
 name: yi-dogfood
-description: Dogfood a Yi tool the way D171 was — claims ledger, real corpus, census, probes, a played session scored against pre-registered truth, and the replay that goes in the PR
+description: Dogfood any Yi tool the way D171 was — claims ledger, real corpus, census, probes, a played session scored against pre-registered truth, and the replay that goes in the PR
 ---
 
 # Dogfooding a tool
@@ -764,12 +852,16 @@ where this starts: every D171 defect sat beside passing tests.
    cannot, and run every remedy a hint names in the real venv or shell. For each loop a
    user will run, write where the answer lives without the tool: a second format, the
    task's scorer, a second engine. This table is the PR's `## Claims ledger`.
-2. **Corpus.** `just dogfood sample <run> <exts> <roots>…` copies a stratified sample (kind ×
-   size, extremes kept) into `target/dogfood/<run>/in`. Add lookalikes by hand: wrong
+2. **Corpus.** For a tool that reads files, `just dogfood sample <run> <exts> <roots>…` copies
+   a stratified sample (kind × size, extremes kept) into `target/dogfood/<run>/in`. For any
+   other tool, `just dogfood mine <run> <tool>` takes its real inputs from `~/.yi/sessions`
+   (bash only where `kind_for` says read-only). The per-tool corpus and truth table is in
+   docs/plans/2026-09-10-dogfood-method-and-mandates.md §2. Add lookalikes by hand: wrong
    extensions, lock files, other encodings, the dependency's own adversarial inputs.
    Copies only; never a path under the tree.
-3. **Census.** `just dogfood census <run> <tool> '{"path": "{path}"}'`, then
-   `just dogfood report <run>`. Read the outliers of every bucket. The bucket you did not
+3. **Census.** `just dogfood census <run> <tool> '{"path": "{path}"}'` (or over the mined
+   `inputs.jsonl`), then `just dogfood report <run>`. Stateful tools (`edit`, `write`,
+   `plan`, `todo`, `ask_user`) skip this step and are covered in play. Read the outliers of every bucket. The bucket you did not
    expect to have members is the bug (RTF sat in "plain text").
 4. **Probe.** Every suspicion becomes a minimal probe before it is a finding: N threads on
    one new input, the limit and the limit plus one, one bad part, a content change that keeps
@@ -788,8 +880,9 @@ where this starts: every D171 defect sat beside passing tests.
    `just dogfood replay <run> <run2>` and paste its table into `## Dogfood`, and
    `just dogfood clean <run>`. Stop when a replay and a census rerun find no new P1 or P2.
 
-What it cannot see: the permission broker, bash's sandbox and wall, the loop's result
-shaping and compaction. It calls tools, not a loop. A mutation that changes the extras
+The player reaches every tool the session registers, through the same adapters a model's
+call passes (rules, wall, broker, sandbox, extension hooks). What it cannot see is the loop
+between calls: compaction, steering, retries. A mutation that changes the extras
 runs with `--venv <run>/venv`; never delete a `~/.yi/kernel-venv-*` you did not create.
 Report only counts, kinds, timings and the one line that shows each defect.
 ```
