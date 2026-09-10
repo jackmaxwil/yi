@@ -1070,7 +1070,7 @@ fn main() {
             std::process::exit(2);
         }
     };
-    let version = env!("CARGO_PKG_VERSION");
+    let version = env!("ARCHITECTURE_VERSION");
     match args.command.as_str() {
         "version" => println!("yi {version}"),
         "ask" => {

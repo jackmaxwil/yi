@@ -7,6 +7,7 @@ Register out of tree:
 
 import json
 import os
+import shlex
 import sys
 from pathlib import Path
 
@@ -20,10 +21,13 @@ from yi_usage import (
     EVENTS_FILENAME,
     SESSIONS_SUBDIR,
     config_fingerprint,
+    eval_config,
     kernel_problems,
     parse_events,
+    routing_label,
     run_command,
     TASK_TIMEOUT_SEC,
+    with_budget,
 )
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
@@ -32,12 +36,6 @@ import atif  # noqa: E402
 TRAJECTORY_FILENAME = "trajectory.json"
 
 REMOTE_BINARY = "/usr/local/bin/yi"
-# The run's numbers (D132) need telemetry on in the agent user's HOME; the
-# adapter writes the one config line at install, never the caller's ~/.yi.
-TELEMETRY_CONFIG = '{"telemetry":{"enabled":true}}'
-CONFIG_COMMAND = (
-    "mkdir -p ~/.yi && printf '%s' " + repr(TELEMETRY_CONFIG) + " > ~/.yi/config.json"
-)
 # Incident: `oven/bun` ships no CA roots, and the platform verifier (YI_DESIGN
 # 13.3: no bundled store) refused OpenRouter's certificate ("UnknownIssuer") on
 # the first request; harbor's own certifi bundle rides along and SSL_CERT_FILE
@@ -56,10 +54,18 @@ DOCTOR_COMMAND = f"{REMOTE_BINARY} doctor --fix --json || true"
 
 
 def mode_label():
-    """`yolo`, plus the timeout multiplier when the driver set one: a one-hour
-    row and an eight-hour row must never share a fingerprint (plan §4)."""
+    """`yolo`, plus the timeout multiplier and the routing when the driver set
+    them: a one-hour row and an eight-hour row, or two routings, must never
+    share a fingerprint (plan §4)."""
     mult = os.environ.get(TIMEOUT_MULT_ENV)
-    return f"yolo+t{mult}" if mult else "yolo"
+    return "yolo" + (f"+t{mult}" if mult else "") + routing_label(os.environ)
+
+
+def config_command():
+    """The run's numbers (D132) need telemetry on in the agent user's HOME; the
+    adapter writes the config at install, never the caller's ~/.yi."""
+    config = shlex.quote(json.dumps(eval_config(os.environ)))
+    return f"mkdir -p ~/.yi && printf '%s' {config} > ~/.yi/config.json"
 
 
 def install_command(url):
@@ -89,7 +95,7 @@ class Yi(BaseInstalledAgent):
         url = os.environ.get(BINARY_URL_ENV)
         if url:
             await self.exec_as_root(environment, command=install_command(url))
-            await self.exec_as_agent(environment, command=CONFIG_COMMAND)
+            await self.exec_as_agent(environment, command=config_command())
             await self.upload_ca_bundle(environment)
             await self.warm_kernel(environment)
             return
@@ -104,7 +110,7 @@ class Yi(BaseInstalledAgent):
             environment,
             command=f"set -euo pipefail; chmod +x {REMOTE_BINARY} && {VERSION_CHECK}",
         )
-        await self.exec_as_agent(environment, command=CONFIG_COMMAND)
+        await self.exec_as_agent(environment, command=config_command())
         await self.upload_ca_bundle(environment)
         await self.warm_kernel(environment)
 
@@ -148,6 +154,10 @@ class Yi(BaseInstalledAgent):
         """Harbor never tells the agent its timeout; the driver's multiplier does."""
         return int(TASK_TIMEOUT_SEC * float(os.environ.get(TIMEOUT_MULT_ENV) or 1))
 
+    def render_instruction(self, instruction: str) -> str:
+        """The task's own last line names all 28800 seconds; the trial gets the multiplier's share."""
+        return with_budget(super().render_instruction(instruction), self.deadline_sec())
+
     def write_trajectory(self):
         """The synced session file as ATIF, beside the event stream in logs_dir."""
         sessions = sorted((self.logs_dir / SESSIONS_SUBDIR).rglob("*.jsonl"))
@@ -180,4 +190,5 @@ class Yi(BaseInstalledAgent):
                 self.version(), self.model_name, mode_label(), os.environ.get(SUITE_REV_ENV)
             ),
             "timeoutMultiplier": os.environ.get(TIMEOUT_MULT_ENV),
+            "byUpstream": usage["byUpstream"],
         }

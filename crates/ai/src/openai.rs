@@ -521,6 +521,9 @@ impl ChunkMapper {
         {
             *response_id = Some(id.to_owned());
         }
+        if let Some(upstream) = chunk.get("provider").and_then(Value::as_str) {
+            crate::request::note_upstream(&mut self.output, upstream);
+        }
         if let Some(usage_value) = chunk.get("usage").filter(|value| !value.is_null()) {
             let usage = parse_chunk_usage(usage_value, &self.model);
             if let AgentMessage::Assistant {
@@ -785,9 +788,13 @@ fn settle_from_record(
         ..
     } = output
         && usage.unknown
-        && let Some(settled) = crate::settle::generation_usage(model, api_key, proxy, id)
+        && let Some((settled, upstream)) =
+            crate::settle::generation_usage(model, api_key, proxy, id)
     {
         *usage = settled;
+        if let Some(upstream) = upstream {
+            crate::request::note_upstream(output, &upstream);
+        }
     }
 }
 
