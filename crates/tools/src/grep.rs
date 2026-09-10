@@ -246,7 +246,7 @@ fn collect(
         let Ok(bytes) = fs::read(path) else {
             return true;
         };
-        if bytes.iter().take(4096).any(|byte| *byte == 0) {
+        if crate::document::has_nul(&bytes) {
             binary_skipped = binary_skipped.saturating_add(1);
             return true;
         }
