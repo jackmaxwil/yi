@@ -68,10 +68,8 @@ impl Fixture {
     }
 
     fn read_tool(&self, path: &str) -> ToolOutput {
-        HashlineReadTool {
-            state: std::sync::Arc::clone(&self.state),
-        }
-        .execute(args(&[("path", json!(path))]), &self.context)
+        HashlineReadTool::new(std::sync::Arc::clone(&self.state))
+            .execute(args(&[("path", json!(path))]), &self.context)
     }
 
     fn edit(&self, patch: &str) -> ToolOutput {
@@ -289,10 +287,7 @@ fn seen_lines_guard_reveals_unseen_lines_then_allows_retry() -> TestResult {
     let fixture = Fixture::new("seen")?;
     let body: String = (1..=50).map(|n| format!("line {n}\n")).collect();
     fixture.write("big.txt", &body)?;
-    let read = HashlineReadTool {
-        state: std::sync::Arc::clone(&fixture.state),
-    }
-    .execute(
+    let read = HashlineReadTool::new(std::sync::Arc::clone(&fixture.state)).execute(
         args(&[
             ("path", json!("big.txt")),
             ("offset", json!(1)),

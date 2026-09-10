@@ -32,9 +32,9 @@ fn args(pairs: &[(&str, Value)]) -> Map<String, Value> {
 }
 
 fn read_tool() -> yi_tools::hashline::tool::HashlineReadTool {
-    yi_tools::hashline::tool::HashlineReadTool {
-        state: yi_tools::hashline::tool::shared_hashline_state(),
-    }
+    yi_tools::hashline::tool::HashlineReadTool::new(
+        yi_tools::hashline::tool::shared_hashline_state(),
+    )
 }
 
 fn output_text(output: &yi_tools::ToolOutput) -> String {
@@ -63,9 +63,9 @@ fn write_then_read_round_trips_through_the_working_directory() -> TestResult {
     );
     assert!(!written.is_error, "{}", output_text(&written));
 
-    let read = yi_tools::hashline::tool::HashlineReadTool {
-        state: yi_tools::hashline::tool::shared_hashline_state(),
-    }
+    let read = yi_tools::hashline::tool::HashlineReadTool::new(
+        yi_tools::hashline::tool::shared_hashline_state(),
+    )
     .execute(
         args(&[
             ("path", json!("notes/hello.txt")),
@@ -90,9 +90,9 @@ fn write_then_read_round_trips_through_the_working_directory() -> TestResult {
 fn read_reports_a_missing_file_as_a_tool_error() -> TestResult {
     let dir = temp_dir("read-missing")?;
     let context = ToolContext::new(dir.0.clone());
-    let read = yi_tools::hashline::tool::HashlineReadTool {
-        state: yi_tools::hashline::tool::shared_hashline_state(),
-    }
+    let read = yi_tools::hashline::tool::HashlineReadTool::new(
+        yi_tools::hashline::tool::shared_hashline_state(),
+    )
     .execute(args(&[("path", json!("absent.txt"))]), &context);
     assert!(read.is_error);
     Ok(())
@@ -906,9 +906,7 @@ fn read_ranges_and_line_clip() -> TestResult {
     let body: String = (1..=60).map(|n| format!("line {n}\n")).collect();
     fs::write(dir.0.join("r.txt"), &body)?;
     let state = yi_tools::hashline::tool::shared_hashline_state();
-    let read = yi_tools::hashline::tool::HashlineReadTool {
-        state: std::sync::Arc::clone(&state),
-    };
+    let read = yi_tools::hashline::tool::HashlineReadTool::new(std::sync::Arc::clone(&state));
     let context = ToolContext::new(dir.0.clone());
     let out = read.execute(
         args(&[
@@ -956,9 +954,9 @@ fn read_footers_name_the_next_offset() -> TestResult {
     let dir = temp_dir("read-footers")?;
     let body: String = (1..=200).map(|n| format!("line {n}\n")).collect();
     fs::write(dir.0.join("r.txt"), &body)?;
-    let read = yi_tools::hashline::tool::HashlineReadTool {
-        state: yi_tools::hashline::tool::shared_hashline_state(),
-    };
+    let read = yi_tools::hashline::tool::HashlineReadTool::new(
+        yi_tools::hashline::tool::shared_hashline_state(),
+    );
     let context = ToolContext::new(dir.0.clone());
     let windows = read.execute(
         args(&[
@@ -1345,9 +1343,7 @@ fn every_cut_view_names_its_cap() -> TestResult {
     );
     let text = output_text(&plain);
     assert!(
-        text.contains(
-            "[find: no block resolver for this file; lines 1-1 of 1 around the hit at line 1"
-        ),
+        text.contains("[find: no enclosing block; lines 1-1 of 1 around the hit at line 1"),
         "{text}"
     );
 
@@ -1453,10 +1449,8 @@ fn an_edit_that_breaks_python_says_so_in_its_result() -> TestResult {
     assert!(text.ends_with("\nsyntax: ok"), "{text}");
     assert_eq!(written.result.details["syntax"], json!("syntax: ok"));
 
-    let read = yi_tools::hashline::tool::HashlineReadTool {
-        state: Arc::clone(&state),
-    }
-    .execute(args(&[("path", json!("a.py"))]), &context);
+    let read = yi_tools::hashline::tool::HashlineReadTool::new(Arc::clone(&state))
+        .execute(args(&[("path", json!("a.py"))]), &context);
     let tag = output_text(&read)
         .lines()
         .next()

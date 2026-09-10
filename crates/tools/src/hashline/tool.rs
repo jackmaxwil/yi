@@ -32,6 +32,7 @@ pub struct HashlineState {
     pub snapshots: SnapshotStore,
     noop: std::collections::HashMap<String, (u64, u32)>,
     clipboard: Clipboard,
+    pub documents: Option<crate::Documents>,
 }
 
 pub type SharedHashline = Arc<Mutex<HashlineState>>;
@@ -50,8 +51,46 @@ fn input_hash(input: &str) -> u64 {
     u64::from(xxhash_rust::xxh32::xxh32(input.as_bytes(), 0))
 }
 
+const READ_DESCRIPTION: &str = "Read a file (tagged [path#TAG] header, LINE:TEXT rows that anchor edits), a directory (listing plus skeletons), or a glob (every match). find=\"text\" shows the block around the first match plus its references. A capped read ends with the file's skeleton. offset/limit or ranges ([[10,40],[90,120]]) pick windows. Do not re-read a file you just edited: the edit result carries the new anchors, and a failed edit says so. Prefer one read of a large range to many small ones.";
+
+/// How one text is shown. `on_disk`: the text is the file itself, so clipping guards its anchors
+/// and code refs apply; a document's copy is neither, and gets a shorter `first_look`.
+pub(super) struct View<'a> {
+    pub resolve_as: &'a str,
+    pub note: Option<String>,
+    pub on_disk: bool,
+    pub first_look: usize,
+}
+
+impl<'a> View<'a> {
+    pub(super) fn source(path: &'a str) -> Self {
+        Self {
+            resolve_as: path,
+            note: None,
+            on_disk: true,
+            first_look: READ_BYTE_FLOOR,
+        }
+    }
+}
+
 pub struct HashlineReadTool {
     pub state: SharedHashline,
+    /// The formats last described and the text built from them; the text is leaked because the
+    /// trait hands out `&str`, and it is rebuilt only when the venv's format list changes.
+    description: Mutex<(Vec<String>, &'static str)>,
+}
+
+impl HashlineReadTool {
+    pub fn new(state: SharedHashline) -> Self {
+        Self {
+            state,
+            description: Mutex::new((Vec::new(), READ_DESCRIPTION)),
+        }
+    }
+}
+
+pub(crate) fn documents(state: &SharedHashline) -> Option<crate::Documents> {
+    lock_state(state).documents.clone()
 }
 
 impl Tool for HashlineReadTool {
@@ -60,7 +99,18 @@ impl Tool for HashlineReadTool {
     }
 
     fn description(&self) -> &str {
-        "Read a file (tagged [path#TAG] header, LINE:TEXT rows that anchor edits), a directory (listing plus skeletons), or a glob (every match). find=\"text\" shows the block around the first match plus its references. A capped read ends with the file's skeleton. offset/limit or ranges ([[10,40],[90,120]]) pick windows. Do not re-read a file you just edited: the edit result carries the new anchors, and a failed edit says so. Prefer one read of a large range to many small ones."
+        let formats = documents(&self.state)
+            .map_or_else(Vec::new, |documents| (documents.converter)().formats);
+        let mut cached = self
+            .description
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if cached.0 != formats {
+            let text: &'static str =
+                Box::leak(crate::document::describe(READ_DESCRIPTION, &formats).into_boxed_str());
+            *cached = (formats, text);
+        }
+        cached.1
     }
 
     fn schema(&self) -> Value {
@@ -71,7 +121,8 @@ impl Tool for HashlineReadTool {
                 "find": {"type": "string", "description": "Show the block around the first line containing this text, then its references; exclusive with offset/ranges"},
                 "offset": {"type": "integer", "description": "1-based first line to read"},
                 "limit": {"type": "integer", "description": "Max lines (default 2000; explicit values may exceed it, byte-budgeted)"},
-                "ranges": {"type": "array", "items": {"type": "array", "items": {"type": "integer"}}, "description": "1-based inclusive [start, end] windows; exclusive with offset/limit"}
+                "ranges": {"type": "array", "items": {"type": "array", "items": {"type": "integer"}}, "description": "1-based inclusive [start, end] windows; exclusive with offset/limit"},
+                "pages": {"type": "string", "description": "PDF only: the 1-based pages to convert, such as \"3-5,9\"; the rest are left out"}
             },
             "required": ["path"]
         })
@@ -107,7 +158,7 @@ struct Found {
 const FIND_CONTEXT: usize = 20;
 const NEAR_MISSES: usize = 5;
 const REFS_CAP: usize = 20;
-const SKELETON_ROWS: usize = 40;
+pub(super) const SKELETON_ROWS: usize = 40;
 const GLOB_FILES_CAP: usize = 200;
 const DIR_HEADS_PER_FILE: usize = 8;
 const GLOB_HEADS_PER_FILE: usize = 12;
@@ -138,6 +189,7 @@ fn identifier_in(needle: &str, line: &str) -> Option<String> {
 /// else to a fixed window; no hit lists the nearest lines by the needle's longest word.
 fn locate(
     display_path: &str,
+    resolve_as: &str,
     normalized: &str,
     lines: &[&str],
     needle: &str,
@@ -148,7 +200,11 @@ fn locate(
             yi_types::event::ToolErrorKind::InvalidArgs,
         ))
     };
-    let Some(index) = lines.iter().position(|line| line.contains(needle)) else {
+    let folded = fold_typography(needle);
+    let Some(index) = lines
+        .iter()
+        .position(|line| line.contains(needle) || fold_typography(line).contains(&folded))
+    else {
         // Nearest by the longest word's stem, so a plural or a typo still lands nearby.
         let word = needle
             .split(|character: char| !(character.is_ascii_alphanumeric() || character == '_'))
@@ -182,7 +238,7 @@ fn locate(
     };
     let line = u64::try_from(index).unwrap_or(u64::MAX).saturating_add(1);
     let span = super::patcher::block_resolver(&super::types::BlockResolverRequest {
-        path: display_path,
+        path: resolve_as,
         text: normalized,
         line,
     });
@@ -209,6 +265,19 @@ fn locate(
             .get(index)
             .and_then(|line| identifier_in(needle, line)),
     })
+}
+
+/// Documents set ’ “ – where a model types ' " -, so `find` compares the two spellings as one.
+fn fold_typography(text: &str) -> String {
+    text.chars()
+        .map(|character| match character {
+            '\u{2018}' | '\u{2019}' | '\u{201a}' | '\u{201b}' | '\u{2032}' => '\'',
+            '\u{201c}' | '\u{201d}' | '\u{201e}' | '\u{201f}' | '\u{2033}' => '"',
+            '\u{2010}'..='\u{2015}' | '\u{2212}' => '-',
+            '\u{a0}' | '\u{202f}' => ' ',
+            other => other,
+        })
+        .collect()
 }
 
 fn skeleton_rows(text: &str) -> Vec<String> {
@@ -346,8 +415,14 @@ impl HashlineReadTool {
                 .unwrap_or(path)
                 .to_string_lossy()
                 .into_owned();
-            let size = std::fs::metadata(path)
-                .map_or(0, |meta| usize::try_from(meta.len()).unwrap_or(usize::MAX));
+            let bytes = std::fs::read(path).unwrap_or_default();
+            let document = self.listed_document(path, &bytes, spent < READ_BYTE_FLOOR, context);
+            let size = match &document {
+                Some(super::documents::Listed::Copy(copy)) => std::fs::metadata(&copy.path)
+                    .map_or(0, |meta| usize::try_from(meta.len()).unwrap_or(usize::MAX)),
+                Some(_) => usize::MAX,
+                None => bytes.len(),
+            };
             if spent.saturating_add(size) <= READ_BYTE_FLOOR {
                 let output = self.read_file(&display, path, &Map::new(), context);
                 spent = spent.saturating_add(size);
@@ -358,10 +433,14 @@ impl HashlineReadTool {
             if !budget_named {
                 budget_named = true;
                 sections.push(format!(
-                    "[byte budget {READ_BYTE_FLOOR} reached after {whole} whole files; the rest are skeletons — read a file for its text]"
+                    "[byte budget {READ_BYTE_FLOOR} reached after {whole} whole files; files that do not fit are listed, not shown — read one for its text]"
                 ));
             }
-            let text = std::fs::read_to_string(path).unwrap_or_default();
+            if let Some(document) = document {
+                sections.push(format!("{display}  ({})", document.describe(bytes.len())));
+                continue;
+            }
+            let text = String::from_utf8(bytes).unwrap_or_default();
             let (heads, total) = skeleton_heads(&text, GLOB_HEADS_PER_FILE);
             let mut rows = vec![format!(
                 "{display}  ({} lines, {total} declarations, skeleton)",
@@ -375,21 +454,23 @@ impl HashlineReadTool {
         output
     }
 
-    fn read_file(
+    pub(super) fn render_file(
         &self,
         display_path: &str,
         path: &Path,
+        raw: &str,
+        view: View<'_>,
         input: &Map<String, Value>,
         context: &ToolContext,
     ) -> ToolOutput {
-        let raw = match std::fs::read_to_string(path) {
-            Ok(raw) => raw,
-            Err(error) => {
-                return error_output(format!("failed to read {}: {error}", path.display()));
-            }
-        };
+        let View {
+            resolve_as,
+            note,
+            on_disk,
+            first_look,
+        } = view;
         let file_bytes = raw.len();
-        let normalized = normalize_to_lf(strip_bom(&raw).text);
+        let normalized = normalize_to_lf(strip_bom(raw).text);
         let all_lines: Vec<&str> = normalized.split('\n').collect();
         let line_count = if normalized.ends_with('\n') {
             all_lines.len().saturating_sub(1)
@@ -412,7 +493,13 @@ impl HashlineReadTool {
                 );
             }
             Some(needle) => {
-                match locate(display_path, &normalized, &all_lines[..line_count], needle) {
+                match locate(
+                    display_path,
+                    resolve_as,
+                    &normalized,
+                    &all_lines[..line_count],
+                    needle,
+                ) {
                     Ok(found) => Some(found),
                     Err(output) => return *output,
                 }
@@ -426,7 +513,12 @@ impl HashlineReadTool {
                 Err(output) => return *output,
             },
         };
-        let budget = explicit_limit.map_or(READ_BYTE_FLOOR, |limit| {
+        let floor = if explicit_window || found.is_some() {
+            READ_BYTE_FLOOR
+        } else {
+            first_look
+        };
+        let budget = explicit_limit.map_or(floor, |limit| {
             READ_BYTE_FLOOR
                 .max(limit.saturating_mul(256))
                 .min(READ_BYTE_CEIL)
@@ -455,7 +547,7 @@ impl HashlineReadTool {
                     byte_capped_at = Some(number);
                     break 'windows;
                 }
-                let (text, was_clipped) = if line.chars().count() > READ_LINE_CLIP {
+                let (text, was_clipped) = if on_disk && line.chars().count() > READ_LINE_CLIP {
                     let cut: String = line.chars().take(READ_LINE_CLIP).collect();
                     (format!("{cut}\u{2026}"), true)
                 } else {
@@ -483,13 +575,14 @@ impl HashlineReadTool {
 
         let empty = rows.is_empty();
         let mut rendered = vec![format_hashline_header(display_path, tag)];
+        rendered.extend(note);
         if let Some(found) = &found {
             let (lo, hi) = found.window;
             rendered.push(if found.block {
                 format!("[find: block at lines {lo}-{hi} of {line_count}]")
             } else {
                 format!(
-                    "[find: no block resolver for this file; lines {lo}-{hi} of {line_count} around the hit at line {} — ranges= for more]",
+                    "[find: no enclosing block; lines {lo}-{hi} of {line_count} around the hit at line {} — ranges= for more]",
                     found.index.saturating_add(1)
                 )
             });
@@ -522,8 +615,16 @@ impl HashlineReadTool {
         }
         let capped = byte_capped_at.is_some()
             || (!explicit_window && found.is_none() && shown_end < line_count);
-        if capped {
-            rendered.extend(skeleton_rows(&normalized));
+        if capped && !on_disk {
+            let at = rendered.len().min(2);
+            let outline = super::documents::outline_rows(&normalized);
+            rendered.splice(at..at, outline);
+        } else if capped {
+            rendered.extend(if resolve_as.ends_with(".md") {
+                super::documents::outline_rows(&normalized)
+            } else {
+                skeleton_rows(&normalized)
+            });
         }
         let mut refs_total = 0_usize;
         if let Some(Found {
@@ -531,6 +632,7 @@ impl HashlineReadTool {
             index,
             ..
         }) = &found
+            && on_disk
         {
             let grep = crate::grep::GrepTool {
                 hashline: Some(Arc::clone(&self.state)),
@@ -781,11 +883,18 @@ impl Tool for HashlineEditTool {
         if patch.sections.is_empty() {
             return error_output("Patch input did not produce any sections.");
         }
+        let home = documents(&self.state).map(|documents| documents.home);
+        if let Some(refusal) = patch.sections.iter().find_map(|section| {
+            crate::document::write_refusal(home.as_deref(), &resolve_path(context, &section.path))
+        }) {
+            return error_output(refusal);
+        }
         let mut state = lock_state(&self.state);
         let HashlineState {
             snapshots,
             noop,
             clipboard,
+            ..
         } = &mut *state;
         let mut host_clipboard = std::mem::take(clipboard);
         let mut patcher = Patcher::new(snapshots, context.cwd.clone());

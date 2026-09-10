@@ -3,6 +3,7 @@
 mod builtins;
 pub mod checkpoint;
 pub mod diff;
+mod document;
 mod exec;
 mod grep;
 pub mod hashline;
@@ -21,6 +22,7 @@ use std::sync::Arc;
 pub use builtins::{BashTool, WriteTool, list_files};
 pub use checkpoint::{Change, ChangeKind, CheckpointError, Checkpoints, TreeId};
 pub use diff::{GitPatch, patch};
+pub use document::{Converter, DEFAULT_TIMEOUT, Documents, document_ceiling};
 pub use exec::{ExecTool, discover_exec_tools};
 pub use grep::GrepTool;
 pub use ipython::cell_output;
@@ -36,17 +38,19 @@ pub use tool::{
 };
 
 pub fn builtin_tools() -> Vec<Arc<dyn Tool>> {
-    builtin_tools_with(false)
+    builtin_tools_with(false, None)
 }
 
 /// `freeform_grammar` opts the edit tool into [`Tool::freeform`]: a grammar
 /// the provider rejects fails every request carrying the tool, not just edits.
-pub fn builtin_tools_with(freeform_grammar: bool) -> Vec<Arc<dyn Tool>> {
+pub fn builtin_tools_with(
+    freeform_grammar: bool,
+    documents: Option<Documents>,
+) -> Vec<Arc<dyn Tool>> {
     let state = hashline::tool::shared_hashline_state();
+    hashline::tool::lock_state(&state).documents = documents;
     vec![
-        Arc::new(hashline::tool::HashlineReadTool {
-            state: Arc::clone(&state),
-        }),
+        Arc::new(hashline::tool::HashlineReadTool::new(Arc::clone(&state))),
         Arc::new(hashline::tool::HashlineEditTool {
             state: Arc::clone(&state),
             freeform_grammar,
