@@ -225,4 +225,34 @@ mod tests {
         assert!(elapsed < Duration::from_millis(2500), "waited {elapsed:?}");
         Ok(())
     }
+
+    #[test]
+    fn a_process_group_dies_with_no_kill_binary_on_path() -> Fallible {
+        // The group kill runs in this process, so the test reruns itself under a PATH with no
+        // `kill` on it, as in the benchmark images; the rerun makes the assertions.
+        if std::env::var_os("PATH").is_none_or(|path| path != "/nonexistent") {
+            let status = command(std::env::current_exe()?)
+                .args([
+                    "--exact",
+                    "process::tests::a_process_group_dies_with_no_kill_binary_on_path",
+                ])
+                .env("PATH", "/nonexistent")
+                .status()?;
+            assert!(status.success(), "the rerun with no kill binary: {status}");
+            return Ok(());
+        }
+        let mut pipeline = command("/bin/sh");
+        pipeline.arg("-c").arg("/bin/sleep 30 | /bin/cat");
+        let deadline = Instant::now() + Duration::from_millis(300);
+        let cancelled: CancelFlag = Arc::new(move || Instant::now() >= deadline);
+        let started = Instant::now();
+        let capture = run_captured(pipeline, None, &cancelled, OUTPUT_CAP)?;
+        let elapsed = started.elapsed();
+        assert!(capture.cancelled);
+        assert!(
+            elapsed < Duration::from_secs(2),
+            "the group outlived the kill and held stdout for {elapsed:?}"
+        );
+        Ok(())
+    }
 }
