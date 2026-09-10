@@ -83,18 +83,19 @@ fn drain_capped(mut reader: impl Read, cap: usize, live: Option<&LiveOutput>) ->
     (String::from_utf8_lossy(&buffer).into_owned(), truncated)
 }
 
-/// Incident: waiting under the guard parked the cancel watchdog on the same lock for the
-/// child's whole life, so an early pipe-closer could not be killed. Released between polls.
-fn wait_polled(child: &Mutex<Child>) -> Result<Option<i32>, String> {
+/// Incident: waiting under the guard parked the cancel watchdog on the same lock, so an early
+/// pipe-closer could not be killed. Released between polls; a reap sets `done` under it.
+fn wait_polled(child: &Mutex<Child>, done: &AtomicBool) -> Result<Option<i32>, String> {
     loop {
-        let polled = child
-            .lock()
-            .map_err(|_| "child lock poisoned".to_owned())?
+        let mut guard = child.lock().map_err(|_| "child lock poisoned".to_owned())?;
+        let polled = guard
             .try_wait()
             .map_err(|error| format!("wait failed: {error}"))?;
         if let Some(status) = polled {
+            done.store(true, Ordering::SeqCst);
             return Ok(status.code());
         }
+        drop(guard);
         std::thread::sleep(Duration::from_millis(20));
     }
 }
@@ -156,10 +157,11 @@ pub(crate) fn run_captured_live(
             while !done.load(Ordering::SeqCst) {
                 if cancelled() {
                     was_cancelled.store(true, Ordering::SeqCst);
-                    // A poisoned lock surfaces from `wait_polled` below.
+                    // A poisoned lock surfaces from `wait_polled` below; a reaped pid is not ours.
                     return child
                         .lock()
                         .ok()
+                        .filter(|_| !done.load(Ordering::SeqCst))
                         .and_then(|mut child| kill_tree(&mut child).err());
                 }
                 std::thread::sleep(Duration::from_millis(50));
@@ -181,7 +183,7 @@ pub(crate) fn run_captured_live(
         .join()
         .unwrap_or_else(|_| (String::new(), false));
 
-    let waited = wait_polled(&child);
+    let waited = wait_polled(&child, &done);
     done.store(true, Ordering::SeqCst);
     let kill_error = watchdog
         .join()
