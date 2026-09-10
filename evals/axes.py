@@ -4,11 +4,13 @@
     python3 evals/axes.py <dir> [--suite S] [--model M] [--json out.jsonl]
 
 A trial is a v4 session file; its context is the nearest ancestor holding a
-harbor `result.json` (reward, wall, timeout) or a run.py `row.json`. One JSON
-line per trial, then the docs/eval-ledger.md row with the persistence, rigor
-and experience triples on the right. Exit 2 when a trial is unmeasurable: a
-turn without usage, or no assistant message at all. Every column is a
-deterministic function of the run's own files (axes.md names each source).
+harbor `result.json` (reward, wall, timeout; the verifier's `ctrf.json` and
+`trace_results.json` beside it) or a run.py `row.json`. One JSON line per
+trial, then the docs/eval-ledger.md row with the persistence, rigor and
+experience triples, timeouts and partials on the right. Exit 2 when a trial
+is unmeasurable: a turn without usage, or no assistant message at all. Every
+column is a deterministic function of the run's own files (axes.md names each
+source).
 """
 
 import argparse
@@ -62,16 +64,31 @@ def _iso_seconds(timing):
     return round((end - start).total_seconds(), 2)
 
 
+def verifier_report(trial, name):
+    """A file the task's verifier wrote beside its reward, or {} when this verifier writes none."""
+    path = trial / "verifier" / name
+    report = json.loads(path.read_text()) if path.is_file() else {}
+    return report if isinstance(report, dict) else {}
+
+
 def harbor_context(trial):
     result = json.loads((trial / "result.json").read_text())
     rewards = (result.get("verifier_result") or {}).get("rewards") or {}
     exc = (result.get("exception_info") or {}).get("exception_type") or ""
     reward = rewards.get("reward")
+    tally = (verifier_report(trial, "ctrf.json").get("results") or {}).get("summary") or {}
+    partial = verifier_report(trial, "trace_results.json").get("partial_score")
     return {
         "task": result.get("task_name"),
         "reward": float(reward) if isinstance(reward, (int, float)) else 0.0,
-        "timedOut": "Timeout" in exc,
-        "errored": bool(exc) and "Timeout" not in exc,
+        "timedOut": exc == "AgentTimeoutError",
+        "errored": exc not in ("", "AgentTimeoutError", "VerifierTimeoutError"),
+        # Incident: photonic cc3HUqA's verifier overran its 300 s ceiling and harbor kept the agent
+        # timeout over the VerifierTimeoutError; a verifier that started and returned nothing survives.
+        "verifierUnmeasured": result.get("verifier_result") is None and bool(result.get("verifier")),
+        "testsPassed": tally.get("passed"),
+        "testsTotal": tally.get("tests"),
+        "partialScore": partial if isinstance(partial, (int, float)) else None,
         "wallSec": _iso_seconds(result.get("agent_execution") or {}),
     }
 
@@ -79,7 +96,7 @@ def harbor_context(trial):
 def run_context(trial):
     row = json.loads((trial / "row.json").read_text())
     return {"task": row.get("task"), "reward": float(row.get("reward") or 0), "timedOut": bool(row.get("timedOut")),
-            "errored": False, "wallSec": row.get("wallSec")}
+            "errored": row.get("exit") not in (0, None), "wallSec": row.get("wallSec")}
 
 
 def telemetry(path):
@@ -189,11 +206,15 @@ def ledger_row(rows, suite, model, fingerprint, note):
     attempts = max((len(v) for v in by_task.values()), default=1)
     pk = pass_at_k(by_task)
     width = ci95(by_task) if attempts >= 2 else None
-    pass_cell = f"k={attempts}" + (" " + " ".join(f"{k}={v}" for k, v in pk.items()) if pk else "") + (f" ±{width}" if width else "")
+    pass_cell = f"k={attempts}" + (" " + " ".join(f"{k}={v}" for k, v in pk.items()) if pk else "") + (f" ±{width}" if width is not None else "")
     unknown = _sum(rows, "unknownTurns")
     cost = _sum(rows, "costUsd")
     wall = _sum(rows, "wallSec")
     persistence, rigor, experience = triples(rows)
+    tallied = [row for row in rows if row.get("testsTotal") is not None]
+    scores = [row["partialScore"] for row in rows if row.get("partialScore") is not None]
+    partials = " ".join(([f"{_sum(tallied, 'testsPassed')}/{_sum(tallied, 'testsTotal')}"] if tallied else [])
+                        + ([f"{statistics.mean(scores):.2f}"] if scores else [])) or "-"
     return " | ".join([
         "| NNNN", datetime.now().date().isoformat(), suite, model, fingerprint,
         f"{passed}/{len(scored)}" if scored else "—", pass_cell,
@@ -201,7 +222,8 @@ def ledger_row(rows, suite, model, fingerprint, note):
         "?" if unknown else (f"{cost:.4f}" if cost else "-"),
         f"{wall:.1f}s" if wall else "-", str(_sum(rows, "turns")),
         str(max((row["peakContextTokens"] or 0 for row in rows), default=0)),
-        str(_sum(rows, "compactions")), note, "", persistence, rigor, experience + " |",
+        str(_sum(rows, "compactions")), note, "", persistence, rigor, experience,
+        f"{_sum(rows, 'timedOut')}/{_sum(rows, 'verifierUnmeasured')}/{_sum(rows, 'errored')}", partials + " |",
     ])
 
 
