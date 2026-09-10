@@ -149,5 +149,6 @@ when it changes rather than editing them by hand.
 - [D171](adr/d171.md) - `read` converts a file that is not UTF-8 through the kernel venv, never...
 - [D171](adr/d171.md) - `read` converts a file that is not text through the kernel venv, never...
 - [D173](adr/d173.md) - the ledger row says what it could not measure
+- [D174](adr/d174.md) - a row names the build, upstream and routing it ran on, and a trial its budget
 
 D36-D51, D72, D73 and D74 have no ADR yet; ARCHITECTURE.md is the record for those rows.

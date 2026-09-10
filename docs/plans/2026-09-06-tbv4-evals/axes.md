@@ -101,6 +101,7 @@ stopped on its own. Both are visible per row; neither is a score.
 | compactions | `compaction` entries | emission `summarization_count` |
 | tokens per turn | (in + cached) / turns | derived |
 | output per pass | Σ output / successes | derived; on QnA-shaped tasks output buys rubric coverage (§15.3 lever 10); on binary tasks it is pure cost |
+| upstreams | turns per upstream as `name=n`, most turns first; `-` when no turn names one (D174) | the `upstream` diagnostic the completions mapper keeps off each OpenRouter chunk's `provider`, `yi_usage.upstreams` |
 
 ## What a ledger row holds
 
