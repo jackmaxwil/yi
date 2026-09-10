@@ -1,6 +1,6 @@
 {
   "id": "block-on-user",
-  "dryReward": 0,
+  "dryReward": 1,
   "timeoutSec": 600,
-  "note": "faux leaves the tree untouched but its echo asks nothing, so it scores 0: the reward wants the seed tree and an answer.txt that asks for the timeout key's name"
+  "note": "faux leaves the tree untouched and its echo names the timeout key, so it scores 1; a dead binary writes no answer.txt and scores 0"
 }
