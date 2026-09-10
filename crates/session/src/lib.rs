@@ -11,7 +11,7 @@ mod store;
 
 pub use error::SessionError;
 pub use id::{IdGenerator, age_label, now_ms, session_title, validate_session_id};
-pub use jsonl::{JsonlRepo, create_flat_session, load_session};
+pub use jsonl::{JsonlRepo, create_flat_session, load_session, session_directory_name};
 pub use query::{
     BranchBounds, CreateOptions, EntryOrder, EntryQuery, ForkPosition, ForkScope, HistoryHit,
     LanePointer, LogOptions, RecordQuery, SessionMetadata, SessionStats,

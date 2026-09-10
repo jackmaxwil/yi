@@ -80,10 +80,13 @@ fn draw_frame<B>(
     let reflow_theme = app.theme;
     run_reflow(app, terminal, app.width.saturating_sub(2), &reflow_theme);
     let goal = port.and_then(|port| port.goal());
+    let memory = port
+        .and_then(|port| port.memory())
+        .and_then(|feed| feed.hud());
     app.plan_progress = port.and_then(|port| port.plan_progress());
     app.todos = port.and_then(|port| port.todo_list());
     let total = u16::try_from(app.rows).unwrap_or(u16::MAX);
-    let layout = layout_chat(app, goal, total);
+    let layout = layout_chat(app, goal, memory, total);
     let resized = terminal
         .resize_viewport(layout.rows(), layout.floor)
         .unwrap_or(false);
@@ -192,7 +195,12 @@ impl ChatLayout {
 
 /// Everything the chat shows for a frame of `total` rows, assembled from the app alone;
 /// the live tail is trimmed to what the rest leaves.
-pub fn layout_chat(app: &mut App, goal: Option<GoalView>, total: u16) -> ChatLayout {
+pub fn layout_chat(
+    app: &mut App,
+    goal: Option<GoalView>,
+    memory: Option<String>,
+    total: u16,
+) -> ChatLayout {
     let spinner = app.spinner_phase();
     let theme = app.theme;
     let width = app.width;
@@ -201,7 +209,7 @@ pub fn layout_chat(app: &mut App, goal: Option<GoalView>, total: u16) -> ChatLay
     let hud_lines = if app.hud_hidden {
         Vec::new()
     } else {
-        crate::hud::render(&crate::hud::input(app, goal), &theme)
+        crate::hud::render(&crate::hud::input(app, goal, memory), &theme)
     };
 
     let status_input = StatusInput {
@@ -404,7 +412,7 @@ pub fn paint_pane(
     let _ = app.take_pending_repaint();
     app.set_width(usize::from(area.width));
     app.set_rows(usize::from(area.height));
-    let layout = layout_chat(app, goal, area.height);
+    let layout = layout_chat(app, goal, None, area.height);
     let chat_rows = layout.rows().min(area.height);
     let above = usize::from(area.height.saturating_sub(chat_rows));
     let history = app.reflowed(above.saturating_add(*scroll));

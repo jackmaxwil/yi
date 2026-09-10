@@ -457,19 +457,19 @@ pub struct Pool {
     slots: u8,
 }
 
+/// Invariant: a lane is itself a worktree, so lanes and memory key off the common git dir.
+pub fn canonical_repo(cwd: &Path) -> Option<PathBuf> {
+    let common = git(
+        cwd,
+        &["rev-parse", "--path-format=absolute", "--git-common-dir"],
+    )
+    .ok()?;
+    PathBuf::from(common.trim()).parent()?.canonicalize().ok()
+}
+
 impl Pool {
     pub fn open(home: &Path, cwd: &Path, slots: u8) -> Result<Self, LaneError> {
-        // Invariant: a lane is itself a worktree, so the pool is keyed by the common git dir.
-        let common = git(
-            cwd,
-            &["rev-parse", "--path-format=absolute", "--git-common-dir"],
-        )
-        .map_err(|_| LaneError::NotARepo(cwd.to_path_buf()))?;
-        let common = PathBuf::from(common.trim());
-        let root = common
-            .parent()
-            .ok_or_else(|| LaneError::NotARepo(cwd.to_path_buf()))?;
-        let repo = root.canonicalize().map_err(io_error(root))?;
+        let repo = canonical_repo(cwd).ok_or_else(|| LaneError::NotARepo(cwd.to_path_buf()))?;
         let hash = crate::ext::content_hash(&repo.to_string_lossy());
         let short: String = hash.chars().take(16).collect();
         // Invariant: opening the pool writes nothing; a `--here` start or a listing

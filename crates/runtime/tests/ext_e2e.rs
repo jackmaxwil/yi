@@ -588,3 +588,38 @@ fn identical_instruction_files_ride_the_yard_once() -> TestResult {
     assert!(!assembled.contains("source=\"CLAUDE.md\""), "{assembled}");
     Ok(())
 }
+
+#[test]
+fn the_memory_block_is_present_at_zero_notes() -> TestResult {
+    let cwd = temp_dir("memory-zero-cwd")?;
+    let home = temp_dir("memory-zero-home")?;
+    let mut host = install(ExtOptions {
+        cwd: cwd.clone(),
+        home: home.clone(),
+        mode: yi_runtime::PermissionMode::Auto,
+        user_system: String::new(),
+        schema_instruction: None,
+        context_window: 128_000,
+    });
+    let feed = std::sync::Arc::new(yi_runtime::memory::Activity::default());
+    host.register(Box::new(yi_runtime::memory::MemoryExt::new(
+        home.clone(),
+        std::sync::Arc::clone(&feed),
+    )));
+    host.start(None, false);
+    let prompt = host.system_prompt();
+    assert!(
+        prompt.contains("source=\"memory\" trust=\"untrusted\">>>\nSaved memories:"),
+        "{prompt}"
+    );
+    assert!(prompt.contains("await memory.save(\"\"\"---\nname: kebab-slug"));
+    assert!(prompt.contains("0 repo · 0 global\nNo notes yet."));
+    assert_eq!(feed.take_lines(), vec!["memory · 0 repo · 0 global"]);
+    assert!(
+        !home.join(".yi").exists(),
+        "a session with no notes wrote to HOME"
+    );
+    let _ = std::fs::remove_dir_all(&cwd);
+    let _ = std::fs::remove_dir_all(&home);
+    Ok(())
+}
