@@ -313,6 +313,9 @@ pub struct KernelServiceOptions {
     pub on_restore: Option<Arc<RestoreNoticeFn>>,
     pub sandbox: Option<yi_tools::Sandbox>,
     pub snapshot_key: Option<Arc<dyn Fn() -> Option<String> + Send + Sync>>,
+    /// A cell's wall clock, past which it is interrupted as a cancel would; `None` is
+    /// bash's ceiling, [`yi_tools::MAX_TIMEOUT_SECS`].
+    pub cell_ceiling: Option<std::time::Duration>,
 }
 
 /// A session's snapshot files, beside the root's, prefixed with its id: the sessions
@@ -578,14 +581,22 @@ impl KernelService {
         cancelled: &CancelFlag,
     ) -> Result<KernelCellOutcome, String> {
         let mut kernel_restarted = false;
+        let ceiling = self
+            .options
+            .cell_ceiling
+            .unwrap_or(std::time::Duration::from_secs(yi_tools::MAX_TIMEOUT_SECS));
         loop {
             let manager = self.ensure().await?;
             let abort = AbortFlag::default();
             let watcher = {
                 let abort = abort.clone();
                 let cancelled = Arc::clone(cancelled);
+                // Started after the boot, so a cold venv build is not charged to the cell;
+                // a ceiling past `Instant`'s range is no clock at all.
+                let ceiling_at = std::time::Instant::now().checked_add(ceiling);
                 tokio::spawn(async move {
-                    while !cancelled() {
+                    while !cancelled() && ceiling_at.is_none_or(|at| std::time::Instant::now() < at)
+                    {
                         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
                     }
                     abort.fire();
@@ -1054,6 +1065,7 @@ mod tests {
             on_restore: None,
             sandbox: None,
             snapshot_key: None,
+            cell_ceiling: None,
         });
         service.dispose().await;
         assert!(
@@ -1077,6 +1089,7 @@ mod tests {
             on_restore: None,
             sandbox: None,
             snapshot_key: None,
+            cell_ceiling: None,
         })
     }
 
