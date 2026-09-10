@@ -256,7 +256,12 @@ fn render(id: u64, job: &Job) -> JobReport {
     let state = state(job);
     let output = match &job.capture {
         Some(capture) => {
-            crate::reduce::strip_ansi(&format!("{}{}", capture.stdout, capture.stderr))
+            let failed = capture
+                .kill_error
+                .as_ref()
+                .map(|error| format!("\n[group kill failed: {error}]"));
+            let text = format!("{}{}", capture.stdout, capture.stderr);
+            crate::reduce::strip_ansi(&text) + &failed.unwrap_or_default()
         }
         None => String::new(),
     };
