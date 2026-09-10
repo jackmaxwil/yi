@@ -76,7 +76,7 @@ act, and a real-model suite is user-run and budgeted (plan law 3).
 run HOME's `routing` config key for `evals/run.py` and the harbor adapter
 (`yi_usage.eval_config`, the one writer) and rides the fingerprint's mode as
 `+routing{…}`, so a routing A/B needs no rebuild; anything but a JSON object is
-refused.
+refused, and so is `--home` on the fixtures lane, whose config stays the caller's.
 
 ## Axes (D140)
 
