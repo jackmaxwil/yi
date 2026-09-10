@@ -568,6 +568,33 @@ mod tests {
     }
 
     #[test]
+    fn a_failed_group_kill_is_named_in_the_job_report() -> Fallible {
+        // A group that survives its kill holds the pipes past the grace, so only this late
+        // report can say why.
+        let id = registry().insert("sleep 300", Reaper::Handle, Arc::default(), Arc::default());
+        registry().finish(
+            id,
+            CommandCapture {
+                stdout: "partial".to_owned(),
+                stderr: String::new(),
+                exit_code: None,
+                cancelled: true,
+                truncated: false,
+                kill_error: Some("/bin/sh: No such file or directory".to_owned()),
+            },
+        );
+        let report = registry().release(id)?;
+        assert!(
+            report
+                .output
+                .ends_with("[group kill failed: /bin/sh: No such file or directory]"),
+            "{}",
+            report.output
+        );
+        Ok(())
+    }
+
+    #[test]
     fn the_live_buffer_trims_and_says_it_trimmed() -> Fallible {
         let dir = scratch()?;
         let id = spawn_job(
