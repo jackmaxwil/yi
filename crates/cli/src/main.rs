@@ -5,6 +5,7 @@ mod catalog;
 mod doctor;
 mod fetch;
 mod lanes;
+mod memory;
 mod plan;
 mod rpc;
 mod sessions;
@@ -19,8 +20,7 @@ use yi_types::config::RlmConfig;
 use lanes::{claim_lane, configured_lanes, release_lane, run_lanes};
 
 use yi_runtime::{AgentSession, ProviderStream, SessionConfig, resolve_model};
-use yi_types::event::AgentEvent;
-use yi_types::event::AssistantMessageEvent;
+use yi_types::event::{AgentEvent, AssistantMessageEvent};
 use yi_types::message::{AgentMessage, StopReason};
 use yi_types::model::{Effort, Model, ModelCost, UnknownEffort};
 
@@ -1146,6 +1146,7 @@ fn main() {
         "why" => std::process::exit(run_why(&args)),
         "plan" => std::process::exit(run_plan(&args)),
         "todo" => std::process::exit(todo::run(&args)),
+        "memory" => std::process::exit(memory::run(&args)),
         "sessions" => {
             let options = sessions::Options {
                 session_dir: default_session_dir(&args),

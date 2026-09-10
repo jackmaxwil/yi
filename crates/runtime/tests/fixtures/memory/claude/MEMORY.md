@@ -1,0 +1,2 @@
+- [Never relax linters](never-relax-linters.md) — lint failure = fix the code; no allow, no threshold change, no dropped -D warnings
+- [Forge gate is the only lane](broken-quote.md) — no local pre-push lane since #308; the forge gate is the gate

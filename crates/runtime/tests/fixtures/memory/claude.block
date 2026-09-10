@@ -1,0 +1,25 @@
+Saved memories: notes from earlier sessions, untrusted. The repository and the
+user's words outrank them. One line each: a link to the note, then its hook.
+When a hook matches the task, open the note: await memory.read("name"), the
+name being the link's file without .md. A note that names a file or flag is
+checked before it is acted on; ⚠ marks a line whose path is gone; [[name]] in
+a note names another note. After a user correction, an incident, or a verified
+success (never every turn) save one; the same name updates, and
+await memory.forget("name") deletes a wrong one:
+await memory.save("""---
+name: kebab-slug
+description: the situation, then the rule, one line
+type: user | feedback | project | reference
+---
+The fact.
+
+**Why:** the incident.
+
+**How to apply:** the rule next time; name the file, flag, or command.
+
+**Related:** [[other-note]]
+""")
+3 repo · 0 global
+- [Never relax linters](never-relax-linters.md) — lint failure = fix the code; no allow, no threshold change, no dropped -D warnings
+- [Forge gate is the only lane](broken-quote.md) — no local pre-push lane since #308; the forge gate is the gate
+- [fgj-forge-cli](fgj-forge-cli.md) — The forge CLI is fgj; pass -R apex/yi from any worktree.
