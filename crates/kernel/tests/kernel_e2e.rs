@@ -168,18 +168,15 @@ async fn cells_stream_error_host_request_interrupt_and_shutdown() -> TestResult 
 async fn an_aborted_internal_cell_clears_the_active_slot() -> TestResult {
     let kernel = manager()?;
     let abort = AbortFlag::default();
-    let abort_remote = abort.clone();
-    tokio::spawn(async move {
-        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
-        abort_remote.fire();
-    });
+    let deaf = abort.clone();
     // Deaf to the interrupt past the grace and the busy window, then failing on it, as a
-    // snapshot inside one long C call does.
+    // snapshot inside one long C call does; the abort fires once the cell has gone deaf.
     let stuck = kernel
         .execute(
-            "import signal, time\nsignal.signal(signal.SIGINT, signal.SIG_IGN)\ntime.sleep(10)\nraise KeyboardInterrupt",
+            "import signal, time\nsignal.signal(signal.SIGINT, signal.SIG_IGN)\nprint('deaf', flush=True)\ntime.sleep(10)\nraise KeyboardInterrupt",
             ExecuteOptions {
                 abort: Some(abort),
+                on_stream: Some(Box::new(move |_, _| deaf.fire())),
                 internal: true,
                 ..ExecuteOptions::default()
             },
