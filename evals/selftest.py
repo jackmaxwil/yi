@@ -216,6 +216,15 @@ def check_axes():
     with tempfile.TemporaryDirectory() as directory:
         Path(directory, "row.json").write_text(json.dumps({"task": "t", "reward": 0, "exit": 1}))
         assert axes.run_context(Path(directory))["errored"], "a run that exited 1 is not a verified failure"
+    # The three timeouts cells never count one trial twice: only the agent's own timeout is `timedOut`,
+    # and a verifier that started and raised anything but a timeout (no reward file) is an error alone.
+    for exc, cells in (("VerifierTimeoutError", (False, True, False)), ("RewardFileNotFoundError", (False, False, True)),
+                       ("AgentSetupTimeoutError", (False, False, True))):
+        with tempfile.TemporaryDirectory() as directory:
+            Path(directory, "result.json").write_text(json.dumps({"exception_info": {"exception_type": exc},
+                                                                  "verifier": {"started_at": "2026-09-09T00:00:00Z"}}))
+            got = axes.harbor_context(Path(directory))
+        assert (got["timedOut"], got["verifierUnmeasured"], got["errored"]) == cells, (exc, got)
     with tempfile.TemporaryDirectory() as directory:
         empty = Path(directory)
         with contextlib.redirect_stderr(io.StringIO()):

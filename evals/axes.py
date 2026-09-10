@@ -78,14 +78,16 @@ def harbor_context(trial):
     reward = rewards.get("reward")
     tally = (verifier_report(trial, "ctrf.json").get("results") or {}).get("summary") or {}
     partial = verifier_report(trial, "trace_results.json").get("partial_score")
+    errored = exc not in ("", "AgentTimeoutError", "VerifierTimeoutError")
     return {
         "task": result.get("task_name"),
         "reward": float(reward) if isinstance(reward, (int, float)) else 0.0,
         "timedOut": exc == "AgentTimeoutError",
-        "errored": exc not in ("", "AgentTimeoutError", "VerifierTimeoutError"),
+        "errored": errored,
         # Incident: photonic cc3HUqA's verifier overran its 300 s ceiling and harbor kept the agent
         # timeout over the VerifierTimeoutError; a verifier that started and returned nothing survives.
-        "verifierUnmeasured": result.get("verifier_result") is None and bool(result.get("verifier")),
+        # One that raised anything else (a missing reward file) is counted as an error, not twice.
+        "verifierUnmeasured": not errored and result.get("verifier_result") is None and bool(result.get("verifier")),
         "testsPassed": tally.get("passed"),
         "testsTotal": tally.get("tests"),
         "partialScore": partial if isinstance(partial, (int, float)) else None,
