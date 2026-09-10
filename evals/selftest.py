@@ -171,6 +171,23 @@ def check_eval_config():
     assert done.returncode == 2 and yi_usage.ROUTING_ENV in done.stderr, (done.returncode, done.stdout)
 
 
+def check_empty_stream_fails_clean_workspace():
+    """Row 0012: a binary that exited 4 before any request scored clean-workspace 1, because the
+    runner wrote an empty answer.txt; a rollout that answered nothing leaves no answer file."""
+    env = {key: value for key, value in os.environ.items() if key != yi_usage.ROUTING_ENV}
+    with tempfile.TemporaryDirectory() as home:
+        dead = Path(home) / "yi"
+        dead.write_text("#!/bin/sh\nexit 4\n")
+        dead.chmod(0o755)
+        done = subprocess.run(
+            [sys.executable, str(ROOT / "run.py"), "--home", home, "--binary", str(dead), "--task", "clean-workspace"],
+            capture_output=True, text=True, env=env, timeout=120,
+        )
+    assert done.returncode == 0, done.stdout + done.stderr
+    row = json.loads(done.stdout.splitlines()[0])
+    assert row["reward"] == 0, f"an empty stream scored clean-workspace {row['reward']}"
+
+
 def check_no_assistant_rows():
     """E9: token fields land all-or-none, never as flattering zeros."""
     kept = []
@@ -467,6 +484,7 @@ CHECKS = (
     check_usage,
     check_budget_sentence,
     check_eval_config,
+    check_empty_stream_fails_clean_workspace,
     check_no_assistant_rows,
     check_unknown_usage_is_not_a_free_turn,
     check_session_extras,
