@@ -260,3 +260,53 @@ fn a_binary_that_is_no_document_keeps_the_plain_error() -> TestResult {
     assert_eq!(copies(&scratch.home), 0);
     Ok(())
 }
+
+#[test]
+fn an_rtf_file_converts_though_it_is_seven_bit_text() -> TestResult {
+    let (scratch, tools) = setup("rtf")?;
+    std::fs::copy(
+        Path::new(FIXTURES).join("brief.rtf"),
+        scratch.cwd.join("brief.rtf"),
+    )?;
+    let output = call(
+        &tool(&tools, "read")?,
+        &scratch.cwd,
+        json!({"path": "brief.rtf"}),
+    )?;
+    let body = text(&output);
+    assert!(
+        body.lines()
+            .nth(1)
+            .is_some_and(|line| line.contains("converted to Markdown")),
+        "{body}"
+    );
+    assert!(body.contains("Quarterly brief"), "{body}");
+    assert!(body.contains("€1 240"), "{body}");
+    assert!(
+        !body.contains("\\rtf1"),
+        "no RTF markup reaches the model: {body}"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_partly_scanned_pdf_reads_its_text_pages_and_names_the_rest() -> TestResult {
+    let (scratch, tools) = setup("mixed")?;
+    std::fs::copy(
+        Path::new(FIXTURES).join("mixed.pdf"),
+        scratch.cwd.join("mixed.pdf"),
+    )?;
+    let output = call(
+        &tool(&tools, "read")?,
+        &scratch.cwd,
+        json!({"path": "mixed.pdf"}),
+    )?;
+    let body = text(&output);
+    assert!(!output.is_error, "{body}");
+    assert!(
+        body.contains("[no text layer on page(s) 2 of 2; left out]"),
+        "{body}"
+    );
+    assert!(body.contains("Zoë signs the lease"), "{body}");
+    Ok(())
+}

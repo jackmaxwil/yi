@@ -531,7 +531,7 @@ tree walk (§4.4), and images/audio/video (§8).
 
 ## 12. As built
 
-Five departures from the text above, each for a reason found while building it:
+Seven departures from the text above, each for a reason found while building or dogfooding it:
 
 - **The converter reaches `read` through the tool set, not `ToolContext`.** The description
   has to name the formats when the tool is constructed, before any call carries a context, so
@@ -552,3 +552,19 @@ Five departures from the text above, each for a reason found while building it:
   asserting on source text. The refusal is proven behaviourally instead: a scanned PDF from a
   real producer (Quartz, via `sips`) comes back as the local refusal and leaves no copy, and
   the only `ocr` value the converter can pass is the literal `"reject"`.
+- **RTF is offered by its marker, not only by the UTF-8 failure.** RTF is 7-bit text, so the
+  non-UTF-8 trigger never fired on it and the model got raw `{\rtf1…` markup (an 820,000-line
+  file on this machine). A file whose text starts `{\rtf` now goes to the converter too, and
+  falls back to the raw text if nothing converts. This is a content marker, not an extension.
+- **A partly scanned PDF converts its text pages.** anydoc's `reject` refuses a whole PDF if
+  one page lacks a text layer, and a real 11-page PDF with one such page came back as a
+  refusal. `pdf_inspector.process_pdf`, the local non-OCR path, now supplies the text pages
+  under a first line naming the pages left out. Only a PDF with no text page is refused.
+
+Dogfood, 2026-09-10: 141 documents sampled from `~/Downloads`, `~/Desktop` and
+`~/Development`, covering every extension in §8, were read through the built tools. 118
+converted, cold in a median of about 55-110 ms (1.1 s at most) and 0 ms from the copy. 18
+were refused with a stated reason, and 5 were read as text because they were text (two UTF-8
+csv files, a web2py template named `.pdf`, a spreadsheet saved as text, and a Word lock file
+`~$…docx`). `find=`, windows, and the `edit`/`write` refusals behaved on copies of real files.
+

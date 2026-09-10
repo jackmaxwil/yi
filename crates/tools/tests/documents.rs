@@ -40,7 +40,7 @@ fn the_description_claims_only_the_recorded_formats() -> TestResult {
     assert!(
         recorded
             .description()
-            .contains("converted to Markdown when it is one of: docx, pdf."),
+            .contains("converted to Markdown: docx, pdf."),
         "{}",
         recorded.description()
     );

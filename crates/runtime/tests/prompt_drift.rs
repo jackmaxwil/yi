@@ -96,7 +96,7 @@ fn read_names_exactly_the_formats_the_installed_wheel_converts() -> TestResult {
         .ok_or("no read tool")?;
     let claimed: Vec<String> = read
         .description()
-        .split("one of: ")
+        .split("converted to Markdown: ")
         .nth(1)
         .and_then(|rest| rest.split('.').next())
         .map(|list| list.split(", ").map(str::to_owned).collect())
