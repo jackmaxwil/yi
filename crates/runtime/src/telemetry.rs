@@ -39,6 +39,18 @@ fn text_of(message: &AgentMessage) -> String {
     }
 }
 
+/// A dead stream's class is in its error message, not its text; the text is the fallback.
+fn error_class(message: &AgentMessage) -> ErrorClass {
+    if let AgentMessage::Assistant {
+        error_message: Some(text),
+        ..
+    } = message
+    {
+        return ErrorClass::from_provider_text(text);
+    }
+    ErrorClass::from_provider_text(&text_of(message))
+}
+
 fn usage_of(message: &AgentMessage) -> Option<&Usage> {
     match message {
         AgentMessage::Assistant { usage, .. } => Some(usage),
@@ -118,10 +130,9 @@ impl Telemetry {
                 }
                 let ended = match &event {
                     AssistantMessageEvent::Done { message, .. } => Some((usage_of(message), None)),
-                    AssistantMessageEvent::Error { error, .. } => Some((
-                        usage_of(error),
-                        Some(ErrorClass::from_provider_text(&text_of(error))),
-                    )),
+                    AssistantMessageEvent::Error { error, .. } => {
+                        Some((usage_of(error), Some(error_class(error))))
+                    }
                     _ => None,
                 };
                 if let Some((usage, class)) = ended {
