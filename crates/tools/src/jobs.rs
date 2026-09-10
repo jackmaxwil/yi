@@ -399,6 +399,7 @@ pub fn run_or_background(
                     exit_code: None,
                     cancelled: true,
                     truncated: false,
+                    kill_error: None,
                 }))),
             }
         }

@@ -24,29 +24,37 @@ pub struct CommandCapture {
     pub exit_code: Option<i32>,
     pub cancelled: bool,
     pub truncated: bool,
+    pub kill_error: Option<String>,
 }
 
-/// Kill the shell, then its process group: a grandchild outliving the shell holds the capture
-/// pipes, so [`drain_capped`] waits out the cancelled command. `kill(1)`, no `libc` (§13.1).
-fn kill_tree(child: &mut Child) {
-    // Also the guard on the group kill below: `Child::kill` alone knows whether the child was
-    // reaped, and a reaped pid can already name somebody else's group.
-    if child.kill().is_err() {
-        return;
-    }
+/// Kill the shell's group, then the shell: a grandchild left alive holds the capture pipes. The
+/// group goes first, while the shell is still in it: macOS refuses a group of zombies (EPERM).
+fn kill_tree(child: &mut Child) -> Result<(), String> {
     #[cfg(unix)]
-    {
-        // Incident: `--` is load-bearing. BSD kill(1) reads a bare `-<pgid>` as a negative
-        // pid, procps as a signal option, so on Linux the group survived silently.
-        let _group_kill_best_effort = command("kill")
-            .arg("-KILL")
-            .arg("--")
-            .arg(format!("-{}", child.id()))
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status();
+    let group = group_kill(child.id());
+    let shell = child
+        .kill()
+        .map_err(|error| format!("kill {}: {error}", child.id()));
+    #[cfg(unix)]
+    group?;
+    shell
+}
+
+/// Incident: slim images ship no `kill(1)`, and its dropped ENOENT left timed-out `python3`
+/// jobs running. No `libc` (§13.1): the shell's builtin, in the one form dash and bash parse.
+#[cfg(unix)]
+fn group_kill(pgid: u32) -> Result<(), String> {
+    let status = command("/bin/sh")
+        .args(["-c", r#"kill -KILL "-$1""#, "kill", &pgid.to_string()])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map_err(|error| format!("/bin/sh: {error}"))?;
+    if status.success() {
+        return Ok(());
     }
+    Err(format!("kill -KILL -{pgid}: {status}"))
 }
 
 fn drain_capped(mut reader: impl Read, cap: usize, live: Option<&LiveOutput>) -> (String, bool) {
@@ -148,13 +156,15 @@ pub(crate) fn run_captured_live(
             while !done.load(Ordering::SeqCst) {
                 if cancelled() {
                     was_cancelled.store(true, Ordering::SeqCst);
-                    if let Ok(mut child) = child.lock() {
-                        kill_tree(&mut child);
-                    }
-                    return;
+                    // A poisoned lock surfaces from `wait_polled` below.
+                    return child
+                        .lock()
+                        .ok()
+                        .and_then(|mut child| kill_tree(&mut child).err());
                 }
                 std::thread::sleep(Duration::from_millis(50));
             }
+            None
         })
     };
 
@@ -173,7 +183,9 @@ pub(crate) fn run_captured_live(
 
     let waited = wait_polled(&child);
     done.store(true, Ordering::SeqCst);
-    let _watchdog_exits_on_done = watchdog.join();
+    let kill_error = watchdog
+        .join()
+        .unwrap_or_else(|_| Some("the cancel watchdog panicked".to_owned()));
     if let Some(writer) = stdin_writer {
         let _writer_done = writer.join();
     }
@@ -184,6 +196,7 @@ pub(crate) fn run_captured_live(
         exit_code: waited?,
         cancelled: was_cancelled.load(Ordering::SeqCst),
         truncated: stdout_truncated || stderr_truncated,
+        kill_error,
     })
 }
 
