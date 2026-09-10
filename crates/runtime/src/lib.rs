@@ -88,6 +88,15 @@ pub use yi_permission::{
 };
 pub use yi_session as session_store;
 pub use yi_tools::{
-    Change, ChangeKind, builtin_tools, builtin_tools_with, discover_exec_tools, edit_file,
-    list_files,
+    Change, ChangeKind, Documents, builtin_tools, builtin_tools_with, discover_exec_tools,
+    edit_file, list_files,
 };
+
+pub fn documents(home: &std::path::Path) -> Documents {
+    let (python, formats) = yi_kernel::bootstrap::document_converter(home);
+    Documents {
+        python,
+        formats,
+        home: home.to_path_buf(),
+    }
+}

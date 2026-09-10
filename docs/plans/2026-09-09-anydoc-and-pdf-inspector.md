@@ -1,9 +1,9 @@
 # anydoc and pdf-inspector: `read` on every format, without the crate
 
 ```
-status:  PROPOSED. Phase 1 is admitted on its own measurements; phases 2-3
-         are gated on a trigger stated in §9 that today's evidence does not
-         yet pull.
+status:  IMPLEMENTED in 0.207.0 (D171, #368), all three phases. The §9
+         trigger for phases 2-3 was not met and was waived by the owner on
+         2026-09-10. Where the build departs from this text, §12 says how.
 date:    2026-09-09
 inputs:  github.com/firecrawl/anydoc (crates.io `anydoc` 0.2.4, PyPI
          `firecrawl-anydoc` 0.2.4, MIT) · github.com/firecrawl/pdf-inspector
@@ -516,7 +516,7 @@ tree walk (§4.4), and images/audio/video (§8).
 
 ## 11. Records this change owes
 
-- `D140` in YI_DESIGN §14.6, amending the demotion row: the crate stays
+- `D171` in YI_DESIGN §14.6, amending the demotion row: the crate stays
   refused, with this document's +3.42 MiB against 401 KB as the reason, and the
   wheels are recorded as what replaces it. §1.1 is **not** edited — nothing is
   admitted that needs an out.
@@ -528,3 +528,27 @@ tree walk (§4.4), and images/audio/video (§8).
   is what `read`'s description is derived from, and a wheel change rebuilds
   both together.
 - Phase 2 carries a growth memo against the `yi-tools` budget.
+
+## 12. As built
+
+Five departures from the text above, each for a reason found while building it:
+
+- **The converter reaches `read` through the tool set, not `ToolContext`.** The description
+  has to name the formats when the tool is constructed, before any call carries a context, so
+  `builtin_tools_with` takes a `Documents` (python, recorded formats, home) and the read, edit
+  and write tools share it through the hashline state. The dependency direction of §4.3 holds:
+  `yi-runtime` reads the venv record and `yi-tools` never learns where the list came from.
+- **The venv's directory is keyed by the extras as well as the ready check.** Two new extras
+  change `extra_args`, and every session still running main's code would have seen a mismatch
+  and rebuilt the shared venv, the back-and-forth the directory key was introduced to stop.
+- **The clause is worded for what actually triggers it.** A UTF-8 `.csv` is read as text and
+  never converted, so the description says "a file that is not UTF-8 text is converted to
+  Markdown when it is one of: …", then that the copy is read-only and `edit`/`write` refuse
+  the original.
+- **Phase 1's error signal ships as `details.convertedFrom`** on a converted read: the gate
+  it was meant to count toward was waived, and the extension on every conversion is the same
+  count, already in the session record.
+- **Phase 3 has no source-grep test.** The testing doctrine (`.ruler/080-testing.md`) forbids
+  asserting on source text. The refusal is proven behaviourally instead: a scanned PDF from a
+  real producer (Quartz, via `sips`) comes back as the local refusal and leaves no copy, and
+  the only `ocr` value the converter can pass is the literal `"reject"`.
