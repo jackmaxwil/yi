@@ -108,10 +108,11 @@ impl Scope {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Field {
-    Text(String),
-    List(Vec<String>),
-    Map(Vec<(String, String)>),
+pub struct Entry {
+    key: String,
+    value: String,
+    children: Vec<(String, String)>,
+    raw: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -159,7 +160,7 @@ pub struct Note {
     pub hook: String,
     pub kind: Option<MemoryType>,
     pub body: String,
-    pub front: Vec<(String, Field)>,
+    pub front: Vec<Entry>,
     pub trouble: Option<Trouble>,
 }
 
@@ -169,7 +170,7 @@ pub struct Memory {
     pub hook: String,
     pub kind: MemoryType,
     pub body: String,
-    pub extra: Vec<(String, Field)>,
+    pub extra: Vec<Entry>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -223,232 +224,83 @@ fn valid_key(key: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
 }
 
-fn unquote(raw: &str, line: usize) -> Result<String, Trouble> {
-    let unclosed = || Trouble {
+fn scalar_of(raw: &str, line: usize) -> Result<String, Trouble> {
+    let Some(rest) = raw.strip_prefix('"') else {
+        return Ok(raw.trim().to_owned());
+    };
+    let mut out = String::new();
+    let mut chars = rest.chars();
+    while let Some(c) = chars.next() {
+        match c {
+            '"' => return Ok(out),
+            '\\' => match chars.next() {
+                Some('n') => out.push('\n'),
+                Some('t') => out.push('\t'),
+                Some(other) => out.push(other),
+                None => break,
+            },
+            other => out.push(other),
+        }
+    }
+    Err(Trouble {
         line,
         reason: "unclosed quote".to_owned(),
-    };
-    if let Some(rest) = raw.strip_prefix('"') {
-        let mut out = String::new();
-        let mut chars = rest.chars();
-        while let Some(c) = chars.next() {
-            match c {
-                '"' => return Ok(out),
-                '\\' => match chars.next() {
-                    Some('n') => out.push('\n'),
-                    Some('t') => out.push('\t'),
-                    Some(other) => out.push(other),
-                    None => return Err(unclosed()),
-                },
-                other => out.push(other),
-            }
-        }
-        return Err(unclosed());
-    }
-    if let Some(rest) = raw.strip_prefix('\'') {
-        let mut out = String::new();
-        let mut chars = rest.chars().peekable();
-        while let Some(c) = chars.next() {
-            if c != '\'' {
-                out.push(c);
-            } else if chars.peek() == Some(&'\'') {
-                out.push('\'');
-                chars.next();
-            } else {
-                return Ok(out);
-            }
-        }
-        return Err(unclosed());
-    }
-    Ok(raw.trim().to_owned())
+    })
 }
 
-fn flow_list(raw: &str, line: usize) -> Result<Vec<String>, Trouble> {
-    let Some(inner) = raw
-        .trim_end()
-        .strip_prefix('[')
-        .and_then(|rest| rest.strip_suffix(']'))
-    else {
-        return Err(Trouble {
-            line,
-            reason: "unclosed [".to_owned(),
-        });
-    };
-    let mut items = Vec::new();
-    let mut current = String::new();
-    let mut quote: Option<char> = None;
-    for c in inner.chars() {
-        match (quote, c) {
-            (None, '"' | '\'') => {
-                quote = Some(c);
-                current.push(c);
-            }
-            (Some(open), _) if c == open => {
-                quote = None;
-                current.push(c);
-            }
-            (None, ',') => {
-                items.push(std::mem::take(&mut current));
-            }
-            _ => current.push(c),
-        }
-    }
-    if quote.is_some() {
-        return Err(Trouble {
-            line,
-            reason: "unclosed quote".to_owned(),
-        });
-    }
-    items.push(current);
-    items
-        .iter()
-        .map(|item| item.trim())
-        .filter(|item| !item.is_empty())
-        .map(|item| unquote(item, line))
-        .collect()
-}
-
-fn indented_run<'a>(lines: &[&'a str], from: usize) -> Vec<&'a str> {
-    lines
-        .iter()
-        .skip(from)
-        .take_while(|line| line.trim().is_empty() || line.starts_with(char::is_whitespace))
-        .copied()
-        .collect()
-}
-
-fn nested(run: &[&str], first_line: usize) -> Result<Option<Field>, Trouble> {
-    let items: Vec<(usize, &str)> = run
-        .iter()
-        .enumerate()
-        .filter(|(_, line)| !line.trim().is_empty())
-        .map(|(at, line)| (first_line.saturating_add(at), line.trim()))
-        .collect();
-    let Some((_, head)) = items.first() else {
-        return Ok(None);
-    };
-    if head.starts_with("- ") || *head == "-" {
-        let mut list = Vec::new();
-        for (line, item) in items {
-            if let Some(value) = item.strip_prefix('-') {
-                list.push(unquote(value.trim(), line)?);
-            }
-        }
-        return Ok(Some(Field::List(list)));
-    }
-    let mut map = Vec::new();
-    for (line, item) in items {
-        if let Some((key, value)) = item.split_once(':')
-            && valid_key(key.trim())
-        {
-            map.push((key.trim().to_owned(), unquote(value.trim(), line)?));
-        }
-    }
-    Ok((!map.is_empty()).then_some(Field::Map(map)))
-}
-
-fn parse_yaml(block: &str) -> Result<Vec<(String, Field)>, Trouble> {
-    let lines: Vec<&str> = block.lines().collect();
-    let mut entries: Vec<(String, Field)> = Vec::new();
-    let mut at = 0usize;
-    while let Some(line) = lines.get(at) {
+fn parse_block(block: &str) -> Result<Vec<Entry>, Trouble> {
+    let mut entries: Vec<Entry> = Vec::new();
+    for (at, line) in block.lines().enumerate() {
         let number = at.saturating_add(2);
-        at = at.saturating_add(1);
-        if line.trim().is_empty()
-            || line.trim_start().starts_with('#')
-            || line.starts_with(char::is_whitespace)
-        {
+        if line.starts_with(char::is_whitespace) {
+            if let Some(entry) = entries.last_mut() {
+                entry.raw.push('\n');
+                entry.raw.push_str(line);
+                if entry.value.is_empty()
+                    && let Some((key, value)) = line.trim().split_once(':')
+                    && valid_key(key.trim())
+                {
+                    entry
+                        .children
+                        .push((key.trim().to_owned(), scalar_of(value.trim(), number)?));
+                }
+            }
             continue;
         }
-        let Some((key, rest)) = line.split_once(':') else {
+        let Some((key, rest)) = line
+            .split_once(':')
+            .filter(|(key, _)| valid_key(key.trim()))
+        else {
             continue;
         };
-        let key = key.trim();
-        if !valid_key(key) {
-            continue;
-        }
-        let rest = rest.trim();
-        let field = match rest {
-            "" => {
-                let run = indented_run(&lines, at);
-                at = at.saturating_add(run.len());
-                nested(&run, number.saturating_add(1))?
-            }
-            ">" | "|" | ">-" | "|-" => {
-                let run = indented_run(&lines, at);
-                at = at.saturating_add(run.len());
-                let parts: Vec<&str> = run.iter().map(|line| line.trim()).collect();
-                let joiner = if rest.starts_with('>') { " " } else { "\n" };
-                Some(Field::Text(parts.join(joiner).trim().to_owned()))
-            }
-            _ if rest.starts_with('[') => Some(Field::List(flow_list(rest, number)?)),
-            _ => Some(Field::Text(unquote(rest, number)?)),
-        };
-        if let Some(field) = field {
-            entries.retain(|(existing, _)| existing != key);
-            entries.push((key.to_owned(), field));
-        }
+        let key = key.trim().to_owned();
+        entries.retain(|entry| entry.key != key);
+        entries.push(Entry {
+            value: scalar_of(rest.trim(), number)?,
+            key,
+            children: Vec::new(),
+            raw: line.to_owned(),
+        });
     }
     Ok(entries)
 }
 
-fn json_field(value: &serde_json::Value) -> Option<Field> {
-    let text = |value: &serde_json::Value| match value {
-        serde_json::Value::String(text) => text.clone(),
-        other => other.to_string(),
-    };
-    match value {
-        serde_json::Value::Null => None,
-        serde_json::Value::Array(items) => Some(Field::List(items.iter().map(text).collect())),
-        serde_json::Value::Object(map) => Some(Field::Map(
-            map.iter()
-                .map(|(key, value)| (key.clone(), text(value)))
-                .collect(),
-        )),
-        other => Some(Field::Text(text(other))),
-    }
-}
-
-fn parse_json(block: &str) -> Result<Vec<(String, Field)>, Trouble> {
-    let map: serde_json::Map<String, serde_json::Value> =
-        serde_json::from_str(block).map_err(|error| Trouble {
-            line: error.line().saturating_add(1),
-            reason: error.to_string(),
-        })?;
-    Ok(map
+fn text_of<'a>(front: &'a [Entry], key: &str) -> Option<&'a str> {
+    front
         .iter()
-        .filter_map(|(key, value)| json_field(value).map(|field| (key.clone(), field)))
-        .collect())
+        .find(|entry| entry.key == key && !entry.value.is_empty())
+        .map(|entry| entry.value.as_str())
 }
 
-fn is_json(block: &str) -> bool {
-    block.trim_start().starts_with("{")
-}
-
-fn parse_block(block: &str) -> Result<Vec<(String, Field)>, Trouble> {
-    if is_json(block) {
-        parse_json(block)
-    } else {
-        parse_yaml(block)
-    }
-}
-
-fn text_of<'a>(front: &'a [(String, Field)], key: &str) -> Option<&'a str> {
-    front.iter().find_map(|(name, field)| match field {
-        Field::Text(text) if name == key => Some(text.as_str()),
-        _ => None,
-    })
-}
-
-fn kind_of(front: &[(String, Field)]) -> Option<&str> {
+fn kind_of(front: &[Entry]) -> Option<&str> {
     text_of(front, "type").or_else(|| {
-        front.iter().find_map(|(name, field)| match field {
-            Field::Map(map) if name == "metadata" => map
-                .iter()
-                .find(|(key, _)| key == "type")
-                .map(|(_, value)| value.as_str()),
-            _ => None,
-        })
+        front
+            .iter()
+            .find(|entry| entry.key == "metadata")?
+            .children
+            .iter()
+            .find(|(key, _)| key == "type")
+            .map(|(_, value)| value.as_str())
     })
 }
 
@@ -572,17 +424,17 @@ pub fn draft(markdown: &str, overlay: &[(String, String)]) -> Result<Draft, DocE
     let parts = split(markdown).map_err(DocError::Frontmatter)?;
     let mut warnings = Vec::new();
     let mut front = match parts.block {
-        Some(block) => {
-            if is_json(block) {
-                warnings.push("frontmatter was JSON; written as YAML".to_owned());
-            }
-            parse_block(block).map_err(DocError::Frontmatter)?
-        }
+        Some(block) => parse_block(block).map_err(DocError::Frontmatter)?,
         None => Vec::new(),
     };
     for (key, value) in overlay {
-        front.retain(|(existing, _)| existing != key);
-        front.push((key.clone(), Field::Text(value.clone())));
+        front.retain(|entry| &entry.key != key);
+        front.push(Entry {
+            key: key.clone(),
+            value: value.clone(),
+            children: Vec::new(),
+            raw: format!("{key}: {}", quoted(value)),
+        });
     }
     let body = parts.body.trim().to_owned();
     if body.len() > BODY_CAP {
@@ -630,13 +482,16 @@ pub fn draft(markdown: &str, overlay: &[(String, String)]) -> Result<Draft, DocE
             name
         }
     };
-    let extra: Vec<(String, Field)> = front
+    let extra: Vec<Entry> = front
         .into_iter()
-        .filter(|(key, _)| !KNOWN.contains(&key.as_str()))
+        .filter(|entry| !KNOWN.contains(&entry.key.as_str()))
         .collect();
-    for (key, _) in &extra {
-        if let Some(known) = suggestion(key) {
-            warnings.push(format!("ignored key `{key}`; did you mean `{known}`"));
+    for entry in &extra {
+        if let Some(known) = suggestion(&entry.key) {
+            warnings.push(format!(
+                "ignored key `{}`; did you mean `{known}`",
+                entry.key
+            ));
         }
     }
     Ok(Draft {
@@ -654,9 +509,10 @@ pub fn draft(markdown: &str, overlay: &[(String, String)]) -> Result<Draft, DocE
 
 impl Memory {
     pub fn carry(&mut self, old: &Note) {
-        for (key, field) in &old.front {
-            if !KNOWN.contains(&key.as_str()) && !self.extra.iter().any(|(own, _)| own == key) {
-                self.extra.push((key.clone(), field.clone()));
+        for entry in &old.front {
+            let known = KNOWN.contains(&entry.key.as_str());
+            if !known && !self.extra.iter().any(|own| own.key == entry.key) {
+                self.extra.push(entry.clone());
             }
         }
     }
@@ -668,20 +524,9 @@ impl Memory {
             quoted(&self.hook),
             self.kind.as_str()
         );
-        for (key, field) in &self.extra {
-            match field {
-                Field::Text(text) => out.push_str(&format!("{key}: {}\n", scalar(text))),
-                Field::List(items) => {
-                    let items: Vec<String> = items.iter().map(|item| list_item(item)).collect();
-                    out.push_str(&format!("{key}: [{}]\n", items.join(", ")));
-                }
-                Field::Map(map) => {
-                    out.push_str(&format!("{key}:\n"));
-                    for (inner, value) in map {
-                        out.push_str(&format!("  {inner}: {}\n", scalar(value)));
-                    }
-                }
-            }
+        for entry in &self.extra {
+            out.push_str(&entry.raw);
+            out.push('\n');
         }
         out.push_str("---\n");
         if !self.body.is_empty() {
@@ -704,33 +549,6 @@ fn quoted(text: &str) -> String {
         .replace('\n', "\\n")
         .replace('\t', "\\t");
     format!("\"{escaped}\"")
-}
-
-fn plain_safe(text: &str) -> bool {
-    let Some(first) = text.chars().next() else {
-        return false;
-    };
-    text.trim() == text
-        && !"-?:,[]{}#&*!|>'\"%@`".contains(first)
-        && !text.contains(": ")
-        && !text.contains(" #")
-        && !text.contains(['\n', '\t', '\\'])
-}
-
-fn scalar(text: &str) -> String {
-    if plain_safe(text) {
-        text.to_owned()
-    } else {
-        quoted(text)
-    }
-}
-
-fn list_item(text: &str) -> String {
-    if plain_safe(text) && !text.contains([',', ']']) {
-        text.to_owned()
-    } else {
-        quoted(text)
-    }
 }
 
 #[cfg(test)]
@@ -784,16 +602,10 @@ mod tests {
     }
 
     #[test]
-    fn json_frontmatter_is_accepted_and_warned() {
+    fn a_json_block_is_refused_for_want_of_a_type() {
         let text =
             "---\n{\"name\": \"j\", \"description\": \"a hook\", \"type\": \"user\"}\n---\nbody\n";
-        let draft = draft(text, &[]).unwrap();
-        assert_eq!(draft.memory.kind, MemoryType::User);
-        assert_eq!(
-            draft.warnings,
-            vec!["frontmatter was JSON; written as YAML"]
-        );
-        assert!(draft.memory.render().starts_with("---\nname: j\n"));
+        assert_eq!(draft(text, &[]), Err(DocError::NoType));
     }
 
     #[test]
@@ -916,18 +728,13 @@ mod tests {
     }
 
     #[test]
-    fn lists_round_trip_through_flow_form() {
-        let text = TEMPLATE.replace(
-            "type: feedback\n",
-            "type: feedback\nsee:\n  - \"a, b\"\n  - c\n",
-        );
-        let draft = draft(&text, &[]).unwrap();
-        let rendered = draft.memory.render();
-        assert!(rendered.contains("see: [\"a, b\", c]\n"), "{rendered}");
+    fn an_unknown_key_is_written_back_byte_for_byte() {
+        let block = "see: [\"a, b\", c]\ntags:\n  - one\n  - two\nsummary: >\n  folded\n";
+        let text = TEMPLATE.replace("type: feedback\n", &format!("type: feedback\n{block}"));
+        let rendered = draft(&text, &[]).unwrap().memory.render();
+        assert!(rendered.contains(block), "{rendered}");
         let again = read_note(name("buildhost-tmp-is-ram"), &rendered);
-        assert!(again.front.contains(&(
-            "see".to_owned(),
-            Field::List(vec!["a, b".to_owned(), "c".to_owned()])
-        )));
+        assert_eq!(again.trouble, None);
+        assert_eq!(again.hook, "Buildhost /tmp is RAM; never scratch there");
     }
 }
