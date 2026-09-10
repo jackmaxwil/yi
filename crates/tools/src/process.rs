@@ -244,14 +244,19 @@ mod tests {
         // The group kill runs in this process, so the test reruns itself under a PATH with no
         // `kill` on it, as in the benchmark images; the rerun makes the assertions.
         if std::env::var_os("PATH").is_none_or(|path| path != "/nonexistent") {
-            let status = command(std::env::current_exe()?)
+            let rerun = command(std::env::current_exe()?)
                 .args([
                     "--exact",
                     "process::tests::a_process_group_dies_with_no_kill_binary_on_path",
                 ])
                 .env("PATH", "/nonexistent")
-                .status()?;
-            assert!(status.success(), "the rerun with no kill binary: {status}");
+                .output()?;
+            // libtest exits 0 on a filter that matches nothing, so the rerun must say it ran one.
+            let stdout = String::from_utf8_lossy(&rerun.stdout);
+            assert!(
+                rerun.status.success() && stdout.contains("1 passed"),
+                "{stdout}"
+            );
             return Ok(());
         }
         let mut pipeline = command("/bin/sh");
