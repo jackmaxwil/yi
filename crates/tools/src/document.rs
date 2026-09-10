@@ -27,20 +27,28 @@ try:
     markdown = anydoc.to_markdown_bytes(data, kind, ocr="reject")
 except anydoc.UnsupportedError:
     say(unsupported=True)
+    sys.exit()
 except anydoc.NeedsOcrError as error:
-    pdf_type = "image-only"
+    missing = sorted(error.pages)
+    markdown, pdf_type = None, "image-only"
     try:
         import pdf_inspector
+        if len(missing) < error.page_count:
+            markdown = pdf_inspector.process_pdf(source).markdown
         pdf_type = str(pdf_inspector.detect_pdf(source).pdf_type).replace("_", "-")
     except Exception:
         pass
-    say(ocr=pdf_type, pages=len(error.pages), page_count=error.page_count)
+    if not markdown:
+        say(ocr=pdf_type, pages=len(missing), page_count=error.page_count)
+        sys.exit()
+    pages = ", ".join(map(str, missing))
+    markdown = f"[no text layer on page(s) {pages} of {error.page_count}; left out]\n\n{markdown}"
 except anydoc.ConvertError as error:
     say(error=f"{type(error).__name__}: {error}")
-else:
-    with open(out, "w", encoding="utf-8") as handle:
-        handle.write(markdown)
-    say(ok=True)
+    sys.exit()
+with open(out, "w", encoding="utf-8") as handle:
+    handle.write(markdown)
+say(ok=True)
 "#;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -60,7 +68,7 @@ pub(crate) enum Converted {
 pub(crate) fn describe(base: &str, documents: Option<&Documents>) -> String {
     match documents {
         Some(documents) if !documents.formats.is_empty() => format!(
-            "{base} A file that is not UTF-8 text is converted to Markdown when it is one of: {}. The Markdown is a read-only copy; edit and write refuse the original.",
+            "{base} Files in these formats are converted to Markdown: {}. A csv that is valid UTF-8 is read as it is; the Markdown is a read-only copy, and edit and write refuse the original.",
             documents.formats.join(", ")
         ),
         _ => base.to_owned(),

@@ -3,7 +3,8 @@
 # gating parallel siblings, `modle` the deliberate config typo a 0.55.0 test
 # asserts on, `iTerm` the terminal whose TERM_PROGRAM the console matches. Short fixture fragments carry inline directives. The recorded
 # sessions under crates/tui/tests/fixtures/sessions are transcripts of what was
-# said, not prose this repo can correct, so they are skipped whole.
+# said, not prose this repo can correct, so they are skipped whole, as are the documents
+# under crates/runtime/tests/fixtures/documents, which a converter wrote (RTF's `\pard`).
 [codespell]
-skip = ./target,./vendor,./Cargo.lock,./.git,./python/.venv,./ref,./evals/arc/runs,./crates/tui/tests/fixtures/sessions
+skip = ./target,./vendor,./Cargo.lock,./.git,./python/.venv,./ref,./evals/arc/runs,./crates/tui/tests/fixtures/sessions,./crates/runtime/tests/fixtures/documents
 ignore-words-list = ratatui,advices,unparseable,disjointness,modle,iterm

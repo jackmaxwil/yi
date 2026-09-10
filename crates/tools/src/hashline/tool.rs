@@ -398,34 +398,43 @@ impl HashlineReadTool {
         input: &Map<String, Value>,
         context: &ToolContext,
     ) -> ToolOutput {
+        let failed = |error: std::io::Error| format!("failed to read {}: {error}", path.display());
         match std::fs::read_to_string(path) {
-            Ok(raw) => self.render_file(display_path, path, &raw, None, input, context),
-            Err(error) => self.read_document(display_path, path, &error, input, context),
+            Ok(raw) if !raw.starts_with("{\\rtf") => {
+                self.render_file(display_path, path, &raw, None, input, context)
+            }
+            Ok(raw) => self.read_document(display_path, path, Ok(raw), input, context),
+            Err(error) if error.kind() == std::io::ErrorKind::InvalidData => {
+                self.read_document(display_path, path, Err(failed(error)), input, context)
+            }
+            Err(error) => error_output(failed(error)),
         }
     }
 
-    /// The converter, never an extension list, decides whether a non-UTF-8 file is a document.
+    /// The converter, never an extension list, decides what is a document. RTF is the one kind
+    /// written as 7-bit text, so its marker offers it; `plain` is what shows if nothing converts.
     fn read_document(
         &self,
         display_path: &str,
         path: &Path,
-        error: &std::io::Error,
+        plain: Result<String, String>,
         input: &Map<String, Value>,
         context: &ToolContext,
     ) -> ToolOutput {
-        let failed = format!("failed to read {}: {error}", path.display());
-        let Some(documents) = documents(&self.state) else {
-            return error_output(failed);
+        let unconverted = |line: Option<String>| match &plain {
+            Ok(raw) => self.render_file(display_path, path, raw, None, input, context),
+            Err(failed) => error_output(
+                line.map_or_else(|| failed.clone(), |line| format!("{failed}\n{line}")),
+            ),
         };
-        if error.kind() != std::io::ErrorKind::InvalidData {
-            return error_output(failed);
-        }
+        let Some(documents) = documents(&self.state) else {
+            return unconverted(None);
+        };
         let copy = match crate::document::convert(&documents, path, &context.cancelled) {
             crate::document::Converted::Markdown(copy) => copy,
-            crate::document::Converted::NotADocument => return error_output(failed),
-            crate::document::Converted::Unavailable(line) => {
-                return error_output(format!("{failed}\n{line}"));
-            }
+            crate::document::Converted::NotADocument => return unconverted(None),
+            crate::document::Converted::Unavailable(line) => return unconverted(Some(line)),
+            crate::document::Converted::Refused(_) if plain.is_ok() => return unconverted(None),
             crate::document::Converted::Refused(reason) => {
                 return error_output(format!("failed to read {}: {reason}", path.display()));
             }
