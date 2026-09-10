@@ -232,6 +232,40 @@ fn openrouter_requests_deprioritise_slow_upstreams_unless_the_config_says_otherw
     Ok(())
 }
 
+/// Row 0028 paid twice the catalog on an upstream nothing recorded: every chunk names the
+/// upstream OpenRouter routed to, and the message keeps it once.
+#[test]
+fn a_chunk_that_names_its_upstream_leaves_one_upstream_diagnostic() -> TestResult {
+    let model = target_model()?;
+    let mut mapper = ChunkMapper::new(&model);
+    for chunk in [
+        json!({"id": "gen-1", "provider": "Z.AI", "choices": [{"delta": {"content": "the answer"}}]}),
+        json!({"id": "gen-1", "provider": "Z.AI", "choices": [{"delta": {}, "finish_reason": "stop"}],
+               "usage": {"prompt_tokens": 10, "completion_tokens": 2}}),
+    ] {
+        let _ = mapper.push_chunk(&chunk);
+    }
+    let Some(yi_types::event::AssistantMessageEvent::Done { message, .. }) = mapper.finish().pop()
+    else {
+        return Err("expected a done event".into());
+    };
+    let AgentMessage::Assistant { diagnostics, .. } = message else {
+        return Err("expected an assistant message".into());
+    };
+    let notes = diagnostics.ok_or("the upstream is kept as a diagnostic")?;
+    let upstreams: Vec<_> = notes
+        .iter()
+        .filter(|note| note.diagnostic_type == "upstream")
+        .map(|note| {
+            note.details
+                .as_ref()
+                .and_then(|details| details.get("provider"))
+        })
+        .collect();
+    assert_eq!(upstreams, [Some(&json!("Z.AI"))], "{notes:?}");
+    Ok(())
+}
+
 #[test]
 fn a_mid_stream_error_chunk_names_the_upstream_and_the_code() -> TestResult {
     let model = target_model()?;
