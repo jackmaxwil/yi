@@ -389,6 +389,11 @@ def main(argv=None):
             errors_early = f"--home must be absolute, not {args.home!r}"
             print(errors_early, file=sys.stderr)
             return 2
+        # The fixtures lane leaves a caller's HOME as it found it (the live lane writes its config),
+        # so the routing the fingerprint's mode would name never reaches that config.
+        if os.environ.get(yi_usage.ROUTING_ENV) and not args.live:
+            print(f"{yi_usage.ROUTING_ENV} needs the run's own HOME: --home keeps its own config", file=sys.stderr)
+            return 2
         _RUN_HOME.append(args.home)
 
     if args.live:
