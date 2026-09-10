@@ -53,9 +53,12 @@ The workspace is `<tmp>/repo`, and the runner's own files sit beside it as
 where a `git diff` or clean-tree reward would score them as part of the
 solution and the agent could read back its own transcript. The runner asks once
 with `--json --yolo --cwd <ws> --session-dir <tmp>/.yi-sessions`, writes the
-last assistant text to `<ws>/answer.txt` (SWE-Atlas QnA grades the answer file,
-so a real run's answer must exist), and scores the task binary: `reward.sh`
-exits 0 or the task scored nothing. A timeout is a result, never a retry.
+last assistant text to `<ws>/answer.txt` when there is one (SWE-Atlas QnA grades
+the answer file, so a real run's answer must exist; a rollout that answered
+nothing leaves no file, or a dead binary passes `clean-workspace`), and scores
+the task binary: `reward.sh` exits 0 or the task scored nothing.
+`block-on-user` reads its question there, a file that under harbor only its
+oracle writes. A timeout is a result, never a retry.
 
 `--dry` runs faux only — it refuses any other provider, because a gate spends no
 API budget — and compares each reward to the task's `dryReward`, which is what
