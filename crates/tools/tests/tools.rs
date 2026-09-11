@@ -667,6 +667,16 @@ fn an_inspecting_shell_command_is_not_flagged_irreversible() -> TestResult {
     Ok(())
 }
 
+/// The gate judges a reversible read only by what a read can leak (D180), so a read-kind
+/// tool whose call writes must not pass for one.
+#[test]
+fn a_grep_that_rewrites_is_flagged_irreversible() {
+    let grep = GrepTool::default();
+    let preview = args(&[("pattern", json!("x")), ("replace", json!("y"))]);
+    assert!(!grep.irreversible(&preview), "a preview writes nothing");
+    assert!(grep.irreversible(&preview_args()), "apply writes every hit");
+}
+
 fn text_of(content: &[Content]) -> String {
     content
         .iter()
