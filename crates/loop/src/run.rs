@@ -1,3 +1,4 @@
+use std::collections::VecDeque;
 use std::sync::Arc;
 
 use serde_json::{Map, Value, json};
@@ -470,18 +471,28 @@ fn stream_retry(error: Option<&str>) -> AgentMessage {
 }
 
 pub const REPEAT_BREAK_CUSTOM_TYPE: &str = "repeat_break";
-pub const REPEAT_BREAK_TEXT: &str = "The same tool calls have run the last three turns with the same result. Nothing is changing. Write the final answer now; call no tools.";
+pub const REPEAT_BREAK_TEXT: &str = "The same tool calls have run the last three turns. Nothing is changing. Write the final answer now; call no tools.";
 pub const REPEAT_STEER_AT: u32 = 3;
 pub const REPEAT_STOP_AT: u32 = 6;
+const REPEAT_WINDOW: usize = 6;
 
-/// A turn's tool batch by name and arguments; a bash job poll (no `command`) is a legitimate
-/// repeat and yields nothing, so a run waiting on a job never trips the breaker.
+/// A turn's tool batch by name and arguments, or a tool-less turn's text; a bash job poll (no
+/// `command`) or a cut turn (no text) yields nothing, so waiting on a job never trips the breaker.
 fn batch_signature(message: &AgentMessage) -> Option<String> {
     let calls = extract_tool_calls(message);
-    if calls.is_empty()
-        || calls
-            .iter()
-            .all(|call| call.name == "bash" && !call.arguments.contains_key("command"))
+    if calls.is_empty() {
+        let text = message.plain_text();
+        let words: Vec<&str> = text.split_whitespace().collect();
+        return (!words.is_empty()).then(|| {
+            format!(
+                "text:{}",
+                words.join(" ").chars().take(256).collect::<String>()
+            )
+        });
+    }
+    if calls
+        .iter()
+        .all(|call| call.name == "bash" && !call.arguments.contains_key("command"))
     {
         return None;
     }
@@ -494,7 +505,7 @@ fn batch_signature(message: &AgentMessage) -> Option<String> {
     )
 }
 
-/// A turn that repeats the previous one verbatim is sent back once, then ended.
+/// A batch run three times in the last six turns is sent back once; six times ends the run.
 fn repeat_break() -> AgentMessage {
     AgentMessage::Custom {
         custom_type: REPEAT_BREAK_CUSTOM_TYPE.to_owned(),
@@ -663,8 +674,8 @@ pub async fn run_loop<S: StreamFn>(
     let mut length_stops: u32 = 0;
     let mut cut_stops: u32 = 0;
     let mut stream_retries: u32 = 0;
-    let mut last_batch: Option<String> = None;
-    let mut repeats: u32 = 0;
+    let mut recent: VecDeque<String> = VecDeque::with_capacity(REPEAT_WINDOW);
+    let mut steered = false;
     let mut tool_choice = config.first_turn_tool_choice.clone();
     let mut pending: Vec<AgentMessage> = config
         .get_steering_messages
@@ -740,13 +751,21 @@ pub async fn run_loop<S: StreamFn>(
             // a clean turn ends the error streak: the next error gets its own retry
             stream_retries = 0;
 
-            let batch = batch_signature(&message);
-            repeats = match (&batch, &last_batch) {
-                (Some(now), Some(before)) if now == before => repeats.saturating_add(1),
-                (Some(_), _) => 1,
-                (None, _) => 0,
+            let repeats = match batch_signature(&message) {
+                Some(batch) => {
+                    if recent.len() >= REPEAT_WINDOW {
+                        recent.pop_front();
+                    }
+                    let seen = recent.iter().filter(|past| **past == batch).count();
+                    recent.push_back(batch);
+                    // a batch new to the window is progress: the next stretch earns its own steer
+                    if seen == 0 {
+                        steered = false;
+                    }
+                    u32::try_from(seen.saturating_add(1)).unwrap_or(u32::MAX)
+                }
+                None => 0,
             };
-            last_batch = batch;
             let calls = extract_tool_calls(&message);
             let mut tool_results: Vec<AgentMessage> = Vec::new();
             has_more_tool_calls = false;
@@ -815,7 +834,10 @@ pub async fn run_loop<S: StreamFn>(
                 .get_steering_messages
                 .as_ref()
                 .map_or_else(Vec::new, |get| get());
-            if repeats == REPEAT_STEER_AT {
+            // once per stretch: two batches taking turns hold the count at three, and a steer on
+            // every turn would itself keep a text-only pair re-driving without end
+            if repeats == REPEAT_STEER_AT && !steered {
+                steered = true;
                 pending.push(repeat_break());
             }
             if !has_more_tool_calls && pending.is_empty() && reason == StopReason::Length {
