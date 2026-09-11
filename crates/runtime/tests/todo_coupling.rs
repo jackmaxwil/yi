@@ -300,7 +300,7 @@ fn a_stop_with_open_todos_is_re_driven_up_the_ladder_then_let_go() -> TestResult
     assert_eq!(kind, INTERCEPT_CUSTOM_TYPE);
     assert!(display, "rung 1 is the one the user sees");
     assert!(
-        text.contains("[running] first: done t1 evidence="),
+        text.contains("[running] first: done t1 evidence=`<command>` <output line> · block"),
         "{text}"
     );
     assert!(text.contains("block t1 on user note="), "{text}");
