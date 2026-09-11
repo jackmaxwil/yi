@@ -373,6 +373,8 @@ fn a_read_of_a_system_path_is_allowed_but_a_key_is_not() -> TestResult {
             "/home/user",
             "/",
             "/dev/zero",
+            "/proc/self/root/home/user/.ssh/id_rsa",
+            "/proc/self/cwd/.git/config",
         ] {
             let decision = read(path);
             assert!(
@@ -380,6 +382,26 @@ fn a_read_of_a_system_path_is_allowed_but_a_key_is_not() -> TestResult {
                 "{path} in {mode:?}: {decision:?}"
             );
         }
+    }
+    // Other users' key stores sit under /home and /Users whatever this HOME is.
+    let root = CatastrophicContext {
+        home_dir: Some(PathBuf::from("/root")),
+        ..context()
+    };
+    for path in ["/home", "/Users"] {
+        let targets = [PathBuf::from(path)];
+        let decision = decide(
+            &read_call(&targets),
+            PermissionMode::Yolo,
+            &[],
+            &session,
+            &[],
+            &root,
+        );
+        assert!(
+            matches!(decision, Decision::Deny { .. }),
+            "{path}: {decision:?}"
+        );
     }
     // A write, and a read-kind call that reports itself irreversible (grep's replace+apply),
     // still meet the whole denylist.
