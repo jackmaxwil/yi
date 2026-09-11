@@ -226,7 +226,7 @@ impl PromptState {
 /// cached block: the sentinel is escaped and control characters are dropped.
 fn sanitize(text: &str) -> std::borrow::Cow<'_, str> {
     let clean = |text: &str| {
-        text.replace(FENCE_SENTINEL, FENCE_ESCAPE)
+        escape_sentinel(text)
             .chars()
             .filter(|ch| !ch.is_control() || *ch == '\n' || *ch == '\t')
             .collect::<String>()
@@ -240,4 +240,17 @@ fn sanitize(text: &str) -> std::borrow::Cow<'_, str> {
     } else {
         std::borrow::Cow::Borrowed(text)
     }
+}
+
+/// Incident: `replace` does not overlap and the escape ends in `<<`, so `<<<<yi-external` became
+/// a live `<\<<<yi-external` header. Each pass lowers the overlapping `<<<` count, below `len`.
+pub(crate) fn escape_sentinel(text: &str) -> String {
+    let mut out = text.to_owned();
+    for _ in 0..text.len() {
+        if !out.contains(FENCE_SENTINEL) {
+            break;
+        }
+        out = out.replace(FENCE_SENTINEL, FENCE_ESCAPE);
+    }
+    out
 }
