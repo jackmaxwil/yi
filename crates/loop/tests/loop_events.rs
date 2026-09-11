@@ -319,7 +319,7 @@ async fn a_turn_repeated_verbatim_is_steered_once_then_ended() {
             matches!(message, AgentMessage::Custom { custom_type, .. } if custom_type == yi_loop::REPEAT_BREAK_CUSTOM_TYPE)
         })
         .count();
-    assert_eq!(breaks, 1, "one steer at the third identical batch");
+    assert_eq!(breaks, 1, "one steer, at the fourth identical batch");
     let answers = collected
         .iter()
         .filter(|message| matches!(message, AgentMessage::Assistant { .. }))

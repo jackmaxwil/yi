@@ -505,7 +505,7 @@ fn batch_signature(message: &AgentMessage) -> Option<String> {
     )
 }
 
-/// A batch run three times in the last six turns is sent back once; six times ends the run.
+/// A third copy in six turns, the last three all repeats, is sent back once; six end the run.
 fn repeat_break() -> AgentMessage {
     AgentMessage::Custom {
         custom_type: REPEAT_BREAK_CUSTOM_TYPE.to_owned(),
@@ -675,6 +675,7 @@ pub async fn run_loop<S: StreamFn>(
     let mut cut_stops: u32 = 0;
     let mut stream_retries: u32 = 0;
     let mut recent: VecDeque<String> = VecDeque::with_capacity(REPEAT_WINDOW);
+    let mut repeating: u32 = 0;
     let mut steered = false;
     let mut tool_choice = config.first_turn_tool_choice.clone();
     let mut pending: Vec<AgentMessage> = config
@@ -761,6 +762,9 @@ pub async fn run_loop<S: StreamFn>(
                     // a batch new to the window is progress: the next stretch earns its own steer
                     if seen == 0 {
                         steered = false;
+                        repeating = 0;
+                    } else {
+                        repeating = repeating.saturating_add(1);
                     }
                     u32::try_from(seen.saturating_add(1)).unwrap_or(u32::MAX)
                 }
@@ -834,9 +838,9 @@ pub async fn run_loop<S: StreamFn>(
                 .get_steering_messages
                 .as_ref()
                 .map_or_else(Vec::new, |get| get());
-            // once per stretch: two batches taking turns hold the count at three, and a steer on
-            // every turn would itself keep a text-only pair re-driving without end
-            if repeats == REPEAT_STEER_AT && !steered {
+            // after three repeating turns in a row, so a fresh edit before each check is progress,
+            // and once per stretch: two batches taking turns hold the count at three for good
+            if repeats >= REPEAT_STEER_AT && repeating >= REPEAT_STEER_AT && !steered {
                 steered = true;
                 pending.push(repeat_break());
             }
