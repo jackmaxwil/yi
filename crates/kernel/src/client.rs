@@ -575,6 +575,13 @@ impl KernelManager {
         self.inner.wrap.as_ref()
     }
 
+    pub fn snapshot_path(&self) -> Option<&std::path::Path> {
+        self.inner
+            .snapshot
+            .as_ref()
+            .map(|config| config.path.as_path())
+    }
+
     pub async fn start(&self) -> Result<(), String> {
         let _guard = self.inner.start_lock.lock().await;
         match self.inner.state() {
