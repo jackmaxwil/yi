@@ -153,5 +153,6 @@ when it changes rather than editing them by hand.
 - [D175](adr/d175.md) - an in-band provider error is retried and settled like a dropped stream
 - [D176](adr/d176.md) - a kernel cell has a wall clock, and an abandoned internal cell frees the kernel
 - [D182](adr/d182.md) - the artifact and closure gates are deleted, and a config that still names...
+- [D183](adr/d183.md) - done needs evidence, not a typography
 
 D36-D51, D72, D73 and D74 have no ADR yet; ARCHITECTURE.md is the record for those rows.
