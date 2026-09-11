@@ -86,18 +86,22 @@ fn process(
             kernels: yi_runtime::fetch::KernelServiceMap::new(),
         },
     );
-    session.attach_store(Arc::new(Mutex::new(yi_session::SessionStore::in_memory(
+    session.attach_store(store(id))?;
+    let kernel = session
+        .kernel_service()
+        .ok_or("the wiring installs a kernel")?;
+    Ok((session, kernel))
+}
+
+fn store(id: &str) -> yi_session::SharedSession {
+    Arc::new(Mutex::new(yi_session::SessionStore::in_memory(
         yi_session::SessionMetadata {
             id: id.to_owned(),
             created_at: 0,
             parent_session_id: None,
             name: None,
         },
-    ))))?;
-    let kernel = session
-        .kernel_service()
-        .ok_or("the wiring installs a kernel")?;
-    Ok((session, kernel))
+    )))
 }
 
 async fn cell(
@@ -210,6 +214,47 @@ async fn the_snapshot_dir_is_the_sessions_dir_not_the_process_dir() -> TestResul
     assert!(
         outcome.result.stdout.contains("42"),
         "the next process must revive the namespace: {} {}",
+        outcome.result.stdout,
+        outcome.result.stderr
+    );
+    kernel.dispose().await;
+    let _ = std::fs::remove_dir_all(&root);
+    Ok(())
+}
+
+/// Incident: `/new`, `switch_session` and `fork` swap the store under a live kernel, which
+/// kept snapshotting under the first session's id, so the second session's names overwrote
+/// the first's file in the shared sessions dir and the second had none.
+#[tokio::test]
+async fn a_store_switch_rekeys_the_live_kernel() -> TestResult {
+    let root = std::env::temp_dir().join(format!("yi-snap-switch-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root)?;
+
+    let (session, kernel) = process(&root, 4711, "snap-a")?;
+    cell(&kernel, "answer = 42").await?;
+    session.reset();
+    session.attach_store(store("snap-b"))?;
+    let outcome = cell(&kernel, "other = 'answer' in dir()\nprint(other)").await?;
+    assert!(
+        outcome.result.stdout.contains("False"),
+        "the new session's kernel starts from its own namespace: {} {}",
+        outcome.result.stdout,
+        outcome.result.stderr
+    );
+    kernel.dispose().await;
+    let (snapshot, _) = yi_runtime::kernel::snapshot_paths(&root.join("sessions"), Some("snap-b"));
+    assert!(
+        snapshot.is_file(),
+        "keyed by the new id: {}",
+        snapshot.display()
+    );
+
+    let (_next, kernel) = process(&root, 4890, "snap-a")?;
+    let outcome = cell(&kernel, "print(answer, 'other' in dir())").await?;
+    assert!(
+        outcome.result.stdout.contains("42 False"),
+        "the first session's snapshot holds only its own names: {} {}",
         outcome.result.stdout,
         outcome.result.stderr
     );
