@@ -187,6 +187,7 @@ fn bash_times_out_kills_the_command_and_says_how_to_raise_the_limit() -> TestRes
         "{text}"
     );
     assert!(!text.contains("[command aborted]"));
+    assert!(!text.contains("[group kill failed"), "{text}");
     assert_eq!(output.result.details["timedOut"], json!(true));
     Ok(())
 }
