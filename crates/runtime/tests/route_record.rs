@@ -1,8 +1,8 @@
 use std::error::Error;
 use std::sync::{Arc, Mutex};
 
-use serde_json::Value;
-use yi_runtime::ext::{ExtOptions, Host, install};
+use serde_json::{Value, json};
+use yi_runtime::ext::{Event, ExtOptions, Host, install};
 
 type TestResult = Result<(), Box<dyn Error>>;
 
@@ -93,5 +93,55 @@ fn the_route_record_carries_every_prefilter_score_component() -> TestResult {
         "score is the sum the bounds are compared against: {row}"
     );
     let _ = std::fs::remove_dir_all(&dir);
+    Ok(())
+}
+
+/// An escalation is telemetry: the fragment it attached rode every later turn of 12 of row
+/// 0028's 21 sessions, and none of them called `rlm`, `plan` or `get_context`.
+#[test]
+fn an_escalation_is_recorded_and_leaves_the_prompt_alone() -> TestResult {
+    let five_calls = Event::TurnEnd {
+        turn: 0,
+        tool_calls_this_turn: 5,
+    };
+    let wide_search = Event::ToolResult {
+        name: "grep".to_owned(),
+        exit: Some(0),
+        files_matched: 9,
+    };
+    for (signal, prompt, trajectory) in [
+        ("prefilter", CRAFTED, None),
+        ("tool_calls_per_turn", "fix the typo", Some(five_calls)),
+        ("files_matched", "fix the typo", Some(wide_search)),
+    ] {
+        let store = memory_store();
+        let mut host = host_for(&std::env::temp_dir());
+        let reminders = Arc::new(Mutex::new(Vec::<String>::new()));
+        let sink = Arc::clone(&reminders);
+        host.set_notice(Arc::new(move |line: &str| {
+            if let Ok(mut lines) = sink.lock() {
+                lines.push(line.to_owned());
+            }
+        }));
+        host.start(Some(&store), false);
+        let before = host.system_prompt();
+        let submitted = host.prompt_event(prompt);
+        host.dispatch(&submitted, Some(&store));
+        if let Some(event) = &trajectory {
+            host.dispatch(event, Some(&store));
+        }
+        assert_eq!(
+            records(&store, "orchestrate_attached")?,
+            [json!({ "signal": signal })]
+        );
+        let after = host.system_prompt();
+        assert!(
+            before == after,
+            "{signal}: the escalation added {} bytes to the prompt",
+            after.len().saturating_sub(before.len())
+        );
+        let sent = reminders.lock().map_err(|_| "poisoned")?.join("\n");
+        assert!(sent.is_empty(), "{signal}: the escalation sent {sent:?}");
+    }
     Ok(())
 }
