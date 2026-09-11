@@ -155,5 +155,6 @@ when it changes rather than editing them by hand.
 - [D177](adr/d177.md) - `--deadline` is enforced, not only shown
 - [D178](adr/d178.md) - reasoning cuts are counted per prompt and a truncated call is a length strike
 - [D179](adr/d179.md) - the repeat breaker counts a batch over six turns and sees a text-only turn
+- [D180](adr/d180.md) - a read is refused only where a read does harm
 
 D36-D51, D72, D73 and D74 have no ADR yet; ARCHITECTURE.md is the record for those rows.
