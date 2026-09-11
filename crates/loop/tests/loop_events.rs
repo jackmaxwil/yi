@@ -459,6 +459,27 @@ async fn an_alternating_pair_and_a_text_only_spiral_are_broken() {
     assert_eq!(answers(&collected), 5);
 }
 
+/// D179: a prompt queued behind a running one starts its own repeat window, as it starts its
+/// own cut count (D178): the same short answer to three prompts is not a spiral.
+#[tokio::test]
+async fn a_follow_up_prompt_starts_its_own_repeat_window() {
+    let done = || faux_assistant_message(vec![faux_text("Done.")], StopReason::Stop);
+    let mut config = LoopConfig::new(faux_model());
+    let follow_ups = Arc::new(Mutex::new(vec![user("and this?"), user("and this?")]));
+    config.get_follow_up_messages = Some(Box::new(move || {
+        follow_ups
+            .lock()
+            .map(|mut queued| queued.pop().into_iter().collect())
+            .unwrap_or_default()
+    }));
+    let collected = run_with(&Scripted::new(vec![done(), done(), done()]), &config).await;
+    let steers = collected
+        .iter()
+        .filter(|message| matches!(message, AgentMessage::Custom { custom_type, .. } if custom_type == yi_loop::REPEAT_BREAK_CUSTOM_TYPE))
+        .count();
+    assert_eq!(steers, 0, "{collected:?}");
+}
+
 fn three_bare_length_stops() -> Scripted {
     Scripted::new(vec![
         faux_assistant_message(vec![faux_text("thinking, thinking")], StopReason::Length),
