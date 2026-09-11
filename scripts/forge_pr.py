@@ -184,7 +184,10 @@ def read_json(path):
 
 def cmd_ratchet(args):
     before = {path: read_json(path) for path in baseline_paths()}
-    for script in ("check_test_size.py", "check_crate_size.py", "check_comments.py", "check_schemas_lock.py"):
+    # Incident: nothing ran check_growth --update, so src_loc.json sat 64 versions back and every
+    # memo restated one cumulative number; its update refuses a delta the row has not priced.
+    for script in ("check_test_size.py", "check_crate_size.py", "check_comments.py",
+                   "check_schemas_lock.py", "check_growth.py"):
         subprocess.run((sys.executable, str(ROOT / "scripts/guardrails" / script), "--update"), check=False)
     changed = dirty(baseline_paths())
     if not changed:
