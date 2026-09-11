@@ -943,6 +943,86 @@ async fn a_dropped_stream_that_showed_nothing_is_retried_once() {
     );
 }
 
+/// OpenRouter's in-band error chunk as the mapper leaves it: thinking shown, no usage, the
+/// raw stop marked; the text is the 2026-09-09 night's Wafer 502.
+fn in_band_error() -> AgentMessage {
+    let mut error = faux_assistant_message(vec![faux_thinking("hmm")], StopReason::Error);
+    if let AgentMessage::Assistant {
+        error_message,
+        raw_stop_reason,
+        usage,
+        ..
+    } = &mut error
+    {
+        *error_message =
+            Some("Internal Server Error (upstream Wafer, code 502, server_error)".to_owned());
+        *raw_stop_reason = Some(yi_types::message::RAW_STOP_IN_BAND_ERROR.to_owned());
+        *usage = yi_types::message::Usage::unknown();
+    }
+    error
+}
+
+/// Runs the script against the echo tool: the hidden stream retries that rode it, and the
+/// stop reason the run ended on.
+async fn run_script(script: Vec<AgentMessage>) -> (usize, Option<StopReason>) {
+    let stream = Scripted::new(script);
+    let mut context = LoopContext {
+        system_prompt: String::new(),
+        messages: Vec::new(),
+        tools: vec![Arc::new(EchoTool)],
+    };
+    let config = LoopConfig::new(faux_model());
+    let (_events, mut emit) = collector();
+    let collected = run_loop(
+        &mut context,
+        vec![user("hi")],
+        &config,
+        &InterruptSignal::default(),
+        &mut emit,
+        &stream,
+    )
+    .await;
+    let retries = collected
+        .iter()
+        .filter(|message| matches!(message, AgentMessage::Custom { custom_type, .. } if custom_type == yi_loop::STREAM_RETRY_CUSTOM_TYPE))
+        .count();
+    let last = match collected.last() {
+        Some(AgentMessage::Assistant { stop_reason, .. }) => Some(*stop_reason),
+        _ => None,
+    };
+    (retries, last)
+}
+
+#[tokio::test]
+async fn an_in_band_provider_error_is_retried_once() {
+    let recovered = || faux_assistant_message(vec![faux_text("recovered")], StopReason::Stop);
+    assert_eq!(
+        run_script(vec![in_band_error(), recovered()]).await,
+        (1, Some(StopReason::Stop)),
+        "an in-band error that showed nothing runs again"
+    );
+    assert_eq!(
+        run_script(vec![in_band_error(), in_band_error()]).await,
+        (1, Some(StopReason::Error)),
+        "a second in a row ends the run"
+    );
+    let tool_turn = faux_assistant_message(
+        vec![faux_tool_call("call-1", "echo", Map::new())],
+        StopReason::ToolUse,
+    );
+    assert_eq!(
+        run_script(vec![
+            in_band_error(),
+            tool_turn,
+            in_band_error(),
+            recovered()
+        ])
+        .await,
+        (2, Some(StopReason::Stop)),
+        "a clean turn between two errors gives the second its own retry"
+    );
+}
+
 #[tokio::test]
 async fn error_stop_ends_turn_without_tools() {
     let mut error = faux_assistant_message(vec![faux_text("half an answer")], StopReason::Error);
