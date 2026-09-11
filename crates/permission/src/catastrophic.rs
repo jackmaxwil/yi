@@ -145,22 +145,47 @@ pub fn is_catastrophic(path: &Path, context: &CatastrophicContext) -> bool {
         .any(|sub| path == home.join(sub))
 }
 
+fn credential_stores(context: &CatastrophicContext) -> Vec<PathBuf> {
+    context
+        .home_dir
+        .iter()
+        .flat_map(|home| {
+            PROTECTED_CREDENTIAL_SUBPATHS
+                .iter()
+                .map(|sub| lexical_normalize(&home.join(sub)))
+        })
+        .collect()
+}
+
+/// What a read may not touch (D180): a key or the workspace `.git`, a directory a walk would
+/// carry into a key store, and a device, which never ends (`/dev/zero`) or waits (`/dev/tty`).
+pub(crate) fn read_is_catastrophic(path: &Path, context: &CatastrophicContext) -> bool {
+    let path = lexical_normalize(path);
+    if path.starts_with("/dev") {
+        return true;
+    }
+    if let Some(git) = &context.workspace_git
+        && path.starts_with(lexical_normalize(git))
+    {
+        return true;
+    }
+    credential_stores(context)
+        .iter()
+        .any(|store| path.starts_with(store) || store.starts_with(&path))
+}
+
 const DESTRUCTIVE_COMMANDS: [&str; 4] = ["rm", "rmdir", "shred", "unlink"];
 
 /// A key read into the transcript has already left the machine, so credential stores are
 /// read-gated too. Path-shaped arguments only: this reads a command, it does not run one.
 pub fn command_reads_credentials(command: &str, context: &CatastrophicContext) -> Option<String> {
-    let home = context.home_dir.as_ref()?;
-    let protected: Vec<PathBuf> = PROTECTED_CREDENTIAL_SUBPATHS
-        .iter()
-        .map(|sub| lexical_normalize(&home.join(sub)))
-        .collect();
+    let stores = credential_stores(context);
     command
         .split_whitespace()
         .skip(1)
         .filter(|token| !token.starts_with('-'))
         .map(|token| expand(token, context))
-        .find(|path| protected.iter().any(|root| path.starts_with(root)))
+        .find(|path| stores.iter().any(|store| path.starts_with(store)))
         .map(|path| path.to_string_lossy().into_owned())
 }
 
