@@ -340,6 +340,36 @@ fn a_credential_read_is_named_before_it_happens() -> TestResult {
     Ok(())
 }
 
+/// Incident: a `read` of `~/.ssh/id_rsa` reached the check as a relative path and passed it;
+/// only the read's own failure kept the key out of the transcript.
+#[test]
+fn a_tilde_read_is_judged_under_home() -> TestResult {
+    let session = SessionRules::new();
+    for mode in [
+        PermissionMode::Ask,
+        PermissionMode::Auto,
+        PermissionMode::Yolo,
+    ] {
+        let read = |path: &str| {
+            let targets = [PathBuf::from(path)];
+            decide(&read_call(&targets), mode, &[], &session, &[], &context())
+        };
+        let key = read("~/.ssh/id_rsa");
+        match &key {
+            Decision::Deny { reason } => {
+                assert!(reason.contains("/home/user/.ssh/id_rsa"), "{reason}")
+            }
+            other => return Err(format!("{mode:?}: expected a deny, got {other:?}").into()),
+        }
+        let notes = read("~/notes.txt");
+        assert!(
+            matches!(notes, Decision::Allow { .. }),
+            "{mode:?}: {notes:?}"
+        );
+    }
+    Ok(())
+}
+
 /// Auto's own arm: a write the turn checkpoint can undo runs, a write outside
 /// the tree asks, and a tool that reports itself reversible runs.
 #[test]
