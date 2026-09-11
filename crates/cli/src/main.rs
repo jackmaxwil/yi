@@ -759,8 +759,14 @@ fn run(args: &Args) -> i32 {
         }
         let mut exit = 0;
         loop {
-            let Ok(event) = events.recv().await else {
-                break;
+            let event = match events.recv().await {
+                Ok(event) => event,
+                // A slow reader is not the end of the run: breaking here exited 0 mid-turn.
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(missed)) => {
+                    eprintln!("warning: {missed} events dropped behind a slow reader");
+                    continue;
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
             };
             if json && let Ok(line) = serde_json::to_string(&event) {
                 println!("{line}");
