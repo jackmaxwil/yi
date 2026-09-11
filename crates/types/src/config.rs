@@ -76,10 +76,18 @@ pub fn migrate(config: &mut serde_json::Value) -> Vec<ConfigMigration> {
     applied
 }
 
-/// The one config load: raw JSON, migrated, then read strictly, with the migrations it took.
+/// The one config load, with the migrations it took. A current config skips `Value`, which
+/// reads a doubled key last-wins and drops the error's line and column.
 pub fn parse(raw: &str) -> Result<(UserConfig, Vec<ConfigMigration>), serde_json::Error> {
+    let strict = match serde_json::from_str(raw) {
+        Ok(config) => return Ok((config, Vec::new())),
+        Err(error) => error,
+    };
     let mut config = serde_json::from_str(raw)?;
     let applied = migrate(&mut config);
+    if applied.is_empty() {
+        return Err(strict);
+    }
     Ok((serde_json::from_value(config)?, applied))
 }
 
