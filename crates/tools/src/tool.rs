@@ -70,8 +70,9 @@ pub trait Tool: Send + Sync {
         None
     }
 
-    fn irreversible(&self, _input: &Map<String, Value>) -> bool {
-        !matches!(self.kind(), ToolKind::Read)
+    /// By the call's own kind, so a grep that writes is no read to the permission gate (D180).
+    fn irreversible(&self, input: &Map<String, Value>) -> bool {
+        !matches!(self.kind_for(input), ToolKind::Read)
     }
 
     fn validate(&self, _input: &Map<String, Value>) -> Result<(), String> {
