@@ -401,6 +401,41 @@ fn the_tool_result_teaches_the_next_move_with_the_label_filled_in() -> TestResul
 }
 
 #[test]
+fn a_move_returns_the_rows_it_changed_not_the_whole_list() -> TestResult {
+    let (session, _root) = session("moved")?;
+    let tool = TodoTool::new(store_for(&session));
+    let (is_error, text) = call(
+        &tool,
+        json!({"op": "init", "items": ["read the code", "write the fix", "run the suite"]}),
+    );
+    assert!(!is_error, "{text}");
+    assert!(text.contains("- [ ] t3 run the suite"), "{text}");
+    let (is_error, text) = call(
+        &tool,
+        json!({"op": "done", "id": "t1", "evidence": "`wc -l src/lib.rs` 40 src/lib.rs"}),
+    );
+    assert!(!is_error, "{text}");
+    assert!(
+        text.starts_with(
+            "Todos 1/3 · running: write the fix\n- [x] t1 read the code\n- [>] t2 write the fix\n"
+        ),
+        "{text}"
+    );
+    assert!(
+        !text.contains("- [ ] t3 run the suite"),
+        "an untouched row stays out: {text}"
+    );
+    assert!(text.contains("next: start t3 · drop t3 <reason>"), "{text}");
+    assert!(text.ends_with("touched: 2"), "{text}");
+    let (_, text) = call(&tool, json!({"op": "view"}));
+    assert!(
+        text.contains("- [x] t1 read the code") && text.contains("- [ ] t3 run the suite"),
+        "view lists every row: {text}"
+    );
+    Ok(())
+}
+
+#[test]
 fn a_checklist_round_trips_through_render() -> TestResult {
     let list =
         text::parse("## Build\n- [x] a\n- [>] b\n  - [ ] b1\n## Verify\n- [!] c\n- [-] d\n")?;
