@@ -154,5 +154,6 @@ when it changes rather than editing them by hand.
 - [D176](adr/d176.md) - a kernel cell has a wall clock, and an abandoned internal cell frees the kernel
 - [D177](adr/d177.md) - `--deadline` is enforced, not only shown
 - [D178](adr/d178.md) - reasoning cuts are counted per prompt and a truncated call is a length strike
+- [D179](adr/d179.md) - the repeat breaker counts a batch over six turns and sees a text-only turn
 
 D36-D51, D72, D73 and D74 have no ADR yet; ARCHITECTURE.md is the record for those rows.
