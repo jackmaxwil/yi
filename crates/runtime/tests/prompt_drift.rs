@@ -68,3 +68,57 @@ fn doctrine_names_only_ops_the_todo_tool_accepts() -> TestResult {
     }
     Ok(())
 }
+
+/// Listing formats in `read`'s description is a claim about the installed wheel, so the list is
+/// checked against the wheel itself, both ways.
+#[test]
+fn read_names_exactly_the_formats_the_installed_wheel_converts() -> TestResult {
+    let home = std::path::PathBuf::from(std::env::var_os("HOME").ok_or("HOME is unset")?);
+    let python =
+        yi_kernel::bootstrap::ensure_kernel_python(&yi_kernel::bootstrap::BootstrapOptions {
+            on_progress: None,
+            home: home.clone(),
+            runtime_source_dir: yi_kernel::bootstrap::default_runtime_source_dir(),
+            skills_source_dir: yi_kernel::bootstrap::default_skills_source_dir(),
+            toolchain: None,
+            venv_dir: None,
+        })?;
+    let probe = yi_tools::command(&python)
+        .args([
+            "-c",
+            "import json, typing, anydoc; print(json.dumps([kind for kind in typing.get_args(anydoc.Format) if kind != 'csv']))",
+        ])
+        .output()?;
+    let live: Vec<String> = serde_json::from_slice(&probe.stdout)?;
+    let read = yi_runtime::builtin_tools_with(false, Some(yi_runtime::documents(&home)))
+        .into_iter()
+        .find(|tool| tool.name() == "read")
+        .ok_or("no read tool")?;
+    let claimed: Vec<String> = read
+        .description()
+        .split("converted to Markdown: ")
+        .nth(1)
+        .and_then(|rest| rest.split('.').next())
+        .map(|list| {
+            let mut depth = 0_u32;
+            let canonical: String = list
+                .chars()
+                .filter(|character| {
+                    depth = match character {
+                        '(' => depth.saturating_add(1),
+                        ')' => depth.saturating_sub(1),
+                        _ => depth,
+                    };
+                    depth == 0 && *character != ')'
+                })
+                .collect();
+            canonical
+                .split(", ")
+                .map(|entry| entry.trim().to_owned())
+                .collect()
+        })
+        .unwrap_or_default();
+    assert!(!live.is_empty(), "the venv carries the converter");
+    assert_eq!(claimed, live);
+    Ok(())
+}

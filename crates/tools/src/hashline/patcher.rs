@@ -109,6 +109,7 @@ pub fn block_resolver(request: &BlockResolverRequest<'_>) -> Option<BlockSpan> {
         .unwrap_or_default();
     match extension {
         "py" | "pyi" | "yaml" | "yml" => indent_block_resolver(request.text, request.line),
+        "md" | "markdown" => super::blocks::markdown_section_resolver(request.text, request.line),
         _ => brace_block_resolver(request.text, request.line),
     }
 }

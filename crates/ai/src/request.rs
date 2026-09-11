@@ -287,6 +287,29 @@ pub fn note_resend(output: &mut AgentMessage, first_error: &str) {
     }
 }
 
+/// The upstream an OpenRouter turn ran on, kept once: every chunk names it, and so does the record.
+pub fn note_upstream(output: &mut AgentMessage, upstream: &str) {
+    if let AgentMessage::Assistant {
+        diagnostics,
+        timestamp,
+        ..
+    } = output
+    {
+        let notes = diagnostics.get_or_insert_with(Vec::new);
+        if notes.iter().any(|note| note.diagnostic_type == "upstream") {
+            return;
+        }
+        let mut details = serde_json::Map::new();
+        details.insert("provider".to_owned(), Value::from(upstream));
+        notes.push(yi_types::message::AssistantMessageDiagnostic {
+            diagnostic_type: "upstream".to_owned(),
+            timestamp: *timestamp,
+            error: None,
+            details: Some(details),
+        });
+    }
+}
+
 pub fn fail_message(output: &mut AgentMessage, text: &str) -> crate::EventOut {
     if let AgentMessage::Assistant {
         stop_reason,

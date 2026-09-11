@@ -712,6 +712,7 @@ mod tests {
                 on_restore: None,
                 sandbox: None,
                 snapshot_key: None,
+                cell_ceiling: None,
             },
         ));
         map.insert("main", &service);

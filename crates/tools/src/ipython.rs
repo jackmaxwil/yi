@@ -42,7 +42,7 @@ impl Tool for IpythonTool {
     }
 
     fn description(&self) -> &str {
-        "Execute Python in this session's kernel: one process, yours alone, that boots on the first cell and keeps its variables across your calls and across compaction (a snapshot revives them; a restart after a hang says so and starts empty). Nothing here is shared with bash; the cwd is. `await` works at top level; `rlm` is preloaded (`help(rlm.run)`); `%%bash` runs a shell in the kernel's env and `%pip install x` adds a package. Output over 64 KiB is cut; a cell has no timeout, so print progress from a long loop. Children run their own kernels: `rlm.status()` shows them, `rlm.put/get` and `kernel://<name>/<var>` move objects between kernels whole, and a child reads yours through `kernel://main/<var>`."
+        "Execute Python in this session's kernel: one process, yours alone, that boots on the first cell and keeps its variables across your calls and across compaction (a snapshot revives them; a restart after a hang says so and starts empty). Nothing here is shared with bash; the cwd is. `await` works at top level; `rlm` is preloaded (`help(rlm.run)`); `%%bash` runs a shell in the kernel's env and `%pip install x` adds a package; pandas (with openpyxl) reads spreadsheets, and `anydoc` and `pdf_inspector` (`extract_text`) read documents read cannot show. Output over 64 KiB is cut; a cell is interrupted after 600 s, so split longer work across cells. Children run their own kernels: `rlm.status()` shows them, `rlm.put/get` and `kernel://<name>/<var>` move objects between kernels whole, and a child reads yours through `kernel://main/<var>`."
     }
 
     fn schema(&self) -> Value {

@@ -353,7 +353,7 @@ check; it is the rare case and the one that needs ownership.
    waits `rlm.status()` is the fact: `needs_you` gets
    `send(name, text, followup=True)`; `stuck` gets its tail
    (`history://<name>/tail/20`), an `interrupt`, and a corrected respawn.
-   Collect with `await h.result(schema=SCHEMA, timeout=900)`; reap with
+   Collect with `await h.result(schema=SCHEMA, timeout=420)`; reap with
    `rlm.delete_subagent`. Depth is one unless the config raises it.
 6. Data stays in kernels. A large result comes home by `rlm.put(name, obj)`
    and your `rlm.get(name)`, a file in a worktree by
@@ -364,7 +364,7 @@ check; it is the rare case and the one that needs ownership.
     SCHEMA = {"type": "object", "required": ["outcome"], "properties": {"outcome": {"type": "string"}}}
     h = await rlm.run(brief, name="foo", isolation="worktree")
     await rlm.wait(120)
-    r = await h.result(schema=SCHEMA, timeout=900)
+    r = await h.result(schema=SCHEMA, timeout=420)
 
 ## Done is a measurement
 

@@ -147,5 +147,12 @@ when it changes rather than editing them by hand.
 - [D167](adr/d167.md) - the forge CLI is `fgj`
 - [D168](adr/d168.md) - a reasoning cut is not a length strike
 - [D169](adr/d169.md) - host-written memory, one markdown file per fact
+- [D171](adr/d171.md) - `read` converts a file that is not UTF-8 through the kernel venv, never...
+- [D171](adr/d171.md) - `read` converts a file that is not text through the kernel venv, never...
+- [D173](adr/d173.md) - the ledger row says what it could not measure
+- [D174](adr/d174.md) - a row names the build, upstream and routing it ran on, and a trial its budget
+- [D175](adr/d175.md) - an in-band provider error is retried and settled like a dropped stream
+- [D176](adr/d176.md) - a kernel cell has a wall clock, and an abandoned internal cell frees the kernel
+- [D177](adr/d177.md) - `--deadline` is enforced, not only shown
 
 D36-D51, D72, D73 and D74 have no ADR yet; ARCHITECTURE.md is the record for those rows.

@@ -256,7 +256,12 @@ fn render(id: u64, job: &Job) -> JobReport {
     let state = state(job);
     let output = match &job.capture {
         Some(capture) => {
-            crate::reduce::strip_ansi(&format!("{}{}", capture.stdout, capture.stderr))
+            let failed = capture
+                .kill_error
+                .as_ref()
+                .map(|error| format!("\n[group kill failed: {error}]"));
+            let text = format!("{}{}", capture.stdout, capture.stderr);
+            crate::reduce::strip_ansi(&text) + &failed.unwrap_or_default()
         }
         None => String::new(),
     };
@@ -399,6 +404,7 @@ pub fn run_or_background(
                     exit_code: None,
                     cancelled: true,
                     truncated: false,
+                    kill_error: None,
                 }))),
             }
         }
@@ -563,6 +569,33 @@ mod tests {
         assert_eq!(registry().kill(id)?, KillOutcome::AlreadySettled(exited));
         registry().release(id)?;
         assert_eq!(registry().kill(id), Err(JobError::UnknownJob(id)));
+        Ok(())
+    }
+
+    #[test]
+    fn a_failed_group_kill_is_named_in_the_job_report() -> Fallible {
+        // A group that survives its kill holds the pipes past the grace, so only this late
+        // report can say why.
+        let id = registry().insert("sleep 300", Reaper::Handle, Arc::default(), Arc::default());
+        registry().finish(
+            id,
+            CommandCapture {
+                stdout: "partial".to_owned(),
+                stderr: String::new(),
+                exit_code: None,
+                cancelled: true,
+                truncated: false,
+                kill_error: Some("/bin/sh: No such file or directory".to_owned()),
+            },
+        );
+        let report = registry().release(id)?;
+        assert!(
+            report
+                .output
+                .ends_with("[group kill failed: /bin/sh: No such file or directory]"),
+            "{}",
+            report.output
+        );
         Ok(())
     }
 

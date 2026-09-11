@@ -56,6 +56,7 @@ def check_command():
     assert "grep -v" in command and "|| [ $? -eq 1 ]" in command, "E6: the delta filter must be guarded"
     assert command.rstrip().endswith(">/dev/null"), "harbor must not buffer the event stream"
     assert "message_update" in command, "the deltas are what made one trial 43.8 GB"
+    assert f"tee -a {yi_usage.REMOTE_EVENTS_PATH}" in command, "a resumed trial truncated its first segment"
     assert argv.count(INSTRUCTION) == 1, "E7: instruction must be one quoted argv"
     assert yi_usage.REMOTE_SESSION_DIR in argv, "session dir must be collected"
     assert yi_usage.REMOTE_SESSION_DIR.startswith("/logs/"), "sessions live under /logs"
@@ -113,6 +114,78 @@ def check_usage():
     for key in yi_usage.TOKEN_KEYS:
         assert usage[key] == 0, (key, usage[key])
     assert usage["costUsd"] is None, usage
+    assert usage.get("byUpstream") == {}, "faux names no upstream"
+    # Row 0028 paid twice the catalog on an upstream nothing recorded; the turn's diagnostic names it.
+    upstream = {"type": "upstream", "timestamp": 0, "details": {"provider": "Z.AI"}}
+    lines = []
+    for line in EVENTS.read_text().splitlines():
+        event = json.loads(line)
+        message = event.get("message") or {}
+        if event.get("type") == "message_end" and message.get("role") == "assistant":
+            message["diagnostics"] = [{"type": "stream_resent", "timestamp": 0}, upstream]
+        lines.append(json.dumps(event))
+    with tempfile.TemporaryDirectory() as directory:
+        path = Path(directory) / "yi.jsonl"
+        path.write_text("\n".join(lines) + "\n")
+        assert yi_usage.parse_events(path).get("byUpstream") == {"Z.AI": 1}, "the upstream tally"
+
+
+def check_budget_sentence():
+    """S1: every v4 instruction ends `You have 28800 seconds to complete this task.`, the whole
+    [agent] timeout; the trial runs the multiplier's share, and the sentence must say that."""
+    task = "Fix the filter.\n\nYou have 28800 seconds to complete this task."
+    told = yi_usage.with_budget(task, int(yi_usage.TASK_TIMEOUT_SEC * 0.125))
+    assert "28800" not in told and told.endswith("You have 3600 seconds to complete this task."), told
+    assert yi_usage.with_budget("no budget named", 3600) == "no budget named"
+    source = (ROOT / "adapters" / "yi_harbor" / "agent.py").read_text()
+    assert "def render_instruction" in source and "with_budget(" in source, "harbor passes the task's 28800 through"
+
+
+def check_eval_config():
+    """A routing A/B is the trial HOME's config and a label in the fingerprint's mode, never a
+    rebuild; one helper writes that config for run.py and the harbor adapter."""
+    assert yi_usage.eval_config({}) == {"telemetry": {"enabled": True}}
+    pinned = {yi_usage.ROUTING_ENV: '{"order": ["deepinfra"], "allow_fallbacks": false}'}
+    config = yi_usage.eval_config(pinned)
+    assert config["routing"] == {"order": ["deepinfra"], "allow_fallbacks": False}, config
+    assert config["telemetry"] == {"enabled": True}, config
+    assert yi_usage.routing_label({}) == ""
+    assert yi_usage.routing_label(pinned) == '+routing{"allow_fallbacks":false,"order":["deepinfra"]}'
+    assert yi_usage.routing_label({yi_usage.ROUTING_ENV: "{}"}) == "+routing{}", "{} sends no provider object"
+    for bad in ("not json", '["deepinfra"]'):
+        try:
+            yi_usage.eval_config({yi_usage.ROUTING_ENV: bad})
+        except ValueError:
+            continue
+        raise AssertionError(f"routing {bad!r} must be refused, not dropped")
+    for name in ("run.py", "adapters/yi_harbor/agent.py"):
+        source = (ROOT / name).read_text()
+        assert "eval_config(" in source and '"enabled"' not in source, f"{name} writes its own config"
+        assert "routing_label(" in source, f"{name}'s fingerprint cannot tell two routings apart"
+    # The fixtures lane leaves a caller's --home config alone, so a label there names a routing never sent.
+    with tempfile.TemporaryDirectory() as home:
+        done = subprocess.run(
+            [sys.executable, str(ROOT / "run.py"), "--home", home, "--binary", str(Path(home) / "no-yi")],
+            capture_output=True, text=True, env={**os.environ, yi_usage.ROUTING_ENV: "{}"},
+        )
+    assert done.returncode == 2 and yi_usage.ROUTING_ENV in done.stderr, (done.returncode, done.stdout)
+
+
+def check_empty_stream_fails_clean_workspace():
+    """Row 0012: a binary that exited 4 before any request scored clean-workspace 1, because the
+    runner wrote an empty answer.txt; a rollout that answered nothing leaves no answer file."""
+    env = {key: value for key, value in os.environ.items() if key != yi_usage.ROUTING_ENV}
+    with tempfile.TemporaryDirectory() as home:
+        dead = Path(home) / "yi"
+        dead.write_text("#!/bin/sh\nexit 4\n")
+        dead.chmod(0o755)
+        done = subprocess.run(
+            [sys.executable, str(ROOT / "run.py"), "--home", home, "--binary", str(dead), "--task", "clean-workspace"],
+            capture_output=True, text=True, env=env, timeout=120,
+        )
+    assert done.returncode == 0, done.stdout + done.stderr
+    row = json.loads(done.stdout.splitlines()[0])
+    assert row["reward"] == 0, f"an empty stream scored clean-workspace {row['reward']}"
 
 
 def check_no_assistant_rows():
@@ -194,6 +267,11 @@ def check_axes():
     """The five-axis scorer reads all three run shapes and its rows are byte-stable."""
     fixture = FIXTURES / "axes"
     expected = (fixture / "expected.jsonl").read_text()
+    rows = [json.loads(line) for line in expected.splitlines()]
+    # E1: every attempt passed, so the within-task CI is exactly zero; rows 0023 and 0025
+    # dropped the falsy 0.0 and printed no width at all.
+    both = axes.ledger_row([r for r in rows if r["task"] == "fixture-a"] * 2, "", "", "", "")
+    assert "| k=2 pass_at_2=1.0 ±0.0 |" in both, both
     with tempfile.TemporaryDirectory() as directory:
         out = Path(directory) / "rows.jsonl"
         buffer = io.StringIO()
@@ -202,11 +280,25 @@ def check_axes():
         assert code == 0, buffer.getvalue()
         assert out.read_text() == expected, "axes rows drifted from evals/fixtures/axes/expected.jsonl"
         row = buffer.getvalue().strip().splitlines()[-1]
-    assert "| 1/2 | k=1 |" in row, row
-    assert row.endswith("| 1 / 1(3) / 2 | 3 / 1 / 1 / 1 | 68 / 1 / 17 / 1.0s |"), row
-    rows = [json.loads(line) for line in expected.splitlines()]
+    assert "| 1/3 | k=1 |" in row, row
+    # E2, E3: fixture-b timed out and its verifier ran past its own ceiling (photonic
+    # cc3HUqA); the row counts both and carries the pytest tally and the partial score.
+    # fixture-b's one turn ran on Z.AI; the other trials name no upstream.
+    assert row.endswith("| 1 / 1(3) / 2 | 3 / 1 / 1 / 1 | 51 / 1 / 17 / 1.0s | 1/1/0 | 12/14 0.35 | Z.AI=1 |"), row
     kinds = sorted(r["kind"] for r in rows)
-    assert kinds == ["harbor", "journey", "run"], kinds
+    assert kinds == ["harbor", "harbor", "journey", "run"], kinds
+    with tempfile.TemporaryDirectory() as directory:
+        Path(directory, "row.json").write_text(json.dumps({"task": "t", "reward": 0, "exit": 1}))
+        assert axes.run_context(Path(directory))["errored"], "a run that exited 1 is not a verified failure"
+    # The three timeouts cells never count one trial twice: only the agent's own timeout is `timedOut`,
+    # and a verifier that started and raised anything but a timeout (no reward file) is an error alone.
+    for exc, cells in (("VerifierTimeoutError", (False, True, False)), ("RewardFileNotFoundError", (False, False, True)),
+                       ("AgentSetupTimeoutError", (False, False, True))):
+        with tempfile.TemporaryDirectory() as directory:
+            Path(directory, "result.json").write_text(json.dumps({"exception_info": {"exception_type": exc},
+                                                                  "verifier": {"started_at": "2026-09-09T00:00:00Z"}}))
+            got = axes.harbor_context(Path(directory))
+        assert (got["timedOut"], got["verifierUnmeasured"], got["errored"]) == cells, (exc, got)
     with tempfile.TemporaryDirectory() as directory:
         empty = Path(directory)
         with contextlib.redirect_stderr(io.StringIO()):
@@ -390,6 +482,9 @@ CHECKS = (
     check_install,
     check_adapter_imports,
     check_usage,
+    check_budget_sentence,
+    check_eval_config,
+    check_empty_stream_fails_clean_workspace,
     check_no_assistant_rows,
     check_unknown_usage_is_not_a_free_turn,
     check_session_extras,
