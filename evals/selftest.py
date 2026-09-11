@@ -302,6 +302,19 @@ def check_axes():
                                                                   "verifier": {"started_at": "2026-09-09T00:00:00Z"}}))
             got = axes.harbor_context(Path(directory))
         assert (got["timedOut"], got["verifierUnmeasured"], got["errored"]) == cells, (exc, got)
+    # Incident: freight-dispatch-shift scores its trace as `diagnostic_score` (130/232 points) beside
+    # a one-test ctrf wrapper that passes; the sweep's partials read 1/1 and no score.
+    with tempfile.TemporaryDirectory() as directory:
+        trial = Path(directory)
+        (trial / "verifier").mkdir()
+        (trial / "result.json").write_text(json.dumps({"verifier_result": {"rewards": {"reward": 0.0}}}))
+        (trial / "verifier" / "trace_results.json").write_text(json.dumps({"diagnostic_score": 0.5603}))
+        assert axes.harbor_context(trial)["partialScore"] == 0.5603, "a trace score under either name"
+        # vba-userform-port writes its traces as a list and the tally in trace_summary.json: 0/28
+        # beside four wrapper tests that pass.
+        (trial / "verifier" / "trace_results.json").write_text(json.dumps([{"name": "001", "ok": False}]))
+        (trial / "verifier" / "trace_summary.json").write_text(json.dumps({"passed_traces": 7, "total_traces": 28}))
+        assert axes.harbor_context(trial)["partialScore"] == 0.25, "a trace tally in trace_summary.json"
     with tempfile.TemporaryDirectory() as directory:
         empty = Path(directory)
         with contextlib.redirect_stderr(io.StringIO()):
