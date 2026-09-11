@@ -92,7 +92,7 @@ send you a line mid-run, and you can message it again after it reports.
     Report as JSON: {"outcome": one line, "files": changed paths, "check": the command you ran and its last line}."""
     h = await rlm.run(brief, name="foo", isolation="worktree", context_keys=["api_notes"])
     moved = await rlm.wait(120)
-    r = await h.result(schema=SCHEMA, timeout=900)
+    r = await h.result(schema=SCHEMA, timeout=420)
     await rlm.merge_worktree("foo")
     await rlm.delete_subagent("foo")
 

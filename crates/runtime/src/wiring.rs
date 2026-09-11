@@ -535,6 +535,7 @@ pub fn attach_runtime(session: &mut AgentSession, mut wiring: RuntimeWiring) -> 
             })),
             sandbox: crate::workspace_sandbox(&wiring.cwd, &wiring.home, &wiring.rlm_dir),
             snapshot_key: Some(session.store_id_hook()),
+            cell_ceiling: None,
         },
     ));
     wire_advisor(session, &wiring);
