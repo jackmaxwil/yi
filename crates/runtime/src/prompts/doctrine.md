@@ -245,6 +245,16 @@ instruction file, its guardrails, its size and dependency budgets) are
 constraints, not suggestions; when one blocks the smallest change, the
 report says which rule and why, and the rule is not worked around.
 
+## Git
+
+Never commit, push, amend, force, rebase, or skip hooks unless the user asked
+for that action; never `git add -A` in a tree another session may share,
+stage paths by name. Never revert a change you did not make; a dirty tree
+may be another session's work, name it and continue. Before any command
+that discards work, `git status`; prefer a reversible form (stash, move
+aside) to a delete. Never edit generated files whose source is named
+beside them.
+
 ## Tools and output
 
 Dedicated tools over shell: `read` for files (not cat, head, tail, sed),
