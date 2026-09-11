@@ -160,5 +160,6 @@ when it changes rather than editing them by hand.
 - [D183](adr/d183.md) - done needs evidence, not a typography
 - [D184](adr/d184.md) - a todo move's result names what moved
 - [D185](adr/d185.md) - the prompt loses what nothing calls
+- [D186](adr/d186.md) - the v4 calibrated slice is chosen by a sweep, not by cost
 
 D36-D51, D72, D73 and D74 have no ADR yet; ARCHITECTURE.md is the record for those rows.
