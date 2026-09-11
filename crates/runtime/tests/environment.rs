@@ -4,7 +4,7 @@ use std::sync::Arc;
 use yi_ai::faux::{faux_assistant_message, faux_text};
 use yi_loop::ExecutionMode;
 use yi_runtime::environment::{
-    FILES_SHOWN, append, deadline_line, files_line, git_summary, render, sanitize,
+    FILES_SHOWN, append, deadline_line, files_line, git_summary, render, sanitize, time_per_minute,
 };
 use yi_runtime::{AgentSession, ProviderStream, SessionConfig};
 use yi_types::message::{AgentMessage, ENVIRONMENT_TAG, StopReason, UserContent};
@@ -131,6 +131,55 @@ async fn the_environment_block_is_read_once_per_request_not_per_prompt() -> Test
         "two requests in one prompt read the facts twice"
     );
     Ok(())
+}
+
+#[tokio::test]
+async fn the_session_cost_sums_every_assistant_turn() -> TestResult {
+    let provider = Arc::new(ProviderStream::new(None, None));
+    for total in [0.25, 0.5] {
+        let mut message = faux_assistant_message(vec![faux_text("done")], StopReason::Stop);
+        if let AgentMessage::Assistant { usage, .. } = &mut message {
+            usage.cost.total = serde_json::Number::from_f64(total).ok_or("finite")?;
+        }
+        provider.queue_faux(vec![message]);
+    }
+    let session = AgentSession::new(
+        SessionConfig {
+            system_prompt: "sys".to_owned(),
+            model: faux_model(),
+            thinking_level: None,
+            tool_execution: ExecutionMode::Sequential,
+        },
+        provider,
+    );
+    let cost = session.cost_handle();
+    assert_eq!(cost(), Some(0.0), "no turn yet is a measured zero");
+    for text in ["one", "two"] {
+        session.prompt(text)?;
+        session.wait_idle().await;
+    }
+    assert_eq!(cost(), Some(0.75), "both turns, not the last");
+    Ok(())
+}
+
+#[test]
+fn the_time_line_reads_the_clock_once_a_minute() {
+    let clock = std::sync::Mutex::new(None);
+    let read = |time: &str| Some(time.to_owned());
+    assert_eq!(
+        time_per_minute(&clock, 120_000, || read("12:02")),
+        read("12:02")
+    );
+    assert_eq!(
+        time_per_minute(&clock, 179_999, || read("unread")),
+        read("12:02"),
+        "the same minute keeps the first read"
+    );
+    assert_eq!(
+        time_per_minute(&clock, 180_000, || read("12:03")),
+        read("12:03"),
+        "the next minute reads again"
+    );
 }
 
 #[test]
