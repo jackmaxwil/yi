@@ -703,6 +703,77 @@ async fn cut_turns_are_counted_per_prompt_not_per_tool_call() {
     assert_eq!(answers, 11, "the sixth cut ends the run: {collected:?}");
 }
 
+/// D178: a prompt queued behind a running one (ACP `session/prompt` while busy) arrives as a
+/// follow-up in the same loop; it starts its own cut count, not the fifth cut of the last one.
+#[tokio::test]
+async fn a_follow_up_prompt_starts_its_own_cut_count() {
+    let spiral = || {
+        faux_assistant_message(
+            vec![faux_thinking(
+                &"the router must rise at y=2, no, y=3, ".repeat(2_000),
+            )],
+            StopReason::Stop,
+        )
+    };
+    let mut arguments = Map::new();
+    arguments.insert("word".to_owned(), json!("x"));
+    let work = || {
+        faux_assistant_message(
+            vec![faux_tool_call("c", "echo", arguments.clone())],
+            StopReason::ToolUse,
+        )
+    };
+    let answer = |text: &str| faux_assistant_message(vec![faux_text(text)], StopReason::Stop);
+    let mut script: Vec<AgentMessage> = (0..5).flat_map(|_| [spiral(), work()]).collect();
+    script.extend([answer("first"), spiral(), answer("second")]);
+    let stream = Spiral {
+        responses: Mutex::new(script),
+    };
+    let mut context = LoopContext {
+        system_prompt: String::new(),
+        messages: Vec::new(),
+        tools: vec![Arc::new(EchoTool)],
+    };
+    let mut config = LoopConfig::new(faux_model());
+    let follow_ups = Arc::new(Mutex::new(vec![user("and then?")]));
+    config.get_follow_up_messages = Some(Box::new(move || {
+        follow_ups
+            .lock()
+            .map(|mut queued| std::mem::take(&mut *queued))
+            .unwrap_or_default()
+    }));
+    let signal = InterruptSignal::default();
+    let (_events, mut emit) = collector();
+    let collected = run_loop(
+        &mut context,
+        vec![user("go")],
+        &config,
+        &signal,
+        &mut emit,
+        &stream,
+    )
+    .await;
+    let rungs: Vec<i64> = collected
+        .iter()
+        .filter_map(|message| match message {
+            AgentMessage::Custom {
+                custom_type,
+                details,
+                ..
+            } if custom_type == yi_loop::LENGTH_REDRIVE_CUSTOM_TYPE => {
+                details.as_ref().and_then(|d| d["rung"].as_i64())
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(rungs, vec![1, 2, 3, 4, 5, 1], "{collected:?}");
+    let answers = collected
+        .iter()
+        .filter(|message| matches!(message, AgentMessage::Assistant { .. }))
+        .count();
+    assert_eq!(answers, 13, "the follow-up reaches its answer");
+}
+
 /// D163 amended: the provider settles a cut turn from the generation record and its `Done`
 /// carries the measured usage; the cut message keeps it instead of the chars/4 estimate.
 #[tokio::test]
