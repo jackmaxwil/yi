@@ -306,30 +306,27 @@ fn done_without_evidence_is_refused_and_says_what_evidence_is() -> TestResult {
         0,
         "one evidence closes the whole list"
     );
-    let prose = store
-        .apply(
-            Op::Done {
-                target: Target::Label(label("a")?),
-                evidence: Some(
-                    "filter.py reads argv[1]; missing-arg path returns exit 2".to_owned(),
-                ),
-            },
-            None,
-        )
-        .err()
-        .ok_or("prose evidence must be refused")?;
-    assert!(
-        matches!(prose, TodoError::EvidenceShape { ref label } if label == "a"),
-        "{prose}"
-    );
-    assert!(prose.to_string().contains("`<command>`"), "{prose}");
+    // Incident: row 0028 refused all three; a checker that prints `ok` could never close.
     store.apply(
-        Op::Done {
-            target: Target::Label(label("a")?),
-            evidence: Some("`python3 check.py` all 12 checks passed".to_owned()),
+        Op::Set {
+            list: "- [ ] e\n- [ ] f\n- [ ] g\n".to_owned(),
         },
         None,
     )?;
+    for (item, evidence) in [
+        ("e", "`pytest -q` → `3 passed in 0.00s`"),
+        ("f", "python3 check.py → ok"),
+        ("g", "`./check` ok"),
+    ] {
+        store.apply(
+            Op::Done {
+                target: Target::Label(label(item)?),
+                evidence: Some(evidence.to_owned()),
+            },
+            None,
+        )?;
+    }
+    assert_eq!(store.progress().open, 0, "evidence closes in any shape");
     store.apply(
         Op::Set {
             list: "- [ ] c\n- [x] d\n".to_owned(),
