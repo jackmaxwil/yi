@@ -685,6 +685,28 @@ fn no_gates_disables_both() -> TestResult {
     Ok(())
 }
 
+/// D182: a path the prompt names is the model's to write; no turn count steers toward it and
+/// a clean stop that leaves it unwritten is the model's own.
+#[test]
+fn a_named_path_left_unwritten_neither_steers_nor_refuses_the_stop() -> TestResult {
+    let r = rig("named-path")?;
+    let hooks = prelude_hooks(&r);
+    (hooks.on_prompt)(&user("Write a router at `route.py` that reads the board."));
+    let read = faux_assistant_message(
+        vec![faux_tool_call("c1", "read", Map::new())],
+        StopReason::ToolUse,
+    );
+    let results = vec![result("c1", "read", false)];
+    for _ in 0..4 {
+        (hooks.on_turn)(&snap(&read, &results));
+    }
+    assert_eq!(r.session.pending_count(), 0, "no turn count earns a steer");
+    let claim = stop("The router is described above.");
+    assert!((hooks.intercept_stop)(&snap(&claim, &[])).is_none());
+    assert!(intercept_records(&r.store).is_empty());
+    Ok(())
+}
+
 fn labels(todos: &TodoStore) -> Vec<String> {
     todos
         .list()

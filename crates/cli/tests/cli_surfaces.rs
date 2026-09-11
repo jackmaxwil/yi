@@ -355,6 +355,26 @@ fn a_misspelled_config_key_fails_naming_it() -> TestResult {
     Ok(())
 }
 
+/// D182 deleted the gates; a config written for them still loads, and says so once.
+#[test]
+fn a_config_that_still_names_gates_runs_and_says_the_key_is_gone() -> TestResult {
+    let workspace = Workspace::new("config-gates")?;
+    write_config(
+        &workspace,
+        r#"{"models":{"primary":"faux/faux-1"},"gates":{"artifact":false}}"#,
+    )?;
+    let answered = workspace.yi(&["ask", "gates check"])?;
+    let stderr = String::from_utf8_lossy(&answered.stderr);
+    assert_eq!(answered.status.code(), Some(0), "{stderr}");
+    assert_eq!(stderr.matches("`gates`").count(), 1, "{stderr}");
+    assert!(
+        stdout(&answered).contains("faux: gates check"),
+        "{}",
+        stdout(&answered)
+    );
+    Ok(())
+}
+
 #[test]
 fn a_broken_config_file_fails_instead_of_reading_as_absent() -> TestResult {
     let workspace = Workspace::new("config-broken")?;
