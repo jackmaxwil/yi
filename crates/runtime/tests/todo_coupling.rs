@@ -6,12 +6,10 @@ use yi_ai::faux::{faux_assistant_message, faux_text, faux_tool_call};
 use yi_loop::{ExecutionMode, TurnSnapshot};
 use yi_runtime::todo::coupling::{
     CLOSED_LIST_TEXT, Cycle, EMPTY_STOP_TEXT, Eager, IMPOSSIBLE_TEXT, INTERCEPT_CUSTOM_TYPE,
-    Options, SEED_ACTOR, StopPosture, artifact_candidates, coupling, figures_of, find_checker,
-    gate, landed, numbers_of, stop_posture,
+    Options, SEED_ACTOR, StopPosture, coupling, figures_of, gate, landed, numbers_of, stop_posture,
 };
 use yi_runtime::todo::{Op, Target, TodoStore, latest_record};
 use yi_runtime::{AgentSession, ProviderStream, SessionConfig};
-use yi_types::config::Gates;
 use yi_types::message::{AgentMessage, Attribution, StopReason, UserContent};
 use yi_types::model::{Model, ModelCost, ToolChoice};
 use yi_types::plan::doc::TodoLabel;
@@ -288,8 +286,6 @@ fn a_stop_with_open_todos_is_re_driven_up_the_ladder_then_let_go() -> TestResult
             eager: Eager::Prelude,
             children_running: Arc::new(|| false),
             inner: None,
-            cwd: empty_dir(),
-            gates: Gates::default(),
         },
     );
     let message = stop("All done, anything else?");
@@ -358,8 +354,6 @@ fn only_a_state_suppresses_the_interception() -> TestResult {
             eager: Eager::Prelude,
             children_running: Arc::new(|| false),
             inner: None,
-            cwd: empty_dir(),
-            gates: Gates::default(),
         },
     );
     let question = stop("Which branch should I land on?");
@@ -410,8 +404,6 @@ fn terminal_stops_are_never_re_driven_and_empty_stops_are_capped() -> TestResult
             eager: Eager::Prelude,
             children_running: Arc::new(|| false),
             inner: None,
-            cwd: empty_dir(),
-            gates: Gates::default(),
         },
     );
     for reason in [StopReason::Aborted, StopReason::Error, StopReason::Length] {
@@ -456,8 +448,6 @@ fn a_multi_step_prompt_gets_the_prelude_and_force_is_opt_in() -> TestResult {
             eager: Eager::Prelude,
             children_running: Arc::new(|| false),
             inner: None,
-            cwd: empty_dir(),
-            gates: Gates::default(),
         },
     );
     assert_eq!(r.session.pending_count(), 0);
@@ -477,8 +467,6 @@ fn a_multi_step_prompt_gets_the_prelude_and_force_is_opt_in() -> TestResult {
             eager: Eager::Force,
             children_running: Arc::new(|| false),
             inner: None,
-            cwd: empty_dir(),
-            gates: Gates::default(),
         },
     );
     match (forced.on_prompt)(&prompt) {
@@ -489,20 +477,6 @@ fn a_multi_step_prompt_gets_the_prelude_and_force_is_opt_in() -> TestResult {
 }
 
 fn prelude_hooks(r: &Rig) -> yi_runtime::session::TurnCoupling {
-    hooks_in(r, empty_dir(), Gates::default())
-}
-
-/// A fresh empty cwd per rig: the system temp dir holds thousands of entries the checker
-/// scan would walk, and may hold a `test_*.py` of someone else's.
-fn empty_dir() -> std::path::PathBuf {
-    static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-    let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let dir = std::env::temp_dir().join(format!("yi-coupling-{}-{n}", std::process::id()));
-    let _ = std::fs::create_dir_all(&dir);
-    dir
-}
-
-fn hooks_in(r: &Rig, cwd: std::path::PathBuf, gates: Gates) -> yi_runtime::session::TurnCoupling {
     coupling(
         &r.session,
         Arc::clone(&r.todos),
@@ -510,179 +484,8 @@ fn hooks_in(r: &Rig, cwd: std::path::PathBuf, gates: Gates) -> yi_runtime::sessi
             eager: Eager::Prelude,
             children_running: Arc::new(|| false),
             inner: None,
-            cwd,
-            gates,
         },
     )
-}
-
-fn scratch(name: &str) -> Result<std::path::PathBuf, Box<dyn Error>> {
-    let dir = std::env::temp_dir().join(format!("yi-gates-{name}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir)?;
-    Ok(dir)
-}
-
-fn tool_turn(
-    id: &str,
-    tool: &str,
-    arguments: Map<String, Value>,
-) -> (AgentMessage, Vec<AgentMessage>) {
-    let message = faux_assistant_message(
-        vec![faux_tool_call(id, tool, arguments)],
-        StopReason::ToolUse,
-    );
-    (message, vec![result(id, tool, false)])
-}
-
-#[test]
-fn artifact_paths_are_read_from_the_prompt_and_inputs_are_not() -> TestResult {
-    let dir = scratch("artifacts")?;
-    std::fs::create_dir_all(dir.join("data"))?;
-    std::fs::write(dir.join("data/x.csv"), "a,b\n")?;
-    let text = "Read the data in data/x.csv and save the result to `out/result.json`. Write a router at /nonexistent-yi/route.py; the site https://example.com/x.html is not a file. Score 24/27.";
-    let found = artifact_candidates(text, &dir);
-    assert_eq!(
-        found,
-        vec![
-            dir.join("out/result.json"),
-            std::path::PathBuf::from("/nonexistent-yi/route.py")
-        ],
-        "{found:?}"
-    );
-    Ok(())
-}
-
-#[test]
-fn the_artifact_steer_fires_once_on_the_third_tool_turn_with_nothing_on_disk() -> TestResult {
-    let dir = scratch("steer")?;
-    let r = rig("steer")?;
-    let hooks = hooks_in(&r, dir.clone(), Gates::default());
-    (hooks.on_prompt)(&user("Write a router at `route.py` that reads the board."));
-    let (message, results) = tool_turn("c1", "read", Map::new());
-    let snapshot = snap(&message, &results);
-    (hooks.on_turn)(&snapshot);
-    (hooks.on_turn)(&snapshot);
-    assert_eq!(r.session.pending_count(), 0, "two tool turns say nothing");
-    (hooks.on_turn)(&snapshot);
-    assert_eq!(
-        r.session.pending_count(),
-        1,
-        "the third tool turn earns the steer"
-    );
-    (hooks.on_turn)(&snapshot);
-    assert_eq!(r.session.pending_count(), 1, "once");
-    Ok(())
-}
-
-/// D168: a turn cut at the reasoning budget makes no tool call and still counts toward the
-/// steer, so a spiral that starts on turn two is told what to write on turn three.
-#[test]
-fn cut_turns_count_toward_the_artifact_steer() -> TestResult {
-    let dir = scratch("steer-cut")?;
-    let r = rig("steer-cut")?;
-    let hooks = hooks_in(&r, dir.clone(), Gates::default());
-    (hooks.on_prompt)(&user("Write a router at `route.py` that reads the board."));
-    let (message, results) = tool_turn("c1", "read", Map::new());
-    (hooks.on_turn)(&snap(&message, &results));
-    let cut = faux_assistant_message(Vec::new(), StopReason::Length);
-    (hooks.on_turn)(&snap(&cut, &[]));
-    assert_eq!(
-        r.session.pending_count(),
-        0,
-        "one tool turn and one cut say nothing"
-    );
-    (hooks.on_turn)(&snap(&cut, &[]));
-    assert_eq!(
-        r.session.pending_count(),
-        1,
-        "the third turn, a cut, earns the steer"
-    );
-    Ok(())
-}
-
-#[test]
-fn a_clean_stop_with_a_missing_artifact_is_refused_once_then_waived() -> TestResult {
-    let dir = scratch("artifact-stop")?;
-    let r = rig("artifact-stop")?;
-    let hooks = hooks_in(&r, dir.clone(), Gates::default());
-    (hooks.on_prompt)(&user("Save the answer to `answer.txt`."));
-    let claim = stop("The answer is forty-two.");
-    let first = (hooks.intercept_stop)(&snap(&claim, &[])).ok_or("the first stop is refused")?;
-    let (kind, _, text) = custom_type(&first);
-    assert_eq!(kind, INTERCEPT_CUSTOM_TYPE);
-    assert!(
-        text.contains("answer.txt") && text.contains("does not exist"),
-        "{text}"
-    );
-    assert!(
-        (hooks.intercept_stop)(&snap(&claim, &[])).is_none(),
-        "the second passes"
-    );
-    let reasons: Vec<String> = intercept_records(&r.store)
-        .iter()
-        .map(|record| record.reason.clone())
-        .collect();
-    assert_eq!(reasons, ["artifact_missing", "artifact_waived"]);
-    let written = rig("artifact-written")?;
-    let hooks = hooks_in(&written, dir.clone(), Gates::default());
-    (hooks.on_prompt)(&user("Save the answer to `answer.txt`."));
-    std::fs::write(dir.join("answer.txt"), "42\n")?;
-    assert!(
-        (hooks.intercept_stop)(&snap(&claim, &[])).is_none(),
-        "a written artifact passes"
-    );
-    Ok(())
-}
-
-#[test]
-fn a_checker_that_did_not_run_since_the_last_write_refuses_the_first_stop() -> TestResult {
-    let dir = scratch("closure")?;
-    std::fs::write(dir.join("check.py"), "print('ok')\n")?;
-    assert_eq!(
-        find_checker(&dir).map(|c| c.command),
-        Some("python3 check.py".to_owned())
-    );
-    let r = rig("closure")?;
-    let hooks = hooks_in(&r, dir.clone(), Gates::default());
-    (hooks.on_prompt)(&user("Fix the parser."));
-    let (edit, edit_results) = tool_turn("e1", "edit", Map::new());
-    (hooks.on_turn)(&snap(&edit, &edit_results));
-    let claim = stop("Fixed.");
-    let first = (hooks.intercept_stop)(&snap(&claim, &[]))
-        .ok_or("an unrun checker refuses the first stop")?;
-    let (_, _, text) = custom_type(&first);
-    assert!(text.contains("Run `python3 check.py`"), "{text}");
-    let mut arguments = Map::new();
-    arguments.insert("command".to_owned(), json!("python3 check.py"));
-    let (check, check_results) = tool_turn("b1", "bash", arguments);
-    (hooks.on_turn)(&snap(&check, &check_results));
-    assert!(
-        (hooks.intercept_stop)(&snap(&claim, &[])).is_none(),
-        "a check after the write passes"
-    );
-    let reasons: Vec<String> = intercept_records(&r.store)
-        .iter()
-        .map(|record| record.reason.clone())
-        .collect();
-    assert_eq!(reasons, ["closure_unrun"]);
-    Ok(())
-}
-
-#[test]
-fn no_gates_disables_both() -> TestResult {
-    let dir = scratch("no-gates")?;
-    std::fs::write(dir.join("check.py"), "print('ok')\n")?;
-    let r = rig("no-gates")?;
-    let hooks = hooks_in(&r, dir, Gates::OFF);
-    (hooks.on_prompt)(&user(
-        "Save the answer to `answer.txt` after fixing the parser.",
-    ));
-    let (edit, edit_results) = tool_turn("e1", "edit", Map::new());
-    (hooks.on_turn)(&snap(&edit, &edit_results));
-    assert!((hooks.intercept_stop)(&snap(&stop("Done."), &[])).is_none());
-    assert!(intercept_records(&r.store).is_empty());
-    Ok(())
 }
 
 /// D182: a path the prompt names is the model's to write; no turn count steers toward it and
@@ -1014,9 +817,6 @@ fn a_number_written_to_an_answer_file_with_no_source_is_re_driven() -> TestResul
             .map(|record| record.reason.clone()),
         Some("artifact".to_owned())
     );
-    let second = (hooks.intercept_stop)(&snap(&done, &[]))
-        .ok_or("the artifact gate refuses the file that was never written to disk")?;
-    assert!(custom_type(&second).2.contains("does not exist"));
     assert!(
         (hooks.intercept_stop)(&snap(&done, &[])).is_none(),
         "each re-drive once per prompt"
@@ -1035,8 +835,6 @@ fn the_cycle_counter_survives_a_resume() -> TestResult {
             eager: Eager::Prelude,
             children_running: Arc::new(|| false),
             inner: None,
-            cwd: empty_dir(),
-            gates: Gates::default(),
         },
     );
     let message = stop("done");
@@ -1053,8 +851,6 @@ fn the_cycle_counter_survives_a_resume() -> TestResult {
             eager: Eager::Prelude,
             children_running: Arc::new(|| false),
             inner: None,
-            cwd: empty_dir(),
-            gates: Gates::default(),
         },
     );
     assert!(

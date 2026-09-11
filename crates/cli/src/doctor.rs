@@ -70,7 +70,7 @@ fn config_parses(site: &Site) -> Finding {
 fn catalog_age(site: &Site) -> Finding {
     let hours = read_config(&site.home)
         .ok()
-        .and_then(|config| config.catalog.and_then(|catalog| catalog.refresh_hours))
+        .and_then(|(config, _)| config.catalog.and_then(|catalog| catalog.refresh_hours))
         .unwrap_or(yi_runtime::DEFAULT_REFRESH_HOURS);
     let dir = site.home.join(".yi/catalog");
     let now = crate::catalog::clock();

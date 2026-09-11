@@ -1,4 +1,5 @@
-use yi_types::config::UserConfig;
+use serde_json::Value;
+use yi_types::config::{ConfigMigration, UserConfig, migrate, parse};
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
@@ -12,5 +13,26 @@ fn the_strict_config_refuses_gates_and_loads_the_migrated_file() -> TestResult {
         .err()
         .ok_or("`gates` is an unknown key once the gates are gone")?;
     assert!(refused.to_string().contains("gates"), "{refused}");
+    Ok(())
+}
+
+#[test]
+fn a_config_naming_gates_migrates_to_the_current_shape_once() -> TestResult {
+    let after: Value = serde_json::from_str(AFTER)?;
+    let mut config: Value = serde_json::from_str(BEFORE)?;
+    assert_eq!(migrate(&mut config), [ConfigMigration::RemovedGates]);
+    assert_eq!(config, after, "before migrates to after");
+    assert!(migrate(&mut config).is_empty(), "after migrates to itself");
+    assert_eq!(config, after);
+    let (loaded, migrations) = parse(BEFORE)?;
+    assert_eq!(
+        (loaded, migrations),
+        (parse(AFTER)?.0, vec![ConfigMigration::RemovedGates])
+    );
+    assert!(
+        ConfigMigration::RemovedGates
+            .to_string()
+            .contains("`gates`")
+    );
     Ok(())
 }
