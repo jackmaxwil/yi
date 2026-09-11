@@ -88,7 +88,7 @@ pub struct RuntimeWiring {
     pub wall: crate::wall::Wall,
     /// D13 `bash.autoBackgroundMs`; None keeps every command in the turn.
     pub auto_background: Option<std::time::Duration>,
-    /// `--deadline`: the wall clock the run has, shown counting down in the environment block.
+    /// `--deadline`: the run's wall clock, counted down in the environment block and enforced.
     pub deadline: Option<std::time::Duration>,
     /// the artifact and closure gates at a clean stop; `--no-gates` turns both off (D162).
     pub gates: yi_types::config::Gates,
@@ -450,6 +450,9 @@ fn wire_job_completions(session: &AgentSession) {
 }
 
 pub fn attach_runtime(session: &mut AgentSession, mut wiring: RuntimeWiring) -> Arc<SubagentHost> {
+    if let Some(total) = wiring.deadline {
+        session.set_deadline(total);
+    }
     let plans_dir = wiring
         .plans_dir
         .clone()

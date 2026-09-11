@@ -759,8 +759,14 @@ fn run(args: &Args) -> i32 {
         }
         let mut exit = 0;
         loop {
-            let Ok(event) = events.recv().await else {
-                break;
+            let event = match events.recv().await {
+                Ok(event) => event,
+                // A slow reader is not the end of the run: breaking here exited 0 mid-turn.
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(missed)) => {
+                    eprintln!("warning: {missed} events dropped behind a slow reader");
+                    continue;
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
             };
             if json && let Ok(line) = serde_json::to_string(&event) {
                 println!("{line}");
@@ -1012,31 +1018,8 @@ fn mcp_enabled() -> bool {
     config().mcp.as_ref().and_then(|mcp| mcp.enabled) == Some(true)
 }
 
-fn run_serve_command(args: &Args, version: &str) -> i32 {
-    let runtime = match tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-    {
-        Ok(runtime) => runtime,
-        Err(error) => {
-            eprintln!("error: {error}");
-            std::process::exit(1);
-        }
-    };
-    let socket = daemon_socket(args);
-    let worker_args = shells::serve_flags(args);
-    yi_acp::daemon::run_daemon(
-        yi_acp::daemon::DaemonOptions {
-            socket,
-            worker_args,
-            agent_version: version.to_owned(),
-        },
-        runtime,
-    )
-}
-
 mod shells;
-use shells::{daemon_socket, run_console_command, run_tui_command};
+use shells::{run_console_command, run_serve_command, run_tui_command};
 
 /// `yi mcp` answers before argument parsing: it takes the raw argv the one-shot CLI owns.
 fn mcp_fast_path() {
