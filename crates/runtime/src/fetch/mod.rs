@@ -506,7 +506,7 @@ fn sanitize(text: &str) -> String {
         .chars()
         .filter(|ch| !ch.is_control() || *ch == '\n' || *ch == '\t')
         .collect();
-    stripped.replace("<<<", "<\\<<")
+    crate::ext::escape_sentinel(&stripped)
 }
 
 #[cfg(test)]
