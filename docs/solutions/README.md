@@ -152,5 +152,6 @@ when it changes rather than editing them by hand.
 - [D174](adr/d174.md) - a row names the build, upstream and routing it ran on, and a trial its budget
 - [D175](adr/d175.md) - an in-band provider error is retried and settled like a dropped stream
 - [D176](adr/d176.md) - a kernel cell has a wall clock, and an abandoned internal cell frees the kernel
+- [D177](adr/d177.md) - `--deadline` is enforced, not only shown
 
 D36-D51, D72, D73 and D74 have no ADR yet; ARCHITECTURE.md is the record for those rows.
