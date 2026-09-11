@@ -841,6 +841,7 @@ pub async fn run_loop<S: StreamFn>(
         if follow_ups.is_empty() {
             break;
         }
+        cut_stops = 0;
         pending = follow_ups;
     }
 
