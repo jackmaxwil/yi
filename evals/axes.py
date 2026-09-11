@@ -7,13 +7,14 @@ A trial is a v4 session file; its context is the nearest ancestor holding a
 harbor `result.json` (reward, wall, timeout; the verifier's `ctrf.json` and
 `trace_results.json` beside it) or a run.py `row.json`. One JSON line per
 trial, then the docs/eval-ledger.md row with the persistence, rigor and
-experience triples, timeouts and partials on the right. Exit 2 when a trial
-is unmeasurable: a turn without usage, or no assistant message at all. Every
-column is a deterministic function of the run's own files (axes.md names each
-source).
+experience triples, timeouts, partials and upstreams on the right. Exit 2
+when a trial is unmeasurable: a turn without usage, or no assistant message
+at all. Every column is a deterministic function of the run's own files
+(axes.md names each source).
 """
 
 import argparse
+import collections
 import json
 import statistics
 import sys
@@ -147,6 +148,7 @@ def score(path, root):
         "repeatedCalls": mu["repeatedCalls"], "interrupts": mu["friction"]["interrupts"],
         "readsBeforeMutation": mu["orientation"]["callsBeforeFirstMutation"],
         "signals": signals, **telemetry(path),
+        "byUpstream": yi_usage.upstreams(e["message"] for e in entries if e.get("type") == "message" and e.get("message")),
         "measurable": mu["turns"] > 0 and unknown == 0,
     }
     return row
@@ -217,6 +219,10 @@ def ledger_row(rows, suite, model, fingerprint, note):
     scores = [row["partialScore"] for row in rows if row.get("partialScore") is not None]
     partials = " ".join(([f"{_sum(tallied, 'testsPassed')}/{_sum(tallied, 'testsTotal')}"] if tallied else [])
                         + ([f"{statistics.mean(scores):.2f}"] if scores else [])) or "-"
+    turns_on = collections.Counter()
+    for row in rows:
+        turns_on.update(row.get("byUpstream") or {})
+    upstreams = ", ".join(f"{name}={n}" for name, n in sorted(turns_on.items(), key=lambda kv: (-kv[1], kv[0]))) or "-"
     return " | ".join([
         "| NNNN", datetime.now().date().isoformat(), suite, model, fingerprint,
         f"{passed}/{len(scored)}" if scored else "—", pass_cell,
@@ -225,7 +231,8 @@ def ledger_row(rows, suite, model, fingerprint, note):
         f"{wall:.1f}s" if wall else "-", str(_sum(rows, "turns")),
         str(max((row["peakContextTokens"] or 0 for row in rows), default=0)),
         str(_sum(rows, "compactions")), note, "", persistence, rigor, experience,
-        f"{_sum(rows, 'timedOut')}/{_sum(rows, 'verifierUnmeasured')}/{_sum(rows, 'errored')}", partials + " |",
+        f"{_sum(rows, 'timedOut')}/{_sum(rows, 'verifierUnmeasured')}/{_sum(rows, 'errored')}", partials,
+        upstreams + " |",
     ])
 
 
