@@ -120,6 +120,16 @@ impl RuntimeWiring {
         }
         dir.join("family")
     }
+
+    /// The kernel's snapshot, `RLM_SESSION_DIR` and writable root. Incident: the root's was
+    /// `rlm-<pid>`, so `--continue` never found its snapshot; a child keeps its `sub-*`.
+    fn kernel_dir(&self) -> PathBuf {
+        self.sessions_dir
+            .as_ref()
+            .filter(|_| self.depth == 0)
+            .unwrap_or(&self.rlm_dir)
+            .clone()
+    }
 }
 
 /// Every spawned child wires itself the same way at depth+1; the depth check in
@@ -530,13 +540,13 @@ pub fn attach_runtime(session: &mut AgentSession, mut wiring: RuntimeWiring) -> 
         crate::kernel::KernelServiceOptions {
             cwd: wiring.cwd.clone(),
             home: wiring.home.clone(),
-            session_dir: Some(wiring.rlm_dir.clone()),
+            session_dir: Some(wiring.kernel_dir()),
             family_dir: Some(wiring.family_dir()),
             host: Arc::new(registry),
             on_restore: Some(Arc::new(move |restore| {
                 restore_notice(&crate::kernel::restore_notice_text(restore));
             })),
-            sandbox: crate::workspace_sandbox(&wiring.cwd, &wiring.home, &wiring.rlm_dir),
+            sandbox: crate::workspace_sandbox(&wiring.cwd, &wiring.home, &wiring.kernel_dir()),
             snapshot_key: Some(session.store_id_hook()),
             cell_ceiling: None,
         },
