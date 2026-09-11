@@ -261,8 +261,8 @@ push:
 pr *args:
     python3 scripts/forge_pr.py pr "$@"
 
-# The whole landing: merge main (baselines merge themselves), re-ratchet, reprice the
-# growth memo's number, render missing ADRs, open, wait, merge.
+# The whole landing: merge main (baselines merge themselves), reprice the growth memo from
+# main's baseline, re-ratchet, render missing ADRs, open, wait, merge.
 land title *args:
     python3 scripts/forge_pr.py land "$@"
 
