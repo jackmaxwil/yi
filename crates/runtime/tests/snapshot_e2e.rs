@@ -79,7 +79,6 @@ fn process(
             wall: Wall::default(),
             auto_background: None,
             deadline: None,
-            gates: Default::default(),
             kernel_prewarm: false,
             mcp_read: None,
             sessions_dir: Some(sessions),

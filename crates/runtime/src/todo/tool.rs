@@ -267,12 +267,14 @@ impl TodoTool {
             String::new()
         };
         let expected = args.get("touched").and_then(Value::as_u64);
+        let whole = matches!(op, Op::Set { .. } | Op::Init { .. });
         let applied = self.store.apply(op, expected)?;
-        Ok(format!(
-            "{inferred}{}\ntouched: {}",
-            text::render(&applied.list),
-            applied.touched
-        ))
+        let body = if applied.changed && !whole {
+            text::render_change(&applied.before, &applied.list)
+        } else {
+            text::render(&applied.list)
+        };
+        Ok(format!("{inferred}{body}\ntouched: {}", applied.touched))
     }
 }
 

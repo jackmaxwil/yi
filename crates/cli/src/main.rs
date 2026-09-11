@@ -14,7 +14,7 @@ mod tty;
 mod why;
 
 use std::sync::Arc;
-use yi_types::config::RlmConfig;
+use yi_types::config::{ConfigMigration, RlmConfig, UserConfig};
 
 use lanes::{claim_lane, configured_lanes, release_lane, run_lanes};
 
@@ -46,7 +46,6 @@ struct Args {
     record: Option<String>,
     snap: Option<String>,
     deadline: Option<u64>,
-    no_gates: bool,
     resume: Resume,
     schema: Option<String>,
     prompt: String,
@@ -83,7 +82,6 @@ fn parse_args() -> Result<Args, lexopt::Error> {
     let mut record = None;
     let mut snap = None;
     let mut deadline = None;
-    let mut no_gates = false;
     let mut continue_leaf = false;
     let mut session = None;
     let mut schema = None;
@@ -120,7 +118,6 @@ fn parse_args() -> Result<Args, lexopt::Error> {
             Long("record") => record = Some(parser.value()?.string()?),
             Long("snap") => snap = Some(parser.value()?.string()?),
             Long("deadline") => deadline = Some(parser.value()?.parse()?),
-            Long("no-gates") => no_gates = true,
             Long("continue") => continue_leaf = true,
             Long("session") => session = Some(parser.value()?.string()?),
             Long("schema") => schema = Some(parser.value()?.string()?),
@@ -173,7 +170,6 @@ fn parse_args() -> Result<Args, lexopt::Error> {
         record,
         snap,
         deadline,
-        no_gates,
         resume: match (session, continue_leaf) {
             (Some(id), _) => Resume::Named(id),
             (None, true) => Resume::Leaf,
@@ -254,21 +250,25 @@ fn load_config() -> Result<(), String> {
         ));
     }
     yi_runtime::set_catalog_cache_dir(std::path::Path::new(&home).join(".yi/catalog"));
-    set_config(read_config(std::path::Path::new(&home))?)
+    let (config, migrations) = read_config(std::path::Path::new(&home))?;
+    for migration in migrations {
+        eprintln!("warning: {migration}");
+    }
+    set_config(config)
 }
 
 /// A relative home would read `<cwd>/.yi/config.json`, which is X7's project
 /// layer, not this one; [`load_config`] is the only caller for that reason.
-fn read_config(home: &std::path::Path) -> Result<yi_types::config::UserConfig, String> {
+fn read_config(home: &std::path::Path) -> Result<(UserConfig, Vec<ConfigMigration>), String> {
     let path = home.join(".yi/config.json");
     let raw = match std::fs::read_to_string(&path) {
         Ok(raw) => raw,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            return Ok(yi_types::config::UserConfig::default());
+            return Ok(Default::default());
         }
         Err(error) => return Err(format!("{}: {error}", path.display())),
     };
-    serde_json::from_str(&raw).map_err(|error| format!("{}: {error}", path.display()))
+    yi_types::config::parse(&raw).map_err(|error| format!("{}: {error}", path.display()))
 }
 
 /// Invariant: nothing may read the config before this lands it, or the strict
@@ -525,7 +525,6 @@ fn build_session(
             plans_dir: configured_plans_dir(&work),
             auto_background: configured_auto_background(),
             deadline: args.deadline.map(std::time::Duration::from_secs),
-            gates: yi_types::config::Gates::resolve(args.no_gates, config().gates.as_ref()),
             kernel_prewarm: config()
                 .kernel
                 .as_ref()
@@ -1059,7 +1058,7 @@ fn main() {
         "ask" => {
             if args.prompt.is_empty() {
                 eprintln!(
-                    "usage: yi ask [--model provider/id] [--json] [--deadline secs] [--no-gates] <prompt>"
+                    "usage: yi ask [--model provider/id] [--json] [--deadline secs] <prompt>"
                 );
                 std::process::exit(2);
             }
