@@ -194,6 +194,11 @@ def check_axes():
     """The five-axis scorer reads all three run shapes and its rows are byte-stable."""
     fixture = FIXTURES / "axes"
     expected = (fixture / "expected.jsonl").read_text()
+    rows = [json.loads(line) for line in expected.splitlines()]
+    # E1: every attempt passed, so the within-task CI is exactly zero; rows 0023 and 0025
+    # dropped the falsy 0.0 and printed no width at all.
+    both = axes.ledger_row([r for r in rows if r["task"] == "fixture-a"] * 2, "", "", "", "")
+    assert "| k=2 pass_at_2=1.0 ±0.0 |" in both, both
     with tempfile.TemporaryDirectory() as directory:
         out = Path(directory) / "rows.jsonl"
         buffer = io.StringIO()
@@ -202,11 +207,24 @@ def check_axes():
         assert code == 0, buffer.getvalue()
         assert out.read_text() == expected, "axes rows drifted from evals/fixtures/axes/expected.jsonl"
         row = buffer.getvalue().strip().splitlines()[-1]
-    assert "| 1/2 | k=1 |" in row, row
-    assert row.endswith("| 1 / 1(3) / 2 | 3 / 1 / 1 / 1 | 68 / 1 / 17 / 1.0s |"), row
-    rows = [json.loads(line) for line in expected.splitlines()]
+    assert "| 1/3 | k=1 |" in row, row
+    # E2, E3: fixture-b timed out and its verifier ran past its own ceiling (photonic
+    # cc3HUqA); the row counts both and carries the pytest tally and the partial score.
+    assert row.endswith("| 1 / 1(3) / 2 | 3 / 1 / 1 / 1 | 51 / 1 / 17 / 1.0s | 1/1/0 | 12/14 0.35 |"), row
     kinds = sorted(r["kind"] for r in rows)
-    assert kinds == ["harbor", "journey", "run"], kinds
+    assert kinds == ["harbor", "harbor", "journey", "run"], kinds
+    with tempfile.TemporaryDirectory() as directory:
+        Path(directory, "row.json").write_text(json.dumps({"task": "t", "reward": 0, "exit": 1}))
+        assert axes.run_context(Path(directory))["errored"], "a run that exited 1 is not a verified failure"
+    # The three timeouts cells never count one trial twice: only the agent's own timeout is `timedOut`,
+    # and a verifier that started and raised anything but a timeout (no reward file) is an error alone.
+    for exc, cells in (("VerifierTimeoutError", (False, True, False)), ("RewardFileNotFoundError", (False, False, True)),
+                       ("AgentSetupTimeoutError", (False, False, True))):
+        with tempfile.TemporaryDirectory() as directory:
+            Path(directory, "result.json").write_text(json.dumps({"exception_info": {"exception_type": exc},
+                                                                  "verifier": {"started_at": "2026-09-09T00:00:00Z"}}))
+            got = axes.harbor_context(Path(directory))
+        assert (got["timedOut"], got["verifierUnmeasured"], got["errored"]) == cells, (exc, got)
     with tempfile.TemporaryDirectory() as directory:
         empty = Path(directory)
         with contextlib.redirect_stderr(io.StringIO()):
