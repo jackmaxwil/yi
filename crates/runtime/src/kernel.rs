@@ -440,18 +440,8 @@ impl KernelService {
 
     async fn ensure_inner(&self) -> Result<Arc<KernelManager>, String> {
         let wrap = self.kernel_wrap(self.sandbox.lock().await.as_ref());
-        let mut slot = self.manager.lock().await;
-        if let Some(manager) = slot.as_ref()
-            && manager.is_running()
-            && manager.wrap() == wrap.as_ref()
-        {
-            return Ok(Arc::clone(manager));
-        }
-        if let Some(old) = slot.take() {
-            old.dispose().await;
-        }
-        // Only sessions with an on-disk directory get a revivable snapshot
-        // (design K10).
+        // Only an on-disk session is revivable (K10). Incident: `/new`, `switch_session` and
+        // `fork` swap the store under a live kernel, which kept writing under the old id.
         let key = self.options.snapshot_key.as_ref().and_then(|key| key());
         let snapshot = self.options.session_dir.as_deref().map(|dir| {
             let (path, manifest_path) = snapshot_paths(dir, key.as_deref());
@@ -463,6 +453,17 @@ impl KernelService {
                 debounce_ms: None,
             }
         });
+        let mut slot = self.manager.lock().await;
+        if let Some(manager) = slot.as_ref()
+            && manager.is_running()
+            && manager.wrap() == wrap.as_ref()
+            && manager.snapshot_path() == snapshot.as_ref().map(|config| config.path.as_path())
+        {
+            return Ok(Arc::clone(manager));
+        }
+        if let Some(old) = slot.take() {
+            old.dispose().await;
+        }
         let snapshot_existed = snapshot
             .as_ref()
             .is_some_and(|config| config.path.is_file());
