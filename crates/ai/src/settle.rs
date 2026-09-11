@@ -11,8 +11,8 @@ pub fn settles(model: &Model) -> bool {
     model.base_url.contains("openrouter.ai")
 }
 
-/// The generation record as a measured usage, or None when it carries no token counts.
-pub fn usage_from_generation(data: &Value) -> Option<Usage> {
+/// The generation record as a measured usage and its upstream, or None without token counts.
+pub fn usage_from_generation(data: &Value) -> Option<(Usage, Option<String>)> {
     let count = |key: &str| data.get(key).and_then(Value::as_i64);
     let input = count("tokens_prompt")?;
     let output = count("tokens_completion")?;
@@ -28,7 +28,8 @@ pub fn usage_from_generation(data: &Value) -> Option<Usage> {
         .and_then(serde_json::Number::from_f64)?;
     usage.cost.total = total;
     usage.unknown = false;
-    Some(usage)
+    let upstream = data.get("provider_name").and_then(Value::as_str);
+    Some((usage, upstream.map(str::to_owned)))
 }
 
 /// The record appears about ten seconds after the drop (a 404 at 2, 5 and 8 s, present at
@@ -38,7 +39,7 @@ pub fn generation_usage(
     api_key: &str,
     proxy: Option<&crate::request::ProxyConfig>,
     id: &str,
-) -> Option<Usage> {
+) -> Option<(Usage, Option<String>)> {
     if !settles(model) || id.is_empty() {
         return None;
     }
@@ -48,9 +49,9 @@ pub fn generation_usage(
     for wait_ms in [3_000_u64, 5_000, 8_000, 12_000] {
         std::thread::sleep(std::time::Duration::from_millis(wait_ms));
         if let Ok(body) = crate::request::get_json(&url, &headers, proxy, 64 * 1024)
-            && let Some(usage) = body.get("data").and_then(usage_from_generation)
+            && let Some(settled) = body.get("data").and_then(usage_from_generation)
         {
-            return Some(usage);
+            return Some(settled);
         }
     }
     None
@@ -66,7 +67,8 @@ mod tests {
             "tokens_prompt": 23, "tokens_completion": 3089, "native_tokens_reasoning": 3089,
             "total_cost": 0.000773975, "finish_reason": null, "provider_name": "Z.AI"
         });
-        let usage = usage_from_generation(&data).unwrap();
+        let (usage, upstream) = usage_from_generation(&data).unwrap();
+        assert_eq!(upstream.as_deref(), Some("Z.AI"));
         assert_eq!(
             (usage.input, usage.output, usage.reasoning),
             (23, 3089, Some(3089))
