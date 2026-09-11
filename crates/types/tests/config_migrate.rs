@@ -26,7 +26,7 @@ fn a_config_with_nothing_to_migrate_keeps_the_strict_errors() -> TestResult {
     let typed = parse(r#"{"tui":{"pace":"fast"}}"#)
         .err()
         .ok_or("a string pace is refused")?;
-    assert_eq!((typed.line(), typed.column()), (1, 20), "{typed}");
+    assert_eq!((typed.line(), typed.column()), (1, 21), "{typed}");
     Ok(())
 }
 

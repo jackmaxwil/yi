@@ -62,7 +62,11 @@ fn home_absolute(site: &Site) -> Finding {
 
 fn config_parses(site: &Site) -> Finding {
     match read_config(&site.home) {
-        Ok(_) => ok("~/.yi/config.json"),
+        Ok((_, migrations)) => ok(migrations
+            .iter()
+            .fold(String::from("~/.yi/config.json"), |row, migration| {
+                format!("{row}; {migration}")
+            })),
         Err(error) => fail(error),
     }
 }
