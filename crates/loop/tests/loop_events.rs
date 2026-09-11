@@ -480,6 +480,45 @@ async fn a_follow_up_prompt_starts_its_own_repeat_window() {
     assert_eq!(steers, 0, "{collected:?}");
 }
 
+/// D179 review: a fresh edit before each run of the same test is progress, yet each new edit
+/// re-armed the steer, so every check from the third on was told to stop calling tools.
+#[tokio::test]
+async fn an_edit_then_check_loop_is_not_steered() {
+    let call = |name: &str, key: &str, value: String| {
+        let mut arguments = Map::new();
+        arguments.insert(key.to_owned(), json!(value));
+        faux_assistant_message(
+            vec![faux_tool_call("c", name, arguments)],
+            StopReason::ToolUse,
+        )
+    };
+    let mut script: Vec<AgentMessage> = (0..5)
+        .flat_map(|n| {
+            [
+                call("edit", "patch", format!("fix {n}")),
+                call("bash", "command", "cargo test".to_owned()),
+            ]
+        })
+        .collect();
+    script.push(faux_assistant_message(
+        vec![faux_text("fixed")],
+        StopReason::Stop,
+    ));
+    let collected = run_with(&Scripted::new(script), &LoopConfig::new(faux_model())).await;
+    let steers = collected
+        .iter()
+        .filter(|message| matches!(message, AgentMessage::Custom { custom_type, .. } if custom_type == yi_loop::REPEAT_BREAK_CUSTOM_TYPE))
+        .count();
+    assert_eq!(steers, 0, "five edits, each checked once");
+    assert!(matches!(
+        collected.last(),
+        Some(AgentMessage::Assistant {
+            stop_reason: StopReason::Stop,
+            ..
+        })
+    ));
+}
+
 fn three_bare_length_stops() -> Scripted {
     Scripted::new(vec![
         faux_assistant_message(vec![faux_text("thinking, thinking")], StopReason::Length),
