@@ -368,6 +368,97 @@ async fn a_turn_repeated_verbatim_is_steered_once_then_ended() {
     assert_eq!(answers, 9, "a job poll repeats as long as it likes");
 }
 
+async fn run_with<S: yi_loop::run::StreamFn>(stream: &S, config: &LoopConfig) -> Vec<AgentMessage> {
+    let mut context = LoopContext {
+        system_prompt: String::new(),
+        messages: Vec::new(),
+        tools: vec![Arc::new(EchoTool)],
+    };
+    let (_events, mut emit) = collector();
+    let signal = InterruptSignal::default();
+    run_loop(
+        &mut context,
+        vec![user("go")],
+        config,
+        &signal,
+        &mut emit,
+        stream,
+    )
+    .await
+}
+
+/// D179: `bash ls` and `todo view` taking turns never repeated the previous turn, and a
+/// text-only turn had no signature, so neither loop was ever broken (audit B5, G6). The breaker
+/// now counts a batch over the last six turns and fingerprints the text of a tool-less turn.
+#[tokio::test]
+async fn an_alternating_pair_and_a_text_only_spiral_are_broken() {
+    let breaks = |collected: &[AgentMessage]| {
+        collected
+            .iter()
+            .filter(|message| matches!(message, AgentMessage::Custom { custom_type, .. } if custom_type == yi_loop::REPEAT_BREAK_CUSTOM_TYPE))
+            .count()
+    };
+    let answers = |collected: &[AgentMessage]| {
+        collected
+            .iter()
+            .filter(|message| matches!(message, AgentMessage::Assistant { .. }))
+            .count()
+    };
+    let call = |word: &str| {
+        let mut arguments = Map::new();
+        arguments.insert("word".to_owned(), json!(word));
+        faux_assistant_message(
+            vec![faux_tool_call("c", "echo", arguments)],
+            StopReason::ToolUse,
+        )
+    };
+    let reply = |text: &str| faux_assistant_message(vec![faux_text(text)], StopReason::Stop);
+
+    let mut script: Vec<AgentMessage> = (0..4).flat_map(|_| [call("ls"), call("view")]).collect();
+    script.push(reply("done"));
+    let collected = run_with(&Scripted::new(script), &LoopConfig::new(faux_model())).await;
+    assert_eq!(
+        breaks(&collected),
+        1,
+        "one steer, at the third ls in five turns"
+    );
+    assert_eq!(answers(&collected), 9);
+
+    let spiral = (0..10)
+        .map(|n| {
+            reply(if n % 2 == 0 {
+                "All  green."
+            } else {
+                "All green.\n"
+            })
+        })
+        .collect();
+    let mut config = LoopConfig::new(faux_model());
+    config.intercept_stop = Some(Box::new(|_| Some(user("keep going"))));
+    let collected = run_with(&Scripted::new(spiral), &config).await;
+    assert_eq!(breaks(&collected), 1, "{collected:?}");
+    assert_eq!(
+        answers(&collected),
+        yi_loop::REPEAT_STOP_AT as usize,
+        "the sixth identical reply ends the run"
+    );
+
+    let cut = || {
+        faux_assistant_message(
+            vec![faux_thinking(
+                &"the router must rise at y=2, no, y=3, ".repeat(2_000),
+            )],
+            StopReason::Stop,
+        )
+    };
+    let stream = Spiral {
+        responses: Mutex::new(vec![cut(), cut(), cut(), cut(), reply("done")]),
+    };
+    let collected = run_with(&stream, &LoopConfig::new(faux_model())).await;
+    assert_eq!(breaks(&collected), 0, "a cut turn has no text to repeat");
+    assert_eq!(answers(&collected), 5);
+}
+
 fn three_bare_length_stops() -> Scripted {
     Scripted::new(vec![
         faux_assistant_message(vec![faux_text("thinking, thinking")], StopReason::Length),
