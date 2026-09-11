@@ -342,15 +342,34 @@ def check_atif():
 
 
 def check_driver_ceiling():
-    """The v4 driver refuses a multiplier past one hour before it needs anything installed."""
-    script = ROOT / "drivers" / "tbv4_baseline.sh"
-    env = {"PATH": os.environ.get("PATH", ""), "TBV4_TIMEOUT_MULT": "0.5"}
-    done = subprocess.run(["sh", str(script)], capture_output=True, text=True, env=env, timeout=60)
-    assert done.returncode == 1, done
-    assert "0.125 ceiling" in done.stderr, done.stderr
-    env["TBV4_TIMEOUT_MULT"] = "0.125"
-    done = subprocess.run(["sh", str(script)], capture_output=True, text=True, env=env, timeout=60)
-    assert done.returncode == 1 and "OPENROUTER_API_KEY" in done.stderr, done.stderr
+    """Both v4 drivers refuse a multiplier past one hour before they need anything installed."""
+    for name in ("tbv4_baseline.sh", "tbv4_sweep.sh"):
+        script = ROOT / "drivers" / name
+        env = {"PATH": os.environ.get("PATH", ""), "TBV4_TIMEOUT_MULT": "0.5"}
+        done = subprocess.run(["sh", str(script)], capture_output=True, text=True, env=env, timeout=60,
+                              cwd=ROOT.parent)
+        assert done.returncode == 1, (name, done)
+        assert "0.125 ceiling" in done.stderr, (name, done.stderr)
+        env["TBV4_TIMEOUT_MULT"] = "0.125"
+        done = subprocess.run(["sh", str(script)], capture_output=True, text=True, env=env, timeout=60,
+                              cwd=ROOT.parent)
+        assert done.returncode == 1 and "OPENROUTER_API_KEY" in done.stderr, (name, done.stderr)
+
+
+def check_watch_stops():
+    """The sweep watcher kills its child's group at the wall and writes why; a child that
+    finishes first hands back its own exit code."""
+    watch = ROOT / "drivers" / "watch.py"
+    with tempfile.TemporaryDirectory() as tmp:
+        runs = Path(tmp) / "runs"
+        done = subprocess.run([sys.executable, str(watch), "--runs", str(runs), "--hard", "20", "--wall", "0",
+                               "--poll", "0.2", "--", "sleep", "30"], capture_output=True, text=True, timeout=60)
+        assert done.returncode == 2, done
+        assert "passed 0 s" in (Path(tmp) / "runs.STOPPED").read_text(), done.stdout
+        done = subprocess.run([sys.executable, str(watch), "--runs", str(runs), "--hard", "20", "--wall", "60",
+                               "--poll", "0.2", "--", "sh", "-c", "exit 3"], capture_output=True, text=True,
+                              timeout=60)
+        assert done.returncode == 3, done
 
 
 def check_record():
@@ -506,6 +525,7 @@ CHECKS = (
     check_session_extras,
     check_fingerprint,
     check_driver_ceiling,
+    check_watch_stops,
     check_axes,
     check_atif,
     check_record,
