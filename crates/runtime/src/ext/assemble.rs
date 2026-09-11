@@ -107,10 +107,6 @@ impl PromptState {
         changed
     }
 
-    pub fn detach(&mut self, slot: &Slot) -> bool {
-        self.slots.remove(slot).is_some()
-    }
-
     pub fn has(&self, slot: &Slot) -> bool {
         self.slots.contains_key(slot)
     }
@@ -230,10 +226,12 @@ impl PromptState {
 /// escaping before stripping let `<<\0<` re-form the sentinel; strip first, escape last.
 pub(crate) fn sanitize(text: &str) -> std::borrow::Cow<'_, str> {
     let clean = |text: &str| {
-        text.chars()
-            .filter(|ch| !ch.is_control() || *ch == '\n' || *ch == '\t')
-            .collect::<String>()
-            .replace(FENCE_SENTINEL, FENCE_ESCAPE)
+        escape_sentinel(
+            &text
+                .chars()
+                .filter(|ch| !ch.is_control() || *ch == '\n' || *ch == '\t')
+                .collect::<String>(),
+        )
     };
     if text.contains(FENCE_SENTINEL)
         || text
@@ -244,4 +242,17 @@ pub(crate) fn sanitize(text: &str) -> std::borrow::Cow<'_, str> {
     } else {
         std::borrow::Cow::Borrowed(text)
     }
+}
+
+/// Incident: `replace` does not overlap and the escape ends in `<<`, so `<<<<yi-external` became
+/// a live `<\<<<yi-external` header. Each pass lowers the overlapping `<<<` count, below `len`.
+pub(crate) fn escape_sentinel(text: &str) -> String {
+    let mut out = text.to_owned();
+    for _ in 0..text.len() {
+        if !out.contains(FENCE_SENTINEL) {
+            break;
+        }
+        out = out.replace(FENCE_SENTINEL, FENCE_ESCAPE);
+    }
+    out
 }
