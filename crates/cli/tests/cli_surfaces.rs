@@ -872,6 +872,22 @@ fn doctor_runs_over_a_broken_config_and_names_the_key() -> TestResult {
     Ok(())
 }
 
+/// `doctor` reads the config before any session does, so its row is where a migrated key shows.
+#[test]
+fn doctor_names_a_config_key_the_migration_dropped() -> TestResult {
+    let workspace = Workspace::new("doctor-migrated")?;
+    write_config(&workspace, r#"{"gates":{"closure":false}}"#)?;
+    let seen = workspace.yi_env(&["doctor"], NO_KERNEL)?;
+    let lines = doctor_lines(&seen);
+    assert!(
+        lines
+            .iter()
+            .any(|l| l.starts_with("ok    config") && l.contains("`gates`")),
+        "{lines:?}"
+    );
+    Ok(())
+}
+
 /// With `telemetry.enabled`, a turn leaves one span file beside the session file, and
 /// `yi stats telemetry <dir>` rolls every sidecar under a directory into one record.
 #[test]

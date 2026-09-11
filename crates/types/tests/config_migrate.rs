@@ -16,6 +16,20 @@ fn the_strict_config_refuses_gates_and_loads_the_migrated_file() -> TestResult {
     Ok(())
 }
 
+/// X7: a config with nothing to migrate is read as strictly as before migrations existed.
+#[test]
+fn a_config_with_nothing_to_migrate_keeps_the_strict_errors() -> TestResult {
+    let twice = parse(r#"{"model":"a","model":"b"}"#)
+        .err()
+        .ok_or("a key named twice is refused, not read last-wins")?;
+    assert!(twice.to_string().contains("duplicate field"), "{twice}");
+    let typed = parse(r#"{"tui":{"pace":"fast"}}"#)
+        .err()
+        .ok_or("a string pace is refused")?;
+    assert_eq!((typed.line(), typed.column()), (1, 20), "{typed}");
+    Ok(())
+}
+
 #[test]
 fn a_config_naming_gates_migrates_to_the_current_shape_once() -> TestResult {
     let after: Value = serde_json::from_str(AFTER)?;
