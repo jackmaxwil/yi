@@ -13,7 +13,6 @@ use serde_json::Value;
 
 pub use assemble::{PromptState, Rank, Slot, Trust};
 pub use install::{ExtOptions, install};
-pub use orchestrate::{Features, Route, features, prefilter};
 pub use pack::Pack;
 pub use project::{
     TrustGate, content_hash, contributions, git_root, is_project_root, resource_roots,
@@ -62,9 +61,6 @@ pub enum Effect {
     AttachFragment {
         slot: Slot,
         text: String,
-    },
-    DetachFragment {
-        slot: Slot,
     },
     /// Environment-sourced text. Never enters the trusted prefix: it renders in
     /// the yard behind a nonce fence, labeled with source and trust.
@@ -250,9 +246,6 @@ impl Host {
             match effect {
                 Effect::AttachFragment { slot, text } => {
                     changed |= self.state.attach(slot, text);
-                }
-                Effect::DetachFragment { slot } => {
-                    changed |= self.state.detach(&slot);
                 }
                 Effect::AttachExternal {
                     source,

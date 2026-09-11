@@ -96,6 +96,53 @@ fn the_route_record_carries_every_prefilter_score_component() -> TestResult {
     Ok(())
 }
 
+/// The route the prefilter gave `prompt`, as the persisted row records it.
+fn route_of(prompt: &str) -> Result<String, Box<dyn Error>> {
+    let store = memory_store();
+    let mut host = host_for(&std::env::temp_dir());
+    host.start(Some(&store), false);
+    let event = host.prompt_event(prompt);
+    host.dispatch(&event, Some(&store));
+    let rows = records(&store, "route")?;
+    let route = rows.first().and_then(|row| row.get("route"));
+    Ok(route
+        .and_then(Value::as_str)
+        .ok_or("no route record was persisted")?
+        .to_owned())
+}
+
+#[test]
+fn the_prefilter_separates_a_question_from_a_program() -> TestResult {
+    assert_eq!(route_of("what does this do?")?, "one_shot");
+    assert_eq!(
+        route_of(
+            "refactor crates/runtime/src/ext and migrate crates/cli/src/main.rs, then split the tests"
+        )?,
+        "complex"
+    );
+    assert_eq!(
+        route_of("add a retry to crates/ai/src/request.rs when the provider answers 429")?,
+        "undecided"
+    );
+    Ok(())
+}
+
+const BULLETED: &str = "Notes from the session, before the next step:\n\
+    - the loader reads the manifest twice on startup\n\
+    - the second read happens inside the retry helper\n\
+    - both reads share one cache entry, so the miss is silent\n\
+    - the timing only shows up under a cold cache\n";
+
+#[test]
+fn every_commonmark_bullet_marker_counts_as_an_enumeration() -> TestResult {
+    let marked = |marker: &str| BULLETED.replace("- ", marker);
+    assert_eq!(route_of(BULLETED)?, "complex");
+    assert_eq!(route_of(&marked("* "))?, "complex");
+    assert_eq!(route_of(&marked("+ "))?, "complex");
+    assert_eq!(route_of(&marked("*"))?, "undecided");
+    Ok(())
+}
+
 /// An escalation is telemetry: the fragment it attached rode every later turn of 12 of row
 /// 0028's 21 sessions, and none of them called `rlm`, `plan` or `get_context`.
 #[test]
