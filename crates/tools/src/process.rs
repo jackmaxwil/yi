@@ -24,29 +24,37 @@ pub struct CommandCapture {
     pub exit_code: Option<i32>,
     pub cancelled: bool,
     pub truncated: bool,
+    pub kill_error: Option<String>,
 }
 
-/// Kill the shell, then its process group: a grandchild outliving the shell holds the capture
-/// pipes, so [`drain_capped`] waits out the cancelled command. `kill(1)`, no `libc` (§13.1).
-fn kill_tree(child: &mut Child) {
-    // Also the guard on the group kill below: `Child::kill` alone knows whether the child was
-    // reaped, and a reaped pid can already name somebody else's group.
-    if child.kill().is_err() {
-        return;
-    }
+/// Kill the shell's group, then the shell: a grandchild left alive holds the capture pipes. The
+/// group goes first, while the shell is still in it: macOS refuses a group of zombies (EPERM).
+fn kill_tree(child: &mut Child) -> Result<(), String> {
     #[cfg(unix)]
-    {
-        // Incident: `--` is load-bearing. BSD kill(1) reads a bare `-<pgid>` as a negative
-        // pid, procps as a signal option, so on Linux the group survived silently.
-        let _group_kill_best_effort = command("kill")
-            .arg("-KILL")
-            .arg("--")
-            .arg(format!("-{}", child.id()))
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status();
+    let group = group_kill(child.id());
+    let shell = child
+        .kill()
+        .map_err(|error| format!("kill {}: {error}", child.id()));
+    #[cfg(unix)]
+    group?;
+    shell
+}
+
+/// Incident: slim images ship no `kill(1)`, and its dropped ENOENT left timed-out `python3`
+/// jobs running. No `libc` (§13.1): the shell's builtin, in the one form dash and bash parse.
+#[cfg(unix)]
+fn group_kill(pgid: u32) -> Result<(), String> {
+    let status = command("/bin/sh")
+        .args(["-c", r#"kill -KILL "-$1""#, "kill", &pgid.to_string()])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map_err(|error| format!("/bin/sh: {error}"))?;
+    if status.success() {
+        return Ok(());
     }
+    Err(format!("kill -KILL -{pgid}: {status}"))
 }
 
 fn drain_capped(mut reader: impl Read, cap: usize, live: Option<&LiveOutput>) -> (String, bool) {
@@ -75,18 +83,19 @@ fn drain_capped(mut reader: impl Read, cap: usize, live: Option<&LiveOutput>) ->
     (String::from_utf8_lossy(&buffer).into_owned(), truncated)
 }
 
-/// Incident: waiting under the guard parked the cancel watchdog on the same lock for the
-/// child's whole life, so an early pipe-closer could not be killed. Released between polls.
-fn wait_polled(child: &Mutex<Child>) -> Result<Option<i32>, String> {
+/// Incident: waiting under the guard parked the cancel watchdog on the same lock, so an early
+/// pipe-closer could not be killed. Released between polls; a reap sets `done` under it.
+fn wait_polled(child: &Mutex<Child>, done: &AtomicBool) -> Result<Option<i32>, String> {
     loop {
-        let polled = child
-            .lock()
-            .map_err(|_| "child lock poisoned".to_owned())?
+        let mut guard = child.lock().map_err(|_| "child lock poisoned".to_owned())?;
+        let polled = guard
             .try_wait()
             .map_err(|error| format!("wait failed: {error}"))?;
         if let Some(status) = polled {
+            done.store(true, Ordering::SeqCst);
             return Ok(status.code());
         }
+        drop(guard);
         std::thread::sleep(Duration::from_millis(20));
     }
 }
@@ -148,13 +157,16 @@ pub(crate) fn run_captured_live(
             while !done.load(Ordering::SeqCst) {
                 if cancelled() {
                     was_cancelled.store(true, Ordering::SeqCst);
-                    if let Ok(mut child) = child.lock() {
-                        kill_tree(&mut child);
-                    }
-                    return;
+                    // A poisoned lock surfaces from `wait_polled` below; a reaped pid is not ours.
+                    return child
+                        .lock()
+                        .ok()
+                        .filter(|_| !done.load(Ordering::SeqCst))
+                        .and_then(|mut child| kill_tree(&mut child).err());
                 }
                 std::thread::sleep(Duration::from_millis(50));
             }
+            None
         })
     };
 
@@ -171,9 +183,11 @@ pub(crate) fn run_captured_live(
         .join()
         .unwrap_or_else(|_| (String::new(), false));
 
-    let waited = wait_polled(&child);
+    let waited = wait_polled(&child, &done);
     done.store(true, Ordering::SeqCst);
-    let _watchdog_exits_on_done = watchdog.join();
+    let kill_error = watchdog
+        .join()
+        .unwrap_or_else(|_| Some("the cancel watchdog panicked".to_owned()));
     if let Some(writer) = stdin_writer {
         let _writer_done = writer.join();
     }
@@ -184,6 +198,7 @@ pub(crate) fn run_captured_live(
         exit_code: waited?,
         cancelled: was_cancelled.load(Ordering::SeqCst),
         truncated: stdout_truncated || stderr_truncated,
+        kill_error,
     })
 }
 
@@ -223,6 +238,41 @@ mod tests {
             "the sleep exited on its own, so nothing was signalled"
         );
         assert!(elapsed < Duration::from_millis(2500), "waited {elapsed:?}");
+        Ok(())
+    }
+
+    #[test]
+    fn a_process_group_dies_with_no_kill_binary_on_path() -> Fallible {
+        // The group kill runs in this process, so the test reruns itself under a PATH with no
+        // `kill` on it, as in the benchmark images; the rerun makes the assertions.
+        if std::env::var_os("PATH").is_none_or(|path| path != "/nonexistent") {
+            let rerun = command(std::env::current_exe()?)
+                .args([
+                    "--exact",
+                    "process::tests::a_process_group_dies_with_no_kill_binary_on_path",
+                ])
+                .env("PATH", "/nonexistent")
+                .output()?;
+            // libtest exits 0 on a filter that matches nothing, so the rerun must say it ran one.
+            let stdout = String::from_utf8_lossy(&rerun.stdout);
+            assert!(
+                rerun.status.success() && stdout.contains("1 passed"),
+                "{stdout}"
+            );
+            return Ok(());
+        }
+        let mut pipeline = command("/bin/sh");
+        pipeline.arg("-c").arg("/bin/sleep 30 | /bin/cat");
+        let deadline = Instant::now() + Duration::from_millis(300);
+        let cancelled: CancelFlag = Arc::new(move || Instant::now() >= deadline);
+        let started = Instant::now();
+        let capture = run_captured(pipeline, None, &cancelled, OUTPUT_CAP)?;
+        let elapsed = started.elapsed();
+        assert!(capture.cancelled);
+        assert!(
+            elapsed < Duration::from_secs(2),
+            "the group outlived the kill and held stdout for {elapsed:?}"
+        );
         Ok(())
     }
 }

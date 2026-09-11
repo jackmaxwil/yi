@@ -47,6 +47,7 @@ fn service(cwd: PathBuf, home: PathBuf, sandbox: Sandbox) -> Arc<KernelService> 
         on_restore: None,
         sandbox: Some(sandbox),
         snapshot_key: None,
+        cell_ceiling: None,
     }))
 }
 

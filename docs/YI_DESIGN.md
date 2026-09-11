@@ -835,7 +835,7 @@ memoized on `(mode, rules_hash)` — never recompiled per call.
 
 | # | Primitive | Signature | Purity | Source |
 |---|---|---|---|---|
-| K1 | bootstrap | `ensure_venv(dir) -> PythonPath`: `uv` install `ipykernel` + runtime pkg; `.bootstrap-version` JSON `{schema, ipykernel, runtime: sha256(src/rlm/** + pyproject), extra_args, skills}` — any mismatch ⇒ full rebuild; lock **directory** (`mkdir` + pid file; stale = pid dead ∨ mtime > 30 s); in-process dedupe memoized on env key; `RUNTIME_READY_CHECK` = venv probe subprocess, not the live kernel; XDG fallback venv dir | I/O | — |
+| K1 | bootstrap | `ensure_venv(dir) -> PythonPath`: `uv` install `ipykernel` + runtime pkg; `.bootstrap-version` JSON `{schema, ipykernel, runtime: sha256(src/rlm/** + pyproject), extra_args, skills}` — any mismatch ⇒ full rebuild; plus `documentFormats`, the installed anydoc wheel's formats, which `read`'s description is derived from (D171); the venv dir is named by the ready check and the extras; lock **directory** (`mkdir` + pid file; stale = pid dead ∨ mtime > 30 s); in-process dedupe memoized on env key; `RUNTIME_READY_CHECK` = venv probe subprocess, not the live kernel; XDG fallback venv dir | I/O | — |
 | K2 | ConnectionFile | `{ip: 127.0.0.1, transport: tcp, ports: 0…, key: 32-hex random, signature_scheme: hmac-sha256}`; 0600 file in 0700 `mkdtemp` dir; polled 25 ms until all five ports resolve (30 s) though only shell/iopub/control connect; stdin never wired (`allow_stdin: false`), hb never used | I/O | — |
 | K3 | framing | `encode(ids, header, parent, metadata, content) -> frames` with `<IDS|MSG>` delimiter + HMAC; `decode` | pure | — |
 | K4 | channels | connect shell/iopub/control → `subscribe("")` → **control pump** → 50 ms slow-joiner sleep → **iopub pump** → `kernel_info` handshake (shell, 30 s); first execute only after the handshake, so no output is lost. Shell `execute_reply` is never read by the reference — Rust drains shell in a background task (or rcv HWM) or the queue grows unboundedly | I/O | — |
@@ -1699,7 +1699,7 @@ subagents and heartbeats are in daily use. Plan, so no re-design is needed then:
 
 | Library | Verdict | Surface |
 |---|---|---|
-| `anydoc` (+ `pdf-inspector` transitively; pure Rust, MIT) | **demoted** (§1.1, 2026-08-31 — the console's one-out) | cargo feature `docs` (off by default, size-ledger measured): `read` on `.docx/.pptx/.xlsx/.pdf/.epub/.rtf` returns markdown. Never the `ocr` feature |
+| `anydoc` + `pdf-inspector` (pure Rust, MIT) | crate **demoted** (§1.1, 2026-08-31 — the console's one-out; +3.42 MiB measured 2026-09-09); wheels **leveraged** (D171) | `firecrawl-anydoc` and `pdf-inspector` in the kernel venv's default extras: `read` converts a non-UTF-8 file to a Markdown copy and its description names the formats the venv recorded. Never OCR: pinned to `reject`, no path to the hosted mode |
 | `cua-driver` | leverage | optional exec tool: `cua-driver call` if present on PATH; nothing vendored |
 | `turbovec` | inspire | revisit only if `grep` over sessions measurably fails; the embedder would be a C dep |
 | `mempalace` | inspire | verbatim (not summarized) memory text and project-scoped namespaces for ledger `memory` entries; its hook-driven auto-writes are the opposite of the ledger contract |

@@ -761,13 +761,15 @@ impl Pool {
         let Some(pid) = state.warm.as_ref().and_then(|warm| warm.pid) else {
             return Ok(());
         };
-        let text = pid.to_string();
-        if capture(&self.dir, "kill", &["-0", &text], probe_deadline()).is_err() {
+        let running = || yi_kernel::bootstrap::process_is_running(pid).map_err(io_error(&self.dir));
+        if !running()? {
             return Ok(());
         }
-        let _ = capture(&self.dir, "kill", &["-TERM", &text], probe_deadline());
+        let term = ["-c", r#"kill -TERM "$1""#, "kill", &pid.to_string()];
+        let _the_poll_below_sees_a_failed_term =
+            capture(&self.dir, "/bin/sh", &term, probe_deadline());
         let started = std::time::Instant::now();
-        while capture(&self.dir, "kill", &["-0", &text], probe_deadline()).is_ok() {
+        while running()? {
             if started.elapsed().as_millis() >= u128::from(WARMER_EXIT_WAIT_MS) {
                 return Err(LaneError::WarmerStuck {
                     slot,

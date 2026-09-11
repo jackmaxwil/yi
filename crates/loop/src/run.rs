@@ -431,13 +431,14 @@ pub const STREAM_RETRY_CUSTOM_TYPE: &str = "stream_retry";
 pub const STREAM_RETRY_TEXT: &str = "The provider dropped the stream before any output reached the transcript; the same turn runs again.";
 pub const STREAM_RETRY_AT: u32 = 1;
 
-/// A stream that was generating (usage says so) or died on the wire, and showed nothing;
-/// a synthesized error with zero usage never went to a provider and is not retried.
+/// A stream that was generating, died on the wire or ended on an in-band error chunk, and
+/// showed nothing; a synthesized error with zero usage never went to a provider.
 fn nothing_delivered(message: &AgentMessage) -> bool {
     let AgentMessage::Assistant {
         content,
         usage,
         error_message,
+        raw_stop_reason,
         ..
     } = message
     else {
@@ -447,7 +448,9 @@ fn nothing_delivered(message: &AgentMessage) -> bool {
     let wire = error_message.as_deref().is_some_and(|text| {
         yi_types::telemetry::ErrorClass::from_provider_text(text).is_transport()
     });
-    (generating || wire)
+    // Incident: Wafer's in-band 502 had no usage and no transport class; yi exited 0 (D175)
+    let in_band = raw_stop_reason.as_deref() == Some(yi_types::message::RAW_STOP_IN_BAND_ERROR);
+    (generating || wire || in_band)
         && !content.iter().any(|block| match block {
             Content::Text { text, .. } => !text.trim().is_empty(),
             Content::ToolCall { .. } => true,
@@ -734,6 +737,8 @@ pub async fn run_loop<S: StreamFn>(
                 });
                 return collected;
             }
+            // a clean turn ends the error streak: the next error gets its own retry
+            stream_retries = 0;
 
             let batch = batch_signature(&message);
             repeats = match (&batch, &last_batch) {

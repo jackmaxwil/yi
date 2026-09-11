@@ -126,6 +126,7 @@ async fn bundled_python_skills_work_through_the_kernel() -> TestResult {
         on_restore: None,
         sandbox: None,
         snapshot_key: None,
+        cell_ceiling: None,
     }));
 
     let status_cell = cell(
@@ -478,6 +479,7 @@ async fn save_read_forget_through_the_kernel() -> TestResult {
         on_restore: None,
         sandbox: None,
         snapshot_key: None,
+        cell_ceiling: None,
     }));
     let out = cell(
         &service,
