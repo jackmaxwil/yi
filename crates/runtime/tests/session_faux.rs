@@ -455,7 +455,6 @@ fn deadline_session(root: &std::path::Path, command: &str, total: Duration) -> A
             wall: yi_runtime::Wall::default(),
             auto_background: None,
             deadline: Some(total),
-            gates: yi_types::config::Gates::OFF,
             kernel_prewarm: false,
             mcp_read: None,
             sessions_dir: None,
