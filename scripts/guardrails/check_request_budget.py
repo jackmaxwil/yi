@@ -15,7 +15,7 @@ import sys
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 from _common import ROOT, BASE, fail  # noqa: E402
-from pr_body import surface_diff  # noqa: E402
+from pr_body import LOCK_MISSING, surface_diff  # noqa: E402
 
 LOCK = BASE / "tool_surface.json"
 
@@ -44,17 +44,16 @@ def measure():
 
 def surface_delta(lock, surface):
     """(added, changed, removed) between the locked and the measured surface.
-    A missing lock is the seeding commit asking nothing. added/changed are
-    pr_body's surface_diff, the one implementation; the lock also reports
-    removals, which a PR body owes nothing for."""
-    if lock is None:
-        return [], [], []
+    added/changed are pr_body's surface_diff, the one implementation; the lock
+    also reports removals, which a PR body owes nothing for."""
     added, changed = surface_diff(lock, surface)
     removed = sorted(key for key in lock if key not in surface)
     return added, changed, removed
 
 
 def surface_problems(lock, surface):
+    if lock is None:
+        return [LOCK_MISSING]
     added, changed, removed = surface_delta(lock, surface)
     if not (added or changed or removed):
         return []
@@ -70,7 +69,8 @@ def selfcheck():
     """The lock judged by its own cases: a drift it stays silent on is a gate
     that only looks like one."""
     locked = {"tool:read": "a", "tool:bash": "b", "extra:openpyxl": "c"}
-    assert surface_problems(None, locked) == [], "a missing lock is the seeding commit"
+    missing = surface_problems(None, locked)
+    assert missing and "--update" in missing[0], "a deleted lock must fail, naming how to write it"
     assert surface_problems(locked, dict(locked)) == []
     problems = surface_problems(locked, {**locked, "tool:read": "x"})
     assert "changed tool:read" in problems[0] and "added —" in problems[0], problems

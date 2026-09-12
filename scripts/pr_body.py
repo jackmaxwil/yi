@@ -104,6 +104,9 @@ def section(title, body):
 
 
 SURFACE_LOCK = "scripts/guardrails/baselines/tool_surface.json"
+# Only `--update` writes the lock, so one missing from the tree was deleted, not seeded.
+LOCK_MISSING = (f"{SURFACE_LOCK} is missing; `check_request_budget.py --update` writes it,"
+                " committed alone as a Ratchet")
 
 
 def surface_diff(was, now):
@@ -123,8 +126,9 @@ def surface_delta(base):
     if before.returncode != 0:
         return [], []
     now_path = ROOT / SURFACE_LOCK
-    now = json.loads(now_path.read_text()) if now_path.exists() else {}
-    return surface_diff(json.loads(before.stdout), now)
+    if not now_path.exists():
+        raise SystemExit(LOCK_MISSING)
+    return surface_diff(json.loads(before.stdout), json.loads(now_path.read_text()))
 
 
 def surface_skeletons(added, changed):
