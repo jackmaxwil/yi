@@ -162,6 +162,38 @@ async fn cells_stream_error_host_request_interrupt_and_shutdown() -> TestResult 
     Ok(())
 }
 
+/// Incident: the debounced snapshot's 5 s abort left its cell in the active slot, so the
+/// user's next cell waited out the busy window and was refused (the 2026-09-10 audit, S7).
+#[tokio::test]
+async fn an_aborted_internal_cell_clears_the_active_slot() -> TestResult {
+    let kernel = manager()?;
+    let abort = AbortFlag::default();
+    let deaf = abort.clone();
+    // Deaf to the interrupt past the grace and the busy window, then failing on it, as a
+    // snapshot inside one long C call does; the abort fires once the cell has gone deaf.
+    let stuck = kernel
+        .execute(
+            "import signal, time\nsignal.signal(signal.SIGINT, signal.SIG_IGN)\nprint('deaf', flush=True)\ntime.sleep(10)\nraise KeyboardInterrupt",
+            ExecuteOptions {
+                abort: Some(abort),
+                on_stream: Some(Box::new(move |_, _| deaf.fire())),
+                internal: true,
+                ..ExecuteOptions::default()
+            },
+        )
+        .await?;
+    assert_eq!(stuck.status, ExecuteStatus::Aborted);
+
+    let after = kernel.execute("'alive'", ExecuteOptions::default()).await?;
+    assert_eq!(
+        after.result.as_deref(),
+        Some("'alive'"),
+        "the user's next cell must run once Yi's own cell is abandoned"
+    );
+    kernel.dispose().await;
+    Ok(())
+}
+
 #[tokio::test]
 async fn namespace_snapshot_revives_across_kernels() -> TestResult {
     let dir = std::env::temp_dir().join(format!("yi-snap-e2e-{}", std::process::id()));
