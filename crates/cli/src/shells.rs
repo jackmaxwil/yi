@@ -1,5 +1,5 @@
-//! `yi tui` and `yi console` launchers, their shared drive-script loader, and the daemon
-//! socket they resolve. Lifted out of main.rs, which the console landing pushed past 1200.
+//! `yi tui`, `yi console` and `yi serve` launchers, their shared drive-script loader, and the
+//! daemon socket they resolve. Lifted out of main.rs, which the console landing pushed past 1200.
 
 use crate::{
     Args, Resume, attach_store, build_session, config, default_session_dir, effective_cwd,
@@ -207,6 +207,29 @@ pub fn daemon_socket(args: &Args) -> std::path::PathBuf {
             )
         },
         std::path::PathBuf::from,
+    )
+}
+
+pub fn run_serve_command(args: &Args, version: &str) -> i32 {
+    let runtime = match tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+    {
+        Ok(runtime) => runtime,
+        Err(error) => {
+            eprintln!("error: {error}");
+            std::process::exit(1);
+        }
+    };
+    let socket = daemon_socket(args);
+    let worker_args = serve_flags(args);
+    yi_acp::daemon::run_daemon(
+        yi_acp::daemon::DaemonOptions {
+            socket,
+            worker_args,
+            agent_version: version.to_owned(),
+        },
+        runtime,
     )
 }
 
