@@ -107,10 +107,6 @@ impl PromptState {
         changed
     }
 
-    pub fn detach(&mut self, slot: &Slot) -> bool {
-        self.slots.remove(slot).is_some()
-    }
-
     pub fn has(&self, slot: &Slot) -> bool {
         self.slots.contains_key(slot)
     }
