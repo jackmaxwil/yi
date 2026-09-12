@@ -396,31 +396,21 @@ mod tests {
 
     #[test]
     fn a_grandchild_that_left_the_group_dies_with_the_tree() -> Fallible {
-        // GNU timeout re-groups its child, so `timeout 900 python` survived a
-        // group kill; python's process_group=0 stands in for timeout so the
-        // test does not depend on a GNU userland. The grandchild inherits
-        // stdout, so while it lives the drain below cannot finish.
-        if std::process::Command::new("python3")
-            .arg("--version")
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .is_err()
-        {
-            return Ok(());
-        }
+        // GNU timeout's setpgid, as python 3.2+ spells it. The grandchild inherits stdout, so
+        // while it lives the drain cannot finish; no python3 means no "ready", a failure.
         let mut shell = command("sh");
         shell.arg("-c").arg(
-            "python3 -c 'import subprocess, time; subprocess.Popen([\"sleep\", \"10\"], process_group=0); time.sleep(10)'",
+            "python3 -c 'import os, subprocess, time; subprocess.Popen([\"sleep\", \"30\"], preexec_fn=os.setpgrp); print(\"ready\", flush=True); time.sleep(30)'",
         );
-        let deadline = Instant::now() + Duration::from_millis(1500);
+        let deadline = Instant::now() + Duration::from_secs(2);
         let cancelled: CancelFlag = Arc::new(move || Instant::now() >= deadline);
         let started = Instant::now();
         let capture = run_captured(shell, None, &cancelled, OUTPUT_CAP)?;
         let elapsed = started.elapsed();
+        assert!(capture.stdout.contains("ready"), "{}", capture.stderr);
         assert!(capture.cancelled);
         assert!(
-            elapsed < Duration::from_secs(5),
+            elapsed < Duration::from_secs(6),
             "the re-grouped grandchild outlived the kill and held stdout for {elapsed:?}"
         );
         Ok(())
