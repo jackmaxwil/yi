@@ -501,7 +501,8 @@ impl Tool for BashTool {
             max_lines,
         );
         let mut sections = Vec::new();
-        if let Some(asked) = requested_timeout.filter(|asked| *asked > crate::jobs::MAX_TIMEOUT_SECS)
+        if let Some(asked) =
+            requested_timeout.filter(|asked| *asked > crate::jobs::MAX_TIMEOUT_SECS)
         {
             sections.push(format!(
                 "[timeout_secs {asked} capped at {}]",
@@ -668,7 +669,8 @@ mod tests {
         let tool = BashTool::default();
         let description = tool.description();
         assert!(
-            description.contains(format!("default {} s", crate::jobs::DEFAULT_TIMEOUT_SECS).as_str()),
+            description
+                .contains(format!("default {} s", crate::jobs::DEFAULT_TIMEOUT_SECS).as_str()),
             "the description must name DEFAULT_TIMEOUT_SECS"
         );
         assert!(
