@@ -419,7 +419,9 @@ pub fn clamp_wait(seconds: u64) -> Duration {
     Duration::from_secs(seconds.clamp(5, 300))
 }
 
-pub const DEFAULT_TIMEOUT_SECS: u64 = 120;
+/// Matches the wait clamp's top: a build or a short suite finishes inside the default,
+/// and a hung command still returns the turn within five minutes.
+pub const DEFAULT_TIMEOUT_SECS: u64 = 300;
 const KILL_GRACE: Duration = Duration::from_secs(5);
 /// One sixth of a one-hour attempt: room for a cold build or a whole suite, and twice the
 /// wait clamp, so anything longer is already a job.

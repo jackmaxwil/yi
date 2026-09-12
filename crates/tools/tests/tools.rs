@@ -189,6 +189,32 @@ fn bash_kills_a_running_command_when_cancelled() -> TestResult {
 }
 
 #[test]
+fn a_capped_timeout_secs_says_so_even_when_the_command_makes_it() -> TestResult {
+    let dir = temp_dir("bash-capped")?;
+    let context = ToolContext::new(dir.0.clone());
+    let output = BashTool::default().execute(
+        args(&[("command", json!("true")), ("timeout_secs", json!(10_000))]),
+        &context,
+    );
+    assert!(!output.is_error, "{}", output_text(&output));
+    assert!(
+        output_text(&output).contains("[timeout_secs 10000 capped at 600]"),
+        "{}",
+        output_text(&output)
+    );
+    let output = BashTool::default().execute(
+        args(&[("command", json!("true")), ("timeout_secs", json!(30))]),
+        &context,
+    );
+    assert!(
+        !output_text(&output).contains("capped at"),
+        "an uncapped call says nothing: {}",
+        output_text(&output)
+    );
+    Ok(())
+}
+
+#[test]
 fn bash_times_out_kills_the_command_and_says_how_to_raise_the_limit() -> TestResult {
     let dir = temp_dir("bash-timeout")?;
     let context = ToolContext::new(dir.0.clone());
