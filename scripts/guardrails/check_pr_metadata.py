@@ -27,7 +27,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 from _common import ROOT, FREE_BAND, fail  # noqa: E402
 from check_commit_style import NAMED, subject_errors  # noqa: E402
-from pr_body import base_commit, diff_stats, git, tally  # noqa: E402
+from pr_body import base_commit, diff_stats, git, surface_delta, tally  # noqa: E402
 
 ARCH = "docs/ARCHITECTURE.md"
 LOG = "docs/CHANGELOG.md"
@@ -149,6 +149,60 @@ def footer_problems(body):
         f"the PR body credits an assistant: {line.strip()!r} — delete the line"
         for line in (body or "").splitlines()
         if FOOTER.search(line) and NAMED.search(line)
+    ]
+
+
+COMMENT = re.compile(r"<!--.*?-->", re.S)
+
+
+def section_table_ok(body, title):
+    """The text under a level-two `## <title>` (case-insensitive), comments
+    stripped and read up to the next level-two heading, holds a markdown table:
+    a `|…|` row, a separator row of `- : |`, and at least one data row after
+    it. Shape, not content — reviewers read the cells."""
+    inside = False
+    lines = []
+    for line in (body or "").splitlines():
+        if line.startswith("## "):
+            if inside:
+                break
+            inside = line[3:].strip().lower() == title.lower()
+            continue
+        if inside:
+            lines.append(line)
+    if not lines:
+        return False
+    text = COMMENT.sub("", "\n".join(lines))
+    saw_header = saw_separator = False
+    for line in (line.strip() for line in text.splitlines()):
+        if not line.startswith("|"):
+            continue
+        if not set(line) - set("|-: "):
+            if saw_header:
+                saw_separator = True
+        elif saw_separator:
+            return True
+        else:
+            saw_header = True
+    return False
+
+
+def surface_problems(body, added, changed):
+    """A change to the surface a model reads owes its sections (D195): a changed
+    key owes the claims ledger, an added key owes the neighbour matrix and the
+    dogfood table beside it. A removal makes no new claim and asks nothing."""
+    owed = []
+    if changed:
+        owed.append(("Claims ledger", f"the PR changes {', '.join(changed)}, which the model reads"))
+    if added:
+        if not changed:
+            owed.append(("Claims ledger", f"the PR adds {', '.join(added)} to the surface the model reads"))
+        owed.append(("Neighbour matrix", f"the PR adds {', '.join(added)}"))
+        owed.append(("Dogfood", f"the PR adds {', '.join(added)}"))
+    return [
+        f"{why}; the body owes `## {title}` with a table — `just pr-body` prints the skeleton"
+        for title, why in owed
+        if not section_table_ok(body, title)
     ]
 
 
@@ -294,6 +348,34 @@ def selfcheck():
     # --- the title rule is check_commit_style's, imported, not restated
     assert subject_errors("Gate a pull request's issue citation") == []
     assert subject_errors("Added the gate."), "a bad title must still be caught here"
+
+    # --- the surface gate: shape, not content, over the sections a surface
+    # change owes. surface_problems is pure, so the forge is never asked.
+    table = "| claim | check | result |\n|---|---|---|\n| it works | ran it | passed |\n"
+    assert surface_problems("", [], []) == [], "no delta, empty body"
+    # (the lock-absent-at-base seeding case and the removal-only case measure
+    # as added/changed == [] in pr_body.surface_delta, whose selfcheck covers
+    # them; here they are the same call as the line above)
+    errs = surface_problems("## Summary\n\nwords\n", [], ["tool:ipython"])
+    assert len(errs) == 1 and "## Claims ledger" in errs[0] and "tool:ipython" in errs[0], errs
+    errs = surface_problems("## Claims ledger\n\n<!-- fill me -->\n", [], ["tool:ipython"])
+    assert errs, "a template comment is not a table"
+    errs = surface_problems("## Claims ledger\n\nprose but no table\n", [], ["tool:ipython"])
+    assert errs, "prose is not a table"
+    errs = surface_problems("## Claims ledger\n\n| claim | check | result |\n|---|---|---|\n",
+                            [], ["tool:ipython"])
+    assert errs, "header and separator without a data row is not a filled table"
+    errs = surface_problems("### Claims ledger\n\n" + table, [], ["tool:ipython"])
+    assert errs, "the section is level two; a ### does not count"
+    assert surface_problems("## Claims ledger\n\n" + table, [], ["tool:ipython"]) == []
+    errs = surface_problems("## Claims ledger\n\n" + table, ["tool:foo"], [])
+    assert len(errs) == 2 and "Neighbour matrix" in errs[0] and "Dogfood" in errs[1], errs
+    full = ("## Claims ledger\n\n" + table + "## Neighbour matrix\n\n" + table
+            + "## Dogfood\n\n" + table)
+    assert surface_problems(full, ["tool:foo"], []) == []
+    errs = surface_problems("## Claims ledger\n\nno table\n## Dogfood\n\n" + table,
+                            [], ["tool:ipython"])
+    assert errs, "a table under the next section is not under this one"
     print("ok   pr_metadata selfcheck")
 
 
@@ -306,7 +388,8 @@ def measure():
         return added_rows(git("show", f"{base}:{path}").stdout, (ROOT / path).read_text(), heading)
 
     rows = diff_stats(base)
-    return (added(ARCH, LEDGER), added(LOG, CHANGELOG), tally(rows)[2]), None
+    return (added(ARCH, LEDGER), added(LOG, CHANGELOG), tally(rows)[2],
+            surface_delta(base)), None
 
 
 def main(argv):
@@ -317,8 +400,9 @@ def main(argv):
     measured, why = measure()
     if why:
         fail([why], "pr_metadata")
-    ledger_added, changelog_added, src_net = measured
+    ledger_added, changelog_added, src_net, (surface_added, surface_changed) = measured
     errs += footer_problems(os.environ.get("PR_BODY", ""))
+    errs += surface_problems(os.environ.get("PR_BODY", ""), surface_added, surface_changed)
     errs += body_problems(
         send,
         os.environ["FORGEJO_API_URL"],

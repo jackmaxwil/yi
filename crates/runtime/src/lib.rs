@@ -104,3 +104,21 @@ pub fn documents(home: &std::path::Path) -> Documents {
         timeout: yi_tools::DEFAULT_TIMEOUT,
     }
 }
+
+/// The tool table a session opens with: the builtins (with documents when given)
+/// plus every exec tool discovered under `exec_dir`. The CLI, the dogfood player
+/// and the surface lock all build the table here, so the locked surface is the
+/// registered one by construction.
+pub fn session_tools(
+    freeform_grammar: bool,
+    documents: Option<Documents>,
+    exec_dir: Option<std::path::PathBuf>,
+) -> Vec<std::sync::Arc<dyn yi_tools::Tool>> {
+    let mut tools = builtin_tools_with(freeform_grammar, documents);
+    if let Some(dir) = exec_dir {
+        for tool in discover_exec_tools(&dir) {
+            tools.push(std::sync::Arc::new(tool));
+        }
+    }
+    tools
+}

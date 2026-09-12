@@ -4,7 +4,10 @@ use serde_json::{Map, Value, json};
 use yi_ai::anthropic::{AnthropicOptions, Thinking, build_params};
 use yi_ai::faux::{faux_assistant_message, faux_tool_call};
 use yi_ai::openai::{self, OpenAiOptions};
-use yi_runtime::{PermissionMode, builtin_tools, identity_fragment, mode_fragment};
+use yi_runtime::{
+    AgentSession, PermissionMode, ProviderStream, SessionConfig, identity_fragment,
+    mode_fragment,
+};
 use yi_types::message::{AgentMessage, Content, StopReason, UserContent};
 use yi_types::model::{LlmContext, Model, ModelCost, ToolDef};
 
@@ -67,33 +70,142 @@ fn options() -> AnthropicOptions {
     }
 }
 
-/// Invariant: the plan tool is wired per session rather than into the builtin
-/// list, so pricing only the builtins would leave the largest single tool in
-/// the prefix invisible to the gate that exists to catch prefix growth.
-fn tool_defs() -> Vec<ToolDef> {
-    builtin_tools()
+/// The `documentFormats` the kernel venv's anydoc 0.2.x wheel reports, recorded
+/// 2026-09-11, so the read tool's document clause joins the locked table on a
+/// machine with no venv. A venv whose wheel reports differently is a surface
+/// change, and the lock says so.
+const RECORDED_DOCUMENT_FORMATS: [&str; 11] = [
+    "doc",
+    "docx (docm)",
+    "odt",
+    "pdf",
+    "ppt (pps, pot)",
+    "pptx (ppsx, ppsm, pptm)",
+    "rtf",
+    "epub",
+    "xlsx (xls, xlsm, xlsb)",
+    "ods",
+    "odp",
+];
+
+/// The table a real session registers, built the way the CLI builds it:
+/// `session_tools` for the builtins and `attach_runtime` for ipython, ask_user,
+/// plan and todo, over scratch dirs so nothing touches the real HOME. Pricing
+/// only the builtins would leave the largest tools in the prefix invisible to
+/// the gate that exists to catch prefix growth, and the surface lock must pin
+/// what a model call can actually name.
+fn session_tool_defs() -> Vec<ToolDef> {
+    use std::path::PathBuf;
+    use std::sync::Arc;
+
+    // attach_runtime spawns nothing with prewarm off, but lanes and hooks touch
+    // tokio primitives that insist a reactor exists.
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("tokio runtime");
+    let _reactor = runtime.enter();
+    let root = std::env::temp_dir().join(format!("yi-surface-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let (cwd, home) = (root.join("cwd"), root.join("home"));
+    std::fs::create_dir_all(&cwd).expect("cwd");
+    std::fs::create_dir_all(&home).expect("home");
+    let fixed = yi_tools::Documents::fixed(
+        home.clone(),
+        yi_tools::Converter {
+            python: PathBuf::new(),
+            formats: RECORDED_DOCUMENT_FORMATS
+                .iter()
+                .map(|&format| format.to_owned())
+                .collect(),
+        },
+    );
+    let provider = Arc::new(ProviderStream::new(None, None));
+    let mut session = AgentSession::new(
+        SessionConfig {
+            system_prompt: String::new(),
+            model: model(),
+            thinking_level: None,
+            tool_execution: yi_runtime::ExecutionMode::Sequential,
+        },
+        Arc::clone(&provider),
+    );
+    yi_runtime::attach_runtime(
+        &mut session,
+        yi_runtime::RuntimeWiring {
+            provider,
+            system_prompt: String::new(),
+            tool_execution: yi_runtime::ExecutionMode::Sequential,
+            cwd: cwd.clone(),
+            home: home.clone(),
+            lane_slots: 1,
+            broker: None,
+            tools: Arc::new(move || {
+                yi_runtime::session_tools(false, Some(fixed.clone()), None)
+            }),
+            depth: 0,
+            max_depth: 1,
+            rlm_dir: root.join("rlm"),
+            summarizer: None,
+            advisor: None,
+            auto_review: None,
+            plan_stale_turns: None,
+            plans_dir: Some(root.join("plans")),
+            parent_link: None,
+            wall: yi_runtime::Wall::default(),
+            auto_background: None,
+            deadline: None,
+            kernel_prewarm: false,
+            mcp_read: None,
+            sessions_dir: Some(root.join("sessions")),
+            kernels: yi_runtime::fetch::KernelServiceMap::new(),
+        },
+    );
+    let defs = session
+        .tools()
         .iter()
-        .map(|tool| ToolDef {
-            name: tool.name().to_owned(),
-            description: tool.description().to_owned(),
-            parameters: tool.schema(),
-            freeform: None,
+        .map(|tool| tool.definition())
+        .collect();
+    let _ = std::fs::remove_dir_all(&root);
+    defs
+}
+
+fn tool_defs() -> Vec<ToolDef> {
+    static TABLE: std::sync::OnceLock<Vec<ToolDef>> = std::sync::OnceLock::new();
+    TABLE.get_or_init(session_tool_defs).clone()
+}
+
+/// One lock line per key the model reads: each registered tool's description
+/// and schema, each kernel extra a hint can name, and the identity fragment
+/// that says what each tool is for. check_request_budget.py hashes the texts.
+fn surface_lines() -> Vec<String> {
+    let mut lines: Vec<String> = tool_defs()
+        .iter()
+        .map(|def| {
+            json!({
+                "key": format!("tool:{}", def.name),
+                "text": format!(
+                    "{}\n{}",
+                    def.description,
+                    serde_json::to_string(&def.parameters).unwrap_or_default()
+                ),
+            })
+            .to_string()
         })
-        .chain([
-            ToolDef {
-                name: "plan".to_owned(),
-                description: yi_runtime::plan::tool::DESCRIPTION.to_owned(),
-                parameters: yi_runtime::plan::tool::schema(),
-                freeform: None,
-            },
-            ToolDef {
-                name: yi_runtime::todo::tool::NAME.to_owned(),
-                description: yi_runtime::todo::tool::DESCRIPTION.to_owned(),
-                parameters: yi_runtime::todo::tool::schema(),
-                freeform: None,
-            },
-        ])
-        .collect()
+        .collect();
+    for arg in yi_kernel::bootstrap::DEFAULT_RLM_EXTRA_UV_ARGS {
+        let package = arg
+            .split(|ch: char| ch == '<' || ch == '>' || ch == '=' || ch == '!' || ch == ' ')
+            .next()
+            .unwrap_or(arg);
+        lines.push(
+            json!({"key": format!("extra:{package}"), "text": package}).to_string(),
+        );
+    }
+    lines.push(
+        json!({"key": "prompt:identity", "text": identity_fragment()}).to_string(),
+    );
+    lines
 }
 
 /// The skills catalog is deliberately excluded: it is assembled from the
@@ -503,7 +615,8 @@ fn the_frozen_prefix_is_location_invariant_and_residue_free() -> TestResult {
     Err(violations.join("\n").into())
 }
 
-/// Read by scripts/guardrails/check_request_budget.py, which owns the ratchet.
+/// Read by scripts/guardrails/check_request_budget.py, which owns the ratchet
+/// and the surface lock.
 #[test]
 fn report_the_prefix_size() -> TestResult {
     let params = build_params(&model(), &context(first_turn()), &options());
@@ -515,6 +628,9 @@ fn report_the_prefix_size() -> TestResult {
         tools.len(),
         prefix_bytes(&params)?
     );
+    for line in surface_lines() {
+        println!("TOOL_SURFACE {line}");
+    }
     Ok(())
 }
 
