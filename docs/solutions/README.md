@@ -164,5 +164,6 @@ when it changes rather than editing them by hand.
 - [D184](adr/d184.md) - a todo move's result names what moved
 - [D185](adr/d185.md) - the prompt loses what nothing calls
 - [D186](adr/d186.md) - the v4 calibrated slice is chosen by a sweep, not by cost
+- [D189](adr/d189.md) - the todo tool reads its fields by the name a model gives them
 
 D36-D51, D72, D73 and D74 have no ADR yet; ARCHITECTURE.md is the record for those rows.
