@@ -31,14 +31,95 @@ pub struct CommandCapture {
 /// Kill the shell's group, then the shell: a grandchild left alive holds the capture pipes. The
 /// group goes first, while the shell is still in it: macOS refuses a group of zombies (EPERM).
 fn kill_tree(child: &mut Child) -> Result<(), String> {
+    // Walked before any signal: a descendant that left the group (GNU timeout
+    // re-groups its child) reparents to init once its parent dies, unseen.
+    #[cfg(unix)]
+    let tree = descendants(child.id());
     #[cfg(unix)]
     let group = group_kill(child.id());
     let shell = child
         .kill()
         .map_err(|error| format!("kill {}: {error}", child.id()));
     #[cfg(unix)]
+    pid_kill(&tree);
+    #[cfg(unix)]
     group?;
     shell
+}
+
+/// Every pid whose parent chain reaches `root`. A fork mid-walk is missed; the
+/// group kill covers anything still in the group, and the window is under a ms.
+#[cfg(unix)]
+fn descendants(root: u32) -> Vec<u32> {
+    let table = process_table();
+    let mut found = Vec::new();
+    let mut frontier = vec![root];
+    while let Some(parent) = frontier.pop() {
+        for &(pid, ppid) in &table {
+            if ppid == parent && !found.contains(&pid) {
+                found.push(pid);
+                frontier.push(pid);
+            }
+        }
+    }
+    found
+}
+
+/// `(pid, ppid)` for every visible process. `/proc/<pid>/stat` comm may hold
+/// spaces and parens, so the fields are split right of the closing paren.
+#[cfg(target_os = "linux")]
+fn process_table() -> Vec<(u32, u32)> {
+    std::fs::read_dir("/proc")
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|entry| {
+            let pid = entry.file_name().to_str()?.parse::<u32>().ok()?;
+            let stat = std::fs::read_to_string(entry.path().join("stat")).ok()?;
+            let (_, rest) = stat.rsplit_once(") ")?;
+            let ppid = rest.split_whitespace().nth(1)?.parse::<u32>().ok()?;
+            Some((pid, ppid))
+        })
+        .collect()
+}
+
+/// macOS has no `/proc`; ps(1) is on every macOS. Slim Linux images that lack
+/// ps are the benchmark target, and those read `/proc` above.
+#[cfg(all(unix, not(target_os = "linux")))]
+fn process_table() -> Vec<(u32, u32)> {
+    let Ok(output) = command("/bin/ps")
+        .args(["-eo", "pid=,ppid="])
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output()
+    else {
+        return Vec::new();
+    };
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter_map(|line| {
+            let mut fields = line.split_whitespace();
+            Some((fields.next()?.parse().ok()?, fields.next()?.parse().ok()?))
+        })
+        .collect()
+}
+
+/// Best effort: a pid that settled since the walk fails its own operand
+/// without stopping the rest, and a failure says nothing the group kill's would not.
+#[cfg(unix)]
+fn pid_kill(pids: &[u32]) {
+    if pids.is_empty() {
+        return;
+    }
+    let _best_effort = command("/bin/sh")
+        .arg("-c")
+        .arg(r#"kill -KILL "$@""#)
+        .arg("kill")
+        .args(pids.iter().map(u32::to_string))
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
 }
 
 /// Incident: slim images ship no `kill(1)`, and its dropped ENOENT left timed-out `python3`
@@ -293,6 +374,38 @@ mod tests {
         assert!(
             elapsed < Duration::from_secs(2),
             "the group outlived the kill and held stdout for {elapsed:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_grandchild_that_left_the_group_dies_with_the_tree() -> Fallible {
+        // GNU timeout re-groups its child, so `timeout 900 python` survived a
+        // group kill; python's process_group=0 stands in for timeout so the
+        // test does not depend on a GNU userland. The grandchild inherits
+        // stdout, so while it lives the drain below cannot finish.
+        if std::process::Command::new("python3")
+            .arg("--version")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .is_err()
+        {
+            return Ok(());
+        }
+        let mut shell = command("sh");
+        shell.arg("-c").arg(
+            "python3 -c 'import subprocess, time; subprocess.Popen([\"sleep\", \"10\"], process_group=0); time.sleep(10)'",
+        );
+        let deadline = Instant::now() + Duration::from_millis(1500);
+        let cancelled: CancelFlag = Arc::new(move || Instant::now() >= deadline);
+        let started = Instant::now();
+        let capture = run_captured(shell, None, &cancelled, OUTPUT_CAP)?;
+        let elapsed = started.elapsed();
+        assert!(capture.cancelled);
+        assert!(
+            elapsed < Duration::from_secs(5),
+            "the re-grouped grandchild outlived the kill and held stdout for {elapsed:?}"
         );
         Ok(())
     }
