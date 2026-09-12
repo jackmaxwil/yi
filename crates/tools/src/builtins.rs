@@ -467,6 +467,15 @@ impl Tool for BashTool {
         }
         let requested_timeout = input.get("timeout_secs").and_then(Value::as_u64);
         let timeout = crate::jobs::clamp_timeout(requested_timeout);
+        let mut sections = Vec::new();
+        if let Some(asked) =
+            requested_timeout.filter(|asked| *asked > crate::jobs::MAX_TIMEOUT_SECS)
+        {
+            sections.push(format!(
+                "[timeout_secs {asked} capped at {}]",
+                crate::jobs::MAX_TIMEOUT_SECS
+            ));
+        }
         let (capture, timed_out) = match crate::jobs::run_or_background(
             command,
             &context.cwd,
@@ -478,9 +487,10 @@ impl Tool for BashTool {
             Ok(crate::jobs::Run::Finished(capture)) => (*capture, false),
             Ok(crate::jobs::Run::TimedOut(capture)) => (*capture, true),
             Ok(crate::jobs::Run::Backgrounded(id)) => {
-                let mut output = text_output(format!(
+                sections.push(format!(
                     "Backgrounded as job {id}. Call bash with no command (optionally job={id}) to check on it."
                 ));
+                let mut output = text_output(sections.join("\n"));
                 output.result.details = json!({ "job": id.0, "backgrounded": true });
                 return output;
             }
@@ -500,15 +510,6 @@ impl Tool for BashTool {
             context.recovery_dir.as_deref(),
             max_lines,
         );
-        let mut sections = Vec::new();
-        if let Some(asked) =
-            requested_timeout.filter(|asked| *asked > crate::jobs::MAX_TIMEOUT_SECS)
-        {
-            sections.push(format!(
-                "[timeout_secs {asked} capped at {}]",
-                crate::jobs::MAX_TIMEOUT_SECS
-            ));
-        }
         if !reduced.text.is_empty() {
             sections.push(reduced.text.clone());
         }
