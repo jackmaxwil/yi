@@ -28,8 +28,11 @@ pub struct CommandCapture {
     pub kill_error: Option<String>,
 }
 
-/// Kill the shell's group, then the shell: a grandchild left alive holds the capture pipes. The
-/// group goes first, while the shell is still in it: macOS refuses a group of zombies (EPERM).
+/// Walk the shell's descendants, then kill the group, then the shell, then each walked pid:
+/// a grandchild left alive holds the capture pipes. The walk comes first, while the parent
+/// chain still reaches the shell — a re-grouped descendant reparents to init once its parent
+/// dies and becomes unwalkable. The group kill precedes the shell's: macOS refuses a group of
+/// zombies (EPERM).
 fn kill_tree(child: &mut Child) -> Result<(), String> {
     // Walked before any signal: a descendant that left the group (GNU timeout
     // re-groups its child) reparents to init once its parent dies, unseen.
@@ -48,7 +51,8 @@ fn kill_tree(child: &mut Child) -> Result<(), String> {
 }
 
 /// Every pid whose parent chain reaches `root`. A fork mid-walk is missed; the
-/// group kill covers anything still in the group, and the window is under a ms.
+/// group kill covers anything still in the group, and the window is the walk
+/// itself — under a ms on Linux, a `ps` spawn's worth on macOS.
 ///
 /// ponytail: O(frontier x table) with a linear `contains` — a process table is
 /// hundreds of rows and a timed-out tree is tens, so the scan is microseconds;
@@ -111,9 +115,10 @@ fn process_table() -> Vec<(u32, u32)> {
 /// Best effort: a pid that settled since the walk fails its own operand
 /// without stopping the rest, and a failure says nothing the group kill's would not.
 ///
-/// ponytail: a pid that exits *and is reused* in the sub-ms walk-to-kill window
-/// takes the KILL meant for the dead one. The window is one process-table read
-/// wide and pids allocate near-monotonically, so the wrong target is a fresh
+/// ponytail: a pid that exits *and is reused* in the walk-to-kill window takes
+/// the KILL meant for the dead one. The window is the walk plus two shell spawns
+/// wide — under a ms on Linux, a few ms on macOS where the table is a `ps`
+/// spawn — and pids allocate near-monotonically, so the wrong target is a fresh
 /// process; closing it means a pidfd-style handle per pid (Linux-only) or
 /// re-walking to confirm each ppid still names the shell, which costs more than
 /// the risk it retires.
