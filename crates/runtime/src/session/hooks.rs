@@ -136,6 +136,26 @@ impl AgentSession {
         })
     }
 
+    /// Summed under the lock, not over a history clone; `None` when poisoned, never a fake `0.0`.
+    pub fn cost_handle(&self) -> Arc<dyn Fn() -> Option<f64> + Send + Sync> {
+        let shared = Arc::clone(&self.shared);
+        Arc::new(move || {
+            let messages = shared.messages.lock().ok()?;
+            Some(
+                messages
+                    .iter()
+                    .filter_map(|message| {
+                        if let AgentMessage::Assistant { usage, .. } = message {
+                            usage.cost.total.as_f64()
+                        } else {
+                            None
+                        }
+                    })
+                    .sum(),
+            )
+        })
+    }
+
     pub fn usage_handle(&self) -> Arc<dyn Fn() -> Option<Usage> + Send + Sync> {
         let shared = Arc::clone(&self.shared);
         Arc::new(move || {

@@ -1,3 +1,4 @@
+use std::collections::VecDeque;
 use std::sync::Arc;
 
 use serde_json::{Map, Value, json};
@@ -354,15 +355,15 @@ fn fail_truncated_calls(
 
 pub const LENGTH_REDRIVE_CUSTOM_TYPE: &str = "length_redrive";
 pub const LENGTH_REDRIVE_TEXT: &str = "The reply hit the output limit before any tool call. Pick the most boring viable option and act on it now: make the tool call, then explain.";
-/// Consecutive bare length stops; a turn that calls a tool starts the count over.
+/// Consecutive length stops, bare or with a truncated call (D178); a call that runs resets them.
 pub const LENGTH_STOP_AT: u32 = 3;
-/// Consecutive reasoning cuts (D168): a cut costs about a third of a cent once settled, so
-/// the strike that forfeits the hour was the expensive part; twelve in a row still end it.
-pub const CUT_STOP_AT: u32 = 12;
+/// Reasoning cuts per prompt (D178, amends D168): a tool call between cuts reset the old count
+/// of twelve, so the audit slice's 22 photonic cuts, four in a row at most, never came near it.
+pub const CUT_STOP_AT: u32 = 6;
 pub const CUT_REDRIVE_TEXT: &str = "The reply was cut at the reasoning budget again. Stop deriving: write the first version of the file the task names now, even a stub that runs, in one `write` call, and reason after it exists.";
 
 /// A turn that spent its whole output budget thinking, or was cut at the reasoning budget, is
-/// sent back to act instead; from the second consecutive cut it is told what to write.
+/// sent back to act instead; from the prompt's second cut it is told what to write.
 fn length_redrive(rung: u32, cut: Option<usize>) -> AgentMessage {
     let details = match cut {
         Some(chars) => json!({"rung": rung, "cut": true, "reasoningChars": chars}),
@@ -431,13 +432,14 @@ pub const STREAM_RETRY_CUSTOM_TYPE: &str = "stream_retry";
 pub const STREAM_RETRY_TEXT: &str = "The provider dropped the stream before any output reached the transcript; the same turn runs again.";
 pub const STREAM_RETRY_AT: u32 = 1;
 
-/// A stream that was generating (usage says so) or died on the wire, and showed nothing;
-/// a synthesized error with zero usage never went to a provider and is not retried.
+/// A stream that was generating, died on the wire or ended on an in-band error chunk, and
+/// showed nothing; a synthesized error with zero usage never went to a provider.
 fn nothing_delivered(message: &AgentMessage) -> bool {
     let AgentMessage::Assistant {
         content,
         usage,
         error_message,
+        raw_stop_reason,
         ..
     } = message
     else {
@@ -447,7 +449,9 @@ fn nothing_delivered(message: &AgentMessage) -> bool {
     let wire = error_message.as_deref().is_some_and(|text| {
         yi_types::telemetry::ErrorClass::from_provider_text(text).is_transport()
     });
-    (generating || wire)
+    // Incident: Wafer's in-band 502 had no usage and no transport class; yi exited 0 (D175)
+    let in_band = raw_stop_reason.as_deref() == Some(yi_types::message::RAW_STOP_IN_BAND_ERROR);
+    (generating || wire || in_band)
         && !content.iter().any(|block| match block {
             Content::Text { text, .. } => !text.trim().is_empty(),
             Content::ToolCall { .. } => true,
@@ -467,18 +471,28 @@ fn stream_retry(error: Option<&str>) -> AgentMessage {
 }
 
 pub const REPEAT_BREAK_CUSTOM_TYPE: &str = "repeat_break";
-pub const REPEAT_BREAK_TEXT: &str = "The same tool calls have run the last three turns with the same result. Nothing is changing. Write the final answer now; call no tools.";
+pub const REPEAT_BREAK_TEXT: &str = "The same tool calls have run the last three turns. Nothing is changing. Write the final answer now; call no tools.";
 pub const REPEAT_STEER_AT: u32 = 3;
 pub const REPEAT_STOP_AT: u32 = 6;
+const REPEAT_WINDOW: usize = 6;
 
-/// A turn's tool batch by name and arguments; a bash job poll (no `command`) is a legitimate
-/// repeat and yields nothing, so a run waiting on a job never trips the breaker.
+/// A turn's tool batch by name and arguments, or a tool-less turn's text; a bash job poll (no
+/// `command`) or a cut turn (no text) yields nothing, so waiting on a job never trips the breaker.
 fn batch_signature(message: &AgentMessage) -> Option<String> {
     let calls = extract_tool_calls(message);
-    if calls.is_empty()
-        || calls
-            .iter()
-            .all(|call| call.name == "bash" && !call.arguments.contains_key("command"))
+    if calls.is_empty() {
+        let text = message.plain_text();
+        let words: Vec<&str> = text.split_whitespace().collect();
+        return (!words.is_empty()).then(|| {
+            format!(
+                "text:{}",
+                words.join(" ").chars().take(256).collect::<String>()
+            )
+        });
+    }
+    if calls
+        .iter()
+        .all(|call| call.name == "bash" && !call.arguments.contains_key("command"))
     {
         return None;
     }
@@ -491,7 +505,7 @@ fn batch_signature(message: &AgentMessage) -> Option<String> {
     )
 }
 
-/// A turn that repeats the previous one verbatim is sent back once, then ended.
+/// A third copy in six turns, the last three all repeats, is sent back once; six end the run.
 fn repeat_break() -> AgentMessage {
     AgentMessage::Custom {
         custom_type: REPEAT_BREAK_CUSTOM_TYPE.to_owned(),
@@ -660,8 +674,9 @@ pub async fn run_loop<S: StreamFn>(
     let mut length_stops: u32 = 0;
     let mut cut_stops: u32 = 0;
     let mut stream_retries: u32 = 0;
-    let mut last_batch: Option<String> = None;
-    let mut repeats: u32 = 0;
+    let mut recent: VecDeque<String> = VecDeque::with_capacity(REPEAT_WINDOW);
+    let mut repeating: u32 = 0;
+    let mut steered = false;
     let mut tool_choice = config.first_turn_tool_choice.clone();
     let mut pending: Vec<AgentMessage> = config
         .get_steering_messages
@@ -734,23 +749,36 @@ pub async fn run_loop<S: StreamFn>(
                 });
                 return collected;
             }
+            // a clean turn ends the error streak: the next error gets its own retry
+            stream_retries = 0;
 
-            let batch = batch_signature(&message);
-            repeats = match (&batch, &last_batch) {
-                (Some(now), Some(before)) if now == before => repeats.saturating_add(1),
-                (Some(_), _) => 1,
-                (None, _) => 0,
+            let repeats = match batch_signature(&message) {
+                Some(batch) => {
+                    if recent.len() >= REPEAT_WINDOW {
+                        recent.pop_front();
+                    }
+                    let seen = recent.iter().filter(|past| **past == batch).count();
+                    recent.push_back(batch);
+                    // a batch new to the window is progress: the next stretch earns its own steer
+                    if seen == 0 {
+                        steered = false;
+                        repeating = 0;
+                    } else {
+                        repeating = repeating.saturating_add(1);
+                    }
+                    u32::try_from(seen.saturating_add(1)).unwrap_or(u32::MAX)
+                }
+                None => 0,
             };
-            last_batch = batch;
             let calls = extract_tool_calls(&message);
             let mut tool_results: Vec<AgentMessage> = Vec::new();
             has_more_tool_calls = false;
             if !calls.is_empty() {
-                length_stops = 0;
-                cut_stops = 0;
                 let (finalized, terminate) = if reason == StopReason::Length {
+                    length_stops = length_stops.saturating_add(1);
                     (fail_truncated_calls(calls, emit), false)
                 } else {
+                    length_stops = 0;
                     let (finalized, terminate) =
                         execute_tool_calls(context, calls, config.tool_execution, signal, emit)
                             .await;
@@ -761,6 +789,13 @@ pub async fn run_loop<S: StreamFn>(
                 for result in &tool_results {
                     context.messages.push(result.clone());
                     collected.push(result.clone());
+                }
+            } else if reason == StopReason::Length {
+                // a cut is not a length strike: it has its own, longer count (D168)
+                if cut.is_some() {
+                    cut_stops = cut_stops.saturating_add(1);
+                } else {
+                    length_stops = length_stops.saturating_add(1);
                 }
             }
 
@@ -790,7 +825,10 @@ pub async fn run_loop<S: StreamFn>(
                 });
                 return collected;
             }
-            if repeats >= REPEAT_STOP_AT {
+            if repeats >= REPEAT_STOP_AT
+                || length_stops >= LENGTH_STOP_AT
+                || cut_stops >= CUT_STOP_AT
+            {
                 emit(AgentEvent::AgentEnd {
                     messages: collected.clone(),
                 });
@@ -800,24 +838,18 @@ pub async fn run_loop<S: StreamFn>(
                 .get_steering_messages
                 .as_ref()
                 .map_or_else(Vec::new, |get| get());
-            if repeats == REPEAT_STEER_AT {
+            // after three repeating turns in a row, so a fresh edit before each check is progress,
+            // and once per stretch: two batches taking turns hold the count at three for good
+            if repeats >= REPEAT_STEER_AT && repeating >= REPEAT_STEER_AT && !steered {
+                steered = true;
                 pending.push(repeat_break());
             }
             if !has_more_tool_calls && pending.is_empty() && reason == StopReason::Length {
-                // a cut is not a length strike: it has its own, longer count (D168)
                 let rung = if cut.is_some() {
-                    cut_stops = cut_stops.saturating_add(1);
                     cut_stops
                 } else {
-                    length_stops = length_stops.saturating_add(1);
                     length_stops
                 };
-                if length_stops >= LENGTH_STOP_AT || cut_stops >= CUT_STOP_AT {
-                    emit(AgentEvent::AgentEnd {
-                        messages: collected.clone(),
-                    });
-                    return collected;
-                }
                 pending.push(length_redrive(rung, cut));
             } else if !has_more_tool_calls
                 && pending.is_empty()
@@ -835,6 +867,8 @@ pub async fn run_loop<S: StreamFn>(
         if follow_ups.is_empty() {
             break;
         }
+        cut_stops = 0;
+        recent.clear();
         pending = follow_ups;
     }
 
