@@ -28,14 +28,11 @@ pub struct CommandCapture {
     pub kill_error: Option<String>,
 }
 
-/// Walk the shell's descendants, then kill the group, then the shell, then each walked pid:
-/// a grandchild left alive holds the capture pipes. The walk comes first, while the parent
-/// chain still reaches the shell — a re-grouped descendant reparents to init once its parent
-/// dies and becomes unwalkable. The group kill precedes the shell's: macOS refuses a group of
-/// zombies (EPERM).
+/// Walk the descendants, then kill the group, the shell and each walked pid: a live grandchild
+/// holds the capture pipes. The group dies before the shell: macOS refuses a zombie group (EPERM).
 fn kill_tree(child: &mut Child) -> Result<(), String> {
-    // Walked before any signal: a descendant that left the group (GNU timeout
-    // re-groups its child) reparents to init once its parent dies, unseen.
+    // Walked before any signal, while a re-grouped child (GNU timeout's) still has its parent.
+    // ponytail: one orphaned before the cancel escapes; a subreaper or cgroup needs libc (§13.1).
     #[cfg(unix)]
     let tree = descendants(child.id());
     #[cfg(unix)]
@@ -44,22 +41,19 @@ fn kill_tree(child: &mut Child) -> Result<(), String> {
         .kill()
         .map_err(|error| format!("kill {}: {error}", child.id()));
     #[cfg(unix)]
-    pid_kill(&tree);
+    let tree = tree.and_then(|pids| pid_kill(&pids));
     #[cfg(unix)]
     group?;
+    #[cfg(unix)]
+    tree?;
     shell
 }
 
-/// Every pid whose parent chain reaches `root`. A fork mid-walk is missed; the
-/// group kill covers anything still in the group, and the window is the walk
-/// itself — under a ms on Linux, a `ps` spawn's worth on macOS.
-///
-/// ponytail: O(frontier x table) with a linear `contains` — a process table is
-/// hundreds of rows and a timed-out tree is tens, so the scan is microseconds;
-/// if it ever walks a thousand-node tree, swap `found` for a HashSet.
+/// Every pid whose parent chain reaches `root`; a fork mid-walk is left to the group kill.
+/// ponytail: linear scans over a table of hundreds; a HashSet if a tree reaches thousands.
 #[cfg(unix)]
-fn descendants(root: u32) -> Vec<u32> {
-    let table = process_table();
+fn descendants(root: u32) -> Result<Vec<u32>, String> {
+    let table = process_table()?;
     let mut found = Vec::new();
     let mut frontier = vec![root];
     while let Some(parent) = frontier.pop() {
@@ -70,16 +64,15 @@ fn descendants(root: u32) -> Vec<u32> {
             }
         }
     }
-    found
+    Ok(found)
 }
 
 /// `(pid, ppid)` for every visible process. `/proc/<pid>/stat` comm may hold
 /// spaces and parens, so the fields are split right of the closing paren.
 #[cfg(target_os = "linux")]
-fn process_table() -> Vec<(u32, u32)> {
-    std::fs::read_dir("/proc")
-        .into_iter()
-        .flatten()
+fn process_table() -> Result<Vec<(u32, u32)>, String> {
+    let entries = std::fs::read_dir("/proc").map_err(|error| format!("/proc: {error}"))?;
+    Ok(entries
         .flatten()
         .filter_map(|entry| {
             let pid = entry.file_name().to_str()?.parse::<u32>().ok()?;
@@ -88,46 +81,39 @@ fn process_table() -> Vec<(u32, u32)> {
             let ppid = rest.split_whitespace().nth(1)?.parse::<u32>().ok()?;
             Some((pid, ppid))
         })
-        .collect()
+        .collect())
 }
 
 /// macOS has no `/proc`; ps(1) is on every macOS. Slim Linux images that lack
 /// ps are the benchmark target, and those read `/proc` above.
 #[cfg(all(unix, not(target_os = "linux")))]
-fn process_table() -> Vec<(u32, u32)> {
-    let Ok(output) = command("/bin/ps")
+fn process_table() -> Result<Vec<(u32, u32)>, String> {
+    let output = command("/bin/ps")
         .args(["-eo", "pid=,ppid="])
         .stdin(Stdio::null())
         .stderr(Stdio::null())
         .output()
-    else {
-        return Vec::new();
-    };
-    String::from_utf8_lossy(&output.stdout)
+        .map_err(|error| format!("/bin/ps: {error}"))?;
+    if !output.status.success() {
+        return Err(format!("/bin/ps -eo pid=,ppid=: {}", output.status));
+    }
+    Ok(String::from_utf8_lossy(&output.stdout)
         .lines()
         .filter_map(|line| {
             let mut fields = line.split_whitespace();
             Some((fields.next()?.parse().ok()?, fields.next()?.parse().ok()?))
         })
-        .collect()
+        .collect())
 }
 
-/// Best effort: a pid that settled since the walk fails its own operand
-/// without stopping the rest, and a failure says nothing the group kill's would not.
-///
-/// ponytail: a pid that exits *and is reused* in the walk-to-kill window takes
-/// the KILL meant for the dead one. The window is the walk plus two shell spawns
-/// wide — under a ms on Linux, a few ms on macOS where the table is a `ps`
-/// spawn — and pids allocate near-monotonically, so the wrong target is a fresh
-/// process; closing it means a pidfd-style handle per pid (Linux-only) or
-/// re-walking to confirm each ppid still names the shell, which costs more than
-/// the risk it retires.
+/// A walked pid already killed and reaped fails its own operand, so the exit status says nothing.
+/// ponytail: a pid reused inside the walk-to-kill window takes the KILL; pids allocate upward.
 #[cfg(unix)]
-fn pid_kill(pids: &[u32]) {
+fn pid_kill(pids: &[u32]) -> Result<(), String> {
     if pids.is_empty() {
-        return;
+        return Ok(());
     }
-    let _best_effort = command("/bin/sh")
+    command("/bin/sh")
         .arg("-c")
         .arg(r#"kill -KILL "$@""#)
         .arg("kill")
@@ -135,7 +121,9 @@ fn pid_kill(pids: &[u32]) {
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
-        .status();
+        .status()
+        .map(drop)
+        .map_err(|error| format!("/bin/sh: {error}"))
 }
 
 /// Incident: slim images ship no `kill(1)`, and its dropped ENOENT left timed-out `python3`
