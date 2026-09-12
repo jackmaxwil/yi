@@ -947,3 +947,43 @@ fn telemetry_writes_spans_beside_the_session_and_stats_rolls_them_up() -> TestRe
     assert_eq!(record["files"], 1, "{record}");
     Ok(())
 }
+
+#[test]
+fn memory_imports_lists_checks_and_forgets() -> TestResult {
+    let workspace = Workspace::new("memory")?;
+    let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../runtime/tests/fixtures/memory/claude");
+    let import = workspace.yi(&["memory", "import", &fixture.to_string_lossy()])?;
+    assert_eq!(
+        String::from_utf8_lossy(&import.stdout).trim(),
+        "memory · imported 3 · updated 0 · skipped 0"
+    );
+    let list = workspace.yi(&["memory"])?;
+    let text = String::from_utf8_lossy(&list.stdout);
+    assert!(
+        text.contains("memory · 3 repo · 0 global · 1 unparsed"),
+        "{text}"
+    );
+    assert!(
+        text.contains("never-relax-linters            feedback  repo"),
+        "{text}"
+    );
+    assert!(text.contains("! broken-quote"), "{text}");
+    let check = workspace.yi(&["memory", "check"])?;
+    assert_eq!(check.status.code(), Some(1));
+    assert!(
+        String::from_utf8_lossy(&check.stdout).contains("broken-quote.md:3: unclosed quote"),
+        "{}",
+        String::from_utf8_lossy(&check.stdout)
+    );
+    let forget = workspace.yi(&["memory", "forget", "fgj-forge-cli"])?;
+    assert_eq!(
+        String::from_utf8_lossy(&forget.stdout).trim(),
+        "memory · forgot fgj-forge-cli · repo"
+    );
+    let show = workspace.yi(&["memory", "show", "fgj-forge-cli"])?;
+    assert_eq!(show.status.code(), Some(1));
+    let usage = workspace.yi(&["memory", "frobnicate"])?;
+    assert_eq!(usage.status.code(), Some(2));
+    Ok(())
+}

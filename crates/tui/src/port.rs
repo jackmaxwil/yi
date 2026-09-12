@@ -80,6 +80,9 @@ pub trait SessionPort {
     fn todo_list(&self) -> Option<yi_types::todo::TodoList> {
         None
     }
+    fn memory(&self) -> Option<Arc<yi_runtime::memory::Activity>> {
+        None
+    }
 }
 
 /// The status row's branch, from the runtime's HEAD reader: a file read, never a git process.
@@ -296,6 +299,10 @@ impl SessionPort for Arc<AgentSession> {
         AgentSession::todos(self.as_ref()).map(|store| store.list())
     }
 
+    fn memory(&self) -> Option<Arc<yi_runtime::memory::Activity>> {
+        AgentSession::memory(self.as_ref())
+    }
+
     fn goal(&self) -> Option<GoalView> {
         let store = self.store()?;
         let goal = lock_session(&store).goal()?;
@@ -500,6 +507,13 @@ pub fn tick(
             crate::app::UiEvent::Ask(ask) => app.open_approval(ask),
             crate::app::UiEvent::Reply(reply) => app.apply(reply),
         }
+    }
+    for text in port
+        .memory()
+        .map(|feed| feed.take_lines())
+        .unwrap_or_default()
+    {
+        app.commit_cell(&Cell::Footer { text });
     }
     app.step_reveal(std::time::Instant::now());
     app.settle(port);

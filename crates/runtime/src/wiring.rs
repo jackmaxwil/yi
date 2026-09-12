@@ -254,6 +254,13 @@ fn wire_fetch(
         })
     });
     register_history_grep(registry, session.store_handle());
+    crate::memory::attach(
+        Some(session),
+        registry,
+        wiring.home.clone(),
+        wiring.cwd.clone(),
+        wiring.depth == 0,
+    );
     resolver
 }
 
