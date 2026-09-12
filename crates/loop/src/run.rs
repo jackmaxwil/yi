@@ -361,6 +361,9 @@ pub const LENGTH_STOP_AT: u32 = 3;
 /// of twelve, so the audit slice's 22 photonic cuts, four in a row at most, never came near it.
 pub const CUT_STOP_AT: u32 = 6;
 pub const CUT_REDRIVE_TEXT: &str = "The reply was cut at the reasoning budget again. Stop deriving: write the first version of the file the task names now, even a stub that runs, in one `write` call, and reason after it exists.";
+/// The cut the clamp lands on: the same nudge twice is repetition, a third is a spiral.
+pub const CUT_CLAMP_AT: u32 = 3;
+pub const CUT_CLAMP_REDRIVE_TEXT: &str = "The reply was cut at the reasoning budget a third time, so thinking is off for the rest of this run: write the first version of the file the task names now, in one `write` call, however rough, and reason after it exists.";
 
 /// A turn that spent its whole output budget thinking, or was cut at the reasoning budget, is
 /// sent back to act instead; from the prompt's second cut it is told what to write.
@@ -369,10 +372,10 @@ fn length_redrive(rung: u32, cut: Option<usize>) -> AgentMessage {
         Some(chars) => json!({"rung": rung, "cut": true, "reasoningChars": chars}),
         None => json!({"rung": rung, "cut": false}),
     };
-    let text = if cut.is_some() && rung >= 2 {
-        CUT_REDRIVE_TEXT
-    } else {
-        LENGTH_REDRIVE_TEXT
+    let text = match cut {
+        Some(_) if rung >= CUT_CLAMP_AT => CUT_CLAMP_REDRIVE_TEXT,
+        Some(_) if rung >= 2 => CUT_REDRIVE_TEXT,
+        _ => LENGTH_REDRIVE_TEXT,
     };
     AgentMessage::Custom {
         custom_type: LENGTH_REDRIVE_CUSTOM_TYPE.to_owned(),
@@ -850,6 +853,10 @@ pub async fn run_loop<S: StreamFn>(
                 } else {
                     length_stops
                 };
+                // a spiral the nudge alone has not broken: take the reasoning budget away
+                if cut.is_some() && cut_stops >= CUT_CLAMP_AT {
+                    current_effort = current_model.clamp_effort(Effort::Off);
+                }
                 pending.push(length_redrive(rung, cut));
             } else if !has_more_tool_calls
                 && pending.is_empty()
