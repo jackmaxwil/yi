@@ -9,7 +9,6 @@ use super::project::{ProjectResources, TrustGate, git_root};
 use super::telemetry::RouteTelemetry;
 use super::{Host, Rank, Slot, Trust};
 
-const ORCHESTRATE: &str = include_str!("../prompts/orchestrate.md");
 const HAR_CORE: &str = include_str!("../prompts/har-core.md");
 
 pub struct ExtOptions {
@@ -65,7 +64,7 @@ pub fn install(options: ExtOptions) -> Host {
     for pack in user_packs(&cwd, &home) {
         host.register(Box::new(PackExtension::new(pack, cwd.clone())));
     }
-    host.register(Box::new(Orchestrate::new(ORCHESTRATE)));
+    host.register(Box::new(Orchestrate::default()));
     host.register(Box::new(Grid::new(cwd, home)));
     host.register(Box::new(RouteTelemetry::new()));
     host

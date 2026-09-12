@@ -1,4 +1,5 @@
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
+use std::time::Duration;
 
 use tokio::sync::broadcast;
 use yi_loop::interrupt::InterruptSignal;
@@ -10,7 +11,10 @@ use yi_types::model::{Effort, Model};
 
 use crate::provider::ProviderStream;
 
+mod deadline;
 mod hooks;
+
+use deadline::Deadline;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Status {
@@ -61,6 +65,7 @@ struct Shared {
     lane: Mutex<Option<Arc<crate::lane::land::LaneHandle>>>,
     telemetry: Mutex<Option<Arc<crate::telemetry::Telemetry>>>,
     todos: Mutex<Option<Arc<crate::todo::TodoStore>>>,
+    deadline: OnceLock<Deadline>,
 }
 
 pub type PromptChoiceFn =
@@ -161,6 +166,7 @@ impl AgentSession {
                 todos: Mutex::new(None),
                 on_turn_end: Mutex::new(None),
                 coupling: Mutex::new(None),
+                deadline: OnceLock::new(),
             }),
             config,
             provider,
@@ -234,6 +240,15 @@ impl AgentSession {
         let shared = Arc::clone(&self.shared);
         let fallback = self.config.system_prompt.clone();
         Arc::new(move || assembled_prompt(&shared, &fallback))
+    }
+
+    /// Starts the clock; the first call wins, so the budget never moves mid-run.
+    pub(crate) fn set_deadline(&self, total: Duration) {
+        self.shared.deadline.get_or_init(|| Deadline::new(total));
+    }
+
+    pub(crate) fn deadline(&self) -> Option<Deadline> {
+        self.shared.deadline.get().copied()
     }
 
     pub fn set_environment(&self, hook: Arc<EnvironmentFn>) {
@@ -479,7 +494,14 @@ impl AgentSession {
             .into_iter()
             .map(|tool| {
                 let shared = Arc::clone(&self.shared);
-                let cancelled: yi_tools::CancelFlag = Arc::new(move || shared.signal.is_fired());
+                // The deadline cancels like Esc: bash dies, the kernel cell is interrupted.
+                let cancelled: yi_tools::CancelFlag = Arc::new(move || {
+                    shared.signal.is_fired()
+                        || shared
+                            .deadline
+                            .get()
+                            .is_some_and(|deadline| deadline.passed(Duration::ZERO))
+                });
                 Arc::new(
                     crate::tools::ToolAdapter::new(
                         tool,
@@ -852,6 +874,10 @@ impl AgentSession {
             }
             wire_queues_and_coupling(&mut config, &shared, &prompt);
             wire_environment(&mut config, &shared).await;
+            // Not the interrupt: the turn in flight ends and settles, and no request follows.
+            if let Some(deadline) = shared.deadline.get().copied() {
+                config.should_stop_after_turn = Some(Box::new(move |_| deadline.winding_down()));
+            }
             let emit_shared = Arc::clone(&shared);
             let emit_compactor = compactor.clone();
             let mut emit = move |event: AgentEvent| {

@@ -1,0 +1,6 @@
+{
+  "model": "openrouter/z-ai/glm-5.3-flash",
+  "telemetry": { "enabled": true },
+  "gates": { "artifact": true, "closure": false },
+  "rlm": { "maxDepth": 1 }
+}
