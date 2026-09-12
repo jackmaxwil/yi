@@ -187,7 +187,7 @@ def cmd_ratchet(args):
     # Incident: nothing ran check_growth --update, so src_loc.json sat 64 versions back and every
     # memo restated one cumulative number; its update refuses a delta the row has not priced.
     for script in ("check_test_size.py", "check_crate_size.py", "check_comments.py",
-                   "check_schemas_lock.py", "check_growth.py"):
+                   "check_schemas_lock.py", "check_growth.py", "check_request_budget.py"):
         subprocess.run((sys.executable, str(ROOT / "scripts/guardrails" / script), "--update"), check=False)
     changed = dirty(baseline_paths())
     if not changed:
@@ -205,6 +205,10 @@ def cmd_ratchet(args):
             for crate, limit in now.items():
                 if was.get(crate) != limit:
                     parts.append(f"{crate} crate {was.get(crate, '?')} -> {limit}")
+        elif stem == "request_budget":
+            for key in ("system", "tools", "total"):
+                if was.get(key) != now.get(key):
+                    parts.append(f"request budget {key} {was.get(key, '?')} -> {now.get(key, '?')}")
         else:
             parts.append(stem.replace("_", " "))
     subject = ratchet_subject(parts, args.topic)
@@ -290,7 +294,8 @@ def check_problems(title, body):
     measured, why = gate.measure()
     if why:
         return errs + [why]
-    ledger_added, changelog_added, src_net = measured
+    ledger_added, changelog_added, src_net, (surface_added, surface_changed) = measured
+    errs += gate.surface_problems(body, surface_added, surface_changed)
     errs += gate.body_problems(
         fgj_api, "", repo(), body, [gate.row_key(row) for row in ledger_added], changelog_added, src_net
     )
@@ -311,6 +316,20 @@ def cmd_check(args):
     return 1 if errs else 0
 
 
+def dedupe_counted(body, counted):
+    """A section the author already wrote — matched by its level-two heading,
+    case-insensitive — wins over the prefill, so `just pr open` never prints a
+    section twice."""
+    have = {line[3:].strip().lower() for line in body.splitlines() if line.startswith("## ")}
+    out, keep = [], True
+    for line in counted.splitlines():
+        if line.startswith("## "):
+            keep = line[3:].strip().lower() not in have
+        if keep:
+            out.append(line)
+    return "\n".join(out).strip()
+
+
 def compose_body(args):
     body = pathlib.Path(args.body).read_text().strip() if args.body else ""
     cites = [f"Closes #{n}" for n in args.closes] + [f"Refs #{n}" for n in args.refs]
@@ -319,6 +338,8 @@ def compose_body(args):
     counted = subprocess.run(
         (sys.executable, str(ROOT / "scripts/pr_body.py")), capture_output=True, text=True, check=False
     ).stdout.strip()
+    if counted:
+        counted = dedupe_counted(body, counted)
     return body + ("\n\n" + counted if counted else "")
 
 
@@ -597,6 +618,24 @@ def selfcheck():
     row = "| 0.150.0 | d | x. growth +1026: measured under D119; prose. |"
     assert repriced_memo(row, "4315") == "| 0.150.0 | d | x. growth +4315: measured under D119; prose. |"
     assert repriced_memo("| 0.1.0 | d | no memo |", "9") == "| 0.1.0 | d | no memo |"
+    counted = "<!-- prefilled -->\n\n## Summary\n\nprefill\n\n## Files edited\n\nprefill files\n"
+    kept = dedupe_counted("## Summary\n\nmine\n", counted)
+    assert "mine" not in kept and "prefill files" in kept and kept.count("## Summary") == 0, kept
+    kept = dedupe_counted("## summary\n\nmine\n", counted)
+    assert "## Summary" not in kept, "the heading match is case-insensitive"
+    assert dedupe_counted("", counted) == counted.strip(), "no author prose keeps the whole prefill"
+    # Incident: measure() grew the surface delta and this unpack still took three, so
+    # `just pr open`, `pr check` and `land` died on a ValueError before asking anything.
+    import check_pr_metadata as gate
+
+    real = gate.measure, globals()["repo"]
+    gate.measure = lambda: (([], [], 0, ([], ["tool:bash"])), None)
+    globals()["repo"] = lambda: "apex/yi"
+    try:
+        errs = check_problems("Lock the tool surface", "## Summary\n\nwords\n")
+    finally:
+        gate.measure, globals()["repo"] = real
+    assert len(errs) == 1 and "## Claims ledger" in errs[0] and "tool:bash" in errs[0], errs
     print("ok   forge_pr selfcheck")
 
 

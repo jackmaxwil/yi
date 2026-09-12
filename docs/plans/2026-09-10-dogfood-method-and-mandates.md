@@ -952,3 +952,17 @@ shown whole. The others follow the table in §7:
   ]
 }
 ```
+
+## 16. Revision notes (2026-09-11, phase 1 review)
+
+Reviewed against the tree at the phase-1 branch point; the §0 conflicts still stood
+as recorded. Two notes from the review:
+
+1. **§13 question 7 is answered: yes.** `attach_runtime` runs in a T0 test as it
+   stands. The widened `request_budget.rs` builds a real `AgentSession`, enters a
+   current-thread tokio reactor (`lanes.rs` panics "no reactor running" otherwise),
+   points every path argument at a scratch dir, and attaches a full `RuntimeWiring`
+   with `broker: None` and depth 0/1. The measured table is the one a session
+   registers: 10 tools, 15 `extra:` keys, one `prompt:identity` key.
+2. **`ruler.toml` needs no skills edit.** `[skills] enabled = true` picks up every
+   directory under `.ruler/skills/`; adding `yi-dogfood/` is the whole change.
