@@ -178,7 +178,7 @@ fn open_moves(list: &TodoList) -> String {
         let name = text::name(item);
         let moves = match item.state {
             TodoStateName::Running => format!(
-                "done {name} evidence=<the check that passed> · block {name} on user note=<what would unblock it> · drop {name} reason=<why>"
+                "done {name} evidence=`<command>` <output line> · block {name} on user note=<what would unblock it> · drop {name} reason=<why>"
             ),
             TodoStateName::Pending => format!("start {name} · drop {name} reason=<why>"),
             _ => format!("unblock {name} · drop {name} reason=<why>"),

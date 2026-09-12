@@ -128,10 +128,6 @@ pub enum TodoError {
         "done needs evidence: the command you ran and the line of its output that proves {label:?}"
     )]
     NoEvidence { label: String },
-    #[error(
-        "done needs evidence shaped `<command>` then the output line it produced, e.g. `pytest -q` 3 passed in 0.41s; prose is not evidence for {label:?}"
-    )]
-    EvidenceShape { label: String },
     #[error("`set` cannot close {labels}; `done <label>` with evidence closes an item")]
     SetClosed { labels: String },
     #[error(
@@ -154,21 +150,6 @@ pub enum TodoError {
 struct State {
     list: TodoList,
     touched: u64,
-}
-
-/// A command in backticks and at least twelve characters of its output outside them: the
-/// shape a measurement has and prose does not.
-pub fn evidence_shaped(text: &str) -> bool {
-    let mut outside = String::new();
-    let mut command = false;
-    for (index, part) in text.split('`').enumerate() {
-        if index % 2 == 1 {
-            command |= !part.trim().is_empty();
-        } else {
-            outside.push_str(part);
-        }
-    }
-    command && outside.trim().chars().count() >= 12
 }
 
 pub struct TodoStore {
@@ -644,18 +625,12 @@ fn step(list: &mut TodoList, op: Op) -> Result<(), TodoError> {
                     });
                 }
             }
-            let shaped = evidence.as_deref().is_some_and(evidence_shaped);
             each_target(list, &target, |item| {
                 if matches!(item.state, TodoStateName::Other(_)) {
                     return Err(illegal("done", item));
                 }
                 if evidence.is_none() {
                     return Err(TodoError::NoEvidence {
-                        label: item.label.to_string(),
-                    });
-                }
-                if !shaped {
-                    return Err(TodoError::EvidenceShape {
                         label: item.label.to_string(),
                     });
                 }
