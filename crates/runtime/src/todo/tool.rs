@@ -215,8 +215,10 @@ pub fn infer_op(args: &Map<String, Value>) -> Option<&'static str> {
     }
 }
 
-pub fn parse_op(args: &Map<String, Value>) -> Result<(Op, Option<String>), ArgError> {
-    let (args, notice) = normalize(args);
+pub fn parse_op(args: &Map<String, Value>) -> Result<Op, ArgError> {
+    // The rename notice is run's to print; here the normalized map is all that
+    // matters, so a validated alias parses the same as the canonical key.
+    let (args, _) = normalize(args);
     let args = &args;
     let op = string(args, "op")
         .or_else(|| infer_op(args).map(str::to_owned))
@@ -305,7 +307,7 @@ pub fn parse_op(args: &Map<String, Value>) -> Result<(Op, Option<String>), ArgEr
             });
         }
     };
-    Ok((op, notice))
+    Ok(op)
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -330,7 +332,7 @@ impl TodoTool {
         // must read the map the aliases already produced, or an op given as
         // "action" is reported as inferred. parse_op's own pass is then a no-op.
         let (args, aliased) = normalize(args);
-        let (op, _) = parse_op(&args)?;
+        let op = parse_op(&args)?;
         let aliased = aliased.unwrap_or_default();
         let inferred = if string(&args, "op").is_none() {
             format!("(op inferred: {})\n", op.name())
