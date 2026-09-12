@@ -78,7 +78,13 @@ def harbor_context(trial):
     exc = (result.get("exception_info") or {}).get("exception_type") or ""
     reward = rewards.get("reward")
     tally = (verifier_report(trial, "ctrf.json").get("results") or {}).get("summary") or {}
-    partial = verifier_report(trial, "trace_results.json").get("partial_score")
+    # v4 traces score three ways: `partial_score`, `diagnostic_score` (points), or a passed/total
+    # tally in trace_summary.json; the ctrf beside them may be a wrapper test that always passes.
+    trace = verifier_report(trial, "trace_results.json")
+    partial = trace.get("partial_score", trace.get("diagnostic_score"))
+    summary = verifier_report(trial, "trace_summary.json")
+    if partial is None and isinstance(summary.get("total_traces"), int) and summary["total_traces"] > 0:
+        partial = (summary.get("passed_traces") or 0) / summary["total_traces"]
     errored = exc not in ("", "AgentTimeoutError", "VerifierTimeoutError")
     return {
         "task": result.get("task_name"),
