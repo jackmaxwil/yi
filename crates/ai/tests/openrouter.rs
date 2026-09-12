@@ -1,8 +1,14 @@
 use serde_json::json;
 use std::error::Error;
+use std::io::{BufRead, BufReader, Read, Write};
+use std::net::TcpListener;
 use yi_ai::catalog::Catalog;
 use yi_ai::openai::{ChunkMapper, OpenAiOptions, build_params};
-use yi_types::message::{AgentMessage, Content, StopReason, Usage, UserContent};
+use yi_ai::request::ProxyConfig;
+use yi_types::event::AssistantMessageEvent;
+use yi_types::message::{
+    AgentMessage, Content, RAW_STOP_IN_BAND_ERROR, StopReason, Usage, UserContent,
+};
 use yi_types::model::{Effort, LlmContext, Model};
 
 type TestResult = Result<(), Box<dyn Error>>;
@@ -232,6 +238,40 @@ fn openrouter_requests_deprioritise_slow_upstreams_unless_the_config_says_otherw
     Ok(())
 }
 
+/// Row 0028 paid twice the catalog on an upstream nothing recorded: every chunk names the
+/// upstream OpenRouter routed to, and the message keeps it once.
+#[test]
+fn a_chunk_that_names_its_upstream_leaves_one_upstream_diagnostic() -> TestResult {
+    let model = target_model()?;
+    let mut mapper = ChunkMapper::new(&model);
+    for chunk in [
+        json!({"id": "gen-1", "provider": "Z.AI", "choices": [{"delta": {"content": "the answer"}}]}),
+        json!({"id": "gen-1", "provider": "Z.AI", "choices": [{"delta": {}, "finish_reason": "stop"}],
+               "usage": {"prompt_tokens": 10, "completion_tokens": 2}}),
+    ] {
+        let _ = mapper.push_chunk(&chunk);
+    }
+    let Some(yi_types::event::AssistantMessageEvent::Done { message, .. }) = mapper.finish().pop()
+    else {
+        return Err("expected a done event".into());
+    };
+    let AgentMessage::Assistant { diagnostics, .. } = message else {
+        return Err("expected an assistant message".into());
+    };
+    let notes = diagnostics.ok_or("the upstream is kept as a diagnostic")?;
+    let upstreams: Vec<_> = notes
+        .iter()
+        .filter(|note| note.diagnostic_type == "upstream")
+        .map(|note| {
+            note.details
+                .as_ref()
+                .and_then(|details| details.get("provider"))
+        })
+        .collect();
+    assert_eq!(upstreams, [Some(&json!("Z.AI"))], "{notes:?}");
+    Ok(())
+}
+
 #[test]
 fn a_mid_stream_error_chunk_names_the_upstream_and_the_code() -> TestResult {
     let model = target_model()?;
@@ -264,5 +304,94 @@ fn a_mid_stream_error_chunk_names_the_upstream_and_the_code() -> TestResult {
         text,
         "upstream closed the stream (upstream Wafer, code 502, provider_timeout)"
     );
+    Ok(())
+}
+
+/// One HTTP/1.1 exchange on the loopback proxy: the request is read whole and `reply`
+/// answers it as a sized body.
+fn answer(listener: &TcpListener, content_type: &str, reply: &str) -> std::io::Result<()> {
+    let (stream, _) = listener.accept()?;
+    let mut reader = BufReader::new(stream);
+    let mut length = 0usize;
+    loop {
+        let mut header = String::new();
+        if reader.read_line(&mut header)? == 0 || header.trim().is_empty() {
+            break;
+        }
+        if let Some((name, value)) = header.split_once(':')
+            && name.eq_ignore_ascii_case("content-length")
+        {
+            length = value.trim().parse().unwrap_or(0);
+        }
+    }
+    let mut body = vec![0u8; length];
+    reader.read_exact(&mut body)?;
+    write!(
+        reader.into_inner(),
+        "HTTP/1.1 200 OK\r\ncontent-type: {content_type}\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{reply}",
+        reply.len()
+    )
+}
+
+/// D175: an in-band error chunk ends the stream with no usage chunk and no transport fault,
+/// so the turn is settled from the generation record like a dropped one. Settlement exists
+/// only on an `openrouter.ai` base URL; this one cannot resolve, and the loopback proxy
+/// answers both the stream and the record.
+#[tokio::test]
+async fn an_in_band_error_chunk_is_settled_from_the_record() -> TestResult {
+    let listener = TcpListener::bind("127.0.0.1:0")?;
+    let port = listener.local_addr()?.port();
+    let stream_body: String = [
+        json!({"id": "gen-1", "provider": "Wafer", "choices": [{"index": 0, "delta": {"reasoning": "hmm"}}]}),
+        json!({"id": "gen-1", "provider": "Wafer",
+               "error": {"code": 502, "message": "Internal Server Error", "metadata": {"error_type": "server_error"}},
+               "choices": [{"index": 0, "delta": {"content": ""}, "finish_reason": "error"}]}),
+    ]
+    .iter()
+    .map(|chunk| format!("data: {chunk}\n\n"))
+    .collect();
+    let record = json!({"data": {"tokens_prompt": 5200, "tokens_completion": 900,
+        "native_tokens_reasoning": 900, "total_cost": 0.0004, "provider_name": "Wafer"}})
+    .to_string();
+    // not joined: a turn left unsettled never asks for the record, so the second accept waits
+    std::thread::spawn(move || -> std::io::Result<()> {
+        answer(&listener, "text/event-stream", &stream_body)?;
+        answer(&listener, "application/json", &record)
+    });
+
+    let mut model = target_model()?;
+    model.base_url = "http://openrouter.ai.invalid/api/v1".to_owned();
+    let options = OpenAiOptions {
+        proxy: ProxyConfig::from_values(Some(&format!("http://127.0.0.1:{port}")), None, None)?,
+        ..OpenAiOptions::default()
+    };
+    let mut events = yi_ai::openai::stream(&model, &history_context(), &options, "sk-test");
+    let mut last = None;
+    while let Some(event) = events.recv().await {
+        last = Some(event);
+    }
+    let Some(AssistantMessageEvent::Error { error, .. }) = last else {
+        return Err(format!("expected an error event: {last:?}").into());
+    };
+    let AgentMessage::Assistant {
+        usage,
+        error_message,
+        raw_stop_reason,
+        ..
+    } = error
+    else {
+        return Err("not an assistant message".into());
+    };
+    assert_eq!(raw_stop_reason.as_deref(), Some(RAW_STOP_IN_BAND_ERROR));
+    assert_eq!(
+        error_message.as_deref(),
+        Some("Internal Server Error (upstream Wafer, code 502, server_error)")
+    );
+    assert!(
+        !usage.unknown,
+        "the in-band error turn is settled from the record"
+    );
+    assert_eq!((usage.input, usage.output), (5200, 900));
+    assert_eq!(usage.cost.total.as_f64(), Some(0.0004));
     Ok(())
 }

@@ -84,6 +84,7 @@ async fn ipython_tool_runs_a_cell_through_the_full_agent_loop() -> Result<(), Bo
         on_restore: None,
         sandbox: None,
         snapshot_key: None,
+        cell_ceiling: None,
     }));
     let mut tools = yi_tools::builtin_tools();
     tools.push(ipython_tool(Arc::clone(&service)));
@@ -154,6 +155,7 @@ async fn an_unawaited_spawn_is_named_in_the_cell_result() -> Result<(), Box<dyn 
         on_restore: None,
         sandbox: None,
         snapshot_key: None,
+        cell_ceiling: None,
     }));
     let mut tools = yi_tools::builtin_tools();
     tools.push(ipython_tool(Arc::clone(&service)));
@@ -182,6 +184,81 @@ async fn an_unawaited_spawn_is_named_in_the_cell_result() -> Result<(), Box<dyn 
     assert!(
         cell.contains("await rlm.run"),
         "an un-awaited spawn must carry the affordance: {cell}"
+    );
+    Ok(())
+}
+
+/// Incident: a `while True:` cell had no clock but the interrupt, so it held the turn until
+/// harbor killed the container (the 2026-09-10 harness audit, B6).
+#[tokio::test]
+async fn a_cell_that_never_returns_is_aborted_at_the_ceiling() -> Result<(), Box<dyn Error>> {
+    let provider = Arc::new(ProviderStream::new(None, None));
+    let mut call_args = serde_json::Map::new();
+    call_args.insert(
+        "code".to_owned(),
+        serde_json::json!(
+            "import time\nprint('started', flush=True)\nwhile True:\n    time.sleep(0.1)"
+        ),
+    );
+    provider.queue_faux(vec![
+        faux_assistant_message(
+            vec![faux_tool_call("call-1", "ipython", call_args)],
+            StopReason::ToolUse,
+        ),
+        faux_assistant_message(vec![faux_text("done")], StopReason::Stop),
+    ]);
+    let mut session = AgentSession::new(
+        SessionConfig {
+            system_prompt: "sys".to_owned(),
+            model: faux_model(),
+            thinking_level: None,
+            tool_execution: ExecutionMode::Sequential,
+        },
+        provider,
+    );
+    let mut registry = HostRegistry::default();
+    registry.register_mcp_stubs();
+    let service = Arc::new(KernelService::new(KernelServiceOptions {
+        cwd: std::env::temp_dir(),
+        home: home(),
+        session_dir: None,
+        family_dir: None,
+        host: Arc::new(registry),
+        on_restore: None,
+        sandbox: None,
+        snapshot_key: None,
+        cell_ceiling: Some(std::time::Duration::from_secs(1)),
+    }));
+    // The boot (and a cold venv build) stays off the clock under test.
+    service.prewarm().await;
+    let mut tools = yi_tools::builtin_tools();
+    tools.push(ipython_tool(Arc::clone(&service)));
+    session.use_tools(tools, std::env::temp_dir(), None);
+
+    let mut events = session.subscribe();
+    session.prompt("loop forever")?;
+    let settled =
+        tokio::time::timeout(std::time::Duration::from_secs(30), session.wait_idle()).await;
+    service.dispose().await;
+    settled.map_err(|_| "a cell with a 1 s ceiling was still running after 30 s")?;
+
+    let mut ends = Vec::new();
+    while let Ok(event) = events.try_recv() {
+        if let AgentEvent::ToolExecutionEnd {
+            result, is_error, ..
+        } = event
+        {
+            for content in result.content {
+                if let yi_types::message::Content::Text { text, .. } = content {
+                    ends.push((is_error, text));
+                }
+            }
+        }
+    }
+    let (is_error, cell) = ends.first().ok_or("the ipython call produced no result")?;
+    assert!(
+        *is_error && cell.contains("started") && cell.contains("[cell aborted]"),
+        "a cell past its ceiling must come back aborted with its output so far: {cell}"
     );
     Ok(())
 }

@@ -306,30 +306,27 @@ fn done_without_evidence_is_refused_and_says_what_evidence_is() -> TestResult {
         0,
         "one evidence closes the whole list"
     );
-    let prose = store
-        .apply(
-            Op::Done {
-                target: Target::Label(label("a")?),
-                evidence: Some(
-                    "filter.py reads argv[1]; missing-arg path returns exit 2".to_owned(),
-                ),
-            },
-            None,
-        )
-        .err()
-        .ok_or("prose evidence must be refused")?;
-    assert!(
-        matches!(prose, TodoError::EvidenceShape { ref label } if label == "a"),
-        "{prose}"
-    );
-    assert!(prose.to_string().contains("`<command>`"), "{prose}");
+    // Incident: row 0028 refused all three; a checker that prints `ok` could never close.
     store.apply(
-        Op::Done {
-            target: Target::Label(label("a")?),
-            evidence: Some("`python3 check.py` all 12 checks passed".to_owned()),
+        Op::Set {
+            list: "- [ ] e\n- [ ] f\n- [ ] g\n".to_owned(),
         },
         None,
     )?;
+    for (item, evidence) in [
+        ("e", "`pytest -q` → `3 passed in 0.00s`"),
+        ("f", "python3 check.py → ok"),
+        ("g", "`./check` ok"),
+    ] {
+        store.apply(
+            Op::Done {
+                target: Target::Label(label(item)?),
+                evidence: Some(evidence.to_owned()),
+            },
+            None,
+        )?;
+    }
+    assert_eq!(store.progress().open, 0, "evidence closes in any shape");
     store.apply(
         Op::Set {
             list: "- [ ] c\n- [x] d\n".to_owned(),
@@ -399,6 +396,41 @@ fn the_tool_result_teaches_the_next_move_with_the_label_filled_in() -> TestResul
     assert!(
         text.contains("legal here: start, done, block, drop, rm"),
         "{text}"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_move_returns_the_rows_it_changed_not_the_whole_list() -> TestResult {
+    let (session, _root) = session("moved")?;
+    let tool = TodoTool::new(store_for(&session));
+    let (is_error, text) = call(
+        &tool,
+        json!({"op": "init", "items": ["read the code", "write the fix", "run the suite"]}),
+    );
+    assert!(!is_error, "{text}");
+    assert!(text.contains("- [ ] t3 run the suite"), "{text}");
+    let (is_error, text) = call(
+        &tool,
+        json!({"op": "done", "id": "t1", "evidence": "`wc -l src/lib.rs` 40 src/lib.rs"}),
+    );
+    assert!(!is_error, "{text}");
+    assert!(
+        text.starts_with(
+            "Todos 1/3 · running: write the fix\n- [x] t1 read the code\n- [>] t2 write the fix\n"
+        ),
+        "{text}"
+    );
+    assert!(
+        !text.contains("- [ ] t3 run the suite"),
+        "an untouched row stays out: {text}"
+    );
+    assert!(text.contains("next: start t3 · drop t3 <reason>"), "{text}");
+    assert!(text.ends_with("touched: 2"), "{text}");
+    let (_, text) = call(&tool, json!({"op": "view"}));
+    assert!(
+        text.contains("- [x] t1 read the code") && text.contains("- [ ] t3 run the suite"),
+        "view lists every row: {text}"
     );
     Ok(())
 }
