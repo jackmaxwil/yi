@@ -226,14 +226,14 @@ impl PromptState {
     }
 }
 
-/// External text cannot close its own fence, forge a trust label, or split a
-/// cached block: the sentinel is escaped and control characters are dropped.
-fn sanitize(text: &str) -> std::borrow::Cow<'_, str> {
+/// External text cannot close its fence, forge a trust label or split a cached block. Incident:
+/// escaping before stripping let `<<\0<` re-form the sentinel; strip first, escape last.
+pub(crate) fn sanitize(text: &str) -> std::borrow::Cow<'_, str> {
     let clean = |text: &str| {
-        text.replace(FENCE_SENTINEL, FENCE_ESCAPE)
-            .chars()
+        text.chars()
             .filter(|ch| !ch.is_control() || *ch == '\n' || *ch == '\t')
             .collect::<String>()
+            .replace(FENCE_SENTINEL, FENCE_ESCAPE)
     };
     if text.contains(FENCE_SENTINEL)
         || text
