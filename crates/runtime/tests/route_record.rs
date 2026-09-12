@@ -1,3 +1,7 @@
+#[path = "../../types/tests/support/scratch.rs"]
+mod scratch;
+use scratch::Scratch;
+
 use std::error::Error;
 use std::sync::{Arc, Mutex};
 
@@ -59,9 +63,7 @@ fn records(store: &yi_session::SharedSession, key: &str) -> Result<Vec<Value>, B
 /// drifts fits the wrong number.
 #[test]
 fn the_route_record_carries_every_prefilter_score_component() -> TestResult {
-    let dir = std::env::temp_dir().join(format!("yi-route-record-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir)?;
+    let dir = Scratch::new("yi-route-record")?;
     let store = memory_store();
     let mut host = host_for(&dir);
     host.start(Some(&store), false);
@@ -92,6 +94,5 @@ fn the_route_record_carries_every_prefilter_score_component() -> TestResult {
         5,
         "score is the sum the bounds are compared against: {row}"
     );
-    let _ = std::fs::remove_dir_all(&dir);
     Ok(())
 }

@@ -1,6 +1,5 @@
 use std::error::Error;
 use std::fs;
-use std::path::PathBuf;
 
 use serde_json::{Map, Value, json};
 use yi_tools::hashline::tool::{
@@ -9,22 +8,11 @@ use yi_tools::hashline::tool::{
 use yi_tools::{Tool, ToolContext, ToolOutput, WriteTool};
 use yi_types::message::Content;
 
+#[path = "../../types/tests/support/scratch.rs"]
+mod scratch;
+use scratch::Scratch;
+
 type TestResult = Result<(), Box<dyn Error>>;
-
-struct TempDir(PathBuf);
-
-impl Drop for TempDir {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
-    }
-}
-
-fn temp_dir(tag: &str) -> Result<TempDir, Box<dyn Error>> {
-    let dir = std::env::temp_dir().join(format!("yi-hashline-{tag}-{}", std::process::id()));
-    let _ = fs::remove_dir_all(&dir);
-    fs::create_dir_all(&dir)?;
-    Ok(TempDir(dir))
-}
 
 fn output_text(output: &ToolOutput) -> String {
     output
@@ -46,15 +34,15 @@ fn args(pairs: &[(&str, Value)]) -> Map<String, Value> {
 }
 
 struct Fixture {
-    _dir: TempDir,
+    _dir: Scratch,
     context: ToolContext,
     state: SharedHashline,
 }
 
 impl Fixture {
     fn new(tag: &str) -> Result<Self, Box<dyn Error>> {
-        let dir = temp_dir(tag)?;
-        let context = ToolContext::new(dir.0.clone());
+        let dir = Scratch::new(&format!("yi-hashline-{tag}"))?;
+        let context = ToolContext::new(dir.to_path_buf());
         Ok(Self {
             _dir: dir,
             context,

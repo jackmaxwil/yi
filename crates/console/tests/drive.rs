@@ -13,6 +13,10 @@ use yi_console::{ConsoleOptions, DriveOptions, parse_script, run_headless};
 use yi_types::event::{AgentEvent, AssistantMessageEvent};
 use yi_types::message::{AgentMessage, Content, StopReason, Usage, UserContent};
 
+#[path = "../../types/tests/support/scratch.rs"]
+mod scratch;
+use scratch::Scratch;
+
 type TestResult = Result<(), Box<dyn Error>>;
 type Responder = fn(&Value) -> Vec<Value>;
 
@@ -28,10 +32,10 @@ enum Step {
     Accept,
 }
 
-fn scratch_socket(name: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("yi-console-test-{}-{name}", std::process::id()));
-    let _ = std::fs::create_dir_all(&dir);
-    dir.join("fixture.sock")
+fn scratch_socket(name: &str) -> std::io::Result<(Scratch, PathBuf)> {
+    let dir = Scratch::new(&format!("yi-console-test-{name}"))?;
+    let socket = dir.join("sock");
+    Ok((dir, socket))
 }
 
 fn write_frame(stream: &mut UnixStream, frame: &Value) -> Result<(), String> {
@@ -319,9 +323,15 @@ fn run_frames_with(
     script: &str,
     sidebar: SidebarMode,
 ) -> Result<String, Box<dyn Error>> {
-    let dir = std::env::temp_dir().join(format!("yi-console-frames-{}-{name}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    run_opts(name, fixture, script, false, sidebar, Some(dir.clone()))?;
+    let dir = Scratch::new(&format!("yi-console-frames-{name}"))?;
+    run_opts(
+        name,
+        fixture,
+        script,
+        false,
+        sidebar,
+        Some(dir.to_path_buf()),
+    )?;
     let mut names: Vec<PathBuf> = std::fs::read_dir(&dir)?
         .filter_map(Result::ok)
         .map(|entry| entry.path())
@@ -351,7 +361,7 @@ fn run_opts(
     sidebar: SidebarMode,
     frames: Option<PathBuf>,
 ) -> TestResult {
-    let socket = scratch_socket(name);
+    let (_dir, socket) = scratch_socket(name)?;
     let server = spawn_fixture(socket.clone(), fixture);
     let steps = parse_script(script)?;
     let code = run_headless(
@@ -530,8 +540,7 @@ fn resume_replays_and_prompt_streams() -> TestResult {
 fn prompt_rejected_while_daemon_unreachable() -> TestResult {
     // No listener at all: the client keeps retrying and the composer submit
     // is refused with a visible status note, never queued.
-    let socket = scratch_socket("unreachable");
-    let _ = std::fs::remove_file(&socket);
+    let (_dir, socket) = scratch_socket("unreachable")?;
     let steps = parse_script(
         "wait-frame 5000 disconnected\n\
          key tab\n\
@@ -685,7 +694,7 @@ fn navigator_filters_and_opens() -> TestResult {
 
 #[test]
 fn tiny_terminal_survives_splits() -> TestResult {
-    let socket = scratch_socket("tiny");
+    let (_dir, socket) = scratch_socket("tiny")?;
     let server = spawn_fixture(
         socket.clone(),
         vec![
@@ -862,8 +871,7 @@ fn notebook_pane_shows_cells_and_image_placeholder() -> TestResult {
 
 #[test]
 fn markdown_viewer_pane_renders_file() -> TestResult {
-    let dir = std::env::temp_dir().join(format!("yi-console-md-{}", std::process::id()));
-    let _ = std::fs::create_dir_all(&dir);
+    let dir = Scratch::new("yi-console-md")?;
     let path = dir.join("NOTES.md");
     std::fs::write(&path, "# Drift Survey\n\nthe datum moved\n")?;
     run(

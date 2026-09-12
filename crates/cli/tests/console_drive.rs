@@ -7,6 +7,10 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
+#[path = "../../types/tests/support/scratch.rs"]
+mod scratch;
+use scratch::Scratch;
+
 type TestResult = Result<(), Box<dyn Error>>;
 
 fn spawn_daemon(dir: &Path) -> Result<(Child, PathBuf), Box<dyn Error>> {
@@ -69,9 +73,7 @@ fn run_console(dir: &Path, socket: &Path, root: &Path, script: &str) -> TestResu
 
 #[test]
 fn console_creates_prompts_detaches_and_replays() -> TestResult {
-    let dir = std::env::temp_dir().join(format!("yi-console-e2e-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir)?;
+    let dir = Scratch::new("yi-console-e2e")?;
     let root = dir.join("repo");
     std::fs::create_dir_all(&root)?;
     let (mut daemon, socket) = spawn_daemon(&dir)?;
@@ -129,9 +131,8 @@ fn frames_of(dir: &Path) -> Result<String, Box<dyn Error>> {
 /// popup, because they run the same chat.
 #[test]
 fn the_console_pane_and_solo_render_the_same_chat() -> TestResult {
-    let dir = std::env::temp_dir().join(format!("yi-parity-e2e-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir)?;
+    let dir = Scratch::new("yi-parity-e2e")?;
+    let home = dir.home()?;
     let root = dir.join("repo");
     std::fs::create_dir_all(&root)?;
     let body = std::fs::read_to_string(concat!(
@@ -161,7 +162,7 @@ fn the_console_pane_and_solo_render_the_same_chat() -> TestResult {
             "--frames",
             &solo_frames.display().to_string(),
         ])
-        .env("HOME", &dir)
+        .env("HOME", &home)
         .current_dir(&root)
         .status()?;
     if !status.success() {
@@ -195,7 +196,7 @@ fn the_console_pane_and_solo_render_the_same_chat() -> TestResult {
                 "--frames",
                 &console_frames.display().to_string(),
             ])
-            .env("HOME", &dir)
+            .env("HOME", &home)
             .status()?;
         if !status.success() {
             return Err(format!("console exited {status}").into());

@@ -1,3 +1,7 @@
+#[path = "../../types/tests/support/scratch.rs"]
+mod scratch;
+use scratch::Scratch;
+
 use std::error::Error;
 use std::sync::{Arc, Mutex};
 
@@ -59,9 +63,8 @@ fn a_store_attached_after_the_resolver_still_serves_history() -> TestResult {
         },
         Arc::new(ProviderStream::new(None, None)),
     );
-    let workspace = std::env::temp_dir().join(format!("yi-fetch-session-{}", std::process::id()));
-    std::fs::create_dir_all(&workspace)?;
-    let resolver = Resolver::new(workspace, Wall::default())
+    let workspace = Scratch::new("yi-fetch-session")?;
+    let resolver = Resolver::new(workspace.to_path_buf(), Wall::default())
         .with_session_handle("main", session.store_handle());
 
     let transcript: Url = "history://main".parse()?;

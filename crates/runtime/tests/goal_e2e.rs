@@ -1,3 +1,7 @@
+#[path = "../../types/tests/support/scratch.rs"]
+mod scratch;
+use scratch::Scratch;
+
 use std::error::Error;
 use std::sync::{Arc, Mutex};
 
@@ -54,28 +58,14 @@ fn memory_store() -> yi_session::SharedSession {
     )))
 }
 
-fn service_with_store() -> (
+type Service = (
     Arc<GoalService>,
     yi_session::SharedSession,
     Arc<Mutex<Vec<AgentMessage>>>,
-) {
-    let (service, store, delivered, _plans) = service_with_plans();
-    (service, store, delivered)
-}
+);
 
-fn service_with_plans() -> (
-    Arc<GoalService>,
-    yi_session::SharedSession,
-    Arc<Mutex<Vec<AgentMessage>>>,
-    std::path::PathBuf,
-) {
-    static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-    let plans = std::env::temp_dir().join(format!(
-        "yi-goal-plans-{}-{}",
-        std::process::id(),
-        NEXT.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
-    ));
-    let _ = std::fs::remove_dir_all(&plans);
+fn service_with_plans() -> std::io::Result<(Scratch, Service)> {
+    let root = Scratch::new("yi-goal-plans")?;
     let store = memory_store();
     let handle = store.clone();
     let delivered: Arc<Mutex<Vec<AgentMessage>>> = Arc::new(Mutex::new(Vec::new()));
@@ -89,9 +79,9 @@ fn service_with_plans() -> (
                 }
             }),
         )
-        .with_plans_dir(plans.clone()),
+        .with_plans_dir(root.join("plans")),
     );
-    (service, store, delivered, plans)
+    Ok((root, (service, store, delivered)))
 }
 
 #[test]
@@ -120,7 +110,7 @@ fn template_rejects_extra_and_missing_values() {
 
 #[test]
 fn create_fails_while_unfinished_and_survives_the_store_fact() -> TestResult {
-    let (service, store, _delivered) = service_with_store();
+    let (_plans, (service, store, _delivered)) = service_with_plans()?;
     service.create("ship phase 6", Some(1000), None, None)?;
     let error = service
         .create("another", None, None, None)
@@ -139,7 +129,7 @@ fn create_fails_while_unfinished_and_survives_the_store_fact() -> TestResult {
 
 #[test]
 fn budget_crossing_limits_the_goal_and_delivers_one_reminder() -> TestResult {
-    let (service, store, delivered) = service_with_store();
+    let (_plans, (service, store, delivered)) = service_with_plans()?;
     service.create("bounded work", Some(100), None, None)?;
     let zero = || Number::from(0u64);
     let usage = Usage {
@@ -291,7 +281,7 @@ fn continuation_prompt_interpolates_budgets() -> TestResult {
 
 #[test]
 fn check_gate_rejects_completion_and_persists_the_evidence() -> TestResult {
-    let (service, store, _delivered) = service_with_store();
+    let (_plans, (service, store, _delivered)) = service_with_plans()?;
     service.create(
         "provably done work",
         None,
@@ -332,7 +322,7 @@ fn check_gate_rejects_completion_and_persists_the_evidence() -> TestResult {
 
 #[test]
 fn check_gate_passes_and_clears_the_failure() -> TestResult {
-    let (service, store, _delivered) = service_with_store();
+    let (_plans, (service, store, _delivered)) = service_with_plans()?;
     service.create("done when true", None, Some("false".to_owned()), None)?;
     assert!(service.update("complete").is_err());
     let store_goal = yi_session::lock_session(&store).goal().ok_or("goal")?;
@@ -353,7 +343,7 @@ fn check_gate_passes_and_clears_the_failure() -> TestResult {
 
 #[test]
 fn check_gate_timeout_rejects_with_the_timeout_named() -> TestResult {
-    let (service, _store, _delivered) = service_with_store();
+    let (_plans, (service, _store, _delivered)) = service_with_plans()?;
     service.create("slow check", None, Some("sleep 5".to_owned()), Some(100))?;
     let error = service.update("complete").err().ok_or("must time out")?;
     assert!(
@@ -363,18 +353,18 @@ fn check_gate_timeout_rejects_with_the_timeout_named() -> TestResult {
     Ok(())
 }
 
-fn seed_plan(plans: &std::path::Path, check: &str) -> TestResult {
-    seed_plan_of(plans, "t1", check)
+fn seed_plan(root: &std::path::Path, check: &str) -> TestResult {
+    seed_plan_of(root, "t1", check)
 }
 
 /// The canonical plan file is truth: one Active root whose single todo carries
 /// the runnable acceptance a discovery row can name.
-fn seed_plan_of(plans: &std::path::Path, label: &str, check: &str) -> TestResult {
+fn seed_plan_of(root: &std::path::Path, label: &str, check: &str) -> TestResult {
     use yi_types::plan::doc::{
         Check, Delegation, GoalText, Plan, PlanId, PlanTier, RetryCount, SpawnSpec, Todo,
         TodoLabel, TodoState,
     };
-    let store = yi_runtime::plan::store::PlanStore::open(plans.to_path_buf())?;
+    let store = yi_runtime::plan::store::PlanStore::open(root.join("plans"))?;
     let plan = Plan::opening(
         PlanId::new("hold-the-invariant")?,
         GoalText::new("hold the invariant")?,
@@ -416,11 +406,9 @@ fn seed_plan_of(plans: &std::path::Path, label: &str, check: &str) -> TestResult
 /// adjudicating per row lets a ledger multiply one command by its row count.
 #[test]
 fn rows_naming_one_task_adjudicate_on_a_single_check_run() -> TestResult {
-    let dir = std::env::temp_dir().join(format!("yi-drain-once-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir)?;
+    let dir = Scratch::new("yi-drain-once")?;
     let tally = dir.join("runs");
-    let (service, store, _delivered, plans) = service_with_plans();
+    let (plans, (service, store, _delivered)) = service_with_plans()?;
     service.create("ship the fix", None, None, None)?;
     seed_plan(&plans, &format!("echo run >> {}", tally.display()))?;
     let handle = store_handle(&store);
@@ -436,7 +424,6 @@ fn rows_naming_one_task_adjudicate_on_a_single_check_run() -> TestResult {
         1,
         "three rows naming t1 must cost one check run, not one each"
     );
-    let _ = std::fs::remove_dir_all(&dir);
     Ok(())
 }
 
@@ -458,7 +445,7 @@ fn store_handle(store: &yi_session::SharedSession) -> StoreHandle {
 
 #[test]
 fn an_undrained_discovery_refuses_completion_until_its_check_goes_green() -> TestResult {
-    let (service, store, delivered, plans) = service_with_plans();
+    let (plans, (service, store, delivered)) = service_with_plans()?;
     service.create("ship the fix", None, None, None)?;
     seed_plan(&plans, "echo t1 still broken; exit 4")?;
     let handle = store_handle(&store);
@@ -522,7 +509,7 @@ fn an_undrained_discovery_refuses_completion_until_its_check_goes_green() -> Tes
 
 #[test]
 fn a_row_whose_check_left_the_plan_drains_instead_of_wedging_the_goal() -> TestResult {
-    let (service, store, delivered, plans) = service_with_plans();
+    let (plans, (service, store, delivered)) = service_with_plans()?;
     service.create("ship the fix", None, None, None)?;
     seed_plan(&plans, "exit 4")?;
     record_discovery(&store_handle(&store), &high_row())?;
@@ -556,7 +543,7 @@ fn a_row_whose_check_left_the_plan_drains_instead_of_wedging_the_goal() -> TestR
 
 #[test]
 fn a_recorded_row_survives_a_plan_the_gate_cannot_read() -> TestResult {
-    let (service, store, delivered) = service_with_store();
+    let (_plans, (service, store, delivered)) = service_with_plans()?;
     service.create("ship the fix", None, None, None)?;
     record_discovery(&store_handle(&store), &high_row())?;
 
@@ -594,11 +581,11 @@ fn a_recorded_row_survives_a_plan_the_gate_cannot_read() -> TestResult {
 
 #[test]
 fn check_gate_ignores_blocked_and_checkless_goals() -> TestResult {
-    let (service, _store, _delivered) = service_with_store();
+    let (_plans, (service, _store, _delivered)) = service_with_plans()?;
     service.create("blocked path", None, Some("exit 1".to_owned()), None)?;
     // blocked is a report, not a completion claim: no check runs.
     service.update("blocked")?;
-    let (service, _store, _delivered) = service_with_store();
+    let (_plans, (service, _store, _delivered)) = service_with_plans()?;
     service.create("no check", None, None, None)?;
     service.update("complete")?;
     Ok(())
@@ -608,7 +595,7 @@ fn check_gate_ignores_blocked_and_checkless_goals() -> TestResult {
 /// resolves to a message carrying genuine user attribution.
 #[test]
 fn a_goal_edit_requires_an_attributed_user_citation() -> TestResult {
-    let (service, store, _delivered) = service_with_store();
+    let (_plans, (service, store, _delivered)) = service_with_plans()?;
     service.create("original objective", None, None, None)?;
     {
         let mut session = yi_session::lock_session(&store);
@@ -656,7 +643,7 @@ fn a_goal_edit_requires_an_attributed_user_citation() -> TestResult {
 /// `user://2` name different messages at the two seams.
 #[test]
 fn a_citation_ordinal_names_the_same_message_at_the_goal_and_the_fetch_seam() -> TestResult {
-    let (service, store, _delivered) = service_with_store();
+    let (_plans, (service, store, _delivered)) = service_with_plans()?;
     service.create("original objective", None, None, None)?;
     {
         let mut session = yi_session::lock_session(&store);

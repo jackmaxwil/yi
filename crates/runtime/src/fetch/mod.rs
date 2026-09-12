@@ -512,18 +512,13 @@ fn sanitize(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::scratch::Scratch;
 
     type TestResult = Result<(), Box<dyn std::error::Error>>;
 
-    fn scratch(name: &str) -> Result<PathBuf, std::io::Error> {
-        let dir = std::env::temp_dir().join(format!("yi-fetch-{name}-{}", std::process::id()));
-        std::fs::create_dir_all(&dir)?;
-        Ok(dir)
-    }
-
     #[test]
     fn a_walled_url_is_denied() -> TestResult {
-        let workspace = scratch("walled")?;
+        let workspace = Scratch::new("yi-fetch-walled")?;
         std::fs::create_dir_all(workspace.join("secret"))?;
         std::fs::write(workspace.join("secret/key.txt"), "hunter2\n")?;
         let wall = Wall {
@@ -531,7 +526,7 @@ mod tests {
             deny_read: vec![workspace.join("secret")],
             deny_url: vec!["plan://forbidden".to_owned()],
         };
-        let resolver = Resolver::new(workspace, wall);
+        let resolver = Resolver::new(workspace.to_path_buf(), wall);
         let path_walled: Url = "local://secret/key.txt".parse()?;
         assert!(matches!(
             resolver.fetch(&path_walled),
@@ -556,8 +551,8 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn a_symlink_leaves_the_workspace_no_wider_than_a_path_does() -> TestResult {
-        let workspace = scratch("symlink")?;
-        let elsewhere = scratch("symlink-elsewhere")?;
+        let workspace = Scratch::new("yi-fetch-symlink")?;
+        let elsewhere = Scratch::new("yi-fetch-symlink-elsewhere")?;
         std::fs::write(elsewhere.join("passwd"), "root:x:0:0\n")?;
         std::fs::create_dir_all(workspace.join("secret"))?;
         std::fs::write(workspace.join("secret/key.txt"), "hunter2\n")?;
@@ -574,7 +569,7 @@ mod tests {
             deny_read: vec![workspace.join("secret")],
             deny_url: Vec::new(),
         };
-        let resolver = Resolver::new(workspace, wall);
+        let resolver = Resolver::new(workspace.to_path_buf(), wall);
         let escape: Url = "local://escape.txt".parse()?;
         let error = resolver
             .fetch(&escape)
@@ -598,8 +593,8 @@ mod tests {
 
     #[test]
     fn every_scheme_dispatches_to_its_own_arm() -> TestResult {
-        let workspace = scratch("dispatch")?;
-        let resolver = Resolver::new(workspace, Wall::default());
+        let workspace = Scratch::new("yi-fetch-dispatch")?;
+        let resolver = Resolver::new(workspace.to_path_buf(), Wall::default());
         for (url, missing) in [
             ("kernel://main/token_api_seam", KERNEL_MISSING),
             ("mcp://github/issue-42", MCP_MISSING),
@@ -659,9 +654,9 @@ mod tests {
 
     #[test]
     fn a_successful_fetch_lands_in_the_log() -> TestResult {
-        let workspace = scratch("logged")?;
+        let workspace = Scratch::new("yi-fetch-logged")?;
         std::fs::write(workspace.join("note.txt"), "alpha\n")?;
-        let resolver = Resolver::new(workspace, Wall::default());
+        let resolver = Resolver::new(workspace.to_path_buf(), Wall::default());
         let url: Url = "local://note.txt".parse()?;
         let fetched = resolver.fetch(&url)?;
         assert_eq!(fetched.served_by, "workspace-file");
@@ -701,11 +696,11 @@ mod tests {
     async fn the_kernel_service_map_routes_reads_by_agent_id() -> TestResult {
         let map = KernelServiceMap::new();
         read_via(&map, "ghost").await?;
-        let dir = scratch("kernel-map")?;
+        let dir = Scratch::new("yi-fetch-kernel-map")?;
         let service = Arc::new(crate::kernel::KernelService::new(
             crate::kernel::KernelServiceOptions {
-                cwd: dir.clone(),
-                home: dir,
+                cwd: dir.to_path_buf(),
+                home: dir.to_path_buf(),
                 session_dir: None,
                 family_dir: None,
                 host: Arc::new(NoHost),

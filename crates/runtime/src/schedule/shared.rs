@@ -90,6 +90,7 @@ mod tests {
     use super::*;
     use crate::schedule::HeartbeatService as Service;
     use crate::schedule::{JobSpec, RunOutcome, new_job};
+    use crate::scratch::Scratch;
     use std::sync::{Condvar, Mutex};
     use std::time::{Duration, Instant};
     use yi_types::schedule::{CronSchedule, JobSource, ScheduleKind};
@@ -176,7 +177,6 @@ mod tests {
     }
 
     fn lane_service(dir: &std::path::Path, hub: &Arc<DeliveryHub>) -> (Arc<JobStore>, Service) {
-        let _ = std::fs::remove_dir_all(dir);
         let store = Arc::new(JobStore::open(dir.join("scheduled-jobs.json")));
         let service = Service::new(Arc::clone(&store), "/tmp")
             .with_lane(Arc::clone(hub), Arc::new(|_| RunOutcome::Ran));
@@ -184,8 +184,8 @@ mod tests {
     }
 
     #[test]
-    fn dropping_an_attached_service_withdraws_its_lane() {
-        let dir = std::env::temp_dir().join(format!("yi-hub-drop-{}", std::process::id()));
+    fn dropping_an_attached_service_withdraws_its_lane() -> std::io::Result<()> {
+        let dir = Scratch::new("yi-hub-drop")?;
         let hub = Arc::new(DeliveryHub::new());
         let (_store, service) = lane_service(&dir, &hub);
         service.bind_session("a".to_owned());
@@ -195,12 +195,12 @@ mod tests {
 
         assert_eq!(hub.lane_count(), 0, "the session ended but kept its lane");
         assert_eq!(hub.dispatch(&job("a")), RunOutcome::Skipped);
-        let _ = std::fs::remove_dir_all(&dir);
+        Ok(())
     }
 
     #[test]
-    fn rebinding_the_service_withdraws_the_previous_lane() {
-        let dir = std::env::temp_dir().join(format!("yi-hub-rebind-{}", std::process::id()));
+    fn rebinding_the_service_withdraws_the_previous_lane() -> std::io::Result<()> {
+        let dir = Scratch::new("yi-hub-rebind")?;
         let hub = Arc::new(DeliveryHub::new());
         let (_store, service) = lane_service(&dir, &hub);
         service.bind_session("a".to_owned());
@@ -217,13 +217,13 @@ mod tests {
             "the rebind left session a's lane behind"
         );
         assert_eq!(hub.dispatch(&job("b")), RunOutcome::Ran);
-        let _ = std::fs::remove_dir_all(&dir);
+        Ok(())
     }
 
     #[tokio::test]
     async fn an_ended_session_leaves_the_timer_nothing_to_re_arm()
     -> Result<(), Box<dyn std::error::Error>> {
-        let dir = std::env::temp_dir().join(format!("yi-hub-ended-{}", std::process::id()));
+        let dir = Scratch::new("yi-hub-ended")?;
         let path = dir.join("scheduled-jobs.json");
         let hub = Arc::new(DeliveryHub::new());
         let (store, service) = lane_service(&dir, &hub);
@@ -265,15 +265,13 @@ mod tests {
             state.dispatches.is_empty(),
             "a dead session's job was claimed"
         );
-        let _ = std::fs::remove_dir_all(&dir);
         Ok(())
     }
 
     #[test]
     fn a_heartbeat_before_attach_is_refused_not_stamped_empty()
     -> Result<(), Box<dyn std::error::Error>> {
-        let dir = std::env::temp_dir().join(format!("yi-hub-unbound-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        let dir = Scratch::new("yi-hub-unbound")?;
         let store = Arc::new(JobStore::open(dir.join("scheduled-jobs.json")));
         let service = Service::new(Arc::clone(&store), "/tmp")
             .with_lane(Arc::new(DeliveryHub::new()), Arc::new(|_| RunOutcome::Ran));
@@ -289,7 +287,6 @@ mod tests {
             store.snapshot().jobs.is_empty(),
             "a job stamped with the empty session id reached the ledger"
         );
-        let _ = std::fs::remove_dir_all(&dir);
         Ok(())
     }
 }

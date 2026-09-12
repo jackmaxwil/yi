@@ -15,6 +15,10 @@ use yi_tui::keymap::default_keymap;
 use yi_types::message::StopReason;
 use yi_types::model::{Model, ModelCost};
 
+#[path = "../../types/tests/support/scratch.rs"]
+mod scratch;
+use scratch::Scratch;
+
 type TestResult = Result<(), Box<dyn Error>>;
 
 fn faux_model() -> Model {
@@ -201,15 +205,13 @@ fn subagent_task_cell_focus_and_back() -> TestResult {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
-    let dir = std::env::temp_dir().join(format!("yi-tui-e2e-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir)?;
+    let dir = Scratch::new("yi-tui-e2e")?;
     let host = Arc::new(SubagentHost::new(SubagentHostOptions {
         depth: 0,
         max_depth: 1,
         max_children: 4,
-        parent_session_dir: dir.clone(),
-        cwd: dir.clone(),
+        parent_session_dir: dir.to_path_buf(),
+        cwd: dir.to_path_buf(),
         home: std::env::temp_dir(),
         lane_slots: 1,
         defaults: Arc::new(|| (faux_model(), yi_types::model::Effort::Medium)),
@@ -281,7 +283,6 @@ fn subagent_task_cell_focus_and_back() -> TestResult {
         "unfocusing prints the closing rule: {back_commits:?}"
     );
     assert_eq!(app.focused(), None);
-    let _ = std::fs::remove_dir_all(&dir);
     Ok(())
 }
 
@@ -306,8 +307,7 @@ fn draw_paints_inside_the_inline_viewport_offset() -> TestResult {
 
 #[test]
 fn external_editor_replaces_the_draft() -> TestResult {
-    let dir = std::env::temp_dir().join(format!("yi-tui-editor-{}", std::process::id()));
-    std::fs::create_dir_all(&dir)?;
+    let dir = Scratch::new("yi-tui-editor")?;
     let editor = dir.join("fake-editor.sh");
     std::fs::write(
         &editor,
@@ -329,7 +329,6 @@ fn external_editor_replaces_the_draft() -> TestResult {
     yi_tui::editor::process_pending_editor(&mut app, &mut terminal, false);
 
     assert_eq!(app.composer_text(), "edited elsewhere");
-    let _ = std::fs::remove_dir_all(&dir);
     Ok(())
 }
 
@@ -987,9 +986,7 @@ fn the_status_cost_sums_the_session_not_the_last_turn() -> TestResult {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
-    let dir = std::env::temp_dir().join(format!("yi-tui-cost-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir)?;
+    let dir = Scratch::new("yi-tui-cost")?;
     let provider = Arc::new(ProviderStream::new(None, None));
     provider.queue_faux(vec![priced("one", 0.02), priced("two", 0.03)]);
     let session = Arc::new(AgentSession::new(
@@ -1005,8 +1002,8 @@ fn the_status_cost_sums_the_session_not_the_last_turn() -> TestResult {
         depth: 0,
         max_depth: 1,
         max_children: 4,
-        parent_session_dir: dir.clone(),
-        cwd: dir.clone(),
+        parent_session_dir: dir.to_path_buf(),
+        cwd: dir.to_path_buf(),
         home: std::env::temp_dir(),
         lane_slots: 1,
         defaults: Arc::new(|| (faux_model(), yi_types::model::Effort::Medium)),
@@ -1032,7 +1029,7 @@ fn the_status_cost_sums_the_session_not_the_last_turn() -> TestResult {
         options(),
         yi_tui::DriveOptions {
             script,
-            frames_dir: Some(dir.clone()),
+            frames_dir: Some(dir.to_path_buf()),
             record: None,
             snap: None,
             deadline_secs: 60,
@@ -1047,7 +1044,6 @@ fn the_status_cost_sums_the_session_not_the_last_turn() -> TestResult {
         .collect();
     frames.sort();
     let last = std::fs::read_to_string(frames.last().ok_or("no frames dumped")?)?;
-    let _ = std::fs::remove_dir_all(&dir);
     assert!(
         last.contains("$0.05"),
         "the status line must carry both turns ($0.02 + $0.03), not the last one:\n{last}"
@@ -1103,16 +1099,14 @@ fn a_recording_replays_to_the_frame_the_run_asserted_on() -> TestResult {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
-    let dir = std::env::temp_dir().join(format!("yi-tui-cast-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir)?;
+    let dir = Scratch::new("yi-tui-cast")?;
     let session = Arc::new(faux_session("recorded reply"));
     let host = Arc::new(SubagentHost::new(SubagentHostOptions {
         depth: 0,
         max_depth: 1,
         max_children: 4,
-        parent_session_dir: dir.clone(),
-        cwd: dir.clone(),
+        parent_session_dir: dir.to_path_buf(),
+        cwd: dir.to_path_buf(),
         home: std::env::temp_dir(),
         lane_slots: 1,
         defaults: Arc::new(|| (faux_model(), yi_types::model::Effort::Medium)),
@@ -1138,7 +1132,7 @@ fn a_recording_replays_to_the_frame_the_run_asserted_on() -> TestResult {
         options(),
         yi_tui::DriveOptions {
             script,
-            frames_dir: Some(dir.clone()),
+            frames_dir: Some(dir.to_path_buf()),
             record: Some(cast.clone()),
             snap: Some(still.clone()),
             deadline_secs: 60,
@@ -1195,7 +1189,6 @@ fn a_recording_replays_to_the_frame_the_run_asserted_on() -> TestResult {
     let mut still_parser = vt100::Parser::new(24, 80, 0);
     still_parser.process(still_event[2].as_str().ok_or("still payload")?.as_bytes());
     let still_screen = still_parser.screen().contents();
-    let _ = std::fs::remove_dir_all(&dir);
 
     assert_eq!(
         screen_lines(&replayed),
@@ -1267,15 +1260,13 @@ fn a_child_that_finishes_inside_its_spawning_cell_lands_under_it() -> TestResult
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
-    let dir = std::env::temp_dir().join(format!("yi-tui-spawn-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir)?;
+    let dir = Scratch::new("yi-tui-spawn")?;
     let host = Arc::new(SubagentHost::new(SubagentHostOptions {
         depth: 0,
         max_depth: 1,
         max_children: 4,
-        parent_session_dir: dir.clone(),
-        cwd: dir.clone(),
+        parent_session_dir: dir.to_path_buf(),
+        cwd: dir.to_path_buf(),
         home: std::env::temp_dir(),
         lane_slots: 1,
         defaults: Arc::new(|| (faux_model(), yi_types::model::Effort::Medium)),
@@ -1365,7 +1356,6 @@ fn a_child_that_finishes_inside_its_spawning_cell_lands_under_it() -> TestResult
         1,
         "one task row: {committed:?}"
     );
-    let _ = std::fs::remove_dir_all(&dir);
     Ok(())
 }
 
@@ -1864,9 +1854,7 @@ fn the_hud_shows_open_todos_in_a_headless_frame() -> TestResult {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
-    let dir = std::env::temp_dir().join(format!("yi-tui-todos-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir)?;
+    let dir = Scratch::new("yi-tui-todos")?;
     let session = Arc::new(faux_session("noted"));
     let store = Arc::new(std::sync::Mutex::new(
         yi_runtime::session_store::SessionStore::in_memory(
@@ -1891,8 +1879,8 @@ fn the_hud_shows_open_todos_in_a_headless_frame() -> TestResult {
         depth: 0,
         max_depth: 1,
         max_children: 4,
-        parent_session_dir: dir.clone(),
-        cwd: dir.clone(),
+        parent_session_dir: dir.to_path_buf(),
+        cwd: dir.to_path_buf(),
         home: std::env::temp_dir(),
         lane_slots: 1,
         defaults: Arc::new(|| (faux_model(), yi_types::model::Effort::Medium)),
@@ -1916,7 +1904,7 @@ fn the_hud_shows_open_todos_in_a_headless_frame() -> TestResult {
         options(),
         yi_tui::DriveOptions {
             script,
-            frames_dir: Some(dir.clone()),
+            frames_dir: Some(dir.to_path_buf()),
             record: None,
             snap: None,
             deadline_secs: 60,
@@ -1931,7 +1919,6 @@ fn the_hud_shows_open_todos_in_a_headless_frame() -> TestResult {
         .collect();
     frames.sort();
     let last = std::fs::read_to_string(frames.last().ok_or("no frames dumped")?)?;
-    let _ = std::fs::remove_dir_all(&dir);
     for needle in [
         "Todos 0/3 · running: read the code",
         "- [>] t1 read the code",

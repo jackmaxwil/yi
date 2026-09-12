@@ -190,7 +190,12 @@ fn plan_records(options: &Options, plan: &PlanId) -> Vec<PlanOpRecord> {
 }
 
 #[cfg(test)]
+#[path = "../../types/tests/support/scratch.rs"]
+mod scratch;
+
+#[cfg(test)]
 mod tests {
+    use super::scratch::Scratch;
     use super::*;
     use yi_runtime::session_store::{CreateOptions, JsonlRepo, SessionRepo, lock_session};
     use yi_types::plan::doc::TodoLabel;
@@ -214,8 +219,7 @@ mod tests {
 
     #[test]
     fn a_report_reads_the_session_that_ran_the_plan() -> TestResult {
-        let root = std::env::temp_dir().join(format!("yi-plan-report-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
+        let root = Scratch::new("yi-plan-report")?;
         let sessions = root.join("sessions");
         let cwd = root.join("project");
         std::fs::create_dir_all(&sessions)?;
@@ -252,7 +256,6 @@ mod tests {
             1,
             "the plan's own session carries its op stream, whatever ran last"
         );
-        let _ = std::fs::remove_dir_all(&root);
         Ok(())
     }
 }

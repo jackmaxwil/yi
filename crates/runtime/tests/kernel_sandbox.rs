@@ -1,5 +1,9 @@
 #![cfg(target_os = "macos")]
 
+#[path = "../../types/tests/support/scratch.rs"]
+mod scratch;
+use scratch::Scratch;
+
 use std::error::Error;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -22,9 +26,8 @@ async fn cell(
     .map_err(|error| error.to_string())?
 }
 
-fn workspace(tag: &str) -> Result<(PathBuf, PathBuf, PathBuf), Box<dyn Error>> {
-    let root = std::env::temp_dir().join(format!("yi-kernel-sbx-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&root);
+fn workspace(tag: &str) -> Result<(Scratch, PathBuf, PathBuf, PathBuf), Box<dyn Error>> {
+    let root = Scratch::new(&format!("yi-kernel-sbx-{tag}"))?;
     let project = root.join("project");
     let home = std::env::var_os("HOME")
         .map(PathBuf::from)
@@ -32,7 +35,7 @@ fn workspace(tag: &str) -> Result<(PathBuf, PathBuf, PathBuf), Box<dyn Error>> {
     let session = root.join("session");
     std::fs::create_dir_all(&project)?;
     std::fs::create_dir_all(&session)?;
-    Ok((project, home, session))
+    Ok((root, project, home, session))
 }
 
 fn service(cwd: PathBuf, home: PathBuf, sandbox: Sandbox) -> Arc<KernelService> {
@@ -55,7 +58,7 @@ async fn an_ipython_cell_cannot_write_outside_the_confined_roots() -> TestResult
     if !Sandbox::available() {
         return Ok(());
     }
-    let (project, home, session) = workspace("write")?;
+    let (_root, project, home, session) = workspace("write")?;
     let sandbox = Sandbox::for_workspace(&project, &home, Some(&session));
     let kernel = service(project.clone(), home.clone(), sandbox);
     let inside = cell(
@@ -128,7 +131,7 @@ async fn a_profile_change_restarts_the_kernel() -> TestResult {
     if !Sandbox::available() {
         return Ok(());
     }
-    let (project, home, session) = workspace("restart")?;
+    let (_root, project, home, session) = workspace("restart")?;
     let sandbox = Sandbox::for_workspace(&project, &home, Some(&session));
     let kernel = service(project.clone(), home.clone(), sandbox.clone());
     let first = cell(&kernel, "marker = 1\nprint(marker)".to_owned()).await?;

@@ -551,25 +551,12 @@ pub struct Harvest {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::scratch::Scratch;
     use std::path::PathBuf;
     use std::sync::Mutex;
-    use std::sync::atomic::{AtomicU32, Ordering};
     use yi_types::plan::TaskId;
 
     type TestResult = Result<(), Box<dyn std::error::Error>>;
-
-    static NEXT: AtomicU32 = AtomicU32::new(0);
-
-    fn scratch(tag: &str) -> Result<PathBuf, Box<dyn std::error::Error>> {
-        let dir = std::env::temp_dir().join(format!(
-            "yi-mailbox-{tag}-{}-{}",
-            std::process::id(),
-            NEXT.fetch_add(1, Ordering::SeqCst)
-        ));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir)?;
-        Ok(dir)
-    }
 
     fn memory_store_with_goal() -> Result<yi_session::SharedSession, Box<dyn std::error::Error>> {
         let store: yi_session::SharedSession = Arc::new(Mutex::new(
@@ -712,10 +699,10 @@ mod tests {
 
     #[test]
     fn a_discovery_is_adjudicated_against_the_canonical_document() -> TestResult {
-        let cwd = scratch("adjudicate")?;
+        let cwd = Scratch::new("yi-mailbox-adjudicate")?;
         write_canonical_plan(&cwd, "echo t1 broken; exit 4")?;
         let store = memory_store_with_goal()?;
-        let (host, reports) = host_at(cwd, store.clone())?;
+        let (host, reports) = host_at(cwd.to_path_buf(), store.clone())?;
         host.route_discoveries("finder", &[row(true)])?;
         let texts: Vec<String> = reports
             .lock()
@@ -746,9 +733,9 @@ mod tests {
 
     #[test]
     fn a_green_canonical_check_defers_the_row() -> TestResult {
-        let cwd = scratch("defer")?;
+        let cwd = Scratch::new("yi-mailbox-defer")?;
         write_canonical_plan(&cwd, "true")?;
-        let (host, reports) = host_at(cwd, memory_store_with_goal()?)?;
+        let (host, reports) = host_at(cwd.to_path_buf(), memory_store_with_goal()?)?;
         host.route_discoveries("finder", &[row(true)])?;
         let texts: Vec<String> = reports
             .lock()
@@ -773,8 +760,8 @@ mod tests {
 
     #[test]
     fn adjudication_fails_closed_when_no_canonical_plan_is_readable() -> TestResult {
-        let cwd = scratch("fail-closed")?;
-        let (host, reports) = host_at(cwd, memory_store_with_goal()?)?;
+        let cwd = Scratch::new("yi-mailbox-fail-closed")?;
+        let (host, reports) = host_at(cwd.to_path_buf(), memory_store_with_goal()?)?;
         let error = host
             .route_discoveries("finder", &[row(true)])
             .err()

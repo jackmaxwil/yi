@@ -13,6 +13,10 @@ use yi_kernel::client::{
 use yi_kernel::snapshot::{manifest_path_in, snapshot_path_in};
 use yi_types::kernel::ExecuteStatus;
 
+#[path = "../../types/tests/support/scratch.rs"]
+mod scratch;
+use scratch::Scratch;
+
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
 struct EchoHost;
@@ -164,8 +168,7 @@ async fn cells_stream_error_host_request_interrupt_and_shutdown() -> TestResult 
 
 #[tokio::test]
 async fn namespace_snapshot_revives_across_kernels() -> TestResult {
-    let dir = std::env::temp_dir().join(format!("yi-snap-e2e-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
+    let dir = Scratch::new("yi-snap-e2e")?;
     let config = KernelSnapshotConfig {
         path: snapshot_path_in(&dir),
         manifest_path: manifest_path_in(&dir),
@@ -227,14 +230,12 @@ async fn namespace_snapshot_revives_across_kernels() -> TestResult {
         cell.stderr
     );
     second.dispose().await;
-    let _ = std::fs::remove_dir_all(&dir);
     Ok(())
 }
 
 #[tokio::test]
 async fn prune_removes_oversized_variables_and_list_names_reports() -> TestResult {
-    let dir = std::env::temp_dir().join(format!("yi-prune-e2e-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
+    let dir = Scratch::new("yi-prune-e2e")?;
     let kernel = manager_with_snapshot(Some(KernelSnapshotConfig {
         path: snapshot_path_in(&dir),
         manifest_path: manifest_path_in(&dir),
@@ -286,7 +287,6 @@ async fn prune_removes_oversized_variables_and_list_names_reports() -> TestResul
     assert_eq!(kept.result.as_deref(), Some("7"));
 
     kernel.dispose().await;
-    let _ = std::fs::remove_dir_all(&dir);
     Ok(())
 }
 
@@ -297,9 +297,9 @@ async fn the_kernel_boots_on_system_python_when_uv_is_absent() -> TestResult {
     let Some(python3) = find_system_python() else {
         return Ok(());
     };
-    let scratch = std::env::temp_dir().join(format!("yi-system-venv-{}", std::process::id()));
+    let scratch = Scratch::new("yi-system-venv")?;
     let built = tokio::task::spawn_blocking({
-        let scratch = scratch.clone();
+        let venv = scratch.join("venv");
         move || {
             ensure_kernel_python(&BootstrapOptions {
                 on_progress: Some(Box::new(|message| eprintln!("{message}"))),
@@ -307,7 +307,7 @@ async fn the_kernel_boots_on_system_python_when_uv_is_absent() -> TestResult {
                 runtime_source_dir: default_runtime_source_dir(),
                 skills_source_dir: default_skills_source_dir(),
                 toolchain: Some(Toolchain::System(python3)),
-                venv_dir: Some(scratch.join("venv")),
+                venv_dir: Some(venv),
             })
         }
     })
@@ -318,7 +318,6 @@ async fn the_kernel_boots_on_system_python_when_uv_is_absent() -> TestResult {
         Ok(python) => python,
         Err(error) if error.contains("ensurepip") => {
             eprintln!("skipped: {error}");
-            let _ = std::fs::remove_dir_all(&scratch);
             return Ok(());
         }
         Err(error) => return Err(error.into()),
@@ -343,7 +342,6 @@ async fn the_kernel_boots_on_system_python_when_uv_is_absent() -> TestResult {
         )
         .await?;
     kernel.dispose().await;
-    let _ = std::fs::remove_dir_all(&scratch);
     assert_eq!(result.status, ExecuteStatus::Ok, "{result:?}");
     assert_eq!(result.stdout.trim(), "True");
     Ok(())

@@ -1,5 +1,4 @@
 use std::error::Error;
-use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde_json::{Value, json};
 use yi_types::entry::Entry;
@@ -12,32 +11,17 @@ use yi_session::{
     LanePointer, LogOptions, MemRepo, RecordQuery, SessionError, SessionRepo, lock_session,
 };
 
+#[path = "../../types/tests/support/scratch.rs"]
+mod scratch;
+use scratch::Scratch;
+
 type TestResult = Result<(), Box<dyn Error>>;
-
-static DIR_COUNTER: AtomicU64 = AtomicU64::new(0);
-
-struct TempRoot(std::path::PathBuf);
-
-impl Drop for TempRoot {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
-    }
-}
-
-fn jsonl_fixture() -> (TempRoot, JsonlRepo) {
-    let unique = DIR_COUNTER.fetch_add(1, Ordering::Relaxed);
-    let root = std::env::temp_dir().join(format!(
-        "yi-session-conformance-{}-{unique}",
-        std::process::id()
-    ));
-    let repo = JsonlRepo::new(root.clone(), "/tmp/yi-conformance");
-    (TempRoot(root), repo)
-}
 
 fn for_each_backend(case: impl Fn(&mut dyn SessionRepo) -> TestResult) -> TestResult {
     let mut mem = MemRepo::new();
     case(&mut mem)?;
-    let (_root, mut jsonl) = jsonl_fixture();
+    let root = Scratch::new("yi-session-conformance")?;
+    let mut jsonl = JsonlRepo::new(root.to_path_buf(), "/tmp/yi-conformance");
     case(&mut jsonl)?;
     Ok(())
 }

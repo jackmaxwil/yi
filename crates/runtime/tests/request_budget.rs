@@ -1,3 +1,7 @@
+#[path = "../../types/tests/support/scratch.rs"]
+mod scratch;
+use scratch::Scratch;
+
 use std::error::Error;
 
 use serde_json::{Map, Value, json};
@@ -418,8 +422,7 @@ fn frozen_block(cwd: &std::path::Path, home: &std::path::Path) -> Result<String,
 /// every ambient value, so invariance and a residue scan both have to run.
 #[test]
 fn the_frozen_prefix_is_location_invariant_and_residue_free() -> TestResult {
-    let root = std::env::temp_dir().join(format!("yi-frozen-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&root);
+    let root = Scratch::new("yi-frozen")?;
     let (cwd_a, home_a) = (root.join("alpha/work"), root.join("alpha/dwelling"));
     let (cwd_b, home_b) = (root.join("beta/elsewhere"), root.join("beta/abode"));
     let a = frozen_block(&cwd_a, &home_a)?;
@@ -496,7 +499,6 @@ fn the_frozen_prefix_is_location_invariant_and_residue_free() -> TestResult {
             ));
         }
     }
-    let _ = std::fs::remove_dir_all(&root);
     if violations.is_empty() {
         return Ok(());
     }

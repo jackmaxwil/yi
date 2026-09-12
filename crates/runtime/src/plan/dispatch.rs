@@ -197,9 +197,7 @@ impl Delegate for SessionDelegate {
 mod tests {
     use super::*;
     use std::num::NonZeroUsize;
-    use std::path::PathBuf;
     use std::sync::Mutex;
-    use std::sync::atomic::{AtomicU32, Ordering};
     use yi_loop::ExecutionMode;
     use yi_types::message::StopReason;
     use yi_types::model::{Model, ModelCost};
@@ -208,23 +206,11 @@ mod tests {
 
     use crate::plan::ops::{Actor, Op, OpRequest, PlanEngine, TodoSpec};
     use crate::plan::store::PlanStore;
+    use crate::scratch::Scratch;
     use crate::session::{AgentSession, SessionConfig};
     use crate::subagent::{ChildBuild, ChildStatus, SubagentHostOptions};
 
     type TestResult = Result<(), Box<dyn std::error::Error>>;
-
-    static NEXT: AtomicU32 = AtomicU32::new(0);
-
-    fn scratch(tag: &str) -> Result<PathBuf, Box<dyn std::error::Error>> {
-        let dir = std::env::temp_dir().join(format!(
-            "yi-dispatch-{tag}-{}-{}",
-            std::process::id(),
-            NEXT.fetch_add(1, Ordering::SeqCst)
-        ));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir)?;
-        Ok(dir)
-    }
 
     fn faux_model() -> Model {
         let zero = || serde_json::Number::from(0u64);
@@ -276,11 +262,11 @@ mod tests {
         pins: Arc<FetchLog>,
         reports: Arc<Mutex<Vec<AgentMessage>>>,
         delivered: Arc<Mutex<Vec<AgentMessage>>>,
-        cwd: PathBuf,
+        cwd: Scratch,
     }
 
     fn rig(child_answer: &'static str) -> Result<Rig, Box<dyn std::error::Error>> {
-        let root = scratch("rig")?;
+        let root = Scratch::new("yi-dispatch-rig")?;
         let (events, _keep) = tokio::sync::broadcast::channel(64);
         let reports: Arc<Mutex<Vec<AgentMessage>>> = Arc::new(Mutex::new(Vec::new()));
         let report_sink = Arc::clone(&reports);
@@ -289,7 +275,7 @@ mod tests {
             max_depth: 1,
             max_children: 8,
             parent_session_dir: root.join("children"),
-            cwd: root.clone(),
+            cwd: root.to_path_buf(),
             home: std::env::temp_dir(),
             lane_slots: 1,
             defaults: Arc::new(|| (faux_model(), yi_types::model::Effort::Medium)),
@@ -433,8 +419,9 @@ mod tests {
         assert!(pin.to_string().starts_with("history://"), "{pin}");
         // Incident: the real seam looked a reaped child up by name under the
         // sessions root, where no child transcript lives; only a stub desk passed.
+        let workspace = Scratch::new("yi-dispatch-resolver")?;
         let resolver =
-            crate::fetch::Resolver::new(scratch("resolver")?, crate::wall::Wall::default())
+            crate::fetch::Resolver::new(workspace.to_path_buf(), crate::wall::Wall::default())
                 .with_log(Arc::clone(&rig.pins))
                 .with_transcripts(Arc::new(crate::fetch::SessionTranscripts::new(
                     Arc::clone(&rig.host),
@@ -538,7 +525,7 @@ mod tests {
     async fn the_follow_up_wakes_an_idle_owner_and_names_the_held_count() -> TestResult {
         let owner_session = faux_session(&["picking up the dispatched todo"]);
         let deliver = owner_session.heartbeat_hook();
-        let root = scratch("idle")?;
+        let root = Scratch::new("yi-dispatch-idle")?;
         let (events, _keep) = tokio::sync::broadcast::channel(16);
         let host = Arc::new(SubagentHost::new(SubagentHostOptions {
             depth: 0,
@@ -547,7 +534,7 @@ mod tests {
             parent_session_dir: root.join("children"),
             plans_dir: root.join(crate::plan::PLANS_DIR),
             family_live: Arc::new(|| 0),
-            cwd: root,
+            cwd: root.to_path_buf(),
             home: std::env::temp_dir(),
             lane_slots: 1,
             defaults: Arc::new(|| (faux_model(), yi_types::model::Effort::Medium)),

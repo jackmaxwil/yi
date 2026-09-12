@@ -8,6 +8,10 @@ use std::time::{Duration, Instant};
 use serde_json::{Value, json};
 use yi_types::schedule::ScheduleState;
 
+#[path = "../../types/tests/support/scratch.rs"]
+mod scratch;
+use scratch::Scratch;
+
 type TestResult = Result<(), Box<dyn Error>>;
 
 const WORKERS: usize = 2;
@@ -165,9 +169,7 @@ fn arm_heartbeat(client: &mut DaemonClient, id: &str, session_id: &str) -> TestR
 #[test]
 #[ignore = "tier-2 journey: `just journeys`"]
 fn reconnect_keeps_heartbeats() -> TestResult {
-    let dir = std::env::temp_dir().join(format!("yi-serve-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir)?;
+    let dir = Scratch::new("yi-serve")?;
     let (mut daemon, socket) = spawn_daemon(&dir)?;
 
     let outcome = (|| -> TestResult {
@@ -237,8 +239,7 @@ fn new_session(
 #[test]
 #[ignore = "tier-2 journey: `just journeys`"]
 fn two_roots_run_two_workers_that_keep_their_own_schedules() -> TestResult {
-    let dir = std::env::temp_dir().join(format!("yi-serve-roots-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
+    let dir = Scratch::new("yi-serve-roots")?;
     let alpha = dir.join("alpha");
     let beta = dir.join("beta");
     std::fs::create_dir_all(&alpha)?;
@@ -326,7 +327,6 @@ fn two_roots_run_two_workers_that_keep_their_own_schedules() -> TestResult {
 
     let _cleanup = daemon.kill();
     let _reaped = daemon.wait();
-    let _ = std::fs::remove_dir_all(&dir);
     outcome
 }
 
@@ -337,9 +337,7 @@ fn two_roots_run_two_workers_that_keep_their_own_schedules() -> TestResult {
 #[test]
 #[ignore = "tier-2 journey: `just journeys`"]
 fn workers_do_not_lose_heartbeats_or_tear_the_job_ledger() -> TestResult {
-    let dir = std::env::temp_dir().join(format!("yi-serve-g2-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir)?;
+    let dir = Scratch::new("yi-serve-g2")?;
     let (mut daemon, socket) = spawn_daemon(&dir)?;
 
     let outcome = (|| -> TestResult {
@@ -455,9 +453,7 @@ fn ledgers_are_intact(sessions: &Path) -> Result<bool, Box<dyn Error>> {
 /// the last resumer.
 #[test]
 fn two_clients_both_stream_one_session() -> TestResult {
-    let dir = std::env::temp_dir().join(format!("yi-fanout-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir)?;
+    let dir = Scratch::new("yi-fanout")?;
     let root = dir.join("repo");
     std::fs::create_dir_all(&root)?;
     let (mut daemon, socket) = spawn_daemon(&dir)?;
@@ -501,9 +497,7 @@ fn two_clients_both_stream_one_session() -> TestResult {
 #[test]
 #[ignore = "tier-2 journey: `just journeys`"]
 fn a_returning_client_sees_one_unseen_and_the_branch_verbatim() -> TestResult {
-    let dir = std::env::temp_dir().join(format!("yi-serve-replay-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir)?;
+    let dir = Scratch::new("yi-serve-replay")?;
     let (mut daemon, socket) = spawn_daemon(&dir)?;
 
     let outcome = (|| -> TestResult {
@@ -579,7 +573,6 @@ fn a_returning_client_sees_one_unseen_and_the_branch_verbatim() -> TestResult {
 
     let _cleanup = daemon.kill();
     let _reaped = daemon.wait();
-    let _ = std::fs::remove_dir_all(&dir);
     outcome
 }
 
@@ -600,9 +593,7 @@ fn listed_row(
 #[test]
 #[ignore = "tier-2 journey: `just journeys`"]
 fn the_ledger_survives_a_daemon_restart() -> TestResult {
-    let dir = std::env::temp_dir().join(format!("yi-serve-ledger-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir)?;
+    let dir = Scratch::new("yi-serve-ledger")?;
     let (mut daemon, socket) = spawn_daemon(&dir)?;
     let outcome = (|| -> TestResult {
         let mut first = DaemonClient::connect(&socket)?;
@@ -657,9 +648,7 @@ fn the_ledger_survives_a_daemon_restart() -> TestResult {
 #[test]
 #[ignore = "tier-2 journey: `just journeys`"]
 fn shutdown_stops_the_daemon_and_its_worker() -> TestResult {
-    let dir = std::env::temp_dir().join(format!("yi-serve-shutdown-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir)?;
+    let dir = Scratch::new("yi-serve-shutdown")?;
     let root = dir.join("repo");
     std::fs::create_dir_all(&root)?;
     let (mut daemon, socket) = spawn_daemon(&dir)?;

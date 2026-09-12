@@ -4,12 +4,15 @@ use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 
 use serde_json::{Value, json};
 
+#[path = "../../types/tests/support/scratch.rs"]
+mod scratch;
+use scratch::Scratch;
+
 type TestResult = Result<(), Box<dyn Error>>;
 
-fn temp_dir(tag: &str) -> Result<std::path::PathBuf, Box<dyn Error>> {
-    let dir = std::env::temp_dir().join(format!("yi-acp-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir)?;
+fn temp_dir(tag: &str) -> Result<Scratch, Box<dyn Error>> {
+    let dir = Scratch::new(&format!("yi-acp-{tag}"))?;
+    dir.home()?;
     Ok(dir)
 }
 
@@ -739,7 +742,6 @@ fn git_in(dir: &std::path::Path, args: &[&str]) -> Result<String, Box<dyn Error>
 #[test]
 fn two_sessions_on_one_worker_hold_two_lanes() -> Result<(), Box<dyn Error>> {
     let dir = temp_dir("two-lanes")?;
-    std::fs::create_dir_all(dir.join("home"))?;
     git_in(&dir, &["init", "-q", "-b", "main"])?;
     git_in(
         &dir,
@@ -784,6 +786,5 @@ fn two_sessions_on_one_worker_hold_two_lanes() -> Result<(), Box<dyn Error>> {
         );
     }
     client.finish()?;
-    let _ = std::fs::remove_dir_all(&dir);
     Ok(())
 }

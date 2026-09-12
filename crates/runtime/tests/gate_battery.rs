@@ -1,3 +1,7 @@
+#[path = "../../types/tests/support/scratch.rs"]
+mod scratch;
+use scratch::Scratch;
+
 use std::error::Error;
 use std::path::{Path, PathBuf};
 
@@ -276,8 +280,7 @@ fn the_modes_are_strictly_ordered() -> TestResult {
 /// the battery names files that do not exist and one that must not be touched.
 #[test]
 fn explaining_a_command_never_runs_it() -> TestResult {
-    let dir = std::env::temp_dir().join(format!("yi-gate-dry-{}", std::process::id()));
-    std::fs::create_dir_all(&dir)?;
+    let dir = Scratch::new("yi-gate-dry")?;
     let victim = dir.join("keep-me.txt");
     std::fs::write(&victim, "intact")?;
     for command in [
@@ -288,6 +291,5 @@ fn explaining_a_command_never_runs_it() -> TestResult {
         let _ = explain(command, PermissionMode::Yolo, &dir);
     }
     assert_eq!(std::fs::read_to_string(&victim)?, "intact");
-    let _ = std::fs::remove_dir_all(&dir);
     Ok(())
 }

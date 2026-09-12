@@ -949,6 +949,7 @@ pub fn ensure_kernel_python(options: &BootstrapOptions) -> Result<PathBuf, Strin
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::scratch::Scratch;
 
     fn version(runtime: &str) -> BootstrapVersion {
         BootstrapVersion {
@@ -1027,7 +1028,7 @@ mod tests {
 
     #[test]
     fn the_converter_reads_back_the_formats_its_venv_recorded() -> Result<(), String> {
-        let home = std::env::temp_dir().join(format!("yi-formats-{}", std::process::id()));
+        let home = Scratch::new("yi-formats").map_err(|error| error.to_string())?;
         let venv = default_kernel_venv_dir(&home, RUNTIME_READY_CHECK);
         std::fs::create_dir_all(venv.join("bin")).map_err(|error| error.to_string())?;
         std::fs::write(kernel_python(&venv), "").map_err(|error| error.to_string())?;
@@ -1040,14 +1041,12 @@ mod tests {
             Vec::<String>::new(),
             "a venv built without the converter claims no format"
         );
-        std::fs::remove_dir_all(&home).map_err(|error| error.to_string())
+        Ok(())
     }
 
     #[test]
     fn dead_pid_lock_is_broken_live_pid_lock_holds() -> Result<(), String> {
-        let root = std::env::temp_dir().join(format!("yi-kernel-lock-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
-        std::fs::create_dir_all(&root).map_err(|error| error.to_string())?;
+        let root = Scratch::new("yi-kernel-lock").map_err(|error| error.to_string())?;
         let venv = root.join("kernel-venv");
         let lock_dir = bootstrap_lock_dir(&venv);
         std::fs::create_dir_all(&lock_dir).map_err(|error| error.to_string())?;
@@ -1058,14 +1057,12 @@ mod tests {
         assert_eq!(held.trim(), std::process::id().to_string());
         drop(lock);
         assert!(!lock_dir.exists(), "drop must release the lock directory");
-        let _ = std::fs::remove_dir_all(&root);
         Ok(())
     }
 
     #[test]
     fn runtime_identity_tracks_python_source_changes() -> Result<(), String> {
-        let root = std::env::temp_dir().join(format!("yi-kernel-ident-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
+        let root = Scratch::new("yi-kernel-ident").map_err(|error| error.to_string())?;
         let rlm = root.join("src").join("rlm");
         std::fs::create_dir_all(&rlm).map_err(|error| error.to_string())?;
         std::fs::write(root.join("pyproject.toml"), "[project]\n")
@@ -1079,7 +1076,6 @@ mod tests {
             "a runtime source edit must invalidate the venv"
         );
         assert!(before.starts_with("sha256:"));
-        let _ = std::fs::remove_dir_all(&root);
         Ok(())
     }
 
@@ -1104,8 +1100,7 @@ mod tests {
     /// from the build tree it was compiled in.
     #[test]
     fn python_root_prefers_the_unpacked_tree_then_the_installed_home() -> Result<(), String> {
-        let base = std::env::temp_dir().join(format!("yi-python-root-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&base);
+        let base = Scratch::new("yi-python-root").map_err(|error| error.to_string())?;
         let tree = base.join("yi-0.0.0-target");
         let home = base.join("home");
         let sources = |root: &Path| root.join("python").join("yi_runtime");
@@ -1134,14 +1129,12 @@ mod tests {
             fallback,
             "with nothing to find, the compile-time path is the last resort"
         );
-        let _ = std::fs::remove_dir_all(&base);
         Ok(())
     }
 
     #[test]
     fn the_embed_is_unpacked_under_home_when_no_tree_is_found() -> Result<(), String> {
-        let base = std::env::temp_dir().join(format!("yi-python-embed-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&base);
+        let base = Scratch::new("yi-python-embed").map_err(|error| error.to_string())?;
         let home = base.join("home");
         std::fs::create_dir_all(&home).map_err(|error| error.to_string())?;
         let exe = base.join("bin").join("yi");
@@ -1167,14 +1160,12 @@ mod tests {
         assert_eq!(resolve(), root);
         assert!(!marker.exists(), "a stale stamp must re-unpack the tree");
         assert!(root.join("yi_runtime").join("pyproject.toml").is_file());
-        let _ = std::fs::remove_dir_all(&base);
         Ok(())
     }
 
     #[test]
     fn the_exe_tree_wins_over_the_embed() -> Result<(), String> {
-        let base = std::env::temp_dir().join(format!("yi-python-exe-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&base);
+        let base = Scratch::new("yi-python-exe").map_err(|error| error.to_string())?;
         let tree = base.join("yi-target");
         let home = base.join("home");
         std::fs::create_dir_all(tree.join("python").join("yi_runtime"))
@@ -1189,7 +1180,6 @@ mod tests {
             !home.join(".yi").exists(),
             "nothing is unpacked while the exe tree serves"
         );
-        let _ = std::fs::remove_dir_all(&base);
         Ok(())
     }
 }

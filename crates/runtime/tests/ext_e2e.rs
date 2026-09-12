@@ -1,3 +1,7 @@
+#[path = "../../types/tests/support/scratch.rs"]
+mod scratch;
+use scratch::Scratch;
+
 use std::error::Error;
 use std::path::{Path, PathBuf};
 
@@ -8,13 +12,6 @@ use yi_runtime::ext::{
 use yi_types::model::SYSTEM_BLOCK_SEPARATOR;
 
 type TestResult = Result<(), Box<dyn Error>>;
-
-fn temp_dir(name: &str) -> Result<PathBuf, Box<dyn Error>> {
-    let dir = std::env::temp_dir().join(format!("yi-ext-{name}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir)?;
-    Ok(dir)
-}
 
 fn repo(dir: &Path) -> Result<(), Box<dyn Error>> {
     std::fs::create_dir_all(dir.join(".git"))?;
@@ -93,7 +90,7 @@ fn granted_entries_sort_before_untrusted_ones() -> TestResult {
 
 #[test]
 fn project_instructions_land_in_the_yard_untrusted_until_granted() -> TestResult {
-    let dir = temp_dir("agents")?;
+    let dir = Scratch::new("yi-ext-agents")?;
     let home = dir.join("home");
     let project = dir.join("project");
     std::fs::create_dir_all(&home)?;
@@ -141,7 +138,6 @@ fn project_instructions_land_in_the_yard_untrusted_until_granted() -> TestResult
             .ok_or("no block")?,
         "project text never changes the cached universal prefix"
     );
-    let _ = std::fs::remove_dir_all(&dir);
     Ok(())
 }
 
@@ -149,7 +145,7 @@ fn project_instructions_land_in_the_yard_untrusted_until_granted() -> TestResult
 /// still carries the protocol on Thursday. Counters restart on purpose.
 #[test]
 fn the_slot_table_survives_a_resume() -> TestResult {
-    let dir = temp_dir("resume")?;
+    let dir = Scratch::new("yi-ext-resume")?;
     let mut repo = yi_session::JsonlRepo::new(dir.join("sessions"), dir.display().to_string());
     let store = {
         use yi_session::SessionRepo;
@@ -163,8 +159,8 @@ fn the_slot_table_survives_a_resume() -> TestResult {
     assert!(host.system_prompt().contains("# Orchestrate"));
 
     let mut resumed = install(ExtOptions {
-        cwd: dir.clone(),
-        home: dir.clone(),
+        cwd: dir.to_path_buf(),
+        home: dir.to_path_buf(),
         mode: yi_runtime::PermissionMode::Auto,
         user_system: String::new(),
         schema_instruction: None,
@@ -175,7 +171,6 @@ fn the_slot_table_survives_a_resume() -> TestResult {
         resumed.system_prompt().contains("# Orchestrate"),
         "an attached protocol must not be dropped by a resume"
     );
-    let _ = std::fs::remove_dir_all(&dir);
     Ok(())
 }
 
@@ -183,7 +178,7 @@ fn the_slot_table_survives_a_resume() -> TestResult {
 /// first block is what every session and every child reads from cache.
 #[test]
 fn a_mid_session_attach_leaves_the_universal_prefix_alone() -> TestResult {
-    let dir = temp_dir("rebuild")?;
+    let dir = Scratch::new("yi-ext-rebuild")?;
     let mut host = started(&dir, &dir);
     let before = host.system_prompt();
     host.dispatch(
@@ -203,7 +198,6 @@ fn a_mid_session_attach_leaves_the_universal_prefix_alone() -> TestResult {
             .to_owned()
     };
     assert_eq!(universal(&before), universal(&after));
-    let _ = std::fs::remove_dir_all(&dir);
     Ok(())
 }
 
@@ -245,7 +239,7 @@ fn every_commonmark_bullet_marker_counts_as_an_enumeration() {
 
 #[test]
 fn a_quiet_prompt_escalates_on_the_trajectory() -> TestResult {
-    let dir = temp_dir("escalate")?;
+    let dir = Scratch::new("yi-ext-escalate")?;
     let mut host = started(&dir, &dir);
     host.dispatch(&host.prompt_event("fix the typo"), None);
     assert!(
@@ -267,13 +261,12 @@ fn a_quiet_prompt_escalates_on_the_trajectory() -> TestResult {
         host.system_prompt().contains("# Orchestrate"),
         "five tool calls in one turn is the escalation signal"
     );
-    let _ = std::fs::remove_dir_all(&dir);
     Ok(())
 }
 
 #[test]
 fn a_search_over_many_files_escalates() -> TestResult {
-    let dir = temp_dir("files")?;
+    let dir = Scratch::new("yi-ext-files")?;
     let mut host = started(&dir, &dir);
     host.dispatch(
         &Event::ToolResult {
@@ -284,23 +277,21 @@ fn a_search_over_many_files_escalates() -> TestResult {
         None,
     );
     assert!(host.system_prompt().contains("# Orchestrate"));
-    let _ = std::fs::remove_dir_all(&dir);
     Ok(())
 }
 
 #[test]
 fn a_rust_repository_loads_the_language_pack() -> TestResult {
-    let dir = temp_dir("rust")?;
+    let dir = Scratch::new("yi-ext-rust")?;
     std::fs::write(dir.join("Cargo.toml"), "[package]\nname = \"x\"\n")?;
     let host = started(&dir, &dir);
     assert!(host.system_prompt().contains("# Rust discipline"));
-    let _ = std::fs::remove_dir_all(&dir);
     Ok(())
 }
 
 #[test]
 fn a_rust_write_arms_the_language_pack_in_a_foreign_repository() -> TestResult {
-    let dir = temp_dir("armed")?;
+    let dir = Scratch::new("yi-ext-armed")?;
     let mut host = started(&dir, &dir);
     assert!(!host.system_prompt().contains("# Rust discipline"));
     host.dispatch(
@@ -322,7 +313,6 @@ fn a_rust_write_arms_the_language_pack_in_a_foreign_repository() -> TestResult {
         None,
     );
     assert!(host.system_prompt().contains("# Rust discipline"));
-    let _ = std::fs::remove_dir_all(&dir);
     Ok(())
 }
 
@@ -372,8 +362,8 @@ fn fragment_examples_name_real_kernel_apis() -> TestResult {
 
 #[test]
 fn effects_apply_in_emit_order_and_reminders_reach_the_notice_hook() -> TestResult {
-    let dir = temp_dir("effects")?;
-    let mut host = Host::new(dir.clone());
+    let dir = Scratch::new("yi-ext-effects")?;
+    let mut host = Host::new(dir.to_path_buf());
     let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
     let sink = std::sync::Arc::clone(&seen);
     host.set_notice(std::sync::Arc::new(move |line: &str| {
@@ -389,7 +379,6 @@ fn effects_apply_in_emit_order_and_reminders_reach_the_notice_hook() -> TestResu
         1,
         "the reminder must reach the session's notice hook"
     );
-    let _ = std::fs::remove_dir_all(&dir);
     Ok(())
 }
 
@@ -426,7 +415,7 @@ impl yi_runtime::ext::Extension for Noisy {
 /// and one the user drops in a directory.
 #[test]
 fn a_user_pack_loads_from_the_global_root() -> TestResult {
-    let dir = temp_dir("pack")?;
+    let dir = Scratch::new("yi-ext-pack")?;
     let home = dir.join("home");
     let packs = home.join(".yi/extensions");
     std::fs::create_dir_all(&packs)?;
@@ -465,7 +454,6 @@ fn a_user_pack_loads_from_the_global_root() -> TestResult {
         host.system_prompt().contains("# Python discipline"),
         "writing a covered file arms the pack"
     );
-    let _ = std::fs::remove_dir_all(&dir);
     Ok(())
 }
 
@@ -473,7 +461,7 @@ fn a_user_pack_loads_from_the_global_root() -> TestResult {
 /// is inert until the root is granted.
 #[test]
 fn a_project_pack_waits_for_the_trust_grant() -> TestResult {
-    let dir = temp_dir("project-pack")?;
+    let dir = Scratch::new("yi-ext-project-pack")?;
     let home = dir.join("home");
     let project = dir.join("project");
     std::fs::create_dir_all(&home)?;
@@ -497,7 +485,6 @@ fn a_project_pack_waits_for_the_trust_grant() -> TestResult {
             .contains("# House style"),
         "a granted root carries its own pack"
     );
-    let _ = std::fs::remove_dir_all(&dir);
     Ok(())
 }
 
@@ -505,7 +492,7 @@ fn a_project_pack_waits_for_the_trust_grant() -> TestResult {
 /// to survive the session rather than living in a counter.
 #[test]
 fn telemetry_records_reach_the_session_store() -> TestResult {
-    let dir = temp_dir("telemetry")?;
+    let dir = Scratch::new("yi-ext-telemetry")?;
     let mut repo = yi_session::JsonlRepo::new(dir.join("sessions"), dir.display().to_string());
     let store = {
         use yi_session::SessionRepo;
@@ -540,7 +527,6 @@ fn telemetry_records_reach_the_session_store() -> TestResult {
     assert!(joined.contains("one_shot"), "{joined}");
     assert!(joined.contains("\"read_ratio\":0.8"), "{joined}");
     assert!(joined.contains("\"turn\""), "{joined}");
-    let _ = std::fs::remove_dir_all(&dir);
     Ok(())
 }
 
@@ -548,7 +534,7 @@ fn telemetry_records_reach_the_session_store() -> TestResult {
 /// available for the message tail.
 #[test]
 fn a_repository_that_says_nothing_gets_no_yard() -> TestResult {
-    let dir = temp_dir("no-yard")?;
+    let dir = Scratch::new("yi-ext-no-yard")?;
     let host = started(&dir, &dir);
     let blocks: Vec<&str> = host
         .system_prompt()
@@ -563,13 +549,12 @@ fn a_repository_that_says_nothing_gets_no_yard() -> TestResult {
         "universal prefix and trusted rest, no yard"
     );
     assert!(host.state().yard_is_empty());
-    let _ = std::fs::remove_dir_all(&dir);
     Ok(())
 }
 
 #[test]
 fn identical_instruction_files_ride_the_yard_once() -> TestResult {
-    let dir = temp_dir("agents-dedupe")?;
+    let dir = Scratch::new("yi-ext-agents-dedupe")?;
     let home = dir.join("home");
     let project = dir.join("project");
     std::fs::create_dir_all(&home)?;

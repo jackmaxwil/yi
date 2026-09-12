@@ -1,3 +1,7 @@
+#[path = "../../types/tests/support/scratch.rs"]
+mod scratch;
+use scratch::Scratch;
+
 use std::error::Error;
 use std::sync::Arc;
 
@@ -11,17 +15,15 @@ use yi_types::todo::{BlockedOn, PhaseName, TodoItem, TodoList};
 
 type TestResult = Result<(), Box<dyn Error>>;
 
-fn session(name: &str) -> Result<(SharedSession, std::path::PathBuf), Box<dyn Error>> {
-    let root = std::env::temp_dir().join(format!("yi-todo-{name}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&root);
-    std::fs::create_dir_all(&root)?;
+fn session(name: &str) -> Result<(Scratch, SharedSession), Box<dyn Error>> {
+    let root = Scratch::new(&format!("yi-todo-{name}"))?;
     let mut repo = JsonlRepo::new(root.join("sessions"), root.display().to_string());
     let store = repo.create(CreateOptions {
         id: Some(name.to_owned()),
         parent_session_id: None,
         metadata: None,
     })?;
-    Ok((store, root))
+    Ok((root, store))
 }
 
 fn store_for(session: &SharedSession) -> Arc<TodoStore> {
@@ -69,7 +71,7 @@ fn states(list: &TodoList) -> Vec<(String, TodoStateName)> {
 
 #[test]
 fn init_starts_the_first_item_and_done_moves_the_pointer() -> TestResult {
-    let (session, _root) = session("init")?;
+    let (_root, session) = session("init")?;
     let store = store_for(&session);
     let applied = store.apply(
         Op::Init {
@@ -118,7 +120,7 @@ fn init_starts_the_first_item_and_done_moves_the_pointer() -> TestResult {
 
 #[test]
 fn the_list_rehydrates_from_the_session_on_a_fresh_store() -> TestResult {
-    let (session, _root) = session("rehydrate")?;
+    let (_root, session) = session("rehydrate")?;
     let store = store_for(&session);
     store.apply(
         Op::Set {
@@ -150,7 +152,7 @@ fn the_list_rehydrates_from_the_session_on_a_fresh_store() -> TestResult {
 
 #[test]
 fn a_parent_with_open_children_refuses_done_and_names_them() -> TestResult {
-    let (session, _root) = session("parent")?;
+    let (_root, session) = session("parent")?;
     let store = store_for(&session);
     store.apply(
         Op::Set {
@@ -178,7 +180,7 @@ fn a_parent_with_open_children_refuses_done_and_names_them() -> TestResult {
 
 #[test]
 fn set_keeps_a_blocker_the_rewrite_did_not_mention() -> TestResult {
-    let (session, _root) = session("carry")?;
+    let (_root, session) = session("carry")?;
     let store = store_for(&session);
     store.apply(
         Op::Init {
@@ -223,7 +225,7 @@ fn set_keeps_a_blocker_the_rewrite_did_not_mention() -> TestResult {
 
 #[test]
 fn a_stale_touched_counter_is_refused_so_a_user_edit_survives() -> TestResult {
-    let (session, _root) = session("stale")?;
+    let (_root, session) = session("stale")?;
     let store = store_for(&session);
     store.apply(
         Op::Init {
@@ -263,7 +265,7 @@ fn a_stale_touched_counter_is_refused_so_a_user_edit_survives() -> TestResult {
 
 #[test]
 fn done_without_evidence_is_refused_and_says_what_evidence_is() -> TestResult {
-    let (session, _root) = session("evidence")?;
+    let (_root, session) = session("evidence")?;
     let store = store_for(&session);
     store.apply(
         Op::Set {
@@ -355,7 +357,7 @@ fn done_without_evidence_is_refused_and_says_what_evidence_is() -> TestResult {
 
 #[test]
 fn the_tool_result_teaches_the_next_move_with_the_label_filled_in() -> TestResult {
-    let (session, _root) = session("tool")?;
+    let (_root, session) = session("tool")?;
     let tool = TodoTool::new(store_for(&session));
     let mut input: Map<String, Value> = Map::new();
     input.insert("op".to_owned(), json!("init"));
@@ -427,7 +429,7 @@ fn a_checklist_round_trips_through_render() -> TestResult {
 
 #[test]
 fn a_set_that_keeps_no_label_restarts_the_ids_at_t1() -> TestResult {
-    let (session, _root) = session("restart")?;
+    let (_root, session) = session("restart")?;
     let store = store_for(&session);
     store.apply(
         Op::Set {
@@ -466,7 +468,7 @@ fn a_set_that_keeps_no_label_restarts_the_ids_at_t1() -> TestResult {
 
 #[test]
 fn an_id_names_an_item_across_a_set() -> TestResult {
-    let (session, _root) = session("ids")?;
+    let (_root, session) = session("ids")?;
     let store = store_for(&session);
     let applied = store.apply(
         Op::Init {
@@ -543,7 +545,7 @@ fn an_id_names_an_item_across_a_set() -> TestResult {
 
 #[test]
 fn a_unique_prefix_matches_and_an_ambiguous_one_lists_both() -> TestResult {
-    let (session, _root) = session("prefix")?;
+    let (_root, session) = session("prefix")?;
     let store = store_for(&session);
     store.apply(
         Op::Set {
@@ -594,7 +596,7 @@ fn a_unique_prefix_matches_and_an_ambiguous_one_lists_both() -> TestResult {
 
 #[test]
 fn a_long_label_is_cut_into_its_note_not_refused() -> TestResult {
-    let (session, _root) = session("long")?;
+    let (_root, session) = session("long")?;
     let tool = TodoTool::new(store_for(&session));
     let long = "Verify the parser against every fixture in the corpus, then the live forge, then the replay set";
     let (is_error, text) = call(&tool, json!({"op": "init", "items": [long, "short"]}));
@@ -617,7 +619,7 @@ fn a_long_label_is_cut_into_its_note_not_refused() -> TestResult {
 
 #[test]
 fn a_call_with_items_and_no_op_is_an_append() -> TestResult {
-    let (session, _root) = session("infer")?;
+    let (_root, session) = session("infer")?;
     let tool = TodoTool::new(store_for(&session));
     let (is_error, text) = call(&tool, json!({"list": "- [ ] one\n- [ ] two\n"}));
     assert!(!is_error, "{text}");
@@ -655,7 +657,7 @@ fn a_call_with_items_and_no_op_is_an_append() -> TestResult {
 
 #[test]
 fn an_old_session_without_ids_rehydrates_with_ids() -> TestResult {
-    let (session, _root) = session("old")?;
+    let (_root, session) = session("old")?;
     let record = json!({
         "op": "set", "actor": "main", "at": 1, "touched": 3,
         "list": {"phases": [{"name": "Tasks", "items": [
