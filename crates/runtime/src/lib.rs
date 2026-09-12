@@ -105,10 +105,8 @@ pub fn documents(home: &std::path::Path) -> Documents {
     }
 }
 
-/// The tool table a session opens with: the builtins (with documents when given)
-/// plus every exec tool discovered under `exec_dir`. The CLI, the dogfood player
-/// and the surface lock all build the table here, so the locked surface is the
-/// registered one by construction.
+/// The tool table a session opens with: the builtins plus the exec tools under
+/// `exec_dir`. The CLI and the surface lock both build it here.
 pub fn session_tools(
     freeform_grammar: bool,
     documents: Option<Documents>,
