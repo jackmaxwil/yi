@@ -158,5 +158,6 @@ when it changes rather than editing them by hand.
 - [D180](adr/d180.md) - a read is refused only where a read does harm
 - [D182](adr/d182.md) - the artifact and closure gates are deleted, and a config that still names...
 - [D183](adr/d183.md) - done needs evidence, not a typography
+- [D184](adr/d184.md) - a todo move's result names what moved
 
 D36-D51, D72, D73 and D74 have no ADR yet; ARCHITECTURE.md is the record for those rows.

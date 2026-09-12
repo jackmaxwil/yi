@@ -160,6 +160,7 @@ pub struct TodoStore {
 }
 
 pub struct Applied {
+    pub before: TodoList,
     pub list: TodoList,
     pub touched: u64,
     pub changed: bool,
@@ -233,12 +234,14 @@ impl TodoStore {
         }
         if matches!(op, Op::View) {
             return Ok(Applied {
+                before: state.list.clone(),
                 list: state.list.clone(),
                 touched: state.touched,
                 changed: false,
             });
         }
-        let mut list = state.list.clone();
+        let before = state.list.clone();
+        let mut list = before.clone();
         let label = op.label().cloned();
         let name = op.name();
         step(&mut list, op)?;
@@ -255,6 +258,7 @@ impl TodoStore {
             }
         }
         Ok(Applied {
+            before,
             list,
             touched,
             changed: true,
