@@ -188,7 +188,7 @@ def section_table_ok(body, title):
 
 
 def surface_problems(body, added, changed):
-    """A change to the surface a model reads owes its sections (D195): a changed
+    """A change to the surface a model reads owes its sections (D188): a changed
     key owes the claims ledger, an added key owes the neighbour matrix and the
     dogfood table beside it. A removal makes no new claim and asks nothing."""
     owed = []
