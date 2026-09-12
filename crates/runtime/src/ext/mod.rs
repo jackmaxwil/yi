@@ -11,7 +11,7 @@ use std::sync::Arc;
 
 use serde_json::Value;
 
-pub(crate) use assemble::escape_sentinel;
+pub(crate) use assemble::sanitize;
 pub use assemble::{PromptState, Rank, Slot, Trust};
 pub use install::{ExtOptions, install};
 pub use pack::Pack;

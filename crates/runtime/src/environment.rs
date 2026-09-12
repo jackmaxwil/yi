@@ -158,9 +158,8 @@ pub fn hook(
     let context = session.compact_status_handle();
     let lane = session.lane_handle();
     let todos = session.todos_handle();
-    let deadline = wiring.deadline;
+    let deadline = session.deadline();
     let kernel = session.kernel_state_handle();
-    let started = std::time::Instant::now();
     let clock = Mutex::new(None);
     Arc::new(move || {
         let mut lines = Vec::new();
@@ -191,8 +190,8 @@ pub fn hook(
         if let Some(time) = time_per_minute(&clock, yi_session::now_ms(), || local_time(&cwd)) {
             lines.push(format!("time: {time}"));
         }
-        if let Some(total) = deadline {
-            lines.push(deadline_line(total, started.elapsed()));
+        if let Some(deadline) = deadline {
+            lines.push(deadline_line(deadline.total, deadline.started.elapsed()));
         }
         let shell = std::env::var("SHELL")
             .ok()

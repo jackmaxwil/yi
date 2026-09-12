@@ -11,6 +11,7 @@ use yi_types::entry::Entry;
 use yi_types::message::{AgentMessage, Attribution, UserContent};
 use yi_types::url::{Scheme, Url};
 
+use crate::ext::sanitize;
 use crate::kernel::{VariableName, VariableReadError};
 use crate::wall::Wall;
 
@@ -497,16 +498,6 @@ pub fn fence_untrusted(source: &str, text: &str) -> String {
         "<<<yi-external {nonce} source=\"{}\" trust=\"untrusted\">>>\n{clean}\n<<<end-yi-external {nonce}>>>",
         sanitize(source)
     )
-}
-
-/// Incident: escaping before stripping let `<<\0<` re-form an unescaped sentinel once the
-/// control byte dropped, forging a `trust="trusted"` label. Strip first, escape last.
-fn sanitize(text: &str) -> String {
-    let stripped: String = text
-        .chars()
-        .filter(|ch| !ch.is_control() || *ch == '\n' || *ch == '\t')
-        .collect();
-    crate::ext::escape_sentinel(&stripped)
 }
 
 #[cfg(test)]

@@ -539,6 +539,33 @@ fn progress_and_duplicate_lines_compress_before_the_middle_is_cut() -> TestResul
     Ok(())
 }
 
+/// Incident: the capture kept a command's first 30 000 bytes, so a long build or test run lost
+/// its last lines, where the verdict is.
+#[test]
+fn a_capped_bash_stream_keeps_the_tail_with_the_verdict() -> TestResult {
+    let dir = temp_dir("bash-capped")?;
+    let context = ToolContext::new(dir.0.clone());
+    let verdict = "test result: FAILED. 3 passed; 1 failed";
+    let command = format!("for i in $(seq 1 5000); do echo row-$i; done; echo '{verdict}'");
+    let output = BashTool::default().execute(args(&[("command", json!(command))]), &context);
+    let text = output_text(&output);
+    let last: Vec<&str> = text.lines().rev().take(3).collect();
+    assert!(text.contains(verdict), "the tail is gone: {last:?}");
+    let streamed: usize = (1..=5000)
+        .map(|n| format!("row-{n}\n").len())
+        .sum::<usize>()
+        + verdict.len()
+        + 1;
+    let marker = format!(
+        "[{} bytes omitted from the middle]",
+        streamed - yi_tools::OUTPUT_CAP
+    );
+    assert!(text.contains(&marker), "no {marker}: {last:?}");
+    assert!(text.starts_with("row-1\nrow-2\n"), "the head is gone");
+    assert_eq!(output.result.details["truncated"], json!(true));
+    Ok(())
+}
+
 #[test]
 fn a_lossy_reduction_without_a_tee_returns_raw() -> TestResult {
     let raw: String = (1..4_000).map(|n| format!("line-{n}\n")).collect();
@@ -638,6 +665,16 @@ fn an_inspecting_shell_command_is_not_flagged_irreversible() -> TestResult {
         );
     }
     Ok(())
+}
+
+/// The gate judges a reversible read only by what a read can leak (D180), so a read-kind
+/// tool whose call writes must not pass for one.
+#[test]
+fn a_grep_that_rewrites_is_flagged_irreversible() {
+    let grep = GrepTool::default();
+    let preview = args(&[("pattern", json!("x")), ("replace", json!("y"))]);
+    assert!(!grep.irreversible(&preview), "a preview writes nothing");
+    assert!(grep.irreversible(&preview_args()), "apply writes every hit");
 }
 
 fn text_of(content: &[Content]) -> String {
