@@ -70,8 +70,9 @@ pub trait Tool: Send + Sync {
         None
     }
 
-    fn irreversible(&self, _input: &Map<String, Value>) -> bool {
-        !matches!(self.kind(), ToolKind::Read)
+    /// By the call's own kind, so a grep that writes is no read to the permission gate (D180).
+    fn irreversible(&self, input: &Map<String, Value>) -> bool {
+        !matches!(self.kind_for(input), ToolKind::Read)
     }
 
     fn validate(&self, _input: &Map<String, Value>) -> Result<(), String> {
@@ -153,10 +154,5 @@ pub fn require_str<'a>(input: &'a Map<String, Value>, key: &str) -> Result<&'a s
 }
 
 pub fn resolve_path(context: &ToolContext, path: &str) -> PathBuf {
-    let candidate = PathBuf::from(path);
-    if candidate.is_absolute() {
-        candidate
-    } else {
-        context.cwd.join(candidate)
-    }
+    yi_permission::resolve_target(path, &context.cwd)
 }

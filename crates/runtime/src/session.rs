@@ -1,4 +1,5 @@
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
+use std::time::Duration;
 
 use tokio::sync::broadcast;
 use yi_loop::interrupt::InterruptSignal;
@@ -10,7 +11,10 @@ use yi_types::model::{Effort, Model};
 
 use crate::provider::ProviderStream;
 
+mod deadline;
 mod hooks;
+
+use deadline::Deadline;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Status {
@@ -61,6 +65,7 @@ struct Shared {
     lane: Mutex<Option<Arc<crate::lane::land::LaneHandle>>>,
     telemetry: Mutex<Option<Arc<crate::telemetry::Telemetry>>>,
     todos: Mutex<Option<Arc<crate::todo::TodoStore>>>,
+    deadline: OnceLock<Deadline>,
 }
 
 pub type PromptChoiceFn =
@@ -126,6 +131,7 @@ pub struct AgentSession {
     permission: Mutex<Option<Arc<crate::permission::PermissionBroker>>>,
     goal: Mutex<Option<Arc<crate::goal::GoalService>>>,
     plan: Mutex<Option<Arc<crate::plan::PlanService>>>,
+    memory: Mutex<Option<Arc<crate::memory::Activity>>>,
     rules: Mutex<Option<Arc<crate::rules::RuleEngine>>>,
     wall: Mutex<crate::wall::Wall>,
     kernel: Arc<Mutex<Option<Arc<crate::kernel::KernelService>>>>,
@@ -161,6 +167,7 @@ impl AgentSession {
                 todos: Mutex::new(None),
                 on_turn_end: Mutex::new(None),
                 coupling: Mutex::new(None),
+                deadline: OnceLock::new(),
             }),
             config,
             provider,
@@ -172,6 +179,7 @@ impl AgentSession {
             permission: Mutex::new(None),
             goal: Mutex::new(None),
             plan: Mutex::new(None),
+            memory: Mutex::new(None),
             rules: Mutex::new(None),
             wall: Mutex::new(crate::wall::Wall::default()),
             kernel: Arc::new(Mutex::new(None)),
@@ -234,6 +242,15 @@ impl AgentSession {
         let shared = Arc::clone(&self.shared);
         let fallback = self.config.system_prompt.clone();
         Arc::new(move || assembled_prompt(&shared, &fallback))
+    }
+
+    /// Starts the clock; the first call wins, so the budget never moves mid-run.
+    pub(crate) fn set_deadline(&self, total: Duration) {
+        self.shared.deadline.get_or_init(|| Deadline::new(total));
+    }
+
+    pub(crate) fn deadline(&self) -> Option<Deadline> {
+        self.shared.deadline.get().copied()
     }
 
     pub fn set_environment(&self, hook: Arc<EnvironmentFn>) {
@@ -363,6 +380,19 @@ impl AgentSession {
             .and_then(|slot| slot.as_ref().map(Arc::clone))
     }
 
+    pub fn set_memory(&self, activity: Arc<crate::memory::Activity>) {
+        if let Ok(mut slot) = self.memory.lock() {
+            *slot = Some(activity);
+        }
+    }
+
+    pub fn memory(&self) -> Option<Arc<crate::memory::Activity>> {
+        self.memory
+            .lock()
+            .ok()
+            .and_then(|slot| slot.as_ref().map(Arc::clone))
+    }
+
     pub fn goal_service(&self) -> Option<Arc<crate::goal::GoalService>> {
         self.goal
             .lock()
@@ -479,7 +509,14 @@ impl AgentSession {
             .into_iter()
             .map(|tool| {
                 let shared = Arc::clone(&self.shared);
-                let cancelled: yi_tools::CancelFlag = Arc::new(move || shared.signal.is_fired());
+                // The deadline cancels like Esc: bash dies, the kernel cell is interrupted.
+                let cancelled: yi_tools::CancelFlag = Arc::new(move || {
+                    shared.signal.is_fired()
+                        || shared
+                            .deadline
+                            .get()
+                            .is_some_and(|deadline| deadline.passed(Duration::ZERO))
+                });
                 Arc::new(
                     crate::tools::ToolAdapter::new(
                         tool,
@@ -852,6 +889,10 @@ impl AgentSession {
             }
             wire_queues_and_coupling(&mut config, &shared, &prompt);
             wire_environment(&mut config, &shared).await;
+            // Not the interrupt: the turn in flight ends and settles, and no request follows.
+            if let Some(deadline) = shared.deadline.get().copied() {
+                config.should_stop_after_turn = Some(Box::new(move |_| deadline.winding_down()));
+            }
             let emit_shared = Arc::clone(&shared);
             let emit_compactor = compactor.clone();
             let mut emit = move |event: AgentEvent| {

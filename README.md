@@ -221,7 +221,6 @@ One file: `~/.yi/config.json`. Current keys:
   "mcp": { "enabled": false },                 // MCP stays off until asked
   "bash": { "autoBackgroundMs": 0 },           // long commands auto-background
   "routing": { "preferred_min_throughput": { "p50": 20 } }, // OpenRouter provider object, verbatim; {} = none
-  "gates": { "artifact": true, "closure": true },  // the two soft stop gates (D162); --no-gates on yi ask
   "rlm": { "maxDepth": 1 },                    // how deep a family nests (ceiling 3); 8 children per parent, 16 live per family
   "console": { "autoSide": true },             // first kernel cell / tracked edit opens a side pane
   "tui": { "pace": 100 },                      // streamed-text reveal speed, percent; 0 paints on arrival
@@ -233,6 +232,8 @@ Unset roles fall back to the primary model. `YI_*` environment variables are
 a registered surface with a hard cap of 40.
 
 ## Contribute
+
+Where changes land, and why the GitHub mirror takes none yet: `CONTRIBUTING.md`.
 
 Read `docs/YI_DESIGN.md` (the law) and `docs/ARCHITECTURE.md` (the map: version,
 feature ledger, decision log; version history in `docs/CHANGELOG.md`) first.
@@ -249,3 +250,7 @@ in the same change.
   naming what the code cannot; two lines, hard cap.
 - Agent instructions live in `.ruler/`; regenerate the per-tool files with
   `npx @intellectronica/ruler apply`. Never edit the generated ones.
+
+## License
+
+MIT, in `LICENSE`. `vendor/` keeps its upstream Apache-2.0 notices.

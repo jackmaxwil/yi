@@ -62,7 +62,11 @@ fn home_absolute(site: &Site) -> Finding {
 
 fn config_parses(site: &Site) -> Finding {
     match read_config(&site.home) {
-        Ok(_) => ok("~/.yi/config.json"),
+        Ok((_, migrations)) => ok(migrations
+            .iter()
+            .fold(String::from("~/.yi/config.json"), |row, migration| {
+                format!("{row}; {migration}")
+            })),
         Err(error) => fail(error),
     }
 }
@@ -70,7 +74,7 @@ fn config_parses(site: &Site) -> Finding {
 fn catalog_age(site: &Site) -> Finding {
     let hours = read_config(&site.home)
         .ok()
-        .and_then(|config| config.catalog.and_then(|catalog| catalog.refresh_hours))
+        .and_then(|(config, _)| config.catalog.and_then(|catalog| catalog.refresh_hours))
         .unwrap_or(yi_runtime::DEFAULT_REFRESH_HOURS);
     let dir = site.home.join(".yi/catalog");
     let now = crate::catalog::clock();

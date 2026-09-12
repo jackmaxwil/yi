@@ -118,9 +118,10 @@ def run_task(task_dir, binary, model, out=None):
     seed = task_dir / ("environment/app" if harbor_layout else "repo")
     started = time.monotonic()
     with tempfile.TemporaryDirectory(prefix="yi-eval-") as directory:
-        # Invariant: the graded tree holds the task's own files plus answer.txt.
-        # The stream and the session dir are siblings, never inside it: a diff or
-        # clean-tree reward scores them, and the agent can read its own events.
+        # Invariant: the graded tree holds the task's own files plus answer.txt
+        # when the rollout answered. The stream and the session dir are siblings,
+        # never inside it: a diff or clean-tree reward scores them, and the agent
+        # can read its own events.
         workspace = Path(directory) / "repo"
         shutil.copytree(seed, workspace)
         keep = Path(out) / spec["id"] if out else Path(directory)
@@ -160,7 +161,11 @@ def run_task(task_dir, binary, model, out=None):
                 exit_code = done.returncode
             except subprocess.TimeoutExpired:
                 timed_out = True
-        (workspace / "answer.txt").write_text(final_answer(events))
+        answer = final_answer(events)
+        # Incident: row 0012's binary exited 4 before any request, and the empty
+        # answer.txt written for it passed clean-workspace; no answer, no file.
+        if answer:
+            (workspace / "answer.txt").write_text(answer)
         row = {
             "task": spec["id"],
             "reward": score(task_dir, workspace, keep if out else None),
@@ -231,7 +236,7 @@ def run_home():
         os.environ.setdefault("UV_CACHE_DIR", str(Path.home() / ".cache" / "uv"))
         config = Path(_RUN_HOME[0]) / ".yi" / "config.json"
         config.parent.mkdir(parents=True, exist_ok=True)
-        config.write_text(json.dumps({"telemetry": {"enabled": True}}))
+        config.write_text(json.dumps(yi_usage.eval_config(os.environ)))
     return _RUN_HOME[0]
 
 
@@ -324,12 +329,13 @@ def run_live(args):
     out.mkdir(parents=True, exist_ok=True)
     home = Path(run_home())
     (home / ".yi").mkdir(parents=True, exist_ok=True)
-    (home / ".yi" / "config.json").write_text(json.dumps({"telemetry": {"enabled": True}}))
+    (home / ".yi" / "config.json").write_text(json.dumps(yi_usage.eval_config(os.environ)))
     specs = sorted(path.parent for path in LIVE.glob("*/task.json"))
     if args.task:
         specs = [spec for spec in specs if spec.name in set(args.task)]
     suite = f"live@{_capture(['git', '-C', str(ROOT), 'rev-parse', '--short', 'HEAD'])}"
-    fingerprint = yi_usage.config_fingerprint(_capture([args.binary, "--version"]), args.model, "live", suite)
+    mode = "live" + yi_usage.routing_label(os.environ)
+    fingerprint = yi_usage.config_fingerprint(_capture([args.binary, "--version"]), args.model, mode, suite)
     rows, spent, budget_hit = [], 0.0, False
     for task_dir in specs:
         spec = json.loads((task_dir / "task.json").read_text())
@@ -393,6 +399,11 @@ def main(argv=None):
             errors_early = f"--home must be absolute, not {args.home!r}"
             print(errors_early, file=sys.stderr)
             return 2
+        # The fixtures lane leaves a caller's HOME as it found it (the live lane writes its config),
+        # so the routing the fingerprint's mode would name never reaches that config.
+        if os.environ.get(yi_usage.ROUTING_ENV) and not args.live:
+            print(f"{yi_usage.ROUTING_ENV} needs the run's own HOME: --home keeps its own config", file=sys.stderr)
+            return 2
         _RUN_HOME.append(args.home)
 
     if args.live:
@@ -421,7 +432,7 @@ def main(argv=None):
         return report(errors, 0)
 
     suite = f"fixtures@{_capture(['git', '-C', str(ROOT), 'rev-parse', '--short', 'HEAD'])}"
-    mode = f"yolo+{args.variant}" if args.variant else "yolo"
+    mode = (f"yolo+{args.variant}" if args.variant else "yolo") + yi_usage.routing_label(os.environ)
     fingerprint = yi_usage.config_fingerprint(
         _capture([args.binary, "--version"]), args.model, mode, suite
     )

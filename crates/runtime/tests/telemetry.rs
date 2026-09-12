@@ -12,7 +12,7 @@ use yi_ai::faux::{faux_assistant_message, faux_text};
 use yi_loop::ExecutionMode;
 use yi_runtime::{AgentSession, ProviderStream, SessionConfig, Telemetry};
 use yi_session::{CreateOptions, JsonlRepo, SessionRepo};
-use yi_types::event::{AgentEvent, ToolResult};
+use yi_types::event::{AgentEvent, AssistantMessageEvent, ToolResult};
 use yi_types::message::{AgentMessage, StopReason};
 use yi_types::model::{Model, ModelCost};
 use yi_types::telemetry::{Span, SpanKind};
@@ -157,6 +157,51 @@ fn a_tool_end_event_becomes_a_tool_span_with_the_loops_duration() -> TestResult 
         spans[1].class.as_deref(),
         Some("tool:denied"),
         "the loop's kind is the class"
+    );
+    Ok(())
+}
+
+/// D175: a failed request carries its error in `error_message` and usually no text, so the
+/// span's class is read there; the content text is read only when the message has none.
+#[tokio::test]
+async fn an_error_span_is_classed_from_its_error_message() -> TestResult {
+    let root = Scratch::new("yi-telemetry-error")?;
+    let telemetry = Arc::new(Telemetry::default());
+    telemetry.bind(&root.join("1_t-3.jsonl"), "t-3");
+    let rate_limited = {
+        let mut error = faux_assistant_message(Vec::new(), StopReason::Error);
+        if let AgentMessage::Assistant { error_message, .. } = &mut error {
+            *error_message = Some(
+                "HTTP 429: z-ai/glm-5.3-flash is temporarily rate-limited upstream".to_owned(),
+            );
+        }
+        error
+    };
+    let text_only =
+        faux_assistant_message(vec![faux_text("HTTP 503: overloaded")], StopReason::Error);
+    for error in [rate_limited, text_only] {
+        let (sender, receiver) = tokio::sync::mpsc::channel(1);
+        let mut wrapped = telemetry.wrap(&faux_model(), receiver);
+        sender
+            .send(AssistantMessageEvent::Error {
+                reason: StopReason::Error,
+                error,
+            })
+            .await
+            .map_err(|_| "the wrapper closed its input")?;
+        drop(sender);
+        while wrapped.recv().await.is_some() {}
+    }
+    let classes: Vec<_> = spans_in(&root.join("1_t-3.telemetry.jsonl"))?
+        .into_iter()
+        .map(|span| span.class)
+        .collect();
+    assert_eq!(
+        classes,
+        [
+            Some("transport:http_429".to_owned()),
+            Some("transport:http_503".to_owned())
+        ]
     );
     Ok(())
 }

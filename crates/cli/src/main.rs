@@ -5,6 +5,7 @@ mod catalog;
 mod doctor;
 mod fetch;
 mod lanes;
+mod memory;
 mod plan;
 mod rpc;
 mod sessions;
@@ -14,13 +15,12 @@ mod tty;
 mod why;
 
 use std::sync::Arc;
-use yi_types::config::RlmConfig;
+use yi_types::config::{ConfigMigration, RlmConfig, UserConfig};
 
 use lanes::{claim_lane, configured_lanes, release_lane, run_lanes};
 
 use yi_runtime::{AgentSession, ProviderStream, SessionConfig, resolve_model};
-use yi_types::event::AgentEvent;
-use yi_types::event::AssistantMessageEvent;
+use yi_types::event::{AgentEvent, AssistantMessageEvent};
 use yi_types::message::{AgentMessage, StopReason};
 use yi_types::model::{Effort, Model, ModelCost, UnknownEffort};
 
@@ -46,7 +46,6 @@ struct Args {
     record: Option<String>,
     snap: Option<String>,
     deadline: Option<u64>,
-    no_gates: bool,
     resume: Resume,
     schema: Option<String>,
     prompt: String,
@@ -83,7 +82,6 @@ fn parse_args() -> Result<Args, lexopt::Error> {
     let mut record = None;
     let mut snap = None;
     let mut deadline = None;
-    let mut no_gates = false;
     let mut continue_leaf = false;
     let mut session = None;
     let mut schema = None;
@@ -120,7 +118,6 @@ fn parse_args() -> Result<Args, lexopt::Error> {
             Long("record") => record = Some(parser.value()?.string()?),
             Long("snap") => snap = Some(parser.value()?.string()?),
             Long("deadline") => deadline = Some(parser.value()?.parse()?),
-            Long("no-gates") => no_gates = true,
             Long("continue") => continue_leaf = true,
             Long("session") => session = Some(parser.value()?.string()?),
             Long("schema") => schema = Some(parser.value()?.string()?),
@@ -173,7 +170,6 @@ fn parse_args() -> Result<Args, lexopt::Error> {
         record,
         snap,
         deadline,
-        no_gates,
         resume: match (session, continue_leaf) {
             (Some(id), _) => Resume::Named(id),
             (None, true) => Resume::Leaf,
@@ -254,21 +250,25 @@ fn load_config() -> Result<(), String> {
         ));
     }
     yi_runtime::set_catalog_cache_dir(std::path::Path::new(&home).join(".yi/catalog"));
-    set_config(read_config(std::path::Path::new(&home))?)
+    let (config, migrations) = read_config(std::path::Path::new(&home))?;
+    for migration in migrations {
+        eprintln!("warning: {migration}");
+    }
+    set_config(config)
 }
 
 /// A relative home would read `<cwd>/.yi/config.json`, which is X7's project
 /// layer, not this one; [`load_config`] is the only caller for that reason.
-fn read_config(home: &std::path::Path) -> Result<yi_types::config::UserConfig, String> {
+fn read_config(home: &std::path::Path) -> Result<(UserConfig, Vec<ConfigMigration>), String> {
     let path = home.join(".yi/config.json");
     let raw = match std::fs::read_to_string(&path) {
         Ok(raw) => raw,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            return Ok(yi_types::config::UserConfig::default());
+            return Ok(Default::default());
         }
         Err(error) => return Err(format!("{}: {error}", path.display())),
     };
-    serde_json::from_str(&raw).map_err(|error| format!("{}: {error}", path.display()))
+    yi_types::config::parse(&raw).map_err(|error| format!("{}: {error}", path.display()))
 }
 
 /// Invariant: nothing may read the config before this lands it, or the strict
@@ -525,7 +525,6 @@ fn build_session(
             plans_dir: configured_plans_dir(&work),
             auto_background: configured_auto_background(),
             deadline: args.deadline.map(std::time::Duration::from_secs),
-            gates: yi_types::config::Gates::resolve(args.no_gates, config().gates.as_ref()),
             kernel_prewarm: config()
                 .kernel
                 .as_ref()
@@ -759,8 +758,14 @@ fn run(args: &Args) -> i32 {
         }
         let mut exit = 0;
         loop {
-            let Ok(event) = events.recv().await else {
-                break;
+            let event = match events.recv().await {
+                Ok(event) => event,
+                // A slow reader is not the end of the run: breaking here exited 0 mid-turn.
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(missed)) => {
+                    eprintln!("warning: {missed} events dropped behind a slow reader");
+                    continue;
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
             };
             if json && let Ok(line) = serde_json::to_string(&event) {
                 println!("{line}");
@@ -1012,31 +1017,8 @@ fn mcp_enabled() -> bool {
     config().mcp.as_ref().and_then(|mcp| mcp.enabled) == Some(true)
 }
 
-fn run_serve_command(args: &Args, version: &str) -> i32 {
-    let runtime = match tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-    {
-        Ok(runtime) => runtime,
-        Err(error) => {
-            eprintln!("error: {error}");
-            std::process::exit(1);
-        }
-    };
-    let socket = daemon_socket(args);
-    let worker_args = shells::serve_flags(args);
-    yi_acp::daemon::run_daemon(
-        yi_acp::daemon::DaemonOptions {
-            socket,
-            worker_args,
-            agent_version: version.to_owned(),
-        },
-        runtime,
-    )
-}
-
 mod shells;
-use shells::{daemon_socket, run_console_command, run_tui_command};
+use shells::{run_console_command, run_serve_command, run_tui_command};
 
 /// `yi mcp` answers before argument parsing: it takes the raw argv the one-shot CLI owns.
 fn mcp_fast_path() {
@@ -1070,13 +1052,13 @@ fn main() {
             std::process::exit(2);
         }
     };
-    let version = env!("CARGO_PKG_VERSION");
+    let version = env!("ARCHITECTURE_VERSION");
     match args.command.as_str() {
         "version" => println!("yi {version}"),
         "ask" => {
             if args.prompt.is_empty() {
                 eprintln!(
-                    "usage: yi ask [--model provider/id] [--json] [--deadline secs] [--no-gates] <prompt>"
+                    "usage: yi ask [--model provider/id] [--json] [--deadline secs] <prompt>"
                 );
                 std::process::exit(2);
             }
@@ -1147,6 +1129,7 @@ fn main() {
         "why" => std::process::exit(run_why(&args)),
         "plan" => std::process::exit(run_plan(&args)),
         "todo" => std::process::exit(todo::run(&args)),
+        "memory" => std::process::exit(memory::run(&args)),
         "sessions" => {
             let options = sessions::Options {
                 session_dir: default_session_dir(&args),

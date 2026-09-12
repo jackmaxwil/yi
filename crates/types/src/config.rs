@@ -42,10 +42,53 @@ pub struct UserConfig {
     /// `routing`: OpenRouter's `provider` object, sent verbatim; absent deprioritises
     /// upstreams under 20 tok/s or over 10 s p50 latency, and `{}` sends nothing.
     pub routing: Option<serde_json::Value>,
-    /// the two soft gates at a clean stop; `false` turns one off (D162).
-    pub gates: Option<GatesConfig>,
     /// `rlm.maxDepth`, how deep a family may nest (default 1, ceiling 3) (D165).
     pub rlm: Option<RlmConfig>,
+}
+
+/// A key an older Yi read that this one does not: [`migrate`] drops it before the strict
+/// parse, so a config that loaded yesterday still loads, and the caller names each drop.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConfigMigration {
+    /// `gates` switched the artifact and closure stop gates, which D182 deleted.
+    RemovedGates,
+}
+
+impl std::fmt::Display for ConfigMigration {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::RemovedGates => f.write_str(
+                "the config's `gates` key is ignored: the artifact and closure stop gates are gone; delete it",
+            ),
+        }
+    }
+}
+
+/// Rewrites a raw config into the shape [`UserConfig`] parses; a current config comes back
+/// unchanged with no migrations, so running it twice is running it once.
+pub fn migrate(config: &mut serde_json::Value) -> Vec<ConfigMigration> {
+    let mut applied = Vec::new();
+    if let Some(keys) = config.as_object_mut()
+        && keys.remove("gates").is_some()
+    {
+        applied.push(ConfigMigration::RemovedGates);
+    }
+    applied
+}
+
+/// The one config load, with the migrations it took. A current config skips `Value`, which
+/// reads a doubled key last-wins and drops the error's line and column.
+pub fn parse(raw: &str) -> Result<(UserConfig, Vec<ConfigMigration>), serde_json::Error> {
+    let strict = match serde_json::from_str(raw) {
+        Ok(config) => return Ok((config, Vec::new())),
+        Err(error) => error,
+    };
+    let mut config = serde_json::from_str(raw)?;
+    let applied = migrate(&mut config);
+    if applied.is_empty() {
+        return Err(strict);
+    }
+    Ok((serde_json::from_value(config)?, applied))
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
@@ -58,47 +101,6 @@ impl RlmConfig {
     /// The nesting depth a family may reach: the configured value clamped to 1..=3.
     pub fn depth(&self) -> u8 {
         self.max_depth.unwrap_or(1).clamp(1, 3)
-    }
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct GatesConfig {
-    pub artifact: Option<bool>,
-    pub closure: Option<bool>,
-}
-
-/// The gates as wired: on unless the config or `--no-gates` says otherwise.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Gates {
-    pub artifact: bool,
-    pub closure: bool,
-}
-
-impl Default for Gates {
-    fn default() -> Self {
-        Self {
-            artifact: true,
-            closure: true,
-        }
-    }
-}
-
-impl Gates {
-    pub const OFF: Self = Self {
-        artifact: false,
-        closure: false,
-    };
-
-    /// `--no-gates` wins over the config; an unset key is on.
-    pub fn resolve(off: bool, config: Option<&GatesConfig>) -> Self {
-        if off {
-            return Self::OFF;
-        }
-        Self {
-            artifact: config.and_then(|gates| gates.artifact).unwrap_or(true),
-            closure: config.and_then(|gates| gates.closure).unwrap_or(true),
-        }
     }
 }
 

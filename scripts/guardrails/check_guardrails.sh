@@ -29,6 +29,7 @@ run "$PY" scripts/guardrails/check_duplication.py
 run "$PY" scripts/guardrails/check_test_size.py
 run "$PY" scripts/guardrails/check_test_tiers.py
 run "$PY" scripts/guardrails/check_blob_size.py
+run "$PY" scripts/guardrails/check_public_surface.py
 run "$PY" scripts/guardrails/check_deps_budget.py
 run "$PY" scripts/guardrails/check_request_budget.py
 run "$PY" scripts/guardrails/check_behavior.py
@@ -63,6 +64,9 @@ run "$PY" scripts/forge_pr.py --selfcheck
 # judge anything at all: each scan is disabled in turn and the selfcheck must fail
 # for that scan's own reason (D109).
 run "$PY" scripts/guardrails/check_orphans.py --selfcheck
+# The public surface is what the mirror publishes, modelled on filter-repo's own
+# exclusion and substitution; a model that drifts from it passes a leak (D172).
+run "$PY" scripts/guardrails/check_public_surface.py --selfcheck
 # Prose is not exempt: 1,485 comment lines are under ratchet, and the design docs
 # are the reference. Config and the domain-word allowlist live in .codespellrc.
 if command -v codespell >/dev/null; then run codespell; else echo "FAIL codespell (uv tool install codespell)"; FAILED=$((FAILED+1)); fi

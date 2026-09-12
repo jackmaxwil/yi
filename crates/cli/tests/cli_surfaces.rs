@@ -352,6 +352,26 @@ fn a_misspelled_config_key_fails_naming_it() -> TestResult {
     Ok(())
 }
 
+/// D182 deleted the gates; a config written for them still loads, and says so once.
+#[test]
+fn a_config_that_still_names_gates_runs_and_says_the_key_is_gone() -> TestResult {
+    let workspace = Workspace::new("config-gates")?;
+    write_config(
+        &workspace,
+        r#"{"models":{"primary":"faux/faux-1"},"gates":{"artifact":false}}"#,
+    )?;
+    let answered = workspace.yi(&["ask", "gates check"])?;
+    let stderr = String::from_utf8_lossy(&answered.stderr);
+    assert_eq!(answered.status.code(), Some(0), "{stderr}");
+    assert_eq!(stderr.matches("`gates`").count(), 1, "{stderr}");
+    assert!(
+        stdout(&answered).contains("faux: gates check"),
+        "{}",
+        stdout(&answered)
+    );
+    Ok(())
+}
+
 #[test]
 fn a_broken_config_file_fails_instead_of_reading_as_absent() -> TestResult {
     let workspace = Workspace::new("config-broken")?;
@@ -650,6 +670,25 @@ fn a_relative_home_is_refused_at_boot() -> TestResult {
     Ok(())
 }
 
+/// Rows 0023, 0025 and 0026 ran three builds that all said `yi 0.2.0`; the version a build
+/// reports is the `version:` line of docs/ARCHITECTURE.md it was built from.
+#[test]
+fn version_prints_the_architecture_version() -> TestResult {
+    let map = std::fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../docs/ARCHITECTURE.md"
+    ))?;
+    let version = map
+        .lines()
+        .find_map(|line| line.strip_prefix("version:"))
+        .and_then(|rest| rest.split_whitespace().next())
+        .ok_or("docs/ARCHITECTURE.md has no version line")?;
+    let workspace = Workspace::new("version")?;
+    let printed = workspace.yi(&["--version"])?;
+    assert_eq!(stdout(&printed).trim(), format!("yi {version}"));
+    Ok(())
+}
+
 /// A headless drive is a harness: it claims no lane in a repository unless told `--lanes`,
 /// so a run its harness kills leaves no orphan behind.
 #[test]
@@ -830,6 +869,22 @@ fn doctor_runs_over_a_broken_config_and_names_the_key() -> TestResult {
     Ok(())
 }
 
+/// `doctor` reads the config before any session does, so its row is where a migrated key shows.
+#[test]
+fn doctor_names_a_config_key_the_migration_dropped() -> TestResult {
+    let workspace = Workspace::new("doctor-migrated")?;
+    write_config(&workspace, r#"{"gates":{"closure":false}}"#)?;
+    let seen = workspace.yi_env(&["doctor"], NO_KERNEL)?;
+    let lines = doctor_lines(&seen);
+    assert!(
+        lines
+            .iter()
+            .any(|l| l.starts_with("ok    config") && l.contains("`gates`")),
+        "{lines:?}"
+    );
+    Ok(())
+}
+
 /// With `telemetry.enabled`, a turn leaves one span file beside the session file, and
 /// `yi stats telemetry <dir>` rolls every sidecar under a directory into one record.
 #[test]
@@ -887,5 +942,45 @@ fn telemetry_writes_spans_beside_the_session_and_stats_rolls_them_up() -> TestRe
     assert_eq!(record["requests"], 1, "{record}");
     assert_eq!(record["turns"], 1, "{record}");
     assert_eq!(record["files"], 1, "{record}");
+    Ok(())
+}
+
+#[test]
+fn memory_imports_lists_checks_and_forgets() -> TestResult {
+    let workspace = Workspace::new("memory")?;
+    let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../runtime/tests/fixtures/memory/claude");
+    let import = workspace.yi(&["memory", "import", &fixture.to_string_lossy()])?;
+    assert_eq!(
+        String::from_utf8_lossy(&import.stdout).trim(),
+        "memory · imported 3 · updated 0 · skipped 0"
+    );
+    let list = workspace.yi(&["memory"])?;
+    let text = String::from_utf8_lossy(&list.stdout);
+    assert!(
+        text.contains("memory · 3 repo · 0 global · 1 unparsed"),
+        "{text}"
+    );
+    assert!(
+        text.contains("never-relax-linters            feedback  repo"),
+        "{text}"
+    );
+    assert!(text.contains("! broken-quote"), "{text}");
+    let check = workspace.yi(&["memory", "check"])?;
+    assert_eq!(check.status.code(), Some(1));
+    assert!(
+        String::from_utf8_lossy(&check.stdout).contains("broken-quote.md:3: unclosed quote"),
+        "{}",
+        String::from_utf8_lossy(&check.stdout)
+    );
+    let forget = workspace.yi(&["memory", "forget", "fgj-forge-cli"])?;
+    assert_eq!(
+        String::from_utf8_lossy(&forget.stdout).trim(),
+        "memory · forgot fgj-forge-cli · repo"
+    );
+    let show = workspace.yi(&["memory", "show", "fgj-forge-cli"])?;
+    assert_eq!(show.status.code(), Some(1));
+    let usage = workspace.yi(&["memory", "frobnicate"])?;
+    assert_eq!(usage.status.code(), Some(2));
     Ok(())
 }
