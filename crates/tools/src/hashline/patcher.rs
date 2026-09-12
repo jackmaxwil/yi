@@ -124,12 +124,7 @@ impl<'a> Patcher<'a> {
     }
 
     fn resolve_path(&self, path: &str) -> PathBuf {
-        let candidate = Path::new(path);
-        if candidate.is_absolute() {
-            candidate.to_path_buf()
-        } else {
-            self.cwd.join(candidate)
-        }
+        yi_permission::resolve_target(path, &self.cwd)
     }
 
     fn canonical_path(&self, path: &str) -> String {

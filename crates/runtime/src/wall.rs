@@ -26,12 +26,7 @@ fn parse_paths(value: Option<&Value>, cwd: &Path, key: &str) -> Result<Vec<PathB
             let text = entry
                 .as_str()
                 .ok_or_else(|| format!("rlm.run {key} entries must be strings, got {entry}"))?;
-            let path = PathBuf::from(text);
-            Ok(if path.is_absolute() {
-                path
-            } else {
-                cwd.join(path)
-            })
+            Ok(yi_permission::resolve_target(text, cwd))
         })
         .collect()
 }

@@ -130,7 +130,7 @@ pub fn get_json(
 
 pub fn send_with_retry(
     url: &str,
-    headers: &[(&str, String)],
+    headers: &[(String, String)],
     body: &Value,
     proxy: Option<&ProxyConfig>,
 ) -> Result<ureq::Response, String> {
@@ -343,18 +343,47 @@ pub fn terminal_event(output: AgentMessage) -> crate::EventOut {
     }
 }
 
+/// Invariant: a `~/.yi/catalog/<provider>.json` name replaces the adapter's own header
+/// case-insensitively; empty removes it, since a gateway retarget must drop `x-api-key`.
+pub fn headers_for(model: &Model, base: Vec<(&str, String)>) -> Vec<(String, String)> {
+    let mut merged: Vec<(String, String)> = base
+        .into_iter()
+        .map(|(name, value)| (name.to_owned(), value))
+        .collect();
+    let overlay = model
+        .headers
+        .as_ref()
+        .and_then(Value::as_object)
+        .into_iter()
+        .flatten()
+        .filter_map(|(name, value)| Some((name.clone(), value.as_str()?.to_owned())));
+    for (name, value) in overlay {
+        let at = merged
+            .iter()
+            .position(|(existing, _)| existing.eq_ignore_ascii_case(&name));
+        match (at, value.is_empty()) {
+            (Some(at), true) => drop(merged.remove(at)),
+            (Some(at), false) => {
+                if let Some(slot) = merged.get_mut(at) {
+                    slot.1 = value;
+                }
+            }
+            (None, true) => {}
+            (None, false) => merged.push((name, value)),
+        }
+    }
+    merged
+}
+
 pub fn openai_bearer_post(
     url: &str,
+    model: &Model,
     api_key: &str,
     body: &Value,
     proxy: Option<&ProxyConfig>,
 ) -> Result<ureq::Response, String> {
-    send_with_retry(
-        url,
-        &[("authorization", format!("Bearer {api_key}"))],
-        body,
-        proxy,
-    )
+    let headers = headers_for(model, vec![("authorization", format!("Bearer {api_key}"))]);
+    send_with_retry(url, &headers, body, proxy)
 }
 
 /// What one request needs beside its body: the key, the proxy, and the loop's cut flag.
