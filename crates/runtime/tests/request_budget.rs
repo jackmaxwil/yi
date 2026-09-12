@@ -5,8 +5,7 @@ use yi_ai::anthropic::{AnthropicOptions, Thinking, build_params};
 use yi_ai::faux::{faux_assistant_message, faux_tool_call};
 use yi_ai::openai::{self, OpenAiOptions};
 use yi_runtime::{
-    AgentSession, PermissionMode, ProviderStream, SessionConfig, identity_fragment,
-    mode_fragment,
+    AgentSession, PermissionMode, ProviderStream, SessionConfig, identity_fragment, mode_fragment,
 };
 use yi_types::message::{AgentMessage, Content, StopReason, UserContent};
 use yi_types::model::{LlmContext, Model, ModelCost, ToolDef};
@@ -98,7 +97,7 @@ const RECORDED_DOCUMENT_FORMATS: [&str; 11] = [
 /// only the builtins would leave the largest tools in the prefix invisible to
 /// the gate that exists to catch prefix growth, and the surface lock must pin
 /// what a model call can actually name.
-fn session_tool_defs() -> Vec<ToolDef> {
+fn session_tool_defs() -> Result<Vec<ToolDef>, Box<dyn Error>> {
     use std::path::PathBuf;
     use std::sync::Arc;
 
@@ -106,14 +105,13 @@ fn session_tool_defs() -> Vec<ToolDef> {
     // tokio primitives that insist a reactor exists.
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
-        .build()
-        .expect("tokio runtime");
+        .build()?;
     let _reactor = runtime.enter();
     let root = std::env::temp_dir().join(format!("yi-surface-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&root);
     let (cwd, home) = (root.join("cwd"), root.join("home"));
-    std::fs::create_dir_all(&cwd).expect("cwd");
-    std::fs::create_dir_all(&home).expect("home");
+    std::fs::create_dir_all(&cwd)?;
+    std::fs::create_dir_all(&home)?;
     let fixed = yi_tools::Documents::fixed(
         home.clone(),
         yi_tools::Converter {
@@ -144,9 +142,7 @@ fn session_tool_defs() -> Vec<ToolDef> {
             home: home.clone(),
             lane_slots: 1,
             broker: None,
-            tools: Arc::new(move || {
-                yi_runtime::session_tools(false, Some(fixed.clone()), None)
-            }),
+            tools: Arc::new(move || yi_runtime::session_tools(false, Some(fixed.clone()), None)),
             depth: 0,
             max_depth: 1,
             rlm_dir: root.join("rlm"),
@@ -171,45 +167,32 @@ fn session_tool_defs() -> Vec<ToolDef> {
         .map(|tool| tool.definition())
         .collect();
     let _ = std::fs::remove_dir_all(&root);
-    defs
+    Ok(defs)
 }
 
-fn tool_defs() -> Vec<ToolDef> {
-    static TABLE: std::sync::OnceLock<Vec<ToolDef>> = std::sync::OnceLock::new();
-    TABLE.get_or_init(session_tool_defs).clone()
+fn tool_defs() -> Result<Vec<ToolDef>, Box<dyn Error>> {
+    static TABLE: std::sync::OnceLock<Result<Vec<ToolDef>, String>> = std::sync::OnceLock::new();
+    Ok(TABLE
+        .get_or_init(|| session_tool_defs().map_err(|err| err.to_string()))
+        .clone()?)
 }
 
 /// One lock line per key the model reads: each registered tool's description
 /// and schema, each kernel extra a hint can name, and the identity fragment
 /// that says what each tool is for. check_request_budget.py hashes the texts.
-fn surface_lines() -> Vec<String> {
-    let mut lines: Vec<String> = tool_defs()
-        .iter()
-        .map(|def| {
-            json!({
-                "key": format!("tool:{}", def.name),
-                "text": format!(
-                    "{}\n{}",
-                    def.description,
-                    serde_json::to_string(&def.parameters).unwrap_or_default()
-                ),
-            })
-            .to_string()
-        })
-        .collect();
-    for arg in yi_kernel::bootstrap::DEFAULT_RLM_EXTRA_UV_ARGS {
-        let package = arg
-            .split(|ch: char| ch == '<' || ch == '>' || ch == '=' || ch == '!' || ch == ' ')
-            .next()
-            .unwrap_or(arg);
-        lines.push(
-            json!({"key": format!("extra:{package}"), "text": package}).to_string(),
-        );
+fn surface_lines() -> Result<Vec<String>, Box<dyn Error>> {
+    let mut lines = Vec::new();
+    for def in tool_defs()? {
+        let schema = serde_json::to_string(&def.parameters)?;
+        let text = format!("{}\n{schema}", def.description);
+        lines.push(json!({"key": format!("tool:{}", def.name), "text": text}).to_string());
     }
-    lines.push(
-        json!({"key": "prompt:identity", "text": identity_fragment()}).to_string(),
-    );
-    lines
+    for arg in yi_kernel::bootstrap::DEFAULT_RLM_EXTRA_UV_ARGS {
+        let package = arg.split(['<', '>', '=', '!', ' ']).next().unwrap_or(arg);
+        lines.push(json!({"key": format!("extra:{package}"), "text": package}).to_string());
+    }
+    lines.push(json!({"key": "prompt:identity", "text": identity_fragment()}).to_string());
+    Ok(lines)
 }
 
 /// The skills catalog is deliberately excluded: it is assembled from the
@@ -251,13 +234,13 @@ fn tool_result(id: &str, name: &str, text: &str) -> AgentMessage {
     }
 }
 
-fn context(messages: Vec<AgentMessage>) -> LlmContext {
-    LlmContext {
+fn context(messages: Vec<AgentMessage>) -> Result<LlmContext, Box<dyn Error>> {
+    Ok(LlmContext {
         system_prompt: system_prompt(),
         messages,
-        tools: Some(tool_defs()),
+        tools: Some(tool_defs()?),
         tool_choice: None,
-    }
+    })
 }
 
 fn first_turn() -> Vec<AgentMessage> {
@@ -350,8 +333,8 @@ fn the_anthropic_cached_prefix_survives_a_turn() -> TestResult {
     let model = model();
     let options = options();
     assert_prefix_survives_a_turn(
-        &build_params(&model, &context(first_turn()), &options),
-        &build_params(&model, &context(second_turn()), &options),
+        &build_params(&model, &context(first_turn())?, &options),
+        &build_params(&model, &context(second_turn())?, &options),
     )
 }
 
@@ -366,8 +349,8 @@ fn the_openai_cached_prefix_survives_a_turn() -> TestResult {
         ..OpenAiOptions::default()
     };
     assert_prefix_survives_a_turn(
-        &openai::build_params(&model, &context(first_turn()), &options),
-        &openai::build_params(&model, &context(second_turn()), &options),
+        &openai::build_params(&model, &context(first_turn())?, &options),
+        &openai::build_params(&model, &context(second_turn())?, &options),
     )
 }
 
@@ -381,8 +364,8 @@ fn the_openrouter_cached_prefix_survives_a_turn() -> TestResult {
         session_id: Some("session-1".to_owned()),
         ..OpenAiOptions::default()
     };
-    let first = openai::build_params(&model, &context(first_turn()), &options);
-    let second = openai::build_params(&model, &context(second_turn()), &options);
+    let first = openai::build_params(&model, &context(first_turn())?, &options);
+    let second = openai::build_params(&model, &context(second_turn())?, &options);
     for params in [&first, &second] {
         assert_eq!(params["cache_control"], json!({"type": "ephemeral"}));
         assert!(params.get("prompt_cache_key").is_none());
@@ -623,7 +606,7 @@ fn the_frozen_prefix_is_location_invariant_and_residue_free() -> TestResult {
 /// and the surface lock.
 #[test]
 fn report_the_prefix_size() -> TestResult {
-    let params = build_params(&model(), &context(first_turn()), &options());
+    let params = build_params(&model(), &context(first_turn())?, &options());
     let system = serde_json::to_string(params.get("system").unwrap_or(&Value::Null))?;
     let tools = serde_json::to_string(params.get("tools").unwrap_or(&Value::Null))?;
     println!(
@@ -632,7 +615,7 @@ fn report_the_prefix_size() -> TestResult {
         tools.len(),
         prefix_bytes(&params)?
     );
-    for line in surface_lines() {
+    for line in surface_lines()? {
         println!("TOOL_SURFACE {line}");
     }
     Ok(())
@@ -651,8 +634,8 @@ fn the_environment_block_does_not_move_the_cached_prefix() -> TestResult {
     first.push(env(1));
     let mut second = second_turn();
     second.push(env(2));
-    let a = build_params(&model(), &context(first), &options());
-    let b = build_params(&model(), &context(second), &options());
+    let a = build_params(&model(), &context(first)?, &options());
+    let b = build_params(&model(), &context(second)?, &options());
     let strip_env = |params: &Value| -> Result<Value, Box<dyn Error>> {
         let mut out = params.clone();
         let messages = out["messages"].as_array_mut().ok_or("messages")?;
