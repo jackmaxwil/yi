@@ -53,7 +53,9 @@ class RLMSpawnHandle:
         self,
         *,
         schema: dict[str, Any] | None = None,
-        timeout: float = 900.0,
+        # Under the kernel cell's 600 s wall clock (D176): a 900 s wait could never
+        # elapse, the cell was aborted first and the child's answer never came back.
+        timeout: float = 540.0,
         poll: float = 0.5,
     ) -> dict[str, Any]:
         """Wait for this child to finish and return its answer as data.

@@ -18,6 +18,8 @@ import asyncio
 import os as _yi_os
 
 _yi_os.environ["NO_COLOR"] = "1"
+_yi_os.environ["PIP_NO_COLOR"] = "1"
+_yi_os.environ["PIP_DISABLE_PIP_VERSION_CHECK"] = "1"
 get_ipython().colors = "nocolor"
 
 try:
@@ -311,6 +313,9 @@ pub struct KernelServiceOptions {
     pub on_restore: Option<Arc<RestoreNoticeFn>>,
     pub sandbox: Option<yi_tools::Sandbox>,
     pub snapshot_key: Option<Arc<dyn Fn() -> Option<String> + Send + Sync>>,
+    /// A cell's wall clock, past which it is interrupted as a cancel would; `None` is
+    /// bash's ceiling, [`yi_tools::MAX_TIMEOUT_SECS`].
+    pub cell_ceiling: Option<std::time::Duration>,
 }
 
 /// A session's snapshot files, beside the root's, prefixed with its id: the sessions
@@ -435,18 +440,8 @@ impl KernelService {
 
     async fn ensure_inner(&self) -> Result<Arc<KernelManager>, String> {
         let wrap = self.kernel_wrap(self.sandbox.lock().await.as_ref());
-        let mut slot = self.manager.lock().await;
-        if let Some(manager) = slot.as_ref()
-            && manager.is_running()
-            && manager.wrap() == wrap.as_ref()
-        {
-            return Ok(Arc::clone(manager));
-        }
-        if let Some(old) = slot.take() {
-            old.dispose().await;
-        }
-        // Only sessions with an on-disk directory get a revivable snapshot
-        // (design K10).
+        // Only an on-disk session is revivable (K10). Incident: `/new`, `switch_session` and
+        // `fork` swap the store under a live kernel, which kept writing under the old id.
         let key = self.options.snapshot_key.as_ref().and_then(|key| key());
         let snapshot = self.options.session_dir.as_deref().map(|dir| {
             let (path, manifest_path) = snapshot_paths(dir, key.as_deref());
@@ -458,6 +453,17 @@ impl KernelService {
                 debounce_ms: None,
             }
         });
+        let mut slot = self.manager.lock().await;
+        if let Some(manager) = slot.as_ref()
+            && manager.is_running()
+            && manager.wrap() == wrap.as_ref()
+            && manager.snapshot_path() == snapshot.as_ref().map(|config| config.path.as_path())
+        {
+            return Ok(Arc::clone(manager));
+        }
+        if let Some(old) = slot.take() {
+            old.dispose().await;
+        }
         let snapshot_existed = snapshot
             .as_ref()
             .is_some_and(|config| config.path.is_file());
@@ -576,14 +582,22 @@ impl KernelService {
         cancelled: &CancelFlag,
     ) -> Result<KernelCellOutcome, String> {
         let mut kernel_restarted = false;
+        let ceiling = self
+            .options
+            .cell_ceiling
+            .unwrap_or(std::time::Duration::from_secs(yi_tools::MAX_TIMEOUT_SECS));
         loop {
             let manager = self.ensure().await?;
             let abort = AbortFlag::default();
             let watcher = {
                 let abort = abort.clone();
                 let cancelled = Arc::clone(cancelled);
+                // Started after the boot, so a cold venv build is not charged to the cell;
+                // a ceiling past `Instant`'s range is no clock at all.
+                let ceiling_at = std::time::Instant::now().checked_add(ceiling);
                 tokio::spawn(async move {
-                    while !cancelled() {
+                    while !cancelled() && ceiling_at.is_none_or(|at| std::time::Instant::now() < at)
+                    {
                         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
                     }
                     abort.fire();
@@ -1052,6 +1066,7 @@ mod tests {
             on_restore: None,
             sandbox: None,
             snapshot_key: None,
+            cell_ceiling: None,
         });
         service.dispose().await;
         assert!(
@@ -1075,6 +1090,7 @@ mod tests {
             on_restore: None,
             sandbox: None,
             snapshot_key: None,
+            cell_ceiling: None,
         })
     }
 

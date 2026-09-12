@@ -575,6 +575,13 @@ impl KernelManager {
         self.inner.wrap.as_ref()
     }
 
+    pub fn snapshot_path(&self) -> Option<&std::path::Path> {
+        self.inner
+            .snapshot
+            .as_ref()
+            .map(|config| config.path.as_path())
+    }
+
     pub async fn start(&self) -> Result<(), String> {
         let _guard = self.inner.start_lock.lock().await;
         match self.inner.state() {
@@ -910,7 +917,9 @@ impl KernelManager {
             "store_history": true,
             "user_expressions": {},
             "allow_stdin": false,
-            "stop_on_error": true,
+            // The kernel aborts every request queued behind a failed one; Yi's own cell, left
+            // running under an abort, must not take the user's next cell with it.
+            "stop_on_error": !options.internal,
         });
         let content = content.as_object().cloned().unwrap_or_default();
         let message = inner
@@ -947,16 +956,17 @@ impl KernelManager {
             *last = Some(code.to_owned());
         }
 
+        let internal = options.internal;
         let abort_task = options.abort.clone().map(|abort| {
             let inner = Arc::clone(inner);
             let request_id = request_id.clone();
             tokio::spawn(async move {
                 abort.fired().await;
                 inner.interrupt();
-                // 1 s grace, then force-Aborted WITHOUT clearing the active execution: the
-                // cell may still be running and the busy-reuse path owns recovery (K8).
+                // 1 s grace, then force-Aborted; a user cell keeps the slot, since it may still
+                // run and busy-reuse owns recovery (K8), while Yi's own cell gives it up.
                 tokio::time::sleep(std::time::Duration::from_millis(KERNEL_ABORT_GRACE_MS)).await;
-                inner.resolve_active(Some(&request_id), false, Some(ExecuteStatus::Aborted));
+                inner.resolve_active(Some(&request_id), internal, Some(ExecuteStatus::Aborted));
             })
         });
 

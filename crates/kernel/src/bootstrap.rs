@@ -7,7 +7,7 @@ pub const BOOTSTRAP_SCHEMA: u64 = 1;
 const PYTHON_VERSION: &str = "3.11";
 const IPYKERNEL_REQUIREMENT: &str = "ipykernel";
 const STATE_SNAPSHOT_REQUIREMENT: &str = "dill";
-pub const DEFAULT_RLM_EXTRA_UV_ARGS: [&str; 12] = [
+pub const DEFAULT_RLM_EXTRA_UV_ARGS: [&str; 15] = [
     "requests",
     "httpx",
     "pyyaml",
@@ -20,11 +20,47 @@ pub const DEFAULT_RLM_EXTRA_UV_ARGS: [&str; 12] = [
     "lxml",
     "pydantic",
     "tyro",
+    "firecrawl-anydoc>=0.2.4,<0.3",
+    "pdf-inspector>=1.19,<2",
+    "openpyxl",
 ];
-const DEFAULT_RLM_EXTRA_IMPORT_NAMES: [&str; 12] = [
-    "requests", "httpx", "yaml", "tomli", "dotenv", "pandas", "numpy", "scipy", "bs4", "lxml",
-    "pydantic", "tyro",
+const DEFAULT_RLM_EXTRA_IMPORT_NAMES: [&str; 15] = [
+    "requests",
+    "httpx",
+    "yaml",
+    "tomli",
+    "dotenv",
+    "pandas",
+    "numpy",
+    "scipy",
+    "bs4",
+    "lxml",
+    "pydantic",
+    "tyro",
+    "anydoc",
+    "pdf_inspector",
+    "openpyxl",
 ];
+/// csv is left out because read shows it as the text it is; the alias candidates are checked live.
+const DOCUMENT_FORMATS_PROBE: &str = r#"import json, typing, anydoc
+kinds = [kind for kind in typing.get_args(anydoc.Format) if kind != "csv"]
+aliases = {}
+for ext in ("docm", "dot", "dotx", "dotm", "xls", "xlsm", "xlsb", "xlt", "xltx", "xltm", "pps", "ppsx", "ppsm", "pot", "potx", "potm", "pptm", "fodt", "fods", "fodp"):
+    kind = anydoc.format_from_extension(ext)
+    if kind in kinds and ext != kind:
+        aliases.setdefault(kind, []).append(ext)
+print(json.dumps([kind + (f" ({', '.join(aliases[kind])})" if kind in aliases else "") for kind in kinds]))"#;
+/// The converter wheels are the only extras a `YI_KERNEL_PYTHON` may lack: without them read
+/// shows a document as bytes and nothing else changes.
+const OPTIONAL_IMPORT_NAMES: [&str; 2] = ["anydoc", "pdf_inspector"];
+const DOCUMENT_FORMATS_KEY: &str = "documentFormats";
+/// The probe's own hash rides in the record, so a reworded probe re-asks the wheel on the next
+/// readiness check instead of serving a list the code no longer produces (no rebuild needed).
+const DOCUMENT_PROBE_KEY: &str = "documentProbe";
+
+fn document_probe_hash() -> String {
+    format!("{:016x}", fnv1a(DOCUMENT_FORMATS_PROBE.as_bytes()))
+}
 const UV_INSTALL_COMMAND: &str = "curl -LsSf https://astral.sh/uv/install.sh | sh";
 pub const RUNTIME_READY_CHECK: &str = "import inspect; import rlm; from rlm import McpIntegration; import rlm.mcp as mcp; from rlm.harness import HarnessEntry; _harness_methods = [\"create_memory\",\"update_memory\",\"delete_memory\",\"create_skill\",\"update_skill\",\"delete_skill\",\"create_subagent\",\"update_subagent\",\"delete_subagent\",\"create_prompt_note\",\"update_prompt_note\",\"delete_prompt_note\",\"record_refinement\"]; assert callable(mcp.list_tools); assert callable(mcp.call_tool); assert hasattr(rlm, 'run'); assert callable(rlm); assert hasattr(rlm, 'rlm'); assert callable(rlm.rlm); assert callable(rlm.host_request); assert callable(rlm.find_models); assert callable(rlm.rlm.find_models); assert hasattr(rlm, 'harness'); assert hasattr(rlm, 'get_harness_state'); assert hasattr(rlm.rlm, 'harness'); assert hasattr(rlm.rlm, 'get_harness_state'); assert all(callable(getattr(_harness, _method, None)) for _harness in (rlm.harness, rlm.rlm.harness) for _method in _harness_methods); assert 'reference' in HarnessEntry.__dataclass_fields__; assert 'scope' in HarnessEntry.__dataclass_fields__; assert 'reference' in inspect.signature(rlm.harness.create_skill).parameters; assert 'reference' in inspect.signature(rlm.harness.update_skill).parameters; assert 'global_' in inspect.signature(rlm.harness.create_memory).parameters; assert 'global_' in inspect.signature(rlm.get_harness_state).parameters; assert inspect.iscoroutinefunction(rlm.fetch); assert callable(rlm.rlm.fetch); assert callable(rlm.bash); assert not inspect.iscoroutinefunction(rlm.bash); assert callable(rlm.rlm.bash); assert not inspect.iscoroutinefunction(rlm.rlm.bash); assert hasattr(rlm.BashHandle, '__await__'); assert not hasattr(rlm, 'background'); assert not hasattr(rlm.rlm, 'background'); from pathlib import Path as _P; assert rlm.RLMSubagent(rlm_child_id='c', active_session_id=None, session_id=None, session_name='kid', session_dir=_P('.'), status='idle').name == 'kid'";
 const BOOTSTRAP_VERSION_FILE: &str = ".bootstrap-version";
@@ -231,11 +267,12 @@ pub fn default_runtime_source_dir() -> PathBuf {
 
 /// (import name, directory under python/skills). Install order is declared
 /// order; the dependency toposort waits until a skill grows a sibling dep.
-pub const PYTHON_SKILLS: [(&str, &str); 4] = [
+pub const PYTHON_SKILLS: [(&str, &str); 5] = [
     ("compact", "compact"),
     ("attach_image", "attach-image"),
     ("goal", "goal"),
     ("plan", "plan"),
+    ("memory", "memory"),
 ];
 
 pub fn default_skills_source_dir() -> PathBuf {
@@ -249,9 +286,15 @@ fn env_path(name: &str) -> Option<PathBuf> {
 }
 
 /// Incident: one `~/.yi/kernel-venv` served every commit, so two sessions whose ready checks
-/// differed rebuilt it back and forth. The check the venv satisfies now names the directory.
-fn venv_name(check: &str) -> String {
-    let digest = Sha256::digest(check.as_bytes());
+/// differed rebuilt it back and forth. The check and the extras the venv carries name it now.
+fn venv_name(check: &str, extras: &[&str]) -> String {
+    let mut hash = Sha256::new();
+    hash.update(check.as_bytes());
+    for extra in extras {
+        hash.update(b"\0");
+        hash.update(extra.as_bytes());
+    }
+    let digest = hash.finalize();
     let slot: String = digest
         .iter()
         .take(4)
@@ -261,7 +304,8 @@ fn venv_name(check: &str) -> String {
 }
 
 fn default_kernel_venv_dir(home: &Path, check: &str) -> PathBuf {
-    home.join(".yi").join(venv_name(check))
+    home.join(".yi")
+        .join(venv_name(check, &DEFAULT_RLM_EXTRA_UV_ARGS))
 }
 
 pub fn kernel_venv_dir(home: &Path) -> PathBuf {
@@ -276,7 +320,9 @@ fn xdg_kernel_venv_dir(home: &Path) -> PathBuf {
         Some(dir) => dir,
         None => home.join(".local").join("share"),
     };
-    data_home.join("yi").join(venv_name(RUNTIME_READY_CHECK))
+    data_home
+        .join("yi")
+        .join(venv_name(RUNTIME_READY_CHECK, &DEFAULT_RLM_EXTRA_UV_ARGS))
 }
 
 fn resolve_writable_venv_dir(options: &BootstrapOptions) -> Result<PathBuf, String> {
@@ -381,6 +427,7 @@ pub fn has_runtime(python: &Path) -> bool {
 fn missing_extra_imports(python: &Path) -> Vec<String> {
     DEFAULT_RLM_EXTRA_IMPORT_NAMES
         .iter()
+        .filter(|name| !OPTIONAL_IMPORT_NAMES.contains(name))
         .filter(|name| !python_imports(python, name))
         .map(|name| (*name).to_owned())
         .collect()
@@ -598,7 +645,46 @@ fn bootstrap_version_current(version: Option<&BootstrapVersion>, runtime_identit
     })
 }
 
-fn write_bootstrap_version(venv: &Path, runtime_identity: &str) -> Result<(), String> {
+fn document_formats_of(python: &Path) -> Vec<String> {
+    output(python, &["-c", DOCUMENT_FORMATS_PROBE])
+        .ok()
+        .and_then(|text| serde_json::from_str(text.trim()).ok())
+        .unwrap_or_default()
+}
+
+pub fn document_converter(home: &Path) -> (PathBuf, Vec<String>) {
+    if let Some(python) = env_path("YI_KERNEL_PYTHON") {
+        let formats = document_formats_of(&python);
+        return (python, formats);
+    }
+    let primary = kernel_venv_dir(home);
+    let venv = [primary.clone(), xdg_kernel_venv_dir(home)]
+        .into_iter()
+        .find(|venv| kernel_python(venv).is_file())
+        .unwrap_or(primary);
+    let formats = read_bootstrap_version(&venv)
+        .and_then(|version| version.extra.get(DOCUMENT_FORMATS_KEY).cloned())
+        .and_then(|formats| serde_json::from_value(formats).ok())
+        .unwrap_or_default();
+    (kernel_python(&venv), formats)
+}
+
+fn write_bootstrap_version(
+    venv: &Path,
+    runtime_identity: &str,
+    document_formats: Vec<String>,
+) -> Result<(), String> {
+    let mut extra = serde_json::Map::new();
+    extra.insert(
+        DOCUMENT_PROBE_KEY.to_owned(),
+        serde_json::Value::from(document_probe_hash()),
+    );
+    if !document_formats.is_empty() {
+        extra.insert(
+            DOCUMENT_FORMATS_KEY.to_owned(),
+            serde_json::Value::from(document_formats),
+        );
+    }
     let version = BootstrapVersion {
         schema: BOOTSTRAP_SCHEMA,
         ipykernel: IPYKERNEL_REQUIREMENT.to_owned(),
@@ -609,7 +695,7 @@ fn write_bootstrap_version(venv: &Path, runtime_identity: &str) -> Result<(), St
             .collect(),
         skills: expected_skills(),
         snapshot: Some(STATE_SNAPSHOT_REQUIREMENT.to_owned()),
-        extra: serde_json::Map::new(),
+        extra,
     };
     let text = serde_json::to_string(&version).map_err(|error| error.to_string())?;
     std::fs::write(venv.join(BOOTSTRAP_VERSION_FILE), format!("{text}\n"))
@@ -625,20 +711,27 @@ fn bootstrap_lock_dir(venv: &Path) -> PathBuf {
 }
 
 #[cfg(unix)]
-pub fn process_is_running(pid: u32) -> bool {
-    // kill -0 probes liveness; EPERM still means the pid exists.
-    command(Path::new("kill"))
-        .args(["-0", &pid.to_string()])
+pub fn process_is_running(pid: u32) -> std::io::Result<bool> {
+    // kill -0 as the shell's builtin: slim images ship no kill(1), whose ENOENT read as dead.
+    command(Path::new("/bin/sh"))
+        .args(["-c", r#"kill -0 "$1""#, "kill", &pid.to_string()])
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .status()
         .map(|status| status.success())
-        .unwrap_or(false)
 }
 
 #[cfg(not(unix))]
-pub fn process_is_running(_pid: u32) -> bool {
-    true
+pub fn process_is_running(_pid: u32) -> std::io::Result<bool> {
+    Ok(true)
+}
+
+/// A probe that could not run says nothing of the holder: the lock's age decides, as for no pid.
+pub fn lock_is_stale(lock_dir: &Path, probe: Option<std::io::Result<bool>>) -> bool {
+    match probe {
+        Some(Ok(running)) => !running,
+        Some(Err(_)) | None => lock_missing_pid_is_stale(lock_dir),
+    }
 }
 
 pub fn read_lock_pid(lock_dir: &Path) -> Option<u32> {
@@ -682,11 +775,7 @@ fn acquire_bootstrap_lock(venv: &Path) -> Result<BootstrapLock, String> {
                 return Ok(BootstrapLock { dir: lock_dir });
             }
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-                let stale = match read_lock_pid(&lock_dir) {
-                    Some(pid) => !process_is_running(pid),
-                    None => lock_missing_pid_is_stale(&lock_dir),
-                };
-                if stale {
+                if lock_is_stale(&lock_dir, read_lock_pid(&lock_dir).map(process_is_running)) {
                     let _ = std::fs::remove_dir_all(&lock_dir);
                     continue;
                 }
@@ -698,13 +787,23 @@ fn acquire_bootstrap_lock(venv: &Path) -> Result<BootstrapLock, String> {
 }
 
 fn kernel_ready(python: &Path, venv: &Path, runtime_identity: &str) -> bool {
-    bootstrap_version_current(read_bootstrap_version(venv).as_ref(), runtime_identity)
-        && run(
-            python,
-            &["-c", &format!("import ipykernel; {RUNTIME_READY_CHECK}")],
-            false,
-        )
-        .is_ok()
+    let version = read_bootstrap_version(venv);
+    if !bootstrap_version_current(version.as_ref(), runtime_identity) {
+        return false;
+    }
+    let live = run(
+        python,
+        &["-c", &format!("import ipykernel; {RUNTIME_READY_CHECK}")],
+        false,
+    )
+    .is_ok();
+    let probe = serde_json::Value::from(document_probe_hash());
+    if live && version.is_some_and(|version| version.extra.get(DOCUMENT_PROBE_KEY) != Some(&probe))
+    {
+        let _record_refreshed =
+            write_bootstrap_version(venv, runtime_identity, document_formats_of(python));
+    }
+    live
 }
 
 fn bootstrap_venv(
@@ -764,7 +863,13 @@ fn bootstrap_venv(
             extras.join(", ")
         ));
     }
-    write_bootstrap_version(venv, runtime_identity)
+    let document_formats = document_formats_of(&python);
+    if document_formats.is_empty() && python_imports(&python, "anydoc") {
+        options.progress(
+            "Warning: anydoc reports no formats; read will not list documents until it does",
+        );
+    }
+    write_bootstrap_version(venv, runtime_identity, document_formats)
 }
 
 pub fn kernel_python(venv: &Path) -> PathBuf {
@@ -900,8 +1005,46 @@ mod tests {
         );
         assert_eq!(
             default_kernel_venv_dir(home, RUNTIME_READY_CHECK),
-            home.join(".yi").join(venv_name(RUNTIME_READY_CHECK))
+            home.join(".yi")
+                .join(venv_name(RUNTIME_READY_CHECK, &DEFAULT_RLM_EXTRA_UV_ARGS))
         );
+        assert_ne!(
+            venv_name("check", &["pandas"]),
+            venv_name("check", &["pandas", "firecrawl-anydoc"]),
+            "two commits whose extras differ must not share one venv"
+        );
+    }
+
+    #[test]
+    fn a_kernel_python_may_lack_the_converter_wheels() {
+        let Some(python) = find_system_python() else {
+            return;
+        };
+        let missing = missing_extra_imports(&python);
+        assert!(
+            !missing
+                .iter()
+                .any(|name| OPTIONAL_IMPORT_NAMES.contains(&name.as_str())),
+            "the converter wheels are optional: {missing:?}"
+        );
+    }
+
+    #[test]
+    fn the_converter_reads_back_the_formats_its_venv_recorded() -> Result<(), String> {
+        let home = std::env::temp_dir().join(format!("yi-formats-{}", std::process::id()));
+        let venv = default_kernel_venv_dir(&home, RUNTIME_READY_CHECK);
+        std::fs::create_dir_all(venv.join("bin")).map_err(|error| error.to_string())?;
+        std::fs::write(kernel_python(&venv), "").map_err(|error| error.to_string())?;
+        let formats = vec!["docx".to_owned(), "pdf".to_owned()];
+        write_bootstrap_version(&venv, "sha256:abc", formats.clone())?;
+        assert_eq!(document_converter(&home), (kernel_python(&venv), formats));
+        write_bootstrap_version(&venv, "sha256:abc", Vec::new())?;
+        assert_eq!(
+            document_converter(&home).1,
+            Vec::<String>::new(),
+            "a venv built without the converter claims no format"
+        );
+        std::fs::remove_dir_all(&home).map_err(|error| error.to_string())
     }
 
     #[test]

@@ -8,6 +8,22 @@ use crate::tool::{
     text_output,
 };
 
+/// The converters a model reaches for by habit; `read` already does their job.
+fn document_hint(command: &str) -> Option<String> {
+    let verb = command
+        .split(['|', ';', '&'])
+        .filter_map(|segment| segment.split_whitespace().next())
+        .find(|verb| {
+            matches!(
+                verb.rsplit('/').next().unwrap_or(verb),
+                "pdftotext" | "pandoc" | "textutil" | "soffice" | "libreoffice" | "docx2txt"
+            )
+        })?;
+    Some(format!(
+        "[read converts office documents and PDFs to Markdown itself; read <path> replaces {verb} here]"
+    ))
+}
+
 #[derive(Default)]
 pub struct WriteTool {
     pub hashline: Option<crate::hashline::tool::SharedHashline>,
@@ -40,11 +56,7 @@ impl Tool for WriteTool {
     fn preview(&self, input: &Map<String, Value>, cwd: &Path) -> Option<String> {
         let path = input.get("path").and_then(Value::as_str)?;
         let content = input.get("content").and_then(Value::as_str)?;
-        let resolved = if Path::new(path).is_absolute() {
-            std::path::PathBuf::from(path)
-        } else {
-            cwd.join(path)
-        };
+        let resolved = yi_permission::resolve_target(path, cwd);
         let before = fs::read_to_string(&resolved).unwrap_or_default();
         let patch = crate::diff::patch(&before, content, &resolved);
         (!patch.is_empty()).then(|| patch.as_str().to_owned())
@@ -59,6 +71,14 @@ impl Tool for WriteTool {
             Ok(content) => content,
             Err(message) => return error_output(message),
         };
+        let home = self
+            .hashline
+            .as_ref()
+            .and_then(crate::hashline::tool::documents)
+            .map(|documents| documents.home);
+        if let Some(refusal) = crate::document::write_refusal(home.as_deref(), &path) {
+            return error_output(refusal);
+        }
         if let Some(parent) = path.parent()
             && let Err(error) = fs::create_dir_all(parent)
         {
@@ -495,6 +515,9 @@ impl Tool for BashTool {
         } else if capture.cancelled {
             sections.push("[command aborted]".to_owned());
         }
+        if let Some(error) = &capture.kill_error {
+            sections.push(format!("[group kill failed: {error}]"));
+        }
         let exit_code = capture.exit_code.unwrap_or(-1);
         if exit_code != 0 {
             sections.push(format!("exit code: {exit_code}"));
@@ -503,6 +526,9 @@ impl Tool for BashTool {
                     "[chain stopped at exit {exit_code}: the segments after the failing one did not run]"
                 ));
             }
+        }
+        if let Some(hint) = document_hint(command) {
+            sections.push(hint);
         }
         if context.sandbox.is_some()
             && let Some(hint) = crate::sandbox::denial_hint(

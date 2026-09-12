@@ -109,6 +109,7 @@ pub fn block_resolver(request: &BlockResolverRequest<'_>) -> Option<BlockSpan> {
         .unwrap_or_default();
     match extension {
         "py" | "pyi" | "yaml" | "yml" => indent_block_resolver(request.text, request.line),
+        "md" | "markdown" => super::blocks::markdown_section_resolver(request.text, request.line),
         _ => brace_block_resolver(request.text, request.line),
     }
 }
@@ -123,12 +124,7 @@ impl<'a> Patcher<'a> {
     }
 
     fn resolve_path(&self, path: &str) -> PathBuf {
-        let candidate = Path::new(path);
-        if candidate.is_absolute() {
-            candidate.to_path_buf()
-        } else {
-            self.cwd.join(candidate)
-        }
+        yi_permission::resolve_target(path, &self.cwd)
     }
 
     fn canonical_path(&self, path: &str) -> String {

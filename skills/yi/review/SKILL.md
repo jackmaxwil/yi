@@ -2,10 +2,9 @@
 name: review
 description: >
   Verify finished work against its acceptance criteria with a cold-context
-  reviewer. Use before declaring a goal or large task complete, when the
-  user asks for a completion review, or when the orchestrate skill's final
-  verification step calls for a fresh look. Not a code-style review — this
-  checks that the claimed end state is actually true.
+  reviewer. Use before declaring a goal or large task complete, or when the
+  user asks for a completion review. Not a code-style review — this checks
+  that the claimed end state is actually true.
 trigger: review the work, verify the goal, acceptance criteria, cold review
 scope: text
 ---

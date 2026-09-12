@@ -126,6 +126,7 @@ async fn bundled_python_skills_work_through_the_kernel() -> TestResult {
         on_restore: None,
         sandbox: None,
         snapshot_key: None,
+        cell_ceiling: None,
     }));
 
     let status_cell = cell(
@@ -450,5 +451,55 @@ fn the_catalog_ladder_keeps_every_name_and_clips_descriptions_first() -> TestRes
         yi_runtime::skills::CATALOG_FLOOR
     );
     std::fs::remove_dir_all(&root)?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn save_read_forget_through_the_kernel() -> TestResult {
+    let base = std::env::temp_dir().join(format!("yi-skills-memory-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&base);
+    std::fs::create_dir_all(base.join("cwd"))?;
+    let mut registry = HostRegistry::default();
+    registry.register_mcp_stubs();
+    yi_runtime::memory::attach(
+        None,
+        &mut registry,
+        base.join("home"),
+        base.join("cwd"),
+        true,
+    );
+    let service = Arc::new(KernelService::new(KernelServiceOptions {
+        cwd: base.join("cwd"),
+        home: std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .unwrap_or_default(),
+        session_dir: None,
+        family_dir: None,
+        host: Arc::new(registry),
+        on_restore: None,
+        sandbox: None,
+        snapshot_key: None,
+        cell_ceiling: None,
+    }));
+    let out = cell(
+        &service,
+        "r = await memory.save(\"\"\"---\nname: harbor-json-stderr\ndescription: harbor exec merges stderr; parse --json from the first [ line\ntype: project\nscpe: repo\n---\nA --json command under harbor arrives with its stderr first.\n\"\"\")\nprint(r['name'], r['scope'], r['updated'], r['warnings'])\nn = await memory.read('harbor exec merges stderr; parse --json from the first [ line')\nprint(n['text'])\nprint((await memory.forget('harbor-json-stderr'))['name'])\ntry:\n    await memory.read('harbor-json-stderr')\nexcept Exception as error:\n    print('gone:', error)",
+    )
+    .await?;
+    let stdout = out.result.stdout;
+    assert!(
+        stdout
+            .contains("harbor-json-stderr repo False ['ignored key `scpe`; did you mean `scope`']"),
+        "{stdout} {}",
+        out.result.stderr
+    );
+    assert!(stdout.contains("A --json command under harbor arrives with its stderr first."));
+    assert!(
+        stdout.contains("gone:") && stdout.contains("no note matches"),
+        "{stdout}"
+    );
+    assert!(!stdout.contains(".yi"), "a reply leaked a path: {stdout}");
+    service.dispose().await;
+    let _ = std::fs::remove_dir_all(&base);
     Ok(())
 }

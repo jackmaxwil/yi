@@ -76,10 +76,6 @@ fn undefined_constants(block: &str) -> BTreeSet<String> {
 #[test]
 fn every_prompt_example_defines_the_constants_it_uses() {
     for (name, text) in [
-        (
-            "orchestrate.md",
-            include_str!("../src/prompts/orchestrate.md"),
-        ),
         ("doctrine.md", include_str!("../src/prompts/doctrine.md")),
         ("identity.md", include_str!("../src/prompts/identity.md")),
     ] {
@@ -98,4 +94,27 @@ fn the_rot_the_test_exists_for_is_caught() {
     let missing = undefined_constants("r = await h.result(schema=TASK_SCHEMA)");
     assert_eq!(missing.into_iter().collect::<Vec<_>>(), ["TASK_SCHEMA"]);
     assert!(undefined_constants("SCHEMA = {}\nr = await h.result(schema=SCHEMA)").is_empty());
+}
+
+/// The most seconds `key` is followed by anywhere in `text`.
+fn longest(text: &str, key: &str) -> u64 {
+    text.split(key)
+        .skip(1)
+        .filter_map(|rest| rest.split(|c: char| !c.is_ascii_digit()).next())
+        .filter_map(|digits| digits.parse().ok())
+        .max()
+        .unwrap_or(0)
+}
+
+/// D176: the kernel interrupts a cell at bash's ceiling, and the examples wait on a child and
+/// collect it in one cell, so a longer wait reads `[cell aborted]`, never the promised result
+/// or `TimeoutError`.
+#[test]
+fn no_prompt_example_waits_past_the_cell_ceiling() {
+    let text = include_str!("../src/prompts/doctrine.md");
+    let waited = longest(text, "rlm.wait(").saturating_add(longest(text, "timeout="));
+    assert!(
+        waited < yi_tools::MAX_TIMEOUT_SECS,
+        "doctrine.md: an example waits {waited} s in one cell"
+    );
 }

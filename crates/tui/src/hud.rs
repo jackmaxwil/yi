@@ -11,6 +11,7 @@ pub struct HudInput {
     pub todos: Option<yi_types::todo::TodoList>,
     pub steering: Vec<String>,
     pub follow_up: Vec<String>,
+    pub memory: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -61,7 +62,11 @@ pub fn todo_rows(list: Option<&yi_types::todo::TodoList>) -> Option<(String, Vec
     Some((yi_runtime::todo::text::header(list), rows))
 }
 
-pub(crate) fn input(app: &crate::app::App, goal: Option<GoalView>) -> HudInput {
+pub(crate) fn input(
+    app: &crate::app::App,
+    goal: Option<GoalView>,
+    memory: Option<String>,
+) -> HudInput {
     HudInput {
         goal,
         landing: app.landing.as_ref().map(yi_runtime::slash::landing_line),
@@ -69,6 +74,7 @@ pub(crate) fn input(app: &crate::app::App, goal: Option<GoalView>) -> HudInput {
         todos: app.todos.clone(),
         steering: app.steering.clone(),
         follow_up: Vec::new(),
+        memory,
     }
 }
 
@@ -110,11 +116,13 @@ pub fn render(input: &HudInput, theme: &Theme) -> Vec<Line<'static>> {
             Some(header)
         }
     };
-    if let Some(landing) = &input.landing {
-        content.push(Line::from(Span::styled(
-            format!("Land · {landing}"),
-            theme.muted_style(),
-        )));
+    for (label, value) in [("Land", &input.landing), ("Memory", &input.memory)] {
+        if let Some(value) = value {
+            content.push(Line::from(Span::styled(
+                format!("{label} · {value}"),
+                theme.muted_style(),
+            )));
+        }
     }
     for (label, items) in [
         ("Steering", &input.steering),
