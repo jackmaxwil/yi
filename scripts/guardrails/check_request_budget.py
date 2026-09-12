@@ -12,8 +12,10 @@ import re
 import subprocess
 import sys
 
-sys.path.insert(0, str(pathlib.Path(__file__).parent))
-from _common import ROOT, BASE, fail
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
+from _common import ROOT, BASE, fail  # noqa: E402
+from pr_body import surface_diff  # noqa: E402
 
 LOCK = BASE / "tool_surface.json"
 
@@ -42,12 +44,13 @@ def measure():
 
 def surface_delta(lock, surface):
     """(added, changed, removed) between the locked and the measured surface.
-    A missing lock is the seeding commit asking nothing."""
+    A missing lock is the seeding commit asking nothing. added/changed are
+    pr_body's surface_diff, the one implementation; the lock also reports
+    removals, which a PR body owes nothing for."""
     if lock is None:
         return [], [], []
-    added = sorted(key for key in surface if key not in lock)
+    added, changed = surface_diff(lock, surface)
     removed = sorted(key for key in lock if key not in surface)
-    changed = sorted(key for key in surface if key in lock and lock[key] != surface[key])
     return added, changed, removed
 
 
