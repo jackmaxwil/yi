@@ -336,6 +336,8 @@ fn segment_category(segment: &str) -> Option<&'static str> {
 #[derive(Default)]
 pub struct BashTool {
     pub hashline: Option<crate::hashline::tool::SharedHashline>,
+    /// Consecutive search-shaped timeouts; any other call starts the row over.
+    pub(crate) search_timeouts: std::sync::atomic::AtomicU32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -485,6 +487,17 @@ impl Tool for BashTool {
             }
             Err(message) => return error_output(message),
         };
+        let search_streak = if timed_out
+            && matches!(command_category(command), "search" | "list_files")
+        {
+            self.search_timeouts
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+                + 1
+        } else {
+            self.search_timeouts
+                .store(0, std::sync::atomic::Ordering::Relaxed);
+            0
+        };
         let exit_code_for_reduce = capture.exit_code.unwrap_or(-1);
         let max_lines = input
             .get("max_output_lines")
@@ -512,6 +525,11 @@ impl Tool for BashTool {
                 timeout.as_secs(),
                 crate::jobs::MAX_TIMEOUT_SECS
             ));
+            if search_streak >= 2 {
+                sections.push(format!(
+                    "[{search_streak} searches in a row timed out; the grep tool walks and pages with no wall-clock kill, or bound the command: name the directory, add -maxdepth/--max-depth N, pipe through head]"
+                ));
+            }
         } else if capture.cancelled {
             sections.push("[command aborted]".to_owned());
         }
