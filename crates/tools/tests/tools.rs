@@ -191,12 +191,10 @@ fn bash_kills_a_running_command_when_cancelled() -> TestResult {
 #[test]
 fn a_second_timed_out_search_in_a_row_carries_the_nudge() -> TestResult {
     let dir = temp_dir("bash-search-nudge")?;
-    let status = std::process::Command::new("mkfifo")
-        .arg(dir.0.join("pipe"))
-        .status()?;
-    assert!(status.success());
     let tool = BashTool::default();
     let context = ToolContext::new(dir.0.clone());
+    let fifo = tool.execute(args(&[("command", json!("mkfifo pipe"))]), &context);
+    assert!(!fifo.is_error, "{}", output_text(&fifo));
     let search = |tool: &BashTool| {
         tool.execute(
             args(&[

@@ -487,17 +487,16 @@ impl Tool for BashTool {
             }
             Err(message) => return error_output(message),
         };
-        let search_streak = if timed_out
-            && matches!(command_category(command), "search" | "list_files")
-        {
-            self.search_timeouts
-                .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-                + 1
-        } else {
-            self.search_timeouts
-                .store(0, std::sync::atomic::Ordering::Relaxed);
-            0
-        };
+        let search_streak =
+            if timed_out && matches!(command_category(command), "search" | "list_files") {
+                self.search_timeouts
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+                    + 1
+            } else {
+                self.search_timeouts
+                    .store(0, std::sync::atomic::Ordering::Relaxed);
+                0
+            };
         let exit_code_for_reduce = capture.exit_code.unwrap_or(-1);
         let max_lines = input
             .get("max_output_lines")
