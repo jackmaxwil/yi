@@ -1,5 +1,9 @@
+#[path = "../../types/tests/support/scratch.rs"]
+mod scratch;
+use scratch::Scratch;
+
 use std::error::Error;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 use yi_runtime::plan::store::{PlanFile, PlanStore};
@@ -12,13 +16,6 @@ use yi_types::plan::doc::{
 };
 
 type TestResult = Result<(), Box<dyn Error>>;
-
-fn scratch(tag: &str) -> Result<PathBuf, Box<dyn Error>> {
-    let dir = std::env::temp_dir().join(format!("yi-plan-view-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir)?;
-    Ok(dir)
-}
 
 fn memory_store() -> yi_session::SharedSession {
     Arc::new(Mutex::new(yi_session::SessionStore::in_memory(
@@ -121,7 +118,7 @@ fn reminder_count(delivered: &Arc<Mutex<Vec<AgentMessage>>>) -> usize {
 
 #[test]
 fn the_doc_pointer_resolves_to_the_canonical_file() -> TestResult {
-    let dir = scratch("pointer")?;
+    let dir = Scratch::new("yi-plan-view-pointer")?;
     let store = memory_store();
     write_plan(
         &dir,
@@ -142,7 +139,7 @@ fn the_doc_pointer_resolves_to_the_canonical_file() -> TestResult {
 
 #[test]
 fn without_a_pointer_the_active_root_is_the_plan() -> TestResult {
-    let dir = scratch("fallback")?;
+    let dir = Scratch::new("yi-plan-view-fallback")?;
     let store = memory_store();
     write_plan(
         &dir,
@@ -155,7 +152,7 @@ fn without_a_pointer_the_active_root_is_the_plan() -> TestResult {
 
 #[test]
 fn a_bad_pointer_is_a_typed_refusal_and_no_plan_is_named() -> TestResult {
-    let dir = scratch("bad-pointer")?;
+    let dir = Scratch::new("yi-plan-view-bad-pointer")?;
     let store = memory_store();
     write_plan(
         &dir,
@@ -167,10 +164,10 @@ fn a_bad_pointer_is_a_typed_refusal_and_no_plan_is_named() -> TestResult {
         Err(CanonicalPlanError::Pointer { id, .. }) => assert_eq!(id, "NOT_a.plan.id"),
         other => return Err(format!("expected a pointer refusal, got {other:?}").into()),
     }
-    let empty = scratch("bad-pointer-empty")?;
+    let empty = Scratch::new("yi-plan-view-bad-pointer-empty")?;
     let (unpointed, _delivered) = harness(&empty, &memory_store(), 12);
     match unpointed.read_plan() {
-        Err(CanonicalPlanError::NoPlanOpen { dir }) => assert_eq!(dir, empty),
+        Err(CanonicalPlanError::NoPlanOpen { dir }) => assert_eq!(dir, *empty),
         other => return Err(format!("expected no-plan, got {other:?}").into()),
     }
     Ok(())
@@ -204,7 +201,7 @@ fn summary_and_frontier_render_the_document() -> TestResult {
 
 #[test]
 fn stale_plan_reminds_once_then_latches_until_touched_moves() -> TestResult {
-    let dir = scratch("stale")?;
+    let dir = Scratch::new("yi-plan-view-stale")?;
     let store = memory_store();
     write_plan(
         &dir,
@@ -237,7 +234,7 @@ fn stale_plan_reminds_once_then_latches_until_touched_moves() -> TestResult {
 
 #[test]
 fn a_touched_move_pokes_the_change_hook_with_the_new_document() -> TestResult {
-    let dir = scratch("hook")?;
+    let dir = Scratch::new("yi-plan-view-hook")?;
     let store = memory_store();
     write_plan(
         &dir,
@@ -272,7 +269,7 @@ fn a_touched_move_pokes_the_change_hook_with_the_new_document() -> TestResult {
 
 #[test]
 fn plan_get_serializes_the_document_with_ready_and_finished() -> TestResult {
-    let dir = scratch("get")?;
+    let dir = Scratch::new("yi-plan-view-get")?;
     let store = memory_store();
     write_plan(
         &dir,

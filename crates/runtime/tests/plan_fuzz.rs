@@ -4,10 +4,13 @@
 //! every insert-check invariant after every op. A failing property shrinks to
 //! the shortest breaking sequence, which then becomes a walkthrough fixture.
 
+#[path = "../../types/tests/support/scratch.rs"]
+mod scratch;
+use scratch::Scratch;
+
 use std::collections::HashMap;
 use std::error::Error;
 use std::num::NonZeroUsize;
-use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -264,21 +267,10 @@ impl Delegate for Stub {
     fn follow_up(&self, _dispatched: &[TodoLabel], _held: usize) {}
 }
 
-static NEXT_CASE: AtomicU32 = AtomicU32::new(0);
-
-struct TempDir(PathBuf);
-
-impl Drop for TempDir {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
-    }
-}
-
 /// `expected` mirrors what the engine may legally have changed: touched moves
 /// once per applied op, version on supersede alone, and the spawn floor only
 /// ever rises — including across a simulated rehydration.
 struct Case {
-    dir: PathBuf,
     store: PlanStore,
     stub: Arc<Stub>,
     engine: PlanEngine,
@@ -286,6 +278,7 @@ struct Case {
     expected: HashMap<String, (u64, u64)>,
     spawn_floor: HashMap<String, u32>,
     pad: u32,
+    dir: Scratch,
 }
 
 enum Bump {
@@ -296,33 +289,25 @@ enum Bump {
 }
 
 impl Case {
-    fn new(width: NonZeroUsize) -> Result<(TempDir, Self), TestCaseError> {
-        let dir = std::env::temp_dir().join(format!(
-            "yi-plan-fuzz-{}-{}",
-            std::process::id(),
-            NEXT_CASE.fetch_add(1, Ordering::SeqCst)
-        ));
-        let _ = std::fs::remove_dir_all(&dir);
-        let store = PlanStore::open(dir.clone()).map_err(fail)?;
+    fn new(width: NonZeroUsize) -> Result<Self, TestCaseError> {
+        let dir = Scratch::new("yi-plan-fuzz").map_err(fail)?;
+        let store = PlanStore::open(dir.to_path_buf()).map_err(fail)?;
         let stub = Arc::new(Stub::default());
         let engine = PlanEngine::new(store.clone(), stub.clone()).with_width(width);
-        Ok((
-            TempDir(dir.clone()),
-            Self {
-                dir,
-                store,
-                stub,
-                engine,
-                width,
-                expected: HashMap::new(),
-                spawn_floor: HashMap::new(),
-                pad: 0,
-            },
-        ))
+        Ok(Self {
+            store,
+            stub,
+            engine,
+            width,
+            expected: HashMap::new(),
+            spawn_floor: HashMap::new(),
+            pad: 0,
+            dir,
+        })
     }
 
     fn rehydrate(&mut self) -> Result<(), TestCaseError> {
-        self.store = PlanStore::open(self.dir.clone()).map_err(fail)?;
+        self.store = PlanStore::open(self.dir.to_path_buf()).map_err(fail)?;
         self.engine = PlanEngine::new(self.store.clone(), self.stub.clone()).with_width(self.width);
         Ok(())
     }
@@ -896,7 +881,7 @@ fn act(case: &mut Case, action: &Action) -> Result<(), TestCaseError> {
 
 fn run_case(width: usize, actions: &[Action]) -> Result<(), TestCaseError> {
     let width = NonZeroUsize::new(width.clamp(1, 3)).unwrap_or(NonZeroUsize::MIN);
-    let (_temp, mut case) = Case::new(width)?;
+    let mut case = Case::new(width)?;
     for action in actions {
         act(&mut case, action)?;
         case.audit()?;

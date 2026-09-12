@@ -7,21 +7,14 @@ use serde_json::{Map, Value, json};
 use yi_tools::{BashTool, GrepTool, Tool, ToolContext, ToolKind, WriteTool, discover_exec_tools};
 use yi_types::message::Content;
 
+#[path = "../../types/tests/support/scratch.rs"]
+mod scratch;
+use scratch::Scratch;
+
 type TestResult = Result<(), Box<dyn Error>>;
 
-struct TempDir(PathBuf);
-
-impl Drop for TempDir {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
-    }
-}
-
-fn temp_dir(tag: &str) -> Result<TempDir, Box<dyn Error>> {
-    let dir = std::env::temp_dir().join(format!("yi-tools-{tag}-{}", std::process::id()));
-    let _ = fs::remove_dir_all(&dir);
-    fs::create_dir_all(&dir)?;
-    Ok(TempDir(dir))
+fn temp_dir(tag: &str) -> std::io::Result<Scratch> {
+    Scratch::new(&format!("yi-tools-{tag}"))
 }
 
 fn args(pairs: &[(&str, Value)]) -> Map<String, Value> {
@@ -52,7 +45,7 @@ fn output_text(output: &yi_tools::ToolOutput) -> String {
 #[test]
 fn write_then_read_round_trips_through_the_working_directory() -> TestResult {
     let dir = temp_dir("read-write")?;
-    let context = ToolContext::new(dir.0.clone());
+    let context = ToolContext::new(dir.to_path_buf());
 
     let written = WriteTool::default().execute(
         args(&[
@@ -89,7 +82,7 @@ fn write_then_read_round_trips_through_the_working_directory() -> TestResult {
 #[test]
 fn read_reports_a_missing_file_as_a_tool_error() -> TestResult {
     let dir = temp_dir("read-missing")?;
-    let context = ToolContext::new(dir.0.clone());
+    let context = ToolContext::new(dir.to_path_buf());
     let read = yi_tools::hashline::tool::HashlineReadTool::new(
         yi_tools::hashline::tool::shared_hashline_state(),
     )
@@ -101,12 +94,12 @@ fn read_reports_a_missing_file_as_a_tool_error() -> TestResult {
 #[test]
 fn a_glob_read_matches_relative_patterns_and_skips_git() -> TestResult {
     let dir = temp_dir("glob")?;
-    fs::create_dir_all(dir.0.join("src"))?;
-    fs::create_dir_all(dir.0.join(".git"))?;
-    fs::write(dir.0.join("src/a.rs"), "")?;
-    fs::write(dir.0.join("src/b.txt"), "")?;
-    fs::write(dir.0.join(".git/c.rs"), "")?;
-    let context = ToolContext::new(dir.0.clone());
+    fs::create_dir_all(dir.join("src"))?;
+    fs::create_dir_all(dir.join(".git"))?;
+    fs::write(dir.join("src/a.rs"), "")?;
+    fs::write(dir.join("src/b.txt"), "")?;
+    fs::write(dir.join(".git/c.rs"), "")?;
+    let context = ToolContext::new(dir.to_path_buf());
 
     let found = read_tool().execute(args(&[("path", json!("**/*.rs"))]), &context);
     let text = output_text(&found);
@@ -119,8 +112,8 @@ fn a_glob_read_matches_relative_patterns_and_skips_git() -> TestResult {
 #[test]
 fn grep_returns_path_line_hits_and_respects_case_flag() -> TestResult {
     let dir = temp_dir("grep")?;
-    fs::write(dir.0.join("one.txt"), "alpha\nNEEDLE here\nomega")?;
-    let context = ToolContext::new(dir.0.clone());
+    fs::write(dir.join("one.txt"), "alpha\nNEEDLE here\nomega")?;
+    let context = ToolContext::new(dir.to_path_buf());
 
     let missed = GrepTool::default().execute(args(&[("pattern", json!("needle"))]), &context);
     assert_eq!(output_text(&missed), "No matches found");
@@ -137,7 +130,7 @@ fn grep_returns_path_line_hits_and_respects_case_flag() -> TestResult {
 #[test]
 fn bash_reports_output_exit_code_and_stderr() -> TestResult {
     let dir = temp_dir("bash")?;
-    let context = ToolContext::new(dir.0.clone());
+    let context = ToolContext::new(dir.to_path_buf());
 
     let ok = BashTool::default().execute(args(&[("command", json!("echo hello"))]), &context);
     assert!(!ok.is_error);
@@ -157,7 +150,7 @@ fn bash_reports_output_exit_code_and_stderr() -> TestResult {
 #[test]
 fn bash_kills_a_running_command_when_cancelled() -> TestResult {
     let dir = temp_dir("bash-cancel")?;
-    let mut context = ToolContext::new(dir.0.clone());
+    let mut context = ToolContext::new(dir.to_path_buf());
     context.cancelled = Arc::new(|| true);
 
     let start = std::time::Instant::now();
@@ -171,7 +164,7 @@ fn bash_kills_a_running_command_when_cancelled() -> TestResult {
 #[test]
 fn bash_times_out_kills_the_command_and_says_how_to_raise_the_limit() -> TestResult {
     let dir = temp_dir("bash-timeout")?;
-    let context = ToolContext::new(dir.0.clone());
+    let context = ToolContext::new(dir.to_path_buf());
     let start = std::time::Instant::now();
     let output = BashTool::default().execute(
         args(&[("command", json!("sleep 5")), ("timeout_secs", json!(1))]),
@@ -194,7 +187,7 @@ fn bash_times_out_kills_the_command_and_says_how_to_raise_the_limit() -> TestRes
 #[test]
 fn a_child_that_leaves_the_group_cannot_hold_the_timeout_open() -> TestResult {
     let dir = temp_dir("bash-escapee")?;
-    let context = ToolContext::new(dir.0.clone());
+    let context = ToolContext::new(dir.to_path_buf());
     let start = std::time::Instant::now();
     let output = BashTool::default().execute(
         args(&[
@@ -220,7 +213,7 @@ fn a_child_that_leaves_the_group_cannot_hold_the_timeout_open() -> TestResult {
 #[test]
 fn a_shorter_auto_background_wins_over_the_timeout() -> TestResult {
     let dir = temp_dir("bash-auto-bg")?;
-    let mut context = ToolContext::new(dir.0.clone());
+    let mut context = ToolContext::new(dir.to_path_buf());
     context.auto_background = Some(std::time::Duration::from_millis(200));
     let output = BashTool::default().execute(
         args(&[("command", json!("sleep 2")), ("timeout_secs", json!(1))]),
@@ -234,7 +227,7 @@ fn a_shorter_auto_background_wins_over_the_timeout() -> TestResult {
 #[test]
 fn bash_refuses_a_root_walk_before_spawning() -> TestResult {
     let dir = temp_dir("bash-root-walk")?;
-    let context = ToolContext::new(dir.0.clone());
+    let context = ToolContext::new(dir.to_path_buf());
     let start = std::time::Instant::now();
     let output = BashTool::default().execute(
         args(&[("command", json!("find / -name slug.py"))]),
@@ -255,20 +248,20 @@ fn discovers_and_runs_an_exec_tool_via_the_schema_contract() -> TestResult {
     use std::os::unix::fs::PermissionsExt;
 
     let dir = temp_dir("exec")?;
-    let script = dir.0.join("greet");
+    let script = dir.join("greet");
     fs::write(
         &script,
         "#!/bin/sh\nif [ \"$1\" = \"--schema\" ]; then\n  printf '{\"name\":\"greet\",\"description\":\"greets\",\"input_schema\":{\"type\":\"object\"},\"kind\":\"read\"}'\n  exit 0\nfi\nread line\nprintf 'greeting for %s' \"$line\"\n",
     )?;
     fs::set_permissions(&script, fs::Permissions::from_mode(0o755))?;
-    fs::write(dir.0.join("not-executable.txt"), "ignored")?;
+    fs::write(dir.join("not-executable.txt"), "ignored")?;
 
-    let tools = discover_exec_tools(&dir.0);
+    let tools = discover_exec_tools(&dir);
     assert_eq!(tools.len(), 1);
     let tool = &tools[0];
     assert_eq!(tool.name(), "greet");
 
-    let context = ToolContext::new(dir.0.clone());
+    let context = ToolContext::new(dir.to_path_buf());
     let output = tool.execute(args(&[("who", json!("yi"))]), &context);
     assert!(!output.is_error, "{}", output_text(&output));
     assert!(output_text(&output).contains("greeting for"));
@@ -278,7 +271,7 @@ fn discovers_and_runs_an_exec_tool_via_the_schema_contract() -> TestResult {
 #[test]
 fn glob_skips_gitignored_paths() -> TestResult {
     let dir = temp_dir("gitignore")?;
-    let root = &dir.0;
+    let root = &dir;
     fs::write(root.join(".gitignore"), "target/\n*.log\n!keep.log\n")?;
     fs::write(root.join("main.rs"), "")?;
     fs::write(root.join("noisy.log"), "")?;
@@ -296,7 +289,7 @@ fn glob_skips_gitignored_paths() -> TestResult {
     assert!(!listed.iter().any(|path| path.starts_with("target")));
     assert!(!listed.contains(&"src/lib.rs".to_owned()));
 
-    let context = ToolContext::new(root.clone());
+    let context = ToolContext::new(root.to_path_buf());
     let output = read_tool().execute(args(&[("path", json!("**/*.rs"))]), &context);
     let text = output_text(&output);
     assert!(text.contains("main.rs"));
@@ -308,14 +301,14 @@ fn glob_skips_gitignored_paths() -> TestResult {
 fn checkpoint_restore_reverts_a_turn() -> TestResult {
     let project = temp_dir("checkpoint-project")?;
     let shadow = temp_dir("checkpoint-shadow")?;
-    fs::write(project.0.join("kept.txt"), "before\n")?;
-    fs::write(project.0.join("removed.txt"), "gone\n")?;
-    let checkpoints = yi_tools::Checkpoints::open(&shadow.0, &project.0)?;
+    fs::write(project.join("kept.txt"), "before\n")?;
+    fs::write(project.join("removed.txt"), "gone\n")?;
+    let checkpoints = yi_tools::Checkpoints::open(&shadow, &project)?;
     let turn_start = checkpoints.capture()?;
 
-    fs::write(project.0.join("kept.txt"), "after\n")?;
-    fs::remove_file(project.0.join("removed.txt"))?;
-    fs::write(project.0.join("created.txt"), "new\n")?;
+    fs::write(project.join("kept.txt"), "after\n")?;
+    fs::remove_file(project.join("removed.txt"))?;
+    fs::write(project.join("created.txt"), "new\n")?;
 
     let mut changed = checkpoints.restore(&turn_start)?;
     changed.sort_by(|left, right| left.path.cmp(&right.path));
@@ -324,9 +317,9 @@ fn checkpoint_restore_reverts_a_turn() -> TestResult {
         .map(|change| change.path.display().to_string())
         .collect();
     assert_eq!(names, ["created.txt", "kept.txt", "removed.txt"]);
-    assert_eq!(fs::read_to_string(project.0.join("kept.txt"))?, "before\n");
-    assert_eq!(fs::read_to_string(project.0.join("removed.txt"))?, "gone\n");
-    assert!(!project.0.join("created.txt").exists());
+    assert_eq!(fs::read_to_string(project.join("kept.txt"))?, "before\n");
+    assert_eq!(fs::read_to_string(project.join("removed.txt"))?, "gone\n");
+    assert!(!project.join("created.txt").exists());
     Ok(())
 }
 
@@ -361,7 +354,7 @@ fn diff_of_identical_files_is_empty() -> TestResult {
 #[test]
 fn diff_applies_with_git_apply() -> TestResult {
     let dir = temp_dir("diff-apply")?;
-    let root = fs::canonicalize(&dir.0)?;
+    let root = fs::canonicalize(&dir)?;
     let file = root.join("sample.txt");
     let pre = "alpha\nbravo\ncharlie\ndelta\n";
     let post = "alpha\nBRAVO\ncharlie\ndelta\necho\n";
@@ -391,10 +384,10 @@ fn diff_applies_with_git_apply() -> TestResult {
 fn checkpoint_diff_reports_what_changed_between_captures() -> TestResult {
     let project = temp_dir("checkpoint-diff")?;
     let shadow = temp_dir("checkpoint-diff-shadow")?;
-    fs::write(project.0.join("notes.txt"), "alpha\n")?;
-    let checkpoints = yi_tools::Checkpoints::open(&shadow.0, &project.0)?;
+    fs::write(project.join("notes.txt"), "alpha\n")?;
+    let checkpoints = yi_tools::Checkpoints::open(&shadow, &project)?;
     let first = checkpoints.capture()?;
-    fs::write(project.0.join("notes.txt"), "beta\n")?;
+    fs::write(project.join("notes.txt"), "beta\n")?;
     let second = checkpoints.capture()?;
 
     let patch = checkpoints.diff(&first, &second)?;
@@ -418,13 +411,16 @@ fn checkpoints_on_one_project_serialize_across_handles() -> TestResult {
     // Enough of a tree that `git add --all` is wide enough to overlap; a
     // two-file project closes the window without proving anything.
     for index in 0..600 {
-        fs::write(project.0.join(format!("f{index}.txt")), "x".repeat(2048))?;
+        fs::write(project.join(format!("f{index}.txt")), "x".repeat(2048))?;
     }
     let failures = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
     let mut workers = Vec::new();
     for _ in 0..2 {
-        let (shadow, project, failures) =
-            (shadow.0.clone(), project.0.clone(), Arc::clone(&failures));
+        let (shadow, project, failures) = (
+            shadow.to_path_buf(),
+            project.to_path_buf(),
+            Arc::clone(&failures),
+        );
         workers.push(std::thread::spawn(move || {
             for _ in 0..8 {
                 let attempt = yi_tools::Checkpoints::open(&shadow, &project)
@@ -449,8 +445,8 @@ fn checkpoints_on_one_project_serialize_across_handles() -> TestResult {
 fn bash_output_is_reduced_and_recoverable() -> TestResult {
     let dir = temp_dir("reduce-bash")?;
     let tool = BashTool::default();
-    let mut context = ToolContext::new(dir.0.clone());
-    context.recovery_dir = Some(dir.0.join("tool-output"));
+    let mut context = ToolContext::new(dir.to_path_buf());
+    context.recovery_dir = Some(dir.join("tool-output"));
     let output = tool.execute(
         args(&[(
             "command",
@@ -488,8 +484,8 @@ fn bash_output_is_reduced_and_recoverable() -> TestResult {
 fn a_result_under_eight_kib_is_never_reduced() -> TestResult {
     let dir = temp_dir("reduce-floor")?;
     let tool = BashTool::default();
-    let mut context = ToolContext::new(dir.0.clone());
-    context.recovery_dir = Some(dir.0.join("tool-output"));
+    let mut context = ToolContext::new(dir.to_path_buf());
+    context.recovery_dir = Some(dir.join("tool-output"));
     let output = tool.execute(
         args(&[(
             "command",
@@ -515,8 +511,8 @@ fn a_result_under_eight_kib_is_never_reduced() -> TestResult {
 fn progress_and_duplicate_lines_compress_before_the_middle_is_cut() -> TestResult {
     let dir = temp_dir("reduce-compress")?;
     let tool = BashTool::default();
-    let mut context = ToolContext::new(dir.0.clone());
-    context.recovery_dir = Some(dir.0.join("tool-output"));
+    let mut context = ToolContext::new(dir.to_path_buf());
+    context.recovery_dir = Some(dir.join("tool-output"));
     let command = "for i in $(seq 1 200); do echo 'duplicate row'; done; printf 'progress 1%%\\rprogress 50%%\\rprogress 100%%\\n'; for i in $(seq 1 1500); do echo row-$i; done";
     let output = tool.execute(args(&[("command", json!(command))]), &context);
     let text = output_text(&output);
@@ -566,7 +562,7 @@ fn a_failing_cargo_run_keeps_its_diagnostics() -> TestResult {
     raw.push_str("error[E0425]: cannot find value `nope` in this scope\n");
     raw.push_str("  --> src/lib.rs:3:5\n");
     let dir = temp_dir("reduce-cargo")?;
-    let reduced = yi_tools::reduce("cargo build", &raw, "", 101, Some(&dir.0), None);
+    let reduced = yi_tools::reduce("cargo build", &raw, "", 101, Some(&dir), None);
     assert!(reduced.text.contains("E0425"), "{}", reduced.text);
     assert!(reduced.out_bytes < reduced.raw_bytes);
     Ok(())
@@ -576,7 +572,7 @@ fn a_failing_cargo_run_keeps_its_diagnostics() -> TestResult {
 fn a_slow_command_backgrounds_and_can_be_polled() -> TestResult {
     let dir = temp_dir("background")?;
     let tool = BashTool::default();
-    let mut context = ToolContext::new(dir.0.clone());
+    let mut context = ToolContext::new(dir.to_path_buf());
     context.auto_background = Some(std::time::Duration::from_millis(200));
     let started = tool.execute(args(&[("command", json!("sleep 1; echo woke"))]), &context);
     let announcement = text_of(&started.result.content);
@@ -602,7 +598,7 @@ fn a_slow_command_backgrounds_and_can_be_polled() -> TestResult {
 fn without_auto_background_a_command_holds_the_turn() -> TestResult {
     let dir = temp_dir("no-background")?;
     let tool = BashTool::default();
-    let context = ToolContext::new(dir.0.clone());
+    let context = ToolContext::new(dir.to_path_buf());
     let output = tool.execute(
         args(&[("command", json!("sleep 0.3; echo done"))]),
         &context,
@@ -655,10 +651,10 @@ fn grep_context_windows_merge_split_and_clip_at_file_edges() -> TestResult {
     // Hits on the first and last lines force both clips, the pair at 4 and 5
     // makes two windows overlap, and the run of x/y/z leaves a real gap.
     fs::write(
-        dir.0.join("c.txt"),
+        dir.join("c.txt"),
         "hit\nb\nc\nhit\nhit\nf\ng\nhit\nx\ny\nz\nhit",
     )?;
-    let context = ToolContext::new(dir.0.clone());
+    let context = ToolContext::new(dir.to_path_buf());
 
     let out = GrepTool::default().execute(
         args(&[("pattern", json!("hit")), ("context", json!(1))]),
@@ -695,8 +691,8 @@ fn grep_context_is_clamped_and_defaults_to_bare_hits() -> TestResult {
             }
         })
         .collect();
-    fs::write(dir.0.join("big.txt"), body)?;
-    let context = ToolContext::new(dir.0.clone());
+    fs::write(dir.join("big.txt"), body)?;
+    let context = ToolContext::new(dir.to_path_buf());
 
     let bare = GrepTool::default().execute(args(&[("pattern", json!("hit"))]), &context);
     assert_eq!(output_text(&bare).lines().count(), 1);
@@ -719,7 +715,7 @@ fn grep_context_is_clamped_and_defaults_to_bare_hits() -> TestResult {
 #[test]
 fn a_write_carries_its_patch_and_line_counts() -> TestResult {
     let dir = temp_dir("write-patch")?;
-    let context = ToolContext::new(dir.0.clone());
+    let context = ToolContext::new(dir.to_path_buf());
     let tool = WriteTool::default();
 
     let created = tool.execute(
@@ -749,7 +745,7 @@ fn a_write_carries_its_patch_and_line_counts() -> TestResult {
 #[test]
 fn a_write_over_a_file_past_the_cap_claims_no_patch() -> TestResult {
     let dir = temp_dir("write-cap")?;
-    let context = ToolContext::new(dir.0.clone());
+    let context = ToolContext::new(dir.to_path_buf());
     let tool = WriteTool::default();
     let big = "x".repeat(yi_tools::DETAIL_CAP + 1);
 
@@ -792,7 +788,7 @@ impl yi_tools::KernelBridge for OneCell {
 #[test]
 fn a_kernel_edit_arrives_as_a_real_patch() -> TestResult {
     let dir = temp_dir("kernel-diff")?;
-    let context = ToolContext::new(dir.0.clone());
+    let context = ToolContext::new(dir.to_path_buf());
     let tool = yi_tools::IpythonTool {
         bridge: Arc::new(OneCell(yi_types::kernel::ExecuteResult {
             stdout: String::new(),
@@ -831,9 +827,9 @@ fn a_kernel_edit_arrives_as_a_real_patch() -> TestResult {
 #[test]
 fn grep_v2_regex_type_filter_and_offset_paging() -> TestResult {
     let dir = temp_dir("grep-v2")?;
-    fs::write(dir.0.join("a.rs"), "fn alpha() {}\nfn beta() {}\n")?;
-    fs::write(dir.0.join("b.py"), "def alpha():\n    pass\n")?;
-    let context = ToolContext::new(dir.0.clone());
+    fs::write(dir.join("a.rs"), "fn alpha() {}\nfn beta() {}\n")?;
+    fs::write(dir.join("b.py"), "def alpha():\n    pass\n")?;
+    let context = ToolContext::new(dir.to_path_buf());
     let grep = GrepTool::default();
 
     let literal = grep.execute(
@@ -877,8 +873,8 @@ fn grep_v2_regex_type_filter_and_offset_paging() -> TestResult {
 #[test]
 fn grep_mints_snapshot_tags_when_hashline_attached() -> TestResult {
     let dir = temp_dir("grep-tags")?;
-    fs::write(dir.0.join("x.rs"), "one\ntwo\nthree\n")?;
-    let context = ToolContext::new(dir.0.clone());
+    fs::write(dir.join("x.rs"), "one\ntwo\nthree\n")?;
+    let context = ToolContext::new(dir.to_path_buf());
     let state = yi_tools::hashline::tool::shared_hashline_state();
     let grep = GrepTool {
         hashline: Some(std::sync::Arc::clone(&state)),
@@ -890,7 +886,7 @@ fn grep_mints_snapshot_tags_when_hashline_attached() -> TestResult {
     let text = output_text(&out);
     assert!(text.contains("#"), "tag header missing: {text}");
     assert!(text.contains("2:two"), "{text}");
-    let canonical = dir.0.join("x.rs").canonicalize()?.display().to_string();
+    let canonical = dir.join("x.rs").canonicalize()?.display().to_string();
     let guard = state.lock().map_err(|_| "poisoned")?;
     let snapshot = guard.snapshots.head(&canonical).ok_or("no snapshot")?;
     let seen = snapshot.seen_lines.as_ref().ok_or("no seen lines")?;
@@ -904,10 +900,10 @@ fn grep_mints_snapshot_tags_when_hashline_attached() -> TestResult {
 fn read_ranges_and_line_clip() -> TestResult {
     let dir = temp_dir("read-v2")?;
     let body: String = (1..=60).map(|n| format!("line {n}\n")).collect();
-    fs::write(dir.0.join("r.txt"), &body)?;
+    fs::write(dir.join("r.txt"), &body)?;
     let state = yi_tools::hashline::tool::shared_hashline_state();
     let read = yi_tools::hashline::tool::HashlineReadTool::new(std::sync::Arc::clone(&state));
-    let context = ToolContext::new(dir.0.clone());
+    let context = ToolContext::new(dir.to_path_buf());
     let out = read.execute(
         args(&[
             ("path", json!("r.txt")),
@@ -934,12 +930,12 @@ fn read_ranges_and_line_clip() -> TestResult {
     assert!(both.is_error);
 
     let long = format!("short\n{}\n", "x".repeat(5_000));
-    fs::write(dir.0.join("wide.txt"), &long)?;
+    fs::write(dir.join("wide.txt"), &long)?;
     let out = read.execute(args(&[("path", json!("wide.txt"))]), &context);
     let text = output_text(&out);
     assert!(text.contains("were clipped"), "{text}");
     assert!(text.contains("sed -n '2p'"), "{text}");
-    let canonical = dir.0.join("wide.txt").canonicalize()?.display().to_string();
+    let canonical = dir.join("wide.txt").canonicalize()?.display().to_string();
     let guard = state.lock().map_err(|_| "poisoned")?;
     let snapshot = guard.snapshots.head(&canonical).ok_or("no snapshot")?;
     let seen = snapshot.seen_lines.as_ref().ok_or("no seen lines")?;
@@ -953,11 +949,11 @@ fn read_ranges_and_line_clip() -> TestResult {
 fn read_footers_name_the_next_offset() -> TestResult {
     let dir = temp_dir("read-footers")?;
     let body: String = (1..=200).map(|n| format!("line {n}\n")).collect();
-    fs::write(dir.0.join("r.txt"), &body)?;
+    fs::write(dir.join("r.txt"), &body)?;
     let read = yi_tools::hashline::tool::HashlineReadTool::new(
         yi_tools::hashline::tool::shared_hashline_state(),
     );
-    let context = ToolContext::new(dir.0.clone());
+    let context = ToolContext::new(dir.to_path_buf());
     let windows = read.execute(
         args(&[
             ("path", json!("r.txt")),
@@ -971,7 +967,7 @@ fn read_footers_name_the_next_offset() -> TestResult {
     let wide: String = (1..=400)
         .map(|n| format!("{n} {}\n", "x".repeat(400)))
         .collect();
-    fs::write(dir.0.join("wide.txt"), &wide)?;
+    fs::write(dir.join("wide.txt"), &wide)?;
     let capped = read.execute(args(&[("path", json!("wide.txt"))]), &context);
     let text = output_text(&capped);
     assert!(text.contains("byte budget"), "{text}");
@@ -1007,9 +1003,9 @@ fn read_footers_name_the_next_offset() -> TestResult {
 fn grep_cap_and_offset_footers_are_honest() -> TestResult {
     let dir = temp_dir("grep-caps")?;
     let body: String = (1..=2_000).map(|n| format!("needle {n}\n")).collect();
-    fs::write(dir.0.join("full.txt"), &body)?;
+    fs::write(dir.join("full.txt"), &body)?;
     let grep = yi_tools::GrepTool::default();
-    let context = ToolContext::new(dir.0.clone());
+    let context = ToolContext::new(dir.to_path_buf());
     let exact = grep.execute(args(&[("pattern", json!("needle"))]), &context);
     let text = output_text(&exact);
     assert!(!text.contains("match collection stopped"), "{text}");
@@ -1040,7 +1036,7 @@ fn grep_cap_and_offset_footers_are_honest() -> TestResult {
 #[test]
 fn bash_details_carry_a_command_category() -> TestResult {
     let dir = temp_dir("bash-cat")?;
-    let context = ToolContext::new(dir.0.clone());
+    let context = ToolContext::new(dir.to_path_buf());
     let out = BashTool::default().execute(args(&[("command", json!("ls"))]), &context);
     assert_eq!(
         out.result.details.get("category").and_then(Value::as_str),
@@ -1052,8 +1048,8 @@ fn bash_details_carry_a_command_category() -> TestResult {
 #[test]
 fn a_bash_view_of_one_file_carries_an_edit_anchor() -> TestResult {
     let dir = temp_dir("bash-bridge")?;
-    fs::write(dir.0.join("a.txt"), "one\ntwo\nthree\n")?;
-    let context = ToolContext::new(dir.0.clone());
+    fs::write(dir.join("a.txt"), "one\ntwo\nthree\n")?;
+    let context = ToolContext::new(dir.to_path_buf());
     let state = yi_tools::hashline::tool::shared_hashline_state();
     let bash = BashTool {
         hashline: Some(std::sync::Arc::clone(&state)),
@@ -1076,10 +1072,7 @@ fn a_bash_view_of_one_file_carries_an_edit_anchor() -> TestResult {
         &context,
     );
     assert!(!edit.is_error, "{}", output_text(&edit));
-    assert_eq!(
-        fs::read_to_string(dir.0.join("a.txt"))?,
-        "one\nTWO\nthree\n"
-    );
+    assert_eq!(fs::read_to_string(dir.join("a.txt"))?, "one\nTWO\nthree\n");
 
     let piped = bash.execute(args(&[("command", json!("cat a.txt | head -1"))]), &context);
     assert!(
@@ -1116,10 +1109,10 @@ fn a_read_only_command_is_a_read_kind_call() {
 #[test]
 fn a_directory_reads_as_a_listing_with_skeletons() -> TestResult {
     let dir = temp_dir("read-dir")?;
-    fs::create_dir_all(dir.0.join("src/sub"))?;
-    fs::write(dir.0.join("src/a.rs"), "pub fn alpha() {}\nstruct Beta;\n")?;
-    fs::write(dir.0.join("src/notes.txt"), "plain\n")?;
-    let context = ToolContext::new(dir.0.clone());
+    fs::create_dir_all(dir.join("src/sub"))?;
+    fs::write(dir.join("src/a.rs"), "pub fn alpha() {}\nstruct Beta;\n")?;
+    fs::write(dir.join("src/notes.txt"), "plain\n")?;
+    let context = ToolContext::new(dir.to_path_buf());
     let out = read_tool().execute(args(&[("path", json!("src"))]), &context);
     let text = output_text(&out);
     assert!(text.starts_with("[src]\nsub/\na.rs  "), "{text}");
@@ -1135,11 +1128,11 @@ fn a_directory_reads_as_a_listing_with_skeletons() -> TestResult {
 fn find_shows_the_block_and_the_references_in_one_read() -> TestResult {
     let dir = temp_dir("read-find")?;
     fs::write(
-        dir.0.join("lib.rs"),
+        dir.join("lib.rs"),
         "fn helper() {\n    1\n}\n\nfn main() {\n    helper();\n}\n",
     )?;
-    fs::write(dir.0.join("other.rs"), "use crate::helper;\n")?;
-    let context = ToolContext::new(dir.0.clone());
+    fs::write(dir.join("other.rs"), "use crate::helper;\n")?;
+    let context = ToolContext::new(dir.to_path_buf());
     let out = read_tool().execute(
         args(&[("path", json!("lib.rs")), ("find", json!("fn helper"))]),
         &context,
@@ -1179,8 +1172,8 @@ fn a_read_cut_by_the_line_cap_ends_with_the_skeleton() -> TestResult {
         big.push_str(&format!("let x{index} = {index};\n"));
     }
     big.push_str("fn tail() {}\n");
-    fs::write(dir.0.join("big.rs"), &big)?;
-    let context = ToolContext::new(dir.0.clone());
+    fs::write(dir.join("big.rs"), &big)?;
+    let context = ToolContext::new(dir.to_path_buf());
     let out = read_tool().execute(args(&[("path", json!("big.rs"))]), &context);
     let text = output_text(&out);
     assert!(
@@ -1199,10 +1192,10 @@ fn a_read_cut_by_the_line_cap_ends_with_the_skeleton() -> TestResult {
 fn grep_def_count_and_block_modes() -> TestResult {
     let dir = temp_dir("grep-modes")?;
     fs::write(
-        dir.0.join("a.rs"),
+        dir.join("a.rs"),
         "fn alpha() {\n    beta();\n}\nfn beta() {\n    alpha();\n    alpha();\n}\n",
     )?;
-    let context = ToolContext::new(dir.0.clone());
+    let context = ToolContext::new(dir.to_path_buf());
     let grep = GrepTool {
         hashline: Some(yi_tools::hashline::tool::shared_hashline_state()),
     };
@@ -1260,9 +1253,9 @@ fn grep_def_count_and_block_modes() -> TestResult {
 #[test]
 fn grep_replace_previews_then_applies_and_tags() -> TestResult {
     let dir = temp_dir("grep-replace")?;
-    fs::write(dir.0.join("a.rs"), "fn old_name() {}\n")?;
-    fs::write(dir.0.join("b.rs"), "old_name();\r\n")?;
-    let context = ToolContext::new(dir.0.clone());
+    fs::write(dir.join("a.rs"), "fn old_name() {}\n")?;
+    fs::write(dir.join("b.rs"), "old_name();\r\n")?;
+    let context = ToolContext::new(dir.to_path_buf());
     let state = yi_tools::hashline::tool::shared_hashline_state();
     let grep = GrepTool {
         hashline: Some(Arc::clone(&state)),
@@ -1277,10 +1270,7 @@ fn grep_replace_previews_then_applies_and_tags() -> TestResult {
     let text = output_text(&preview);
     assert!(text.contains("+fn new_name() {}"), "{text}");
     assert!(text.contains("[preview: 2 files would change"), "{text}");
-    assert_eq!(
-        fs::read_to_string(dir.0.join("a.rs"))?,
-        "fn old_name() {}\n"
-    );
+    assert_eq!(fs::read_to_string(dir.join("a.rs"))?, "fn old_name() {}\n");
     assert_eq!(
         grep.kind_for(&args(&[("pattern", json!("x")), ("replace", json!("y"))])),
         ToolKind::Read
@@ -1292,13 +1282,10 @@ fn grep_replace_previews_then_applies_and_tags() -> TestResult {
         "{}",
         output_text(&applied)
     );
-    assert_eq!(
-        fs::read_to_string(dir.0.join("a.rs"))?,
-        "fn new_name() {}\n"
-    );
-    assert_eq!(fs::read_to_string(dir.0.join("b.rs"))?, "new_name();\r\n");
+    assert_eq!(fs::read_to_string(dir.join("a.rs"))?, "fn new_name() {}\n");
+    assert_eq!(fs::read_to_string(dir.join("b.rs"))?, "new_name();\r\n");
     assert_eq!(grep.kind_for(&preview_args()), ToolKind::Write);
-    let canonical = dir.0.join("a.rs").canonicalize()?.display().to_string();
+    let canonical = dir.join("a.rs").canonicalize()?.display().to_string();
     let guard = state.lock().map_err(|_| "poisoned")?;
     assert!(
         guard.snapshots.head(&canonical).is_some(),
@@ -1325,10 +1312,10 @@ fn every_cut_view_names_its_cap() -> TestResult {
     for index in 0..2_100 {
         many.push_str(&format!("let x{index} = 1;\n"));
     }
-    fs::write(dir.0.join("many.rs"), &many)?;
-    fs::write(dir.0.join("notes.txt"), "alpha beta\n")?;
-    fs::write(dir.0.join("blob.bin"), b"alpha\0beta")?;
-    let context = ToolContext::new(dir.0.clone());
+    fs::write(dir.join("many.rs"), &many)?;
+    fs::write(dir.join("notes.txt"), "alpha beta\n")?;
+    fs::write(dir.join("blob.bin"), b"alpha\0beta")?;
+    let context = ToolContext::new(dir.to_path_buf());
 
     let capped = read_tool().execute(args(&[("path", json!("many.rs"))]), &context);
     let text = output_text(&capped);
@@ -1433,7 +1420,7 @@ fn an_edit_that_breaks_python_says_so_in_its_result() -> TestResult {
         return Ok(());
     }
     let dir = temp_dir("syntax-py")?;
-    let context = ToolContext::new(dir.0.clone());
+    let context = ToolContext::new(dir.to_path_buf());
     let state = yi_tools::hashline::tool::shared_hashline_state();
     let write = WriteTool {
         hashline: Some(Arc::clone(&state)),
@@ -1484,7 +1471,7 @@ fn an_edit_that_breaks_python_says_so_in_its_result() -> TestResult {
 #[test]
 fn a_write_of_bad_json_reports_the_line() -> TestResult {
     let dir = temp_dir("syntax-json")?;
-    let context = ToolContext::new(dir.0.clone());
+    let context = ToolContext::new(dir.to_path_buf());
     let written = WriteTool::default().execute(
         args(&[
             ("path", json!("a.json")),
@@ -1500,7 +1487,7 @@ fn a_write_of_bad_json_reports_the_line() -> TestResult {
 #[test]
 fn a_file_with_no_checker_gets_no_verdict() -> TestResult {
     let dir = temp_dir("syntax-none")?;
-    let context = ToolContext::new(dir.0.clone());
+    let context = ToolContext::new(dir.to_path_buf());
     let written = WriteTool::default().execute(
         args(&[("path", json!("a.zzz")), ("content", json!("anything\n"))]),
         &context,

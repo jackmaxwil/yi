@@ -15,6 +15,7 @@ is budgeted and user-run (README, "Budget discipline"; plan law 3).
 """
 
 import argparse
+import atexit
 import json
 import os
 import shutil
@@ -224,6 +225,10 @@ def run_home():
     """A fresh absolute HOME per process: a run is a harness, never the caller's ~/.yi."""
     if not _RUN_HOME:
         _RUN_HOME.append(tempfile.mkdtemp(prefix="yi-evals-home-"))
+        # Incident: each run left its HOME behind, ~650 MB of kernel venv and uv cache;
+        # 95 of them filled the disk. The uv cache is the caller's, so a venv costs a clone.
+        atexit.register(shutil.rmtree, _RUN_HOME[0], True)
+        os.environ.setdefault("UV_CACHE_DIR", str(Path.home() / ".cache" / "uv"))
         config = Path(_RUN_HOME[0]) / ".yi" / "config.json"
         config.parent.mkdir(parents=True, exist_ok=True)
         config.write_text(json.dumps({"telemetry": {"enabled": True}}))

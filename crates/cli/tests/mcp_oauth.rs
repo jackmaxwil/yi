@@ -3,6 +3,10 @@ use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
 use std::process::{Child, Stdio};
 
+#[path = "../../types/tests/support/scratch.rs"]
+mod scratch;
+use scratch::Scratch;
+
 type TestResult = Result<(), Box<dyn Error>>;
 
 #[expect(
@@ -44,9 +48,8 @@ fn start_fixture() -> Result<Fixture, Box<dyn Error>> {
     Ok(Fixture { child, port })
 }
 
-fn oauth_home(port: u16) -> Result<PathBuf, Box<dyn Error>> {
-    let home = std::env::temp_dir().join(format!("yi-mcp-oauth-{}-{port}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&home);
+fn oauth_home(port: u16) -> Result<Scratch, Box<dyn Error>> {
+    let home = Scratch::new(&format!("yi-mcp-oauth-{port}"))?;
     std::fs::create_dir_all(home.join(".yi"))?;
     std::fs::write(
         home.join(".yi/config.json"),
@@ -174,7 +177,6 @@ fn oauth_login_http_ops_refresh_and_logout_flow() -> TestResult {
         denied.stderr
     );
 
-    std::fs::remove_dir_all(&home)?;
     Ok(())
 }
 
@@ -198,7 +200,6 @@ fn a_401_never_starts_a_login_flow() -> TestResult {
     )?)?;
     assert_eq!(sessions["sessions"]["web"]["state"], "unauthorized");
 
-    std::fs::remove_dir_all(&home)?;
     Ok(())
 }
 
@@ -231,7 +232,6 @@ fn stale_refresh_locks_are_broken_not_fatal() -> TestResult {
     let call = yi_mcp(&home, &["@web", "tools-list", "--json"])?;
     assert_eq!(call.code, 0, "stale lock must be broken: {}", call.stderr);
 
-    std::fs::remove_dir_all(&home)?;
     Ok(())
 }
 

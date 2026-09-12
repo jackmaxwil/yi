@@ -1,3 +1,7 @@
+#[path = "../../types/tests/support/scratch.rs"]
+mod scratch;
+use scratch::Scratch;
+
 use std::error::Error;
 use std::sync::Arc;
 
@@ -107,9 +111,8 @@ fn switching_model_clamps_a_level_the_new_model_rejects() {
 /// recording that as a change filled the transcript with noise.
 #[test]
 fn setting_the_same_model_records_nothing() -> TestResult {
-    let dir = std::env::temp_dir().join(format!("yi-effort-noop-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    let mut repo = JsonlRepo::new(dir.clone(), "/tmp/yi-effort-test");
+    let dir = Scratch::new("yi-effort-noop")?;
+    let mut repo = JsonlRepo::new(dir.to_path_buf(), "/tmp/yi-effort-test");
     let store = repo.create(CreateOptions::default())?;
 
     let provider = Arc::new(ProviderStream::new(None, None));
@@ -118,8 +121,6 @@ fn setting_the_same_model_records_nothing() -> TestResult {
     let before = entry_kinds(&store)?;
     session.set_model(model("m", true, None));
     assert_eq!(entry_kinds(&store)?, before);
-
-    let _ = std::fs::remove_dir_all(&dir);
     Ok(())
 }
 
@@ -128,9 +129,8 @@ fn setting_the_same_model_records_nothing() -> TestResult {
 /// set after `attach_store` wins.
 #[test]
 fn a_set_after_attach_outranks_the_restored_level() -> TestResult {
-    let dir = std::env::temp_dir().join(format!("yi-effort-pin-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    let mut repo = JsonlRepo::new(dir.clone(), "/tmp/yi-effort-test");
+    let dir = Scratch::new("yi-effort-pin")?;
+    let mut repo = JsonlRepo::new(dir.to_path_buf(), "/tmp/yi-effort-test");
     let store = repo.create(CreateOptions::default())?;
     let id = yi_session::lock_session(&store).metadata().id.clone();
 
@@ -145,8 +145,6 @@ fn a_set_after_attach_outranks_the_restored_level() -> TestResult {
     assert_eq!(second.effort(), Effort::Low, "the store wins on its own");
     second.set_effort(Effort::High);
     assert_eq!(second.effort(), Effort::High);
-
-    let _ = std::fs::remove_dir_all(&dir);
     Ok(())
 }
 
@@ -164,9 +162,8 @@ fn entry_kinds(store: &yi_session::SharedSession) -> Result<Vec<String>, Box<dyn
 
 #[test]
 fn resume_comes_back_on_the_model_and_effort_it_left_on() -> TestResult {
-    let dir = std::env::temp_dir().join(format!("yi-effort-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    let mut repo = JsonlRepo::new(dir.clone(), "/tmp/yi-effort-test");
+    let dir = Scratch::new("yi-effort")?;
+    let mut repo = JsonlRepo::new(dir.to_path_buf(), "/tmp/yi-effort-test");
     let store = repo.create(CreateOptions::default())?;
     let id = yi_session::lock_session(&store).metadata().id.clone();
 
@@ -185,7 +182,5 @@ fn resume_comes_back_on_the_model_and_effort_it_left_on() -> TestResult {
     second.attach_store(reopened)?;
     assert_eq!(second.effort(), Effort::Low);
     assert_eq!(second.model().id, "claude-haiku-4-5");
-
-    let _ = std::fs::remove_dir_all(&dir);
     Ok(())
 }

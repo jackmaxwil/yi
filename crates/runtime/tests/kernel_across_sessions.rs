@@ -1,5 +1,9 @@
 //! `kernel://<child>/var` is a parent reading a namespace that is not its own,
 //! so the proof is one map shared by two sessions the wiring built.
+#[path = "../../types/tests/support/scratch.rs"]
+mod scratch;
+use scratch::Scratch;
+
 use std::error::Error;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -62,9 +66,7 @@ async fn wait_for_status(host: &Arc<SubagentHost>, name: &str, status: &str) -> 
 
 #[tokio::test]
 async fn a_parent_reads_a_variable_out_of_its_childs_kernel() -> TestResult {
-    let root = std::env::temp_dir().join(format!("yi-kernel-across-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&root);
-    std::fs::create_dir_all(&root)?;
+    let root = Scratch::new("yi-kernel-across")?;
     let provider = Arc::new(ProviderStream::new(None, None));
     let mut code = Map::new();
     code.insert("code".to_owned(), Value::String("answer = 42".to_owned()));
@@ -92,7 +94,7 @@ async fn a_parent_reads_a_variable_out_of_its_childs_kernel() -> TestResult {
             provider: Arc::clone(&provider),
             system_prompt: String::new(),
             tool_execution: ExecutionMode::Sequential,
-            cwd: root.clone(),
+            cwd: root.to_path_buf(),
             lane_slots: 1,
             deadline: None,
             gates: Default::default(),
@@ -130,7 +132,7 @@ async fn a_parent_reads_a_variable_out_of_its_childs_kernel() -> TestResult {
 
     let family = root.join("family");
     let resolver = Arc::new(
-        Resolver::new(root.clone(), Wall::default())
+        Resolver::new(root.to_path_buf(), Wall::default())
             .with_kernel_variables(kernels)
             .with_family_dir(family.clone()),
     );
@@ -145,6 +147,5 @@ async fn a_parent_reads_a_variable_out_of_its_childs_kernel() -> TestResult {
     let (path, bytes) = tokio::task::spawn_blocking(move || dumper.dump_kernel(&object)).await??;
     assert_eq!(path, family.join("helper.answer.dill"));
     assert!(bytes > 0 && path.is_file(), "{path:?} {bytes}");
-    let _ = std::fs::remove_dir_all(&root);
     Ok(())
 }

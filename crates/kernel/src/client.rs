@@ -476,6 +476,16 @@ impl Inner {
     }
 }
 
+/// Incident: only shutdown and dispose removed the connection dir, so every manager dropped
+/// without one left a `yi-kernel-*` dir in the temp dir; 1,393 had piled up by 2026-09-11.
+impl Drop for Inner {
+    fn drop(&mut self) {
+        if let Some(dir) = self.temp_dir.get_mut().ok().and_then(Option::take) {
+            let _ = std::fs::remove_dir_all(dir);
+        }
+    }
+}
+
 pub(crate) fn trim_tail(text: &mut String) {
     if text.len() > STDERR_TAIL_CAP {
         let boundary = text
@@ -1110,5 +1120,39 @@ fn aborted_result() -> ExecuteResult {
         status: ExecuteStatus::Aborted,
         error: None,
         duration_ms: 0,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{KernelManager, KernelOptions};
+    use crate::scratch::Scratch;
+
+    #[test]
+    fn a_manager_dropped_without_shutdown_removes_its_connection_dir()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = Scratch::new("yi-kernel-drop")?;
+        let connection = crate::connection::make_connection(&root)?;
+        let manager = KernelManager::new(KernelOptions {
+            python: None,
+            cwd: None,
+            env: Vec::new(),
+            username: "yi".to_owned(),
+            home: root.to_path_buf(),
+            runtime_source_dir: root.to_path_buf(),
+            host: None,
+            on_progress: None,
+            snapshot: None,
+            wrap: None,
+        })?;
+        if let Ok(mut slot) = manager.inner.temp_dir.lock() {
+            *slot = Some(connection.temp_dir.clone());
+        }
+        drop(manager);
+        assert!(
+            !connection.temp_dir.exists(),
+            "connection dir survived the drop"
+        );
+        Ok(())
     }
 }

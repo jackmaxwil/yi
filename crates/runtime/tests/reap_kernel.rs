@@ -1,3 +1,7 @@
+#[path = "../../types/tests/support/scratch.rs"]
+mod scratch;
+use scratch::Scratch;
+
 use std::error::Error;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -85,8 +89,7 @@ async fn run_cell(service: &Arc<KernelService>, code: &'static str) -> Result<St
 /// child, reap the child, and the kernel's python process must be gone.
 #[tokio::test]
 async fn a_reaped_childs_booted_kernel_process_is_gone() -> TestResult {
-    let root = std::env::temp_dir().join(format!("yi-reap-kernel-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&root);
+    let root = Scratch::new("yi-reap-kernel")?;
     let kernel_slot: Arc<Mutex<Option<Arc<KernelService>>>> = Arc::new(Mutex::new(None));
     let factory_slot = Arc::clone(&kernel_slot);
     let (events, _keep) = tokio::sync::broadcast::channel(64);
@@ -94,7 +97,7 @@ async fn a_reaped_childs_booted_kernel_process_is_gone() -> TestResult {
         depth: 0,
         max_depth: 1,
         max_children: 4,
-        parent_session_dir: root.clone(),
+        parent_session_dir: root.to_path_buf(),
         cwd: std::env::temp_dir(),
         home: std::env::temp_dir(),
         lane_slots: 1,

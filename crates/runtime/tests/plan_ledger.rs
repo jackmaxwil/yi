@@ -1,9 +1,11 @@
 //! §12's yield over the op stream: the outcome ledger, the critical path, and
 //! the discovery ratio, plus the emitter that makes any of them possible.
 
+#[path = "../../types/tests/support/scratch.rs"]
+mod scratch;
+use scratch::Scratch;
+
 use std::error::Error;
-use std::path::PathBuf;
-use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
 use yi_runtime::plan::ledger::{self, report};
@@ -17,8 +19,6 @@ use yi_types::plan::ledger::PlanOpRecord;
 use yi_types::url::Url;
 
 type TestResult = Result<(), Box<dyn Error>>;
-
-static NEXT_DIR: AtomicU32 = AtomicU32::new(0);
 
 #[derive(Default)]
 struct Recorder(Mutex<Vec<PlanOpRecord>>);
@@ -49,16 +49,6 @@ impl Delegate for Nobody {
     fn follow_up(&self, _dispatched: &[TodoLabel], _held: usize) {}
 }
 
-fn scratch() -> Result<PathBuf, Box<dyn Error>> {
-    let dir = std::env::temp_dir().join(format!(
-        "yi-plan-ledger-{}-{}",
-        std::process::id(),
-        NEXT_DIR.fetch_add(1, Ordering::SeqCst)
-    ));
-    let _ = std::fs::remove_dir_all(&dir);
-    Ok(dir)
-}
-
 fn spec(label: &str, after: &[&str]) -> Result<TodoSpec, Box<dyn Error>> {
     Ok(TodoSpec {
         label: TodoLabel::new(label)?,
@@ -81,9 +71,9 @@ fn owner(op: Op) -> OpRequest {
 
 #[test]
 fn every_applied_op_reaches_the_sink_with_the_state_it_moved_between() -> TestResult {
-    let dir = scratch()?;
+    let dir = Scratch::new("yi-plan-ledger")?;
     let seen = Arc::new(Recorder::default());
-    let engine = PlanEngine::new(PlanStore::open(dir.clone())?, Arc::new(Nobody))
+    let engine = PlanEngine::new(PlanStore::open(dir.to_path_buf())?, Arc::new(Nobody))
         .with_op_sink(Arc::clone(&seen) as Arc<dyn OpSink>);
     engine.apply(owner(Op::Init {
         goal: GoalText::new("ship it")?,
@@ -112,7 +102,6 @@ fn every_applied_op_reaches_the_sink_with_the_state_it_moved_between() -> TestRe
     assert_eq!(started.to, Some(TodoStateName::Running));
     assert_eq!(started.todos, 2, "the count rides every record");
     assert_eq!(started.actor, "main");
-    let _ = std::fs::remove_dir_all(&dir);
     Ok(())
 }
 

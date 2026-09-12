@@ -3,6 +3,10 @@
 //! provider and prints a BEHAVIOR verdict line that check_behavior.py locks.
 //! A red case is data, not a test failure; only a broken harness fails here.
 
+#[path = "../../types/tests/support/scratch.rs"]
+mod scratch;
+use scratch::Scratch;
+
 use std::collections::VecDeque;
 use std::error::Error;
 use std::path::{Path, PathBuf};
@@ -562,26 +566,20 @@ fn trace_of(recorded: &Recorded, outcomes: &[Option<String>], roots: &[String]) 
 }
 
 async fn replay(cassette: &Value, id: &str, run: u32) -> Result<(Vec<String>, Vec<String>), Fatal> {
-    let root = std::env::temp_dir().join(format!("yi-behavior-{}-{id}-{run}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&root);
-    std::fs::create_dir_all(&root).map_err(|error| error.to_string())?;
+    let root =
+        Scratch::new(&format!("yi-behavior-{id}-{run}")).map_err(|error| error.to_string())?;
     let mut roots = vec![root.to_string_lossy().into_owned()];
     if let Ok(canonical) = root.canonicalize() {
         roots.insert(0, canonical.to_string_lossy().into_owned());
     }
 
-    let outcome = async {
-        let recorded = drive(cassette, &root).await?;
-        let mut outcomes = Vec::new();
-        for assertion in items(cassette, "assertions") {
-            outcomes.push(evaluate(assertion, &recorded, &root)?);
-        }
-        let trace = trace_of(&recorded, &outcomes, &roots);
-        Ok((trace, outcomes.into_iter().flatten().collect::<Vec<_>>()))
+    let recorded = drive(cassette, &root).await?;
+    let mut outcomes = Vec::new();
+    for assertion in items(cassette, "assertions") {
+        outcomes.push(evaluate(assertion, &recorded, &root)?);
     }
-    .await;
-    let _ = std::fs::remove_dir_all(&root);
-    outcome
+    let trace = trace_of(&recorded, &outcomes, &roots);
+    Ok((trace, outcomes.into_iter().flatten().collect::<Vec<_>>()))
 }
 
 fn one_line(text: &str) -> String {

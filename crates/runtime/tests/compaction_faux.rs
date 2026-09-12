@@ -1,3 +1,7 @@
+#[path = "../../types/tests/support/scratch.rs"]
+mod scratch;
+use scratch::Scratch;
+
 use std::error::Error;
 use std::sync::Arc;
 
@@ -82,9 +86,8 @@ fn compaction_entries(store: &yi_session::SharedSession) -> Vec<Entry> {
 #[tokio::test]
 async fn auto_compaction_fires_at_the_message_boundary_and_persists() -> Result<(), Box<dyn Error>>
 {
-    let root = std::env::temp_dir().join(format!("yi-compact-e2e-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&root);
-    let mut repo = JsonlRepo::new(root.clone(), "/tmp/yi-compact-test");
+    let root = Scratch::new("yi-compact-e2e")?;
+    let mut repo = JsonlRepo::new(root.to_path_buf(), "/tmp/yi-compact-test");
     let store = repo.create(CreateOptions {
         id: Some("compact-one".to_owned()),
         ..CreateOptions::default()
@@ -166,7 +169,6 @@ async fn auto_compaction_fires_at_the_message_boundary_and_persists() -> Result<
         ),
         "projection after reopen must start from the compaction summary"
     );
-    std::fs::remove_dir_all(&root)?;
     Ok(())
 }
 
@@ -204,17 +206,16 @@ async fn compact_now_applies_immediately_when_idle() -> Result<(), Box<dyn Error
 /// Both recall tests need the same shape: a probe turn whose long tool body hides `needle`,
 /// then two live asks that trip the boundary and compact that turn away.
 struct Recalled {
-    root: std::path::PathBuf,
     store: yi_session::SharedSession,
     session: AgentSession,
     needle_id: String,
     body: String,
+    root: Scratch,
 }
 
 async fn seed_and_compact(tag: &str, needle: &str) -> Result<Recalled, Box<dyn Error>> {
-    let root = std::env::temp_dir().join(format!("yi-compact-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&root);
-    let mut repo = JsonlRepo::new(root.clone(), format!("/tmp/yi-compact-{tag}"));
+    let root = Scratch::new(&format!("yi-compact-{tag}"))?;
+    let mut repo = JsonlRepo::new(root.to_path_buf(), format!("/tmp/yi-compact-{tag}"));
     let store = repo.create(CreateOptions {
         id: Some(format!("compact-{tag}")),
         ..CreateOptions::default()
@@ -276,11 +277,11 @@ async fn seed_and_compact(tag: &str, needle: &str) -> Result<Recalled, Box<dyn E
     session.wait_idle().await;
     assert_eq!(session.store_error(), None);
     Ok(Recalled {
-        root,
         store,
         session,
         needle_id,
         body,
+        root,
     })
 }
 
@@ -314,7 +315,7 @@ async fn a_compacted_away_turn_stays_greppable_and_fetchable() -> Result<(), Box
         fetched.contains(&seeded.body),
         "history:// must serve the full compacted-away blob: {fetched}"
     );
-    finish(seeded)
+    Ok(())
 }
 
 /// Compact still emits the extractive view and `history://` still fetches the pointed-to entry.
@@ -333,7 +334,7 @@ async fn compact_view_cites_a_tool_entry_that_history_can_fetch() -> Result<(), 
         fetched.contains(ident),
         "history:// must fetch the pointed-to entry: {fetched}"
     );
-    finish(seeded)
+    Ok(())
 }
 
 fn live_text(session: &AgentSession) -> Result<String, Box<dyn Error>> {
@@ -347,17 +348,10 @@ fn live_text(session: &AgentSession) -> Result<String, Box<dyn Error>> {
 
 fn fetch_entry(seeded: &Recalled) -> Result<String, Box<dyn Error>> {
     let resolver =
-        yi_runtime::fetch::Resolver::new(seeded.root.clone(), yi_runtime::Wall::default())
+        yi_runtime::fetch::Resolver::new(seeded.root.to_path_buf(), yi_runtime::Wall::default())
             .with_session_handle("main", seeded.session.store_handle());
     let url: yi_types::url::Url = format!("history://main/{}", seeded.needle_id).parse()?;
     Ok(resolver.fetch(&url)?.text)
-}
-
-fn finish(seeded: Recalled) -> Result<(), Box<dyn Error>> {
-    let root = seeded.root.clone();
-    drop(seeded);
-    std::fs::remove_dir_all(&root)?;
-    Ok(())
 }
 
 #[tokio::test]

@@ -1,3 +1,7 @@
+#[path = "../../types/tests/support/scratch.rs"]
+mod scratch;
+use scratch::Scratch;
+
 use std::error::Error;
 use std::sync::{Arc, Mutex};
 
@@ -61,6 +65,9 @@ struct Rig {
     session: AgentSession,
     store: yi_session::SharedSession,
     todos: Arc<TodoStore>,
+    /// A fresh empty cwd per rig: the system temp dir holds thousands of entries the checker
+    /// scan would walk, and may hold a `test_*.py` of someone else's.
+    cwd: Scratch,
 }
 
 fn rig(name: &str) -> Result<Rig, Box<dyn Error>> {
@@ -80,6 +87,7 @@ fn rig(name: &str) -> Result<Rig, Box<dyn Error>> {
         session,
         store,
         todos,
+        cwd: Scratch::new(&format!("yi-coupling-{name}"))?,
     })
 }
 
@@ -288,7 +296,7 @@ fn a_stop_with_open_todos_is_re_driven_up_the_ladder_then_let_go() -> TestResult
             eager: Eager::Prelude,
             children_running: Arc::new(|| false),
             inner: None,
-            cwd: empty_dir(),
+            cwd: r.cwd.to_path_buf(),
             gates: Gates::default(),
         },
     );
@@ -358,7 +366,7 @@ fn only_a_state_suppresses_the_interception() -> TestResult {
             eager: Eager::Prelude,
             children_running: Arc::new(|| false),
             inner: None,
-            cwd: empty_dir(),
+            cwd: r.cwd.to_path_buf(),
             gates: Gates::default(),
         },
     );
@@ -410,7 +418,7 @@ fn terminal_stops_are_never_re_driven_and_empty_stops_are_capped() -> TestResult
             eager: Eager::Prelude,
             children_running: Arc::new(|| false),
             inner: None,
-            cwd: empty_dir(),
+            cwd: r.cwd.to_path_buf(),
             gates: Gates::default(),
         },
     );
@@ -456,7 +464,7 @@ fn a_multi_step_prompt_gets_the_prelude_and_force_is_opt_in() -> TestResult {
             eager: Eager::Prelude,
             children_running: Arc::new(|| false),
             inner: None,
-            cwd: empty_dir(),
+            cwd: r.cwd.to_path_buf(),
             gates: Gates::default(),
         },
     );
@@ -477,7 +485,7 @@ fn a_multi_step_prompt_gets_the_prelude_and_force_is_opt_in() -> TestResult {
             eager: Eager::Force,
             children_running: Arc::new(|| false),
             inner: None,
-            cwd: empty_dir(),
+            cwd: r.cwd.to_path_buf(),
             gates: Gates::default(),
         },
     );
@@ -489,17 +497,7 @@ fn a_multi_step_prompt_gets_the_prelude_and_force_is_opt_in() -> TestResult {
 }
 
 fn prelude_hooks(r: &Rig) -> yi_runtime::session::TurnCoupling {
-    hooks_in(r, empty_dir(), Gates::default())
-}
-
-/// A fresh empty cwd per rig: the system temp dir holds thousands of entries the checker
-/// scan would walk, and may hold a `test_*.py` of someone else's.
-fn empty_dir() -> std::path::PathBuf {
-    static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-    let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let dir = std::env::temp_dir().join(format!("yi-coupling-{}-{n}", std::process::id()));
-    let _ = std::fs::create_dir_all(&dir);
-    dir
+    hooks_in(r, r.cwd.to_path_buf(), Gates::default())
 }
 
 fn hooks_in(r: &Rig, cwd: std::path::PathBuf, gates: Gates) -> yi_runtime::session::TurnCoupling {
@@ -516,13 +514,6 @@ fn hooks_in(r: &Rig, cwd: std::path::PathBuf, gates: Gates) -> yi_runtime::sessi
     )
 }
 
-fn scratch(name: &str) -> Result<std::path::PathBuf, Box<dyn Error>> {
-    let dir = std::env::temp_dir().join(format!("yi-gates-{name}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir)?;
-    Ok(dir)
-}
-
 fn tool_turn(
     id: &str,
     tool: &str,
@@ -537,7 +528,7 @@ fn tool_turn(
 
 #[test]
 fn artifact_paths_are_read_from_the_prompt_and_inputs_are_not() -> TestResult {
-    let dir = scratch("artifacts")?;
+    let dir = Scratch::new("yi-gates-artifacts")?;
     std::fs::create_dir_all(dir.join("data"))?;
     std::fs::write(dir.join("data/x.csv"), "a,b\n")?;
     let text = "Read the data in data/x.csv and save the result to `out/result.json`. Write a router at /nonexistent-yi/route.py; the site https://example.com/x.html is not a file. Score 24/27.";
@@ -555,9 +546,9 @@ fn artifact_paths_are_read_from_the_prompt_and_inputs_are_not() -> TestResult {
 
 #[test]
 fn the_artifact_steer_fires_once_on_the_third_tool_turn_with_nothing_on_disk() -> TestResult {
-    let dir = scratch("steer")?;
+    let dir = Scratch::new("yi-gates-steer")?;
     let r = rig("steer")?;
-    let hooks = hooks_in(&r, dir.clone(), Gates::default());
+    let hooks = hooks_in(&r, dir.to_path_buf(), Gates::default());
     (hooks.on_prompt)(&user("Write a router at `route.py` that reads the board."));
     let (message, results) = tool_turn("c1", "read", Map::new());
     let snapshot = snap(&message, &results);
@@ -579,9 +570,9 @@ fn the_artifact_steer_fires_once_on_the_third_tool_turn_with_nothing_on_disk() -
 /// steer, so a spiral that starts on turn two is told what to write on turn three.
 #[test]
 fn cut_turns_count_toward_the_artifact_steer() -> TestResult {
-    let dir = scratch("steer-cut")?;
+    let dir = Scratch::new("yi-gates-steer-cut")?;
     let r = rig("steer-cut")?;
-    let hooks = hooks_in(&r, dir.clone(), Gates::default());
+    let hooks = hooks_in(&r, dir.to_path_buf(), Gates::default());
     (hooks.on_prompt)(&user("Write a router at `route.py` that reads the board."));
     let (message, results) = tool_turn("c1", "read", Map::new());
     (hooks.on_turn)(&snap(&message, &results));
@@ -603,9 +594,9 @@ fn cut_turns_count_toward_the_artifact_steer() -> TestResult {
 
 #[test]
 fn a_clean_stop_with_a_missing_artifact_is_refused_once_then_waived() -> TestResult {
-    let dir = scratch("artifact-stop")?;
+    let dir = Scratch::new("yi-gates-artifact-stop")?;
     let r = rig("artifact-stop")?;
-    let hooks = hooks_in(&r, dir.clone(), Gates::default());
+    let hooks = hooks_in(&r, dir.to_path_buf(), Gates::default());
     (hooks.on_prompt)(&user("Save the answer to `answer.txt`."));
     let claim = stop("The answer is forty-two.");
     let first = (hooks.intercept_stop)(&snap(&claim, &[])).ok_or("the first stop is refused")?;
@@ -625,7 +616,7 @@ fn a_clean_stop_with_a_missing_artifact_is_refused_once_then_waived() -> TestRes
         .collect();
     assert_eq!(reasons, ["artifact_missing", "artifact_waived"]);
     let written = rig("artifact-written")?;
-    let hooks = hooks_in(&written, dir.clone(), Gates::default());
+    let hooks = hooks_in(&written, dir.to_path_buf(), Gates::default());
     (hooks.on_prompt)(&user("Save the answer to `answer.txt`."));
     std::fs::write(dir.join("answer.txt"), "42\n")?;
     assert!(
@@ -637,14 +628,14 @@ fn a_clean_stop_with_a_missing_artifact_is_refused_once_then_waived() -> TestRes
 
 #[test]
 fn a_checker_that_did_not_run_since_the_last_write_refuses_the_first_stop() -> TestResult {
-    let dir = scratch("closure")?;
+    let dir = Scratch::new("yi-gates-closure")?;
     std::fs::write(dir.join("check.py"), "print('ok')\n")?;
     assert_eq!(
         find_checker(&dir).map(|c| c.command),
         Some("python3 check.py".to_owned())
     );
     let r = rig("closure")?;
-    let hooks = hooks_in(&r, dir.clone(), Gates::default());
+    let hooks = hooks_in(&r, dir.to_path_buf(), Gates::default());
     (hooks.on_prompt)(&user("Fix the parser."));
     let (edit, edit_results) = tool_turn("e1", "edit", Map::new());
     (hooks.on_turn)(&snap(&edit, &edit_results));
@@ -671,10 +662,10 @@ fn a_checker_that_did_not_run_since_the_last_write_refuses_the_first_stop() -> T
 
 #[test]
 fn no_gates_disables_both() -> TestResult {
-    let dir = scratch("no-gates")?;
+    let dir = Scratch::new("yi-gates-no-gates")?;
     std::fs::write(dir.join("check.py"), "print('ok')\n")?;
     let r = rig("no-gates")?;
-    let hooks = hooks_in(&r, dir, Gates::OFF);
+    let hooks = hooks_in(&r, dir.to_path_buf(), Gates::OFF);
     (hooks.on_prompt)(&user(
         "Save the answer to `answer.txt` after fixing the parser.",
     ));
@@ -1013,7 +1004,7 @@ fn the_cycle_counter_survives_a_resume() -> TestResult {
             eager: Eager::Prelude,
             children_running: Arc::new(|| false),
             inner: None,
-            cwd: empty_dir(),
+            cwd: r.cwd.to_path_buf(),
             gates: Gates::default(),
         },
     );
@@ -1031,7 +1022,7 @@ fn the_cycle_counter_survives_a_resume() -> TestResult {
             eager: Eager::Prelude,
             children_running: Arc::new(|| false),
             inner: None,
-            cwd: empty_dir(),
+            cwd: r.cwd.to_path_buf(),
             gates: Gates::default(),
         },
     );

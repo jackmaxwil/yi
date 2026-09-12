@@ -1,3 +1,7 @@
+#[path = "../../types/tests/support/scratch.rs"]
+mod scratch;
+use scratch::Scratch;
+
 use std::error::Error;
 use std::sync::Arc;
 
@@ -234,8 +238,7 @@ async fn llm_reviewer_advises_through_the_advise_tool() -> TestResult {
 
 #[test]
 fn promotion_writes_a_rule_the_discovery_parser_accepts() -> TestResult {
-    let root = std::env::temp_dir().join(format!("yi-promote-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&root);
+    let root = Scratch::new("yi-promote")?;
     let rules_dir = root.join(".yi/rules");
     let runtime = yi_runtime::advisor::AdvisorRuntime::new(
         AdvisorConfig {
@@ -326,6 +329,5 @@ fn promotion_writes_a_rule_the_discovery_parser_accepts() -> TestResult {
         "advice with nothing to trigger on is refused, not guessed at"
     );
     assert!(path.exists());
-    let _ = std::fs::remove_dir_all(&root);
     Ok(())
 }

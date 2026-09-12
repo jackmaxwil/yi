@@ -2,6 +2,10 @@
 //! a `BranchSummary` behind, written by the summarizer role and replayed by the
 //! same projection every other entry goes through.
 
+#[path = "../../types/tests/support/scratch.rs"]
+mod scratch;
+use scratch::Scratch;
+
 use std::error::Error;
 use std::sync::Arc;
 
@@ -44,15 +48,14 @@ struct Seeded {
     session: AgentSession,
     store: yi_session::SharedSession,
     provider: Arc<ProviderStream>,
-    root: std::path::PathBuf,
+    _root: Scratch,
 }
 
 /// Two turns on one lane; the caller rewinds onto the first assistant reply, so
 /// the second turn is the abandoned attempt.
 async fn seeded(id: &str) -> Result<Seeded, Box<dyn Error>> {
-    let root = std::env::temp_dir().join(format!("yi-rewind-{id}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&root);
-    let mut repo = JsonlRepo::new(root.clone(), "/tmp/yi-rewind-test");
+    let root = Scratch::new(&format!("yi-rewind-{id}"))?;
+    let mut repo = JsonlRepo::new(root.to_path_buf(), "/tmp/yi-rewind-test");
     let store = repo.create(CreateOptions {
         id: Some(id.to_owned()),
         ..CreateOptions::default()
@@ -83,7 +86,7 @@ async fn seeded(id: &str) -> Result<Seeded, Box<dyn Error>> {
         session,
         store,
         provider,
-        root,
+        _root: root,
     })
 }
 
@@ -177,7 +180,6 @@ async fn a_rewind_writes_a_branch_summary_the_projection_replays() -> TestResult
             .any(|message| matches!(message, AgentMessage::BranchSummary { .. })),
         "an idle session must also see it without a reload"
     );
-    std::fs::remove_dir_all(&seeded.root)?;
     Ok(())
 }
 
@@ -208,7 +210,6 @@ async fn a_failed_summarizer_never_fails_the_rewind() -> TestResult {
         Some(target),
         "the rewind itself stands"
     );
-    std::fs::remove_dir_all(&seeded.root)?;
     Ok(())
 }
 
@@ -226,6 +227,5 @@ async fn an_empty_abandoned_span_writes_nothing() -> TestResult {
         rewound.abandoned.is_none(),
         "rewinding onto the leaf abandons nothing, so no summarizer call is earned"
     );
-    std::fs::remove_dir_all(&seeded.root)?;
     Ok(())
 }

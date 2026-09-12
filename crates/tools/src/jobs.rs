@@ -432,25 +432,14 @@ pub fn clamp_timeout(seconds: Option<u64>) -> Duration {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::scratch::Scratch;
     use std::error::Error;
-    use std::path::PathBuf;
     use std::time::Instant;
 
     type Fallible = Result<(), Box<dyn Error>>;
 
     fn never() -> CancelFlag {
         Arc::new(|| false)
-    }
-
-    fn scratch() -> Result<PathBuf, Box<dyn Error>> {
-        static NEXT: AtomicU64 = AtomicU64::new(0);
-        let dir = std::env::temp_dir().join(format!(
-            "yi-jobs-{}-{}",
-            std::process::id(),
-            NEXT.fetch_add(1, Ordering::Relaxed)
-        ));
-        std::fs::create_dir_all(&dir)?;
-        Ok(dir)
     }
 
     fn poll_until<T>(mut probe: impl FnMut() -> Option<T>) -> Result<T, Box<dyn Error>> {
@@ -490,7 +479,7 @@ mod tests {
 
     #[test]
     fn output_is_readable_before_the_job_exits() -> Fallible {
-        let dir = scratch()?;
+        let dir = Scratch::new("yi-jobs")?;
         let id = spawn_job("printf hello; sleep 300", &dir, &never(), None);
         let chunk = poll_until(|| {
             let chunk = registry().output_since(id, 0).ok()?;
@@ -508,7 +497,7 @@ mod tests {
 
     #[test]
     fn a_second_read_returns_only_what_is_new() -> Fallible {
-        let dir = scratch()?;
+        let dir = Scratch::new("yi-jobs")?;
         let gate = dir.join("gate");
         let id = spawn_job(
             &format!(
@@ -543,7 +532,7 @@ mod tests {
 
     #[test]
     fn kill_stops_a_sleeper_and_reports_killed() -> Fallible {
-        let dir = scratch()?;
+        let dir = Scratch::new("yi-jobs")?;
         let id = spawn_job("sleep 300", &dir, &never(), None);
         assert_eq!(registry().kill(id)?, KillOutcome::Signalled);
         assert_eq!(settled(id)?, Outcome::Killed);
@@ -555,7 +544,7 @@ mod tests {
 
     #[test]
     fn kill_after_exit_is_a_no_op() -> Fallible {
-        let dir = scratch()?;
+        let dir = Scratch::new("yi-jobs")?;
         let id = spawn_job("exit 3", &dir, &never(), None);
         let exited = Outcome::Exited { code: Some(3) };
         assert_eq!(settled(id)?, exited);
@@ -568,7 +557,7 @@ mod tests {
 
     #[test]
     fn the_live_buffer_trims_and_says_it_trimmed() -> Fallible {
-        let dir = scratch()?;
+        let dir = Scratch::new("yi-jobs")?;
         let id = spawn_job(
             "awk 'BEGIN{for(i=0;i<5000;i++) print \"0123456789\"}'",
             &dir,
