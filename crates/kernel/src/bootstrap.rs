@@ -267,11 +267,12 @@ pub fn default_runtime_source_dir() -> PathBuf {
 
 /// (import name, directory under python/skills). Install order is declared
 /// order; the dependency toposort waits until a skill grows a sibling dep.
-pub const PYTHON_SKILLS: [(&str, &str); 4] = [
+pub const PYTHON_SKILLS: [(&str, &str); 5] = [
     ("compact", "compact"),
     ("attach_image", "attach-image"),
     ("goal", "goal"),
     ("plan", "plan"),
+    ("memory", "memory"),
 ];
 
 pub fn default_skills_source_dir() -> PathBuf {
@@ -710,20 +711,27 @@ fn bootstrap_lock_dir(venv: &Path) -> PathBuf {
 }
 
 #[cfg(unix)]
-pub fn process_is_running(pid: u32) -> bool {
-    // kill -0 probes liveness; EPERM still means the pid exists.
-    command(Path::new("kill"))
-        .args(["-0", &pid.to_string()])
+pub fn process_is_running(pid: u32) -> std::io::Result<bool> {
+    // kill -0 as the shell's builtin: slim images ship no kill(1), whose ENOENT read as dead.
+    command(Path::new("/bin/sh"))
+        .args(["-c", r#"kill -0 "$1""#, "kill", &pid.to_string()])
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .status()
         .map(|status| status.success())
-        .unwrap_or(false)
 }
 
 #[cfg(not(unix))]
-pub fn process_is_running(_pid: u32) -> bool {
-    true
+pub fn process_is_running(_pid: u32) -> std::io::Result<bool> {
+    Ok(true)
+}
+
+/// A probe that could not run says nothing of the holder: the lock's age decides, as for no pid.
+pub fn lock_is_stale(lock_dir: &Path, probe: Option<std::io::Result<bool>>) -> bool {
+    match probe {
+        Some(Ok(running)) => !running,
+        Some(Err(_)) | None => lock_missing_pid_is_stale(lock_dir),
+    }
 }
 
 pub fn read_lock_pid(lock_dir: &Path) -> Option<u32> {
@@ -767,11 +775,7 @@ fn acquire_bootstrap_lock(venv: &Path) -> Result<BootstrapLock, String> {
                 return Ok(BootstrapLock { dir: lock_dir });
             }
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-                let stale = match read_lock_pid(&lock_dir) {
-                    Some(pid) => !process_is_running(pid),
-                    None => lock_missing_pid_is_stale(&lock_dir),
-                };
-                if stale {
+                if lock_is_stale(&lock_dir, read_lock_pid(&lock_dir).map(process_is_running)) {
                     let _ = std::fs::remove_dir_all(&lock_dir);
                     continue;
                 }

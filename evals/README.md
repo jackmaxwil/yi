@@ -53,9 +53,12 @@ The workspace is `<tmp>/repo`, and the runner's own files sit beside it as
 where a `git diff` or clean-tree reward would score them as part of the
 solution and the agent could read back its own transcript. The runner asks once
 with `--json --yolo --cwd <ws> --session-dir <tmp>/.yi-sessions`, writes the
-last assistant text to `<ws>/answer.txt` (SWE-Atlas QnA grades the answer file,
-so a real run's answer must exist), and scores the task binary: `reward.sh`
-exits 0 or the task scored nothing. A timeout is a result, never a retry.
+last assistant text to `<ws>/answer.txt` when there is one (SWE-Atlas QnA grades
+the answer file, so a real run's answer must exist; a rollout that answered
+nothing leaves no file, or a dead binary passes `clean-workspace`), and scores
+the task binary: `reward.sh` exits 0 or the task scored nothing.
+`block-on-user` reads its question there, a file that under harbor only its
+oracle writes. A timeout is a result, never a retry.
 
 `--dry` runs faux only — it refuses any other provider, because a gate spends no
 API budget — and compares each reward to the task's `dryReward`, which is what
@@ -72,6 +75,12 @@ Drop `--dry` and the runner prints one JSON row per task plus a ready-to-paste
 `docs/eval-ledger.md` row with its config fingerprint. Pasting it stays a human
 act, and a real-model suite is user-run and budgeted (plan law 3).
 
+`EVAL_ROUTING`, OpenRouter's provider object as JSON, goes verbatim into the
+run HOME's `routing` config key for `evals/run.py` and the harbor adapter
+(`yi_usage.eval_config`, the one writer) and rides the fingerprint's mode as
+`+routing{…}`, so a routing A/B needs no rebuild; anything but a JSON object is
+refused, and so is `--home` on the fixtures lane, whose config stays the caller's.
+
 ## Axes (D140)
 
 ```
@@ -82,13 +91,15 @@ python3 evals/axes.py evals/fixtures/axes --json /tmp/rows.jsonl
 One JSON row per v4 session file found under the directory, its context the
 nearest ancestor holding a harbor `result.json` (reward, wall, timeout) or a
 run.py `row.json`, else a journey; then the `docs/eval-ledger.md` row with
-the `persistence`, `rigor` and `experience` triples on the right. Every column
-is named with its source in `docs/plans/2026-09-06-tbv4-evals/axes.md`; the
+the `persistence`, `rigor` and `experience` triples, `timeouts`, `partials`
+and `upstreams` on the right. Every column is named with its source in
+`docs/plans/2026-09-06-tbv4-evals/axes.md`; the
 signals come from `skills/yi/session-mining/extract.py` by import, the
 telemetry columns from the `.telemetry.jsonl` sidecar beside each session.
 Exit 2 when a trial is unmeasurable (a turn without usage, no assistant
 message, no session at all). `evals/fixtures/axes/` holds one trial of each
-shape and `expected.jsonl` pins the rows byte-for-byte (`check_axes`).
+shape, plus a harbor trial that timed out with its verifier past its ceiling,
+and `expected.jsonl` pins the rows byte-for-byte (`check_axes`).
 
 ## ATIF (E10)
 
@@ -230,7 +241,11 @@ SWE-Atlas QnA is graded **only** from `/logs/agent/answer.txt` inside
 `<<FINAL_ANSWER>>` tags, and the verifier runs even after an agent timeout
 (E4) — so drafting the answer file early and refining it in place is worth
 real points. That is task and prompt discipline: the adapter never injects
-instruction text of its own.
+instruction text of its own. The one exception is the budget: every v4
+instruction ends `You have 28800 seconds to complete this task.`, the task's
+whole `[agent]` timeout, and the harbor adapter's `render_instruction` rewrites
+the number to the trial's own share (`EVAL_TIMEOUT_MULT` × 28800, the value
+`--deadline` carries).
 
 ## Budget discipline
 

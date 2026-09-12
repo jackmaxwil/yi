@@ -85,14 +85,7 @@ pub(crate) fn extract_targets(
     cwd: &Path,
 ) -> Vec<PathBuf> {
     let mut targets = Vec::new();
-    let mut push = |raw: &str| {
-        let candidate = PathBuf::from(raw);
-        targets.push(if candidate.is_absolute() {
-            candidate
-        } else {
-            cwd.join(candidate)
-        });
-    };
+    let mut push = |raw: &str| targets.push(yi_permission::resolve_target(raw, cwd));
     if let Some(path) = args.get("path").and_then(Value::as_str) {
         push(path);
     }

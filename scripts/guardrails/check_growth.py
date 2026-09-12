@@ -2,7 +2,8 @@
 """Net src growth is budgeted: <= +150 lines rides free, past it the current
 version's changelog row must carry a `growth +N:` memo naming the measured
 number, past +2000 that row must also cite the decision row the landing claimed.
---update pays the same price before it absorbs a delta.
+--update pays the same price before it absorbs a delta, and absorbs growth only
+across a bump.
 Both bands come from history, which --calibrate reprints: over 95 versions the
 free band lands almost exactly on the seam between the two regimes — 46 organic
 bumps under it, 49 landings over — and 7 of those landings clear +2000."""
@@ -142,6 +143,11 @@ if "--update" in sys.argv:
     # the price falls due, and the only moment the number is still known.
     if base is not None:
         fail(unpaid(version, base["version"], now - base["loc"]), "growth --update")
+        # A version spends its free band once: absorbed at an unchanged version, every
+        # ratchet rode the band again and the bump then measured none of it.
+        if version == base["version"] and now > base["loc"]:
+            print(f"src LOC {now} left unabsorbed: {now - base['loc']:+d} rides free until the bump past {version} prices it")
+            sys.exit(0)
     BASELINE.write_text(json.dumps({"version": version, "loc": now}, indent=2) + "\n")
     was = f"{base['loc']} (version {base['version']})" if base else "unseeded"
     print(f"src LOC {was} -> {now} (version {version})")

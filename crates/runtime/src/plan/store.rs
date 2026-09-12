@@ -316,8 +316,8 @@ impl PlanStore {
         })
     }
 
-    /// Invariant: K1's lock rule branches — a parseable pid file makes staleness dead-pid
-    /// only, and the 30 s mtime rule covers the arms K1 leaves plus an unnamed generation.
+    /// Invariant: K1's `lock_is_stale` decides — a dead pid, else the 30 s mtime rule, which
+    /// also covers an unnamed generation.
     pub fn lease(&self) -> Result<Lease, StoreError> {
         std::fs::create_dir_all(&self.dir).map_err(io_at(&self.dir))?;
         let dir = self.dir.join(LEASE_NAME);
@@ -337,20 +337,10 @@ impl PlanStore {
                 }
                 Err(source) if source.kind() == std::io::ErrorKind::AlreadyExists => {
                     let generation = lease_hold(&dir);
-                    match yi_kernel::bootstrap::read_lock_pid(&dir) {
-                        Some(pid) if yi_kernel::bootstrap::process_is_running(pid) => {
-                            return Err(StoreError::LeaseHeld {
-                                path: dir,
-                                pid: Some(pid),
-                            });
-                        }
-                        None if !yi_kernel::bootstrap::lock_missing_pid_is_stale(&dir) => {
-                            return Err(StoreError::LeaseHeld {
-                                path: dir,
-                                pid: None,
-                            });
-                        }
-                        _ => {}
+                    let pid = yi_kernel::bootstrap::read_lock_pid(&dir);
+                    let probe = pid.map(yi_kernel::bootstrap::process_is_running);
+                    if !yi_kernel::bootstrap::lock_is_stale(&dir, probe) {
+                        return Err(StoreError::LeaseHeld { path: dir, pid });
                     }
                     match generation {
                         Some(hold) => {

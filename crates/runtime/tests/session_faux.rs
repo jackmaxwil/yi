@@ -4,6 +4,7 @@ use scratch::Scratch;
 
 use std::error::Error;
 use std::sync::Arc;
+use std::time::Duration;
 use yi_ai::faux::{faux_assistant_message, faux_text, faux_tool_call};
 use yi_loop::ExecutionMode;
 use yi_runtime::{AgentSession, ProviderStream, SessionConfig, Status};
@@ -173,12 +174,19 @@ async fn persists_a_turn_to_the_store_and_resumes_from_it() -> Result<(), Box<dy
 }
 
 fn tool_call_session(command: &str) -> AgentSession {
-    let provider = Arc::new(ProviderStream::new(None, None));
     let mut call_args = serde_json::Map::new();
     call_args.insert("command".to_owned(), serde_json::json!(command));
+    one_call_session("bash", call_args)
+}
+
+fn one_call_session(
+    tool: &str,
+    call_args: serde_json::Map<String, serde_json::Value>,
+) -> AgentSession {
+    let provider = Arc::new(ProviderStream::new(None, None));
     provider.queue_faux(vec![
         faux_assistant_message(
-            vec![faux_tool_call("call-1", "bash", call_args)],
+            vec![faux_tool_call("call-1", tool, call_args)],
             StopReason::ToolUse,
         ),
         faux_assistant_message(vec![faux_text("done")], StopReason::Stop),
@@ -198,8 +206,14 @@ async fn run_gated(
     command: &str,
     mode: yi_runtime::PermissionMode,
 ) -> Result<(bool, String), Box<dyn Error>> {
+    run_gated_session(tool_call_session(command), mode).await
+}
+
+async fn run_gated_session(
+    mut session: AgentSession,
+    mode: yi_runtime::PermissionMode,
+) -> Result<(bool, String), Box<dyn Error>> {
     let dir = Scratch::new("yi-runtime-perm")?;
-    let mut session = tool_call_session(command);
     let broker = Arc::new(yi_runtime::PermissionBroker::new(
         mode,
         dir.to_path_buf(),
@@ -255,6 +269,21 @@ async fn catastrophic_targets_are_denied_even_in_yolo() -> Result<(), Box<dyn Er
     assert!(!allowed);
     assert!(text.contains("protected path"), "{text}");
     assert!(text.contains("denied in every mode"), "{text}");
+    Ok(())
+}
+
+/// Incident: a `read` of `~/.ssh/id_rsa` was judged as `<cwd>/~/.ssh/id_rsa`, passed, and
+/// failed only because no such file exists. The name here is absent, so a regression prints
+/// no key.
+#[tokio::test]
+async fn a_tilde_read_of_a_key_store_is_denied_even_in_yolo() -> Result<(), Box<dyn Error>> {
+    let mut call_args = serde_json::Map::new();
+    let absent = format!("~/.ssh/yi-absent-{}", std::process::id());
+    call_args.insert("path".to_owned(), serde_json::json!(absent));
+    let session = one_call_session("read", call_args);
+    let (allowed, text) = run_gated_session(session, yi_runtime::PermissionMode::Yolo).await?;
+    assert!(!allowed);
+    assert!(text.contains("protected path"), "{text}");
     Ok(())
 }
 
@@ -412,5 +441,89 @@ async fn an_abort_during_a_tool_call_kills_the_child() -> Result<(), Box<dyn Err
         !marker.exists(),
         "the interrupted shell must not run its next command"
     );
+    Ok(())
+}
+
+/// `tool_call_session` wired the way `yi ask` is, `--deadline` included.
+fn deadline_session(root: &std::path::Path, command: &str, total: Duration) -> AgentSession {
+    let mut session = tool_call_session(command);
+    let provider = Arc::clone(session.provider_arc());
+    yi_runtime::attach_runtime(
+        &mut session,
+        yi_runtime::RuntimeWiring {
+            provider,
+            system_prompt: "sys".to_owned(),
+            tool_execution: ExecutionMode::Sequential,
+            cwd: root.to_path_buf(),
+            home: root.join("home"),
+            lane_slots: 1,
+            broker: None,
+            tools: Arc::new(yi_tools::builtin_tools),
+            depth: 0,
+            max_depth: 1,
+            rlm_dir: root.join("rlm"),
+            summarizer: None,
+            advisor: None,
+            auto_review: None,
+            plan_stale_turns: None,
+            plans_dir: Some(root.join("plans")),
+            parent_link: None,
+            wall: yi_runtime::Wall::default(),
+            auto_background: None,
+            deadline: Some(total),
+            kernel_prewarm: false,
+            mcp_read: None,
+            sessions_dir: None,
+            kernels: yi_runtime::fetch::KernelServiceMap::new(),
+        },
+    );
+    session
+}
+
+fn scratch(name: &str) -> Result<Scratch, Box<dyn Error>> {
+    Ok(Scratch::new(&format!("yi-runtime-{name}"))?)
+}
+
+/// Incident: `--deadline` only counted down in the environment block, so a command that
+/// outlived the budget held its turn until harbor killed the container.
+#[tokio::test]
+async fn a_deadline_kills_a_running_bash_call() -> Result<(), Box<dyn Error>> {
+    let root = scratch("deadline-kill")?;
+    let session = deadline_session(&root, "sleep 30", Duration::from_secs(1));
+    let started = std::time::Instant::now();
+    session.prompt("run it")?;
+    let settled = tokio::time::timeout(Duration::from_secs(5), session.wait_idle()).await;
+    assert!(
+        settled.is_ok(),
+        "a one-second deadline must end the command, not wait it out: {:?}",
+        started.elapsed()
+    );
+    Ok(())
+}
+
+/// The deadline ends the run between turns, never inside one: the call in flight runs to its
+/// own end and the next request is never sent.
+#[tokio::test]
+async fn a_deadline_ends_the_run_after_the_turn_in_flight() -> Result<(), Box<dyn Error>> {
+    let root = scratch("deadline-stop")?;
+    // A 4.6 s call ends past a quarter-of-six-seconds margin and before the clock runs out.
+    let session = deadline_session(&root, "sleep 4.6", Duration::from_secs(6));
+    let mut events = session.subscribe();
+    session.prompt("run it")?;
+    session.wait_idle().await;
+    let mut calls = Vec::new();
+    while let Ok(event) = events.try_recv() {
+        if let AgentEvent::ToolExecutionEnd { is_error, .. } = event {
+            calls.push(is_error);
+        }
+    }
+    assert_eq!(calls, [false], "the call in flight runs to its own end");
+    let unsent = session
+        .provider()
+        .faux
+        .lock()
+        .map(|faux| faux.pending_response_count())
+        .unwrap_or_default();
+    assert_eq!(unsent, 1, "a request started inside the margin");
     Ok(())
 }

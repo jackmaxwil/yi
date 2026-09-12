@@ -9,6 +9,7 @@ mod safety;
 
 pub use catastrophic::{
     CatastrophicContext, command_reads_credentials, is_catastrophic, lexical_normalize,
+    resolve_target,
 };
 pub use decide::{
     Decision, Hold, HoldSource, ParseOutcome, PermissionMode, ToolCall, decide, mode_fragment,

@@ -24,7 +24,7 @@ fn invalid_file(path: &Path, line: usize, message: impl std::fmt::Display) -> Se
     ))
 }
 
-fn session_directory_name(cwd: &str) -> String {
+pub fn session_directory_name(cwd: &str) -> String {
     let trimmed = cwd.strip_prefix(['/', '\\']).unwrap_or(cwd);
     let encoded: String = trimmed
         .chars()

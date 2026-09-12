@@ -3,6 +3,10 @@ use serde_json::{Map, Number, Value};
 
 pub const ENVIRONMENT_TAG: &str = "<environment>";
 
+/// The `raw_stop_reason` of a turn that ended on the provider's in-band error chunk, not on
+/// the wire: written by the completions mapper, read by the loop's retry rule (D175).
+pub const RAW_STOP_IN_BAND_ERROR: &str = "error";
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum Content {
