@@ -212,8 +212,8 @@ fn a_scanned_pdf_is_refused_with_its_reason() -> TestResult {
     let message = text(&output);
     assert!(output.is_error, "{message}");
     assert!(
-        message.ends_with(
-            "scanned.pdf: no text layer on any of the 1 PDF page(s) read of 1 (image-only or vector art), so there is no text to show"
+        message.contains(
+            "scanned.pdf: no text layer on any of the 1 PDF page(s) read of 1 (image-only or vector art), so there is no text to show; "
         ),
         "{message}"
     );

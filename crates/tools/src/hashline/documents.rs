@@ -83,8 +83,9 @@ impl HashlineReadTool {
         }
         if let Some(kind) = crate::document::image_kind(&bytes) {
             return error_output(format!(
-                "failed to read {path}: a {kind} image, not text; in ipython run `print(await attach_image(\"{path}\"))` to put it in front of the model",
-                path = path.display()
+                "failed to read {}: a {kind} image, not text; in ipython run `print(await attach_image({}))` to put it in front of the model",
+                path.display(),
+                crate::document::python_str(path)
             ));
         }
         if bytes.starts_with(b"\xff\xfe") || bytes.starts_with(b"\xfe\xff") {
