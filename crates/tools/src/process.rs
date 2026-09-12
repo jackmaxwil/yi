@@ -49,6 +49,10 @@ fn kill_tree(child: &mut Child) -> Result<(), String> {
 
 /// Every pid whose parent chain reaches `root`. A fork mid-walk is missed; the
 /// group kill covers anything still in the group, and the window is under a ms.
+///
+/// ponytail: O(frontier x table) with a linear `contains` — a process table is
+/// hundreds of rows and a timed-out tree is tens, so the scan is microseconds;
+/// if it ever walks a thousand-node tree, swap `found` for a HashSet.
 #[cfg(unix)]
 fn descendants(root: u32) -> Vec<u32> {
     let table = process_table();
@@ -106,6 +110,13 @@ fn process_table() -> Vec<(u32, u32)> {
 
 /// Best effort: a pid that settled since the walk fails its own operand
 /// without stopping the rest, and a failure says nothing the group kill's would not.
+///
+/// ponytail: a pid that exits *and is reused* in the sub-ms walk-to-kill window
+/// takes the KILL meant for the dead one. The window is one process-table read
+/// wide and pids allocate near-monotonically, so the wrong target is a fresh
+/// process; closing it means a pidfd-style handle per pid (Linux-only) or
+/// re-walking to confirm each ppid still names the shell, which costs more than
+/// the risk it retires.
 #[cfg(unix)]
 fn pid_kill(pids: &[u32]) {
     if pids.is_empty() {
