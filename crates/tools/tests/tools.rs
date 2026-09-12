@@ -189,6 +189,48 @@ fn bash_kills_a_running_command_when_cancelled() -> TestResult {
 }
 
 #[test]
+fn a_second_timed_out_search_in_a_row_carries_the_nudge() -> TestResult {
+    let dir = temp_dir("bash-search-nudge")?;
+    let status = std::process::Command::new("mkfifo")
+        .arg(dir.0.join("pipe"))
+        .status()?;
+    assert!(status.success());
+    let tool = BashTool::default();
+    let context = ToolContext::new(dir.0.clone());
+    let search = |tool: &BashTool| {
+        tool.execute(
+            args(&[
+                ("command", json!("grep needle pipe")),
+                ("timeout_secs", json!(1)),
+            ]),
+            &context,
+        )
+    };
+    let first = search(&tool);
+    assert!(first.is_error, "{}", output_text(&first));
+    assert!(
+        !output_text(&first).contains("searches in a row"),
+        "the first timed-out search only times out: {}",
+        output_text(&first)
+    );
+    let second = search(&tool);
+    assert!(
+        output_text(&second).contains("[2 searches in a row timed out;"),
+        "the second names the streak and the recovery: {}",
+        output_text(&second)
+    );
+    let output = tool.execute(args(&[("command", json!("true"))]), &context);
+    assert!(!output.is_error, "{}", output_text(&output));
+    let third = search(&tool);
+    assert!(
+        !output_text(&third).contains("searches in a row"),
+        "a successful call between them starts the row over: {}",
+        output_text(&third)
+    );
+    Ok(())
+}
+
+#[test]
 fn bash_times_out_kills_the_command_and_says_how_to_raise_the_limit() -> TestResult {
     let dir = temp_dir("bash-timeout")?;
     let context = ToolContext::new(dir.0.clone());
@@ -1113,9 +1155,8 @@ fn a_bash_view_of_one_file_carries_an_edit_anchor() -> TestResult {
     fs::write(dir.0.join("a.txt"), "one\ntwo\nthree\n")?;
     let context = ToolContext::new(dir.0.clone());
     let state = yi_tools::hashline::tool::shared_hashline_state();
-    let bash = BashTool {
-        hashline: Some(std::sync::Arc::clone(&state)),
-    };
+    let mut bash = BashTool::default();
+    bash.hashline = Some(std::sync::Arc::clone(&state));
     let viewed = bash.execute(args(&[("command", json!("cat a.txt"))]), &context);
     let text = output_text(&viewed);
     assert!(text.starts_with("[a.txt#"), "{text}");
