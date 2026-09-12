@@ -772,10 +772,13 @@ fn run_request(
         stop,
     } = wire;
     let url = format!("{}/v1/messages", model.base_url);
-    let headers = vec![
-        ("x-api-key", api_key.to_owned()),
-        ("anthropic-version", ANTHROPIC_VERSION.to_owned()),
-    ];
+    let headers = crate::request::headers_for(
+        model,
+        vec![
+            ("x-api-key", api_key.to_owned()),
+            ("anthropic-version", ANTHROPIC_VERSION.to_owned()),
+        ],
+    );
     let mut mapper = Mapper::new(model);
     let _ = sender.blocking_send(mapper.start_event());
     let resent = crate::request::pump_sse_with_resend(

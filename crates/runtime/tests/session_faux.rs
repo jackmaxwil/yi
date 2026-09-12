@@ -175,12 +175,19 @@ async fn persists_a_turn_to_the_store_and_resumes_from_it() -> Result<(), Box<dy
 }
 
 fn tool_call_session(command: &str) -> AgentSession {
-    let provider = Arc::new(ProviderStream::new(None, None));
     let mut call_args = serde_json::Map::new();
     call_args.insert("command".to_owned(), serde_json::json!(command));
+    one_call_session("bash", call_args)
+}
+
+fn one_call_session(
+    tool: &str,
+    call_args: serde_json::Map<String, serde_json::Value>,
+) -> AgentSession {
+    let provider = Arc::new(ProviderStream::new(None, None));
     provider.queue_faux(vec![
         faux_assistant_message(
-            vec![faux_tool_call("call-1", "bash", call_args)],
+            vec![faux_tool_call("call-1", tool, call_args)],
             StopReason::ToolUse,
         ),
         faux_assistant_message(vec![faux_text("done")], StopReason::Stop),
@@ -200,12 +207,18 @@ async fn run_gated(
     command: &str,
     mode: yi_runtime::PermissionMode,
 ) -> Result<(bool, String), Box<dyn Error>> {
+    run_gated_session(tool_call_session(command), mode).await
+}
+
+async fn run_gated_session(
+    mut session: AgentSession,
+    mode: yi_runtime::PermissionMode,
+) -> Result<(bool, String), Box<dyn Error>> {
     static PERM_DIR_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let unique = PERM_DIR_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let dir = std::env::temp_dir().join(format!("yi-runtime-perm-{}-{unique}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir)?;
-    let mut session = tool_call_session(command);
     let broker = Arc::new(yi_runtime::PermissionBroker::new(
         mode,
         dir.clone(),
@@ -262,6 +275,21 @@ async fn catastrophic_targets_are_denied_even_in_yolo() -> Result<(), Box<dyn Er
     assert!(!allowed);
     assert!(text.contains("protected path"), "{text}");
     assert!(text.contains("denied in every mode"), "{text}");
+    Ok(())
+}
+
+/// Incident: a `read` of `~/.ssh/id_rsa` was judged as `<cwd>/~/.ssh/id_rsa`, passed, and
+/// failed only because no such file exists. The name here is absent, so a regression prints
+/// no key.
+#[tokio::test]
+async fn a_tilde_read_of_a_key_store_is_denied_even_in_yolo() -> Result<(), Box<dyn Error>> {
+    let mut call_args = serde_json::Map::new();
+    let absent = format!("~/.ssh/yi-absent-{}", std::process::id());
+    call_args.insert("path".to_owned(), serde_json::json!(absent));
+    let session = one_call_session("read", call_args);
+    let (allowed, text) = run_gated_session(session, yi_runtime::PermissionMode::Yolo).await?;
+    assert!(!allowed);
+    assert!(text.contains("protected path"), "{text}");
     Ok(())
 }
 
@@ -455,7 +483,6 @@ fn deadline_session(root: &std::path::Path, command: &str, total: Duration) -> A
             wall: yi_runtime::Wall::default(),
             auto_background: None,
             deadline: Some(total),
-            gates: yi_types::config::Gates::OFF,
             kernel_prewarm: false,
             mcp_read: None,
             sessions_dir: None,

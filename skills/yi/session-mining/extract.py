@@ -82,7 +82,6 @@ DEDUPE_SOURCES = [
     "crates/runtime/src/prompts/doctrine.md",
     "crates/runtime/src/prompts/har-core.md",
     "crates/runtime/src/prompts/identity.md",
-    "crates/runtime/src/prompts/orchestrate.md",
 ]
 STOPWORDS = frozenset(
     "the a an and or but if then than that this these those is are was were be been being to of "

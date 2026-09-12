@@ -56,11 +56,7 @@ impl Tool for WriteTool {
     fn preview(&self, input: &Map<String, Value>, cwd: &Path) -> Option<String> {
         let path = input.get("path").and_then(Value::as_str)?;
         let content = input.get("content").and_then(Value::as_str)?;
-        let resolved = if Path::new(path).is_absolute() {
-            std::path::PathBuf::from(path)
-        } else {
-            cwd.join(path)
-        };
+        let resolved = yi_permission::resolve_target(path, cwd);
         let before = fs::read_to_string(&resolved).unwrap_or_default();
         let patch = crate::diff::patch(&before, content, &resolved);
         (!patch.is_empty()).then(|| patch.as_str().to_owned())

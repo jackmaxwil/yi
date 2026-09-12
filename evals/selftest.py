@@ -57,6 +57,9 @@ def check_command():
     assert command.rstrip().endswith(">/dev/null"), "harbor must not buffer the event stream"
     assert "message_update" in command, "the deltas are what made one trial 43.8 GB"
     assert f"tee -a {yi_usage.REMOTE_EVENTS_PATH}" in command, "a resumed trial truncated its first segment"
+    # Incident: grep block-buffers into a pipe, so a deadline smoke harbor killed left yi.jsonl
+    # at 172,032 bytes, cut inside turn 1's turn_end, its cost short and agent_end never written.
+    assert "stdbuf -oL grep -v" in command, "the delta filter must pass each event line on as it lands"
     assert argv.count(INSTRUCTION) == 1, "E7: instruction must be one quoted argv"
     assert yi_usage.REMOTE_SESSION_DIR in argv, "session dir must be collected"
     assert yi_usage.REMOTE_SESSION_DIR.startswith("/logs/"), "sessions live under /logs"
@@ -299,6 +302,19 @@ def check_axes():
                                                                   "verifier": {"started_at": "2026-09-09T00:00:00Z"}}))
             got = axes.harbor_context(Path(directory))
         assert (got["timedOut"], got["verifierUnmeasured"], got["errored"]) == cells, (exc, got)
+    # Incident: freight-dispatch-shift scores its trace as `diagnostic_score` (130/232 points) beside
+    # a one-test ctrf wrapper that passes; the sweep's partials read 1/1 and no score.
+    with tempfile.TemporaryDirectory() as directory:
+        trial = Path(directory)
+        (trial / "verifier").mkdir()
+        (trial / "result.json").write_text(json.dumps({"verifier_result": {"rewards": {"reward": 0.0}}}))
+        (trial / "verifier" / "trace_results.json").write_text(json.dumps({"diagnostic_score": 0.5603}))
+        assert axes.harbor_context(trial)["partialScore"] == 0.5603, "a trace score under either name"
+        # vba-userform-port writes its traces as a list and the tally in trace_summary.json: 0/28
+        # beside four wrapper tests that pass.
+        (trial / "verifier" / "trace_results.json").write_text(json.dumps([{"name": "001", "ok": False}]))
+        (trial / "verifier" / "trace_summary.json").write_text(json.dumps({"passed_traces": 7, "total_traces": 28}))
+        assert axes.harbor_context(trial)["partialScore"] == 0.25, "a trace tally in trace_summary.json"
     with tempfile.TemporaryDirectory() as directory:
         empty = Path(directory)
         with contextlib.redirect_stderr(io.StringIO()):
@@ -326,15 +342,34 @@ def check_atif():
 
 
 def check_driver_ceiling():
-    """The v4 driver refuses a multiplier past one hour before it needs anything installed."""
-    script = ROOT / "drivers" / "tbv4_baseline.sh"
-    env = {"PATH": os.environ.get("PATH", ""), "TBV4_TIMEOUT_MULT": "0.5"}
-    done = subprocess.run(["sh", str(script)], capture_output=True, text=True, env=env, timeout=60)
-    assert done.returncode == 1, done
-    assert "0.125 ceiling" in done.stderr, done.stderr
-    env["TBV4_TIMEOUT_MULT"] = "0.125"
-    done = subprocess.run(["sh", str(script)], capture_output=True, text=True, env=env, timeout=60)
-    assert done.returncode == 1 and "OPENROUTER_API_KEY" in done.stderr, done.stderr
+    """Both v4 drivers refuse a multiplier past one hour before they need anything installed."""
+    for name in ("tbv4_baseline.sh", "tbv4_sweep.sh"):
+        script = ROOT / "drivers" / name
+        env = {"PATH": os.environ.get("PATH", ""), "TBV4_TIMEOUT_MULT": "0.5"}
+        done = subprocess.run(["sh", str(script)], capture_output=True, text=True, env=env, timeout=60,
+                              cwd=ROOT.parent)
+        assert done.returncode == 1, (name, done)
+        assert "0.125 ceiling" in done.stderr, (name, done.stderr)
+        env["TBV4_TIMEOUT_MULT"] = "0.125"
+        done = subprocess.run(["sh", str(script)], capture_output=True, text=True, env=env, timeout=60,
+                              cwd=ROOT.parent)
+        assert done.returncode == 1 and "OPENROUTER_API_KEY" in done.stderr, (name, done.stderr)
+
+
+def check_watch_stops():
+    """The sweep watcher kills its child's group at the wall and writes why; a child that
+    finishes first hands back its own exit code."""
+    watch = ROOT / "drivers" / "watch.py"
+    with tempfile.TemporaryDirectory() as tmp:
+        runs = Path(tmp) / "runs"
+        done = subprocess.run([sys.executable, str(watch), "--runs", str(runs), "--hard", "20", "--wall", "0",
+                               "--poll", "0.2", "--", "sleep", "30"], capture_output=True, text=True, timeout=60)
+        assert done.returncode == 2, done
+        assert "passed 0 s" in (Path(tmp) / "runs.STOPPED").read_text(), done.stdout
+        done = subprocess.run([sys.executable, str(watch), "--runs", str(runs), "--hard", "20", "--wall", "60",
+                               "--poll", "0.2", "--", "sh", "-c", "exit 3"], capture_output=True, text=True,
+                              timeout=60)
+        assert done.returncode == 3, done
 
 
 def check_record():
@@ -490,6 +525,7 @@ CHECKS = (
     check_session_extras,
     check_fingerprint,
     check_driver_ceiling,
+    check_watch_stops,
     check_axes,
     check_atif,
     check_record,

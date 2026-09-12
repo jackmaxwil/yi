@@ -84,15 +84,6 @@ fn ipython_note(tool: &str, result: &yi_types::event::ToolResult) -> Option<Stri
         .then(crate::affordance::listing_name)
 }
 
-fn absolute(cwd: &std::path::Path, path: &str) -> PathBuf {
-    let candidate = PathBuf::from(path);
-    if candidate.is_absolute() {
-        candidate
-    } else {
-        cwd.join(candidate)
-    }
-}
-
 /// T19 tee target: the home root, never the user's working tree.
 fn default_recovery_dir() -> Option<PathBuf> {
     std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".yi/tool-output"))
@@ -211,7 +202,7 @@ impl AgentTool for ToolAdapter {
                     target: args
                         .get("path")
                         .and_then(Value::as_str)
-                        .map(|path| absolute(&context.cwd, path)),
+                        .map(|path| yi_permission::resolve_target(path, &context.cwd)),
                 });
             }
             // User rules gate before permission: a matching eligible gate rule
