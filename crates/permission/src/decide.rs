@@ -4,7 +4,7 @@ use yi_types::permission::{RuleDecision, RuleKind};
 
 use crate::catastrophic::{
     CatastrophicContext, command_reads_credentials, command_targets_catastrophic, is_catastrophic,
-    read_is_catastrophic,
+    read_is_catastrophic, resolve,
 };
 use crate::rules::{ConfigRule, ConfigRuleAction, SessionRules};
 
@@ -122,7 +122,8 @@ pub fn decide(
         false => is_catastrophic,
     };
     for target in call.targets {
-        if protected(target, catastrophic_context) {
+        let target = resolve(target, catastrophic_context);
+        if protected(&target, catastrophic_context) {
             return Decision::Deny {
                 reason: format!(
                     "{} targets a protected path ({}); this is denied in every mode.",
