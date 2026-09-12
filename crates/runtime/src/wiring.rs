@@ -88,7 +88,7 @@ pub struct RuntimeWiring {
     pub wall: crate::wall::Wall,
     /// D13 `bash.autoBackgroundMs`; None keeps every command in the turn.
     pub auto_background: Option<std::time::Duration>,
-    /// `--deadline`: the wall clock the run has, shown counting down in the environment block.
+    /// `--deadline`: the run's wall clock, counted down in the environment block and enforced.
     pub deadline: Option<std::time::Duration>,
     /// `kernel.prewarm` (default true): boot the kernel in the background at
     /// session open. Children never prewarm — they spawn to run a cell now.
@@ -117,6 +117,16 @@ impl RuntimeWiring {
             dir = parent;
         }
         dir.join("family")
+    }
+
+    /// The kernel's snapshot, `RLM_SESSION_DIR` and writable root. Incident: the root's was
+    /// `rlm-<pid>`, so `--continue` never found its snapshot; a child keeps its `sub-*`.
+    fn kernel_dir(&self) -> PathBuf {
+        self.sessions_dir
+            .as_ref()
+            .filter(|_| self.depth == 0)
+            .unwrap_or(&self.rlm_dir)
+            .clone()
     }
 }
 
@@ -446,6 +456,9 @@ fn wire_job_completions(session: &AgentSession) {
 }
 
 pub fn attach_runtime(session: &mut AgentSession, mut wiring: RuntimeWiring) -> Arc<SubagentHost> {
+    if let Some(total) = wiring.deadline {
+        session.set_deadline(total);
+    }
     let plans_dir = wiring
         .plans_dir
         .clone()
@@ -523,13 +536,13 @@ pub fn attach_runtime(session: &mut AgentSession, mut wiring: RuntimeWiring) -> 
         crate::kernel::KernelServiceOptions {
             cwd: wiring.cwd.clone(),
             home: wiring.home.clone(),
-            session_dir: Some(wiring.rlm_dir.clone()),
+            session_dir: Some(wiring.kernel_dir()),
             family_dir: Some(wiring.family_dir()),
             host: Arc::new(registry),
             on_restore: Some(Arc::new(move |restore| {
                 restore_notice(&crate::kernel::restore_notice_text(restore));
             })),
-            sandbox: crate::workspace_sandbox(&wiring.cwd, &wiring.home, &wiring.rlm_dir),
+            sandbox: crate::workspace_sandbox(&wiring.cwd, &wiring.home, &wiring.kernel_dir()),
             snapshot_key: Some(session.store_id_hook()),
             cell_ceiling: None,
         },

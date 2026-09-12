@@ -57,6 +57,9 @@ def check_command():
     assert command.rstrip().endswith(">/dev/null"), "harbor must not buffer the event stream"
     assert "message_update" in command, "the deltas are what made one trial 43.8 GB"
     assert f"tee -a {yi_usage.REMOTE_EVENTS_PATH}" in command, "a resumed trial truncated its first segment"
+    # Incident: grep block-buffers into a pipe, so a deadline smoke harbor killed left yi.jsonl
+    # at 172,032 bytes, cut inside turn 1's turn_end, its cost short and agent_end never written.
+    assert "stdbuf -oL grep -v" in command, "the delta filter must pass each event line on as it lands"
     assert argv.count(INSTRUCTION) == 1, "E7: instruction must be one quoted argv"
     assert yi_usage.REMOTE_SESSION_DIR in argv, "session dir must be collected"
     assert yi_usage.REMOTE_SESSION_DIR.startswith("/logs/"), "sessions live under /logs"
