@@ -29,6 +29,42 @@ TOKEN_KEYS = ("input", "output", "cacheRead", "cacheWrite")
 # Every Terminal-Bench v4 task's [agent] timeout; the trial's share is the multiplier's.
 TASK_TIMEOUT_SEC = 28800
 
+# OpenRouter's provider object for a routing A/B, as JSON; never `YI_*`, the harness's name.
+ROUTING_ENV = "EVAL_ROUTING"
+
+
+def with_budget(instruction, deadline_sec):
+    """S1: every v4 instruction ends `You have 28800 seconds to complete this task.`, the whole
+    [agent] timeout, while the trial runs the multiplier's share: the sentence names that share."""
+    return instruction.replace(
+        f"You have {TASK_TIMEOUT_SEC} seconds", f"You have {int(deadline_sec)} seconds"
+    )
+
+
+def eval_config(environ):
+    """The trial HOME's `~/.yi/config.json` for run.py and the harbor adapter: telemetry on
+    (D132), and `routing` verbatim from EVAL_ROUTING, refused when it is not a JSON object."""
+    config = {"telemetry": {"enabled": True}}
+    raw = environ.get(ROUTING_ENV)
+    if raw:
+        try:
+            routing = json.loads(raw)
+        except ValueError:
+            routing = None
+        if not isinstance(routing, dict):
+            raise ValueError(f"{ROUTING_ENV} must be a JSON object, not {raw!r}")
+        config["routing"] = routing
+    return config
+
+
+def routing_label(environ):
+    """The routing object as it rides the fingerprint's mode; `{}` (no provider object) is a
+    variant of its own, and no EVAL_ROUTING is no label."""
+    routing = eval_config(environ).get("routing")
+    if routing is None:
+        return ""
+    return "+routing" + json.dumps(routing, sort_keys=True, separators=(",", ":"))
+
 
 KERNEL_ROWS = ("kernel-toolchain", "kernel-boot")
 
@@ -73,14 +109,18 @@ def run_command(model_name, instruction, resume=False, deadline_sec=None):
     # killed it. The deltas are dropped through a guarded filter (E6: a bare
     # `grep -v` exits 1 when nothing survives, and pipefail scores that 0),
     # message_end carries every field the parse reads, and tee's stdout goes
-    # to /dev/null so harbor holds nothing in memory.
+    # to /dev/null so harbor holds nothing in memory. `-a`: a resumed trial's
+    # `--continue` run appends to the first segment instead of truncating it.
+    # Incident: grep block-buffers into a pipe, so a killed trial's file ended
+    # mid-event at 172,032 bytes; `stdbuf -oL`, since busybox grep has no
+    # `--line-buffered`.
     return (
         "yi ask --json --yolo "
         f"--model {shlex.quote(model_name)} "
         f"--session-dir {REMOTE_SESSION_DIR} "
         f"{deadline_flag}{resume_flag}{shlex.quote(instruction)} "
-        "2>&1 </dev/null | { grep -v '\"type\":\"message_update\"' || [ $? -eq 1 ]; } "
-        f"| stdbuf -oL tee {REMOTE_EVENTS_PATH} >/dev/null"
+        "2>&1 </dev/null | { stdbuf -oL grep -v '\"type\":\"message_update\"' || [ $? -eq 1 ]; } "
+        f"| stdbuf -oL tee -a {REMOTE_EVENTS_PATH} >/dev/null"
     )
 
 
@@ -119,6 +159,18 @@ def json_lines(path):
     return parsed, malformed
 
 
+def upstreams(messages):
+    """Turns per upstream, from the `upstream` diagnostic the completions mapper keeps off
+    OpenRouter's chunks; a turn that names none (faux, a direct provider) is not counted."""
+    tally = {}
+    for message in messages:
+        for note in message.get("diagnostics") or []:
+            name = (note.get("details") or {}).get("provider") if note.get("type") == "upstream" else None
+            if name:
+                tally[name] = tally.get(name, 0) + 1
+    return tally
+
+
 def parse_events(path):
     """Sum assistant usage over a `yi ask --json` transcript.
 
@@ -135,6 +187,7 @@ def parse_events(path):
     cost = 0.0
     assistant = 0
     unknown = 0
+    turns = []
     events, malformed = json_lines(path)
     for event in events:
         if event.get("type") != "message_end":
@@ -143,6 +196,7 @@ def parse_events(path):
         if not isinstance(message, dict) or message.get("role") != "assistant":
             continue
         assistant += 1
+        turns.append(message)
         usage = message.get("usage")
         _add_tokens(totals, usage)
         if isinstance(usage, dict) and usage.get("unknown") is True:
@@ -155,6 +209,7 @@ def parse_events(path):
         "nAssistantMessages": assistant,
         "malformedLines": malformed,
         "costUnknownTurns": unknown,
+        "byUpstream": upstreams(turns),
     }
     if assistant == 0:
         result.update({key: None for key in TOKEN_KEYS})

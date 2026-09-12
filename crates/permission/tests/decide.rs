@@ -340,6 +340,81 @@ fn a_credential_read_is_named_before_it_happens() -> TestResult {
     Ok(())
 }
 
+/// Incident: under `--yolo` a `read` of /etc/nginx/nginx.conf was refused as catastrophic
+/// while `bash cat` printed the same bytes (the 2026-09-10 harness audit, S3). A read is
+/// refused for what it leaks or never finishes: a key, the workspace .git, a directory a walk
+/// would carry into a key store, a device.
+#[test]
+fn a_read_of_a_system_path_is_allowed_but_a_key_is_not() -> TestResult {
+    let session = SessionRules::new();
+    for mode in [
+        PermissionMode::Ask,
+        PermissionMode::Auto,
+        PermissionMode::Yolo,
+    ] {
+        let read = |path: &str| {
+            let targets = [PathBuf::from(path)];
+            decide(&read_call(&targets), mode, &[], &session, &[], &context())
+        };
+        for path in [
+            "/etc/nginx/nginx.conf",
+            "/usr/include/stdio.h",
+            "/proc/self/environ",
+        ] {
+            let decision = read(path);
+            assert!(
+                matches!(decision, Decision::Allow { .. }),
+                "{path} in {mode:?}: {decision:?}"
+            );
+        }
+        for path in [
+            "/home/user/.ssh/id_rsa",
+            "/home/user/project/.git/config",
+            "/home/user",
+            "/",
+            "/dev/zero",
+            "/proc/self/root/home/user/.ssh/id_rsa",
+            "/proc/self/cwd/.git/config",
+        ] {
+            let decision = read(path);
+            assert!(
+                matches!(decision, Decision::Deny { .. }),
+                "{path} in {mode:?}: {decision:?}"
+            );
+        }
+    }
+    // Other users' key stores sit under /home and /Users whatever this HOME is.
+    let root = CatastrophicContext {
+        home_dir: Some(PathBuf::from("/root")),
+        ..context()
+    };
+    for path in ["/home", "/Users"] {
+        let targets = [PathBuf::from(path)];
+        let decision = decide(
+            &read_call(&targets),
+            PermissionMode::Yolo,
+            &[],
+            &session,
+            &[],
+            &root,
+        );
+        assert!(
+            matches!(decision, Decision::Deny { .. }),
+            "{path}: {decision:?}"
+        );
+    }
+    // A write, and a read-kind call that reports itself irreversible (grep's replace+apply),
+    // still meet the whole denylist.
+    let targets = [PathBuf::from("/etc/nginx/nginx.conf")];
+    let mut rewrite = read_call(&targets);
+    rewrite.irreversible = true;
+    for call in [rewrite, write_call(&targets, false)] {
+        let decision = decide(&call, PermissionMode::Yolo, &[], &session, &[], &context());
+        assert!(matches!(decision, Decision::Deny { .. }), "{decision:?}");
+    }
+    Ok(())
+}
+
 /// Incident: a `read` of `~/.ssh/id_rsa` reached the check as a relative path and passed it;
 /// only the read's own failure kept the key out of the transcript.
 #[test]

@@ -15,7 +15,6 @@ pub const LEDGER_CUSTOM_TYPE: &str = "ledger_prompt";
 /// Every threshold the loop coupling reads is named here and nowhere else,
 /// fitted on task-shape features alone, never on a benchmark identity.
 pub mod gate {
-    pub const NUDGE_CAP_PER_CYCLE: u32 = 2;
     pub const STOP_CAP_PER_CYCLE: u32 = 2;
     pub const MULTI_STEP_SCORE: usize = 2;
     pub const LONG_PROMPT_WORDS: usize = 30;

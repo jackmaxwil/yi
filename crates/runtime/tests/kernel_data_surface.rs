@@ -120,6 +120,7 @@ fn service() -> Arc<KernelService> {
         on_restore: None,
         sandbox: None,
         snapshot_key: None,
+        cell_ceiling: None,
     }))
 }
 

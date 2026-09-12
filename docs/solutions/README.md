@@ -146,7 +146,21 @@ when it changes rather than editing them by hand.
 - [D166](adr/d166.md) - the working model is in the prompt, placed by the laws
 - [D167](adr/d167.md) - the forge CLI is `fgj`
 - [D168](adr/d168.md) - a reasoning cut is not a length strike
+- [D170](adr/d170.md) - a catalog model's `headers` reach the wire
 - [D171](adr/d171.md) - `read` converts a file that is not UTF-8 through the kernel venv, never...
 - [D171](adr/d171.md) - `read` converts a file that is not text through the kernel venv, never...
+- [D173](adr/d173.md) - the ledger row says what it could not measure
+- [D174](adr/d174.md) - a row names the build, upstream and routing it ran on, and a trial its budget
+- [D175](adr/d175.md) - an in-band provider error is retried and settled like a dropped stream
+- [D176](adr/d176.md) - a kernel cell has a wall clock, and an abandoned internal cell frees the kernel
+- [D177](adr/d177.md) - `--deadline` is enforced, not only shown
+- [D178](adr/d178.md) - reasoning cuts are counted per prompt and a truncated call is a length strike
+- [D179](adr/d179.md) - the repeat breaker counts a batch over six turns and sees a text-only turn
+- [D180](adr/d180.md) - a read is refused only where a read does harm
+- [D182](adr/d182.md) - the artifact and closure gates are deleted, and a config that still names...
+- [D183](adr/d183.md) - done needs evidence, not a typography
+- [D184](adr/d184.md) - a todo move's result names what moved
+- [D185](adr/d185.md) - the prompt loses what nothing calls
+- [D186](adr/d186.md) - the v4 calibrated slice is chosen by a sweep, not by cost
 
 D36-D51, D72, D73 and D74 have no ADR yet; ARCHITECTURE.md is the record for those rows.

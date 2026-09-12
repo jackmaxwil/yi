@@ -1,5 +1,6 @@
 use std::error::Error;
 use std::sync::Arc;
+use std::time::Duration;
 use yi_ai::faux::{faux_assistant_message, faux_text, faux_tool_call};
 use yi_loop::ExecutionMode;
 use yi_runtime::{AgentSession, ProviderStream, SessionConfig, Status};
@@ -452,5 +453,94 @@ async fn an_abort_during_a_tool_call_kills_the_child() -> Result<(), Box<dyn Err
         "the interrupted shell must not run its next command"
     );
     let _ = std::fs::remove_dir_all(&dir);
+    Ok(())
+}
+
+/// `tool_call_session` wired the way `yi ask` is, `--deadline` included.
+fn deadline_session(root: &std::path::Path, command: &str, total: Duration) -> AgentSession {
+    let mut session = tool_call_session(command);
+    let provider = Arc::clone(session.provider_arc());
+    yi_runtime::attach_runtime(
+        &mut session,
+        yi_runtime::RuntimeWiring {
+            provider,
+            system_prompt: "sys".to_owned(),
+            tool_execution: ExecutionMode::Sequential,
+            cwd: root.to_path_buf(),
+            home: root.join("home"),
+            lane_slots: 1,
+            broker: None,
+            tools: Arc::new(yi_tools::builtin_tools),
+            depth: 0,
+            max_depth: 1,
+            rlm_dir: root.join("rlm"),
+            summarizer: None,
+            advisor: None,
+            auto_review: None,
+            plan_stale_turns: None,
+            plans_dir: Some(root.join("plans")),
+            parent_link: None,
+            wall: yi_runtime::Wall::default(),
+            auto_background: None,
+            deadline: Some(total),
+            kernel_prewarm: false,
+            mcp_read: None,
+            sessions_dir: None,
+            kernels: yi_runtime::fetch::KernelServiceMap::new(),
+        },
+    );
+    session
+}
+
+fn scratch(name: &str) -> Result<std::path::PathBuf, Box<dyn Error>> {
+    let root = std::env::temp_dir().join(format!("yi-runtime-{name}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root)?;
+    Ok(root)
+}
+
+/// Incident: `--deadline` only counted down in the environment block, so a command that
+/// outlived the budget held its turn until harbor killed the container.
+#[tokio::test]
+async fn a_deadline_kills_a_running_bash_call() -> Result<(), Box<dyn Error>> {
+    let root = scratch("deadline-kill")?;
+    let session = deadline_session(&root, "sleep 30", Duration::from_secs(1));
+    let started = std::time::Instant::now();
+    session.prompt("run it")?;
+    let settled = tokio::time::timeout(Duration::from_secs(5), session.wait_idle()).await;
+    let _ = std::fs::remove_dir_all(&root);
+    assert!(
+        settled.is_ok(),
+        "a one-second deadline must end the command, not wait it out: {:?}",
+        started.elapsed()
+    );
+    Ok(())
+}
+
+/// The deadline ends the run between turns, never inside one: the call in flight runs to its
+/// own end and the next request is never sent.
+#[tokio::test]
+async fn a_deadline_ends_the_run_after_the_turn_in_flight() -> Result<(), Box<dyn Error>> {
+    let root = scratch("deadline-stop")?;
+    // A 4.6 s call ends past a quarter-of-six-seconds margin and before the clock runs out.
+    let session = deadline_session(&root, "sleep 4.6", Duration::from_secs(6));
+    let mut events = session.subscribe();
+    session.prompt("run it")?;
+    session.wait_idle().await;
+    let _ = std::fs::remove_dir_all(&root);
+    let mut calls = Vec::new();
+    while let Ok(event) = events.try_recv() {
+        if let AgentEvent::ToolExecutionEnd { is_error, .. } = event {
+            calls.push(is_error);
+        }
+    }
+    assert_eq!(calls, [false], "the call in flight runs to its own end");
+    let unsent = session
+        .provider()
+        .faux
+        .lock()
+        .map(|faux| faux.pending_response_count())
+        .unwrap_or_default();
+    assert_eq!(unsent, 1, "a request started inside the margin");
     Ok(())
 }

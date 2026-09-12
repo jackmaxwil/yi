@@ -95,7 +95,6 @@ async fn a_parent_reads_a_variable_out_of_its_childs_kernel() -> TestResult {
             cwd: root.clone(),
             lane_slots: 1,
             deadline: None,
-            gates: Default::default(),
             home: std::env::var_os("HOME")
                 .map(PathBuf::from)
                 .unwrap_or_default(),
