@@ -1,7 +1,9 @@
 use serde_json::{Value, json};
 use tokio::sync::mpsc::{Receiver, Sender};
 use yi_types::event::AssistantMessageEvent;
-use yi_types::message::{AgentMessage, Content, StopReason, Usage, UserContent};
+use yi_types::message::{
+    AgentMessage, Content, RAW_STOP_IN_BAND_ERROR, StopReason, Usage, UserContent,
+};
 use yi_types::model::{Effort, LlmContext, Model, ToolChoice, ToolDef};
 
 use crate::catalog::calculate_cost;
@@ -521,6 +523,9 @@ impl ChunkMapper {
         {
             *response_id = Some(id.to_owned());
         }
+        if let Some(upstream) = chunk.get("provider").and_then(Value::as_str) {
+            crate::request::note_upstream(&mut self.output, upstream);
+        }
         if let Some(usage_value) = chunk.get("usage").filter(|value| !value.is_null()) {
             let usage = parse_chunk_usage(usage_value, &self.model);
             if let AgentMessage::Assistant {
@@ -540,7 +545,7 @@ impl ChunkMapper {
             } = &mut self.output
         {
             *output_stop = StopReason::Error;
-            *raw_stop_reason = Some("error".to_owned());
+            *raw_stop_reason = Some(RAW_STOP_IN_BAND_ERROR.to_owned());
             *output_error = Some(error_chunk_text(chunk, error));
             self.has_finish_reason = true;
         }
@@ -785,9 +790,13 @@ fn settle_from_record(
         ..
     } = output
         && usage.unknown
-        && let Some(settled) = crate::settle::generation_usage(model, api_key, proxy, id)
+        && let Some((settled, upstream)) =
+            crate::settle::generation_usage(model, api_key, proxy, id)
     {
         *usage = settled;
+        if let Some(upstream) = upstream {
+            crate::request::note_upstream(output, &upstream);
+        }
     }
 }
 
@@ -807,7 +816,7 @@ fn run_request(
     let _ = sender.blocking_send(mapper.start_event());
     let pumped = crate::request::pump_sse_with_resend(
         stop,
-        || crate::request::openai_bearer_post(&url, api_key, body, proxy),
+        || crate::request::openai_bearer_post(&url, model, api_key, body, proxy),
         |sse| {
             if sse.data == "[DONE]" {
                 return Ok(true);
@@ -838,6 +847,16 @@ fn run_request(
     // stop and is settled from the generation record (D163)
     if stop.is_some_and(|flag| flag.load(std::sync::atomic::Ordering::SeqCst)) {
         mapper.cut();
+        settle_from_record(&mut mapper.output, model, api_key, proxy);
+    }
+    // an in-band error chunk ends the stream before its usage chunk: settled the same way (D175)
+    if matches!(
+        mapper.output,
+        AgentMessage::Assistant {
+            stop_reason: StopReason::Error,
+            ..
+        }
+    ) {
         settle_from_record(&mut mapper.output, model, api_key, proxy);
     }
     for event in mapper.finish() {

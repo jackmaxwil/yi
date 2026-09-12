@@ -319,7 +319,7 @@ async fn a_turn_repeated_verbatim_is_steered_once_then_ended() {
             matches!(message, AgentMessage::Custom { custom_type, .. } if custom_type == yi_loop::REPEAT_BREAK_CUSTOM_TYPE)
         })
         .count();
-    assert_eq!(breaks, 1, "one steer at the third identical batch");
+    assert_eq!(breaks, 1, "one steer, at the fourth identical batch");
     let answers = collected
         .iter()
         .filter(|message| matches!(message, AgentMessage::Assistant { .. }))
@@ -366,6 +366,157 @@ async fn a_turn_repeated_verbatim_is_steered_once_then_ended() {
         .filter(|message| matches!(message, AgentMessage::Assistant { .. }))
         .count();
     assert_eq!(answers, 9, "a job poll repeats as long as it likes");
+}
+
+async fn run_with<S: yi_loop::run::StreamFn>(stream: &S, config: &LoopConfig) -> Vec<AgentMessage> {
+    let mut context = LoopContext {
+        system_prompt: String::new(),
+        messages: Vec::new(),
+        tools: vec![Arc::new(EchoTool)],
+    };
+    let (_events, mut emit) = collector();
+    let signal = InterruptSignal::default();
+    run_loop(
+        &mut context,
+        vec![user("go")],
+        config,
+        &signal,
+        &mut emit,
+        stream,
+    )
+    .await
+}
+
+/// D179: `bash ls` and `todo view` taking turns never repeated the previous turn, and a
+/// text-only turn had no signature, so neither loop was ever broken (audit B5, G6). The breaker
+/// now counts a batch over the last six turns and fingerprints the text of a tool-less turn.
+#[tokio::test]
+async fn an_alternating_pair_and_a_text_only_spiral_are_broken() {
+    let breaks = |collected: &[AgentMessage]| {
+        collected
+            .iter()
+            .filter(|message| matches!(message, AgentMessage::Custom { custom_type, .. } if custom_type == yi_loop::REPEAT_BREAK_CUSTOM_TYPE))
+            .count()
+    };
+    let answers = |collected: &[AgentMessage]| {
+        collected
+            .iter()
+            .filter(|message| matches!(message, AgentMessage::Assistant { .. }))
+            .count()
+    };
+    let call = |word: &str| {
+        let mut arguments = Map::new();
+        arguments.insert("word".to_owned(), json!(word));
+        faux_assistant_message(
+            vec![faux_tool_call("c", "echo", arguments)],
+            StopReason::ToolUse,
+        )
+    };
+    let reply = |text: &str| faux_assistant_message(vec![faux_text(text)], StopReason::Stop);
+
+    let mut script: Vec<AgentMessage> = (0..4).flat_map(|_| [call("ls"), call("view")]).collect();
+    script.push(reply("done"));
+    let collected = run_with(&Scripted::new(script), &LoopConfig::new(faux_model())).await;
+    assert_eq!(
+        breaks(&collected),
+        1,
+        "one steer, at the third ls in five turns"
+    );
+    assert_eq!(answers(&collected), 9);
+
+    let spiral = (0..10)
+        .map(|n| {
+            reply(if n % 2 == 0 {
+                "All  green."
+            } else {
+                "All green.\n"
+            })
+        })
+        .collect();
+    let mut config = LoopConfig::new(faux_model());
+    config.intercept_stop = Some(Box::new(|_| Some(user("keep going"))));
+    let collected = run_with(&Scripted::new(spiral), &config).await;
+    assert_eq!(breaks(&collected), 1, "{collected:?}");
+    assert_eq!(
+        answers(&collected),
+        yi_loop::REPEAT_STOP_AT as usize,
+        "the sixth identical reply ends the run"
+    );
+
+    let cut = || {
+        faux_assistant_message(
+            vec![faux_thinking(
+                &"the router must rise at y=2, no, y=3, ".repeat(2_000),
+            )],
+            StopReason::Stop,
+        )
+    };
+    let stream = Spiral {
+        responses: Mutex::new(vec![cut(), cut(), cut(), cut(), reply("done")]),
+    };
+    let collected = run_with(&stream, &LoopConfig::new(faux_model())).await;
+    assert_eq!(breaks(&collected), 0, "a cut turn has no text to repeat");
+    assert_eq!(answers(&collected), 5);
+}
+
+/// D179: a prompt queued behind a running one starts its own repeat window, as it starts its
+/// own cut count (D178): the same short answer to three prompts is not a spiral.
+#[tokio::test]
+async fn a_follow_up_prompt_starts_its_own_repeat_window() {
+    let done = || faux_assistant_message(vec![faux_text("Done.")], StopReason::Stop);
+    let mut config = LoopConfig::new(faux_model());
+    let follow_ups = Arc::new(Mutex::new(vec![user("and this?"), user("and this?")]));
+    config.get_follow_up_messages = Some(Box::new(move || {
+        follow_ups
+            .lock()
+            .map(|mut queued| queued.pop().into_iter().collect())
+            .unwrap_or_default()
+    }));
+    let collected = run_with(&Scripted::new(vec![done(), done(), done()]), &config).await;
+    let steers = collected
+        .iter()
+        .filter(|message| matches!(message, AgentMessage::Custom { custom_type, .. } if custom_type == yi_loop::REPEAT_BREAK_CUSTOM_TYPE))
+        .count();
+    assert_eq!(steers, 0, "{collected:?}");
+}
+
+/// D179 review: a fresh edit before each run of the same test is progress, yet each new edit
+/// re-armed the steer, so every check from the third on was told to stop calling tools.
+#[tokio::test]
+async fn an_edit_then_check_loop_is_not_steered() {
+    let call = |name: &str, key: &str, value: String| {
+        let mut arguments = Map::new();
+        arguments.insert(key.to_owned(), json!(value));
+        faux_assistant_message(
+            vec![faux_tool_call("c", name, arguments)],
+            StopReason::ToolUse,
+        )
+    };
+    let mut script: Vec<AgentMessage> = (0..5)
+        .flat_map(|n| {
+            [
+                call("edit", "patch", format!("fix {n}")),
+                call("bash", "command", "cargo test".to_owned()),
+            ]
+        })
+        .collect();
+    script.push(faux_assistant_message(
+        vec![faux_text("fixed")],
+        StopReason::Stop,
+    ));
+    let collected = run_with(&Scripted::new(script), &LoopConfig::new(faux_model())).await;
+    let steers = collected
+        .iter()
+        .filter(|message| matches!(message, AgentMessage::Custom { custom_type, .. } if custom_type == yi_loop::REPEAT_BREAK_CUSTOM_TYPE))
+        .count();
+    assert_eq!(steers, 0, "five edits, each checked once");
+    assert!(matches!(
+        collected.last(),
+        Some(AgentMessage::Assistant {
+            stop_reason: StopReason::Stop,
+            ..
+        })
+    ));
 }
 
 fn three_bare_length_stops() -> Scripted {
@@ -636,6 +787,144 @@ async fn consecutive_cuts_re_drive_past_the_third_and_name_the_write() {
     );
 }
 
+/// D178: the audit slice's photonic trials were cut 22 times, never more than four in a row,
+/// because a tool call between cuts started the count over, so twelve was never approached.
+/// The sixth cut of a prompt ends the run, calls or not.
+#[tokio::test]
+async fn cut_turns_are_counted_per_prompt_not_per_tool_call() {
+    let spiral = || {
+        faux_assistant_message(
+            vec![faux_thinking(
+                &"the router must rise at y=2, no, y=3, ".repeat(2_000),
+            )],
+            StopReason::Stop,
+        )
+    };
+    let mut arguments = Map::new();
+    arguments.insert("word".to_owned(), json!("x"));
+    let work = || {
+        faux_assistant_message(
+            vec![faux_tool_call("c", "echo", arguments.clone())],
+            StopReason::ToolUse,
+        )
+    };
+    let mut script: Vec<AgentMessage> = (0..6).flat_map(|_| [spiral(), work()]).collect();
+    script.push(faux_assistant_message(
+        vec![faux_text("never reached")],
+        StopReason::Stop,
+    ));
+    let stream = Spiral {
+        responses: Mutex::new(script),
+    };
+    let mut context = LoopContext {
+        system_prompt: String::new(),
+        messages: Vec::new(),
+        tools: vec![Arc::new(EchoTool)],
+    };
+    let config = LoopConfig::new(faux_model());
+    let signal = InterruptSignal::default();
+    let (_events, mut emit) = collector();
+    let collected = run_loop(
+        &mut context,
+        vec![user("go")],
+        &config,
+        &signal,
+        &mut emit,
+        &stream,
+    )
+    .await;
+    let rungs: Vec<i64> = collected
+        .iter()
+        .filter_map(|message| match message {
+            AgentMessage::Custom {
+                custom_type,
+                details,
+                ..
+            } if custom_type == yi_loop::LENGTH_REDRIVE_CUSTOM_TYPE => {
+                details.as_ref().and_then(|d| d["rung"].as_i64())
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(rungs, vec![1, 2, 3, 4, 5], "a tool call keeps the count");
+    let answers = collected
+        .iter()
+        .filter(|message| matches!(message, AgentMessage::Assistant { .. }))
+        .count();
+    assert_eq!(answers, 11, "the sixth cut ends the run: {collected:?}");
+}
+
+/// D178: a prompt queued behind a running one (ACP `session/prompt` while busy) arrives as a
+/// follow-up in the same loop; it starts its own cut count, not the fifth cut of the last one.
+#[tokio::test]
+async fn a_follow_up_prompt_starts_its_own_cut_count() {
+    let spiral = || {
+        faux_assistant_message(
+            vec![faux_thinking(
+                &"the router must rise at y=2, no, y=3, ".repeat(2_000),
+            )],
+            StopReason::Stop,
+        )
+    };
+    let mut arguments = Map::new();
+    arguments.insert("word".to_owned(), json!("x"));
+    let work = || {
+        faux_assistant_message(
+            vec![faux_tool_call("c", "echo", arguments.clone())],
+            StopReason::ToolUse,
+        )
+    };
+    let answer = |text: &str| faux_assistant_message(vec![faux_text(text)], StopReason::Stop);
+    let mut script: Vec<AgentMessage> = (0..5).flat_map(|_| [spiral(), work()]).collect();
+    script.extend([answer("first"), spiral(), answer("second")]);
+    let stream = Spiral {
+        responses: Mutex::new(script),
+    };
+    let mut context = LoopContext {
+        system_prompt: String::new(),
+        messages: Vec::new(),
+        tools: vec![Arc::new(EchoTool)],
+    };
+    let mut config = LoopConfig::new(faux_model());
+    let follow_ups = Arc::new(Mutex::new(vec![user("and then?")]));
+    config.get_follow_up_messages = Some(Box::new(move || {
+        follow_ups
+            .lock()
+            .map(|mut queued| std::mem::take(&mut *queued))
+            .unwrap_or_default()
+    }));
+    let signal = InterruptSignal::default();
+    let (_events, mut emit) = collector();
+    let collected = run_loop(
+        &mut context,
+        vec![user("go")],
+        &config,
+        &signal,
+        &mut emit,
+        &stream,
+    )
+    .await;
+    let rungs: Vec<i64> = collected
+        .iter()
+        .filter_map(|message| match message {
+            AgentMessage::Custom {
+                custom_type,
+                details,
+                ..
+            } if custom_type == yi_loop::LENGTH_REDRIVE_CUSTOM_TYPE => {
+                details.as_ref().and_then(|d| d["rung"].as_i64())
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(rungs, vec![1, 2, 3, 4, 5, 1], "{collected:?}");
+    let answers = collected
+        .iter()
+        .filter(|message| matches!(message, AgentMessage::Assistant { .. }))
+        .count();
+    assert_eq!(answers, 13, "the follow-up reaches its answer");
+}
+
 /// D163 amended: the provider settles a cut turn from the generation record and its `Done`
 /// carries the measured usage; the cut message keeps it instead of the chars/4 estimate.
 #[tokio::test]
@@ -814,6 +1103,30 @@ async fn length_stop_fails_every_tool_call() {
     assert!(kinds(&events).contains(&"tool_execution_end"));
 }
 
+/// D178: a call too long for the output ceiling is re-issued whole and truncated again, its
+/// partial arguments different each time, so neither the repeat breaker nor a reset length
+/// count ended it; each truncated call is a length strike and the third ends the run.
+#[tokio::test]
+async fn a_length_stop_carrying_a_truncated_call_is_a_strike() {
+    let truncated = |n: usize| {
+        let mut arguments = Map::new();
+        arguments.insert("content".to_owned(), json!("x".repeat(n)));
+        faux_assistant_message(
+            vec![faux_tool_call("w", "echo", arguments)],
+            StopReason::Length,
+        )
+    };
+    let stream = Scripted::new(vec![
+        truncated(1),
+        truncated(2),
+        truncated(3),
+        faux_assistant_message(vec![faux_text("never reached")], StopReason::Stop),
+    ]);
+    let (_details, answers, events) = drive_length_ladder(&stream, vec![Arc::new(EchoTool)]).await;
+    assert_eq!(answers, 3, "the third truncated call ends the run");
+    assert_eq!(kinds(&events).last(), Some(&"agent_end"));
+}
+
 fn dropped_stream() -> AgentMessage {
     let mut error = faux_assistant_message(Vec::new(), StopReason::Error);
     if let AgentMessage::Assistant {
@@ -940,6 +1253,86 @@ async fn a_dropped_stream_that_showed_nothing_is_retried_once() {
     assert!(
         collected.iter().any(|message| matches!(message, AgentMessage::Custom { custom_type, .. } if custom_type == yi_loop::STREAM_RETRY_CUSTOM_TYPE)),
         "a wire failure with zero usage is a dropped stream and is retried"
+    );
+}
+
+/// OpenRouter's in-band error chunk as the mapper leaves it: thinking shown, no usage, the
+/// raw stop marked; the text is the 2026-09-09 night's Wafer 502.
+fn in_band_error() -> AgentMessage {
+    let mut error = faux_assistant_message(vec![faux_thinking("hmm")], StopReason::Error);
+    if let AgentMessage::Assistant {
+        error_message,
+        raw_stop_reason,
+        usage,
+        ..
+    } = &mut error
+    {
+        *error_message =
+            Some("Internal Server Error (upstream Wafer, code 502, server_error)".to_owned());
+        *raw_stop_reason = Some(yi_types::message::RAW_STOP_IN_BAND_ERROR.to_owned());
+        *usage = yi_types::message::Usage::unknown();
+    }
+    error
+}
+
+/// Runs the script against the echo tool: the hidden stream retries that rode it, and the
+/// stop reason the run ended on.
+async fn run_script(script: Vec<AgentMessage>) -> (usize, Option<StopReason>) {
+    let stream = Scripted::new(script);
+    let mut context = LoopContext {
+        system_prompt: String::new(),
+        messages: Vec::new(),
+        tools: vec![Arc::new(EchoTool)],
+    };
+    let config = LoopConfig::new(faux_model());
+    let (_events, mut emit) = collector();
+    let collected = run_loop(
+        &mut context,
+        vec![user("hi")],
+        &config,
+        &InterruptSignal::default(),
+        &mut emit,
+        &stream,
+    )
+    .await;
+    let retries = collected
+        .iter()
+        .filter(|message| matches!(message, AgentMessage::Custom { custom_type, .. } if custom_type == yi_loop::STREAM_RETRY_CUSTOM_TYPE))
+        .count();
+    let last = match collected.last() {
+        Some(AgentMessage::Assistant { stop_reason, .. }) => Some(*stop_reason),
+        _ => None,
+    };
+    (retries, last)
+}
+
+#[tokio::test]
+async fn an_in_band_provider_error_is_retried_once() {
+    let recovered = || faux_assistant_message(vec![faux_text("recovered")], StopReason::Stop);
+    assert_eq!(
+        run_script(vec![in_band_error(), recovered()]).await,
+        (1, Some(StopReason::Stop)),
+        "an in-band error that showed nothing runs again"
+    );
+    assert_eq!(
+        run_script(vec![in_band_error(), in_band_error()]).await,
+        (1, Some(StopReason::Error)),
+        "a second in a row ends the run"
+    );
+    let tool_turn = faux_assistant_message(
+        vec![faux_tool_call("call-1", "echo", Map::new())],
+        StopReason::ToolUse,
+    );
+    assert_eq!(
+        run_script(vec![
+            in_band_error(),
+            tool_turn,
+            in_band_error(),
+            recovered()
+        ])
+        .await,
+        (2, Some(StopReason::Stop)),
+        "a clean turn between two errors gives the second its own retry"
     );
 }
 

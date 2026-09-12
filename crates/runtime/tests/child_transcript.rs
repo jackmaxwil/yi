@@ -229,6 +229,7 @@ async fn a_kernel_cell_spawns_a_child_whose_typed_answer_and_transcript_land() -
         on_restore: None,
         sandbox: None,
         snapshot_key: None,
+        cell_ceiling: None,
     });
     let cancelled: yi_tools::CancelFlag = Arc::new(|| false);
     let cell = tokio::task::spawn_blocking(move || {

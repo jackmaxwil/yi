@@ -515,6 +515,9 @@ impl Tool for BashTool {
         } else if capture.cancelled {
             sections.push("[command aborted]".to_owned());
         }
+        if let Some(error) = &capture.kill_error {
+            sections.push(format!("[group kill failed: {error}]"));
+        }
         let exit_code = capture.exit_code.unwrap_or(-1);
         if exit_code != 0 {
             sections.push(format!("exit code: {exit_code}"));
