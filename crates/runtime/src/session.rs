@@ -131,6 +131,7 @@ pub struct AgentSession {
     permission: Mutex<Option<Arc<crate::permission::PermissionBroker>>>,
     goal: Mutex<Option<Arc<crate::goal::GoalService>>>,
     plan: Mutex<Option<Arc<crate::plan::PlanService>>>,
+    memory: Mutex<Option<Arc<crate::memory::Activity>>>,
     rules: Mutex<Option<Arc<crate::rules::RuleEngine>>>,
     wall: Mutex<crate::wall::Wall>,
     kernel: Arc<Mutex<Option<Arc<crate::kernel::KernelService>>>>,
@@ -178,6 +179,7 @@ impl AgentSession {
             permission: Mutex::new(None),
             goal: Mutex::new(None),
             plan: Mutex::new(None),
+            memory: Mutex::new(None),
             rules: Mutex::new(None),
             wall: Mutex::new(crate::wall::Wall::default()),
             kernel: Arc::new(Mutex::new(None)),
@@ -373,6 +375,19 @@ impl AgentSession {
 
     pub fn plan_service(&self) -> Option<Arc<crate::plan::PlanService>> {
         self.plan
+            .lock()
+            .ok()
+            .and_then(|slot| slot.as_ref().map(Arc::clone))
+    }
+
+    pub fn set_memory(&self, activity: Arc<crate::memory::Activity>) {
+        if let Ok(mut slot) = self.memory.lock() {
+            *slot = Some(activity);
+        }
+    }
+
+    pub fn memory(&self) -> Option<Arc<crate::memory::Activity>> {
+        self.memory
             .lock()
             .ok()
             .and_then(|slot| slot.as_ref().map(Arc::clone))
