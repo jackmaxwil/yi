@@ -294,7 +294,8 @@ def check_problems(title, body):
     measured, why = gate.measure()
     if why:
         return errs + [why]
-    ledger_added, changelog_added, src_net = measured
+    ledger_added, changelog_added, src_net, (surface_added, surface_changed) = measured
+    errs += gate.surface_problems(body, surface_added, surface_changed)
     errs += gate.body_problems(
         fgj_api, "", repo(), body, [gate.row_key(row) for row in ledger_added], changelog_added, src_net
     )
@@ -623,6 +624,18 @@ def selfcheck():
     kept = dedupe_counted("## summary\n\nmine\n", counted)
     assert "## Summary" not in kept, "the heading match is case-insensitive"
     assert dedupe_counted("", counted) == counted.strip(), "no author prose keeps the whole prefill"
+    # Incident: measure() grew the surface delta and this unpack still took three, so
+    # `just pr open`, `pr check` and `land` died on a ValueError before asking anything.
+    import check_pr_metadata as gate
+
+    real = gate.measure, globals()["repo"]
+    gate.measure = lambda: (([], [], 0, ([], ["tool:bash"])), None)
+    globals()["repo"] = lambda: "apex/yi"
+    try:
+        errs = check_problems("Lock the tool surface", "## Summary\n\nwords\n")
+    finally:
+        gate.measure, globals()["repo"] = real
+    assert len(errs) == 1 and "## Claims ledger" in errs[0] and "tool:bash" in errs[0], errs
     print("ok   forge_pr selfcheck")
 
 
