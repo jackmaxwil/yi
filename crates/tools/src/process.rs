@@ -1,3 +1,4 @@
+use std::collections::VecDeque;
 use std::io::{Read, Write};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -57,30 +58,43 @@ fn group_kill(pgid: u32) -> Result<(), String> {
     Err(format!("kill -KILL -{pgid}: {status}"))
 }
 
+/// Incident: keeping only the first `cap` bytes lost a long build's last lines, where its verdict
+/// is. The first half and a rolling last half are kept, and the middle is counted.
 fn drain_capped(mut reader: impl Read, cap: usize, live: Option<&LiveOutput>) -> (String, bool) {
-    let mut buffer = Vec::new();
+    let head_cap = cap / 2;
+    let tail_cap = cap.saturating_sub(head_cap);
+    let mut head = Vec::new();
+    let mut tail = VecDeque::new();
+    let mut omitted: usize = 0;
     let mut chunk = [0u8; 8192];
-    let mut truncated = false;
     loop {
         match reader.read(&mut chunk) {
             Ok(0) | Err(_) => break,
             Ok(n) => {
+                let bytes = chunk.get(..n).unwrap_or(&[]);
                 if let Some(live) = live {
-                    live.push(chunk.get(..n).unwrap_or(&[]));
+                    live.push(bytes);
                 }
-                if buffer.len() < cap {
-                    let take = n.min(cap.saturating_sub(buffer.len()));
-                    buffer.extend_from_slice(chunk.get(..take).unwrap_or(&[]));
-                    if take < n {
-                        truncated = true;
-                    }
-                } else {
-                    truncated = true;
-                }
+                let room = head_cap.saturating_sub(head.len());
+                head.extend(bytes.iter().take(room));
+                tail.extend(bytes.iter().skip(room));
+                let excess = tail.len().saturating_sub(tail_cap);
+                tail.drain(..excess);
+                omitted = omitted.saturating_add(excess);
             }
         }
     }
-    (String::from_utf8_lossy(&buffer).into_owned(), truncated)
+    let tail = tail.make_contiguous();
+    if omitted == 0 {
+        head.extend_from_slice(tail);
+        return (String::from_utf8_lossy(&head).into_owned(), false);
+    }
+    let head = String::from_utf8_lossy(&head);
+    let tail = String::from_utf8_lossy(tail);
+    (
+        format!("{head}\n[{omitted} bytes omitted from the middle]\n{tail}"),
+        true,
+    )
 }
 
 /// Incident: waiting under the guard parked the cancel watchdog on the same lock, so an early
@@ -222,6 +236,13 @@ mod tests {
     use std::time::Instant;
 
     type Fallible = Result<(), Box<dyn std::error::Error>>;
+
+    #[test]
+    fn an_uncut_stream_is_decoded_whole() {
+        // Twelve two-byte characters: the 17-byte head of a 35-byte cap ends inside the ninth.
+        let text = "é".repeat(12);
+        assert_eq!(drain_capped(text.as_bytes(), 35, None), (text, false));
+    }
 
     #[test]
     fn cancel_kills_a_child_that_closed_its_own_pipes() -> Fallible {
