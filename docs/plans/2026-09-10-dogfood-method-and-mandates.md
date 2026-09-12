@@ -953,10 +953,10 @@ shown whole. The others follow the table in §7:
 }
 ```
 
-## 15. Revision notes (2026-09-11, phase 1 review)
+## 16. Revision notes (2026-09-11, phase 1 review)
 
 Reviewed against the tree at the phase-1 branch point; the §0 conflicts still stood
-as recorded. Four notes from the review:
+as recorded. Two notes from the review:
 
 1. **§13 question 7 is answered: yes.** `attach_runtime` runs in a T0 test as it
    stands. The widened `request_budget.rs` builds a real `AgentSession`, enters a
@@ -964,12 +964,5 @@ as recorded. Four notes from the review:
    points every path argument at a scratch dir, and attaches a full `RuntimeWiring`
    with `broker: None` and depth 0/1. The measured table is the one a session
    registers: 10 tools, 15 `extra:` keys, one `prompt:identity` key.
-2. **Numbers moved.** Phase 1 claims D195 and 0.243.0; open PRs #403–#410 hold
-   D187–D194 and 0.235.0–0.242.0. Whichever lands last rebases.
-3. **The lock interacts with two open PRs.** #403 edits `identity.md` (the
-   `prompt:identity` key) and #407 edits the bash description (the `tool:bash`
-   key). Whichever of the three lands after the others reruns
-   `check_request_budget.py --update` in its own Ratchet commit and owes the
-   claims ledger its PR body names.
-4. **`ruler.toml` needs no skills edit.** `[skills] enabled = true` picks up every
+2. **`ruler.toml` needs no skills edit.** `[skills] enabled = true` picks up every
    directory under `.ruler/skills/`; adding `yi-dogfood/` is the whole change.

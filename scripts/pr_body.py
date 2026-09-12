@@ -132,7 +132,7 @@ def surface_delta(base):
 
 
 def surface_skeletons(added, changed):
-    """The sections a surface change owes (D195), printed as header row and
+    """The sections a surface change owes (D188), printed as header row and
     separator with the columns in a comment and no data row, so an unfilled
     skeleton fails check_pr_metadata.py on purpose."""
     keys = ", ".join(changed + added)
