@@ -56,6 +56,32 @@ The trials land under `runs/tbv4/<job>/<task>__<id>/` with `result.json`,
 `agent/yi.jsonl`, `agent/yi/sessions/*.jsonl` and the telemetry sidecar the
 adapter turns on at install. `evals/axes.py` (plan S2) reads that directory.
 
+## tbv4_sweep.sh — one continuous run over a task list, held by watch.py
+
+For calibration: which v4 tasks can show a harness change at this model. Same
+dataset digest, model, binary and preflight as the baseline (the multiplier
+ceiling is checked first), but every task in `TBV4_LIST` (default
+`tbv4_sweep_tasks.txt`, 48 host-feasible tasks in a seeded shuffle: no GPU task,
+no 16-CPU task, not the six baseline tasks) goes to one `harbor run`, so all
+`TBV4_CONCURRENCY` (default 3) slots stay full until the wall instead of waiting
+on each task's slowest trial. What finishes before the wall is the sample; the
+shuffle keeps the unfinished tail random.
+
+`watch.py` owns the harbor process (its own process group) and polls every 60 s:
+a trial past $1 or 180 turns has its containers stopped; the run's spend past
+`TBV4_HARD_CAP` (default $20), the wall past `TBV4_WALL` (default 27,900 s,
+7 h 45 min) or host space under 8 GB (macOS's figure for important usage, which
+counts Time Machine local snapshots as free; 3 GB plain `df` as a floor) stops the
+group and this run's trial containers, exits 2 and writes the reason to
+`<runs>.STOPPED`. It also removes terminal-bench images no container uses:
+harbor's `--rmi local` never removes a pulled image, and these are pulled by
+digest, untagged, so they go by id after two idle polls. `evals/selftest.py` (`check_driver_ceiling`,
+`check_watch_stops`) holds the ceiling and the stop path.
+
+```sh
+TBV4_RUNS_DIR=runs/tbv4-sweep sh evals/drivers/tbv4_sweep.sh
+```
+
 ## T1 frontier — no targets, $0 spent (campaign 3)
 
 T1 pins its two targets on a baseline row's failing tasks. Row `0001` is
