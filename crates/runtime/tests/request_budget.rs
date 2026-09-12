@@ -72,8 +72,12 @@ fn options() -> AnthropicOptions {
 
 /// The `documentFormats` the kernel venv's anydoc 0.2.x wheel reports, recorded
 /// 2026-09-11, so the read tool's document clause joins the locked table on a
-/// machine with no venv. A venv whose wheel reports differently is a surface
-/// change, and the lock says so.
+/// machine with no venv.
+///
+/// ponytail: the lock pins this recorded list, not the live wheel — an anydoc
+/// upgrade that changes the real formats drifts silently until someone re-probes
+/// the venv and edits the list. The upgrade path is a live-lane test that builds
+/// the venv and asserts the wheel's list equals this one.
 const RECORDED_DOCUMENT_FORMATS: [&str; 11] = [
     "doc",
     "docx (docm)",
