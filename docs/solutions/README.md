@@ -150,6 +150,7 @@ when it changes rather than editing them by hand.
 - [D170](adr/d170.md) - a catalog model's `headers` reach the wire
 - [D171](adr/d171.md) - `read` converts a file that is not UTF-8 through the kernel venv, never...
 - [D171](adr/d171.md) - `read` converts a file that is not text through the kernel venv, never...
+- [D172](adr/d172.md) - the public mirror is a derived history, not the forge's
 - [D173](adr/d173.md) - the ledger row says what it could not measure
 - [D174](adr/d174.md) - a row names the build, upstream and routing it ran on, and a trial its budget
 - [D175](adr/d175.md) - an in-band provider error is retried and settled like a dropped stream
