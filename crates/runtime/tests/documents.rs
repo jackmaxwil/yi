@@ -258,7 +258,7 @@ fn a_binary_that_is_no_document_keeps_the_plain_error() -> TestResult {
     assert_eq!(
         text(&output),
         format!(
-            "failed to read {}: a PNG image, not text; in ipython the bundled attach_image skill puts it in front of the model",
+            "failed to read {0}: a PNG image, not text; in ipython run `print(await attach_image(\"{0}\"))` to put it in front of the model",
             path.display()
         )
     );
