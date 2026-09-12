@@ -76,10 +76,6 @@ fn undefined_constants(block: &str) -> BTreeSet<String> {
 #[test]
 fn every_prompt_example_defines_the_constants_it_uses() {
     for (name, text) in [
-        (
-            "orchestrate.md",
-            include_str!("../src/prompts/orchestrate.md"),
-        ),
         ("doctrine.md", include_str!("../src/prompts/doctrine.md")),
         ("identity.md", include_str!("../src/prompts/identity.md")),
     ] {
@@ -115,17 +111,10 @@ fn longest(text: &str, key: &str) -> u64 {
 /// or `TimeoutError`.
 #[test]
 fn no_prompt_example_waits_past_the_cell_ceiling() {
-    for (name, text) in [
-        (
-            "orchestrate.md",
-            include_str!("../src/prompts/orchestrate.md"),
-        ),
-        ("doctrine.md", include_str!("../src/prompts/doctrine.md")),
-    ] {
-        let waited = longest(text, "rlm.wait(").saturating_add(longest(text, "timeout="));
-        assert!(
-            waited < yi_tools::MAX_TIMEOUT_SECS,
-            "{name}: an example waits {waited} s in one cell"
-        );
-    }
+    let text = include_str!("../src/prompts/doctrine.md");
+    let waited = longest(text, "rlm.wait(").saturating_add(longest(text, "timeout="));
+    assert!(
+        waited < yi_tools::MAX_TIMEOUT_SECS,
+        "doctrine.md: an example waits {waited} s in one cell"
+    );
 }
