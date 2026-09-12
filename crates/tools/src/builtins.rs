@@ -420,7 +420,7 @@ impl Tool for BashTool {
     }
 
     fn description(&self) -> &str {
-        "Run a shell command with sh -c in the working directory and return its output and exit code. cwd persists between calls; shell state does not. `a && b` stops at the first nonzero segment and `x | head` exits 141, so later segments silently never run: a chain that stopped is reported, a truncation is not the cause. Output over 30,000 bytes per stream is cut with [output truncated]; over 8,192 bytes it is reduced ([N lines omitted: A-B]) and the full text is at [full output: path], which read opens; max_output_lines raises the reducer's budget and -v/--verbose bypass it. wait is clamped 5-300 s; a longer command becomes a job you check by calling bash with no command. A command is killed at timeout_secs (default 120 s, ceiling 600 s); raise it for a build or a test suite. An unbounded walk of / or ~ (find /, grep -r … /, rg … /, du /, ls -R /) is refused before it runs: search from the cwd, bound it (-maxdepth, --max-depth, -d), or name the directory. In auto mode a command the gate cannot prove runs contained where a sandbox exists (no network, no socket bind, writes only under cwd and tmp); a PermissionDenied there says nothing about the code."
+        "Run a shell command with sh -c in the working directory and return its output and exit code. cwd persists between calls; shell state does not. `a && b` stops at the first nonzero segment and `x | head` exits 141, so later segments silently never run: a chain that stopped is reported, a truncation is not the cause. Output over 30,000 bytes per stream is cut with [output truncated]; over 8,192 bytes it is reduced ([N lines omitted: A-B]) and the full text is at [full output: path], which read opens; max_output_lines raises the reducer's budget and -v/--verbose bypass it. wait is clamped 5-300 s; a longer command becomes a job you check by calling bash with no command. A command is killed at timeout_secs (default 300 s, ceiling 600 s); raise it for a build or a test suite. An unbounded walk of / or ~ (find /, grep -r … /, rg … /, du /, ls -R /) is refused before it runs: search from the cwd, bound it (-maxdepth, --max-depth, -d), or name the directory. In auto mode a command the gate cannot prove runs contained where a sandbox exists (no network, no socket bind, writes only under cwd and tmp); a PermissionDenied there says nothing about the code."
     }
 
     fn schema(&self) -> Value {
@@ -430,7 +430,7 @@ impl Tool for BashTool {
                 "command": {"type": "string", "description": "Shell command to run. Omit it to check on a background job instead."},
                 "job": {"type": "integer", "description": "Background job to check on; defaults to the most recent"},
                 "wait": {"type": "integer", "description": "Seconds to wait for that job, clamped to 5-300"},
-                "timeout_secs": {"type": "integer", "description": "Wall-clock limit in seconds, default 120, ceiling 600; raise it for a build or a test suite. Past it the command is killed and reported as timed out."},
+                "timeout_secs": {"type": "integer", "description": "Wall-clock limit in seconds, default 300, ceiling 600; raise it for a build or a test suite. Past it the command is killed and reported as timed out."},
                 "max_output_lines": {"type": "integer", "description": "Per-call reducer line budget, for when the full output matters"}
             }
         })
@@ -465,7 +465,8 @@ impl Tool for BashTool {
         if let Some(refusal) = broad_search(command) {
             return error_output(refusal);
         }
-        let timeout = crate::jobs::clamp_timeout(input.get("timeout_secs").and_then(Value::as_u64));
+        let requested_timeout = input.get("timeout_secs").and_then(Value::as_u64);
+        let timeout = crate::jobs::clamp_timeout(requested_timeout);
         let (capture, timed_out) = match crate::jobs::run_or_background(
             command,
             &context.cwd,
@@ -500,6 +501,13 @@ impl Tool for BashTool {
             max_lines,
         );
         let mut sections = Vec::new();
+        if let Some(asked) = requested_timeout.filter(|asked| *asked > crate::jobs::MAX_TIMEOUT_SECS)
+        {
+            sections.push(format!(
+                "[timeout_secs {asked} capped at {}]",
+                crate::jobs::MAX_TIMEOUT_SECS
+            ));
+        }
         if !reduced.text.is_empty() {
             sections.push(reduced.text.clone());
         }
@@ -652,6 +660,20 @@ mod tests {
                 .description()
                 .contains(&format!("over {thousands} bytes it is reduced")),
             "the description must name REDUCE_FLOOR ({floor})"
+        );
+    }
+
+    #[test]
+    fn the_bash_description_names_the_timeout_default_and_ceiling() {
+        let tool = BashTool::default();
+        let description = tool.description();
+        assert!(
+            description.contains(format!("default {} s", crate::jobs::DEFAULT_TIMEOUT_SECS).as_str()),
+            "the description must name DEFAULT_TIMEOUT_SECS"
+        );
+        assert!(
+            description.contains(format!("ceiling {} s", crate::jobs::MAX_TIMEOUT_SECS).as_str()),
+            "the description must name MAX_TIMEOUT_SECS"
         );
     }
 
