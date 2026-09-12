@@ -37,6 +37,8 @@ Sources, by name:
 | pass@k | per task `1 - C(n-c,k)/C(n,k)`, averaged over tasks; a task with fewer than k trials skipped for that k | `core/metrics.py:52-74`, reimplemented in twenty stdlib lines (no harbor import under `evals/`) |
 | ci95 | 1.96 × √(Σ p(1-p)/(k-1) / n²) × 100, `k ≥ 2` only | `core/metrics.py:29-49` |
 | timed out | `exception_info.exception_type == "AgentTimeoutError"` | harbor |
+| verifier unmeasured | `verifier_result` is null while `verifier` has a start time: the verifier's own timeout, or one harbor dropped under an earlier agent timeout (D173) | harbor `_run_verifier`, `_record_exception` |
+| partials | `results.summary.passed` / `.tests` of `verifier/ctrf.json`; `partial_score` of `verifier/trace_results.json` (D173) | the task's verifier |
 
 ## B. Persistence (the user never asks twice)
 
@@ -99,6 +101,7 @@ stopped on its own. Both are visible per row; neither is a score.
 | compactions | `compaction` entries | emission `summarization_count` |
 | tokens per turn | (in + cached) / turns | derived |
 | output per pass | Σ output / successes | derived; on QnA-shaped tasks output buys rubric coverage (§15.3 lever 10); on binary tasks it is pure cost |
+| upstreams | turns per upstream as `name=n`, most turns first; `-` when no turn names one (D174) | the `upstream` diagnostic the completions mapper keeps off each OpenRouter chunk's `provider`, `yi_usage.upstreams` |
 
 ## What a ledger row holds
 

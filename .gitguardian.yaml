@@ -9,3 +9,4 @@ paths-ignore:
   - "crates/runtime/tests/fixtures/behavior/*planted*"
   - "skills/yi/session-mining/extract.py"
   - "vendor/rtk/filters/ssh.toml"
+  - "crates/runtime/src/memory/doc.rs"

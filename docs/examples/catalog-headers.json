@@ -1,0 +1,63 @@
+{
+  "_comment": [
+    "Per-model headers (D182). Copy an entry into ~/.yi/catalog/<provider>.json and yi",
+    "sends its `headers` on every request for that (provider, id).",
+    "",
+    "The file overlays the bundled catalog by (provider, id): the bundle is the floor, a",
+    "missing or unreadable file changes nothing, `yi catalog` prints its age, and a",
+    "background refresh may rewrite it (set catalog.enabled: false to hand-hold a file).",
+    "",
+    "A name here REPLACES the adapter's own header of that name, matched",
+    "case-insensitively -- it does not ride beside it. That is what makes `authorization`",
+    "and `x-api-key` retargetable, and it is also the footgun: this file already chooses",
+    "`baseUrl`, so an entry can point a request somewhere else AND set the credential it",
+    "arrives with. Treat it as you would a shell profile.",
+    "",
+    "Values are literal strings; yi does no expansion, so there is no ${ENV_VAR} form.",
+    "Shape and field names are the bundle's own: {api: {id: Model}}."
+  ],
+
+  "anthropic-messages": {
+    "claude-sonnet-5": {
+      "id": "claude-sonnet-5",
+      "name": "Claude Sonnet 5 (via gateway)",
+      "api": "anthropic-messages",
+      "provider": "anthropic",
+      "baseUrl": "https://gateway.example.internal/anthropic",
+      "reasoning": true,
+      "input": ["text", "image"],
+      "cost": { "input": 3, "output": 15, "cacheRead": 0.3, "cacheWrite": 3.75 },
+      "contextWindow": 200000,
+      "maxTokens": 64000,
+      "headers": {
+        "_": "Auth retarget: the gateway wants a bearer, so `authorization` is added and",
+        "__": "`x-api-key` is blanked -- the adapter would otherwise send both.",
+        "authorization": "Bearer FILL-IN-YOUR-GATEWAY-TOKEN",
+        "x-api-key": "",
+        "user-agent": "FILL-IN-YOUR-CLIENT-STRING",
+        "x-gateway-tenant": "FILL-IN-YOUR-TENANT",
+        "x-gateway-route": "FILL-IN-YOUR-ROUTE"
+      }
+    }
+  },
+
+  "openai-completions": {
+    "some-model": {
+      "id": "some-model",
+      "name": "Some model (via gateway)",
+      "api": "openai-completions",
+      "provider": "openrouter",
+      "baseUrl": "https://gateway.example.internal/v1",
+      "reasoning": false,
+      "input": ["text"],
+      "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 },
+      "contextWindow": 128000,
+      "maxTokens": 16000,
+      "headers": {
+        "_": "The OpenAI-style paths build only `authorization`; anything else is additive.",
+        "http-referer": "FILL-IN-YOUR-APP-URL",
+        "x-title": "FILL-IN-YOUR-APP-NAME"
+      }
+    }
+  }
+}

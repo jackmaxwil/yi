@@ -255,6 +255,20 @@ fn hud_shows_the_checklist_count_without_a_goal() -> TestResult {
 }
 
 #[test]
+fn hud_shows_memory_saves_on_the_spine() -> TestResult {
+    let input = yi_tui::hud::HudInput {
+        memory: Some("saved 1".to_owned()),
+        ..yi_tui::hud::HudInput::default()
+    };
+    let text: String = yi_tui::hud::render(&input, &theme())
+        .iter()
+        .flat_map(|line| line.spans.iter().map(|span| span.content.to_string()))
+        .collect();
+    assert!(text.contains("├─ Memory · saved 1"), "{text}");
+    Ok(())
+}
+
+#[test]
 fn hud_empty_input_renders_nothing() -> TestResult {
     let lines = yi_tui::hud::render(&yi_tui::hud::HudInput::default(), &theme());
     assert!(lines.is_empty());

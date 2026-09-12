@@ -1813,7 +1813,7 @@ fn the_chat_paints_into_a_rectangle_and_stays_inside_it() -> TestResult {
     }
     let _ = app.take_commits();
     let rect = Rect::new(10, 5, 60, 12);
-    let layout = yi_tui::render::layout_chat(&mut app, None, rect.height);
+    let layout = yi_tui::render::layout_chat(&mut app, None, None, rect.height);
     let used = layout.rows().min(rect.height);
     let above = rect.height.saturating_sub(used);
     let mut buffer = Buffer::empty(Rect::new(0, 0, 80, 24));

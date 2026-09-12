@@ -313,3 +313,33 @@ pub fn resolve_block_edits(
         resolutions,
     })
 }
+
+pub fn heading_level(line: &str) -> Option<usize> {
+    let level = line.bytes().take_while(|byte| *byte == b'#').count();
+    ((1..=6).contains(&level) && line.as_bytes().get(level) == Some(&b' ')).then_some(level)
+}
+
+/// A Markdown section: the heading at or above `line` through the line before the next heading
+/// of the same or a higher level. Fenced code is skipped, since `#` inside it is a comment.
+pub fn markdown_section_resolver(text: &str, line: u64) -> Option<BlockSpan> {
+    let lines: Vec<&str> = text.split('\n').collect();
+    let index = usize::try_from(line).ok()?.checked_sub(1)?;
+    let mut fenced = false;
+    let mut headings: Vec<(usize, usize)> = Vec::new();
+    for (at, text) in lines.iter().enumerate() {
+        if text.starts_with("```") {
+            fenced = !fenced;
+        } else if !fenced && let Some(level) = heading_level(text) {
+            headings.push((at, level));
+        }
+    }
+    let (start, depth) = *headings.iter().rev().find(|(at, _)| *at <= index)?;
+    let end = headings
+        .iter()
+        .find(|(at, level)| *at > start && *level <= depth)
+        .map_or(lines.len(), |(at, _)| *at);
+    Some(BlockSpan {
+        start: u64::try_from(start).ok()?.saturating_add(1),
+        end: u64::try_from(end).ok()?,
+    })
+}

@@ -184,7 +184,10 @@ def read_json(path):
 
 def cmd_ratchet(args):
     before = {path: read_json(path) for path in baseline_paths()}
-    for script in ("check_test_size.py", "check_crate_size.py", "check_comments.py", "check_schemas_lock.py"):
+    # Incident: nothing ran check_growth --update, so src_loc.json sat 64 versions back and every
+    # memo restated one cumulative number; its update refuses a delta the row has not priced.
+    for script in ("check_test_size.py", "check_crate_size.py", "check_comments.py",
+                   "check_schemas_lock.py", "check_growth.py"):
         subprocess.run((sys.executable, str(ROOT / "scripts/guardrails" / script), "--update"), check=False)
     changed = dirty(baseline_paths())
     if not changed:
@@ -543,9 +546,15 @@ def refresh_from_main():
 def cmd_land(args):
     if refresh_from_main():
         return 1
-    cmd_ratchet(argparse.Namespace(topic=args.title, no_binary=False))
+    # Incident: the merge kept this branch's src_loc.json, a pair that had never seen main's
+    # growth, so the gate read main's lines as this version's and no reprice could say so.
+    # Main's pair is the last priced point: the row prices everything since, then the
+    # ratchet moves the pair past it.
+    growth = "scripts/guardrails/baselines/src_loc.json"
+    (ROOT / growth).write_text(git("show", f"origin/main:{growth}", check=True) + "\n")
     if subject := reprice_growth():
         print(f"land: {subject}")
+    cmd_ratchet(argparse.Namespace(topic=args.title, no_binary=False))
     if written := render_missing_adrs():
         print("land: ADRs rendered for " + ", ".join(f"D{n}" for n in written))
     code = cmd_open(args)

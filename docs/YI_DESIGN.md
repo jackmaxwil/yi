@@ -353,7 +353,7 @@ the Python-runtime contract.
 
 Host handler table (registered by `yi-runtime`, vocabulary verbatim): `rlm.run`,
 `rlm.list_subagents`, `rlm.delete_subagent`, `rlm.find_models`, `model.info`, `compact.run`,
-`compact.status`, `rlm_heartbeat.*`, `agent_message.*`, `goal.*` (phase 6). Reply envelope and the reserved `status`
+`compact.status`, `memory.save`, `memory.read`, `memory.forget`, `history.grep`, `rlm_heartbeat.*`, `agent_message.*`, `goal.*` (phase 6). Reply envelope and the reserved `status`
 key: K7. "Unavailable" is expressed as an error, never as a payload: an unregistered
 type errors `host request type "X" is not available`; `mcp.config` returns `{}` (the Python
 side raises its own KeyError), `mcp.refresh` throws, `mcp.begin_login` is not registered.
@@ -835,7 +835,7 @@ memoized on `(mode, rules_hash)` — never recompiled per call.
 
 | # | Primitive | Signature | Purity | Source |
 |---|---|---|---|---|
-| K1 | bootstrap | `ensure_venv(dir) -> PythonPath`: `uv` install `ipykernel` + runtime pkg; `.bootstrap-version` JSON `{schema, ipykernel, runtime: sha256(src/rlm/** + pyproject), extra_args, skills}` — any mismatch ⇒ full rebuild; lock **directory** (`mkdir` + pid file; stale = pid dead ∨ mtime > 30 s); in-process dedupe memoized on env key; `RUNTIME_READY_CHECK` = venv probe subprocess, not the live kernel; XDG fallback venv dir | I/O | — |
+| K1 | bootstrap | `ensure_venv(dir) -> PythonPath`: `uv` install `ipykernel` + runtime pkg; `.bootstrap-version` JSON `{schema, ipykernel, runtime: sha256(src/rlm/** + pyproject), extra_args, skills}` — any mismatch ⇒ full rebuild; plus `documentFormats`, the installed anydoc wheel's formats, which `read`'s description is derived from (D171); the venv dir is named by the ready check and the extras; lock **directory** (`mkdir` + pid file; stale = pid dead ∨ mtime > 30 s); in-process dedupe memoized on env key; `RUNTIME_READY_CHECK` = venv probe subprocess, not the live kernel; XDG fallback venv dir | I/O | — |
 | K2 | ConnectionFile | `{ip: 127.0.0.1, transport: tcp, ports: 0…, key: 32-hex random, signature_scheme: hmac-sha256}`; 0600 file in 0700 `mkdtemp` dir; polled 25 ms until all five ports resolve (30 s) though only shell/iopub/control connect; stdin never wired (`allow_stdin: false`), hb never used | I/O | — |
 | K3 | framing | `encode(ids, header, parent, metadata, content) -> frames` with `<IDS|MSG>` delimiter + HMAC; `decode` | pure | — |
 | K4 | channels | connect shell/iopub/control → `subscribe("")` → **control pump** → 50 ms slow-joiner sleep → **iopub pump** → `kernel_info` handshake (shell, 30 s); first execute only after the handshake, so no output is lost. Shell `execute_reply` is never read by the reference — Rust drains shell in a background task (or rcv HWM) or the queue grows unboundedly | I/O | — |
@@ -1699,7 +1699,7 @@ subagents and heartbeats are in daily use. Plan, so no re-design is needed then:
 
 | Library | Verdict | Surface |
 |---|---|---|
-| `anydoc` (+ `pdf-inspector` transitively; pure Rust, MIT) | **demoted** (§1.1, 2026-08-31 — the console's one-out) | cargo feature `docs` (off by default, size-ledger measured): `read` on `.docx/.pptx/.xlsx/.pdf/.epub/.rtf` returns markdown. Never the `ocr` feature |
+| `anydoc` + `pdf-inspector` (pure Rust, MIT) | crate **demoted** (§1.1, 2026-08-31 — the console's one-out; +3.42 MiB measured 2026-09-09); wheels **leveraged** (D171) | `firecrawl-anydoc` and `pdf-inspector` in the kernel venv's default extras: `read` converts a non-UTF-8 file to a Markdown copy and its description names the formats the venv recorded. Never OCR: pinned to `reject`, no path to the hosted mode |
 | `cua-driver` | leverage | optional exec tool: `cua-driver call` if present on PATH; nothing vendored |
 | `turbovec` | inspire | revisit only if `grep` over sessions measurably fails; the embedder would be a C dep |
 | `mempalace` | inspire | verbatim (not summarized) memory text and project-scoped namespaces for ledger `memory` entries; its hook-driven auto-writes are the opposite of the ledger contract |
@@ -1825,7 +1825,7 @@ citations: A.12.
 
 ## 16. Memory design (explicit)
 
-Yi has no retrieval stack, no embeddings, no memory daemon. It has six memories, each with one
+Yi has no retrieval stack, no embeddings, no memory daemon. It has seven memories, each with one
 owner, one write path, and one read path — and the write paths are the design:
 
 | # | Memory | Kind | Written by | Read by | Persistence |
@@ -1837,13 +1837,15 @@ owner, one write path, and one read path — and the write paths are the design:
 | MM5 | Advisor transcript + outcome ledger (V9) | episodic (advisor's own) | advisor runtime | advisor prefix; `/advisor stats` | per session |
 | MM6 | Permission rules + holds (M2–M5) | **procedural, enforced** | user (`allow_always`, `/advisor promote`) | M6 `decide()` at the tool gate | session rules in session header; config rules in config |
 | MM7 | Trigger rules (D54, 0.34.0; D114, 0.143.0) | procedural, delivered verbatim | **user rules and optional skill triggers** (`.yi/rules/*.md` and SKILL.md `trigger:`; project shadows global; zero builtins; a skill without trigger stays catalog-only) | `rules::RuleEngine` — gate rules deny-with-evidence before `decide()`; remind rules land as `custom{reminder}` at the boundary, per-(rule, evidence) gap as the noise budget, evidence being (rule, needle, path); post-tool `scope: result`/`error`; `paths:` reads the call's `path` argument only, so a rule that sets it never fires on a tool without one (`bash`) | rule files on disk; fire state is session-local |
+| MM8 | Notes (D169) | semantic, recalled | **host**, on the model's `memory.save` or the user's hand; one markdown file per fact, `MEMORY.md` the index | the root session's untrusted `memory` yard block at start (the index, 200 lines / 25 000 bytes, the most recently used past the cap); `memory.read` opens a note (the sandbox cannot read `~/.yi`) | `~/.yi/projects/<encoded canonical repo>/memory/`, `~/.yi/memory/`; `usage.json` counts sessions, saves, reads |
 
 Principles, each with its evidence:
 
 - **Enforced beats recalled.** A standing correction lives in MM6 where `decide()` checks it,
   never as prose the model may ignore — TRACE (arXiv 2606.13174) measured stored-correction
   violation at 57.5 % vs 2–37 % when compiled to runtime checks. This is why there is no
-  model-writable "memory" kind and why V11 promotes advice into rules.
+  model-*owned* memory kind (MM8's `memory.save` is a request the host renders into a file a
+  later session may ignore) and why V11 promotes advice into rules.
 - **Remember decisions, not descriptions.** MM2 entries and V9 outcomes are terse claims
   ("prefers rebase-merge", "hold on git push was denied"), not summaries of conversations —
   the rate-distortion result (arXiv 2605.10870): memory earns its bytes by preserving
