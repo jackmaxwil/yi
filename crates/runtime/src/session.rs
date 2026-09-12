@@ -484,6 +484,12 @@ impl AgentSession {
         self.tools = tools;
     }
 
+    /// The registered table, as attached; the surface lock renders its lock
+    /// from these definitions so what it pins is what a model call can name.
+    pub fn tools(&self) -> &[Arc<dyn yi_loop::AgentTool>] {
+        &self.tools
+    }
+
     /// Aborting the session cancels any tool subprocess still running.
     /// `permission` gates every call; None runs ungated.
     pub fn use_tools(

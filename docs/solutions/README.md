@@ -165,5 +165,6 @@ when it changes rather than editing them by hand.
 - [D185](adr/d185.md) - the prompt loses what nothing calls
 - [D186](adr/d186.md) - the v4 calibrated slice is chosen by a sweep, not by cost
 - [D187](adr/d187.md) - D185 is reverted
+- [D188](adr/d188.md) - the tool surface a session registers is locked and priced from the session's...
 
 D36-D51, D72, D73 and D74 have no ADR yet; ARCHITECTURE.md is the record for those rows.
