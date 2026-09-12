@@ -716,3 +716,63 @@ fn an_old_session_without_ids_rehydrates_with_ids() -> TestResult {
     assert_eq!(applied.list.next_id, 4);
     Ok(())
 }
+
+#[test]
+fn a_field_alias_is_read_as_the_canonical_field_and_named() -> TestResult {
+    let (session, _root) = session("alias")?;
+    let tool = TodoTool::new(store_for(&session));
+    let (is_error, text) = call(
+        &tool,
+        json!({"action": "set", "checklist": "- [ ] one\n- [ ] two\n"}),
+    );
+    assert!(!is_error, "{text}");
+    assert!(
+        text.starts_with("(fields: \"action\" read as \"op\", \"checklist\" read as \"list\")\n"),
+        "{text}"
+    );
+    let (is_error, text) = call(&tool, json!({"op": "start", "task": "one"}));
+    assert!(!is_error, "{text}");
+    assert!(
+        text.starts_with("(fields: \"task\" read as \"label\")\n"),
+        "{text}"
+    );
+    let (is_error, text) = call(
+        &tool,
+        json!({"op": "done", "task": "one", "proof": "`make check` all targets ok"}),
+    );
+    assert!(!is_error, "{text}");
+    assert!(text.contains("- [x] t1 one"), "{text}");
+    let (is_error, text) = call(&tool, json!({"op": "append", "tasks": ["three"]}));
+    assert!(!is_error, "{text}");
+    assert!(text.contains("- [ ] t3 three"), "{text}");
+    let (is_error, text) = call(&tool, json!({"op": "view"}));
+    assert!(!is_error, "{text}");
+    assert!(
+        !text.starts_with("(fields:"),
+        "a call without aliases says nothing: {text}"
+    );
+    Ok(())
+}
+
+#[test]
+fn an_argument_error_shows_a_full_call_for_the_op() -> TestResult {
+    let (session, _root) = session("example")?;
+    let tool = TodoTool::new(store_for(&session));
+    call(&tool, json!({"op": "set", "list": "- [ ] one\n"}));
+    let (is_error, text) = call(&tool, json!({"op": "drop", "label": "one"}));
+    assert!(is_error, "{text}");
+    assert!(text.starts_with("drop requires \"reason\""), "{text}");
+    assert!(
+        text.contains("a full drop call looks like {\"op\": \"drop\", \"label\": \"first task\", \"reason\": \"out of scope\"}"),
+        "{text}"
+    );
+    let (is_error, text) = call(&tool, json!({"op": "finish"}));
+    assert!(is_error, "{text}");
+    assert!(text.starts_with("unknown op \"finish\""), "{text}");
+    assert!(text.contains("a full call looks like {\"op\": \"view\"}"), "{text}");
+    let (is_error, text) = call(&tool, json!({"label": "one"}));
+    assert!(is_error, "{text}");
+    assert!(text.starts_with("op is required"), "{text}");
+    assert!(text.contains("a full call looks like {\"op\": \"view\"}"), "{text}");
+    Ok(())
+}
