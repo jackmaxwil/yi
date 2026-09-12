@@ -111,12 +111,15 @@ def run_command(model_name, instruction, resume=False, deadline_sec=None):
     # message_end carries every field the parse reads, and tee's stdout goes
     # to /dev/null so harbor holds nothing in memory. `-a`: a resumed trial's
     # `--continue` run appends to the first segment instead of truncating it.
+    # Incident: grep block-buffers into a pipe, so a killed trial's file ended
+    # mid-event at 172,032 bytes; `stdbuf -oL`, since busybox grep has no
+    # `--line-buffered`.
     return (
         "yi ask --json --yolo "
         f"--model {shlex.quote(model_name)} "
         f"--session-dir {REMOTE_SESSION_DIR} "
         f"{deadline_flag}{resume_flag}{shlex.quote(instruction)} "
-        "2>&1 </dev/null | { grep -v '\"type\":\"message_update\"' || [ $? -eq 1 ]; } "
+        "2>&1 </dev/null | { stdbuf -oL grep -v '\"type\":\"message_update\"' || [ $? -eq 1 ]; } "
         f"| stdbuf -oL tee -a {REMOTE_EVENTS_PATH} >/dev/null"
     )
 
