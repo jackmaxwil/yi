@@ -56,11 +56,29 @@ pub struct CatastrophicContext {
 impl CatastrophicContext {
     pub fn detect(cwd: &Path) -> Self {
         Self {
-            home_dir: std::env::var_os("HOME").map(PathBuf::from),
+            home_dir: home_dir(),
             working_dir: Some(cwd.to_path_buf()),
             workspace_git: Some(cwd.join(".git")),
         }
     }
+}
+
+fn home_dir() -> Option<PathBuf> {
+    std::env::var_os("HOME").map(PathBuf::from)
+}
+
+fn expand_home(path: &Path, home: Option<&Path>) -> PathBuf {
+    match (home, path.strip_prefix("~")) {
+        (Some(home), Ok(rest)) if rest.as_os_str().is_empty() => home.to_path_buf(),
+        (Some(home), Ok(rest)) => home.join(rest),
+        _ => path.to_path_buf(),
+    }
+}
+
+/// `~` is HOME as a shell reads it, and the HOME `detect` reads: a tool opening
+/// `<cwd>/~/notes.txt` would open a file the permission check never judged.
+pub fn resolve_target(raw: &str, cwd: &Path) -> PathBuf {
+    cwd.join(expand_home(Path::new(raw), home_dir().as_deref()))
 }
 
 /// Never touches the filesystem: canonicalize() fails on a file being created and a hostile
@@ -89,13 +107,12 @@ fn expand(raw: &str, context: &CatastrophicContext) -> PathBuf {
         for var in ["${HOME}", "$HOME"] {
             text = text.replace(var, &home_str);
         }
-        if text == "~" {
-            text = home_str.clone();
-        } else if let Some(rest) = text.strip_prefix("~/") {
-            text = format!("{home_str}/{rest}");
-        }
     }
-    let path = PathBuf::from(&text);
+    resolve(Path::new(&text), context)
+}
+
+pub(crate) fn resolve(path: &Path, context: &CatastrophicContext) -> PathBuf {
+    let path = expand_home(path, context.home_dir.as_deref());
     if path.is_absolute() {
         return lexical_normalize(&path);
     }

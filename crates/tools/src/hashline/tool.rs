@@ -856,7 +856,7 @@ impl Tool for HashlineEditTool {
                 continue;
             }
             let (before, after) = prepared.diff_inputs();
-            let resolved = resolve_path(&ToolContext::new(cwd.to_owned()), prepared.path());
+            let resolved = yi_permission::resolve_target(prepared.path(), cwd);
             let diff = crate::diff::patch(before, after, &resolved);
             if diff.is_empty() {
                 continue;

@@ -98,6 +98,26 @@ fn read_reports_a_missing_file_as_a_tool_error() -> TestResult {
     Ok(())
 }
 
+/// Incident: a read of `~/.ssh/id_rsa` failed on `<cwd>/~/.ssh/id_rsa`, so the permission
+/// check judged a path in the workspace while the model meant HOME's.
+#[test]
+fn a_tilde_path_reads_under_home() -> TestResult {
+    let dir = temp_dir("read-tilde")?;
+    let home = PathBuf::from(std::env::var_os("HOME").ok_or("HOME is unset")?);
+    let name = format!("yi-tools-absent-{}", std::process::id());
+    let read = read_tool().execute(
+        args(&[("path", json!(format!("~/{name}")))]),
+        &ToolContext::new(dir.0.clone()),
+    );
+    let text = output_text(&read);
+    assert!(read.is_error, "{text}");
+    assert!(
+        text.contains(&home.join(&name).display().to_string()),
+        "{text}"
+    );
+    Ok(())
+}
+
 #[test]
 fn a_glob_read_matches_relative_patterns_and_skips_git() -> TestResult {
     let dir = temp_dir("glob")?;

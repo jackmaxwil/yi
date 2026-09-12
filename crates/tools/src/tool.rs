@@ -154,10 +154,5 @@ pub fn require_str<'a>(input: &'a Map<String, Value>, key: &str) -> Result<&'a s
 }
 
 pub fn resolve_path(context: &ToolContext, path: &str) -> PathBuf {
-    let candidate = PathBuf::from(path);
-    if candidate.is_absolute() {
-        candidate
-    } else {
-        context.cwd.join(candidate)
-    }
+    yi_permission::resolve_target(path, &context.cwd)
 }
