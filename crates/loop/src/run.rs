@@ -361,33 +361,40 @@ pub const LENGTH_STOP_AT: u32 = 3;
 /// of twelve, so the audit slice's 22 photonic cuts, four in a row at most, never came near it.
 pub const CUT_STOP_AT: u32 = 6;
 pub const CUT_REDRIVE_TEXT: &str = "The reply was cut at the reasoning budget again. Stop deriving: write the first version of the file the task names now, even a stub that runs, in one `write` call, and reason after it exists.";
-/// The cut the clamp lands on: the same nudge twice is repetition, a third is a spiral.
-pub const CUT_CLAMP_AT: u32 = 3;
-pub const CUT_CLAMP_REDRIVE_TEXT: &str = "The reply was cut at the reasoning budget a third time, so thinking is off for the rest of this run: write the first version of the file the task names now, in one `write` call, however rough, and reason after it exists.";
+const CUT_QUOTE_TEXT: &str = "The cut reasoning is not in this conversation; it ended with the lines below, so write from where they stop instead of deriving it again.";
+
+struct Cut {
+    chars: usize,
+    tail: String,
+}
 
 /// A turn that spent its whole output budget thinking, or was cut at the reasoning budget, is
-/// sent back to act instead; from the prompt's second cut it is told what to write.
-fn length_redrive(rung: u32, cut: Option<usize>) -> AgentMessage {
+/// sent back to act; from the prompt's second cut it is told what to write and where it stopped.
+fn length_redrive(rung: u32, cut: Option<&Cut>) -> AgentMessage {
     let details = match cut {
-        Some(chars) => json!({"rung": rung, "cut": true, "reasoningChars": chars}),
+        Some(cut) => json!({"rung": rung, "cut": true, "reasoningChars": cut.chars}),
         None => json!({"rung": rung, "cut": false}),
     };
+    // Incident: coq-block-bound's cut requests carried only the nudge; six turns derived from zero
     let text = match cut {
-        Some(_) if rung >= CUT_CLAMP_AT => CUT_CLAMP_REDRIVE_TEXT,
-        Some(_) if rung >= 2 => CUT_REDRIVE_TEXT,
-        _ => LENGTH_REDRIVE_TEXT,
+        Some(cut) if rung >= 2 && !cut.tail.is_empty() => format!(
+            "{CUT_REDRIVE_TEXT}\n\n{CUT_QUOTE_TEXT}\n<cut_reasoning>\n{}\n</cut_reasoning>",
+            cut.tail
+        ),
+        Some(_) if rung >= 2 => CUT_REDRIVE_TEXT.to_owned(),
+        _ => LENGTH_REDRIVE_TEXT.to_owned(),
     };
     AgentMessage::Custom {
         custom_type: LENGTH_REDRIVE_CUSTOM_TYPE.to_owned(),
-        content: yi_types::message::UserContent::Text(text.to_owned()),
+        content: yi_types::message::UserContent::Text(text),
         display: false,
         details: Some(details),
         timestamp: 0,
     }
 }
 
-/// The cut turn as the record keeps it: a bare length stop with no thinking block, so the
-/// runaway never rides a later request as cached input, and the char count as its usage.
+/// The cut turn as the record keeps it: a bare length stop with no thinking block, so at most a
+/// re-drive's quote of the runaway rides a later request, and the char count as its usage.
 fn cut_message(partial: Option<&AgentMessage>, model: &Model, chars: usize) -> AgentMessage {
     let mut message = partial
         .cloned()
@@ -532,7 +539,7 @@ async fn stream_assistant_response<S: StreamFn>(
     signal: &InterruptSignal,
     emit: &mut (dyn FnMut(AgentEvent) + Send),
     stream: &S,
-) -> (AgentMessage, Option<usize>) {
+) -> (AgentMessage, Option<Cut>) {
     let TurnRequest {
         model,
         effort,
@@ -613,16 +620,18 @@ async fn stream_assistant_response<S: StreamFn>(
             }
         }
     }
-    if let Some(chars) = cut {
-        let settled = drain_to_done(&mut receiver).await;
-        final_message = Some(cut_message(
-            settled
+    let cut = match cut {
+        Some(chars) => {
+            let settled = drain_to_done(&mut receiver).await;
+            let source = settled
                 .as_ref()
-                .or_else(|| added_partial.then(|| context.messages.last()).flatten()),
-            model,
-            chars,
-        ));
-    }
+                .or_else(|| added_partial.then(|| context.messages.last()).flatten());
+            let tail = source.map(crate::reasoning::tail).unwrap_or_default();
+            final_message = Some(cut_message(source, model, chars));
+            Some(Cut { chars, tail })
+        }
+        None => None,
+    };
     let final_message = final_message.unwrap_or_else(|| {
         if signal.is_fired() {
             aborted_message(
@@ -853,11 +862,7 @@ pub async fn run_loop<S: StreamFn>(
                 } else {
                     length_stops
                 };
-                // a spiral the nudge alone has not broken: take the reasoning budget away
-                if cut.is_some() && cut_stops >= CUT_CLAMP_AT {
-                    current_effort = current_model.clamp_effort(Effort::Off);
-                }
-                pending.push(length_redrive(rung, cut));
+                pending.push(length_redrive(rung, cut.as_ref()));
             } else if !has_more_tool_calls
                 && pending.is_empty()
                 && let Some(intercept) = &config.intercept_stop
