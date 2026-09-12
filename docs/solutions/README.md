@@ -146,6 +146,7 @@ when it changes rather than editing them by hand.
 - [D166](adr/d166.md) - the working model is in the prompt, placed by the laws
 - [D167](adr/d167.md) - the forge CLI is `fgj`
 - [D168](adr/d168.md) - a reasoning cut is not a length strike
+- [D170](adr/d170.md) - a catalog model's `headers` reach the wire
 - [D171](adr/d171.md) - `read` converts a file that is not UTF-8 through the kernel venv, never...
 - [D171](adr/d171.md) - `read` converts a file that is not text through the kernel venv, never...
 - [D173](adr/d173.md) - the ledger row says what it could not measure
