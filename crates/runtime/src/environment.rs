@@ -1,5 +1,5 @@
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use yi_types::message::{AgentMessage, ENVIRONMENT_TAG, UserContent};
@@ -29,6 +29,26 @@ fn local_time(cwd: &Path) -> Option<String> {
     let out = crate::lane::capture(cwd, "date", &["+%Y-%m-%d %H:%M %Z"], PROBE).ok()?;
     let time = out.trim();
     (!time.is_empty()).then(|| time.to_owned())
+}
+
+/// The line shows minutes, so `date` runs once per minute of wall clock, not once per request.
+pub fn time_per_minute(
+    last: &Mutex<Option<(u64, Option<String>)>>,
+    now_ms: u64,
+    read: impl FnOnce() -> Option<String>,
+) -> Option<String> {
+    let minute = now_ms / 60_000;
+    let Ok(mut last) = last.lock() else {
+        return read();
+    };
+    if let Some((at, time)) = last.as_ref()
+        && *at == minute
+    {
+        return time.clone();
+    }
+    let time = read();
+    *last = Some((minute, time.clone()));
+    time
 }
 
 fn tokens(count: u64) -> String {
@@ -134,13 +154,13 @@ pub fn hook(
     let broker = wiring.broker.clone();
     let settings = session.settings_handle();
     let usage = session.usage_handle();
-    let history = session.history_handle();
+    let cost = session.cost_handle();
     let context = session.compact_status_handle();
     let lane = session.lane_handle();
     let todos = session.todos_handle();
-    let deadline = wiring.deadline;
+    let deadline = session.deadline();
     let kernel = session.kernel_state_handle();
-    let started = std::time::Instant::now();
+    let clock = Mutex::new(None);
     Arc::new(move || {
         let mut lines = Vec::new();
         let git = git_summary(&cwd)
@@ -167,11 +187,11 @@ pub fn hook(
                 crate::todo::text::header(&list).trim_start_matches("Todos ")
             ));
         }
-        if let Some(time) = local_time(&cwd) {
+        if let Some(time) = time_per_minute(&clock, yi_session::now_ms(), || local_time(&cwd)) {
             lines.push(format!("time: {time}"));
         }
-        if let Some(total) = deadline {
-            lines.push(deadline_line(total, started.elapsed()));
+        if let Some(deadline) = deadline {
+            lines.push(deadline_line(deadline.total, deadline.started.elapsed()));
         }
         let shell = std::env::var("SHELL")
             .ok()
@@ -210,15 +230,8 @@ pub fn hook(
             );
             budget = Some(budget.map_or(turn.clone(), |b| format!("{b} · {turn}")));
         }
-        let cost: f64 = history()
-            .iter()
-            .filter_map(|m| match m {
-                AgentMessage::Assistant { usage, .. } => usage.cost.total.as_f64(),
-                _ => None,
-            })
-            .sum();
         if let Some(mut line) = budget {
-            if cost > 0.0 {
+            if let Some(cost) = cost().filter(|cost| *cost > 0.0) {
                 line.push_str(&format!(" · session ${cost:.2}"));
             }
             lines.push(format!("context: {line}"));

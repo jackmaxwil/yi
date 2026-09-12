@@ -246,3 +246,19 @@ pub fn render(list: &TodoList) -> String {
     lines.extend(next_lines(list));
     lines.join("\n")
 }
+
+/// Incident: the whole list on every op was 61.5% of row 0028's tool-result characters (D184).
+pub fn render_change(before: &TodoList, after: &TodoList) -> String {
+    if after.items().next().is_none() {
+        return render(after);
+    }
+    let seen = checklist(before);
+    let mut lines = vec![header(after)];
+    lines.extend(
+        checklist(after)
+            .into_iter()
+            .filter(|line| !seen.contains(line)),
+    );
+    lines.extend(next_lines(after));
+    lines.join("\n")
+}
