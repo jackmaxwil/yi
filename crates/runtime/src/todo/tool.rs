@@ -326,9 +326,13 @@ impl TodoTool {
     }
 
     fn run(&self, args: &Map<String, Value>) -> Result<String, TodoToolError> {
-        let (op, aliased) = parse_op(args)?;
+        // Normalize here, not only inside parse_op: the inferred-op line below
+        // must read the map the aliases already produced, or an op given as
+        // "action" is reported as inferred. parse_op's own pass is then a no-op.
+        let (args, aliased) = normalize(args);
+        let (op, _) = parse_op(&args)?;
         let aliased = aliased.unwrap_or_default();
-        let inferred = if string(args, "op").is_none() {
+        let inferred = if string(&args, "op").is_none() {
             format!("(op inferred: {})\n", op.name())
         } else {
             String::new()

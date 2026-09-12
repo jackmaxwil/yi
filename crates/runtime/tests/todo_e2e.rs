@@ -730,6 +730,10 @@ fn a_field_alias_is_read_as_the_canonical_field_and_named() -> TestResult {
         text.starts_with("(fields: \"action\" read as \"op\", \"checklist\" read as \"list\")\n"),
         "{text}"
     );
+    assert!(
+        !text.contains("(op inferred"),
+        "an op given under an alias was given, not inferred: {text}"
+    );
     let (is_error, text) = call(&tool, json!({"op": "start", "task": "one"}));
     assert!(!is_error, "{text}");
     assert!(
