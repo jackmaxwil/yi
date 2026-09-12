@@ -233,6 +233,8 @@ a registered surface with a hard cap of 40.
 
 ## Contribute
 
+Where changes land, and why the GitHub mirror takes none yet: `CONTRIBUTING.md`.
+
 Read `docs/YI_DESIGN.md` (the law) and `docs/ARCHITECTURE.md` (the map: version,
 feature ledger, decision log; version history in `docs/CHANGELOG.md`) first.
 Code follows the docs; revising a settled decision requires a decision-log row
@@ -248,3 +250,7 @@ in the same change.
   naming what the code cannot; two lines, hard cap.
 - Agent instructions live in `.ruler/`; regenerate the per-tool files with
   `npx @intellectronica/ruler apply`. Never edit the generated ones.
+
+## License
+
+MIT, in `LICENSE`. `vendor/` keeps its upstream Apache-2.0 notices.
