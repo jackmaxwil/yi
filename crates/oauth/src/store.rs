@@ -73,12 +73,18 @@ impl Store {
             "account": credential.account,
             "org": credential.org,
         });
-        std::fs::write(&path, json.to_string()).map_err(|error| error.to_string())?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
-        }
+        // Atomic + 0600 like the profile generator: the token never sits on disk
+        // with wider permissions, and a crash leaves the old file, not a half one.
+        let tmp = path.with_extension("json.tmp");
+        let bytes = json.to_string();
+        write_fresh_0600(&tmp, bytes.as_bytes())
+            .or_else(|error| {
+                // A stale tmp from a crashed save is ours; remove it and retry once.
+                std::fs::remove_file(&tmp).map_err(|_| error.to_string())?;
+                write_fresh_0600(&tmp, bytes.as_bytes()).map_err(|e| e.to_string())
+            })
+            .map_err(|error| format!("{}: {error}", tmp.display()))?;
+        std::fs::rename(&tmp, &path).map_err(|error| format!("{}: {error}", path.display()))?;
         Ok(())
     }
 
@@ -153,6 +159,27 @@ impl Store {
     }
 }
 
+#[cfg(unix)]
+fn write_fresh_0600(path: &std::path::Path, bytes: &[u8]) -> Result<(), std::io::Error> {
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(path)
+        .and_then(|mut file| file.write_all(bytes))
+}
+
+#[cfg(not(unix))]
+fn write_fresh_0600(path: &std::path::Path, bytes: &[u8]) -> Result<(), std::io::Error> {
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+        .and_then(|mut file| std::io::Write::write_all(&mut file, bytes))
+}
+
 pub fn now_ms() -> u64 {
     #[expect(
         clippy::disallowed_methods,
@@ -162,4 +189,54 @@ pub fn now_ms() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|duration| u64::try_from(duration.as_millis()).unwrap_or(u64::MAX))
         .unwrap_or(0)
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    fn credential(access: &str) -> Credential {
+        Credential {
+            kind: Kind::Oauth,
+            access: access.to_owned(),
+            refresh: Some("r".to_owned()),
+            expires_ms: 1,
+            account: None,
+            org: None,
+        }
+    }
+
+    fn mode_of(store: &Store, provider: &str) -> u32 {
+        std::fs::metadata(store.path(provider))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777
+    }
+
+    #[test]
+    fn a_saved_token_is_0600_from_the_first_save_and_every_rewrite() {
+        let root = std::env::temp_dir().join(format!("yi-oauth-store-{}", std::process::id()));
+        let store = Store::open(root.clone());
+        store.save("p", &credential("one")).unwrap();
+        assert_eq!(mode_of(&store, "p"), 0o600, "first save");
+        store.save("p", &credential("two")).unwrap();
+        assert_eq!(mode_of(&store, "p"), 0o600, "rewrite");
+        assert_eq!(store.load("p").unwrap().access, "two");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn a_stale_tmp_from_a_crashed_save_does_not_stick_the_next_save() {
+        let root = std::env::temp_dir().join(format!("yi-oauth-stale-{}", std::process::id()));
+        let store = Store::open(root.clone());
+        let tmp = store.path("p").with_extension("json.tmp");
+        std::fs::create_dir_all(tmp.parent().unwrap()).unwrap();
+        std::fs::write(&tmp, "half-written").unwrap();
+        store.save("p", &credential("one")).unwrap();
+        assert_eq!(store.load("p").unwrap().access, "one");
+        assert_eq!(mode_of(&store, "p"), 0o600);
+        let _ = std::fs::remove_dir_all(root);
+    }
 }
