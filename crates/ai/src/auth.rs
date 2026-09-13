@@ -30,7 +30,7 @@ pub struct Resolved {
     pub secret: Secret,
     pub kind: AuthKind,
     pub org: Option<String>,
-    /// The login profile's `stream_headers` (D172). Yi ships none: this is whatever
+    /// The login profile's `stream_headers` (D191). Yi ships none: this is whatever
     /// the user's own `~/.yi/oauth/<provider>.json` carries.
     pub headers: Vec<(String, String)>,
 }

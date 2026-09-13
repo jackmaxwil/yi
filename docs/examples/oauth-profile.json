@@ -1,6 +1,6 @@
 {
   "_comment": [
-    "Login profile (D172). Yi reads ~/.yi/oauth/<provider>.json and ships none of its own:",
+    "Login profile (D191). Yi reads ~/.yi/oauth/<provider>.json and ships none of its own:",
     "no client ids, no endpoints, no wire identity. Whatever this file carries is what",
     "`yi login <provider>` uses and what every request for that provider sends.",
     "",

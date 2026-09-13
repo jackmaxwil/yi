@@ -124,7 +124,7 @@ fn env_beats_the_store_and_logout_deletes() -> Res {
     Ok(())
 }
 
-/// The whole point of D172: the identity on the wire comes from the user's own
+/// The whole point of D191: the identity on the wire comes from the user's own
 /// profile. Yi compiles none of it, so a profile that carries nothing sends nothing.
 #[test]
 fn a_profile_puts_its_stream_headers_on_the_wire() -> Res {

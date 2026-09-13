@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Write ~/.yi/oauth/<provider>.json (D172).
+"""Write ~/.yi/oauth/<provider>.json (D191).
 
 Yi ships no provider identity. This script is the scaffold that writes the profile
 file; the four discover_* functions below are stubs that return REPLACE_ME. Fill in

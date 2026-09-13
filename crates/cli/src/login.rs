@@ -16,7 +16,7 @@ pub(crate) fn fast_path() {
 }
 
 /// The credential the session streams with: the secret plus, for a stored OAuth
-/// login, its profile's headers (D172). `None` is the faux provider, which needs none.
+/// login, its profile's headers (D191). `None` is the faux provider, which needs none.
 pub(crate) fn stream_for(
     resolved: Option<&yi_runtime::auth::Resolved>,
 ) -> yi_runtime::ProviderStream {
