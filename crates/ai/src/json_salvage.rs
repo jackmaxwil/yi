@@ -136,69 +136,6 @@ fn close_partial(json: &str) -> Option<String> {
     Some(closed)
 }
 
-/// GLM sometimes leaks its native tool-call markup into the arguments string.
-/// A key baked out of `<arg_key>path</arg_key>` reads back as `path`.
-fn clean_arg_keys(map: &mut Map<String, Value>) {
-    let keys: Vec<String> = map.keys().cloned().collect();
-    for key in keys {
-        let Some(start) = key.find("<arg_key>") else {
-            continue;
-        };
-        let after = &key[start + "<arg_key>".len()..];
-        let Some(end) = after.find("</arg_key>") else {
-            continue;
-        };
-        let real = after[..end].trim().to_owned();
-        if real.is_empty() || map.contains_key(&real) {
-            continue;
-        }
-        if let Some(value) = map.remove(&key) {
-            map.insert(real, value);
-        }
-    }
-}
-
-/// The same leak with no JSON around it: `<arg_key>k</arg_key><arg_value>v</arg_value>`
-/// pairs as the whole arguments string. Both tags must show before it fires.
-fn salvage_arg_markup(raw: &str) -> Option<Map<String, Value>> {
-    if !raw.contains("<arg_key>") || !raw.contains("<arg_value>") {
-        return None;
-    }
-    let mut out = Map::new();
-    let mut rest = raw;
-    while let Some(start) = rest.find("<arg_key>") {
-        let after_key = &rest[start + "<arg_key>".len()..];
-        let Some(key_end) = after_key.find("</arg_key>") else {
-            break;
-        };
-        let key = after_key[..key_end].trim().to_owned();
-        let after = &after_key[key_end + "</arg_key>".len()..];
-        let Some(value_start) = after.find("<arg_value>") else {
-            rest = after;
-            continue;
-        };
-        let after_value = &after[value_start + "<arg_value>".len()..];
-        let (text, tail) = match after_value.find("</arg_value>") {
-            Some(value_end) => (
-                &after_value[..value_end],
-                &after_value[value_end + "</arg_value>".len()..],
-            ),
-            None => (after_value, ""),
-        };
-        rest = tail;
-        if !key.is_empty() {
-            out.insert(
-                key,
-                parse_json_with_repair(text).unwrap_or_else(|_| Value::String(text.to_owned())),
-            );
-        }
-    }
-    match out.is_empty() {
-        true => None,
-        false => Some(out),
-    }
-}
-
 pub fn parse_streaming_json(partial: &str) -> Map<String, Value> {
     if partial.trim().is_empty() {
         return Map::new();
@@ -208,9 +145,8 @@ pub fn parse_streaming_json(partial: &str) -> Map<String, Value> {
         _ => None,
     };
     if let Ok(value) = parse_json_with_repair(partial)
-        && let Some(mut object) = as_object(value)
+        && let Some(object) = as_object(value)
     {
-        clean_arg_keys(&mut object);
         return object;
     }
     for candidate in [close_partial(partial), close_partial(&repair_json(partial))]
@@ -218,13 +154,12 @@ pub fn parse_streaming_json(partial: &str) -> Map<String, Value> {
         .flatten()
     {
         if let Ok(value) = serde_json::from_str::<Value>(&candidate)
-            && let Some(mut object) = as_object(value)
+            && let Some(object) = as_object(value)
         {
-            clean_arg_keys(&mut object);
             return object;
         }
     }
-    salvage_arg_markup(partial).unwrap_or_default()
+    Map::new()
 }
 
 #[cfg(test)]
@@ -258,34 +193,5 @@ mod tests {
     #[test]
     fn garbage_yields_empty_object() {
         assert!(parse_streaming_json("not json").is_empty());
-    }
-
-    #[test]
-    fn bare_arg_markup_reads_back_as_pairs() {
-        let parsed = parse_streaming_json(
-            "<arg_key>path</arg_key><arg_value>/tmp/x</arg_value><arg_key>verbose</arg_key><arg_value>true</arg_value>",
-        );
-        assert_eq!(parsed["path"], "/tmp/x");
-        assert_eq!(parsed["verbose"], true);
-    }
-
-    #[test]
-    fn arg_markup_value_that_is_json_parses_as_json() {
-        let parsed =
-            parse_streaming_json("<arg_key>items</arg_key><arg_value>[\"a\", \"b\"]</arg_value>");
-        assert_eq!(parsed["items"], serde_json::json!(["a", "b"]));
-    }
-
-    #[test]
-    fn markup_in_a_json_key_names_the_key() {
-        let parsed = parse_streaming_json(r#"{"<arg_key>path</arg_key>": "/tmp/x"}"#);
-        assert_eq!(parsed["path"], "/tmp/x");
-        assert!(!parsed.contains_key("<arg_key>path</arg_key>"));
-    }
-
-    #[test]
-    fn arg_markup_text_inside_a_string_value_stays_put() {
-        let parsed = parse_streaming_json(r#"{"cmd": "echo <arg_key>x</arg_key>"}"#);
-        assert_eq!(parsed["cmd"], "echo <arg_key>x</arg_key>");
     }
 }
