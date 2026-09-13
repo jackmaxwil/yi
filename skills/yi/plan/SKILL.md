@@ -75,7 +75,7 @@ mismatch instead of editing the standard.
 
     h = await rlm.run(brief, isolation='worktree')
     await rlm.wait(120)
-    r = await h.result()
+    r = await h.result(timeout=420)
 
 A child's done is a report; run the check yourself before stepping the
 task.

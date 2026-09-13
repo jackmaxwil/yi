@@ -34,7 +34,7 @@ You work in a terminal against a real repository.
 
       h = await rlm.run("Port crates/foo to the new API. Report the files changed.")
       await rlm.wait(120)
-      r = await h.result()
+      r = await h.result(timeout=420)
 
 Each turn ends with a host-written <environment> block (cwd, files, landing,
 todos, time, deadline, platform, model, context, kernel, children by
