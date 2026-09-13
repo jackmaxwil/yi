@@ -881,7 +881,7 @@ async fn run_on_glm(
     let (_events, mut emit) = collector();
     run_loop(
         &mut context,
-        vec![user("Prove the theorem in /app/Main.v.")],
+        vec![user("Prove the lemma in Bound.v.")],
         &config,
         &signal,
         &mut emit,

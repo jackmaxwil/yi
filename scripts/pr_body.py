@@ -103,6 +103,71 @@ def section(title, body):
     return f"## {title}\n\n{body}\n"
 
 
+SURFACE_LOCK = "scripts/guardrails/baselines/tool_surface.json"
+# Only `--update` writes the lock, so one missing from the tree was deleted, not seeded.
+LOCK_MISSING = (f"{SURFACE_LOCK} is missing; `check_request_budget.py --update` writes it,"
+                " committed alone as a Ratchet")
+
+
+def surface_diff(was, now):
+    """(added, changed) lock keys between two surfaces. A removal makes no new
+    claim and asks nothing, so removed keys are not reported."""
+    added = sorted(key for key in now if key not in was)
+    changed = sorted(key for key in now if key in was and was[key] != now[key])
+    return added, changed
+
+
+def surface_delta(base):
+    """(added, changed) keys in the tool-surface lock between the merge base and
+    the working tree. A lock missing at base is being seeded and asks nothing."""
+    import json
+
+    before = git("show", f"{base}:{SURFACE_LOCK}")
+    if before.returncode != 0:
+        return [], []
+    now_path = ROOT / SURFACE_LOCK
+    if not now_path.exists():
+        raise SystemExit(LOCK_MISSING)
+    return surface_diff(json.loads(before.stdout), json.loads(now_path.read_text()))
+
+
+def surface_skeletons(added, changed):
+    """The sections a surface change owes (D188), printed as header row and
+    separator with the columns in a comment and no data row, so an unfilled
+    skeleton fails check_pr_metadata.py on purpose."""
+    keys = ", ".join(changed + added)
+    out = []
+    if changed:
+        out.append(section(
+            "Claims ledger",
+            f"<!-- owed: the PR changes {keys}, which the model reads. "
+            "claim · check · result -->\n\n"
+            "| claim | check | result |\n|---|---|---|",
+        ))
+    if added:
+        if not changed:
+            out.append(section(
+                "Claims ledger",
+                f"<!-- owed: the PR adds {keys} to the surface the model reads. "
+                "claim · check · result -->\n\n"
+                "| claim | check | result |\n|---|---|---|",
+            ))
+        out.append(section(
+            "Neighbour matrix",
+            "<!-- owed: a new tool is judged against its neighbours — "
+            "read, grep, glob, edit, write, bash hints, kernel, TUI, prompts. "
+            "neighbour · overlap · why this one -->\n\n"
+            "| neighbour | overlap | why this one |\n|---|---|---|",
+        ))
+        out.append(section(
+            "Dogfood",
+            "<!-- owed: the census bucket the tool serves and the replay's "
+            "before/after. bucket · run · result -->\n\n"
+            "| bucket | run | result |\n|---|---|---|",
+        ))
+    return out
+
+
 def selfcheck():
     """A path landing in the wrong bucket misreports net src LOC, which is the
     one number the growth budget prices."""
@@ -130,6 +195,12 @@ def selfcheck():
     assert total == src_net, f"src table sums to {total}, printed under {src_net}"
     assert set(src_by_area) == {"crates/runtime", "crates/types"}, sorted(src_by_area)
     assert by_area["crates/runtime"] == [2, 240, 5], by_area["crates/runtime"]
+    # The surface delta: a lock absent at base is the seeding commit asking
+    # nothing (surface_delta's early return); a removal-only delta owes nothing.
+    assert surface_diff({"tool:read": "a"}, {"tool:read": "a"}) == ([], [])
+    assert surface_diff({"tool:read": "a"}, {"tool:read": "a", "tool:foo": "b"}) == (["tool:foo"], [])
+    assert surface_diff({"tool:read": "a"}, {"tool:read": "z"}) == ([], ["tool:read"])
+    assert surface_diff({"tool:read": "a", "tool:gone": "b"}, {"tool:read": "a"}) == ([], [])
     print("ok   pr_body selfcheck")
 
 
@@ -179,6 +250,12 @@ def main():
         section("Summary", "<!-- what changed and why, for a reader without the diff open -->"),
         section("User outcomes", "<!-- what a yi user can now do, see, or rely on -->"),
         section(
+            "Seen red",
+            "<!-- one line per new or changed test: test name · the failure it "
+            "produced against the unfixed code · where the fixture came from. "
+            "\"No tests changed\" if none. -->",
+        ),
+        section(
             "UI changes",
             "\n".join(f"- `{p}`" for p in ui) + "\n\n<!-- describe what moved -->"
             if ui
@@ -203,8 +280,10 @@ def main():
             "Architecture notes",
             "<!-- version bump, changelog row, D-rows, feature-ledger rows (each names its journey test) -->",
         ),
-        section("Screenshots", "<!-- TUI frames or rendered output; \"None\" if none -->"),
     ]
+    added, changed = surface_delta(base)
+    out += surface_skeletons(added, changed)
+    out.append(section("Screenshots", "<!-- TUI frames or rendered output; \"None\" if none -->"))
     print("\n".join(out).rstrip())
     return 0
 
