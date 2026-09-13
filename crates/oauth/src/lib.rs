@@ -1,4 +1,4 @@
-//! Provider login (D172). An OAuth provider is described by a file the user writes
+//! Provider login (D191). An OAuth provider is described by a file the user writes
 //! at `~/.yi/oauth/<provider>.json`; this crate reads it and ships no identity itself.
 
 #![forbid(unsafe_code)]

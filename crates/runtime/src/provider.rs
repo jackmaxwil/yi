@@ -101,7 +101,7 @@ impl ProviderStream {
         }
     }
 
-    /// The resolved credential's shape and the login profile's headers (D172):
+    /// The resolved credential's shape and the login profile's headers (D191):
     /// a stored OAuth token streams as Bearer and carries whatever that file holds.
     #[must_use]
     pub fn with_auth(mut self, resolved: &yi_ai::auth::Resolved) -> Self {

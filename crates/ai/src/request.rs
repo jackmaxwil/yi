@@ -361,7 +361,7 @@ pub fn headers_for(model: &Model, base: Vec<(&str, String)>) -> Vec<(String, Str
 }
 
 /// The one merge the wire has: a catalog overlay (D170) and a login profile's
-/// `stream_headers` (D172) both arrive here, so both obey the same replace/remove rule.
+/// `stream_headers` (D191) both arrive here, so both obey the same replace/remove rule.
 pub fn merge_headers(
     mut merged: Vec<(String, String)>,
     overlay: impl IntoIterator<Item = (String, String)>,
