@@ -773,10 +773,16 @@ fn an_argument_error_shows_a_full_call_for_the_op() -> TestResult {
     let (is_error, text) = call(&tool, json!({"op": "finish"}));
     assert!(is_error, "{text}");
     assert!(text.starts_with("unknown op \"finish\""), "{text}");
-    assert!(text.contains("a full call looks like {\"op\": \"view\"}"), "{text}");
+    assert!(
+        text.contains("a full call looks like {\"op\": \"view\"}"),
+        "{text}"
+    );
     let (is_error, text) = call(&tool, json!({"label": "one"}));
     assert!(is_error, "{text}");
     assert!(text.starts_with("op is required"), "{text}");
-    assert!(text.contains("a full call looks like {\"op\": \"view\"}"), "{text}");
+    assert!(
+        text.contains("a full call looks like {\"op\": \"view\"}"),
+        "{text}"
+    );
     Ok(())
 }

@@ -73,9 +73,13 @@ fn example(op: &str) -> &'static str {
         "init" => r###"{"op": "init", "phases": [{"name": "Phase", "items": ["first task"]}]}"###,
         "append" => r###"{"op": "append", "items": ["another task"]}"###,
         "start" => r###"{"op": "start", "label": "first task"}"###,
-        "done" => r###"{"op": "done", "label": "first task", "evidence": "`make check` all targets ok"}"###,
+        "done" => {
+            r###"{"op": "done", "label": "first task", "evidence": "`make check` all targets ok"}"###
+        }
         "drop" => r###"{"op": "drop", "label": "first task", "reason": "out of scope"}"###,
-        "block" => r###"{"op": "block", "label": "first task", "on": "user", "note": "which file?"}"###,
+        "block" => {
+            r###"{"op": "block", "label": "first task", "on": "user", "note": "which file?"}"###
+        }
         "unblock" => r###"{"op": "unblock", "label": "first task"}"###,
         "rm" => r###"{"op": "rm", "label": "first task"}"###,
         _ => r###"{"op": "view"}"###,
