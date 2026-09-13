@@ -6,8 +6,8 @@ use std::error::Error;
 use std::path::{Path, PathBuf};
 
 use yi_runtime::ext::{
-    Effect, Event, ExtOptions, Host, PromptState, Rank, Slot, StartReason, Trust, TrustGate,
-    contributions, install,
+    Effect, Event, ExtOptions, Host, PromptState, Rank, Route, Slot, StartReason, Trust, TrustGate,
+    contributions, install, prefilter,
 };
 use yi_types::model::SYSTEM_BLOCK_SEPARATOR;
 
@@ -46,6 +46,8 @@ fn slots_assemble_in_rank_order_and_attach_is_idempotent() -> TestResult {
     assert_eq!(blocks.len(), 2, "no yard, so no third block: {assembled:?}");
     assert_eq!(blocks[0], "ID");
     assert_eq!(blocks[1], "MODE\n\nSCHEMA");
+    assert!(state.detach(&Slot::new(Rank::Schema, "schema")));
+    assert!(!state.assemble().contains("SCHEMA"));
     Ok(())
 }
 
@@ -139,8 +141,8 @@ fn project_instructions_land_in_the_yard_untrusted_until_granted() -> TestResult
     Ok(())
 }
 
-/// Resume rehydrates the slot table, so a session that armed a pack on Tuesday
-/// still carries it on Thursday. Counters restart on purpose.
+/// Resume rehydrates the slot table, so a session that escalated on Tuesday
+/// still carries the protocol on Thursday. Counters restart on purpose.
 #[test]
 fn the_slot_table_survives_a_resume() -> TestResult {
     let dir = Scratch::new("yi-ext-resume")?;
@@ -151,13 +153,10 @@ fn the_slot_table_survives_a_resume() -> TestResult {
     };
     let mut host = started(&dir, &dir);
     host.dispatch(
-        &Event::ToolCall {
-            name: "write".to_owned(),
-            target: Some(dir.join("build.rs")),
-        },
+        &host.prompt_event("refactor and migrate and split crates/a and crates/b"),
         Some(&store),
     );
-    assert!(host.system_prompt().contains("# Rust discipline"));
+    assert!(host.system_prompt().contains("# Orchestrate"));
 
     let mut resumed = install(ExtOptions {
         cwd: dir.to_path_buf(),
@@ -169,8 +168,8 @@ fn the_slot_table_survives_a_resume() -> TestResult {
     });
     resumed.start(Some(&store), true);
     assert!(
-        resumed.system_prompt().contains("# Rust discipline"),
-        "an armed pack must not be dropped by a resume"
+        resumed.system_prompt().contains("# Orchestrate"),
+        "an attached protocol must not be dropped by a resume"
     );
     Ok(())
 }
@@ -183,9 +182,10 @@ fn a_mid_session_attach_leaves_the_universal_prefix_alone() -> TestResult {
     let mut host = started(&dir, &dir);
     let before = host.system_prompt();
     host.dispatch(
-        &Event::ToolCall {
-            name: "write".to_owned(),
-            target: Some(dir.join("build.rs")),
+        &Event::ToolResult {
+            name: "grep".to_owned(),
+            exit: Some(0),
+            files_matched: 40,
         },
         None,
     );
@@ -198,6 +198,87 @@ fn a_mid_session_attach_leaves_the_universal_prefix_alone() -> TestResult {
             .to_owned()
     };
     assert_eq!(universal(&before), universal(&after));
+    Ok(())
+}
+
+#[test]
+fn the_prefilter_separates_a_question_from_a_program() {
+    assert_eq!(prefilter("what does this do?", false, 0), Route::OneShot);
+    assert_eq!(
+        prefilter(
+            "refactor crates/runtime/src/ext and migrate crates/cli/src/main.rs, then split the tests",
+            false,
+            2
+        ),
+        Route::Complex
+    );
+    assert_eq!(
+        prefilter(
+            "add a retry to crates/ai/src/request.rs when the provider answers 429",
+            false,
+            1
+        ),
+        Route::Undecided
+    );
+}
+
+const BULLETED: &str = "Notes from the session, before the next step:\n\
+    - the loader reads the manifest twice on startup\n\
+    - the second read happens inside the retry helper\n\
+    - both reads share one cache entry, so the miss is silent\n\
+    - the timing only shows up under a cold cache\n";
+
+#[test]
+fn every_commonmark_bullet_marker_counts_as_an_enumeration() {
+    let marked = |marker: &str| BULLETED.replace("- ", marker);
+    assert_eq!(prefilter(BULLETED, false, 0), Route::Complex);
+    assert_eq!(prefilter(&marked("* "), false, 0), Route::Complex);
+    assert_eq!(prefilter(&marked("+ "), false, 0), Route::Complex);
+    assert_eq!(prefilter(&marked("*"), false, 0), Route::Undecided);
+}
+
+#[test]
+fn a_quiet_prompt_escalates_on_the_trajectory() -> TestResult {
+    let dir = temp_dir("escalate")?;
+    let mut host = started(&dir, &dir);
+    host.dispatch(&host.prompt_event("fix the typo"), None);
+    assert!(
+        !host.system_prompt().contains("# Orchestrate"),
+        "a small prompt must not load the protocol"
+    );
+    for _ in 0..5 {
+        host.dispatch(
+            &Event::ToolCall {
+                name: "read".to_owned(),
+                target: None,
+            },
+            None,
+        );
+    }
+    let end = host.turn_end_event();
+    host.dispatch(&end, None);
+    assert!(
+        host.system_prompt().contains("# Orchestrate"),
+        "five tool calls in one turn is the escalation signal"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+    Ok(())
+}
+
+#[test]
+fn a_search_over_many_files_escalates() -> TestResult {
+    let dir = temp_dir("files")?;
+    let mut host = started(&dir, &dir);
+    host.dispatch(
+        &Event::ToolResult {
+            name: "grep".to_owned(),
+            exit: Some(0),
+            files_matched: 9,
+        },
+        None,
+    );
+    assert!(host.system_prompt().contains("# Orchestrate"));
+    let _ = std::fs::remove_dir_all(&dir);
     Ok(())
 }
 
@@ -261,6 +342,7 @@ fn fragment_examples_name_real_kernel_apis() -> TestResult {
     let mut names = api("python/yi_runtime/src/rlm/__init__.py", "rlm.")?;
     names.extend(api("python/skills/goal/src/goal/__init__.py", "goal.")?);
     let fragments = [
+        include_str!("../src/prompts/orchestrate.md"),
         include_str!("../src/prompts/identity.md"),
         include_str!("../src/prompts/doctrine.md"),
     ];

@@ -217,12 +217,31 @@ fn a_scanned_pdf_is_refused_with_its_reason() -> TestResult {
     let message = text(&output);
     assert!(output.is_error, "{message}");
     assert!(
-        message.ends_with(
-            "scanned.pdf: no text layer on any of the 1 PDF page(s) read of 1 (image-only or vector art), so there is no text to show"
+        message.contains(
+            "scanned.pdf: no text layer on any of the 1 PDF page(s) read of 1 (image-only or vector art), so there is no text to show; "
         ),
         "{message}"
     );
     assert_eq!(copies(&scratch.home), 0, "a refusal leaves no copy");
+    Ok(())
+}
+
+/// A page with no text layer, the shape of music-harmony's score in the 2026-09-11 v4 sweep (vector
+/// art): the model rendered the page, never attached it, and spent the run on drawing paths.
+#[test]
+fn a_pdf_with_no_text_layer_names_the_render_and_the_attach() -> TestResult {
+    let (scratch, tools) = setup("no-text-layer")?;
+    let path = scratch.cwd.join("score.pdf");
+    std::fs::copy(Path::new(FIXTURES).join("scanned.pdf"), &path)?;
+    let output = call(&tool(&tools, "read")?, &scratch.cwd, json!({"path": path}))?;
+    assert!(output.is_error);
+    assert_eq!(
+        text(&output),
+        format!(
+            "failed to read {0}: no text layer on any of the 1 PDF page(s) read of 1 (image-only or vector art), so there is no text to show; to see page 1, render it to PNG in ipython: `%pip install pymupdf`, then `import pymupdf; p = \"/tmp/page-1.png\"; pymupdf.open(\"{0}\")[0].get_pixmap(dpi=200).save(p); print(await attach_image(p))`",
+            path.display()
+        )
+    );
     Ok(())
 }
 
@@ -263,7 +282,7 @@ fn a_binary_that_is_no_document_keeps_the_plain_error() -> TestResult {
     assert_eq!(
         text(&output),
         format!(
-            "failed to read {}: a PNG image, not text; in ipython the bundled attach_image skill puts it in front of the model",
+            "failed to read {0}: a PNG image, not text; in ipython run `print(await attach_image(\"{0}\"))` to put it in front of the model",
             path.display()
         )
     );

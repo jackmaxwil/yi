@@ -11,7 +11,8 @@ use yi_loop::ExecutionMode;
 use yi_runtime::{
     AgentSession, HostRegistry, KernelService, KernelServiceOptions, ProviderStream, SessionConfig,
 };
-use yi_tools::{CancelFlag, KernelBridge};
+use yi_tools::{CancelFlag, KernelBridge, ToolContext};
+use yi_types::message::Content;
 use yi_types::model::{Model, ModelCost};
 
 type TestResult = Result<(), Box<dyn Error>>;
@@ -43,12 +44,13 @@ fn vision_faux_model() -> Model {
 
 async fn cell(
     service: &Arc<KernelService>,
-    code: &'static str,
+    code: impl Into<String>,
 ) -> Result<yi_tools::KernelCellOutcome, String> {
     let service = Arc::clone(service);
+    let code = code.into();
     tokio::task::spawn_blocking(move || {
         let cancelled: CancelFlag = Arc::new(|| false);
-        KernelBridge::execute_cell(service.as_ref(), code, &cancelled)
+        KernelBridge::execute_cell(service.as_ref(), &code, &cancelled)
     })
     .await
     .map_err(|error| error.to_string())?
@@ -196,20 +198,45 @@ async fn bundled_python_skills_work_through_the_kernel() -> TestResult {
         recall_cell.result.stderr
     );
 
-    let attach_cell = cell(
-        &service,
-        "from PIL import Image\nimport tempfile, os\np = os.path.join(tempfile.gettempdir(), 'yi-skill-test.png')\nImage.new('RGB', (4, 4), 'red').save(p)\nprint(await attach_image(p))",
-    )
-    .await
-    .map_err(|error| error.to_string())?;
+    // The call a refused read names runs as named, on an image under a name with a quote and a
+    // backslash that a bare "{path}" literal breaks on (the 2026-09-11 v4 sweep's image reads).
+    let dir = std::env::temp_dir().join(format!("yi-skills-attach-{}", std::process::id()));
+    std::fs::create_dir_all(&dir)?;
+    let image = dir.join("sch\"em\\atic.png");
+    std::fs::copy(
+        concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/documents/checker.png"
+        ),
+        &image,
+    )?;
+    let read = yi_tools::builtin_tools()
+        .into_iter()
+        .find(|tool| tool.name() == "read")
+        .ok_or("no read tool")?;
+    let refused = read.execute(
+        serde_json::from_value(json!({"path": image}))?,
+        &ToolContext::new(dir.clone()),
+    );
+    let refusal: String = refused
+        .result
+        .content
+        .iter()
+        .map(|content| match content {
+            Content::Text { text, .. } => text.as_str(),
+            _ => "",
+        })
+        .collect();
+    let named = refusal.split('`').nth(1).ok_or_else(|| refusal.clone())?;
+    let attach_cell = cell(&service, named).await?;
     assert!(
         attach_cell
             .result
             .stdout
             .contains("Loaded 1 image(s) into context"),
-        "attach_image must confirm the load: {} {}",
+        "{named} must confirm the load: {} {:?}",
         attach_cell.result.stdout,
-        attach_cell.result.stderr
+        attach_cell.result.error
     );
     assert_eq!(
         attach_cell.result.attachments.len(),
@@ -217,6 +244,7 @@ async fn bundled_python_skills_work_through_the_kernel() -> TestResult {
         "the display_data attachment must reach the host reducer"
     );
     assert_eq!(attach_cell.result.attachments[0].mime_type, "image/png");
+    std::fs::remove_dir_all(&dir)?;
 
     service.dispose().await;
     Ok(())

@@ -336,6 +336,8 @@ fn segment_category(segment: &str) -> Option<&'static str> {
 #[derive(Default)]
 pub struct BashTool {
     pub hashline: Option<crate::hashline::tool::SharedHashline>,
+    /// The last four calls that ran, newest in bit 0; a set bit hit its time limit.
+    pub(crate) recent_ceilings: std::sync::atomic::AtomicU8,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -414,13 +416,68 @@ fn viewed_lines(command: &str, content: &str, output: &str) -> Vec<u64> {
         .collect()
 }
 
+/// Incident: layout-config-recreation's cv2 search died three times under its own 590 s and 480 s
+/// `timeout` wrappers, as exit 124. A wrapped command that exits 124 by itself ends sooner.
+fn own_timeout_fired(command: &str, exit_code: i32, elapsed: std::time::Duration) -> bool {
+    exit_code == 124
+        && command
+            .split(['|', ';', '\n', '&', '('])
+            .filter_map(timeout_limit)
+            .any(|limit| elapsed >= limit)
+}
+
+fn timeout_limit(segment: &str) -> Option<std::time::Duration> {
+    let mut words = segment
+        .split_whitespace()
+        .skip_while(|word| word.contains('='));
+    if words.next()?.rsplit('/').next()? != "timeout" {
+        return None;
+    }
+    let limit = loop {
+        let word = words.next()?;
+        if matches!(word, "-k" | "-s" | "--kill-after" | "--signal") {
+            words.next()?;
+        } else if !word.starts_with('-') {
+            break word;
+        }
+    };
+    let scale = match limit.chars().last()? {
+        'm' => 60.0,
+        'h' => 3600.0,
+        'd' => 86400.0,
+        _ => 1.0,
+    };
+    let seconds: f64 = limit.trim_end_matches(['s', 'm', 'h', 'd']).parse().ok()?;
+    std::time::Duration::try_from_secs_f64(seconds * scale).ok()
+}
+
+impl BashTool {
+    /// How many of the last four calls hit their time limit, when this one did and one more did.
+    fn ceiling_nudge(
+        &self,
+        command: &str,
+        timed_out: bool,
+        exit_code: i32,
+        elapsed: std::time::Duration,
+    ) -> Option<u32> {
+        let hit = timed_out || own_timeout_fired(command, exit_code, elapsed);
+        let push = |bits: u8| (bits << 1 | u8::from(hit)) & 0b1111;
+        let ordering = std::sync::atomic::Ordering::Relaxed;
+        let (Ok(before) | Err(before)) =
+            self.recent_ceilings
+                .fetch_update(ordering, ordering, |bits| Some(push(bits)));
+        let hits = push(before).count_ones();
+        (hit && hits >= 2).then_some(hits)
+    }
+}
+
 impl Tool for BashTool {
     fn name(&self) -> &str {
         "bash"
     }
 
     fn description(&self) -> &str {
-        "Run a shell command with sh -c in the working directory and return its output and exit code. cwd persists between calls; shell state does not. `a && b` stops at the first nonzero segment and `x | head` exits 141, so later segments silently never run: a chain that stopped is reported, a truncation is not the cause. Output over 30,000 bytes per stream is cut with [output truncated]; over 8,192 bytes it is reduced ([N lines omitted: A-B]) and the full text is at [full output: path], which read opens; max_output_lines raises the reducer's budget and -v/--verbose bypass it. wait is clamped 5-300 s; a longer command becomes a job you check by calling bash with no command. A command is killed at timeout_secs (default 120 s, ceiling 600 s); raise it for a build or a test suite. An unbounded walk of / or ~ (find /, grep -r … /, rg … /, du /, ls -R /) is refused before it runs: search from the cwd, bound it (-maxdepth, --max-depth, -d), or name the directory. In auto mode a command the gate cannot prove runs contained where a sandbox exists (no network, no socket bind, writes only under cwd and tmp); a PermissionDenied there says nothing about the code."
+        "Run a shell command with sh -c in the working directory and return its output and exit code. cwd persists between calls; shell state does not. `a && b` stops at the first nonzero segment and `x | head` exits 141, so later segments silently never run: a chain that stopped is reported, a truncation is not the cause. Output over 30,000 bytes per stream is cut with [output truncated]; over 8,192 bytes it is reduced ([N lines omitted: A-B]) and the full text is at [full output: path], which read opens; max_output_lines raises the reducer's budget and -v/--verbose bypass it. wait is clamped 5-300 s; a longer command becomes a job you check by calling bash with no command. A command is killed at timeout_secs (default 300 s, ceiling 600 s); raise it for a build or a test suite. An unbounded walk of / or ~ (find /, grep -r … /, rg … /, du /, ls -R /) is refused before it runs: search from the cwd, bound it (-maxdepth, --max-depth, -d), or name the directory. In auto mode a command the gate cannot prove runs contained where a sandbox exists (no network, no socket bind, writes only under cwd and tmp); a PermissionDenied there says nothing about the code."
     }
 
     fn schema(&self) -> Value {
@@ -430,7 +487,7 @@ impl Tool for BashTool {
                 "command": {"type": "string", "description": "Shell command to run. Omit it to check on a background job instead."},
                 "job": {"type": "integer", "description": "Background job to check on; defaults to the most recent"},
                 "wait": {"type": "integer", "description": "Seconds to wait for that job, clamped to 5-300"},
-                "timeout_secs": {"type": "integer", "description": "Wall-clock limit in seconds, default 120, ceiling 600; raise it for a build or a test suite. Past it the command is killed and reported as timed out."},
+                "timeout_secs": {"type": "integer", "description": "Wall-clock limit in seconds, default 300, ceiling 600; raise it for a build or a test suite. Past it the command is killed and reported as timed out."},
                 "max_output_lines": {"type": "integer", "description": "Per-call reducer line budget, for when the full output matters"}
             }
         })
@@ -465,7 +522,18 @@ impl Tool for BashTool {
         if let Some(refusal) = broad_search(command) {
             return error_output(refusal);
         }
-        let timeout = crate::jobs::clamp_timeout(input.get("timeout_secs").and_then(Value::as_u64));
+        let requested_timeout = input.get("timeout_secs").and_then(Value::as_u64);
+        let timeout = crate::jobs::clamp_timeout(requested_timeout);
+        let started = std::time::Instant::now();
+        let mut sections = Vec::new();
+        if let Some(asked) =
+            requested_timeout.filter(|asked| *asked > crate::jobs::MAX_TIMEOUT_SECS)
+        {
+            sections.push(format!(
+                "[timeout_secs {asked} capped at {}]",
+                crate::jobs::MAX_TIMEOUT_SECS
+            ));
+        }
         let (capture, timed_out) = match crate::jobs::run_or_background(
             command,
             &context.cwd,
@@ -477,15 +545,17 @@ impl Tool for BashTool {
             Ok(crate::jobs::Run::Finished(capture)) => (*capture, false),
             Ok(crate::jobs::Run::TimedOut(capture)) => (*capture, true),
             Ok(crate::jobs::Run::Backgrounded(id)) => {
-                let mut output = text_output(format!(
+                sections.push(format!(
                     "Backgrounded as job {id}. Call bash with no command (optionally job={id}) to check on it."
                 ));
+                let mut output = text_output(sections.join("\n"));
                 output.result.details = json!({ "job": id.0, "backgrounded": true });
                 return output;
             }
             Err(message) => return error_output(message),
         };
         let exit_code_for_reduce = capture.exit_code.unwrap_or(-1);
+        let nudge = self.ceiling_nudge(command, timed_out, exit_code_for_reduce, started.elapsed());
         let max_lines = input
             .get("max_output_lines")
             .and_then(Value::as_u64)
@@ -499,14 +569,15 @@ impl Tool for BashTool {
             context.recovery_dir.as_deref(),
             max_lines,
         );
-        let mut sections = Vec::new();
         if !reduced.text.is_empty() {
             sections.push(reduced.text.clone());
         }
         if capture.truncated {
             sections.push("[output truncated]".to_owned());
         }
-        if timed_out {
+        if timed_out && nudge.is_some() {
+            sections.push(format!("[timed out after {}s]", timeout.as_secs()));
+        } else if timed_out {
             sections.push(format!(
                 "[timed out after {}s; pass timeout_secs up to {} for a longer run, or narrow the command]",
                 timeout.as_secs(),
@@ -526,6 +597,11 @@ impl Tool for BashTool {
                     "[chain stopped at exit {exit_code}: the segments after the failing one did not run]"
                 ));
             }
+        }
+        if let Some(hits) = nudge {
+            sections.push(format!(
+                "[{hits} of the last 4 bash calls hit their time limit; change the method, not the limit: bound the work (a smaller input, a sample, an early exit), vectorize it, or run it in the background (nohup CMD > out.log 2>&1 &) and read the log in a later call]"
+            ));
         }
         if let Some(hint) = document_hint(command) {
             sections.push(hint);
@@ -642,6 +718,7 @@ pub fn list_files(root: &Path, cap: usize) -> Vec<String> {
 mod tests {
     use super::{BashTool, broad_search};
     use crate::Tool;
+    use std::time::Duration;
 
     #[test]
     fn the_bash_description_names_the_reducer_floor() {
@@ -652,6 +729,21 @@ mod tests {
                 .description()
                 .contains(&format!("over {thousands} bytes it is reduced")),
             "the description must name REDUCE_FLOOR ({floor})"
+        );
+    }
+
+    #[test]
+    fn the_bash_description_names_the_timeout_default_and_ceiling() {
+        let tool = BashTool::default();
+        let description = tool.description();
+        assert!(
+            description
+                .contains(format!("default {} s", crate::jobs::DEFAULT_TIMEOUT_SECS).as_str()),
+            "the description must name DEFAULT_TIMEOUT_SECS"
+        );
+        assert!(
+            description.contains(format!("ceiling {} s", crate::jobs::MAX_TIMEOUT_SECS).as_str()),
+            "the description must name MAX_TIMEOUT_SECS"
         );
     }
 
@@ -714,5 +806,44 @@ mod tests {
         for command in allowed {
             assert!(broad_search(command).is_none(), "{command} should run");
         }
+    }
+
+    #[test]
+    fn the_ceiling_nudge_fires_on_a_second_hit_within_four_calls() {
+        // Invented bash results, one session per case; the 2026-09-11 sweep replay cited by D190
+        // read the real transcripts outside the repository and is not committed.
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/bash-time-limits.jsonl");
+        let rows = std::fs::read_to_string(path).unwrap();
+        let mut tools = std::collections::BTreeMap::<String, BashTool>::new();
+        let mut fired = Vec::new();
+        for line in rows.lines() {
+            let row: serde_json::Value = serde_json::from_str(line).unwrap();
+            let session = row["session"].as_str().unwrap();
+            let nudge = tools.entry(session.to_owned()).or_default().ceiling_nudge(
+                row["command"].as_str().unwrap(),
+                row["timedOut"].as_bool().unwrap(),
+                i32::try_from(row["exitCode"].as_i64().unwrap()).unwrap(),
+                Duration::from_millis(row["durationMs"].as_u64().unwrap()),
+            );
+            if nudge.is_some() {
+                fired.push(format!("{session} call {}", row["call"]));
+            }
+        }
+        assert_eq!((rows.lines().count(), tools.len()), (44, 12));
+        assert_eq!(
+            fired,
+            [
+                "kill-then-own-timeout call 3",
+                "kill-two-successes-kill call 4",
+                "own-timeouts-in-a-row call 2",
+                "own-timeouts-in-a-row call 3",
+                "search-kills-in-a-row call 2",
+                "kill-after-and-signal-options call 3",
+                "env-path-and-chain-before-timeout call 2",
+                "env-path-and-chain-before-timeout call 3",
+                "later-segment-exits-124-misfires call 2"
+            ]
+        );
     }
 }

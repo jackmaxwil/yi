@@ -3,7 +3,7 @@ use std::path::PathBuf;
 
 use serde_json::json;
 
-use super::{Effect, Event, EventMask, Extension};
+use super::{Effect, Event, EventMask, Extension, Rank, Slot};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Route {
@@ -127,27 +127,48 @@ pub fn features(prompt: &str, repo_dirty: bool, named_paths: u32) -> Features {
     }
 }
 
+pub fn prefilter(prompt: &str, repo_dirty: bool, named_paths: u32) -> Route {
+    features(prompt, repo_dirty, named_paths).route()
+}
+
 const TOOL_CALLS_PER_TURN: u32 = 4;
 const FILES_MATCHED: u32 = 5;
 
-#[derive(Default)]
 pub struct Orchestrate {
-    escalated: bool,
+    fragment: &'static str,
+    attached: bool,
     reads: BTreeSet<PathBuf>,
     edited: bool,
 }
 
 impl Orchestrate {
-    fn escalate(&mut self, out: &mut Vec<Effect>, signal: &'static str) {
-        if self.escalated {
+    pub fn new(fragment: &'static str) -> Self {
+        Self {
+            fragment,
+            attached: false,
+            reads: BTreeSet::new(),
+            edited: false,
+        }
+    }
+
+    fn attach(&mut self, out: &mut Vec<Effect>, signal: &'static str) {
+        if self.attached {
             return;
         }
-        self.escalated = true;
-        // orient_census.py counts escalations by this key, named for a fragment no longer sent.
+        self.attached = true;
+        out.push(Effect::AttachFragment {
+            slot: Slot::new(Rank::Protocol, "orchestrate"),
+            text: self.fragment.to_owned(),
+        });
         out.push(Effect::Record {
             key: "orchestrate_attached",
             value: json!({ "signal": signal }),
         });
+        if signal != "prefilter" {
+            out.push(Effect::Remind {
+                text: "This task has outgrown one-shot handling; write the plan now.".to_owned(),
+            });
+        }
     }
 
     fn on_prompt(
@@ -179,7 +200,7 @@ impl Orchestrate {
             }),
         });
         if route == Route::Complex {
-            self.escalate(out, "prefilter");
+            self.attach(out, "prefilter");
         }
     }
 
@@ -193,7 +214,7 @@ impl Orchestrate {
             "edit" => {
                 self.edited = true;
                 if target.is_some_and(|path| !self.reads.contains(path)) {
-                    self.escalate(out, "edit_before_read");
+                    self.attach(out, "edit_before_read");
                 }
             }
             "write" => self.edited = true,
@@ -236,10 +257,10 @@ impl Extension for Orchestrate {
                 ..
             } => {
                 if *files_matched > FILES_MATCHED {
-                    self.escalate(out, "files_matched");
+                    self.attach(out, "files_matched");
                 }
                 if self.edited && name == "bash" && exit.is_some_and(|code| code != 0) {
-                    self.escalate(out, "failed_check_after_edit");
+                    self.attach(out, "failed_check_after_edit");
                 }
             }
             Event::TurnEnd {
@@ -247,7 +268,7 @@ impl Extension for Orchestrate {
                 ..
             } => {
                 if *tool_calls_this_turn > TOOL_CALLS_PER_TURN {
-                    self.escalate(out, "tool_calls_per_turn");
+                    self.attach(out, "tool_calls_per_turn");
                 }
             }
             _ => {}
