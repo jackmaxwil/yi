@@ -1,0 +1,51 @@
+{
+ "lands": [
+  {
+   "arguments": {"done<arg_key>evidence": "`cargo test -p ledger` test result: ok. 14 passed; 0 failed", "label": "Add the ledger rounding test"},
+   "evidence": "`cargo test -p ledger` test result: ok. 14 passed; 0 failed"
+  },
+  {
+   "arguments": {"label": "Retry the upload on HTTP 503, twice (max)!", "done<arg_key>evidence": "`python3 -m pytest tests/test_upload.py -q` 3 passed in 0.42s"},
+   "evidence": "`python3 -m pytest tests/test_upload.py -q` 3 passed in 0.42s"
+  },
+  {
+   "arguments": {"done<arg_key>evidence": "`./render --lang ja` wrote 見出し.html (2 KB)", "label": "Render the 日本語 heading"},
+   "evidence": "`./render --lang ja` wrote 見出し.html (2 KB)"
+  },
+  {
+   "arguments": {"done<arg_key>evidence": "`./bench --runs 50` p99 4.1ms < 5ms budget", "label": "Keep p99 under the budget"},
+   "evidence": "`./bench --runs 50` p99 4.1ms < 5ms budget"
+  },
+  {
+   "arguments": {"done<arg_key>evidence": "  `./health-probe` {\"status\":\"ok\",\"checks\":3}\n", "label": "Expose the health endpoint"},
+   "evidence": "`./health-probe` {\"status\":\"ok\",\"checks\":3}"
+  },
+  {
+   "arguments": {"done": "evidence</arg_key><arg_value>`make check` all 6 targets ok", "label": "Wire the lint target into make check"},
+   "evidence": "`make check` all 6 targets ok"
+  },
+  {
+   "arguments": {"label": "Fix off-by-one in `range(1, n)`; add a test", "done": "evidence</arg_key><arg_value>`go test ./pager/...` ok  pager 0.012s"},
+   "evidence": "`go test ./pager/...` ok  pager 0.012s"
+  },
+  {
+   "arguments": {"done": "evidence</arg_key><arg_value>`node slug.js` café → cafe, Ærø → aero", "label": "Fold accents out of the café slugs"},
+   "evidence": "`node slug.js` café → cafe, Ærø → aero"
+  },
+  {
+   "arguments": {"done": "evidence</arg_key><arg_value>`grep -c '<table>' out/report.html` → 1", "label": "Emit one <table> per report"},
+   "evidence": "`grep -c '<table>' out/report.html` → 1"
+  },
+  {
+   "arguments": {"done": "evidence</arg_key><arg_value>`npm test`\n  12 passing (80ms)\n", "label": "Cover the date parser — leap years too"},
+   "evidence": "`npm test`\n  12 passing (80ms)"
+  }
+ ],
+ "refused": [
+  {"done<arg_key>evidence": "`make` exit 0"},
+  {"done": "evidence</arg_key><arg_value>`make` exit 0"},
+  {"done<arg_key>evidence": "`make` exit 0", "label": "an item that is not on the list"},
+  {"done": "see notes </arg_key><arg_value>`make` exit 0", "label": "a standing item"},
+  {"done<arg_key>evidence": "`make` exit 0", "evidence": "", "label": "a standing item"}
+ ]
+}
