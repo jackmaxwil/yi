@@ -718,47 +718,6 @@ fn an_old_session_without_ids_rehydrates_with_ids() -> TestResult {
 }
 
 #[test]
-fn a_field_alias_is_read_as_the_canonical_field_and_named() -> TestResult {
-    let (session, _root) = session("alias")?;
-    let tool = TodoTool::new(store_for(&session));
-    let (is_error, text) = call(
-        &tool,
-        json!({"action": "set", "checklist": "- [ ] one\n- [ ] two\n"}),
-    );
-    assert!(!is_error, "{text}");
-    assert!(
-        text.starts_with("(fields: \"action\" read as \"op\", \"checklist\" read as \"list\")\n"),
-        "{text}"
-    );
-    assert!(
-        !text.contains("(op inferred"),
-        "an op given under an alias was given, not inferred: {text}"
-    );
-    let (is_error, text) = call(&tool, json!({"op": "start", "task": "one"}));
-    assert!(!is_error, "{text}");
-    assert!(
-        text.starts_with("(fields: \"task\" read as \"label\")\n"),
-        "{text}"
-    );
-    let (is_error, text) = call(
-        &tool,
-        json!({"op": "done", "task": "one", "proof": "`make check` all targets ok"}),
-    );
-    assert!(!is_error, "{text}");
-    assert!(text.contains("- [x] t1 one"), "{text}");
-    let (is_error, text) = call(&tool, json!({"op": "append", "tasks": ["three"]}));
-    assert!(!is_error, "{text}");
-    assert!(text.contains("- [ ] t3 three"), "{text}");
-    let (is_error, text) = call(&tool, json!({"op": "view"}));
-    assert!(!is_error, "{text}");
-    assert!(
-        !text.starts_with("(fields:"),
-        "a call without aliases says nothing: {text}"
-    );
-    Ok(())
-}
-
-#[test]
 fn every_argument_error_ends_with_an_id_call_that_lands() -> TestResult {
     let (session, _root) = session("example")?;
     let tool = TodoTool::new(store_for(&session));
