@@ -7,8 +7,23 @@ use yi_types::message::{AgentMessage, Usage};
 use yi_types::model::{Effort, Model};
 
 use super::{
-    AgentSession, ExtHook, Status, attribute_to_shared, dispatch_ext, store_of, user_message,
+    AgentSession, ExtHook, Shared, Status, attribute_to_shared, dispatch_ext, store_of,
+    user_message,
 };
+
+pub(super) fn settings_of(shared: &Shared) -> (Model, Effort) {
+    let model = shared
+        .model
+        .lock()
+        .map(|model| model.clone())
+        .unwrap_or_else(|poisoned| poisoned.into_inner().clone());
+    let effort = shared
+        .effort
+        .lock()
+        .map(|effort| *effort)
+        .unwrap_or_else(|poisoned| *poisoned.into_inner());
+    (model, effort)
+}
 
 fn take_queued(queue: &std::sync::Mutex<Vec<AgentMessage>>, message: &AgentMessage) -> bool {
     let Ok(mut pending) = queue.lock() else {
@@ -50,19 +65,7 @@ impl AgentSession {
 
     pub fn settings_handle(&self) -> Arc<dyn Fn() -> (Model, Effort) + Send + Sync> {
         let shared = Arc::clone(&self.shared);
-        Arc::new(move || {
-            let model = shared
-                .model
-                .lock()
-                .map(|model| model.clone())
-                .unwrap_or_else(|poisoned| poisoned.into_inner().clone());
-            let effort = shared
-                .effort
-                .lock()
-                .map(|effort| *effort)
-                .unwrap_or_else(|poisoned| *poisoned.into_inner());
-            (model, effort)
-        })
+        Arc::new(move || settings_of(&shared))
     }
 
     /// Running session ⇒ queued (Steer drains at the next message boundary,

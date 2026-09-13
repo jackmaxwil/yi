@@ -893,6 +893,7 @@ impl SubagentHost {
         let Some(record) = children.remove(&key) else {
             return Err(format!("No RLM child matches \"{target}\""));
         };
+        children.touch(&key);
         if record.status == ChildStatus::Running {
             record.session.abort();
         }

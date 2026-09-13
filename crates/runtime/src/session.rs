@@ -51,6 +51,7 @@ struct Shared {
     messages: Mutex<Vec<AgentMessage>>,
     steer: Mutex<Vec<AgentMessage>>,
     follow_up: Mutex<Vec<AgentMessage>>,
+    tools: Mutex<Vec<Arc<dyn yi_loop::AgentTool>>>,
     status: Mutex<Status>,
     last_usage: Mutex<Option<Usage>>,
     store: Mutex<Option<yi_session::SharedSession>>,
@@ -111,10 +112,7 @@ struct RunParts {
     shared: Arc<Shared>,
     provider: Arc<ProviderStream>,
     system_prompt: PromptSource,
-    model: Model,
-    effort: Effort,
     tool_execution: ExecutionMode,
-    tools: Vec<Arc<dyn yi_loop::AgentTool>>,
     compactor: Option<Arc<crate::compaction::Compactor>>,
     on_compacted: Option<Arc<dyn Fn() + Send + Sync>>,
 }
@@ -123,7 +121,6 @@ pub struct AgentSession {
     config: SessionConfig,
     provider: Arc<ProviderStream>,
     shared: Arc<Shared>,
-    tools: Vec<Arc<dyn yi_loop::AgentTool>>,
     compactor: Option<Arc<crate::compaction::Compactor>>,
     on_compacted: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
     schedule: Mutex<Option<Arc<crate::schedule::HeartbeatService>>>,
@@ -152,6 +149,7 @@ impl AgentSession {
                 messages: Mutex::new(Vec::new()),
                 steer: Mutex::new(Vec::new()),
                 follow_up: Mutex::new(Vec::new()),
+                tools: Mutex::new(Vec::new()),
                 status: Mutex::new(Status::Idle),
                 last_usage: Mutex::new(None),
                 store: Mutex::new(None),
@@ -162,7 +160,6 @@ impl AgentSession {
                 on_turn_start: Mutex::new(None),
                 environment: Mutex::new(None),
                 lane: Mutex::new(None),
-
                 telemetry: Mutex::new(None),
                 todos: Mutex::new(None),
                 on_turn_end: Mutex::new(None),
@@ -171,7 +168,6 @@ impl AgentSession {
             }),
             config,
             provider,
-            tools: Vec::new(),
             compactor: None,
             on_compacted: Mutex::new(None),
             schedule: Mutex::new(None),
@@ -480,14 +476,18 @@ impl AgentSession {
             .and_then(|usage| usage.clone())
     }
 
+    /// Incident: a wake handle minted before the tools landed woke a turn that could call nothing.
     pub fn set_tools(&mut self, tools: Vec<Arc<dyn yi_loop::AgentTool>>) {
-        self.tools = tools;
+        if let Ok(mut slot) = self.shared.tools.lock() {
+            *slot = tools;
+        }
     }
 
     /// The registered table, as attached; the surface lock renders its lock
     /// from these definitions so what it pins is what a model call can name.
-    pub fn tools(&self) -> &[Arc<dyn yi_loop::AgentTool>] {
-        &self.tools
+    pub fn tools(&self) -> Vec<Arc<dyn yi_loop::AgentTool>> {
+        let slot = self.shared.tools.lock();
+        slot.as_deref().cloned().unwrap_or_default()
     }
 
     /// Aborting the session cancels any tool subprocess still running.
@@ -537,7 +537,7 @@ impl AgentSession {
                 ) as Arc<dyn yi_loop::AgentTool>
             })
             .collect();
-        self.tools = adapters;
+        self.set_tools(adapters);
     }
 
     pub fn events_sender(&self) -> tokio::sync::broadcast::Sender<AgentEvent> {
@@ -790,18 +790,14 @@ impl AgentSession {
             shared: Arc::clone(&self.shared),
             provider: Arc::clone(&self.provider),
             system_prompt: self.prompt_source(),
-            model: self.model(),
-            effort: self.effort(),
             tool_execution: self.config.tool_execution,
-            tools: self.tools.clone(),
             compactor: self.compactor.clone(),
             on_compacted: self.on_compacted.lock().ok().and_then(|slot| slot.clone()),
         };
         Self::spawn_run(parts, prompt)
     }
 
-    /// Lets a heartbeat wake an idle session without a `&self` borrow. Tools and
-    /// model are snapshotted here — re-wire after [`AgentSession::set_model`]/[`AgentSession::use_tools`].
+    /// Wakes an idle session without `&self`; model, effort and tools are read at run start.
     pub fn run_handle(
         &self,
     ) -> Arc<dyn Fn(AgentMessage) -> Result<(), SessionError> + Send + Sync> {
@@ -809,10 +805,7 @@ impl AgentSession {
             shared: Arc::clone(&self.shared),
             provider: Arc::clone(&self.provider),
             system_prompt: self.prompt_source(),
-            model: self.model(),
-            effort: self.effort(),
             tool_execution: self.config.tool_execution,
-            tools: self.tools.clone(),
             compactor: self.compactor.clone(),
             on_compacted: self.on_compacted.lock().ok().and_then(|slot| slot.clone()),
         };
@@ -843,10 +836,7 @@ impl AgentSession {
             shared,
             provider,
             system_prompt,
-            model,
-            effort,
             tool_execution,
-            tools,
             compactor,
             on_compacted,
         } = parts;
@@ -869,8 +859,9 @@ impl AgentSession {
                     .lock()
                     .map(|messages| messages.clone())
                     .unwrap_or_default(),
-                tools,
+                tools: shared.tools.lock().as_deref().cloned().unwrap_or_default(),
             };
+            let (model, effort) = hooks::settings_of(&shared);
             let mut config = LoopConfig::new(model.clone());
             config.effort = effort;
             config.tool_execution = tool_execution;
