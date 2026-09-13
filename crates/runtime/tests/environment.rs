@@ -1,3 +1,7 @@
+#[path = "../../types/tests/support/scratch.rs"]
+mod scratch;
+use scratch::Scratch;
+
 use std::error::Error;
 use std::sync::Arc;
 
@@ -200,9 +204,7 @@ fn environment_sanitizes_branch_and_child_names() -> TestResult {
 
 #[test]
 fn git_summary_reads_branch_and_dirty_count() -> TestResult {
-    let dir = std::env::temp_dir().join(format!("yi-env-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir)?;
+    let dir = Scratch::new("yi-env")?;
     assert_eq!(git_summary(&dir), None, "a plain directory has no branch");
     let init = yi_tools::command("git")
         .args(["init", "-q", "-b", "main"])
@@ -213,14 +215,12 @@ fn git_summary_reads_branch_and_dirty_count() -> TestResult {
     let (branch, dirty) = git_summary(&dir).ok_or("no summary in a repo")?;
     assert_eq!(branch, "main");
     assert_eq!(dirty, 1);
-    let _ = std::fs::remove_dir_all(&dir);
     Ok(())
 }
 
 #[test]
 fn tracked_reports_only_paths_git_knows() -> TestResult {
-    let dir = std::env::temp_dir().join(format!("yi-tracked-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
+    let dir = Scratch::new("yi-tracked")?;
     std::fs::create_dir_all(dir.join("src"))?;
     assert!(
         yi_tools::command("git")
@@ -248,7 +248,6 @@ fn tracked_reports_only_paths_git_knows() -> TestResult {
         yi_runtime::environment::tracked(&dir, &[inside, loose, outside]),
         vec![true, false, false]
     );
-    let _ = std::fs::remove_dir_all(&dir);
     Ok(())
 }
 
@@ -267,8 +266,7 @@ fn the_deadline_line_counts_down_and_stops_at_zero() {
 
 #[test]
 fn the_files_line_lists_the_top_level_and_caps_at_twenty() -> TestResult {
-    let dir = std::env::temp_dir().join(format!("yi-env-files-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
+    let dir = Scratch::new("yi-env-files")?;
     std::fs::create_dir_all(dir.join("a-sub"))?;
     for i in 0..24 {
         std::fs::write(dir.join(format!("f{i:02}.txt")), "x")?;
@@ -284,6 +282,5 @@ fn the_files_line_lists_the_top_level_and_caps_at_twenty() -> TestResult {
     let empty = dir.join("empty");
     std::fs::create_dir_all(&empty)?;
     assert!(files_line(&empty).is_none(), "an empty dir has no line");
-    let _ = std::fs::remove_dir_all(&dir);
     Ok(())
 }

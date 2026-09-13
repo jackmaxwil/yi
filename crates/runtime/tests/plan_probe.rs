@@ -1,8 +1,11 @@
 //! The §5 saturating probe ladder: a `Blocked{on: External}` todo returns on
 //! its own when its probe passes, and a probeless one nudges its owner.
 
+#[path = "../../types/tests/support/scratch.rs"]
+mod scratch;
+use scratch::Scratch;
+
 use std::error::Error;
-use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
@@ -17,8 +20,6 @@ use yi_types::plan::doc::{
 use yi_types::url::Url;
 
 type TestResult = Result<(), Box<dyn Error>>;
-
-static NEXT_DIR: AtomicU32 = AtomicU32::new(0);
 
 struct Nobody;
 
@@ -35,30 +36,19 @@ impl Delegate for Nobody {
 }
 
 struct Rig {
-    dir: PathBuf,
     store: PlanStore,
     engine: Arc<PlanEngine>,
     said: Arc<Mutex<Vec<String>>>,
     green: Arc<AtomicBool>,
     ran: Arc<AtomicU32>,
-}
-
-impl Drop for Rig {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.dir);
-    }
+    _dir: Scratch,
 }
 
 fn rig() -> Result<(Rig, ProbeLadder), Box<dyn Error>> {
-    let dir = std::env::temp_dir().join(format!(
-        "yi-plan-probe-{}-{}",
-        std::process::id(),
-        NEXT_DIR.fetch_add(1, Ordering::SeqCst)
-    ));
-    let _ = std::fs::remove_dir_all(&dir);
-    let store = PlanStore::open(dir.clone())?;
+    let dir = Scratch::new("yi-plan-probe")?;
+    let store = PlanStore::open(dir.to_path_buf())?;
     let engine = Arc::new(PlanEngine::new(
-        PlanStore::open(dir.clone())?,
+        PlanStore::open(dir.to_path_buf())?,
         Arc::new(Nobody),
     ));
     let said: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
@@ -69,7 +59,7 @@ fn rig() -> Result<(Rig, ProbeLadder), Box<dyn Error>> {
     let count = Arc::clone(&ran);
     let ladder = ProbeLadder::new(
         Arc::clone(&engine),
-        dir.clone(),
+        dir.to_path_buf(),
         Arc::new(move |message: AgentMessage, _mode| {
             if let AgentMessage::Custom { content, .. } = message
                 && let Ok(mut said) = sink.lock()
@@ -88,12 +78,12 @@ fn rig() -> Result<(Rig, ProbeLadder), Box<dyn Error>> {
     }));
     Ok((
         Rig {
-            dir,
             store,
             engine,
             said,
             green,
             ran,
+            _dir: dir,
         },
         ladder,
     ))

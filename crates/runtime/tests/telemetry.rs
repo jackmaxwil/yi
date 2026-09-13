@@ -1,6 +1,10 @@
 //! The spans a run is judged by, driven by a faux session: a request's timings and usage, a
 //! turn, and a tool call's duration — each on disk beside the session file.
 
+#[path = "../../types/tests/support/scratch.rs"]
+mod scratch;
+use scratch::Scratch;
+
 use std::error::Error;
 use std::sync::Arc;
 
@@ -60,9 +64,8 @@ fn spans_in(path: &std::path::Path) -> Result<Vec<Span>, Box<dyn Error>> {
 
 #[tokio::test]
 async fn a_faux_turn_leaves_a_request_and_a_turn_span_beside_the_session() -> TestResult {
-    let root = std::env::temp_dir().join(format!("yi-telemetry-turn-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&root);
-    let mut repo = JsonlRepo::new(root.clone(), "/tmp/yi-telemetry".to_owned());
+    let root = Scratch::new("yi-telemetry-turn")?;
+    let mut repo = JsonlRepo::new(root.to_path_buf(), "/tmp/yi-telemetry".to_owned());
     let store = repo.create(CreateOptions {
         id: Some("t-1".to_owned()),
         ..CreateOptions::default()
@@ -110,16 +113,13 @@ async fn a_faux_turn_leaves_a_request_and_a_turn_span_beside_the_session() -> Te
         .ok_or("no turn span")?;
     assert_eq!(turn.turn, Some(1));
     assert_eq!(turn.input, Some(120));
-    let _ = std::fs::remove_dir_all(&root);
     Ok(())
 }
 
 /// A tool span is a projection of the end event: its duration is the one the loop stamped.
 #[test]
 fn a_tool_end_event_becomes_a_tool_span_with_the_loops_duration() -> TestResult {
-    let root = std::env::temp_dir().join(format!("yi-telemetry-tool-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&root);
-    std::fs::create_dir_all(&root)?;
+    let root = Scratch::new("yi-telemetry-tool")?;
     let telemetry = Telemetry::default();
     telemetry.bind(&root.join("1_t-2.jsonl"), "t-2");
     telemetry.on_event(&AgentEvent::ToolExecutionEnd {
@@ -158,7 +158,6 @@ fn a_tool_end_event_becomes_a_tool_span_with_the_loops_duration() -> TestResult 
         Some("tool:denied"),
         "the loop's kind is the class"
     );
-    let _ = std::fs::remove_dir_all(&root);
     Ok(())
 }
 
@@ -166,9 +165,7 @@ fn a_tool_end_event_becomes_a_tool_span_with_the_loops_duration() -> TestResult 
 /// span's class is read there; the content text is read only when the message has none.
 #[tokio::test]
 async fn an_error_span_is_classed_from_its_error_message() -> TestResult {
-    let root = std::env::temp_dir().join(format!("yi-telemetry-error-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&root);
-    std::fs::create_dir_all(&root)?;
+    let root = Scratch::new("yi-telemetry-error")?;
     let telemetry = Arc::new(Telemetry::default());
     telemetry.bind(&root.join("1_t-3.jsonl"), "t-3");
     let rate_limited = {
@@ -206,7 +203,6 @@ async fn an_error_span_is_classed_from_its_error_message() -> TestResult {
             Some("transport:http_503".to_owned())
         ]
     );
-    let _ = std::fs::remove_dir_all(&root);
     Ok(())
 }
 

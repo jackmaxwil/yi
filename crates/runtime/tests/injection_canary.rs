@@ -1,5 +1,9 @@
+#[path = "../../types/tests/support/scratch.rs"]
+mod scratch;
+use scratch::Scratch;
+
 use std::error::Error;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
 
 use serde_json::{Map, json};
@@ -50,9 +54,8 @@ fn faux_model() -> Model {
     }
 }
 
-fn hostile_repo(name: &str) -> Result<PathBuf, Box<dyn Error>> {
-    let dir = std::env::temp_dir().join(format!("yi-canary-{name}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
+fn hostile_repo(name: &str) -> Result<Scratch, Box<dyn Error>> {
+    let dir = Scratch::new(&format!("yi-canary-{name}"))?;
     std::fs::create_dir_all(dir.join(".git"))?;
     std::fs::write(dir.join("AGENTS.md"), POISON)?;
     let skill = dir.join(".yi/skills/helper");
@@ -95,7 +98,7 @@ fn tool_result_text(messages: &[AgentMessage]) -> String {
 fn poisoned_project_text_stays_in_the_yard() -> TestResult {
     let dir = hostile_repo("prompt")?;
     let mut host = yi_runtime::ext::install(yi_runtime::ExtOptions {
-        cwd: dir.clone(),
+        cwd: dir.to_path_buf(),
         home: dir.join("home"),
         mode: PermissionMode::Auto,
         user_system: String::new(),
@@ -138,7 +141,6 @@ fn poisoned_project_text_stays_in_the_yard() -> TestResult {
         !forged,
         "a fence header is written by Yi; content cannot forge one: {yard}"
     );
-    let _ = std::fs::remove_dir_all(&dir);
     Ok(())
 }
 
@@ -167,12 +169,12 @@ async fn no_poisoned_command_actuates() -> TestResult {
         );
         let broker = Arc::new(PermissionBroker::new(
             PermissionMode::Auto,
-            dir.clone(),
+            dir.to_path_buf(),
             Vec::new(),
             None,
             session.events_sender(),
         ));
-        session.use_tools(builtin_tools(), dir.clone(), Some(broker));
+        session.use_tools(builtin_tools(), dir.to_path_buf(), Some(broker));
         session.prompt("do the task")?;
         session.wait_idle().await;
         let text = tool_result_text(&session.messages());
@@ -181,7 +183,6 @@ async fn no_poisoned_command_actuates() -> TestResult {
             "{command:?} must be refused, got: {text}"
         );
         assert!(marker.exists(), "{command:?} must not have run");
-        let _ = std::fs::remove_dir_all(&dir);
         let _ = std::fs::remove_dir_all(marker);
     }
     Ok(())

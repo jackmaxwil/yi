@@ -1,3 +1,7 @@
+#[path = "../../types/tests/support/scratch.rs"]
+mod scratch;
+use scratch::Scratch;
+
 use std::error::Error;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -12,18 +16,18 @@ use yi_types::schedule::DeliveryMode;
 
 type TestResult = Result<(), Box<dyn Error>>;
 
-fn scratch(label: &str) -> Result<(PathBuf, PathBuf), Box<dyn Error>> {
-    let base = std::env::temp_dir().join(format!("yi-rules-{label}-{}", std::process::id()));
+fn scratch(label: &str) -> Result<(Scratch, PathBuf, PathBuf), Box<dyn Error>> {
+    let base = Scratch::new(&format!("yi-rules-{label}"))?;
     let home = base.join("home");
     let cwd = base.join("cwd");
     std::fs::create_dir_all(home.join(".yi/rules"))?;
     std::fs::create_dir_all(cwd.join(".yi/rules"))?;
-    Ok((home, cwd))
+    Ok((base, home, cwd))
 }
 
 #[test]
 fn discovery_parses_shadows_and_names_skips() -> TestResult {
-    let (home, cwd) = scratch("discover")?;
+    let (_base, home, cwd) = scratch("discover")?;
     std::fs::write(
         home.join(".yi/rules/no-leak.md"),
         "---\ntrigger: Box::leak\nscope: tool:edit\nmode: gate\ngap: 3\n---\nNever leak; use Arc.\n",
@@ -314,8 +318,8 @@ async fn gate_rule_denies_through_the_real_adapter_before_execution() -> TestRes
     };
     let provider = Arc::new(ProviderStream::new(None, None));
     let mut call_args = serde_json::Map::new();
-    let marker = std::env::temp_dir().join(format!("yi-rule-gate-{}", std::process::id()));
-    let _ = std::fs::remove_file(&marker);
+    let dir = Scratch::new("yi-rule-gate")?;
+    let marker = dir.join("touched");
     call_args.insert(
         "command".to_owned(),
         serde_json::json!(format!("git push --force && touch {}", marker.display())),
@@ -554,7 +558,7 @@ fn skill_pointer_is_one_line_and_read_suppresses() -> TestResult {
 
 #[test]
 fn skill_trigger_compiles_when_the_user_did_not_claim_the_name() -> TestResult {
-    let (home, cwd) = scratch("skill-rule")?;
+    let (_base, home, cwd) = scratch("skill-rule")?;
     std::fs::create_dir_all(cwd.join(".yi/skills/rust-borrowck"))?;
     std::fs::write(
         cwd.join(".yi/skills/rust-borrowck/SKILL.md"),
@@ -721,7 +725,7 @@ fn after_three_counts_one_needle_through_a_changing_result() -> TestResult {
 
 #[test]
 fn a_dollar_name_in_the_prompt_points_at_the_skill_with_or_without_a_trigger() -> TestResult {
-    let (home, cwd) = scratch("skill-mention")?;
+    let (_base, home, cwd) = scratch("skill-mention")?;
     std::fs::create_dir_all(cwd.join(".yi/skills/assess"))?;
     std::fs::create_dir_all(cwd.join(".yi/skills/quiet"))?;
     std::fs::write(

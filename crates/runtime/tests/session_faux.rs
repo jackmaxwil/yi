@@ -1,3 +1,7 @@
+#[path = "../../types/tests/support/scratch.rs"]
+mod scratch;
+use scratch::Scratch;
+
 use std::error::Error;
 use std::sync::Arc;
 use std::time::Duration;
@@ -90,9 +94,7 @@ fn session_with_reply(text: &str) -> AgentSession {
 
 #[tokio::test]
 async fn executes_a_read_tool_call_through_the_adapter() -> Result<(), Box<dyn Error>> {
-    let dir = std::env::temp_dir().join(format!("yi-runtime-tool-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir)?;
+    let dir = Scratch::new("yi-runtime-tool")?;
     std::fs::write(dir.join("fact.txt"), "the answer is 42")?;
 
     let provider = Arc::new(ProviderStream::new(None, None));
@@ -114,7 +116,7 @@ async fn executes_a_read_tool_call_through_the_adapter() -> Result<(), Box<dyn E
         },
         provider,
     );
-    session.use_tools(yi_tools::builtin_tools(), dir.clone(), None);
+    session.use_tools(yi_tools::builtin_tools(), dir.to_path_buf(), None);
     let mut events = session.subscribe();
     session.prompt("read the fact")?;
     session.wait_idle().await;
@@ -134,15 +136,13 @@ async fn executes_a_read_tool_call_through_the_adapter() -> Result<(), Box<dyn E
         }
     }
     assert!(tool_result_text.contains("the answer is 42"));
-    std::fs::remove_dir_all(&dir)?;
     Ok(())
 }
 
 #[tokio::test]
 async fn persists_a_turn_to_the_store_and_resumes_from_it() -> Result<(), Box<dyn Error>> {
-    let root = std::env::temp_dir().join(format!("yi-runtime-store-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&root);
-    let mut repo = JsonlRepo::new(root.clone(), "/tmp/yi-runtime-test");
+    let root = Scratch::new("yi-runtime-store")?;
+    let mut repo = JsonlRepo::new(root.to_path_buf(), "/tmp/yi-runtime-test");
 
     let store = repo.create(CreateOptions {
         id: Some("turn-one".to_owned()),
@@ -170,7 +170,6 @@ async fn persists_a_turn_to_the_store_and_resumes_from_it() -> Result<(), Box<dy
         ..yi_session::EntryQuery::default()
     })?;
     assert_eq!(entries.len(), 4);
-    std::fs::remove_dir_all(&root)?;
     Ok(())
 }
 
@@ -214,19 +213,15 @@ async fn run_gated_session(
     mut session: AgentSession,
     mode: yi_runtime::PermissionMode,
 ) -> Result<(bool, String), Box<dyn Error>> {
-    static PERM_DIR_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    let unique = PERM_DIR_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let dir = std::env::temp_dir().join(format!("yi-runtime-perm-{}-{unique}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir)?;
+    let dir = Scratch::new("yi-runtime-perm")?;
     let broker = Arc::new(yi_runtime::PermissionBroker::new(
         mode,
-        dir.clone(),
+        dir.to_path_buf(),
         Vec::new(),
         None,
         session.events_sender(),
     ));
-    session.use_tools(yi_tools::builtin_tools(), dir.clone(), Some(broker));
+    session.use_tools(yi_tools::builtin_tools(), dir.to_path_buf(), Some(broker));
     let mut events = session.subscribe();
     session.prompt("run it")?;
     session.wait_idle().await;
@@ -247,7 +242,6 @@ async fn run_gated_session(
             outcome = (!is_error, text);
         }
     }
-    let _ = std::fs::remove_dir_all(&dir);
     Ok(outcome)
 }
 
@@ -295,9 +289,7 @@ async fn a_tilde_read_of_a_key_store_is_denied_even_in_yolo() -> Result<(), Box<
 
 #[tokio::test]
 async fn write_approval_carries_the_patch() -> Result<(), Box<dyn Error>> {
-    let dir = std::env::temp_dir().join(format!("yi-runtime-diff-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir)?;
+    let dir = Scratch::new("yi-runtime-diff")?;
     let target = dir.join("notes.txt");
     std::fs::write(&target, "alpha\nbravo\ncharlie\n")?;
 
@@ -326,12 +318,12 @@ async fn write_approval_carries_the_patch() -> Result<(), Box<dyn Error>> {
     );
     let broker = Arc::new(yi_runtime::PermissionBroker::new(
         yi_runtime::PermissionMode::Ask,
-        dir.clone(),
+        dir.to_path_buf(),
         Vec::new(),
         None,
         session.events_sender(),
     ));
-    session.use_tools(yi_tools::builtin_tools(), dir.clone(), Some(broker));
+    session.use_tools(yi_tools::builtin_tools(), dir.to_path_buf(), Some(broker));
     let mut events = session.subscribe();
     session.prompt("write it")?;
     session.wait_idle().await;
@@ -353,7 +345,6 @@ async fn write_approval_carries_the_patch() -> Result<(), Box<dyn Error>> {
     assert!(denial.contains("+BRAVO"), "{denial}");
     assert!(denial.contains(" alpha"), "{denial}");
     assert_eq!(std::fs::read_to_string(&target)?, "alpha\nbravo\ncharlie\n");
-    let _ = std::fs::remove_dir_all(&dir);
     Ok(())
 }
 
@@ -413,9 +404,7 @@ async fn a_session_still_runs_turns_after_an_abort() -> Result<(), Box<dyn Error
 /// long build left the UI working until the build finished on its own.
 #[tokio::test]
 async fn an_abort_during_a_tool_call_kills_the_child() -> Result<(), Box<dyn Error>> {
-    let dir = std::env::temp_dir().join(format!("yi-runtime-abort-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir)?;
+    let dir = Scratch::new("yi-runtime-abort")?;
     let marker = dir.join("marker");
     let started = dir.join("started");
     // `sleep` is forked before `started` appears, so the grandchild holding the
@@ -423,12 +412,12 @@ async fn an_abort_during_a_tool_call_kills_the_child() -> Result<(), Box<dyn Err
     let mut session = tool_call_session("sleep 2 & echo up > started; wait; echo late > marker");
     let broker = Arc::new(yi_runtime::PermissionBroker::new(
         yi_runtime::PermissionMode::Yolo,
-        dir.clone(),
+        dir.to_path_buf(),
         Vec::new(),
         None,
         session.events_sender(),
     ));
-    session.use_tools(yi_tools::builtin_tools(), dir.clone(), Some(broker));
+    session.use_tools(yi_tools::builtin_tools(), dir.to_path_buf(), Some(broker));
     session.prompt("run it")?;
     for _ in 0..200 {
         if started.exists() {
@@ -452,7 +441,6 @@ async fn an_abort_during_a_tool_call_kills_the_child() -> Result<(), Box<dyn Err
         !marker.exists(),
         "the interrupted shell must not run its next command"
     );
-    let _ = std::fs::remove_dir_all(&dir);
     Ok(())
 }
 
@@ -492,11 +480,8 @@ fn deadline_session(root: &std::path::Path, command: &str, total: Duration) -> A
     session
 }
 
-fn scratch(name: &str) -> Result<std::path::PathBuf, Box<dyn Error>> {
-    let root = std::env::temp_dir().join(format!("yi-runtime-{name}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&root);
-    std::fs::create_dir_all(&root)?;
-    Ok(root)
+fn scratch(name: &str) -> Result<Scratch, Box<dyn Error>> {
+    Ok(Scratch::new(&format!("yi-runtime-{name}"))?)
 }
 
 /// Incident: `--deadline` only counted down in the environment block, so a command that
@@ -508,7 +493,6 @@ async fn a_deadline_kills_a_running_bash_call() -> Result<(), Box<dyn Error>> {
     let started = std::time::Instant::now();
     session.prompt("run it")?;
     let settled = tokio::time::timeout(Duration::from_secs(5), session.wait_idle()).await;
-    let _ = std::fs::remove_dir_all(&root);
     assert!(
         settled.is_ok(),
         "a one-second deadline must end the command, not wait it out: {:?}",
@@ -527,7 +511,6 @@ async fn a_deadline_ends_the_run_after_the_turn_in_flight() -> Result<(), Box<dy
     let mut events = session.subscribe();
     session.prompt("run it")?;
     session.wait_idle().await;
-    let _ = std::fs::remove_dir_all(&root);
     let mut calls = Vec::new();
     while let Ok(event) = events.try_recv() {
         if let AgentEvent::ToolExecutionEnd { is_error, .. } = event {

@@ -16,6 +16,8 @@ Example:
 """
 
 import argparse
+import atexit
+import shutil
 import tempfile
 import fcntl
 import os
@@ -59,7 +61,10 @@ def main() -> int:
     parser.add_argument("args", nargs=argparse.REMAINDER)
     options = parser.parse_args()
     yi_args = [a for a in options.args if a != "--"]
-    home = options.home or tempfile.mkdtemp(prefix="yi-pty-home-")
+    home = options.home
+    if not home:
+        home = tempfile.mkdtemp(prefix="yi-pty-home-")
+        atexit.register(shutil.rmtree, home, True)
     if not os.path.isabs(home):
         parser.error(f"--home must be absolute, not {home!r}: a relative HOME plants "
                      "a worktree beside the repository")

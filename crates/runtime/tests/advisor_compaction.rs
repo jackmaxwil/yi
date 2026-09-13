@@ -1,6 +1,10 @@
 //! E2 (V5 `CompactionCheck`): a compaction replaces the primary's view, and the
 //! advisor is the only thing that can say what the replacement dropped.
 
+#[path = "../../types/tests/support/scratch.rs"]
+mod scratch;
+use scratch::Scratch;
+
 use std::error::Error;
 use std::sync::Arc;
 
@@ -86,10 +90,9 @@ fn runtime(config: AdvisorConfig) -> Arc<AdvisorRuntime> {
 
 /// A real faux compaction against a real store, so the seam reads the entry the
 /// compactor actually wrote rather than one the test hand-built.
-async fn compacted_store(id: &str) -> Result<(yi_session::SharedSession, String), Box<dyn Error>> {
-    let root = std::env::temp_dir().join(format!("yi-advisor-compact-{id}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&root);
-    let mut repo = JsonlRepo::new(root, "/tmp/yi-advisor-compact");
+async fn compacted_store(id: &str) -> Result<(Scratch, yi_session::SharedSession), Box<dyn Error>> {
+    let root = Scratch::new(&format!("yi-advisor-compact-{id}"))?;
+    let mut repo = JsonlRepo::new(root.to_path_buf(), "/tmp/yi-advisor-compact");
     let store = repo.create(CreateOptions {
         id: Some(id.to_owned()),
         ..CreateOptions::default()
@@ -124,15 +127,7 @@ async fn compacted_store(id: &str) -> Result<(yi_session::SharedSession, String)
     if !session.compact_now().await {
         return Err("the fixture must actually compact".into());
     }
-    let path = root_of(&store);
-    Ok((store, path))
-}
-
-fn root_of(store: &yi_session::SharedSession) -> String {
-    yi_session::lock_session(store)
-        .file_path()
-        .and_then(|path| path.parent().map(|parent| parent.display().to_string()))
-        .unwrap_or_default()
+    Ok((root, store))
 }
 
 #[test]
@@ -183,7 +178,7 @@ fn a_view_prefixed_summary_shows_the_goal_in_the_digest_head() -> TestResult {
 
 #[tokio::test]
 async fn a_compaction_hands_the_judge_the_summary_beside_the_directives() -> TestResult {
-    let (store, root) = compacted_store("advisor-compact-one").await?;
+    let (_root, store) = compacted_store("advisor-compact-one").await?;
     let advisor = runtime(AdvisorConfig::default());
     // The directive was stated before the compaction: it is the ground truth
     // the judge audits the replacement summary against (§7.6).
@@ -220,13 +215,12 @@ async fn a_compaction_hands_the_judge_the_summary_beside_the_directives() -> Tes
         full.contains("src/parse.rs"),
         "pull must return the whole summary, not the head: {full}"
     );
-    let _ = std::fs::remove_dir_all(&root);
     Ok(())
 }
 
 #[tokio::test]
 async fn a_compaction_review_is_budget_gated() -> TestResult {
-    let (store, root) = compacted_store("advisor-compact-two").await?;
+    let (_root, store) = compacted_store("advisor-compact-two").await?;
     let advisor = runtime(AdvisorConfig {
         tokens_per_hour: Some(100),
         ..AdvisorConfig::default()
@@ -238,15 +232,13 @@ async fn a_compaction_review_is_budget_gated() -> TestResult {
         advisor.observe(&tool_result("bash"), 2).is_none(),
         "an exhausted hourly budget must swallow the compaction review, not overspend on it"
     );
-    let _ = std::fs::remove_dir_all(&root);
     Ok(())
 }
 
 #[test]
 fn a_storeless_compaction_audit_is_skipped_not_faked() -> TestResult {
-    let root = std::env::temp_dir().join(format!("yi-advisor-empty-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&root);
-    let mut repo = JsonlRepo::new(root.clone(), "/tmp/yi-advisor-empty");
+    let root = Scratch::new("yi-advisor-empty")?;
+    let mut repo = JsonlRepo::new(root.to_path_buf(), "/tmp/yi-advisor-empty");
     let store = repo.create(CreateOptions::default())?;
     let advisor = runtime(AdvisorConfig::default());
 
@@ -255,6 +247,5 @@ fn a_storeless_compaction_audit_is_skipped_not_faked() -> TestResult {
         advisor.observe(&tool_result("bash"), 2).is_none(),
         "a session that never compacted must not trigger a compaction review"
     );
-    let _ = std::fs::remove_dir_all(&root);
     Ok(())
 }

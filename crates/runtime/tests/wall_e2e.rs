@@ -1,3 +1,7 @@
+#[path = "../../types/tests/support/scratch.rs"]
+mod scratch;
+use scratch::Scratch;
+
 use std::error::Error;
 use std::sync::Arc;
 
@@ -38,14 +42,14 @@ fn faux_model() -> Model {
 async fn run_denied_command(wall: Wall, command: String) -> Result<(String, bool), Box<dyn Error>> {
     let mut args = serde_json::Map::new();
     args.insert("command".to_owned(), serde_json::json!(command));
-    run_walled_tool(wall, "bash", args, std::env::temp_dir()).await
+    run_walled_tool(wall, "bash", args, &std::env::temp_dir()).await
 }
 
 async fn run_walled_tool(
     wall: Wall,
     tool: &str,
     args: serde_json::Map<String, serde_json::Value>,
-    cwd: std::path::PathBuf,
+    cwd: &std::path::Path,
 ) -> Result<(String, bool), Box<dyn Error>> {
     let provider = Arc::new(ProviderStream::new(None, None));
     provider.queue_faux(vec![
@@ -65,7 +69,7 @@ async fn run_walled_tool(
         provider,
     );
     session.set_wall(wall);
-    session.use_tools(yi_tools::builtin_tools(), cwd, None);
+    session.use_tools(yi_tools::builtin_tools(), cwd.to_path_buf(), None);
     let mut events = session.subscribe();
     session.prompt("go")?;
     session.wait_idle().await;
@@ -91,12 +95,10 @@ async fn run_walled_tool(
 
 #[tokio::test]
 async fn the_wall_denies_a_write_to_the_instrument_before_it_runs() -> TestResult {
-    let instrument = std::env::temp_dir().join(format!("yi-wall-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&instrument);
-    std::fs::create_dir_all(&instrument)?;
+    let instrument = Scratch::new("yi-wall")?;
     let marker = instrument.join("cases.json");
     let wall = Wall {
-        deny_write: vec![instrument.clone()],
+        deny_write: vec![instrument.to_path_buf()],
         deny_read: Vec::new(),
         deny_url: Vec::new(),
     };
@@ -119,7 +121,6 @@ async fn the_wall_denies_a_write_to_the_instrument_before_it_runs() -> TestResul
         !is_error && allowed.contains("untouched"),
         "work outside the wall is untouched by it: {allowed}"
     );
-    let _ = std::fs::remove_dir_all(&instrument);
     Ok(())
 }
 
@@ -127,8 +128,7 @@ async fn the_wall_denies_a_write_to_the_instrument_before_it_runs() -> TestResul
 /// refuse it from the call: the tool has to consult the deny set itself.
 #[tokio::test]
 async fn a_read_deny_keeps_the_orientation_packet_out_of_the_denied_tree() -> TestResult {
-    let root = std::env::temp_dir().join(format!("yi-wall-orient-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&root);
+    let root = Scratch::new("yi-wall-orient")?;
     std::fs::create_dir_all(root.join("secret"))?;
     std::fs::write(root.join("open.rs"), "pub fn open_declaration() {}\n")?;
     std::fs::write(
@@ -142,7 +142,7 @@ async fn a_read_deny_keeps_the_orientation_packet_out_of_the_denied_tree() -> Te
     };
 
     let (packet, is_error) =
-        run_walled_tool(wall, "get_context", serde_json::Map::new(), root.clone()).await?;
+        run_walled_tool(wall, "get_context", serde_json::Map::new(), &root).await?;
     assert!(
         !is_error,
         "the packet still answers outside the deny: {packet}"
@@ -155,7 +155,6 @@ async fn a_read_deny_keeps_the_orientation_packet_out_of_the_denied_tree() -> Te
         !packet.contains("hidden_declaration"),
         "a deny_read child must not read declarations out of the denied tree: {packet}"
     );
-    let _ = std::fs::remove_dir_all(&root);
     Ok(())
 }
 

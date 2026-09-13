@@ -1,28 +1,17 @@
 use std::error::Error;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::Command;
 
 use serde_json::{Map, Value, json};
 use yi_tools::{GetContextTool, Tool, ToolContext};
 use yi_types::message::Content;
 
+#[path = "../../types/tests/support/scratch.rs"]
+mod scratch;
+use scratch::Scratch;
+
 type TestResult = Result<(), Box<dyn Error>>;
-
-struct TempDir(PathBuf);
-
-impl Drop for TempDir {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
-    }
-}
-
-fn temp_dir(tag: &str) -> Result<TempDir, Box<dyn Error>> {
-    let dir = std::env::temp_dir().join(format!("yi-orient-{tag}-{}", std::process::id()));
-    let _ = fs::remove_dir_all(&dir);
-    fs::create_dir_all(&dir)?;
-    Ok(TempDir(dir))
-}
 
 #[expect(
     clippy::disallowed_methods,
@@ -42,9 +31,9 @@ fn git(root: &Path, args: &[&str]) -> TestResult {
 
 /// A fixture repo with two commits, a gate manifest, and a mining store, so
 /// every non-grid layer has something to report.
-fn fixture(tag: &str) -> Result<TempDir, Box<dyn Error>> {
-    let dir = temp_dir(tag)?;
-    let root = &dir.0;
+fn fixture(tag: &str) -> Result<Scratch, Box<dyn Error>> {
+    let dir = Scratch::new(&format!("yi-orient-{tag}"))?;
+    let root = &dir;
     fs::write(root.join("Cargo.toml"), "[package]\nname = \"fixture\"\n")?;
     fs::write(
         root.join("alpha.rs"),
@@ -93,8 +82,8 @@ fn run(root: &Path, input: Map<String, Value>) -> String {
 #[test]
 fn packet_is_byte_stable_across_two_runs_on_one_tree() -> TestResult {
     let dir = fixture("stable")?;
-    let first = run(&dir.0, Map::new());
-    let second = run(&dir.0, Map::new());
+    let first = run(&dir, Map::new());
+    let second = run(&dir, Map::new());
     assert_eq!(
         first, second,
         "orientation packet must not drift between runs on a fixed tree"
@@ -133,7 +122,7 @@ fn sections(packet: &str) -> Vec<(String, String)> {
 #[test]
 fn every_layer_is_named_and_the_header_count_matches() -> TestResult {
     let dir = fixture("honest-header")?;
-    let packet = run(&dir.0, Map::new());
+    let packet = run(&dir, Map::new());
     let sections = sections(&packet);
     assert_eq!(sections.len(), 6, "six named layers: {packet}");
     for (name, first) in &sections {
@@ -165,11 +154,11 @@ fn oversized_skeleton_layer_names_its_truncation() -> TestResult {
     let dir = fixture("clamped")?;
     for index in 0..60 {
         fs::write(
-            dir.0.join(format!("gen{index:03}.rs")),
+            dir.join(format!("gen{index:03}.rs")),
             "pub fn generated() {}\n",
         )?;
     }
-    let packet = run(&dir.0, Map::new());
+    let packet = run(&dir, Map::new());
     assert!(
         packet.contains("[skeletons truncated: 40 of 62 files]"),
         "a clamped layer must name what it cut: {packet}"
@@ -182,7 +171,7 @@ fn symbol_argument_reaches_the_neighborhood_layer() -> TestResult {
     let dir = fixture("symbol")?;
     let mut input = Map::new();
     input.insert("symbol".to_owned(), json!("yi_tools.orient"));
-    let packet = run(&dir.0, input);
+    let packet = run(&dir, input);
     assert!(
         !packet.contains("absent: no symbol argument was given"),
         "a named symbol must not report itself missing: {packet}"

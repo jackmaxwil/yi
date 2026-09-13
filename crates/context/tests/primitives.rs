@@ -12,6 +12,10 @@ use yi_types::entry::Entry;
 use yi_types::message::{AgentMessage, Content, Cost, StopReason, Usage, UserContent};
 use yi_types::record::LaneRecord;
 
+#[path = "../../types/tests/support/scratch.rs"]
+mod scratch;
+use scratch::Scratch;
+
 type TestResult = Result<(), Box<dyn Error>>;
 
 fn user(text: &str) -> AgentMessage {
@@ -461,8 +465,7 @@ fn source_budget_fit_marks_truncation() -> TestResult {
 
 #[test]
 fn ledger_loads_reference_shaped_state_and_formats_hints() -> TestResult {
-    let dir = std::env::temp_dir().join(format!("yi-ledger-{}", std::process::id()));
-    std::fs::create_dir_all(&dir)?;
+    let dir = Scratch::new("yi-ledger")?;
     let path = dir.join("harness_state.json");
     std::fs::write(
         &path,
@@ -489,7 +492,6 @@ fn ledger_loads_reference_shaped_state_and_formats_hints() -> TestResult {
     assert!(prompt_text.contains("[global:m1] Build cmd: use just check"));
     let empty = HarnessState::load(&dir.join("missing.json"));
     assert!(empty.format_for_prompt(Bytes(4096)).is_none());
-    std::fs::remove_dir_all(&dir)?;
     Ok(())
 }
 

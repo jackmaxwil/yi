@@ -389,33 +389,22 @@ impl PlanStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::scratch::Scratch;
     use yi_types::plan::PlanVersion;
     use yi_types::plan::doc::{PlanTier, RetryCount, Todo, TouchCount};
 
     type Fallible = Result<(), Box<dyn std::error::Error>>;
 
     struct TempStore {
-        dir: PathBuf,
         store: PlanStore,
+        dir: Scratch,
     }
 
     impl TempStore {
-        fn new(name: &str) -> Result<Self, StoreError> {
-            let dir =
-                std::env::temp_dir().join(format!("yi-plan-store-{name}-{}", std::process::id()));
-            let _ = std::fs::remove_dir_all(&dir);
-            // `open` no longer creates the directory (production callers wire
-            // a store before any plan exists); tests that touch `dir` directly
-            // still need it there.
-            std::fs::create_dir_all(&dir).map_err(io_at(&dir))?;
-            let store = PlanStore::open(dir.clone())?;
-            Ok(Self { dir, store })
-        }
-    }
-
-    impl Drop for TempStore {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.dir);
+        fn new(name: &str) -> Result<Self, Box<dyn std::error::Error>> {
+            let dir = Scratch::new(&format!("yi-plan-store-{name}"))?;
+            let store = PlanStore::open(dir.to_path_buf())?;
+            Ok(Self { store, dir })
         }
     }
 

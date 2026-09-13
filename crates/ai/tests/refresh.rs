@@ -6,17 +6,14 @@ use serde_json::Value;
 use yi_ai::catalog::Catalog;
 use yi_ai::refresh::{catalog_from, is_stale, reachable_ids};
 
+#[path = "../../types/tests/support/scratch.rs"]
+mod scratch;
+use scratch::Scratch;
+
 type TestResult = Result<(), Box<dyn Error>>;
 
 const MODELS_DEV: &str = include_str!("fixtures/models_dev_2026-09-05.json");
 const OPENROUTER_LIST: &str = include_str!("fixtures/openrouter_models_2026-09-05.json");
-
-fn tempdir(tag: &str) -> Result<std::path::PathBuf, Box<dyn Error>> {
-    let dir = std::env::temp_dir().join(format!("yi-refresh-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir)?;
-    Ok(dir)
-}
 
 /// A model the bundled files predate resolves once its cache file exists, with the cost and
 /// limits models.dev published and the compat block OpenRouter ids need.
@@ -31,7 +28,7 @@ fn a_model_newer_than_the_bundle_resolves_from_the_cache() -> TestResult {
     );
     let reachable = reachable_ids(&list).ok_or("openrouter list shape")?;
     let written = catalog_from(&models_dev, "openrouter", Some(&reachable), &bundled);
-    let dir = tempdir("overlay")?;
+    let dir = Scratch::new("yi-refresh-overlay")?;
     std::fs::write(dir.join("openrouter.json"), written.to_string())?;
     let catalog = Catalog::bundled().with_cache(&dir);
     let astra = catalog
@@ -86,7 +83,7 @@ fn a_bundled_id_keeps_its_compat_through_a_refresh() -> TestResult {
 /// A cache file that is not the catalog shape leaves the bundled set exactly as it was.
 #[test]
 fn a_corrupt_cache_file_changes_nothing() -> TestResult {
-    let dir = tempdir("corrupt")?;
+    let dir = Scratch::new("yi-refresh-corrupt")?;
     std::fs::write(dir.join("openrouter.json"), b"{not json")?;
     std::fs::write(dir.join("openai.json"), b"[]")?;
     let catalog = Catalog::bundled().with_cache(&dir);
@@ -108,7 +105,7 @@ fn an_unexpected_list_shape_is_no_filter() -> TestResult {
 /// A missing file is stale; a fresh one is not; the threshold is in hours.
 #[test]
 fn staleness_reads_the_file_age() -> TestResult {
-    let dir = tempdir("stale")?;
+    let dir = Scratch::new("yi-refresh-stale")?;
     let epoch = std::time::UNIX_EPOCH;
     assert!(
         is_stale(&dir, "openai", 24, epoch),

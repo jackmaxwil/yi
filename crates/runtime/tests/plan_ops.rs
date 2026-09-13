@@ -3,9 +3,12 @@
 //! defect of the 2026-08-31 review — each was watched failing on the unfixed
 //! engine before its fix landed.
 
+#[path = "../../types/tests/support/scratch.rs"]
+mod scratch;
+use scratch::Scratch;
+
 use std::error::Error;
 use std::num::NonZeroUsize;
-use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -24,31 +27,6 @@ use yi_types::plan::doc::{
 use yi_types::url::Url;
 
 type TestResult = Result<(), Box<dyn Error>>;
-
-static NEXT_DIR: AtomicU32 = AtomicU32::new(0);
-
-struct TempStore {
-    dir: PathBuf,
-}
-
-impl TempStore {
-    fn new() -> Result<(Self, PlanStore), Box<dyn Error>> {
-        let dir = std::env::temp_dir().join(format!(
-            "yi-plan-ops-{}-{}",
-            std::process::id(),
-            NEXT_DIR.fetch_add(1, Ordering::SeqCst)
-        ));
-        let _ = std::fs::remove_dir_all(&dir);
-        let store = PlanStore::open(dir.clone())?;
-        Ok((Self { dir }, store))
-    }
-}
-
-impl Drop for TempStore {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.dir);
-    }
-}
 
 #[derive(Default)]
 struct Stub {
@@ -87,10 +65,11 @@ fn width(value: usize) -> Result<NonZeroUsize, Box<dyn Error>> {
     NonZeroUsize::new(value).ok_or_else(|| "zero width".into())
 }
 
-type Harness = (TempStore, PlanStore, Arc<Stub>, PlanEngine);
+type Harness = (Scratch, PlanStore, Arc<Stub>, PlanEngine);
 
 fn harness(cap: usize) -> Result<Harness, Box<dyn Error>> {
-    let (temp, store) = TempStore::new()?;
+    let temp = Scratch::new("yi-plan-ops")?;
+    let store = PlanStore::open(temp.to_path_buf())?;
     let stub = Arc::new(Stub::default());
     let engine = PlanEngine::new(store.clone(), stub.clone()).with_width(width(cap)?);
     Ok((temp, store, stub, engine))

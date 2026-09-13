@@ -1,3 +1,7 @@
+#[path = "../../types/tests/support/scratch.rs"]
+mod scratch;
+use scratch::Scratch;
+
 use std::error::Error;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -196,8 +200,7 @@ async fn bundled_python_skills_work_through_the_kernel() -> TestResult {
 
     // The call a refused read names runs as named, on an image under a name with a quote and a
     // backslash that a bare "{path}" literal breaks on (the 2026-09-11 v4 sweep's image reads).
-    let dir = std::env::temp_dir().join(format!("yi-skills-attach-{}", std::process::id()));
-    std::fs::create_dir_all(&dir)?;
+    let dir = Scratch::new("yi-skills-attach")?;
     let image = dir.join("sch\"em\\atic.png");
     std::fs::copy(
         concat!(
@@ -212,7 +215,7 @@ async fn bundled_python_skills_work_through_the_kernel() -> TestResult {
         .ok_or("no read tool")?;
     let refused = read.execute(
         serde_json::from_value(json!({"path": image}))?,
-        &ToolContext::new(dir.clone()),
+        &ToolContext::new(dir.to_path_buf()),
     );
     let refusal: String = refused
         .result
@@ -240,7 +243,6 @@ async fn bundled_python_skills_work_through_the_kernel() -> TestResult {
         "the display_data attachment must reach the host reducer"
     );
     assert_eq!(attach_cell.result.attachments[0].mime_type, "image/png");
-    std::fs::remove_dir_all(&dir)?;
 
     service.dispose().await;
     Ok(())
@@ -255,8 +257,7 @@ fn skill_dir(root: &std::path::Path, name: &str, frontmatter: &str) -> TestResul
 
 #[test]
 fn the_catalog_lists_both_roots_and_the_project_shadows_the_global() -> TestResult {
-    let root = std::env::temp_dir().join(format!("yi-skills-catalog-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&root);
+    let root = Scratch::new("yi-skills-catalog")?;
     let home = root.join("home");
     let project = root.join("project");
     std::fs::create_dir_all(home.join(".yi/skills"))?;
@@ -312,25 +313,19 @@ fn the_catalog_lists_both_roots_and_the_project_shadows_the_global() -> TestResu
         yi_runtime::skills_catalog(&project, &home, yi_runtime::Bytes(80)).ok_or("no catalog")?;
     assert!(tight.truncated, "a catalog over budget must say so");
     assert!(tight.text.len() < catalog.text.len());
-
-    let _ = std::fs::remove_dir_all(&root);
     Ok(())
 }
 
 #[test]
 fn no_skills_roots_means_no_catalog_block() -> TestResult {
-    let root = std::env::temp_dir().join(format!("yi-skills-empty-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&root);
-    std::fs::create_dir_all(&root)?;
+    let root = Scratch::new("yi-skills-empty")?;
     assert!(yi_runtime::skills_catalog(&root, &root, yi_runtime::Bytes(16_384)).is_none());
-    let _ = std::fs::remove_dir_all(&root);
     Ok(())
 }
 
 #[test]
 fn a_bundle_layout_is_walked_one_level_deeper() -> TestResult {
-    let root = std::env::temp_dir().join(format!("yi-skills-bundle-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&root);
+    let root = Scratch::new("yi-skills-bundle")?;
     let global = root.join("home/.yi/skills");
     std::fs::create_dir_all(global.join("caveman"))?;
     skill_dir(
@@ -347,14 +342,12 @@ fn a_bundle_layout_is_walked_one_level_deeper() -> TestResult {
         "{}",
         catalog.text
     );
-    let _ = std::fs::remove_dir_all(&root);
     Ok(())
 }
 
 #[test]
 fn a_folded_description_reads_as_its_sentence() -> TestResult {
-    let root = std::env::temp_dir().join(format!("yi-skills-folded-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&root);
+    let root = Scratch::new("yi-skills-folded")?;
     let home = root.join("home");
     std::fs::create_dir_all(home.join(".yi/skills"))?;
     skill_dir(
@@ -382,14 +375,12 @@ fn a_folded_description_reads_as_its_sentence() -> TestResult {
         catalog.text
     );
     assert!(!catalog.text.contains("review: >"), "{}", catalog.text);
-    std::fs::remove_dir_all(&root)?;
     Ok(())
 }
 
 #[test]
 fn a_project_under_home_keeps_its_skills_project_scoped() -> TestResult {
-    let home = std::env::temp_dir().join(format!("yi-skills-under-home-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&home);
+    let home = Scratch::new("yi-skills-under-home")?;
     let project = home.join("Development/project");
     std::fs::create_dir_all(home.join(".yi/skills"))?;
     std::fs::create_dir_all(project.join(".agents/skills"))?;
@@ -418,14 +409,12 @@ fn a_project_under_home_keeps_its_skills_project_scoped() -> TestResult {
             .collect::<Vec<_>>(),
         vec!["repo-one"]
     );
-    std::fs::remove_dir_all(&home)?;
     Ok(())
 }
 
 #[test]
 fn the_catalog_ladder_keeps_every_name_and_clips_descriptions_first() -> TestResult {
-    let root = std::env::temp_dir().join(format!("yi-skills-ladder-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&root);
+    let root = Scratch::new("yi-skills-ladder")?;
     let home = root.join("home");
     std::fs::create_dir_all(home.join(".yi/skills"))?;
     let long = "x".repeat(300);
@@ -478,14 +467,12 @@ fn the_catalog_ladder_keeps_every_name_and_clips_descriptions_first() -> TestRes
         yi_runtime::skills::catalog_budget(8_000),
         yi_runtime::skills::CATALOG_FLOOR
     );
-    std::fs::remove_dir_all(&root)?;
     Ok(())
 }
 
 #[tokio::test]
 async fn save_read_forget_through_the_kernel() -> TestResult {
-    let base = std::env::temp_dir().join(format!("yi-skills-memory-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&base);
+    let base = Scratch::new("yi-skills-memory")?;
     std::fs::create_dir_all(base.join("cwd"))?;
     let mut registry = HostRegistry::default();
     registry.register_mcp_stubs();
@@ -528,6 +515,5 @@ async fn save_read_forget_through_the_kernel() -> TestResult {
     );
     assert!(!stdout.contains(".yi"), "a reply leaked a path: {stdout}");
     service.dispose().await;
-    let _ = std::fs::remove_dir_all(&base);
     Ok(())
 }

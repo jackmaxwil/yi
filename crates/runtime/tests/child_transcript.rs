@@ -1,7 +1,10 @@
+#[path = "../../types/tests/support/scratch.rs"]
+mod scratch;
+use scratch::Scratch;
+
 use std::error::Error;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
 
 use serde_json::{Map, Value};
 use yi_ai::faux::{faux_assistant_message, faux_text};
@@ -45,20 +48,14 @@ fn faux_model() -> Model {
 
 /// `answer: None` queues nothing, so the child's turn ends on the faux
 /// provider's own empty-queue error rather than an answer.
-fn host(answer: Option<&'static str>) -> (Arc<SubagentHost>, PathBuf) {
-    static SCENARIO: AtomicUsize = AtomicUsize::new(0);
-    let root = std::env::temp_dir().join(format!(
-        "yi-child-transcript-{}-{}",
-        std::process::id(),
-        SCENARIO.fetch_add(1, Ordering::Relaxed)
-    ));
-    let _ = std::fs::remove_dir_all(&root);
+fn host(answer: Option<&'static str>) -> std::io::Result<(Scratch, Arc<SubagentHost>)> {
+    let root = Scratch::new("yi-child-transcript")?;
     let (events, _keep) = tokio::sync::broadcast::channel(64);
     let host = Arc::new(SubagentHost::new(SubagentHostOptions {
         depth: 0,
         max_depth: 1,
         max_children: 4,
-        parent_session_dir: root.clone(),
+        parent_session_dir: root.to_path_buf(),
         cwd: std::env::temp_dir(),
         home: std::env::temp_dir(),
         lane_slots: 1,
@@ -90,7 +87,7 @@ fn host(answer: Option<&'static str>) -> (Arc<SubagentHost>, PathBuf) {
         plans_dir: std::env::temp_dir().join(".yi/plans"),
         family_live: Arc::new(|| 0),
     }));
-    (host, root)
+    Ok((root, host))
 }
 
 fn kwargs(name: &str) -> Map<String, Value> {
@@ -151,8 +148,8 @@ fn messages_of(path: &Path) -> Result<Vec<AgentMessage>, Box<dyn Error>> {
 async fn spawn_and_settle(
     answer: Option<&'static str>,
     status: &str,
-) -> Result<(Arc<SubagentHost>, String, PathBuf), Box<dyn Error>> {
-    let (host, _root) = host(answer);
+) -> Result<(Scratch, Arc<SubagentHost>, String, PathBuf), Box<dyn Error>> {
+    let (root, host) = host(answer)?;
     let reply = host
         .spawn("compute the answer".to_owned(), kwargs("helper"))
         .map_err(|error| error.to_string())?;
@@ -165,14 +162,15 @@ async fn spawn_and_settle(
         wait_for_status(&host, &child_id, status).await,
         "child must reach {status}"
     );
-    Ok((host, child_id, session_dir))
+    Ok((root, host, child_id, session_dir))
 }
 
 #[tokio::test]
 async fn a_faux_childs_transcript_reads_back_through_the_parents_reader() -> TestResult {
-    let (_host, _child_id, dir) = spawn_and_settle(Some("the answer is forty-two"), "completed")
-        .await
-        .map_err(|error| error.to_string())?;
+    let (_root, _host, _child_id, dir) =
+        spawn_and_settle(Some("the answer is forty-two"), "completed")
+            .await
+            .map_err(|error| error.to_string())?;
     let messages = messages_of(&transcript_in(&dir)?)?;
     let rendered = format!("{messages:?}");
     assert!(
@@ -190,7 +188,7 @@ async fn a_faux_childs_transcript_reads_back_through_the_parents_reader() -> Tes
 /// text has to be in the file, not only in the parent's terminal notice.
 #[tokio::test]
 async fn an_errored_child_leaves_a_transcript_naming_the_error() -> TestResult {
-    let (_host, _child_id, dir) = spawn_and_settle(None, "error")
+    let (_root, _host, _child_id, dir) = spawn_and_settle(None, "error")
         .await
         .map_err(|error| error.to_string())?;
     let messages = messages_of(&transcript_in(&dir)?)?;
@@ -214,7 +212,7 @@ async fn an_errored_child_leaves_a_transcript_naming_the_error() -> TestResult {
 #[tokio::test]
 #[ignore = "tier-2 journey: `just journeys`"]
 async fn a_kernel_cell_spawns_a_child_whose_typed_answer_and_transcript_land() -> TestResult {
-    let (host, root) = host(Some(r#"{"answer": 42}"#));
+    let (root, host) = host(Some(r#"{"answer": 42}"#))?;
     let mut registry = HostRegistry::default();
     registry.register_mcp_stubs();
     host.register(&mut registry);
@@ -223,7 +221,7 @@ async fn a_kernel_cell_spawns_a_child_whose_typed_answer_and_transcript_land() -
         home: std::env::var_os("HOME")
             .map(PathBuf::from)
             .unwrap_or_default(),
-        session_dir: Some(root.clone()),
+        session_dir: Some(root.to_path_buf()),
         family_dir: None,
         host: Arc::new(registry),
         on_restore: None,
@@ -265,7 +263,7 @@ async fn a_kernel_cell_spawns_a_child_whose_typed_answer_and_transcript_land() -
 /// Reaping drops the record and the live session; the evidence outlives both.
 #[tokio::test]
 async fn a_reaped_childs_transcript_survives_delete() -> TestResult {
-    let (host, child_id, dir) = spawn_and_settle(Some("done"), "completed")
+    let (_root, host, child_id, dir) = spawn_and_settle(Some("done"), "completed")
         .await
         .map_err(|error| error.to_string())?;
     let path = transcript_in(&dir)?;

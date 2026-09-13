@@ -257,18 +257,19 @@ pub fn attach(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::scratch::Scratch;
 
-    fn verbs(label: &str, root: bool) -> Verbs {
-        let base = std::env::temp_dir().join(format!("yi-memverbs-{label}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&base);
+    fn verbs(label: &str, root: bool) -> (Scratch, Verbs) {
+        let base = Scratch::new(&format!("yi-memverbs-{label}")).unwrap();
         std::fs::create_dir_all(base.join("cwd")).unwrap();
-        Verbs {
+        let verbs = Verbs {
             home: base.join("home"),
             cwd: base.join("cwd"),
             root,
             saves: AtomicUsize::new(0),
             activity: Arc::new(Activity::default()),
-        }
+        };
+        (base, verbs)
     }
 
     fn save_payload(name: &str) -> Map<String, Value> {
@@ -281,7 +282,7 @@ mod tests {
 
     #[test]
     fn a_fourth_save_is_refused_and_a_refused_save_is_refunded() {
-        let verbs = verbs("cap", true);
+        let (_base, verbs) = verbs("cap", true);
         let mut bad = Map::new();
         bad.insert("markdown".to_owned(), Value::from("no type here"));
         let err = verbs.save(&bad).unwrap_err();
@@ -301,7 +302,7 @@ mod tests {
 
     #[test]
     fn a_child_is_refused_every_verb() {
-        let verbs = verbs("child", false);
+        let (_base, verbs) = verbs("child", false);
         let err = verbs.save(&save_payload("x")).unwrap_err();
         assert!(err.contains("only the root session"), "{err}");
         let mut name = Map::new();
@@ -312,7 +313,7 @@ mod tests {
 
     #[test]
     fn read_counts_and_replies_without_a_path() {
-        let verbs = verbs("read", true);
+        let (_base, verbs) = verbs("read", true);
         verbs.save(&save_payload("alpha")).unwrap();
         let mut query = Map::new();
         query.insert("name".to_owned(), Value::from("hook for alpha"));

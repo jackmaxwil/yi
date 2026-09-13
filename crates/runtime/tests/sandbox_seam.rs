@@ -1,5 +1,9 @@
 #![cfg(target_os = "macos")]
 
+#[path = "../../types/tests/support/scratch.rs"]
+mod scratch;
+use scratch::Scratch;
+
 use std::error::Error;
 use std::sync::Arc;
 
@@ -78,8 +82,7 @@ async fn an_unknown_command_runs_contained_then_asks() -> TestResult {
     if !yi_tools::Sandbox::available() {
         return Ok(());
     }
-    let root = std::env::temp_dir().join(format!("yi-seam-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&root);
+    let root = Scratch::new("yi-seam")?;
     let project = root.join("project");
     let home = root.join("home");
     std::fs::create_dir_all(&project)?;
@@ -142,7 +145,6 @@ async fn an_unknown_command_runs_contained_then_asks() -> TestResult {
         "the second attempt asks rather than repeating the denial: {}",
         results[1]
     );
-    let _ = std::fs::remove_dir_all(&root);
     Ok(())
 }
 
@@ -150,11 +152,9 @@ async fn an_unknown_command_runs_contained_then_asks() -> TestResult {
 /// runs free.
 #[test]
 fn a_safe_command_is_never_contained() -> TestResult {
-    let dir = std::env::temp_dir().join(format!("yi-seam-safe-{}", std::process::id()));
-    std::fs::create_dir_all(&dir)?;
+    let dir = Scratch::new("yi-seam-safe")?;
     let report = yi_runtime::gate::explain("git status && ls", PermissionMode::Auto, &dir);
     assert_eq!(report.outcome(), "allow");
     assert_eq!(report.to_json()["sandboxed"], false);
-    let _ = std::fs::remove_dir_all(&dir);
     Ok(())
 }

@@ -2,7 +2,7 @@
 """Run the journey prompts against a real model under one prompt ref and score the
 session files with the extractor. One JSONL per prompt lands under --out/<ref>/;
 the signals table is the number a prompt change is judged by."""
-import argparse, os, pathlib, shutil, subprocess, sys, tempfile
+import argparse, atexit, os, pathlib, shutil, subprocess, sys, tempfile
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 PROMPTS = pathlib.Path(__file__).resolve().parent / "prompts" / "prompts.txt"
@@ -22,6 +22,7 @@ def main(argv=None):
     out.mkdir(parents=True, exist_ok=True)
     (pathlib.Path(args.out) / ".gitignore").write_text("*\n")
     home = tempfile.mkdtemp(prefix="yi-journey-home-")
+    atexit.register(shutil.rmtree, home, True)
     config = pathlib.Path(home) / ".yi" / "config.json"
     config.parent.mkdir(parents=True, exist_ok=True)
     config.write_text('{"telemetry":{"enabled":true}}')

@@ -8,6 +8,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use yi_tools::{Converter, Documents, Tool, ToolContext, builtin_tools, builtin_tools_with};
 use yi_types::message::Content;
 
+#[path = "../../types/tests/support/scratch.rs"]
+mod scratch;
+use scratch::Scratch;
+
 type TestResult = Result<(), Box<dyn Error>>;
 
 fn read_of(tools: Vec<Arc<dyn Tool>>) -> Result<Arc<dyn Tool>, Box<dyn Error>> {
@@ -53,14 +57,16 @@ fn the_description_claims_only_the_recorded_formats() -> TestResult {
 
 #[test]
 fn an_unbuilt_venv_is_named_beside_the_plain_error() -> TestResult {
-    let root = std::env::temp_dir().join(format!("yi-documents-unbuilt-{}", std::process::id()));
-    std::fs::create_dir_all(&root)?;
+    let root = Scratch::new("yi-documents-unbuilt")?;
     let path = root.join("brief.docx");
     std::fs::write(&path, [b'P', b'K', 0x03, 0x04, 0xff, 0xfe, 0x00, 0x81])?;
-    let read = read_of(builtin_tools_with(false, Some(unbuilt(root.clone(), &[]))))?;
+    let read = read_of(builtin_tools_with(
+        false,
+        Some(unbuilt(root.to_path_buf(), &[])),
+    ))?;
     let input: Map<String, serde_json::Value> =
         serde_json::from_value(json!({"path": "brief.docx"}))?;
-    let output = read.execute(input, &ToolContext::new(root.clone()));
+    let output = read.execute(input, &ToolContext::new(root.to_path_buf()));
     let text: String = output
         .result
         .content
@@ -78,7 +84,6 @@ fn an_unbuilt_venv_is_named_beside_the_plain_error() -> TestResult {
             path.display()
         )
     );
-    std::fs::remove_dir_all(&root)?;
     Ok(())
 }
 
