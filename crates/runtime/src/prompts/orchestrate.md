@@ -72,7 +72,7 @@ cited line yourself before building on it.
             name=f"read-{name}", deny_write=["."])
     while readers:
         for name in (await rlm.wait(120))["updated"]:
-            r = await readers.pop(name).result(schema=FINDINGS)
+            r = await readers.pop(name).result(schema=FINDINGS, timeout=420)
             findings[name] = r["json"]["findings"]
             await rlm.delete_subagent(name)
 
