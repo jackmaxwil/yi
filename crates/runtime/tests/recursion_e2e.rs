@@ -78,6 +78,8 @@ struct HarnessOptions {
     tool_command: Option<&'static str>,
     /// The repository worktree children branch from.
     cwd: Option<PathBuf>,
+    /// A parent whose lifecycle wake replaces the notice sink.
+    wake_parent: Option<Arc<AgentSession>>,
 }
 
 fn harness(depth: u8, max_depth: u8, child_answer: &'static str) -> std::io::Result<Harness> {
@@ -87,7 +89,54 @@ fn harness(depth: u8, max_depth: u8, child_answer: &'static str) -> std::io::Res
         child_answer,
         tool_command: None,
         cwd: None,
+        wake_parent: None,
     })
+}
+
+fn parent_session(replies: &[&str]) -> Arc<AgentSession> {
+    Arc::new(parent_session_scripted(Vec::new(), replies))
+}
+
+/// `first` runs ahead of the text replies: a tool call there holds the parent's turn open.
+fn parent_session_scripted(first: Vec<AgentMessage>, replies: &[&str]) -> AgentSession {
+    let provider = Arc::new(ProviderStream::new(None, None));
+    let mut script = first;
+    for reply in replies {
+        script.push(faux_assistant_message(
+            vec![faux_text(reply)],
+            StopReason::Stop,
+        ));
+    }
+    provider.queue_faux(script);
+    AgentSession::new(
+        SessionConfig {
+            system_prompt: "parent sys".to_owned(),
+            model: faux_model(),
+            thinking_level: None,
+            tool_execution: ExecutionMode::Sequential,
+        },
+        provider,
+    )
+}
+
+fn notice_texts(messages: &[AgentMessage]) -> Vec<String> {
+    messages
+        .iter()
+        .filter_map(|message| match message {
+            AgentMessage::User {
+                content: yi_types::message::UserContent::Text(text),
+                ..
+            } if text.starts_with("[subagent ") => Some(text.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+fn assistant_count(messages: &[AgentMessage]) -> usize {
+    messages
+        .iter()
+        .filter(|message| matches!(message, AgentMessage::Assistant { .. }))
+        .count()
 }
 
 fn harness_with(options: HarnessOptions) -> std::io::Result<Harness> {
@@ -97,6 +146,7 @@ fn harness_with(options: HarnessOptions) -> std::io::Result<Harness> {
         child_answer,
         tool_command,
         cwd,
+        wake_parent,
     } = options;
     let root = Scratch::new("yi-recursion")?;
     let cwd = cwd.unwrap_or_else(std::env::temp_dir);
@@ -163,11 +213,14 @@ fn harness_with(options: HarnessOptions) -> std::io::Result<Harness> {
             }
             Ok(child)
         }),
-        notice: Arc::new(move |text: &str| {
-            if let Ok(mut sink) = notice_sink.lock() {
-                sink.push(text.to_owned());
-            }
-        }),
+        notice: match wake_parent {
+            Some(parent) => yi_runtime::wiring::lifecycle_notice(&parent),
+            None => Arc::new(move |text: &str| {
+                if let Ok(mut sink) = notice_sink.lock() {
+                    sink.push(text.to_owned());
+                }
+            }),
+        },
         events: events.clone(),
         report: Arc::new(move |message| {
             if let Ok(mut sink) = entry_sink.lock() {
@@ -306,6 +359,7 @@ async fn child_updates_ride_the_parent_bus_with_counts_and_activity() -> TestRes
         child_answer: "swept the logs",
         tool_command: Some("echo probing"),
         cwd: None,
+        wake_parent: None,
     })?;
     let mut events = harness.events.subscribe();
     harness
@@ -562,8 +616,9 @@ async fn a_child_reports_upward_and_the_parent_waits_for_it() -> TestResult {
         .spawn("do it".to_owned(), kwargs(&[("name", "scout")]))
         .map_err(|error| error.to_string())?;
     assert!(child_sees(&harness, "scout", "[task from parent]").await);
-    // Drains the terminal transition so the wait below observes the report only.
-    harness.host.wait(0).await;
+    // Reads past the terminal transition so the wait below observes the report only.
+    let settled = harness.host.wait(0, None).await;
+    let cursor = settled["cursor"].as_u64();
 
     let link = yi_runtime::ParentLink {
         child_name: "scout".to_owned(),
@@ -580,13 +635,13 @@ async fn a_child_reports_upward_and_the_parent_waits_for_it() -> TestResult {
         "a child's report reaches the parent as provenanced data: {inbox:?}"
     );
 
-    let woken = harness.host.wait(60_000).await;
+    let woken = harness.host.wait(60_000, cursor).await;
     assert_eq!(woken["updated"], serde_json::json!(["scout"]));
-    let quiet = harness.host.wait(0).await;
+    let quiet = harness.host.wait(0, woken["cursor"].as_u64()).await;
     assert_eq!(
         quiet["updated"],
         serde_json::json!([]),
-        "an update is collected once, not reported forever"
+        "an update is behind the cursor it was read at, not reported forever"
     );
     assert_eq!(quiet["timeout_ms"], 1000, "the clamp is applied");
     assert_eq!(quiet["clamped"], true, "and reported");
@@ -753,6 +808,7 @@ async fn a_worktree_child_gets_its_own_checkout_and_hands_it_back() -> TestResul
         child_answer: "isolated",
         tool_command: None,
         cwd: Some(repo.to_path_buf()),
+        wake_parent: None,
     })?;
     let reply = harness
         .host
@@ -822,6 +878,7 @@ async fn discarding_a_worktree_throws_the_branch_away() -> TestResult {
         child_answer: "discarded",
         tool_command: None,
         cwd: Some(repo.to_path_buf()),
+        wake_parent: None,
     })?;
     let reply = harness
         .host
@@ -1321,6 +1378,7 @@ async fn a_discovery_the_runtime_cannot_adjudicate_holds_the_result_back() -> Te
         child_answer: ONE_DISCOVERY,
         tool_command: None,
         cwd: Some(cwd.to_path_buf()),
+        wake_parent: None,
     })?;
     harness
         .host
@@ -1356,6 +1414,7 @@ async fn a_high_row_that_cannot_reach_the_ledger_holds_the_result_back() -> Test
         child_answer: ONE_DISCOVERY,
         tool_command: None,
         cwd: Some(cwd.to_path_buf()),
+        wake_parent: None,
     })?;
     harness
         .host
@@ -1415,6 +1474,7 @@ async fn criticality_is_derived_by_re_running_the_ancestors_check() -> TestResul
         child_answer: TWO_DISCOVERIES,
         tool_command: None,
         cwd: Some(cwd.to_path_buf()),
+        wake_parent: None,
     })?;
     yi_session::lock_session(&harness.store).set_goal(yi_types::goal::Goal {
         objective: "ship the retry fix".to_owned(),
@@ -1514,5 +1574,247 @@ async fn criticality_is_derived_by_re_running_the_ancestors_check() -> TestResul
         vec!["aaa"],
         "only the HIGH row enters the goal ledger the completion gate drains: {ledger:?}"
     );
+    Ok(())
+}
+
+struct FireAtTurnEnd {
+    notice: Arc<dyn Fn(&str) + Send + Sync>,
+    running: Arc<dyn Fn() -> bool + Send + Sync>,
+    fired_while_running: Arc<std::sync::atomic::AtomicBool>,
+    fired: bool,
+}
+
+impl yi_runtime::ext::Extension for FireAtTurnEnd {
+    fn name(&self) -> &'static str {
+        "fire-at-turn-end"
+    }
+
+    fn interests(&self) -> yi_runtime::ext::EventMask {
+        yi_runtime::ext::EventMask::TURN_END
+    }
+
+    fn on(&mut self, _event: &yi_runtime::ext::Event, _out: &mut Vec<yi_runtime::ext::Effect>) {
+        if self.fired {
+            return;
+        }
+        self.fired = true;
+        self.fired_while_running
+            .store((self.running)(), Ordering::SeqCst);
+        (self.notice)("[subagent helper (sub-1) finished]\nLast answer: done at the seam");
+    }
+}
+
+/// Guards `wake_idle_hook` over `notice_hook` at `wiring::lifecycle_notice`: the notice
+/// fires at TurnEnd while the status is still Running, where a steer queues for nobody.
+#[tokio::test]
+async fn notice_arriving_at_parent_turn_end_is_not_lost() -> TestResult {
+    let parent = parent_session(&["first turn", "woken by the notice"]);
+    let fired_while_running = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let mut host = yi_runtime::ext::Host::new(std::env::temp_dir());
+    host.register(Box::new(FireAtTurnEnd {
+        notice: yi_runtime::wiring::lifecycle_notice(&parent),
+        running: parent.activity_handle(),
+        fired_while_running: Arc::clone(&fired_while_running),
+        fired: false,
+    }));
+    parent.install_extensions(host);
+    parent.prompt("start the first turn")?;
+    let mut messages = Vec::new();
+    for _ in 0..POLL_ATTEMPTS {
+        messages = parent.messages();
+        if assistant_count(&messages) >= 2 {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(POLL_INTERVAL_MS)).await;
+    }
+    assert!(
+        fired_while_running.load(Ordering::SeqCst),
+        "the interleaving under test fires while the parent is still Running"
+    );
+    assert_eq!(
+        notice_texts(&messages).len(),
+        1,
+        "the notice starts the next turn exactly once: {messages:?}"
+    );
+    assert_eq!(assistant_count(&messages), 2, "{messages:?}");
+    Ok(())
+}
+
+/// Guards `wake_idle_hook`'s follow-up queue: two children finish while the parent's turn
+/// sleeps in a tool, so both wakes fire on one idle; the old `run(message)` drop lost the
+/// one that answered Busy, and both ride the open turn here.
+#[tokio::test]
+async fn concurrent_notices_preserve_updates_and_coalesce_wakes() -> TestResult {
+    let mut sleep = Map::new();
+    sleep.insert("command".to_owned(), Value::String("sleep 2".to_owned()));
+    let mut parent = parent_session_scripted(
+        vec![faux_assistant_message(
+            vec![yi_ai::faux::faux_tool_call("hold-1", "bash", sleep)],
+            StopReason::ToolUse,
+        )],
+        &["after the sleep", "heard them both", "heard the late one"],
+    );
+    parent.use_tools(yi_tools::builtin_tools(), std::env::temp_dir(), None);
+    let parent = Arc::new(parent);
+    let harness = harness_with(HarnessOptions {
+        depth: 0,
+        max_depth: 1,
+        child_answer: "done",
+        tool_command: None,
+        cwd: None,
+        wake_parent: Some(Arc::clone(&parent)),
+    })?;
+    parent.prompt("hold the turn open")?;
+    for name in ["alpha", "beta"] {
+        harness
+            .host
+            .spawn("finish now".to_owned(), kwargs(&[("name", name)]))
+            .map_err(|error| error.to_string())?;
+    }
+    let mut messages = Vec::new();
+    for _ in 0..POLL_ATTEMPTS {
+        messages = parent.messages();
+        let notices = notice_texts(&messages);
+        let both = notices
+            .iter()
+            .any(|text| text.starts_with("[subagent alpha"))
+            && notices
+                .iter()
+                .any(|text| text.starts_with("[subagent beta"));
+        if both && parent.status() == yi_runtime::Status::Idle {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(POLL_INTERVAL_MS)).await;
+    }
+    let notices = notice_texts(&messages);
+    assert_eq!(
+        notices.len(),
+        2,
+        "each finish reaches the parent once: {notices:?}"
+    );
+    assert!(
+        notices
+            .iter()
+            .any(|text| text.starts_with("[subagent alpha"))
+            && notices
+                .iter()
+                .any(|text| text.starts_with("[subagent beta")),
+        "{notices:?}"
+    );
+    let turns = assistant_count(&messages);
+    assert!(
+        (3..=4).contains(&turns),
+        "the tool call, its reply, and one or two notice turns: {turns} in {messages:?}"
+    );
+    Ok(())
+}
+
+/// Guards the cursor over the old `take_pending` drain: with the drain, the first waiter
+/// zeroed the counter and the second returned empty at its deadline.
+#[tokio::test]
+async fn two_waiters_observe_their_own_child_completion() -> TestResult {
+    let harness = harness(0, 1, "done")?;
+    let reply = harness
+        .host
+        .spawn("finish now".to_owned(), kwargs(&[("name", "solo")]))
+        .map_err(|error| error.to_string())?;
+    let child_id = reply["rlm_child_id"]
+        .as_str()
+        .ok_or("missing child id")?
+        .to_owned();
+    let (first, second) = tokio::join!(
+        harness.host.wait(1_000, None),
+        harness.host.wait(1_000, None)
+    );
+    for reply in [&first, &second] {
+        assert_eq!(
+            reply["changed"],
+            json!(["solo"]),
+            "the spawn moved it: {reply:?}"
+        );
+    }
+    assert!(
+        wait_for_status(&harness.host, &child_id, "completed").await,
+        "the child completes"
+    );
+    let (first, second) = tokio::join!(
+        harness.host.wait(1_000, None),
+        harness.host.wait(1_000, None)
+    );
+    for reply in [&first, &second] {
+        assert_eq!(reply["changed"], json!(["solo"]), "{reply:?}");
+        assert_eq!(reply["updated"], reply["changed"]);
+        assert_eq!(reply["states"]["solo"], json!("finished"), "{reply:?}");
+        assert!(reply["cursor"].as_u64().is_some_and(|cursor| cursor > 0));
+    }
+    let cursor = first["cursor"].as_u64().ok_or("cursor missing")?;
+    let quiet = harness.host.wait(1_000, Some(cursor)).await;
+    assert_eq!(quiet["changed"], json!([]), "nothing moved past the cursor");
+    assert_eq!(quiet["states"]["solo"], json!("finished"));
+    Ok(())
+}
+
+/// Guards the wake on a delete: the reaped record carries no epoch, so a waiter that only
+/// returned on a named change slept to its deadline while `states` already lacked the child.
+#[tokio::test]
+async fn a_delete_wakes_a_waiter_with_the_child_gone() -> TestResult {
+    let harness = harness(0, 1, "done")?;
+    let reply = harness
+        .host
+        .spawn("finish now".to_owned(), kwargs(&[("name", "gone")]))
+        .map_err(|error| error.to_string())?;
+    let child_id = reply["rlm_child_id"]
+        .as_str()
+        .ok_or("missing child id")?
+        .to_owned();
+    assert!(wait_for_status(&harness.host, &child_id, "completed").await);
+    let settled = harness.host.wait(0, None).await;
+    let cursor = settled["cursor"].as_u64();
+    let host = Arc::clone(&harness.host);
+    let waiter = tokio::spawn(async move { host.wait(300_000, cursor).await });
+    tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+    let started = std::time::Instant::now();
+    harness.host.reap("gone")?;
+    let woken = waiter.await.map_err(|error| error.to_string())?;
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(5),
+        "a delete wakes the waiter, not the deadline"
+    );
+    assert_eq!(woken["changed"], json!([]), "{woken:?}");
+    assert!(
+        woken["states"].get("gone").is_none(),
+        "the reaped child is off the state map: {woken:?}"
+    );
+    assert!(
+        woken["cursor"].as_u64() > cursor,
+        "the delete moved the cursor: {woken:?}"
+    );
+    Ok(())
+}
+
+/// Guards the cursor over the drain: a waiter arriving after another collected the
+/// completion still sees the terminal state at once.
+#[tokio::test]
+async fn late_wait_observes_already_completed_child() -> TestResult {
+    let harness = harness(0, 1, "done")?;
+    let reply = harness
+        .host
+        .spawn("finish now".to_owned(), kwargs(&[("name", "early")]))
+        .map_err(|error| error.to_string())?;
+    let child_id = reply["rlm_child_id"]
+        .as_str()
+        .ok_or("missing child id")?
+        .to_owned();
+    assert!(wait_for_status(&harness.host, &child_id, "completed").await);
+    let collected = harness.host.wait(1_000, None).await;
+    assert_eq!(collected["changed"], json!(["early"]));
+    let started = std::time::Instant::now();
+    let late = harness.host.wait(300_000, None).await;
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(5),
+        "a late waiter returns at once, not at the deadline"
+    );
+    assert_eq!(late["changed"], json!(["early"]), "{late:?}");
+    assert_eq!(late["states"]["early"], json!("finished"));
     Ok(())
 }

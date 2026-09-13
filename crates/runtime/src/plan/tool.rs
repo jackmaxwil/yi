@@ -63,6 +63,8 @@ pub enum ArgError {
     EmptyList,
     #[error("set list nests deeper than {max} levels at line {line}")]
     TooDeep { line: usize, max: usize },
+    #[error("actor is not an argument; the surface a request arrives on fixes its principal")]
+    ActorArg,
 }
 
 const CHECKLIST_DEPTH: usize = 6;
@@ -341,7 +343,11 @@ fn parse_op(args: &Map<String, Value>) -> Result<Op, ArgError> {
     })
 }
 
-fn request(actor: &Actor, args: &Map<String, Value>) -> Result<OpRequest, ArgError> {
+/// Invariant: the principal is a channel, never a string (§3.6): `actor` is refused, never read.
+pub(super) fn request(actor: &Actor, args: &Map<String, Value>) -> Result<OpRequest, ArgError> {
+    if args.contains_key("actor") {
+        return Err(ArgError::ActorArg);
+    }
     let op = parse_op(args)?;
     Ok(OpRequest {
         plan: opt(args, op.kind(), "plan")?,
@@ -510,6 +516,11 @@ fn render(outcome: &Outcome, full: bool, stepped: Option<&TodoLabel>) -> String 
     out.join("\n")
 }
 
+pub(super) fn render_outcome(op: &Op, outcome: &Outcome) -> String {
+    let full = matches!(op, Op::View { full: true });
+    render(outcome, full, op.label())
+}
+
 pub struct PlanTool {
     engine: Arc<PlanEngine>,
     actor: Actor,
@@ -522,10 +533,9 @@ impl PlanTool {
 
     fn run(&self, args: &Map<String, Value>) -> Result<String, PlanToolError> {
         let request = request(&self.actor, args)?;
-        let full = matches!(request.op, Op::View { full: true });
-        let stepped = request.op.label().cloned();
+        let op = request.op.clone();
         let outcome = self.engine.apply(request)?;
-        Ok(render(&outcome, full, stepped.as_ref()))
+        Ok(render_outcome(&op, &outcome))
     }
 }
 
@@ -740,5 +750,66 @@ mod tests {
         input.insert("list".to_owned(), Value::String("- [ ] a\n".to_owned()));
         assert!(matches!(parse_op(&input)?, Op::Set { .. }));
         Ok(())
+    }
+
+    /// Guards the actor refusal in `request`: drop the `actor` key check and the child's
+    /// `view` below is honoured as the owner.
+    #[test]
+    fn the_tool_and_the_request_refuse_an_actor_argument() -> Fallible {
+        let dir = crate::scratch::Scratch::new("yi-plan-tool-actor")?;
+        let store = super::super::store::PlanStore::open(dir.to_path_buf())?;
+        let engine = Arc::new(PlanEngine::new(store, Arc::new(NoChildren)));
+        let child = Actor::Child(yi_types::plan::doc::AgentId::new("helper")?);
+        let mut args = Map::new();
+        args.insert("op".to_owned(), Value::String("init".to_owned()));
+        args.insert("goal".to_owned(), Value::String("ship the seam".to_owned()));
+        args.insert("todos".to_owned(), json!([{"label": "cut"}]));
+        args.insert("actor".to_owned(), Value::String("agent://main".to_owned()));
+        let tool = PlanTool::new(Arc::clone(&engine), child.clone());
+        let output = tool.execute(args.clone(), &ToolContext::new(dir.to_path_buf()));
+        assert!(output.is_error, "the tool honoured an actor argument");
+        let refused = match output.result.content.first() {
+            Some(yi_types::message::Content::Text { text, .. }) => text.clone(),
+            _ => String::new(),
+        };
+        assert!(
+            refused.contains("actor is not an argument"),
+            "the tool refuses the key itself, not the op: {refused}"
+        );
+        let refusal = super::super::request::refusal_of(&child, &args);
+        assert_eq!(refusal["refusal"]["code"], json!("bad_args"));
+        assert!(
+            refusal["refusal"]["message"]
+                .as_str()
+                .is_some_and(|text| text.contains("actor is not an argument")),
+            "{refusal:?}"
+        );
+        assert!(
+            engine.revision(None).is_err(),
+            "no plan may open through a claimed actor"
+        );
+        Ok(())
+    }
+
+    struct NoChildren;
+
+    impl super::super::ops::Delegate for NoChildren {
+        fn spawn(
+            &self,
+            _at: &yi_types::plan::doc::TodoAddr,
+            _delegation: &Delegation,
+        ) -> Result<yi_types::plan::doc::AgentId, String> {
+            Err("no children in this test".to_owned())
+        }
+
+        fn reap(
+            &self,
+            _agent: &yi_types::plan::doc::AgentId,
+            _supplied: &[Url],
+        ) -> Result<Option<Url>, String> {
+            Ok(None)
+        }
+
+        fn follow_up(&self, _dispatched: &[TodoLabel], _held: usize) {}
     }
 }

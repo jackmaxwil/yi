@@ -33,10 +33,42 @@ pub(crate) struct ChildRecord {
     /// L3: set makes this a protocol child — its answer must decode as a
     /// [`yi_types::subagent::ChildResult`] and this check must be green.
     pub(crate) check: Option<String>,
-    /// B13 wait: reports and terminal transitions the parent has not collected.
-    pub(crate) pending: u64,
     pub(crate) replied: bool,
+    pub(crate) changed_at_epoch: u64,
     pub(crate) session: Arc<AgentSession>,
+}
+
+/// One lock for the records and the epoch they move under, so the two are never seen apart.
+#[derive(Default)]
+pub(crate) struct Children {
+    records: HashMap<String, ChildRecord>,
+    pub(crate) epoch: u64,
+}
+
+impl Children {
+    /// A reaped record still moves the epoch, so an older cursor wakes and re-reads `states`.
+    pub(crate) fn touch(&mut self, key: &str) -> u64 {
+        self.epoch = self.epoch.saturating_add(1);
+        let epoch = self.epoch;
+        if let Some(record) = self.records.get_mut(key) {
+            record.changed_at_epoch = epoch;
+        }
+        epoch
+    }
+}
+
+impl std::ops::Deref for Children {
+    type Target = HashMap<String, ChildRecord>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.records
+    }
+}
+
+impl std::ops::DerefMut for Children {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.records
+    }
 }
 
 impl ChildRecord {
@@ -107,7 +139,7 @@ pub struct SubagentHostOptions {
 
 pub struct SubagentHost {
     pub(crate) options: SubagentHostOptions,
-    pub(crate) children: Mutex<HashMap<String, ChildRecord>>,
+    pub(crate) children: Mutex<Children>,
     /// Invariant: a reap pin names `history://<child>`, and a child's file lives
     /// under a `sub-*` directory no session repo scans, so it is kept by name here.
     pub(crate) reaped: Mutex<HashMap<String, yi_session::SharedSession>>,
@@ -391,7 +423,7 @@ impl SubagentHost {
     pub fn new(options: SubagentHostOptions) -> Self {
         Self {
             options,
-            children: Mutex::new(HashMap::new()),
+            children: Mutex::new(Children::default()),
             reaped: Mutex::new(HashMap::new()),
         }
     }
@@ -582,11 +614,12 @@ impl SubagentHost {
                     answer_preview: None,
                     error: None,
                     check,
-                    pending: 0,
                     replied: false,
+                    changed_at_epoch: 0,
                     session: Arc::clone(&session),
                 },
             );
+            children.touch(&child_id);
             self.watch(child_id.clone(), &session);
             let host = Arc::clone(self);
             let task_child_id = child_id.clone();
@@ -680,9 +713,9 @@ impl SubagentHost {
             record.status = status;
             record.activity = ChildActivity::Waiting;
             record.error = error.clone();
-            record.pending = record.pending.saturating_add(1);
             replied = record.replied;
             reaped = false;
+            children.touch(&child_id);
         }
         if reaped {
             return;
@@ -915,8 +948,9 @@ impl SubagentHost {
                 .get("timeout_ms")
                 .and_then(Value::as_u64)
                 .unwrap_or(WAIT_MAX_MS);
+            let cursor = payload.get("cursor").and_then(Value::as_u64);
             let host = Arc::clone(&host);
-            Box::pin(async move { Ok(host.wait(timeout).await) })
+            Box::pin(async move { Ok(host.wait(timeout, cursor).await) })
         });
         let host = Arc::clone(self);
         registry.register("rlm.interrupt", move |payload| {

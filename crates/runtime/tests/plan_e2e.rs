@@ -6,6 +6,9 @@ use std::error::Error;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
+use yi_kernel::client::HostHandlers;
+use yi_runtime::HostRegistry;
+use yi_runtime::plan::ops::{Actor, Delegate, PlanEngine};
 use yi_runtime::plan::store::{PlanFile, PlanStore};
 use yi_runtime::plan::{CanonicalPlanError, PlanService};
 use yi_types::event::AgentEvent;
@@ -287,5 +290,177 @@ fn plan_get_serializes_the_document_with_ready_and_finished() -> TestResult {
     assert_eq!(value["plan"], serde_json::json!("served"));
     assert_eq!(value["ready"], serde_json::json!(["second"]));
     assert_eq!(value["finished"], serde_json::json!(false));
+    Ok(())
+}
+
+struct NoChildren;
+
+impl Delegate for NoChildren {
+    fn spawn(
+        &self,
+        _at: &yi_types::plan::doc::TodoAddr,
+        _delegation: &yi_types::plan::doc::Delegation,
+    ) -> Result<yi_types::plan::doc::AgentId, String> {
+        Err("no children in this test".to_owned())
+    }
+
+    fn reap(
+        &self,
+        _agent: &yi_types::plan::doc::AgentId,
+        _supplied: &[yi_types::url::Url],
+    ) -> Result<Option<yi_types::url::Url>, String> {
+        Ok(None)
+    }
+
+    fn follow_up(&self, _dispatched: &[TodoLabel], _held: usize) {}
+}
+
+async fn plan_op(
+    registry: &HostRegistry,
+    payload: serde_json::Value,
+) -> Result<serde_json::Map<String, serde_json::Value>, String> {
+    let payload = payload
+        .as_object()
+        .cloned()
+        .ok_or("payload is not an object")?;
+    registry
+        .dispatch("plan.op", payload)
+        .ok_or("plan.op is not registered")?
+        .await
+}
+
+/// Guards `check_actor`'s child arm: let `Actor::Child` past `View` and the `done` below
+/// lands on the parent's plan.
+#[tokio::test]
+async fn a_child_kernels_plan_op_is_refused_beyond_view() -> TestResult {
+    let dir = Scratch::new("yi-plan-op-child")?;
+    write_plan(
+        &dir,
+        doc_plan(
+            "parents",
+            3,
+            vec![todo(
+                "cut",
+                TodoState::Running {
+                    by: yi_types::plan::doc::AgentId::new("main")?,
+                },
+            )?],
+        )?,
+    )?;
+    let engine = Arc::new(PlanEngine::new(
+        PlanStore::open(dir.to_path_buf())?,
+        Arc::new(NoChildren),
+    ));
+    let mut registry = HostRegistry::default();
+    yi_runtime::plan::request::register(
+        engine,
+        Actor::Child(yi_types::plan::doc::AgentId::new("helper")?),
+        &mut registry,
+    );
+    let viewed = plan_op(
+        &registry,
+        serde_json::json!({"request_id": "r1", "op": "view", "args": {}}),
+    )
+    .await?;
+    assert_eq!(viewed["ok"], serde_json::json!(true), "{viewed:?}");
+    assert_eq!(viewed["revision"], serde_json::json!(3));
+    assert!(
+        viewed["text"]
+            .as_str()
+            .is_some_and(|text| text.starts_with("plan parents")),
+        "{viewed:?}"
+    );
+    let stepped = plan_op(
+        &registry,
+        serde_json::json!({"request_id": "r2", "op": "done", "args": {"label": "cut"}}),
+    )
+    .await?;
+    assert_eq!(stepped["ok"], serde_json::json!(false), "{stepped:?}");
+    assert_eq!(stepped["refusal"]["code"], serde_json::json!("not_owner"));
+    assert!(
+        stepped["refusal"]["message"]
+            .as_str()
+            .is_some_and(|text| text.contains("only the plan owner")),
+        "{stepped:?}"
+    );
+    let file = PlanStore::open(dir.to_path_buf())?.read(&PlanId::new("parents")?)?;
+    assert!(
+        matches!(file.plan.todos[0].state, TodoState::Running { .. }),
+        "a child's done must not land"
+    );
+    assert_eq!(file.plan.touched, TouchCount(3));
+    let again = plan_op(
+        &registry,
+        serde_json::json!({"request_id": "r2", "op": "view", "args": {}}),
+    )
+    .await?;
+    assert_eq!(
+        again, stepped,
+        "a duplicate request_id returns the cached reply"
+    );
+    let stale = plan_op(
+        &registry,
+        serde_json::json!({"request_id": "r3", "op": "view", "args": {"actor": "agent://main"}}),
+    )
+    .await?;
+    assert_eq!(
+        stale["refusal"]["code"],
+        serde_json::json!("bad_args"),
+        "{stale:?}"
+    );
+    let shapeless = plan_op(&registry, serde_json::json!({"op": "view"})).await;
+    assert!(
+        shapeless.is_err(),
+        "a missing request_id is a transport error"
+    );
+    Ok(())
+}
+
+/// Guards the revision guard's target: `expected_revision` is compared on the plan the op
+/// runs on, which `args.plan` may name, never on the session's default plan.
+#[tokio::test]
+async fn expected_revision_is_compared_on_the_plan_the_op_names() -> TestResult {
+    let dir = Scratch::new("yi-plan-op-revision")?;
+    write_plan(&dir, doc_plan("alpha", 3, Vec::new())?)?;
+    write_plan(&dir, doc_plan("beta", 7, Vec::new())?)?;
+    let engine = Arc::new(PlanEngine::new(
+        PlanStore::open(dir.to_path_buf())?,
+        Arc::new(NoChildren),
+    ));
+    let mut registry = HostRegistry::default();
+    yi_runtime::plan::request::register(engine, Actor::Owner, &mut registry);
+    let append = serde_json::json!({"plan": "beta", "todos": [{"label": "cut"}]});
+    let stale = plan_op(
+        &registry,
+        serde_json::json!({"request_id": "g1", "expected_revision": 3, "op": "append", "args": append}),
+    )
+    .await?;
+    assert_eq!(stale["ok"], serde_json::json!(false), "{stale:?}");
+    assert_eq!(
+        stale["refusal"]["code"],
+        serde_json::json!("stale_revision")
+    );
+    assert_eq!(
+        stale["revision"],
+        serde_json::json!(7),
+        "beta's revision, not alpha's"
+    );
+    let store = PlanStore::open(dir.to_path_buf())?;
+    assert!(
+        store.read(&PlanId::new("beta")?)?.plan.todos.is_empty(),
+        "a stale append must not land"
+    );
+    let landed = plan_op(
+        &registry,
+        serde_json::json!({"request_id": "g2", "expected_revision": 7, "op": "append", "args": append}),
+    )
+    .await?;
+    assert_eq!(landed["ok"], serde_json::json!(true), "{landed:?}");
+    assert_eq!(landed["revision"], serde_json::json!(8));
+    assert_eq!(store.read(&PlanId::new("beta")?)?.plan.todos.len(), 1);
+    assert_eq!(
+        store.read(&PlanId::new("alpha")?)?.plan.touched,
+        TouchCount(3)
+    );
     Ok(())
 }

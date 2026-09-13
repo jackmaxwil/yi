@@ -10,6 +10,19 @@ use super::{
     AgentSession, ExtHook, Status, attribute_to_shared, dispatch_ext, store_of, user_message,
 };
 
+fn take_queued(queue: &std::sync::Mutex<Vec<AgentMessage>>, message: &AgentMessage) -> bool {
+    let Ok(mut pending) = queue.lock() else {
+        return false;
+    };
+    match pending.iter().position(|queued| queued == message) {
+        Some(index) => {
+            pending.remove(index);
+            true
+        }
+        None => false,
+    }
+}
+
 impl AgentSession {
     pub fn ext_hook(&self) -> ExtHook {
         let shared = Arc::clone(&self.shared);
@@ -79,8 +92,8 @@ impl AgentSession {
         })
     }
 
-    /// Waits out any running turn rather than gating on status: AgentEnd is emitted while the
-    /// status is still Running, so a status-gated hook queued into a follow-up that never ran.
+    /// A running turn takes the message from its follow-up queue; one that ended past its
+    /// last drain leaves it there, and this task takes it back and starts the next turn.
     pub fn wake_idle_hook(&self) -> Arc<dyn Fn(AgentMessage) + Send + Sync> {
         let shared = Arc::clone(&self.shared);
         let run = self.run_handle();
@@ -88,18 +101,34 @@ impl AgentSession {
             let shared = Arc::clone(&shared);
             let run = Arc::clone(&run);
             tokio::spawn(async move {
+                let mut queued = false;
                 loop {
-                    let idle = shared
+                    // Armed before the status read: `notify_waiters` stores no permit.
+                    let idle = shared.idle.notified();
+                    tokio::pin!(idle);
+                    idle.as_mut().enable();
+                    let running = shared
                         .status
                         .lock()
-                        .map(|status| *status == Status::Idle)
-                        .unwrap_or(true);
-                    if idle {
-                        break;
+                        .map(|status| *status == Status::Running)
+                        .unwrap_or(false);
+                    if !running {
+                        if queued && !take_queued(&shared.follow_up, &message) {
+                            return;
+                        }
+                        queued = false;
+                        if run(message.clone()).is_ok() {
+                            return;
+                        }
                     }
-                    shared.idle.notified().await;
+                    if !queued {
+                        if let Ok(mut pending) = shared.follow_up.lock() {
+                            pending.push(message.clone());
+                        }
+                        queued = true;
+                    }
+                    idle.await;
                 }
-                let _busy_means_queued = run(message);
             });
         })
     }
