@@ -164,6 +164,6 @@ when it changes rather than editing them by hand.
 - [D184](adr/d184.md) - a todo move's result names what moved
 - [D185](adr/d185.md) - the prompt loses what nothing calls
 - [D186](adr/d186.md) - the v4 calibrated slice is chosen by a sweep, not by cost
-- [D193](adr/d193.md) - the second search-shaped bash timeout in a row names the streak and the recovery
+- [D191](adr/d191.md) - two time-limit hits in four bash calls ask for a new method, not a longer limit
 
 D36-D51, D72, D73 and D74 have no ADR yet; ARCHITECTURE.md is the record for those rows.
