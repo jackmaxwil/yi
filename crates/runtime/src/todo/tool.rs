@@ -39,21 +39,48 @@ pub fn schema() -> Value {
 
 #[derive(Debug, thiserror::Error)]
 pub enum ArgError {
-    #[error("op is required; legal ops are {}", OPS.join(", "))]
+    #[error(
+        "op is required; legal ops are {}; a full call looks like {}",
+        OPS.join(", "),
+        example("done")
+    )]
     NoOp,
-    #[error("unknown op {got:?}; legal ops are {}", OPS.join(", "))]
+    #[error(
+        "unknown op {got:?}; legal ops are {}; a full call looks like {}",
+        OPS.join(", "),
+        example("done")
+    )]
     UnknownOp { got: String },
-    #[error("{op} requires {field:?}")]
+    #[error("{op} requires {field:?}; a full {op} call looks like {}", example(op))]
     Missing {
         op: &'static str,
         field: &'static str,
     },
-    #[error("{op} argument {field:?} is malformed: {cause}")]
+    #[error(
+        "{op} argument {field:?} is malformed: {cause}; a full {op} call looks like {}",
+        example(op)
+    )]
     Malformed {
         op: &'static str,
         field: &'static str,
         cause: String,
     },
+}
+
+/// The call a refused argument was reaching for, spelled out so the retry lands.
+fn example(op: &str) -> &'static str {
+    match op {
+        "set" => r###"{"op": "set", "list": "## Phase\n- [ ] first task\n- [ ] second task"}"###,
+        "init" => r###"{"op": "init", "phases": [{"name": "Phase", "items": ["first task"]}]}"###,
+        "append" => r###"{"op": "append", "items": ["another task"]}"###,
+        "start" => r###"{"op": "start", "id": "t1"}"###,
+        "drop" => r###"{"op": "drop", "id": "t1", "reason": "out of scope"}"###,
+        "block" => r###"{"op": "block", "id": "t1", "on": "user", "note": "which file?"}"###,
+        "unblock" => r###"{"op": "unblock", "id": "t1"}"###,
+        "rm" => r###"{"op": "rm", "id": "t1"}"###,
+        // Done, and the op a call lost: all 17 `op is required` in the v4 sweep were done calls.
+        _ => r###"{"op": "done", "id": "t1", "evidence": "`make check` all targets ok"}"###,
+    }
 }
 
 fn string(args: &Map<String, Value>, field: &'static str) -> Option<String> {
@@ -87,19 +114,21 @@ fn label(args: &Map<String, Value>, op: &'static str) -> Result<TodoLabel, ArgEr
         })
 }
 
-fn items(
-    args: &Map<String, Value>,
-    op: &'static str,
-    field: &'static str,
-) -> Result<Vec<TodoItem>, ArgError> {
-    let raw = args
-        .get(field)
+/// `items`, which the v4 sweep's models also sent as `todos`.
+fn item_list(args: &Map<String, Value>) -> Option<&Vec<Value>> {
+    args.get("items")
+        .or_else(|| args.get("todos"))
         .and_then(Value::as_array)
-        .ok_or(ArgError::Missing { op, field })?;
+}
+
+fn items(args: &Map<String, Value>, op: &'static str) -> Result<Vec<TodoItem>, ArgError> {
+    let field = "items";
+    let raw = item_list(args).ok_or(ArgError::Missing { op, field })?;
     raw.iter()
         .map(|value| {
             value
                 .as_str()
+                .or_else(|| value.get("label").and_then(Value::as_str))
                 .ok_or_else(|| ArgError::Malformed {
                     op,
                     field,
@@ -183,7 +212,14 @@ pub fn parse_op(args: &Map<String, Value>) -> Result<Op, ArgError> {
     let op = string(args, "op")
         .or_else(|| infer_op(args).map(str::to_owned))
         .ok_or(ArgError::NoOp)?;
-    Ok(match op.as_str() {
+    let list = string(args, "list").is_some();
+    let op = match op.as_str() {
+        // An init carrying set's checklist, or a set carrying init's items, meant the other.
+        "init" if list && item_list(args).is_none() && !args.contains_key("phases") => "set",
+        "set" if !list && item_list(args).is_some() => "init",
+        given => given,
+    };
+    Ok(match op {
         "set" => Op::Set {
             list: need_string(args, "set", "list")?,
         },
@@ -203,7 +239,7 @@ pub fn parse_op(args: &Map<String, Value>) -> Result<Op, ArgError> {
                                     field: "name",
                                     cause: cause.to_string(),
                                 })?;
-                            Ok((name, items(object, "init", "items")?))
+                            Ok((name, items(object, "init")?))
                         })
                         .collect::<Result<Vec<_>, ArgError>>()?
                 }
@@ -215,7 +251,7 @@ pub fn parse_op(args: &Map<String, Value>) -> Result<Op, ArgError> {
                             cause: cause.to_string(),
                         },
                     )?),
-                    items(args, "init", "items")?,
+                    items(args, "init")?,
                 )],
             };
             Op::Init { phases }
@@ -231,7 +267,7 @@ pub fn parse_op(args: &Map<String, Value>) -> Result<Op, ArgError> {
                     })
                 })
                 .transpose()?,
-            items: items(args, "append", "items")?,
+            items: items(args, "append")?,
         },
         "start" => Op::Start {
             label: label(args, "start")?,
@@ -288,10 +324,10 @@ impl TodoTool {
 
     fn run(&self, args: &Map<String, Value>) -> Result<String, TodoToolError> {
         let op = parse_op(args)?;
-        let inferred = if string(args, "op").is_none() {
-            format!("(op inferred: {})\n", op.name())
-        } else {
+        let inferred = if string(args, "op").as_deref() == Some(op.name()) {
             String::new()
+        } else {
+            format!("(op inferred: {})\n", op.name())
         };
         let expected = args.get("touched").and_then(Value::as_u64);
         let whole = matches!(op, Op::Set { .. } | Op::Init { .. });
