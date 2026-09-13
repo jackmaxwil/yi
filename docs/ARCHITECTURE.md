@@ -1,7 +1,7 @@
 # Yi — Architecture Map
 
 ```
-version: 0.240.0         # bump on any structural change; row goes in CHANGELOG.md
+version: 0.241.0         # bump on any structural change; row goes in CHANGELOG.md
 design:  YI_DESIGN.md   # the deep design; § refs below point into it
 status:  phase 4 done   # yi-kernel (Jupyter client over pure-Rust zeromq) + uv venv bootstrap + verbatim rlm Python runtime (mcp.py rewritten over `yi mcp --json`) + ipython tool + runtime::subagent (rlm.run depth 1). Exit gate green: recursion scenarios incl. a live-kernel round trip. 4b done. Phase 5 done: runtime::schedule + runtime::advisor. Phase 5b done: yi-acp v2 server (hand-rolled wire, D40). Phase 6 done: yi-runtime::goal (G1-G6) + `yi serve` daemon (D4 supervisor + worker-per-root; exit gate green: a heartbeat dispatches while no client is attached and a reconnected client lists and resumes the session). Phase 7 done: `yi-tui` (D41 design — inline skeleton, subagent UX, pinned HUD/status) in the default build; `yi [prompt]` opens the TUI on a TTY (X1). Phase 8 (D42): nothing is deferred any more — every deferred, stretch, and never-built row is open work, worked in that order — the rows lived in docs/TODOS.md (ids A1-M5) until 2026-09-02 and are now issues on the forge, one per row, titled with the row's id (D106; the file is frozen at docs/archive/todos-2026-09-02.md). U13 stable-prefix streaming landed in 7; U18, dynamic viewport height, and the gitignore-aware @-walk are A3, A2, A4. TODOS section B (CLI surfaces) is closed at 0.19.0, which also lands the T14 capture/restore half of C1.
 ```

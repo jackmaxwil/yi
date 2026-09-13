@@ -1,0 +1,59 @@
+{"op": "set", "list": "## Build\n- [ ] write the parser\n  - [ ] handle empty input\n- [>] add the CLI flag\n- [x] sketch the grammar\n- [-] port the old lexer\n- [!] ask about the license\n"}
+{"list": "- [ ] one step\n- [ ] another step\n"}
+{"op": "set", "list": "## Ship\n- [ ] tag the release\n", "touched": 4}
+{"op": " set ", "list": "# Notes\n- [ ] padded op word\n"}
+{"op": "init", "items": ["read the spec", "write the tests", "make them pass"]}
+{"op": "init", "phase": "Explore", "items": ["list the modules"]}
+{"op": "init", "phases": [{"name": "Plan", "items": ["outline the change"]}, {"name": "Build", "items": ["implement it", "test it"]}]}
+{"op": "init", "phases": [{"name": "Ω phase", "items": ["check the größe field", "日本語の見出しを描く"]}], "touched": 0}
+{"op": "append", "items": ["update the docs"]}
+{"op": "append", "phase": "Review", "items": ["request a review", "address the comments"]}
+{"op": "append", "under": "write the tests", "items": ["cover the empty file", "cover a 2 GB file"]}
+{"op": "append", "phase": "Build", "under": "implement it", "items": ["split the long function"], "touched": 7}
+{"items": ["an inferred append"]}
+{"op": "append", "items": ["a label that runs well past the eighty character limit so the tool cuts it and keeps the whole text as its note"]}
+{"op": "start", "label": "write the tests"}
+{"op": "start", "id": "t2"}
+{"op": "done", "label": "read the spec", "evidence": "`wc -l SPEC.md` 214 SPEC.md"}
+{"op": "done", "id": "t3", "evidence": "`cargo test` test result: ok. 9 passed; 0 failed"}
+{"op": "done", "phase": "Plan", "evidence": "`git diff --stat` 3 files changed"}
+{"op": "done", "evidence": "`make all` exit 0"}
+{"label": "make them pass", "evidence": "`pytest -q` 12 passed; a < b holds and <html> is escaped"}
+{"id": "t4", "evidence": "`./probe` {\"status\":\"ok\",\"count\":3}"}
+{"op": "done", "label": "parse <config> files", "evidence": "`./check --strict` 0 errors <= 0 allowed\nsecond line\ttabbed"}
+{"done": "evidence `make` ok", "label": "write the tests"}
+{"op": "done", "label": "evidence", "evidence": "done"}
+{"op": "drop", "label": "port the old lexer", "reason": "the new parser replaces it"}
+{"op": "drop", "id": "t6", "reason": "duplicate of t2"}
+{"op": "drop", "phase": "Review", "reason": "no reviewer this week"}
+{"op": "drop", "reason": "the plan changed"}
+{"label": "cover a 2 GB file", "reason": "needs a bigger disk"}
+{"op": "block", "label": "ask about the license", "on": "user", "note": "is MIT acceptable?"}
+{"op": "block", "id": "t5", "on": "external", "note": "waiting on the upstream fix"}
+{"op": "block", "label": "implement it", "on": "child", "note": "a subagent is writing the migration"}
+{"op": "block", "label": "tag the release", "note": "which version number?"}
+{"op": "block", "label": "tag the release", "on": "ci", "note": "the runner queue is full"}
+{"label": "update the docs", "on": "user", "note": "which audience?"}
+{"op": "unblock", "label": "ask about the license"}
+{"op": "unblock", "id": "t5"}
+{"op": "rm", "label": "cover the empty file"}
+{"op": "rm", "id": "t9"}
+{"op": "rm", "phase": "Explore"}
+{"op": "rm"}
+{"op": "view"}
+{"op": "view", "touched": 12}
+{}
+{"op": "rename", "label": "write the tests"}
+{"label": "a bare label"}
+{"op": "done", "label": "write the tests"}
+{"op": "done", "label": "", "evidence": "   "}
+{"op": "init", "items": ["fine", 3, null]}
+{"op": "init", "phases": [{"items": ["a phase with no name"]}]}
+{"op": "init", "phases": ["not an object"]}
+{"op": "append", "items": []}
+{"op": "start", "id": 7}
+{"op": "VIEW"}
+{"Op": "view", "label ": "a key with a trailing space"}
+{"op": "done", "label": "write the tests", "evidence": "`make` ok", "touched": "3"}
+{"op": "view", "extra": {"nested": [1, 2.5, true, false, null], "empty": {}}}
+{"op": null, "list": ["not", "a", "string"], "items": "not an array"}
