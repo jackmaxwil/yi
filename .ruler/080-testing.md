@@ -34,6 +34,23 @@ not add the test.
   truth for input shape; the expected output still comes from the invariant, never from what Yi
   rendered. New sessions are added beside the old, never edited. Fourteen defects sat beside
   green tests whose fixtures had chosen the shape that works.
+- A hint that names a remedy is a claim, and its test runs the remedy where the model would:
+  "pandas reads this" is proven by pandas reading the fixture in the kernel venv, never by the
+  sentence being present. The spreadsheet hint shipped naming a route the venv could not take
+  (pandas without openpyxl); only running it found that.
+- An input made of parts carries a fixture with exactly one bad part, and every limit is tested
+  at the limit and at the limit plus one. An eleven-page PDF with one image-only page was
+  refused whole; the census found it, not a fixture.
+- A transform that can be confidently wrong — a table, a layout, a decode — is checked against
+  a reference that did not come from it: the same content in a second format, or a second
+  engine's reading, asserted a row at a time. A schedule came back with a neighbour's slot
+  pinned to the right course name, which a check for the course name alone passes. The fixture
+  comes from a real producer, named in `Seen red` — never a user's file or a benchmark's
+  answer key.
+- Anything that keeps state across calls — a cache, a staging file, a key — has a test that
+  runs N threads on one new input and one that changes the content while keeping the
+  timestamp. Forty of sixty parallel first reads of one document failed on a shared staging
+  name that every test run one call at a time had passed.
 - A test that pins a user-facing sentence has read it beside what the user sees next to it.
   "completed without replying" was asserted on the row above "Last answer: …", and the test
   defended the contradiction. Quote the sentence in the PR's User outcomes, in its context.
