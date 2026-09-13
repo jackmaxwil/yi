@@ -66,6 +66,7 @@ pub fn builtin_tools_with(
         }),
         Arc::new(BashTool {
             hashline: Some(state),
+            ..Default::default()
         }),
         Arc::new(GetContextTool),
     ]

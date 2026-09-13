@@ -375,8 +375,8 @@ fn nth_mut(list: &mut TodoList, index: usize) -> Option<&mut TodoItem> {
     None
 }
 
-/// Exact label, then exact label or id with surrounding backticks stripped, then a unique
-/// case-insensitive label prefix of [`PREFIX_MIN`] chars or more.
+/// Exact label; label or id with surrounding backticks stripped; an id and its own label
+/// (`t1 read the spec`); a unique case-insensitive label prefix of [`PREFIX_MIN`] chars or more.
 fn locate(list: &TodoList, needle: &str) -> Result<usize, TodoError> {
     let items: Vec<&TodoItem> = list.items().collect();
     if let Some(index) = items.iter().position(|item| item.label.as_str() == needle) {
@@ -386,6 +386,13 @@ fn locate(list: &TodoList, needle: &str) -> Result<usize, TodoError> {
     if let Some(index) = items.iter().position(|item| {
         item.label.as_str() == bare || item.id.as_ref().is_some_and(|id| id.as_str() == bare)
     }) {
+        return Ok(index);
+    }
+    if let Some((id, rest)) = bare.split_once(' ')
+        && let Some(index) = items.iter().position(|item| {
+            item.label.as_str() == rest && item.id.as_ref().is_some_and(|own| own.as_str() == id)
+        })
+    {
         return Ok(index);
     }
     let prefix = bare.to_lowercase();
