@@ -602,6 +602,41 @@ mod tests {
     }
 
     #[test]
+    fn the_sweeps_timeout_python_chain_dies_at_the_bash_timeout() -> Fallible {
+        // telecom-entity-resolution ran `cd /app && timeout 580 <venv>/bin/python solve.py && ls`;
+        // GNU timeout re-groups itself and python, so a group kill leaves both holding the pipes.
+        let has_timeout = command("sh")
+            .args(["-c", "command -v timeout"])
+            .stdout(std::process::Stdio::null())
+            .status()?
+            .success();
+        if !has_timeout && !cfg!(target_os = "linux") {
+            eprintln!("skipped: no timeout(1) on PATH (coreutils); on Linux this runs or fails");
+            return Ok(());
+        }
+        let run = run_or_background(
+            "cd /tmp && timeout 900 python3 -c 'import time; print(\"ready\", flush=True); time.sleep(30)' && ls -la",
+            &scratch()?,
+            &never(),
+            None,
+            Duration::from_secs(3),
+            None,
+        )?;
+        let capture = match run {
+            Run::TimedOut(capture) => capture,
+            Run::Finished(capture) => return Err(format!("finished: {capture:?}").into()),
+            Run::Backgrounded(id) => return Err(format!("backgrounded as {id}").into()),
+        };
+        assert!(
+            !capture.stderr.contains("outlived the kill"),
+            "{}",
+            capture.stderr
+        );
+        assert!(capture.stdout.contains("ready"), "{}", capture.stderr);
+        Ok(())
+    }
+
+    #[test]
     fn the_live_buffer_trims_and_says_it_trimmed() -> Fallible {
         let dir = scratch()?;
         let id = spawn_job(
