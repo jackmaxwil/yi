@@ -201,13 +201,11 @@ impl Extension for MemoryExt {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::scratch::Scratch;
     use std::fs;
 
-    fn temp(label: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("yi-memext-{label}-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).unwrap();
-        dir
+    fn temp(label: &str) -> Scratch {
+        Scratch::new(&format!("yi-memext-{label}")).unwrap()
     }
 
     #[test]
@@ -222,8 +220,6 @@ mod tests {
             super::super::doc::PLACEHOLDER
         )));
         assert_eq!(summary.line(), "memory · 0 repo · 0 global");
-        let _ = fs::remove_dir_all(&home);
-        let _ = fs::remove_dir_all(&cwd);
     }
 
     #[test]
@@ -240,8 +236,6 @@ mod tests {
         assert_eq!(summary.unparsed, 1);
         let again = store.import(&fixtures.join("claude")).unwrap();
         assert_eq!((again.imported, again.updated, again.skipped), (0, 0, 3));
-        let _ = fs::remove_dir_all(&home);
-        let _ = fs::remove_dir_all(&cwd);
     }
 
     #[test]
@@ -258,6 +252,5 @@ mod tests {
             stale_path("Buildhost /tmp is RAM; ~/.yi/x.json too", &root),
             None
         );
-        let _ = fs::remove_dir_all(&root);
     }
 }

@@ -2,6 +2,10 @@
 //! trunk, a full pool refuses, a resumed session gets its slot back, an orphan reaps
 //! without losing its branch, and the warmer refuses a lockfile no session synced.
 
+#[path = "../../types/tests/support/scratch.rs"]
+mod scratch;
+use scratch::Scratch;
+
 use std::error::Error;
 use std::path::{Path, PathBuf};
 
@@ -32,15 +36,14 @@ fn git(cwd: &Path, args: &[&str]) -> Result<String, Box<dyn Error>> {
 }
 
 struct Rig {
-    root: PathBuf,
     repo: PathBuf,
     home: PathBuf,
+    root: Scratch,
 }
 
 impl Rig {
     fn new(label: &str) -> Result<Self, Box<dyn Error>> {
-        let root = std::env::temp_dir().join(format!("yi-lanes-{label}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
+        let root = Scratch::new(&format!("yi-lanes-{label}"))?;
         let repo = root.join("repo");
         let home = root.join("home");
         std::fs::create_dir_all(&repo)?;
@@ -51,15 +54,11 @@ impl Rig {
         std::fs::write(repo.join("README.md"), "base\n")?;
         git(&repo, &["add", "README.md"])?;
         git(&repo, &["commit", "-qm", "base"])?;
-        Ok(Self { root, repo, home })
+        Ok(Self { repo, home, root })
     }
 
     fn pool(&self, slots: u8) -> Result<Pool, Box<dyn Error>> {
         Ok(Pool::open(&self.home, &self.repo, slots)?)
-    }
-
-    fn reclaim(self) {
-        let _ = std::fs::remove_dir_all(&self.root);
     }
 }
 
@@ -105,7 +104,6 @@ fn a_claim_branches_a_slot_and_leaves_the_trunk_untouched() -> TestResult {
         "",
         "a branch with nothing on it is deleted at release"
     );
-    rig.reclaim();
     Ok(())
 }
 
@@ -130,7 +128,6 @@ fn a_full_pool_refuses_with_the_count_it_holds() -> TestResult {
     );
     drop(first);
     drop(second);
-    rig.reclaim();
     Ok(())
 }
 
@@ -183,7 +180,6 @@ fn a_resumed_session_reclaims_its_slot_with_its_work_and_an_orphan_blocks_others
         "the commit is still on the branch"
     );
     drop(back);
-    rig.reclaim();
     Ok(())
 }
 
@@ -222,7 +218,6 @@ fn an_orphan_with_nothing_main_lacks_is_a_free_slot() -> TestResult {
         matches!(refused, Err(LaneError::PoolFull { orphans: 1, .. })),
         "{refused:?}"
     );
-    rig.reclaim();
     Ok(())
 }
 
@@ -248,7 +243,6 @@ fn binding_the_store_id_renames_the_branch_so_a_resume_finds_it() -> TestResult 
         "the resumed session gets its work back"
     );
     drop(back);
-    rig.reclaim();
     Ok(())
 }
 
@@ -272,7 +266,6 @@ fn reap_frees_an_orphan_and_keeps_its_unmerged_branch() -> TestResult {
     assert!(matches!(&pool.list()?[..], [SlotView::Idle { .. }]));
     let text = format_lanes(&pool.list()?, None);
     assert!(text.starts_with("lane 0: idle"), "{text}");
-    rig.reclaim();
     Ok(())
 }
 
@@ -301,7 +294,6 @@ fn a_child_lane_branches_from_the_parents_head() -> TestResult {
         "the trunk checkout is never the merge target"
     );
     drop(parent);
-    rig.reclaim();
     Ok(())
 }
 
@@ -368,7 +360,6 @@ fn the_warmer_refuses_a_lockfile_no_session_synced() -> TestResult {
         state.warm.is_some(),
         "the release started a warm with a receipt"
     );
-    rig.reclaim();
     Ok(())
 }
 
@@ -394,7 +385,6 @@ fn head_reads_a_branch_a_detached_sha_and_refuses_garbage() -> TestResult {
         head(&rig.repo).is_err(),
         "neither a ref nor a sha is refused"
     );
-    rig.reclaim();
     Ok(())
 }
 
@@ -458,7 +448,6 @@ fn a_listing_says_what_a_reap_would_lose() -> TestResult {
         two.contains("clean") && two.ends_with("the next claim takes it"),
         "{two}"
     );
-    rig.reclaim();
     Ok(())
 }
 
@@ -488,7 +477,6 @@ fn the_ledger_names_a_holder() -> TestResult {
         "{text}"
     );
     lane.release()?;
-    rig.reclaim();
     Ok(())
 }
 
@@ -511,7 +499,6 @@ fn reap_left_by_refuses_a_slot_that_moved() -> TestResult {
         "{refused:?}"
     );
     assert!(pool.reap_left_by(slot, "s-second").is_ok());
-    rig.reclaim();
     Ok(())
 }
 
@@ -565,7 +552,6 @@ fn two_lands_share_one_poller() -> TestResult {
     );
     std::thread::sleep(std::time::Duration::from_millis(1_500));
     handle.release()?;
-    rig.reclaim();
     Ok(())
 }
 
@@ -609,7 +595,6 @@ fn a_conflicting_base_pushes_nothing() -> TestResult {
     );
     assert_eq!(handle.landing(), yi_types::lane::Landing::Unlanded);
     handle.release()?;
-    rig.reclaim();
     Ok(())
 }
 

@@ -4,13 +4,14 @@ use std::process::{Command, Stdio};
 
 use serde_json::Value;
 
+#[path = "../../types/tests/support/scratch.rs"]
+mod scratch;
+use scratch::Scratch;
+
 type TestResult = Result<(), Box<dyn Error>>;
 
-fn temp_dir(tag: &str) -> Result<std::path::PathBuf, Box<dyn Error>> {
-    let dir = std::env::temp_dir().join(format!("yi-rpc-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir)?;
-    Ok(dir)
+fn temp_dir(tag: &str) -> Result<Scratch, Box<dyn Error>> {
+    Ok(Scratch::new(&format!("yi-rpc-{tag}"))?)
 }
 
 fn run_rpc(dir: &std::path::Path, commands: &[Value]) -> Result<Vec<Value>, Box<dyn Error>> {
@@ -119,7 +120,6 @@ fn responds_per_command_streams_events_and_persists_v4() -> TestResult {
             .any(|line| line["kind"] == "fact" && line["name"] == "protocol-test")
     );
 
-    std::fs::remove_dir_all(&dir)?;
     Ok(())
 }
 
@@ -163,7 +163,6 @@ fn rejects_unknown_commands_and_answers_queries() -> TestResult {
     let unknown = by_id("u")?;
     assert_eq!(unknown["success"], false);
 
-    std::fs::remove_dir_all(&dir)?;
     Ok(())
 }
 
@@ -215,7 +214,6 @@ fn the_level_list_follows_the_model_and_a_set_reports_the_clamp() -> TestResult 
         "the rejection names the value: {bad}"
     );
 
-    std::fs::remove_dir_all(&dir)?;
     Ok(())
 }
 
@@ -262,7 +260,6 @@ fn heartbeat_and_advisor_surfaces_respond() -> TestResult {
             .is_some_and(|text| text.starts_with("advisor:")),
         "/advisor stats must render: {stats}"
     );
-    let _ = std::fs::remove_dir_all(&dir);
     Ok(())
 }
 

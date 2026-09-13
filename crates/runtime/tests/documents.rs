@@ -1,3 +1,7 @@
+#[path = "../../types/tests/support/scratch.rs"]
+mod scratch;
+use scratch::Scratch;
+
 use std::error::Error;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -13,12 +17,13 @@ type TestResult = Result<(), Box<dyn Error>>;
 
 const FIXTURES: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/documents");
 
-struct Scratch {
+struct Dirs {
     cwd: PathBuf,
     home: PathBuf,
+    _root: Scratch,
 }
 
-type Setup = (Scratch, Vec<Arc<dyn Tool>>);
+type Setup = (Dirs, Vec<Arc<dyn Tool>>);
 
 /// The shared kernel venv every kernel test builds, with the converted copies kept under a
 /// scratch home so no run reads another's cache.
@@ -34,11 +39,11 @@ fn setup(tag: &str) -> Result<Setup, Box<dyn Error>> {
         toolchain: None,
         venv_dir: None,
     })?;
-    let root = std::env::temp_dir().join(format!("yi-documents-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&root);
-    let scratch = Scratch {
+    let root = Scratch::new(&format!("yi-documents-{tag}"))?;
+    let scratch = Dirs {
         cwd: root.join("project"),
         home: root.join("home"),
+        _root: root,
     };
     std::fs::create_dir_all(&scratch.cwd)?;
     std::fs::create_dir_all(&scratch.home)?;
@@ -377,7 +382,7 @@ fn a_partly_scanned_pdf_reads_its_text_pages_and_names_the_rest() -> TestResult 
     Ok(())
 }
 
-fn slow_converter(scratch: &Scratch, timeout_secs: u64) -> Result<Documents, Box<dyn Error>> {
+fn slow_converter(scratch: &Dirs, timeout_secs: u64) -> Result<Documents, Box<dyn Error>> {
     let script = scratch.home.join("slow-python");
     std::fs::write(&script, "#!/bin/sh\nsleep 30\n")?;
     #[cfg(unix)]

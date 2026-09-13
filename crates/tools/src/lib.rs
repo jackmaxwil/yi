@@ -14,6 +14,9 @@ mod orient;
 mod process;
 pub mod reduce;
 pub mod sandbox;
+#[cfg(test)]
+#[path = "../../types/tests/support/scratch.rs"]
+mod scratch;
 mod syntax;
 mod tool;
 

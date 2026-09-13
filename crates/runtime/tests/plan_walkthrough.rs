@@ -1,3 +1,7 @@
+#[path = "../../types/tests/support/scratch.rs"]
+mod scratch;
+use scratch::Scratch;
+
 use std::error::Error;
 use std::num::NonZeroUsize;
 use std::path::PathBuf;
@@ -41,24 +45,6 @@ const FIXTURE_KEYS: [&str; 11] = [
 
 fn fixtures_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/plans")
-}
-
-struct TempDir(PathBuf);
-
-impl TempDir {
-    fn new(stem: &str) -> Fallible<(Self, PlanStore)> {
-        let dir =
-            std::env::temp_dir().join(format!("yi-plan-walkthrough-{stem}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        let store = PlanStore::open(dir.clone())?;
-        Ok((Self(dir), store))
-    }
-}
-
-impl Drop for TempDir {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
-    }
 }
 
 #[derive(Default)]
@@ -822,7 +808,8 @@ fn run_fixture(stem: &str) -> Fallible<()> {
         return Err(format!("fixture id does not match file stem {stem:?}").into());
     }
     let eager = boolean(require(doc, "eagerInit", "fixture")?, "eagerInit")?;
-    let (_temp, store) = TempDir::new(stem)?;
+    let dir = Scratch::new(&format!("yi-plan-walkthrough-{stem}"))?;
+    let store = PlanStore::open(dir.to_path_buf())?;
     let stub = Arc::new(Stub::default());
     let mut failures: Vec<String> = Vec::new();
     let prompt = text(require(doc, "prompt", "fixture")?, "prompt")?;

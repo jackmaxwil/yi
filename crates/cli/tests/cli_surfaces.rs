@@ -4,22 +4,19 @@ use std::process::{Command, Output};
 
 use serde_json::Value;
 
+#[path = "../../types/tests/support/scratch.rs"]
+mod scratch;
+use scratch::Scratch;
+
 type TestResult = Result<(), Box<dyn Error>>;
 
-struct Workspace(PathBuf);
-
-impl Drop for Workspace {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
-    }
-}
+struct Workspace(Scratch);
 
 impl Workspace {
     fn new(tag: &str) -> Result<Self, Box<dyn Error>> {
-        let dir = std::env::temp_dir().join(format!("yi-cli-{tag}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        let dir = Scratch::new(&format!("yi-cli-{tag}"))?;
         std::fs::create_dir_all(dir.join("project"))?;
-        std::fs::create_dir_all(dir.join("home"))?;
+        dir.home()?;
         Ok(Self(dir))
     }
 

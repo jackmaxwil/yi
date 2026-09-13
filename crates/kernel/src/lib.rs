@@ -7,6 +7,9 @@ pub mod framing;
 pub mod journal;
 pub(crate) mod pump;
 pub mod reduce;
+#[cfg(test)]
+#[path = "../../types/tests/support/scratch.rs"]
+mod scratch;
 pub mod snapshot;
 
 // Generous backstop for a kernel alive but wedged: crashes surface in one 25ms poll and warm

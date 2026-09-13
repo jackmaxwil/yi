@@ -6,18 +6,21 @@ use std::sync::Arc;
 
 use yi_tools::{CancelFlag, Run, Sandbox, denial_hint, run_or_background};
 
+#[path = "../../types/tests/support/scratch.rs"]
+mod scratch;
+use scratch::Scratch;
+
 type TestResult = Result<(), Box<dyn Error>>;
 
-fn workspace(tag: &str) -> Result<(PathBuf, PathBuf), Box<dyn Error>> {
-    let root = std::env::temp_dir().join(format!("yi-sandbox-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&root);
+fn workspace(tag: &str) -> Result<(Scratch, PathBuf, PathBuf), Box<dyn Error>> {
+    let root = Scratch::new(&format!("yi-sandbox-{tag}"))?;
     let project = root.join("project");
     let home = root.join("home");
     std::fs::create_dir_all(&project)?;
     std::fs::create_dir_all(home.join(".ssh"))?;
     std::fs::write(home.join(".ssh/id_rsa"), "PRIVATE KEY")?;
     std::fs::write(home.join("notes.md"), "ordinary")?;
-    Ok((project, home))
+    Ok((root, project, home))
 }
 
 fn run(command: &str, cwd: &Path, sandbox: Option<&Sandbox>) -> Result<(i32, String), String> {
@@ -118,8 +121,8 @@ fn a_contained_command_writes_only_where_the_policy_says() -> TestResult {
     if !Sandbox::available() {
         return Ok(());
     }
-    let (project, home) = workspace("write")?;
-    let outside = project.parent().ok_or("no parent")?.join("outside");
+    let (root, project, home) = workspace("write")?;
+    let outside = root.join("outside");
     std::fs::create_dir_all(&outside)?;
     let sandbox = Sandbox {
         writable: vec![project.clone()],
@@ -145,7 +148,6 @@ fn a_contained_command_writes_only_where_the_policy_says() -> TestResult {
         "the failure must read as a sandbox denial: {output}"
     );
 
-    let _ = std::fs::remove_dir_all(project.parent().ok_or("no parent")?);
     Ok(())
 }
 
@@ -155,7 +157,7 @@ fn a_contained_command_reads_the_tree_but_not_the_keys() -> TestResult {
     if !Sandbox::available() {
         return Ok(());
     }
-    let (project, home) = workspace("read")?;
+    let (_root, project, home) = workspace("read")?;
     let sandbox = Sandbox {
         writable: vec![project.clone()],
         deny_read: vec![home.join(".ssh")],
@@ -171,7 +173,6 @@ fn a_contained_command_reads_the_tree_but_not_the_keys() -> TestResult {
     assert_ne!(code, 0, "the key must not be readable: {output}");
     assert!(!output.contains("PRIVATE KEY"), "{output}");
 
-    let _ = std::fs::remove_dir_all(project.parent().ok_or("no parent")?);
     Ok(())
 }
 
@@ -183,7 +184,7 @@ fn a_contained_command_has_no_network() -> TestResult {
     if !Sandbox::available() {
         return Ok(());
     }
-    let (project, home) = workspace("network")?;
+    let (_root, project, home) = workspace("network")?;
     let probe = "curl -m 5 -sS -o /dev/null https://example.com";
     let (code, _) = run(probe, &project, None)?;
     if code != 0 {
@@ -192,6 +193,5 @@ fn a_contained_command_has_no_network() -> TestResult {
     let sandbox = Sandbox::for_workspace(&project, &home, None);
     let (code, output) = run(probe, &project, Some(&sandbox))?;
     assert_ne!(code, 0, "the sandbox must refuse egress: {output}");
-    let _ = std::fs::remove_dir_all(project.parent().ok_or("no parent")?);
     Ok(())
 }

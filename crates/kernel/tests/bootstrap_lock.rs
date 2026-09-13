@@ -1,4 +1,7 @@
 //! The bootstrap lock's holder probe, where the benchmark images run it: with no `kill(1)`.
+#[path = "../../types/tests/support/scratch.rs"]
+mod scratch;
+use scratch::Scratch;
 
 #[expect(
     clippy::disallowed_methods,
@@ -31,12 +34,10 @@ fn a_live_holder_is_seen_with_no_kill_binary_on_path() -> Result<(), Box<dyn std
 
 #[test]
 fn a_probe_error_does_not_mark_a_lock_stale() -> Result<(), Box<dyn std::error::Error>> {
-    let lock_dir = std::env::temp_dir().join(format!("yi-kernel-probe-{}", std::process::id()));
-    std::fs::create_dir_all(&lock_dir)?;
+    let lock_dir = Scratch::new("yi-kernel-probe")?;
     let unanswered = Some(Err(std::io::Error::other("no shell")));
     let taken = yi_kernel::bootstrap::lock_is_stale(&lock_dir, unanswered);
     let dead = yi_kernel::bootstrap::lock_is_stale(&lock_dir, Some(Ok(false)));
-    std::fs::remove_dir_all(&lock_dir)?;
     assert!(
         !taken,
         "a fresh lock went stale on a probe that could not run"

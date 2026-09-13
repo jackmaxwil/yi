@@ -1,3 +1,7 @@
+#[path = "../../types/tests/support/scratch.rs"]
+mod scratch;
+use scratch::Scratch;
+
 use std::error::Error;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -56,13 +60,13 @@ struct Harness {
     host: Arc<SubagentHost>,
     notices: Arc<Mutex<Vec<String>>>,
     attributed: Arc<AtomicU32>,
-    root: PathBuf,
     events: tokio::sync::broadcast::Sender<AgentEvent>,
     parent: Arc<Mutex<Vec<AgentMessage>>>,
     child_cwd: Arc<Mutex<Option<PathBuf>>>,
     inbox: Arc<Mutex<Vec<String>>>,
     entries: Arc<Mutex<Vec<AgentMessage>>>,
     store: yi_session::SharedSession,
+    root: Scratch,
 }
 
 struct HarnessOptions {
@@ -76,7 +80,7 @@ struct HarnessOptions {
     cwd: Option<PathBuf>,
 }
 
-fn harness(depth: u8, max_depth: u8, child_answer: &'static str) -> Harness {
+fn harness(depth: u8, max_depth: u8, child_answer: &'static str) -> std::io::Result<Harness> {
     harness_with(HarnessOptions {
         depth,
         max_depth,
@@ -86,7 +90,7 @@ fn harness(depth: u8, max_depth: u8, child_answer: &'static str) -> Harness {
     })
 }
 
-fn harness_with(options: HarnessOptions) -> Harness {
+fn harness_with(options: HarnessOptions) -> std::io::Result<Harness> {
     let HarnessOptions {
         depth,
         max_depth,
@@ -94,18 +98,7 @@ fn harness_with(options: HarnessOptions) -> Harness {
         tool_command,
         cwd,
     } = options;
-    // The name was the scenario's parameters, so two tests with the same depth,
-    // answer length and no command shared a root — and this remove_dir_all then
-    // deleted the other one's live session while it ran.
-    static SCENARIO: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-    let root = std::env::temp_dir().join(format!(
-        "yi-recursion-{}-{}-{depth}-{}-{}",
-        std::process::id(),
-        SCENARIO.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
-        child_answer.len(),
-        tool_command.unwrap_or("none")
-    ));
-    let _ = std::fs::remove_dir_all(&root);
+    let root = Scratch::new("yi-recursion")?;
     let cwd = cwd.unwrap_or_else(std::env::temp_dir);
     let child_cwd: Arc<Mutex<Option<PathBuf>>> = Arc::new(Mutex::new(None));
     let cwd_sink = Arc::clone(&child_cwd);
@@ -133,7 +126,7 @@ fn harness_with(options: HarnessOptions) -> Harness {
         depth,
         max_depth,
         max_children: 8,
-        parent_session_dir: root.clone(),
+        parent_session_dir: root.to_path_buf(),
         cwd: cwd.clone(),
         home: root.join("home"),
         lane_slots: 2,
@@ -202,18 +195,18 @@ fn harness_with(options: HarnessOptions) -> Harness {
         plans_dir: cwd.join(".yi/plans"),
         family_live: Arc::new(|| 0),
     }));
-    Harness {
+    Ok(Harness {
         host,
         notices,
         attributed,
-        root,
         events,
         parent,
         child_cwd,
         inbox,
         entries,
         store,
-    }
+        root,
+    })
 }
 
 /// A poll budget, not a sleep: every loop below exits on its first true
@@ -247,7 +240,7 @@ async fn wait_for_status(host: &Arc<SubagentHost>, child_id: &str, status: &str)
 
 #[tokio::test]
 async fn spawn_runs_child_to_completion_with_notice_and_attribution() -> TestResult {
-    let harness = harness(0, 1, "the answer is forty-two");
+    let harness = harness(0, 1, "the answer is forty-two")?;
     let reply = harness
         .host
         .spawn(
@@ -313,7 +306,7 @@ async fn child_updates_ride_the_parent_bus_with_counts_and_activity() -> TestRes
         child_answer: "swept the logs",
         tool_command: Some("echo probing"),
         cwd: None,
-    });
+    })?;
     let mut events = harness.events.subscribe();
     harness
         .host
@@ -400,7 +393,7 @@ fn user_texts(messages: &[AgentMessage]) -> Vec<String> {
 
 #[tokio::test]
 async fn fork_seeds_the_child_with_the_turns_it_asked_for() -> TestResult {
-    let cold = harness(0, 1, "cold");
+    let cold = harness(0, 1, "cold")?;
     {
         let mut parent = cold.parent.lock().map_err(|_| "poisoned")?;
         parent.extend(parent_turn("turn one", "a1"));
@@ -416,7 +409,7 @@ async fn fork_seeds_the_child_with_the_turns_it_asked_for() -> TestResult {
         "no fork means a cold child: the parent's turns never cross"
     );
 
-    let forked = harness(0, 1, "forked");
+    let forked = harness(0, 1, "forked")?;
     {
         let mut parent = forked.parent.lock().map_err(|_| "poisoned")?;
         parent.extend(parent_turn("turn one", "a1"));
@@ -439,7 +432,7 @@ async fn fork_seeds_the_child_with_the_turns_it_asked_for() -> TestResult {
         "fork=1 seeds the last turn boundary onward, nothing older"
     );
 
-    let whole = harness(0, 1, "whole");
+    let whole = harness(0, 1, "whole")?;
     {
         let mut parent = whole.parent.lock().map_err(|_| "poisoned")?;
         parent.extend(parent_turn("turn one", "a1"));
@@ -505,7 +498,7 @@ async fn child_sees(harness: &Harness, name: &str, needle: &str) -> bool {
 
 #[tokio::test]
 async fn agent_messages_route_by_name_and_broadcast_with_receipts() -> TestResult {
-    let harness = harness(0, 1, "ok");
+    let harness = harness(0, 1, "ok")?;
     for name in ["alpha", "beta"] {
         harness
             .host
@@ -563,7 +556,7 @@ async fn agent_messages_route_by_name_and_broadcast_with_receipts() -> TestResul
 
 #[tokio::test]
 async fn a_child_reports_upward_and_the_parent_waits_for_it() -> TestResult {
-    let harness = harness(0, 1, "ok");
+    let harness = harness(0, 1, "ok")?;
     harness
         .host
         .spawn("do it".to_owned(), kwargs(&[("name", "scout")]))
@@ -602,7 +595,7 @@ async fn a_child_reports_upward_and_the_parent_waits_for_it() -> TestResult {
 
 #[tokio::test]
 async fn a_finished_child_hands_back_a_schema_checked_result() -> TestResult {
-    let harness = harness(0, 1, "{\"files\": 3}");
+    let harness = harness(0, 1, "{\"files\": 3}")?;
     harness
         .host
         .spawn("count files".to_owned(), kwargs(&[("name", "counter")]))
@@ -650,7 +643,7 @@ async fn a_finished_child_hands_back_a_schema_checked_result() -> TestResult {
 
 #[tokio::test]
 async fn a_malformed_schema_is_refused_before_the_answer_is_read() -> TestResult {
-    let harness = harness(0, 1, "{\"files\": 3}");
+    let harness = harness(0, 1, "{\"files\": 3}")?;
     harness
         .host
         .spawn("count files".to_owned(), kwargs(&[("name", "counter")]))
@@ -670,7 +663,7 @@ async fn a_malformed_schema_is_refused_before_the_answer_is_read() -> TestResult
 
 #[tokio::test]
 async fn a_child_that_messaged_its_parent_finishes_without_the_silent_note() -> TestResult {
-    let harness = harness(0, 1, "ok");
+    let harness = harness(0, 1, "ok")?;
     let reply = harness
         .host
         .spawn("do it".to_owned(), kwargs(&[("name", "scout")]))
@@ -727,10 +720,8 @@ fn branches(repo: &std::path::Path) -> Result<String, Box<dyn Error>> {
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
-fn git_repo(label: &str) -> Result<PathBuf, Box<dyn Error>> {
-    let repo = std::env::temp_dir().join(format!("yi-wt-{}-{label}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&repo);
-    std::fs::create_dir_all(&repo)?;
+fn git_repo(label: &str) -> Result<Scratch, Box<dyn Error>> {
+    let repo = Scratch::new(&format!("yi-wt-{label}"))?;
     let run = |args: &[&str]| -> Result<(), Box<dyn Error>> {
         let status = yi_tools::command("git")
             .current_dir(&repo)
@@ -761,8 +752,8 @@ async fn a_worktree_child_gets_its_own_checkout_and_hands_it_back() -> TestResul
         max_depth: 1,
         child_answer: "isolated",
         tool_command: None,
-        cwd: Some(repo.clone()),
-    });
+        cwd: Some(repo.to_path_buf()),
+    })?;
     let reply = harness
         .host
         .spawn(
@@ -819,7 +810,6 @@ async fn a_worktree_child_gets_its_own_checkout_and_hands_it_back() -> TestResul
         harness.host.delete("mutator").is_ok(),
         "once merged, the slot is reapable"
     );
-    let _ = std::fs::remove_dir_all(&repo);
     Ok(())
 }
 
@@ -831,8 +821,8 @@ async fn discarding_a_worktree_throws_the_branch_away() -> TestResult {
         max_depth: 1,
         child_answer: "discarded",
         tool_command: None,
-        cwd: Some(repo.clone()),
-    });
+        cwd: Some(repo.to_path_buf()),
+    })?;
     let reply = harness
         .host
         .spawn(
@@ -871,13 +861,12 @@ async fn discarding_a_worktree_throws_the_branch_away() -> TestResult {
             .is_some_and(|error| error.contains("has no worktree")),
         "a second hand-back names the reason rather than half-working"
     );
-    let _ = std::fs::remove_dir_all(&repo);
     Ok(())
 }
 
 #[tokio::test]
 async fn depth_limit_name_collision_slots_and_delete() -> TestResult {
-    let at_limit = harness(1, 1, "unused");
+    let at_limit = harness(1, 1, "unused")?;
     let refused = at_limit.host.spawn("nested".to_owned(), Map::new());
     assert_eq!(
         refused.err().as_deref(),
@@ -885,7 +874,7 @@ async fn depth_limit_name_collision_slots_and_delete() -> TestResult {
         "a depth-1 child must not spawn grandchildren"
     );
 
-    let harness = harness(0, 1, "ok");
+    let harness = harness(0, 1, "ok")?;
     harness
         .host
         .spawn("first".to_owned(), kwargs(&[("name", "twin")]))
@@ -945,7 +934,7 @@ async fn depth_limit_name_collision_slots_and_delete() -> TestResult {
 
 #[tokio::test]
 async fn rlm_run_round_trips_through_a_real_kernel() -> TestResult {
-    let harness = harness(0, 1, "kernel child says hi");
+    let harness = harness(0, 1, "kernel child says hi")?;
     let mut registry = HostRegistry::default();
     registry.register_mcp_stubs();
     harness.host.register(&mut registry);
@@ -954,7 +943,7 @@ async fn rlm_run_round_trips_through_a_real_kernel() -> TestResult {
         home: std::env::var_os("HOME")
             .map(PathBuf::from)
             .unwrap_or_default(),
-        session_dir: Some(harness.root.clone()),
+        session_dir: Some(harness.root.to_path_buf()),
         family_dir: None,
         host: Arc::new(registry),
         on_restore: None,
@@ -1132,7 +1121,7 @@ fn scoped_names(brief: &str) -> Vec<String> {
 
 #[tokio::test]
 async fn a_scoped_child_reads_the_named_keys_and_nothing_else() -> TestResult {
-    let harness = harness(0, 1, "solved");
+    let harness = harness(0, 1, "solved")?;
     let oversized = "g".repeat(5_000);
     harness
         .host
@@ -1194,7 +1183,7 @@ async fn a_scoped_child_reads_the_named_keys_and_nothing_else() -> TestResult {
 
 #[tokio::test]
 async fn a_checked_childs_malformed_answer_is_fatal() -> TestResult {
-    let harness = harness(0, 1, "I fixed it, trust me");
+    let harness = harness(0, 1, "I fixed it, trust me")?;
     harness
         .host
         .spawn(
@@ -1221,7 +1210,7 @@ async fn a_checked_childs_malformed_answer_is_fatal() -> TestResult {
 
 #[tokio::test]
 async fn a_checked_childs_result_is_held_back_while_its_check_is_red() -> TestResult {
-    let harness = harness(0, 1, "{\"value\": 1, \"discoveries\": []}");
+    let harness = harness(0, 1, "{\"value\": 1, \"discoveries\": []}")?;
     harness
         .host
         .spawn(
@@ -1240,13 +1229,6 @@ async fn a_checked_childs_result_is_held_back_while_its_check_is_red() -> TestRe
         "the refusal carries the check's own evidence: {error}"
     );
     Ok(())
-}
-
-fn fresh_cwd(tag: &str) -> Result<PathBuf, Box<dyn Error>> {
-    let dir = std::env::temp_dir().join(format!("yi-adjudication-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir)?;
-    Ok(dir)
 }
 
 /// Adjudication reads the canonical plan file, never the session fact: the
@@ -1332,13 +1314,14 @@ fn discovery_texts(harness: &Harness) -> Vec<String> {
 
 #[tokio::test]
 async fn a_discovery_the_runtime_cannot_adjudicate_holds_the_result_back() -> TestResult {
+    let cwd = Scratch::new("yi-adjudication-no-plan")?;
     let harness = harness_with(HarnessOptions {
         depth: 0,
         max_depth: 1,
         child_answer: ONE_DISCOVERY,
         tool_command: None,
-        cwd: Some(fresh_cwd("no-plan")?),
-    });
+        cwd: Some(cwd.to_path_buf()),
+    })?;
     harness
         .host
         .spawn(
@@ -1365,15 +1348,15 @@ async fn a_discovery_the_runtime_cannot_adjudicate_holds_the_result_back() -> Te
 
 #[tokio::test]
 async fn a_high_row_that_cannot_reach_the_ledger_holds_the_result_back() -> TestResult {
-    let cwd = fresh_cwd("no-ledger")?;
+    let cwd = Scratch::new("yi-adjudication-no-ledger")?;
     write_canonical_plan(&cwd, &[("t1", "exit 4")])?;
     let harness = harness_with(HarnessOptions {
         depth: 0,
         max_depth: 1,
         child_answer: ONE_DISCOVERY,
         tool_command: None,
-        cwd: Some(cwd),
-    });
+        cwd: Some(cwd.to_path_buf()),
+    })?;
     harness
         .host
         .spawn(
@@ -1396,7 +1379,7 @@ async fn a_high_row_that_cannot_reach_the_ledger_holds_the_result_back() -> Test
 
 #[tokio::test]
 async fn an_oversized_discovery_list_is_refused_before_any_check_runs() -> TestResult {
-    let harness = harness(0, 1, discovery_rows(17));
+    let harness = harness(0, 1, discovery_rows(17))?;
     harness
         .host
         .spawn(
@@ -1424,15 +1407,15 @@ async fn an_oversized_discovery_list_is_refused_before_any_check_runs() -> TestR
 
 #[tokio::test]
 async fn criticality_is_derived_by_re_running_the_ancestors_check() -> TestResult {
-    let cwd = fresh_cwd("criticality")?;
+    let cwd = Scratch::new("yi-adjudication-criticality")?;
     write_canonical_plan(&cwd, &[("t1", "exit 4"), ("t2", "true")])?;
     let harness = harness_with(HarnessOptions {
         depth: 0,
         max_depth: 1,
         child_answer: TWO_DISCOVERIES,
         tool_command: None,
-        cwd: Some(cwd),
-    });
+        cwd: Some(cwd.to_path_buf()),
+    })?;
     yi_session::lock_session(&harness.store).set_goal(yi_types::goal::Goal {
         objective: "ship the retry fix".to_owned(),
         status: yi_types::goal::GoalStatus::Active,

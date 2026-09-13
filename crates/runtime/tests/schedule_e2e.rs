@@ -1,3 +1,7 @@
+#[path = "../../types/tests/support/scratch.rs"]
+mod scratch;
+use scratch::Scratch;
+
 use std::error::Error;
 use std::sync::{Arc, Condvar, Mutex};
 
@@ -41,11 +45,10 @@ fn faux_model() -> Model {
     }
 }
 
-fn temp_store(name: &str) -> (std::path::PathBuf, Arc<JobStore>) {
-    let dir = std::env::temp_dir().join(format!("yi-sched-{name}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
+fn temp_store(name: &str) -> std::io::Result<(Scratch, Arc<JobStore>)> {
+    let dir = Scratch::new(&format!("yi-sched-{name}"))?;
     let path = dir.join("scheduled-jobs.json");
-    (dir, Arc::new(JobStore::open(path)))
+    Ok((dir, Arc::new(JobStore::open(path))))
 }
 
 fn heartbeat_job(id: &str, interval_ms: u64, next_run_at: u64) -> yi_types::schedule::Job {
@@ -87,7 +90,7 @@ async fn due_heartbeat_wakes_an_idle_session_and_advances_the_job() -> TestResul
         provider,
     );
 
-    let (dir, store) = temp_store("wake");
+    let (_dir, store) = temp_store("wake")?;
     let now = yi_session::now_ms();
     store.mutate(|state| state.jobs.push(heartbeat_job("hb-1", 10_000, now)));
 
@@ -155,13 +158,12 @@ async fn due_heartbeat_wakes_an_idle_session_and_advances_the_job() -> TestResul
         "a delivered dispatch must be resolved, not leak"
     );
     scheduler.stop();
-    let _ = std::fs::remove_dir_all(&dir);
     Ok(())
 }
 
 #[tokio::test]
 async fn unresolved_claims_recover_as_interrupted_on_start() -> TestResult {
-    let (dir, store) = temp_store("recover");
+    let (dir, store) = temp_store("recover")?;
     let now = yi_session::now_ms();
     store.mutate(|state| {
         state.jobs.push(heartbeat_job("hb-crash", 10_000, now));
@@ -192,13 +194,12 @@ async fn unresolved_claims_recover_as_interrupted_on_start() -> TestResult {
         Some(INTERRUPTED_ERROR),
         "an interrupted dispatch must be visible on the job"
     );
-    let _ = std::fs::remove_dir_all(&dir);
     Ok(())
 }
 
 #[tokio::test]
 async fn heartbeat_surface_set_status_pause_clear_round_trip() -> TestResult {
-    let (dir, store) = temp_store("surface");
+    let (_dir, store) = temp_store("surface")?;
     let service = HeartbeatService::new(Arc::clone(&store), "/tmp");
     service.bind_session("test".to_owned());
     let now = yi_session::now_ms();
@@ -265,7 +266,6 @@ async fn heartbeat_surface_set_status_pause_clear_round_trip() -> TestResult {
         bad.err().as_deref(),
         Some("Recurring interval must be at least 10 seconds")
     );
-    let _ = std::fs::remove_dir_all(&dir);
     Ok(())
 }
 
@@ -372,7 +372,7 @@ fn once_job(id: &str, session: &str, next_run_at: u64) -> yi_types::schedule::Jo
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn blocked_session_does_not_stall_a_sibling_lane() -> TestResult {
-    let (dir, store) = temp_store("lanes");
+    let (_dir, store) = temp_store("lanes")?;
     let now = yi_session::now_ms();
     store.mutate(|state| {
         state.jobs.push(lane_job("hb-a", "a", 10_000, now));
@@ -386,7 +386,6 @@ async fn blocked_session_does_not_stall_a_sibling_lane() -> TestResult {
     open_gate(&gate);
     let a_ran = wait_until(2_000, || run_count(&store, "hb-a") == 1).await;
     scheduler.stop();
-    let _ = std::fs::remove_dir_all(&dir);
 
     assert!(
         b_ran,
@@ -402,7 +401,7 @@ async fn blocked_session_does_not_stall_a_sibling_lane() -> TestResult {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn job_due_during_a_block_still_dispatches() -> TestResult {
-    let (dir, store) = temp_store("due-during");
+    let (_dir, store) = temp_store("due-during")?;
     let now = yi_session::now_ms();
     store.mutate(|state| {
         state.jobs.push(lane_job("hb-a", "a", 10_000, now));
@@ -416,8 +415,10 @@ async fn job_due_during_a_block_still_dispatches() -> TestResult {
     let b_ran = wait_until(2_000, || run_count(&store, "hb-b") == 1).await;
     let a_runs_while_blocked = run_count(&store, "hb-a");
     open_gate(&gate);
+    // Incident: A's completion persists after the gate opens; returning first let it
+    // re-create the scratch dir the test had already dropped.
+    wait_until(2_000, || run_count(&store, "hb-a") >= 1).await;
     scheduler.stop();
-    let _ = std::fs::remove_dir_all(&dir);
 
     assert!(
         b_ran,
@@ -435,7 +436,7 @@ async fn job_due_during_a_block_still_dispatches() -> TestResult {
 /// A 60s heartbeat parked behind a five-minute turn is this case.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_rearming_block_does_not_hide_a_sibling_coming_due() -> TestResult {
-    let (dir, store) = temp_store("lanes-rearm");
+    let (_dir, store) = temp_store("lanes-rearm")?;
     let now = yi_session::now_ms();
     store.mutate(|state| {
         state.jobs.push(lane_job("hb-a", "a", 200, now));
@@ -449,8 +450,8 @@ async fn a_rearming_block_does_not_hide_a_sibling_coming_due() -> TestResult {
     let b_ran = wait_until(3_000, || run_count(&store, "hb-b") == 1).await;
     let a_runs_while_blocked = run_count(&store, "hb-a");
     open_gate(&gate);
+    wait_until(2_000, || run_count(&store, "hb-a") >= 1).await;
     scheduler.stop();
-    let _ = std::fs::remove_dir_all(&dir);
 
     assert!(
         b_ran,
@@ -468,7 +469,7 @@ async fn a_rearming_block_does_not_hide_a_sibling_coming_due() -> TestResult {
 /// than wait the lane out.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_job_scheduled_mid_block_dispatches_before_the_lane_ends() -> TestResult {
-    let (dir, store) = temp_store("lanes-midblock");
+    let (_dir, store) = temp_store("lanes-midblock")?;
     let now = yi_session::now_ms();
     store.mutate(|state| state.jobs.push(once_job("hb-a", "a", now)));
     let (deliver, gate, entered) = gated_deliver("a");
@@ -486,8 +487,8 @@ async fn a_job_scheduled_mid_block_dispatches_before_the_lane_ends() -> TestResu
     });
     let b_ran = wait_until(3_000, || run_count(&store, "hb-b") == 1).await;
     open_gate(&gate);
+    wait_until(2_000, || run_count(&store, "hb-a") >= 1).await;
     scheduler.stop();
-    let _ = std::fs::remove_dir_all(&dir);
 
     assert!(lane_running, "session A's lane never entered deliver");
     assert!(
@@ -499,7 +500,7 @@ async fn a_job_scheduled_mid_block_dispatches_before_the_lane_ends() -> TestResu
 
 #[test]
 fn setting_a_heartbeat_does_not_cancel_a_sibling_session() -> TestResult {
-    let (dir, store) = temp_store("sibling-hb");
+    let (_dir, store) = temp_store("sibling-hb")?;
     let a = HeartbeatService::new(Arc::clone(&store), "/tmp");
     a.bind_session("sess-a".to_owned());
     let b = HeartbeatService::new(Arc::clone(&store), "/tmp");
@@ -524,7 +525,6 @@ fn setting_a_heartbeat_does_not_cancel_a_sibling_session() -> TestResult {
         2,
         "two sessions on one store must keep both heartbeats: {active:?}"
     );
-    let _ = std::fs::remove_dir_all(&dir);
     Ok(())
 }
 
@@ -547,7 +547,7 @@ fn bound(store: &Arc<JobStore>, session_id: &str) -> Arc<HeartbeatService> {
 
 #[tokio::test]
 async fn the_kernel_vocabulary_cannot_reach_a_sibling_session() -> TestResult {
-    let (dir, store) = temp_store("rlm-scope");
+    let (_dir, store) = temp_store("rlm-scope")?;
     let (a, b) = (bound(&store, "sess-a"), bound(&store, "sess-b"));
     let (mut a_host, mut b_host) = (HostRegistry::default(), HostRegistry::default());
     a.register(&mut a_host);
@@ -607,6 +607,5 @@ async fn the_kernel_vocabulary_cannot_reach_a_sibling_session() -> TestResult {
         Some(JobStatus::Active),
         "a sibling session's heartbeat was cancelled from another session"
     );
-    let _ = std::fs::remove_dir_all(&dir);
     Ok(())
 }

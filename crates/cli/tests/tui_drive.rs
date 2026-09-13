@@ -1,13 +1,16 @@
 use std::error::Error;
 use std::process::Command;
 
+#[path = "../../types/tests/support/scratch.rs"]
+mod scratch;
+use scratch::Scratch;
+
 type TestResult = Result<(), Box<dyn Error>>;
 
 #[test]
 fn headless_drive_renders_a_turn_and_dumps_frames() -> TestResult {
-    let dir = std::env::temp_dir().join(format!("yi-tui-drive-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir)?;
+    let dir = Scratch::new("yi-tui-drive")?;
+    let home = dir.home()?;
     let keys = dir.join("script.keys");
     std::fs::write(
         &keys,
@@ -38,7 +41,7 @@ fn headless_drive_renders_a_turn_and_dumps_frames() -> TestResult {
         ])
         // Incident: the drive gate read the developer's own ~/.yi/config.json,
         // so a `keys` entry there decided whether it passed.
-        .env("HOME", &dir)
+        .env("HOME", &home)
         .output()?;
     assert!(
         output.status.success(),
@@ -59,7 +62,6 @@ fn headless_drive_renders_a_turn_and_dumps_frames() -> TestResult {
             "frames must show the rendered UI ({needle} missing)"
         );
     }
-    let _ = std::fs::remove_dir_all(&dir);
     Ok(())
 }
 
@@ -67,9 +69,8 @@ fn headless_drive_renders_a_turn_and_dumps_frames() -> TestResult {
 /// the message it undid comes back to the composer unsent.
 #[test]
 fn rewinding_removes_the_exchange_and_restores_the_message() -> TestResult {
-    let dir = std::env::temp_dir().join(format!("yi-tui-rewind-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir)?;
+    let dir = Scratch::new("yi-tui-rewind")?;
+    let home = dir.home()?;
     let keys = dir.join("script.keys");
     std::fs::write(
         &keys,
@@ -102,7 +103,7 @@ fn rewinding_removes_the_exchange_and_restores_the_message() -> TestResult {
             &frames.display().to_string(),
             "first question",
         ])
-        .env("HOME", &dir)
+        .env("HOME", &home)
         .output()?;
     assert!(
         output.status.success(),
@@ -127,15 +128,13 @@ fn rewinding_removes_the_exchange_and_restores_the_message() -> TestResult {
         final_frame.contains("│second question"),
         "the rewound message returns to the composer: {final_frame}"
     );
-    let _ = std::fs::remove_dir_all(&dir);
     Ok(())
 }
 
 #[test]
 fn slash_new_swaps_the_session_and_clears_the_transcript() -> TestResult {
-    let dir = std::env::temp_dir().join(format!("yi-tui-new-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir)?;
+    let dir = Scratch::new("yi-tui-new")?;
+    let home = dir.home()?;
     let keys = dir.join("script.keys");
     std::fs::write(
         &keys,
@@ -165,7 +164,7 @@ fn slash_new_swaps_the_session_and_clears_the_transcript() -> TestResult {
             &frames.display().to_string(),
             "ping",
         ])
-        .env("HOME", &dir)
+        .env("HOME", &home)
         .output()?;
     assert!(
         output.status.success(),
@@ -203,24 +202,16 @@ fn slash_new_swaps_the_session_and_clears_the_transcript() -> TestResult {
         files, 2,
         "/new writes a second session file beside the first"
     );
-    let _ = std::fs::remove_dir_all(&dir);
     Ok(())
 }
 
 /// Plan, undo, permissions, compact and sessions all answer for this session.
 #[test]
 fn plan_and_undo_answer_for_the_session_the_turn_ran_in() -> TestResult {
-    let dir = std::env::temp_dir().join(format!("yi-tui-surfaces-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
+    let dir = Scratch::new("yi-tui-surfaces")?;
+    let home = dir.home()?;
     let work = dir.join("work");
     std::fs::create_dir_all(&work)?;
-    // Incident: an empty HOME prewarms a venv whose "one-time, ~30s" frame outlasted
-    // the waits below. None of these verbs need a kernel.
-    std::fs::create_dir_all(dir.join(".yi"))?;
-    std::fs::write(
-        dir.join(".yi/config.json"),
-        r#"{"kernel":{"prewarm":false}}"#,
-    )?;
     let keys = dir.join("script.keys");
     std::fs::write(
         &keys,
@@ -253,7 +244,7 @@ fn plan_and_undo_answer_for_the_session_the_turn_ran_in() -> TestResult {
             &frames.display().to_string(),
             "ping",
         ])
-        .env("HOME", &dir)
+        .env("HOME", &home)
         .output()?;
     assert!(
         output.status.success(),
@@ -277,7 +268,6 @@ fn plan_and_undo_answer_for_the_session_the_turn_ran_in() -> TestResult {
             "{needle} must reach this session: {final_frame}"
         );
     }
-    let _ = std::fs::remove_dir_all(&dir);
     Ok(())
 }
 
@@ -285,14 +275,8 @@ fn plan_and_undo_answer_for_the_session_the_turn_ran_in() -> TestResult {
 /// does not start another turn.
 #[test]
 fn reverse_search_enter_accepts_a_match_without_submitting() -> TestResult {
-    let dir = std::env::temp_dir().join(format!("yi-tui-isearch-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir)?;
-    std::fs::create_dir_all(dir.join(".yi"))?;
-    std::fs::write(
-        dir.join(".yi/config.json"),
-        r#"{"kernel":{"prewarm":false}}"#,
-    )?;
+    let dir = Scratch::new("yi-tui-isearch")?;
+    let home = dir.home()?;
     let keys = dir.join("script.keys");
     std::fs::write(
         &keys,
@@ -321,7 +305,7 @@ fn reverse_search_enter_accepts_a_match_without_submitting() -> TestResult {
             &frames.display().to_string(),
             "ping",
         ])
-        .env("HOME", &dir)
+        .env("HOME", &home)
         .output()?;
     assert!(
         output.status.success(),
@@ -354,7 +338,6 @@ fn reverse_search_enter_accepts_a_match_without_submitting() -> TestResult {
         final_frame.contains("│findme"),
         "the accepted match stays in the composer: {final_frame}"
     );
-    let _ = std::fs::remove_dir_all(&dir);
     Ok(())
 }
 
@@ -363,9 +346,8 @@ fn reverse_search_enter_accepts_a_match_without_submitting() -> TestResult {
 /// aborted the process at 101 before the loop ran a single step.
 #[test]
 fn an_absurd_deadline_is_clamped_rather_than_panicking() -> TestResult {
-    let dir = std::env::temp_dir().join(format!("yi-tui-deadline-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir)?;
+    let dir = Scratch::new("yi-tui-deadline")?;
+    let home = dir.home()?;
     let keys = dir.join("keys");
     std::fs::write(&keys, "quit\n")?;
     #[expect(
@@ -385,9 +367,8 @@ fn an_absurd_deadline_is_clamped_rather_than_panicking() -> TestResult {
             "--deadline",
             &u64::MAX.to_string(),
         ])
-        .env("HOME", &dir)
+        .env("HOME", &home)
         .output()?;
-    let _ = std::fs::remove_dir_all(&dir);
     assert_ne!(
         output.status.code(),
         Some(101),
@@ -407,9 +388,8 @@ fn an_absurd_deadline_is_clamped_rather_than_panicking() -> TestResult {
 /// recording still open on it, and the run exited 0 having lost it.
 #[test]
 fn one_path_for_both_capture_sinks_is_refused() -> TestResult {
-    let dir = std::env::temp_dir().join(format!("yi-tui-samepath-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir)?;
+    let dir = Scratch::new("yi-tui-samepath")?;
+    let home = dir.home()?;
     let keys = dir.join("keys");
     std::fs::write(&keys, "quit\n")?;
     let both = dir.join("both.cast");
@@ -432,10 +412,9 @@ fn one_path_for_both_capture_sinks_is_refused() -> TestResult {
             "--snap",
             &both.display().to_string(),
         ])
-        .env("HOME", &dir)
+        .env("HOME", &home)
         .output()?;
     let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
-    let _ = std::fs::remove_dir_all(&dir);
     assert_eq!(output.status.code(), Some(2), "{stderr}");
     assert!(stderr.contains("different files"), "{stderr}");
     Ok(())
@@ -448,9 +427,8 @@ fn one_path_for_both_capture_sinks_is_refused() -> TestResult {
 /// is dominated by the one-time kernel setup.
 #[test]
 fn a_paced_type_step_still_honours_the_deadline() -> TestResult {
-    let dir = std::env::temp_dir().join(format!("yi-tui-paced-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir)?;
+    let dir = Scratch::new("yi-tui-paced")?;
+    let home = dir.home()?;
     let keys = dir.join("keys");
     let frames = dir.join("frames");
     // 40 characters at 100 ms is 4 s of typing against a 1 s deadline, so at
@@ -476,7 +454,7 @@ fn a_paced_type_step_still_honours_the_deadline() -> TestResult {
             "--deadline",
             "1",
         ])
-        .env("HOME", &dir)
+        .env("HOME", &home)
         .output()?;
     let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
     let mut dumps: Vec<_> = std::fs::read_dir(&frames)?
@@ -485,7 +463,6 @@ fn a_paced_type_step_still_honours_the_deadline() -> TestResult {
     dumps.sort();
     let last = std::fs::read_to_string(dumps.last().ok_or("no frames dumped")?)?;
     let landed = last.matches('x').count();
-    let _ = std::fs::remove_dir_all(&dir);
 
     assert_eq!(output.status.code(), Some(1), "{stderr}");
     assert!(stderr.contains("timed out"), "{stderr}");

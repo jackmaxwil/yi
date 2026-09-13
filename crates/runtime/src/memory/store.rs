@@ -451,11 +451,10 @@ pub fn loaded<'a>(lines: &'a [IndexLine], usage: &Usage) -> (Vec<&'a IndexLine>,
 mod tests {
     use super::*;
     use crate::memory::doc::draft;
+    use crate::scratch::Scratch;
 
-    fn temp(label: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("yi-memstore-{label}-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&dir);
-        dir
+    fn temp(label: &str) -> Scratch {
+        Scratch::new(&format!("yi-memstore-{label}")).unwrap()
     }
 
     fn note(name: &str, hook: &str) -> Memory {
@@ -466,7 +465,8 @@ mod tests {
 
     #[test]
     fn save_update_forget_keep_the_index_in_step() {
-        let store = Store::new(temp("cycle"));
+        let dir = temp("cycle");
+        let store = Store::new(dir.join("store"));
         assert!(!store.save(note("alpha", "first hook")).unwrap());
         assert!(!store.save(note("beta", "second hook")).unwrap());
         assert!(store.save(note("alpha", "revised hook")).unwrap());
@@ -482,12 +482,12 @@ mod tests {
         let index = fs::read_to_string(store.dir().join(INDEX)).unwrap();
         assert_eq!(index, "- [beta](beta.md) — second hook\n");
         assert!(!store.dir().join("alpha.md").exists());
-        let _ = fs::remove_dir_all(store.dir());
     }
 
     #[test]
     fn a_hand_edited_index_line_survives_reconcile() {
-        let store = Store::new(temp("hand"));
+        let dir = temp("hand");
+        let store = Store::new(dir.join("store"));
         store.save(note("alpha", "model hook")).unwrap();
         store.save(note("beta", "beta hook")).unwrap();
         fs::write(
@@ -506,12 +506,12 @@ mod tests {
             .resolve("the user's own hook")
             .map(|note| note.name.to_string());
         assert_eq!(found.as_deref(), Some("alpha"));
-        let _ = fs::remove_dir_all(store.dir());
     }
 
     #[test]
     fn a_broken_frontmatter_still_indexes() {
-        let store = Store::new(temp("broken"));
+        let dir = temp("broken");
+        let store = Store::new(dir.join("store"));
         fs::create_dir_all(store.dir()).unwrap();
         fs::write(
             store.dir().join("half.md"),
@@ -528,12 +528,12 @@ mod tests {
         );
         let note = store.resolve("half").unwrap();
         assert_eq!(note.trouble.map(|t| t.line), Some(3));
-        let _ = fs::remove_dir_all(store.dir());
     }
 
     #[test]
     fn an_unreadable_index_is_refused_and_left_alone() {
-        let store = Store::new(temp("latin1"));
+        let dir = temp("latin1");
+        let store = Store::new(dir.join("store"));
         fs::create_dir_all(store.dir()).unwrap();
         let bytes = b"- [keep](keep.md) \x97 hand edit\n".to_vec();
         fs::write(store.dir().join(INDEX), &bytes).unwrap();
@@ -545,12 +545,12 @@ mod tests {
         assert!(store.reconcile().is_err());
         assert_eq!(fs::read(store.dir().join(INDEX)).unwrap(), bytes);
         assert!(!store.dir().join("new.md").exists());
-        let _ = fs::remove_dir_all(store.dir());
     }
 
     #[test]
     fn concurrent_saves_keep_every_index_line() {
-        let store = Store::new(temp("race"));
+        let dir = temp("race");
+        let store = Store::new(dir.join("store"));
         std::thread::scope(|scope| {
             for i in 0..16 {
                 let store = &store;
@@ -560,7 +560,6 @@ mod tests {
         let index = fs::read_to_string(store.dir().join(INDEX)).unwrap();
         assert_eq!(index.lines().count(), 16, "{index}");
         assert_eq!(store.usage().notes.len(), 16);
-        let _ = fs::remove_dir_all(store.dir());
     }
 
     #[test]
@@ -633,6 +632,5 @@ mod tests {
             encoded.starts_with("--") && encoded.ends_with("repo--"),
             "{encoded}"
         );
-        let _ = fs::remove_dir_all(&root);
     }
 }

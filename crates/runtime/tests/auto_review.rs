@@ -1,3 +1,7 @@
+#[path = "../../types/tests/support/scratch.rs"]
+mod scratch;
+use scratch::Scratch;
+
 use std::error::Error;
 use std::sync::{Arc, Mutex};
 
@@ -42,6 +46,7 @@ struct Harness {
     provider: Arc<ProviderStream>,
     asks: Arc<Mutex<Vec<String>>>,
     events: tokio::sync::broadcast::Receiver<yi_types::event::AgentEvent>,
+    _cwd: Scratch,
 }
 
 fn permission_events(harness: &mut Harness) -> Vec<String> {
@@ -68,13 +73,8 @@ fn answers(replies: &[&str]) -> Vec<yi_types::message::AgentMessage> {
         .collect()
 }
 
-fn setup(reply: Option<AskOutcome>, with_reviewer: bool) -> Harness {
-    let cwd = std::env::temp_dir().join(format!(
-        "yi-auto-review-{}-{}",
-        std::process::id(),
-        yi_session::now_ms()
-    ));
-    let _ = std::fs::create_dir_all(&cwd);
+fn setup(reply: Option<AskOutcome>, with_reviewer: bool) -> std::io::Result<Harness> {
+    let cwd = Scratch::new("yi-auto-review")?;
     let asks: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
     let asker: Option<Asker> = reply.map(|reply| {
         let asks = Arc::clone(&asks);
@@ -88,7 +88,7 @@ fn setup(reply: Option<AskOutcome>, with_reviewer: bool) -> Harness {
     let (events, receiver) = tokio::sync::broadcast::channel(64);
     let broker = Arc::new(PermissionBroker::new(
         PermissionMode::Auto,
-        cwd,
+        cwd.to_path_buf(),
         Vec::new(),
         asker,
         events,
@@ -97,12 +97,13 @@ fn setup(reply: Option<AskOutcome>, with_reviewer: bool) -> Harness {
     if with_reviewer {
         broker.set_reviewer(Arc::new(Reviewer::new(Arc::clone(&provider), faux_model())));
     }
-    Harness {
+    Ok(Harness {
         broker,
         provider,
         asks,
         events: receiver,
-    }
+        _cwd: cwd,
+    })
 }
 
 fn destructive_args() -> Map<String, Value> {
@@ -151,7 +152,7 @@ fn credential_args() -> Map<String, Value> {
 /// fallback ask to review.
 #[tokio::test]
 async fn a_call_outside_the_reviewers_jurisdiction_goes_straight_to_the_user() -> TestResult {
-    let harness = setup(Some(AskOutcome::Reject), true);
+    let harness = setup(Some(AskOutcome::Reject), true)?;
     harness.provider.queue_faux(answers(&["allow"]));
     let outcome = decide(&harness.broker, credential_args()).await?;
     assert!(!outcome.allowed);
@@ -171,7 +172,7 @@ async fn a_call_outside_the_reviewers_jurisdiction_goes_straight_to_the_user() -
         "a credential read is unreachable from the reviewer"
     );
 
-    let asking = setup(Some(AskOutcome::Reject), true);
+    let asking = setup(Some(AskOutcome::Reject), true)?;
     asking.broker.set_mode(PermissionMode::Ask);
     asking.provider.queue_faux(answers(&["allow"]));
     let outcome = decide(&asking.broker, destructive_args()).await?;
@@ -189,7 +190,7 @@ async fn a_call_outside_the_reviewers_jurisdiction_goes_straight_to_the_user() -
 
 #[tokio::test]
 async fn a_reviewer_allowance_runs_the_call_and_never_asks_the_user() -> TestResult {
-    let harness = setup(Some(AskOutcome::Reject), true);
+    let harness = setup(Some(AskOutcome::Reject), true)?;
     harness.provider.queue_faux(answers(&["allow"]));
     let outcome = decide(&harness.broker, destructive_args()).await?;
     assert!(outcome.allowed, "reason was {:?}", outcome.reason);
@@ -211,7 +212,7 @@ async fn a_reviewer_allowance_runs_the_call_and_never_asks_the_user() -> TestRes
 /// for every path that answers without [`PermissionBroker::run_ask`].
 #[tokio::test]
 async fn a_reviewed_decision_is_announced_and_settled_like_any_other() -> TestResult {
-    let mut harness = setup(Some(AskOutcome::Reject), true);
+    let mut harness = setup(Some(AskOutcome::Reject), true)?;
     harness.provider.queue_faux(answers(&["allow"]));
     let allowed = decide(&harness.broker, destructive_args()).await?;
     assert!(allowed.allowed, "reason was {:?}", allowed.reason);
@@ -251,7 +252,7 @@ async fn a_reviewed_decision_is_announced_and_settled_like_any_other() -> TestRe
 /// `ask_user` takes. A denial with neither is a dead end the model retries.
 #[tokio::test]
 async fn a_reviewer_denial_carries_its_evidence_and_a_request_number() -> TestResult {
-    let harness = setup(Some(AskOutcome::Reject), true);
+    let harness = setup(Some(AskOutcome::Reject), true)?;
     harness
         .provider
         .queue_faux(answers(&["deny it deletes an untracked build tree"]));
@@ -276,14 +277,14 @@ async fn a_reviewer_denial_carries_its_evidence_and_a_request_number() -> TestRe
 /// queue is the provider being unreachable, which must not read as consent.
 #[tokio::test]
 async fn a_malformed_or_absent_reviewer_answer_denies_rather_than_allows() -> TestResult {
-    let harness = setup(Some(AskOutcome::Reject), true);
+    let harness = setup(Some(AskOutcome::Reject), true)?;
     harness
         .provider
         .queue_faux(answers(&["Sure! That looks fine to me, go ahead."]));
     let outcome = decide(&harness.broker, destructive_args()).await?;
     assert!(!outcome.allowed, "prose is not an allowance");
 
-    let starved = setup(Some(AskOutcome::Reject), true);
+    let starved = setup(Some(AskOutcome::Reject), true)?;
     let outcome = decide(&starved.broker, destructive_args()).await?;
     assert!(!outcome.allowed, "an unreachable reviewer is not consent");
     assert!(outcome.reason.contains("ask_user with request 1"));
@@ -301,7 +302,7 @@ async fn a_malformed_or_absent_reviewer_answer_denies_rather_than_allows() -> Te
 /// re-issue runs without spending either again.
 #[tokio::test]
 async fn an_approved_request_lets_the_identical_call_through_once() -> TestResult {
-    let harness = setup(Some(AskOutcome::AllowOnce), true);
+    let harness = setup(Some(AskOutcome::AllowOnce), true)?;
     harness.provider.queue_faux(answers(&["deny unprovable"]));
     let denied = decide(&harness.broker, destructive_args()).await?;
     assert!(!denied.allowed);
@@ -332,7 +333,7 @@ async fn an_approved_request_lets_the_identical_call_through_once() -> TestResul
 /// review and no second question.
 #[tokio::test]
 async fn a_denied_call_re_issued_unchanged_spends_no_second_review() -> TestResult {
-    let harness = setup(Some(AskOutcome::Reject), true);
+    let harness = setup(Some(AskOutcome::Reject), true)?;
     harness.provider.queue_faux(answers(&["deny unprovable"]));
     let first = decide(&harness.broker, destructive_args()).await?;
     let after_review = provider_calls(&harness.provider);
@@ -363,7 +364,7 @@ async fn a_denied_call_re_issued_unchanged_spends_no_second_review() -> TestResu
 
 #[tokio::test]
 async fn a_user_denial_stands_without_asking_again() -> TestResult {
-    let harness = setup(Some(AskOutcome::Reject), true);
+    let harness = setup(Some(AskOutcome::Reject), true)?;
     harness.provider.queue_faux(answers(&["deny unprovable"]));
     decide(&harness.broker, destructive_args()).await?;
     let replay = harness.broker.resolve_request(1, "call-ask");
@@ -388,7 +389,7 @@ async fn a_user_denial_stands_without_asking_again() -> TestResult {
 /// never a silent terminal error.
 #[tokio::test]
 async fn headless_escalation_degrades_and_keeps_the_evidence() -> TestResult {
-    let harness = setup(None, true);
+    let harness = setup(None, true)?;
     harness
         .provider
         .queue_faux(answers(&["deny it leaves the working tree"]));
@@ -408,7 +409,7 @@ async fn headless_escalation_degrades_and_keeps_the_evidence() -> TestResult {
 
 #[tokio::test]
 async fn an_unknown_request_number_is_named_rather_than_guessed() -> TestResult {
-    let harness = setup(Some(AskOutcome::AllowOnce), true);
+    let harness = setup(Some(AskOutcome::AllowOnce), true)?;
     let replay = harness.broker.resolve_request(99, "call-ask");
     assert!(replay.contains("no open request 99"), "{replay}");
     assert!(
@@ -426,7 +427,7 @@ async fn an_unknown_request_number_is_named_rather_than_guessed() -> TestResult 
 /// the outcome is the deterministic one this file had before M7 existed.
 #[tokio::test]
 async fn with_no_reviewer_named_the_decision_is_byte_identical_to_today() -> TestResult {
-    let harness = setup(Some(AskOutcome::Reject), false);
+    let harness = setup(Some(AskOutcome::Reject), false)?;
     assert!(!harness.broker.has_reviewer());
     let outcome = decide(&harness.broker, destructive_args()).await?;
     assert!(!outcome.allowed);
@@ -436,7 +437,7 @@ async fn with_no_reviewer_named_the_decision_is_byte_identical_to_today() -> Tes
     );
     assert_eq!(provider_calls(&harness.provider), 0, "no review was spent");
 
-    let allowing = setup(Some(AskOutcome::AllowOnce), false);
+    let allowing = setup(Some(AskOutcome::AllowOnce), false)?;
     let outcome = decide(&allowing.broker, destructive_args()).await?;
     assert!(outcome.allowed);
     assert_eq!(outcome.reason, "allowed by user");
@@ -449,7 +450,8 @@ async fn with_no_reviewer_named_the_decision_is_byte_identical_to_today() -> Tes
 #[tokio::test]
 async fn the_role_is_the_only_switch_for_the_reviewer_the_tool_and_the_sentence() -> TestResult {
     for named in [false, true] {
-        let harness = setup(Some(AskOutcome::Reject), false);
+        let dir = Scratch::new(&format!("yi-wire-{named}"))?;
+        let harness = setup(Some(AskOutcome::Reject), false)?;
         let session = yi_runtime::AgentSession::new(
             yi_runtime::SessionConfig {
                 system_prompt: String::new(),
@@ -459,11 +461,9 @@ async fn the_role_is_the_only_switch_for_the_reviewer_the_tool_and_the_sentence(
             },
             Arc::clone(&harness.provider),
         );
-        let dir = std::env::temp_dir().join(format!("yi-wire-{}-{named}", std::process::id()));
-        let _ = std::fs::create_dir_all(&dir);
         session.install_extensions(yi_runtime::ext::install(yi_runtime::ExtOptions {
-            cwd: dir.clone(),
-            home: dir.clone(),
+            cwd: dir.to_path_buf(),
+            home: dir.to_path_buf(),
             mode: PermissionMode::Auto,
             user_system: String::new(),
             schema_instruction: None,
@@ -496,7 +496,6 @@ async fn the_role_is_the_only_switch_for_the_reviewer_the_tool_and_the_sentence(
             named,
             "an unnamed role must pay no prompt bytes"
         );
-        let _ = std::fs::remove_dir_all(&dir);
         let _ = session;
     }
     Ok(())

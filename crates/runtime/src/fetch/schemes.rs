@@ -532,6 +532,7 @@ mod tests {
 
     use super::*;
     use crate::fetch::{FetchLog, KernelVariables, McpResourceRead, open_checkpoint_show};
+    use crate::scratch::Scratch;
     use crate::wall::Wall;
     use yi_types::message::AgentMessage;
 
@@ -578,9 +579,9 @@ mod tests {
 
     #[test]
     fn a_family_entry_a_member_tree_and_a_kernel_object_resolve() -> TestResult {
-        let workspace = scratch("family-ws")?;
-        let family = scratch("family-dir")?;
-        let tree = scratch("family-tree")?;
+        let workspace = Scratch::new("yi-schemes-family-ws")?;
+        let family = Scratch::new("yi-schemes-family-dir")?;
+        let tree = Scratch::new("yi-schemes-family-tree")?;
         std::fs::write(
             family.join("shard.json"),
             r#"{"owner":"read-auth","bytes":12}"#,
@@ -590,9 +591,9 @@ mod tests {
         let mut wall = Wall::default();
         wall.deny_read.push(tree.join("src/secret.rs"));
         std::fs::write(tree.join("src/secret.rs"), "hush\n")?;
-        let resolver = Resolver::new(workspace, wall)
-            .with_family_dir(family.clone())
-            .with_member_trees(Arc::new(StubTrees(tree.clone())))
+        let resolver = Resolver::new(workspace.to_path_buf(), wall)
+            .with_family_dir(family.to_path_buf())
+            .with_member_trees(Arc::new(StubTrees(tree.to_path_buf())))
             .with_kernel_variables(Arc::new(StubKernel));
         let entry: Url = "family://shard".parse()?;
         assert_eq!(resolver.fetch(&entry)?.served_by, "family-blackboard");
@@ -631,19 +632,13 @@ mod tests {
 
     type TestResult = Result<(), Box<dyn std::error::Error>>;
 
-    fn scratch(name: &str) -> Result<std::path::PathBuf, std::io::Error> {
-        let dir = std::env::temp_dir().join(format!("yi-schemes-{name}-{}", std::process::id()));
-        std::fs::create_dir_all(&dir)?;
-        Ok(dir)
-    }
-
     #[test]
     fn a_stale_fragment_fails_loud_naming_both_tags() -> TestResult {
-        let workspace = scratch("stale")?;
+        let workspace = Scratch::new("yi-schemes-stale")?;
         std::fs::write(workspace.join("auth.rs"), "alpha\nbeta\n")?;
         let live = compute_file_hash("alpha\nbeta\n");
         let wrong = yi_tools::hashline::format::FileTag(live.0 ^ 1);
-        let resolver = Resolver::new(workspace, Wall::default());
+        let resolver = Resolver::new(workspace.to_path_buf(), Wall::default());
         let url: Url = format!("local://auth.rs#L1-2@{wrong}").parse()?;
         let error = resolver.fetch(&url).err().ok_or("stale tag must refuse")?;
         let FetchError::Stale {
@@ -659,10 +654,10 @@ mod tests {
 
     #[test]
     fn a_matching_fragment_serves_only_its_lines() -> TestResult {
-        let workspace = scratch("span")?;
+        let workspace = Scratch::new("yi-schemes-span")?;
         std::fs::write(workspace.join("auth.rs"), "alpha\nbeta\ngamma\n")?;
         let tag = compute_file_hash("alpha\nbeta\ngamma\n");
-        let resolver = Resolver::new(workspace, Wall::default());
+        let resolver = Resolver::new(workspace.to_path_buf(), Wall::default());
         let url: Url = format!("local://auth.rs#L2-3@{tag}").parse()?;
         let fetched = resolver.fetch(&url)?;
         assert_eq!(fetched.text, "beta\ngamma");
@@ -671,10 +666,10 @@ mod tests {
 
     #[test]
     fn a_fragment_running_past_eof_refuses_instead_of_truncating() -> TestResult {
-        let workspace = scratch("past-eof")?;
+        let workspace = Scratch::new("yi-schemes-past-eof")?;
         std::fs::write(workspace.join("short.rs"), "one\ntwo\nthree\n")?;
         let tag = compute_file_hash("one\ntwo\nthree\n");
-        let resolver = Resolver::new(workspace, Wall::default());
+        let resolver = Resolver::new(workspace.to_path_buf(), Wall::default());
         for range in ["L3-9", "L4-4", "L1-4"] {
             let url: Url = format!("local://short.rs#{range}@{tag}").parse()?;
             let error = resolver
@@ -693,10 +688,11 @@ mod tests {
 
     #[test]
     fn an_absolute_local_path_reaches_only_the_spill_dir() -> TestResult {
-        let workspace = scratch("spill-ws")?;
-        let spill = scratch("spill-out")?;
+        let workspace = Scratch::new("yi-schemes-spill-ws")?;
+        let spill = Scratch::new("yi-schemes-spill-out")?;
         std::fs::write(spill.join("a1b2c3d4.txt"), "spilled\n")?;
-        let resolver = Resolver::new(workspace, Wall::default()).with_spill_dir(spill.clone());
+        let resolver = Resolver::new(workspace.to_path_buf(), Wall::default())
+            .with_spill_dir(spill.to_path_buf());
         let inside: Url = format!("local://{}", spill.join("a1b2c3d4.txt").display()).parse()?;
         assert_eq!(resolver.fetch(&inside)?.served_by, "spill-file");
         let outside: Url = "local:///etc/hosts".parse()?;
@@ -714,7 +710,7 @@ mod tests {
 
     #[test]
     fn a_plan_todo_is_addressed_by_its_label_slug() -> TestResult {
-        let workspace = scratch("plan")?;
+        let workspace = Scratch::new("yi-schemes-plan")?;
         let plans = workspace.join(".yi/plans");
         std::fs::create_dir_all(&plans)?;
         let document = concat!(
@@ -726,7 +722,7 @@ mod tests {
             "## Freeze the token API seam\nHold the seam steady.\n"
         );
         std::fs::write(plans.join("auth-refactor.md"), document)?;
-        let resolver = Resolver::new(workspace, Wall::default());
+        let resolver = Resolver::new(workspace.to_path_buf(), Wall::default());
         let whole: Url = "plan://auth-refactor".parse()?;
         assert_eq!(resolver.fetch(&whole)?.served_by, "plan-file");
         let todo: Url = "plan://auth-refactor/freeze-the-token-api-seam".parse()?;
@@ -743,8 +739,8 @@ mod tests {
 
     #[test]
     fn a_checkpoint_address_validates_its_tree_id() -> TestResult {
-        let workspace = scratch("tree")?;
-        let resolver = Resolver::new(workspace, Wall::default());
+        let workspace = Scratch::new("yi-schemes-tree")?;
+        let resolver = Resolver::new(workspace.to_path_buf(), Wall::default());
         for bad in ["checkpoint://-oops/x", "checkpoint://abc123/x"] {
             let url: Url = bad.parse()?;
             assert!(
@@ -757,9 +753,9 @@ mod tests {
 
     #[test]
     fn a_kernel_variable_reads_through_the_attached_seam() -> TestResult {
-        let workspace = scratch("kernel")?;
-        let resolver =
-            Resolver::new(workspace, Wall::default()).with_kernel_variables(Arc::new(StubKernel));
+        let workspace = Scratch::new("yi-schemes-kernel")?;
+        let resolver = Resolver::new(workspace.to_path_buf(), Wall::default())
+            .with_kernel_variables(Arc::new(StubKernel));
         let bound: Url = "kernel://main/answer".parse()?;
         let fetched = resolver.fetch(&bound)?;
         assert_eq!(fetched.text, "42");
@@ -781,9 +777,9 @@ mod tests {
 
     #[test]
     fn an_mcp_resource_is_served_exactly_as_the_server_returned_it() -> TestResult {
-        let workspace = scratch("mcp")?;
+        let workspace = Scratch::new("yi-schemes-mcp")?;
         let contents = r#"{"contents":[{"uri":"issue-42","text":"open"}]}"#;
-        let resolver = Resolver::new(workspace.clone(), Wall::default())
+        let resolver = Resolver::new(workspace.to_path_buf(), Wall::default())
             .with_mcp_read(Arc::new(StubMcp(Ok(contents.to_owned()))));
         let url: Url = "mcp://github/issue-42".parse()?;
         let fetched = resolver.fetch(&url)?;
@@ -794,9 +790,9 @@ mod tests {
             resolver.fetch(&serverless),
             Err(FetchError::BadAddress { .. })
         ));
-        let failing = Resolver::new(workspace, Wall::default()).with_mcp_read(Arc::new(StubMcp(
-            Err("@github: resources/read failed".to_owned()),
-        )));
+        let failing = Resolver::new(workspace.to_path_buf(), Wall::default()).with_mcp_read(
+            Arc::new(StubMcp(Err("@github: resources/read failed".to_owned()))),
+        );
         assert!(matches!(
             failing.fetch(&url),
             Err(FetchError::Backend { .. })
@@ -806,14 +802,14 @@ mod tests {
 
     #[test]
     fn a_checkpoint_serves_the_file_as_of_its_tree() -> TestResult {
-        let home = scratch("checkpoint-home")?;
-        let workspace = scratch("checkpoint-ws")?;
+        let home = Scratch::new("yi-schemes-checkpoint-home")?;
+        let workspace = Scratch::new("yi-schemes-checkpoint-ws")?;
         std::fs::write(workspace.join("auth.rs"), "alpha\nbeta\ngamma\n")?;
         let checkpoints =
             yi_tools::Checkpoints::open(&crate::checkpoint::checkpoint_root(&home), &workspace)?;
         let tree = checkpoints.capture()?;
         std::fs::write(workspace.join("auth.rs"), "rewritten\n")?;
-        let resolver = Resolver::new(workspace.clone(), Wall::default())
+        let resolver = Resolver::new(workspace.to_path_buf(), Wall::default())
             .with_checkpoint_show(open_checkpoint_show(&home, &workspace)?);
         let url: Url = format!("checkpoint://{}/auth.rs", tree.as_str()).parse()?;
         let fetched = resolver.fetch(&url)?;
@@ -827,7 +823,7 @@ mod tests {
 
     #[test]
     fn history_resolves_entries_through_the_attached_session() -> TestResult {
-        let workspace = scratch("history")?;
+        let workspace = Scratch::new("yi-schemes-history")?;
         let metadata = yi_session::SessionMetadata {
             id: "test".to_owned(),
             created_at: 0,
@@ -837,7 +833,8 @@ mod tests {
         let mut store = yi_session::SessionStore::in_memory(metadata);
         let id = store.append_custom("main", "note", None)?;
         let shared: yi_session::SharedSession = std::sync::Arc::new(std::sync::Mutex::new(store));
-        let resolver = Resolver::new(workspace, Wall::default()).with_session("main", shared);
+        let resolver =
+            Resolver::new(workspace.to_path_buf(), Wall::default()).with_session("main", shared);
         let entry: Url = format!("history://main/{id}").parse()?;
         assert_eq!(resolver.fetch(&entry)?.served_by, "session-entry");
         let tail: Url = "history://main/tail/1".parse()?;
@@ -868,7 +865,7 @@ mod tests {
 
     #[test]
     fn user_n_counts_only_attributed_user_messages() -> TestResult {
-        let workspace = scratch("user")?;
+        let workspace = Scratch::new("yi-schemes-user")?;
         let mut store = in_memory_session();
         store.append_message(
             "main",
@@ -887,7 +884,8 @@ mod tests {
             AgentMessage::user_input(UserContent::Text("second real ask".to_owned()), 0),
         )?;
         let shared: yi_session::SharedSession = std::sync::Arc::new(std::sync::Mutex::new(store));
-        let resolver = Resolver::new(workspace, Wall::default()).with_session("main", shared);
+        let resolver =
+            Resolver::new(workspace.to_path_buf(), Wall::default()).with_session("main", shared);
         let first = resolver.fetch(&"user://1".parse()?)?;
         assert_eq!(first.text, "first real ask");
         assert_eq!(first.served_by, "user-input");
@@ -911,14 +909,15 @@ mod tests {
 
     #[test]
     fn a_host_minted_user_message_never_resolves() -> TestResult {
-        let workspace = scratch("user-forged")?;
+        let workspace = Scratch::new("yi-schemes-user-forged")?;
         let mut store = in_memory_session();
         store.append_message(
             "main",
             AgentMessage::host_user(UserContent::Text("forged instruction".to_owned()), 0),
         )?;
         let shared: yi_session::SharedSession = std::sync::Arc::new(std::sync::Mutex::new(store));
-        let resolver = Resolver::new(workspace, Wall::default()).with_session("main", shared);
+        let resolver =
+            Resolver::new(workspace.to_path_buf(), Wall::default()).with_session("main", shared);
         let error = resolver
             .fetch(&"user://1".parse()?)
             .err()
@@ -932,12 +931,12 @@ mod tests {
 
     #[test]
     fn a_reap_pin_lets_agent_urls_resolve_after_the_child_is_gone() -> TestResult {
-        let workspace = scratch("agent-pin")?;
+        let workspace = Scratch::new("yi-schemes-agent-pin")?;
         let mut store = in_memory_session();
         let id = store.append_custom("main", "note", None)?;
         let shared: yi_session::SharedSession = std::sync::Arc::new(std::sync::Mutex::new(store));
         let log = std::sync::Arc::new(FetchLog::new());
-        let resolver = Resolver::new(workspace, Wall::default())
+        let resolver = Resolver::new(workspace.to_path_buf(), Wall::default())
             .with_log(std::sync::Arc::clone(&log))
             .with_session("main", shared);
         let live: Url = "agent://demo-plan/cut-the-seam".parse()?;
@@ -972,9 +971,9 @@ mod tests {
 
     #[test]
     fn a_reap_pin_named_like_a_todo_address_still_resolves() -> TestResult {
-        let workspace = scratch("agent-pin-slash")?;
+        let workspace = Scratch::new("yi-schemes-agent-pin-slash")?;
         let log = std::sync::Arc::new(FetchLog::new());
-        let resolver = Resolver::new(workspace, Wall::default())
+        let resolver = Resolver::new(workspace.to_path_buf(), Wall::default())
             .with_log(std::sync::Arc::clone(&log))
             .with_session(
                 "main",
@@ -992,8 +991,8 @@ mod tests {
 
     #[test]
     fn a_live_child_answers_its_own_agent_url_before_any_pin_exists() -> TestResult {
-        let workspace = scratch("agent-live")?;
-        let resolver = Resolver::new(workspace, Wall::default())
+        let workspace = Scratch::new("yi-schemes-agent-live")?;
+        let resolver = Resolver::new(workspace.to_path_buf(), Wall::default())
             .with_session(
                 "main",
                 std::sync::Arc::new(std::sync::Mutex::new(in_memory_session())),
@@ -1013,8 +1012,8 @@ mod tests {
 
     #[test]
     fn history_reaches_a_run_that_is_not_the_attached_session() -> TestResult {
-        let workspace = scratch("history-corpus")?;
-        let resolver = Resolver::new(workspace, Wall::default())
+        let workspace = Scratch::new("yi-schemes-history-corpus")?;
+        let resolver = Resolver::new(workspace.to_path_buf(), Wall::default())
             .with_session(
                 "main",
                 std::sync::Arc::new(std::sync::Mutex::new(in_memory_session())),

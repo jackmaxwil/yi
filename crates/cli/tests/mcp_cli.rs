@@ -1,11 +1,14 @@
 use std::error::Error;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
+
+#[path = "../../types/tests/support/scratch.rs"]
+mod scratch;
+use scratch::Scratch;
 
 type TestResult = Result<(), Box<dyn Error>>;
 
 struct McpHome {
-    home: PathBuf,
+    home: Scratch,
 }
 
 fn fixture_server_path() -> PathBuf {
@@ -14,10 +17,7 @@ fn fixture_server_path() -> PathBuf {
 
 /// Isolated HOME with mcp enabled and a fixture stdio server entry.
 fn mcp_home() -> Result<McpHome, Box<dyn Error>> {
-    static DIR_ID: AtomicU64 = AtomicU64::new(0);
-    let unique = DIR_ID.fetch_add(1, Ordering::Relaxed);
-    let home = std::env::temp_dir().join(format!("yi-mcp-e2e-{}-{unique}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&home);
+    let home = Scratch::new("yi-mcp-e2e")?;
     std::fs::create_dir_all(home.join(".yi"))?;
     std::fs::write(
         home.join(".yi/config.json"),
@@ -70,7 +70,6 @@ fn disabled_config_hides_the_subcommand() -> TestResult {
     let out = yi_mcp(&home, &["connect", "fixture"])?;
     assert_eq!(out.code, 2);
     assert!(out.stderr.contains("mcp is disabled"), "{}", out.stderr);
-    std::fs::remove_dir_all(&home.home)?;
     Ok(())
 }
 
@@ -136,7 +135,6 @@ fn connect_list_call_grep_flow_matches_the_mcpc_examples() -> TestResult {
     let ping = yi_mcp(&home, &["@s", "ping", "--json"])?;
     assert_eq!(ping.code, 0);
 
-    std::fs::remove_dir_all(&home.home)?;
     Ok(())
 }
 
@@ -184,7 +182,6 @@ fn schema_snapshot_flags_breaking_changes() -> TestResult {
         broken.stderr
     );
 
-    std::fs::remove_dir_all(&home.home)?;
     Ok(())
 }
 
@@ -215,7 +212,6 @@ fn sessions_persist_states_and_survive_close_restart() -> TestResult {
         unknown.stderr
     );
 
-    std::fs::remove_dir_all(&home.home)?;
     Ok(())
 }
 
@@ -226,7 +222,6 @@ fn skill_document_is_printed_only_by_explicit_ask() -> TestResult {
     assert_eq!(skill.code, 0);
     assert!(skill.stdout.contains("yi mcp: MCP command-line client"));
     assert!(skill.stdout.contains("progressive discovery") || skill.stdout.contains("grep"));
-    std::fs::remove_dir_all(&home.home)?;
     Ok(())
 }
 
@@ -259,6 +254,5 @@ fn fetch_resolves_an_mcp_url_through_the_one_shot_cli() -> TestResult {
         addressless.stderr
     );
 
-    std::fs::remove_dir_all(&home.home)?;
     Ok(())
 }

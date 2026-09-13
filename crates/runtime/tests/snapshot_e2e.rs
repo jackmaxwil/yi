@@ -1,3 +1,7 @@
+#[path = "../../types/tests/support/scratch.rs"]
+mod scratch;
+use scratch::Scratch;
+
 use std::error::Error;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -141,9 +145,7 @@ fn service(session_dir: &std::path::Path, notices: &Arc<Mutex<Vec<String>>>) -> 
 
 #[tokio::test]
 async fn session_dir_snapshot_revives_through_the_service() -> TestResult {
-    let dir = std::env::temp_dir().join(format!("yi-snap-svc-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir)?;
+    let dir = Scratch::new("yi-snap-svc")?;
     let notices = Arc::new(Mutex::new(Vec::new()));
 
     let first = service(&dir, &notices);
@@ -183,7 +185,6 @@ async fn session_dir_snapshot_revives_through_the_service() -> TestResult {
         "the model must be told which names were revived, only after bootstrap: {announced}"
     );
     second.dispose().await;
-    let _ = std::fs::remove_dir_all(&dir);
     Ok(())
 }
 
@@ -193,9 +194,7 @@ async fn session_dir_snapshot_revives_through_the_service() -> TestResult {
 #[tokio::test]
 async fn the_snapshot_dir_is_the_sessions_dir_not_the_process_dir() -> TestResult {
     const ID: &str = "snap-continue";
-    let root = std::env::temp_dir().join(format!("yi-snap-dir-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&root);
-    std::fs::create_dir_all(&root)?;
+    let root = Scratch::new("yi-snap-dir")?;
 
     let (_first, kernel) = process(&root, 4711, ID)?;
     let outcome = cell(&kernel, "answer = 42").await?;
@@ -217,7 +216,6 @@ async fn the_snapshot_dir_is_the_sessions_dir_not_the_process_dir() -> TestResul
         outcome.result.stderr
     );
     kernel.dispose().await;
-    let _ = std::fs::remove_dir_all(&root);
     Ok(())
 }
 
@@ -226,9 +224,7 @@ async fn the_snapshot_dir_is_the_sessions_dir_not_the_process_dir() -> TestResul
 /// the first's file in the shared sessions dir and the second had none.
 #[tokio::test]
 async fn a_store_switch_rekeys_the_live_kernel() -> TestResult {
-    let root = std::env::temp_dir().join(format!("yi-snap-switch-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&root);
-    std::fs::create_dir_all(&root)?;
+    let root = Scratch::new("yi-snap-switch")?;
 
     let (session, kernel) = process(&root, 4711, "snap-a")?;
     cell(&kernel, "answer = 42").await?;
@@ -258,15 +254,12 @@ async fn a_store_switch_rekeys_the_live_kernel() -> TestResult {
         outcome.result.stderr
     );
     kernel.dispose().await;
-    let _ = std::fs::remove_dir_all(&root);
     Ok(())
 }
 
 #[tokio::test]
 async fn post_compaction_sync_prunes_and_reports_names() -> TestResult {
-    let dir = std::env::temp_dir().join(format!("yi-sync-svc-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir)?;
+    let dir = Scratch::new("yi-sync-svc")?;
     let notices = Arc::new(Mutex::new(Vec::new()));
     let service = service(&dir, &notices);
 
@@ -293,6 +286,5 @@ async fn post_compaction_sync_prunes_and_reports_names() -> TestResult {
         "the notice must list surviving names: {notice}\nkernel diagnostics: {diagnostics}"
     );
     service.dispose().await;
-    let _ = std::fs::remove_dir_all(&dir);
     Ok(())
 }

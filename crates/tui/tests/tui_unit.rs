@@ -13,6 +13,10 @@ use yi_tui::status::StatusInput;
 use yi_tui::tree::{TreeFilter, TreeResult, TreeView};
 use yi_tui::wrap::wrap_line;
 
+#[path = "../../types/tests/support/scratch.rs"]
+mod scratch;
+use scratch::Scratch;
+
 type TestResult = Result<(), Box<dyn Error>>;
 
 fn theme() -> Theme {
@@ -1981,7 +1985,8 @@ fn cast_payloads(path: &std::path::Path) -> Result<Vec<String>, Box<dyn Error>> 
 fn a_character_split_across_writes_survives_the_cast() -> TestResult {
     use std::io::Write;
 
-    let path = std::env::temp_dir().join(format!("yi-cast-utf8-{}.cast", std::process::id()));
+    let dir = Scratch::new("yi-cast-utf8")?;
+    let path = dir.join("run.cast");
     let mut cast = yi_tui::capture::CastWriter::create(&path, 80, 24)?;
     // "─" is e2 94 80: two bytes now, the third only after a flush.
     cast.write_all(b"a\xe2\x94")?;
@@ -2006,7 +2011,6 @@ fn a_character_split_across_writes_survives_the_cast() -> TestResult {
     cast.write_all(b"\xffok")?;
     cast.flush()?;
     let third = cast_payloads(&path)?;
-    let _ = std::fs::remove_file(&path);
     assert_eq!(
         third.concat(),
         "a─bok",
@@ -2024,7 +2028,8 @@ fn an_unchanged_frame_records_nothing() -> TestResult {
     use ratatui::backend::Backend;
     use std::io::Write;
 
-    let path = std::env::temp_dir().join(format!("yi-cast-idle-{}.cast", std::process::id()));
+    let dir = Scratch::new("yi-cast-idle")?;
+    let path = dir.join("run.cast");
     let mut backend = yi_tui::capture::RecordingBackend::new(80, 24, Some(&path))?;
     // Exactly what `render::draw` does on a tick that changed nothing.
     let idle_tick = |backend: &mut yi_tui::capture::RecordingBackend| -> TestResult {
@@ -2054,7 +2059,6 @@ fn an_unchanged_frame_records_nothing() -> TestResult {
     backend.draw(std::iter::once((0, 0, &cell)))?;
     Backend::flush(&mut backend)?;
     let changed = cast_payloads(&path)?;
-    let _ = std::fs::remove_file(&path);
     assert_eq!(
         changed.len(),
         first.len() + 1,
