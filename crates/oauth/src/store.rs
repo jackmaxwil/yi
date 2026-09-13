@@ -191,9 +191,10 @@ pub fn now_ms() -> u64 {
         .unwrap_or(0)
 }
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
+#[cfg(unix)]
 mod tests {
-    use super::*;
+    use super::{Credential, Kind, Store};
     use std::os::unix::fs::PermissionsExt;
 
     fn credential(access: &str) -> Credential {
