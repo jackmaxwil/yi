@@ -502,12 +502,11 @@ fn build_session(
             mcp_read: Some(std::sync::Arc::new(McpOneShot)),
             broker: Some(broker),
             tools: std::sync::Arc::new(move || {
-                let documents = Some(yi_runtime::documents(&tools_home));
-                let mut tools = yi_runtime::builtin_tools_with(freeform_grammar, documents);
-                for tool in yi_runtime::discover_exec_tools(&tools_home.join(".yi/tools")) {
-                    tools.push(std::sync::Arc::new(tool));
-                }
-                tools
+                yi_runtime::session_tools(
+                    freeform_grammar,
+                    Some(yi_runtime::documents(&tools_home)),
+                    Some(tools_home.join(".yi/tools")),
+                )
             }),
             depth: 0,
             max_depth: config().rlm.as_ref().map_or(1, RlmConfig::depth),
