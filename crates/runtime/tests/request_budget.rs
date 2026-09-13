@@ -111,8 +111,7 @@ fn session_tool_defs() -> Result<Vec<ToolDef>, Box<dyn Error>> {
         .enable_all()
         .build()?;
     let _reactor = runtime.enter();
-    let root = std::env::temp_dir().join(format!("yi-surface-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&root);
+    let root = Scratch::new("yi-surface")?;
     let (cwd, home) = (root.join("cwd"), root.join("home"));
     std::fs::create_dir_all(&cwd)?;
     std::fs::create_dir_all(&home)?;
@@ -170,7 +169,6 @@ fn session_tool_defs() -> Result<Vec<ToolDef>, Box<dyn Error>> {
         .iter()
         .map(|tool| tool.definition())
         .collect();
-    let _ = std::fs::remove_dir_all(&root);
     Ok(defs)
 }
 
