@@ -1,0 +1,44 @@
+{"session": "kill-then-own-timeout", "call": 1, "timedOut": true, "exitCode": -1, "durationMs": 600000, "command": "python3 build_index.py --full"}
+{"session": "kill-then-own-timeout", "call": 2, "timedOut": false, "exitCode": 0, "durationMs": 85, "command": "ls -la out/"}
+{"session": "kill-then-own-timeout", "call": 3, "timedOut": false, "exitCode": 124, "durationMs": 30011, "command": "timeout 30 python3 scan.py"}
+{"session": "kill-then-own-timeout", "call": 4, "timedOut": false, "exitCode": 0, "durationMs": 2004, "command": "timeout 30 python3 scan.py --quick"}
+{"session": "kill-two-successes-kill", "call": 1, "timedOut": true, "exitCode": -1, "durationMs": 600000, "command": "while true; do curl -s localhost:8080/health; sleep 5; done"}
+{"session": "kill-two-successes-kill", "call": 2, "timedOut": false, "exitCode": 0, "durationMs": 140, "command": "curl -s localhost:8080/metrics | head -20"}
+{"session": "kill-two-successes-kill", "call": 3, "timedOut": false, "exitCode": 0, "durationMs": 52, "command": "tail -n 50 service.log"}
+{"session": "kill-two-successes-kill", "call": 4, "timedOut": true, "exitCode": -1, "durationMs": 600000, "command": "while true; do curl -s localhost:8080/health; sleep 5; done"}
+{"session": "own-timeouts-in-a-row", "call": 1, "timedOut": false, "exitCode": 124, "durationMs": 300040, "command": "timeout 300 python3 match_shapes.py --scale 0.5"}
+{"session": "own-timeouts-in-a-row", "call": 2, "timedOut": false, "exitCode": 124, "durationMs": 300020, "command": "timeout 5m python3 match_shapes.py --scale 0.25"}
+{"session": "own-timeouts-in-a-row", "call": 3, "timedOut": false, "exitCode": 124, "durationMs": 240010, "command": "timeout 240 python3 match_shapes.py --sample 100"}
+{"session": "own-timeouts-in-a-row", "call": 4, "timedOut": false, "exitCode": 0, "durationMs": 9012, "command": "python3 match_shapes.py --sample 10"}
+{"session": "search-kills-in-a-row", "call": 1, "timedOut": true, "exitCode": -1, "durationMs": 120000, "command": "grep -rn \"retry_budget\" ."}
+{"session": "search-kills-in-a-row", "call": 2, "timedOut": true, "exitCode": 0, "durationMs": 120000, "command": "find . -name \"*.parquet\""}
+{"session": "hits-five-calls-apart", "call": 1, "timedOut": true, "exitCode": -1, "durationMs": 180000, "command": "make -j8 all"}
+{"session": "hits-five-calls-apart", "call": 2, "timedOut": false, "exitCode": 0, "durationMs": 30, "command": "ls build"}
+{"session": "hits-five-calls-apart", "call": 3, "timedOut": false, "exitCode": 2, "durationMs": 4100, "command": "make -C docs"}
+{"session": "hits-five-calls-apart", "call": 4, "timedOut": false, "exitCode": 0, "durationMs": 25, "command": "tail -5 build/config.log"}
+{"session": "hits-five-calls-apart", "call": 5, "timedOut": false, "exitCode": 124, "durationMs": 45002, "command": "timeout 45 ./run_bench.sh --long"}
+{"session": "hits-five-calls-apart", "call": 6, "timedOut": false, "exitCode": 0, "durationMs": 61, "command": "cat bench/summary.txt"}
+{"session": "hits-five-calls-apart", "call": 7, "timedOut": false, "exitCode": 1, "durationMs": 350, "command": "./run_bench.sh --check"}
+{"session": "hits-five-calls-apart", "call": 8, "timedOut": false, "exitCode": 0, "durationMs": 18, "command": "git diff --stat"}
+{"session": "hits-five-calls-apart", "call": 9, "timedOut": false, "exitCode": 0, "durationMs": 12000, "command": "make -j8 lib"}
+{"session": "hits-five-calls-apart", "call": 10, "timedOut": true, "exitCode": -1, "durationMs": 180000, "command": "make -j8 all"}
+{"session": "one-kill", "call": 1, "timedOut": false, "exitCode": 0, "durationMs": 900, "command": "git log --oneline -5"}
+{"session": "one-kill", "call": 2, "timedOut": true, "exitCode": -1, "durationMs": 600000, "command": "cargo build --release"}
+{"session": "one-kill", "call": 3, "timedOut": false, "exitCode": 0, "durationMs": 40, "command": "ls target/release"}
+{"session": "one-own-timeout", "call": 1, "timedOut": false, "exitCode": 124, "durationMs": 60015, "command": "timeout 60 node server.js"}
+{"session": "one-own-timeout", "call": 2, "timedOut": false, "exitCode": 7, "durationMs": 20, "command": "curl -s localhost:3000/"}
+{"session": "one-own-timeout", "call": 3, "timedOut": false, "exitCode": 0, "durationMs": 700, "command": "node server.js --check"}
+{"session": "unwrapped-exit-124", "call": 1, "timedOut": true, "exitCode": -1, "durationMs": 300000, "command": "python3 train.py --epochs 50"}
+{"session": "unwrapped-exit-124", "call": 2, "timedOut": false, "exitCode": 124, "durationMs": 45249, "command": "./probe_ports.sh 9000-9100"}
+{"session": "unwrapped-exit-124", "call": 3, "timedOut": false, "exitCode": 124, "durationMs": 10050, "command": "./wait_ready.sh --timeout 10"}
+{"session": "wrapped-exit-124-before-its-limit", "call": 1, "timedOut": true, "exitCode": -1, "durationMs": 120000, "command": "pytest tests/slow -x"}
+{"session": "wrapped-exit-124-before-its-limit", "call": 2, "timedOut": false, "exitCode": 124, "durationMs": 12, "command": "timeout 60 sh -c 'exit 124'"}
+{"session": "wrapped-exit-124-before-its-limit", "call": 3, "timedOut": false, "exitCode": 124, "durationMs": 3000, "command": "timeout 5m ./migrate.sh"}
+{"session": "kill-after-and-signal-options", "call": 1, "timedOut": false, "exitCode": 124, "durationMs": 120004, "command": "timeout -k 5 -s INT 2m python3 crawl.py"}
+{"session": "kill-after-and-signal-options", "call": 2, "timedOut": false, "exitCode": 124, "durationMs": 60000, "command": "timeout -k 5 -s INT 2m python3 crawl.py --pages 50"}
+{"session": "kill-after-and-signal-options", "call": 3, "timedOut": false, "exitCode": 124, "durationMs": 90010, "command": "timeout --kill-after=10 --signal=TERM 90s python3 crawl.py --pages 20"}
+{"session": "env-path-and-chain-before-timeout", "call": 1, "timedOut": true, "exitCode": -1, "durationMs": 600000, "command": "sort -S 2G events.tsv > sorted.tsv"}
+{"session": "env-path-and-chain-before-timeout", "call": 2, "timedOut": false, "exitCode": 124, "durationMs": 480030, "command": "LC_ALL=C /usr/bin/timeout 8m sort -S 4G events.tsv -o sorted.tsv"}
+{"session": "env-path-and-chain-before-timeout", "call": 3, "timedOut": false, "exitCode": 124, "durationMs": 20005, "command": "cd data && timeout 20 ./fetch.sh"}
+{"session": "later-segment-exits-124-misfires", "call": 1, "timedOut": true, "exitCode": -1, "durationMs": 300000, "command": "python3 crawl.py --all"}
+{"session": "later-segment-exits-124-misfires", "call": 2, "timedOut": false, "exitCode": 124, "durationMs": 20600, "command": "timeout 20 ./warm_cache.sh; ./verify_cache.sh"}
