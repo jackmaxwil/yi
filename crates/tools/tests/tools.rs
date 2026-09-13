@@ -222,6 +222,48 @@ fn a_second_time_limit_in_four_bash_calls_asks_for_a_new_method() -> TestResult 
 }
 
 #[test]
+fn a_capped_timeout_secs_opens_every_result_of_the_call() -> TestResult {
+    let dir = temp_dir("bash-timeout-cap")?;
+    let mut context = ToolContext::new(dir.0.clone());
+    let capped = "[timeout_secs 900 capped at 600]\n";
+    // telecom-entity-resolution's asks in the 2026-09-11 v4 sweep: these three returned within
+    // 66 s, and the third's arguments sent again ran to the 600 s kill, on the same result path.
+    for command in [
+        "cd /app && timeout 900 python solve.py",
+        "cd /app && timeout 900 python3 solve.py",
+        "cd /app && timeout 900 ~/.yi/kernel-venv-8286f6bd/bin/python solve.py",
+    ] {
+        let output = BashTool::default().execute(
+            args(&[("command", json!(command)), ("timeout_secs", json!(900))]),
+            &context,
+        );
+        let text = output_text(&output);
+        assert!(text.starts_with(capped), "{text}");
+    }
+    // The long run under a TUI's auto_background, with `sleep 2` standing in for its 605 s.
+    context.auto_background = Some(std::time::Duration::from_millis(200));
+    let output = BashTool::default().execute(
+        args(&[("command", json!("sleep 2")), ("timeout_secs", json!(900))]),
+        &context,
+    );
+    let text = output_text(&output);
+    assert!(text.contains("Backgrounded as job"), "{text}");
+    assert!(text.starts_with(capped), "{text}");
+    context.auto_background = None;
+    let command = "cd /app && timeout 580 ~/.yi/kernel-venv-8286f6bd/bin/python solve.py";
+    let output = BashTool::default().execute(
+        args(&[("command", json!(command)), ("timeout_secs", json!(600))]),
+        &context,
+    );
+    let text = output_text(&output);
+    assert!(
+        !text.contains("capped at"),
+        "an ask at the ceiling says nothing: {text}"
+    );
+    Ok(())
+}
+
+#[test]
 fn bash_times_out_kills_the_command_and_says_how_to_raise_the_limit() -> TestResult {
     let dir = temp_dir("bash-timeout")?;
     let context = ToolContext::new(dir.0.clone());
