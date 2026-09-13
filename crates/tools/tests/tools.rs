@@ -185,7 +185,7 @@ fn bash_kills_a_running_command_when_cancelled() -> TestResult {
 fn a_second_time_limit_in_four_bash_calls_asks_for_a_new_method() -> TestResult {
     let dir = temp_dir("bash-ceiling-nudge")?;
     let tool = BashTool::default();
-    let context = ToolContext::new(dir.0.clone());
+    let context = ToolContext::new(dir.to_path_buf());
     let run = |command: &str, limit: u64| {
         let output = tool.execute(
             args(&[("command", json!(command)), ("timeout_secs", json!(limit))]),
@@ -217,7 +217,7 @@ fn a_second_time_limit_in_four_bash_calls_asks_for_a_new_method() -> TestResult 
 #[test]
 fn a_capped_timeout_secs_opens_every_result_of_the_call() -> TestResult {
     let dir = temp_dir("bash-timeout-cap")?;
-    let mut context = ToolContext::new(dir.0.clone());
+    let mut context = ToolContext::new(dir.to_path_buf());
     let capped = "[timeout_secs 900 capped at 600]\n";
     // telecom-entity-resolution's asks in the 2026-09-11 v4 sweep: these three returned within
     // 66 s, and the third's arguments sent again ran to the 600 s kill, on the same result path.

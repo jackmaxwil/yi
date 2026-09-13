@@ -721,7 +721,7 @@ fn an_old_session_without_ids_rehydrates_with_ids() -> TestResult {
 
 #[test]
 fn every_argument_error_ends_with_an_id_call_that_lands() -> TestResult {
-    let (session, _root) = session("example")?;
+    let (_root, session) = session("example")?;
     let tool = TodoTool::new(store_for(&session));
     // In the order their examples can run on one list; each refusal is an argument error.
     let refusals = [
@@ -798,9 +798,14 @@ fn sequences(source: &str) -> Result<Vec<Sequence>, Box<dyn Error>> {
 }
 
 /// A fresh session seeded as the runtime seeds it, with the session's landed calls before `upto`
-/// replayed; a refused call moved nothing, so this is the list the model saw.
-fn replayed_to(sequence: &Sequence, upto: usize, tag: &str) -> Result<TodoTool, Box<dyn Error>> {
-    let (session, _root) = session(&format!("{}-{upto}-{tag}", sequence.name))?;
+/// replayed; a refused call moved nothing, so this is the list the model saw. The scratch dir
+/// comes back with the tool: the session writes into it for as long as the tool is used.
+fn replayed_to(
+    sequence: &Sequence,
+    upto: usize,
+    tag: &str,
+) -> Result<(Scratch, TodoTool), Box<dyn Error>> {
+    let (root, session) = session(&format!("{}-{upto}-{tag}", sequence.name))?;
     let store = store_for(&session);
     if let Some(seed) = &sequence.seed {
         yi_runtime::todo::coupling::seed(&store, seed);
@@ -811,7 +816,7 @@ fn replayed_to(sequence: &Sequence, upto: usize, tag: &str) -> Result<TodoTool, 
             replay(&tool, &row["args"]);
         }
     }
-    Ok(tool)
+    Ok((root, tool))
 }
 
 /// validate, then execute, as the loop runs a tool call.
@@ -827,7 +832,7 @@ fn replay(tool: &TodoTool, args: &Value) -> (bool, String) {
 fn every_well_formed_call_returns_mains_result() -> TestResult {
     let mut calls = 0;
     for sequence in sequences(GOLDEN)? {
-        let tool = replayed_to(&sequence, 0, "same")?;
+        let (_root, tool) = replayed_to(&sequence, 0, "same")?;
         for (index, row) in sequence.calls.iter().enumerate() {
             let (is_error, text) = replay(&tool, &row["args"]);
             assert_eq!(
@@ -851,7 +856,7 @@ fn a_call_refused_for_its_shape_lands_as_it_meant() -> TestResult {
             if row["isError"] == false {
                 continue;
             }
-            let tool = replayed_to(&sequence, index, "sent")?;
+            let (_root, tool) = replayed_to(&sequence, index, "sent")?;
             let (is_error, text) = replay(&tool, &row["args"]);
             let at = format!("{} call {index}", sequence.name);
             let Some(means) = row.get("means") else {
@@ -867,7 +872,8 @@ fn a_call_refused_for_its_shape_lands_as_it_meant() -> TestResult {
                 }
                 continue;
             };
-            let (_, meant) = replay(&replayed_to(&sequence, index, "meant")?, means);
+            let (_meant_root, meant_tool) = replayed_to(&sequence, index, "meant")?;
+            let (_, meant) = replay(&meant_tool, means);
             // A set read as init, or an init as set, names the op it took on a line of its own.
             let shown = text
                 .strip_prefix("(op inferred: set)\n")
@@ -895,7 +901,7 @@ fn todo_fixture(name: &str) -> Result<String, Box<dyn Error>> {
 #[test]
 fn a_done_call_with_leaked_glm_markup_lands_as_done() -> TestResult {
     let fixture: Value = serde_json::from_str(&todo_fixture("glm-leaked-calls.json")?)?;
-    let (session, _root) = session("leaked")?;
+    let (_root, session) = session("leaked")?;
     let store = store_for(&session);
     let tool = TodoTool::new(Arc::clone(&store));
     let decode =

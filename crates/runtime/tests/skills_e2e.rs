@@ -200,8 +200,7 @@ async fn bundled_python_skills_work_through_the_kernel() -> TestResult {
 
     // The call a refused read names runs as named, on an image under a name with a quote and a
     // backslash that a bare "{path}" literal breaks on (the 2026-09-11 v4 sweep's image reads).
-    let dir = std::env::temp_dir().join(format!("yi-skills-attach-{}", std::process::id()));
-    std::fs::create_dir_all(&dir)?;
+    let dir = Scratch::new("yi-skills-attach")?;
     let image = dir.join("sch\"em\\atic.png");
     std::fs::copy(
         concat!(
@@ -216,7 +215,7 @@ async fn bundled_python_skills_work_through_the_kernel() -> TestResult {
         .ok_or("no read tool")?;
     let refused = read.execute(
         serde_json::from_value(json!({"path": image}))?,
-        &ToolContext::new(dir.clone()),
+        &ToolContext::new(dir.to_path_buf()),
     );
     let refusal: String = refused
         .result
@@ -244,7 +243,6 @@ async fn bundled_python_skills_work_through_the_kernel() -> TestResult {
         "the display_data attachment must reach the host reducer"
     );
     assert_eq!(attach_cell.result.attachments[0].mime_type, "image/png");
-    std::fs::remove_dir_all(&dir)?;
 
     service.dispose().await;
     Ok(())

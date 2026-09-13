@@ -603,9 +603,10 @@ mod tests {
             eprintln!("skipped: no timeout(1) on PATH (coreutils); on Linux this runs or fails");
             return Ok(());
         }
+        let dir = Scratch::new("yi-jobs")?;
         let run = run_or_background(
             "cd /tmp && timeout 900 python3 -c 'import time; print(\"ready\", flush=True); time.sleep(30)' && ls -la",
-            &scratch()?,
+            &dir,
             &never(),
             None,
             Duration::from_secs(3),

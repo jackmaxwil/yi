@@ -239,7 +239,7 @@ fn every_commonmark_bullet_marker_counts_as_an_enumeration() {
 
 #[test]
 fn a_quiet_prompt_escalates_on_the_trajectory() -> TestResult {
-    let dir = temp_dir("escalate")?;
+    let dir = Scratch::new("yi-ext-escalate")?;
     let mut host = started(&dir, &dir);
     host.dispatch(&host.prompt_event("fix the typo"), None);
     assert!(
@@ -261,13 +261,12 @@ fn a_quiet_prompt_escalates_on_the_trajectory() -> TestResult {
         host.system_prompt().contains("# Orchestrate"),
         "five tool calls in one turn is the escalation signal"
     );
-    let _ = std::fs::remove_dir_all(&dir);
     Ok(())
 }
 
 #[test]
 fn a_search_over_many_files_escalates() -> TestResult {
-    let dir = temp_dir("files")?;
+    let dir = Scratch::new("yi-ext-files")?;
     let mut host = started(&dir, &dir);
     host.dispatch(
         &Event::ToolResult {
@@ -278,7 +277,6 @@ fn a_search_over_many_files_escalates() -> TestResult {
         None,
     );
     assert!(host.system_prompt().contains("# Orchestrate"));
-    let _ = std::fs::remove_dir_all(&dir);
     Ok(())
 }
 
