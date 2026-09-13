@@ -313,6 +313,10 @@ pub(crate) fn image_kind(bytes: &[u8]) -> Option<&'static str> {
     }
 }
 
+pub(crate) fn python_str(path: &Path) -> String {
+    serde_json::Value::from(path.to_string_lossy()).to_string()
+}
+
 /// UTF-16 by its byte-order mark, else Latin-1: every byte is a character, so nothing is lost.
 pub(crate) fn decode_text(bytes: &[u8]) -> (String, &'static str) {
     let pairs = |bytes: &[u8], big: bool| -> String {
@@ -754,8 +758,11 @@ fn run(
         )));
     }
     if let (Some(blank), Some(total)) = (count("ocr"), count("page_count")) {
+        let page = pages.first().copied().unwrap_or(1);
         return Err(Converted::Refused(format!(
-            "no text layer on any of the {blank} PDF page(s) read of {total} (image-only or vector art), so there is no text to show"
+            "no text layer on any of the {blank} PDF page(s) read of {total} (image-only or vector art), so there is no text to show; to see page {page}, render it to PNG in ipython: `%pip install pymupdf`, then `import pymupdf; p = \"/tmp/page-{page}.png\"; pymupdf.open({source})[{index}].get_pixmap(dpi=200).save(p); print(await attach_image(p))`",
+            source = python_str(source),
+            index = page.saturating_sub(1),
         )));
     }
     let reason = text("error").map_or_else(

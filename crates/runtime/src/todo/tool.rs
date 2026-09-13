@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::sync::Arc;
 
 use serde_json::{Map, Value, json};
@@ -181,7 +182,33 @@ pub fn infer_op(args: &Map<String, Value>) -> Option<&'static str> {
     }
 }
 
+/// Incident: 17 v4 `done` calls leaked GLM's call markup, `{"done<arg_key>evidence": …}` or
+/// `{"done": "evidence</arg_key><arg_value>…"}`; the field reads back and `infer_op` finds the op.
+pub fn unleak(args: &Map<String, Value>) -> Cow<'_, Map<String, Value>> {
+    let mut fixed = Cow::Borrowed(args);
+    for (key, value) in args {
+        let leaked = match key.rsplit_once("<arg_key>") {
+            Some((_, field)) => Some((field, value.clone())),
+            None => value
+                .as_str()
+                .and_then(|text| text.split_once("</arg_key><arg_value>"))
+                .filter(|(field, _)| field.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'))
+                .map(|(field, rest)| (field, Value::String(rest.to_owned()))),
+        };
+        if let Some((field, value)) = leaked
+            && !field.is_empty()
+            && !fixed.contains_key(field)
+        {
+            let map = fixed.to_mut();
+            map.remove(key);
+            map.insert(field.to_owned(), value);
+        }
+    }
+    fixed
+}
+
 pub fn parse_op(args: &Map<String, Value>) -> Result<Op, ArgError> {
+    let args = &unleak(args);
     let op = string(args, "op")
         .or_else(|| infer_op(args).map(str::to_owned))
         .ok_or(ArgError::NoOp)?;

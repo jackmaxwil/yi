@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use serde_json::{Map, Value, json};
 use yi_runtime::session_store::{CreateOptions, JsonlRepo, SessionRepo, SharedSession};
-use yi_runtime::todo::tool::TodoTool;
+use yi_runtime::todo::tool::{TodoTool, unleak};
 use yi_runtime::todo::{Op, Target, TodoError, TodoStore, latest_record, text};
 use yi_tools::{Tool, ToolContext};
 use yi_types::plan::doc::{TodoLabel, TodoStateName};
@@ -879,6 +879,67 @@ fn a_call_refused_for_its_shape_lands_as_it_meant() -> TestResult {
         }
     }
     assert!(wrong.is_empty(), "{}", wrong.join("\n"));
-    assert_eq!((landed, refused), (17, 12), "of the 29 refused calls");
+    assert_eq!((landed, refused), (17, 9), "of the 26 refused calls");
+    Ok(())
+}
+
+fn todo_fixture(name: &str) -> Result<String, Box<dyn Error>> {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/todo");
+    Ok(std::fs::read_to_string(dir.join(name))?)
+}
+
+/// Synthetic calls in both shapes GLM's leaked markup took in 17 refused `done` calls of the
+/// 2026-09-11 v4 sweep, run through the adapters' decode and the tool after an `init`.
+#[test]
+fn a_done_call_with_leaked_glm_markup_lands_as_done() -> TestResult {
+    let fixture: Value = serde_json::from_str(&todo_fixture("glm-leaked-calls.json")?)?;
+    let (session, _root) = session("leaked")?;
+    let store = store_for(&session);
+    let tool = TodoTool::new(Arc::clone(&store));
+    let decode =
+        |args: &Value| Value::Object(yi_ai::json_salvage::parse_streaming_json(&args.to_string()));
+    for args in fixture["refused"].as_array().ok_or("refused")? {
+        call(&tool, json!({"op": "init", "items": ["a standing item"]}));
+        let (is_error, text) = call(&tool, decode(args));
+        assert!(is_error && store.progress().open == 1, "{args}: {text}");
+    }
+    let lands = fixture["lands"].as_array().ok_or("lands")?;
+    let mut refused = Vec::new();
+    for case in lands {
+        let args = &case["arguments"];
+        call(&tool, json!({"op": "init", "items": [args["label"]]}));
+        let (is_error, text) = call(&tool, decode(args));
+        let list = store.list();
+        let item = list.items().next().ok_or("the item")?;
+        let landed = item.state == TodoStateName::Done
+            && item.evidence.as_deref() == case["evidence"].as_str()
+            && text.starts_with("(op inferred: done)\n");
+        if is_error || !landed {
+            refused.push(format!("{args}: {text}"));
+        }
+    }
+    assert!(
+        refused.is_empty(),
+        "{} of {} leaked calls did not land as done:\n{}",
+        refused.len(),
+        lands.len(),
+        refused.join("\n")
+    );
+    Ok(())
+}
+
+/// Synthetic markup-free calls across every op and argument form, refusals and odd values
+/// included, come back from `unleak` byte for byte, as the sweep's 2,383 such calls did.
+#[test]
+fn unleak_leaves_every_call_without_the_markup_byte_identical() -> TestResult {
+    let mut calls = 0;
+    for line in todo_fixture("well-formed-calls.jsonl")?.lines() {
+        assert!(!line.contains("arg_"), "no markup: {line}");
+        let args: Map<String, Value> = serde_json::from_str(line)?;
+        let after = serde_json::to_string(&*unleak(&args))?;
+        assert_eq!(after, serde_json::to_string(&args)?, "{line}");
+        calls += 1;
+    }
+    assert_eq!(calls, 59);
     Ok(())
 }
