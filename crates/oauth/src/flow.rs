@@ -2,34 +2,13 @@ use serde_json::{Value, json};
 
 use crate::loopback;
 use crate::pkce;
-use crate::registry::{DeviceCode, OauthCode};
+use crate::registry::OauthCode;
 use crate::store::{self, Credential, Kind, Store};
+use crate::url::{base64url_decode, https_or_local, urlencode};
+use crate::Result;
 
 pub struct LoginOptions {
     pub no_browser: bool,
-    pub inspect_url: Option<fn(&str)>,
-}
-
-fn https_or_local(url: &str) -> Result<(), String> {
-    let local = url.starts_with("http://127.0.0.1") || url.starts_with("http://localhost");
-    if url.starts_with("https://") || local {
-        Ok(())
-    } else {
-        Err(format!("insecure endpoint refused: {url}"))
-    }
-}
-
-fn urlencode(text: &str) -> String {
-    let mut out = String::new();
-    for byte in text.bytes() {
-        match byte {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                out.push(byte as char);
-            }
-            other => out.push_str(&format!("%{other:02X}")),
-        }
-    }
-    out
 }
 
 fn http_agent(proxy: Option<&ureq::Proxy>) -> ureq::Agent {
@@ -42,18 +21,17 @@ fn http_agent(proxy: Option<&ureq::Proxy>) -> ureq::Agent {
     builder.build()
 }
 
-fn parse_tokens(body: &Value) -> Result<Credential, String> {
+fn parse_tokens(body: &Value) -> Result<Credential> {
     let access = body
         .get("access_token")
         .or_else(|| body.get("key"))
         .and_then(Value::as_str)
         .ok_or("token response has no access_token")?
         .to_owned();
-    let expires_ms = body
+    let expires = body
         .get("expires_in")
         .and_then(Value::as_u64)
-        .map(|seconds| store::now_ms().saturating_add(seconds.saturating_mul(1000)))
-        .unwrap_or(0);
+        .map(|seconds| store::now() + std::time::Duration::from_secs(seconds));
     Ok(Credential {
         kind: Kind::Oauth,
         access,
@@ -61,7 +39,7 @@ fn parse_tokens(body: &Value) -> Result<Credential, String> {
             .get("refresh_token")
             .and_then(Value::as_str)
             .map(str::to_owned),
-        expires_ms,
+        expires,
         account: body
             .pointer("/account/uuid")
             .or_else(|| body.pointer("/account/email_address"))
@@ -70,8 +48,26 @@ fn parse_tokens(body: &Value) -> Result<Credential, String> {
         org: body
             .pointer("/organization/uuid")
             .and_then(Value::as_str)
-            .map(str::to_owned),
+            .map(str::to_owned)
+            .or_else(|| id_token_account(body)),
+        extra: Default::default(),
     })
+}
+
+/// ChatGPT's token response carries no `/organization/uuid`; the account id is the
+/// id_token JWT's `https://api.openai.com/auth` claim (where codex-rs and Pi read it).
+fn id_token_account(body: &Value) -> Option<String> {
+    let id_token = body.get("id_token").and_then(Value::as_str)?;
+    let payload = id_token.split('.').nth(1)?;
+    let claims: Value = serde_json::from_slice(&base64url_decode(payload)?).ok()?;
+    claims
+        .pointer(
+            "/https:~1api.openai.com~1auth/chatgpt_account_id"
+                .replace("~1", "/")
+                .as_str(),
+        )
+        .and_then(Value::as_str)
+        .map(str::to_owned)
 }
 
 fn post_token(
@@ -79,7 +75,7 @@ fn post_token(
     proxy: Option<&ureq::Proxy>,
     fields: &[(&str, &str)],
     refresh: bool,
-) -> Result<Credential, String> {
+) -> Result<Credential> {
     https_or_local(&spec.token)?;
     let agent = http_agent(proxy);
     let mut request = agent.post(&spec.token);
@@ -108,9 +104,10 @@ fn post_token(
             return Err(format!(
                 "token request failed: {}: status code {code}: {body}",
                 spec.token
-            ));
+            )
+            .into());
         }
-        Err(error) => return Err(format!("token request failed: {error}")),
+        Err(error) => return Err(format!("token request failed: {error}").into()),
     };
     parse_tokens(&serde_json::from_str(&text).map_err(|error| format!("token response: {error}"))?)
 }
@@ -138,7 +135,7 @@ pub fn login_oauth(
     spec: &OauthCode,
     options: &LoginOptions,
     proxy: Option<&ureq::Proxy>,
-) -> Result<Credential, String> {
+) -> Result<Credential> {
     let listener = loopback::bind(spec.callback_port, spec.port_fallback)?;
     let redirect = loopback::redirect_uri(&listener, &spec.redirect_host, &spec.callback_path)?;
     let pkce = pkce::generate()?;
@@ -154,13 +151,10 @@ pub fn login_oauth(
     for (key, value) in &spec.extra_authorize {
         auth_url.push_str(&format!("&{key}={}", urlencode(value)));
     }
-    if let Some(inspect) = options.inspect_url {
-        inspect(&auth_url);
-    }
     open_url(&auth_url, options.no_browser);
-    let callback = loopback::wait_for_callback(&listener)?;
+    let callback = loopback::wait_for_callback(&listener, &spec.callback_path)?;
     if callback.state != pkce.state {
-        return Err("state mismatch in OAuth callback (possible CSRF); aborting".to_owned());
+        return Err("state mismatch in OAuth callback (possible CSRF); aborting".into());
     }
     // Anthropic's token JSON requires `state`. `code=true` may return `code#state`.
     let (code, hash_state) = callback
@@ -183,69 +177,19 @@ pub fn login_oauth(
     post_token(spec, proxy, &fields, false)
 }
 
-pub fn login_device(spec: &DeviceCode, proxy: Option<&ureq::Proxy>) -> Result<Credential, String> {
-    https_or_local(&spec.device)?;
-    https_or_local(&spec.token)?;
-    let client = http_agent(proxy);
-    let started = client
-        .post(&spec.device)
-        .send_form(&[
-            ("client_id", spec.client_id.as_str()),
-            ("scope", spec.scopes.as_str()),
-        ])
-        .map_err(|error| format!("device code request failed: {error}"))?
-        .into_string()
-        .map_err(|error| error.to_string())?;
-    let body: Value =
-        serde_json::from_str(&started).map_err(|error| format!("device code response: {error}"))?;
-    let device_code = body
-        .get("device_code")
-        .and_then(Value::as_str)
-        .ok_or("device response has no device_code")?;
-    let user_code = body.get("user_code").and_then(Value::as_str).unwrap_or("");
-    let verify = body
-        .get("verification_uri")
-        .and_then(Value::as_str)
-        .unwrap_or("");
-    println!("Visit {verify} and enter {user_code}");
-    let interval = body.get("interval").and_then(Value::as_u64).unwrap_or(5);
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
-    loop {
-        if std::time::Instant::now() >= deadline {
-            return Err("device login timed out".to_owned());
-        }
-        std::thread::sleep(std::time::Duration::from_secs(interval.max(1)));
-        let token_agent = http_agent(proxy);
-        match token_agent.post(&spec.token).send_form(&[
-            ("grant_type", "urn:ietf:params:oauth:grant-type:device_code"),
-            ("device_code", device_code),
-            ("client_id", spec.client_id.as_str()),
-        ]) {
-            Ok(response) => {
-                let text = response.into_string().map_err(|error| error.to_string())?;
-                return parse_tokens(
-                    &serde_json::from_str(&text)
-                        .map_err(|error| format!("token response: {error}"))?,
-                );
-            }
-            Err(ureq::Error::Status(400 | 428, _)) => continue,
-            Err(error) => return Err(format!("device token poll failed: {error}")),
-        }
-    }
-}
-
-pub fn login_api_key(_provider: &str, key: String) -> Result<Credential, String> {
+pub fn login_api_key(key: String) -> Result<Credential> {
     let key = key.trim().to_owned();
     if key.is_empty() {
-        return Err("empty API key".to_owned());
+        return Err("empty API key".into());
     }
     Ok(Credential {
         kind: Kind::Key,
         access: key,
         refresh: None,
-        expires_ms: 0,
+        expires: None,
         account: None,
         org: None,
+        extra: Default::default(),
     })
 }
 
@@ -253,7 +197,7 @@ pub fn refresh(
     spec: &OauthCode,
     stored: &Credential,
     proxy: Option<&ureq::Proxy>,
-) -> Result<Credential, String> {
+) -> Result<Credential> {
     let refresh_token = stored
         .refresh
         .as_deref()
@@ -272,6 +216,7 @@ pub fn refresh(
     }
     next.account = stored.account.clone();
     next.org = stored.org.clone();
+    next.extra = stored.extra.clone();
     Ok(next)
 }
 
@@ -279,16 +224,16 @@ pub fn live_oauth(
     spec: &OauthCode,
     store: &Store,
     proxy: Option<&ureq::Proxy>,
-) -> Result<Credential, String> {
+) -> Result<Credential> {
     let current = store
         .load(&spec.id)
         .ok_or_else(|| format!("no stored tokens; run: yi login {}", spec.id))?;
-    if !Store::expired(&current, store::now_ms()) {
+    if !Store::expired(&current) {
         return Ok(current);
     }
     store.with_refresh_lock(&spec.id, || {
         let current = store.load(&spec.id).unwrap_or(current.clone());
-        if !Store::expired(&current, store::now_ms()) {
+        if !Store::expired(&current) {
             return Ok(current);
         }
         let refreshed = refresh(spec, &current, proxy)?;
@@ -297,10 +242,10 @@ pub fn live_oauth(
     })
 }
 
-pub fn save(provider: &str, credential: &Credential) -> Result<(), String> {
+pub fn save(provider: &str, credential: &Credential) -> Result<()> {
     Store::user().save(provider, credential)
 }
 
-pub fn logout(provider: &str) -> Result<(), String> {
+pub fn logout(provider: &str) -> Result<()> {
     Store::user().delete(provider)
 }

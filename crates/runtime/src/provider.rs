@@ -73,7 +73,8 @@ fn anthropic_thinking(model: &Model, effort: Effort) -> Thinking {
 }
 
 pub struct ProviderStream {
-    pub api_key: Option<yi_ai::auth::Secret>,
+    auth: Mutex<AuthCell>,
+    provider: String,
     pub session_id: Option<String>,
     pub faux: Mutex<FauxProvider>,
     long_cache: bool,
@@ -85,10 +86,31 @@ pub struct ProviderStream {
     headers: Vec<(String, String)>,
 }
 
+const HALF_MINUTE: std::time::Duration = std::time::Duration::from_secs(30);
+
+#[expect(
+    clippy::disallowed_methods,
+    reason = "deciding whether the streaming credential has expired is this fn's job"
+)]
+fn auth_now() -> std::time::SystemTime {
+    std::time::SystemTime::now()
+}
+
+/// The credential a stream is using, re-resolved when it expires so a days-long
+/// TUI, ACP or daemon session refreshes instead of failing turn by turn (D191).
+struct AuthCell {
+    secret: Option<yi_ai::auth::Secret>,
+    expires: Option<std::time::SystemTime>,
+}
+
 impl ProviderStream {
     pub fn new(api_key: Option<yi_ai::auth::Secret>, session_id: Option<String>) -> Self {
         Self {
-            api_key,
+            auth: Mutex::new(AuthCell {
+                secret: api_key,
+                expires: None,
+            }),
+            provider: String::new(),
             session_id,
             faux: Mutex::new(FauxProvider::default()),
             long_cache: false,
@@ -104,10 +126,17 @@ impl ProviderStream {
     /// The resolved credential's shape and the login profile's headers (D191):
     /// a stored OAuth token streams as Bearer and carries whatever that file holds.
     #[must_use]
-    pub fn with_auth(mut self, resolved: &yi_ai::auth::Resolved) -> Self {
+    pub fn with_auth(mut self, provider: &str, resolved: &yi_ai::auth::Resolved) -> Self {
+        self.provider = provider.to_owned();
         self.oauth = resolved.kind == yi_ai::auth::AuthKind::Oauth;
         self.org = resolved.org.clone();
         self.headers = resolved.headers.clone();
+        if let Ok(mut cell) = self.auth.lock() {
+            cell.secret = Some(yi_ai::auth::Secret::new(
+                resolved.secret.expose().to_owned(),
+            ));
+            cell.expires = resolved.expires;
+        }
         self
     }
 
@@ -141,24 +170,41 @@ impl ProviderStream {
         }
     }
 
-    /// The profile's headers plus anything only the live credential knows, so a
-    /// backend that keys on the account id gets it without a catalog entry.
+    /// The profile's headers plus the account id a ChatGPT login's id_token carried
+    /// (H4) and the originator the Codex backend keys on.
     fn openai_extra(&self, model: &Model) -> Vec<(String, String)> {
         let mut extra = self.headers.clone();
         if model.provider == "openai-codex" {
             extra.push(("originator".to_owned(), "yi".to_owned()));
-            if let Some(org) = &self.org {
-                extra.push(("chatgpt-account-id".to_owned(), org.clone()));
-            }
+        }
+        if let Some(org) = &self.org {
+            extra.push(("chatgpt-account-id".to_owned(), org.clone()));
         }
         extra
     }
 
-    fn key(&self) -> &str {
-        self.api_key
-            .as_ref()
-            .map(yi_ai::auth::Secret::expose)
-            .unwrap_or("")
+    fn key(&self) -> String {
+        if self.oauth && !self.provider.is_empty() {
+            let expired = self
+                .auth
+                .lock()
+                .map(|cell| cell.expires.is_some_and(|at| auth_now() + HALF_MINUTE >= at))
+                .unwrap_or(false);
+            // resolve_with_proxy refreshes under the store's cross-process lock.
+            if expired
+                && let Some(fresh) =
+                    yi_ai::auth::resolve_with_proxy(&self.provider, self.proxy.as_ref())
+                && let Ok(mut cell) = self.auth.lock()
+            {
+                cell.secret = Some(fresh.secret);
+                cell.expires = fresh.expires;
+            }
+        }
+        self.auth
+            .lock()
+            .ok()
+            .and_then(|cell| cell.secret.as_ref().map(|s| s.expose().to_owned()))
+            .unwrap_or_default()
     }
 }
 
@@ -206,7 +252,7 @@ impl ProviderStream {
                     extra_headers: self.headers.clone(),
                     ..AnthropicOptions::default()
                 };
-                anthropic::stream(model, context, &options, self.key())
+                anthropic::stream(model, context, &options, &self.key())
             }
             ProviderApi::OpenAiCompletions => {
                 let options = OpenAiOptions {
@@ -217,9 +263,10 @@ impl ProviderStream {
                     routing: self.routing.clone(),
                     stop: Some(signal.cut_flag()),
                     extra_headers: self.openai_extra(model),
+                    oauth: self.oauth,
                     ..OpenAiOptions::default()
                 };
-                openai::stream(model, context, &options, self.key())
+                openai::stream(model, context, &options, &self.key())
             }
             ProviderApi::OpenAiResponses => {
                 let options = OpenAiOptions {
@@ -230,9 +277,10 @@ impl ProviderStream {
                     routing: self.routing.clone(),
                     stop: Some(signal.cut_flag()),
                     extra_headers: self.openai_extra(model),
+                    oauth: self.oauth,
                     ..OpenAiOptions::default()
                 };
-                openai_responses::stream(model, context, &options, self.key())
+                openai_responses::stream(model, context, &options, &self.key())
             }
             ProviderApi::Faux => {
                 let (sender, receiver) = tokio::sync::mpsc::channel(64);

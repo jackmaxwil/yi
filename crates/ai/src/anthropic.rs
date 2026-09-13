@@ -767,7 +767,6 @@ fn run_request(
     model: &Model,
     body: &Value,
     wire: crate::request::Wire<'_>,
-    oauth: bool,
     sender: &Sender<AssistantMessageEvent>,
 ) -> Result<(), String> {
     let crate::request::Wire {
@@ -775,6 +774,7 @@ fn run_request(
         proxy,
         stop,
         extra,
+        oauth,
     } = wire;
     let url = format!("{}/v1/messages", model.base_url);
     let base = if oauth {
@@ -810,7 +810,8 @@ fn run_request(
             }
             Ok(true)
         },
-    )?;
+    )
+    .map_err(|message| crate::request::auth_hint(&message, oauth, &model.provider))?;
     if let Some(first_error) = resent {
         crate::request::note_resend(&mut mapper.output, &first_error);
     }
@@ -841,8 +842,8 @@ pub fn stream(
                 proxy: proxy.as_ref(),
                 stop: stop.as_deref(),
                 extra: &extra_headers,
+                oauth,
             },
-            oauth,
             &sender,
         ) else {
             return;

@@ -22,6 +22,8 @@ pub struct OpenAiOptions {
     pub proxy: Option<crate::request::ProxyConfig>,
     pub routing: Option<Value>,
     pub extra_headers: Vec<(String, String)>,
+    /// A stored OAuth credential is on the wire (D191): a 401 names `yi login`.
+    pub oauth: bool,
     /// The loop's cut of this request (D163): set, the pump stops at the next event.
     pub stop: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
 }
@@ -812,6 +814,7 @@ fn run_request(
         proxy,
         stop,
         extra,
+        oauth,
     } = wire;
     let url = format!("{}/chat/completions", model.base_url);
     let mut mapper = ChunkMapper::new(model);
@@ -838,7 +841,11 @@ fn run_request(
         // has no record and stays unknown
         Err(message) => {
             settle_from_record(&mut mapper.output, model, api_key, proxy);
-            let _ = sender.blocking_send(mapper.fail(&message));
+            let _ = sender.blocking_send(mapper.fail(&crate::request::auth_hint(
+                &message,
+                oauth,
+                &model.provider,
+            )));
             return Ok(());
         }
     };
@@ -882,6 +889,7 @@ pub fn stream(
             proxy: options.proxy.clone(),
             stop: options.stop.clone(),
             extra: options.extra_headers.clone(),
+            oauth: options.oauth,
         },
         run_request,
     )

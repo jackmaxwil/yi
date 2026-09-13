@@ -2,11 +2,15 @@ use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::time::Duration;
 
+use crate::url::query_param;
+
 const CALLBACK_TIMEOUT_SECS: u64 = 120;
 
 pub struct Callback {
     pub code: String,
     pub state: String,
+    /// RFC 9207 issuer, when the authorization server sends it (MCP discovery checks it).
+    pub iss: Option<String>,
 }
 
 pub fn bind(port: u16, fallback: bool) -> Result<TcpListener, String> {
@@ -31,47 +35,9 @@ pub fn redirect_uri(listener: &TcpListener, host: &str, path: &str) -> Result<St
     Ok(format!("http://{host}:{port}{path}"))
 }
 
-fn urldecode(text: &str) -> String {
-    let mut out = Vec::new();
-    let bytes = text.as_bytes();
-    let mut index = 0;
-    while index < bytes.len() {
-        match bytes[index] {
-            b'%' if index + 3 <= bytes.len() => {
-                let Some(hex) = text.get(index.saturating_add(1)..index.saturating_add(3)) else {
-                    out.push(b'%');
-                    index = index.saturating_add(1);
-                    continue;
-                };
-                if let Ok(byte) = u8::from_str_radix(hex, 16) {
-                    out.push(byte);
-                    index = index.saturating_add(3);
-                    continue;
-                }
-                out.push(b'%');
-                index = index.saturating_add(1);
-            }
-            b'+' => {
-                out.push(b' ');
-                index = index.saturating_add(1);
-            }
-            other => {
-                out.push(other);
-                index = index.saturating_add(1);
-            }
-        }
-    }
-    String::from_utf8_lossy(&out).into_owned()
-}
-
-fn query_param(query: &str, name: &str) -> Option<String> {
-    query.split('&').find_map(|pair| {
-        let (key, value) = pair.split_once('=')?;
-        (key == name).then(|| urldecode(value))
-    })
-}
-
-pub fn wait_for_callback(listener: &TcpListener) -> Result<Callback, String> {
+/// Waits for the one callback request. A denial comes back as `error`, not a missing
+/// code, and a request to any other path is not the callback at all.
+pub fn wait_for_callback(listener: &TcpListener, expected_path: &str) -> Result<Callback, String> {
     listener.set_nonblocking(true).map_err(|e| e.to_string())?;
     let until = std::time::Instant::now() + Duration::from_secs(CALLBACK_TIMEOUT_SECS);
     let mut conn = loop {
@@ -91,16 +57,31 @@ pub fn wait_for_callback(listener: &TcpListener) -> Result<Callback, String> {
     let mut buf = [0u8; 8192];
     let n = conn.read(&mut buf).map_err(|e| e.to_string())?;
     let owned = String::from_utf8_lossy(buf.get(..n).unwrap_or(&[])).into_owned();
-    let path = owned
+    let target = owned
         .lines()
         .next()
         .and_then(|row| row.split_whitespace().nth(1))
         .ok_or("malformed callback request")?;
-    let query = path.split_once('?').map(|(_, q)| q).unwrap_or("");
+    let (path, query) = target.split_once('?').unwrap_or((target, ""));
+    let expected = if expected_path.starts_with('/') {
+        expected_path.to_owned()
+    } else {
+        format!("/{expected_path}")
+    };
+    if path != expected {
+        return Err(format!("callback hit {path}, not {expected}; aborting"));
+    }
+    if let Some(error) = query_param(query, "error") {
+        let detail = query_param(query, "error_description")
+            .map(|text| format!(": {text}"))
+            .unwrap_or_default();
+        return Err(format!("authorization failed: {error}{detail}"));
+    }
     let code = query_param(query, "code").ok_or("callback missing code")?;
     let state = query_param(query, "state").ok_or("callback missing state")?;
+    let iss = query_param(query, "iss");
     let _ = conn.write_all(
         b"HTTP/1.1 200 OK\r\ncontent-type: text/html\r\n\r\n<html><body>Login complete. Return to the terminal.</body></html>",
     );
-    Ok(Callback { code, state })
+    Ok(Callback { code, state, iss })
 }

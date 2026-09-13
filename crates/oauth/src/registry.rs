@@ -1,6 +1,9 @@
 use std::path::PathBuf;
 
-use serde_json::Value;
+use serde_json::{Map, Value};
+use yi_types::oauth::ProfileFile;
+
+use crate::Result;
 
 /// Profiles live beside the token store so a catalog refresh can never rewrite
 /// them: `~/.yi/oauth/<provider>.json`, the binary ships none.
@@ -9,7 +12,6 @@ pub const PROFILE_DIR: &str = "oauth";
 #[derive(Debug, Clone)]
 pub enum Kind {
     OauthCode(Box<OauthCode>),
-    DeviceCode(Box<DeviceCode>),
     ApiKey,
 }
 
@@ -31,16 +33,6 @@ pub struct OauthCode {
     /// these values; nothing here is compiled into the binary.
     pub stream_headers: Vec<(String, String)>,
     pub refresh_headers: Vec<(String, String)>,
-}
-
-#[derive(Debug, Clone)]
-pub struct DeviceCode {
-    pub id: String,
-    pub client_id: String,
-    pub device: String,
-    pub token: String,
-    pub scopes: String,
-    pub stream_headers: Vec<(String, String)>,
 }
 
 /// Providers whose login is a pasted key: no endpoints, no identity, nothing to supply.
@@ -73,84 +65,69 @@ pub fn profile_path(provider: &str) -> PathBuf {
     profile_root().join(format!("{}.json", safe(provider)))
 }
 
-fn text(value: &Value, key: &str) -> Option<String> {
-    value.get(key).and_then(Value::as_str).map(str::to_owned)
-}
-
-fn flag(value: &Value, key: &str) -> bool {
-    value.get(key).and_then(Value::as_bool).unwrap_or(false)
-}
-
 /// Header and query maps are JSON objects so a generator can write them by name;
 /// `preserve_order` keeps the author's order on the wire.
-fn pairs(value: &Value, key: &str) -> Vec<(String, String)> {
-    value
-        .get(key)
-        .and_then(Value::as_object)
-        .map(|map| {
-            map.iter()
-                .filter_map(|(name, item)| Some((name.clone(), item.as_str()?.to_owned())))
-                .collect()
-        })
-        .unwrap_or_default()
+fn pairs(map: &Map<String, Value>) -> Vec<(String, String)> {
+    map.iter()
+        .filter_map(|(name, item)| Some((name.clone(), item.as_str()?.to_owned())))
+        .collect()
 }
 
-fn oauth_code(id: &str, value: &Value) -> Result<OauthCode, String> {
-    let need = |key: &str| text(value, key).ok_or_else(|| format!("{id}: profile needs `{key}`"));
-    Ok(OauthCode {
+fn oauth_code(id: &str, file: ProfileFile) -> Result<Kind> {
+    let need = |field: Option<String>, key: &str| -> Result<String> {
+        field.ok_or_else(|| format!("{id}: profile needs `{key}`").into())
+    };
+    Ok(Kind::OauthCode(Box::new(OauthCode {
         id: id.to_owned(),
-        client_id: need("client_id")?,
-        client_secret: text(value, "client_secret"),
-        authorize: need("authorize")?,
-        token: need("token")?,
-        scopes: text(value, "scopes").unwrap_or_default(),
-        callback_port: value
-            .get("callback_port")
-            .and_then(Value::as_u64)
-            .and_then(|port| u16::try_from(port).ok())
+        client_id: need(file.client_id, "client_id")?,
+        client_secret: file.client_secret,
+        authorize: need(file.authorize, "authorize")?,
+        token: need(file.token, "token")?,
+        scopes: file.scopes.unwrap_or_default(),
+        callback_port: file
+            .callback_port
             .ok_or_else(|| format!("{id}: profile needs `callback_port`"))?,
-        callback_path: text(value, "callback_path").unwrap_or_else(|| "/callback".to_owned()),
-        redirect_host: text(value, "redirect_host").unwrap_or_else(|| "localhost".to_owned()),
-        port_fallback: flag(value, "port_fallback"),
-        json_token: flag(value, "json_token"),
-        extra_authorize: pairs(value, "extra_authorize"),
-        stream_headers: pairs(value, "stream_headers"),
-        refresh_headers: pairs(value, "refresh_headers"),
-    })
+        callback_path: file.callback_path.unwrap_or_else(|| "/callback".to_owned()),
+        redirect_host: file.redirect_host.unwrap_or_else(|| "localhost".to_owned()),
+        port_fallback: file.port_fallback,
+        json_token: file.json_token,
+        extra_authorize: pairs(&file.extra_authorize),
+        stream_headers: pairs(&file.stream_headers),
+        refresh_headers: pairs(&file.refresh_headers),
+    })))
 }
 
-fn device_code(id: &str, value: &Value) -> Result<DeviceCode, String> {
-    let need = |key: &str| text(value, key).ok_or_else(|| format!("{id}: profile needs `{key}`"));
-    Ok(DeviceCode {
-        id: id.to_owned(),
-        client_id: need("client_id")?,
-        device: need("device")?,
-        token: need("token")?,
-        scopes: text(value, "scopes").unwrap_or_default(),
-        stream_headers: pairs(value, "stream_headers"),
-    })
-}
-
-pub fn parse(id: &str, value: &Value) -> Result<Kind, String> {
-    match value.get("kind").and_then(Value::as_str) {
-        Some("oauth-code") => oauth_code(id, value).map(|spec| Kind::OauthCode(Box::new(spec))),
-        Some("device-code") => device_code(id, value).map(|spec| Kind::DeviceCode(Box::new(spec))),
-        Some("api-key") => Ok(Kind::ApiKey),
-        Some(other) => Err(format!("{id}: unknown profile kind {other}")),
-        None => Err(format!("{id}: profile needs `kind`")),
+pub fn parse(id: &str, value: &Value) -> Result<Kind> {
+    let file: ProfileFile = serde_json::from_value(value.clone()).map_err(|error| {
+        crate::Error::from(format!("{id}: profile is not the profile shape: {error}"))
+    })?;
+    if !file.extra.is_empty() {
+        let mut keys: Vec<&str> = file.extra.keys().map(String::as_str).collect();
+        keys.sort_unstable();
+        return Err(format!(
+            "{id}: unknown profile key(s) {}; every key is one of {:?}",
+            keys.join(", "),
+            ProfileFile::KNOWN_KEYS
+        )
+        .into());
+    }
+    match file.kind.as_str() {
+        "oauth-code" => oauth_code(id, file),
+        "api-key" => Ok(Kind::ApiKey),
+        other => Err(format!("{id}: unknown profile kind {other}").into()),
     }
 }
 
-/// A profile file wins over the built-in list, so a pasted-key provider can be
-/// given endpoints without a new binary.
-pub fn lookup(provider: &str) -> Option<Kind> {
-    match load(provider) {
-        Ok(Some(kind)) => Some(kind),
-        Ok(None) | Err(_) => API_KEY_IDS.contains(&provider).then_some(Kind::ApiKey),
+/// A profile file wins over the built-in list. A file that exists but does not
+/// parse is an `Err` naming why — never a silent fall through to "no profile".
+pub fn lookup(provider: &str) -> Result<Option<Kind>> {
+    match load(provider)? {
+        Some(kind) => Ok(Some(kind)),
+        None => Ok(API_KEY_IDS.contains(&provider).then_some(Kind::ApiKey)),
     }
 }
 
-pub fn load(provider: &str) -> Result<Option<Kind>, String> {
+pub fn load(provider: &str) -> Result<Option<Kind>> {
     let path = profile_path(provider);
     let Ok(text) = std::fs::read_to_string(&path) else {
         return Ok(None);
