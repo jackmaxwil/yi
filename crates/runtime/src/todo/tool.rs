@@ -41,13 +41,13 @@ pub enum ArgError {
     #[error(
         "op is required; legal ops are {}; a full call looks like {}",
         OPS.join(", "),
-        example("view")
+        example("done")
     )]
     NoOp,
     #[error(
         "unknown op {got:?}; legal ops are {}; a full call looks like {}",
         OPS.join(", "),
-        example("view")
+        example("done")
     )]
     UnknownOp { got: String },
     #[error("{op} requires {field:?}; a full {op} call looks like {}", example(op))]
@@ -72,53 +72,13 @@ fn example(op: &str) -> &'static str {
         "set" => r###"{"op": "set", "list": "## Phase\n- [ ] first task\n- [ ] second task"}"###,
         "init" => r###"{"op": "init", "phases": [{"name": "Phase", "items": ["first task"]}]}"###,
         "append" => r###"{"op": "append", "items": ["another task"]}"###,
-        "start" => r###"{"op": "start", "label": "first task"}"###,
-        "done" => {
-            r###"{"op": "done", "label": "first task", "evidence": "`make check` all targets ok"}"###
-        }
-        "drop" => r###"{"op": "drop", "label": "first task", "reason": "out of scope"}"###,
-        "block" => {
-            r###"{"op": "block", "label": "first task", "on": "user", "note": "which file?"}"###
-        }
-        "unblock" => r###"{"op": "unblock", "label": "first task"}"###,
-        "rm" => r###"{"op": "rm", "label": "first task"}"###,
-        _ => r###"{"op": "view"}"###,
-    }
-}
-
-/// A field a model plausibly calls by another name; the canonical key wins.
-const ALIASES: [(&str, &[&str]); 11] = [
-    ("op", &["action", "operation"]),
-    ("list", &["checklist"]),
-    ("items", &["tasks", "todos"]),
-    ("phase", &["section"]),
-    ("under", &["parent"]),
-    ("id", &["item_id", "task_id"]),
-    ("label", &["task", "item", "title", "text", "name"]),
-    ("evidence", &["proof"]),
-    ("reason", &["why"]),
-    ("on", &["blocked_on"]),
-    ("note", &["message"]),
-];
-
-fn normalize(args: &Map<String, Value>) -> (Map<String, Value>, Option<String>) {
-    let mut args = args.clone();
-    let mut renamed = Vec::new();
-    for (canonical, aliases) in ALIASES {
-        if args.contains_key(canonical) {
-            continue;
-        }
-        for alias in aliases {
-            if let Some(value) = args.remove(*alias) {
-                renamed.push(format!("{alias:?} read as {canonical:?}"));
-                args.insert(canonical.to_owned(), value);
-                break;
-            }
-        }
-    }
-    match renamed.len() {
-        0 => (args, None),
-        _ => (args, Some(format!("(fields: {})\n", renamed.join(", ")))),
+        "start" => r###"{"op": "start", "id": "t1"}"###,
+        "drop" => r###"{"op": "drop", "id": "t1", "reason": "out of scope"}"###,
+        "block" => r###"{"op": "block", "id": "t1", "on": "user", "note": "which file?"}"###,
+        "unblock" => r###"{"op": "unblock", "id": "t1"}"###,
+        "rm" => r###"{"op": "rm", "id": "t1"}"###,
+        // Done, and the op a call lost: all 17 `op is required` in the v4 sweep were done calls.
+        _ => r###"{"op": "done", "id": "t1", "evidence": "`make check` all targets ok"}"###,
     }
 }
 
@@ -153,19 +113,21 @@ fn label(args: &Map<String, Value>, op: &'static str) -> Result<TodoLabel, ArgEr
         })
 }
 
-fn items(
-    args: &Map<String, Value>,
-    op: &'static str,
-    field: &'static str,
-) -> Result<Vec<TodoItem>, ArgError> {
-    let raw = args
-        .get(field)
+/// `items`, which the v4 sweep's models also sent as `todos`.
+fn item_list(args: &Map<String, Value>) -> Option<&Vec<Value>> {
+    args.get("items")
+        .or_else(|| args.get("todos"))
         .and_then(Value::as_array)
-        .ok_or(ArgError::Missing { op, field })?;
+}
+
+fn items(args: &Map<String, Value>, op: &'static str) -> Result<Vec<TodoItem>, ArgError> {
+    let field = "items";
+    let raw = item_list(args).ok_or(ArgError::Missing { op, field })?;
     raw.iter()
         .map(|value| {
             value
                 .as_str()
+                .or_else(|| value.get("label").and_then(Value::as_str))
                 .ok_or_else(|| ArgError::Malformed {
                     op,
                     field,
@@ -220,14 +182,17 @@ pub fn infer_op(args: &Map<String, Value>) -> Option<&'static str> {
 }
 
 pub fn parse_op(args: &Map<String, Value>) -> Result<Op, ArgError> {
-    // The rename notice is run's to print; here the normalized map is all that
-    // matters, so a validated alias parses the same as the canonical key.
-    let (args, _) = normalize(args);
-    let args = &args;
     let op = string(args, "op")
         .or_else(|| infer_op(args).map(str::to_owned))
         .ok_or(ArgError::NoOp)?;
+    let list = string(args, "list").is_some();
     let op = match op.as_str() {
+        // An init carrying set's checklist, or a set carrying init's items, meant the other.
+        "init" if list && item_list(args).is_none() && !args.contains_key("phases") => "set",
+        "set" if !list && item_list(args).is_some() => "init",
+        given => given,
+    };
+    Ok(match op {
         "set" => Op::Set {
             list: need_string(args, "set", "list")?,
         },
@@ -247,7 +212,7 @@ pub fn parse_op(args: &Map<String, Value>) -> Result<Op, ArgError> {
                                     field: "name",
                                     cause: cause.to_string(),
                                 })?;
-                            Ok((name, items(object, "init", "items")?))
+                            Ok((name, items(object, "init")?))
                         })
                         .collect::<Result<Vec<_>, ArgError>>()?
                 }
@@ -259,7 +224,7 @@ pub fn parse_op(args: &Map<String, Value>) -> Result<Op, ArgError> {
                             cause: cause.to_string(),
                         },
                     )?),
-                    items(args, "init", "items")?,
+                    items(args, "init")?,
                 )],
             };
             Op::Init { phases }
@@ -275,7 +240,7 @@ pub fn parse_op(args: &Map<String, Value>) -> Result<Op, ArgError> {
                     })
                 })
                 .transpose()?,
-            items: items(args, "append", "items")?,
+            items: items(args, "append")?,
         },
         "start" => Op::Start {
             label: label(args, "start")?,
@@ -310,8 +275,7 @@ pub fn parse_op(args: &Map<String, Value>) -> Result<Op, ArgError> {
                 got: other.to_owned(),
             });
         }
-    };
-    Ok(op)
+    })
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -332,16 +296,11 @@ impl TodoTool {
     }
 
     fn run(&self, args: &Map<String, Value>) -> Result<String, TodoToolError> {
-        // Normalize here, not only inside parse_op: the inferred-op line below
-        // must read the map the aliases already produced, or an op given as
-        // "action" is reported as inferred. parse_op's own pass is then a no-op.
-        let (args, aliased) = normalize(args);
-        let op = parse_op(&args)?;
-        let aliased = aliased.unwrap_or_default();
-        let inferred = if string(&args, "op").is_none() {
-            format!("(op inferred: {})\n", op.name())
-        } else {
+        let op = parse_op(args)?;
+        let inferred = if string(args, "op").as_deref() == Some(op.name()) {
             String::new()
+        } else {
+            format!("(op inferred: {})\n", op.name())
         };
         let expected = args.get("touched").and_then(Value::as_u64);
         let whole = matches!(op, Op::Set { .. } | Op::Init { .. });
@@ -351,10 +310,7 @@ impl TodoTool {
         } else {
             text::render(&applied.list)
         };
-        Ok(format!(
-            "{aliased}{inferred}{body}\ntouched: {}",
-            applied.touched
-        ))
+        Ok(format!("{inferred}{body}\ntouched: {}", applied.touched))
     }
 }
 
