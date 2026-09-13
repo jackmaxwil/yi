@@ -759,30 +759,167 @@ fn a_field_alias_is_read_as_the_canonical_field_and_named() -> TestResult {
 }
 
 #[test]
-fn an_argument_error_shows_a_full_call_for_the_op() -> TestResult {
+fn every_argument_error_ends_with_an_id_call_that_lands() -> TestResult {
     let (session, _root) = session("example")?;
     let tool = TodoTool::new(store_for(&session));
-    call(&tool, json!({"op": "set", "list": "- [ ] one\n"}));
-    let (is_error, text) = call(&tool, json!({"op": "drop", "label": "one"}));
-    assert!(is_error, "{text}");
-    assert!(text.starts_with("drop requires \"reason\""), "{text}");
+    // In the order their examples can run on one list; each refusal is an argument error.
+    let refusals = [
+        json!({"op": "init"}),
+        json!({"op": "start"}),
+        json!({"op": "block"}),
+        json!({"op": "unblock"}),
+        json!({"label": "first task"}),
+        json!({"op": "finish"}),
+        json!({"op": "done", "label": "first\ntask"}),
+        json!({"op": "set"}),
+        json!({"op": "append"}),
+        json!({"op": "drop"}),
+        json!({"op": "rm", "label": "first\ntask"}),
+    ];
+    for refusal in refusals {
+        let (is_error, text) = call(&tool, refusal.clone());
+        assert!(is_error, "{refusal}: {text}");
+        let (_, example) = text
+            .split_once(" looks like ")
+            .ok_or(format!("{refusal} shows no call: {text}"))?;
+        assert!(
+            !example.contains("\"label\""),
+            "every `no todo` in the sweep came from a label, none from an id: {example}"
+        );
+        let (is_error, landed) = call(&tool, serde_json::from_str(example)?);
+        assert!(!is_error, "{example}: {landed}");
+    }
+    let (_, text) = call(&tool, json!({"label": "first task"}));
     assert!(
-        text.contains("a full drop call looks like {\"op\": \"drop\", \"label\": \"first task\", \"reason\": \"out of scope\"}"),
-        "{text}"
+        text.ends_with(
+            r#"looks like {"op": "done", "id": "t1", "evidence": "`make check` all targets ok"}"#
+        ),
+        "all 17 `op is required` in the sweep were done calls: {text}"
     );
-    let (is_error, text) = call(&tool, json!({"op": "finish"}));
-    assert!(is_error, "{text}");
-    assert!(text.starts_with("unknown op \"finish\""), "{text}");
-    assert!(
-        text.contains("a full call looks like {\"op\": \"view\"}"),
-        "{text}"
-    );
-    let (is_error, text) = call(&tool, json!({"label": "one"}));
-    assert!(is_error, "{text}");
-    assert!(text.starts_with("op is required"), "{text}");
-    assert!(
-        text.contains("a full call looks like {\"op\": \"view\"}"),
-        "{text}"
-    );
+    Ok(())
+}
+
+/// Synthetic well-formed calls across every op and argument form, each with main's result: generated
+/// on 7706a472, this change's base on main, by replaying each session as the golden test below does.
+const GOLDEN: &str = include_str!("fixtures/todo/golden.jsonl");
+/// Synthetic calls of the shapes the 2026-09-11 v4 sweep's models sent, with the call each `means`
+/// or the refusal `text` it keeps; the sweep's own calls stay out of the repository.
+const SHAPES: &str = include_str!("fixtures/todo/shapes.jsonl");
+
+struct Sequence {
+    name: String,
+    seed: Option<String>,
+    calls: Vec<Value>,
+}
+
+fn sequences(source: &str) -> Result<Vec<Sequence>, Box<dyn Error>> {
+    let mut sequences: Vec<Sequence> = Vec::new();
+    for line in source.lines() {
+        let row: Value = serde_json::from_str(line)?;
+        let name = row["session"].as_str().ok_or("a row names its session")?;
+        if sequences
+            .last()
+            .is_none_or(|sequence| sequence.name != name)
+        {
+            sequences.push(Sequence {
+                name: name.to_owned(),
+                seed: None,
+                calls: Vec::new(),
+            });
+        }
+        let sequence = sequences.last_mut().ok_or("pushed above")?;
+        match row["seed"].as_str() {
+            Some(seed) => sequence.seed = Some(seed.to_owned()),
+            None => sequence.calls.push(row),
+        }
+    }
+    Ok(sequences)
+}
+
+/// A fresh session seeded as the runtime seeds it, with the session's landed calls before `upto`
+/// replayed; a refused call moved nothing, so this is the list the model saw.
+fn replayed_to(sequence: &Sequence, upto: usize, tag: &str) -> Result<TodoTool, Box<dyn Error>> {
+    let (session, _root) = session(&format!("{}-{upto}-{tag}", sequence.name))?;
+    let store = store_for(&session);
+    if let Some(seed) = &sequence.seed {
+        yi_runtime::todo::coupling::seed(&store, seed);
+    }
+    let tool = TodoTool::new(store);
+    for row in sequence.calls.iter().take(upto) {
+        if row["isError"] == false {
+            replay(&tool, &row["args"]);
+        }
+    }
+    Ok(tool)
+}
+
+/// validate, then execute, as the loop runs a tool call.
+fn replay(tool: &TodoTool, args: &Value) -> (bool, String) {
+    let input = args.as_object().cloned().unwrap_or_default();
+    match tool.validate(&input) {
+        Err(reason) => (true, reason),
+        Ok(()) => call(tool, args.clone()),
+    }
+}
+
+#[test]
+fn every_well_formed_call_returns_mains_result() -> TestResult {
+    let mut calls = 0;
+    for sequence in sequences(GOLDEN)? {
+        let tool = replayed_to(&sequence, 0, "same")?;
+        for (index, row) in sequence.calls.iter().enumerate() {
+            let (is_error, text) = replay(&tool, &row["args"]);
+            assert_eq!(
+                row["isError"], is_error,
+                "{} call {index}: {text}",
+                sequence.name
+            );
+            assert_eq!(row["text"], text, "{} call {index}", sequence.name);
+            calls += 1;
+        }
+    }
+    assert_eq!(calls, 87);
+    Ok(())
+}
+
+#[test]
+fn a_call_refused_for_its_shape_lands_as_it_meant() -> TestResult {
+    let (mut landed, mut refused, mut wrong) = (0, 0, Vec::new());
+    for sequence in sequences(SHAPES)? {
+        for (index, row) in sequence.calls.iter().enumerate() {
+            if row["isError"] == false {
+                continue;
+            }
+            let tool = replayed_to(&sequence, index, "sent")?;
+            let (is_error, text) = replay(&tool, &row["args"]);
+            let at = format!("{} call {index}", sequence.name);
+            let Some(means) = row.get("means") else {
+                // Refused word for word, and the call an argument error shows lands on that list.
+                let shown = text.split_once(" looks like ").map(|(_, call)| call);
+                let lands = shown.is_none_or(|call| {
+                    serde_json::from_str(call).is_ok_and(|call: Value| !replay(&tool, &call).0)
+                });
+                if is_error && row["text"] == text && lands {
+                    refused += 1;
+                } else {
+                    wrong.push(format!("{at} is not the refusal it was: {text}"));
+                }
+                continue;
+            };
+            let (_, meant) = replay(&replayed_to(&sequence, index, "meant")?, means);
+            // A set read as init, or an init as set, names the op it took on a line of its own.
+            let shown = text
+                .strip_prefix("(op inferred: set)\n")
+                .or_else(|| text.strip_prefix("(op inferred: init)\n"))
+                .unwrap_or(&text);
+            if !is_error && shown == meant {
+                landed += 1;
+            } else {
+                wrong.push(format!("{at}: {text}"));
+            }
+        }
+    }
+    assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+    assert_eq!((landed, refused), (17, 12), "of the 29 refused calls");
     Ok(())
 }
