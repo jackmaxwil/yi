@@ -189,6 +189,39 @@ fn bash_kills_a_running_command_when_cancelled() -> TestResult {
 }
 
 #[test]
+fn a_second_time_limit_in_four_bash_calls_asks_for_a_new_method() -> TestResult {
+    let dir = temp_dir("bash-ceiling-nudge")?;
+    let tool = BashTool::default();
+    let context = ToolContext::new(dir.0.clone());
+    let run = |command: &str, limit: u64| {
+        let output = tool.execute(
+            args(&[("command", json!(command)), ("timeout_secs", json!(limit))]),
+            &context,
+        );
+        output_text(&output)
+    };
+    // ctr-optimization's shape: a timed-out wait, a call that finishes, the wait again.
+    let first = run("sleep 5", 1);
+    assert!(!first.contains("hit their time limit"), "{first}");
+    assert_eq!(run("true", 1), "(no output)");
+    let own = run("timeout 1 sleep 5", 30);
+    assert!(
+        own.contains("[2 of the last 4 bash calls hit their time limit;"),
+        "an exit 124 from the command's own timeout counts: {own}"
+    );
+    let third = run("sleep 5", 1);
+    assert!(
+        third.contains("[timed out after 1s]\n") && third.contains("[3 of the last 4"),
+        "{third}"
+    );
+    assert!(
+        !third.contains("timeout_secs"),
+        "the nudge never says to raise the limit: {third}"
+    );
+    Ok(())
+}
+
+#[test]
 fn a_capped_timeout_secs_opens_every_result_of_the_call() -> TestResult {
     let dir = temp_dir("bash-timeout-cap")?;
     let mut context = ToolContext::new(dir.0.clone());
@@ -1155,9 +1188,8 @@ fn a_bash_view_of_one_file_carries_an_edit_anchor() -> TestResult {
     fs::write(dir.0.join("a.txt"), "one\ntwo\nthree\n")?;
     let context = ToolContext::new(dir.0.clone());
     let state = yi_tools::hashline::tool::shared_hashline_state();
-    let bash = BashTool {
-        hashline: Some(std::sync::Arc::clone(&state)),
-    };
+    let mut bash = BashTool::default();
+    bash.hashline = Some(std::sync::Arc::clone(&state));
     let viewed = bash.execute(args(&[("command", json!("cat a.txt"))]), &context);
     let text = output_text(&viewed);
     assert!(text.starts_with("[a.txt#"), "{text}");
