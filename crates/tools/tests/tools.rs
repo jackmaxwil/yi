@@ -189,41 +189,34 @@ fn bash_kills_a_running_command_when_cancelled() -> TestResult {
 }
 
 #[test]
-fn a_second_timed_out_search_in_a_row_carries_the_nudge() -> TestResult {
-    let dir = temp_dir("bash-search-nudge")?;
+fn a_second_time_limit_in_four_bash_calls_asks_for_a_new_method() -> TestResult {
+    let dir = temp_dir("bash-ceiling-nudge")?;
     let tool = BashTool::default();
     let context = ToolContext::new(dir.0.clone());
-    let fifo = tool.execute(args(&[("command", json!("mkfifo pipe"))]), &context);
-    assert!(!fifo.is_error, "{}", output_text(&fifo));
-    let search = |tool: &BashTool| {
-        tool.execute(
-            args(&[
-                ("command", json!("grep needle pipe")),
-                ("timeout_secs", json!(1)),
-            ]),
+    let run = |command: &str, limit: u64| {
+        let output = tool.execute(
+            args(&[("command", json!(command)), ("timeout_secs", json!(limit))]),
             &context,
-        )
+        );
+        output_text(&output)
     };
-    let first = search(&tool);
-    assert!(first.is_error, "{}", output_text(&first));
+    // ctr-optimization's shape: a timed-out wait, a call that finishes, the wait again.
+    let first = run("sleep 5", 1);
+    assert!(!first.contains("hit their time limit"), "{first}");
+    assert_eq!(run("true", 1), "(no output)");
+    let own = run("timeout 1 sleep 5", 30);
     assert!(
-        !output_text(&first).contains("searches in a row"),
-        "the first timed-out search only times out: {}",
-        output_text(&first)
+        own.contains("[2 of the last 4 bash calls hit their time limit;"),
+        "an exit 124 from the command's own timeout counts: {own}"
     );
-    let second = search(&tool);
+    let third = run("sleep 5", 1);
     assert!(
-        output_text(&second).contains("[2 searches in a row timed out;"),
-        "the second names the streak and the recovery: {}",
-        output_text(&second)
+        third.contains("[timed out after 1s]\n") && third.contains("[3 of the last 4"),
+        "{third}"
     );
-    let output = tool.execute(args(&[("command", json!("true"))]), &context);
-    assert!(!output.is_error, "{}", output_text(&output));
-    let third = search(&tool);
     assert!(
-        !output_text(&third).contains("searches in a row"),
-        "a successful call between them starts the row over: {}",
-        output_text(&third)
+        !third.contains("timeout_secs"),
+        "the nudge never says to raise the limit: {third}"
     );
     Ok(())
 }
