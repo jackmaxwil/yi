@@ -100,32 +100,67 @@ fn the_rot_the_test_exists_for_is_caught() {
     assert!(undefined_constants("SCHEMA = {}\nr = await h.result(schema=SCHEMA)").is_empty());
 }
 
-/// The most seconds `key` is followed by anywhere in `text`.
-fn longest(text: &str, key: &str) -> u64 {
-    text.split(key)
+/// The runtime's own defaults, so a changed default re-prices every example that leans on it.
+const RLM: &str = include_str!("../../../python/yi_runtime/src/rlm/__init__.py");
+
+/// The whole seconds of the first `param: float = N` after `signature` in the rlm runtime.
+fn python_default(signature: &str, param: &str) -> u64 {
+    RLM.split_once(signature)
+        .and_then(|(_, rest)| rest.split_once(&format!("{param}: float = ")))
+        .and_then(|(_, rest)| rest.split(|c: char| !c.is_ascii_digit()).next())
+        .and_then(|digits| digits.parse().ok())
+        .unwrap_or(u64::MAX)
+}
+
+/// The most seconds any `call` in `text` can wait: its `timeout=`, else its first positional
+/// number, else `default`.
+fn longest(text: &str, call: &str, default: u64) -> u64 {
+    text.split(call)
         .skip(1)
-        .filter_map(|rest| rest.split(|c: char| !c.is_ascii_digit()).next())
-        .filter_map(|digits| digits.parse().ok())
+        .map(|rest| {
+            let args = rest.split(')').next().unwrap_or_default();
+            let seconds = |s: &str| s.split(|c: char| !c.is_ascii_digit()).next()?.parse().ok();
+            args.split_once("timeout=")
+                .map(|(_, after)| after)
+                .or_else(|| {
+                    args.starts_with(|c: char| c.is_ascii_digit())
+                        .then_some(args)
+                })
+                .and_then(seconds)
+                .unwrap_or(default)
+        })
         .max()
         .unwrap_or(0)
 }
 
 /// D176: the kernel interrupts a cell at bash's ceiling, and the examples wait on a child and
 /// collect it in one cell, so a longer wait reads `[cell aborted]`, never the promised result
-/// or `TimeoutError`.
+/// or `TimeoutError`. Incident: identity.md and the plan skill waited `rlm.wait(120)` then a
+/// bare `h.result()`, whose default is 540 s: 660 s in one cell, and neither file was checked.
 #[test]
 fn no_prompt_example_waits_past_the_cell_ceiling() {
+    let wait = python_default("async def wait(timeout", "timeout")
+        .min(python_default("async def wait(self, timeout", "timeout"));
+    let result = python_default("async def result(\n        self,", "timeout");
+    assert_eq!((wait, result), (300, 540), "the defaults this test prices");
+    let mut over = Vec::new();
     for (name, text) in [
         (
             "orchestrate.md",
             include_str!("../src/prompts/orchestrate.md"),
         ),
         ("doctrine.md", include_str!("../src/prompts/doctrine.md")),
+        ("identity.md", include_str!("../src/prompts/identity.md")),
+        (
+            "skills/yi/plan/SKILL.md",
+            include_str!("../../../skills/yi/plan/SKILL.md"),
+        ),
     ] {
-        let waited = longest(text, "rlm.wait(").saturating_add(longest(text, "timeout="));
-        assert!(
-            waited < yi_tools::MAX_TIMEOUT_SECS,
-            "{name}: an example waits {waited} s in one cell"
-        );
+        let waited =
+            longest(text, "rlm.wait(", wait).saturating_add(longest(text, ".result(", result));
+        if waited >= yi_tools::MAX_TIMEOUT_SECS {
+            over.push(format!("{name}: an example waits {waited} s in one cell"));
+        }
     }
+    assert!(over.is_empty(), "{}", over.join("; "));
 }
