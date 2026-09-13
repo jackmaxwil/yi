@@ -18,13 +18,12 @@ pub(crate) fn fast_path() {
 /// The credential the session streams with: the secret plus, for a stored OAuth
 /// login, its profile's headers (D191). `None` is the faux provider, which needs none.
 pub(crate) fn stream_for(
+    provider: &str,
     resolved: Option<&yi_runtime::auth::Resolved>,
 ) -> yi_runtime::ProviderStream {
-    let secret =
-        resolved.map(|found| yi_runtime::auth::Secret::new(found.secret.expose().to_owned()));
-    let stream = yi_runtime::ProviderStream::new(secret, None);
+    let stream = yi_runtime::ProviderStream::new(None, None);
     match resolved {
-        Some(found) => stream.with_auth(found),
+        Some(found) => stream.with_auth(provider, found),
         None => stream,
     }
 }

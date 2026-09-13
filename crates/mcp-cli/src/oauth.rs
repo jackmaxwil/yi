@@ -1,26 +1,16 @@
-use std::io::{Read, Write};
 use std::net::TcpListener;
-use std::time::Duration;
 
 use serde_json::{Value, json};
 use yi_types::mcp::{McpOauthProfile, McpTokenSet};
 
-use crate::pkce;
+use yi_oauth::pkce;
+use yi_oauth::url::{https_or_local, urlencode};
+
 use crate::sessions::now_ms;
 use crate::tokens::Tokens;
 
-const CALLBACK_TIMEOUT_SECS: u64 = 120;
 // Refresh this long before nominal expiry so a token never dies mid-request.
 const EXPIRY_SLACK_MS: u64 = 30_000;
-
-fn https_or_local(url: &str) -> Result<(), String> {
-    let local = url.starts_with("http://127.0.0.1") || url.starts_with("http://localhost");
-    if url.starts_with("https://") || local {
-        Ok(())
-    } else {
-        Err(format!("insecure endpoint refused: {url}"))
-    }
-}
 
 fn host_of(url: &str) -> &str {
     let rest = url
@@ -154,106 +144,6 @@ fn register_client(
         .ok_or("registration response has no client_id".to_owned())
 }
 
-fn urlencode(text: &str) -> String {
-    let mut out = String::new();
-    for byte in text.bytes() {
-        match byte {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                out.push(byte as char);
-            }
-            other => out.push_str(&format!("%{other:02X}")),
-        }
-    }
-    out
-}
-
-fn urldecode(text: &str) -> String {
-    let mut out = Vec::new();
-    let bytes = text.as_bytes();
-    let mut index = 0;
-    while index < bytes.len() {
-        match bytes[index] {
-            b'%' if index + 3 <= bytes.len() => {
-                let hex = &text[index + 1..index + 3];
-                if let Ok(byte) = u8::from_str_radix(hex, 16) {
-                    out.push(byte);
-                    index += 3;
-                    continue;
-                }
-                out.push(b'%');
-                index += 1;
-            }
-            b'+' => {
-                out.push(b' ');
-                index += 1;
-            }
-            other => {
-                out.push(other);
-                index += 1;
-            }
-        }
-    }
-    String::from_utf8_lossy(&out).into_owned()
-}
-
-fn query_param(query: &str, name: &str) -> Option<String> {
-    query.split('&').find_map(|pair| {
-        let (key, value) = pair.split_once('=')?;
-        (key == name).then(|| urldecode(value))
-    })
-}
-
-struct Callback {
-    code: String,
-    state: String,
-    iss: Option<String>,
-}
-
-/// One-shot loopback listener: single connection, 120 s timeout, then a
-/// friendly page. Binds 127.0.0.1 only.
-fn wait_for_callback(listener: &TcpListener) -> Result<Callback, String> {
-    listener
-        .set_nonblocking(true)
-        .map_err(|error| error.to_string())?;
-    let deadline = std::time::Instant::now() + Duration::from_secs(CALLBACK_TIMEOUT_SECS);
-    let (mut stream, _) = loop {
-        match listener.accept() {
-            Ok(accepted) => break accepted,
-            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                if std::time::Instant::now() >= deadline {
-                    return Err(format!(
-                        "no OAuth callback within {CALLBACK_TIMEOUT_SECS}s; aborting"
-                    ));
-                }
-                std::thread::sleep(Duration::from_millis(50));
-            }
-            Err(error) => return Err(format!("callback listener failed: {error}")),
-        }
-    };
-    stream
-        .set_nonblocking(false)
-        .map_err(|error| error.to_string())?;
-    let _ = stream.set_read_timeout(Some(Duration::from_secs(10)));
-    let mut buffer = [0u8; 8192];
-    let read = stream
-        .read(&mut buffer)
-        .map_err(|error| error.to_string())?;
-    let request = String::from_utf8_lossy(&buffer[..read]);
-    let path = request
-        .lines()
-        .next()
-        .and_then(|line| line.split_whitespace().nth(1))
-        .ok_or("malformed callback request")?;
-    let query = path.split_once('?').map(|(_, query)| query).unwrap_or("");
-    let code = query_param(query, "code").ok_or("callback missing code")?;
-    let state = query_param(query, "state").ok_or("callback missing state")?;
-    let iss = query_param(query, "iss");
-    let _ = stream.write_all(
-        b"HTTP/1.1 200 OK\r\ncontent-type: text/html\r\n\r\n<html><body>Login complete. Return to the terminal.</body></html>",
-    );
-    Ok(Callback { code, state, iss })
-}
-
 fn parse_token_response(body: Value) -> Result<McpTokenSet, String> {
     let access_token = body
         .get("access_token")
@@ -343,7 +233,7 @@ pub fn login(
             println!("Open this URL to authorize: {auth_url}");
         }
     }
-    let callback = wait_for_callback(&listener)?;
+    let callback = yi_oauth::loopback::wait_for_callback(&listener, "/callback")?;
     if callback.state != pkce.state {
         return Err("state mismatch in OAuth callback (possible CSRF); aborting".to_owned());
     }

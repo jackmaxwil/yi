@@ -2275,10 +2275,10 @@ version = "0.2.0"
 dependencies = [
  "rmcp",
  "serde_json",
- "sha2",
  "thiserror 2.0.20",
  "tokio",
  "ureq",
+ "yi-oauth",
  "yi-types",
 ]
 
@@ -2288,7 +2288,9 @@ version = "0.2.0"
 dependencies = [
  "serde_json",
  "sha2",
+ "thiserror 2.0.20",
  "ureq",
+ "yi-types",
 ]
 
 [[package]]

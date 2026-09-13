@@ -26,7 +26,10 @@ fn usage() -> i32 {
         "profiles: ~/.yi/oauth/<provider>.json (yi ships none; see docs/examples/oauth-profile.json)"
     );
     eprintln!("examples: yi login --list");
-    eprintln!("          yi login openai --key sk-...");
+    eprintln!("          yi login openai            # paste the key at the prompt");
+    eprintln!(
+        "          yi login openai < ~/.key   # or pipe it: a --key value shows in ps and shell history"
+    );
     eprintln!("          yi login <provider-with-a-profile> --no-browser");
     2
 }
@@ -73,12 +76,19 @@ fn login(args: &[String]) -> i32 {
     let Some(provider) = provider else {
         return usage();
     };
-    let Some(kind) = registry::lookup(&provider) else {
-        eprintln!(
-            "error: no login profile for {provider}. Write one at {} (see docs/examples/oauth-profile.json), or try --list.",
-            registry::profile_path(&provider).display()
-        );
-        return 2;
+    let kind = match registry::lookup(&provider) {
+        Ok(Some(kind)) => kind,
+        Ok(None) => {
+            eprintln!(
+                "error: no login profile for {provider}. Write one at {} (see docs/examples/oauth-profile.json), or try --list.",
+                registry::profile_path(&provider).display()
+            );
+            return 2;
+        }
+        Err(broken) => {
+            eprintln!("error: {broken}");
+            return 2;
+        }
     };
     let proxy = match env_proxy() {
         Ok(proxy) => proxy,
@@ -97,16 +107,8 @@ fn login(args: &[String]) -> i32 {
                 "warning: {provider} logs in with a profile you supplied ({}). Yi ships no client id or wire identity: whatever that file carries is sent as-is, and a provider's terms may forbid it. API keys remain the supported path.",
                 registry::profile_path(&provider).display()
             );
-            flow::login_oauth(
-                &spec,
-                &LoginOptions {
-                    no_browser,
-                    inspect_url: None,
-                },
-                proxy.as_ref(),
-            )
+            flow::login_oauth(&spec, &LoginOptions { no_browser }, proxy.as_ref())
         }
-        registry::Kind::DeviceCode(spec) => flow::login_device(&spec, proxy.as_ref()),
         registry::Kind::ApiKey => {
             let pasted = if let Some(key) = key {
                 key
@@ -119,7 +121,7 @@ fn login(args: &[String]) -> i32 {
                 }
                 key
             };
-            flow::login_api_key(&provider, pasted)
+            flow::login_api_key(pasted)
         }
     };
     match result.and_then(|credential| flow::save(&provider, &credential)) {
@@ -136,8 +138,10 @@ fn login(args: &[String]) -> i32 {
 
 fn logout(args: &[String]) -> i32 {
     if args.is_empty() {
+        // The token directory, not the profile registry: a provider whose profile was
+        // deleted still has its token removed.
         let mut failed = false;
-        for id in registry::ids() {
+        for id in Store::user().list() {
             if let Err(error) = flow::logout(&id) {
                 eprintln!("error: {error}");
                 failed = true;
@@ -163,8 +167,4 @@ pub fn run(verb: &str, args: &[String]) -> i32 {
         "logout" => logout(args),
         _ => usage(),
     }
-}
-
-pub fn stored(provider: &str) -> Option<crate::store::Credential> {
-    Store::user().load(provider)
 }

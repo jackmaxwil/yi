@@ -386,10 +386,6 @@ fn build_session(
         });
     };
     let faux = model.provider == "faux";
-    let resolved = yi_runtime::auth::resolve(&model.provider);
-    if resolved.is_none() && !faux {
-        return Err(login::no_credential(&model.provider));
-    }
     let interactive = {
         use std::io::IsTerminal;
         std::io::stdin().is_terminal()
@@ -410,6 +406,12 @@ fn build_session(
             }
         }
     };
+    // Resolved through the session's proxy so an OAuth refresh can reach the token
+    // endpoint from behind the same wall the stream rides through.
+    let resolved = yi_runtime::auth::resolve_with_proxy(&model.provider, proxy.as_ref());
+    if resolved.is_none() && !faux {
+        return Err(login::no_credential(&model.provider));
+    }
     if !faux {
         catalog::spawn_refresh(
             &model.provider,
@@ -424,7 +426,7 @@ fn build_session(
         .unwrap_or(false)
         .then(|| Arc::new(yi_runtime::Telemetry::default()));
     let provider = Arc::new(
-        login::stream_for(resolved.as_ref())
+        login::stream_for(&model.provider, resolved.as_ref())
             .with_long_cache(interactive)
             .with_proxy(proxy)
             .with_routing(config().routing.clone())

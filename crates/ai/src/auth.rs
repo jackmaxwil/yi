@@ -30,6 +30,9 @@ pub struct Resolved {
     pub secret: Secret,
     pub kind: AuthKind,
     pub org: Option<String>,
+    /// When the credential expires, so a long-lived session can re-resolve instead of
+    /// streaming a dead token (None = never).
+    pub expires: Option<std::time::SystemTime>,
     /// The login profile's `stream_headers` (D191). Yi ships none: this is whatever
     /// the user's own `~/.yi/oauth/<provider>.json` carries.
     pub headers: Vec<(String, String)>,
@@ -53,32 +56,49 @@ fn env_key(provider: &str) -> Option<Secret> {
         .map(Secret::new)
 }
 
-/// A stored OAuth credential is refreshed before it is handed out; a refresh that
-/// fails falls back to what is on disk, so the provider names the 401, not the store.
-fn stored(provider: &str) -> Option<(yi_oauth::store::Credential, Vec<(String, String)>)> {
+/// A stored OAuth credential is refreshed before it is handed out, through the
+/// session's proxy; a failed refresh falls back to the disk copy (the 401 names `yi login`).
+fn stored(
+    provider: &str,
+    proxy: Option<&crate::request::ProxyConfig>,
+) -> Option<(yi_oauth::store::Credential, Vec<(String, String)>)> {
     let store = Store::user();
     let current = store.load(provider)?;
-    let Some(registry::Kind::OauthCode(spec)) = registry::lookup(provider) else {
-        return Some((current, Vec::new()));
+    let spec = match registry::lookup(provider) {
+        Ok(Some(registry::Kind::OauthCode(spec))) => spec,
+        Ok(_) => return Some((current, Vec::new())),
+        // A broken profile is not a missing credential: refuse it so
+        // `yi login <provider>` prints the parse error instead of streaming blind.
+        Err(_) => return None,
     };
     let headers = spec.stream_headers.clone();
     if current.kind != Kind::Oauth {
         return Some((current, headers));
     }
-    let live = flow::live_oauth(&spec, &store, None).unwrap_or(current);
+    let refresh_proxy =
+        proxy.and_then(|config| config.proxy_for(crate::request::host_of(&spec.token)));
+    let live = flow::live_oauth(&spec, &store, refresh_proxy).unwrap_or(current);
     Some((live, headers))
 }
 
 pub fn resolve(provider: &str) -> Option<Resolved> {
+    resolve_with_proxy(provider, None)
+}
+
+pub fn resolve_with_proxy(
+    provider: &str,
+    proxy: Option<&crate::request::ProxyConfig>,
+) -> Option<Resolved> {
     if let Some(secret) = env_key(provider) {
         return Some(Resolved {
             secret,
             kind: AuthKind::ApiKey,
             org: None,
+            expires: None,
             headers: Vec::new(),
         });
     }
-    let (credential, headers) = stored(provider)?;
+    let (credential, headers) = stored(provider, proxy)?;
     Some(Resolved {
         secret: Secret::new(credential.access),
         kind: match credential.kind {
@@ -86,6 +106,7 @@ pub fn resolve(provider: &str) -> Option<Resolved> {
             Kind::Key => AuthKind::ApiKey,
         },
         org: credential.org,
+        expires: credential.expires,
         headers,
     })
 }

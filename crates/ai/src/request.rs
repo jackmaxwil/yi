@@ -93,7 +93,7 @@ fn redacted(url: &str) -> String {
     format!("{scheme}***@{host}")
 }
 
-fn host_of(url: &str) -> &str {
+pub fn host_of(url: &str) -> &str {
     let rest = url.split_once("://").map_or(url, |(_, rest)| rest);
     let rest = rest.split_once('/').map_or(rest, |(host, _)| host);
     rest.split_once(':').map_or(rest, |(host, _)| host)
@@ -405,6 +405,19 @@ pub struct Wire<'a> {
     /// The login profile's `stream_headers`, and anything else only the live
     /// credential knows: never static model data, so the catalog cannot hold it.
     pub extra: &'a [(String, String)],
+    /// A stored OAuth credential is on the wire (D191): a 401 then names the login
+    /// verb instead of dumping the provider's body.
+    pub oauth: bool,
+}
+
+/// A 401 with a stored OAuth credential means the login was rejected or expired past
+/// repair; the provider's body dump helps nobody. Name the verb that fixes it.
+pub fn auth_hint(message: &str, oauth: bool, provider: &str) -> String {
+    if oauth && message.starts_with("HTTP 401") {
+        format!("{message} — credential rejected; run: yi login {provider}")
+    } else {
+        message.to_owned()
+    }
 }
 
 /// The owned half of a [`Wire`]: what the spawned thread must hold for the request.
@@ -413,6 +426,7 @@ pub struct WireOwned {
     pub proxy: Option<ProxyConfig>,
     pub stop: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
     pub extra: Vec<(String, String)>,
+    pub oauth: bool,
 }
 
 /// The OpenAI-style stream shape, shared by the completions and responses paths: one
@@ -433,6 +447,7 @@ pub fn spawn_stream(
             proxy: owned.proxy.as_ref(),
             stop: owned.stop.as_deref(),
             extra: &owned.extra,
+            oauth: owned.oauth,
         };
         if let Err(message) = run(&model, &body, wire, sender) {
             let _ = sender.blocking_send(fail(&model, &message));

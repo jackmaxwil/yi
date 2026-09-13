@@ -17,17 +17,26 @@ fn serial() -> std::sync::MutexGuard<'static, ()> {
         .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
-fn home(tag: &str) -> Result<std::path::PathBuf, Box<dyn std::error::Error>> {
+/// Removes the temp HOME on drop: a failed assert must not leave one behind.
+struct Home(std::path::PathBuf);
+
+impl Drop for Home {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+fn home(tag: &str) -> Result<Home, Box<dyn std::error::Error>> {
     let dir = std::env::temp_dir().join(format!("yi-oauth-{tag}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(dir.join(".yi"))?;
     unsafe { std::env::set_var("HOME", &dir) };
     unsafe { std::env::remove_var("ANTHROPIC_API_KEY") };
-    Ok(dir)
+    Ok(Home(dir))
 }
 
-fn write_profile(home: &std::path::Path, provider: &str, profile: &serde_json::Value) -> Res {
-    let dir = home.join(".yi").join("oauth");
+fn write_profile(home: &Home, provider: &str, profile: &serde_json::Value) -> Res {
+    let dir = home.0.join(".yi").join("oauth");
     std::fs::create_dir_all(&dir)?;
     std::fs::write(dir.join(format!("{provider}.json")), profile.to_string())?;
     Ok(())
@@ -99,9 +108,10 @@ fn env_beats_the_store_and_logout_deletes() -> Res {
             kind: Kind::Oauth,
             access: "stored-token".to_owned(),
             refresh: None,
-            expires_ms: 0,
+            expires: None,
             account: None,
             org: None,
+            extra: Default::default(),
         },
     )?;
     unsafe { std::env::set_var("ANTHROPIC_API_KEY", "env-key") };
@@ -151,9 +161,10 @@ fn a_profile_puts_its_stream_headers_on_the_wire() -> Res {
             kind: Kind::Oauth,
             access: "oauth-tok".to_owned(),
             refresh: None,
-            expires_ms: 0,
+            expires: None,
             account: None,
             org: None,
+            extra: Default::default(),
         },
     )?;
 
@@ -204,9 +215,10 @@ fn a_profile_without_headers_sends_only_bearer() -> Res {
             kind: Kind::Oauth,
             access: "bare-tok".to_owned(),
             refresh: None,
-            expires_ms: 0,
+            expires: None,
             account: None,
             org: None,
+            extra: Default::default(),
         },
     )?;
     let resolved = auth::resolve("anthropic").ok_or("expected the stored credential")?;
@@ -226,6 +238,7 @@ fn a_profile_without_headers_sends_only_bearer() -> Res {
         lower.contains("authorization: bearer bare-tok"),
         "{request}"
     );
-    assert!(!lower.contains("claude"), "{request}");
+    assert_eq!(lower.matches("authorization:").count(), 1, "{request}");
+    assert!(!lower.contains("x-api-key"), "{request}");
     Ok(())
 }
