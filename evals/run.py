@@ -231,9 +231,8 @@ def run_home():
     if not _RUN_HOME:
         _RUN_HOME.append(tempfile.mkdtemp(prefix="yi-evals-home-"))
         # Incident: each run left its HOME behind, ~650 MB of kernel venv and uv cache;
-        # 95 of them filled the disk. The uv cache is the caller's, so a venv costs a clone.
+        # 95 of them filled the disk.
         atexit.register(shutil.rmtree, _RUN_HOME[0], True)
-        os.environ.setdefault("UV_CACHE_DIR", str(Path.home() / ".cache" / "uv"))
         config = Path(_RUN_HOME[0]) / ".yi" / "config.json"
         config.parent.mkdir(parents=True, exist_ok=True)
         config.write_text(json.dumps(yi_usage.eval_config(os.environ)))
@@ -394,6 +393,9 @@ def main(argv=None):
     parser.add_argument("--allow-faux", action="store_true",
                         help="let --live run faux: proves the lane's plumbing offline, never a model")
     args = parser.parse_args(argv)
+    # The uv cache is the caller's, so a run HOME's venv costs a clone. Set before any run: a call
+    # site builds `{**os.environ, "HOME": run_home()}`, which copies the environment first.
+    os.environ.setdefault("UV_CACHE_DIR", str(Path.home() / ".cache" / "uv"))
     if args.home:
         if not os.path.isabs(args.home):
             errors_early = f"--home must be absolute, not {args.home!r}"
