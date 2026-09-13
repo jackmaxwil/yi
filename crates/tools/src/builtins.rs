@@ -336,8 +336,8 @@ fn segment_category(segment: &str) -> Option<&'static str> {
 #[derive(Default)]
 pub struct BashTool {
     pub hashline: Option<crate::hashline::tool::SharedHashline>,
-    /// Consecutive search-shaped timeouts; any other call starts the row over.
-    pub(crate) search_timeouts: std::sync::atomic::AtomicU32,
+    /// The last four calls that ran, newest in bit 0; a set bit hit its time limit.
+    pub(crate) recent_ceilings: std::sync::atomic::AtomicU8,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -416,25 +416,58 @@ fn viewed_lines(command: &str, content: &str, output: &str) -> Vec<u64> {
         .collect()
 }
 
+/// Incident: layout-config-recreation's cv2 search died three times under its own 590 s and 480 s
+/// `timeout` wrappers, as exit 124. A wrapped command that exits 124 by itself ends sooner.
+fn own_timeout_fired(command: &str, exit_code: i32, elapsed: std::time::Duration) -> bool {
+    exit_code == 124
+        && command
+            .split(['|', ';', '\n', '&', '('])
+            .filter_map(timeout_limit)
+            .any(|limit| elapsed >= limit)
+}
+
+fn timeout_limit(segment: &str) -> Option<std::time::Duration> {
+    let mut words = segment
+        .split_whitespace()
+        .skip_while(|word| word.contains('='));
+    if words.next()?.rsplit('/').next()? != "timeout" {
+        return None;
+    }
+    let limit = loop {
+        let word = words.next()?;
+        if matches!(word, "-k" | "-s" | "--kill-after" | "--signal") {
+            words.next()?;
+        } else if !word.starts_with('-') {
+            break word;
+        }
+    };
+    let scale = match limit.chars().last()? {
+        'm' => 60.0,
+        'h' => 3600.0,
+        'd' => 86400.0,
+        _ => 1.0,
+    };
+    let seconds: f64 = limit.trim_end_matches(['s', 'm', 'h', 'd']).parse().ok()?;
+    std::time::Duration::try_from_secs_f64(seconds * scale).ok()
+}
+
 impl BashTool {
+    /// How many of the last four calls hit their time limit, when this one did and one more did.
     fn ceiling_nudge(
         &self,
         command: &str,
         timed_out: bool,
-        _exit_code: i32,
-        _elapsed: std::time::Duration,
+        exit_code: i32,
+        elapsed: std::time::Duration,
     ) -> Option<u32> {
-        if timed_out && matches!(command_category(command), "search" | "list_files") {
-            let streak = self
-                .search_timeouts
-                .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-                .saturating_add(1);
-            (streak >= 2).then_some(streak)
-        } else {
-            self.search_timeouts
-                .store(0, std::sync::atomic::Ordering::Relaxed);
-            None
-        }
+        let hit = timed_out || own_timeout_fired(command, exit_code, elapsed);
+        let push = |bits: u8| (bits << 1 | u8::from(hit)) & 0b1111;
+        let ordering = std::sync::atomic::Ordering::Relaxed;
+        let (Ok(before) | Err(before)) =
+            self.recent_ceilings
+                .fetch_update(ordering, ordering, |bits| Some(push(bits)));
+        let hits = push(before).count_ones();
+        (hit && hits >= 2).then_some(hits)
     }
 }
 
@@ -511,8 +544,7 @@ impl Tool for BashTool {
             Err(message) => return error_output(message),
         };
         let exit_code_for_reduce = capture.exit_code.unwrap_or(-1);
-        let search_streak =
-            self.ceiling_nudge(command, timed_out, exit_code_for_reduce, started.elapsed());
+        let nudge = self.ceiling_nudge(command, timed_out, exit_code_for_reduce, started.elapsed());
         let max_lines = input
             .get("max_output_lines")
             .and_then(Value::as_u64)
@@ -533,17 +565,14 @@ impl Tool for BashTool {
         if capture.truncated {
             sections.push("[output truncated]".to_owned());
         }
-        if timed_out {
+        if timed_out && nudge.is_some() {
+            sections.push(format!("[timed out after {}s]", timeout.as_secs()));
+        } else if timed_out {
             sections.push(format!(
                 "[timed out after {}s; pass timeout_secs up to {} for a longer run, or narrow the command]",
                 timeout.as_secs(),
                 crate::jobs::MAX_TIMEOUT_SECS
             ));
-            if let Some(search_streak) = search_streak {
-                sections.push(format!(
-                    "[{search_streak} searches in a row timed out; the grep tool walks and pages with no wall-clock kill, or bound the command: name the directory, add -maxdepth/--max-depth N, pipe through head]"
-                ));
-            }
         } else if capture.cancelled {
             sections.push("[command aborted]".to_owned());
         }
@@ -558,6 +587,11 @@ impl Tool for BashTool {
                     "[chain stopped at exit {exit_code}: the segments after the failing one did not run]"
                 ));
             }
+        }
+        if let Some(hits) = nudge {
+            sections.push(format!(
+                "[{hits} of the last 4 bash calls hit their time limit; change the method, not the limit: bound the work (a smaller input, a sample, an early exit), vectorize it, or run it in the background (nohup CMD > out.log 2>&1 &) and read the log in a later call]"
+            ));
         }
         if let Some(hint) = document_hint(command) {
             sections.push(hint);
