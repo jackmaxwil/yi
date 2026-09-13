@@ -451,9 +451,7 @@ async fn an_alternating_pair_and_a_text_only_spiral_are_broken() {
             StopReason::Stop,
         )
     };
-    let stream = Spiral {
-        responses: Mutex::new(vec![cut(), cut(), cut(), cut(), reply("done")]),
-    };
+    let stream = Spiral::new(vec![cut(), cut(), cut(), cut(), reply("done")]);
     let collected = run_with(&stream, &LoopConfig::new(faux_model())).await;
     assert_eq!(breaks(&collected), 0, "a cut turn has no text to repeat");
     assert_eq!(answers(&collected), 5);
@@ -668,16 +666,44 @@ async fn a_tool_call_between_length_stops_starts_the_count_over() {
 /// try_send into a channel of 64 would drop a 60k-char thinking block on the floor.
 struct Spiral {
     responses: Mutex<Vec<AgentMessage>>,
+    requests: Mutex<Vec<(yi_types::model::Effort, LlmContext)>>,
+}
+
+impl Spiral {
+    fn new(responses: Vec<AgentMessage>) -> Self {
+        Self {
+            responses: Mutex::new(responses),
+            requests: Mutex::new(Vec::new()),
+        }
+    }
+
+    /// Each request's effort and context, in the order the loop sent them.
+    fn requests(&self) -> Vec<(yi_types::model::Effort, LlmContext)> {
+        self.requests
+            .lock()
+            .map(|requests| requests.clone())
+            .unwrap_or_default()
+    }
+
+    fn efforts(&self) -> Vec<yi_types::model::Effort> {
+        self.requests()
+            .into_iter()
+            .map(|(effort, _)| effort)
+            .collect()
+    }
 }
 
 impl yi_loop::run::StreamFn for Spiral {
     fn stream(
         &self,
         _model: &Model,
-        _context: &LlmContext,
-        _effort: yi_types::model::Effort,
+        context: &LlmContext,
+        effort: yi_types::model::Effort,
         _signal: &InterruptSignal,
     ) -> Receiver<AssistantMessageEvent> {
+        if let Ok(mut requests) = self.requests.lock() {
+            requests.push((effort, context.clone()));
+        }
         let (sender, receiver) = tokio::sync::mpsc::channel(64);
         let events = match self.responses.lock() {
             Ok(mut queue) if !queue.is_empty() => stream_with_deltas(&queue.remove(0)),
@@ -731,9 +757,7 @@ async fn consecutive_cuts_re_drive_past_the_third_and_name_the_write() {
         message
     };
     let answer = faux_assistant_message(vec![faux_text("done")], StopReason::Stop);
-    let stream = Spiral {
-        responses: Mutex::new(vec![spiral(), spiral(), spiral(), spiral(), answer]),
-    };
+    let stream = Spiral::new(vec![spiral(), spiral(), spiral(), spiral(), answer]);
     let mut context = LoopContext {
         system_prompt: String::new(),
         messages: Vec::new(),
@@ -787,6 +811,170 @@ async fn consecutive_cuts_re_drive_past_the_third_and_name_the_write() {
     );
 }
 
+/// `z-ai/glm-5.3-flash` from the bundled catalog: the model and route of the 2026-09-11 sweep.
+fn glm_5_3_flash() -> Option<Model> {
+    yi_ai::catalog::Catalog::bundled()
+        .get("openrouter", "z-ai/glm-5.3-flash")
+        .cloned()
+}
+
+/// A recorded cut turn of `chars` reasoning chars (the transcript's `reasoningChars`; the text
+/// itself was dropped at the cut, so filler stands in) whose last line names `label`.
+fn recorded_cut(chars: usize, label: usize) -> AgentMessage {
+    let last = format!("\nwhere turn {label} stopped: the upper bound still needs its induction");
+    let filler = "the bound holds at n=4, check n=5 again, ".repeat(chars / 40 + 1);
+    let thinking: String = filler
+        .chars()
+        .take(chars.saturating_sub(last.chars().count()))
+        .chain(last.chars())
+        .collect();
+    let mut message = faux_assistant_message(vec![faux_thinking(&thinking)], StopReason::Stop);
+    if let AgentMessage::Assistant { usage, .. } = &mut message {
+        usage.unknown = true;
+    }
+    message
+}
+
+/// The body the runtime's OpenRouter provider builds for a request, with its options.
+fn openrouter_body(model: &Model, effort: yi_types::model::Effort, context: &LlmContext) -> Value {
+    yi_ai::openai::build_params(
+        model,
+        context,
+        &yi_ai::openai::OpenAiOptions {
+            reasoning_effort: (effort != yi_types::model::Effort::Off).then_some(effort),
+            ..yi_ai::openai::OpenAiOptions::default()
+        },
+    )
+}
+
+fn last_message(body: &Value) -> Value {
+    body["messages"]
+        .as_array()
+        .and_then(|messages| messages.last())
+        .cloned()
+        .unwrap_or(Value::Null)
+}
+
+async fn run_on_glm(
+    model: &Model,
+    script: Vec<AgentMessage>,
+    follow_up: Option<&str>,
+) -> (Spiral, Vec<Value>) {
+    let stream = Spiral::new(script);
+    let mut context = LoopContext {
+        system_prompt: String::new(),
+        messages: Vec::new(),
+        tools: vec![Arc::new(EchoTool)],
+    };
+    let mut config = LoopConfig::new(model.clone());
+    config.convert_to_llm = Box::new(yi_context::convert_to_llm);
+    if let Some(text) = follow_up {
+        let queued = Arc::new(Mutex::new(vec![user(text)]));
+        config.get_follow_up_messages = Some(Box::new(move || {
+            queued
+                .lock()
+                .map(|mut queued| std::mem::take(&mut *queued))
+                .unwrap_or_default()
+        }));
+    }
+    let signal = InterruptSignal::default();
+    let (_events, mut emit) = collector();
+    run_loop(
+        &mut context,
+        vec![user("Prove the lemma in Bound.v.")],
+        &config,
+        &signal,
+        &mut emit,
+        &stream,
+    )
+    .await;
+    let bodies = stream
+        .requests()
+        .iter()
+        .map(|(effort, context)| openrouter_body(model, *effort, context))
+        .collect();
+    (stream, bodies)
+}
+
+/// coq-block-bound on glm-5.3-flash (the 2026-09-11 sweep) was cut six times in one prompt, at
+/// 48,002, 48,002, 48,001, 48,019 and 48,006 chars, and called no tool: each request grew by
+/// the re-drive's words alone (11,148 to 11,380 input tokens), so each turn derived from zero.
+#[tokio::test]
+async fn from_the_second_cut_glm_5_3_flash_is_shown_where_its_reasoning_stopped() {
+    let recorded = [48_002, 48_002, 48_001, 48_019, 48_006, 48_006];
+    let script = recorded
+        .iter()
+        .enumerate()
+        .map(|(index, chars)| recorded_cut(*chars, index + 1))
+        .collect();
+    let model = glm_5_3_flash().expect("the bundled catalog carries glm-5.3-flash");
+    let (_stream, bodies) = run_on_glm(&model, script, None).await;
+    assert_eq!(
+        bodies.len(),
+        6,
+        "the sixth cut ends the run, as it ended coq-block-bound"
+    );
+    for body in &bodies {
+        assert_eq!(
+            body["reasoning"],
+            json!({"effort": "low"}),
+            "the route refuses none"
+        );
+        assert!(body.get("tool_choice").is_none(), "{body}");
+    }
+    assert_eq!(
+        last_message(&bodies[1]),
+        json!({"role": "user", "content": yi_loop::LENGTH_REDRIVE_TEXT}),
+        "a first cut is re-driven as before"
+    );
+    for (cut, body) in bodies.iter().enumerate().skip(2) {
+        let text = last_message(body)["content"]
+            .as_str()
+            .unwrap_or_default()
+            .to_owned();
+        assert!(
+            text.contains(&format!("where turn {cut} stopped")),
+            "the request after cut {cut} ends: {text}"
+        );
+        assert!(text.starts_with(yi_loop::CUT_REDRIVE_TEXT), "{text}");
+        assert!(text.chars().count() < 10_000, "a quote, not the cut");
+    }
+}
+
+/// A prompt queued behind a spiral runs in the same loop (ACP `session/prompt` while busy):
+/// it goes out as the first prompt went out, and its first cut is re-driven as a first cut.
+#[tokio::test]
+async fn a_follow_up_after_three_cuts_sends_what_the_first_prompt_sent() {
+    let answer = |text: &str| faux_assistant_message(vec![faux_text(text)], StopReason::Stop);
+    let script = vec![
+        recorded_cut(48_002, 1),
+        recorded_cut(48_002, 2),
+        recorded_cut(48_001, 3),
+        answer("first"),
+        recorded_cut(48_019, 4),
+        answer("second"),
+    ];
+    let model = glm_5_3_flash().expect("the bundled catalog carries glm-5.3-flash");
+    let (stream, bodies) = run_on_glm(&model, script, Some("and then?")).await;
+    let efforts = stream.efforts();
+    assert_eq!(bodies.len(), 6, "{efforts:?}");
+    let configured = model.clamp_effort(yi_types::model::Effort::default());
+    assert!(
+        efforts.iter().all(|effort| *effort == configured),
+        "every request at the configured effort: {efforts:?}"
+    );
+    assert_eq!(bodies[4]["reasoning"], bodies[0]["reasoning"]);
+    assert_eq!(
+        last_message(&bodies[4]),
+        json!({"role": "user", "content": "and then?"})
+    );
+    assert_eq!(
+        last_message(&bodies[5]),
+        json!({"role": "user", "content": yi_loop::LENGTH_REDRIVE_TEXT}),
+        "the follow-up's first cut quotes nothing"
+    );
+}
+
 /// D178: the audit slice's photonic trials were cut 22 times, never more than four in a row,
 /// because a tool call between cuts started the count over, so twelve was never approached.
 /// The sixth cut of a prompt ends the run, calls or not.
@@ -813,9 +1001,7 @@ async fn cut_turns_are_counted_per_prompt_not_per_tool_call() {
         vec![faux_text("never reached")],
         StopReason::Stop,
     ));
-    let stream = Spiral {
-        responses: Mutex::new(script),
-    };
+    let stream = Spiral::new(script);
     let mut context = LoopContext {
         system_prompt: String::new(),
         messages: Vec::new(),
@@ -877,9 +1063,7 @@ async fn a_follow_up_prompt_starts_its_own_cut_count() {
     let answer = |text: &str| faux_assistant_message(vec![faux_text(text)], StopReason::Stop);
     let mut script: Vec<AgentMessage> = (0..5).flat_map(|_| [spiral(), work()]).collect();
     script.extend([answer("first"), spiral(), answer("second")]);
-    let stream = Spiral {
-        responses: Mutex::new(script),
-    };
+    let stream = Spiral::new(script);
     let mut context = LoopContext {
         system_prompt: String::new(),
         messages: Vec::new(),
@@ -943,9 +1127,7 @@ async fn a_cut_turn_keeps_the_usage_the_provider_settled() {
         usage.unknown = false;
     }
     let answer = faux_assistant_message(vec![faux_text("done")], StopReason::Stop);
-    let stream = Spiral {
-        responses: Mutex::new(vec![spiral, answer]),
-    };
+    let stream = Spiral::new(vec![spiral, answer]);
     let mut context = LoopContext {
         system_prompt: String::new(),
         messages: Vec::new(),
@@ -1001,9 +1183,7 @@ async fn a_reasoning_spiral_is_cut_at_the_char_budget_and_re_driven() {
         usage.unknown = true;
     }
     let answer = faux_assistant_message(vec![faux_text("done")], StopReason::Stop);
-    let stream = Spiral {
-        responses: Mutex::new(vec![spiral, answer]),
-    };
+    let stream = Spiral::new(vec![spiral, answer]);
     let mut context = LoopContext {
         system_prompt: String::new(),
         messages: Vec::new(),
