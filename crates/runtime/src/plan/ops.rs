@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex};
 
 use yi_types::plan::doc::{
     AgentId, BlockedOn, Delegation, DocError, GoalText, Plan, PlanId, PlanIssue, PlanState,
-    PlanTier, RetryCount, Spawns, Todo, TodoAddr, TodoLabel, TodoState, TodoStateName,
+    PlanTier, RetryCount, Spawns, Todo, TodoAddr, TodoLabel, TodoState, TodoStateName, TouchCount,
 };
 use yi_types::plan::ledger::PlanOpRecord;
 use yi_types::url::Url;
@@ -390,6 +390,12 @@ impl PlanEngine {
             todos: u32::try_from(plan.todos.len()).unwrap_or(u32::MAX),
             extra: serde_json::Map::new(),
         });
+    }
+
+    /// The revision `plan.op` compares: `touched` moves on every op and user edit, `version` does not.
+    pub fn revision(&self, plan: Option<PlanId>) -> Result<TouchCount, PlanOpError> {
+        let id = self.resolve(plan)?;
+        Ok(self.store.read(&id)?.plan.touched)
     }
 
     pub fn apply(&self, request: OpRequest) -> Result<Outcome, PlanOpError> {

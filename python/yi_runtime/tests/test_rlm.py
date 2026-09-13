@@ -8,6 +8,7 @@ PYTHONPATH=python/yi_runtime/src python3 -m unittest discover -q -s python/yi_ru
 from __future__ import annotations
 
 import asyncio
+import inspect
 import pathlib
 import tempfile
 import shutil
@@ -36,6 +37,18 @@ def _entry(status: str) -> rlm.RLMSubagent:
     )
 
 
+def _wait_reply(state: str, *, name: str = "n", cursor: int = 1) -> dict:
+    return {
+        "cursor": cursor,
+        "changed": [name],
+        "updated": [name],
+        "states": {name: state},
+        "notes": {},
+        "timeout_ms": 1000,
+        "clamped": False,
+    }
+
+
 class ResultSignatureTests(unittest.IsolatedAsyncioTestCase):
     def test_result_refuses_a_positional_schema(self) -> None:
         h = _handle()
@@ -58,37 +71,97 @@ class ResultSignatureTests(unittest.IsolatedAsyncioTestCase):
                 await _handle().result(schema=30)
         self.assertEqual(calls, [])
 
-    async def test_result_deadline_is_wall_clock_not_poll_count(self) -> None:
-        calls: list[int] = []
+    async def test_result_uses_wait_and_keeps_its_errors(self) -> None:
+        """F0a: the handle blocks in rlm.wait with its own cursor, never a listing poll."""
+        signature = inspect.signature(rlm.RLMSpawnHandle.result)
+        self.assertEqual(signature.parameters["timeout"].default, 540.0)
+        self.assertNotIn("poll", signature.parameters)
 
-        async def fake() -> list[rlm.RLMSubagent]:
-            calls.append(1)
-            await asyncio.sleep(0.03)
-            return [_entry("running")]
+        async def never_listed() -> list[rlm.RLMSubagent]:
+            raise AssertionError("result must not poll list_subagents")
 
-        with mock.patch.object(rlm, "list_subagents", fake):
-            with self.assertRaises(TimeoutError):
-                await _handle().result(timeout=0.05, poll=0.01)
-        self.assertLessEqual(len(calls), 3)
+        seen: list[tuple[float, int | None]] = []
 
-    async def test_result_fails_fast_when_the_child_is_no_longer_registered(self) -> None:
-        calls: list[int] = []
+        async def wait_to_finished(timeout: float, cursor: int | None = None) -> dict:
+            seen.append((timeout, cursor))
+            return _wait_reply("running" if len(seen) == 1 else "finished", cursor=len(seen))
 
-        async def fake() -> list[rlm.RLMSubagent]:
-            calls.append(1)
-            return []
+        async def fake_result(*args, **kwargs):
+            return {"text": "ok"}
+
+        with mock.patch.object(rlm, "list_subagents", never_listed), mock.patch.object(
+            rlm, "wait", wait_to_finished
+        ), mock.patch.object(rlm, "result", fake_result):
+            self.assertEqual(await _handle().result(), {"text": "ok"})
+        self.assertEqual([cursor for _, cursor in seen], [None, 1])
+        self.assertLessEqual(seen[0][0], 540.0)
+
+        async def wait_without_the_child(timeout: float, cursor: int | None = None) -> dict:
+            return _wait_reply("finished", name="other")
 
         start = time.monotonic()
-        with mock.patch.object(rlm, "list_subagents", fake):
+        with mock.patch.object(rlm, "list_subagents", never_listed), mock.patch.object(
+            rlm, "wait", wait_without_the_child
+        ):
             with self.assertRaisesRegex(RuntimeError, "no longer registered"):
-                await _handle().result(timeout=5, poll=0.01)
-        elapsed = time.monotonic() - start
-        self.assertEqual(len(calls), 1)
-        self.assertLess(elapsed, 1.0)
+                await _handle().result(timeout=5)
+        self.assertLess(time.monotonic() - start, 1.0)
+
+        waits: list[float] = []
+
+        async def wait_running(timeout: float, cursor: int | None = None) -> dict:
+            waits.append(timeout)
+            await asyncio.sleep(min(timeout, 0.02))
+            return _wait_reply("running")
+
+        with mock.patch.object(rlm, "list_subagents", never_listed), mock.patch.object(
+            rlm, "wait", wait_running
+        ):
+            with self.assertRaises(TimeoutError):
+                await _handle().result(timeout=0.05)
+        self.assertTrue(waits and all(asked <= 0.05 for asked in waits))
+
+    async def test_a_child_asking_its_parent_is_collected_not_timed_out(self) -> None:
+        """needs_you names a child that ended on ask_user (D165); its answer is collectable."""
+
+        async def wait_needs_you(timeout: float, cursor: int | None = None) -> dict:
+            return _wait_reply("needs_you")
+
+        async def fake_result(*args, **kwargs):
+            return {"text": "which file?"}
+
+        with mock.patch.object(rlm, "wait", wait_needs_you), mock.patch.object(
+            rlm, "result", fake_result
+        ):
+            self.assertEqual(await _handle().result(timeout=1.0), {"text": "which file?"})
+
+        # needs_you also names a running child blocked on the user: the host refuses
+        # its result and the handle keeps waiting.
+        seen: list[int | None] = []
+
+        async def wait_blocked_then_finished(timeout: float, cursor: int | None = None) -> dict:
+            seen.append(cursor)
+            state = "needs_you" if len(seen) == 1 else "finished"
+            return _wait_reply(state, cursor=len(seen))
+
+        results: list[int] = []
+
+        async def refuse_then_answer(*args, **kwargs):
+            results.append(1)
+            if len(results) == 1:
+                raise RuntimeError('child "n" is still running')
+            return {"text": "ok"}
+
+        with mock.patch.object(rlm, "wait", wait_blocked_then_finished), mock.patch.object(
+            rlm, "result", refuse_then_answer
+        ):
+            self.assertEqual(await _handle().result(timeout=1.0), {"text": "ok"})
+        self.assertEqual(seen, [None, 1])
+        self.assertEqual(len(results), 2)
 
     async def test_a_finished_child_forwards_the_schema_as_a_keyword(self) -> None:
-        async def fake_list() -> list[rlm.RLMSubagent]:
-            return [_entry("completed")]
+        async def fake_wait(timeout: float, cursor: int | None = None) -> dict:
+            return _wait_reply("finished")
 
         calls: list[tuple[tuple, dict]] = []
 
@@ -96,7 +169,7 @@ class ResultSignatureTests(unittest.IsolatedAsyncioTestCase):
             calls.append((args, kwargs))
             return {"text": "ok"}
 
-        with mock.patch.object(rlm, "list_subagents", fake_list), mock.patch.object(
+        with mock.patch.object(rlm, "wait", fake_wait), mock.patch.object(
             rlm, "result", fake_result
         ):
             await _handle().result(schema={"type": "object"})
@@ -187,3 +260,56 @@ class StatusTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(await rlm.status(), members)
             self.assertEqual(await rlm.status("d"), [members[1]])
 
+
+
+class PlanOpTests(unittest.IsolatedAsyncioTestCase):
+    """F0a: plan.op is one host request; rlm.wait carries a cursor."""
+
+    async def test_plan_op_sends_the_payload_shape(self) -> None:
+        calls: list[tuple[str, dict]] = []
+
+        async def fake_host_request(kind, payload):
+            calls.append((kind, payload))
+            return {"ok": True, "revision": 4, "text": "header"}
+
+        with mock.patch.object(rlm, "host_request", fake_host_request):
+            reply = await rlm.plan_op("view", {"full": True})
+            self.assertEqual(reply, {"ok": True, "revision": 4, "text": "header"})
+            kind, payload = calls[-1]
+            self.assertEqual(kind, "plan.op")
+            self.assertEqual(set(payload), {"request_id", "op", "args"})
+            self.assertEqual(payload["op"], "view")
+            self.assertEqual(payload["args"], {"full": True})
+            self.assertEqual(len(payload["request_id"]), 36)
+
+            await rlm.plan_op("view")
+            self.assertEqual(set(calls[-1][1]), {"request_id", "op"})
+
+            await rlm.plan_op(
+                "done", {"id": "t1"}, plan="p", request_id="r-1", expected_revision=0
+            )
+            self.assertEqual(
+                calls[-1][1],
+                {
+                    "request_id": "r-1",
+                    "plan": "p",
+                    "expected_revision": 0,
+                    "op": "done",
+                    "args": {"id": "t1"},
+                },
+            )
+
+    async def test_wait_sends_the_cursor(self) -> None:
+        calls: list[tuple[str, dict]] = []
+
+        async def fake_host_request(kind, payload):
+            calls.append((kind, payload))
+            return _wait_reply("running")
+
+        with mock.patch.object(rlm, "host_request", fake_host_request):
+            self.assertEqual(await rlm.wait(1.5), _wait_reply("running"))
+            self.assertEqual(calls[-1], ("rlm.wait", {"timeout_ms": 1500}))
+            await rlm.wait(2, cursor=7)
+            self.assertEqual(calls[-1][1], {"timeout_ms": 2000, "cursor": 7})
+            await rlm.rlm.wait(2, 9)
+            self.assertEqual(calls[-1][1], {"timeout_ms": 2000, "cursor": 9})

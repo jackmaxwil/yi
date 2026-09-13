@@ -16,6 +16,7 @@ pub mod ledger;
 pub mod loop_coupling;
 pub mod ops;
 pub mod probe;
+pub mod request;
 pub mod store;
 pub mod table;
 pub mod tool;

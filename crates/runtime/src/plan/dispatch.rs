@@ -575,4 +575,65 @@ mod tests {
         assert!(carried, "the nudge names the slice and the held count");
         Ok(())
     }
+
+    /// Guards `wiring::lifecycle_notice`: restore `session.notice_hook()` there and the
+    /// child's finish only queues a steer for a turn nobody starts.
+    #[tokio::test]
+    async fn a_childs_finish_wakes_an_idle_owner() -> TestResult {
+        let owner_session = faux_session(&["reading the child's answer"]);
+        let notice = crate::wiring::lifecycle_notice(&owner_session);
+        let root = Scratch::new("yi-dispatch-child-wake")?;
+        let (events, _keep) = tokio::sync::broadcast::channel(16);
+        let host = Arc::new(SubagentHost::new(SubagentHostOptions {
+            depth: 0,
+            max_depth: 1,
+            max_children: 8,
+            parent_session_dir: root.join("children"),
+            plans_dir: root.join(crate::plan::PLANS_DIR),
+            family_live: Arc::new(|| 0),
+            cwd: root.to_path_buf(),
+            home: std::env::temp_dir(),
+            lane_slots: 1,
+            defaults: Arc::new(|| (faux_model(), yi_types::model::Effort::Medium)),
+            factory: Arc::new(|_build| Ok(faux_session(&["the child's answer"]))),
+            notice,
+            events,
+            parent_messages: Arc::new(Vec::new),
+            report: Arc::new(|_message| {}),
+            attribute: Arc::new(|_usage| {}),
+            store: Arc::new(|| None),
+        }));
+        let mut kwargs = serde_json::Map::new();
+        kwargs.insert(
+            "name".to_owned(),
+            serde_json::Value::String("helper".to_owned()),
+        );
+        host.spawn("answer once".to_owned(), kwargs)
+            .map_err(|error| error.to_string())?;
+        let mut woke = false;
+        for _ in 0..400 {
+            let notified = owner_session.messages().iter().any(|message| {
+                matches!(
+                    message,
+                    AgentMessage::User { content: UserContent::Text(text), .. }
+                        if text.contains("[subagent helper")
+                )
+            });
+            let replied = owner_session
+                .messages()
+                .iter()
+                .any(|message| matches!(message, AgentMessage::Assistant { .. }));
+            if notified && replied {
+                woke = true;
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
+        assert!(
+            woke,
+            "an idle owner must be woken by its child's finish: {:?}",
+            owner_session.messages()
+        );
+        Ok(())
+    }
 }

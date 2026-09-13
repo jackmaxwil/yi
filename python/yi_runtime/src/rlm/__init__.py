@@ -10,6 +10,7 @@ import pathlib
 import time
 import re
 import types
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -56,32 +57,48 @@ class RLMSpawnHandle:
         # Under the kernel cell's 600 s wall clock (D176): a 900 s wait could never
         # elapse, the cell was aborted first and the child's answer never came back.
         timeout: float = 540.0,
-        poll: float = 0.5,
     ) -> dict[str, Any]:
         """Wait for this child to finish and return its answer as data.
 
         The reply carries ``text`` and, when the child answered with JSON,
         ``json``. A ``schema`` is checked host-side and a mismatch raises,
         so a malformed result never reaches the parent's transcript as if
-        it had passed. The deadline is wall clock, not a poll count, and a
+        it had passed. The wait is ``rlm.wait`` with this call's own cursor,
+        so the host blocks instead of the kernel polling, and no other waiter
+        can steal this child's update. The deadline is wall clock, and a
         child no longer registered with the parent (``delete_subagent``
-        reaps it) raises immediately instead of polling to the deadline.
+        reaps it) raises immediately instead of waiting to the deadline.
         """
         _check_schema(schema)
         loop = asyncio.get_running_loop()
         deadline = loop.time() + timeout
-        while loop.time() < deadline:
-            entries = await list_subagents()
-            mine = next((e for e in entries if e.rlm_child_id == self.rlm_child_id), None)
-            if mine is None:
+        cursor: int | None = None
+        while True:
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                break
+            reply = await wait(timeout=remaining, cursor=cursor)
+            states = reply.get("states")
+            if not isinstance(states, dict):
+                raise RuntimeError("rlm.wait returned an invalid state map")
+            next_cursor = reply.get("cursor")
+            if isinstance(next_cursor, int):
+                cursor = next_cursor
+            state = states.get(self.name)
+            if state is None:
                 raise RuntimeError(
                     f"child {self.name} ({self.rlm_child_id}) is no longer registered with "
                     "the parent; rlm.delete_subagent reaps a child and its answer with it"
                 )
-            if mine.status != "running":
-                return await result(self.rlm_child_id, schema=schema)
-            # ponytail: 0.5 s listing poll; switch to rlm.wait(...) if the round trips ever matter.
-            await asyncio.sleep(poll)
+            if state in ("finished", "failed", "needs_you"):
+                try:
+                    return await result(self.rlm_child_id, schema=schema)
+                except RuntimeError as error:
+                    # needs_you also names a running child blocked on the user; only a
+                    # child that ended asking its parent has an answer to collect.
+                    if state == "needs_you" and "still running" in str(error):
+                        continue
+                    raise
         raise TimeoutError(f"child {self.name} did not finish within {timeout}s")
 
     async def send(self, message: str, followup: bool = False) -> dict[str, Any]:
@@ -389,13 +406,53 @@ async def list_agents() -> list[dict[str, Any]]:
     return agents
 
 
-async def wait(timeout: float = 300.0) -> dict[str, Any]:
-    """Block until a child reports or finishes; returns the names that moved.
+async def wait(timeout: float = 300.0, cursor: int | None = None) -> dict[str, Any]:
+    """Block until a child reports or finishes; returns what moved since ``cursor``.
 
+    The reply carries ``cursor`` (pass it back on the next call and no other
+    waiter can steal your updates), ``changed`` and its one-release alias
+    ``updated`` (the names that moved), ``states`` (every registered child by
+    name: ``running``, ``finished``, ``failed``, ``needs_you`` or ``stuck``)
+    and ``notes``. Called with no cursor you see the family as it stands now,
+    so a child that finished before you called is still terminal in ``states``.
     The host clamps the timeout and says so in the reply (``clamped``), so a
     caller is never silently given a different one.
     """
-    return await host_request("rlm.wait", {"timeout_ms": int(timeout * 1000)})
+    payload: dict[str, Any] = {"timeout_ms": int(timeout * 1000)}
+    if cursor is not None:
+        payload["cursor"] = cursor
+    return await host_request("rlm.wait", payload)
+
+
+async def plan_op(
+    op: str,
+    args: dict[str, Any] | None = None,
+    *,
+    plan: str | None = None,
+    request_id: str | None = None,
+    expected_revision: int | None = None,
+) -> dict[str, Any]:
+    """Run one op against the host's plan engine and return its reply.
+
+    The same parser and the same engine the JSON plan tool uses; the host
+    fixes the actor from the registry this kernel is wired to, so a child
+    kernel gets its parent's plan read-only whatever it asks for. ``plan``
+    names a plan other than the session's and ``expected_revision`` refuses
+    the op if the plan moved under you. Pass your own ``request_id`` to retry
+    as the same request; without one each call is minted a new id and is a
+    new request. Read ``ok`` in the reply: a refusal is data, not an
+    exception.
+
+        reply = await plan_op("view", {"full": True})
+    """
+    payload: dict[str, Any] = {
+        "request_id": request_id or str(uuid.uuid4()),
+        "plan": plan,
+        "expected_revision": expected_revision,
+        "op": op,
+        "args": args,
+    }
+    return await host_request("plan.op", {k: v for k, v in payload.items() if v is not None})
 
 
 async def interrupt(target: "str | RLMSubagent") -> dict[str, Any]:
@@ -797,8 +854,21 @@ class _RLMCallable:
     async def status(self, name: str | None = None) -> list[dict[str, Any]]:
         return await status(name)
 
-    async def wait(self, timeout: float = 300.0) -> dict[str, Any]:
-        return await wait(timeout)
+    async def wait(self, timeout: float = 300.0, cursor: int | None = None) -> dict[str, Any]:
+        return await wait(timeout, cursor)
+
+    async def plan_op(
+        self,
+        op: str,
+        args: dict[str, Any] | None = None,
+        *,
+        plan: str | None = None,
+        request_id: str | None = None,
+        expected_revision: int | None = None,
+    ) -> dict[str, Any]:
+        return await plan_op(
+            op, args, plan=plan, request_id=request_id, expected_revision=expected_revision
+        )
 
     async def interrupt(self, target: str | RLMSubagent) -> dict[str, Any]:
         return await interrupt(target)
@@ -854,6 +924,7 @@ __all__ = [
     "list_agents",
     "list_subagents",
     "merge_worktree",
+    "plan_op",
     "result",
     "rlm",
     "run",

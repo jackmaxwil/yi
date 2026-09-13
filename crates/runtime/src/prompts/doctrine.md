@@ -349,8 +349,8 @@ check; it is the rare case and the one that needs ownership.
    writers never own one file: `isolation='worktree'` each and
    `merge_worktree` in dependency order, or a `deny_write` list that is
    the complement of the scope. Keep working what you kept;
-   `await rlm.wait(120)` only when the next step needs a result, and read
-   the names it returns because they are gone from the next call. Between
+   `await rlm.wait(120)` only when the next step needs a result; it returns
+   the names that moved and their `states`, so read them there. Between
    waits `rlm.status()` is the fact: `needs_you` gets
    `send(name, text, followup=True)`; `stuck` gets its tail
    (`history://<name>/tail/20`), an `interrupt`, and a corrected respawn.

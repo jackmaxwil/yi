@@ -219,8 +219,8 @@ impl SubagentHost {
             && let Ok(key) = Self::key_of(&children, from)
             && let Some(record) = children.get_mut(&key)
         {
-            record.pending = record.pending.saturating_add(1);
             record.replied = true;
+            children.touch(&key);
         }
         (self.options.report)(agent_message(from, text));
     }
@@ -282,17 +282,35 @@ impl SubagentHost {
         reply
     }
 
-    /// B13 wait: which children moved since the last call; the clamp is reported.
-    pub async fn wait(&self, timeout_ms: u64) -> Map<String, Value> {
+    /// B13 wait with a per-caller cursor (§7.5): nothing shared is drained, so two waiters
+    /// never steal each other's updates; `updated` mirrors `changed` for one release.
+    pub async fn wait(&self, timeout_ms: u64, cursor: Option<u64>) -> Map<String, Value> {
         let clamped = timeout_ms.clamp(WAIT_MIN_MS, WAIT_MAX_MS);
         let deadline = std::time::Instant::now()
             .checked_add(std::time::Duration::from_millis(clamped))
             .unwrap_or_else(std::time::Instant::now);
+        let since = cursor.unwrap_or(0);
         loop {
-            let updated = self.take_pending();
-            if !updated.is_empty() || std::time::Instant::now() >= deadline {
+            let (epoch, changed) = self.changed_since(since);
+            // Any family move wakes a waiter: a delete names nothing in `changed`.
+            if epoch > since || std::time::Instant::now() >= deadline {
+                let mut states = Map::new();
+                let mut notes = Map::new();
+                for view in self.states() {
+                    states.insert(
+                        view.name.clone(),
+                        Value::String(view.state.as_str().to_owned()),
+                    );
+                    if let Some(note) = view.note {
+                        notes.insert(view.name, Value::String(note));
+                    }
+                }
                 let mut reply = Map::new();
-                reply.insert("updated".to_owned(), json!(updated));
+                reply.insert("cursor".to_owned(), Value::from(epoch));
+                reply.insert("changed".to_owned(), json!(changed));
+                reply.insert("states".to_owned(), Value::Object(states));
+                reply.insert("notes".to_owned(), Value::Object(notes));
+                reply.insert("updated".to_owned(), json!(changed));
                 reply.insert("timeout_ms".to_owned(), Value::from(clamped));
                 reply.insert("clamped".to_owned(), Value::Bool(clamped != timeout_ms));
                 return reply;
@@ -301,25 +319,22 @@ impl SubagentHost {
         }
     }
 
-    fn take_pending(&self) -> Vec<String> {
-        let Ok(mut children) = self.children.lock() else {
-            return Vec::new();
+    fn changed_since(&self, since: u64) -> (u64, Vec<String>) {
+        let Ok(children) = self.children.lock() else {
+            return (since, Vec::new());
         };
         let mut moved: Vec<String> = children
-            .values_mut()
-            .filter(|record| record.pending > 0)
-            .map(|record| {
-                record.pending = 0;
-                record.session_name.clone()
-            })
+            .values()
+            .filter(|record| record.changed_at_epoch > since)
+            .map(|record| record.session_name.clone())
             .collect();
         moved.sort();
-        moved
+        (children.epoch, moved)
     }
 
     /// B13 interrupt: ends the run and keeps the record, unlike delete.
     pub fn interrupt(&self, target: &str) -> Result<Map<String, Value>, String> {
-        let children = self
+        let mut children = self
             .children
             .lock()
             .map_err(|_| "subagent state poisoned")?;
@@ -328,6 +343,7 @@ impl SubagentHost {
             .get(&key)
             .ok_or_else(|| format!("No RLM child matches \"{target}\""))?;
         record.session.abort();
+        children.touch(&key);
         let mut reply = Map::new();
         reply.insert("interrupted".to_owned(), Value::String(key));
         Ok(reply)
@@ -495,9 +511,11 @@ impl SubagentHost {
                 .lock()
                 .map_err(|_| "subagent state poisoned")?;
             let key = Self::key_of(&children, target)?;
-            children
+            let record = children
                 .remove(&key)
-                .ok_or_else(|| format!("No RLM child matches \"{target}\""))?
+                .ok_or_else(|| format!("No RLM child matches \"{target}\""))?;
+            children.touch(&key);
+            record
         };
         if record.status == ChildStatus::Running {
             record.session.abort();
