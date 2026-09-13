@@ -1640,9 +1640,10 @@ async fn notice_arriving_at_parent_turn_end_is_not_lost() -> TestResult {
     Ok(())
 }
 
-/// Guards `wake_idle_hook`'s follow-up queue: two children finish while the parent's turn
-/// sleeps in a tool, so both wakes fire on one idle; the old `run(message)` drop lost the
-/// one that answered Busy, and both ride the open turn here.
+/// Guards `wake_idle_hook`'s follow-up queue: two children finish in milliseconds while the
+/// parent's turn sleeps two seconds in a tool, so both notices ride the open turn's one drain;
+/// the old `run(message)` drop lost the one that answered Busy, and a wake per notice would
+/// start a fourth turn the script cannot answer.
 #[tokio::test]
 async fn concurrent_notices_preserve_updates_and_coalesce_wakes() -> TestResult {
     let mut sleep = Map::new();
@@ -1652,7 +1653,7 @@ async fn concurrent_notices_preserve_updates_and_coalesce_wakes() -> TestResult 
             vec![yi_ai::faux::faux_tool_call("hold-1", "bash", sleep)],
             StopReason::ToolUse,
         )],
-        &["after the sleep", "heard them both", "heard the late one"],
+        &["after the sleep", "heard them both"],
     );
     parent.use_tools(yi_tools::builtin_tools(), std::env::temp_dir(), None);
     let parent = Arc::new(parent);
@@ -1701,10 +1702,48 @@ async fn concurrent_notices_preserve_updates_and_coalesce_wakes() -> TestResult 
                 .any(|text| text.starts_with("[subagent beta")),
         "{notices:?}"
     );
-    let turns = assistant_count(&messages);
+    assert_eq!(
+        assistant_count(&messages),
+        3,
+        "the tool call, its reply, and one turn for both notices: {messages:?}"
+    );
+    Ok(())
+}
+
+/// Guards the tool slot read at run start: `attach_runtime` builds the child host's wake
+/// before it installs the session's tools, and a handle that copied the table at that point
+/// woke a turn in which every tool call answered "not found".
+#[tokio::test]
+async fn a_wake_built_before_the_tools_runs_the_woken_turn_with_them() -> TestResult {
+    let root = Scratch::new("yi-wake-tools")?;
+    let marker = root.join("woken");
+    let mut touch = Map::new();
+    touch.insert(
+        "command".to_owned(),
+        Value::String(format!("touch {}", marker.display())),
+    );
+    let mut parent = parent_session_scripted(
+        vec![faux_assistant_message(
+            vec![yi_ai::faux::faux_tool_call("wake-1", "bash", touch)],
+            StopReason::ToolUse,
+        )],
+        &["the tool ran"],
+    );
+    let wake = yi_runtime::wiring::lifecycle_notice(&parent);
+    parent.use_tools(yi_tools::builtin_tools(), std::env::temp_dir(), None);
+    wake("[subagent helper (sub-1) finished]\nLast answer: done");
+    let mut messages = Vec::new();
+    for _ in 0..POLL_ATTEMPTS {
+        messages = parent.messages();
+        if assistant_count(&messages) >= 2 && parent.status() == yi_runtime::Status::Idle {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(POLL_INTERVAL_MS)).await;
+    }
+    assert_eq!(assistant_count(&messages), 2, "{messages:?}");
     assert!(
-        (3..=4).contains(&turns),
-        "the tool call, its reply, and one or two notice turns: {turns} in {messages:?}"
+        marker.exists(),
+        "the woken turn ran bash with the tools installed after the wake was built: {messages:?}"
     );
     Ok(())
 }
@@ -1754,8 +1793,9 @@ async fn two_waiters_observe_their_own_child_completion() -> TestResult {
     Ok(())
 }
 
-/// Guards the wake on a delete: the reaped record carries no epoch, so a waiter that only
-/// returned on a named change slept to its deadline while `states` already lacked the child.
+/// Guards the wake on a delete, the path `rlm.delete_subagent` takes: the removed record
+/// carries no epoch, so a waiter that only returned on a named change slept to its deadline
+/// while `states` already lacked the child.
 #[tokio::test]
 async fn a_delete_wakes_a_waiter_with_the_child_gone() -> TestResult {
     let harness = harness(0, 1, "done")?;
@@ -1774,7 +1814,7 @@ async fn a_delete_wakes_a_waiter_with_the_child_gone() -> TestResult {
     let waiter = tokio::spawn(async move { host.wait(300_000, cursor).await });
     tokio::time::sleep(std::time::Duration::from_millis(250)).await;
     let started = std::time::Instant::now();
-    harness.host.reap("gone")?;
+    harness.host.delete("gone")?;
     let woken = waiter.await.map_err(|error| error.to_string())?;
     assert!(
         started.elapsed() < std::time::Duration::from_secs(5),
