@@ -2264,6 +2264,7 @@ dependencies = [
  "serde_json",
  "tokio",
  "yi-ai",
+ "yi-context",
  "yi-types",
 ]
 
