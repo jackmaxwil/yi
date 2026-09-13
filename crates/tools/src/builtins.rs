@@ -416,6 +416,28 @@ fn viewed_lines(command: &str, content: &str, output: &str) -> Vec<u64> {
         .collect()
 }
 
+impl BashTool {
+    fn ceiling_nudge(
+        &self,
+        command: &str,
+        timed_out: bool,
+        _exit_code: i32,
+        _elapsed: std::time::Duration,
+    ) -> Option<u32> {
+        if timed_out && matches!(command_category(command), "search" | "list_files") {
+            let streak = self
+                .search_timeouts
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+                .saturating_add(1);
+            (streak >= 2).then_some(streak)
+        } else {
+            self.search_timeouts
+                .store(0, std::sync::atomic::Ordering::Relaxed);
+            None
+        }
+    }
+}
+
 impl Tool for BashTool {
     fn name(&self) -> &str {
         "bash"
@@ -468,6 +490,7 @@ impl Tool for BashTool {
             return error_output(refusal);
         }
         let timeout = crate::jobs::clamp_timeout(input.get("timeout_secs").and_then(Value::as_u64));
+        let started = std::time::Instant::now();
         let (capture, timed_out) = match crate::jobs::run_or_background(
             command,
             &context.cwd,
@@ -487,17 +510,9 @@ impl Tool for BashTool {
             }
             Err(message) => return error_output(message),
         };
-        let search_streak =
-            if timed_out && matches!(command_category(command), "search" | "list_files") {
-                self.search_timeouts
-                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-                    + 1
-            } else {
-                self.search_timeouts
-                    .store(0, std::sync::atomic::Ordering::Relaxed);
-                0
-            };
         let exit_code_for_reduce = capture.exit_code.unwrap_or(-1);
+        let search_streak =
+            self.ceiling_nudge(command, timed_out, exit_code_for_reduce, started.elapsed());
         let max_lines = input
             .get("max_output_lines")
             .and_then(Value::as_u64)
@@ -524,7 +539,7 @@ impl Tool for BashTool {
                 timeout.as_secs(),
                 crate::jobs::MAX_TIMEOUT_SECS
             ));
-            if search_streak >= 2 {
+            if let Some(search_streak) = search_streak {
                 sections.push(format!(
                     "[{search_streak} searches in a row timed out; the grep tool walks and pages with no wall-clock kill, or bound the command: name the directory, add -maxdepth/--max-depth N, pipe through head]"
                 ));
