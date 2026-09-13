@@ -1281,7 +1281,10 @@ intentional growth.
   LOC of its own, 128 hits in agent-session; hashline: 7,193 LOC, 2 hits)
 - total event vocabulary ≤ 18 **summed across every layer**, measured at design time (13
   loop + 5 ACP `_yi/*`, C9); a bridge or runtime addition edits this number in the same
-  commit; not per enum (surveyed: 10 + 15 + 25 = 50, each union individually defensible)
+  commit; not per enum (surveyed: 10 + 15 + 25 = 50, each union individually defensible).
+  A syscall is not an event: every host request on the kernel registry, `plan.op`
+  included (D192), is answered there and adds no variant, so this budget stays where it
+  is while the syscall table grows
 - seam width ≤ 8 members: an extraction interface wider than 8 is the core with a different
   name (surveyed: 34-member advisor host, 219-member extension API)
 - config-key budget: every settings key names its owning feature; per-feature count ratcheted
