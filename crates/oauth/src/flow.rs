@@ -1,11 +1,11 @@
 use serde_json::{Value, json};
 
+use crate::Result;
 use crate::loopback;
 use crate::pkce;
 use crate::registry::OauthCode;
 use crate::store::{self, Credential, Kind, Store};
 use crate::url::{base64url_decode, https_or_local, urlencode};
-use crate::Result;
 
 pub struct LoginOptions {
     pub no_browser: bool,

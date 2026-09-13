@@ -188,7 +188,10 @@ impl ProviderStream {
             let expired = self
                 .auth
                 .lock()
-                .map(|cell| cell.expires.is_some_and(|at| auth_now() + HALF_MINUTE >= at))
+                .map(|cell| {
+                    cell.expires
+                        .is_some_and(|at| auth_now() + HALF_MINUTE >= at)
+                })
                 .unwrap_or(false);
             // resolve_with_proxy refreshes under the store's cross-process lock.
             if expired

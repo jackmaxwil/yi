@@ -962,7 +962,12 @@ fn run_request(
         wire.stop,
         || {
             crate::request::openai_bearer_post(
-                &url, model, wire.api_key, body, wire.proxy, wire.extra,
+                &url,
+                model,
+                wire.api_key,
+                body,
+                wire.proxy,
+                wire.extra,
             )
         },
         |sse| {
