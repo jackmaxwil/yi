@@ -951,3 +951,27 @@ fn unleak_leaves_every_call_without_the_markup_byte_identical() -> TestResult {
     assert_eq!(calls, 59);
     Ok(())
 }
+
+/// The HUD header ended mid-phrase on a long running label; the cut says it is one.
+#[test]
+fn the_header_marks_a_cut_running_label() -> TestResult {
+    let long = "read the record (architecture, design doc, git log, changelog, gate recipe, last merges, guardrail script)";
+    let mut running = TodoItem::from_text(long)?;
+    running.state = TodoStateName::Running;
+    assert!(running.is_cut(), "the label is cut to the max");
+    let list = TodoList {
+        phases: vec![yi_types::todo::TodoPhase {
+            name: PhaseName::new("Tasks")?,
+            items: vec![running],
+            extra: Map::new(),
+        }],
+        ..TodoList::default()
+    };
+    let header = text::header(&list);
+    assert!(header.ends_with('…'), "{header}");
+    assert!(
+        header.starts_with("Todos 0/1 · running: read the record"),
+        "{header}"
+    );
+    Ok(())
+}

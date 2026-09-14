@@ -74,6 +74,14 @@ fn patch_targets(patch: &str) -> String {
     }
 }
 
+/// `Todos 7/7` from a todo result whose header counts every item done; None while work is open.
+pub(crate) fn todo_finished(text: &str) -> Option<String> {
+    let counts = text.lines().next()?.strip_prefix("Todos ")?;
+    let (done, rest) = counts.split_once('/')?;
+    let total = rest.split(|c: char| !c.is_ascii_digit()).next()?;
+    (done == total && total.parse::<u64>().ok()? > 0).then(|| format!("Todos {total}/{total}"))
+}
+
 pub(crate) fn arg_summary(tool: &str, args: &Value) -> String {
     if tool == "edit" {
         let targets = args
@@ -100,8 +108,8 @@ pub(crate) fn arg_summary(tool: &str, args: &Value) -> String {
         Some(text) => {
             let first = text.lines().next().unwrap_or("");
             let mut text = first.split_whitespace().collect::<Vec<_>>().join(" ");
-            if text.chars().count() > 60 {
-                text = text.chars().take(60).collect::<String>() + "…";
+            if text.chars().count() > 120 {
+                text = text.chars().take(120).collect::<String>() + "…";
             }
             text
         }

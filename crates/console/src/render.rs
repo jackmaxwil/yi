@@ -674,6 +674,7 @@ fn paint_chat_pane(
             ..inner
         };
     }
+    chat.app.sync_port(Some(&chat.port));
     let goal = chat.port.goal();
     let mut scroll = pane.scroll_from_bottom;
     view.scroll = yi_tui::render::paint_pane(&mut chat.app, goal, buffer, inner, &mut scroll);
