@@ -177,7 +177,8 @@ pub fn header(list: &TodoList) -> String {
     let progress = list.progress();
     let mut line = format!("Todos {}/{}", progress.done, progress.total);
     if let Some(running) = list.running() {
-        line.push_str(&format!(" · running: {}", running.label));
+        let cut = if running.is_cut() { "…" } else { "" };
+        line.push_str(&format!(" · running: {}{cut}", running.label));
     }
     if progress.blocked > 0 {
         line.push_str(&format!(" · {} blocked", progress.blocked));

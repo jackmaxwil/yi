@@ -12,6 +12,8 @@ use yi_console::model::SidebarMode;
 use yi_console::{ConsoleOptions, DriveOptions, parse_script, run_headless};
 use yi_types::event::{AgentEvent, AssistantMessageEvent};
 use yi_types::message::{AgentMessage, Content, StopReason, Usage, UserContent};
+use yi_types::plan::doc::{TodoLabel, TodoStateName};
+use yi_types::todo::{PhaseName, TodoItem, TodoList, TodoPhase};
 
 #[path = "../../types/tests/support/scratch.rs"]
 mod scratch;
@@ -2321,6 +2323,60 @@ fn the_rail_reads_from_the_top() -> TestResult {
         "the first slot is on the first row: {first}"
     );
     Ok(())
+}
+
+fn todo_update() -> Vec<Value> {
+    let item = |label: &str, state: TodoStateName| {
+        TodoLabel::new(label).ok().map(|label| {
+            let mut item = TodoItem::pending(label);
+            item.state = state;
+            item
+        })
+    };
+    let Some(phase) = PhaseName::new("Tasks").ok() else {
+        return Vec::new();
+    };
+    let list = TodoList {
+        phases: vec![TodoPhase {
+            name: phase,
+            items: [
+                item("read the record", TodoStateName::Done),
+                item("write the plan", TodoStateName::Running),
+            ]
+            .into_iter()
+            .flatten()
+            .collect(),
+            extra: serde_json::Map::new(),
+        }],
+        ..TodoList::default()
+    };
+    vec![update(
+        "s-alpha",
+        json!({"sessionUpdate": "_yi/todo", "list": list}),
+    )]
+}
+
+/// The daemon streams `_yi/todo` and the port kept it, but the pane never asked the port,
+/// so the console showed six todo cards and no block above the composer.
+#[test]
+fn a_todo_update_paints_the_block_above_the_composer() -> TestResult {
+    run(
+        "todo-hud",
+        vec![
+            Step::Expect("initialize", init_reply),
+            Step::Expect("session/list", two_session_list),
+            Step::Expect("session/list", empty_list),
+            Step::Expect("session/resume", resume_alpha),
+            Step::Expect("_yi/seen", seen_ok),
+            Step::Push(todo_update),
+        ],
+        "wait-frame 5000 s-alpha\n\
+         key enter\n\
+         wait-frame 5000 replayed world\n\
+         wait-frame 5000 Todos 1/2 · running: write the plan\n\
+         wait-frame 5000 ▶ write the plan\n\
+         quit\n",
+    )
 }
 
 /// A drag copied silently, so nothing said whether the release had taken; the banner
