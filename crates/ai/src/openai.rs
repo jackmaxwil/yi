@@ -727,6 +727,7 @@ impl ChunkMapper {
 
     pub fn finish(mut self) -> Vec<AssistantMessageEvent> {
         let mut events = Vec::new();
+        crate::leak::recover_in(&mut self.output);
         let content = self.content_mut().clone();
         for (content_index, block) in content.iter().enumerate() {
             match block {
