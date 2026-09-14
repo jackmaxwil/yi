@@ -281,6 +281,10 @@ struct FireState {
     fired_once: BTreeMap<Evidence, bool>,
     seen: BTreeMap<Evidence, u64>,
     loaded: BTreeSet<String>,
+    /// An edit or write since the prompt: a skill is a method for work, and a turn
+    /// that only read has none to apply it to.
+    mutated: bool,
+    pointers: usize,
 }
 
 impl FireState {
@@ -376,6 +380,14 @@ fn paths_ok(rule: &RuleDoc, path: &str) -> bool {
 
 fn skill_name(rule: &RuleDoc) -> Option<&str> {
     rule.body.strip_prefix("skill://")
+}
+
+/// A read, a search or a fetch quotes text; only a run produces a failure.
+fn quotes_not_runs(tool: &str) -> bool {
+    matches!(
+        tool,
+        "read" | "grep" | "glob" | "find" | "fetch" | "web_search" | "document"
+    )
 }
 
 /// A dropped pointer is not latched, so the next scan that matches it delivers.
@@ -483,7 +495,9 @@ impl RuleEngine {
         };
         let mut denial = None;
         let mut reminders = Vec::new();
-        let mut pointers = 0;
+        if pre && matches!(tool, "edit" | "write") {
+            state.mutated = true;
+        }
         let path = call_path(args_json);
         let rules = self.snapshot();
         for rule in &rules {
@@ -493,6 +507,9 @@ impl RuleEngine {
                 result_scope(rule, is_error)
             };
             if !in_scope || !paths_ok(rule, &path) || !matches(rule, haystack) {
+                continue;
+            }
+            if !pre && quotes_not_runs(tool) && skill_name(rule).is_some() {
                 continue;
             }
             let evidence = Evidence::of(rule, haystack, &path);
@@ -515,12 +532,12 @@ impl RuleEngine {
                 }
                 RuleMode::Gate => {}
                 RuleMode::Remind => {
-                    if !take_pointer_slot(rule, &mut pointers) {
+                    if !take_pointer_slot(rule, &mut state.pointers) {
                         continue;
                     }
                     // Incident: the cap ran after the latch, so a marked rule could be dropped unheard.
                     state.mark(&evidence);
-                    reminders.push(self.render_reminder(rule));
+                    reminders.push(self.render_reminder(rule, &evidence.needle));
                 }
             }
         }
@@ -549,9 +566,9 @@ impl RuleEngine {
             .any(|record| record.url.contains(&needle))
     }
 
-    fn render_reminder(&self, rule: &RuleDoc) -> String {
+    fn render_reminder(&self, rule: &RuleDoc, needle: &str) -> String {
         if let Some(name) = skill_name(rule) {
-            format!("Relevant: skill://{name} (read before the next edit)")
+            format!("Relevant: skill://{name} (matched \"{needle}\")")
         } else {
             format!("<rule name=\"{}\">\n{}\n</rule>", rule.name, rule.body)
         }
@@ -585,6 +602,12 @@ impl RuleEngine {
     }
 
     pub fn observe(&self, event: &AgentEvent) {
+        if matches!(event, AgentEvent::AgentEnd { .. })
+            && let Ok(mut state) = self.state.lock()
+        {
+            state.mutated = false;
+            return;
+        }
         let AgentEvent::MessageEnd {
             message:
                 AgentMessage::Assistant {
@@ -605,7 +628,6 @@ impl RuleEngine {
             .collect::<Vec<_>>()
             .join("\n");
         let mut reminders = Vec::new();
-        let mut pointers = 0;
         let rules = self.snapshot();
         if let Ok(mut state) = self.state.lock() {
             if !text.is_empty() {
@@ -613,7 +635,7 @@ impl RuleEngine {
                     if rule.mode != RuleMode::Remind || rule.scope != RuleScope::Text {
                         continue;
                     }
-                    if !matches(rule, &text) {
+                    if !matches(rule, &text) || (skill_name(rule).is_some() && !state.mutated) {
                         continue;
                     }
                     let evidence = Evidence::of(rule, &text, "");
@@ -624,14 +646,15 @@ impl RuleEngine {
                     if self.skill_already_loaded(&state, rule) {
                         continue;
                     }
-                    if !take_pointer_slot(rule, &mut pointers) {
+                    if !take_pointer_slot(rule, &mut state.pointers) {
                         continue;
                     }
                     state.mark(&evidence);
-                    reminders.push(self.render_reminder(rule));
+                    reminders.push(self.render_reminder(rule, &evidence.needle));
                 }
             }
             state.turn = state.turn.saturating_add(1);
+            state.pointers = 0;
         }
         self.deliver_reminders(reminders);
     }

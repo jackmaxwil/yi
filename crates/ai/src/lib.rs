@@ -6,6 +6,7 @@ pub mod catalog;
 mod compat;
 pub mod faux;
 pub mod json_salvage;
+pub mod leak;
 pub mod openai;
 pub mod openai_responses;
 pub mod refresh;
