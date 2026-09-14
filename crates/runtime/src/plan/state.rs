@@ -6,8 +6,8 @@ use serde_json::{Map, Value};
 use yi_types::plan::canonical::Digest;
 use yi_types::plan::contract::{self, Outcome, Verdict, VerificationToken};
 use yi_types::plan::doc::{
-    AgentId, BlockedOn, Check, GoalText, Isolation, Plan, PlanId, PlanState, PlanTier, SPAWN_CAP,
-    Todo, TodoAddr, TodoLabel, TodoState, TodoStateName,
+    AgentId, BlockedOn, Check, GoalText, Plan, PlanId, PlanState, PlanTier, SPAWN_CAP, Todo,
+    TodoAddr, TodoLabel, TodoState, TodoStateName,
 };
 use yi_types::plan::ledger::{AttemptId, EffectId, JournalRecord, Seq};
 use yi_types::url::Url;
@@ -29,6 +29,10 @@ pub const SUBMITTED_KEY: &str = "submitted";
 pub const KIND_VERIFICATION_REQUESTED: &str = "verification_requested";
 pub const KIND_DONE_REFUSED: &str = "done_refused";
 pub const KIND_VERIFICATION_STALE: &str = "verification_stale";
+use super::acceptance::{
+    KIND_ACCEPTED, KIND_CANDIDATE_SUBMITTED, KIND_CANDIDATE_VERIFIED, KIND_DISPOSITION,
+    KIND_INTEGRATION_PREPARED, KIND_INTEGRATION_STALE, KIND_INTEGRATION_VERIFIED,
+};
 
 /// Who requested a verification and when: another process refuses a `done` for the same token
 /// while the claimant is alive and inside the verifier's deadline, and adopts the effect after.
@@ -381,9 +385,26 @@ pub fn apply(state: &mut RootState, record: &JournalRecord) -> Result<(), Reduce
                 }
             }
         }
-        KIND_RECONCILED => {}
+        KIND_RECONCILED
+        | KIND_CANDIDATE_SUBMITTED
+        | KIND_INTEGRATION_PREPARED
+        | KIND_INTEGRATION_STALE
+        | KIND_DISPOSITION => {}
+        // A verified candidate or integration settles the effect it names; the acceptance
+        // record is the `done` transition with its body (plan section 6.6).
+        KIND_CANDIDATE_VERIFIED | KIND_INTEGRATION_VERIFIED => {
+            let verdict = verdict_of(record).map_err(bad_args)?;
+            let effect = settling_effect(record).map_err(bad_args)?;
+            settle(state, &id, record.record.todo.as_ref(), effect, verdict).map_err(bad_args)?;
+        }
+        KIND_ACCEPTED => {
+            let op = super::acceptance::accepted_op(record).map_err(bad_args)?;
+            let decided = Decided::from_extra(&record.record.extra).map_err(bad_args)?;
+            apply_op(state, &id, &op, &decided).map_err(failed)?;
+        }
         _ => {
             let op = op_of(record)?;
+            super::acceptance::refuse_plain_done(state, &id, &op).map_err(failed)?;
             let decided = Decided::from_extra(&record.record.extra).map_err(bad_args)?;
             apply_op(state, &id, &op, &decided).map_err(failed)?;
             if let Op::Done { label, .. } = &op {
@@ -627,7 +648,7 @@ pub fn apply_op(
             return Err(PlanOpError::NotJournaled { op: kind });
         }
         Op::Append { todos } => append_todos(state.plan_mut(id)?, todos.clone())?,
-        Op::Drop { label } => {
+        Op::Drop { label, .. } => {
             step_todo(state.plan_mut(id)?, label, OpKind::Drop, decided, |_| {
                 TodoState::Abandoned
             })?;
@@ -664,7 +685,7 @@ pub fn apply_op(
                 move |_| TodoState::Done { output, resolution },
             )?;
         }
-        Op::Fail { label, cause } => {
+        Op::Fail { label, cause, .. } => {
             let cause = cause.clone();
             step_todo(
                 state.plan_mut(id)?,
@@ -781,16 +802,17 @@ fn completion(
     completion_of(todo, resolution)
 }
 
-/// The validator itself: no completion of a worktree todo before F0d (section 6.6), a todo that
-/// needs a resolution is `Done` only beside one, any other completes on the caller's word (D194).
+/// The validator itself: a worktree todo completes only by acceptance or the user's word, a
+/// todo that needs a resolution only beside one, any other on the caller's word (D194).
 fn completion_of(
     todo: &Todo,
     resolution: Option<contract::Resolution>,
 ) -> Result<Option<contract::Resolution>, PlanOpError> {
-    if todo
-        .delegation
-        .as_ref()
-        .is_some_and(|delegation| delegation.spec.isolation == Some(Isolation::Worktree))
+    if super::acceptance::is_worktree(todo)
+        && !matches!(
+            resolution,
+            Some(contract::Resolution::VerifiedDone | contract::Resolution::AcceptedByUser)
+        )
     {
         return Err(PlanOpError::AcceptanceUnavailable {
             label: todo.label.clone(),

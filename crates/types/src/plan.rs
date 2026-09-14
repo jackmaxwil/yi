@@ -1,3 +1,4 @@
+pub mod acceptance;
 pub mod canonical;
 #[macro_use]
 pub mod ledger;

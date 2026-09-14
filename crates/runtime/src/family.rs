@@ -160,6 +160,29 @@ pub fn state_from_records(
     }
 }
 
+/// One stuck notice per episode (plan section 7.5): a member is latched by name when first
+/// seen `Stuck` and released when its records move it off `Stuck`, or when it is gone.
+#[derive(Debug, Default)]
+pub struct StuckLatch(std::collections::HashSet<String>);
+
+impl StuckLatch {
+    /// The `[child <name> stuck: <note>]` notices the members newly stuck this tick earn.
+    pub fn notices(&mut self, views: &[MemberView]) -> Vec<String> {
+        let mut notices = Vec::new();
+        for view in views {
+            if view.state != MemberState::Stuck {
+                self.0.remove(&view.name);
+            } else if self.0.insert(view.name.clone()) {
+                let note = view.note.as_deref().unwrap_or("no note");
+                notices.push(format!("[child {} stuck: {note}]", view.name));
+            }
+        }
+        self.0
+            .retain(|name| views.iter().any(|view| view.name == *name));
+        notices
+    }
+}
+
 pub fn recent_entries(session: &yi_session::SharedSession) -> Vec<Entry> {
     yi_session::lock_session(session)
         .find_entries(&yi_session::EntryQuery {

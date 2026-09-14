@@ -321,15 +321,22 @@ fn wire_plan_request(
     log: Arc<crate::fetch::FetchLog>,
     resolver: Arc<crate::fetch::Resolver>,
 ) -> Option<(Arc<crate::plan::ops::PlanEngine>, crate::plan::ops::Actor)> {
-    let actor = if wiring.depth == 0 {
-        crate::plan::ops::Actor::Owner
+    // Invariant: a child's engine stands on its parent's host and checkout, since its `submit`
+    // settles the lane the parent holds and integrates onto the parent's generation (6.6).
+    let (actor, host, cwd) = if wiring.depth == 0 {
+        (
+            crate::plan::ops::Actor::Owner,
+            Arc::clone(host),
+            wiring.cwd.clone(),
+        )
     } else {
-        let name = wiring
-            .parent_link
-            .as_ref()
-            .and_then(|link| yi_types::plan::doc::AgentId::new(&link.child_name).ok())?;
-        crate::plan::ops::Actor::Child(name)
+        let link = wiring.parent_link.as_ref()?;
+        let name = yi_types::plan::doc::AgentId::new(&link.child_name).ok()?;
+        let parent = link.host.upgrade()?;
+        let cwd = parent.options.cwd.clone();
+        (crate::plan::ops::Actor::Child(name), parent, cwd)
     };
+    let host = &host;
     let store = match crate::plan::store::PlanStore::open(plans_dir.to_path_buf()) {
         Ok(store) => store,
         Err(error) => {
@@ -352,21 +359,25 @@ fn wire_plan_request(
         .with_output_resolve(resolver)
         .with_op_sink(ops)
         .with_liveness(liveness)
-        .with_cwd(wiring.cwd.clone());
+        .with_cwd(cwd.clone());
     // A verification never outlives the run (D177): the verifier reads the session's deadline
-    // as well as its own clock.
+    // as well as its own clock, and so does every lane settle the host runs.
     if let Some(deadline) = session.deadline()
         && let Some(ends) = deadline.started.checked_add(deadline.total)
     {
         let verifier = crate::plan::verify::Verifier::new(crate::goal::DEFAULT_CHECK_TIMEOUT_MS)
             .with_deadline(ends);
         engine = engine.with_verifier(verifier);
+        host.set_deadline(Some(ends));
+    }
+    // The staging and verification checkouts come from the lane pool, split with the host's
+    // workers over one object (sections 6.6 and 7.6); no repository, no worktree children.
+    if let Ok(pool) = crate::lane::Pool::open(&wiring.home, &cwd, wiring.lane_slots) {
+        engine = engine.with_lanes(pool).with_capacity(host.capacity());
     }
     // The verification snapshot is the shadow gitdir tree the turn checkpoints capture (plan
     // section 6.3); without git the engine hashes the workspace itself.
-    if let Some(snapshotter) =
-        crate::plan::snapshot::shadow_tree(&wiring.home, &wiring.cwd, plans_dir)
-    {
+    if let Some(snapshotter) = crate::plan::snapshot::shadow_tree(&wiring.home, &cwd, plans_dir) {
         engine = engine.with_snapshotter(snapshotter);
     }
     let engine = Arc::new(engine);
@@ -406,11 +417,14 @@ fn wire_plan_engine(
     ))));
     session.set_todos(Arc::clone(&todos));
     let inner = (wiring.depth == 0).then(|| {
-        crate::plan::probe::spawn(Arc::new(crate::plan::probe::ProbeLadder::new(
-            engine,
-            plans_dir.to_path_buf(),
-            probe_deliver,
-        )));
+        let children = Arc::clone(host);
+        crate::plan::probe::spawn(Arc::new(
+            crate::plan::probe::ProbeLadder::new(engine, plans_dir.to_path_buf(), probe_deliver)
+                .with_children(
+                    Arc::new(move || children.states()),
+                    lifecycle_notice(session),
+                ),
+        ));
         crate::plan::loop_coupling::coupling(
             session,
             crate::plan::loop_coupling::CouplingOptions {

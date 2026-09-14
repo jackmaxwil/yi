@@ -36,6 +36,22 @@
 //! | `set_cannot_complete_a_worktree_todo` | T0 | A `[x]` row for a worktree todo is refused `AcceptanceUnavailable` exactly as `done` is, and the todo stays `Running` with its child and lane; every completion of a worktree todo waits on F0d. | The worktree test in `completion_of` (state.rs), the validator `set`, `reconcile` and `accept` share with `done`. Keep it in `prepare` alone and `set` completes the todo `done` refuses, reaping nothing. |
 //! | `a_verbose_refusal_still_journals_under_the_record_cap` | T0 | A refusal whose six item tails would not fit the 64 KiB record once escaped still lands as `done_refused`: the journaled item details are clipped, the refusal is charged and the effect is settled. | `fitted` rehearsing the record under the cap before the commit. Commit unrehearsed and `seal` refuses the line, so the caller sees a store error, nothing is charged and the next `done` re-runs the same checker into the same wall. |
 //! | `import_marks_legacy_success_unverified` | T0 | An imported format-1 todo whose `Check::Stated` says a child called it done lands as `LegacyUnverified`, displayed as history and never as new evidence, and a later `set` asking `done` on the plan's remaining todo is refused all the same. | `Resolution` having three members. Read `LegacyUnverified` as `VerifiedDone` and one import launders a year of unchecked claims into verified work; drop the member and the history the user asked to keep is lost. Fixture: `fixtures/plans/contracts/legacy-stated-unverified.json`. |
+//!
+//! F0d, worktree acceptance. Plan section 6.6 at the engine, where F0c left a refusal: a
+//! worktree todo was refused `AcceptanceUnavailable` on every completion path, and these
+//! three rows replace that refusal with the accept phase. They live in the same `contracts`
+//! module and use its helpers, so the helper column names what each turns on;
+//! `done_on_an_uncontracted_worktree_todo_is_refused_as_unavailable` and
+//! `set_cannot_complete_a_worktree_todo` stay as they are, because an uncontracted worktree
+//! todo has nothing to accept and `set` still may not author `Done`. These rows run over
+//! the `Stub` delegate and seeded records, no repository; the live acceptance rows, against
+//! `fixtures/plans/worktree/repo.sh`, are in `lanes.rs`.
+//!
+//! | test | tier | helpers | what it pins | the control it dies with |
+//! |---|---|---|---|---|
+//! | `failed_unmerged_task_can_preserve_or_discard_and_finish` | T1 | `rig`, `planned`, `cmd_contract`, `contracted` with `Isolation::Worktree`, `start`, `done`, `kinds`, `todo_of` | The same failed worktree todo, run twice: once finishing with `Retained` and once with `Discarded`. Both reach a terminal state, both journal a `disposition` record before the slot is free, both leave `kept` resolving, and neither journals an `accepted` or moves the parent. The choice rides the op, not a default. | `step_todo`'s reap on every exit from `Running` (`ops.rs:699-708`) taking the disposition path instead of dropping the lane. Drop it and the only way to finish a failed worktree todo is a merge, which is the pressure that makes a model merge a branch it knows is red. |
+//! | `full_worker_capacity_does_not_deadlock_verification` | T0 | `Capacity::for_slots(DEFAULT_SLOTS)`, `DEFAULT_MAX_CHILDREN` | Every worker a parent may retain asks for a checkout of its own, at the product's constants: the worker share of the lane pool runs out before the parent's child cap does, the lanes it refuses are the verification reserve, and with the share full a verification still reserves. Both counters end at zero. The live half, a worktree todo accepted while the engine's own worker share is held to its cap, is `lanes::full_worker_capacity_does_not_deadlock_verification` (T1). | Verification capacity being reserved separately from worker slots (section 7.6). Charge verification against the worker share and the workers a parent retains occupy every lane their own verification needs, so the plan stops with every todo running and nothing able to finish. |
+//! | `a_worktree_child_cannot_be_marked_done_before_acceptance` | T0 | `rig`, `planned`, `cmd_contract`, `contracted` with `Isolation::Worktree`, `start`, `done`, `refused`, `todo_of`, `kinds` | `done` before the candidate is submitted is refused and the todo stays `Running`; `done` after `candidate_verified` but before `integration_verified` is refused the same way and journals no `accepted`; `fail` is legal at every one of those points and takes the disposition path. The refusal names the phase that is missing. | `done` being legal only at the accept phase, tested from the records rather than from whether a lane is held. Test the lane and a todo whose lane was already taken looks acceptable, which is exactly the state a merge-less reap leaves behind. |
 
 #[path = "../../types/tests/support/scratch.rs"]
 mod scratch;
@@ -355,6 +371,7 @@ fn ephemeral_urls_are_refused_in_terminal_records() -> TestResult {
     let refused = engine.apply(owner(Op::Fail {
         label: label("delegated job")?,
         cause: "went sideways".to_owned(),
+        disposition: None,
     }));
     assert!(matches!(
         refused,
@@ -366,6 +383,7 @@ fn ephemeral_urls_are_refused_in_terminal_records() -> TestResult {
     let out = engine.apply(owner(Op::Fail {
         label: label("delegated job")?,
         cause: "went sideways".to_owned(),
+        disposition: None,
     }))?;
     assert_eq!(out.reaped.len(), 1);
     let todo = out
@@ -651,6 +669,7 @@ fn add_edge_is_refused_on_an_abandoned_todo() -> TestResult {
     let out = init(&engine, vec![spec("first job")?, spec("second job")?])?;
     engine.apply(owner(Op::Drop {
         label: label("second job")?,
+        disposition: None,
     }))?;
     let refused = engine.apply(owner(Op::AddEdge {
         todo: label("second job")?,
@@ -677,6 +696,7 @@ fn a_failed_last_todo_reopens_on_retry() -> TestResult {
     engine.apply(owner(Op::Fail {
         label: label("only job")?,
         cause: "first attempt sank".to_owned(),
+        disposition: None,
     }))?;
     assert_eq!(store.read(&id)?.state, PlanState::Done);
     engine.apply(at(
@@ -890,6 +910,7 @@ fn a_plan_whose_last_todo_failed_stays_reachable_unnamed() -> TestResult {
     engine.apply(owner(Op::Fail {
         label: label("only job")?,
         cause: "first attempt sank".to_owned(),
+        disposition: None,
     }))?;
     assert_eq!(store.read(&id)?.state, PlanState::Done);
     let out = engine.apply(owner(Op::View { full: false }))?;
@@ -1542,10 +1563,13 @@ mod contracts {
     use serde_json::{Value, json};
     use yi_kernel::client::HostHandlers;
     use yi_runtime::HostRegistry;
+    use yi_runtime::lane::DEFAULT_SLOTS;
     use yi_runtime::plan::authority::{Confirmer, Submission, SubmitError, submit};
+    use yi_runtime::plan::capacity::{Capacity, Purpose};
     use yi_runtime::plan::journal::{Journal, RealFs};
     use yi_runtime::plan::verify::Verifier;
     use yi_runtime::session_store::{CreateOptions, JsonlRepo, SessionRepo};
+    use yi_runtime::subagent::DEFAULT_MAX_CHILDREN;
     use yi_runtime::{AskOutcome, Asker, PermissionAsk, PermissionBroker, PermissionMode};
     use yi_types::plan::canonical::{ArtifactRef, Digest};
     use yi_types::plan::contract::{
@@ -1980,6 +2004,7 @@ mod contracts {
             Op::Fail {
                 label: label("ship it")?,
                 cause: "x".to_owned(),
+                disposition: None,
             },
         ))?;
         let failed = after.plan.todo(&label("ship it")?).ok_or("todo")?;
@@ -2164,6 +2189,7 @@ mod contracts {
                     Op::Fail {
                         label: label.clone(),
                         cause: "the build host lost the disk".to_owned(),
+                        disposition: None,
                     },
                 ));
                 let _retried = mover.apply(at(
@@ -3209,6 +3235,266 @@ mod contracts {
             "the journaled details are clipped: {}",
             last.lines().len()
         );
+        Ok(())
+    }
+
+    fn worktree_spec(label: &str, contract: Contract) -> Result<TodoSpec, Box<dyn Error>> {
+        let mut spec = delegated_spec(label)?;
+        if let Some(delegation) = &mut spec.delegation {
+            delegation.spec.isolation = Some(Isolation::Worktree);
+        }
+        spec.contract = Some(contract);
+        Ok(spec)
+    }
+
+    fn records(store: &PlanStore, plan: &PlanId) -> Result<Vec<JournalRecord>, Box<dyn Error>> {
+        Ok(store.journal(plan).read()?.records)
+    }
+
+    /// One journal record appended behind the engine's back, the way a crashed or foreign
+    /// process would leave it: sealed onto the chain, never reduced by this call.
+    fn seed(
+        store: &PlanStore,
+        plan: &PlanId,
+        kind: &str,
+        label: &str,
+        args: Value,
+        verdict: Option<Value>,
+    ) -> Result<(), Box<dyn Error>> {
+        let journal = store.journal(plan);
+        let last = journal
+            .read()?
+            .records
+            .last()
+            .cloned()
+            .ok_or("empty journal")?;
+        let mut value = serde_json::to_value(&last)?;
+        value["op"] = json!(kind);
+        value["todo"] = json!(label);
+        value["requestId"] = json!(format!("seed-{kind}-{}", store.nonce()));
+        value["attempt"] = json!(1);
+        value["args"] = args;
+        if let Some(fields) = value.as_object_mut() {
+            fields.remove("from");
+            fields.remove("to");
+            fields.remove("verdict");
+            fields.remove("effect_id");
+            fields.remove("resolution");
+            if let Some(verdict) = verdict {
+                fields.insert("verdict".to_owned(), verdict);
+                fields.insert("effect_id".to_owned(), json!("e-seeded"));
+            }
+        }
+        let record: JournalRecord = serde_json::from_value(value)?;
+        journal.append(&journal.seal(record, Some(&last))?)?;
+        Ok(())
+    }
+
+    // Dies with `dispose` in `reap_leaving` (acceptance.rs): drop the lane on the reap and a
+    // failed worktree todo finishes with no record naming its branch, which is the pressure
+    // that makes a model merge a branch it knows is red.
+    #[test]
+    fn failed_unmerged_task_can_preserve_or_discard_and_finish() -> TestResult {
+        for (choice, member) in [
+            (yi_types::plan::op::Choice::Retained, "retained"),
+            (yi_types::plan::op::Choice::Discarded, "discarded"),
+        ] {
+            let rig = rig(&format!("yi-f0d-{member}"), None)?;
+            let plan = planned()?;
+            init(
+                &rig.engine,
+                vec![worktree_spec(
+                    "build it apart",
+                    cmd_contract(&rig.store, &plan, "true", "writer")?,
+                )?],
+            )?;
+            start(&rig.engine, &plan, "build it apart")?;
+            rig.engine.apply(at(
+                &plan,
+                Op::Fail {
+                    label: TodoLabel::new("build it apart")?,
+                    cause: "the checker was red".to_owned(),
+                    disposition: Some(choice),
+                },
+            ))?;
+            assert!(matches!(
+                todo_of(&rig.store, &plan, "build it apart")?.state,
+                TodoState::Failed { .. }
+            ));
+            let kinds = kinds(&rig.store, &plan)?;
+            let disposition = kinds
+                .iter()
+                .position(|kind| kind == "disposition")
+                .ok_or("no disposition record")?;
+            let fail = kinds
+                .iter()
+                .position(|kind| kind == "fail")
+                .ok_or("no fail record")?;
+            assert!(disposition < fail, "the disposition lands first: {kinds:?}");
+            assert!(!kinds.contains(&"accepted".to_owned()), "{kinds:?}");
+            let records = records(&rig.store, &plan)?;
+            let record = &records[disposition];
+            let body = &record.args["disposition"][member];
+            assert!(body.is_object(), "{member}: {:?}", record.args);
+            assert_eq!(record.args["slot_released"], true);
+            let kept: Url = body["kept"][0].as_str().ok_or("kept is empty")?.parse()?;
+            assert_eq!(kept.to_string(), "history://child-0", "the pin resolves");
+        }
+        Ok(())
+    }
+
+    // Dies with `phase_of` in `try_publish` (acceptance.rs): test the lane instead of the
+    // records and a todo whose lane was already taken looks acceptable.
+    #[test]
+    fn a_worktree_child_cannot_be_marked_done_before_acceptance() -> TestResult {
+        let rig = rig("yi-f0d-phase", None)?;
+        let plan = planned()?;
+        let contract = cmd_contract(&rig.store, &plan, "true", "writer")?;
+        init(
+            &rig.engine,
+            vec![worktree_spec("build it apart", contract.clone())?],
+        )?;
+        start(&rig.engine, &plan, "build it apart")?;
+        let refused = done(&rig.engine, &plan, "build it apart", None);
+        assert!(
+            matches!(
+                &refused,
+                Err(PlanOpError::PhaseMissing { phase, missing, .. })
+                    if *phase == "unsubmitted" && *missing == "candidate_submitted"
+            ),
+            "{refused:?}"
+        );
+        assert!(matches!(
+            todo_of(&rig.store, &plan, "build it apart")?.state,
+            TodoState::Running { .. }
+        ));
+        // The records of a candidate that passed on its own branch, and nothing after.
+        let token = VerificationToken {
+            plan: plan.clone(),
+            version: PlanVersion(1),
+            todo: TodoLabel::new("build it apart")?,
+            attempt: AttemptId::FIRST,
+            contract_digest: contract.digest()?,
+            criteria_digest: contract.criteria_digest()?,
+            output_digest: Digest::of(b""),
+            snapshot: "4c1f0b6d9e2a7358f0b1c4d5e6a7b8c9d0e1f234".to_owned(),
+            integration: None,
+        };
+        seed(
+            &rig.store,
+            &plan,
+            "candidate_submitted",
+            "build it apart",
+            json!({"label": "build it apart", "branch": "yi/child-0",
+                   "candidate": token.snapshot, "parent_base": "9a7e3d21c0b8f4567a9e0d1c2b3a4958e6f7d8c9",
+                   "outputs": [], "quiescent": {"at": 0, "running_commands": 0}}),
+            None,
+        )?;
+        seed(
+            &rig.store,
+            &plan,
+            "verification_requested",
+            "build it apart",
+            json!({"label": "build it apart", "token": token, "effect_id": "e-seeded"}),
+            None,
+        )?;
+        let verdict = json!({"token": token, "outcome": "pass", "score": 1000, "coverage": 1000,
+                             "items": [], "reproducible": true, "elapsed_ms": 1, "at": 1});
+        seed(
+            &rig.store,
+            &plan,
+            "candidate_verified",
+            "build it apart",
+            json!({"label": "build it apart", "token": token, "effect_id": "e-seeded"}),
+            Some(verdict),
+        )?;
+        // A verified candidate whose integration never landed is prepared again by `done`
+        // (section 6.6 row three); over the stub there is no lane pool to prepare it in, so
+        // the preparation is refused as infrastructure and nothing completes.
+        let refused = done(&rig.engine, &plan, "build it apart", None);
+        assert!(
+            matches!(&refused, Err(PlanOpError::Verification { .. })),
+            "{refused:?}"
+        );
+        let kinds = kinds(&rig.store, &plan)?;
+        assert!(!kinds.contains(&"accepted".to_owned()), "{kinds:?}");
+        assert!(
+            !kinds.contains(&"integration_prepared".to_owned()),
+            "nothing was prepared without a pool: {kinds:?}"
+        );
+        assert!(matches!(
+            todo_of(&rig.store, &plan, "build it apart")?.state,
+            TodoState::Running { .. }
+        ));
+        // `fail` is legal here and takes the disposition path with the seeded refs.
+        rig.engine.apply(at(
+            &plan,
+            Op::Fail {
+                label: TodoLabel::new("build it apart")?,
+                cause: "abandoning the candidate".to_owned(),
+                disposition: None,
+            },
+        ))?;
+        let records = records(&rig.store, &plan)?;
+        let disposition = records
+            .iter()
+            .rev()
+            .find(|record| record.record.op == "disposition")
+            .ok_or("no disposition record")?;
+        assert_eq!(
+            disposition.args["disposition"]["retained"]["branch"], "yi/child-0",
+            "the branch the records named"
+        );
+        assert!(matches!(
+            todo_of(&rig.store, &plan, "build it apart")?.state,
+            TodoState::Failed { .. }
+        ));
+        Ok(())
+    }
+
+    // Dies with `Purpose::Verification` being its own counter (capacity.rs): charge the
+    // candidate check against the worker share and the workers a parent retains own every lane
+    // their own verification needs, so the plan stops with every todo running. The engine
+    // half is `lanes::full_worker_capacity_does_not_deadlock_verification`.
+    #[test]
+    fn full_worker_capacity_does_not_deadlock_verification() -> TestResult {
+        let capacity = Capacity::for_slots(DEFAULT_SLOTS);
+        let share = usize::from(capacity.cap(Purpose::Worker));
+        // Every worker the parent may retain asks for a checkout of its own. The share runs
+        // out first, and it runs out one lane short of the pool: that lane is the reserve.
+        let mut held = Vec::new();
+        let mut refused = Vec::new();
+        for _ in 0..DEFAULT_MAX_CHILDREN {
+            match capacity.reserve(Purpose::Worker) {
+                Ok(permit) => held.push(permit),
+                Err(over) => refused.push(over),
+            }
+        }
+        assert_eq!(held.len(), share, "the worker share is what workers get");
+        assert_eq!(refused.len(), DEFAULT_MAX_CHILDREN - share);
+        let over = refused.first().ok_or("the worker share never ran out")?;
+        assert_eq!(
+            (over.purpose, over.held, over.cap),
+            (
+                Purpose::Worker,
+                capacity.cap(Purpose::Worker),
+                capacity.cap(Purpose::Worker)
+            ),
+            "the refusal carries the count"
+        );
+        assert_eq!(
+            usize::from(capacity.cap(Purpose::Verification)),
+            usize::from(DEFAULT_SLOTS) - share,
+            "the lanes the workers did not get are the verification's"
+        );
+        // With every worker lane held, the verification a retained worker's own candidate
+        // needs still reserves, and a second one waits its turn: one candidate at a time.
+        let verifying = capacity.reserve(Purpose::Verification)?;
+        assert!(capacity.reserve(Purpose::Verification).is_err());
+        drop(verifying);
+        drop(held);
+        assert_eq!(capacity.held(Purpose::Worker), 0);
+        assert_eq!(capacity.held(Purpose::Verification), 0);
         Ok(())
     }
 }

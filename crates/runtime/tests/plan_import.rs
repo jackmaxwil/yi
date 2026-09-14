@@ -453,6 +453,7 @@ fn a_retried_import_replays_and_a_lost_checkpoint_cannot_be_imported_over() -> T
         actor: Actor::Owner,
         op: Op::Drop {
             label: TodoLabel::new("cut")?,
+            disposition: None,
         },
         request_id: None,
         expected_revision: None,

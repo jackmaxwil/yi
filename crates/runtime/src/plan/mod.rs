@@ -11,8 +11,10 @@ use yi_types::schedule::DeliveryMode;
 
 use crate::goal::{DeliverFn, StoreHandle};
 
+pub mod acceptance;
 pub mod artifact;
 pub mod authority;
+pub mod capacity;
 pub mod dispatch;
 pub mod done;
 pub mod import;
@@ -27,6 +29,7 @@ pub mod request;
 pub mod snapshot;
 pub mod state;
 pub mod store;
+pub mod submit;
 pub mod table;
 pub mod tool;
 pub mod verify;

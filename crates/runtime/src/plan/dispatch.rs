@@ -6,11 +6,15 @@ use yi_types::plan::doc::{AgentId, Check, Delegation, Isolation, TodoAddr, TodoL
 use yi_types::schedule::DeliveryMode;
 use yi_types::url::Url;
 
-use super::ops::Delegate;
+use super::ops::{Delegate, Delta, PlanEngine, PlanOpError, Txn, agent_url};
 use super::recovery::Liveness;
+use super::state::{self, KIND_SPAWN_INTENT, KIND_SPAWN_RESULT};
+use super::store::draft;
 use crate::fetch::FetchLog;
 use crate::goal::DeliverFn;
 use crate::subagent::SubagentHost;
+use yi_types::plan::doc::{DocError, PlanId, SPAWN_CAP, TodoState};
+use yi_types::plan::ledger::EffectId;
 
 /// [`super::ops::Delegate`] over the B-series host and the owner's Steer queue.
 pub struct SessionDelegate {
@@ -150,11 +154,126 @@ impl Liveness for SessionDelegate {
     }
 }
 
+/// The spawn half of `start` (plan section 5.3): the intent and its result are two records
+/// around the one effect, so a crash between them is reconciled, never re-spawned blind.
+impl PlanEngine {
+    pub(super) fn ensure_spawned(
+        &self,
+        txn: &mut Txn,
+        id: &PlanId,
+        root: &PlanId,
+        label: &TodoLabel,
+        delta: &mut Delta,
+    ) -> Result<(), PlanOpError> {
+        let plan = txn.state.plan(id)?;
+        let Some(todo) = plan.todo(label) else {
+            return Ok(());
+        };
+        let Some(delegation) = todo.delegation.clone() else {
+            return Ok(());
+        };
+        if !matches!(todo.state, TodoState::Pending) {
+            return Ok(());
+        }
+        let addr = TodoAddr {
+            plan: id.clone(),
+            todo: label.clone(),
+        };
+        let url = agent_url(&addr)?;
+        if let Some((effect, intent)) = txn.state.intent_for(id, label) {
+            return match &intent.outcome {
+                state::IntentOutcome::Spawned { .. } => {
+                    delta.spawned.push(url);
+                    Ok(())
+                }
+                state::IntentOutcome::Pending => Err(PlanOpError::NeedsReconciliation {
+                    label: label.clone(),
+                    effect: effect.clone(),
+                }),
+            };
+        }
+        let spent = txn.state.plan(root)?.spawns();
+        if spent >= SPAWN_CAP {
+            return Err(PlanOpError::SpawnCeilingExhausted {
+                spent,
+                cap: SPAWN_CAP,
+            });
+        }
+        let attempt = todo.attempt;
+        // Invariant: a journal outlives the pid, so the effect id carries the clock too.
+        let effect =
+            EffectId::new(format!("e-{}", self.store.request_nonce())).map_err(|error| {
+                PlanOpError::Doc(DocError::AgentIdWhitespace {
+                    id: error.to_string(),
+                })
+            })?;
+        let todos = u32::try_from(plan.todos.len()).unwrap_or(u32::MAX);
+        let mut intent = draft(
+            id,
+            KIND_SPAWN_INTENT,
+            txn.actor.clone(),
+            self.store.now_ms(),
+            todos,
+            serde_json::json!({"label": label, "attempt": attempt, "effect_id": effect}),
+            txn.derived("intent")?,
+            txn.expected,
+            Some(attempt),
+        );
+        intent.record.todo = Some(label.clone());
+        self.commit(txn, intent)?;
+        let spawned = self.delegate.spawn(&addr, &delegation);
+        let args = match &spawned {
+            Ok(agent) => serde_json::json!({"effect_id": effect, "agent": agent}),
+            Err(reason) => serde_json::json!({"effect_id": effect, "error": reason}),
+        };
+        let mut result = draft(
+            id,
+            KIND_SPAWN_RESULT,
+            txn.actor.clone(),
+            self.store.now_ms(),
+            todos,
+            args,
+            txn.derived("result")?,
+            txn.expected,
+            Some(attempt),
+        );
+        result.record.todo = Some(label.clone());
+        self.commit(txn, result)?;
+        match spawned {
+            Ok(_) => {
+                delta.spawned.push(url);
+                Ok(())
+            }
+            Err(reason) => {
+                self.store.checkpoint_family(&txn.state)?;
+                Err(PlanOpError::SpawnFailed { at: addr, reason })
+            }
+        }
+    }
+}
+
 impl Delegate for SessionDelegate {
+    fn candidate(&self, agent: &AgentId) -> Result<Option<crate::lane::settle::Held>, String> {
+        if !self.host.holds(agent.as_str()) {
+            return Ok(None);
+        }
+        self.host.candidate_of(agent.as_str())
+    }
+
+    fn mark(&self, agent: &AgentId, choice: yi_types::plan::op::Choice) -> Result<(), String> {
+        if !self.host.holds(agent.as_str()) {
+            return Ok(());
+        }
+        self.host.mark_disposed(agent.as_str(), choice)
+    }
+
     fn spawn(&self, at: &TodoAddr, delegation: &Delegation) -> Result<AgentId, String> {
         let agent = child_name(at)?;
         self.host
             .spawn(brief(at, delegation), kwargs_of(&agent, delegation)?)?;
+        // Its worktree goes through `submit` or a journaled disposition: the kernel's merge
+        // and discard are refused for a child the engine dispatched.
+        self.host.mark_managed(agent.as_str())?;
         Ok(agent)
     }
 
@@ -520,6 +639,7 @@ mod tests {
         }))?;
         assert!(wait_done(&rig.host).await, "child never completed");
         let out = rig.engine.apply(owner(Op::Fail {
+            disposition: None,
             label: TodoLabel::new("write the patch")?,
             cause: "the probe disagreed".to_owned(),
         }))?;

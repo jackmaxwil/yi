@@ -505,7 +505,7 @@ impl SubagentHost {
     /// Invariant: promotion runs at reap whatever the outcome, so the last product reaches
     /// the owner's transcript before the slot frees and no live child dangles.
     pub fn reap(&self, target: &str) -> Result<Harvest, String> {
-        let record = {
+        let (key, record) = {
             let mut children = self
                 .children
                 .lock()
@@ -515,12 +515,15 @@ impl SubagentHost {
                 .remove(&key)
                 .ok_or_else(|| format!("No RLM child matches \"{target}\""))?;
             children.touch(&key);
-            record
+            (key, record)
         };
         if record.status == ChildStatus::Running {
             record.session.abort();
         }
         SubagentHost::dispose_child_kernel(&record.session);
+        // The lane settles under the choice the engine journaled before this reap; a lane
+        // that cannot settle goes back on the record with its slot, and the reap fails.
+        let (record, _settled) = self.settle_or_restore(&key, record)?;
         let answer = last_assistant_text(&record.session.messages());
         let body = match (&record.error, &answer) {
             (Some(error), Some(answer)) => {
@@ -559,8 +562,8 @@ impl SubagentHost {
     }
 }
 
-/// What a reap found: the child's name and whether it left any product to
-/// point a terminal record at.
+/// What a reap found: the child's name and whether it left any product to point a terminal
+/// record at; how its worktree went is the engine's journaled disposition, not the reap's.
 pub struct Harvest {
     pub name: String,
     pub produced: bool,

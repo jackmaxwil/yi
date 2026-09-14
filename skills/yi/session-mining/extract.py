@@ -268,6 +268,9 @@ SIGNAL_NAMES = (
     "spiral_cut", "kernel_cells", "shell_cells", "children_spawned", "readers_spawned",
     "verification_requested", "verdict_pass", "verdict_fail", "verdict_abstain",
     "verdict_escalate", "done_refused", "done_after_refusal", "verification_stale",
+    "candidate_submitted", "candidate_verified", "integration_prepared", "integration_verified",
+    "integration_stale", "accepted", "disposition_retained", "disposition_discarded",
+    "disposition_merge_failed", "disposition_repossession_pending",
 )
 
 # The outcome word plan.op's refusal detail names (contract.rs Outcome::Display), read back out
@@ -501,6 +504,16 @@ def signals(entries):
             # it passed under: a retry that fixed the product, not the contract.
             if label in refused_frozen and refused_frozen[label] is not None and refused_frozen[label] == frozen_at.get(label):
                 out["done_after_refusal"] += 1
+        elif op in ("candidate_submitted", "candidate_verified", "integration_prepared",
+                    "integration_verified", "integration_stale"):
+            out[op] += 1
+        elif op == "accepted" and record.get("to") == "done" and record.get("resolution") == "verified_done":
+            out["accepted"] += 1
+        elif op == "disposition":
+            # Externally tagged (types/plan/acceptance.rs Disposition): {"retained": {...}} and so on.
+            name = next(iter(record.get("disposition") or {}), None)
+            if name in ("retained", "discarded", "merge_failed", "repossession_pending"):
+                out[f"disposition_{name}"] += 1
     return out
 
 

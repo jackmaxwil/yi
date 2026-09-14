@@ -1956,9 +1956,15 @@ disposition), `probe.rs:105,233-260` (the stuck job, the `Notify`),
 | cleanup preserves artifacts before releasing the slot | `lanes::cleanup_preserves_artifacts_before_releasing_slot` (T1) |
 | a writer is quiescent before snapshot or settle | `lanes::writer_is_quiescent_before_snapshot_or_settle` (T1, a background command) |
 | the user's dirty tree survives an integration | `lanes::user_dirty_tree_is_preserved_during_integration` (T1) |
-| full worker capacity cannot deadlock verification | `plan_ops::full_worker_capacity_does_not_deadlock_verification` (T1) |
-| `done` on an unmerged worktree todo is refused, `fail` is not | `plan_ops::a_worktree_child_cannot_be_marked_done_before_acceptance` (T1) |
+| full worker capacity cannot deadlock verification | `lanes::full_worker_capacity_does_not_deadlock_verification` (T1); `plan_ops::full_worker_capacity_does_not_deadlock_verification` (T0, the counters at the product constants) |
+| `done` on an unmerged worktree todo is refused, `fail` is not | `plan_ops::a_worktree_child_cannot_be_marked_done_before_acceptance` (T0, over the stub delegate; the lanes bench covers the T1 side) |
 | one stuck notice per episode, and an earlier due time interrupts the sleep | `family::a_stuck_child_is_reported_once_until_its_records_move` (T0, clock injected); `plan_probe::an_earlier_due_time_wakes_the_loop` (T0) |
+| a lane that cannot settle stays held, never dropped onto the next claim | `lanes::a_lane_that_cannot_settle_stays_held` (T1, a background command) |
+| the user's untracked directory survives a ref-only publication | `lanes::an_untracked_directory_survives_a_ref_only_publication` (T1) |
+| a publication runs from the repository root whatever the session cwd | `lanes::a_publication_runs_from_the_repository_root_whatever_the_cwd` (T1) |
+| a fast-forward failure that is not the user's dirt publishes nothing | `lanes::a_transient_fast_forward_failure_publishes_nothing` (T1) |
+| a stale integration left unprepared is prepared by the next `done` | `lanes::a_stale_integration_left_unprepared_is_prepared_by_the_next_done` (T1) |
+| a second `submit` of one token replays its settled refusal | `lanes::failing_candidate_never_contaminates_parent_checkout` (T1) |
 
 **LOC.** yi-runtime +420. Memo: `growth +420: candidate acceptance,
 integration, dispositions and the stuck notice`. **Issue.** "F0d worktree

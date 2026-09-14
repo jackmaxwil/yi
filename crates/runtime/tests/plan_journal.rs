@@ -820,6 +820,7 @@ fn a_reused_request_id_with_another_op_kind_is_refused() -> TestResult {
     let dropped = rig.engine.apply(request(
         Op::Drop {
             label: label.clone(),
+            disposition: None,
         },
         "r-1",
     )?)?;
@@ -834,6 +835,94 @@ fn a_reused_request_id_with_another_op_kind_is_refused() -> TestResult {
         records.len(),
         3,
         "init, append, drop; the unblock wrote nothing"
+    );
+    Ok(())
+}
+
+// Dies with `fixtures/plans/journal/acceptance.jsonl` drifting from the wire or from its own
+// chain: every token, verdict and disposition round-trips through the types the acceptance
+// coordinator writes, and the `accepted` record is the `done` transition it stands for.
+#[test]
+fn the_acceptance_fixture_carries_the_shapes_the_coordinator_writes() -> TestResult {
+    use yi_types::plan::acceptance::{Disposition, Published};
+    use yi_types::plan::contract::{Verdict, VerificationToken};
+    use yi_types::plan::doc::TodoStateName;
+
+    let records = verify_chain(&fixtures().join("journal/acceptance.jsonl"))?;
+    let kinds: Vec<&str> = records
+        .iter()
+        .map(|record| record.record.op.as_str())
+        .collect();
+    assert_eq!(
+        kinds,
+        [
+            "candidate_submitted",
+            "candidate_verified",
+            "integration_prepared",
+            "integration_verified",
+            "accepted",
+            "disposition",
+            "disposition",
+            "disposition",
+            "disposition",
+        ]
+    );
+    assert_eq!(records[0].args["quiescent"]["running_commands"], 0);
+    let mut tokens = Vec::new();
+    for record in [&records[1], &records[3]] {
+        let token: VerificationToken = serde_json::from_value(record.args["token"].clone())?;
+        let verdict: Verdict = serde_json::from_value(record.verdict.clone().ok_or("a verdict")?)?;
+        assert_eq!(
+            verdict.token, token,
+            "the verdict names the token it settles"
+        );
+        assert!(
+            record.record.extra["effect_id"]
+                .as_str()
+                .is_some_and(|id| id.starts_with("e-"))
+        );
+        tokens.push(token);
+    }
+    assert_eq!(tokens[0].snapshot, records[0].args["candidate"]);
+    assert_eq!(tokens[0].integration, None);
+    assert_eq!(tokens[1].snapshot, records[2].args["integrated"]);
+    assert_eq!(tokens[1].integration, Some(1));
+    assert_eq!(tokens[0].contract_digest, tokens[1].contract_digest);
+    assert_eq!(tokens[0].criteria_digest, tokens[1].criteria_digest);
+    let accepted = &records[4];
+    assert_eq!(accepted.record.from, Some(TodoStateName::Running));
+    assert_eq!(accepted.record.to, Some(TodoStateName::Done));
+    assert_eq!(accepted.record.extra["resolution"], "verified_done");
+    assert_eq!(accepted.args["candidate"], records[0].args["candidate"]);
+    assert_eq!(accepted.args["integrated"], records[2].args["integrated"]);
+    let _how: Published = serde_json::from_value(accepted.args["how"].clone())?;
+    let members: Vec<&str> = records[5..]
+        .iter()
+        .map(|record| {
+            let disposition: Disposition =
+                serde_json::from_value(record.args["disposition"].clone())?;
+            assert_eq!(
+                record.args["slot_released"],
+                disposition.releases_slot(),
+                "{:?}",
+                record.args
+            );
+            Ok::<_, Box<dyn Error>>(match disposition {
+                Disposition::Retained { .. } => "retained",
+                Disposition::Discarded { .. } => "discarded",
+                Disposition::MergeFailed { .. } => "merge_failed",
+                Disposition::RepossessionPending { .. } => "repossession_pending",
+            })
+        })
+        .collect::<Result<_, _>>()?;
+    assert_eq!(
+        members,
+        [
+            "retained",
+            "discarded",
+            "merge_failed",
+            "repossession_pending"
+        ]
     );
     Ok(())
 }

@@ -921,6 +921,11 @@ sequenceDiagram
   walled at the same cooperative seams as an `rlm.run` child; a plan-dispatched reader was
   unwalled before this. Cooperative, not a sandbox, same as B15: it stops an honest agent at
   the mediated seams, nothing more.
+- **B18 stuck notice (F0d, plan §7.5)** | the probe loop's second job computes
+  `state_from_records` (`family.rs`) for each running child on its own due time and sends one
+  `failure`-kind notice through the same wake the tick a child is first found `Stuck`, latched
+  until its records move; deterministic from the records the loop already writes, never a
+  model's judgment that a child is stuck.
 
 Not yet done: hereditary shrink (a child's wall as the union of its parent's and its own,
 so a child can never spawn with a wall smaller than its parent's) and holds compiled down for
@@ -1263,7 +1268,21 @@ caller's word as `Done { resolution: None }`, reported unverified, on every surf
 (D194's carve-out, closed by a decider today or by F3a's judge). The boundary is
 exact, not aspirational: a `judge` decider is refused at declaration until F3a lands,
 so today only a `cmd`, `schema` or `example` item can decide a contract, and "host-
-verified" names that set and nothing past it. The paragraph below records the 0.33.0
+verified" names that set and nothing past it. **A worktree todo is done only through
+acceptance (F0d, D-next-4, plan §6.6).** Submitting a candidate on its branch commits
+`candidate_submitted`, and the candidate's own verification against that commit lands
+`candidate_verified`; only then may integration begin. Integration is prepared against
+the parent's current generation in a staging worktree, never the user's checkout, and
+lands `integration_prepared`, then `integration_verified` once the required checks pass
+against that exact tree outside the lock; a parent that moved underneath the prepared
+merge is `integration_stale` and the todo re-prepares against the new generation.
+`done` on a worktree todo is legal only once every phase above is present; passing lands
+one `accepted` record with the publication, the candidate and parent commits, and both
+verdicts, as the same transition to `Done { VerifiedDone }`. Every other exit from
+`Running` — a failure, a drop, a supersede, a revocation — commits an explicit
+`disposition` first (`Retained`, `Discarded`, `MergeFailed` or `RepossessionPending`,
+carrying what a retry needs and what the cleanup kept) and never merges to free a slot.
+The paragraph below records the 0.33.0
 shape the store superseded.
 
 

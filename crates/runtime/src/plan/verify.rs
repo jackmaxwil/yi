@@ -179,6 +179,11 @@ impl Verifier {
         self.timeout_ms
     }
 
+    /// The session deadline the verifier was built with, so a settle can read the same clock.
+    pub fn deadline(&self) -> Option<Instant> {
+        self.deadline
+    }
+
     /// Run every item under one whole-verification deadline and each item's own, then
     /// aggregate. Never fails: what cannot be decided abstains with its reason.
     pub fn run(
