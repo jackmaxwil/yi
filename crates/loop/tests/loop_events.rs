@@ -1954,3 +1954,54 @@ async fn sequential_tool_splits_the_batch() {
         .collect();
     assert_eq!(ends, ["call-a", "call-b", "call-c"]);
 }
+
+/// Markup the mapper could not read as a call is not an answer either: the turn ends as an
+/// error the surface can show, not as prose that says `<tool_call>`.
+#[tokio::test]
+async fn unparsed_call_markup_ends_the_turn_as_an_error() -> Result<(), Box<dyn std::error::Error>>
+{
+    let stream = Scripted::new(vec![faux_assistant_message(
+        vec![faux_text(
+            "<tool_call>read<arg_key>path</arg_key><arg_value>a.rs",
+        )],
+        StopReason::Stop,
+    )]);
+    let mut context = LoopContext {
+        system_prompt: "sys".to_owned(),
+        messages: Vec::new(),
+        tools: Vec::new(),
+    };
+    let config = LoopConfig::new(faux_model());
+    let signal = InterruptSignal::default();
+    let (events, mut emit) = collector();
+    let collected = run_loop(
+        &mut context,
+        vec![user("read it")],
+        &config,
+        &signal,
+        &mut emit,
+        &stream,
+    )
+    .await;
+    let last = collected.last();
+    let Some(AgentMessage::Assistant {
+        stop_reason,
+        error_message,
+        ..
+    }) = last
+    else {
+        return Err(format!("the turn ends on the assistant message: {last:?}").into());
+    };
+    assert_eq!(*stop_reason, StopReason::Error);
+    assert_eq!(
+        error_message.as_deref(),
+        Some(yi_loop::run::UNPARSED_MARKUP)
+    );
+    let events = events.lock().unwrap_or_else(|error| error.into_inner());
+    assert!(
+        !kinds(&events).contains(&"tool_execution_start"),
+        "nothing ran: {:?}",
+        kinds(&events)
+    );
+    Ok(())
+}

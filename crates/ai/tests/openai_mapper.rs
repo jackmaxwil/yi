@@ -291,3 +291,60 @@ fn a_stream_that_dies_mid_turn_keeps_the_usage_it_reported() -> Result<(), Box<d
     assert!(error_message.as_deref().unwrap_or("").contains("502"));
     Ok(())
 }
+
+/// The 2026-09-14 session: glm-5.3-flash streamed its call as text and stopped, so the turn
+/// printed markup and ran nothing. The mapper reads the words as the call they spell.
+#[test]
+fn a_call_streamed_as_text_finishes_as_a_tool_call() -> Result<(), Box<dyn Error>> {
+    let model = model(false);
+    let mut mapper = ChunkMapper::new(&model);
+    let mut events = vec![mapper.start_event()];
+    let parts = [
+        "<tool_call>read<arg_key>path</arg_key>",
+        "<arg_value>~/.yi/skills/yi/plan/SKILL.md</arg_value>",
+        "</tool_call>",
+    ];
+    for part in parts {
+        events.extend(
+            mapper.push_chunk(&json!({"id":"chatcmpl-9","choices":[{"delta":{"content":part}}]})),
+        );
+    }
+    events.extend(
+        mapper.push_chunk(
+            &json!({"id":"chatcmpl-9","choices":[{"delta":{},"finish_reason":"stop"}]}),
+        ),
+    );
+    events.extend(mapper.finish());
+    let last = events.last().ok_or("empty")?;
+    let AssistantMessageEvent::Done { reason, message } = last else {
+        return Err(format!("expected done: {last:?}").into());
+    };
+    assert_eq!(*reason, StopReason::ToolUse);
+    let AgentMessage::Assistant { content, .. } = message else {
+        return Err("not assistant".into());
+    };
+    assert!(matches!(content.first(), Some(Content::Text { text, .. }) if text.is_empty()));
+    match content.get(1) {
+        Some(Content::ToolCall {
+            id,
+            name,
+            arguments,
+            ..
+        }) => {
+            assert_eq!(id, "leak-0");
+            assert_eq!(name, "read");
+            assert_eq!(
+                arguments["path"],
+                "~/.yi/skills/yi/plan/SKILL.md"
+            );
+        }
+        other => return Err(format!("expected the recovered call: {other:?}").into()),
+    }
+    assert!(
+        events
+            .iter()
+            .any(|event| matches!(event, AssistantMessageEvent::ToolCallEnd { .. })),
+        "the recovered call ends like a streamed one"
+    );
+    Ok(())
+}
