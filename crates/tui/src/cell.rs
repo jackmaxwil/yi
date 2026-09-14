@@ -223,7 +223,7 @@ fn tint(lines: Vec<Line<'static>>, width: usize, theme: &Theme) -> Vec<Line<'sta
 
 /// The user turn carries a heavy left bar in the session accent over a panel
 /// fill. The bar is what survives at 16 colors, where the tint degrades away.
-const USER_BAR: &str = "┃";
+pub const USER_BAR: &str = "┃";
 
 fn bar(lines: Vec<Line<'static>>, theme: &Theme) -> Vec<Line<'static>> {
     let style = theme.user_style().fg(theme.accent);

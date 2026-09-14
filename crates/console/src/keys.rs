@@ -171,7 +171,7 @@ const fn chord(
     }
 }
 
-pub const CHORDS: [Chord; 16] = [
+pub const CHORDS: [Chord; 19] = [
     chord("command palette", "⌥/", "⌘P", "g", Some(Action::Navigator)),
     chord("new session", "⌥n", "⌘⇧N", "o", Some(Action::NewSession)),
     chord("jump to rail slot 1..9", "⌥1..9", "⌘1..9", "", None),
@@ -224,6 +224,21 @@ pub const CHORDS: [Chord; 16] = [
         Some(Action::StopDaemon),
     ),
     chord("all keys", "⌥?", "⌘?", "", Some(Action::Keys)),
+    chord(
+        "chat: cycle normal · thinking · verbose",
+        "ctrl+o",
+        "ctrl+o",
+        "",
+        None,
+    ),
+    chord("chat: hide or show the HUD", "ctrl+t", "ctrl+t", "", None),
+    chord(
+        "sidebar glyphs: ◐ running · ○ done · ✕ error",
+        "",
+        "",
+        "",
+        None,
+    ),
 ];
 
 pub fn hint(prefix_armed: bool, cmd: bool) -> &'static str {

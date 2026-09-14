@@ -24,6 +24,7 @@ use port::EventSeq;
 
 const REQUEST_DEADLINE: Duration = Duration::from_secs(10);
 const LIST_POLL: Duration = Duration::from_secs(5);
+const FLASH: Duration = Duration::from_secs(2);
 const SPLIT_ANIM: Duration = Duration::from_millis(140);
 const QUIT_WINDOW: Duration = Duration::from_secs(1);
 
@@ -85,6 +86,7 @@ pub struct App {
     /// The live drag over the frame, and the text the last draw read under it.
     pub selection: Option<crate::select::Selection>,
     pub selected: String,
+    pub flash: Option<(String, Instant)>,
     pub avatars: crate::avatar::Avatars,
     pub accents: HashMap<String, usize>,
     /// Split path under an active border drag, pinned to its tab so a
@@ -134,6 +136,7 @@ impl App {
             osc_out: Vec::new(),
             selection: None,
             selected: String::new(),
+            flash: None,
             hits: None,
             avatars: crate::avatar::Avatars::default(),
             accents: HashMap::new(),
@@ -236,6 +239,14 @@ impl App {
             self.send_request(outbound, RequestKind::ListDaemon, "session/list", json!({}));
         }
         self.tick_animations(now);
+        if self
+            .flash
+            .as_ref()
+            .is_some_and(|(_, at)| now.saturating_duration_since(*at) > FLASH)
+        {
+            self.flash = None;
+            self.dirty = true;
+        }
         self.close_idle_notebooks(now);
         self.tick_notes(now);
         self.check_editors(now);

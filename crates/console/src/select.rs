@@ -4,6 +4,8 @@
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Position, Rect};
 use ratatui::style::Color;
+use yi_tui::card::RAIL;
+use yi_tui::cell::{CALLOUT_RAIL, GUTTER, USER_BAR};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Selection {
@@ -36,7 +38,7 @@ pub fn paint(buffer: &mut Buffer, area: Rect, selection: Selection, bg: Color) -
     let ((x0, y0), (x1, y1)) = selection.ends();
     let last_x = area.right().saturating_sub(1);
     let last_y = area.bottom().saturating_sub(1);
-    let mut text = String::new();
+    let mut rows = Vec::new();
     for y in y0.max(area.y)..=y1.min(last_y) {
         let start = if y == y0 { x0.max(area.x) } else { area.x };
         let end = if y == y1 { x1 } else { last_x };
@@ -48,12 +50,44 @@ pub fn paint(buffer: &mut Buffer, area: Rect, selection: Selection, bg: Color) -
             cell.set_bg(bg);
             row.push_str(cell.symbol());
         }
-        if y > y0 {
-            text.push('\n');
-        }
-        text.push_str(row.trim_end());
+        rows.push(row.trim_end().to_owned());
     }
-    text
+    words(&rows)
+}
+
+/// The words under a drag, not the frame: Yi's own chrome (the card rail, the callout rail,
+/// the user bar, the assistant gutter) drops off each row, then the rows shed a shared indent.
+pub fn words(rows: &[String]) -> String {
+    let stripped: Vec<String> = rows.iter().map(|row| strip_chrome(row)).collect();
+    let indent = stripped
+        .iter()
+        .filter(|row| !row.trim().is_empty())
+        .map(|row| row.len().saturating_sub(row.trim_start().len()))
+        .min()
+        .unwrap_or(0);
+    stripped
+        .iter()
+        .map(|row| row.get(indent..).unwrap_or_default())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn strip_chrome(row: &str) -> String {
+    let body = row.trim_start();
+    let lead = " ".repeat(row.len().saturating_sub(body.len()));
+    // The card rail and the gutter carry their own space, and a card body's inset is its
+    // shape; the user bar and the callout rail pad with spaces that are only chrome.
+    for glyph in [RAIL, GUTTER] {
+        if let Some(rest) = body.strip_prefix(glyph) {
+            return format!("{lead}{rest}");
+        }
+    }
+    for glyph in [CALLOUT_RAIL, USER_BAR] {
+        if let Some(rest) = body.strip_prefix(glyph) {
+            return format!("{lead}{}", rest.trim_start());
+        }
+    }
+    row.to_owned()
 }
 
 const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
