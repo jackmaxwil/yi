@@ -372,7 +372,10 @@ fn seed_plan_of(root: &std::path::Path, label: &str, check: &str) -> TestResult 
         vec![Todo {
             label: TodoLabel::new(label)?,
             after: Vec::new(),
-            state: TodoState::Done { output: None },
+            state: TodoState::Done {
+                output: None,
+                resolution: None,
+            },
             delegation: Some(Delegation {
                 spec: SpawnSpec {
                     role: None,
@@ -381,6 +384,7 @@ fn seed_plan_of(root: &std::path::Path, label: &str, check: &str) -> TestResult 
                     tools: Vec::new(),
                     isolation: None,
                     budget: None,
+                    wall: None,
                     extra: serde_json::Map::new(),
                 },
                 accept: Check::Command(check.to_owned()),
@@ -395,6 +399,8 @@ fn seed_plan_of(root: &std::path::Path, label: &str, check: &str) -> TestResult 
             note: None,
             attempt: yi_types::plan::doc::AttemptId::FIRST,
             refusals: 0,
+            contract: None,
+            contract_hash: None,
             extra: serde_json::Map::new(),
         }],
     );

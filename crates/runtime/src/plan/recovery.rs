@@ -6,8 +6,11 @@ use yi_types::plan::doc::{AgentId, PlanId, TodoLabel, TodoState};
 use yi_types::plan::ledger::{EffectId, JournalRecord};
 
 use super::journal::Damage;
-use super::state::{IntentOutcome, RootState, reduce};
+use super::ops::{Actor, Op, Outcome, PlanEngine, PlanOpError, Resolution};
+use super::state::{IntentOutcome, RootState, reduce, root_of};
 use super::store::{PlanStore, StoreError};
+use yi_types::plan::doc::TouchCount;
+use yi_types::plan::ledger::RequestId;
 
 pub trait Liveness: Send + Sync {
     fn alive(&self, agent: &AgentId) -> Option<bool>;
@@ -150,4 +153,55 @@ pub fn run(
         torn,
         findings,
     })
+}
+
+impl PlanEngine {
+    pub(super) fn repair(
+        &self,
+        plan: Option<PlanId>,
+        resolutions: Vec<Resolution>,
+        actor: &Actor,
+        request: RequestId,
+        expected: Option<TouchCount>,
+    ) -> Result<Outcome, PlanOpError> {
+        let id = self.resolve(plan)?;
+        let root = root_of(&id)?;
+        let recovered = run(&self.store, &root, &*self.liveness)?;
+        let mut notices: Vec<String> = Vec::new();
+        if let Some(torn) = &recovered.torn {
+            notices.push(format!(
+                "a torn journal tail was set aside at {}",
+                torn.display()
+            ));
+        }
+        notices.push(format!(
+            "regenerated {} checkpoint(s) from the journal",
+            recovered.regenerated.len()
+        ));
+        notices.extend(recovered.findings.iter().map(ToString::to_string));
+        for resolution in &resolutions {
+            let found = recovered
+                .findings
+                .iter()
+                .any(|finding| finding.plan == id && finding.label == resolution.label);
+            if !found {
+                return Err(PlanOpError::NotReconcilable {
+                    label: resolution.label.clone(),
+                });
+            }
+        }
+        let mut outcome = if resolutions.is_empty() {
+            self.view(Some(id), true)?
+        } else {
+            self.framed(
+                Some(id),
+                actor,
+                Op::Repair { resolutions },
+                request,
+                expected,
+            )?
+        };
+        outcome.notices.splice(0..0, notices);
+        Ok(outcome)
+    }
 }

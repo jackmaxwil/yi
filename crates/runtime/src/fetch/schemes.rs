@@ -792,6 +792,7 @@ mod tests {
                     label: TodoLabel::new("Freeze the token API seam")?,
                     after: Vec::new(),
                     delegation: None,
+                    contract: None,
                     children: Vec::new(),
                 }],
             },

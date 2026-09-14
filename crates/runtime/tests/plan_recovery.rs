@@ -98,6 +98,7 @@ fn delegated(text: &str) -> Result<TodoSpec, Box<dyn Error>> {
                 tools: Vec::new(),
                 isolation: None,
                 budget: None,
+                wall: None,
                 extra: serde_json::Map::new(),
             },
             accept: Check::Stated("it works".to_owned()),
@@ -106,6 +107,7 @@ fn delegated(text: &str) -> Result<TodoSpec, Box<dyn Error>> {
             note: None,
             extra: serde_json::Map::new(),
         }),
+        contract: None,
         children: Vec::new(),
     })
 }
@@ -115,6 +117,7 @@ fn plain(text: &str) -> Result<TodoSpec, Box<dyn Error>> {
         label: TodoLabel::new(text)?,
         after: Vec::new(),
         delegation: None,
+        contract: None,
         children: Vec::new(),
     })
 }

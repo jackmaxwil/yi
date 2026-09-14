@@ -266,7 +266,15 @@ SIGNAL_NAMES = (
     "stream_retry", "kernel_dead", "module_missing", "reduced_results",
     "artifact_steer", "artifact_refused", "closure_refused", "gate_waived", "evidence_shape_refused",
     "spiral_cut", "kernel_cells", "shell_cells", "children_spawned", "readers_spawned",
+    "verification_requested", "verdict_pass", "verdict_fail", "verdict_abstain",
+    "verdict_escalate", "done_refused", "done_after_refusal", "verification_stale",
 )
+
+# The outcome word plan.op's refusal detail names (contract.rs Outcome::Display), read back out
+# of the `refusal.detail` string a `done_refused` or `verification_stale` custom entry carries.
+# There is no structured outcome field on the session-visible record (plan section 6.3 commits
+# the verdict to the journal, not to this entry), so the display text is the only witness.
+VERDICT_OUTCOME_RE = re.compile(r": (fail|abstain|escalate)\b")
 
 
 def _tokens(text):
@@ -287,7 +295,7 @@ def signals(entries):
     (0 when it never happened), computed from the JSONL and nothing the model said about it."""
     out = {name: 0 for name in SIGNAL_NAMES}
     calls, results, users, assistants = {}, [], [], []
-    todo_records, intercepts, custom_intercept = [], [], []
+    todo_records, intercepts, custom_intercept, plan_op_records = [], [], [], []
     for entry in entries:
         if entry.get("type") == "custom":
             kind = entry.get("customType")
@@ -295,6 +303,8 @@ def signals(entries):
                 todo_records.append(entry.get("data") or {})
             elif kind == "todo_intercept":
                 custom_intercept.append(entry.get("data") or {})
+            elif kind == "plan_op":
+                plan_op_records.append(entry.get("data") or {})
             continue
         if entry.get("type") != "message":
             continue
@@ -467,6 +477,30 @@ def signals(entries):
         else:
             streak = 0
     out["cache_miss_streak"] = best
+    # Record-derived, not text-derived (plan section 10.6): one `custom{plan_op}` entry per
+    # applied op, oldest first, already the journal's own append order.
+    frozen_at, refused_frozen = {}, {}
+    for record in plan_op_records:
+        op, label = record.get("op"), record.get("todo")
+        if op == "start" and label:
+            frozen_at[label] = record.get("contract_hash")
+        elif op == "verification_requested":
+            out["verification_requested"] += 1
+        elif op == "verification_stale":
+            out["verification_stale"] += 1
+        elif op == "done_refused":
+            out["done_refused"] += 1
+            match = VERDICT_OUTCOME_RE.search((record.get("refusal") or {}).get("detail") or "")
+            if match:
+                out[f"verdict_{match.group(1)}"] += 1
+            if label:
+                refused_frozen[label] = frozen_at.get(label)
+        elif op == "done" and record.get("to") == "done" and record.get("resolution") == "verified_done":
+            out["verdict_pass"] += 1
+            # Same todo, a later attempt, and the criteria it was refused under are the ones
+            # it passed under: a retry that fixed the product, not the contract.
+            if label in refused_frozen and refused_frozen[label] is not None and refused_frozen[label] == frozen_at.get(label):
+                out["done_after_refusal"] += 1
     return out
 
 

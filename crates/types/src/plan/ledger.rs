@@ -164,7 +164,7 @@ impl std::fmt::Display for AttemptId {
     }
 }
 
-fn check_id(what: &'static str, id: &str) -> Result<(), IdError> {
+pub(crate) fn check_id(what: &'static str, id: &str) -> Result<(), IdError> {
     if id.is_empty() {
         return Err(IdError::Empty { what });
     }
@@ -191,10 +191,10 @@ macro_rules! text_id {
 
         impl $name {
             /// # Errors
-            /// Empty, over [`ID_MAX_BYTES`], or containing whitespace.
-            pub fn new(id: impl Into<String>) -> Result<Self, IdError> {
+            /// Empty, over [`crate::plan::ledger::ID_MAX_BYTES`], or containing whitespace.
+            pub fn new(id: impl Into<String>) -> Result<Self, $crate::plan::ledger::IdError> {
                 let id = id.into();
-                check_id($what, &id)?;
+                $crate::plan::ledger::check_id($what, &id)?;
                 Ok(Self(id))
             }
 
@@ -204,7 +204,7 @@ macro_rules! text_id {
         }
 
         impl TryFrom<String> for $name {
-            type Error = IdError;
+            type Error = $crate::plan::ledger::IdError;
 
             fn try_from(id: String) -> Result<Self, Self::Error> {
                 Self::new(id)

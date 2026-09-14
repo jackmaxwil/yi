@@ -60,6 +60,11 @@ pub const STEPS: &[Step] = &[
         to: TodoStateName::Running,
     },
     Step {
+        from: TodoStateName::Running,
+        op: OpKind::Accept,
+        to: TodoStateName::Done,
+    },
+    Step {
         from: TodoStateName::Blocked,
         op: OpKind::Unblock,
         to: TodoStateName::Pending,
@@ -75,6 +80,11 @@ pub const STEPS: &[Step] = &[
         to: TodoStateName::Blocked,
     },
     Step {
+        from: TodoStateName::Blocked,
+        op: OpKind::Accept,
+        to: TodoStateName::Done,
+    },
+    Step {
         from: TodoStateName::Done,
         op: OpKind::AddEdge,
         to: TodoStateName::Done,
@@ -88,6 +98,11 @@ pub const STEPS: &[Step] = &[
         from: TodoStateName::Failed,
         op: OpKind::AddEdge,
         to: TodoStateName::Failed,
+    },
+    Step {
+        from: TodoStateName::Failed,
+        op: OpKind::Accept,
+        to: TodoStateName::Done,
     },
 ];
 
@@ -119,17 +134,19 @@ pub(super) fn check_plan_state(plan: &Plan, op: OpKind) -> Result<(), PlanOpErro
     }
 }
 
+/// Invariant: authority is a channel (plan section 5.6). `User` is minted only by the confirmed
+/// path, so the ops it alone may apply are the ones the owner is refused here.
 pub(super) fn check_actor(actor: &Actor, op: &Op) -> Result<(), PlanOpError> {
     let kind = op.kind();
     let allowed = match actor {
         Actor::Owner => match op {
-            Op::FuseReset => false,
+            Op::FuseReset | Op::Resolve { .. } | Op::Accept { .. } => false,
             Op::Repair { resolutions } => resolutions.is_empty(),
             _ => true,
         },
         Actor::User(_) => true,
         Actor::Host => matches!(kind, OpKind::Unblock | OpKind::Reconcile),
-        Actor::Child(_) => matches!(kind, OpKind::View),
+        Actor::Child(_) => matches!(kind, OpKind::View | OpKind::Submit),
     };
     if allowed {
         Ok(())
@@ -241,9 +258,11 @@ pub(super) fn validate_plan(plan: &Plan) -> Result<(), PlanOpError> {
         Some(PlanIssue::SlugCollision { second, .. }) => {
             Err(PlanOpError::LabelNotUnique { label: second })
         }
-        Some(issue @ (PlanIssue::UnresolvedEdge { .. } | PlanIssue::Cycle { .. })) => {
-            Err(PlanOpError::Invalid { issue })
-        }
+        Some(
+            issue @ (PlanIssue::UnresolvedEdge { .. }
+            | PlanIssue::Cycle { .. }
+            | PlanIssue::Contract { .. }),
+        ) => Err(PlanOpError::Invalid { issue }),
     }
 }
 
@@ -306,6 +325,8 @@ pub(super) fn new_todo(spec: TodoSpec) -> Todo {
         note: None,
         attempt: yi_types::plan::doc::AttemptId::FIRST,
         refusals: 0,
+        contract: spec.contract,
+        contract_hash: None,
         extra: Map::new(),
     }
 }
@@ -368,7 +389,7 @@ mod tests {
 
     type TestResult = Result<(), Box<dyn std::error::Error>>;
 
-    const OPS: [OpKind; 19] = ALL_OPS;
+    const OPS: [OpKind; 22] = ALL_OPS;
 
     fn named_states() -> Result<Vec<(TodoStateName, TodoState)>, Box<dyn std::error::Error>> {
         Ok(vec![
@@ -386,7 +407,13 @@ mod tests {
                     note: String::new(),
                 },
             ),
-            (TodoStateName::Done, TodoState::Done { output: None }),
+            (
+                TodoStateName::Done,
+                TodoState::Done {
+                    output: None,
+                    resolution: None,
+                },
+            ),
             (
                 TodoStateName::Failed,
                 TodoState::Failed {
@@ -438,7 +465,13 @@ mod tests {
             Some(TodoStateName::Pending)
         );
         assert_eq!(
-            step(&TodoState::Done { output: None }, OpKind::AddEdge),
+            step(
+                &TodoState::Done {
+                    output: None,
+                    resolution: None
+                },
+                OpKind::AddEdge
+            ),
             Some(TodoStateName::Done)
         );
         assert_eq!(step(&TodoState::Pending, OpKind::Done), None);
@@ -464,6 +497,9 @@ mod tests {
                                 Some(TodoStateName::Pending)
                             }
                             OpKind::AddEdge => Some(name.clone()),
+                            OpKind::Accept if name == TodoStateName::Failed => {
+                                Some(TodoStateName::Done)
+                            }
                             OpKind::Init
                             | OpKind::Append
                             | OpKind::Drop
@@ -481,7 +517,10 @@ mod tests {
                             | OpKind::FuseReset
                             | OpKind::Repair
                             | OpKind::Import
-                            | OpKind::Reconcile => None,
+                            | OpKind::Reconcile
+                            | OpKind::Submit
+                            | OpKind::Resolve
+                            | OpKind::Accept => None,
                         };
                         assert_eq!(step(&state, op), expected, "{name} x {op:?}");
                     }
@@ -529,6 +568,7 @@ mod tests {
                 tools: Vec::new(),
                 isolation: None,
                 budget: None,
+                wall: None,
                 extra: Map::new(),
             },
             accept: Check::Stated("it works".to_owned()),

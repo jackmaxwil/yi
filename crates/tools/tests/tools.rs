@@ -476,6 +476,26 @@ fn diff_applies_with_git_apply() -> TestResult {
     Ok(())
 }
 
+// Dies with the private index in `materialize`: share the shadow index and a materialized
+// verification tree becomes the next capture, or the checkout gets rewritten.
+#[test]
+fn checkpoint_materialize_writes_the_captured_tree_elsewhere() -> TestResult {
+    let project = temp_dir("checkpoint-materialize-project")?;
+    let shadow = temp_dir("checkpoint-materialize-shadow")?;
+    let into = temp_dir("checkpoint-materialize-into")?;
+    fs::write(project.join("kept.txt"), "before\n")?;
+    let checkpoints = yi_tools::Checkpoints::open(&shadow, &project)?;
+    let captured = checkpoints.capture()?;
+    fs::write(project.join("kept.txt"), "after\n")?;
+    checkpoints.materialize(&captured, &into.join("tree"))?;
+    assert_eq!(fs::read_to_string(into.join("tree/kept.txt"))?, "before\n");
+    assert_eq!(fs::read_to_string(project.join("kept.txt"))?, "after\n");
+    assert!(!into.join("tree.index").exists());
+    let again = checkpoints.capture()?;
+    assert_ne!(again, captured, "the shadow index still tracks the project");
+    Ok(())
+}
+
 #[test]
 fn checkpoint_diff_reports_what_changed_between_captures() -> TestResult {
     let project = temp_dir("checkpoint-diff")?;

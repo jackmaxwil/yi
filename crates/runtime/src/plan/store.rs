@@ -726,8 +726,7 @@ mod tests {
     use crate::scratch::Scratch;
     use yi_types::plan::PlanVersion;
     use yi_types::plan::doc::{
-        AgentId, AttemptId, Delegation, PlanTier, RetryCount, Todo, TodoAddr, TodoLabel, TodoState,
-        TouchCount,
+        AgentId, Delegation, PlanTier, RetryCount, Todo, TodoAddr, TodoLabel, TodoState, TouchCount,
     };
     use yi_types::url::Url;
 
@@ -777,34 +776,19 @@ mod tests {
             PlanTier::Root,
             vec![
                 Todo {
-                    label: TodoLabel::new("Freeze the token API seam")?,
-                    after: Vec::new(),
                     state: TodoState::Done {
                         output: Some("kernel://token_api_seam".parse()?),
+                        resolution: None,
                     },
-                    delegation: None,
-                    subplan: None,
-                    retries: RetryCount(0),
-                    children: Vec::new(),
-                    note: None,
-                    attempt: AttemptId::FIRST,
-                    refusals: 0,
-                    extra: serde_json::Map::new(),
+                    ..Todo::pending(TodoLabel::new("Freeze the token API seam")?)
                 },
                 Todo {
-                    label: TodoLabel::new("Implement refresh flow")?,
                     after: vec![TodoLabel::new("Freeze the token API seam")?],
                     state: TodoState::Running {
                         by: AgentId::new("child-1")?,
                     },
-                    delegation: None,
-                    subplan: None,
                     retries: RetryCount(1),
-                    children: Vec::new(),
-                    note: None,
-                    attempt: AttemptId::FIRST,
-                    refusals: 0,
-                    extra: serde_json::Map::new(),
+                    ..Todo::pending(TodoLabel::new("Implement refresh flow")?)
                 },
             ],
         );
@@ -912,6 +896,7 @@ mod tests {
                 label: TodoLabel::new("cut")?,
                 after: Vec::new(),
                 delegation: None,
+                contract: None,
                 children: Vec::new(),
             }],
         }))?;
@@ -957,6 +942,7 @@ mod tests {
                 label: TodoLabel::new("cut")?,
                 after: Vec::new(),
                 delegation: None,
+                contract: None,
                 children: Vec::new(),
             }],
         }))?;
@@ -970,6 +956,7 @@ mod tests {
                 label: TodoLabel::new("polish")?,
                 after: Vec::new(),
                 delegation: None,
+                contract: None,
                 children: Vec::new(),
             }],
         }));
@@ -992,6 +979,7 @@ mod tests {
                 label: TodoLabel::new("polish")?,
                 after: Vec::new(),
                 delegation: None,
+                contract: None,
                 children: Vec::new(),
             }],
         }))?;

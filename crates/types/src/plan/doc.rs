@@ -5,6 +5,7 @@ use serde_json::{Map, Value};
 use std::collections::{HashMap, HashSet};
 
 pub use super::canonical::Digest;
+pub use super::contract::{Contract, Resolution};
 pub use super::ids::{
     AgentId, GOAL_TEXT_MAX, GoalText, INLINE_NOTE_MAX_BYTES, INTENT_MAX_BYTES, InlineNote, Intent,
     LEGACY_PLAN_FORMAT, NOTE_MAX_BYTES, Note, PLAN_FORMAT, PLAN_ID_MAX, PlanId, ProbeCommand,
@@ -93,8 +94,11 @@ pub enum TodoState {
         on: BlockedOn,
         note: String,
     },
+    /// Invariant: `resolution` says how the todo got here; `VerifiedDone` is written only beside
+    /// a committed `pass` verdict, and an uncontracted todo carries none.
     Done {
         output: Option<Url>,
+        resolution: Option<Resolution>,
     },
     /// Invariant: `last` is host-minted at reap, never model-supplied, and terminal-only;
     /// [`crate::url::Durability`] keeps an ephemeral trace out of a record that outlives it.
@@ -161,6 +165,18 @@ pub enum Isolation {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TokenBudget(pub u64);
 
+/// A child's wall (plan section 7.6): paths it may not write or read and URL prefixes it may
+/// not fetch. Cooperative, as every wall is: it stops an honest child at the mediated seams.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WallSpec {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub deny_write: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub deny_read: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub deny_url: Vec<String>,
+}
+
 /// Describes the child to spawn; it never names a live one, so a stale spec
 /// cannot point at a dead agent.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -177,6 +193,8 @@ pub struct SpawnSpec {
     pub isolation: Option<Isolation>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub budget: Option<TokenBudget>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wall: Option<WallSpec>,
     #[serde(flatten)]
     pub extra: Map<String, Value>,
 }
@@ -226,6 +244,11 @@ pub struct Todo {
     pub attempt: AttemptId,
     /// Refused transitions on this todo, saturating at the cap the reducer names.
     pub refusals: u32,
+    /// What `done` verifies; a todo without one is completed on the caller's word alone.
+    pub contract: Option<Contract>,
+    /// The contract's canonical digest as frozen at `start`; a `done` whose contract digests
+    /// differently is drift.
+    pub contract_hash: Option<Digest>,
     pub extra: Map<String, Value>,
 }
 
@@ -243,6 +266,8 @@ impl Todo {
             note: None,
             attempt: AttemptId::FIRST,
             refusals: 0,
+            contract: None,
+            contract_hash: None,
             extra: Map::new(),
         }
     }
@@ -369,12 +394,19 @@ struct TodoRepr {
     attempt: AttemptId,
     #[serde(default)]
     refusals: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    contract: Option<Contract>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    contract_hash: Option<Digest>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    resolution: Option<Resolution>,
     #[serde(flatten)]
     extra: Map<String, Value>,
 }
 
 impl From<Todo> for TodoRepr {
     fn from(todo: Todo) -> Self {
+        let mut resolution = None;
         let (state, by, blocked, cause, last, output) = match todo.state {
             TodoState::Pending => (TodoStateName::Pending, None, None, None, None, None),
             TodoState::Running { by } => (TodoStateName::Running, Some(by), None, None, None, None),
@@ -386,7 +418,13 @@ impl From<Todo> for TodoRepr {
                 None,
                 None,
             ),
-            TodoState::Done { output } => (TodoStateName::Done, None, None, None, None, output),
+            TodoState::Done {
+                output,
+                resolution: how,
+            } => {
+                resolution = how;
+                (TodoStateName::Done, None, None, None, None, output)
+            }
             TodoState::Failed { cause, last } => {
                 (TodoStateName::Failed, None, None, Some(cause), last, None)
             }
@@ -409,6 +447,9 @@ impl From<Todo> for TodoRepr {
             note: todo.note,
             attempt: todo.attempt,
             refusals: todo.refusals,
+            contract: todo.contract,
+            contract_hash: todo.contract_hash,
+            resolution,
             extra: todo.extra,
         }
     }
@@ -432,6 +473,7 @@ impl TryFrom<TodoRepr> for Todo {
         let mut cause = repr.cause;
         let mut last = repr.last;
         let mut output = repr.output;
+        let mut resolution = repr.resolution;
         let state = match repr.state {
             TodoStateName::Pending => TodoState::Pending,
             TodoStateName::Running => TodoState::Running {
@@ -446,6 +488,7 @@ impl TryFrom<TodoRepr> for Todo {
             }
             TodoStateName::Done => TodoState::Done {
                 output: output.take(),
+                resolution: resolution.take(),
             },
             TodoStateName::Failed => TodoState::Failed {
                 cause: cause.take().ok_or_else(|| missing("cause"))?,
@@ -469,6 +512,9 @@ impl TryFrom<TodoRepr> for Todo {
         if output.is_some() {
             return Err(stray("output"));
         }
+        if resolution.is_some() {
+            return Err(stray("resolution"));
+        }
         let children = repr
             .children
             .into_iter()
@@ -485,6 +531,8 @@ impl TryFrom<TodoRepr> for Todo {
             note: repr.note,
             attempt: repr.attempt,
             refusals: repr.refusals,
+            contract: repr.contract,
+            contract_hash: repr.contract_hash,
             extra: repr.extra,
         })
     }
@@ -763,6 +811,14 @@ impl Plan {
             }
         }
         for todo in &self.todos {
+            if let Some(Err(issue)) = todo.contract.as_ref().map(Contract::validate) {
+                issues.push(PlanIssue::Contract {
+                    label: todo.label.clone(),
+                    issue,
+                });
+            }
+        }
+        for todo in &self.todos {
             for after in &todo.after {
                 if !seen.contains(after) {
                     issues.push(PlanIssue::UnresolvedEdge {
@@ -825,6 +881,10 @@ pub enum PlanIssue {
     Cycle {
         labels: Vec<TodoLabel>,
     },
+    Contract {
+        label: TodoLabel,
+        issue: super::contract::ContractError,
+    },
 }
 
 impl std::fmt::Display for PlanIssue {
@@ -852,6 +912,9 @@ impl std::fmt::Display for PlanIssue {
             Self::Cycle { labels } => {
                 let names: Vec<&str> = labels.iter().map(TodoLabel::as_str).collect();
                 write!(formatter, "ordering cycle through {names:?}")
+            }
+            Self::Contract { label, issue } => {
+                write!(formatter, "todo {:?}: {issue}", label.as_str())
             }
         }
     }

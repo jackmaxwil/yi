@@ -1,5 +1,6 @@
 use std::collections::{HashMap, HashSet};
 
+use yi_types::plan::contract::Resolution;
 use yi_types::plan::doc::{BlockedOn, Check, Plan, PlanId, TodoLabel, TodoState, TodoStateName};
 use yi_types::plan::ledger::{PLAN_OP_ENTRY_TYPE, PlanOpRecord};
 use yi_types::url::Durability;
@@ -58,6 +59,8 @@ pub struct TodoOutcome {
     pub blocked_ms: u64,
     pub retries: u32,
     pub ended: Option<TodoStateName>,
+    /// How a `done` was reached, from the record that landed it; absent on an uncontracted todo.
+    pub resolution: Option<Resolution>,
 }
 
 impl TodoOutcome {
@@ -197,6 +200,7 @@ pub fn report(plan: &Plan, records: &[PlanOpRecord]) -> Report {
             blocked_ms: 0,
             retries: 0,
             ended: None,
+            resolution: None,
         });
         if record.op == "retry" {
             outcome.retries = outcome.retries.saturating_add(1);
@@ -206,6 +210,10 @@ pub fn report(plan: &Plan, records: &[PlanOpRecord]) -> Report {
         }
         if let Some(now) = &record.to {
             outcome.ended = terminal(now).then(|| now.clone());
+            outcome.resolution = record
+                .extra
+                .get("resolution")
+                .and_then(|value| serde_json::from_value(value.clone()).ok());
             standing.insert(key, (now.clone(), record.at));
         }
     }
@@ -263,7 +271,9 @@ pub fn lint(plan: &Plan, width: usize) -> Vec<Finding> {
     }
     for todo in &plan.todos {
         match &todo.state {
-            TodoState::Done { output: Some(url) } => {
+            TodoState::Done {
+                output: Some(url), ..
+            } => {
                 if url.durability() == Durability::Ephemeral {
                     findings.push(Finding {
                         todo: Some(todo.label.clone()),
@@ -292,7 +302,7 @@ pub fn lint(plan: &Plan, width: usize) -> Vec<Finding> {
             TodoState::Pending
             | TodoState::Running { .. }
             | TodoState::Blocked { .. }
-            | TodoState::Done { output: None }
+            | TodoState::Done { output: None, .. }
             | TodoState::Failed { last: None, .. }
             | TodoState::Abandoned => {}
         }

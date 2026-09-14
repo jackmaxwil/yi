@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use super::doc::{AgentId, BlockedOn, Delegation, GoalText, Todo, TodoLabel, TodoStateName};
-use super::ledger::EffectId;
+use super::ledger::{AttemptId, EffectId};
 use crate::url::Url;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -29,14 +29,17 @@ pub enum OpKind {
     Repair,
     Import,
     Reconcile,
+    Submit,
+    Resolve,
+    Accept,
 }
 
-/// The kinds a model may call, in the tool schema's order; the four administrative kinds
-/// below parse on every surface but cost the prompt no bytes.
+/// The kinds a model may call, in the tool schema's order; the administrative kinds below
+/// parse on every surface but cost the prompt no bytes.
 pub const MODEL_OPS: usize = 15;
 
 /// Every kind, in wire order; the parser reads this list and the schema its first `MODEL_OPS`.
-pub const ALL_OPS: [OpKind; 19] = [
+pub const ALL_OPS: [OpKind; 22] = [
     OpKind::Set,
     OpKind::Init,
     OpKind::Append,
@@ -56,6 +59,9 @@ pub const ALL_OPS: [OpKind; 19] = [
     OpKind::Repair,
     OpKind::Import,
     OpKind::Reconcile,
+    OpKind::Submit,
+    OpKind::Resolve,
+    OpKind::Accept,
 ];
 
 pub fn op_name(op: OpKind) -> &'static str {
@@ -79,6 +85,9 @@ pub fn op_name(op: OpKind) -> &'static str {
         OpKind::Repair => "repair",
         OpKind::Import => "import",
         OpKind::Reconcile => "reconcile",
+        OpKind::Submit => "submit",
+        OpKind::Resolve => "resolve",
+        OpKind::Accept => "accepted_by_user",
     }
 }
 
@@ -89,6 +98,8 @@ pub struct TodoSpec {
     pub after: Vec<TodoLabel>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub delegation: Option<Delegation>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub contract: Option<super::contract::Contract>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub children: Vec<Todo>,
 }
@@ -198,6 +209,27 @@ pub enum Op {
         effect_id: Option<EffectId>,
         outcome: Reconciliation,
     },
+    /// The running agent's output for its own attempt (plan section 3.6); a submit for
+    /// another agent's todo or a stale attempt is refused.
+    Submit {
+        label: TodoLabel,
+        attempt: AttemptId,
+        output: Url,
+    },
+    /// One todo's repair resolution, bound to the attempt the user saw (plan section 5.6).
+    Resolve {
+        label: TodoLabel,
+        attempt: AttemptId,
+        resolution: Resolve,
+    },
+    /// The user's administrative acceptance: `Done { AcceptedByUser }`, never verified.
+    #[serde(rename = "accepted_by_user")]
+    Accept {
+        label: TodoLabel,
+        note: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        output: Option<Url>,
+    },
 }
 
 impl Op {
@@ -211,7 +243,10 @@ impl Op {
             | Self::Fail { label, .. }
             | Self::Retry { label, .. }
             | Self::Decompose { label, .. }
-            | Self::Reconcile { label, .. } => Some(label),
+            | Self::Reconcile { label, .. }
+            | Self::Submit { label, .. }
+            | Self::Resolve { label, .. }
+            | Self::Accept { label, .. } => Some(label),
             Self::AddEdge { todo, .. } => Some(todo),
             Self::Init { .. }
             | Self::Append { .. }
@@ -246,6 +281,9 @@ impl Op {
             Self::Repair { .. } => OpKind::Repair,
             Self::Import { .. } => OpKind::Import,
             Self::Reconcile { .. } => OpKind::Reconcile,
+            Self::Submit { .. } => OpKind::Submit,
+            Self::Resolve { .. } => OpKind::Resolve,
+            Self::Accept { .. } => OpKind::Accept,
         }
     }
 

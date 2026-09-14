@@ -1,0 +1,191 @@
+{
+  "id": "writer-cmd-red-then-green",
+  "description": "One writer todo with one critical cmd item. The first product fails the frozen checker and done is refused with a recorded verdict; the product is repaired and the same frozen checker passes it. Nothing about the contract changes between the two verdicts, which is the whole point: a red that goes green by editing the checker is the specification failure MAST names, and this fixture is how a reviewer tells the two apart.",
+  "decisions": [
+    "The checker is a frozen manifest artifact, not a pathname. Both attempts name the same digest, so the fixture can assert contractDigestUnchanged at the end and a rewrite of the checker would break the assertion rather than quietly pass.",
+    "The refusal does not move the todo. done_refused has no row in STEPS (plan section 6.5), so after step 3 the todo is still running and its refusals counter reads 1; the second done is a second verification of the same attempt, not a retry.",
+    "The verdict's score and coverage are permille. One critical item that fails gives score 0, coverage 1000 and outcome fail by rule 1 of section 6.2, before any threshold arithmetic runs.",
+    "The checker command is sh and grep only. A python3 checker would make the fixture depend on the kernel venv, which a T0 unit test must not."
+  ],
+  "prompt": "Write a report generator and prove it green with the repository's own checker.",
+  "eagerInit": true,
+  "goal": "Write a report generator whose own suite reports zero failures",
+  "plan": "write-a-report-generator-whose-own",
+  "artifacts": {
+    "checker": {
+      "digest": "sha256:c827887362974b2cb2878a9d3d3cf125df0a17b52eb4e92fefa70a11fe8b4b48",
+      "media_type": "application/vnd.yi.checker-manifest+json",
+      "length": 212,
+      "text": "{\n  \"command\": \"grep -q '\\\"failures\\\": 0' report.json\",\n  \"cwd\": \"snapshot_root\",\n  \"cwd_subdir\": null,\n  \"env\": [],\n  \"manifest\": 1,\n  \"protected\": [],\n  \"reads_outside_snapshot\": false,\n  \"timeout_ms\": 30000\n}\n"
+    },
+    "product-red": {
+      "digest": "sha256:1140e2514fa1ead0200a49e9d9c4b59e57bb7fb37f5a5560cb1b22667980061d",
+      "media_type": "application/json",
+      "length": 28,
+      "text": "{\"cases\": 3, \"failures\": 1}\n"
+    },
+    "product-green": {
+      "digest": "sha256:f6e594cfb739a2870bcd1300563420664693b9fa54fc4ff93fd9a3c291283e1b",
+      "media_type": "application/json",
+      "length": 28,
+      "text": "{\"cases\": 3, \"failures\": 0}\n"
+    }
+  },
+  "steps": [
+    {
+      "op": "init",
+      "actor": "agent://main",
+      "args": {
+        "goal": "Write a report generator whose own suite reports zero failures",
+        "todos": [
+          {
+            "label": "Generate the report",
+            "contract": {
+              "class": "writer",
+              "items": [
+                {
+                  "id": "suite-green",
+                  "critical": true,
+                  "weight": 100,
+                  "decider": {
+                    "cmd": {
+                      "checker": {
+                        "digest": "sha256:c827887362974b2cb2878a9d3d3cf125df0a17b52eb4e92fefa70a11fe8b4b48",
+                        "media_type": "application/vnd.yi.checker-manifest+json",
+                        "length": 212
+                      },
+                      "timeout_ms": 30000
+                    }
+                  }
+                }
+              ],
+              "threshold": 1000,
+              "min_coverage": 1000
+            }
+          }
+        ]
+      },
+      "expect": {
+        "ok": true,
+        "todos": [
+          {
+            "label": "Generate the report",
+            "state": "pending",
+            "attempt": 1,
+            "refusals": 0
+          }
+        ]
+      }
+    },
+    {
+      "op": "start",
+      "actor": "agent://main",
+      "args": {
+        "label": "Generate the report"
+      },
+      "expect": {
+        "ok": true,
+        "todos": [
+          {
+            "label": "Generate the report",
+            "state": "running"
+          }
+        ]
+      }
+    },
+    {
+      "op": "done",
+      "actor": "agent://main",
+      "workspace": {
+        "report.json": "product-red"
+      },
+      "serve": {
+        "local://build/report.json": "product-red"
+      },
+      "args": {
+        "label": "Generate the report",
+        "output": "local://build/report.json"
+      },
+      "expect": {
+        "ok": false,
+        "error": "refused",
+        "verdict": {
+          "outcome": "fail",
+          "score": 0,
+          "coverage": 1000,
+          "items": [
+            {
+              "id": "suite-green",
+              "verdict": "fail"
+            }
+          ],
+          "token": {
+            "attempt": 1
+          }
+        },
+        "journal": [
+          "verification_requested",
+          "done_refused"
+        ],
+        "todos": [
+          {
+            "label": "Generate the report",
+            "state": "running",
+            "attempt": 1,
+            "refusals": 1
+          }
+        ]
+      }
+    },
+    {
+      "op": "done",
+      "actor": "agent://main",
+      "workspace": {
+        "report.json": "product-green"
+      },
+      "serve": {
+        "local://build/report.json": "product-green"
+      },
+      "args": {
+        "label": "Generate the report",
+        "output": "local://build/report.json"
+      },
+      "expect": {
+        "ok": true,
+        "verdict": {
+          "outcome": "pass",
+          "score": 1000,
+          "coverage": 1000,
+          "items": [
+            {
+              "id": "suite-green",
+              "verdict": "pass"
+            }
+          ],
+          "token": {
+            "attempt": 1
+          }
+        },
+        "journal": [
+          "verification_requested",
+          "done"
+        ],
+        "todos": [
+          {
+            "label": "Generate the report",
+            "state": "done",
+            "attempt": 1,
+            "refusals": 1,
+            "resolution": "verified_done",
+            "output": "local://build/report.json"
+          }
+        ]
+      }
+    }
+  ],
+  "final": {
+    "planCount": 1,
+    "contractDigestUnchanged": true,
+    "outputDigestChanged": true
+  }
+}

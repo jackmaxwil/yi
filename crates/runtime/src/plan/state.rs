@@ -4,9 +4,10 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde_json::{Map, Value};
 use yi_types::plan::canonical::Digest;
+use yi_types::plan::contract::{self, Outcome, Verdict, VerificationToken};
 use yi_types::plan::doc::{
-    AgentId, GoalText, Plan, PlanId, PlanState, PlanTier, SPAWN_CAP, Todo, TodoAddr, TodoLabel,
-    TodoState, TodoStateName,
+    AgentId, BlockedOn, Check, GoalText, Isolation, Plan, PlanId, PlanState, PlanTier, SPAWN_CAP,
+    Todo, TodoAddr, TodoLabel, TodoState, TodoStateName,
 };
 use yi_types::plan::ledger::{AttemptId, EffectId, JournalRecord, Seq};
 use yi_types::url::Url;
@@ -23,7 +24,50 @@ pub const KIND_IMPORT: &str = "import";
 pub const KIND_SPAWN_INTENT: &str = "spawn_intent";
 pub const KIND_SPAWN_RESULT: &str = "spawn_result";
 pub const KIND_RECONCILED: &str = "reconciled";
-pub const KIND_ACCEPTED_BY_USER: &str = "accepted_by_user";
+/// The `Todo.extra` key a `submit` writes: the running agent's output url for its attempt.
+pub const SUBMITTED_KEY: &str = "submitted";
+pub const KIND_VERIFICATION_REQUESTED: &str = "verification_requested";
+pub const KIND_DONE_REFUSED: &str = "done_refused";
+pub const KIND_VERIFICATION_STALE: &str = "verification_stale";
+
+/// Who requested a verification and when: another process refuses a `done` for the same token
+/// while the claimant is alive and inside the verifier's deadline, and adopts the effect after.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Claim {
+    pub pid: u32,
+    pub at: u64,
+}
+
+impl Claim {
+    pub fn to_value(self) -> Value {
+        serde_json::json!({"pid": self.pid, "at": self.at})
+    }
+
+    fn parse(value: &Value) -> Result<Self, String> {
+        let field = |name: &str| {
+            value
+                .get(name)
+                .and_then(Value::as_u64)
+                .ok_or_else(|| format!("claim.{name} is not an integer"))
+        };
+        Ok(Self {
+            pid: u32::try_from(field("pid")?).map_err(|e| format!("claim.pid: {e}"))?,
+            at: field("at")?,
+        })
+    }
+}
+
+/// One verification effect (plan section 6.3, step 2): requested under a token, settled by the
+/// `done`, `done_refused` or `verification_stale` record that names its effect id.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Verification {
+    pub plan: PlanId,
+    pub label: TodoLabel,
+    pub token: VerificationToken,
+    pub claim: Option<Claim>,
+    pub settled: bool,
+    pub verdict: Option<Verdict>,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Intent {
@@ -46,6 +90,7 @@ pub struct RootState {
     /// Every effect id the journal has named: `intents` loses its entry when the `start` that
     /// consumes it lands, so it cannot tell a replayed record from a new one.
     pub effects: BTreeSet<EffectId>,
+    pub verifications: BTreeMap<EffectId, Verification>,
     pub mark: Option<(Seq, Digest)>,
 }
 
@@ -62,6 +107,30 @@ impl RootState {
         self.intents
             .iter()
             .find(|(_, intent)| &intent.plan == plan && &intent.label == label)
+    }
+
+    /// The open verification for this todo under exactly this token. Invariant: the token is in
+    /// the search, so an effect a dead claimant left open cannot hide the live one.
+    pub fn pending_verification(
+        &self,
+        plan: &PlanId,
+        label: &TodoLabel,
+        token: &VerificationToken,
+    ) -> Option<(&EffectId, &Verification)> {
+        self.verifications.iter().find(|(_, verification)| {
+            &verification.plan == plan
+                && &verification.label == label
+                && &verification.token == token
+                && !verification.settled
+        })
+    }
+
+    /// The last settled verification for this todo under exactly this token.
+    pub fn settled_verification(&self, token: &VerificationToken) -> Option<&Verification> {
+        self.verifications
+            .values()
+            .rev()
+            .find(|verification| verification.settled && &verification.token == token)
     }
 
     pub fn kin(&self, id: &PlanId) -> Vec<PlanId> {
@@ -102,6 +171,10 @@ pub enum ReduceError {
 pub struct Decided {
     pub reaped: Vec<Reaped>,
     pub subplan: Option<PlanId>,
+    /// How a `done` resolves; the engine decides it beside the committed verdict.
+    pub resolution: Option<contract::Resolution>,
+    /// The contract digest a `start` froze.
+    pub contract_hash: Option<Digest>,
 }
 
 impl Decided {
@@ -114,6 +187,15 @@ impl Decided {
             extra.insert(
                 "subplan".to_owned(),
                 Value::String(subplan.as_str().to_owned()),
+            );
+        }
+        if let Some(resolution) = self.resolution {
+            extra.insert("resolution".to_owned(), serde_json::to_value(resolution)?);
+        }
+        if let Some(digest) = self.contract_hash {
+            extra.insert(
+                "contract_hash".to_owned(),
+                Value::String(digest.to_string()),
             );
         }
         Ok(extra)
@@ -129,7 +211,21 @@ impl Decided {
             Some(Value::String(id)) => Some(PlanId::new(id).map_err(|e| e.to_string())?),
             Some(other) => return Err(format!("subplan is not a string: {other}")),
         };
-        Ok(Self { reaped, subplan })
+        let resolution = match extra.get("resolution") {
+            None => None,
+            Some(value) => serde_json::from_value(value.clone()).map_err(|e| e.to_string())?,
+        };
+        let contract_hash = match extra.get("contract_hash") {
+            None => None,
+            Some(Value::String(text)) => Some(Digest::parse(text).map_err(|e| e.to_string())?),
+            Some(other) => return Err(format!("contract_hash is not a string: {other}")),
+        };
+        Ok(Self {
+            reaped,
+            subplan,
+            resolution,
+            contract_hash,
+        })
     }
 }
 
@@ -189,15 +285,42 @@ pub fn apply(state: &mut RootState, record: &JournalRecord) -> Result<(), Reduce
     };
     let id = record.record.plan.clone();
     if record.is_refusal() {
-        if let (Some(label), Some(plan)) = (&record.record.todo, state.plans.get_mut(&id))
-            && let Some(todo) = plan.todos.iter_mut().find(|todo| &todo.label == label)
-        {
-            todo.refusals = todo.refusals.saturating_add(1);
-        }
-        state.mark = Some((record.seq, record.digest));
-        return Ok(());
+        return apply_refusal(state, record, &id, kind, bad_args);
     }
     match kind {
+        KIND_VERIFICATION_REQUESTED => {
+            let label = record.record.todo.clone().ok_or(ReduceError::NoTodo {
+                seq,
+                op: kind.to_owned(),
+            })?;
+            let effect = effect_of(record).map_err(bad_args)?;
+            if !state.effects.insert(effect.clone()) {
+                return Err(bad_args(format!("verification {effect} already exists")));
+            }
+            let token: VerificationToken = record
+                .args
+                .get("token")
+                .cloned()
+                .ok_or_else(|| bad_args("verification carries no token".to_owned()))
+                .and_then(|value| {
+                    serde_json::from_value(value).map_err(|e| bad_args(e.to_string()))
+                })?;
+            let claim = match record.args.get("claim") {
+                None => None,
+                Some(value) => Some(Claim::parse(value).map_err(bad_args)?),
+            };
+            state.verifications.insert(
+                effect,
+                Verification {
+                    plan: id,
+                    label,
+                    token,
+                    claim,
+                    settled: false,
+                    verdict: None,
+                },
+            );
+        }
         KIND_IMPORT => {
             let plan: Plan = record
                 .args
@@ -258,14 +381,108 @@ pub fn apply(state: &mut RootState, record: &JournalRecord) -> Result<(), Reduce
                 }
             }
         }
-        KIND_RECONCILED | KIND_ACCEPTED_BY_USER => {}
+        KIND_RECONCILED => {}
         _ => {
             let op = op_of(record)?;
             let decided = Decided::from_extra(&record.record.extra).map_err(bad_args)?;
             apply_op(state, &id, &op, &decided).map_err(failed)?;
+            if let Op::Done { label, .. } = &op {
+                let verdict = verdict_of(record).map_err(bad_args)?;
+                let effect = settling_effect(record).map_err(bad_args)?;
+                settle(state, &id, Some(label), effect, verdict).map_err(bad_args)?;
+            }
         }
     }
     state.mark = Some((record.seq, record.digest));
+    Ok(())
+}
+
+/// A refused op: a settling refusal closes its effect, and a refusal that decided something
+/// about the product charges the todo.
+fn apply_refusal(
+    state: &mut RootState,
+    record: &JournalRecord,
+    id: &PlanId,
+    kind: &str,
+    bad_args: impl Fn(String) -> ReduceError + Copy,
+) -> Result<(), ReduceError> {
+    let verdict = verdict_of(record).map_err(bad_args)?;
+    if kind == KIND_DONE_REFUSED || kind == KIND_VERIFICATION_STALE {
+        let effect = settling_effect(record).map_err(bad_args)?;
+        settle(
+            state,
+            id,
+            record.record.todo.as_ref(),
+            effect,
+            verdict.clone(),
+        )
+        .map_err(bad_args)?;
+    }
+    // Invariant: a stale verdict and an abstention decided nothing about the product, so
+    // neither charges the todo (plan section 6.3, step 6).
+    let charges = kind != KIND_VERIFICATION_STALE
+        && !(kind == KIND_DONE_REFUSED
+            && verdict.is_some_and(|verdict| verdict.outcome == Outcome::Abstain));
+    if charges
+        && let (Some(label), Some(plan)) = (&record.record.todo, state.plans.get_mut(id))
+        && let Some(todo) = plan.todos.iter_mut().find(|todo| &todo.label == label)
+    {
+        todo.refusals = todo
+            .refusals
+            .checked_add(1)
+            .ok_or_else(|| bad_args("refusals cannot advance past their cap".to_owned()))?;
+    }
+    state.mark = Some((record.seq, record.digest));
+    Ok(())
+}
+
+fn verdict_of(record: &JournalRecord) -> Result<Option<Verdict>, String> {
+    match &record.verdict {
+        None => Ok(None),
+        Some(value) => serde_json::from_value(value.clone())
+            .map(Some)
+            .map_err(|error| format!("verdict: {error}")),
+    }
+}
+
+/// A settling record names its effect: `done` and `done_refused` in `extra`, `verification_stale`
+/// in its args. A record naming none (a plain `done`) settles nothing.
+fn settling_effect(record: &JournalRecord) -> Result<Option<EffectId>, String> {
+    let named = record
+        .record
+        .extra
+        .get("effect_id")
+        .or_else(|| record.args.get("effect_id"));
+    match named {
+        None => Ok(None),
+        Some(Value::String(id)) => EffectId::new(id).map(Some).map_err(|e| e.to_string()),
+        Some(other) => Err(format!("effect_id is not a string: {other}")),
+    }
+}
+
+/// Invariant: a verdict settles the effect its record names, never the oldest open one for the
+/// label (two pending tokens on one todo cannot swap verdicts); an unknown or settled effect refuses.
+fn settle(
+    state: &mut RootState,
+    plan: &PlanId,
+    label: Option<&TodoLabel>,
+    effect: Option<EffectId>,
+    verdict: Option<Verdict>,
+) -> Result<(), String> {
+    let Some(label) = label else { return Ok(()) };
+    let Some(effect) = effect else { return Ok(()) };
+    let open = state
+        .verifications
+        .get_mut(&effect)
+        .ok_or_else(|| format!("no verification {effect} to settle"))?;
+    if &open.plan != plan || &open.label != label {
+        return Err(format!("verification {effect} belongs to another todo"));
+    }
+    if open.settled {
+        return Err(format!("verification {effect} is already settled"));
+    }
+    open.settled = true;
+    open.verdict = verdict;
     Ok(())
 }
 
@@ -291,7 +508,10 @@ pub fn leaving_running(
             .unwrap_or_default()
     };
     Ok(match op {
-        Op::Done { label, .. } | Op::Fail { label, .. } | Op::Block { label, .. } => named(label),
+        Op::Done { label, .. }
+        | Op::Fail { label, .. }
+        | Op::Block { label, .. }
+        | Op::Accept { label, .. } => named(label),
         Op::Set { rows, .. } => plan
             .todos
             .iter()
@@ -330,7 +550,9 @@ pub fn leaving_running(
         | Op::FuseReset
         | Op::Repair { .. }
         | Op::Import { .. }
-        | Op::Reconcile { .. } => Vec::new(),
+        | Op::Reconcile { .. }
+        | Op::Submit { .. }
+        | Op::Resolve { .. } => Vec::new(),
     })
 }
 
@@ -429,16 +651,17 @@ pub fn apply_op(
         Op::AddEdge { todo, after } => {
             add_edge(state.plan_mut(id)?, todo.clone(), after.clone())?;
         }
-        Op::Start { label } => apply_start(state, id, label)?,
+        Op::Start { label } => apply_start(state, id, label, decided.contract_hash)?,
         Op::Done { label, output } => {
             let output = output.clone();
             check_terminal(label, output.as_ref())?;
+            let resolution = completion(state.plan(id)?, label, decided.resolution)?;
             step_todo(
                 state.plan_mut(id)?,
                 label,
                 OpKind::Done,
                 decided,
-                move |_| TodoState::Done { output },
+                move |_| TodoState::Done { output, resolution },
             )?;
         }
         Op::Fail { label, cause } => {
@@ -473,6 +696,39 @@ pub fn apply_op(
             effect_id,
             outcome,
         } => apply_reconcile(state, id, label, effect_id.as_ref(), outcome)?,
+        Op::Submit {
+            label,
+            attempt,
+            output,
+        } => apply_submit(state.plan_mut(id)?, label, *attempt, output)?,
+        Op::Resolve {
+            label,
+            attempt,
+            resolution,
+        } => {
+            check_attempt(state.plan(id)?, label, *attempt)?;
+            let resolution = Resolution {
+                label: label.clone(),
+                action: resolution.clone(),
+            };
+            apply_resolution(state, id, &resolution)?;
+        }
+        Op::Accept { label, output, .. } => {
+            let output = output.clone();
+            check_terminal(label, output.as_ref())?;
+            let resolution = completion(
+                state.plan(id)?,
+                label,
+                Some(contract::Resolution::AcceptedByUser),
+            )?;
+            step_todo(
+                state.plan_mut(id)?,
+                label,
+                OpKind::Accept,
+                decided,
+                move |_| TodoState::Done { output, resolution },
+            )?;
+        }
     }
     let plan = state.plan_mut(id)?;
     plan.touched = plan.touched.bump();
@@ -502,13 +758,113 @@ fn take_spawned(state: &mut RootState, id: &PlanId, label: &TodoLabel) -> Option
     }
 }
 
-fn apply_start(state: &mut RootState, id: &PlanId, label: &TodoLabel) -> Result<(), PlanOpError> {
+/// A contracted todo completes beside a verdict; one whose only requirement is a stated
+/// acceptance completes beside a decidable item or a user, never on the owner's word.
+pub fn needs_resolution(todo: &Todo) -> bool {
+    todo.contract.is_some()
+        || todo
+            .delegation
+            .as_ref()
+            .is_some_and(|delegation| matches!(delegation.accept, Check::Stated(_)))
+}
+
+/// The one validator every completion path passes (plan section 3.6), by label.
+fn completion(
+    plan: &Plan,
+    label: &TodoLabel,
+    resolution: Option<contract::Resolution>,
+) -> Result<Option<contract::Resolution>, PlanOpError> {
+    let todo = plan.todo(label).ok_or_else(|| PlanOpError::UnknownLabel {
+        plan: plan.id.clone(),
+        label: label.clone(),
+    })?;
+    completion_of(todo, resolution)
+}
+
+/// The validator itself: no completion of a worktree todo before F0d (section 6.6), a todo that
+/// needs a resolution is `Done` only beside one, any other completes on the caller's word (D194).
+fn completion_of(
+    todo: &Todo,
+    resolution: Option<contract::Resolution>,
+) -> Result<Option<contract::Resolution>, PlanOpError> {
+    if todo
+        .delegation
+        .as_ref()
+        .is_some_and(|delegation| delegation.spec.isolation == Some(Isolation::Worktree))
+    {
+        return Err(PlanOpError::AcceptanceUnavailable {
+            label: todo.label.clone(),
+        });
+    }
+    match resolution {
+        None if needs_resolution(todo) => Err(PlanOpError::NoVerifiedCompletion {
+            label: todo.label.clone(),
+        }),
+        other => Ok(other),
+    }
+}
+
+fn check_attempt(plan: &Plan, label: &TodoLabel, named: AttemptId) -> Result<(), PlanOpError> {
+    let todo = plan.todo(label).ok_or_else(|| PlanOpError::UnknownLabel {
+        plan: plan.id.clone(),
+        label: label.clone(),
+    })?;
+    if todo.attempt != named {
+        return Err(PlanOpError::WrongAttempt {
+            label: label.clone(),
+            named,
+            current: todo.attempt,
+        });
+    }
+    Ok(())
+}
+
+/// The output stands on the todo until the attempt ends; a retry drops it with the attempt.
+fn apply_submit(
+    plan: &mut Plan,
+    label: &TodoLabel,
+    attempt: AttemptId,
+    output: &Url,
+) -> Result<(), PlanOpError> {
+    check_attempt(plan, label, attempt)?;
+    check_terminal(label, Some(output))?;
+    let id = plan.id.clone();
+    let todo = plan
+        .todos
+        .iter_mut()
+        .find(|todo| &todo.label == label)
+        .ok_or_else(|| PlanOpError::UnknownLabel {
+            plan: id,
+            label: label.clone(),
+        })?;
+    if !matches!(todo.state, TodoState::Running { .. }) {
+        return Err(PlanOpError::IllegalStep {
+            label: label.clone(),
+            from: TodoStateName::of(&todo.state),
+            op: OpKind::Submit,
+        });
+    }
+    todo.extra
+        .insert(SUBMITTED_KEY.to_owned(), Value::String(output.to_string()));
+    Ok(())
+}
+
+fn apply_start(
+    state: &mut RootState,
+    id: &PlanId,
+    label: &TodoLabel,
+    frozen: Option<Digest>,
+) -> Result<(), PlanOpError> {
     let plan = state.plan(id)?;
     let index = locate_step(plan, label, OpKind::Start)?;
-    let delegated = plan
-        .todos
-        .get(index)
-        .is_some_and(|todo| todo.delegation.is_some());
+    let todo = plan.todos.get(index);
+    let delegated = todo.is_some_and(|todo| todo.delegation.is_some());
+    if todo.is_some_and(|todo| todo.contract.is_some()) && frozen.is_none() {
+        return Err(PlanOpError::Contract {
+            label: label.clone(),
+            detail: "start carries no frozen contract digest".to_owned(),
+        });
+    }
     let by = if delegated {
         take_spawned(state, id, label).ok_or_else(|| PlanOpError::StartWithoutSpawn {
             label: label.clone(),
@@ -522,7 +878,11 @@ fn apply_start(state: &mut RootState, id: &PlanId, label: &TodoLabel) -> Result<
         OpKind::Start,
         &Decided::default(),
         move |_| TodoState::Running { by },
-    )
+    )?;
+    if let Some(todo) = state.plan_mut(id)?.todos.get_mut(index) {
+        todo.contract_hash = frozen;
+    }
+    Ok(())
 }
 
 fn apply_retry(
@@ -550,6 +910,9 @@ fn apply_retry(
     let todo = plan.todos.get_mut(index).ok_or_else(missing)?;
     todo.retries = bumped;
     todo.attempt = attempt;
+    // A retry is a new attempt with a new freeze; the next start records it again.
+    todo.contract_hash = None;
+    todo.extra.remove(SUBMITTED_KEY);
     if let Some(replacement) = delegation {
         todo.delegation = Some(replacement.clone());
     }
@@ -655,14 +1018,25 @@ fn apply_set(plan: &mut Plan, rows: &[SetRow]) -> Result<(), PlanOpError> {
             None => new_todo(row.spec.clone()),
         };
         todo.children = row.spec.children.clone();
+        if let Some(contract) = &row.spec.contract {
+            todo.contract = Some(contract.clone());
+        }
         if TodoStateName::of(&todo.state) != row.state {
             todo.state = match row.state {
                 TodoStateName::Running => TodoState::Running {
                     by: AgentId::new(OWNER_AGENT)?,
                 },
-                TodoStateName::Done => TodoState::Done { output: None },
+                // Invariant: `set` requests a transition through the one validator and never
+                // authors a resolution (plan section 6.5).
+                TodoStateName::Done => TodoState::Done {
+                    output: None,
+                    resolution: completion_of(&todo, None)?,
+                },
+                TodoStateName::Blocked => TodoState::Blocked {
+                    on: BlockedOn::User,
+                    note: String::new(),
+                },
                 TodoStateName::Pending
-                | TodoStateName::Blocked
                 | TodoStateName::Failed
                 | TodoStateName::Abandoned
                 | TodoStateName::Other(_) => TodoState::Pending,
@@ -722,6 +1096,7 @@ fn apply_resolution(
                 label: label.clone(),
             })?;
             todo.state = TodoState::Pending;
+            todo.extra.remove(SUBMITTED_KEY);
         }
         Resolve::Fail { cause } => {
             todo.state = TodoState::Failed {
@@ -784,6 +1159,7 @@ fn apply_reconcile(
             check_terminal(label, Some(output))?;
             todo.state = TodoState::Done {
                 output: Some(output.clone()),
+                resolution: completion_of(todo, None)?,
             };
         }
     }

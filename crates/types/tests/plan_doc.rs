@@ -61,6 +61,8 @@ fn todo(label: &str, after: &[&str], state: TodoState) -> Result<Todo, DocError>
         note: None,
         attempt: yi_types::plan::doc::AttemptId::FIRST,
         refusals: 0,
+        contract: None,
+        contract_hash: None,
         extra: Map::new(),
     })
 }
@@ -68,7 +70,14 @@ fn todo(label: &str, after: &[&str], state: TodoState) -> Result<Todo, DocError>
 #[test]
 fn ready_finished_and_validate() -> TestResult {
     let plan = plan_with(vec![
-        todo("a", &[], TodoState::Done { output: None })?,
+        todo(
+            "a",
+            &[],
+            TodoState::Done {
+                output: None,
+                resolution: None,
+            },
+        )?,
         todo("b", &["a"], TodoState::Pending)?,
         todo("c", &["b"], TodoState::Pending)?,
     ])?;
@@ -82,7 +91,14 @@ fn ready_finished_and_validate() -> TestResult {
     assert!(plan.validate().is_empty());
 
     let done = plan_with(vec![
-        todo("a", &[], TodoState::Done { output: None })?,
+        todo(
+            "a",
+            &[],
+            TodoState::Done {
+                output: None,
+                resolution: None,
+            },
+        )?,
         todo("b", &[], TodoState::Abandoned)?,
         todo(
             "c",
@@ -132,6 +148,7 @@ fn frontmatter_round_trips() -> TestResult {
             &[],
             TodoState::Done {
                 output: Some("kernel://main/seam".parse()?),
+                resolution: None,
             },
         )?,
         todo(
@@ -290,7 +307,14 @@ fn a_terminal_record_keeps_the_owners_kernel_and_refuses_a_childs() -> TestResul
 #[test]
 fn children_round_trip_and_stay_out_of_a_flat_row() -> TestResult {
     let mut parent = todo("parent", &[], TodoState::Pending)?;
-    parent.children = vec![todo("child", &[], TodoState::Done { output: None })?];
+    parent.children = vec![todo(
+        "child",
+        &[],
+        TodoState::Done {
+            output: None,
+            resolution: None,
+        },
+    )?];
     let flat = todo("flat", &[], TodoState::Pending)?;
     let plan = plan_with(vec![parent, flat])?;
     let json = serde_json::to_string(&plan)?;

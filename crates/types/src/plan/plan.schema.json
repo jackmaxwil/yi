@@ -147,6 +147,30 @@
             "description": "prose imported from a format-1 body section, at most 4 KiB; a longer section is an artifact reference and is not inlined here",
             "type": "string"
           },
+          "contract": {
+            "description": "what done verifies (plan section 6.1): class, items, threshold and min_coverage in permille",
+            "type": "object",
+            "required": [
+              "class",
+              "items"
+            ],
+            "properties": {
+              "class": {
+                "type": "string"
+              },
+              "items": {
+                "type": "array"
+              }
+            }
+          },
+          "contract_hash": {
+            "description": "the contract's canonical digest frozen at start; a done that digests differently is drift",
+            "type": "string"
+          },
+          "resolution": {
+            "description": "present when state is done: verified_done, accepted_by_user or legacy_unverified; absent on an uncontracted todo",
+            "type": "string"
+          },
           "after": {
             "description": "sibling labels this todo follows; ordering only",
             "type": "array",

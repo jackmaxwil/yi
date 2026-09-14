@@ -110,7 +110,7 @@ fn detail(todo: &Todo) -> String {
                 parts.push(note.clone());
             }
         }
-        TodoState::Done { output } => {
+        TodoState::Done { output, .. } => {
             if let Some(url) = output {
                 parts.push(url.to_string());
             }

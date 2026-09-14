@@ -124,7 +124,7 @@ pub fn stop_posture(plan: &Plan) -> StopPosture {
             }
             TodoState::Failed { cause: _, last: _ } => failed = true,
             TodoState::Pending
-            | TodoState::Done { output: _ }
+            | TodoState::Done { .. }
             | TodoState::Abandoned
             | TodoState::Other(_) => {}
         }
@@ -298,6 +298,8 @@ mod tests {
             note: None,
             attempt: yi_types::plan::doc::AttemptId::FIRST,
             refusals: 0,
+            contract: None,
+            contract_hash: None,
             extra: serde_json::Map::new(),
         })
     }
@@ -344,7 +346,13 @@ mod tests {
             "a running child re-wakes the loop"
         );
 
-        let finished = plan_of(vec![todo("ship", TodoState::Done { output: None })?])?;
+        let finished = plan_of(vec![todo(
+            "ship",
+            TodoState::Done {
+                output: None,
+                resolution: None,
+            },
+        )?])?;
         assert_eq!(stop_posture(&finished), StopPosture::Quiet);
 
         let inline = AgentId::new(OWNER_AGENT)?;
@@ -380,8 +388,20 @@ mod tests {
     #[test]
     fn the_reinjection_keeps_the_frontier_and_drops_the_rest() -> Fallible {
         let plan = plan_of(vec![
-            todo("cut the scope", TodoState::Done { output: None })?,
-            todo("write the codec", TodoState::Done { output: None })?,
+            todo(
+                "cut the scope",
+                TodoState::Done {
+                    output: None,
+                    resolution: None,
+                },
+            )?,
+            todo(
+                "write the codec",
+                TodoState::Done {
+                    output: None,
+                    resolution: None,
+                },
+            )?,
             todo("ship the tool", TodoState::Pending)?,
         ])?;
         let text = reinjection_text(&plan);

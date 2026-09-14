@@ -6,6 +6,7 @@ use serde_json::{Map, Value, json};
 use yi_runtime::plan::authority::{Submission, Unhosted, cli_args, submit};
 use yi_runtime::plan::ledger::{self, Report};
 use yi_runtime::plan::ops::{Actor, PlanEngine, dispatch_width};
+use yi_runtime::plan::snapshot::shadow_tree;
 use yi_runtime::plan::store::PlanStore;
 use yi_types::plan::doc::{Plan, PlanId, PlanState};
 use yi_types::plan::ledger::PlanOpRecord;
@@ -31,7 +32,7 @@ pub fn run(subcommand: &str, options: &Options) -> i32 {
         "report" => with_plan(options, id, |plan| report(plan, options)),
         "" => {
             eprintln!(
-                "usage: yi plan lint|report [<plan>] | yi plan fuse reset [<plan>] | yi plan repair [<plan>] [<json>] | yi plan <op> [<plan>] [<json args>]"
+                "usage: yi plan lint|report [<plan>] | yi plan fuse reset [<plan>] | yi plan repair [<plan>] [<json>] | yi plan accept [<plan>] <json> | yi plan resolve [<plan>] <json> | yi plan <op> [<plan>] [<json args>]"
             );
             2
         }
@@ -56,8 +57,16 @@ fn dir(options: &Options) -> PathBuf {
 fn apply(line: &str, options: &Options) -> i32 {
     let reply = cli_args(line).and_then(|mut args| {
         import_source(&mut args, options);
-        let store = PlanStore::open(dir(options)).map_err(|error| error.to_string())?;
-        let engine = PlanEngine::new(store, Arc::new(Unhosted)).with_cwd(options.cwd.clone());
+        let plans = dir(options);
+        let store = PlanStore::open(plans.clone()).map_err(|error| error.to_string())?;
+        let mut engine = PlanEngine::new(store, Arc::new(Unhosted)).with_cwd(options.cwd.clone());
+        // The same snapshot the session mints (plan section 6.5): a contracted `done` from the
+        // CLI reads the shadow gitdir tree, not a walk of the whole workspace.
+        if let Some(snapshotter) = std::env::var_os("HOME")
+            .and_then(|home| shadow_tree(&PathBuf::from(home), &options.cwd, &plans))
+        {
+            engine = engine.with_snapshotter(snapshotter);
+        }
         let submission = Submission {
             args,
             request_id: None,
@@ -215,12 +224,15 @@ fn report(plan: &Plan, options: &Options) -> i32 {
     }
     for todo in &measured.todos {
         println!(
-            "  {:<40} run {:>7} ms  wait {:>7} ms  blocked {:>7} ms  retries {}",
+            "  {:<40} run {:>7} ms  wait {:>7} ms  blocked {:>7} ms  retries {}{}",
             todo.label.as_str(),
             todo.running_ms,
             todo.waiting_ms,
             todo.blocked_ms,
-            todo.retries
+            todo.retries,
+            todo.resolution
+                .map(|resolution| format!("  {resolution}"))
+                .unwrap_or_default()
         );
     }
     0
@@ -242,6 +254,7 @@ fn as_json(plan: &Plan, measured: &Report) -> serde_json::Value {
             "blockedMs": todo.blocked_ms,
             "retries": todo.retries,
             "ended": todo.ended.as_ref().map(yi_types::plan::doc::TodoStateName::as_str),
+            "resolution": todo.resolution.map(|resolution| resolution.to_string()),
         })).collect::<Vec<_>>(),
     })
 }

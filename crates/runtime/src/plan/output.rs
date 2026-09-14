@@ -61,29 +61,30 @@ fn validate_product(
         .map_err(mismatch)
 }
 
-/// `done` on a todo whose delegation declares an output schema: the output is required, and
-/// with a resolver it must resolve and validate, else the refusal names which failed.
+/// The product `done` requires when a schema or a contract needs it, validated when a resolver
+/// is attached; resolving to `Ok(None)` refuses rather than skips (plan section 6.3).
 pub(super) fn check_output(
     resolve: Option<&dyn OutputResolve>,
     plan: &Plan,
     label: &TodoLabel,
     output: Option<&Url>,
-) -> Result<(), PlanOpError> {
-    let Some(declared) = plan
-        .todo(label)
+) -> Result<Option<String>, PlanOpError> {
+    let todo = plan.todo(label);
+    let declared = todo
         .and_then(|todo| todo.delegation.as_ref())
-        .and_then(|delegation| delegation.output.as_ref())
-    else {
-        return Ok(());
-    };
-    let Some(url) = output else {
+        .and_then(|delegation| delegation.output.as_ref());
+    let contracted = todo.is_some_and(|todo| todo.contract.is_some());
+    if let (Some(declared), None) = (declared, output) {
         return Err(PlanOpError::MissingDeclaredOutput {
             label: label.clone(),
             schema: declared.schema.clone(),
         });
-    };
-    let Some(resolve) = resolve else {
-        return Ok(());
+    }
+    if declared.is_none() && !contracted {
+        return Ok(None);
+    }
+    let (Some(resolve), Some(url)) = (resolve, output) else {
+        return Ok(None);
     };
     let product = resolve
         .resolve(url)
@@ -91,17 +92,25 @@ pub(super) fn check_output(
             label: label.clone(),
             url: url.clone(),
             cause,
-        })?;
-    let schema = &declared.schema;
-    let document = resolve
-        .resolve(schema)
-        .map_err(|cause| PlanOpError::UnusableSchema {
+        })?
+        .ok_or_else(|| PlanOpError::UnservedOutput {
             label: label.clone(),
-            schema: Box::new(schema.clone()),
-            cause,
+            url: url.clone(),
         })?;
-    if let (Some(product), Some(document)) = (product, document) {
+    if let Some(declared) = declared {
+        let schema = &declared.schema;
+        let document = resolve
+            .resolve(schema)
+            .map_err(|cause| PlanOpError::UnusableSchema {
+                label: label.clone(),
+                schema: Box::new(schema.clone()),
+                cause,
+            })?
+            .ok_or_else(|| PlanOpError::UnservedSchema {
+                label: label.clone(),
+                schema: Box::new(schema.clone()),
+            })?;
         validate_product(label, url, schema, &product, &document)?;
     }
-    Ok(())
+    Ok(Some(product))
 }
