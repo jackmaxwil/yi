@@ -74,6 +74,14 @@ fn patch_targets(patch: &str) -> String {
     }
 }
 
+/// `Todos 7/7` from a todo result whose header counts every item done; None while work is open.
+pub(crate) fn todo_finished(text: &str) -> Option<String> {
+    let counts = text.lines().next()?.strip_prefix("Todos ")?;
+    let (done, rest) = counts.split_once('/')?;
+    let total = rest.split(|c: char| !c.is_ascii_digit()).next()?;
+    (done == total && total.parse::<u64>().ok()? > 0).then(|| format!("Todos {total}/{total}"))
+}
+
 pub(crate) fn arg_summary(tool: &str, args: &Value) -> String {
     if tool == "edit" {
         let targets = args
