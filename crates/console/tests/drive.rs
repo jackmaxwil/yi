@@ -2378,3 +2378,27 @@ fn a_todo_update_paints_the_block_above_the_composer() -> TestResult {
          quit\n",
     )
 }
+
+/// A drag copied silently, so nothing said whether the release had taken; the banner
+/// says what left for the clipboard.
+#[test]
+fn a_drag_over_the_transcript_flashes_what_it_copied() -> TestResult {
+    run(
+        "copy-flash",
+        vec![
+            Step::Expect("initialize", init_reply),
+            Step::Expect("session/list", two_session_list),
+            Step::Expect("session/list", empty_list),
+            Step::Expect("session/resume", resume_alpha),
+            Step::Expect("_yi/seen", seen_ok),
+        ],
+        "wait-frame 5000 s-alpha\n\
+         key enter\n\
+         wait-frame 5000 replayed world\n\
+         mouse down 32 2\n\
+         mouse drag 60 5\n\
+         mouse up 60 5\n\
+         wait-frame 3000 copied 4 lines\n\
+         quit\n",
+    )
+}
