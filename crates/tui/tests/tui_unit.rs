@@ -1748,15 +1748,25 @@ fn cycling_the_transcript_mode_rewrites_what_is_already_on_screen() -> TestResul
     app.reduce_agent(yi_types::event::AgentEvent::AgentEnd {
         messages: Vec::new(),
     });
+    let shown = app.reflowed(200).iter().map(flat).collect::<Vec<_>>();
+    assert!(
+        shown.iter().any(|line| line.contains("2 lines")),
+        "{shown:?}"
+    );
+    // The default view carries the first rows of a result; `normal` is the fold.
+    assert!(
+        shown.iter().any(|line| line.contains("   1 one")),
+        "{shown:?}"
+    );
+    app.cycle_mode();
+    app.cycle_mode();
+    assert_eq!(app.mode(), TranscriptMode::Normal);
     let normal = app.reflowed(200).iter().map(flat).collect::<Vec<_>>();
     assert!(
-        normal.iter().any(|line| line.contains("2 lines")),
-        "{normal:?}"
-    );
-    assert!(
         !normal.iter().any(|line| line.contains("one")),
-        "{normal:?}"
+        "normal keeps the body folded away: {normal:?}"
     );
+    app.cycle_mode();
 
     // Ctrl+O must both change the mode and ask for the rows above the viewport
     // to be rebuilt; without the repaint request the cells already committed

@@ -170,5 +170,6 @@ when it changes rather than editing them by hand.
 - [D190](adr/d190.md) - two time-limit hits in four bash calls ask for a new method, not a longer limit
 - [D196](adr/d196.md) - a reminder fires on evidence of work, not on words in prose, and takes one...
 - [D197](adr/d197.md) - a tool call the model wrote as text is the call it spells
+- [D198](adr/d198.md) - a collapsed tool card shows three result rows and how many it hid
 
 D36-D51, D72, D73 and D74 have no ADR yet; ARCHITECTURE.md is the record for those rows.
