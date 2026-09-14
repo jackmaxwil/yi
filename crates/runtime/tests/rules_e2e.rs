@@ -623,26 +623,6 @@ fn a_prose_skill_pointer_waits_for_a_write_and_forgets_it_at_the_prompt() -> Tes
 }
 
 #[test]
-fn two_skill_pointers_per_turn_however_many_scans() -> TestResult {
-    let (engine, delivered) = engine_with_sink(vec![
-        skill("one", "n1", RuleScope::Result, RuleGap::Once),
-        skill("two", "n2", RuleScope::Result, RuleGap::Once),
-        skill("three", "n3", RuleScope::Result, RuleGap::Once),
-    ]);
-    engine.check_result("bash", "{}", "n1", false);
-    engine.check_result("bash", "{}", "n2 n3", false);
-    assert_eq!(
-        delivered.lock().map_err(|_| "lock")?.len(),
-        2,
-        "the pointer cap is the turn's, not each scan's"
-    );
-    engine.observe(&assistant_saying("next turn"));
-    engine.check_result("bash", "{}", "n3", false);
-    assert_eq!(delivered.lock().map_err(|_| "lock")?.len(), 3);
-    Ok(())
-}
-
-#[test]
 fn skill_trigger_compiles_when_the_user_did_not_claim_the_name() -> TestResult {
     let (_base, home, cwd) = scratch("skill-rule")?;
     std::fs::create_dir_all(cwd.join(".yi/skills/rust-borrowck"))?;
@@ -767,17 +747,16 @@ fn the_third_skill_pointer_is_dropped_and_stays_armed() -> TestResult {
         .collect();
     let (engine, delivered) = engine_with_sink(pointers);
     engine.check_result("bash", "{}", "error[E0502]: cannot borrow", true);
+    engine.check_result("bash", "{}", "error[E0502]: cannot borrow", true);
     {
         let queue = delivered.lock().map_err(|_| "lock")?;
-        assert_eq!(queue.len(), 2, "two pointers is the budget for one scan");
+        assert_eq!(queue.len(), 2, "two pointers is the budget for one turn");
     }
+    engine.observe(&assistant_saying("the next turn"));
     engine.check_result("bash", "{}", "error[E0502]: cannot borrow", true);
     let queue = delivered.lock().map_err(|_| "lock")?;
     assert_eq!(queue.len(), 3, "the dropped pointer was never latched");
-    assert_eq!(
-        queue[2],
-        "Relevant: skill://gamma (read before the next edit)"
-    );
+    assert_eq!(queue[2], "Relevant: skill://gamma (matched \"E0502\")");
     Ok(())
 }
 
