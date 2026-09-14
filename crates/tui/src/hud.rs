@@ -43,23 +43,78 @@ const TAIL_LEN: usize = 4;
 pub const TODO_ROWS: usize = 8;
 
 /// The block shows only while an item is open; closed lists leave the HUD to the goal.
-pub fn todo_rows(list: Option<&yi_types::todo::TodoList>) -> Option<(String, Vec<Line<'static>>)> {
+/// The rows window around the running item, so the step in flight is always on screen.
+pub fn todo_rows(
+    list: Option<&yi_types::todo::TodoList>,
+    theme: &Theme,
+) -> Option<(String, Vec<Line<'static>>)> {
     let list = list?;
     let progress = list.progress();
     if progress.open.saturating_add(progress.blocked) == 0 {
         return None;
     }
     let all = yi_runtime::todo::text::checklist(list);
-    let hidden = all.len().saturating_sub(TODO_ROWS);
-    let mut rows: Vec<Line<'static>> = all
-        .into_iter()
-        .take(TODO_ROWS)
-        .map(|row| Line::from(Span::raw(format!("  {row}"))))
-        .collect();
+    let running = all.iter().position(|row| row.contains("[>]")).unwrap_or(0);
+    // The running row and the one after it stay in view: what is being done and what is next.
+    let start = running
+        .saturating_add(2)
+        .saturating_sub(TODO_ROWS)
+        .min(all.len().saturating_sub(TODO_ROWS));
+    let end = start.saturating_add(TODO_ROWS).min(all.len());
+    let mut rows = Vec::new();
+    if start > 0 {
+        rows.push(Line::from(Span::styled(
+            format!("  +{start} above"),
+            theme.dim_style(),
+        )));
+    }
+    rows.extend(
+        all.iter()
+            .skip(start)
+            .take(end.saturating_sub(start))
+            .map(|row| todo_row(row, theme)),
+    );
+    let hidden = all.len().saturating_sub(end);
     if hidden > 0 {
-        rows.push(Line::from(Span::raw(format!("  +{hidden} more"))));
+        rows.push(Line::from(Span::styled(
+            format!("  +{hidden} more"),
+            theme.dim_style(),
+        )));
     }
     Some((yi_runtime::todo::text::header(list), rows))
+}
+
+/// A checklist row as chrome: the marker becomes a glyph, the running step takes the accent.
+fn todo_row(row: &str, theme: &Theme) -> Line<'static> {
+    let body = row.trim_start();
+    let indent = " ".repeat(row.len().saturating_sub(body.len()));
+    if let Some(phase) = body.strip_prefix("## ") {
+        return Line::from(Span::styled(format!("  {phase}"), theme.muted_style()));
+    }
+    let plain = Style::default().fg(theme.text);
+    let (glyph, style, label) = match body
+        .strip_prefix("- ")
+        .and_then(|item| Some((item.get(..3)?, item.get(3..)?.trim_start())))
+    {
+        Some(("[x]", label)) => ("✓", theme.dim_style(), label),
+        Some(("[>]", label)) => (
+            "▶",
+            theme.accent_style().add_modifier(Modifier::BOLD),
+            label,
+        ),
+        Some(("[!]", label)) => ("!", Style::default().fg(theme.warning), label),
+        Some(("[-]", label)) => (
+            "−",
+            theme.dim_style().add_modifier(Modifier::CROSSED_OUT),
+            label,
+        ),
+        Some((_, label)) => ("○", plain, label),
+        None => ("", plain, body),
+    };
+    Line::from(vec![
+        Span::styled(format!("  {indent}{glyph} "), style),
+        Span::styled(label.to_owned(), style),
+    ])
 }
 
 pub(crate) fn input(
@@ -104,7 +159,7 @@ pub fn render(input: &HudInput, theme: &Theme) -> Vec<Line<'static>> {
         }
         (header, None) => header,
     };
-    let header = match (header, todo_rows(input.todos.as_ref())) {
+    let header = match (header, todo_rows(input.todos.as_ref(), theme)) {
         (header, None) => header,
         (None, Some((title, rows))) => {
             content.extend(rows);

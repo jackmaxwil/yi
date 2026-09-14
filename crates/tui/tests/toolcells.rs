@@ -344,3 +344,54 @@ fn a_long_command_keeps_its_head_to_one_hundred_and_twenty() -> TestResult {
     assert!(!joined.contains('…'), "{joined}");
     Ok(())
 }
+
+fn ended_todo(app: &mut App, id: &str, text: &str, is_error: bool) {
+    app.reduce_agent(AgentEvent::ToolExecutionEnd {
+        tool_call_id: id.to_owned(),
+        tool_name: "todo".to_owned(),
+        result: ToolResult {
+            content: vec![Content::Text {
+                text: text.to_owned(),
+                text_signature: None,
+            }],
+            details: serde_json::Value::Null,
+            usage: None,
+            added_tool_names: None,
+            terminate: None,
+        },
+        is_error,
+    });
+}
+
+/// Six todo steps in one turn were six cards; the HUD block above the composer carries
+/// the list, so a step commits nothing, a refusal keeps its card, and the close is one row.
+#[test]
+fn todo_steps_live_in_the_hud_not_the_transcript() -> TestResult {
+    let mut app = app();
+    started(&mut app, "t0", "todo", "start t1");
+    ended_todo(
+        &mut app,
+        "t0",
+        "Todos 0/2 · running: read\n- [>] read\n- [ ] write",
+        false,
+    );
+    assert!(
+        app.take_commits().is_empty(),
+        "a step that succeeded commits no card"
+    );
+    started(&mut app, "t1", "todo", "done t1");
+    ended_todo(
+        &mut app,
+        "t1",
+        "done needs evidence: the command you ran",
+        true,
+    );
+    let refused = flat(&app.take_commits()).join("\n");
+    assert!(refused.contains("done needs evidence"), "{refused}");
+    started(&mut app, "t2", "todo", "done t2");
+    ended_todo(&mut app, "t2", "Todos 2/2\n- [x] read\n- [x] write", false);
+    let closed = flat(&app.take_commits()).join("\n");
+    assert!(closed.contains("↳ Todos 2/2"), "{closed}");
+    assert!(!closed.contains("⚙"), "{closed}");
+    Ok(())
+}
