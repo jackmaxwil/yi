@@ -78,6 +78,31 @@ struct ExtractedCall {
     arguments: Map<String, Value>,
 }
 
+pub const UNPARSED_MARKUP: &str = "model emitted tool-call markup that could not be parsed";
+const CALL_MARKUP: &str = "<tool_call>";
+
+/// A message that opens with call markup and carries no call is a failed call, not an answer.
+fn flag_unparsed_markup(mut message: AgentMessage) -> AgentMessage {
+    if let AgentMessage::Assistant {
+        content,
+        stop_reason,
+        error_message,
+        ..
+    } = &mut message
+        && *stop_reason == StopReason::Stop
+        && !content
+            .iter()
+            .any(|block| matches!(block, Content::ToolCall { .. }))
+        && content.iter().any(|block| {
+            matches!(block, Content::Text { text, .. } if text.trim_start().starts_with(CALL_MARKUP))
+        })
+    {
+        *stop_reason = StopReason::Error;
+        *error_message = Some(UNPARSED_MARKUP.to_owned());
+    }
+    message
+}
+
 fn extract_tool_calls(message: &AgentMessage) -> Vec<ExtractedCall> {
     let AgentMessage::Assistant { content, .. } = message else {
         return Vec::new();
@@ -732,6 +757,7 @@ pub async fn run_loop<S: StreamFn>(
                 stream,
             )
             .await;
+            let message = flag_unparsed_markup(message);
             collected.push(message.clone());
 
             let reason = stop_reason_of(&message);
