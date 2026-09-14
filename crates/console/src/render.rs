@@ -715,6 +715,20 @@ fn render_banner(app: &App, frame: &mut Frame<'_>, area: Rect, theme: &Theme) {
             theme.dim_style(),
         ));
     }
+    if spans.is_empty()
+        && let Some((flash, _)) = &app.flash
+    {
+        // What the last drag copied takes the hint row for two seconds, flush right.
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                format!("{flash} "),
+                theme.accent_style(),
+            )))
+            .alignment(ratatui::layout::Alignment::Right),
+            area,
+        );
+        return;
+    }
     if spans.is_empty() {
         let armed = matches!(app.state.mode, Mode::Prefix);
         spans.push(Span::styled(
