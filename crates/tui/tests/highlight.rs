@@ -189,7 +189,8 @@ fn a_bash_cell_shows_the_command_and_its_exit() -> TestResult {
     let joined = rendered.join("\n");
     assert!(joined.contains("$ cargo test --workspace"), "{joined}");
     assert!(!joined.contains("bash cargo"), "{joined}");
-    assert!(joined.contains("⏎ 1"), "{joined}");
+    assert!(joined.contains("exit 1"), "{joined}");
+    assert!(!joined.contains('⏎'), "{joined}");
     assert!(joined.contains("1s"), "{joined}");
     let flag = lines
         .iter()

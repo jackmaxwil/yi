@@ -379,3 +379,43 @@ fn a_turn_ends_with_a_dim_footer() -> TestResult {
     assert!(footer.contains("3K in / 620 out · 64% cached"), "{footer}");
     Ok(())
 }
+
+/// Three pointers in one turn landed as three padded blocks, one of them bare:
+/// injected text takes one shape, and a run of it is one block.
+#[test]
+fn injected_text_takes_one_callout_shape_and_a_run_is_one_block() -> TestResult {
+    use yi_tui::history::History;
+
+    let theme = theme();
+    let mut history = History::default();
+    history.retain(Cell::Advisory {
+        source: "reminder".to_owned(),
+        text: "Relevant: skill://plan".to_owned(),
+    });
+    history.retain(Cell::Advisory {
+        source: "reminder".to_owned(),
+        text: "Relevant: skill://verify".to_owned(),
+    });
+    let rows = flat(&History::replay(
+        &history,
+        80,
+        &theme,
+        TranscriptMode::Thinking,
+        100,
+    ));
+    assert_eq!(
+        rows,
+        vec![
+            "  ▌ ⚑ reminder Relevant: skill://plan",
+            "  ▌ ⚑ reminder Relevant: skill://verify",
+        ]
+    );
+    let notice = Cell::Notice {
+        text: "This task has outgrown one-shot handling; write the plan now.".to_owned(),
+    };
+    assert_eq!(
+        flat(&notice.lines(80, &theme, TranscriptMode::Thinking, 0)),
+        vec!["  ▌ ⚑ This task has outgrown one-shot handling; write the plan now."]
+    );
+    Ok(())
+}

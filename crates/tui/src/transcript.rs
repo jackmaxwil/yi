@@ -108,8 +108,8 @@ pub(crate) fn arg_summary(tool: &str, args: &Value) -> String {
         Some(text) => {
             let first = text.lines().next().unwrap_or("");
             let mut text = first.split_whitespace().collect::<Vec<_>>().join(" ");
-            if text.chars().count() > 60 {
-                text = text.chars().take(60).collect::<String>() + "…";
+            if text.chars().count() > 120 {
+                text = text.chars().take(120).collect::<String>() + "…";
             }
             text
         }

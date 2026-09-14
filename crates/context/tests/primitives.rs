@@ -393,6 +393,24 @@ fn internal_context_wrapper_round_trips_and_dies_at_compaction() -> TestResult {
     assert_eq!(internal_source(&user("plain")), None);
     let invalid = wrap_internal("Bad Label!", "text", 1);
     assert_eq!(internal_source(&invalid), Some("internal"));
+    let reminder = wrap_internal("reminder", "Relevant: skill://plan", 1);
+    assert_eq!(internal_source(&reminder), Some("reminder"));
+    let AgentMessage::User {
+        content: UserContent::Text(text),
+        ..
+    } = &reminder
+    else {
+        return Err("a wrapped reminder is a user-role message".into());
+    };
+    let advisory = text
+        .find("not a user instruction")
+        .ok_or("no advisory line")?;
+    let pointer = text.find("Relevant:").ok_or("no pointer")?;
+    assert!(advisory < pointer, "the advisory line comes first: {text}");
+    assert_eq!(
+        internal_source(&wrap_internal("heartbeat", "tick", 1)),
+        Some("heartbeat")
+    );
     let kept = drop_internal(&[wrapped, user("plain")]);
     assert_eq!(kept.len(), 1);
     Ok(())
