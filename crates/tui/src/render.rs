@@ -118,23 +118,13 @@ fn live_lines(
             .live_thought
             .get(app.live_thought_cut..app.pacing.thought.shown())
             .unwrap_or_default();
-        let mut rendered = crate::cell::thought_lines(
+        let rendered = crate::cell::thought_lines(
             tail,
             content_width,
             theme,
             app.mode,
             app.live_thought_cut == 0,
         );
-        // The label pulses only while it is still live and still here: past the
-        // first committed slice the tail has no header and this is a no-op.
-        let glyph = crate::motion::thinking_glyph(crate::motion::elapsed_of(spinner));
-        if let Some(span) = rendered
-            .iter_mut()
-            .flat_map(|l| l.spans.iter_mut())
-            .find(|s| s.content.contains('∴'))
-        {
-            span.content = span.content.replace('∴', &glyph.to_string()).into();
-        }
         live_lines.extend(live_tail(rendered, app.rows));
     }
     if !app.live_markdown.is_empty() {
