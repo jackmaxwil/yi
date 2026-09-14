@@ -83,8 +83,7 @@ fn draw_frame<B>(
     let memory = port
         .and_then(|port| port.memory())
         .and_then(|feed| feed.hud());
-    app.plan_progress = port.and_then(|port| port.plan_progress());
-    app.todos = port.and_then(|port| port.todo_list());
+    app.sync_port(port);
     let total = u16::try_from(app.rows).unwrap_or(u16::MAX);
     let layout = layout_chat(app, goal, memory, total);
     let resized = terminal
