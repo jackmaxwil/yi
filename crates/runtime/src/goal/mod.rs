@@ -23,7 +23,7 @@ pub const NO_GOAL_ERROR: &str = "No goal exists for this session; create one wit
 pub const DEFAULT_CHECK_TIMEOUT_MS: u64 = 600_000;
 const CHECK_TAIL_CHARS: usize = 2_000;
 
-fn output_tail(capture: &yi_tools::CommandCapture) -> String {
+pub(crate) fn output_tail(capture: &yi_tools::CommandCapture) -> String {
     let mut combined = String::new();
     if !capture.stdout.trim().is_empty() {
         combined.push_str(capture.stdout.trim_end());
@@ -65,6 +65,33 @@ pub(crate) fn run_check(check: &str, timeout_ms: u64) -> Result<(), String> {
             ))
         }
     }
+}
+
+/// The environment a checker may see beyond what its manifest declares (plan section 6.3).
+pub const CHECKER_ENV_BASE: [&str; 4] = ["PATH", "HOME", "LANG", "TMPDIR"];
+
+/// # Errors
+/// The shell did not spawn. Runs `/bin/sh -c` with `env_clear()` plus the base allowlist.
+pub(crate) fn run_check_in(
+    cwd: &std::path::Path,
+    command: &str,
+    env_names: &[String],
+    stdin: Option<Vec<u8>>,
+    deadline: Instant,
+) -> Result<yi_tools::CommandCapture, String> {
+    let mut shell = yi_tools::command("/bin/sh");
+    shell.arg("-c").arg(command).current_dir(cwd).env_clear();
+    for name in CHECKER_ENV_BASE
+        .iter()
+        .map(|name| (*name).to_owned())
+        .chain(env_names.iter().cloned())
+    {
+        if let Some(value) = std::env::var_os(&name) {
+            shell.env(name, value);
+        }
+    }
+    let cancelled: yi_tools::CancelFlag = Arc::new(move || Instant::now() >= deadline);
+    yi_tools::run_captured(shell, stdin, &cancelled, yi_tools::OUTPUT_CAP)
 }
 
 pub type StoreHandle = Arc<dyn Fn() -> Option<yi_session::SharedSession> + Send + Sync>;

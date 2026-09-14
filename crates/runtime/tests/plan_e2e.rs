@@ -43,6 +43,8 @@ fn todo(label: &str, state: TodoState) -> Result<Todo, Box<dyn Error>> {
         note: None,
         attempt: yi_types::plan::doc::AttemptId::FIRST,
         refusals: 0,
+        contract: None,
+        contract_hash: None,
         extra: serde_json::Map::new(),
     })
 }
@@ -183,7 +185,13 @@ fn summary_and_frontier_render_the_document() -> TestResult {
         "render-me",
         4,
         vec![
-            todo("cut the seam", TodoState::Done { output: None })?,
+            todo(
+                "cut the seam",
+                TodoState::Done {
+                    output: None,
+                    resolution: None,
+                },
+            )?,
             todo("build it", TodoState::Running { by })?,
             todo("ship it", TodoState::Pending)?,
         ],
@@ -280,7 +288,13 @@ fn plan_get_serializes_the_document_with_ready_and_finished() -> TestResult {
             "served",
             1,
             vec![
-                todo("first", TodoState::Done { output: None })?,
+                todo(
+                    "first",
+                    TodoState::Done {
+                        output: None,
+                        resolution: None,
+                    },
+                )?,
                 todo("second", TodoState::Pending)?,
             ],
         )?,
@@ -327,6 +341,135 @@ async fn plan_op(
         .dispatch("plan.op", payload)
         .ok_or("plan.op is not registered")?
         .await
+}
+
+/// A child spawned for a todo: its agent id is the todo's own label.
+struct Named;
+
+impl Delegate for Named {
+    fn spawn(
+        &self,
+        at: &yi_types::plan::doc::TodoAddr,
+        _delegation: &yi_types::plan::doc::Delegation,
+    ) -> Result<yi_types::plan::doc::AgentId, String> {
+        yi_types::plan::doc::AgentId::new(at.todo.as_str()).map_err(|error| error.to_string())
+    }
+
+    fn reap(
+        &self,
+        _agent: &yi_types::plan::doc::AgentId,
+        _supplied: &[yi_types::url::Url],
+    ) -> Result<Option<yi_types::url::Url>, String> {
+        Ok(None)
+    }
+
+    fn follow_up(&self, _dispatched: &[TodoLabel], _held: usize) {}
+}
+
+fn delegated(label: &str) -> Result<yi_runtime::plan::ops::TodoSpec, Box<dyn Error>> {
+    Ok(yi_runtime::plan::ops::TodoSpec {
+        label: TodoLabel::new(label)?,
+        after: Vec::new(),
+        delegation: Some(yi_types::plan::doc::Delegation {
+            spec: yi_types::plan::doc::SpawnSpec {
+                role: None,
+                model: None,
+                effort: None,
+                tools: Vec::new(),
+                isolation: None,
+                budget: None,
+                wall: None,
+                extra: serde_json::Map::new(),
+            },
+            accept: yi_types::plan::doc::Check::Command("true".to_owned()),
+            output: None,
+            context: Vec::new(),
+            note: None,
+            extra: serde_json::Map::new(),
+        }),
+        contract: None,
+        children: Vec::new(),
+    })
+}
+
+/// Guards `check_actor`'s `Submit` grant and `done::admit`: a child's `plan.op` may submit an
+/// output for the attempt it is running and for nothing else.
+#[tokio::test]
+async fn a_child_may_submit_only_for_its_own_attempt() -> TestResult {
+    let dir = Scratch::new("yi-plan-op-submit")?;
+    let engine = Arc::new(
+        PlanEngine::new(PlanStore::open(dir.to_path_buf())?, Arc::new(Named))
+            .with_width(std::num::NonZeroUsize::MIN.saturating_add(1)),
+    );
+    let owner = |op: yi_runtime::plan::ops::Op| yi_runtime::plan::ops::OpRequest {
+        plan: None,
+        actor: Actor::Owner,
+        op,
+        request_id: None,
+        expected_revision: None,
+    };
+    engine.apply(owner(yi_runtime::plan::ops::Op::Init {
+        goal: GoalText::new("ship the seam end to end")?,
+        todos: vec![delegated("cut")?, delegated("ship")?],
+    }))?;
+    for label in ["cut", "ship"] {
+        engine.apply(owner(yi_runtime::plan::ops::Op::Start {
+            label: TodoLabel::new(label)?,
+        }))?;
+    }
+    let mut registry = HostRegistry::default();
+    yi_runtime::plan::request::register(
+        Arc::clone(&engine),
+        Actor::Child(yi_types::plan::doc::AgentId::new("cut")?),
+        &mut registry,
+    );
+    let submit = |request: &str, label: &str, attempt: u32| {
+        serde_json::json!({
+            "request_id": request, "op": "submit",
+            "args": {"label": label, "attempt": attempt, "output": "local://out/cut.json"}
+        })
+    };
+    let own = plan_op(&registry, submit("s1", "cut", 1)).await?;
+    assert_eq!(own["ok"], serde_json::json!(true), "{own:?}");
+    assert!(
+        own["text"]
+            .as_str()
+            .is_some_and(|text| text.contains("submitted local://out/cut.json")),
+        "{own:?}"
+    );
+    let theirs = plan_op(&registry, submit("s2", "ship", 1)).await?;
+    assert_eq!(theirs["ok"], serde_json::json!(false), "{theirs:?}");
+    assert!(
+        theirs["refusal"]["message"]
+            .as_str()
+            .is_some_and(|text| text.contains("not running by cut")),
+        "{theirs:?}"
+    );
+    let stale = plan_op(&registry, submit("s3", "cut", 2)).await?;
+    assert_eq!(stale["ok"], serde_json::json!(false), "{stale:?}");
+    assert!(
+        stale["refusal"]["message"]
+            .as_str()
+            .is_some_and(|text| text.contains("on attempt 1, not attempt 2")),
+        "{stale:?}"
+    );
+    let done = plan_op(
+        &registry,
+        serde_json::json!({"request_id": "s4", "op": "done", "args": {"label": "cut"}}),
+    )
+    .await?;
+    assert_eq!(done["refusal"]["code"], serde_json::json!("not_owner"));
+    let file =
+        PlanStore::open(dir.to_path_buf())?.read(&PlanId::slug("ship the seam end to end")?)?;
+    let cut = file.todo(&TodoLabel::new("cut")?).ok_or("cut")?;
+    assert!(matches!(cut.state, TodoState::Running { .. }));
+    assert_eq!(
+        cut.extra.get("submitted"),
+        Some(&serde_json::json!("local://out/cut.json"))
+    );
+    let ship = file.todo(&TodoLabel::new("ship")?).ok_or("ship")?;
+    assert!(ship.extra.get("submitted").is_none(), "{ship:?}");
+    Ok(())
 }
 
 /// Guards `check_actor`'s child arm: let `Actor::Child` past `View` and the `done` below

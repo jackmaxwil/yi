@@ -152,6 +152,7 @@ fn parse_specs(value: &Value, what: &str) -> Fallible<Vec<TodoSpec>> {
                 label: TodoLabel::new(label)?,
                 after,
                 delegation,
+                contract: None,
                 children: Vec::new(),
             }),
             Some(raw) => {
@@ -163,6 +164,7 @@ fn parse_specs(value: &Value, what: &str) -> Fallible<Vec<TodoSpec>> {
                         label: TodoLabel::new(format!("{label} {serial}"))?,
                         after: after.clone(),
                         delegation: delegation.clone(),
+                        contract: None,
                         children: Vec::new(),
                     });
                 }
@@ -482,7 +484,7 @@ fn check_todos(ctx: &str, value: &Value, plan: &Plan, failures: &mut Vec<String>
         }
         if let Some(raw) = map.get("output") {
             match &todo.state {
-                TodoState::Done { output } => {
+                TodoState::Done { output, .. } => {
                     cmp_opt_url(&tctx, "output", raw, output.as_ref(), failures)?;
                 }
                 other => failures.push(format!(

@@ -130,6 +130,9 @@ pub struct ArtifactRef {
     pub digest: Digest,
     pub media_type: String,
     pub length: u64,
+    /// Where the bytes came from (a `local://` path, an import), for a reader; never compared.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provenance: Option<String>,
 }
 
 impl fmt::Display for ArtifactRef {

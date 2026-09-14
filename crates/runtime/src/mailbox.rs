@@ -624,6 +624,7 @@ mod tests {
                         tools: Vec::new(),
                         isolation: None,
                         budget: None,
+                        wall: None,
                         extra: Map::new(),
                     },
                     accept: Check::Command(check.to_owned()),
@@ -638,6 +639,8 @@ mod tests {
                 note: None,
                 attempt: yi_types::plan::doc::AttemptId::FIRST,
                 refusals: 0,
+                contract: None,
+                contract_hash: None,
                 extra: Map::new(),
             }],
         );

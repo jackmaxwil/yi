@@ -53,6 +53,8 @@ fn todo(label: &str, state: TodoState, after: &[&str]) -> Result<Todo, Box<dyn E
         note: None,
         attempt: yi_types::plan::doc::AttemptId::FIRST,
         refusals: 0,
+        contract: None,
+        contract_hash: None,
         extra: serde_json::Map::new(),
     })
 }
@@ -67,6 +69,7 @@ fn delegated(label: &str) -> Result<Todo, Box<dyn Error>> {
             tools: Vec::new(),
             isolation: None,
             budget: None,
+            wall: None,
             extra: serde_json::Map::new(),
         },
         accept: Check::Command("just check".to_owned()),
@@ -126,6 +129,7 @@ fn plan() -> Result<Plan, Box<dyn Error>> {
             "ship the docs",
             TodoState::Done {
                 output: Some("plan://demo/ship-the-docs".parse()?),
+                resolution: None,
             },
             &[],
         )?,
@@ -328,7 +332,14 @@ fn a_sub_plan_nests_under_the_todo_that_owns_it() -> TestResult {
 #[test]
 fn children_render_under_their_parent_one_level_deeper() -> TestResult {
     let mut parent = todo("rebase", TodoState::Pending, &[])?;
-    let mut child = todo("remap", TodoState::Done { output: None }, &[])?;
+    let mut child = todo(
+        "remap",
+        TodoState::Done {
+            output: None,
+            resolution: None,
+        },
+        &[],
+    )?;
     child.children = vec![todo("rule one", TodoState::Pending, &[])?];
     parent.children = vec![child, todo("prompt", TodoState::Pending, &[])?];
     let plan = Plan::opening(

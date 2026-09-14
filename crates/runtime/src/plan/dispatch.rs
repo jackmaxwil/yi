@@ -105,6 +105,19 @@ fn kwargs_of(agent: &AgentId, delegation: &Delegation) -> Result<Map<String, Val
     if let Check::Command(command) = &delegation.accept {
         kwargs.insert("check".to_owned(), Value::String(command.clone()));
     }
+    // Plan section 7.6: the spec's wall rides the spawn kwargs the host already reads, so a
+    // plan-dispatched reader is walled at the same cooperative seams as an `rlm.run` child.
+    if let Some(wall) = &delegation.spec.wall {
+        for (key, list) in [
+            ("deny_write", &wall.deny_write),
+            ("deny_read", &wall.deny_read),
+            ("deny_url", &wall.deny_url),
+        ] {
+            if !list.is_empty() {
+                kwargs.insert(key.to_owned(), serde_json::json!(list));
+            }
+        }
+    }
     Ok(kwargs)
 }
 
@@ -351,14 +364,16 @@ mod tests {
                     tools: Vec::new(),
                     isolation: None,
                     budget: None,
+                    wall: None,
                     extra: Map::new(),
                 },
-                accept: Check::Stated("the seam holds".to_owned()),
+                accept: Check::Command("true".to_owned()),
                 output: None,
                 context: Vec::new(),
                 note: None,
                 extra: Map::new(),
             }),
+            contract: None,
             children: Vec::new(),
         })
     }
@@ -529,6 +544,31 @@ mod tests {
             promoted.iter().any(|text| text.contains("half a patch")),
             "the failure path still promotes the last product: {promoted:?}"
         );
+        Ok(())
+    }
+
+    /// Dies with the wall block in `kwargs_of`: drop it and a plan-dispatched reader spawns
+    /// with the parent's whole capability set (plan section 7.6).
+    #[test]
+    fn kwargs_carry_the_wall() -> TestResult {
+        let mut delegation = delegated("read the docs")?.delegation.ok_or("delegated")?;
+        delegation.spec.wall = Some(yi_types::plan::doc::WallSpec {
+            deny_write: vec![".".to_owned()],
+            deny_read: vec!["secrets/".to_owned()],
+            deny_url: vec!["history://main".to_owned()],
+        });
+        let kwargs = kwargs_of(&AgentId::new("reader-1")?, &delegation)?;
+        assert_eq!(kwargs["deny_write"], serde_json::json!(["."]));
+        assert_eq!(kwargs["deny_read"], serde_json::json!(["secrets/"]));
+        assert_eq!(kwargs["deny_url"], serde_json::json!(["history://main"]));
+        let wall = crate::wall::Wall::from_kwargs(&kwargs, std::path::Path::new("/tmp"))?;
+        assert!(
+            !wall.is_empty(),
+            "the host reads the same keys it is handed"
+        );
+        delegation.spec.wall = None;
+        let bare = kwargs_of(&AgentId::new("reader-2")?, &delegation)?;
+        assert!(!bare.contains_key("deny_write") && !bare.contains_key("deny_url"));
         Ok(())
     }
 

@@ -422,7 +422,10 @@ one; any required integration is recorded and verified; the verdict and the
 transition are one committed journal record. `done`, `set`, `import`,
 `repair`, `supersede`, the CLI and every shape go through this one validator;
 `set` may declare and rearrange work and request legal transitions, never
-author `Done` (today it does: `ops.rs:1035`). Imported legacy success is
+author a resolution (F0c landed the one validator, D194; a todo with no
+contract and no stated acceptance still completes on the caller's word as
+`Done { resolution: None }`, reported unverified, until a decider or F3a's
+judge gives it one: the carve-out D194 records). Imported legacy success is
 `LegacyUnverified`, displayed as history, never as new evidence; a user's
 administrative acceptance is `AcceptedByUser`, distinct from `VerifiedDone`
 in the store and in every report. `Plan::finished()` (`doc.rs:598`) counts
@@ -2207,8 +2210,8 @@ format), A2A adapters, module regeneration.
 | `fold_user_edits`, `known` | `ops.rs:515,547-563,548-551` | F0b (replaced by digest detection against the journal, never blind trust) |
 | `user_edits`, `HandEdit`, `running_by`, `PlanFile.body` as mutable state, the frontmatter writer | `store.rs:65-146,259-260,376-392` | F0b (`split_frontmatter`, `parse_document`, `DocumentError` survive two releases inside `import.rs`) |
 | `python/skills/plan/` and its `PYTHON_SKILLS` row | `bootstrap.rs:274` | F0a, in the PR that ships `plan.op` |
-| `do_set`'s direct `TodoState::Done` construction | `ops.rs:1035` | F0c (every transition through the validator) |
-| `Delegation.accept: Check` as live authority; `red_count`, `red_fingerprint`, `readmit` | `doc.rs:196,60-65`, `plan.rs:63-71` | F0c (`accept` is import input only; the fields land in `extra` with wire fixtures) |
+| `do_set`'s direct `TodoState::Done` construction | `ops.rs:1035` | F0c (every transition through the validator; the construction survives behind it for the uncontracted carve-out D194 records) |
+| `Delegation.accept: Check` as live authority; `red_count`, `red_fingerprint`, `readmit` | `doc.rs:196,60-65`, `plan.rs:63-71` | F0c (`accept: command` still rides the spawn as the child's own check and `accept: stated` only raises strictness, D194; the fields land in `extra` with wire fixtures) |
 | the `notice` wiring of the child host (`notice_hook` itself stays for its five other callers) | `wiring.rs:603` | F0a (to `wake_idle_hook`) |
 | `RLMSpawnHandle.result`'s 0.5 s poll | `rlm/__init__.py:52-83` | F0a (cursored `wait`, same timeout and errors) |
 | `take_pending`'s shared drain | `mailbox.rs:304-319` | F0a (per-caller cursors; `updated` kept one release) |

@@ -22,6 +22,7 @@ use yi_runtime::plan::ops::{
 };
 use yi_runtime::plan::store::{PLAN_CAP_BYTES, PlanStore};
 use yi_types::plan::canonical::Digest;
+use yi_types::plan::contract::Contract;
 use yi_types::plan::doc::{
     AgentId, BlockedOn, Check, Delegation, GoalText, OutputSchema, PlanId, PlanState, PlanTier,
     SpawnSpec, TodoLabel, TodoState,
@@ -66,6 +67,9 @@ struct SpecPick {
     delegated: bool,
     declares: bool,
     after: Option<usize>,
+    /// A one-item cmd contract whose checker passes (`true`) or fails (`exit 1`); the manifest
+    /// is staged in the plan's artifacts when the plan id is known at the insert.
+    contract: Option<bool>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -169,7 +173,18 @@ enum Action {
         serial: u8,
         slots: Vec<usize>,
     },
+    /// One contracted todo driven through append (or init), start and done in one action, so
+    /// every run reaches a verified completion and a refused verdict whatever else the
+    /// generator interleaves.
+    Verified {
+        passes: bool,
+    },
 }
+
+/// F0c reachability, counted across the whole run: the `VerifiedDone` invariant is vacuous
+/// in a run that never produces one, so the lane asserts both outcomes happened.
+static VERIFIED_DONE: AtomicU32 = AtomicU32::new(0);
+static DONE_REFUSED: AtomicU32 = AtomicU32::new(0);
 
 fn fail<E: std::fmt::Display>(error: E) -> TestCaseError {
     TestCaseError::fail(error.to_string())
@@ -202,9 +217,10 @@ fn delegation(declares: bool) -> Result<Delegation, TestCaseError> {
             tools: Vec::new(),
             isolation: None,
             budget: None,
+            wall: None,
             extra: serde_json::Map::new(),
         },
-        accept: Check::Stated("it works".to_owned()),
+        accept: Check::Command("true".to_owned()),
         output,
         context: Vec::new(),
         note: None,
@@ -212,7 +228,38 @@ fn delegation(declares: bool) -> Result<Delegation, TestCaseError> {
     })
 }
 
-fn todo_specs(picks: &[SpecPick]) -> Result<Vec<TodoSpec>, TestCaseError> {
+/// A writer contract over one critical cmd item, its manifest staged under `plan`.
+fn contract_for(case: &Case, plan: &PlanId, passes: bool) -> Result<Contract, TestCaseError> {
+    let manifest = serde_json::json!({
+        "manifest": 1, "command": if passes { "true" } else { "exit 1" },
+        "cwd": "snapshot_root", "cwd_subdir": null, "protected": [], "timeout_ms": 5_000,
+        "env": [], "reads_outside_snapshot": false
+    });
+    let put = case
+        .store
+        .artifacts(plan)
+        .put(
+            &serde_json::to_vec(&manifest).map_err(fail)?,
+            "application/vnd.yi.checker-manifest+json",
+            &case.store.nonce(),
+        )
+        .map_err(fail)?;
+    serde_json::from_value(serde_json::json!({
+        "class": "writer",
+        "items": [{"id": "check", "critical": true, "weight": 100,
+                   "decider": {"cmd": {"checker": put, "timeout_ms": 5_000}}}],
+        "threshold": 1000, "min_coverage": 1000
+    }))
+    .map_err(fail)
+}
+
+/// `plan` is the id the specs land in when the insert knows it (init, append, supersede); a
+/// decompose's child id is allocated inside the op, so its specs carry no contract.
+fn todo_specs(
+    case: &Case,
+    plan: Option<&PlanId>,
+    picks: &[SpecPick],
+) -> Result<Vec<TodoSpec>, TestCaseError> {
     picks
         .iter()
         .map(|pick| {
@@ -227,10 +274,18 @@ fn todo_specs(picks: &[SpecPick]) -> Result<Vec<TodoSpec>, TestCaseError> {
                 } else {
                     None
                 },
+                contract: match (plan, pick.contract) {
+                    (Some(plan), Some(passes)) => Some(contract_for(case, plan, passes)?),
+                    _ => None,
+                },
                 children: Vec::new(),
             })
         })
         .collect()
+}
+
+fn fuzz_goal() -> Result<GoalText, TestCaseError> {
+    GoalText::new("ship the fuzzed widget end to end").map_err(fail)
 }
 
 fn root_of(id: &PlanId) -> Result<PlanId, TestCaseError> {
@@ -338,9 +393,11 @@ impl Case {
             .map_err(fail)?
             .with_fs(Arc::clone(&crash) as Arc<dyn Fs>);
         let stub = Arc::new(Stub::default());
+        let ws = dir.join("ws");
+        std::fs::create_dir_all(&ws).map_err(fail)?;
         let engine = PlanEngine::new(store.clone(), stub.clone())
             .with_width(width)
-            .with_cwd(dir.to_path_buf());
+            .with_cwd(ws);
         Ok(Self {
             store,
             stub,
@@ -360,7 +417,7 @@ impl Case {
             .with_fs(Arc::clone(&self.crash) as Arc<dyn Fs>);
         self.engine = PlanEngine::new(self.store.clone(), self.stub.clone())
             .with_width(self.width)
-            .with_cwd(self.dir.to_path_buf());
+            .with_cwd(self.dir.join("ws"));
         Ok(())
     }
 
@@ -548,7 +605,9 @@ impl Case {
         }
         for todo in &file.todos {
             match &todo.state {
-                TodoState::Done { output: Some(url) } => proptest::prop_assert!(
+                TodoState::Done {
+                    output: Some(url), ..
+                } => proptest::prop_assert!(
                     !matches!(url.scheme(), Scheme::Agent),
                     "todo {:?} is Done with agent url {url}",
                     todo.label
@@ -565,10 +624,53 @@ impl Case {
                 TodoState::Pending
                 | TodoState::Running { .. }
                 | TodoState::Blocked { .. }
-                | TodoState::Done { output: None }
+                | TodoState::Done { output: None, .. }
                 | TodoState::Failed { last: None, .. }
                 | TodoState::Abandoned
                 | TodoState::Other(_) => {}
+            }
+        }
+        // F0c: no `Done` on the caller's word where a resolution is owed (a contract, or a
+        // stated acceptance), whatever op moved it.
+        for todo in &file.todos {
+            if let TodoState::Done {
+                resolution: None, ..
+            } = &todo.state
+            {
+                proptest::prop_assert!(
+                    !yi_runtime::plan::state::needs_resolution(todo),
+                    "todo {:?} is Done with no resolution and a contract or stated acceptance",
+                    todo.label
+                );
+            }
+        }
+        // F0c: no `Done { VerifiedDone }` without a committed `pass` verdict on that todo.
+        for todo in &file.todos {
+            if let TodoState::Done {
+                resolution: Some(yi_types::plan::doc::Resolution::VerifiedDone),
+                ..
+            } = &todo.state
+            {
+                let root = root_of(id)?;
+                let journal = yi_runtime::plan::journal::Journal::open(
+                    self.store.journal_path(&root),
+                    Arc::new(RealFs),
+                );
+                let passed = journal.read().map_err(fail)?.records.iter().any(|record| {
+                    record.record.op == "done"
+                        && record.record.todo.as_ref() == Some(&todo.label)
+                        && record
+                            .verdict
+                            .as_ref()
+                            .and_then(|verdict| verdict.get("outcome"))
+                            .and_then(|outcome| outcome.as_str())
+                            == Some("pass")
+                });
+                proptest::prop_assert!(
+                    passed,
+                    "todo {:?} is VerifiedDone with no committed pass verdict",
+                    todo.label
+                );
             }
         }
         let (touched, version) = *self
@@ -724,6 +826,82 @@ fn act_fail(
 }
 
 /// The first four labels slug apart, so a generated document always validates.
+/// Append (or init) one contracted todo, start it and drive its `done`: a passing checker
+/// lands `Done { VerifiedDone }`, a failing one is refused with a verdict, and either count
+/// proves the F0c invariant below is not vacuous.
+fn act_verified(case: &mut Case, passes: bool) -> Result<(), TestCaseError> {
+    case.pad = case.pad.saturating_add(1);
+    let lbl = TodoLabel::new(format!("checked job {}", case.pad)).map_err(fail)?;
+    let (id, opening) = match case.read_target(&None)? {
+        Some(file) => (file.id, None),
+        None => {
+            let goal = fuzz_goal()?;
+            (case.store.allocate(&goal).map_err(fail)?, Some(goal))
+        }
+    };
+    let spec = TodoSpec {
+        label: lbl.clone(),
+        after: Vec::new(),
+        delegation: None,
+        contract: Some(contract_for(case, &id, passes)?),
+        children: Vec::new(),
+    };
+    let inserted = match opening {
+        Some(goal) => case.apply(
+            owner(
+                None,
+                Op::Init {
+                    goal,
+                    todos: vec![spec],
+                },
+            ),
+            Bump::Fresh,
+        )?,
+        None => case.apply(owner(None, Op::Append { todos: vec![spec] }), Bump::Touch)?,
+    };
+    if inserted.is_err() {
+        return Ok(());
+    }
+    let started = case.apply(owner(None, Op::Start { label: lbl.clone() }), Bump::Touch)?;
+    if started.is_err() {
+        return Ok(());
+    }
+    match case.apply(
+        owner(
+            None,
+            Op::Done {
+                label: lbl.clone(),
+                output: None,
+            },
+        ),
+        Bump::Touch,
+    )? {
+        Ok(outcome) => {
+            let verified = outcome.plan.todo(&lbl).is_some_and(|todo| {
+                matches!(
+                    todo.state,
+                    TodoState::Done {
+                        resolution: Some(yi_types::plan::doc::Resolution::VerifiedDone),
+                        ..
+                    }
+                )
+            });
+            proptest::prop_assert!(verified && passes, "a contracted done landed unverified");
+            VERIFIED_DONE.fetch_add(1, Ordering::SeqCst);
+        }
+        Err(PlanOpError::Refused { verdict, .. }) => {
+            proptest::prop_assert!(
+                !passes,
+                "a passing checker was refused: {}",
+                verdict.lines()
+            );
+            DONE_REFUSED.fetch_add(1, Ordering::SeqCst);
+        }
+        Err(_) => {}
+    }
+    Ok(())
+}
+
 fn act_import(case: &mut Case, serial: u8, slots: &[usize]) -> Result<(), TestCaseError> {
     let id = PlanId::new(format!("fuzz-import-{}", serial % 3)).map_err(fail)?;
     let mut labels: Vec<&str> = Vec::new();
@@ -753,7 +931,7 @@ fn act_import(case: &mut Case, serial: u8, slots: &[usize]) -> Result<(), TestCa
         "---\n{frontmatter}\n---\n## {}\nImported by the fuzzer.\n",
         labels[0]
     );
-    std::fs::write(case.dir.join(format!("{id}.md")), &document).map_err(fail)?;
+    std::fs::write(case.dir.join("ws").join(format!("{id}.md")), &document).map_err(fail)?;
     let source: Url = format!("local://{id}.md").parse().map_err(fail)?;
     let existed = case.store.list().map_err(fail)?.contains(&id);
     let result = case.apply(owner(None, Op::Import { source }), Bump::ReadOnly)?;
@@ -795,24 +973,26 @@ fn act_import(case: &mut Case, serial: u8, slots: &[usize]) -> Result<(), TestCa
 fn act(case: &mut Case, action: &Action) -> Result<(), TestCaseError> {
     match action {
         Action::Init { specs } => {
-            let goal = GoalText::new("ship the fuzzed widget end to end").map_err(fail)?;
+            let goal = fuzz_goal()?;
+            let id = case.store.allocate(&goal).map_err(fail)?;
             let _refused = case.apply(
                 owner(
                     None,
                     Op::Init {
                         goal,
-                        todos: todo_specs(specs)?,
+                        todos: todo_specs(case, Some(&id), specs)?,
                     },
                 ),
                 Bump::Fresh,
             )?;
         }
         Action::Append { specs } => {
+            let id = case.read_target(&None)?.map(|file| file.id);
             let _refused = case.apply(
                 owner(
                     None,
                     Op::Append {
-                        todos: todo_specs(specs)?,
+                        todos: todo_specs(case, id.as_ref(), specs)?,
                     },
                 ),
                 Bump::Touch,
@@ -826,6 +1006,7 @@ fn act(case: &mut Case, action: &Action) -> Result<(), TestCaseError> {
                     label: TodoLabel::new(format!("pad job {}", case.pad)).map_err(fail)?,
                     after: Vec::new(),
                     delegation: None,
+                    contract: None,
                     children: Vec::new(),
                 });
             }
@@ -954,7 +1135,7 @@ fn act(case: &mut Case, action: &Action) -> Result<(), TestCaseError> {
                     plan,
                     Op::Decompose {
                         label: label(*slot)?,
-                        todos: todo_specs(specs)?,
+                        todos: todo_specs(case, None, specs)?,
                     },
                 ),
                 Bump::Touch,
@@ -966,13 +1147,14 @@ fn act(case: &mut Case, action: &Action) -> Result<(), TestCaseError> {
             reap_fails,
         } => {
             let plan = case.resolve_target(*target)?;
+            let id = case.read_target(&plan)?.map(|file| file.id);
             case.stub.fail_reap.store(*reap_fails, Ordering::SeqCst);
             let _refused = case.apply(
                 owner(
                     plan,
                     Op::Supersede {
                         reason: "the fuzzer changed its mind".to_owned(),
-                        todos: todo_specs(specs)?,
+                        todos: todo_specs(case, id.as_ref(), specs)?,
                     },
                 ),
                 Bump::Supersede,
@@ -1053,7 +1235,7 @@ fn act(case: &mut Case, action: &Action) -> Result<(), TestCaseError> {
             let result = case.engine.apply(owner(
                 None,
                 Op::Append {
-                    todos: todo_specs(specs)?,
+                    todos: todo_specs(case, None, specs)?,
                 },
             ));
             case.crash.fail_sync.store(false, Ordering::SeqCst);
@@ -1067,6 +1249,7 @@ fn act(case: &mut Case, action: &Action) -> Result<(), TestCaseError> {
             case.resync_expected()?;
         }
         Action::Import { serial, slots } => act_import(case, *serial, slots)?,
+        Action::Verified { passes } => act_verified(case, *passes)?,
     }
     Ok(())
 }
@@ -1087,12 +1270,14 @@ fn spec_strategy() -> impl Strategy<Value = SpecPick> {
         any::<bool>(),
         any::<bool>(),
         prop_oneof![Just(None), (0..LABELS.len()).prop_map(Some)],
+        prop_oneof![4 => Just(None), 1 => any::<bool>().prop_map(Some)],
     )
-        .prop_map(|(slot, delegated, declares, after)| SpecPick {
+        .prop_map(|(slot, delegated, declares, after, contract)| SpecPick {
             slot,
             delegated,
             declares,
             after,
+            contract,
         })
 }
 
@@ -1161,6 +1346,7 @@ fn action_strategy() -> impl Strategy<Value = Action> {
             .prop_map(|(at_sync, specs)| Action::Crash { at_sync, specs }),
         1 => (any::<u8>(), prop::collection::vec(slot_strategy(), 0..4))
             .prop_map(|(serial, slots)| Action::Import { serial, slots }),
+        1 => any::<bool>().prop_map(|passes| Action::Verified { passes }),
     ]
 }
 
@@ -1185,5 +1371,17 @@ fn random_op_sequences_hold_every_invariant() -> Result<(), Box<dyn Error>> {
         .run(&sequence_strategy(), |(width, actions)| {
             run_case(width, &actions)
         })
-        .map_err(|error| format!("{error}").into())
+        .map_err(|error| format!("{error}"))?;
+    // The F0c invariant is only evidence when the lane reached both outcomes.
+    let (verified, refused) = (
+        VERIFIED_DONE.load(Ordering::SeqCst),
+        DONE_REFUSED.load(Ordering::SeqCst),
+    );
+    if verified == 0 || refused == 0 {
+        return Err(format!(
+            "the lane reached {verified} verified completions and {refused} refused verdicts; both must be reached"
+        )
+        .into());
+    }
+    Ok(())
 }

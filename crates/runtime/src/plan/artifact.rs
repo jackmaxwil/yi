@@ -54,6 +54,7 @@ impl Artifacts {
             digest,
             media_type: media_type.to_owned(),
             length: u64::try_from(bytes.len()).unwrap_or(u64::MAX),
+            provenance: None,
         };
         let target = self.path(&digest);
         if target.is_file() {

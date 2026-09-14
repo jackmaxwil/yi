@@ -78,6 +78,26 @@ impl Checkpoints {
         Ok(TreeId::new(tree.trim()))
     }
 
+    /// A capture with `excluded` (paths relative to the project) left out of the tree; the
+    /// next `add --all` puts them back in the shadow index.
+    pub fn capture_excluding(&self, excluded: &[&Path]) -> Result<TreeId, CheckpointError> {
+        self.git(&["add", "--all"])?;
+        for path in excluded {
+            let path = path.to_string_lossy();
+            self.git(&[
+                "rm",
+                "-r",
+                "-q",
+                "--cached",
+                "--ignore-unmatch",
+                "--",
+                &path,
+            ])?;
+        }
+        let tree = self.git(&["write-tree"])?;
+        Ok(TreeId::new(tree.trim()))
+    }
+
     pub fn changed(&self, tree: &TreeId) -> Result<Vec<Change>, CheckpointError> {
         self.git(&["add", "--all"])?;
         let diff = self.git(&["diff", "--name-status", "--cached", tree.as_str()])?;
@@ -111,6 +131,43 @@ impl Checkpoints {
     /// the tree's hex, so no path can present itself to git as an option.
     pub fn show(&self, tree: &TreeId, path: &str) -> Result<String, CheckpointError> {
         self.git(&["show", &format!("{}:{path}", tree.as_str())])
+    }
+
+    /// Writes the tree into `into` as a work tree of its own, through a private index, so the
+    /// shadow index and the project's checkout are untouched.
+    pub fn materialize(&self, tree: &TreeId, into: &Path) -> Result<(), CheckpointError> {
+        std::fs::create_dir_all(into)
+            .map_err(|error| CheckpointError::GitMissing(error.to_string()))?;
+        let index = into.with_extension("index");
+        let _serialized = self
+            .serial
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        for args in [
+            vec!["read-tree", tree.as_str()],
+            vec!["checkout-index", "-a", "-f"],
+        ] {
+            let mut process = command("git");
+            process
+                .env("GIT_INDEX_FILE", &index)
+                .arg("--git-dir")
+                .arg(&self.git_dir)
+                .arg("--work-tree")
+                .arg(into)
+                .args(&args)
+                .current_dir(into);
+            let output = process
+                .output()
+                .map_err(|error| CheckpointError::GitMissing(error.to_string()))?;
+            if !output.status.success() {
+                return Err(CheckpointError::Git {
+                    command: args.first().copied().unwrap_or_default().to_owned(),
+                    message: String::from_utf8_lossy(&output.stderr).trim().to_owned(),
+                });
+            }
+        }
+        let _index_is_scratch = std::fs::remove_file(&index);
+        Ok(())
     }
 
     fn git(&self, args: &[&str]) -> Result<String, CheckpointError> {

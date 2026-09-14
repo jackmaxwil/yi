@@ -6,12 +6,16 @@ use std::path::{Path, PathBuf};
 use serde_json::Value;
 use yi_types::plan::canonical::ArtifactRef;
 use yi_types::plan::doc::{
-    DocError, LEGACY_PLAN_FORMAT, NOTE_MAX_BYTES, Note, Plan, PlanId, PlanParseError, Todo,
+    DocError, LEGACY_PLAN_FORMAT, NOTE_MAX_BYTES, Note, Plan, PlanId, PlanParseError, Resolution,
+    Todo, TodoState,
 };
 use yi_types::url::{Scheme, Url};
 
 use super::artifact::{ArtifactError, Artifacts};
-use super::store::{PLAN_CAP_BYTES, PlanStore};
+use super::ops::{Actor, Delta, Op, Outcome, PlanEngine, PlanOpError};
+use super::state::{KIND_IMPORT, root_of};
+use super::store::{PLAN_CAP_BYTES, PlanStore, draft};
+use yi_types::plan::ledger::RequestId;
 
 /// Invariant: one cap over the whole document before any parse, so an oversized body is refused whole and never silently shortened.
 pub const IMPORT_CAP_BYTES: usize = 1024 * 1024;
@@ -228,6 +232,17 @@ fn map_sections(
     Ok(())
 }
 
+/// An imported `done` is history, never evidence (plan section 3.6): whatever the file said, no
+/// verdict in this journal stands behind it.
+fn mark_legacy(todos: &mut [Todo]) {
+    for todo in todos {
+        if let TodoState::Done { resolution, .. } = &mut todo.state {
+            *resolution = Some(Resolution::LegacyUnverified);
+        }
+        mark_legacy(&mut todo.children);
+    }
+}
+
 /// A document read and parsed, nothing written yet: the engine consults the journal between
 /// this and [`store`], so a retry replays and a plan the journal already holds is refused.
 #[must_use]
@@ -293,10 +308,76 @@ pub fn store(store: &PlanStore, source: Source) -> Result<Imported, ImportError>
     let artifacts = store.artifacts(&plan.id);
     let artifact = artifacts.put(&bytes, media_type, &store.nonce())?;
     map_sections(&mut plan.todos, &body, &artifacts, store)?;
+    mark_legacy(&mut plan.todos);
     Ok(Imported {
         plan,
         artifact,
         format,
         source: url,
     })
+}
+
+impl PlanEngine {
+    pub(super) fn import(
+        &self,
+        source: &Url,
+        actor: &Actor,
+        request: RequestId,
+    ) -> Result<Outcome, PlanOpError> {
+        let read = read(&self.cwd, source)?;
+        super::table::validate_plan(&read.plan)?;
+        let id = read.plan.id.clone();
+        let root = root_of(&id)?;
+        let op = Op::Import {
+            source: source.clone(),
+        };
+        let mut txn = self.begin(&root, actor, request, None, true)?;
+        if let Some(replayed) = self.replay(&txn, &op)? {
+            return Ok(replayed);
+        }
+        // Invariant: the journal, not the checkpoint file, says whether the plan exists, so a
+        // checkpoint lost behind a live journal cannot be imported over.
+        if txn.state.plans.contains_key(&id) {
+            return Err(ImportError::AlreadyImported {
+                path: self.store.path(&id),
+                id,
+            }
+            .into());
+        }
+        let imported = store(&self.store, read)?;
+        let mut record = draft(
+            &id,
+            KIND_IMPORT,
+            txn.actor.clone(),
+            self.store.now_ms(),
+            u32::try_from(imported.plan.todos.len()).unwrap_or(u32::MAX),
+            serde_json::json!({
+                "source": imported.source,
+                "artifact": imported.artifact.to_string(),
+                "format": imported.format,
+                "plan": imported.plan.clone().unmarked(),
+            }),
+            txn.request.clone(),
+            0,
+            None,
+        );
+        record.record.extra.insert(
+            "media_type".to_owned(),
+            Value::String(imported.artifact.media_type.clone()),
+        );
+        record
+            .record
+            .extra
+            .insert("length".to_owned(), Value::from(imported.artifact.length));
+        PlanStore::render(&imported.plan)?;
+        let committed = self.commit(&mut txn, record)?;
+        self.store.checkpoint_family(&txn.state)?;
+        self.emit(&committed);
+        let mut outcome = self.conclude(&id, &txn.state, &[], Delta::default())?;
+        outcome.notices.push(format!(
+            "imported {} as {} (original kept as {})",
+            imported.source, id, imported.artifact
+        ));
+        Ok(outcome)
+    }
 }

@@ -2,22 +2,25 @@
 
 use std::num::NonZeroUsize;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use serde_json::Value;
 use yi_types::plan::canonical::canonical_digest;
+use yi_types::plan::contract::{Resolution as Completion, Verdict, VerificationToken};
 use yi_types::plan::doc::{
     AgentId, Delegation, DocError, GoalText, Plan, PlanId, PlanIssue, PlanState, RetryCount,
     SPAWN_CAP, Spawns, TodoAddr, TodoLabel, TodoState, TodoStateName, TouchCount,
 };
-use yi_types::plan::ledger::{EffectId, JournalRecord, PlanOpRecord, RequestId};
+use yi_types::plan::ledger::{AttemptId, EffectId, JournalRecord, PlanOpRecord, RequestId};
 use yi_types::url::Url;
 
 pub use yi_types::plan::op::{Op, Reconciliation, Resolution, Resolve, SetRow, TodoSpec};
 
 use super::journal::{Journal, has_record};
 pub use super::output::OutputResolve;
+use super::output::check_output;
 use super::recovery::{self, Liveness};
+use super::snapshot::{Snapshotter, TreeHash};
 use super::state::{
     self, Decided, KIND_IMPORT, KIND_SPAWN_INTENT, KIND_SPAWN_RESULT, RootState, leaving_running,
     root_of,
@@ -27,6 +30,7 @@ use super::table::{
     OpKind, Refusal, admit, check_actor, check_plan_state, check_terminal, in_flight, op_name,
     ready_labels,
 };
+use super::verify::Verifier;
 use yi_types::plan::op::Reaped;
 
 pub(super) const OWNER_AGENT: &str = "main";
@@ -167,6 +171,53 @@ pub enum PlanOpError {
     NotJournaled { op: OpKind },
     #[error("todo {label:?} needs no reconciliation")]
     NotReconcilable { label: TodoLabel },
+    #[error("done refused for {label:?}: {} (score {}, coverage {})\n{}", verdict.outcome, verdict.score, verdict.coverage, verdict.lines())]
+    Refused {
+        label: TodoLabel,
+        verdict: Box<Verdict>,
+    },
+    #[error(
+        "done for {label:?} is stale: the token names attempt {}; the todo moved on",
+        token.attempt
+    )]
+    Stale {
+        label: TodoLabel,
+        token: Box<VerificationToken>,
+    },
+    #[error(
+        "done for {label:?} refused: the contract or its criteria changed since start; retry or supersede"
+    )]
+    ContractDrift { label: TodoLabel },
+    #[error("done for {label:?} refused: worktree acceptance is unavailable until F0d lands")]
+    AcceptanceUnavailable { label: TodoLabel },
+    #[error("no verified completion for {:?}", label.as_str())]
+    NoVerifiedCompletion { label: TodoLabel },
+    #[error(
+        "done for {label:?} names unserved product {url}: resolved, but its bytes are not here to adjudicate"
+    )]
+    UnservedOutput { label: TodoLabel, url: Url },
+    #[error(
+        "done for {label:?} names unserved schema {schema}: the criterion is not here to adjudicate"
+    )]
+    UnservedSchema { label: TodoLabel, schema: Box<Url> },
+    #[error("done for {label:?} names no output; the contract's schema item needs the product")]
+    OutputRequired { label: TodoLabel },
+    #[error("contract of {label:?}: {detail}")]
+    Contract { label: TodoLabel, detail: String },
+    #[error("verification of {label:?} could not run: {reason}")]
+    Verification { label: TodoLabel, reason: String },
+    #[error(
+        "{label:?} is on attempt {}, not attempt {}",
+        current.get(),
+        named.get()
+    )]
+    WrongAttempt {
+        label: TodoLabel,
+        named: AttemptId,
+        current: AttemptId,
+    },
+    #[error("{label:?} is not running by {agent}; an agent submits for its own attempt only")]
+    NotRunningBy { label: TodoLabel, agent: String },
     #[error("import refused: {0}")]
     Import(#[from] super::import::ImportError),
     #[error("record did not serialize: {0}")]
@@ -221,6 +272,18 @@ impl PlanOpError {
             Self::SubplanUndecided { .. } => "subplan_undecided",
             Self::NotJournaled { .. } => "not_journaled",
             Self::NotReconcilable { .. } => "not_reconcilable",
+            Self::Refused { .. } => "refused",
+            Self::Stale { .. } => "stale",
+            Self::ContractDrift { .. } => "contract_drift",
+            Self::AcceptanceUnavailable { .. } => "acceptance_unavailable",
+            Self::NoVerifiedCompletion { .. } => "no_verified_completion",
+            Self::UnservedOutput { .. } => "unserved_output",
+            Self::UnservedSchema { .. } => "unserved_schema",
+            Self::OutputRequired { .. } => "output_required",
+            Self::Contract { .. } => "contract",
+            Self::Verification { .. } => "verification",
+            Self::WrongAttempt { .. } => "wrong_attempt",
+            Self::NotRunningBy { .. } => "not_running_by",
             Self::Import(_) => "import",
             Self::Serialize(_) | Self::Canonical(_) => "serialize",
             Self::Reduce(_) => "reduce",
@@ -229,7 +292,9 @@ impl PlanOpError {
         }
     }
 
-    fn is_recordable(&self) -> bool {
+    /// `Refused` and `Stale` are recorded by the done path itself; an unserved product and a
+    /// verification that could not run are the host's failures, so they charge no refusal.
+    pub(super) fn is_recordable(&self) -> bool {
         !matches!(
             self,
             Self::Store(_)
@@ -238,6 +303,11 @@ impl PlanOpError {
                 | Self::Reduce(_)
                 | Self::RecordedRefusal { .. }
                 | Self::RequestIdReused { .. }
+                | Self::Refused { .. }
+                | Self::Stale { .. }
+                | Self::UnservedOutput { .. }
+                | Self::UnservedSchema { .. }
+                | Self::Verification { .. }
         )
     }
 }
@@ -259,29 +329,35 @@ pub fn dispatch_width(cores: NonZeroUsize) -> NonZeroUsize {
 }
 
 #[derive(Debug, Default)]
-struct Delta {
-    spawned: Vec<Url>,
-    reaped: Vec<Url>,
-    subplan: Option<PlanId>,
-    notices: Vec<String>,
+pub(super) struct Delta {
+    pub(super) spawned: Vec<Url>,
+    pub(super) reaped: Vec<Url>,
+    pub(super) subplan: Option<PlanId>,
+    pub(super) notices: Vec<String>,
 }
 
-struct Txn {
-    root: PlanId,
-    state: RootState,
-    records: Vec<JournalRecord>,
-    journal: Journal,
-    actor: String,
-    request: RequestId,
-    expected: u64,
+pub(super) struct Txn {
+    pub(super) root: PlanId,
+    pub(super) state: RootState,
+    pub(super) records: Vec<JournalRecord>,
+    pub(super) journal: Journal,
+    pub(super) actor: String,
+    pub(super) request: RequestId,
+    pub(super) expected: u64,
+    /// The resolution a `done` in this transaction lands with; the done path decides it.
+    pub(super) resolution: Option<Completion>,
+    /// The verdict the `done` record carries, committed as one record with the transition.
+    pub(super) verdict: Option<Verdict>,
+    /// The verification effect the `done` record settles.
+    pub(super) effect: Option<EffectId>,
 }
 
 impl Txn {
-    fn last(&self) -> Option<&JournalRecord> {
+    pub(super) fn last(&self) -> Option<&JournalRecord> {
         self.records.last()
     }
 
-    fn derived(&self, suffix: &str) -> Result<RequestId, PlanOpError> {
+    pub(super) fn derived(&self, suffix: &str) -> Result<RequestId, PlanOpError> {
         RequestId::new(format!("{}/{suffix}", self.request)).map_err(|error| {
             PlanOpError::Doc(DocError::AgentIdWhitespace {
                 id: error.to_string(),
@@ -290,19 +366,28 @@ impl Txn {
     }
 }
 
+/// A hook the done path calls between releasing the lease and running the verifier; tests use
+/// it to move the todo out from under its own verification.
+pub type VerifyHook = Arc<dyn Fn() + Send + Sync>;
+
 pub struct PlanEngine {
-    store: PlanStore,
-    delegate: Arc<dyn Delegate>,
+    pub(super) store: PlanStore,
+    pub(super) delegate: Arc<dyn Delegate>,
     width: NonZeroUsize,
-    output_resolve: Option<Arc<dyn OutputResolve>>,
+    pub(super) output_resolve: Option<Arc<dyn OutputResolve>>,
     op_sink: Option<Arc<dyn OpSink>>,
-    liveness: Arc<dyn Liveness>,
-    cwd: PathBuf,
+    pub(super) liveness: Arc<dyn Liveness>,
+    pub(super) cwd: PathBuf,
+    pub(super) verifier: Verifier,
+    pub(super) snapshotter: Arc<dyn Snapshotter>,
+    pub(super) verify_hook: Option<VerifyHook>,
+    pub(super) in_flight: Mutex<super::done::InFlight>,
 }
 
 impl PlanEngine {
     pub fn new(store: PlanStore, delegate: Arc<dyn Delegate>) -> Self {
         let cores = std::thread::available_parallelism().unwrap_or(NonZeroUsize::MIN);
+        let snapshotter = Arc::new(TreeHash::excluding(store.dir()));
         Self {
             store,
             delegate,
@@ -311,6 +396,28 @@ impl PlanEngine {
             op_sink: None,
             liveness: Arc::new(recovery::Unknown),
             cwd: std::env::current_dir().unwrap_or_default(),
+            verifier: Verifier::new(crate::goal::DEFAULT_CHECK_TIMEOUT_MS),
+            snapshotter,
+            verify_hook: None,
+            in_flight: Mutex::new(super::done::InFlight::default()),
+        }
+    }
+
+    pub fn with_verifier(self, verifier: Verifier) -> Self {
+        Self { verifier, ..self }
+    }
+
+    pub fn with_snapshotter(self, snapshotter: Arc<dyn Snapshotter>) -> Self {
+        Self {
+            snapshotter,
+            ..self
+        }
+    }
+
+    pub fn with_verify_hook(self, hook: VerifyHook) -> Self {
+        Self {
+            verify_hook: Some(hook),
+            ..self
         }
     }
 
@@ -362,7 +469,6 @@ impl PlanEngine {
         if let Op::View { full } = op {
             return self.view(plan, full);
         }
-        let _lease = self.store.lease()?;
         let request = match request_id {
             Some(id) => id,
             None => {
@@ -373,6 +479,12 @@ impl PlanEngine {
                 })?
             }
         };
+        // The done path takes and releases the lease itself around the verifier (plan
+        // section 6.3, step 3), so it is dispatched before this transaction holds one.
+        if matches!(op, Op::Done { .. }) {
+            return self.done(plan, &actor, op, request, expected_revision);
+        }
+        let _lease = self.store.lease()?;
         match op {
             Op::Init { goal, todos } => self.init(goal, todos, &actor, request),
             Op::Import { source } => self.import(&source, &actor, request),
@@ -403,7 +515,7 @@ impl PlanEngine {
     }
 
     /// `adopting` is the importer's load: a checkpoint with no journal is the view it adopts.
-    fn begin(
+    pub(super) fn begin(
         &self,
         root: &PlanId,
         actor: &Actor,
@@ -420,10 +532,17 @@ impl PlanEngine {
             actor: actor_word(actor),
             request,
             expected: expected.map_or(0, |touched| touched.0),
+            resolution: None,
+            verdict: None,
+            effect: None,
         })
     }
 
-    fn commit(&self, txn: &mut Txn, record: JournalRecord) -> Result<JournalRecord, PlanOpError> {
+    pub(super) fn commit(
+        &self,
+        txn: &mut Txn,
+        record: JournalRecord,
+    ) -> Result<JournalRecord, PlanOpError> {
         let sealed = txn.journal.seal(record, txn.last())?;
         txn.journal.append(&sealed)?;
         state::apply(&mut txn.state, &sealed.record)?;
@@ -431,14 +550,14 @@ impl PlanEngine {
         Ok(sealed.record)
     }
 
-    fn emit(&self, record: &JournalRecord) {
+    pub(super) fn emit(&self, record: &JournalRecord) {
         let Some(sink) = &self.op_sink else {
             return;
         };
         let _telemetry_never_fails_an_op = sink.record(record.record.clone());
     }
 
-    fn init(
+    pub(super) fn init(
         &self,
         goal: GoalText,
         specs: Vec<TodoSpec>,
@@ -483,7 +602,7 @@ impl PlanEngine {
         self.conclude(&id, &txn.state, &[], Delta::default())
     }
 
-    fn view(&self, plan: Option<PlanId>, _full: bool) -> Result<Outcome, PlanOpError> {
+    pub(super) fn view(&self, plan: Option<PlanId>, _full: bool) -> Result<Outcome, PlanOpError> {
         let id = self.resolve(plan)?;
         let plan = self.store.read(&id)?;
         let ready = ready_labels(&plan);
@@ -499,7 +618,7 @@ impl PlanEngine {
         })
     }
 
-    fn replay(&self, txn: &Txn, op: &Op) -> Result<Option<Outcome>, PlanOpError> {
+    pub(super) fn replay(&self, txn: &Txn, op: &Op) -> Result<Option<Outcome>, PlanOpError> {
         let Some((index, record)) = txn
             .records
             .iter()
@@ -560,7 +679,7 @@ impl PlanEngine {
         }))
     }
 
-    fn framed(
+    pub(super) fn framed(
         &self,
         plan: Option<PlanId>,
         actor: &Actor,
@@ -574,7 +693,17 @@ impl PlanEngine {
         if let Some(replayed) = self.replay(&txn, &op)? {
             return Ok(replayed);
         }
-        let current = txn.state.plan(&id)?;
+        self.check_revision(&txn, &id, expected)?;
+        self.settle(&mut txn, &id, &root, &op)
+    }
+
+    pub(super) fn check_revision(
+        &self,
+        txn: &Txn,
+        id: &PlanId,
+        expected: Option<TouchCount>,
+    ) -> Result<(), PlanOpError> {
+        let current = txn.state.plan(id)?;
         if let Some(expected) = expected
             && current.touched != expected
         {
@@ -583,19 +712,30 @@ impl PlanEngine {
                 current: current.touched.0,
             });
         }
-        let before = admitted(current, self.slots(&txn.state));
-        match self.transact(&mut txn, &id, &root, &op) {
-            Ok(delta) => self.conclude(&id, &txn.state, &before, delta),
+        Ok(())
+    }
+
+    /// The tail of a framed op: transact, conclude, and record a refusal the caller reads.
+    pub(super) fn settle(
+        &self,
+        txn: &mut Txn,
+        id: &PlanId,
+        root: &PlanId,
+        op: &Op,
+    ) -> Result<Outcome, PlanOpError> {
+        let before = admitted(txn.state.plan(id)?, self.slots(&txn.state));
+        match self.transact(txn, id, root, op) {
+            Ok(delta) => self.conclude(id, &txn.state, &before, delta),
             Err(error) => {
                 if error.is_recordable() {
-                    self.record_refusal(&mut txn, &id, &op, &error);
+                    self.record_refusal(txn, id, op, &error);
                 }
                 Err(error)
             }
         }
     }
 
-    fn transact(
+    pub(super) fn transact(
         &self,
         txn: &mut Txn,
         id: &PlanId,
@@ -605,14 +745,31 @@ impl PlanEngine {
         let plan = txn.state.plan(id)?;
         check_plan_state(plan, op.kind())?;
         if let Op::Done { label, output } = op {
-            let resolve = self.output_resolve.as_deref();
-            super::output::check_output(resolve, plan, label, output.as_ref())?;
+            check_output(self.output_resolve.as_deref(), plan, label, output.as_ref())?;
         }
-        let mut decided = Decided::default();
+        let mut decided = Decided {
+            resolution: txn.resolution,
+            ..Decided::default()
+        };
+        super::done::admit(txn, plan, op, &mut decided)?;
         if let Op::Decompose { label, .. } = op
             && plan.tier == yi_types::plan::doc::PlanTier::Root
         {
             decided.subplan = Some(self.allocate_child(&id.child(label)?)?);
+        }
+        if let Op::Start { label } = op
+            && let Some(contract) = plan.todo(label).and_then(|todo| todo.contract.as_ref())
+        {
+            // Invariant: the criteria are frozen here, before any effect, so a start that
+            // names an unservable criterion spawns nothing.
+            let frozen =
+                super::verify::freeze(&self.store.artifacts(id), contract).map_err(|detail| {
+                    PlanOpError::Contract {
+                        label: label.clone(),
+                        detail,
+                    }
+                })?;
+            decided.contract_hash = Some(frozen.contract_digest);
         }
         let leaving = leaving_running(&txn.state, id, op)?;
         // Invariant: every refusable check runs before the first effect, so a refused op has
@@ -636,6 +793,8 @@ impl PlanEngine {
                     })
                     .collect(),
                 subplan: decided.subplan.clone(),
+                resolution: decided.resolution,
+                contract_hash: decided.contract_hash,
             };
             let rehearsed = state::apply_op(&mut dry, id, op, &rehearsal)?;
             for plan in dry.plans.values() {
@@ -785,7 +944,7 @@ impl PlanEngine {
         }
     }
 
-    fn record_for(
+    pub(super) fn record_for(
         &self,
         txn: &Txn,
         id: &PlanId,
@@ -819,6 +978,15 @@ impl PlanEngine {
         record.record.from = from;
         record.record.to = to;
         record.record.extra = decided.into_extra()?;
+        if let Some(verdict) = &txn.verdict {
+            record.verdict = Some(serde_json::to_value(verdict)?);
+        }
+        if let Some(effect) = &txn.effect {
+            record
+                .record
+                .extra
+                .insert("effect_id".to_owned(), Value::String(effect.to_string()));
+        }
         if matches!(op, Op::FuseReset) {
             let prior = txn.state.plan(&txn.root)?.spawns().get();
             record
@@ -829,14 +997,17 @@ impl PlanEngine {
         Ok(record)
     }
 
-    fn record_refusal(&self, txn: &mut Txn, id: &PlanId, op: &Op, error: &PlanOpError) {
+    pub(super) fn record_refusal(&self, txn: &mut Txn, id: &PlanId, op: &Op, error: &PlanOpError) {
         let Ok(plan) = txn.state.plan(id) else {
             return;
         };
         let Ok(args) = op.args() else {
             return;
         };
-        let label = op.label().cloned();
+        let label = op.label().cloned().or_else(|| match error {
+            PlanOpError::NoVerifiedCompletion { label } => Some(label.clone()),
+            _ => None,
+        });
         let attempt = label
             .as_ref()
             .and_then(|label| plan.todo(label))
@@ -862,119 +1033,7 @@ impl PlanEngine {
             .and_then(|_| Ok(self.store.checkpoint_family(&txn.state)?));
     }
 
-    fn import(
-        &self,
-        source: &Url,
-        actor: &Actor,
-        request: RequestId,
-    ) -> Result<Outcome, PlanOpError> {
-        let read = super::import::read(&self.cwd, source)?;
-        super::table::validate_plan(&read.plan)?;
-        let id = read.plan.id.clone();
-        let root = root_of(&id)?;
-        let op = Op::Import {
-            source: source.clone(),
-        };
-        let mut txn = self.begin(&root, actor, request, None, true)?;
-        if let Some(replayed) = self.replay(&txn, &op)? {
-            return Ok(replayed);
-        }
-        // Invariant: the journal, not the checkpoint file, says whether the plan exists, so a
-        // checkpoint lost behind a live journal cannot be imported over.
-        if txn.state.plans.contains_key(&id) {
-            return Err(super::import::ImportError::AlreadyImported {
-                path: self.store.path(&id),
-                id,
-            }
-            .into());
-        }
-        let imported = super::import::store(&self.store, read)?;
-        let mut record = draft(
-            &id,
-            KIND_IMPORT,
-            txn.actor.clone(),
-            self.store.now_ms(),
-            u32::try_from(imported.plan.todos.len()).unwrap_or(u32::MAX),
-            serde_json::json!({
-                "source": imported.source,
-                "artifact": imported.artifact.to_string(),
-                "format": imported.format,
-                "plan": imported.plan.clone().unmarked(),
-            }),
-            txn.request.clone(),
-            0,
-            None,
-        );
-        record.record.extra.insert(
-            "media_type".to_owned(),
-            Value::String(imported.artifact.media_type.clone()),
-        );
-        record
-            .record
-            .extra
-            .insert("length".to_owned(), Value::from(imported.artifact.length));
-        PlanStore::render(&imported.plan)?;
-        let committed = self.commit(&mut txn, record)?;
-        self.store.checkpoint_family(&txn.state)?;
-        self.emit(&committed);
-        let mut outcome = self.conclude(&id, &txn.state, &[], Delta::default())?;
-        outcome.notices.push(format!(
-            "imported {} as {} (original kept as {})",
-            imported.source, id, imported.artifact
-        ));
-        Ok(outcome)
-    }
-
-    fn repair(
-        &self,
-        plan: Option<PlanId>,
-        resolutions: Vec<Resolution>,
-        actor: &Actor,
-        request: RequestId,
-        expected: Option<TouchCount>,
-    ) -> Result<Outcome, PlanOpError> {
-        let id = self.resolve(plan)?;
-        let root = root_of(&id)?;
-        let recovered = recovery::run(&self.store, &root, &*self.liveness)?;
-        let mut notices: Vec<String> = Vec::new();
-        if let Some(torn) = &recovered.torn {
-            notices.push(format!(
-                "a torn journal tail was set aside at {}",
-                torn.display()
-            ));
-        }
-        notices.push(format!(
-            "regenerated {} checkpoint(s) from the journal",
-            recovered.regenerated.len()
-        ));
-        notices.extend(recovered.findings.iter().map(ToString::to_string));
-        for resolution in &resolutions {
-            let found = recovered
-                .findings
-                .iter()
-                .any(|finding| finding.plan == id && finding.label == resolution.label);
-            if !found {
-                return Err(PlanOpError::NotReconcilable {
-                    label: resolution.label.clone(),
-                });
-            }
-        }
-        let mut outcome = if resolutions.is_empty() {
-            self.view(Some(id), true)?
-        } else {
-            self.framed(
-                Some(id),
-                actor,
-                Op::Repair { resolutions },
-                request,
-                expected,
-            )?
-        };
-        outcome.notices.splice(0..0, notices);
-        Ok(outcome)
-    }
-
-    fn slots(&self, state: &RootState) -> usize {
+    pub(super) fn slots(&self, state: &RootState) -> usize {
         let flight: usize = state
             .plans
             .values()
@@ -984,7 +1043,7 @@ impl PlanEngine {
         self.width.get().saturating_sub(flight)
     }
 
-    fn conclude(
+    pub(super) fn conclude(
         &self,
         id: &PlanId,
         state: &RootState,
@@ -1024,7 +1083,7 @@ impl PlanEngine {
 
     /// Invariant: unnamed resolution finds the Active root, else the newest finished root
     /// still carrying a Failed todo; without one it never matches, so closed work stays shut.
-    fn resolve(&self, plan: Option<PlanId>) -> Result<PlanId, PlanOpError> {
+    pub(super) fn resolve(&self, plan: Option<PlanId>) -> Result<PlanId, PlanOpError> {
         if let Some(id) = plan {
             return Ok(id);
         }

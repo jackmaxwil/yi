@@ -9,8 +9,8 @@ use yi_types::plan::doc::{
 use yi_types::url::Url;
 
 use super::ops::{
-    Actor, Op, OpRequest, Outcome, PlanEngine, PlanOpError, Reconciliation, Resolution, SetRow,
-    TodoSpec,
+    Actor, Op, OpRequest, Outcome, PlanEngine, PlanOpError, Reconciliation, Resolution, Resolve,
+    SetRow, TodoSpec,
 };
 use super::table::{ALL_OPS, OpKind, op_name};
 use yi_types::plan::op::MODEL_OPS;
@@ -51,6 +51,57 @@ pub enum ArgError {
     TooDeep { line: usize, max: usize },
     #[error("actor is not an argument; the surface a request arrives on fixes its principal")]
     ActorArg,
+    #[error("{} does not take {key:?}; its arguments are {legal}", op_name(*op))]
+    UnknownKey {
+        op: OpKind,
+        key: String,
+        legal: String,
+    },
+}
+
+/// Every key an op reads, `op` and `plan` included; `todo` is the alias for `label`.
+fn known_keys(kind: OpKind) -> &'static [&'static str] {
+    match kind {
+        OpKind::Init => &["op", "plan", "goal", "todos"],
+        OpKind::Append => &["op", "plan", "todos"],
+        OpKind::Drop | OpKind::Unblock | OpKind::Start => &["op", "plan", "label", "todo"],
+        OpKind::Block => &["op", "plan", "label", "todo", "on", "note"],
+        OpKind::Reorder => &["op", "plan", "labels"],
+        OpKind::AddEdge => &["op", "plan", "todo", "after"],
+        OpKind::Done => &["op", "plan", "label", "todo", "output"],
+        OpKind::Fail => &["op", "plan", "label", "todo", "cause"],
+        OpKind::Retry => &["op", "plan", "label", "todo", "delegation"],
+        OpKind::Decompose => &["op", "plan", "label", "todo", "todos"],
+        OpKind::Supersede => &["op", "plan", "reason", "todos"],
+        OpKind::Set => &["op", "plan", "goal", "list"],
+        OpKind::View => &["op", "plan", "full"],
+        OpKind::FuseReset => &["op", "plan"],
+        OpKind::Repair => &["op", "plan", "resolutions"],
+        OpKind::Import => &["op", "plan", "source"],
+        OpKind::Reconcile => &["op", "plan", "label", "todo", "effect_id", "outcome"],
+        OpKind::Submit => &["op", "plan", "label", "todo", "attempt", "output"],
+        OpKind::Resolve => &["op", "plan", "label", "todo", "attempt", "resolution"],
+        OpKind::Accept => &["op", "plan", "label", "todo", "note", "output"],
+    }
+}
+
+const TODO_SPEC_KEYS: [&str; 4] = ["label", "after", "delegation", "contract"];
+
+/// Invariant: a key no op reads is refused, never dropped: a misspelled `contract` or `output`
+/// would otherwise land a todo on the unverified path with no error.
+fn refuse_unknown(
+    args: &Map<String, Value>,
+    op: OpKind,
+    legal: &[&'static str],
+) -> Result<(), ArgError> {
+    match args.keys().find(|key| !legal.contains(&key.as_str())) {
+        Some(key) => Err(ArgError::UnknownKey {
+            op,
+            key: key.clone(),
+            legal: legal.join(", "),
+        }),
+        None => Ok(()),
+    }
 }
 
 const CHECKLIST_DEPTH: usize = 6;
@@ -111,7 +162,10 @@ fn parse_checklist(list: &str) -> Result<Vec<SetRow>, ArgError> {
                         },
                     )?,
                 },
-                TodoStateName::Done => TodoState::Done { output: None },
+                TodoStateName::Done => TodoState::Done {
+                    output: None,
+                    resolution: None,
+                },
                 TodoStateName::Pending
                 | TodoStateName::Blocked
                 | TodoStateName::Failed
@@ -125,6 +179,8 @@ fn parse_checklist(list: &str) -> Result<Vec<SetRow>, ArgError> {
             note: None,
             attempt: yi_types::plan::doc::AttemptId::FIRST,
             refusals: 0,
+            contract: None,
+            contract_hash: None,
             extra: serde_json::Map::new(),
         };
         let depth = indent.min(path.len());
@@ -170,6 +226,7 @@ fn parse_checklist(list: &str) -> Result<Vec<SetRow>, ArgError> {
                 label: todo.label,
                 after: Vec::new(),
                 delegation: None,
+                contract: None,
                 children: todo.children,
             },
             state,
@@ -209,11 +266,14 @@ from_arg!(
     Url,
     BlockedOn,
     Delegation,
+    yi_types::plan::contract::Contract,
     String,
     bool,
     Vec<Resolution>,
     yi_types::plan::ledger::EffectId,
+    yi_types::plan::ledger::AttemptId,
     Reconciliation,
+    Resolve,
 );
 
 fn opt<T: FromArg>(
@@ -255,27 +315,32 @@ fn todo_specs(args: &Map<String, Value>, op: OpKind) -> Result<Vec<TodoSpec>, Ar
         let Value::Object(spec) = value else {
             return Err(ArgError::TodoShape { op, index });
         };
+        refuse_unknown(spec, op, &TODO_SPEC_KEYS)?;
         specs.push(TodoSpec {
             label: need(spec, op, "label")?,
             after: opt(spec, op, "after")?.unwrap_or_default(),
             delegation: opt(spec, op, "delegation")?,
+            contract: opt(spec, op, "contract")?,
             children: Vec::new(),
         });
     }
     Ok(specs)
 }
 
+/// `accept` is the word every surface takes for the `accepted_by_user` record.
 fn parse_op(args: &Map<String, Value>) -> Result<Op, ArgError> {
-    let name = args
-        .get("op")
-        .and_then(Value::as_str)
-        .ok_or(ArgError::NoOp)?;
+    let name = match args.get("op").and_then(Value::as_str) {
+        Some("accept") => "accepted_by_user",
+        Some(name) => name,
+        None => return Err(ArgError::NoOp),
+    };
     let kind = ALL_OPS
         .into_iter()
         .find(|op| op_name(*op) == name)
         .ok_or_else(|| ArgError::UnknownOp {
             got: name.to_owned(),
         })?;
+    refuse_unknown(args, kind, known_keys(kind))?;
     Ok(match kind {
         OpKind::Init => Op::Init {
             goal: need(args, kind, "goal")?,
@@ -344,6 +409,21 @@ fn parse_op(args: &Map<String, Value>) -> Result<Op, ArgError> {
             effect_id: opt(args, kind, "effect_id")?,
             outcome: need::<Reconciliation>(args, kind, "outcome")?,
         },
+        OpKind::Submit => Op::Submit {
+            label: label(args, kind)?,
+            attempt: need(args, kind, "attempt")?,
+            output: need(args, kind, "output")?,
+        },
+        OpKind::Resolve => Op::Resolve {
+            label: label(args, kind)?,
+            attempt: need(args, kind, "attempt")?,
+            resolution: need(args, kind, "resolution")?,
+        },
+        OpKind::Accept => Op::Accept {
+            label: label(args, kind)?,
+            note: need(args, kind, "note")?,
+            output: opt(args, kind, "output")?,
+        },
     })
 }
 
@@ -411,17 +491,24 @@ fn todo_line(todo: &Todo) -> String {
             let on = serde_json::to_string(on).unwrap_or_else(|_| "?".to_owned());
             line.push_str(&format!(" on {on}: {note}"));
         }
-        TodoState::Done { output: Some(url) } => line.push_str(&format!(" -> {url}")),
+        TodoState::Done { output, resolution } => {
+            if let Some(url) = output {
+                line.push_str(&format!(" -> {url}"));
+            }
+            if let Some(resolution) = resolution {
+                line.push_str(&format!(" ({resolution})"));
+            }
+        }
         TodoState::Failed { cause, last } => {
             line.push_str(&format!(" ! {cause}"));
             if let Some(url) = last {
                 line.push_str(&format!(" (last {url})"));
             }
         }
-        TodoState::Pending
-        | TodoState::Done { output: None }
-        | TodoState::Abandoned
-        | TodoState::Other(_) => {}
+        TodoState::Pending | TodoState::Abandoned | TodoState::Other(_) => {}
+    }
+    if let Some(Value::String(url)) = todo.extra.get(super::state::SUBMITTED_KEY) {
+        line.push_str(&format!(" submitted {url}"));
     }
     if !todo.retries.is_zero() {
         line.push_str(&format!(" retries {}", todo.retries.0));
@@ -601,7 +688,7 @@ pub fn schema() -> Value {
                 "todos": {
                     "type": "array",
                     "items": {"type": "object"},
-                    "description": "init/append/decompose/supersede: [{label, after?: [label], delegation?: {spec: {role?, model?, effort?, isolation?}, accept: {command|stated}, context?: [url], output?: {schema: url}}}]. A delegation hands the todo to a child and its accept is mandatory",
+                    "description": "init/append/decompose/supersede: [{label, after?: [label], delegation?: {spec: {role?, model?, effort?, isolation?}, accept: {command|stated}, context?: [url], output?: {schema: url}}, contract?: {class: writer|reader|inline, items: [{id, critical: bool, weight: 1..100, decider: {cmd: {checker: artifact, timeout_ms}} | {schema: {schema: artifact}} | {example: {cases: artifact, runner: artifact, timeout_ms}}}], threshold?: 1..1000, min_coverage?: 1..1000}}]. A delegation hands the todo to a child and its accept is mandatory; done runs the contract (an artifact is {digest, media_type, length} from the plan's store) and a todo without one completes unverified",
                     "minItems": 1
                 },
                 "label": {"type": "string", "description": "drop/block/unblock/start/done/fail/retry/decompose: the todo"},
@@ -630,6 +717,17 @@ mod tests {
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/plans")
     }
 
+    /// `repeat` and `reapFails` are the walkthrough's own keys, stripped before the engine
+    /// sees the args, so the parser never learns them.
+    fn strip_walkthrough_keys(args: &mut Map<String, Value>) {
+        args.remove("reapFails");
+        if let Some(Value::Array(todos)) = args.get_mut("todos") {
+            for todo in todos.iter_mut().filter_map(Value::as_object_mut) {
+                todo.remove("repeat");
+            }
+        }
+    }
+
     #[test]
     fn every_fixture_op_argument_set_parses() -> Fallible {
         let mut seen = 0usize;
@@ -650,6 +748,7 @@ mod tests {
                     Some(Value::Object(args)) => args.clone(),
                     _ => Map::new(),
                 };
+                strip_walkthrough_keys(&mut input);
                 input.insert("op".to_owned(), Value::String(name.to_owned()));
                 if let Some(plan) = step.get("plan") {
                     input.insert("plan".to_owned(), plan.clone());
@@ -666,8 +765,9 @@ mod tests {
                     line.push(' ');
                     line.push_str(&serde_json::to_string(args)?);
                 }
-                let through_cli = super::super::authority::cli_args(&line)
+                let mut through_cli = super::super::authority::cli_args(&line)
                     .map_err(|error| format!("{name}: {error}"))?;
+                strip_walkthrough_keys(&mut through_cli);
                 assert_eq!(
                     request(&Actor::Owner, &through_cli).ok(),
                     parsed.ok(),
@@ -686,6 +786,32 @@ mod tests {
             serde_json::to_string(&schema())?,
             serde_json::to_string(&schema())?
         );
+        Ok(())
+    }
+
+    #[test]
+    fn an_unknown_argument_key_is_refused() -> Fallible {
+        let cases = [
+            json!({"op": "done", "label": "x", "outpt": "local://a"}),
+            json!({"op": "set", "list": "- [ ] x", "expected_revision": 3}),
+            json!({"op": "init", "goal": "ship it", "todos": [{"label": "x", "contrat": {}}]}),
+        ];
+        for case in cases {
+            let Value::Object(input) = case else {
+                return Err("case is not an object".into());
+            };
+            let message = request(&Actor::Owner, &input)
+                .err()
+                .ok_or_else(|| format!("{input:?} parsed with an unknown key"))?
+                .to_string();
+            assert!(message.contains("does not take"), "{message}");
+            assert!(
+                message.contains("outpt")
+                    || message.contains("expected_revision")
+                    || message.contains("contrat"),
+                "{message}"
+            );
+        }
         Ok(())
     }
 
@@ -714,6 +840,8 @@ mod tests {
             note: None,
             attempt: yi_types::plan::doc::AttemptId::FIRST,
             refusals: 0,
+            contract: None,
+            contract_hash: None,
             extra: Map::new(),
         })
     }
@@ -726,7 +854,13 @@ mod tests {
             GoalText::new("ship it")?,
             PlanTier::Root,
             vec![
-                todo("cut", TodoState::Done { output: None })?,
+                todo(
+                    "cut",
+                    TodoState::Done {
+                        output: None,
+                        resolution: None,
+                    },
+                )?,
                 todo("build", TodoState::Running { by })?,
                 todo("ship", TodoState::Pending)?,
             ],

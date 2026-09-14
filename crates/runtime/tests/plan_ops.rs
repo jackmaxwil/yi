@@ -2,6 +2,40 @@
 //! that used to live beside the engine, plus one regression per confirmed
 //! defect of the 2026-08-31 review — each was watched failing on the unfixed
 //! engine before its fix landed.
+//!
+//! F0c, completion. Plan section 3.6 is the invariant every row below defends: a
+//! managed todo is `Done` only when the verification token names the current attempt,
+//! the frozen contract and criteria match, every critical item passed, score and
+//! coverage meet the frozen policy, the accepted output snapshot is the verified one,
+//! and the verdict and the transition are one committed journal record. `done`, `set`,
+//! `import`, `repair`, `supersede`, the CLI and every shape go through that one
+//! validator. The rows are ordered by what they defend: first that no surface can walk
+//! around the validator, then that the verdict the validator reads is the right one,
+//! then what a refusal costs.
+//!
+//! | test | tier | what it pins | the control it dies with |
+//! |---|---|---|---|
+//! | `set_cannot_complete_a_failing_task` | T0 | `set` may declare and rearrange work and may request legal transitions, and may not author `Done`. A row asking for `done` with no committed verdict refuses the whole transaction, naming the row; a second `set` asking only for `blocked` applies, which is the control against a driver that refuses every `set`. | The `done` row going through the same validator as `done` itself. `ops.rs` authors `Done` directly today, so this is red until the validator lands. Restore the direct write and the first `set` succeeds with no verdict anywhere in the plan. Fixture: `fixtures/plans/contracts/set-cannot-complete.json`. |
+//! | `every_surface_requires_matching_verified_completion` | T1 | The same todo, in the same state, refused identically through the tool, through `plan.op`, through the CLI, through `import`, through `repair`, and through a view restored from a checkpoint. One list of surfaces, one refusal text, one journal record shape. | One validator, called from every path, rather than a check per surface. Give any one surface its own completion path and that surface becomes the way a model completes unverified work; the T1 tier is the point, since the failure this catches is a surface someone forgot. |
+//! | `writer_requires_a_passing_critical_behavioral_check` | T0 | The writer floor of §6.2: at least one critical behavioural item, `cmd` or `example`. A schema may add shape and a judge item never stands alone, so a writer contract of one schema item plus one judge item is refused at `init`, `append`, `retry` and `supersede`, at declaration, not at `done`. | `floor_of` checked by `Plan::validate()` at every insert. Check the floor only at `done` and a plan sits in the store for a week promising a deliverable nothing can decide. The neighbouring failure, a trivial command added to satisfy the floor, is a specification failure no test catches; the fixture review looks for it and this row says so. |
+//! | `missing_output_schema_or_resolver_never_passes` | T0 | An output that resolves to `Ok(None)`, and a schema document that resolves to `Ok(None)`, are refusals with distinct reasons, charging no refusal against the todo: resolved but unserved means the bytes are not here to adjudicate, which is the case where a pass is least founded. | The explicit `None` arms. Today `check_output` (`crates/runtime/src/plan/output.rs:103-105`) validates only when both resolve to `Some` and falls through to `Ok(())` otherwise, so this row is red on the tree as it stands. Restore the two-`Some` guard and the fixture passes `done` on a product nobody read. Fixture: `fixtures/plans/contracts/unserved-output-today-passes.json`. |
+//! | `old_attempt_verdict_cannot_complete_restarted_task` | T0 | A verification committed under attempt 1 that returns after a `fail`, a `retry` and a `start` put the todo `Running` on attempt 2 with the same contract, output and workspace is refused `Stale` naming the attempt move, commits `verification_stale`, and charges no refusal: nothing about the product was decided. The next attempt verifies and completes normally, so the stale path is not a dead end. | The `attempt` field of the whole-token comparison at step 5: it is the only field that moved, so masking it completes a todo whose product no longer exists. Charge the refusal and three stale verdicts walk a healthy todo into `Blocked { on: User }`. Fixture: `fixtures/plans/contracts/stale-token.json`. |
+//! | `changed_criterion_or_output_invalidates_verdict` | T0 | A `done` whose contract or criteria digest differs from the frozen one is refused `ContractDrift`, naming the label; an output digest that changed between the freeze and the comparison is refused the same way. The road back is `retry`, a new attempt with a new freeze, or `supersede`. | The contract and criteria digests being in the token and compared whole. Freeze the contract by reference rather than by digest and a product that edits its own checker passes, which is the one failure a verified `done` exists to prevent. |
+//! | `concurrent_done_requests_share_verification_effect` | T0 | Two `done` calls for the same token run the checks once, charge one refusal at most, and return or await the same verdict. A third arriving after the verdict commits replays it. | The `verification_requested` record committed at step 2 being the effect's identity, and a second `done` joining it rather than starting its own. Key the effect on the request id instead of the token and two calls run the checker twice and charge two refusals for one product. |
+//! | `another_engine_refuses_a_live_claim_and_charges_nothing` | T0 | A second engine over the same store (the CLI beside a session) calling `done` for the token a live process is verifying is refused as a verification in progress, naming the claimant's pid; the checker runs once, one `verification_requested` and one `done_refused` land, and the todo's refusals read 1. | The `claim` on the `verification_requested` record and `refuse_live_claim` in `done.rs`: the in-flight map is per process, so without the claim a second process adopts the effect, runs the checker again and charges a second refusal for one product. |
+//! | `product_repair_passes_under_unchanged_criteria` | T1 | The red-then-green pair: the first product fails the frozen checker and `done` is refused with a recorded verdict; the product is repaired and the same frozen checker passes it. Every verdict in the run carries the same contract and criteria digest and a different output digest, which is the whole claim, and the todo's refusal counter still reads 1 after the pass. | The criteria being frozen at `start` and the refusal leaving the todo where it was. Let the contract be rewritten between attempts and the fixture still goes green while proving nothing, which is the specification failure this pair exists to make visible. Fixture: `fixtures/plans/contracts/writer-cmd-red-then-green.json`. |
+//! | `inline_task_output_validates_product_not_sidecar` | T0 | An inline todo's contract runs against the product itself, not against a note, a summary or a sidecar file the same turn wrote. The inline floor is the writer or reader floor of its declared role; running the work inline is not an exemption from it. | The output artifact being the one the token names. Let an inline todo nominate any artifact and the cheapest passing move is to write a sidecar that satisfies the schema, which is the reward-hacking shape the floors exist against. |
+//! | `the_third_refusal_blocks_the_todo_on_user_as_a_recorded_transition` | T0 | Three refused verdicts on one todo step it to `Blocked { on: User }` as its own committed transition with its own record, so the human inbox learns about it from the journal and not from a counter someone has to read. Stale and infrastructure abstentions do not count toward the three. | The counter bump being an explicit event and the cap being a transition rather than a return value. Make the cap a refusal text and a model retries forever; count stale verdicts and a slow checker walks a healthy todo into the inbox. |
+//! | `accept_records_accepted_by_user_never_verified_done` | T1 | The user's acceptance is its own op: refused to the owner, confirmed through `authority::submit` as the CLI and the console do, recorded as `accepted_by_user` with the citation as its actor, and landing `Done { AcceptedByUser }` with no `pass` verdict anywhere. | `check_actor` refusing the owner and `Actor::User` being minted only by the confirmed path. Let the owner accept and a model closes what its checker refused; write `VerifiedDone` here and the report cannot tell a checked todo from a waved-through one. |
+//! | `a_stated_only_todo_needs_an_item_or_a_user` | T0 | A todo whose only requirement is a stated acceptance is refused `done` on the owner's word; it completes once a decidable item is added and passes, or once a user accepts it. | `needs_resolution` counting a stated-only delegation. Drop it and "it works" is a contract again, the failure D77 was retired for. |
+//! | `done_on_an_uncontracted_worktree_todo_is_refused_as_unavailable` | T0 | `done` on a worktree todo with no contract is refused `AcceptanceUnavailable` and the todo stays `Running`; worktree acceptance is F0d, and no completion path frees a slot through a merge-less reap before it lands. | The worktree refusal sitting in `prepare` above the contract branch. Leave it inside `evidence` and the uncontracted todo takes the plain path, reaps the child and drops the lane with no disposition. |
+//! | `a_leftover_open_effect_does_not_hide_the_live_verification` | T0 | With an older `verification_requested` on the same todo left open under another token, two concurrent `done` calls still share one effect: the checker runs once, one refusal is charged, and the journal holds the leftover plus one live effect. | The token in `pending_verification`'s search. Match on the label alone and the oldest open effect is found first, the token filter drops it, and each call mints its own effect, runs the checker and charges a refusal. |
+//! | `a_checker_that_writes_into_the_workspace_still_passes` | T0 | A passing checker that appends to a file in its working directory lands `Done { VerifiedDone }` and the checkout is untouched: the checker runs in a materialization of the step 1 tree (`workspace_of(snapshot)`, section 6.3 step 4), never in the live checkout. | The materialization in `run_verifier`. Run the checker in the checkout and `pytest` writing a cache moves the tree step 5 re-captures, so it refuses its own pass as stale on every call. |
+//! | `a_workspace_edited_during_the_check_is_stale` | T0 | A checkout edited while the checker runs (a concurrent agent or the user) is refused `Stale` with `the workspace changed`, charging nothing: step 5 captures the workspace afresh and compares it with the token, as it does the attempt, version, digests and output. | The re-capture in step 5 (`evidence` in done.rs takes no frozen snapshot). Hand the step 1 id back in and the comparison passes by construction, so a tree that no longer exists lands `VerifiedDone`. |
+//! | `an_abstained_verification_is_rerun_not_replayed` | T0 | A verification that abstained for an infrastructure reason (a verifier deadline of 1 ms) is run again by the next `done` for the same token and passes, with no refusal charged at either point. | The `Fail \| Escalate` match on the settled verdict in `prepare` (done.rs). Replay every settled outcome and one abstention refuses a correct product forever without running the checker, and the cap never blocks it either. |
+//! | `set_cannot_complete_a_worktree_todo` | T0 | A `[x]` row for a worktree todo is refused `AcceptanceUnavailable` exactly as `done` is, and the todo stays `Running` with its child and lane; every completion of a worktree todo waits on F0d. | The worktree test in `completion_of` (state.rs), the validator `set`, `reconcile` and `accept` share with `done`. Keep it in `prepare` alone and `set` completes the todo `done` refuses, reaping nothing. |
+//! | `a_verbose_refusal_still_journals_under_the_record_cap` | T0 | A refusal whose six item tails would not fit the 64 KiB record once escaped still lands as `done_refused`: the journaled item details are clipped, the refusal is charged and the effect is settled. | `fitted` rehearsing the record under the cap before the commit. Commit unrehearsed and `seal` refuses the line, so the caller sees a store error, nothing is charged and the next `done` re-runs the same checker into the same wall. |
+//! | `import_marks_legacy_success_unverified` | T0 | An imported format-1 todo whose `Check::Stated` says a child called it done lands as `LegacyUnverified`, displayed as history and never as new evidence, and a later `set` asking `done` on the plan's remaining todo is refused all the same. | `Resolution` having three members. Read `LegacyUnverified` as `VerifiedDone` and one import launders a year of unchecked claims into verified work; drop the member and the history the user asked to keep is lost. Fixture: `fixtures/plans/contracts/legacy-stated-unverified.json`. |
 
 #[path = "../../types/tests/support/scratch.rs"]
 mod scratch;
@@ -85,6 +119,7 @@ fn spec(text: &str) -> Result<TodoSpec, Box<dyn Error>> {
         label: label(text)?,
         after: Vec::new(),
         delegation: None,
+        contract: None,
         children: Vec::new(),
     })
 }
@@ -98,9 +133,10 @@ fn delegation() -> Delegation {
             tools: Vec::new(),
             isolation: None,
             budget: None,
+            wall: None,
             extra: Map::new(),
         },
-        accept: Check::Stated("it works".to_owned()),
+        accept: Check::Command("true".to_owned()),
         output: None,
         context: Vec::new(),
         note: None,
@@ -113,6 +149,7 @@ fn delegated_spec(text: &str) -> Result<TodoSpec, Box<dyn Error>> {
         label: label(text)?,
         after: Vec::new(),
         delegation: Some(delegation()),
+        contract: None,
         children: Vec::new(),
     })
 }
@@ -221,6 +258,7 @@ fn backpressure_holds_a_delegated_todo_pending() -> TestResult {
         todo.state,
         TodoState::Done {
             output: Some("kernel://main/cli_surface".parse::<Url>()?),
+            resolution: None,
         }
     );
     // The freed slot admits the todo that was held.
@@ -357,6 +395,7 @@ fn a_cycle_is_refused_at_insert() -> TestResult {
         label: label("second job")?,
         after: vec![label("first job")?],
         delegation: None,
+        contract: None,
         children: Vec::new(),
     };
     let out = init(&engine, vec![spec("first job")?, second])?;
@@ -718,6 +757,7 @@ fn start_refuses_unmet_after_edges() -> TestResult {
         label: label("second job")?,
         after: vec![label("first job")?],
         delegation: None,
+        contract: None,
         children: Vec::new(),
     };
     let out = init(&engine, vec![spec("first job")?, follows])?;
@@ -927,6 +967,7 @@ fn a_declared_output_is_validated_against_its_schema() -> TestResult {
             label: label("write the report")?,
             after: Vec::new(),
             delegation: Some(declaring("local://schemas/report.json")?),
+            contract: None,
             children: Vec::new(),
         }],
     )?;
@@ -960,6 +1001,7 @@ fn a_product_that_satisfies_its_schema_completes() -> TestResult {
             label: label("write the report")?,
             after: Vec::new(),
             delegation: Some(declaring("local://schemas/report.json")?),
+            contract: None,
             children: Vec::new(),
         }],
     )?;
@@ -974,7 +1016,13 @@ fn a_product_that_satisfies_its_schema_completes() -> TestResult {
         .plan
         .todo(&label("write the report")?)
         .ok_or("todo missing")?;
-    assert!(matches!(todo.state, TodoState::Done { output: Some(_) }));
+    assert!(matches!(
+        todo.state,
+        TodoState::Done {
+            output: Some(_),
+            ..
+        }
+    ));
     Ok(())
 }
 
@@ -988,6 +1036,7 @@ fn a_schema_that_is_not_json_refuses_the_done_naming_the_schema() -> TestResult 
             label: label("write the report")?,
             after: Vec::new(),
             delegation: Some(declaring("local://schemas/report.json")?),
+            contract: None,
             children: Vec::new(),
         }],
     )?;
@@ -1049,6 +1098,7 @@ fn a_declared_output_must_resolve_at_done() -> TestResult {
             label: label("write the report")?,
             after: Vec::new(),
             delegation: Some(declared),
+            contract: None,
             children: Vec::new(),
         }],
     )?;
@@ -1071,15 +1121,16 @@ fn a_declared_output_must_resolve_at_done() -> TestResult {
             return Err(format!("expected an unresolved-output refusal, got {other:?}").into());
         }
     }
-    let out = engine.apply(owner(Op::Done {
+    // F0c: a product that resolves but is not served is a refusal, never the implicit pass
+    // this branch used to pin (plan section 6.3, step 4).
+    let unserved = engine.apply(owner(Op::Done {
         label: label("write the report")?,
         output: Some("local://reports/final.txt".parse::<Url>()?),
-    }))?;
-    let todo = out
-        .plan
-        .todo(&label("write the report")?)
-        .ok_or("todo missing")?;
-    assert!(matches!(todo.state, TodoState::Done { output: Some(_) }));
+    }));
+    assert!(
+        matches!(unserved, Err(PlanOpError::UnservedOutput { .. })),
+        "{unserved:?}"
+    );
     Ok(())
 }
 
@@ -1097,6 +1148,8 @@ fn row(text: &str, state: TodoStateName, children: &[&str]) -> Result<SetRow, Bo
             note: None,
             attempt: yi_types::plan::doc::AttemptId::FIRST,
             refusals: 0,
+            contract: None,
+            contract_hash: None,
             extra: Map::new(),
         });
     }
@@ -1476,4 +1529,1686 @@ fn a_ninth_delegated_start_is_refused_by_the_engine_with_the_count() -> TestResu
         "the refused start spawned"
     );
     Ok(())
+}
+
+// ---------------------------------------------------------------------------------------------
+// F0c: completion is verified on every path.
+
+mod contracts {
+    use super::*;
+    use std::collections::HashMap;
+    use std::path::{Path, PathBuf};
+
+    use serde_json::{Value, json};
+    use yi_kernel::client::HostHandlers;
+    use yi_runtime::HostRegistry;
+    use yi_runtime::plan::authority::{Confirmer, Submission, SubmitError, submit};
+    use yi_runtime::plan::journal::{Journal, RealFs};
+    use yi_runtime::plan::verify::Verifier;
+    use yi_runtime::session_store::{CreateOptions, JsonlRepo, SessionRepo};
+    use yi_runtime::{AskOutcome, Asker, PermissionAsk, PermissionBroker, PermissionMode};
+    use yi_types::plan::canonical::{ArtifactRef, Digest};
+    use yi_types::plan::contract::{
+        Contract, Outcome as VerdictOutcome, Resolution, Verdict, VerificationToken,
+    };
+    use yi_types::plan::doc::{AttemptId, Isolation};
+    use yi_types::plan::ledger::JournalRecord;
+
+    /// The `OutputResolve` stub: a url maps to its text, or to `None` for resolved but unserved.
+    #[derive(Default)]
+    pub(super) struct Serve(Mutex<HashMap<String, Option<String>>>);
+
+    impl Serve {
+        fn set(&self, url: &str, text: Option<&str>) {
+            if let Ok(mut map) = self.0.lock() {
+                map.insert(url.to_owned(), text.map(str::to_owned));
+            }
+        }
+    }
+
+    impl OutputResolve for Serve {
+        fn resolve(&self, url: &Url) -> Result<Option<String>, String> {
+            let map = self.0.lock().map_err(|_| "poisoned".to_owned())?;
+            match map.get(&url.to_string()) {
+                Some(answer) => Ok(answer.clone()),
+                None => Err(format!("{url} is not served")),
+            }
+        }
+    }
+
+    struct Rig {
+        _temp: Scratch,
+        store: PlanStore,
+        serve: Arc<Serve>,
+        engine: Arc<PlanEngine>,
+        ws: PathBuf,
+    }
+
+    fn rig(
+        name: &str,
+        hook: Option<yi_runtime::plan::ops::VerifyHook>,
+    ) -> Result<Rig, Box<dyn Error>> {
+        let temp = Scratch::new(name)?;
+        let store = PlanStore::open(temp.join("plans"))?;
+        let ws = temp.join("ws");
+        std::fs::create_dir_all(&ws)?;
+        let serve = Arc::new(Serve::default());
+        let mut engine = PlanEngine::new(store.clone(), Arc::new(Stub::default()))
+            .with_width(width(4)?)
+            .with_output_resolve(serve.clone())
+            .with_cwd(ws.clone())
+            .with_verifier(Verifier::new(20_000));
+        if let Some(hook) = hook {
+            engine = engine.with_verify_hook(hook);
+        }
+        Ok(Rig {
+            _temp: temp,
+            store,
+            serve,
+            engine: Arc::new(engine),
+            ws,
+        })
+    }
+
+    fn fixture(stem: &str) -> Result<Value, Box<dyn Error>> {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/plans/contracts")
+            .join(format!("{stem}.json"));
+        Ok(serde_json::from_str(&std::fs::read_to_string(path)?)?)
+    }
+
+    /// Every blob the fixture declares, written into the plan's store and checked against its
+    /// declared digest.
+    fn stage(store: &PlanStore, plan: &PlanId, doc: &Value) -> Result<(), Box<dyn Error>> {
+        let artifacts = store.artifacts(plan);
+        let base = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/plans/contracts");
+        for (alias, blob) in doc["artifacts"].as_object().ok_or("artifacts")? {
+            let bytes = match (blob.get("text"), blob.get("file")) {
+                (Some(Value::String(text)), _) => text.as_bytes().to_vec(),
+                (_, Some(Value::String(file))) => std::fs::read(base.join(file))?,
+                _ => return Err(format!("{alias} has neither text nor file").into()),
+            };
+            let media = blob["media_type"].as_str().ok_or("media_type")?;
+            let put = artifacts.put(&bytes, media, &store.nonce())?;
+            assert_eq!(
+                put.digest.to_string(),
+                blob["digest"].as_str().unwrap_or_default(),
+                "{alias}: the fixture's digest must match its bytes"
+            );
+        }
+        Ok(())
+    }
+
+    fn blob(doc: &Value, alias: &str) -> Result<String, Box<dyn Error>> {
+        doc["artifacts"][alias]["text"]
+            .as_str()
+            .map(str::to_owned)
+            .ok_or_else(|| format!("{alias} has no inline text").into())
+    }
+
+    /// The init step's todo specs, contracts included, exactly as the fixture spells them.
+    fn init_specs(doc: &Value) -> Result<(GoalText, Vec<TodoSpec>), Box<dyn Error>> {
+        let step = doc["steps"][0].clone();
+        let goal = GoalText::new(step["args"]["goal"].as_str().ok_or("goal")?)?;
+        let mut specs = Vec::new();
+        for todo in step["args"]["todos"].as_array().ok_or("todos")? {
+            specs.push(TodoSpec {
+                label: TodoLabel::new(todo["label"].as_str().ok_or("label")?)?,
+                after: Vec::new(),
+                delegation: match todo.get("delegation") {
+                    Some(raw) => Some(serde_json::from_value(raw.clone())?),
+                    None => None,
+                },
+                contract: match todo.get("contract") {
+                    Some(raw) => Some(serde_json::from_value(raw.clone())?),
+                    None => None,
+                },
+                children: Vec::new(),
+            });
+        }
+        Ok((goal, specs))
+    }
+
+    /// A contract built here, not from a fixture: one critical cmd item over a manifest.
+    fn cmd_contract(
+        store: &PlanStore,
+        plan: &PlanId,
+        command: &str,
+        class: &str,
+    ) -> Result<Contract, Box<dyn Error>> {
+        let manifest = json!({
+            "manifest": 1, "command": command, "cwd": "snapshot_root", "cwd_subdir": null,
+            "protected": [], "timeout_ms": 10_000, "env": [], "reads_outside_snapshot": false
+        });
+        let put = store.artifacts(plan).put(
+            &serde_json::to_vec(&manifest)?,
+            "application/vnd.yi.checker-manifest+json",
+            &store.nonce(),
+        )?;
+        Ok(serde_json::from_value(json!({
+            "class": class,
+            "items": [{"id": "check", "critical": true, "weight": 100,
+                       "decider": {"cmd": {"checker": put, "timeout_ms": 10_000}}}],
+            "threshold": 1000, "min_coverage": 1000
+        }))?)
+    }
+
+    /// The id `init` allocates for the shared goal, so artifacts can be staged before it.
+    fn planned() -> Result<PlanId, Box<dyn Error>> {
+        Ok(PlanId::slug("ship the widget end to end")?)
+    }
+
+    fn contracted(label: &str, contract: Contract) -> Result<TodoSpec, Box<dyn Error>> {
+        let mut spec = spec(label)?;
+        spec.contract = Some(contract);
+        Ok(spec)
+    }
+
+    fn done(
+        engine: &PlanEngine,
+        plan: &PlanId,
+        label: &str,
+        output: Option<&str>,
+    ) -> Result<Outcome, PlanOpError> {
+        let output = match output {
+            Some(url) => Some(url.parse::<Url>().map_err(|_| PlanOpError::NoPlan)?),
+            None => None,
+        };
+        engine.apply(at(
+            plan,
+            Op::Done {
+                label: TodoLabel::new(label).map_err(PlanOpError::Doc)?,
+                output,
+            },
+        ))
+    }
+
+    fn start(engine: &PlanEngine, plan: &PlanId, label: &str) -> Result<Outcome, PlanOpError> {
+        engine.apply(at(
+            plan,
+            Op::Start {
+                label: TodoLabel::new(label).map_err(PlanOpError::Doc)?,
+            },
+        ))
+    }
+
+    fn kinds(store: &PlanStore, plan: &PlanId) -> Result<Vec<String>, Box<dyn Error>> {
+        let journal = Journal::open(store.journal_path(plan), Arc::new(RealFs));
+        Ok(journal
+            .read()?
+            .records
+            .iter()
+            .map(|record| record.record.op.clone())
+            .collect())
+    }
+
+    fn verdicts(store: &PlanStore, plan: &PlanId) -> Result<Vec<Verdict>, Box<dyn Error>> {
+        let journal = Journal::open(store.journal_path(plan), Arc::new(RealFs));
+        journal
+            .read()?
+            .records
+            .iter()
+            .filter_map(|record| record.verdict.clone())
+            .map(|value| Ok(serde_json::from_value(value)?))
+            .collect()
+    }
+
+    fn todo_of(store: &PlanStore, plan: &PlanId, label: &str) -> Result<Todo, Box<dyn Error>> {
+        Ok(store
+            .read(plan)?
+            .todo(&TodoLabel::new(label)?)
+            .cloned()
+            .ok_or("todo missing")?)
+    }
+
+    fn refused(result: Result<Outcome, PlanOpError>) -> Result<Verdict, Box<dyn Error>> {
+        match result {
+            Err(PlanOpError::Refused { verdict, .. }) => Ok(*verdict),
+            other => Err(format!("expected a refusal with a verdict, got {other:?}").into()),
+        }
+    }
+
+    // Dies with the `TodoStateName::Done` arm of `apply_set` in state.rs: restore the direct
+    // `TodoState::Done` write and the first set completes a todo nothing verified.
+    #[test]
+    fn set_cannot_complete_a_failing_task() -> TestResult {
+        let doc = fixture("set-cannot-complete")?;
+        let rig = rig("yi-f0c-set", None)?;
+        let (goal, specs) = init_specs(&doc)?;
+        let opened = rig.engine.apply(owner(Op::Init { goal, todos: specs }))?;
+        let plan = opened.plan.id.clone();
+        stage(&rig.store, &plan, &doc)?;
+        start(&rig.engine, &plan, "Package the tarball")?;
+        let mut announce = spec("Announce the release")?;
+        announce.contract = None;
+        let refused = rig.engine.apply(at(
+            &plan,
+            Op::Set {
+                goal: None,
+                rows: vec![
+                    SetRow {
+                        spec: spec("Package the tarball")?,
+                        state: TodoStateName::Done,
+                    },
+                    SetRow {
+                        spec: announce,
+                        state: TodoStateName::Pending,
+                    },
+                ],
+            },
+        ));
+        let message = match refused {
+            Err(error @ PlanOpError::NoVerifiedCompletion { .. }) => error.to_string(),
+            other => return Err(format!("expected no verified completion, got {other:?}").into()),
+        };
+        assert_eq!(
+            message,
+            "no verified completion for \"Package the tarball\""
+        );
+        let todo = todo_of(&rig.store, &plan, "Package the tarball")?;
+        assert!(
+            matches!(todo.state, TodoState::Running { .. }),
+            "the set applied nothing"
+        );
+        assert_eq!(todo.refusals, 1, "the refusal is charged to the named row");
+        assert!(
+            rig.store
+                .read(&plan)?
+                .todo(&label("Announce the release")?)
+                .is_none(),
+            "one transaction"
+        );
+        assert_eq!(
+            kinds(&rig.store, &plan)?.last().map(String::as_str),
+            Some("set")
+        );
+        // The control: a set asking only for blocked applies.
+        rig.engine.apply(at(
+            &plan,
+            Op::Set {
+                goal: None,
+                rows: vec![SetRow {
+                    spec: spec("Package the tarball")?,
+                    state: TodoStateName::Blocked,
+                }],
+            },
+        ))?;
+        let todo = todo_of(&rig.store, &plan, "Package the tarball")?;
+        assert!(matches!(
+            todo.state,
+            TodoState::Blocked {
+                on: BlockedOn::User,
+                ..
+            }
+        ));
+        Ok(())
+    }
+
+    // Dies with the `needs_resolution` guards in state.rs: the checker's refusal on surfaces 1
+    // and 3, `apply_set`'s guard on surface 2, `apply_reconcile`'s on surface 5 (the `Op::Done`
+    // arm's `completion` is reached only by a replayed record). Give any surface its own
+    // completion path and that surface is how unverified work completes.
+    #[tokio::test]
+    async fn every_surface_requires_matching_verified_completion() -> TestResult {
+        let rig = rig("yi-f0c-surfaces", None)?;
+        let plan = planned()?;
+        let contract = cmd_contract(&rig.store, &plan, "exit 1", "writer")?;
+        let opened = init(&rig.engine, vec![contracted("ship it", contract)?])?;
+        assert_eq!(opened.plan.id, plan);
+        start(&rig.engine, &plan, "ship it")?;
+        // 1. The tool: done runs the checker and is refused with a verdict.
+        let verdict = refused(done(&rig.engine, &plan, "ship it", None))?;
+        assert_eq!(verdict.outcome, VerdictOutcome::Fail);
+        // 2. plan.op: a set asking for done is refused by the same validator.
+        let mut registry = HostRegistry::default();
+        yi_runtime::plan::request::register(Arc::clone(&rig.engine), Actor::Owner, &mut registry);
+        let mut payload = Map::new();
+        payload.insert(
+            "request_id".to_owned(),
+            Value::String("surface-1".to_owned()),
+        );
+        payload.insert("op".to_owned(), Value::String("set".to_owned()));
+        payload.insert("plan".to_owned(), Value::String(plan.as_str().to_owned()));
+        payload.insert("args".to_owned(), json!({"list": "- [x] ship it"}));
+        let reply = registry
+            .dispatch("plan.op", payload)
+            .ok_or("plan.op is not registered")?
+            .await?;
+        assert_eq!(reply["ok"], Value::Bool(false));
+        assert!(
+            reply["refusal"]["message"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("no verified completion"),
+            "{reply:?}"
+        );
+        // 3. The CLI surface shares `authority::submit` over the same engine.
+        let submission = yi_runtime::plan::authority::Submission {
+            args: json!({"op": "done", "label": "ship it", "plan": plan.as_str()})
+                .as_object()
+                .cloned()
+                .ok_or("args")?,
+            request_id: None,
+            expected_revision: None,
+        };
+        let cli = yi_runtime::plan::authority::submit(&rig.engine, &Actor::Owner, None, submission);
+        assert!(
+            cli.is_err(),
+            "the CLI cannot complete what the checker refused"
+        );
+        let accept = submit(
+            &rig.engine,
+            &Actor::Owner,
+            None,
+            accept_submission(&plan, "ship it")?,
+        );
+        assert!(
+            matches!(
+                accept,
+                Err(SubmitError::NoConfirmer {
+                    op: "accepted_by_user"
+                })
+            ),
+            "the CLI's accept is the user's alone, and no prompt is here: {accept:?}"
+        );
+        // 4. Import: a clone's checkpoint claiming the todo done lands as legacy history.
+        let mut claimed = rig.store.read(&plan)?;
+        for todo in &mut claimed.todos {
+            todo.state = TodoState::Done {
+                output: None,
+                resolution: Some(Resolution::VerifiedDone),
+            };
+        }
+        claimed.id = PlanId::new("ship-it-clone")?;
+        let clone_dir = rig.ws.join("clone/ship-it-clone");
+        std::fs::create_dir_all(&clone_dir)?;
+        std::fs::write(clone_dir.join("plan.json"), PlanStore::render(&claimed)?)?;
+        let imported = rig.engine.apply(owner(Op::Import {
+            source: format!("local://{}", clone_dir.join("plan.json").display()).parse()?,
+        }))?;
+        let legacy = imported
+            .plan
+            .todo(&label("ship it")?)
+            .ok_or("imported todo")?;
+        assert!(
+            matches!(
+                legacy.state,
+                TodoState::Done {
+                    resolution: Some(Resolution::LegacyUnverified),
+                    ..
+                }
+            ),
+            "an imported done is history, never evidence: {:?}",
+            legacy.state
+        );
+        // 5. Repair and reconcile: a reused result cannot complete a contracted todo.
+        let reused = rig.engine.apply(OpRequest {
+            plan: Some(plan.clone()),
+            actor: Actor::Host,
+            op: Op::Reconcile {
+                label: label("ship it")?,
+                effect_id: None,
+                outcome: yi_runtime::plan::ops::Reconciliation::Reused {
+                    output: "local://out.json".parse()?,
+                },
+            },
+            request_id: None,
+            expected_revision: None,
+        });
+        assert!(
+            matches!(reused, Err(PlanOpError::NoVerifiedCompletion { .. })),
+            "{reused:?}"
+        );
+        // 6. A restored view: an edited checkpoint marking the todo done never overwrites the journal.
+        let mut edited = rig.store.read(&plan)?;
+        for todo in &mut edited.todos {
+            todo.state = TodoState::Done {
+                output: None,
+                resolution: Some(Resolution::VerifiedDone),
+            };
+        }
+        std::fs::write(rig.store.path(&plan), PlanStore::render(&edited)?)?;
+        let view = rig.engine.apply(at(&plan, Op::View { full: true }))?;
+        let shown = view.plan.todo(&label("ship it")?).ok_or("todo")?;
+        assert!(
+            matches!(shown.state, TodoState::Running { .. }),
+            "the journal, not the edited file, is what a view restores: {:?}",
+            shown.state
+        );
+        let after = rig.engine.apply(at(
+            &plan,
+            Op::Fail {
+                label: label("ship it")?,
+                cause: "x".to_owned(),
+            },
+        ))?;
+        let failed = after.plan.todo(&label("ship it")?).ok_or("todo")?;
+        assert!(matches!(failed.state, TodoState::Failed { .. }));
+        assert!(
+            !verdicts(&rig.store, &plan)?
+                .iter()
+                .any(|verdict| verdict.outcome == VerdictOutcome::Pass),
+            "no surface produced a pass"
+        );
+        Ok(())
+    }
+
+    // Dies with `Contract::validate` in `Plan::validate`: check the floor only at done and a
+    // plan sits in the store promising a deliverable nothing can decide.
+    #[test]
+    fn writer_requires_a_passing_critical_behavioral_check() -> TestResult {
+        let rig = rig("yi-f0c-floor", None)?;
+        let schema_only: Contract = serde_json::from_value(json!({
+            "class": "writer",
+            "items": [{"id": "shape", "critical": true, "weight": 100,
+                       "decider": {"schema": {"schema": {"digest": yi_types::plan::canonical::Digest::of(b"{}").to_string(), "media_type": "application/schema+json", "length": 2}}}}],
+            "threshold": 1000, "min_coverage": 1000
+        }))?;
+        let mut shaped = spec("write it")?;
+        shaped.contract = Some(schema_only.clone());
+        let at_init = init(&rig.engine, vec![shaped.clone()]);
+        assert!(
+            matches!(at_init, Err(PlanOpError::Invalid { .. })),
+            "{at_init:?}"
+        );
+        let opened = init(&rig.engine, vec![spec("seed")?])?;
+        let plan = opened.plan.id.clone();
+        let at_append = rig.engine.apply(at(
+            &plan,
+            Op::Append {
+                todos: vec![shaped.clone()],
+            },
+        ));
+        assert!(
+            matches!(at_append, Err(PlanOpError::Invalid { .. })),
+            "{at_append:?}"
+        );
+        let at_supersede = rig.engine.apply(at(
+            &plan,
+            Op::Supersede {
+                reason: "reshape".to_owned(),
+                todos: vec![shaped.clone()],
+            },
+        ));
+        assert!(
+            matches!(at_supersede, Err(PlanOpError::Invalid { .. })),
+            "{at_supersede:?}"
+        );
+        let at_set = rig.engine.apply(at(
+            &plan,
+            Op::Set {
+                goal: None,
+                rows: vec![SetRow {
+                    spec: shaped,
+                    state: TodoStateName::Pending,
+                }],
+            },
+        ));
+        assert!(
+            matches!(at_set, Err(PlanOpError::Invalid { .. })),
+            "{at_set:?}"
+        );
+        // A judge item never stands alone, and is refused at declaration until F3a.
+        let judged: Contract = serde_json::from_value(json!({
+            "class": "writer",
+            "items": [{"id": "taste", "critical": true, "weight": 100,
+                       "decider": {"judge": {"rubric": {"digest": yi_types::plan::canonical::Digest::of(b"r").to_string(), "media_type": "text/markdown", "length": 1}, "evidence": [], "policy": {"n": 3}}}}],
+            "threshold": 1000, "min_coverage": 1000
+        }))?;
+        let mut judged_spec = spec("judge it")?;
+        judged_spec.contract = Some(judged);
+        let at_judge = rig.engine.apply(at(
+            &plan,
+            Op::Append {
+                todos: vec![judged_spec],
+            },
+        ));
+        assert!(
+            matches!(at_judge, Err(PlanOpError::Invalid { .. })),
+            "{at_judge:?}"
+        );
+        // The control: a critical cmd item clears the writer floor.
+        let behavioral = cmd_contract(&rig.store, &plan, "true", "writer")?;
+        let mut ok = spec("prove it")?;
+        ok.contract = Some(behavioral);
+        rig.engine
+            .apply(at(&plan, Op::Append { todos: vec![ok] }))?;
+        Ok(())
+    }
+
+    // Dies with the `ok_or_else(UnservedOutput)` and `ok_or_else(UnservedSchema)` arms of
+    // `check_output`: restore the two-Some guard and done passes on a product nobody read.
+    #[test]
+    fn missing_output_schema_or_resolver_never_passes() -> TestResult {
+        let doc = fixture("unserved-output-today-passes")?;
+        let rig = rig("yi-f0c-unserved", None)?;
+        let (goal, specs) = init_specs(&doc)?;
+        let opened = rig.engine.apply(owner(Op::Init { goal, todos: specs }))?;
+        let plan = opened.plan.id.clone();
+        let schema = blob(&doc, "report-schema")?;
+        rig.serve.set("local://schema/report.json", Some(&schema));
+        rig.serve.set("kernel://main/build_report", None);
+        start(&rig.engine, &plan, "Build the tarball")?;
+        let product = done(
+            &rig.engine,
+            &plan,
+            "Build the tarball",
+            Some("kernel://main/build_report"),
+        );
+        assert!(
+            matches!(product, Err(PlanOpError::UnservedOutput { .. })),
+            "{product:?}"
+        );
+        assert!(
+            product
+                .as_ref()
+                .err()
+                .map(ToString::to_string)
+                .unwrap_or_default()
+                .contains("unserved product")
+        );
+        let todo = todo_of(&rig.store, &plan, "Build the tarball")?;
+        assert!(matches!(todo.state, TodoState::Running { .. }));
+        assert_eq!(todo.refusals, 0, "an unserved product charges nothing");
+        rig.serve.set("local://build/docs.json", Some(&schema));
+        rig.serve.set("kernel://main/report_schema", None);
+        start(&rig.engine, &plan, "Build the docs")?;
+        let criterion = done(
+            &rig.engine,
+            &plan,
+            "Build the docs",
+            Some("local://build/docs.json"),
+        );
+        assert!(
+            matches!(criterion, Err(PlanOpError::UnservedSchema { .. })),
+            "{criterion:?}"
+        );
+        assert!(
+            criterion
+                .as_ref()
+                .err()
+                .map(ToString::to_string)
+                .unwrap_or_default()
+                .contains("unserved schema")
+        );
+        assert_eq!(todo_of(&rig.store, &plan, "Build the docs")?.refusals, 0);
+        Ok(())
+    }
+
+    // Dies with the whole-token comparison in `settle_verdict`: compare only the label and a
+    // stale verdict completes a todo whose product no longer exists.
+    #[test]
+    fn old_attempt_verdict_cannot_complete_restarted_task() -> TestResult {
+        let doc = fixture("stale-token")?;
+        let temp = Scratch::new("yi-f0c-stale")?;
+        let store = PlanStore::open(temp.join("plans"))?;
+        let ws = temp.join("ws");
+        std::fs::create_dir_all(ws.join("dist"))?;
+        std::fs::write(
+            ws.join("dist/logrotate-lite.tar.gz"),
+            blob(&doc, "tarball")?,
+        )?;
+        let (goal, specs) = init_specs(&doc)?;
+        let plan = PlanId::new(doc["plan"].as_str().ok_or("plan")?)?;
+        // A second engine over the same store moves the todo while the first verifies it.
+        let other = Arc::new(
+            PlanEngine::new(store.clone(), Arc::new(Stub::default())).with_cwd(ws.clone()),
+        );
+        let mover = Arc::clone(&other);
+        let moved_plan = plan.clone();
+        let hook: yi_runtime::plan::ops::VerifyHook = Arc::new(move || {
+            let label = TodoLabel::new("Package the tarball").ok();
+            if let Some(label) = label {
+                let _failed = mover.apply(at(
+                    &moved_plan,
+                    Op::Fail {
+                        label: label.clone(),
+                        cause: "the build host lost the disk".to_owned(),
+                    },
+                ));
+                let _retried = mover.apply(at(
+                    &moved_plan,
+                    Op::Retry {
+                        label: label.clone(),
+                        delegation: None,
+                    },
+                ));
+                // Running again on attempt 2: the attempt is the only token field that moved.
+                let _started = mover.apply(at(&moved_plan, Op::Start { label }));
+            }
+        });
+        let engine = PlanEngine::new(store.clone(), Arc::new(Stub::default()))
+            .with_cwd(ws.clone())
+            .with_verifier(Verifier::new(20_000))
+            .with_verify_hook(hook);
+        let opened = engine.apply(owner(Op::Init { goal, todos: specs }))?;
+        assert_eq!(opened.plan.id, plan);
+        stage(&store, &plan, &doc)?;
+        start(&engine, &plan, "Package the tarball")?;
+        let stale = done(&engine, &plan, "Package the tarball", None);
+        match stale {
+            Err(PlanOpError::Stale { token, .. }) => assert_eq!(token.attempt.get(), 1),
+            other => return Err(format!("expected stale, got {other:?}").into()),
+        }
+        let tail: Vec<String> = kinds(&store, &plan)?.into_iter().rev().take(5).collect();
+        assert_eq!(
+            tail,
+            [
+                "verification_stale",
+                "start",
+                "retry",
+                "fail",
+                "verification_requested"
+            ]
+        );
+        let journal = Journal::open(store.journal_path(&plan), Arc::new(RealFs));
+        let stale_record = journal.read()?.records.pop().ok_or("stale record")?;
+        let detail = stale_record.record.extra["refusal"]["detail"]
+            .as_str()
+            .unwrap_or_default()
+            .to_owned();
+        assert_eq!(
+            detail, "the token names attempt 1; the todo is on attempt 2",
+            "the stale detail names the attempt move and nothing else"
+        );
+        let todo = todo_of(&store, &plan, "Package the tarball")?;
+        assert!(
+            matches!(todo.state, TodoState::Running { .. }),
+            "{:?}",
+            todo.state
+        );
+        assert_eq!(
+            (todo.attempt.get(), todo.refusals, todo.retries),
+            (2, 0, RetryCount(1))
+        );
+        // The next attempt verifies and completes normally: the stale path is not a dead end.
+        let quiet = PlanEngine::new(store.clone(), Arc::new(Stub::default()))
+            .with_cwd(ws)
+            .with_verifier(Verifier::new(20_000));
+        let passed = done(&quiet, &plan, "Package the tarball", None)?;
+        let todo = passed
+            .plan
+            .todo(&label("Package the tarball")?)
+            .ok_or("todo")?;
+        assert!(matches!(
+            todo.state,
+            TodoState::Done {
+                resolution: Some(Resolution::VerifiedDone),
+                ..
+            }
+        ));
+        assert_eq!(todo.attempt.get(), 2);
+        let last = verdicts(&store, &plan)?.pop().ok_or("a verdict")?;
+        assert_eq!(
+            (last.outcome, last.token.attempt.get()),
+            (VerdictOutcome::Pass, 2)
+        );
+        Ok(())
+    }
+
+    // Dies with the contract digest in the token and its comparison against the frozen hash:
+    // freeze by reference and a product that edits its own checker passes.
+    #[test]
+    fn changed_criterion_or_output_invalidates_verdict() -> TestResult {
+        let serve_swap: Arc<Mutex<Option<Arc<Serve>>>> = Arc::new(Mutex::new(None));
+        let swap = Arc::clone(&serve_swap);
+        let hook: yi_runtime::plan::ops::VerifyHook = Arc::new(move || {
+            if let Ok(slot) = swap.lock()
+                && let Some(serve) = slot.as_ref()
+            {
+                serve.set("local://out.txt", Some("changed while verifying"));
+            }
+        });
+        let rig = rig("yi-f0c-drift", Some(hook))?;
+        let plan = planned()?;
+        let opened = init(
+            &rig.engine,
+            vec![
+                contracted(
+                    "write it",
+                    cmd_contract(&rig.store, &plan, "true", "writer")?,
+                )?,
+                contracted(
+                    "read it",
+                    cmd_contract(&rig.store, &plan, "true", "writer")?,
+                )?,
+            ],
+        )?;
+        assert_eq!(opened.plan.id, plan);
+        start(&rig.engine, &plan, "write it")?;
+        // The criterion changes after the freeze: a set rewrites the running todo's contract.
+        let mut rewritten = spec("write it")?;
+        rewritten.contract = Some(cmd_contract(&rig.store, &plan, "true # edited", "writer")?);
+        rig.engine.apply(at(
+            &plan,
+            Op::Set {
+                goal: None,
+                rows: vec![
+                    SetRow {
+                        spec: rewritten,
+                        state: TodoStateName::Running,
+                    },
+                    SetRow {
+                        spec: spec("read it")?,
+                        state: TodoStateName::Pending,
+                    },
+                ],
+            },
+        ))?;
+        let drift = done(&rig.engine, &plan, "write it", None);
+        assert!(
+            matches!(drift, Err(PlanOpError::ContractDrift { .. })),
+            "{drift:?}"
+        );
+        assert_eq!(
+            todo_of(&rig.store, &plan, "write it")?.refusals,
+            1,
+            "drift is a recorded refusal"
+        );
+        // The output changes between the freeze and the comparison: stale, and nothing charged.
+        rig.serve.set("local://out.txt", Some("as submitted"));
+        if let Ok(mut slot) = serve_swap.lock() {
+            *slot = Some(Arc::clone(&rig.serve));
+        }
+        start(&rig.engine, &plan, "read it")?;
+        let stale = done(&rig.engine, &plan, "read it", Some("local://out.txt"));
+        assert!(matches!(stale, Err(PlanOpError::Stale { .. })), "{stale:?}");
+        assert_eq!(todo_of(&rig.store, &plan, "read it")?.refusals, 0);
+        assert_eq!(
+            kinds(&rig.store, &plan)?.last().map(String::as_str),
+            Some("verification_stale")
+        );
+        Ok(())
+    }
+
+    // Dies with the `verification_requested` effect and the in-process flight keyed on the
+    // token: key it on the request id and two calls run the checker twice and charge twice.
+    #[test]
+    fn concurrent_done_requests_share_verification_effect() -> TestResult {
+        let rig = rig("yi-f0c-shared", None)?;
+        let marker = rig._temp.join("runs.txt");
+        let command = format!("sleep 1; echo run >> {}; exit 1", marker.display());
+        let plan = planned()?;
+        let opened = init(
+            &rig.engine,
+            vec![contracted(
+                "race it",
+                cmd_contract(&rig.store, &plan, &command, "writer")?,
+            )?],
+        )?;
+        assert_eq!(opened.plan.id, plan);
+        start(&rig.engine, &plan, "race it")?;
+        let results: Vec<Result<Outcome, PlanOpError>> = std::thread::scope(|scope| {
+            let handles: Vec<_> = (0..2)
+                .map(|_| {
+                    let engine = Arc::clone(&rig.engine);
+                    let plan = plan.clone();
+                    scope.spawn(move || done(&engine, &plan, "race it", None))
+                })
+                .collect();
+            handles
+                .into_iter()
+                .map(|handle| handle.join().unwrap_or(Err(PlanOpError::NoPlan)))
+                .collect()
+        });
+        for result in results {
+            let verdict = refused(result)?;
+            assert_eq!(verdict.outcome, VerdictOutcome::Fail);
+        }
+        assert_eq!(
+            std::fs::read_to_string(&marker)?.lines().count(),
+            1,
+            "the checker ran once"
+        );
+        assert_eq!(
+            todo_of(&rig.store, &plan, "race it")?.refusals,
+            1,
+            "one refusal for one product"
+        );
+        let requested = kinds(&rig.store, &plan)?
+            .iter()
+            .filter(|kind| *kind == "verification_requested")
+            .count();
+        assert_eq!(requested, 1);
+        // A third arriving after the verdict committed replays it.
+        let replayed = refused(done(&rig.engine, &plan, "race it", None))?;
+        assert_eq!(replayed.outcome, VerdictOutcome::Fail);
+        assert_eq!(std::fs::read_to_string(&marker)?.lines().count(), 1);
+        assert_eq!(todo_of(&rig.store, &plan, "race it")?.refusals, 1);
+        Ok(())
+    }
+
+    // Dies with `refuse_live_claim` in done.rs: drop the claim check and the second engine
+    // adopts the effect, the marker reads two runs and the todo is charged twice.
+    #[test]
+    fn another_engine_refuses_a_live_claim_and_charges_nothing() -> TestResult {
+        let temp = Scratch::new("yi-f0c-claim")?;
+        let store = PlanStore::open(temp.join("plans"))?;
+        let ws = temp.join("ws");
+        std::fs::create_dir_all(&ws)?;
+        let marker = temp.join("runs.txt");
+        let command = format!("echo run >> {}; exit 1", marker.display());
+        let plan = planned()?;
+        let other = Arc::new(
+            PlanEngine::new(store.clone(), Arc::new(Stub::default()))
+                .with_cwd(ws.clone())
+                .with_verifier(Verifier::new(20_000)),
+        );
+        let seen: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+        let hook: yi_runtime::plan::ops::VerifyHook = {
+            let other = Arc::clone(&other);
+            let plan = plan.clone();
+            let seen = Arc::clone(&seen);
+            Arc::new(move || {
+                let refusal = done(&other, &plan, "race it", None)
+                    .err()
+                    .map(|error| error.to_string());
+                if let Ok(mut slot) = seen.lock() {
+                    *slot = refusal;
+                }
+            })
+        };
+        let engine = PlanEngine::new(store.clone(), Arc::new(Stub::default()))
+            .with_cwd(ws)
+            .with_verifier(Verifier::new(20_000))
+            .with_verify_hook(hook);
+        init(
+            &engine,
+            vec![contracted(
+                "race it",
+                cmd_contract(&store, &plan, &command, "writer")?,
+            )?],
+        )?;
+        start(&engine, &plan, "race it")?;
+        let verdict = refused(done(&engine, &plan, "race it", None))?;
+        assert_eq!(verdict.outcome, VerdictOutcome::Fail);
+        let refusal = seen
+            .lock()
+            .map_err(|_| "poisoned")?
+            .clone()
+            .ok_or("the second engine's done was not refused")?;
+        assert!(
+            refusal.contains("in progress since")
+                && refusal.contains(&format!("pid {}", std::process::id())),
+            "{refusal}"
+        );
+        assert_eq!(std::fs::read_to_string(&marker)?.lines().count(), 1);
+        assert_eq!(todo_of(&store, &plan, "race it")?.refusals, 1);
+        let all = kinds(&store, &plan)?;
+        assert_eq!(
+            all.iter()
+                .filter(|kind| *kind == "verification_requested")
+                .count(),
+            1
+        );
+        assert_eq!(all.iter().filter(|kind| *kind == "done_refused").count(), 1);
+        Ok(())
+    }
+
+    // Dies with the criteria being frozen at start and the refusal leaving the todo where it
+    // was: let the contract be rewritten between attempts and the pair goes green proving nothing.
+    #[test]
+    fn product_repair_passes_under_unchanged_criteria() -> TestResult {
+        let doc = fixture("writer-cmd-red-then-green")?;
+        let rig = rig("yi-f0c-red-green", None)?;
+        let (goal, specs) = init_specs(&doc)?;
+        let opened = rig.engine.apply(owner(Op::Init { goal, todos: specs }))?;
+        let plan = opened.plan.id.clone();
+        stage(&rig.store, &plan, &doc)?;
+        let todo = todo_of(&rig.store, &plan, "Generate the report")?;
+        assert_eq!((todo.attempt.get(), todo.refusals), (1, 0));
+        start(&rig.engine, &plan, "Generate the report")?;
+        assert!(
+            todo_of(&rig.store, &plan, "Generate the report")?
+                .contract_hash
+                .is_some(),
+            "start froze the contract"
+        );
+        let red = blob(&doc, "product-red")?;
+        std::fs::write(rig.ws.join("report.json"), &red)?;
+        rig.serve.set("local://build/report.json", Some(&red));
+        let first = refused(done(
+            &rig.engine,
+            &plan,
+            "Generate the report",
+            Some("local://build/report.json"),
+        ))?;
+        assert_eq!(
+            (first.outcome, first.score, first.coverage),
+            (VerdictOutcome::Fail, 0, 1000)
+        );
+        assert_eq!(first.items[0].id.as_str(), "suite-green");
+        assert!(matches!(
+            first.items[0].verdict,
+            yi_types::plan::contract::ItemVerdict::Fail { .. }
+        ));
+        assert_eq!(first.token.attempt.get(), 1);
+        let tail: Vec<String> = kinds(&rig.store, &plan)?
+            .into_iter()
+            .rev()
+            .take(2)
+            .collect();
+        assert_eq!(tail, ["done_refused", "verification_requested"]);
+        let todo = todo_of(&rig.store, &plan, "Generate the report")?;
+        assert!(matches!(todo.state, TodoState::Running { .. }));
+        assert_eq!((todo.attempt.get(), todo.refusals), (1, 1));
+        let green = blob(&doc, "product-green")?;
+        std::fs::write(rig.ws.join("report.json"), &green)?;
+        rig.serve.set("local://build/report.json", Some(&green));
+        let passed = done(
+            &rig.engine,
+            &plan,
+            "Generate the report",
+            Some("local://build/report.json"),
+        )?;
+        let todo = passed
+            .plan
+            .todo(&label("Generate the report")?)
+            .ok_or("todo")?;
+        assert!(
+            matches!(
+                &todo.state,
+                TodoState::Done { output: Some(url), resolution: Some(Resolution::VerifiedDone) }
+                    if url.to_string() == "local://build/report.json"
+            ),
+            "{:?}",
+            todo.state
+        );
+        assert_eq!((todo.attempt.get(), todo.refusals), (1, 1));
+        let tail: Vec<String> = kinds(&rig.store, &plan)?
+            .into_iter()
+            .rev()
+            .take(2)
+            .collect();
+        assert_eq!(tail, ["done", "verification_requested"]);
+        let all = verdicts(&rig.store, &plan)?;
+        assert_eq!(all.len(), 2);
+        assert_eq!(all[1].outcome, VerdictOutcome::Pass);
+        assert_eq!(
+            all[0].token.contract_digest, all[1].token.contract_digest,
+            "the contract never moved"
+        );
+        assert_eq!(all[0].token.criteria_digest, all[1].token.criteria_digest);
+        assert_ne!(
+            all[0].token.output_digest, all[1].token.output_digest,
+            "the product did"
+        );
+        Ok(())
+    }
+
+    // Dies with the verifier reading `snapshot.output`, the bytes the token's output digest
+    // names: let an inline todo nominate any artifact and a sidecar that fits the schema passes.
+    #[test]
+    fn inline_task_output_validates_product_not_sidecar() -> TestResult {
+        let doc = fixture("reader-schema")?;
+        let rig = rig("yi-f0c-inline", None)?;
+        let schema_ref: ArtifactRef = serde_json::from_value(doc["steps"][0]["args"]["todos"][0]["contract"]["items"][0]["decider"]["schema"]["schema"].clone())?;
+        let inline: Contract = serde_json::from_value(json!({
+            "class": "inline",
+            "items": [{"id": "findings-shape", "critical": true, "weight": 100, "decider": {"schema": {"schema": schema_ref}}}],
+            "threshold": 1000, "min_coverage": 1000
+        }))?;
+        let mut todo = spec("summarize the docs")?;
+        todo.contract = Some(inline);
+        let opened = init(&rig.engine, vec![todo])?;
+        let plan = opened.plan.id.clone();
+        stage(&rig.store, &plan, &doc)?;
+        rig.serve.set(
+            "local://findings/product.json",
+            Some(&blob(&doc, "findings-bare")?),
+        );
+        rig.serve.set(
+            "local://findings/sidecar.json",
+            Some(&blob(&doc, "findings-good")?),
+        );
+        start(&rig.engine, &plan, "summarize the docs")?;
+        let bare = refused(done(
+            &rig.engine,
+            &plan,
+            "summarize the docs",
+            Some("local://findings/product.json"),
+        ))?;
+        assert_eq!(bare.outcome, VerdictOutcome::Fail);
+        let detail = bare.items[0].verdict.to_string();
+        assert!(
+            detail.contains("$.findings[0]") && detail.contains("provenance"),
+            "the refusal names the path the schema rejected: {detail}"
+        );
+        let none = done(&rig.engine, &plan, "summarize the docs", None);
+        assert!(
+            matches!(none, Err(PlanOpError::OutputRequired { .. })),
+            "{none:?}"
+        );
+        assert_eq!(
+            todo_of(&rig.store, &plan, "summarize the docs")?.refusals,
+            2
+        );
+        Ok(())
+    }
+
+    // Dies with the `capped` block in `refuse`: make the cap a refusal text and a model retries
+    // forever; count stale verdicts and a slow checker walks a healthy todo into the inbox.
+    #[test]
+    fn the_third_refusal_blocks_the_todo_on_user_as_a_recorded_transition() -> TestResult {
+        let rig = rig("yi-f0c-cap", None)?;
+        let plan = planned()?;
+        let opened = init(
+            &rig.engine,
+            vec![contracted(
+                "land it",
+                cmd_contract(&rig.store, &plan, "exit 1", "writer")?,
+            )?],
+        )?;
+        assert_eq!(opened.plan.id, plan);
+        start(&rig.engine, &plan, "land it")?;
+        for attempt in 1..=3 {
+            rig.serve
+                .set("local://out.txt", Some(&format!("product {attempt}")));
+            let verdict = refused(done(&rig.engine, &plan, "land it", Some("local://out.txt")))?;
+            assert_eq!(verdict.outcome, VerdictOutcome::Fail);
+        }
+        let todo = todo_of(&rig.store, &plan, "land it")?;
+        assert_eq!(todo.refusals, 3);
+        assert!(
+            matches!(&todo.state, TodoState::Blocked { on: BlockedOn::User, note } if note.contains("3 refused verdicts")),
+            "{:?}",
+            todo.state
+        );
+        let all = kinds(&rig.store, &plan)?;
+        assert_eq!(all.iter().filter(|kind| *kind == "done_refused").count(), 3);
+        let tail: Vec<String> = all.into_iter().rev().take(2).collect();
+        assert_eq!(
+            tail,
+            ["block", "done_refused"],
+            "the cap is its own committed transition"
+        );
+        let journal = Journal::open(rig.store.journal_path(&plan), Arc::new(RealFs));
+        let block = journal.read()?.records.pop().ok_or("block record")?;
+        assert_eq!(
+            (block.record.from.clone(), block.record.to.clone()),
+            (Some(TodoStateName::Running), Some(TodoStateName::Blocked))
+        );
+        Ok(())
+    }
+
+    // Dies with `mark_legacy` in import.rs: drop it and one import launders a file's claims into
+    // verified work; read it as VerifiedDone and the fuzz lane's pass-verdict check dies too.
+    fn accept_submission(plan: &PlanId, label: &str) -> Result<Submission, Box<dyn Error>> {
+        Ok(Submission {
+            args: json!({"op": "accept", "plan": plan.as_str(), "label": label, "note": "waved through after review"})
+                .as_object()
+                .cloned()
+                .ok_or("args")?,
+            request_id: None,
+            expected_revision: None,
+        })
+    }
+
+    /// The process that owns the prompt, answering `answer` to every ask.
+    fn confirmer(rig: &Rig, answer: AskOutcome) -> Result<Confirmer, Box<dyn Error>> {
+        let sessions = rig._temp.join("sessions");
+        std::fs::create_dir_all(&sessions)?;
+        let mut repo = JsonlRepo::new(sessions, rig.ws.to_string_lossy().into_owned());
+        let store = repo.create(CreateOptions::default())?;
+        let asker: Asker = Arc::new(move |_ask: &PermissionAsk<'_>| answer);
+        let (events, _nobody_listens) = tokio::sync::broadcast::channel(8);
+        let broker = Arc::new(PermissionBroker::new(
+            PermissionMode::Ask,
+            rig.ws.clone(),
+            Vec::new(),
+            Some(asker),
+            events,
+        ));
+        Ok(Confirmer { broker, store })
+    }
+
+    // Dies with the `Accept` arm of `check_actor` and with `apply_op`'s hard-coded
+    // `AcceptedByUser`: let the owner accept, or write `VerifiedDone` here, and a refused
+    // checker is waved through as verified work.
+    #[test]
+    fn accept_records_accepted_by_user_never_verified_done() -> TestResult {
+        let rig = rig("yi-f0c-accept", None)?;
+        let plan = planned()?;
+        let contract = cmd_contract(&rig.store, &plan, "exit 1", "writer")?;
+        init(&rig.engine, vec![contracted("ship it", contract)?])?;
+        start(&rig.engine, &plan, "ship it")?;
+        let verdict = refused(done(&rig.engine, &plan, "ship it", None))?;
+        assert_eq!(verdict.outcome, VerdictOutcome::Fail);
+        let accept = Op::Accept {
+            label: label("ship it")?,
+            note: "waved through after review".to_owned(),
+            output: None,
+        };
+        let owner_refused = rig.engine.apply(at(&plan, accept.clone()));
+        assert!(
+            matches!(owner_refused, Err(PlanOpError::NotOwner { .. })),
+            "{owner_refused:?}"
+        );
+        let declined = submit(
+            &rig.engine,
+            &Actor::Owner,
+            Some(&confirmer(&rig, AskOutcome::Reject)?),
+            accept_submission(&plan, "ship it")?,
+        );
+        assert!(
+            matches!(declined, Err(SubmitError::Declined { .. })),
+            "{declined:?}"
+        );
+        assert!(matches!(
+            todo_of(&rig.store, &plan, "ship it")?.state,
+            TodoState::Running { .. }
+        ));
+        let applied = submit(
+            &rig.engine,
+            &Actor::Owner,
+            Some(&confirmer(&rig, AskOutcome::AllowOnce)?),
+            accept_submission(&plan, "ship it")?,
+        )?;
+        let accepted = applied
+            .outcome
+            .plan
+            .todo(&label("ship it")?)
+            .ok_or("todo")?;
+        assert_eq!(
+            accepted.state,
+            TodoState::Done {
+                output: None,
+                resolution: Some(Resolution::AcceptedByUser),
+            }
+        );
+        assert!(
+            applied.text().contains("(accepted_by_user)"),
+            "the view names the resolution: {}",
+            applied.text()
+        );
+        let records = rig.store.journal(&plan).read()?.records;
+        let record = records.last().ok_or("no record")?;
+        assert_eq!(record.record.op, "accepted_by_user");
+        assert_eq!(record.record.actor, "user://1", "the citation is the actor");
+        assert_eq!(
+            record.record.extra.get("resolution"),
+            Some(&json!("accepted_by_user"))
+        );
+        assert_eq!(record.args["note"], json!("waved through after review"));
+        assert!(
+            !verdicts(&rig.store, &plan)?
+                .iter()
+                .any(|verdict| verdict.outcome == VerdictOutcome::Pass),
+            "acceptance is not a pass"
+        );
+        assert_eq!(todo_of(&rig.store, &plan, "ship it")?.refusals, 1);
+        Ok(())
+    }
+
+    // Dies with `needs_resolution` in state.rs: count only contracted todos and "it works"
+    // completes a delegated todo on the owner's word again.
+    #[test]
+    fn a_stated_only_todo_needs_an_item_or_a_user() -> TestResult {
+        let rig = rig("yi-f0c-stated", None)?;
+        let plan = planned()?;
+        let mut stated = delegated_spec("write the manpage")?;
+        if let Some(delegation) = &mut stated.delegation {
+            delegation.accept = Check::Stated("the manpage reads well".to_owned());
+        }
+        let mut later = delegated_spec("write the changelog")?;
+        if let Some(delegation) = &mut later.delegation {
+            delegation.accept = Check::Stated("the changelog is complete".to_owned());
+        }
+        init(&rig.engine, vec![stated, later.clone()])?;
+        start(&rig.engine, &plan, "write the manpage")?;
+        let refused = done(&rig.engine, &plan, "write the manpage", None);
+        assert!(
+            matches!(refused, Err(PlanOpError::NoVerifiedCompletion { .. })),
+            "a stated acceptance decides nothing: {refused:?}"
+        );
+        assert!(matches!(
+            todo_of(&rig.store, &plan, "write the manpage")?.state,
+            TodoState::Running { .. }
+        ));
+        // The user's road: accept.
+        let accepted = rig.engine.apply(OpRequest {
+            plan: Some(plan.clone()),
+            actor: Actor::User("user://4".parse::<Url>()?),
+            op: Op::Accept {
+                label: label("write the manpage")?,
+                note: "read it, it is fine".to_owned(),
+                output: None,
+            },
+            request_id: None,
+            expected_revision: None,
+        })?;
+        assert!(matches!(
+            accepted
+                .plan
+                .todo(&label("write the manpage")?)
+                .map(|todo| &todo.state),
+            Some(TodoState::Done {
+                resolution: Some(Resolution::AcceptedByUser),
+                ..
+            })
+        ));
+        // The owner's road: a decidable item, then a verified done.
+        later.contract = Some(cmd_contract(&rig.store, &plan, "true", "writer")?);
+        rig.engine.apply(at(
+            &plan,
+            Op::Set {
+                goal: None,
+                rows: vec![
+                    SetRow {
+                        spec: spec("write the manpage")?,
+                        state: TodoStateName::Done,
+                    },
+                    SetRow {
+                        spec: later,
+                        state: TodoStateName::Pending,
+                    },
+                ],
+            },
+        ))?;
+        start(&rig.engine, &plan, "write the changelog")?;
+        let verified = done(&rig.engine, &plan, "write the changelog", None)?;
+        assert!(matches!(
+            verified
+                .plan
+                .todo(&label("write the changelog")?)
+                .map(|todo| &todo.state),
+            Some(TodoState::Done {
+                resolution: Some(Resolution::VerifiedDone),
+                ..
+            })
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn import_marks_legacy_success_unverified() -> TestResult {
+        let doc = fixture("legacy-stated-unverified")?;
+        let rig = rig("yi-f0c-legacy", None)?;
+        let id = doc["plan"].as_str().ok_or("plan")?;
+        std::fs::create_dir_all(rig.store.dir())?;
+        let legacy = rig.store.dir().join(format!("{id}.md"));
+        std::fs::write(&legacy, blob(&doc, "legacy-md")?)?;
+        let imported = rig.engine.apply(owner(Op::Import {
+            source: format!("local://{}", legacy.display()).parse()?,
+        }))?;
+        let plan = imported.plan.id.clone();
+        let done_todo = imported
+            .plan
+            .todo(&label("Write the Makefile dist target")?)
+            .ok_or("todo")?;
+        assert!(
+            matches!(
+                done_todo.state,
+                TodoState::Done {
+                    resolution: Some(Resolution::LegacyUnverified),
+                    ..
+                }
+            ),
+            "{:?}",
+            done_todo.state
+        );
+        assert!(
+            done_todo
+                .delegation
+                .as_ref()
+                .is_some_and(|d| matches!(d.accept, Check::Stated(_))),
+            "the stated check stays as compatibility input"
+        );
+        assert_eq!(kinds(&rig.store, &plan)?, ["import"]);
+        let view = rig.engine.apply(at(&plan, Op::View { full: true }))?;
+        let shown = view
+            .plan
+            .todo(&label("Write the Makefile dist target")?)
+            .ok_or("todo")?;
+        assert!(matches!(
+            shown.state,
+            TodoState::Done {
+                resolution: Some(Resolution::LegacyUnverified),
+                ..
+            }
+        ));
+        assert!(PlanStore::render(&view.plan)?.contains("\"resolution\": \"legacy_unverified\""));
+        // A contracted todo added later still needs its own verdict; the legacy row buys nothing.
+        let mut next = spec("Drive the whole build through make dist")?;
+        next.contract = Some(cmd_contract(&rig.store, &plan, "exit 1", "writer")?);
+        let refused = rig.engine.apply(at(
+            &plan,
+            Op::Set {
+                goal: None,
+                rows: vec![
+                    SetRow {
+                        spec: spec("Write the Makefile dist target")?,
+                        state: TodoStateName::Done,
+                    },
+                    SetRow {
+                        spec: next,
+                        state: TodoStateName::Done,
+                    },
+                ],
+            },
+        ));
+        assert!(
+            matches!(refused, Err(PlanOpError::NoVerifiedCompletion { .. })),
+            "{refused:?}"
+        );
+        let _isolation = Isolation::None;
+        Ok(())
+    }
+
+    // Dies with the worktree refusal in `prepare` (done.rs), above the contract branch: move it
+    // back into `evidence` and an uncontracted worktree todo completes through a merge-less reap.
+    #[test]
+    fn done_on_an_uncontracted_worktree_todo_is_refused_as_unavailable() -> TestResult {
+        let rig = rig("yi-f0c-worktree-plain", None)?;
+        let mut spec = delegated_spec("build it apart")?;
+        if let Some(delegation) = &mut spec.delegation {
+            delegation.spec.isolation = Some(Isolation::Worktree);
+        }
+        init(&rig.engine, vec![spec])?;
+        let plan = planned()?;
+        start(&rig.engine, &plan, "build it apart")?;
+        let refused = done(&rig.engine, &plan, "build it apart", None);
+        assert!(
+            matches!(refused, Err(PlanOpError::AcceptanceUnavailable { .. })),
+            "{refused:?}"
+        );
+        assert!(matches!(
+            todo_of(&rig.store, &plan, "build it apart")?.state,
+            TodoState::Running { .. }
+        ));
+        Ok(())
+    }
+
+    // Dies with the token in `pending_verification`'s search (state.rs): match on the label
+    // alone and an older effect left open by a dead claimant hides the live one, so two
+    // concurrent `done` calls each mint an effect, run the checker twice and charge twice.
+    #[test]
+    fn a_leftover_open_effect_does_not_hide_the_live_verification() -> TestResult {
+        let rig = rig("yi-f0c-leftover", None)?;
+        let marker = rig._temp.join("runs.txt");
+        let command = format!("sleep 1; echo run >> {}; exit 1", marker.display());
+        let plan = planned()?;
+        init(
+            &rig.engine,
+            vec![contracted(
+                "race it",
+                cmd_contract(&rig.store, &plan, &command, "writer")?,
+            )?],
+        )?;
+        start(&rig.engine, &plan, "race it")?;
+        // A verification requested under another snapshot by a claimant that never settled it.
+        let journal = rig.store.journal(&plan);
+        let last = journal
+            .read()?
+            .records
+            .last()
+            .cloned()
+            .ok_or("empty journal")?;
+        let stale = VerificationToken {
+            plan: plan.clone(),
+            version: PlanVersion(1),
+            todo: TodoLabel::new("race it")?,
+            attempt: AttemptId::FIRST,
+            contract_digest: Digest::of(b""),
+            criteria_digest: Digest::of(b""),
+            output_digest: Digest::of(b""),
+            snapshot: "tree:orphan".to_owned(),
+            integration: None,
+        };
+        let mut value = serde_json::to_value(&last)?;
+        value["op"] = json!("verification_requested");
+        value["todo"] = json!("race it");
+        value["requestId"] = json!("orphan-seed");
+        value["attempt"] = json!(1);
+        value["args"] = json!({"label": "race it", "token": stale, "effect_id": "e-0-orphan"});
+        if let Some(fields) = value.as_object_mut() {
+            fields.remove("from");
+            fields.remove("to");
+        }
+        let orphan: JournalRecord = serde_json::from_value(value)?;
+        journal.append(&journal.seal(orphan, Some(&last))?)?;
+        let results: Vec<Result<Outcome, PlanOpError>> = std::thread::scope(|scope| {
+            let handles: Vec<_> = (0..2)
+                .map(|_| {
+                    let engine = Arc::clone(&rig.engine);
+                    let plan = plan.clone();
+                    scope.spawn(move || done(&engine, &plan, "race it", None))
+                })
+                .collect();
+            handles
+                .into_iter()
+                .map(|handle| handle.join().unwrap_or(Err(PlanOpError::NoPlan)))
+                .collect()
+        });
+        for result in results {
+            assert_eq!(refused(result)?.outcome, VerdictOutcome::Fail);
+        }
+        assert_eq!(
+            std::fs::read_to_string(&marker)?.lines().count(),
+            1,
+            "the checker ran once"
+        );
+        assert_eq!(todo_of(&rig.store, &plan, "race it")?.refusals, 1);
+        let requested = kinds(&rig.store, &plan)?
+            .iter()
+            .filter(|kind| *kind == "verification_requested")
+            .count();
+        assert_eq!(requested, 2, "the leftover and the one live effect");
+        Ok(())
+    }
+
+    // Dies with the materialization in `run_verifier` (done.rs): run the checker in the live
+    // checkout instead and a checker that writes anything into it moves the tree step 5
+    // re-captures, so its own pass reads as stale, forever.
+    #[test]
+    fn a_checker_that_writes_into_the_workspace_still_passes() -> TestResult {
+        let rig = rig("yi-f0c-writing-checker", None)?;
+        let plan = planned()?;
+        std::fs::write(rig.ws.join("product.txt"), "the product")?;
+        init(
+            &rig.engine,
+            vec![contracted(
+                "ship it",
+                cmd_contract(
+                    &rig.store,
+                    &plan,
+                    "test -f product.txt && date +%s%N >> build.log; exit 0",
+                    "writer",
+                )?,
+            )?],
+        )?;
+        start(&rig.engine, &plan, "ship it")?;
+        let landed = done(&rig.engine, &plan, "ship it", None);
+        assert!(landed.is_ok(), "{landed:?}");
+        assert!(
+            !rig.ws.join("build.log").exists(),
+            "the checker wrote into its own materialization, never the checkout"
+        );
+        assert!(matches!(
+            todo_of(&rig.store, &plan, "ship it")?.state,
+            TodoState::Done {
+                resolution: Some(Resolution::VerifiedDone),
+                ..
+            }
+        ));
+        Ok(())
+    }
+
+    // Dies with the re-capture in step 5 (`evidence` in done.rs called with no frozen
+    // snapshot): hand the step 1 tree id back in and the comparison passes by construction,
+    // so a checkout edited during a ten-minute check lands `VerifiedDone` for a tree that no
+    // longer exists.
+    #[test]
+    fn a_workspace_edited_during_the_check_is_stale() -> TestResult {
+        let rig = rig("yi-f0c-moved-workspace", None)?;
+        let plan = planned()?;
+        // The checker passes in its materialization and, as a concurrent editor would, writes
+        // into the live checkout by absolute path.
+        let command = format!(
+            "echo edited > {}; exit 0",
+            rig.ws.join("edited.txt").display()
+        );
+        init(
+            &rig.engine,
+            vec![contracted(
+                "hold still",
+                cmd_contract(&rig.store, &plan, &command, "writer")?,
+            )?],
+        )?;
+        start(&rig.engine, &plan, "hold still")?;
+        let stale = done(&rig.engine, &plan, "hold still", None);
+        assert!(matches!(stale, Err(PlanOpError::Stale { .. })), "{stale:?}");
+        assert!(rig.ws.join("edited.txt").is_file());
+        let todo = todo_of(&rig.store, &plan, "hold still")?;
+        assert!(matches!(todo.state, TodoState::Running { .. }));
+        assert_eq!(
+            todo.refusals, 0,
+            "a moved workspace is not the product's failure"
+        );
+        let journal = Journal::open(rig.store.journal_path(&plan), Arc::new(RealFs));
+        let last = journal
+            .read()?
+            .records
+            .last()
+            .cloned()
+            .ok_or("empty journal")?;
+        assert_eq!(last.record.op, "verification_stale");
+        let detail = last.record.extra["refusal"]["detail"]
+            .as_str()
+            .unwrap_or_default()
+            .to_owned();
+        assert!(detail.contains("the workspace changed"), "{detail}");
+        Ok(())
+    }
+
+    // Dies with the `Fail | Escalate` match on the settled verdict in `prepare` (done.rs):
+    // replay every settled outcome and one abstention, an infrastructure failure, refuses a
+    // correct product on every later `done` without running the checker again.
+    #[test]
+    fn an_abstained_verification_is_rerun_not_replayed() -> TestResult {
+        let temp = Scratch::new("yi-f0c-abstain-rerun")?;
+        let store = PlanStore::open(temp.join("plans"))?;
+        let ws = temp.join("ws");
+        std::fs::create_dir_all(&ws)?;
+        let plan = planned()?;
+        let starved = PlanEngine::new(store.clone(), Arc::new(Stub::default()))
+            .with_cwd(ws.clone())
+            .with_verifier(Verifier::new(1));
+        init(
+            &starved,
+            vec![contracted(
+                "slow but right",
+                cmd_contract(&store, &plan, "sleep 0.3; exit 0", "writer")?,
+            )?],
+        )?;
+        start(&starved, &plan, "slow but right")?;
+        let abstained = refused(done(&starved, &plan, "slow but right", None))?;
+        assert_eq!(abstained.outcome, VerdictOutcome::Abstain, "{abstained:?}");
+        assert_eq!(todo_of(&store, &plan, "slow but right")?.refusals, 0);
+        // The same token, a verifier with time to run: the checks run again and pass.
+        let patient = PlanEngine::new(store.clone(), Arc::new(Stub::default()))
+            .with_cwd(ws)
+            .with_verifier(Verifier::new(20_000));
+        let landed = done(&patient, &plan, "slow but right", None);
+        assert!(landed.is_ok(), "{landed:?}");
+        let todo = todo_of(&store, &plan, "slow but right")?;
+        assert!(matches!(
+            todo.state,
+            TodoState::Done {
+                resolution: Some(Resolution::VerifiedDone),
+                ..
+            }
+        ));
+        assert_eq!(todo.refusals, 0);
+        assert_eq!(
+            kinds(&store, &plan)?
+                .iter()
+                .filter(|kind| *kind == "verification_requested")
+                .count(),
+            2,
+            "the abstention did not settle the token for good"
+        );
+        Ok(())
+    }
+
+    // Dies with the worktree test in `completion_of` (state.rs), the validator `set` shares
+    // with `done`: leave it in `prepare` alone and a `[x]` row completes the worktree todo
+    // `done` refuses, with the child still running and its lane still held.
+    #[test]
+    fn set_cannot_complete_a_worktree_todo() -> TestResult {
+        let rig = rig("yi-f0c-worktree-set", None)?;
+        let mut spec = delegated_spec("build it apart")?;
+        if let Some(delegation) = &mut spec.delegation {
+            delegation.spec.isolation = Some(Isolation::Worktree);
+        }
+        init(&rig.engine, vec![spec.clone()])?;
+        let plan = planned()?;
+        start(&rig.engine, &plan, "build it apart")?;
+        let refused = rig.engine.apply(at(
+            &plan,
+            Op::Set {
+                goal: None,
+                rows: vec![SetRow {
+                    spec,
+                    state: TodoStateName::Done,
+                }],
+            },
+        ));
+        assert!(
+            matches!(refused, Err(PlanOpError::AcceptanceUnavailable { .. })),
+            "{refused:?}"
+        );
+        assert!(matches!(
+            todo_of(&rig.store, &plan, "build it apart")?.state,
+            TodoState::Running { .. }
+        ));
+        Ok(())
+    }
+
+    // Dies with `fitted` in done.rs: commit the refusal unrehearsed and a checker whose tail
+    // does not fit the record cap leaves no `done_refused`, no charge and an open effect.
+    #[test]
+    fn a_verbose_refusal_still_journals_under_the_record_cap() -> TestResult {
+        let rig = rig("yi-f0c-verbose-refusal", None)?;
+        let plan = planned()?;
+        // Six items, each ending in 2,000 control characters: six bytes apiece once escaped.
+        let manifest = json!({
+            "manifest": 1,
+            "command": "awk 'BEGIN { for (i = 0; i < 2000; i++) printf \"\\001\" }'; exit 1",
+            "cwd": "snapshot_root", "cwd_subdir": null, "protected": [], "timeout_ms": 10_000,
+            "env": [], "reads_outside_snapshot": false
+        });
+        let put = rig.store.artifacts(&plan).put(
+            &serde_json::to_vec(&manifest)?,
+            "application/vnd.yi.checker-manifest+json",
+            &rig.store.nonce(),
+        )?;
+        let items: Vec<Value> = (0..6)
+            .map(|index| {
+                json!({"id": format!("loud-{index}"), "critical": true, "weight": 100,
+                       "decider": {"cmd": {"checker": put, "timeout_ms": 10_000}}})
+            })
+            .collect();
+        let contract: Contract = serde_json::from_value(json!({
+            "class": "writer", "items": items, "threshold": 1000, "min_coverage": 1000
+        }))?;
+        init(&rig.engine, vec![contracted("shout", contract)?])?;
+        start(&rig.engine, &plan, "shout")?;
+        let verdict = refused(done(&rig.engine, &plan, "shout", None))?;
+        assert_eq!(verdict.outcome, VerdictOutcome::Fail);
+        assert_eq!(todo_of(&rig.store, &plan, "shout")?.refusals, 1);
+        assert!(
+            kinds(&rig.store, &plan)?
+                .iter()
+                .any(|kind| kind == "done_refused")
+        );
+        let journaled = verdicts(&rig.store, &plan)?;
+        let last = journaled.last().ok_or("no journaled verdict")?;
+        assert!(
+            last.lines().contains("[clipped]"),
+            "the journaled details are clipped: {}",
+            last.lines().len()
+        );
+        Ok(())
+    }
 }

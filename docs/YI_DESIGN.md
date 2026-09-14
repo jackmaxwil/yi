@@ -915,6 +915,17 @@ sequenceDiagram
 - A plan-dispatched spawn is journaled as `spawn_intent` before `delegate.spawn`
   and `spawn_result` after (plan §5.3), so a crash between the two is
   reconciled on the next `yi plan repair`, never silently reissued.
+- **B17 wall on the spec (F0c, plan §7.6)** | `SpawnSpec.wall: Option<WallSpec>{deny_write,
+  deny_read, deny_url}` rides `kwargs_of` (`plan/dispatch.rs:84-107`) onto the same
+  `deny_write`/`deny_read`/`deny_url` kwargs B15 already reads, so a plan-dispatched child is
+  walled at the same cooperative seams as an `rlm.run` child; a plan-dispatched reader was
+  unwalled before this. Cooperative, not a sandbox, same as B15: it stops an honest agent at
+  the mediated seams, nothing more.
+
+Not yet done: hereditary shrink (a child's wall as the union of its parent's and its own,
+so a child can never spawn with a wall smaller than its parent's) and holds compiled down for
+a detached child (plan §7.6) are F2b's; B15 and B17 today set a wall only from the spawning
+spec, with no inherited floor enforced.
 
 ### 8.11 Schedule / heartbeat (`yi-runtime::schedule`)
 
@@ -1236,10 +1247,24 @@ unchanged:** D26 (no advisory-only state tool — a plan tool is checked at turn
 it is a print statement with a schema), and D53's anti-laundering intent, which is
 reconciled rather than repealed: nothing is deleted, `drop` is a state, rewording is
 append-new plus abandon-old, and `supersede` is the audited exception D53 was defending
-against silent versions of. Done is recorded on every path, but nothing verifies it yet:
-a `done` op writes the transition and its journal record, and the kernel checks nothing
-against it until F0c lands the contract validator; until then, "host-verified done" is a
-target, not a fact. The paragraph below records the 0.33.0 shape the store superseded.
+against silent versions of. **A done claim is host-verified again (F0c, D-next-3), no
+wider than the tested boundary.** A todo carries a `Contract` (`crates/types/src/plan/
+contract.rs`): a list of items, each a checker command, a schema, or an examples
+runner, frozen at `start` alongside the attempt. `done` never sets `Done` itself; it
+requests verification, the engine commits `verification_requested` to the journal, runs
+the frozen items under their own deadline with an emptied and allowlisted environment,
+and lands `Done { VerifiedDone }` only when the resulting verdict passes and still names
+the current attempt, contract and output. A failing, abstaining or escalating verdict
+commits `done_refused` with the verdict attached and charges the todo's refusal count;
+three refusals block the todo on the user as its own recorded transition. `set`,
+`import`, `repair` and `supersede` go through the same validator, so none of them can
+author a resolution; a todo with no contract and no stated acceptance completes on the
+caller's word as `Done { resolution: None }`, reported unverified, on every surface alike
+(D194's carve-out, closed by a decider today or by F3a's judge). The boundary is
+exact, not aspirational: a `judge` decider is refused at declaration until F3a lands,
+so today only a `cmd`, `schema` or `example` item can decide a contract, and "host-
+verified" names that set and nothing past it. The paragraph below records the 0.33.0
+shape the store superseded.
 
 
 The task DAG under the goal, per docs/plans/2026-08-27-closing-the-loop.md §3.2:

@@ -348,12 +348,28 @@ fn wire_plan_request(
     ));
     let ops = Arc::new(crate::plan::ledger::SessionOpSink(session.store_handle()));
     let liveness: Arc<dyn crate::plan::recovery::Liveness> = delegate.clone();
-    let engine = Arc::new(
-        crate::plan::ops::PlanEngine::new(store, delegate)
-            .with_output_resolve(resolver)
-            .with_op_sink(ops)
-            .with_liveness(liveness),
-    );
+    let mut engine = crate::plan::ops::PlanEngine::new(store, delegate)
+        .with_output_resolve(resolver)
+        .with_op_sink(ops)
+        .with_liveness(liveness)
+        .with_cwd(wiring.cwd.clone());
+    // A verification never outlives the run (D177): the verifier reads the session's deadline
+    // as well as its own clock.
+    if let Some(deadline) = session.deadline()
+        && let Some(ends) = deadline.started.checked_add(deadline.total)
+    {
+        let verifier = crate::plan::verify::Verifier::new(crate::goal::DEFAULT_CHECK_TIMEOUT_MS)
+            .with_deadline(ends);
+        engine = engine.with_verifier(verifier);
+    }
+    // The verification snapshot is the shadow gitdir tree the turn checkpoints capture (plan
+    // section 6.3); without git the engine hashes the workspace itself.
+    if let Some(snapshotter) =
+        crate::plan::snapshot::shadow_tree(&wiring.home, &wiring.cwd, plans_dir)
+    {
+        engine = engine.with_snapshotter(snapshotter);
+    }
+    let engine = Arc::new(engine);
     crate::plan::request::register(Arc::clone(&engine), actor.clone(), registry);
     Some((engine, actor))
 }

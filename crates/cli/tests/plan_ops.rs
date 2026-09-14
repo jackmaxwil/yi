@@ -99,10 +99,20 @@ fn agent_cli_cannot_reset_fuse_as_user() -> TestResult {
         streams(&resolved)
     );
 
+    let accepted = yi_plan(&root, &["accept", r#"{"label":"cut","note":"looks fine"}"#])?;
+    assert_ne!(accepted.status.code(), Some(0));
+    assert!(
+        streams(&accepted).contains("accepted_by_user needs the user's confirmation"),
+        "{}",
+        streams(&accepted)
+    );
+
     let recorded = journal(&root)?;
     assert!(recorded.contains(r#""op":"start""#), "{recorded}");
     assert!(
-        !recorded.contains(r#""op":"fuse_reset""#) && !recorded.contains("user://"),
+        !recorded.contains(r#""op":"fuse_reset""#)
+            && !recorded.contains("accepted_by_user")
+            && !recorded.contains("user://"),
         "the CLI minted a user: {recorded}"
     );
     let viewed = yi_plan(&root, &["view", "--json"])?;

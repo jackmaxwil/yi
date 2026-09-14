@@ -122,6 +122,7 @@ fn spec(text: &str) -> Result<TodoSpec, Box<dyn Error>> {
         label: TodoLabel::new(text)?,
         after: Vec::new(),
         delegation: None,
+        contract: None,
         children: Vec::new(),
     })
 }
@@ -834,5 +835,53 @@ fn a_reused_request_id_with_another_op_kind_is_refused() -> TestResult {
         3,
         "init, append, drop; the unblock wrote nothing"
     );
+    Ok(())
+}
+
+// Dies with the fixture drifting from the wire: `Verdict.items` is a list of `{id, verdict}`
+// lines and every settling record names its effect, exactly as `done.rs` writes them.
+#[test]
+fn the_verification_fixture_carries_the_shapes_the_kernel_writes() -> TestResult {
+    let records = verify_chain(&fixtures().join("journal/verification.jsonl"))?;
+    let kinds: Vec<&str> = records
+        .iter()
+        .map(|record| record.record.op.as_str())
+        .collect();
+    assert_eq!(
+        kinds,
+        [
+            "verification_requested",
+            "done",
+            "done_refused",
+            "verification_stale"
+        ]
+    );
+    for record in &records[1..] {
+        let effect = record
+            .record
+            .extra
+            .get("effect_id")
+            .or_else(|| record.args.get("effect_id"))
+            .and_then(Value::as_str);
+        assert!(effect.is_some_and(|id| id.starts_with("e-")), "{kinds:?}");
+    }
+    assert!(
+        records[0].args["claim"]["pid"].is_u64(),
+        "the request names its claimant"
+    );
+    let verdicts: Vec<yi_types::plan::contract::Verdict> = records
+        .iter()
+        .filter_map(|record| record.verdict.clone())
+        .map(serde_json::from_value)
+        .collect::<Result<_, _>>()?;
+    assert_eq!(verdicts.len(), 2);
+    for (record, verdict) in records[1..3].iter().zip(&verdicts) {
+        let stored = record.verdict.clone().ok_or("a verdict")?;
+        assert_eq!(
+            canonical_bytes(&serde_json::to_value(verdict)?)?,
+            canonical_bytes(&stored)?,
+            "the fixture's verdict is the bytes the kernel emits"
+        );
+    }
     Ok(())
 }

@@ -63,6 +63,7 @@ use yi_runtime::plan::journal::Clock;
 use yi_runtime::plan::ops::{Actor, Delegate, Op, OpRequest, PlanEngine};
 use yi_runtime::plan::store::{PlanStore, StoreError};
 use yi_types::plan::canonical::Digest;
+use yi_types::plan::contract::Resolution;
 use yi_types::plan::doc::{
     AgentId, Check, Delegation, PLAN_FORMAT, Plan, PlanId, TodoAddr, TodoLabel, TodoState,
 };
@@ -215,6 +216,52 @@ fn import_preserves_all_markdown_and_large_notes() -> TestResult {
     }
 
     large_section(&rig)
+}
+
+/// Every `done` a format-1 file claims imports as `LegacyUnverified`: history the view shows
+/// by name, never evidence a later completion can lean on.
+#[test]
+fn legacy_done_imports_as_legacy_unverified() -> TestResult {
+    let rig = rig("legacy-unverified")?;
+    let id = PlanId::new("ship-logrotate-lite-with-a-packaged")?;
+    let original = std::fs::read_to_string(fixtures().join("format1/campaign.md"))?;
+    let source = rig.legacy(&id, &original)?;
+    rig.import(&source, "r-legacy-1")?;
+    let viewed = rig.engine.apply(OpRequest {
+        plan: Some(id.clone()),
+        actor: Actor::Owner,
+        op: Op::View { full: true },
+        request_id: None,
+        expected_revision: None,
+    })?;
+    assert_eq!(viewed.plan.todos.len(), 2);
+    for todo in &viewed.plan.todos {
+        assert!(
+            matches!(
+                todo.state,
+                TodoState::Done {
+                    resolution: Some(Resolution::LegacyUnverified),
+                    ..
+                }
+            ),
+            "{}: {:?}",
+            todo.label,
+            todo.state
+        );
+    }
+    let rendered = PlanStore::render(&viewed.plan)?;
+    assert_eq!(
+        rendered
+            .matches("\"resolution\": \"legacy_unverified\"")
+            .count(),
+        2,
+        "{rendered}"
+    );
+    assert!(
+        !rendered.contains("verified_done") && !rendered.contains("accepted_by_user"),
+        "{rendered}"
+    );
+    Ok(())
 }
 
 /// The 6 KiB section: whole into a blob, named from the todo, and never inlined or cut.
