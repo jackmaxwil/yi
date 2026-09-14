@@ -1241,10 +1241,9 @@ fn a_flushed_thought_leaves_no_empty_count_row_in_the_live_region() -> TestResul
     yi_tui::render::draw(&mut app, &mut terminal, None);
     let contents = terminal.backend().contents();
     assert!(
-        contents.contains("∴ 1 lines"),
+        contents.contains("thought · 1 line"),
         "the flushed thought's count row committed:\n{contents}"
     );
-    // Glyph-agnostic: the live row's `∴` pulses into a starburst every frame.
     assert!(
         !contents.contains(" 0 lines"),
         "an empty live tail draws nothing:\n{contents}"
@@ -1513,7 +1512,7 @@ fn the_recorded_session_orders_every_thought_above_its_prose() -> TestResult {
                 .get(turn..answer)
                 .unwrap_or_default()
                 .iter()
-                .filter(|row| row.starts_with("  ∴"))
+                .filter(|row| row.contains(thought.as_str()) || row.contains("thought ·"))
                 .count();
             assert_eq!(
                 labels,
