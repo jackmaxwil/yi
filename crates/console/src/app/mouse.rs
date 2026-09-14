@@ -17,6 +17,10 @@ impl App {
     /// A drag copies without the user reaching for a key.
     fn copy_out(&mut self, text: &str) {
         self.osc_out.push(crate::select::osc52(text));
+        let lines = text.lines().count();
+        let noun = if lines == 1 { "line" } else { "lines" };
+        self.flash = Some((format!("copied {lines} {noun}"), std::time::Instant::now()));
+        self.dirty = true;
     }
 
     fn scroll_pane_under(&mut self, x: u16, y: u16, delta: isize) {
