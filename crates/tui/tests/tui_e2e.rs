@@ -1921,9 +1921,9 @@ fn the_hud_shows_open_todos_in_a_headless_frame() -> TestResult {
     let last = std::fs::read_to_string(frames.last().ok_or("no frames dumped")?)?;
     for needle in [
         "Todos 0/3 · running: read the code",
-        "- [>] t1 read the code",
-        "- [ ] t2 write the fix",
-        "  - [ ] t3 parser",
+        "▶ t1 read the code",
+        "○ t2 write the fix",
+        "  ○ t3 parser",
     ] {
         assert!(last.contains(needle), "frame lacks {needle:?}:\n{last}");
     }

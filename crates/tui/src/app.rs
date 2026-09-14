@@ -21,6 +21,7 @@ use crate::keymap::{Keymap, default_keymap};
 use crate::motion::elapsed_ms;
 use crate::orb;
 use crate::popup::ListPopup;
+use crate::port::SessionPort;
 use crate::term;
 use crate::transcript::{arg_summary, intent_of, preview_lines, text_of, thinking_of, user_text};
 use crate::tree::TreeView;
@@ -421,6 +422,13 @@ impl App {
         self.options.context_window = size;
     }
 
+    /// The HUD's plan and todo state, read from whichever port hosts this chat; the console
+    /// paints through `paint_pane`, which never saw the port, so its HUD stayed empty.
+    pub fn sync_port(&mut self, port: Option<&dyn SessionPort>) {
+        self.plan_progress = port.and_then(|port| port.plan_progress());
+        self.todos = port.and_then(|port| port.todo_list());
+    }
+
     pub fn mode(&self) -> TranscriptMode {
         self.mode
     }
@@ -645,51 +653,7 @@ impl App {
                 result,
                 is_error,
             } => {
-                self.turn_tools = self.turn_tools.saturating_add(1);
-                let elapsed = self
-                    .tool_started
-                    .remove(&tool_call_id)
-                    .map(elapsed_ms)
-                    .unwrap_or(0);
-                let index = self
-                    .live_tools
-                    .iter()
-                    .position(|tool| tool.call_id == tool_call_id)
-                    .or_else(|| {
-                        self.live_tools.iter().position(|tool| {
-                            tool.status != ToolStatus::Done && tool.name == tool_name
-                        })
-                    });
-                let mut cell = match index {
-                    Some(i) => self.live_tools.remove(i),
-                    // No start was seen, so nothing is known but the name; the
-                    // result below fills in the rest.
-                    None => ToolCell {
-                        name: tool_name.clone(),
-                        call_id: tool_call_id.clone(),
-                        intent: None,
-                        status: ToolStatus::Running,
-                        summary: ToolCell::summary_of(&tool_name, ""),
-                        digest: None,
-                        preview: Vec::new(),
-                        elapsed_ms: 0,
-                        calls: 1,
-                        details: Value::Null,
-                    },
-                };
-                cell.status = if is_error {
-                    ToolStatus::Failed
-                } else {
-                    ToolStatus::Done
-                };
-                cell.elapsed_ms = elapsed;
-                let text = text_of(&result.content);
-                cell.digest = ToolCell::digest_of(&tool_name, &text, is_error);
-                cell.preview = preview_lines(&text, 12, 6);
-                cell.details = result.details.clone();
-                self.commit_cell(&Cell::Tool(cell));
-                self.commit_finished_tasks();
-                self.intent = None;
+                self.tool_ended(tool_call_id, tool_name, &result, is_error);
             }
             // The waiting call is coloured, not only the prompt, so the row
             // the user is being asked about says so in place.
