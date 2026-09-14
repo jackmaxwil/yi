@@ -38,6 +38,17 @@ impl History {
             head.push_str(markdown);
             return;
         }
+        if let Cell::Advisory { source, text } = &cell
+            && let Some(Cell::Advisory {
+                source: head_source,
+                text: head,
+            }) = self.cells.back_mut()
+            && head_source == source
+        {
+            head.push('\n');
+            head.push_str(text);
+            return;
+        }
         self.cells.push_back(cell);
     }
 
