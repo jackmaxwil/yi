@@ -1,5 +1,5 @@
 use pulldown_cmark::{Alignment, CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
-use ratatui::style::{Modifier, Style};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use unicode_width::UnicodeWidthStr;
 
@@ -172,10 +172,11 @@ impl Builder<'_> {
                 marker
             }
             // Depth glyphs, so nesting reads.
+            // The assistant's own gutter is `•`, so a list never borrows it.
             _ => match depth {
-                0 => "• ".to_owned(),
+                0 => "‣ ".to_owned(),
                 1 => "◦ ".to_owned(),
-                _ => "‣ ".to_owned(),
+                _ => "▪ ".to_owned(),
             },
         };
         if let Some(level) = self.list_stack.last_mut() {
@@ -225,10 +226,8 @@ fn reduce_inline<'e>(b: &mut Builder, event: Event<'e>) -> Option<Event<'e>> {
     match event {
         Event::Start(Tag::Emphasis) => b.push_style(|s| s.add_modifier(Modifier::ITALIC)),
         Event::End(TagEnd::Emphasis) => b.pop_style(),
-        Event::Start(Tag::Strong) => {
-            let accent = b.theme.accent;
-            b.push_style(move |s| s.fg(accent).add_modifier(Modifier::BOLD));
-        }
+        // Weight, not hue: a bold paragraph in the heading's colour read as a heading.
+        Event::Start(Tag::Strong) => b.push_style(|s| s.add_modifier(Modifier::BOLD)),
         Event::End(TagEnd::Strong) => b.pop_style(),
         Event::Start(Tag::Strikethrough) => {
             b.push_style(|s| s.add_modifier(Modifier::CROSSED_OUT));
@@ -251,7 +250,7 @@ fn reduce_inline<'e>(b: &mut Builder, event: Event<'e>) -> Option<Event<'e>> {
             }
         }
         Event::Code(code) => {
-            let style = Style::default().fg(b.theme.orange);
+            let style = Style::default().fg(code_hue(b.theme, &code));
             if let Some(table) = &mut b.table {
                 if table.in_cell
                     && let Some(cell) = table.current.last_mut()
@@ -333,6 +332,26 @@ fn reduce_table(b: &mut Builder, event: &Event) -> bool {
     true
 }
 
+/// A path takes the read tool's hue; every other code span keeps the code colour.
+fn code_hue(theme: &Theme, code: &str) -> Color {
+    let extension = code.rsplit_once('.').is_some_and(|(stem, ext)| {
+        !stem.is_empty() && !stem.contains(' ') && KNOWN_EXTENSIONS.contains(&ext)
+    });
+    let path_like = (code.contains('/') && !code.contains(' '))
+        || code.starts_with("~/")
+        || code.starts_with("./")
+        || extension;
+    if path_like {
+        crate::card::tool_hue(theme, "read")
+    } else {
+        theme.orange
+    }
+}
+
+const KNOWN_EXTENSIONS: [&str; 12] = [
+    "json", "lock", "md", "py", "rs", "sh", "toml", "ts", "tsx", "txt", "yaml", "yml",
+];
+
 pub fn render(source: &str, width: usize, theme: &Theme) -> Vec<Line<'static>> {
     render_stream(source, width, theme, false, &mut None)
 }
@@ -372,18 +391,27 @@ pub fn render_stream(
         match event {
             Event::Start(Tag::Heading { level, .. }) => {
                 b.blank();
-                let (accent, cyan, teal) = (b.theme.accent, b.theme.cyan, b.theme.teal);
+                let (accent, cyan) = (b.theme.accent, b.theme.cyan);
                 // The level has to be legible without the literal `#` marks
                 // Yi drops.
                 b.push_style(move |s| match level {
                     HeadingLevel::H1 => s.fg(accent).add_modifier(Modifier::BOLD),
                     HeadingLevel::H2 => s.fg(cyan).add_modifier(Modifier::BOLD),
-                    HeadingLevel::H3 => s.fg(teal).add_modifier(Modifier::BOLD),
+                    HeadingLevel::H3 => s.add_modifier(Modifier::BOLD),
                     _ => s.add_modifier(Modifier::ITALIC),
                 });
             }
-            Event::End(TagEnd::Heading(_)) => {
+            Event::End(TagEnd::Heading(level)) => {
                 b.pop_style();
+                b.flush_line();
+                // A cell cannot grow, so the top level earns a rule beneath it instead.
+                if level == HeadingLevel::H1 {
+                    let rule: String = std::iter::repeat_n('━', b.width.min(40)).collect();
+                    b.out.push(Line::from(Span::styled(
+                        format!("{}{rule}", b.indent),
+                        Style::default().fg(b.theme.accent),
+                    )));
+                }
                 b.blank();
             }
             Event::Start(Tag::Paragraph) => b.blank(),

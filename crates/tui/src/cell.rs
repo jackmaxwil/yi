@@ -124,8 +124,8 @@ pub const CALLOUT_RAIL: &str = "▌";
 const GUTTER_CONTINUATION: &str = "  ";
 const THOUGHT_INDENT: &str = "  ";
 
-/// Reasoning prose, dim and italic under a `∴` glyph. `header` is false past the
-/// first slice: a thought streams a paragraph at a time, and a label each reads as many.
+/// Reasoning prose, dim and italic, with nothing over it: the style is the label. `header`
+/// is false past the first slice, so a thought streamed in paragraphs opens one blank, not many.
 pub fn thought_lines(
     markdown: &str,
     width: usize,
@@ -134,18 +134,16 @@ pub fn thought_lines(
     header: bool,
 ) -> Vec<Line<'static>> {
     let style = theme.dim_style().add_modifier(Modifier::ITALIC);
-    let glyph = Span::styled("  ∴", style.fg(theme.purple));
     if mode == TranscriptMode::Normal {
         let lines = markdown.lines().count();
-        return vec![Line::from(vec![
-            glyph,
-            Span::styled(format!(" {lines} lines"), style),
-        ])];
+        return vec![Line::from(Span::styled(
+            format!("  thought · {}", count_label(lines, "line")),
+            style,
+        ))];
     }
     let mut out = Vec::new();
     if header {
         out.push(Line::default());
-        out.push(Line::from(glyph));
     }
     // Rendered two columns narrow, matching the indent below: at full width every line that
     // filled it wrapped again and shed its last word onto a line of its own.

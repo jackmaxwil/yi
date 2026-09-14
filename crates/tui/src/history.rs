@@ -12,6 +12,23 @@ pub struct History {
     cells: VecDeque<Cell>,
 }
 
+fn is_blank(line: &Line<'_>) -> bool {
+    line.spans.iter().all(|span| span.content.trim().is_empty())
+}
+
+/// Every cell pads its own seam, so two blocks met across two or three empty rows; one
+/// blank row is the separator, wherever the padding came from.
+pub fn squeeze_blanks(lines: Vec<Line<'static>>) -> Vec<Line<'static>> {
+    let mut out: Vec<Line<'static>> = Vec::with_capacity(lines.len());
+    for line in lines {
+        if is_blank(&line) && out.last().is_some_and(is_blank) {
+            continue;
+        }
+        out.push(line);
+    }
+    out
+}
+
 impl History {
     pub fn clear(&mut self) {
         self.cells.clear();
@@ -71,7 +88,7 @@ impl History {
                 break;
             }
         }
-        blocks.into_iter().flatten().collect()
+        squeeze_blanks(blocks.into_iter().flatten().collect())
     }
 
     pub fn lines(
