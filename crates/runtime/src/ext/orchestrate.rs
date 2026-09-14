@@ -151,7 +151,7 @@ impl Orchestrate {
         }
     }
 
-    fn attach(&mut self, out: &mut Vec<Effect>, signal: &'static str) {
+    fn attach(&mut self, out: &mut Vec<Effect>, signal: &'static str, remind: bool) {
         if self.attached {
             return;
         }
@@ -164,7 +164,7 @@ impl Orchestrate {
             key: "orchestrate_attached",
             value: json!({ "signal": signal }),
         });
-        if signal != "prefilter" {
+        if remind {
             out.push(Effect::Remind {
                 text: "This task has outgrown one-shot handling; write the plan now.".to_owned(),
             });
@@ -200,7 +200,7 @@ impl Orchestrate {
             }),
         });
         if route == Route::Complex {
-            self.attach(out, "prefilter");
+            self.attach(out, "prefilter", false);
         }
     }
 
@@ -214,7 +214,7 @@ impl Orchestrate {
             "edit" => {
                 self.edited = true;
                 if target.is_some_and(|path| !self.reads.contains(path)) {
-                    self.attach(out, "edit_before_read");
+                    self.attach(out, "edit_before_read", true);
                 }
             }
             "write" => self.edited = true,
@@ -257,18 +257,20 @@ impl Extension for Orchestrate {
                 ..
             } => {
                 if *files_matched > FILES_MATCHED {
-                    self.attach(out, "files_matched");
+                    self.attach(out, "files_matched", true);
                 }
                 if self.edited && name == "bash" && exit.is_some_and(|code| code != 0) {
-                    self.attach(out, "failed_check_after_edit");
+                    self.attach(out, "failed_check_after_edit", true);
                 }
             }
             Event::TurnEnd {
                 tool_calls_this_turn,
                 ..
             } => {
-                if *tool_calls_this_turn > TOOL_CALLS_PER_TURN {
-                    self.attach(out, "tool_calls_per_turn");
+                // Incident: twenty reads and no write nudged "write the plan now" after the
+                // answer had shipped; the model took the nudge for the user and burned a turn.
+                if *tool_calls_this_turn > TOOL_CALLS_PER_TURN && self.edited {
+                    self.attach(out, "tool_calls_per_turn", false);
                 }
             }
             _ => {}

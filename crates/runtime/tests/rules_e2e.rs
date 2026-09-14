@@ -537,7 +537,7 @@ fn skill_pointer_is_one_line_and_read_suppresses() -> TestResult {
         assert_eq!(queue.len(), 1);
         assert_eq!(
             queue[0],
-            "Relevant: skill://rust-borrowck (read before the next edit)"
+            "Relevant: skill://rust-borrowck (matched \"E0502\")"
         );
     }
     engine.rearm();
@@ -552,6 +552,72 @@ fn skill_pointer_is_one_line_and_read_suppresses() -> TestResult {
         delivered.lock().map_err(|_| "lock")?.len(),
         1,
         "a read of the skill file spends the pointer"
+    );
+    Ok(())
+}
+
+fn skill(name: &str, needle: &str, scope: RuleScope, gap: RuleGap) -> RuleDoc {
+    let mut doc = rule(name, needle, scope, gap, RuleMode::Remind);
+    doc.body = format!("skill://{name}");
+    doc
+}
+
+#[test]
+fn a_failure_quoted_by_a_read_points_to_no_skill() -> TestResult {
+    let (engine, delivered) = engine_with_sink(vec![skill(
+        "debug",
+        "FAILED",
+        RuleScope::Result,
+        RuleGap::Once,
+    )]);
+    engine.check_result(
+        "read",
+        r#"{"path":"docs/CHANGELOG.md"}"#,
+        "| 0.9.0 | the suite said test result: FAILED |",
+        false,
+    );
+    assert!(
+        delivered.lock().map_err(|_| "lock")?.is_empty(),
+        "a file that quotes a failure is not a failure"
+    );
+    engine.check_result(
+        "bash",
+        "{}",
+        "test result: FAILED. 1 passed; 1 failed",
+        false,
+    );
+    let queue = delivered.lock().map_err(|_| "lock")?;
+    assert_eq!(
+        queue.as_slice(),
+        ["Relevant: skill://debug (matched \"FAILED\")"]
+    );
+    Ok(())
+}
+
+#[test]
+fn a_prose_skill_pointer_waits_for_a_write_and_forgets_it_at_the_prompt() -> TestResult {
+    let (engine, delivered) = engine_with_sink(vec![skill(
+        "verify",
+        "complete",
+        RuleScope::Text,
+        RuleGap::AfterTurns(1),
+    )]);
+    engine.observe(&assistant_saying("the record is decision-complete"));
+    assert!(
+        delivered.lock().map_err(|_| "lock")?.is_empty(),
+        "a turn that only read has nothing to verify"
+    );
+    assert!(engine.check_tool("edit", r#"{"patch":"x"}"#).is_none());
+    engine.observe(&assistant_saying("the change is complete"));
+    assert_eq!(delivered.lock().map_err(|_| "lock")?.len(), 1);
+    engine.observe(&AgentEvent::AgentEnd {
+        messages: Vec::new(),
+    });
+    engine.observe(&assistant_saying("complete, as asked"));
+    assert_eq!(
+        delivered.lock().map_err(|_| "lock")?.len(),
+        1,
+        "a new prompt starts with no write behind it"
     );
     Ok(())
 }
@@ -681,17 +747,16 @@ fn the_third_skill_pointer_is_dropped_and_stays_armed() -> TestResult {
         .collect();
     let (engine, delivered) = engine_with_sink(pointers);
     engine.check_result("bash", "{}", "error[E0502]: cannot borrow", true);
+    engine.check_result("bash", "{}", "error[E0502]: cannot borrow", true);
     {
         let queue = delivered.lock().map_err(|_| "lock")?;
-        assert_eq!(queue.len(), 2, "two pointers is the budget for one scan");
+        assert_eq!(queue.len(), 2, "two pointers is the budget for one turn");
     }
+    engine.observe(&assistant_saying("the next turn"));
     engine.check_result("bash", "{}", "error[E0502]: cannot borrow", true);
     let queue = delivered.lock().map_err(|_| "lock")?;
     assert_eq!(queue.len(), 3, "the dropped pointer was never latched");
-    assert_eq!(
-        queue[2],
-        "Relevant: skill://gamma (read before the next edit)"
-    );
+    assert_eq!(queue[2], "Relevant: skill://gamma (matched \"E0502\")");
     Ok(())
 }
 
