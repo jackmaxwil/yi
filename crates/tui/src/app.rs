@@ -152,6 +152,7 @@ pub struct App {
     /// Finished read-only calls waiting to commit as one `Explored` cell.
     pub(crate) explored: Vec<ToolCell>,
     last_commit_rows: usize,
+    last_commit_blank: bool,
     tool_started: HashMap<String, Instant>,
     pub(crate) tasks: HashMap<String, TaskState>,
     pub(crate) task_order: Vec<String>,
@@ -249,6 +250,7 @@ impl App {
             live_tools: Vec::new(),
             explored: Vec::new(),
             last_commit_rows: 0,
+            last_commit_blank: false,
             tool_started: HashMap::new(),
             tasks: HashMap::new(),
             task_order: Vec::new(),
@@ -489,16 +491,19 @@ impl App {
         }
         let spinner = self.spinner_phase();
         let width = self.content_width();
-        let lines = cell.lines(width, &self.theme, self.mode, spinner);
+        let mut lines = cell.lines(width, &self.theme, self.mode, spinner);
+        let blank = |line: &Line<'_>| line.spans.iter().all(|s| s.content.trim().is_empty());
         // A blank separates blocks, never a run of one-line calls, measured
         // from what the previous cell rendered — all an append path knows.
-        let leads_blank = lines
-            .first()
-            .is_some_and(|line| line.spans.iter().all(|s| s.content.trim().is_empty()));
-        if self.last_commit_rows > 1 && lines.len() > 1 && !leads_blank {
+        let leads_blank = lines.first().is_some_and(blank);
+        if leads_blank && self.last_commit_blank {
+            lines.remove(0);
+        }
+        if self.last_commit_rows > 1 && lines.len() > 1 && !leads_blank && !self.last_commit_blank {
             self.pending_commit.push(Line::default());
         }
         self.last_commit_rows = lines.len();
+        self.last_commit_blank = lines.last().is_some_and(blank);
         self.pending_commit.extend(lines);
         self.retain(cell.clone());
         self.scheduler.request();

@@ -127,17 +127,18 @@ fn palette_maps_tokens_and_headings() -> TestResult {
 }
 
 #[test]
-fn a_thought_row_is_a_purple_glyph_and_a_count() -> TestResult {
+fn a_thought_folds_to_a_dim_count_and_carries_no_glyph() -> TestResult {
     let theme = theme();
     let cell = Cell::Thought {
         markdown: "one line".to_owned(),
     };
     let lines = cell.lines(80, &theme, TranscriptMode::Normal, 0);
     let row = lines.first().ok_or("no row")?;
-    assert_eq!(row.spans[0].content.as_ref(), "  ∴");
-    assert_eq!(row.spans[0].style.fg, Some(theme.purple));
-    let text = flat(&lines).join("\n");
-    assert_eq!(text, "  ∴ 1 lines");
+    assert!(row.spans[0].style.add_modifier.contains(Modifier::ITALIC));
+    assert_eq!(flat(&lines).join("\n"), "  thought · 1 line");
+    let open = flat(&cell.lines(80, &theme, TranscriptMode::Thinking, 0)).join("\n");
+    assert!(!open.contains('∴'), "{open}");
+    assert!(open.contains("one line"), "{open}");
     Ok(())
 }
 
