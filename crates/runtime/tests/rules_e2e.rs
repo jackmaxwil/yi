@@ -537,7 +537,7 @@ fn skill_pointer_is_one_line_and_read_suppresses() -> TestResult {
         assert_eq!(queue.len(), 1);
         assert_eq!(
             queue[0],
-            "Relevant: skill://rust-borrowck (read before the next edit)"
+            "Relevant: skill://rust-borrowck (matched \"E0502\")"
         );
     }
     engine.rearm();
@@ -553,6 +553,92 @@ fn skill_pointer_is_one_line_and_read_suppresses() -> TestResult {
         1,
         "a read of the skill file spends the pointer"
     );
+    Ok(())
+}
+
+fn skill(name: &str, needle: &str, scope: RuleScope, gap: RuleGap) -> RuleDoc {
+    let mut doc = rule(name, needle, scope, gap, RuleMode::Remind);
+    doc.body = format!("skill://{name}");
+    doc
+}
+
+#[test]
+fn a_failure_quoted_by_a_read_points_to_no_skill() -> TestResult {
+    let (engine, delivered) = engine_with_sink(vec![skill(
+        "debug",
+        "FAILED",
+        RuleScope::Result,
+        RuleGap::Once,
+    )]);
+    engine.check_result(
+        "read",
+        r#"{"path":"docs/CHANGELOG.md"}"#,
+        "| 0.9.0 | the suite said test result: FAILED |",
+        false,
+    );
+    assert!(
+        delivered.lock().map_err(|_| "lock")?.is_empty(),
+        "a file that quotes a failure is not a failure"
+    );
+    engine.check_result(
+        "bash",
+        "{}",
+        "test result: FAILED. 1 passed; 1 failed",
+        false,
+    );
+    let queue = delivered.lock().map_err(|_| "lock")?;
+    assert_eq!(
+        queue.as_slice(),
+        ["Relevant: skill://debug (matched \"FAILED\")"]
+    );
+    Ok(())
+}
+
+#[test]
+fn a_prose_skill_pointer_waits_for_a_write_and_forgets_it_at_the_prompt() -> TestResult {
+    let (engine, delivered) = engine_with_sink(vec![skill(
+        "verify",
+        "complete",
+        RuleScope::Text,
+        RuleGap::AfterTurns(1),
+    )]);
+    engine.observe(&assistant_saying("the record is decision-complete"));
+    assert!(
+        delivered.lock().map_err(|_| "lock")?.is_empty(),
+        "a turn that only read has nothing to verify"
+    );
+    assert!(engine.check_tool("edit", r#"{"patch":"x"}"#).is_none());
+    engine.observe(&assistant_saying("the change is complete"));
+    assert_eq!(delivered.lock().map_err(|_| "lock")?.len(), 1);
+    engine.observe(&AgentEvent::AgentEnd {
+        messages: Vec::new(),
+    });
+    engine.observe(&assistant_saying("complete, as asked"));
+    assert_eq!(
+        delivered.lock().map_err(|_| "lock")?.len(),
+        1,
+        "a new prompt starts with no write behind it"
+    );
+    Ok(())
+}
+
+#[test]
+fn two_skill_pointers_per_turn_however_many_scans() -> TestResult {
+    let (engine, delivered) = engine_with_sink(vec![
+        skill("one", "n1", RuleScope::Result, RuleGap::Once),
+        skill("two", "n2", RuleScope::Result, RuleGap::Once),
+        skill("three", "n3", RuleScope::Result, RuleGap::Once),
+    ]);
+    engine.check_result("bash", "{}", "n1", false);
+    engine.check_result("bash", "{}", "n2 n3", false);
+    assert_eq!(
+        delivered.lock().map_err(|_| "lock")?.len(),
+        2,
+        "the pointer cap is the turn's, not each scan's"
+    );
+    engine.observe(&assistant_saying("next turn"));
+    engine.check_result("bash", "{}", "n3", false);
+    assert_eq!(delivered.lock().map_err(|_| "lock")?.len(), 3);
     Ok(())
 }
 

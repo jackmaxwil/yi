@@ -794,36 +794,11 @@ impl Cell {
             Cell::Explored(rows) => explored_lines(rows, width, theme),
             Cell::Task(task) => task.lines(width, theme, mode, spinner_phase),
             Cell::Advisory { source, text } => {
-                // The advisor speaks over the agent's own output, so it takes the callout
-                // rail and blank air rather than a dim aside that reads as more prose.
-                let clean = strip_tags(text);
-                let rail = Style::default().fg(theme.warning);
-                let body = wrap_line(
-                    &Line::from(vec![
-                        Span::styled(format!("⚑ {source} "), rail.add_modifier(Modifier::BOLD)),
-                        Span::styled(clean, theme.muted_style()),
-                    ]),
-                    width.saturating_sub(4),
-                    "",
-                );
-                let mut out = vec![Line::default()];
-                out.extend(body.into_iter().map(|line| {
-                    let mut spans = vec![Span::styled(format!("  {CALLOUT_RAIL} "), rail)];
-                    spans.extend(line.spans);
-                    Line::from(spans)
-                }));
-                out.push(Line::default());
-                out
+                callout(Some(source), text, theme.muted_style(), width, theme)
             }
             Cell::Notice { text } => {
-                let style = Style::default().fg(theme.warning);
-                let rows = format!("  ⚑ {}", text.replace('\n', "\n    "));
-                rows.lines()
-                    .flat_map(|row| {
-                        let line = Line::from(Span::styled(row.to_owned(), style));
-                        wrap_line(&line, width, "    ")
-                    })
-                    .collect()
+                let body = Style::default().fg(theme.warning);
+                callout(None, text, body, width, theme)
             }
             Cell::Footer { text } => {
                 let line = Line::from(Span::styled(format!("  ↳ {text}"), theme.dim_style()));
@@ -848,6 +823,44 @@ impl Cell {
             }
         }
     }
+}
+
+/// Injected text, whoever injected it, takes one shape: the callout rail and a flag,
+/// so it never reads as the user or as the agent, and never as more than one row a line.
+fn callout(
+    source: Option<&str>,
+    text: &str,
+    body: Style,
+    width: usize,
+    theme: &Theme,
+) -> Vec<Line<'static>> {
+    let rail = Style::default().fg(theme.warning);
+    let mut head = String::from("⚑ ");
+    if let Some(source) = source {
+        head.push_str(source);
+        head.push(' ');
+    }
+    let mut out = Vec::new();
+    for row in text.lines() {
+        let row = if source.is_some() {
+            strip_tags(row)
+        } else {
+            row.trim().to_owned()
+        };
+        if row.is_empty() {
+            continue;
+        }
+        let line = Line::from(vec![
+            Span::styled(head.clone(), rail.add_modifier(Modifier::BOLD)),
+            Span::styled(row, body),
+        ]);
+        for wrapped in wrap_line(&line, width.saturating_sub(4), "") {
+            let mut spans = vec![Span::styled(format!("  {CALLOUT_RAIL} "), rail)];
+            spans.extend(wrapped.spans);
+            out.push(Line::from(spans));
+        }
+    }
+    out
 }
 
 const EXPLORED_CAP: usize = 32;
