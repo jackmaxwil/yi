@@ -238,29 +238,67 @@ fn every_commonmark_bullet_marker_counts_as_an_enumeration() {
 }
 
 #[test]
-fn a_quiet_prompt_escalates_on_the_trajectory() -> TestResult {
+fn a_turn_that_only_read_stays_one_shot_and_a_write_escalates_silently() -> TestResult {
     let dir = Scratch::new("yi-ext-escalate")?;
     let mut host = started(&dir, &dir);
+    let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+    let sink = std::sync::Arc::clone(&seen);
+    host.set_notice(std::sync::Arc::new(move |line: &str| {
+        if let Ok(mut lines) = sink.lock() {
+            lines.push(line.to_owned());
+        }
+    }));
     host.dispatch(&host.prompt_event("fix the typo"), None);
+    let call = |name: &str, target: &str| Event::ToolCall {
+        name: name.to_owned(),
+        target: Some(PathBuf::from(target)),
+    };
+    for n in 0..20 {
+        host.dispatch(&call("read", &format!("src/{n}.rs")), None);
+    }
+    let end = host.turn_end_event();
+    host.dispatch(&end, None);
     assert!(
         !host.system_prompt().contains("# Orchestrate"),
-        "a small prompt must not load the protocol"
+        "twenty reads and no write is an assessment, not a program"
     );
-    for _ in 0..5 {
-        host.dispatch(
-            &Event::ToolCall {
-                name: "read".to_owned(),
-                target: None,
-            },
-            None,
-        );
+    host.dispatch(&call("read", "src/lib.rs"), None);
+    host.dispatch(&call("edit", "src/lib.rs"), None);
+    for n in 0..3 {
+        host.dispatch(&call("read", &format!("src/{n}.rs")), None);
     }
     let end = host.turn_end_event();
     host.dispatch(&end, None);
     assert!(
         host.system_prompt().contains("# Orchestrate"),
-        "five tool calls in one turn is the escalation signal"
+        "five calls with a write in the turn loads the protocol"
     );
+    let nudges = || {
+        seen.lock()
+            .map(|lines| lines.iter().filter(|l| l.contains("outgrown")).count())
+            .unwrap_or(usize::MAX)
+    };
+    assert_eq!(
+        nudges(),
+        0,
+        "the turn-end signal attaches silently; a nudge after the answer is a wasted turn"
+    );
+    host.dispatch(&call("edit", "src/never_read.rs"), None);
+    assert_eq!(
+        nudges(),
+        0,
+        "the protocol is already attached, so a later signal adds nothing"
+    );
+    let dir = Scratch::new("yi-ext-edit-before-read")?;
+    let mut host = started(&dir, &dir);
+    let sink = std::sync::Arc::clone(&seen);
+    host.set_notice(std::sync::Arc::new(move |line: &str| {
+        if let Ok(mut lines) = sink.lock() {
+            lines.push(line.to_owned());
+        }
+    }));
+    host.dispatch(&call("edit", "src/never_read.rs"), None);
+    assert_eq!(nudges(), 1, "a mid-turn signal still reminds");
     Ok(())
 }
 
