@@ -172,5 +172,6 @@ when it changes rather than editing them by hand.
 - [D197](adr/d197.md) - a tool call the model wrote as text is the call it spells
 - [D198](adr/d198.md) - a collapsed tool card shows three result rows and how many it hid
 - [D199](adr/d199.md) - todo state is chrome, not transcript
+- [D201](adr/d201.md) - copy takes the words, not the frame
 
 D36-D51, D72, D73 and D74 have no ADR yet; ARCHITECTURE.md is the record for those rows.
