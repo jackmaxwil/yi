@@ -115,6 +115,46 @@ impl RpcState {
         Ok(())
     }
 
+    /// Invariant: the peer is anything running as the user, so a submit carries no principal;
+    /// only this process's own prompt mints `user://<n>`, for the one request it was asked about.
+    async fn submit_plan(
+        &self,
+        service: &yi_runtime::plan::PlanService,
+        payload: &Map<String, Value>,
+    ) -> Result<Value, String> {
+        if payload.contains_key("actor") {
+            return Err(yi_runtime::plan::tool::ArgError::ActorArg.to_string());
+        }
+        let (engine, actor) = service
+            .engine()
+            .ok_or_else(|| "no plan engine is attached".to_owned())?;
+        let submission = yi_runtime::plan::authority::submission_of(payload)?;
+        let confirmer =
+            self.session
+                .permission_broker()
+                .map(|broker| yi_runtime::plan::authority::Confirmer {
+                    broker,
+                    store: Arc::clone(&self.store),
+                });
+        tokio::task::spawn_blocking(move || {
+            let applied = yi_runtime::plan::authority::submit(
+                &engine,
+                &actor,
+                confirmer.as_ref(),
+                submission,
+            )
+            .map_err(|error| error.to_string())?;
+            Ok(json!({
+                "plan": applied.outcome.plan.id.as_str(),
+                "revision": applied.outcome.plan.touched.0,
+                "text": applied.text(),
+                "notices": applied.outcome.notices,
+            }))
+        })
+        .await
+        .map_err(|error| format!("plan.submit task failed: {error}"))?
+    }
+
     async fn handle(
         &mut self,
         command_type: &str,
@@ -216,21 +256,19 @@ impl RpcState {
             },
             "plan" => match self.session.plan_service() {
                 Some(service) => {
-                    // Mutation lives in the model's plan tool; rpc is a view.
                     let outcome = match text_arg("action") {
                         "get" => {
                             let service = std::sync::Arc::clone(&service);
                             match tokio::task::spawn_blocking(move || service.get()).await {
-                                Ok(outcome) => outcome,
+                                Ok(outcome) => outcome.map(|plan| json!({"plan": plan})),
                                 Err(error) => Err(format!("plan.get task failed: {error}")),
                             }
                         }
-                        other => Err(format!(
-                            "unknown plan action {other}; the rpc plan surface is read-only — use get"
-                        )),
+                        "submit" => self.submit_plan(&service, payload).await,
+                        other => Err(format!("unknown plan action {other}; use get|submit")),
                     };
                     match outcome {
-                        Ok(plan) => data_frame(id, "plan", json!({"plan": plan})),
+                        Ok(data) => data_frame(id, "plan", data),
                         Err(error) => error_frame(id, "plan", &error),
                     }
                 }

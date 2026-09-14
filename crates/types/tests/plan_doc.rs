@@ -58,6 +58,9 @@ fn todo(label: &str, after: &[&str], state: TodoState) -> Result<Todo, DocError>
         subplan: None,
         retries: RetryCount::default(),
         children: Vec::new(),
+        note: None,
+        attempt: yi_types::plan::doc::AttemptId::FIRST,
+        refusals: 0,
         extra: Map::new(),
     })
 }
@@ -147,7 +150,7 @@ fn frontmatter_round_trips() -> TestResult {
         },
     };
     let json = serde_json::to_string(&plan)?;
-    assert!(json.contains("\"format\":1"));
+    assert!(json.contains("\"format\":2"));
     assert!(json.contains("\"parent\":\"root/Some parent todo\""));
     let back: Plan = serde_json::from_str(&json)?;
     assert_eq!(back, plan);
@@ -159,9 +162,10 @@ fn frontmatter_round_trips() -> TestResult {
 #[test]
 fn unknown_tags_round_trip_byte_identically() -> TestResult {
     let json = concat!(
-        "{\"format\":1,\"plan\":\"p\",\"goal\":\"g\",\"version\":1,",
+        "{\"format\":2,\"plan\":\"p\",\"goal\":\"g\",\"version\":1,",
         "\"touched\":1,\"tier\":\"quarantine\",\"state\":\"parked\",",
-        "\"todos\":[{\"label\":\"a\",\"state\":\"quarantined\"}]}"
+        "\"intent\":null,\"constraints\":[],\"examples\":[],\"shape\":null,\"placement\":null,",
+        "\"todos\":[{\"label\":\"a\",\"state\":\"quarantined\",\"attempt\":1,\"refusals\":0}]}"
     );
     let plan: Plan = serde_json::from_str(json)?;
     assert_eq!(plan.state, PlanState::Other("parked".to_owned()));
@@ -300,5 +304,22 @@ fn children_round_trip_and_stay_out_of_a_flat_row() -> TestResult {
     assert_eq!(back, plan);
     let progress = yi_types::plan::doc::progress(&back.todos);
     assert_eq!((progress.done, progress.total), (1, 3));
+    Ok(())
+}
+
+#[test]
+fn a_format_one_document_reads_only_through_the_legacy_parser() -> TestResult {
+    let json = concat!(
+        "{\"format\":1,\"plan\":\"p\",\"goal\":\"g\",\"version\":1,",
+        "\"tier\":\"root\",\"state\":\"active\",",
+        "\"todos\":[{\"label\":\"a\",\"state\":\"pending\"}]}"
+    );
+    assert!(
+        serde_json::from_str::<Plan>(json).is_err(),
+        "format 1 is refused after import"
+    );
+    let plan = Plan::parse_legacy(json)?;
+    assert_eq!(plan.todos.first().map(|todo| todo.attempt.get()), Some(1));
+    assert!(Plan::parse_legacy(&json.replace("\"format\":1", "\"format\":2")).is_err());
     Ok(())
 }

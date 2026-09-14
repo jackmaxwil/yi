@@ -8,28 +8,14 @@ use yi_types::plan::doc::{
 };
 use yi_types::url::Url;
 
-use super::ops::{Actor, Op, OpRequest, Outcome, PlanEngine, PlanOpError, SetRow, TodoSpec};
-use super::table::{OpKind, op_name};
+use super::ops::{
+    Actor, Op, OpRequest, Outcome, PlanEngine, PlanOpError, Reconciliation, Resolution, SetRow,
+    TodoSpec,
+};
+use super::table::{ALL_OPS, OpKind, op_name};
+use yi_types::plan::op::MODEL_OPS;
 
 const WINDOW: usize = 8;
-
-const ALL_OPS: [OpKind; 15] = [
-    OpKind::Set,
-    OpKind::Init,
-    OpKind::Append,
-    OpKind::Drop,
-    OpKind::Block,
-    OpKind::Unblock,
-    OpKind::Reorder,
-    OpKind::AddEdge,
-    OpKind::Start,
-    OpKind::Done,
-    OpKind::Fail,
-    OpKind::Retry,
-    OpKind::Decompose,
-    OpKind::Supersede,
-    OpKind::View,
-];
 
 fn legal_ops() -> String {
     ALL_OPS
@@ -136,6 +122,9 @@ fn parse_checklist(list: &str) -> Result<Vec<SetRow>, ArgError> {
             subplan: None,
             retries: yi_types::plan::doc::RetryCount::default(),
             children: Vec::new(),
+            note: None,
+            attempt: yi_types::plan::doc::AttemptId::FIRST,
+            refusals: 0,
             extra: serde_json::Map::new(),
         };
         let depth = indent.min(path.len());
@@ -222,6 +211,9 @@ from_arg!(
     Delegation,
     String,
     bool,
+    Vec<Resolution>,
+    yi_types::plan::ledger::EffectId,
+    Reconciliation,
 );
 
 fn opt<T: FromArg>(
@@ -340,6 +332,18 @@ fn parse_op(args: &Map<String, Value>) -> Result<Op, ArgError> {
         OpKind::View => Op::View {
             full: opt(args, kind, "full")?.unwrap_or(false),
         },
+        OpKind::FuseReset => Op::FuseReset,
+        OpKind::Repair => Op::Repair {
+            resolutions: opt::<Vec<Resolution>>(args, kind, "resolutions")?.unwrap_or_default(),
+        },
+        OpKind::Import => Op::Import {
+            source: need(args, kind, "source")?,
+        },
+        OpKind::Reconcile => Op::Reconcile {
+            label: label(args, kind)?,
+            effect_id: opt(args, kind, "effect_id")?,
+            outcome: need::<Reconciliation>(args, kind, "outcome")?,
+        },
     })
 }
 
@@ -353,6 +357,8 @@ pub(super) fn request(actor: &Actor, args: &Map<String, Value>) -> Result<OpRequ
         plan: opt(args, op.kind(), "plan")?,
         actor: actor.clone(),
         op,
+        request_id: None,
+        expected_revision: None,
     })
 }
 
@@ -586,7 +592,7 @@ pub fn schema() -> Value {
             "properties": {
                 "op": {
                     "type": "string",
-                    "enum": ALL_OPS.iter().map(|op| op_name(*op)).collect::<Vec<_>>(),
+                    "enum": ALL_OPS.iter().take(MODEL_OPS).map(|op| op_name(*op)).collect::<Vec<_>>(),
                     "description": "set replaces the whole list from a checklist; init goal+todos; append/drop/reorder/add_edge edit the cut; start/done/fail step a todo; block/unblock park one; retry a failed one; decompose a running one into a sub-plan; supersede replaces the whole cut; view echoes it"
                 },
                 "list": {"type": "string", "description": "set: the checklist, one `- [ ] label` per line (`[>]` running, `[x]` done), nested by two-space indent"},
@@ -628,7 +634,11 @@ mod tests {
     fn every_fixture_op_argument_set_parses() -> Fallible {
         let mut seen = 0usize;
         for entry in std::fs::read_dir(fixture_dir())? {
-            let fixture: Value = serde_json::from_str(&std::fs::read_to_string(entry?.path())?)?;
+            let path = entry?.path();
+            if path.extension().and_then(|extension| extension.to_str()) != Some("json") {
+                continue;
+            }
+            let fixture: Value = serde_json::from_str(&std::fs::read_to_string(path)?)?;
             let Some(steps) = fixture.get("steps").and_then(Value::as_array) else {
                 continue;
             };
@@ -646,6 +656,23 @@ mod tests {
                 }
                 let parsed = request(&Actor::Owner, &input);
                 assert!(parsed.is_ok(), "{name}: {:?}", parsed.err());
+                // The CLI reads one line: the same args must parse to the same request.
+                let mut line = name.to_owned();
+                if let Some(plan) = step.get("plan").and_then(Value::as_str) {
+                    line.push(' ');
+                    line.push_str(plan);
+                }
+                if let Some(Value::Object(args)) = step.get("args") {
+                    line.push(' ');
+                    line.push_str(&serde_json::to_string(args)?);
+                }
+                let through_cli = super::super::authority::cli_args(&line)
+                    .map_err(|error| format!("{name}: {error}"))?;
+                assert_eq!(
+                    request(&Actor::Owner, &through_cli).ok(),
+                    parsed.ok(),
+                    "{name}: the CLI line parses differently from the tool"
+                );
                 seen = seen.saturating_add(1);
             }
         }
@@ -684,6 +711,9 @@ mod tests {
             subplan: None,
             retries: yi_types::plan::doc::RetryCount::default(),
             children: Vec::new(),
+            note: None,
+            attempt: yi_types::plan::doc::AttemptId::FIRST,
+            refusals: 0,
             extra: Map::new(),
         })
     }
@@ -710,6 +740,7 @@ mod tests {
             spawned: Vec::new(),
             reaped: Vec::new(),
             subplan: None,
+            notices: Vec::new(),
         };
         let windowed = render(&outcome, false, None);
         assert!(
@@ -787,6 +818,12 @@ mod tests {
         assert!(
             engine.revision(None).is_err(),
             "no plan may open through a claimed actor"
+        );
+        let line = format!("init {}", serde_json::to_string(&args)?);
+        let through_cli = super::super::authority::cli_args(&line)?;
+        assert!(
+            matches!(request(&child, &through_cli), Err(ArgError::ActorArg)),
+            "the CLI line carries the key into the same refusal"
         );
         Ok(())
     }

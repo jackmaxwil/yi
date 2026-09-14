@@ -252,7 +252,11 @@ mod tests {
         let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/plans");
         let mut seen = 0usize;
         for entry in std::fs::read_dir(dir)? {
-            let fixture: Value = serde_json::from_str(&std::fs::read_to_string(entry?.path())?)?;
+            let path = entry?.path();
+            if path.extension().and_then(|extension| extension.to_str()) != Some("json") {
+                continue;
+            }
+            let fixture: Value = serde_json::from_str(&std::fs::read_to_string(path)?)?;
             let prompt = fixture
                 .get("prompt")
                 .and_then(Value::as_str)
@@ -291,6 +295,9 @@ mod tests {
             subplan: None,
             retries: RetryCount::default(),
             children: Vec::new(),
+            note: None,
+            attempt: yi_types::plan::doc::AttemptId::FIRST,
+            refusals: 0,
             extra: serde_json::Map::new(),
         })
     }

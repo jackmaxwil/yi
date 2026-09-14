@@ -1,6 +1,11 @@
+pub mod canonical;
 pub mod doc;
 pub mod ids;
 pub mod ledger;
+pub mod op;
+
+/// The format-2 checkpoint schema, published to `.yi/schemas/plan.schema.json` on store open.
+pub const PLAN_SCHEMA: &str = include_str!("plan/plan.schema.json");
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};

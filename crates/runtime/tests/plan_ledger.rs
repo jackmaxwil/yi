@@ -24,10 +24,11 @@ type TestResult = Result<(), Box<dyn Error>>;
 struct Recorder(Mutex<Vec<PlanOpRecord>>);
 
 impl OpSink for Recorder {
-    fn record(&self, record: PlanOpRecord) {
-        if let Ok(mut seen) = self.0.lock() {
-            seen.push(record);
-        }
+    fn record(&self, record: PlanOpRecord) -> Result<(), String> {
+        self.0
+            .lock()
+            .map(|mut seen| seen.push(record))
+            .map_err(|_| "poisoned".to_owned())
     }
 }
 
@@ -66,6 +67,8 @@ fn owner(op: Op) -> OpRequest {
         plan: None,
         actor: Actor::Owner,
         op,
+        request_id: None,
+        expected_revision: None,
     }
 }
 
@@ -119,6 +122,9 @@ fn plan_with(edges: &[(&str, &[&str])]) -> Result<Plan, Box<dyn Error>> {
             subplan: None,
             retries: yi_types::plan::doc::RetryCount(0),
             children: Vec::new(),
+            note: None,
+            attempt: yi_types::plan::doc::AttemptId::FIRST,
+            refusals: 0,
             extra: serde_json::Map::new(),
         });
     }

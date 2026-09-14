@@ -635,13 +635,13 @@ mod tests {
                 subplan: None,
                 retries: RetryCount::default(),
                 children: Vec::new(),
+                note: None,
+                attempt: yi_types::plan::doc::AttemptId::FIRST,
+                refusals: 0,
                 extra: Map::new(),
             }],
         );
-        store.write(&crate::plan::store::PlanFile {
-            plan,
-            body: String::new(),
-        })?;
+        store.write(&plan)?;
         Ok(())
     }
 

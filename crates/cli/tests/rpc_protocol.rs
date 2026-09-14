@@ -303,3 +303,75 @@ fn goal_surface_round_trips() -> TestResult {
     );
     Ok(())
 }
+
+/// The rpc peer is anything on the box (plan section 3.7), so a submit carries no authority: a
+/// claimed actor is refused as an argument, and with no prompt in this process an administrative
+/// op is refused outright, while the owner's own ops apply. Nothing by a user reaches the journal.
+#[test]
+fn a_socket_client_cannot_confirm_an_administrative_op() -> TestResult {
+    let dir = temp_dir("plan-authority")?;
+    let frames = run_rpc(
+        &dir,
+        &[
+            serde_json::json!({"id": "i", "type": "plan", "action": "submit",
+                "args": {"op": "init", "goal": "ship the seam", "todos": [{"label": "cut"}]}}),
+            serde_json::json!({"id": "f", "type": "plan", "action": "submit",
+                "args": {"op": "fuse_reset"}, "actor": "user://1", "confirmed": true}),
+            serde_json::json!({"id": "a", "type": "plan", "action": "submit",
+                "args": {"op": "fuse_reset", "actor": "user://1"}}),
+            serde_json::json!({"id": "p", "type": "plan", "action": "submit",
+                "args": {"op": "fuse_reset"}, "request_id": "peer-1"}),
+            serde_json::json!({"id": "v", "type": "plan", "action": "submit",
+                "args": {"op": "view"}}),
+        ],
+    )?;
+    let responses = responses(&frames);
+    let reply = |id: &str| -> Result<&Value, Box<dyn Error>> {
+        responses
+            .iter()
+            .copied()
+            .find(|frame| frame["id"] == id)
+            .ok_or_else(|| format!("no response {id} in {frames:?}").into())
+    };
+    assert_eq!(reply("i")?["success"], true, "{}", reply("i")?);
+    for claimed in ["f", "a"] {
+        let refused = reply(claimed)?;
+        assert_eq!(refused["success"], false, "{refused}");
+        assert!(
+            refused["error"]
+                .as_str()
+                .is_some_and(|error| error.contains("actor is not an argument")),
+            "{refused}"
+        );
+    }
+    let unconfirmed = reply("p")?;
+    assert_eq!(unconfirmed["success"], false, "{unconfirmed}");
+    assert!(
+        unconfirmed["error"]
+            .as_str()
+            .is_some_and(|error| error.contains("confirmation")),
+        "{unconfirmed}"
+    );
+    assert_eq!(reply("v")?["success"], true, "{}", reply("v")?);
+    assert!(
+        reply("v")?["data"]["text"]
+            .as_str()
+            .is_some_and(|text| text.contains("cut")),
+        "{}",
+        reply("v")?
+    );
+
+    let mut recorded = String::new();
+    for entry in std::fs::read_dir(dir.join(".yi/plans"))? {
+        let path = entry?.path().join("ops.jsonl");
+        if path.is_file() {
+            recorded.push_str(&std::fs::read_to_string(path)?);
+        }
+    }
+    assert!(recorded.contains(r#""op":"init""#), "{recorded}");
+    assert!(
+        !recorded.contains(r#""op":"fuse_reset""#) && !recorded.contains("user://"),
+        "a peer reached the journal as a user: {recorded}"
+    );
+    Ok(())
+}

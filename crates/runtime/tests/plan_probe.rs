@@ -102,6 +102,8 @@ fn open(rig: &Rig, label: &str, probe: Option<&str>) -> Result<(), Box<dyn Error
                 children: Vec::new(),
             }],
         },
+        request_id: None,
+        expected_revision: None,
     })?;
     let probe = probe.map(ProbeCommand::new).transpose()?;
     rig.engine.apply(OpRequest {
@@ -112,6 +114,8 @@ fn open(rig: &Rig, label: &str, probe: Option<&str>) -> Result<(), Box<dyn Error
             on: BlockedOn::External { probe },
             note: "the deploy has to finish".to_owned(),
         },
+        request_id: None,
+        expected_revision: None,
     })?;
     Ok(())
 }
@@ -137,6 +141,8 @@ fn a_block_inside_a_sub_plan_is_probed_too() -> TestResult {
         plan,
         actor: Actor::Owner,
         op,
+        request_id: None,
+        expected_revision: None,
     };
     rig.engine.apply(owner(
         None,
@@ -195,7 +201,6 @@ fn a_block_inside_a_sub_plan_is_probed_too() -> TestResult {
     let todo = rig
         .store
         .read(&sub)?
-        .plan
         .todo(&TodoLabel::new("wait for staging")?)
         .ok_or("todo missing")?
         .state
@@ -208,7 +213,6 @@ fn state_of(rig: &Rig, label: &str) -> Result<TodoState, Box<dyn Error>> {
     let id = rig.store.roots()?.into_iter().next().ok_or("no plan")?;
     let file = rig.store.read(&id)?;
     Ok(file
-        .plan
         .todo(&TodoLabel::new(label)?)
         .ok_or("todo missing")?
         .state

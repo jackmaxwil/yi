@@ -9,18 +9,16 @@ use yi_types::url::Durability;
 pub struct SessionOpSink(pub crate::goal::StoreHandle);
 
 impl super::ops::OpSink for SessionOpSink {
-    fn record(&self, record: PlanOpRecord) {
+    /// Telemetry by policy: a failure is returned, never raised, and the op stands.
+    fn record(&self, record: PlanOpRecord) -> Result<(), String> {
         let Some(session) = (self.0)() else {
-            return;
+            return Err("no session to record into".to_owned());
         };
-        let Ok(payload) = serde_json::to_value(&record) else {
-            return;
-        };
-        let _a_ledger_write_never_fails_an_op = yi_session::lock_session(&session).append_custom(
-            "main",
-            PLAN_OP_ENTRY_TYPE,
-            Some(payload),
-        );
+        let payload = serde_json::to_value(&record).map_err(|error| error.to_string())?;
+        yi_session::lock_session(&session)
+            .append_custom("main", PLAN_OP_ENTRY_TYPE, Some(payload))
+            .map(|_entry| ())
+            .map_err(|error| error.to_string())
     }
 }
 

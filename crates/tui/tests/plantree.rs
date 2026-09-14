@@ -50,6 +50,9 @@ fn todo(label: &str, state: TodoState, after: &[&str]) -> Result<Todo, Box<dyn E
         subplan: None,
         retries: RetryCount(0),
         children: Vec::new(),
+        note: None,
+        attempt: yi_types::plan::doc::AttemptId::FIRST,
+        refusals: 0,
         extra: serde_json::Map::new(),
     })
 }

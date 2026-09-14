@@ -7,6 +7,7 @@ use yi_types::schedule::DeliveryMode;
 use yi_types::url::Url;
 
 use super::ops::Delegate;
+use super::recovery::Liveness;
 use crate::fetch::FetchLog;
 use crate::goal::DeliverFn;
 use crate::subagent::SubagentHost;
@@ -125,6 +126,14 @@ impl SessionDelegate {
             },
             DeliveryMode::Steer,
         );
+    }
+}
+
+/// The host holds a child from spawn to reap: not held means no live process, and a held
+/// child that finished still has a result the owner harvests, so it needs no reconciliation.
+impl Liveness for SessionDelegate {
+    fn alive(&self, agent: &AgentId) -> Option<bool> {
+        Some(self.host.holds(agent.as_str()))
     }
 }
 
@@ -325,6 +334,8 @@ mod tests {
             plan: None,
             actor: Actor::Owner,
             op,
+            request_id: None,
+            expected_revision: None,
         }
     }
 
@@ -633,6 +644,45 @@ mod tests {
             woke,
             "an idle owner must be woken by its child's finish: {:?}",
             owner_session.messages()
+        );
+        Ok(())
+    }
+
+    /// The session's liveness is the host's hold: a spawned child is alive until it is reaped,
+    /// finished or not, and a name the host never held has no live process.
+    #[tokio::test]
+    async fn a_held_child_is_alive_and_an_unknown_one_is_not() -> TestResult {
+        let rig = rig("the seam holds")?;
+        rig.engine.apply(owner(Op::Init {
+            goal: GoalText::new("ship the widget")?,
+            todos: vec![delegated("cut the seam")?],
+        }))?;
+        let out = rig.engine.apply(owner(Op::Start {
+            label: TodoLabel::new("cut the seam")?,
+        }))?;
+        let spawned = out.spawned.first().ok_or("nothing spawned")?;
+        let child = AgentId::new(spawned.path())?;
+        let liveness = SessionDelegate::new(
+            Arc::clone(&rig.host),
+            Arc::new(|_message, _mode| {}),
+            Arc::clone(&rig.pins),
+        );
+        assert_eq!(liveness.alive(&child), Some(true));
+        assert_eq!(liveness.alive(&AgentId::new("never-spawned")?), Some(false));
+        assert!(wait_done(&rig.host).await, "child never completed");
+        assert_eq!(
+            liveness.alive(&child),
+            Some(true),
+            "a finished child the owner has not harvested is still held"
+        );
+        rig.engine.apply(owner(Op::Done {
+            label: TodoLabel::new("cut the seam")?,
+            output: Some("local://seam.md".parse()?),
+        }))?;
+        assert_eq!(
+            liveness.alive(&child),
+            Some(false),
+            "a reaped child is gone"
         );
         Ok(())
     }
