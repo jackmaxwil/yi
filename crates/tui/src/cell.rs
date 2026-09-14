@@ -237,6 +237,17 @@ fn bar(lines: Vec<Line<'static>>, theme: &Theme) -> Vec<Line<'static>> {
         .collect()
 }
 
+/// The tool's name as a card reads it, `Read`, the way the Explored verb column already does.
+pub fn label(tool: &str) -> String {
+    let mut chars = tool.chars();
+    chars
+        .next()
+        .map(|first| first.to_uppercase().chain(chars).collect())
+        .unwrap_or_default()
+}
+
+const PREVIEW_ROWS: usize = 3;
+
 fn glyph(tool: &str) -> char {
     match tool {
         "bash" => '$',
@@ -352,15 +363,37 @@ impl ToolCell {
                 theme.accent_style(),
             )],
             ToolStatus::Awaiting => vec![Span::styled("△ ", style)],
-            _ => Vec::new(),
+            ToolStatus::Failed => vec![Span::styled("✗ ", style)],
+            ToolStatus::Denied => vec![Span::styled("⊘ ", style)],
+            ToolStatus::Done => Vec::new(),
         };
         spans.extend(self.summary_spans(theme, style));
         let (chips, digest) = self.chips(theme);
         let inner = crate::card::body_width(width);
         let mut body = Vec::new();
+        // `normal` folds every body away and `verbose` opens them all; the default view
+        // between them shows the first rows of the result and how many follow.
+        let preview: Vec<Line<'static>> =
+            if mode != TranscriptMode::Thinking || self.patch().is_some() || self.name == "todo" {
+                Vec::new()
+            } else {
+                self.body(theme).into_iter().take(PREVIEW_ROWS).collect()
+            };
+        let repeats_digest = |digest: &str| {
+            preview.first().is_some_and(|row| {
+                row.spans
+                    .iter()
+                    .map(|s| s.content.as_ref())
+                    .collect::<String>()
+                    .trim()
+                    == digest.trim()
+            })
+        };
         // A failure's body is never mode-gated: a reader who cannot see why a
         // call failed cannot act on it, whatever mode the cell rendered under.
-        if let Some(digest) = digest {
+        if let Some(digest) = digest
+            && (failed || !repeats_digest(&digest))
+        {
             let detail = if failed {
                 Style::default().fg(theme.error)
             } else {
@@ -378,6 +411,18 @@ impl ToolCell {
         } else if expanded {
             for line in self.body(theme) {
                 body.extend(capped(&line, inner, "     ", theme));
+            }
+        } else {
+            let hidden = self.lines_total().saturating_sub(preview.len());
+            let shown = !preview.is_empty();
+            for line in preview {
+                body.extend(capped(&line, inner, "     ", theme));
+            }
+            if shown && hidden > 0 {
+                body.push(Line::from(Span::styled(
+                    format!("… {hidden} more lines"),
+                    theme.dim_style(),
+                )));
             }
         }
         crate::card::card(Line::from(spans), &chips, body, width, theme, self.status)
@@ -426,7 +471,21 @@ impl ToolCell {
         if self.status != ToolStatus::Running
             && let Some(code) = self.details.get("exitCode").and_then(Value::as_i64)
         {
-            chips.push(Chip::exit(code, theme));
+            chips.extend(Chip::exit(code, theme));
+            // Incident: `fgj … | head -20; echo ---` reported the tail's 0 over a `command
+            // not found`, and the reader saw a green pass where nothing ran.
+            if code == 0
+                && self
+                    .preview
+                    .iter()
+                    .any(|row| row.contains("command not found"))
+            {
+                chips.push(Chip::new(
+                    "not found",
+                    "",
+                    Style::default().fg(theme.warning),
+                ));
+            }
         }
         chips.extend(Chip::elapsed(self.elapsed_ms, theme));
         (chips, prose)
@@ -444,9 +503,10 @@ impl ToolCell {
             let name = Style::default()
                 .fg(crate::card::tool_hue(theme, &self.name))
                 .add_modifier(Modifier::BOLD);
-            return match self.summary.split_once(self.name.as_str()) {
+            let label = label(&self.name);
+            return match self.summary.split_once(label.as_str()) {
                 Some((glyph, rest)) => {
-                    let mut spans = vec![Span::styled(format!("{glyph}{}", self.name), name)];
+                    let mut spans = vec![Span::styled(format!("{glyph}{label}"), name)];
                     // A path is read by its basename; the directories are context, so dim.
                     match rest.rsplit_once('/') {
                         Some((dir, base)) if !rest.contains(' ') && !base.is_empty() => {
@@ -476,8 +536,9 @@ impl ToolCell {
         let anchored = matches!(self.name.as_str(), "read" | "edit");
         // A patch routes to `diffview`, which colours from its own header; this is the plain
         // numbered dump a read prints, its path in the summary since `details` lacks it.
+        let label = label(&self.name);
         let subject = anchored
-            .then(|| self.summary.split_once(self.name.as_str()))
+            .then(|| self.summary.split_once(label.as_str()))
             .flatten()
             .map(|(_, rest)| rest.trim())
             .filter(|subject| !subject.is_empty());
@@ -533,9 +594,23 @@ impl ToolCell {
         if name == "bash" && !argument.is_empty() {
             return format!("$ {argument}");
         }
-        format!("{} {} {}", glyph(name), name, argument)
+        format!("{} {} {}", glyph(name), label(name), argument)
             .trim_end()
             .to_owned()
+    }
+
+    /// The result's line count, read back from the preview and its elision marker.
+    fn lines_total(&self) -> usize {
+        let omitted = self.preview.iter().find_map(|row| {
+            row.strip_prefix("… ")?
+                .strip_suffix(" more lines")?
+                .parse::<usize>()
+                .ok()
+        });
+        match omitted {
+            Some(n) => self.preview.len().saturating_sub(1).saturating_add(n),
+            None => self.preview.len(),
+        }
     }
 
     /// Yi showed no result lines, so a finished call left no trace of its
@@ -875,7 +950,7 @@ fn explored_lines(rows: &[ToolCell], width: usize, theme: &Theme) -> Vec<Line<'s
         // column now says; what is left is the subject.
         let subject = row
             .summary
-            .split_once(&row.name)
+            .split_once(label(&row.name).as_str())
             .map(|(_, rest)| rest.trim())
             .unwrap_or(row.summary.as_str())
             .to_owned();
