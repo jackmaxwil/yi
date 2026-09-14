@@ -347,10 +347,12 @@ fn wire_plan_request(
         log,
     ));
     let ops = Arc::new(crate::plan::ledger::SessionOpSink(session.store_handle()));
+    let liveness: Arc<dyn crate::plan::recovery::Liveness> = delegate.clone();
     let engine = Arc::new(
         crate::plan::ops::PlanEngine::new(store, delegate)
             .with_output_resolve(resolver)
-            .with_op_sink(ops),
+            .with_op_sink(ops)
+            .with_liveness(liveness),
     );
     crate::plan::request::register(Arc::clone(&engine), actor.clone(), registry);
     Some((engine, actor))
@@ -371,6 +373,9 @@ fn wire_plan_engine(
         let hook = session.heartbeat_hook();
         Arc::new(move |message, mode| hook(message, mode))
     };
+    if let Some(service) = session.plan_service() {
+        service.set_engine(Arc::clone(&engine), actor.clone());
+    }
     tools.push(Arc::new(crate::plan::tool::PlanTool::new(
         Arc::clone(&engine),
         actor,

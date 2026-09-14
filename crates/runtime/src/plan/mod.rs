@@ -11,12 +11,19 @@ use yi_types::schedule::DeliveryMode;
 
 use crate::goal::{DeliverFn, StoreHandle};
 
+pub mod artifact;
+pub mod authority;
 pub mod dispatch;
+pub mod import;
+pub mod journal;
 pub mod ledger;
 pub mod loop_coupling;
 pub mod ops;
+pub mod output;
 pub mod probe;
+pub mod recovery;
 pub mod request;
+pub mod state;
 pub mod store;
 pub mod table;
 pub mod tool;
@@ -37,10 +44,7 @@ pub fn subplans_of(plan: &Plan, plans_dir: &Path) -> Vec<Plan> {
     let Ok(store) = PlanStore::open(plans_dir.to_path_buf()) else {
         return Vec::new();
     };
-    ids.iter()
-        .filter_map(|id| store.read(id).ok())
-        .map(|file| file.plan)
-        .collect()
+    ids.iter().filter_map(|id| store.read(id).ok()).collect()
 }
 
 pub type PlanChangeHook = Arc<dyn Fn(&Plan) + Send + Sync>;
@@ -83,10 +87,10 @@ pub fn canonical_plan(store: &StoreHandle, plans_dir: &Path) -> Result<Plan, Can
     if let Some(raw) = pointer {
         let id = PlanId::new(raw.as_str())
             .map_err(|cause| CanonicalPlanError::Pointer { id: raw, cause })?;
-        return Ok(plans.read(&id)?.plan);
+        return Ok(plans.read(&id)?);
     }
     for id in plans.roots()? {
-        let plan = plans.read(&id)?.plan;
+        let plan = plans.read(&id)?;
         if plan.state == PlanState::Active {
             return Ok(plan);
         }
@@ -248,6 +252,7 @@ pub struct PlanService {
     stale: Mutex<StaleTracker>,
     stale_turns: u64,
     on_change: Mutex<Option<PlanChangeHook>>,
+    engine: std::sync::OnceLock<(Arc<ops::PlanEngine>, ops::Actor)>,
 }
 
 impl PlanService {
@@ -259,7 +264,16 @@ impl PlanService {
             stale: Mutex::new(StaleTracker::default()),
             stale_turns: DEFAULT_STALE_TURNS,
             on_change: Mutex::new(None),
+            engine: std::sync::OnceLock::new(),
         }
+    }
+
+    pub fn set_engine(&self, engine: Arc<ops::PlanEngine>, actor: ops::Actor) {
+        let _first_wiring_wins = self.engine.set((engine, actor));
+    }
+
+    pub fn engine(&self) -> Option<(Arc<ops::PlanEngine>, ops::Actor)> {
+        self.engine.get().cloned()
     }
 
     pub fn with_stale_turns(mut self, turns: Option<u64>) -> Self {

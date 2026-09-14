@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex};
 use yi_kernel::client::HostHandlers;
 use yi_runtime::HostRegistry;
 use yi_runtime::plan::ops::{Actor, Delegate, PlanEngine};
-use yi_runtime::plan::store::{PlanFile, PlanStore};
+use yi_runtime::plan::store::PlanStore;
 use yi_runtime::plan::{CanonicalPlanError, PlanService};
 use yi_types::event::AgentEvent;
 use yi_types::message::{AgentMessage, StopReason};
@@ -40,6 +40,9 @@ fn todo(label: &str, state: TodoState) -> Result<Todo, Box<dyn Error>> {
         subplan: None,
         retries: RetryCount::default(),
         children: Vec::new(),
+        note: None,
+        attempt: yi_types::plan::doc::AttemptId::FIRST,
+        refusals: 0,
         extra: serde_json::Map::new(),
     })
 }
@@ -56,10 +59,7 @@ fn doc_plan(id: &str, touched: u64, todos: Vec<Todo>) -> Result<Plan, Box<dyn Er
 }
 
 fn write_plan(dir: &Path, plan: Plan) -> TestResult {
-    PlanStore::open(dir.to_path_buf())?.write(&PlanFile {
-        plan,
-        body: String::new(),
-    })?;
+    PlanStore::open(dir.to_path_buf())?.write(&plan)?;
     Ok(())
 }
 
@@ -385,18 +385,28 @@ async fn a_child_kernels_plan_op_is_refused_beyond_view() -> TestResult {
     );
     let file = PlanStore::open(dir.to_path_buf())?.read(&PlanId::new("parents")?)?;
     assert!(
-        matches!(file.plan.todos[0].state, TodoState::Running { .. }),
+        matches!(file.todos[0].state, TodoState::Running { .. }),
         "a child's done must not land"
     );
-    assert_eq!(file.plan.touched, TouchCount(3));
+    assert_eq!(file.touched, TouchCount(3));
     let again = plan_op(
+        &registry,
+        serde_json::json!({"request_id": "r2", "op": "done", "args": {"label": "cut"}}),
+    )
+    .await?;
+    assert_eq!(
+        again, stepped,
+        "a duplicate of a refusal that never reached the journal returns the cached reply"
+    );
+    let other = plan_op(
         &registry,
         serde_json::json!({"request_id": "r2", "op": "view", "args": {}}),
     )
     .await?;
     assert_eq!(
-        again, stepped,
-        "a duplicate request_id returns the cached reply"
+        other["ok"],
+        serde_json::json!(true),
+        "the same id with other args is not the cached refusal: {other:?}"
     );
     let stale = plan_op(
         &registry,
@@ -413,6 +423,64 @@ async fn a_child_kernels_plan_op_is_refused_beyond_view() -> TestResult {
         shapeless.is_err(),
         "a missing request_id is a transport error"
     );
+    Ok(())
+}
+
+/// The journal is the deduplicator (plan section 5.3): a reused `request_id` with other args
+/// is refused, the same args replay, and an id the journal could not hold is refused at the
+/// boundary rather than swapped for a minted one.
+#[tokio::test]
+async fn a_reused_request_id_is_refused_by_the_journal_and_a_bad_one_by_the_parser() -> TestResult {
+    let dir = Scratch::new("yi-plan-op-dedup")?;
+    write_plan(
+        &dir,
+        doc_plan("dedup", 1, vec![todo("cut", TodoState::Pending)?])?,
+    )?;
+    let engine = Arc::new(PlanEngine::new(
+        PlanStore::open(dir.to_path_buf())?,
+        Arc::new(NoChildren),
+    ));
+    let mut registry = HostRegistry::default();
+    yi_runtime::plan::request::register(engine, Actor::Owner, &mut registry);
+    let first = plan_op(
+        &registry,
+        serde_json::json!({"request_id": "dup", "op": "append", "args": {"todos": [{"label": "one"}]}}),
+    )
+    .await?;
+    assert_eq!(first["ok"], serde_json::json!(true), "{first:?}");
+    let reused = plan_op(
+        &registry,
+        serde_json::json!({"request_id": "dup", "op": "append", "args": {"todos": [{"label": "two"}]}}),
+    )
+    .await?;
+    assert_eq!(reused["ok"], serde_json::json!(false), "{reused:?}");
+    assert_eq!(
+        reused["refusal"]["code"],
+        serde_json::json!("request_id_reused"),
+        "{reused:?}"
+    );
+    let replayed = plan_op(
+        &registry,
+        serde_json::json!({"request_id": "dup", "op": "append", "args": {"todos": [{"label": "one"}]}}),
+    )
+    .await?;
+    assert_eq!(replayed["ok"], serde_json::json!(true), "{replayed:?}");
+    assert_eq!(replayed["revision"], first["revision"], "nothing ran twice");
+    let labels: Vec<String> = PlanStore::open(dir.to_path_buf())?
+        .read(&PlanId::new("dedup")?)?
+        .todos
+        .iter()
+        .map(|todo| todo.label.as_str().to_owned())
+        .collect();
+    assert_eq!(labels, vec!["cut".to_owned(), "one".to_owned()]);
+    let spaced = plan_op(
+        &registry,
+        serde_json::json!({"request_id": "req 1", "op": "view", "args": {}}),
+    )
+    .await?;
+    assert_eq!(spaced["ok"], serde_json::json!(false), "{spaced:?}");
+    assert_eq!(spaced["refusal"]["code"], serde_json::json!("bad_args"));
+    assert_eq!(spaced["request_id"], serde_json::json!("req 1"));
     Ok(())
 }
 
@@ -438,7 +506,8 @@ async fn expected_revision_is_compared_on_the_plan_the_op_names() -> TestResult 
     assert_eq!(stale["ok"], serde_json::json!(false), "{stale:?}");
     assert_eq!(
         stale["refusal"]["code"],
-        serde_json::json!("stale_revision")
+        serde_json::json!("stale_revision"),
+        "{stale:?}"
     );
     assert_eq!(
         stale["revision"],
@@ -447,7 +516,7 @@ async fn expected_revision_is_compared_on_the_plan_the_op_names() -> TestResult 
     );
     let store = PlanStore::open(dir.to_path_buf())?;
     assert!(
-        store.read(&PlanId::new("beta")?)?.plan.todos.is_empty(),
+        store.read(&PlanId::new("beta")?)?.todos.is_empty(),
         "a stale append must not land"
     );
     let landed = plan_op(
@@ -457,10 +526,7 @@ async fn expected_revision_is_compared_on_the_plan_the_op_names() -> TestResult 
     .await?;
     assert_eq!(landed["ok"], serde_json::json!(true), "{landed:?}");
     assert_eq!(landed["revision"], serde_json::json!(8));
-    assert_eq!(store.read(&PlanId::new("beta")?)?.plan.todos.len(), 1);
-    assert_eq!(
-        store.read(&PlanId::new("alpha")?)?.plan.touched,
-        TouchCount(3)
-    );
+    assert_eq!(store.read(&PlanId::new("beta")?)?.todos.len(), 1);
+    assert_eq!(store.read(&PlanId::new("alpha")?)?.touched, TouchCount(3));
     Ok(())
 }

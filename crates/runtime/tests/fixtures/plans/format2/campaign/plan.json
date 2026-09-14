@@ -1,0 +1,35 @@
+{
+  "constraints": [],
+  "examples": [],
+  "format": 2,
+  "goal": "Ship logrotate-lite with a packaged tarball",
+  "intent": null,
+  "journal_digest": "sha256:b47383fdd17dde68871af97c671b0c2dc098a3a3c6ace5fcc8961da01787cce1",
+  "journal_seq": 1,
+  "placement": null,
+  "plan": "ship-logrotate-lite-with-a-packaged",
+  "shape": null,
+  "spawns": 2,
+  "state": "done",
+  "tier": "root",
+  "todos": [
+    {
+      "attempt": 1,
+      "label": "Write the Makefile dist target",
+      "refusals": 0,
+      "state": "done"
+    },
+    {
+      "after": [
+        "Write the Makefile dist target"
+      ],
+      "attempt": 1,
+      "label": "Drive the whole build through make dist",
+      "output": "local://dist/logrotate-lite.tar.gz",
+      "refusals": 0,
+      "state": "done"
+    }
+  ],
+  "touched": 21,
+  "version": 2
+}

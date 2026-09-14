@@ -1,4 +1,5 @@
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use serde_json::{Map, Value};
@@ -68,6 +69,7 @@ pub struct PermissionBroker {
     /// nothing in this file behaves differently from before it existed.
     reviewer: std::sync::OnceLock<Arc<crate::auto_review::Reviewer>>,
     ledger: Mutex<ActionLedger>,
+    confirms: AtomicU64,
 }
 
 pub struct CallOutcome {
@@ -127,6 +129,7 @@ impl PermissionBroker {
             events,
             reviewer: std::sync::OnceLock::new(),
             ledger: Mutex::new(ActionLedger::new()),
+            confirms: AtomicU64::new(0),
         }
     }
 
@@ -167,6 +170,30 @@ impl PermissionBroker {
         self.contained_failures
             .lock()
             .is_ok_and(|failures| scopes.iter().any(|scope| failures.contains(scope)))
+    }
+
+    /// A question with no tool call behind it, asked once and answered once: an allow-always
+    /// is an allow-once here, so a confirmation never becomes a standing rule.
+    pub fn confirm(&self, ask: &PermissionAsk<'_>) -> AskOutcome {
+        let ordinal = self
+            .confirms
+            .fetch_add(1, Ordering::Relaxed)
+            .saturating_add(1);
+        let tool_call_id = format!("confirm-{ordinal}");
+        let _ = self.events.send(AgentEvent::PermissionRequested {
+            tool_call_id: tool_call_id.clone(),
+            title: ask.title.to_owned(),
+            description: ask.text(),
+        });
+        let outcome = self
+            .asker
+            .as_ref()
+            .map_or(AskOutcome::Reject, |asker| asker(ask));
+        let _ = self.events.send(AgentEvent::PermissionResolved {
+            tool_call_id,
+            allowed: matches!(outcome, AskOutcome::AllowOnce | AskOutcome::AllowAlways),
+        });
+        outcome
     }
 
     /// Whether an interactive asker exists — without one, an advisor Hold

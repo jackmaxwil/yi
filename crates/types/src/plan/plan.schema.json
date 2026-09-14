@@ -1,0 +1,220 @@
+{
+  "title": "yi plan checkpoint, format 2",
+  "description": "The typed checkpoint of one plan journal, plan section 5.2. Written in the subset crates/runtime/src/schema.rs validates: type, required, properties, items, enum. Every other keyword here is descriptive and is ignored by the validator. A nullable field carries no type, because the subset has no union and its type check refuses null; the domain validator owns those. No required property carries a default.",
+  "type": "object",
+  "required": [
+    "format",
+    "plan",
+    "goal",
+    "version",
+    "touched",
+    "tier",
+    "state",
+    "todos",
+    "journal_seq",
+    "journal_digest"
+  ],
+  "properties": {
+    "format": {
+      "description": "2, and only 2; anything else is refused after import",
+      "type": "integer",
+      "enum": [2]
+    },
+    "plan": {
+      "description": "the plan id, a slug; a sub-plan keeps its dotted parent prefix",
+      "type": "string"
+    },
+    "goal": {
+      "description": "the goal text the plan was opened on",
+      "type": "string"
+    },
+    "version": {
+      "description": "bumped by supersede alone",
+      "type": "integer"
+    },
+    "touched": {
+      "description": "monotonic count of applied ops",
+      "type": "integer"
+    },
+    "tier": {
+      "description": "root or sub; an unknown tag from a later version is kept verbatim, so this is not an enum",
+      "type": "string"
+    },
+    "parent": {
+      "description": "present exactly when tier is sub: <plan>/<todo label>",
+      "type": "string"
+    },
+    "spawns": {
+      "description": "the delegation fuse, monotonic; only a confirmed fuse reset lowers it",
+      "type": "integer"
+    },
+    "state": {
+      "description": "active, done, superseded, abandoned, or a tag a later version wrote",
+      "type": "string"
+    },
+    "journal_seq": {
+      "description": "the seq of the last journal record this checkpoint reflects",
+      "type": "integer"
+    },
+    "journal_digest": {
+      "description": "that record's digest, sha256:<64 hex>",
+      "type": "string"
+    },
+    "intent": {
+      "description": "string or null: one paragraph the program or the owner wrote, at most 2 KiB"
+    },
+    "constraints": {
+      "description": "constraints the plan was opened under",
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "examples": {
+      "description": "artifact or local references to example sets",
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "shape": {
+      "description": "string or null: the shape that drove the plan, fork_join or scatter"
+    },
+    "placement": {
+      "description": "reserved, null until placement ships"
+    },
+    "todos": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "label",
+          "state",
+          "attempt",
+          "refusals"
+        ],
+        "properties": {
+          "label": {
+            "description": "unique within the plan",
+            "type": "string"
+          },
+          "state": {
+            "description": "pending, running, blocked, done, failed, abandoned, or a tag a later version wrote",
+            "type": "string"
+          },
+          "attempt": {
+            "description": "attempts of this todo; a retry is a new attempt, and verdicts and tokens name it",
+            "type": "integer"
+          },
+          "refusals": {
+            "description": "refused transitions on this todo, capped",
+            "type": "integer"
+          },
+          "retries": {
+            "description": "retries charged, carried from format 1",
+            "type": "integer"
+          },
+          "by": {
+            "description": "the agent running it; present exactly when state is running",
+            "type": "string"
+          },
+          "blocked": {
+            "description": "present exactly when state is blocked",
+            "type": "object",
+            "required": [
+              "on",
+              "note"
+            ],
+            "properties": {
+              "note": {
+                "type": "string"
+              }
+            }
+          },
+          "cause": {
+            "description": "present when state is failed",
+            "type": "string"
+          },
+          "last": {
+            "description": "host minted at reap, never model supplied",
+            "type": "string"
+          },
+          "output": {
+            "description": "the accepted output url",
+            "type": "string"
+          },
+          "note": {
+            "description": "prose imported from a format-1 body section, at most 4 KiB; a longer section is an artifact reference and is not inlined here",
+            "type": "string"
+          },
+          "after": {
+            "description": "sibling labels this todo follows; ordering only",
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "subplan": {
+            "description": "the sub-plan this todo decomposed into",
+            "type": "string"
+          },
+          "delegation": {
+            "description": "execution and context only; acceptance moved to the contract in F0c",
+            "type": "object",
+            "required": [
+              "spec"
+            ],
+            "properties": {
+              "spec": {
+                "type": "object"
+              },
+              "accept": {
+                "description": "format-1 compatibility input only",
+                "type": "object"
+              },
+              "output": {
+                "type": "object",
+                "required": [
+                  "schema"
+                ],
+                "properties": {
+                  "schema": {
+                    "type": "string"
+                  }
+                }
+              },
+              "context": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "note": {
+                "type": "string"
+              }
+            }
+          },
+          "children": {
+            "description": "grouping only: a label and a state, no edges, no delegation, no sub-plan",
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "label",
+                "state"
+              ],
+              "properties": {
+                "label": {
+                  "type": "string"
+                },
+                "state": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

@@ -1322,6 +1322,9 @@ fn write_canonical_plan(cwd: &std::path::Path, todos: &[(&str, &str)]) -> TestRe
                 subplan: None,
                 retries: RetryCount::default(),
                 children: Vec::new(),
+                note: None,
+                attempt: yi_types::plan::doc::AttemptId::FIRST,
+                refusals: 0,
                 extra: Map::new(),
             })
         })
@@ -1332,10 +1335,7 @@ fn write_canonical_plan(cwd: &std::path::Path, todos: &[(&str, &str)]) -> TestRe
         PlanTier::Root,
         todos,
     );
-    store.write(&yi_runtime::plan::store::PlanFile {
-        plan,
-        body: String::new(),
-    })?;
+    store.write(&plan)?;
     Ok(())
 }
 

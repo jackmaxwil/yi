@@ -392,13 +392,13 @@ fn seed_plan_of(root: &std::path::Path, label: &str, check: &str) -> TestResult 
             subplan: None,
             retries: RetryCount::default(),
             children: Vec::new(),
+            note: None,
+            attempt: yi_types::plan::doc::AttemptId::FIRST,
+            refusals: 0,
             extra: serde_json::Map::new(),
         }],
     );
-    store.write(&yi_runtime::plan::store::PlanFile {
-        plan,
-        body: String::new(),
-    })?;
+    store.write(&plan)?;
     Ok(())
 }
 

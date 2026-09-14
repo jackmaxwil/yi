@@ -95,7 +95,6 @@ impl ProbeLadder {
             .unwrap_or_default()
             .into_iter()
             .filter_map(|id| store.read(&id).ok())
-            .map(|file| file.plan)
             .filter(|plan| plan.state == PlanState::Active)
             .collect()
     }
@@ -194,6 +193,8 @@ impl ProbeLadder {
             op: Op::Unblock {
                 label: label.clone(),
             },
+            request_id: None,
+            expected_revision: None,
         };
         match self.engine.apply(request) {
             Ok(_) => {

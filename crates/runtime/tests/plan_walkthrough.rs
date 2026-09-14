@@ -15,7 +15,7 @@ use yi_runtime::plan::loop_coupling::{StopPosture, gate, stop_posture};
 use yi_runtime::plan::ops::{
     Actor, Delegate, Op, OpRequest, Outcome, PlanEngine, PlanOpError, TodoSpec, dispatch_width,
 };
-use yi_runtime::plan::store::{PlanFile, PlanStore};
+use yi_runtime::plan::store::PlanStore;
 use yi_runtime::todo::coupling::Cycle;
 use yi_types::plan::doc::{
     AgentId, BlockedOn, Delegation, GoalText, Plan, PlanId, PlanState, PlanTier, TodoAddr,
@@ -358,7 +358,7 @@ fn root_id(id: &PlanId) -> Fallible<PlanId> {
 
 fn active_root(store: &PlanStore) -> Fallible<Option<PlanId>> {
     for id in store.roots()? {
-        if store.read(&id)?.plan.state == PlanState::Active {
+        if store.read(&id)?.state == PlanState::Active {
             return Ok(Some(id));
         }
     }
@@ -537,7 +537,7 @@ fn check_plan_key(
     ctx: &str,
     key: &str,
     value: &Value,
-    file: Option<&PlanFile>,
+    file: Option<&Plan>,
     store: &PlanStore,
     failures: &mut Vec<String>,
 ) -> Fallible<()> {
@@ -545,13 +545,13 @@ fn check_plan_key(
         failures.push(format!("{ctx} {key} asserted but no plan exists on disk"));
         return Ok(());
     };
-    let plan = &file.plan;
+    let plan = &file;
     match key {
         "version" => cmp_u64(ctx, key, value, plan.version.0, failures),
         "touched" => cmp_u64(ctx, key, value, plan.touched.0, failures),
         "spawns" => {
             let root = root_id(&plan.id)?;
-            let spawns = u64::from(store.read(&root)?.plan.spawns().get());
+            let spawns = u64::from(store.read(&root)?.spawns().get());
             cmp_u64(ctx, key, value, spawns, failures)
         }
         "planState" => cmp_str(ctx, key, value, &plan_state_tag(&plan.state), failures),
@@ -606,7 +606,7 @@ fn check_outcome_key(
             let map = object(value, key)?;
             for (id, raw) in map {
                 let want = text(raw, key)?;
-                let got = plan_state_tag(&store.read(&PlanId::new(id.as_str())?)?.plan.state);
+                let got = plan_state_tag(&store.read(&PlanId::new(id.as_str())?)?.state);
                 if want != got {
                     failures.push(format!(
                         "{ctx} subplanStates[{id}]: expected {want:?}, got {got:?}"
@@ -671,7 +671,7 @@ fn check_expect(
                 check_outcome_key(ctx, key, value, outcome, store, failures)?;
             }
             "stopPosture" | "stopInterception" => {
-                let posture = file.as_ref().map(|file| stop_posture(&file.plan));
+                let posture = file.as_ref().map(stop_posture);
                 match key.as_str() {
                     "stopPosture" => {
                         let got = posture.map_or("quiet", StopPosture::as_str);
@@ -741,7 +741,7 @@ fn check_final(
     if let Some(raw) = map.get("superseded") {
         let mut total = 0u64;
         for id in &ids {
-            total = total.saturating_add(store.read(id)?.plan.version.0.saturating_sub(1));
+            total = total.saturating_add(store.read(id)?.version.0.saturating_sub(1));
         }
         cmp_u64(&ctx, "superseded", raw, total, failures)?;
     }
@@ -749,7 +749,7 @@ fn check_final(
         let mut total = 0u64;
         for id in &ids {
             if id.is_root() {
-                total = total.saturating_add(u64::from(store.read(id)?.plan.spawns().get()));
+                total = total.saturating_add(u64::from(store.read(id)?.spawns().get()));
             }
         }
         cmp_u64(&ctx, "spawns", raw, total, failures)?;
@@ -757,7 +757,7 @@ fn check_final(
     if let Some(raw) = map.get("stopInterception") {
         let want = boolean(raw, "stopInterception")?;
         let got = match active_root(store)? {
-            Some(id) => stop_posture(&store.read(&id)?.plan) == StopPosture::Continue,
+            Some(id) => stop_posture(&store.read(&id)?) == StopPosture::Continue,
             None => false,
         };
         if want != got {
@@ -860,6 +860,8 @@ fn run_fixture(stem: &str) -> Fallible<()> {
             plan: plan.clone(),
             actor,
             op,
+            request_id: None,
+            expected_revision: None,
         });
         stub.fail_reap.store(false, Ordering::SeqCst);
         stub.set_produced(None);
@@ -990,12 +992,18 @@ fn tool_args(args: &Map<String, Value>) -> Fallible<Map<String, Value>> {
     Ok(out)
 }
 
+/// The checkpoints, with the journal digest and the clock blanked: two runs of one fixture
+/// differ in wall-clock `at` fields and request ids, which the digest chain covers.
 fn plan_files(store: &PlanStore) -> Fallible<Vec<(String, String)>> {
     let mut files = Vec::new();
     for id in store.list()? {
+        let mut value: Value = serde_json::from_str(&std::fs::read_to_string(store.path(&id))?)?;
+        if let Some(map) = value.as_object_mut() {
+            map.insert("journal_digest".to_owned(), Value::Null);
+        }
         files.push((
             id.as_str().to_owned(),
-            std::fs::read_to_string(store.path(&id))?,
+            serde_json::to_string_pretty(&value)?,
         ));
     }
     files.sort();
@@ -1057,6 +1065,8 @@ async fn replay_through_plan_op(stem: &str) -> Fallible<()> {
             plan: plan.clone(),
             actor: actor.clone(),
             op,
+            request_id: None,
+            expected_revision: None,
         });
         let registry = registries.entry(actor_word.to_owned()).or_insert_with(|| {
             let mut registry = HostRegistry::default();
