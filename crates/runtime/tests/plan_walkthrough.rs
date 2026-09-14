@@ -4,7 +4,7 @@ use scratch::Scratch;
 
 use std::error::Error;
 use std::num::NonZeroUsize;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -214,6 +214,7 @@ fn parse_op(name: &str, args: &Map<String, Value>) -> Fallible<(Op, bool)> {
             reject_unknown(args, &["label"], &what)?;
             Op::Drop {
                 label: label("label")?,
+                disposition: None,
             }
         }
         "block" => {
@@ -265,6 +266,7 @@ fn parse_op(name: &str, args: &Map<String, Value>) -> Fallible<(Op, bool)> {
             Op::Fail {
                 label: label("label")?,
                 cause: string("cause")?,
+                disposition: None,
             }
         }
         "retry" => {
@@ -957,6 +959,57 @@ fn every_fixture_has_a_named_runner() -> Fallible<()> {
     for stem in FIXTURE_STEMS {
         if !stems.iter().any(|found| found == stem) {
             return Err(format!("expected fixture {stem}.json is missing").into());
+        }
+    }
+    Ok(())
+}
+
+/// Every `.json` under `fixtures/plans`, at any depth, is opened by a test: its file name or
+/// its quoted stem sits on a non-comment line of some file in `tests/`. A `.example.json` is
+/// documentation, named by `contracts.md`, and is exempt. A fixture nothing reads rots unseen.
+#[test]
+fn every_fixture_at_any_depth_is_named_by_a_test_source() -> Fallible<()> {
+    fn walk(dir: &Path, out: &mut Vec<PathBuf>) -> Fallible<()> {
+        for entry in std::fs::read_dir(dir)? {
+            let path = entry?.path();
+            if path.is_dir() {
+                walk(&path, out)?;
+            } else if path.extension().and_then(|extension| extension.to_str()) == Some("json") {
+                out.push(path);
+            }
+        }
+        Ok(())
+    }
+    let mut fixtures = Vec::new();
+    walk(&fixtures_dir(), &mut fixtures)?;
+    let mut sources = String::new();
+    for entry in std::fs::read_dir(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests"))? {
+        let path = entry?.path();
+        if path.extension().and_then(|extension| extension.to_str()) != Some("rs") {
+            continue;
+        }
+        for line in std::fs::read_to_string(&path)?.lines() {
+            if !line.trim_start().starts_with("//") {
+                sources.push_str(line);
+                sources.push('\n');
+            }
+        }
+    }
+    for path in &fixtures {
+        let name = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or_else(|| format!("unreadable fixture name at {}", path.display()))?;
+        if name.ends_with(".example.json") {
+            continue;
+        }
+        let stem = name.trim_end_matches(".json");
+        if !sources.contains(name) && !sources.contains(&format!("\"{stem}\"")) {
+            return Err(format!(
+                "fixture {} exists but no test source names it; add a test that reads it",
+                path.display()
+            )
+            .into());
         }
     }
     Ok(())

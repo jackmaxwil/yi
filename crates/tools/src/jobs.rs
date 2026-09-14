@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::RecvTimeoutError;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -70,6 +70,8 @@ enum Reaper {
 
 struct Job {
     command: String,
+    /// Where the command runs: a lane settles only once no job under its path is running.
+    cwd: PathBuf,
     started: u64,
     reaper: Reaper,
     capture: Option<CommandCapture>,
@@ -152,6 +154,7 @@ impl Jobs {
     fn insert(
         &self,
         command: &str,
+        cwd: &Path,
         reaper: Reaper,
         live: Arc<LiveOutput>,
         kill: Arc<AtomicBool>,
@@ -162,6 +165,7 @@ impl Jobs {
             id,
             Job {
                 command: command.to_owned(),
+                cwd: cwd.to_path_buf(),
                 started: id,
                 reaper,
                 capture: None,
@@ -225,6 +229,19 @@ impl Jobs {
     pub fn release(&self, id: JobId) -> Result<JobReport, JobError> {
         let job = self.lock().remove(&id.0).ok_or(JobError::UnknownJob(id))?;
         Ok(render(id.0, &job))
+    }
+
+    /// The commands still running under `root`, by their text: the quiescence a lane settle
+    /// reads before it snapshots the tree those commands may still be writing.
+    pub fn running_under(&self, root: &Path) -> Vec<String> {
+        let jobs = self.lock();
+        let mut running: Vec<(u64, String)> = jobs
+            .iter()
+            .filter(|(_, job)| job.cwd.starts_with(root) && state(job) == JobState::Running)
+            .map(|(id, job)| (*id, job.command.clone()))
+            .collect();
+        running.sort_by_key(|(id, _)| *id);
+        running.into_iter().map(|(_, command)| command).collect()
     }
 
     /// Marking them keeps the follow-up queue from repeating every poll.
@@ -321,7 +338,13 @@ fn start(
     let (sender, receiver) = std::sync::mpsc::channel();
     let live = Arc::new(LiveOutput::default());
     let kill = Arc::new(AtomicBool::new(false));
-    let id = registry().insert(shell_command, reaper, Arc::clone(&live), Arc::clone(&kill));
+    let id = registry().insert(
+        shell_command,
+        cwd,
+        reaper,
+        Arc::clone(&live),
+        Arc::clone(&kill),
+    );
     let text = shell_command.to_owned();
     let dir = cwd.to_path_buf();
     let outer = Arc::clone(cancelled);
@@ -567,7 +590,13 @@ mod tests {
     fn a_failed_group_kill_is_named_in_the_job_report() -> Fallible {
         // A group that survives its kill holds the pipes past the grace, so only this late
         // report can say why.
-        let id = registry().insert("sleep 300", Reaper::Handle, Arc::default(), Arc::default());
+        let id = registry().insert(
+            "sleep 300",
+            Path::new("."),
+            Reaper::Handle,
+            Arc::default(),
+            Arc::default(),
+        );
         registry().finish(
             id,
             CommandCapture {

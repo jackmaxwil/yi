@@ -9,7 +9,7 @@ use yi_types::plan::canonical::canonical_digest;
 use yi_types::plan::contract::{Resolution as Completion, Verdict, VerificationToken};
 use yi_types::plan::doc::{
     AgentId, Delegation, DocError, GoalText, Plan, PlanId, PlanIssue, PlanState, RetryCount,
-    SPAWN_CAP, Spawns, TodoAddr, TodoLabel, TodoState, TodoStateName, TouchCount,
+    Spawns, TodoAddr, TodoLabel, TodoState, TodoStateName, TouchCount,
 };
 use yi_types::plan::ledger::{AttemptId, EffectId, JournalRecord, PlanOpRecord, RequestId};
 use yi_types::url::Url;
@@ -21,14 +21,10 @@ pub use super::output::OutputResolve;
 use super::output::check_output;
 use super::recovery::{self, Liveness};
 use super::snapshot::{Snapshotter, TreeHash};
-use super::state::{
-    self, Decided, KIND_IMPORT, KIND_SPAWN_INTENT, KIND_SPAWN_RESULT, RootState, leaving_running,
-    root_of,
-};
+use super::state::{self, Decided, KIND_IMPORT, RootState, leaving_running, root_of};
 use super::store::{Loaded, PlanStore, StoreError, draft};
 use super::table::{
-    OpKind, Refusal, admit, check_actor, check_plan_state, check_terminal, in_flight, op_name,
-    ready_labels,
+    OpKind, Refusal, admit, check_actor, check_plan_state, in_flight, op_name, ready_labels,
 };
 use super::verify::Verifier;
 use yi_types::plan::op::Reaped;
@@ -188,8 +184,24 @@ pub enum PlanOpError {
         "done for {label:?} refused: the contract or its criteria changed since start; retry or supersede"
     )]
     ContractDrift { label: TodoLabel },
-    #[error("done for {label:?} refused: worktree acceptance is unavailable until F0d lands")]
+    #[error(
+        "done for {label:?} refused: a worktree todo completes only through the acceptance of its contracted candidate (plan section 6.6)"
+    )]
     AcceptanceUnavailable { label: TodoLabel },
+    #[error("done for {label:?} refused at phase {phase}: no {missing} record on this attempt")]
+    PhaseMissing {
+        label: TodoLabel,
+        phase: &'static str,
+        missing: &'static str,
+    },
+    #[error(
+        "the candidate of {label:?} conflicts with the parent at {}; the branch is retained: resolve the conflict on it and submit again",
+        paths.join(", ")
+    )]
+    MergeFailed {
+        label: TodoLabel,
+        paths: Vec<String>,
+    },
     #[error("no verified completion for {:?}", label.as_str())]
     NoVerifiedCompletion { label: TodoLabel },
     #[error(
@@ -276,6 +288,8 @@ impl PlanOpError {
             Self::Stale { .. } => "stale",
             Self::ContractDrift { .. } => "contract_drift",
             Self::AcceptanceUnavailable { .. } => "acceptance_unavailable",
+            Self::PhaseMissing { .. } => "phase_missing",
+            Self::MergeFailed { .. } => "merge_failed",
             Self::NoVerifiedCompletion { .. } => "no_verified_completion",
             Self::UnservedOutput { .. } => "unserved_output",
             Self::UnservedSchema { .. } => "unserved_schema",
@@ -308,6 +322,7 @@ impl PlanOpError {
                 | Self::UnservedOutput { .. }
                 | Self::UnservedSchema { .. }
                 | Self::Verification { .. }
+                | Self::MergeFailed { .. }
         )
     }
 }
@@ -318,6 +333,18 @@ pub trait Delegate: Send + Sync {
     /// is also the one that can say how much of it the child ever read.
     fn reap(&self, agent: &AgentId, supplied: &[Url]) -> Result<Option<Url>, String>;
     fn follow_up(&self, dispatched: &[TodoLabel], held: usize);
+    /// A worktree child's candidate, committed on its branch with the child quiescent, read
+    /// with nothing marked on the host; `None` when the host holds no lane for it.
+    fn candidate(&self, agent: &AgentId) -> Result<Option<crate::lane::settle::Held>, String> {
+        let _unused = agent;
+        Ok(None)
+    }
+    /// How the branch goes at the reap that follows, set on the host only after the
+    /// disposition record is committed (plan section 6.6).
+    fn mark(&self, agent: &AgentId, choice: yi_types::plan::op::Choice) -> Result<(), String> {
+        let _unused = (agent, choice);
+        Ok(())
+    }
 }
 
 pub trait OpSink: Send + Sync {
@@ -350,6 +377,8 @@ pub(super) struct Txn {
     pub(super) verdict: Option<Verdict>,
     /// The verification effect the `done` record settles.
     pub(super) effect: Option<EffectId>,
+    /// The acceptance body a worktree `done` lands as one `accepted` record with the transition.
+    pub(super) accepted: Option<Value>,
 }
 
 impl Txn {
@@ -373,15 +402,18 @@ pub type VerifyHook = Arc<dyn Fn() + Send + Sync>;
 pub struct PlanEngine {
     pub(super) store: PlanStore,
     pub(super) delegate: Arc<dyn Delegate>,
-    width: NonZeroUsize,
+    pub(super) width: NonZeroUsize,
     pub(super) output_resolve: Option<Arc<dyn OutputResolve>>,
-    op_sink: Option<Arc<dyn OpSink>>,
+    pub(super) op_sink: Option<Arc<dyn OpSink>>,
     pub(super) liveness: Arc<dyn Liveness>,
     pub(super) cwd: PathBuf,
     pub(super) verifier: Verifier,
     pub(super) snapshotter: Arc<dyn Snapshotter>,
     pub(super) verify_hook: Option<VerifyHook>,
     pub(super) in_flight: Mutex<super::done::InFlight>,
+    pub(super) lanes: Option<crate::lane::Pool>,
+    /// The pool's slots split between workers and verification (plan section 7.6).
+    pub(super) capacity: Arc<super::capacity::Capacity>,
 }
 
 impl PlanEngine {
@@ -400,6 +432,8 @@ impl PlanEngine {
             snapshotter,
             verify_hook: None,
             in_flight: Mutex::new(super::done::InFlight::default()),
+            lanes: None,
+            capacity: super::capacity::Capacity::for_slots(crate::lane::DEFAULT_SLOTS),
         }
     }
 
@@ -479,10 +513,21 @@ impl PlanEngine {
                 })?
             }
         };
-        // The done path takes and releases the lease itself around the verifier (plan
-        // section 6.3, step 3), so it is dispatched before this transaction holds one.
-        if matches!(op, Op::Done { .. }) {
-            return self.done(plan, &actor, op, request, expected_revision);
+        // Done and a worktree submit take their own leases around the verifier (sections 6.3
+        // and 6.6); the probe holds one too, and a read that fails refuses the op outright.
+        let worktree = matches!(op, Op::Done { .. } | Op::Submit { .. }) && {
+            let _peek = self.lease_waiting()?;
+            self.is_worktree_todo(plan.as_ref(), op.label())?
+        };
+        match &op {
+            Op::Done { .. } if worktree => {
+                return self.accept(plan, &actor, op, request, expected_revision);
+            }
+            Op::Done { .. } => return self.done(plan, &actor, op, request, expected_revision),
+            Op::Submit { .. } if worktree => {
+                return self.submit_candidate(plan, &actor, op, request, expected_revision);
+            }
+            _ => {}
         }
         let _lease = self.store.lease()?;
         match op {
@@ -535,6 +580,7 @@ impl PlanEngine {
             resolution: None,
             verdict: None,
             effect: None,
+            accepted: None,
         })
     }
 
@@ -628,13 +674,23 @@ impl PlanEngine {
         else {
             return Ok(None);
         };
-        // Invariant: the kind is part of the identity; `args()` drops the `op` tag.
-        let same = record.record.op == op_name(op.kind())
-            && if record.record.op == KIND_IMPORT {
-                record.args.get("source") == op.args()?.get("source")
-            } else {
-                record.args_hash == canonical_digest(&op.args()?)?
-            };
+        // Invariant: the kind is part of the identity; `args()` drops the `op` tag. An
+        // `accepted` record is its `done` with the acceptance body beside the op's own args.
+        let args = op.args()?;
+        let same = if record.record.op == super::acceptance::KIND_ACCEPTED {
+            matches!(op, Op::Done { .. })
+                && args.as_object().is_some_and(|mine| {
+                    mine.iter()
+                        .all(|(key, value)| record.args.get(key) == Some(value))
+                })
+        } else {
+            record.record.op == op_name(op.kind())
+                && if record.record.op == KIND_IMPORT {
+                    record.args.get("source") == args.get("source")
+                } else {
+                    record.args_hash == canonical_digest(&args)?
+                }
+        };
         if !same {
             return Err(PlanOpError::RequestIdReused {
                 request_id: txn.request.clone(),
@@ -806,34 +862,7 @@ impl PlanEngine {
                 .rehearse(record, txn.last(), REAP_ENVELOPE_BYTES)?;
         }
         let mut delta = Delta::default();
-        for (plan_id, todo) in leaving {
-            let TodoState::Running { by } = &todo.state else {
-                continue;
-            };
-            let supplied = todo
-                .delegation
-                .as_ref()
-                .map(|delegation| delegation.context.clone())
-                .unwrap_or_default();
-            let last =
-                self.delegate
-                    .reap(by, &supplied)
-                    .map_err(|reason| PlanOpError::ReapFailed {
-                        agent: by.clone(),
-                        reason,
-                    })?;
-            check_terminal(&todo.label, last.as_ref())?;
-            delta.reaped.push(agent_url(&TodoAddr {
-                plan: plan_id.clone(),
-                todo: todo.label.clone(),
-            })?);
-            decided.reaped.push(Reaped {
-                plan: plan_id,
-                todo: todo.label.clone(),
-                agent: by.clone(),
-                last,
-            });
-        }
+        self.reap_leaving(txn, op, leaving, &mut delta, &mut decided)?;
         if let Op::Start { label } = op {
             self.ensure_spawned(txn, id, root, label, &mut delta)?;
         }
@@ -848,100 +877,6 @@ impl PlanEngine {
         self.emit(&committed);
         delta.subplan = applied.subplan;
         Ok(delta)
-    }
-
-    fn ensure_spawned(
-        &self,
-        txn: &mut Txn,
-        id: &PlanId,
-        root: &PlanId,
-        label: &TodoLabel,
-        delta: &mut Delta,
-    ) -> Result<(), PlanOpError> {
-        let plan = txn.state.plan(id)?;
-        let Some(todo) = plan.todo(label) else {
-            return Ok(());
-        };
-        let Some(delegation) = todo.delegation.clone() else {
-            return Ok(());
-        };
-        if !matches!(todo.state, TodoState::Pending) {
-            return Ok(());
-        }
-        let addr = TodoAddr {
-            plan: id.clone(),
-            todo: label.clone(),
-        };
-        let url = agent_url(&addr)?;
-        if let Some((effect, intent)) = txn.state.intent_for(id, label) {
-            return match &intent.outcome {
-                state::IntentOutcome::Spawned { .. } => {
-                    delta.spawned.push(url);
-                    Ok(())
-                }
-                state::IntentOutcome::Pending => Err(PlanOpError::NeedsReconciliation {
-                    label: label.clone(),
-                    effect: effect.clone(),
-                }),
-            };
-        }
-        let spent = txn.state.plan(root)?.spawns();
-        if spent >= SPAWN_CAP {
-            return Err(PlanOpError::SpawnCeilingExhausted {
-                spent,
-                cap: SPAWN_CAP,
-            });
-        }
-        let attempt = todo.attempt;
-        // Invariant: a journal outlives the pid, so the effect id carries the clock too.
-        let effect =
-            EffectId::new(format!("e-{}", self.store.request_nonce())).map_err(|error| {
-                PlanOpError::Doc(DocError::AgentIdWhitespace {
-                    id: error.to_string(),
-                })
-            })?;
-        let todos = u32::try_from(plan.todos.len()).unwrap_or(u32::MAX);
-        let mut intent = draft(
-            id,
-            KIND_SPAWN_INTENT,
-            txn.actor.clone(),
-            self.store.now_ms(),
-            todos,
-            serde_json::json!({"label": label, "attempt": attempt, "effect_id": effect}),
-            txn.derived("intent")?,
-            txn.expected,
-            Some(attempt),
-        );
-        intent.record.todo = Some(label.clone());
-        self.commit(txn, intent)?;
-        let spawned = self.delegate.spawn(&addr, &delegation);
-        let args = match &spawned {
-            Ok(agent) => serde_json::json!({"effect_id": effect, "agent": agent}),
-            Err(reason) => serde_json::json!({"effect_id": effect, "error": reason}),
-        };
-        let mut result = draft(
-            id,
-            KIND_SPAWN_RESULT,
-            txn.actor.clone(),
-            self.store.now_ms(),
-            todos,
-            args,
-            txn.derived("result")?,
-            txn.expected,
-            Some(attempt),
-        );
-        result.record.todo = Some(label.clone());
-        self.commit(txn, result)?;
-        match spawned {
-            Ok(_) => {
-                delta.spawned.push(url);
-                Ok(())
-            }
-            Err(reason) => {
-                self.store.checkpoint_family(&txn.state)?;
-                Err(PlanOpError::SpawnFailed { at: addr, reason })
-            }
-        }
     }
 
     pub(super) fn record_for(
@@ -978,6 +913,12 @@ impl PlanEngine {
         record.record.from = from;
         record.record.to = to;
         record.record.extra = decided.into_extra()?;
+        if let Some(Value::Object(acceptance)) = &txn.accepted {
+            record.record.op = super::acceptance::KIND_ACCEPTED.to_owned();
+            if let Value::Object(args) = &mut record.args {
+                args.extend(acceptance.clone());
+            }
+        }
         if let Some(verdict) = &txn.verdict {
             record.verdict = Some(serde_json::to_value(verdict)?);
         }
@@ -1150,7 +1091,7 @@ fn actor_word(actor: &Actor) -> String {
     }
 }
 
-fn agent_url(addr: &TodoAddr) -> Result<Url, PlanOpError> {
+pub(super) fn agent_url(addr: &TodoAddr) -> Result<Url, PlanOpError> {
     let plan_url = addr.to_url()?;
     let rendered = format!("agent://{}", plan_url.path());
     rendered.parse().map_err(|cause| {
@@ -1170,6 +1111,7 @@ mod tests {
         let op = Op::Fail {
             label: TodoLabel::new("cut")?,
             cause: "no".to_owned(),
+            disposition: None,
         };
         let args = op.args()?;
         assert_eq!(args, serde_json::json!({"label": "cut", "cause": "no"}));

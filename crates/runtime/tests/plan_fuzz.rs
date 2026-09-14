@@ -27,6 +27,7 @@ use yi_types::plan::doc::{
     AgentId, BlockedOn, Check, Delegation, GoalText, OutputSchema, PlanId, PlanState, PlanTier,
     SpawnSpec, TodoLabel, TodoState,
 };
+use yi_types::plan::op::Choice;
 use yi_types::url::{Durability, Scheme, Url};
 
 /// Invariant: the fuzz lane rides `just check`, so the case budget stays small
@@ -101,6 +102,7 @@ enum Action {
     Drop {
         target: Target,
         slot: usize,
+        discard: bool,
     },
     Block {
         target: Target,
@@ -134,6 +136,7 @@ enum Action {
         target: Target,
         slot: usize,
         produced: LastPick,
+        discard: bool,
     },
     Retry {
         target: Target,
@@ -771,6 +774,7 @@ fn act_fail(
     target: Target,
     slot: usize,
     pick: LastPick,
+    discard: bool,
 ) -> Result<(), TestCaseError> {
     let plan = case.resolve_target(target)?;
     let lbl = label(slot)?;
@@ -792,6 +796,7 @@ fn act_fail(
             Op::Fail {
                 label: lbl.clone(),
                 cause: "the fuzzer failed it".to_owned(),
+                disposition: discard.then_some(Choice::Discarded),
             },
         ),
         Bump::Touch,
@@ -1012,13 +1017,18 @@ fn act(case: &mut Case, action: &Action) -> Result<(), TestCaseError> {
             }
             let _refused = case.apply(owner(None, Op::Append { todos }), Bump::Touch)?;
         }
-        Action::Drop { target, slot } => {
+        Action::Drop {
+            target,
+            slot,
+            discard,
+        } => {
             let plan = case.resolve_target(*target)?;
             let _refused = case.apply(
                 owner(
                     plan,
                     Op::Drop {
                         label: label(*slot)?,
+                        disposition: discard.then_some(Choice::Discarded),
                     },
                 ),
                 Bump::Touch,
@@ -1101,7 +1111,8 @@ fn act(case: &mut Case, action: &Action) -> Result<(), TestCaseError> {
             target,
             slot,
             produced,
-        } => act_fail(case, *target, *slot, *produced)?,
+            discard,
+        } => act_fail(case, *target, *slot, *produced, *discard)?,
         Action::Retry { target, slot } => {
             let plan = case.resolve_target(*target)?;
             // Incident: retry inside a Done sub-plan shrank to a six-op
@@ -1315,8 +1326,8 @@ fn action_strategy() -> impl Strategy<Value = Action> {
         3 => specs_strategy().prop_map(|specs| Action::Init { specs }),
         3 => specs_strategy().prop_map(|specs| Action::Append { specs }),
         1 => (300u16..900u16).prop_map(|count| Action::BulkAppend { count }),
-        2 => (target_strategy(), slot_strategy())
-            .prop_map(|(target, slot)| Action::Drop { target, slot }),
+        2 => (target_strategy(), slot_strategy(), any::<bool>())
+            .prop_map(|(target, slot, discard)| Action::Drop { target, slot, discard }),
         2 => (target_strategy(), slot_strategy(), 0u16..1500u16)
             .prop_map(|(target, slot, note_len)| Action::Block { target, slot, note_len }),
         2 => (target_strategy(), slot_strategy(), any::<bool>())
@@ -1329,8 +1340,8 @@ fn action_strategy() -> impl Strategy<Value = Action> {
             .prop_map(|(target, slot)| Action::Start { target, slot }),
         5 => (target_strategy(), slot_strategy(), out_strategy())
             .prop_map(|(target, slot, output)| Action::Done { target, slot, output }),
-        4 => (target_strategy(), slot_strategy(), last_strategy())
-            .prop_map(|(target, slot, produced)| Action::Fail { target, slot, produced }),
+        4 => (target_strategy(), slot_strategy(), last_strategy(), any::<bool>())
+            .prop_map(|(target, slot, produced, discard)| Action::Fail { target, slot, produced, discard }),
         3 => (target_strategy(), slot_strategy())
             .prop_map(|(target, slot)| Action::Retry { target, slot }),
         2 => (target_strategy(), slot_strategy(), specs_strategy())

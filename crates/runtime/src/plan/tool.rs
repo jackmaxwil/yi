@@ -64,12 +64,13 @@ fn known_keys(kind: OpKind) -> &'static [&'static str] {
     match kind {
         OpKind::Init => &["op", "plan", "goal", "todos"],
         OpKind::Append => &["op", "plan", "todos"],
-        OpKind::Drop | OpKind::Unblock | OpKind::Start => &["op", "plan", "label", "todo"],
+        OpKind::Unblock | OpKind::Start => &["op", "plan", "label", "todo"],
+        OpKind::Drop => &["op", "plan", "label", "todo", "disposition"],
         OpKind::Block => &["op", "plan", "label", "todo", "on", "note"],
         OpKind::Reorder => &["op", "plan", "labels"],
         OpKind::AddEdge => &["op", "plan", "todo", "after"],
         OpKind::Done => &["op", "plan", "label", "todo", "output"],
-        OpKind::Fail => &["op", "plan", "label", "todo", "cause"],
+        OpKind::Fail => &["op", "plan", "label", "todo", "cause", "disposition"],
         OpKind::Retry => &["op", "plan", "label", "todo", "delegation"],
         OpKind::Decompose => &["op", "plan", "label", "todo", "todos"],
         OpKind::Supersede => &["op", "plan", "reason", "todos"],
@@ -274,6 +275,7 @@ from_arg!(
     yi_types::plan::ledger::AttemptId,
     Reconciliation,
     Resolve,
+    yi_types::plan::op::Choice,
 );
 
 fn opt<T: FromArg>(
@@ -351,6 +353,7 @@ fn parse_op(args: &Map<String, Value>) -> Result<Op, ArgError> {
         },
         OpKind::Drop => Op::Drop {
             label: label(args, kind)?,
+            disposition: opt(args, kind, "disposition")?,
         },
         OpKind::Block => Op::Block {
             label: label(args, kind)?,
@@ -377,6 +380,7 @@ fn parse_op(args: &Map<String, Value>) -> Result<Op, ArgError> {
         OpKind::Fail => Op::Fail {
             label: label(args, kind)?,
             cause: need(args, kind, "cause")?,
+            disposition: opt(args, kind, "disposition")?,
         },
         OpKind::Retry => Op::Retry {
             label: label(args, kind)?,

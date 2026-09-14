@@ -11,7 +11,7 @@ use yi_types::plan::contract::{
     DONE_REFUSAL_CAP, Decider, ItemVerdict, Outcome as ContractOutcome, Resolution, Verdict,
     VerificationToken,
 };
-use yi_types::plan::doc::{BlockedOn, Isolation, Plan, PlanId, TodoLabel, TodoState, TouchCount};
+use yi_types::plan::doc::{BlockedOn, Plan, PlanId, TodoLabel, TodoState, TouchCount};
 use yi_types::plan::ledger::{AttemptId, EffectId, JournalRecord, RequestId};
 
 use super::journal::JournalError;
@@ -42,7 +42,7 @@ impl Flight {
         })
     }
 
-    fn publish(&self, result: Result<Verdict, String>) {
+    pub(super) fn publish(&self, result: Result<Verdict, String>) {
         let mut slot = self.settled.lock().unwrap_or_else(PoisonError::into_inner);
         *slot = Some(result);
         self.ready.notify_all();
@@ -66,14 +66,14 @@ const LEASE_POLL: Duration = Duration::from_millis(20);
 const CLAIM_GRACE_MS: u64 = 5_000;
 
 /// What step 1 established under the lease and step 4 runs against.
-struct Prepared {
-    id: PlanId,
-    root: PlanId,
-    label: TodoLabel,
-    token: VerificationToken,
-    contract: yi_types::plan::contract::Contract,
-    product: Option<String>,
-    effect: EffectId,
+pub(super) struct Prepared {
+    pub(super) id: PlanId,
+    pub(super) root: PlanId,
+    pub(super) label: TodoLabel,
+    pub(super) token: VerificationToken,
+    pub(super) contract: yi_types::plan::contract::Contract,
+    pub(super) product: Option<String>,
+    pub(super) effect: EffectId,
 }
 
 enum Phase1 {
@@ -115,12 +115,17 @@ impl PlanEngine {
             Err(error) => Err(error.to_string()),
         };
         flight.publish(published);
+        self.unflight(&prepared.token);
+        settled
+    }
+
+    /// The flight is over: a later call for the token runs or replays, never joins.
+    pub(super) fn unflight(&self, token: &VerificationToken) {
         if let Ok(mut flights) = self.in_flight.lock()
-            && let Ok(digest) = prepared.token.digest()
+            && let Ok(digest) = token.digest()
         {
             flights.remove(&digest);
         }
-        settled
     }
 
     /// Steps 1 and 2, under the lease.
@@ -150,18 +155,13 @@ impl PlanEngine {
                 plan: id.clone(),
                 label: label.clone(),
             })?;
-        // Worktree acceptance is F0d (plan section 6.6): the validator refuses every completion
-        // of such a todo; `done` refuses here as well, before any effect is committed.
-        if todo
-            .delegation
-            .as_ref()
-            .is_some_and(|delegation| delegation.spec.isolation == Some(Isolation::Worktree))
-        {
+        // Invariant: a worktree todo reaching the plain path is refused on the journal-backed
+        // state, so no routing slip completes it without an `accepted` record (section 6.6).
+        if super::acceptance::is_worktree(todo) {
             return Err(PlanOpError::AcceptanceUnavailable {
                 label: label.clone(),
             });
         }
-        // A user's `done` verifies like the owner's; acceptance is its own op.
         let Some(contract) = todo.contract.clone() else {
             return Ok(Phase1::Plain(Box::new(
                 self.settle(&mut txn, &id, &root, op)?,
@@ -257,7 +257,7 @@ impl PlanEngine {
 
     /// A pending effect another process claimed: refused while that process is alive and
     /// inside the verifier's deadline, adoptable after.
-    fn refuse_live_claim(
+    pub(super) fn refuse_live_claim(
         &self,
         label: &TodoLabel,
         pending: &Verification,
@@ -350,7 +350,7 @@ impl PlanEngine {
 
     /// Two `done` calls may overlap by design (step 3 releases the lease), so the done path
     /// waits a bounded while for a live holder instead of refusing at once.
-    fn lease_waiting(&self) -> Result<super::store::Lease, PlanOpError> {
+    pub(super) fn lease_waiting(&self) -> Result<super::store::Lease, PlanOpError> {
         let started = std::time::Instant::now();
         loop {
             match self.store.lease() {
@@ -365,7 +365,7 @@ impl PlanEngine {
         }
     }
 
-    fn flight_for(&self, token: &VerificationToken) -> Result<Arc<Flight>, PlanOpError> {
+    pub(super) fn flight_for(&self, token: &VerificationToken) -> Result<Arc<Flight>, PlanOpError> {
         let digest = token.digest()?;
         let flight = Flight::new();
         self.in_flight
@@ -489,7 +489,7 @@ impl PlanEngine {
 
     /// Step 6, the refusal: `done_refused` with the verdict, the counter bump the reducer
     /// applies from it, and the cap as its own committed `block`.
-    fn refuse(
+    pub(super) fn refuse(
         &self,
         txn: &mut Txn,
         prepared: &Prepared,
@@ -560,7 +560,7 @@ impl PlanEngine {
 
     /// A second `done` for a token this process is verifying: wait for that verdict and return
     /// it as if this call had run the checks.
-    fn joined(
+    pub(super) fn joined(
         &self,
         flight: &Flight,
         id: PlanId,
@@ -685,7 +685,7 @@ fn clipped(verdict: &Verdict, budget: usize) -> Verdict {
     out
 }
 
-fn stale_detail(was: &VerificationToken, now: &VerificationToken) -> String {
+pub(super) fn stale_detail(was: &VerificationToken, now: &VerificationToken) -> String {
     let mut moved = Vec::new();
     if was.attempt != now.attempt {
         moved.push(format!(

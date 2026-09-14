@@ -124,6 +124,15 @@ pub enum Resolve {
     Fail { cause: String },
 }
 
+/// What a worktree child's branch does when its todo leaves `Running` without an acceptance
+/// (plan section 6.6): kept as the only copy of the work, or deleted once a pin holds it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Choice {
+    Retained,
+    Discarded,
+}
+
 /// The host's own record of an effect it settled: a child reattached, or a durable result
 /// reused.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -146,6 +155,8 @@ pub enum Op {
     },
     Drop {
         label: TodoLabel,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        disposition: Option<Choice>,
     },
     Block {
         label: TodoLabel,
@@ -173,6 +184,8 @@ pub enum Op {
     Fail {
         label: TodoLabel,
         cause: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        disposition: Option<Choice>,
     },
     Retry {
         label: TodoLabel,
@@ -235,7 +248,7 @@ pub enum Op {
 impl Op {
     pub fn label(&self) -> Option<&TodoLabel> {
         match self {
-            Self::Drop { label }
+            Self::Drop { label, .. }
             | Self::Block { label, .. }
             | Self::Unblock { label }
             | Self::Start { label }
