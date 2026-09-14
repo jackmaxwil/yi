@@ -905,6 +905,7 @@ impl EventMapper {
             ));
             return events;
         }
+        crate::leak::recover_in(&mut self.output);
         let content = self.content_mut().cloned().unwrap_or_default();
         for (content_index, block) in content.iter().enumerate() {
             match block {
