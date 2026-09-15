@@ -43,6 +43,7 @@ struct Args {
     solo: bool,
     keys: Option<String>,
     frames: Option<String>,
+    faux: Option<String>,
     record: Option<String>,
     snap: Option<String>,
     deadline: Option<u64>,
@@ -79,6 +80,7 @@ fn parse_args() -> Result<Args, lexopt::Error> {
     let mut solo = false;
     let mut keys = None;
     let mut frames = None;
+    let mut faux = None;
     let mut record = None;
     let mut snap = None;
     let mut deadline = None;
@@ -115,6 +117,7 @@ fn parse_args() -> Result<Args, lexopt::Error> {
             Long("solo") => solo = true,
             Long("keys") => keys = Some(parser.value()?.string()?),
             Long("frames") => frames = Some(parser.value()?.string()?),
+            Long("faux") => faux = Some(parser.value()?.string()?),
             Long("record") => record = Some(parser.value()?.string()?),
             Long("snap") => snap = Some(parser.value()?.string()?),
             Long("deadline") => deadline = Some(parser.value()?.parse()?),
@@ -140,6 +143,7 @@ fn parse_args() -> Result<Args, lexopt::Error> {
         && let Some(flag) = [
             ("--keys", keys.is_some()),
             ("--frames", frames.is_some()),
+            ("--faux", faux.is_some()),
             ("--record", record.is_some()),
             ("--snap", snap.is_some()),
         ]
@@ -167,6 +171,7 @@ fn parse_args() -> Result<Args, lexopt::Error> {
         solo,
         keys,
         frames,
+        faux,
         record,
         snap,
         deadline,
@@ -434,7 +439,11 @@ fn build_session(
             .with_telemetry(telemetry.clone()),
     );
     if faux {
-        provider.queue_faux(vec![yi_ai_faux_reply(&args.prompt)]);
+        provider.queue_faux(shells::faux_replies(args).map_err(|reason| Refused {
+            code: 2,
+            reason,
+            class: yi_types::telemetry::ErrorClass::RefusalConfig,
+        })?);
     }
     let mut session = AgentSession::new(
         SessionConfig {
@@ -999,13 +1008,6 @@ fn emit_structured(schema: &yi_runtime::schema::Schema, answer: &str, json: bool
 
 fn yi_ai_key(provider: &str) -> Option<yi_runtime::auth::Secret> {
     yi_runtime::auth::api_key(provider)
-}
-
-fn yi_ai_faux_reply(prompt: &str) -> AgentMessage {
-    yi_runtime::faux::faux_assistant_message(
-        vec![yi_runtime::faux::faux_text(&format!("faux: {prompt}"))],
-        StopReason::Stop,
-    )
 }
 
 fn yi_loop_default() -> yi_runtime::ExecutionMode {

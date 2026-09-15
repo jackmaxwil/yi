@@ -8,7 +8,7 @@ mod rules;
 mod safety;
 
 pub use catastrophic::{
-    CatastrophicContext, command_reads_credentials, is_catastrophic, lexical_normalize,
+    CatastrophicContext, command_reads_credentials, git_dirs, is_catastrophic, lexical_normalize,
     resolve_target,
 };
 pub use decide::{

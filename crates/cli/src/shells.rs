@@ -233,6 +233,25 @@ pub fn run_serve_command(args: &Args, version: &str) -> i32 {
     )
 }
 
+pub fn faux_replies(args: &Args) -> Result<Vec<yi_types::message::AgentMessage>, String> {
+    let Some(path) = &args.faux else {
+        return Ok(vec![yi_runtime::faux::faux_assistant_message(
+            vec![yi_runtime::faux::faux_text(&format!(
+                "faux: {}",
+                args.prompt
+            ))],
+            yi_types::message::StopReason::Stop,
+        )]);
+    };
+    let source =
+        std::fs::read_to_string(path).map_err(|error| format!("--faux {path}: {error}"))?;
+    source
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| serde_json::from_str(line).map_err(|error| format!("--faux {path}: {error}")))
+        .collect()
+}
+
 #[cfg(feature = "tui")]
 fn load_drive_script<S>(
     keys: &Option<String>,

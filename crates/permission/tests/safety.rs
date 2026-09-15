@@ -251,7 +251,7 @@ fn the_git_surface_splits_along_what_it_destroys() -> TestResult {
         ("git clean -fd", Class::Destructive),
         ("git checkout main", Class::Unknown),
         ("git checkout -- src", Class::Destructive),
-        ("git push origin main", Class::Unknown),
+        ("git push origin main", Class::Egress),
         (
             "git push --force-with-lease origin main",
             Class::Destructive,
@@ -330,5 +330,49 @@ fn find_and_sed_are_read_until_they_are_not() -> TestResult {
     );
     assert_eq!(classify(&argv("sed -n '1,5p' file")[0]), Class::Safe);
     assert_eq!(classify(&argv("sed -i '' s/a/b/ file")[0]), Class::Unknown);
+    Ok(())
+}
+
+#[test]
+fn git_network_verbs_ask_for_egress() -> TestResult {
+    for command in [
+        "git fetch origin",
+        "git pull --rebase",
+        "git push origin main",
+        "git clone https://example.com/repo.git",
+        "git ls-remote origin",
+        "git submodule update --init",
+        "git -C ../other fetch",
+    ] {
+        assert_eq!(classify(&argv(command)[0]), Class::Egress, "{command:?}");
+        match verdict(command) {
+            Verdict::Ask { reason } => assert!(reason.contains("network"), "{reason}"),
+            other => return Err(format!("{command:?} must ask, got {other:?}").into()),
+        }
+    }
+    assert_eq!(
+        classify(&argv("git push --force origin main")[0]),
+        Class::Destructive,
+        "a force push stays destructive, not merely egress"
+    );
+    Ok(())
+}
+
+#[test]
+fn git_global_options_do_not_become_the_subcommand() -> TestResult {
+    let cases = [
+        ("git -C ../wt status", Class::Safe),
+        ("git -C ../wt reset --hard HEAD~1", Class::Destructive),
+        ("git -c core.pager=cat log", Class::Safe),
+        (
+            "git --git-dir=.git --work-tree=. clean -fdx",
+            Class::Destructive,
+        ),
+        ("git -C ../wt commit -m x", Class::Unknown),
+        ("git --no-pager diff", Class::Safe),
+    ];
+    for (command, expected) in cases {
+        assert_eq!(classify(&argv(command)[0]), expected, "{command:?}");
+    }
     Ok(())
 }

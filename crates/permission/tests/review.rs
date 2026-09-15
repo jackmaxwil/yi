@@ -14,7 +14,7 @@ fn context() -> CatastrophicContext {
     CatastrophicContext {
         home_dir: Some(PathBuf::from("/home/user")),
         working_dir: Some(PathBuf::from("/home/user/project")),
-        workspace_git: Some(PathBuf::from("/home/user/project/.git")),
+        workspace_git: vec![PathBuf::from("/home/user/project/.git")],
     }
 }
 
