@@ -74,9 +74,6 @@ pub struct CallOutcome {
     pub reason: String,
     /// The call runs inside the platform sandbox rather than freely.
     pub contained: bool,
-    /// The identity the broker keyed this decision on, so a caller can report
-    /// back what happened to it.
-    pub identity: String,
 }
 
 pub(crate) fn extract_targets(
@@ -154,18 +151,21 @@ impl PermissionBroker {
         self.sandbox.as_ref()
     }
 
-    /// The sandbox is the first attempt and the question the second: a command the sandbox
-    /// refused is asked about next run, rather than failing the same way forever.
-    pub fn note_containment_failure(&self, identity: &str) {
+    /// The sandbox is the first attempt and the question the second, remembered by program and
+    /// verb: a retry that only reshapes the refused command must not be contained again.
+    pub fn note_containment_failure(&self, command: &str) {
         if let Ok(mut failures) = self.contained_failures.lock() {
-            failures.insert(identity.to_owned());
+            failures.extend(yi_permission::refused_scopes(command));
         }
     }
 
-    fn contained_and_failed(&self, identity: &str) -> bool {
+    fn contained_and_failed(&self, command: Option<&str>) -> bool {
+        let scopes = command
+            .map(yi_permission::refused_scopes)
+            .unwrap_or_default();
         self.contained_failures
             .lock()
-            .is_ok_and(|failures| failures.contains(identity))
+            .is_ok_and(|failures| scopes.iter().any(|scope| failures.contains(scope)))
     }
 
     /// Whether an interactive asker exists — without one, an advisor Hold
@@ -300,16 +300,14 @@ impl PermissionBroker {
                 allowed: true,
                 reason,
                 contained: false,
-                identity: canonical.clone(),
             },
             // Containment is an allowance the sandbox enforces; without one
             // there is nothing to enforce it, so the question stands.
             Decision::Contain { reason } => match &self.sandbox {
-                Some(_) if !self.contained_and_failed(&canonical) => CallOutcome {
+                Some(_) if !self.contained_and_failed(command) => CallOutcome {
                     allowed: true,
                     reason,
                     contained: true,
-                    identity: canonical.clone(),
                 },
                 // A containment Yi cannot enforce is the same class of unknown
                 // as an unprovable command, so the reviewer may see it too.
@@ -336,7 +334,6 @@ impl PermissionBroker {
                 allowed: false,
                 reason,
                 contained: false,
-                identity: canonical.clone(),
             },
             Decision::Ask {
                 title,
@@ -411,13 +408,10 @@ impl PermissionBroker {
                     allowed: true,
                     reason: format!("allowed by the user answering request {request}"),
                     contained: false,
-                    identity: canonical.to_owned(),
                 };
             }
             Some((request, ActionState::UserDenied)) => {
-                return self.denied(
-                    canonical,
-                    format!(
+                return self.denied(format!(
                         "The user denied request {request} for this exact call. It stays denied; take another approach."
                     ),
                 );
@@ -426,7 +420,7 @@ impl PermissionBroker {
             // back, never a second review or a second question for the user.
             Some((request, ActionState::DeniedPendingUser)) => {
                 let evidence = self.evidence_of(request);
-                return self.denied(canonical, Self::escalation_text(&evidence, request));
+                return self.denied(Self::escalation_text(&evidence, request));
             }
             None => {}
         }
@@ -448,7 +442,6 @@ impl PermissionBroker {
                 allowed: true,
                 reason: "allowed by the auto reviewer".to_owned(),
                 contained: false,
-                identity: canonical.to_owned(),
             },
             crate::auto_review::ReviewOutcome::Deny { reason } => {
                 let stored = ReviewedAsk {
@@ -462,7 +455,7 @@ impl PermissionBroker {
                     evidence: reason.clone(),
                 };
                 let request = self.open_request(action, stored);
-                self.denied(canonical, Self::escalation_text(&reason, request))
+                self.denied(Self::escalation_text(&reason, request))
             }
         }
     }
@@ -482,12 +475,11 @@ impl PermissionBroker {
             .unwrap_or_default()
     }
 
-    fn denied(&self, canonical: &str, reason: String) -> CallOutcome {
+    fn denied(&self, reason: String) -> CallOutcome {
         CallOutcome {
             allowed: false,
             reason,
             contained: false,
-            identity: canonical.to_owned(),
         }
     }
 
@@ -635,7 +627,6 @@ impl PermissionBroker {
                 return CallOutcome {
                     allowed: false,
                     contained: false,
-                    identity: canonical.to_owned(),
                     reason: format!(
                         "Permission required but no interactive surface is available. {rendered} Run with --yolo, or add an allow rule for this call."
                     ),
@@ -660,14 +651,12 @@ impl PermissionBroker {
                 allowed: true,
                 reason: "allowed by user".to_owned(),
                 contained: false,
-                identity: canonical.to_owned(),
             }
         } else {
             CallOutcome {
                 allowed: false,
                 reason: format!("The user denied this call. {rendered}"),
                 contained: false,
-                identity: canonical.to_owned(),
             }
         }
     }

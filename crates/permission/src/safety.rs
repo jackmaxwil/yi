@@ -440,3 +440,80 @@ pub fn verdict(command: &str) -> Verdict {
         None => Verdict::Allow,
     }
 }
+
+const VERB_PROGRAMS: [&str; 16] = [
+    "brew", "bun", "cargo", "docker", "gem", "git", "go", "just", "make", "npm", "pip", "pip3",
+    "pnpm", "rustup", "uv", "yarn",
+];
+
+fn scope(argv: &[String]) -> Option<String> {
+    let argv: Vec<String> = argv
+        .iter()
+        .skip_while(|token| token.contains('=') && !token.starts_with('-'))
+        .cloned()
+        .collect();
+    let name = program(argv.first()?.trim_start_matches('\u{0}'));
+    if PASSTHROUGH.binary_search(&name).is_ok() {
+        return scope(&argv[1..]);
+    }
+    let verb = match name {
+        "git" => git_subcommand(&argv),
+        name if VERB_PROGRAMS.binary_search(&name).is_ok() => subcommand(&argv),
+        _ => None,
+    };
+    Some(match verb {
+        Some(verb) => format!("{name} {verb}"),
+        None => name.to_owned(),
+    })
+}
+
+/// Scopes a sandbox refusal is remembered by; lenient, since a scope only turns contain into ask.
+pub fn refused_scopes(command: &str) -> Vec<String> {
+    let segments = match parse(command) {
+        Parsed::Segments(segments) => segments,
+        Parsed::Unparsed => lenient_segments(command),
+    };
+    let reader = |argv: &&Vec<String>| {
+        argv.first()
+            .is_some_and(|argv0| SAFE.binary_search(&program(argv0)).is_ok())
+    };
+    let tiers: [Vec<&Vec<String>>; 3] = [
+        segments
+            .iter()
+            .filter(|argv| classify(argv) != Class::Safe)
+            .collect(),
+        segments.iter().filter(|argv| !reader(argv)).collect(),
+        segments.iter().collect(),
+    ];
+    let mut scopes: Vec<String> = tiers
+        .into_iter()
+        .find(|tier| !tier.is_empty())
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|argv| scope(argv))
+        .collect();
+    scopes.dedup();
+    scopes
+}
+
+fn lenient_segments(command: &str) -> Vec<Vec<String>> {
+    let mut segments = vec![Vec::new()];
+    let mut tokens = command.split_whitespace();
+    while let Some(token) = tokens.next() {
+        if matches!(token, "&&" | "||" | "|" | ";" | "&") {
+            segments.push(Vec::new());
+        } else if matches!(token, ">" | ">>" | "<") {
+            tokens.next();
+        } else if !token.contains('>') && !token.starts_with('<') {
+            let word = token.trim_matches(['(', ')', '$', '`', ';']);
+            if let Some(argv) = segments.last_mut().filter(|_| !word.is_empty()) {
+                argv.push(word.to_owned());
+            }
+            if token.ends_with(';') {
+                segments.push(Vec::new());
+            }
+        }
+    }
+    segments.retain(|argv| !argv.is_empty());
+    segments
+}

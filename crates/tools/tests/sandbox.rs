@@ -104,14 +104,20 @@ fn the_policy_denies_by_default_and_names_its_roots() -> TestResult {
 
 #[test]
 fn a_denial_is_only_claimed_when_the_output_says_so() {
-    assert!(denial_hint(Some(0), "operation not permitted").is_none());
-    assert!(denial_hint(Some(127), "command not found").is_none());
-    assert!(denial_hint(Some(1), "assertion failed").is_none());
+    assert!(denial_hint(Some(0), "operation not permitted", "touch x").is_none());
+    assert!(denial_hint(Some(127), "command not found", "nope").is_none());
+    assert!(denial_hint(Some(1), "assertion failed", "cargo nextest run").is_none());
     let hint = denial_hint(
         Some(1),
         "sh: cannot create out.txt: Operation not permitted",
+        "cd /x && cargo fmt 2>&1 | head",
+    )
+    .unwrap_or_default();
+    assert!(hint.starts_with("next: "), "{hint}");
+    assert!(
+        hint.contains("`cargo fmt` now needs permission") && !hint.contains("same command"),
+        "the hint names the refused scope and promises only what the broker does: {hint}"
     );
-    assert!(hint.is_some_and(|line| line.starts_with("next: ")));
 }
 
 /// The live half. Everything above describes the policy; this runs it.
@@ -144,7 +150,7 @@ fn a_contained_command_writes_only_where_the_policy_says() -> TestResult {
         "the file must not exist"
     );
     assert!(
-        denial_hint(Some(code), &output).is_some(),
+        denial_hint(Some(code), &output, &escape).is_some(),
         "the failure must read as a sandbox denial: {output}"
     );
 
