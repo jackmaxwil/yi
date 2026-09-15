@@ -204,8 +204,6 @@ pub use crate::frame::next_spinner_wake;
 
 mod stream;
 
-const MEASURE: usize = 100;
-
 impl App {
     pub fn new(options: TuiOptions, theme: Theme, keymap: Keymap, width: usize) -> Self {
         let mut app = Self {
@@ -377,7 +375,7 @@ impl App {
     }
 
     pub(crate) fn content_width(&self) -> usize {
-        self.width.saturating_sub(2).min(MEASURE)
+        self.width.saturating_sub(2)
     }
 
     /// The mode decides how every cell renders, including those above the viewport, so the
