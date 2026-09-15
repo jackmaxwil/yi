@@ -14,7 +14,9 @@ pub mod land;
 pub mod toolchain;
 
 const GIT_TIMEOUT_MS: u64 = 120_000;
-pub const DEFAULT_SLOTS: u8 = 3;
+/// Incident: three slots refused a console's fourth session, new or resumed. Unset, the
+/// pool grows at the first missing slot and keeps it, so it settles at peak concurrency.
+pub const DEFAULT_SLOTS: u8 = u8::MAX;
 const FETCH_FRESH_MS: u64 = 60_000;
 const WARMER_EXIT_WAIT_MS: u64 = 30_000;
 
