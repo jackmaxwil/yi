@@ -1251,6 +1251,40 @@ fn a_flushed_thought_leaves_no_empty_count_row_in_the_live_region() -> TestResul
     Ok(())
 }
 
+/// The live tail wrapped at the terminal's width and the commit at a 100-column measure, so a
+/// thought paragraph narrowed and grew taller the moment its newline arrived.
+#[test]
+fn a_thought_paragraph_keeps_its_live_width_when_it_commits() -> TestResult {
+    let backend = VT100Backend::with_scrollback(200, 40, 200);
+    let mut terminal = yi_tui::terminal::Terminal::new(backend, 4)?;
+    let mut app = app();
+    app.set_width(200);
+    app.reduce_agent(yi_types::event::AgentEvent::AgentStart);
+    let paragraph = "Opening words of a thought ".repeat(6);
+    let mut stream = |app: &mut App, thought: &str| {
+        let message = yi_runtime::faux::faux_assistant_message(
+            vec![yi_runtime::faux::faux_thinking(thought)],
+            StopReason::Stop,
+        );
+        app.reduce_agent(yi_types::event::AgentEvent::MessageUpdate {
+            assistant_message_event: yi_types::event::AssistantMessageEvent::Done {
+                reason: StopReason::Stop,
+                message,
+            },
+        });
+        yi_tui::render::draw(app, &mut terminal, None);
+        let contents = terminal.backend().contents();
+        contents
+            .lines()
+            .find(|row| row.contains("Opening words"))
+            .map(|row| row.trim_end().to_owned())
+    };
+    let live = stream(&mut app, paragraph.trim_end()).ok_or("no live row")?;
+    let committed = stream(&mut app, &format!("{paragraph}\n\nnext")).ok_or("no committed row")?;
+    assert_eq!(live, committed, "the paragraph wraps once, at one width");
+    Ok(())
+}
+
 /// The screenshot's second defect: the child spawned by `h = await rlm.run(…)`
 /// finished while the kernel cell was still running, and the roster poll
 /// committed its task cell above the cell that made it.
