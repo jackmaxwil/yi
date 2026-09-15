@@ -13,7 +13,8 @@ use yi_runtime::lane::land::{
     LaneHandle, bounded_name, format_lanes, host_of, open_pr_in, owner_repo, parse_jobs, pr_number,
 };
 use yi_runtime::lane::{
-    BranchName, ClaimBase, Head, LaneError, Pool, SlotIndex, SlotView, TreeState, head, toolchain,
+    BranchName, ClaimBase, DEFAULT_SLOTS, Head, LaneError, Pool, SlotIndex, SlotView, TreeState,
+    head, toolchain,
 };
 use yi_types::lane::PrNumber;
 
@@ -128,6 +129,20 @@ fn a_full_pool_refuses_with_the_count_it_holds() -> TestResult {
     );
     drop(first);
     drop(second);
+    Ok(())
+}
+
+/// Incident: a console holding three sessions refused the fourth `/new` and every resume.
+#[test]
+fn an_unconfigured_pool_grows_past_three_live_sessions() -> TestResult {
+    let rig = Rig::new("grow")?;
+    let pool = rig.pool(DEFAULT_SLOTS)?;
+    let lanes = ["s-1", "s-2", "s-3", "s-4"]
+        .into_iter()
+        .map(|session| pool.claim(session, ClaimBase::Main))
+        .collect::<Result<Vec<_>, _>>()?;
+    let slots: std::collections::BTreeSet<_> = lanes.iter().map(|lane| lane.slot()).collect();
+    assert_eq!(slots.len(), 4, "four live sessions hold four lanes");
     Ok(())
 }
 
