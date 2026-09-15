@@ -473,9 +473,11 @@ fn a_paced_type_step_still_honours_the_deadline() -> TestResult {
     Ok(())
 }
 
+#[cfg(target_os = "macos")]
 /// A scratch dir under cargo's target tmp, removed on drop like [`Scratch`].
 struct TargetScratch(std::path::PathBuf);
 
+#[cfg(target_os = "macos")]
 impl TargetScratch {
     fn new(name: &str) -> std::io::Result<Self> {
         let dir = std::path::Path::new(env!("CARGO_TARGET_TMPDIR"))
@@ -486,12 +488,14 @@ impl TargetScratch {
     }
 }
 
+#[cfg(target_os = "macos")]
 impl Drop for TargetScratch {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.0);
     }
 }
 
+#[cfg(target_os = "macos")]
 fn git_in(dir: &std::path::Path, args: &[&str]) -> Result<String, Box<dyn Error>> {
     #[expect(
         clippy::disallowed_methods,
