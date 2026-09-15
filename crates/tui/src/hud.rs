@@ -1,5 +1,11 @@
+use std::time::{Duration, Instant};
+
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
+
+use yi_runtime::todo::DEFAULT_PHASE;
+use yi_types::plan::doc::TodoStateName;
+use yi_types::todo::{TodoItem, TodoList};
 
 use crate::colors::Theme;
 
@@ -8,7 +14,8 @@ pub struct HudInput {
     pub goal: Option<GoalView>,
     pub landing: Option<String>,
     pub plan: Option<PlanProgress>,
-    pub todos: Option<yi_types::todo::TodoList>,
+    pub todos: Option<TodoList>,
+    pub todo_full: bool,
     pub steering: Vec<String>,
     pub follow_up: Vec<String>,
     pub memory: Option<String>,
@@ -39,13 +46,44 @@ pub struct GoalView {
     pub token_budget: Option<u64>,
 }
 
-const TAIL_LEN: usize = 4;
-pub const TODO_ROWS: usize = 8;
+pub const TODO_FULL_FOR: Duration = Duration::from_secs(10);
+const TODO_COMPACT: usize = 4;
 
-/// The block shows only while an item is open; closed lists leave the HUD to the goal.
-/// The rows window around the running item, so the step in flight is always on screen.
+/// When the list's labels last changed: stepping an item keeps the clock, an append restarts it.
+#[derive(Debug, Clone, Default)]
+pub struct TodoClock {
+    seen: Option<(Vec<String>, Instant)>,
+}
+
+impl TodoClock {
+    pub fn observe(&mut self, list: Option<&TodoList>, now: Instant) {
+        let Some(list) = list else {
+            self.seen = None;
+            return;
+        };
+        let labels: Vec<String> = list.items().map(|item| item.label.to_string()).collect();
+        if self.seen.as_ref().is_none_or(|(seen, _)| *seen != labels) {
+            self.seen = Some((labels, now));
+        }
+    }
+
+    pub fn full(&self, now: Instant) -> bool {
+        self.wake(now) != Duration::MAX
+    }
+
+    pub fn wake(&self, now: Instant) -> Duration {
+        self.seen
+            .as_ref()
+            .and_then(|(_, at)| TODO_FULL_FOR.checked_sub(now.saturating_duration_since(*at)))
+            .filter(|left| !left.is_zero())
+            .unwrap_or(Duration::MAX)
+    }
+}
+
+/// When folded, the step before the current one and two after, or three after if none is done.
 pub fn todo_rows(
-    list: Option<&yi_types::todo::TodoList>,
+    list: Option<&TodoList>,
+    full: bool,
     theme: &Theme,
 ) -> Option<(String, Vec<Line<'static>>)> {
     let list = list?;
@@ -53,68 +91,72 @@ pub fn todo_rows(
     if progress.open.saturating_add(progress.blocked) == 0 {
         return None;
     }
-    let all = yi_runtime::todo::text::checklist(list);
-    let running = all.iter().position(|row| row.contains("[>]")).unwrap_or(0);
-    // The running row and the one after it stay in view: what is being done and what is next.
-    let start = running
-        .saturating_add(2)
-        .saturating_sub(TODO_ROWS)
-        .min(all.len().saturating_sub(TODO_ROWS));
-    let end = start.saturating_add(TODO_ROWS).min(all.len());
+    let mut title = format!("Todos {}/{}", progress.done, progress.total);
+    if progress.blocked > 0 {
+        title.push_str(&format!(" · {} blocked", progress.blocked));
+    }
+    let current = list
+        .items()
+        .position(|item| item.state == TodoStateName::Running)
+        .or_else(|| {
+            list.items().position(|item| {
+                matches!(item.state, TodoStateName::Pending | TodoStateName::Blocked)
+            })
+        })
+        .unwrap_or(0);
+    let start = if progress.done == 0 {
+        current
+    } else {
+        current.saturating_sub(1)
+    };
+    let shown = if full {
+        0..usize::MAX
+    } else {
+        start..start.saturating_add(TODO_COMPACT)
+    };
     let mut rows = Vec::new();
-    if start > 0 {
-        rows.push(Line::from(Span::styled(
-            format!("  +{start} above"),
-            theme.dim_style(),
-        )));
+    let mut number = 0usize;
+    for phase in &list.phases {
+        if full && (list.phases.len() > 1 || phase.name.as_str() != DEFAULT_PHASE) {
+            rows.push(Line::from(Span::styled(
+                format!("  {}", phase.name),
+                theme.muted_style(),
+            )));
+        }
+        for item in &phase.items {
+            for (row, indent) in
+                std::iter::once((item, "")).chain(item.children.iter().map(|child| (child, "  ")))
+            {
+                if shown.contains(&number) {
+                    rows.push(todo_row(row, number.saturating_add(1), indent, theme));
+                }
+                number = number.saturating_add(1);
+            }
+        }
     }
-    rows.extend(
-        all.iter()
-            .skip(start)
-            .take(end.saturating_sub(start))
-            .map(|row| todo_row(row, theme)),
-    );
-    let hidden = all.len().saturating_sub(end);
-    if hidden > 0 {
-        rows.push(Line::from(Span::styled(
-            format!("  +{hidden} more"),
-            theme.dim_style(),
-        )));
-    }
-    Some((yi_runtime::todo::text::header(list), rows))
+    Some((title, rows))
 }
 
-/// A checklist row as chrome: the marker becomes a glyph, the running step takes the accent.
-fn todo_row(row: &str, theme: &Theme) -> Line<'static> {
-    let body = row.trim_start();
-    let indent = " ".repeat(row.len().saturating_sub(body.len()));
-    if let Some(phase) = body.strip_prefix("## ") {
-        return Line::from(Span::styled(format!("  {phase}"), theme.muted_style()));
-    }
+fn todo_row(item: &TodoItem, number: usize, indent: &str, theme: &Theme) -> Line<'static> {
     let plain = Style::default().fg(theme.text);
-    let (glyph, style, label) = match body
-        .strip_prefix("- ")
-        .and_then(|item| Some((item.get(..3)?, item.get(3..)?.trim_start())))
-    {
-        Some(("[x]", label)) => ("✓", theme.dim_style(), label),
-        Some(("[>]", label)) => (
-            "▶",
-            theme.accent_style().add_modifier(Modifier::BOLD),
-            label,
-        ),
-        Some(("[!]", label)) => ("!", Style::default().fg(theme.warning), label),
-        Some(("[-]", label)) => (
-            "−",
-            theme.dim_style().add_modifier(Modifier::CROSSED_OUT),
-            label,
-        ),
-        Some((_, label)) => ("○", plain, label),
-        None => ("", plain, body),
+    let (glyph, style) = match item.state {
+        TodoStateName::Done => ("✓", theme.dim_style()),
+        TodoStateName::Running => ("▶", theme.accent_style().add_modifier(Modifier::BOLD)),
+        TodoStateName::Blocked => ("!", Style::default().fg(theme.warning)),
+        TodoStateName::Abandoned | TodoStateName::Failed => {
+            ("−", theme.dim_style().add_modifier(Modifier::CROSSED_OUT))
+        }
+        TodoStateName::Pending | TodoStateName::Other(_) => ("○", plain),
     };
-    Line::from(vec![
-        Span::styled(format!("  {indent}{glyph} "), style),
-        Span::styled(label.to_owned(), style),
-    ])
+    let cut = if item.is_cut() { "…" } else { "" };
+    Line::from(Span::styled(
+        format!(
+            "  {indent}{number}. {glyph} {}{cut}{}",
+            item.label,
+            yi_runtime::todo::text::suffix(item)
+        ),
+        style,
+    ))
 }
 
 pub(crate) fn input(
@@ -127,13 +169,14 @@ pub(crate) fn input(
         landing: app.landing.as_ref().map(yi_runtime::slash::landing_line),
         plan: app.plan_progress.clone(),
         todos: app.todos.clone(),
+        todo_full: app.todo_clock.full(Instant::now()),
         steering: app.steering.clone(),
         follow_up: Vec::new(),
         memory,
     }
 }
 
-/// The goal header over a dim tree spine of steering and follow-up rows.
+/// The goal header over indented plan, todo, steering and follow-up rows.
 pub fn render(input: &HudInput, theme: &Theme) -> Vec<Line<'static>> {
     let mut content: Vec<Line<'static>> = Vec::new();
     let header = match &input.goal {
@@ -159,7 +202,10 @@ pub fn render(input: &HudInput, theme: &Theme) -> Vec<Line<'static>> {
         }
         (header, None) => header,
     };
-    let header = match (header, todo_rows(input.todos.as_ref(), theme)) {
+    let header = match (
+        header,
+        todo_rows(input.todos.as_ref(), input.todo_full, theme),
+    ) {
         (header, None) => header,
         (None, Some((title, rows))) => {
             content.extend(rows);
@@ -215,14 +261,9 @@ pub fn render(input: &HudInput, theme: &Theme) -> Vec<Line<'static>> {
             .add_modifier(Modifier::BOLD),
     )));
     for line in content {
-        let mut spans = vec![Span::styled(" ├─ ", theme.dim_style())];
+        let mut spans = vec![Span::raw("   ")];
         spans.extend(line.spans);
         out.push(Line::from(spans));
     }
-    let tail_fill: String = std::iter::repeat_n('─', TAIL_LEN).collect();
-    out.push(Line::from(Span::styled(
-        format!(" └{tail_fill}"),
-        theme.dim_style(),
-    )));
     out
 }

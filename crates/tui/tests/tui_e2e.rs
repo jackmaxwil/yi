@@ -1953,12 +1953,15 @@ fn the_hud_shows_open_todos_in_a_headless_frame() -> TestResult {
     frames.sort();
     let last = std::fs::read_to_string(frames.last().ok_or("no frames dumped")?)?;
     for needle in [
-        "Todos 0/3 · running: read the code",
-        "▶ t1 read the code",
-        "○ t2 write the fix",
-        "  ○ t3 parser",
+        "Todos 0/3",
+        "1. ▶ read the code",
+        "2. ○ write the fix",
+        "  3. ○ parser",
     ] {
         assert!(last.contains(needle), "frame lacks {needle:?}:\n{last}");
+    }
+    for stray in ["running:", " t1 ", "├─"] {
+        assert!(!last.contains(stray), "frame shows {stray:?}:\n{last}");
     }
     Ok(())
 }

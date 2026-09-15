@@ -176,5 +176,6 @@ when it changes rather than editing them by hand.
 - [D200](adr/d200.md) - emphasis is weight, hue is level, and one blank row parts blocks
 - [D202](adr/d202.md) - transcript text wraps at one width, the terminal's less the two-column...
 - [D203](adr/d203.md) - the lane pool grows instead of refusing
+- [D204](adr/d204.md) - the todo block is a numbered list the HUD builds from the `TodoList`, not...
 
 D36-D51, D72, D73 and D74 have no ADR yet; ARCHITECTURE.md is the record for those rows.
