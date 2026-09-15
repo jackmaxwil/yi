@@ -78,7 +78,7 @@ fn draw_frame<B>(
         app.reflow.schedule_immediate(std::time::Instant::now());
     }
     let reflow_theme = app.theme;
-    run_reflow(app, terminal, app.width.saturating_sub(2), &reflow_theme);
+    run_reflow(app, terminal, app.content_width(), &reflow_theme);
     let goal = port.and_then(|port| port.goal());
     let memory = port
         .and_then(|port| port.memory())
@@ -103,13 +103,8 @@ fn draw_frame<B>(
 }
 
 /// The live region: the streaming thought tail, prose and tool rows of the turn in flight.
-fn live_lines(
-    app: &App,
-    width: usize,
-    spinner: usize,
-    theme: &crate::colors::Theme,
-) -> Vec<Line<'static>> {
-    let content_width = width.saturating_sub(2);
+fn live_lines(app: &App, spinner: usize, theme: &crate::colors::Theme) -> Vec<Line<'static>> {
+    let content_width = app.content_width();
     let mut live_lines: Vec<Line<'static>> = Vec::new();
     if app.live_thought.len() > app.live_thought_cut {
         // Reasoning-heavy models stream thought long before prose, so show its dim tail and
@@ -194,7 +189,7 @@ pub fn layout_chat(
     let theme = app.theme;
     let width = app.width;
 
-    let mut live_lines = live_lines(app, width, spinner, &theme);
+    let mut live_lines = live_lines(app, spinner, &theme);
     let hud_lines = if app.hud_hidden {
         Vec::new()
     } else {

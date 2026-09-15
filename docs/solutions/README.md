@@ -174,5 +174,6 @@ when it changes rather than editing them by hand.
 - [D199](adr/d199.md) - todo state is chrome, not transcript
 - [D201](adr/d201.md) - copy takes the words, not the frame
 - [D200](adr/d200.md) - emphasis is weight, hue is level, and one blank row parts blocks
+- [D202](adr/d202.md) - transcript text wraps at one width, the terminal's less the two-column...
 
 D36-D51, D72, D73 and D74 have no ADR yet; ARCHITECTURE.md is the record for those rows.
