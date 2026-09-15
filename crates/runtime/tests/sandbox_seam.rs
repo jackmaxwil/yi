@@ -148,6 +148,68 @@ async fn an_unknown_command_runs_contained_then_asks() -> TestResult {
     Ok(())
 }
 
+/// The incident: the retry appended `&& git status | wc -l`, so an exact-text memory of the
+/// refusal never matched and the second attempt was contained again instead of asking.
+#[cfg(target_os = "macos")]
+#[tokio::test]
+async fn a_refused_program_asks_even_when_the_retry_text_differs() -> TestResult {
+    if !yi_tools::Sandbox::available() {
+        return Ok(());
+    }
+    let root = Scratch::new("yi-seam-scope")?;
+    let project = root.join("project");
+    let home = root.join("home");
+    std::fs::create_dir_all(&project)?;
+    std::fs::create_dir_all(&home)?;
+    let first = format!("mkdir {}", home.join("a").display());
+    let second = format!("mkdir {} && ls", home.join("b").display());
+
+    let provider = Arc::new(ProviderStream::new(None, None));
+    provider.queue_faux(vec![
+        bash_call("call-1", &first),
+        bash_call("call-2", &second),
+    ]);
+    let mut session = AgentSession::new(
+        SessionConfig {
+            system_prompt: String::new(),
+            model: faux_model(),
+            thinking_level: None,
+            tool_execution: ExecutionMode::Sequential,
+        },
+        provider,
+    );
+    let sandbox = yi_tools::Sandbox {
+        writable: vec![project.clone()],
+        deny_read: Vec::new(),
+    };
+    let broker = Arc::new(
+        PermissionBroker::new(
+            PermissionMode::Auto,
+            project.clone(),
+            Vec::new(),
+            None,
+            session.events_sender(),
+        )
+        .with_sandbox(Some(sandbox)),
+    );
+    session.use_tools(builtin_tools(), project.clone(), Some(broker));
+    session.prompt("make the dirs")?;
+    session.wait_idle().await;
+    let results = results(&session);
+    assert_eq!(results.len(), 2, "{results:?}");
+    assert!(
+        results[0].contains("`mkdir` now needs permission"),
+        "the hint names the scope that will ask: {}",
+        results[0]
+    );
+    assert!(
+        results[1].contains("Permission denied") && !home.join("b").exists(),
+        "a different command using the refused program asks: {}",
+        results[1]
+    );
+    Ok(())
+}
+
 /// Containment is for what the classifier could not read; ordinary work still
 /// runs free.
 #[test]

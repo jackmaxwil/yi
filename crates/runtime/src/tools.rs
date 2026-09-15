@@ -228,7 +228,7 @@ impl AgentTool for ToolAdapter {
                     is_error: true,
                 };
             }
-            let mut contained: Option<(Arc<PermissionBroker>, String)> = None;
+            let mut contained: Option<Arc<PermissionBroker>> = None;
             if let Some(broker) = permission {
                 let sandbox = broker.sandbox().cloned();
                 let reporter = Arc::clone(&broker);
@@ -251,7 +251,7 @@ impl AgentTool for ToolAdapter {
                     Ok(outcome) if outcome.allowed => {
                         if outcome.contained {
                             context.sandbox = sandbox;
-                            contained = Some((reporter, outcome.identity));
+                            contained = Some(reporter);
                         }
                     }
                     Ok(outcome) => {
@@ -283,14 +283,15 @@ impl AgentTool for ToolAdapter {
             match output {
                 Ok(mut output) => {
                     // A contained command the sandbox refused asks the next time, rather than failing the same way forever.
-                    if let Some((broker, identity)) = &contained
+                    if let Some(broker) = &contained
                         && yi_tools::denial_hint(
                             exit_of(&output.result),
                             &result_text(&output.result),
+                            &command,
                         )
                         .is_some()
                     {
-                        broker.note_containment_failure(identity);
+                        broker.note_containment_failure(&command);
                     }
                     if let Some(line) = grid_note(&name, &command, &output.result) {
                         crate::affordance::append(&mut output.result, &line);

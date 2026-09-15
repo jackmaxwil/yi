@@ -473,10 +473,50 @@ fn a_paced_type_step_still_honours_the_deadline() -> TestResult {
     Ok(())
 }
 
+#[cfg(target_os = "macos")]
+/// One assistant message per bash command, then a closing text reply, as `--faux` reads them.
+fn cassette_lines(commands: &[&str], reply: &str) -> String {
+    let message = |content: serde_json::Value, stop: &str| {
+        serde_json::json!({
+            "role": "assistant", "content": content,
+            "api": "faux", "provider": "faux", "model": "faux-1",
+            "usage": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0, "totalTokens": 0,
+                      "cost": {"input": 0.0, "output": 0.0, "cacheRead": 0.0, "cacheWrite": 0.0, "total": 0.0}},
+            "stopReason": stop, "timestamp": 0
+        })
+        .to_string()
+    };
+    let mut lines: Vec<String> = commands
+        .iter()
+        .enumerate()
+        .map(|(index, command)| {
+            message(
+                serde_json::json!([{"type": "toolCall", "id": format!("call-{index}"), "name": "bash", "arguments": {"command": command}}]),
+                "toolUse",
+            )
+        })
+        .collect();
+    lines.push(message(
+        serde_json::json!([{"type": "text", "text": reply}]),
+        "stop",
+    ));
+    lines.join("\n") + "\n"
+}
+
+#[cfg(target_os = "macos")]
 /// A scratch dir under cargo's target tmp, removed on drop like [`Scratch`].
 struct TargetScratch(std::path::PathBuf);
 
+#[cfg(target_os = "macos")]
 impl TargetScratch {
+    /// A checkout under tmp puts cargo's target there too, inside a root the sandbox writes.
+    fn outside_tmp(&self) -> bool {
+        let resolved = self.0.canonicalize().unwrap_or_else(|_| self.0.clone());
+        ["/private/tmp", "/private/var/folders", "/tmp"]
+            .iter()
+            .all(|root| !resolved.starts_with(root))
+    }
+
     fn new(name: &str) -> std::io::Result<Self> {
         let dir = std::path::Path::new(env!("CARGO_TARGET_TMPDIR"))
             .join(format!("{name}-{}", std::process::id()));
@@ -486,12 +526,14 @@ impl TargetScratch {
     }
 }
 
+#[cfg(target_os = "macos")]
 impl Drop for TargetScratch {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.0);
     }
 }
 
+#[cfg(target_os = "macos")]
 fn git_in(dir: &std::path::Path, args: &[&str]) -> Result<String, Box<dyn Error>> {
     #[expect(
         clippy::disallowed_methods,
@@ -517,6 +559,9 @@ fn a_lane_session_commits_contained() -> TestResult {
     let home = dir.home()?;
     // Outside tmp: every tmp root is writable, which would hide the trunk's git dir.
     let trunk = TargetScratch::new("yi-tui-lane-commit")?;
+    if !trunk.outside_tmp() {
+        return Ok(());
+    }
     let project = trunk.0.join("project");
     std::fs::create_dir_all(&project)?;
     git_in(&project, &["init", "-q", "-b", "main"])?;
@@ -536,19 +581,8 @@ fn a_lane_session_commits_contained() -> TestResult {
         ],
     )?;
     let command = "touch lane.txt && git add -A && git -c user.email=yi@example.com -c user.name=yi commit -q -m lane";
-    let call = serde_json::json!({
-        "role": "assistant",
-        "content": [{"type": "toolCall", "id": "call-1", "name": "bash", "arguments": {"command": command}}],
-        "api": "faux", "provider": "faux", "model": "faux-1",
-        "usage": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0, "totalTokens": 0,
-                  "cost": {"input": 0.0, "output": 0.0, "cacheRead": 0.0, "cacheWrite": 0.0, "total": 0.0}},
-        "stopReason": "toolUse", "timestamp": 0
-    });
-    let mut done = call.clone();
-    done["content"] = serde_json::json!([{"type": "text", "text": "committed"}]);
-    done["stopReason"] = serde_json::json!("stop");
     let cassette = dir.join("cassette.jsonl");
-    std::fs::write(&cassette, format!("{call}\n{done}\n"))?;
+    std::fs::write(&cassette, cassette_lines(&[command], "committed"))?;
     let keys = dir.join("script.keys");
     std::fs::write(&keys, "wait-idle 30000\nquit\n")?;
     let frames = dir.join("frames");
@@ -595,6 +629,71 @@ fn a_lane_session_commits_contained() -> TestResult {
     assert!(
         subjects.lines().any(|subject| subject == "lane"),
         "the lane's commit must reach the shared object store: {subjects}"
+    );
+    Ok(())
+}
+
+/// The incident's second half (D206): the retry reshaped the refused command, so an exact-text
+/// memory contained it again and no question ever reached the user.
+#[cfg(target_os = "macos")]
+#[test]
+fn a_reshaped_retry_of_a_refused_program_reaches_the_approval_view() -> TestResult {
+    let dir = Scratch::new("yi-tui-refused-retry")?;
+    let home = dir.home()?;
+    let outside = TargetScratch::new("yi-tui-refused-retry")?;
+    if !outside.outside_tmp() {
+        return Ok(());
+    }
+    let first = format!("mkdir {}", outside.0.join("a").display());
+    let second = format!("mkdir {} && ls", outside.0.join("b").display());
+    let cassette = dir.join("cassette.jsonl");
+    std::fs::write(&cassette, cassette_lines(&[&first, &second], "gave up"))?;
+    let keys = dir.join("script.keys");
+    std::fs::write(
+        &keys,
+        "wait-frame 30000 Reject\nkey esc\nwait-idle 30000\nquit\n",
+    )?;
+    let frames = dir.join("frames");
+
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "the drive contract is the spawned binary's headless mode; tests must run the real process"
+    )]
+    let output = Command::new(env!("CARGO_BIN_EXE_yi"))
+        .args([
+            "tui",
+            "--headless",
+            "--model",
+            "faux/faux-1",
+            "--faux",
+            &cassette.display().to_string(),
+            "--session-dir",
+            &dir.join("sessions").display().to_string(),
+            "--keys",
+            &keys.display().to_string(),
+            "--frames",
+            &frames.display().to_string(),
+            "make the dirs",
+        ])
+        .current_dir(&*dir)
+        .env("HOME", &home)
+        .output()?;
+    let mut all_frames = String::new();
+    for entry in std::fs::read_dir(&frames)?.filter_map(Result::ok) {
+        all_frames.push_str(&std::fs::read_to_string(entry.path())?);
+    }
+    assert!(
+        output.status.success(),
+        "drive run must exit 0: {}\n{all_frames}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        all_frames.contains("requires permission"),
+        "the reshaped retry must ask: {all_frames}"
+    );
+    assert!(
+        !outside.0.join("a").exists() && !outside.0.join("b").exists(),
+        "neither directory may exist: the first was contained, the second rejected"
     );
     Ok(())
 }
