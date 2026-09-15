@@ -259,7 +259,7 @@ fn hud_shows_the_checklist_count_without_a_goal() -> TestResult {
 }
 
 #[test]
-fn hud_shows_memory_saves_on_the_spine() -> TestResult {
+fn hud_shows_memory_saves_without_a_spine() -> TestResult {
     let input = yi_tui::hud::HudInput {
         memory: Some("saved 1".to_owned()),
         ..yi_tui::hud::HudInput::default()
@@ -268,7 +268,8 @@ fn hud_shows_memory_saves_on_the_spine() -> TestResult {
         .iter()
         .flat_map(|line| line.spans.iter().map(|span| span.content.to_string()))
         .collect();
-    assert!(text.contains("├─ Memory · saved 1"), "{text}");
+    assert!(text.contains("   Memory · saved 1"), "{text}");
+    assert!(!text.contains('├') && !text.contains('└'), "{text}");
     Ok(())
 }
 

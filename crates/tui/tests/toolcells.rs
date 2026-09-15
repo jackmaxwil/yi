@@ -395,3 +395,34 @@ fn todo_steps_live_in_the_hud_not_the_transcript() -> TestResult {
     assert!(!closed.contains("⚙"), "{closed}");
     Ok(())
 }
+
+fn custom(app: &mut App, kind: &str, text: &str, display: bool) {
+    app.reduce_agent(AgentEvent::MessageEnd {
+        message: yi_types::message::AgentMessage::Custom {
+            custom_type: kind.to_owned(),
+            content: yi_types::message::UserContent::Text(text.to_owned()),
+            display,
+            details: None,
+            timestamp: 0,
+        },
+    });
+}
+
+/// The todo prelude restated the whole checklist as a dozen flagged rows under the
+/// user's prompt; a message sent `display: false` is the model's alone.
+#[test]
+fn a_hidden_custom_message_stays_out_of_the_transcript() -> TestResult {
+    let mut app = app();
+    custom(
+        &mut app,
+        "todo_prelude",
+        "The todo list still holds 1 open item(s) from before.\n## Ground\n- [x] t1 read",
+        false,
+    );
+    custom(&mut app, "reminder", "Relevant: skill://plan", true);
+    let rows = flat(&app.take_commits()).join("\n");
+    assert!(!rows.contains("todo_prelude"), "{rows}");
+    assert!(!rows.contains("t1 read"), "{rows}");
+    assert!(rows.contains("⚑ reminder Relevant: skill://plan"), "{rows}");
+    Ok(())
+}
