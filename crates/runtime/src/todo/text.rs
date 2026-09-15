@@ -162,7 +162,7 @@ fn row_text(item: &TodoItem) -> String {
     )
 }
 
-fn suffix(item: &TodoItem) -> String {
+pub fn suffix(item: &TodoItem) -> String {
     match (&item.state, &item.on, &item.note) {
         (TodoStateName::Blocked, Some(on), Some(note)) => {
             format!(" (blocked on {on}: {note})", on = on.as_str())

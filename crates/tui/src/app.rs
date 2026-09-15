@@ -110,6 +110,7 @@ pub struct App {
     pub(crate) plan_tree: Option<crate::plantree::PlanTreeView>,
     pub(crate) plan_progress: Option<crate::hud::PlanProgress>,
     pub(crate) todos: Option<yi_types::todo::TodoList>,
+    pub(crate) todo_clock: crate::hud::TodoClock,
     pub(crate) pending_commit: Vec<Line<'static>>,
     pub(crate) pending_open_tree: bool,
     pub(crate) pending_open_plan_tree: bool,
@@ -216,6 +217,7 @@ impl App {
             plan_tree: None,
             plan_progress: None,
             todos: None,
+            todo_clock: crate::hud::TodoClock::default(),
             pending_commit: Vec::new(),
             pending_open_tree: false,
             pending_open_plan_tree: false,
@@ -427,6 +429,8 @@ impl App {
     pub fn sync_port(&mut self, port: Option<&dyn SessionPort>) {
         self.plan_progress = port.and_then(|port| port.plan_progress());
         self.todos = port.and_then(|port| port.todo_list());
+        // ponytail: an idle console pane folds its list on the next event, not at the deadline.
+        self.todo_clock.observe(self.todos.as_ref(), Instant::now());
     }
 
     pub fn mode(&self) -> TranscriptMode {
@@ -696,9 +700,11 @@ impl App {
                     self.commit_cell(&Cell::Notice { text });
                 }
             }
+            // `display: false` is the model's alone; the todo prelude leaked as a dozen callouts.
             AgentMessage::Custom {
                 custom_type,
                 content,
+                display: true,
                 ..
             } => {
                 let cell = Cell::Advisory {
@@ -1099,11 +1105,13 @@ pub fn run_tui(
 
     let mut logo_tick = crate::logos::Tick::default();
     let mut last_spinner_phase = usize::MAX;
+    let mut last_todo_full = false;
     while !app.quit {
         let timeout = app
             .scheduler
             .poll_timeout(Instant::now())
-            .min(app.reveal_wake());
+            .min(app.reveal_wake())
+            .min(app.todo_clock.wake(Instant::now()));
         let animating = app.running
             || app
                 .tasks
@@ -1143,6 +1151,11 @@ pub fn run_tui(
         let phase = app.spinner_phase();
         if animating && phase != last_spinner_phase {
             last_spinner_phase = phase;
+            app.scheduler.request();
+        }
+        let todo_full = app.todo_clock.full(Instant::now());
+        if todo_full != last_todo_full {
+            last_todo_full = todo_full;
             app.scheduler.request();
         }
         crate::editor::process_pending_editor(&mut app, &mut terminal, true);
