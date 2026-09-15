@@ -77,6 +77,7 @@ pub fn class_label(class: Class) -> &'static str {
     match class {
         Class::Safe => "safe",
         Class::Destructive => "destructive",
+        Class::Egress => "egress",
         Class::Unknown => "unknown",
     }
 }

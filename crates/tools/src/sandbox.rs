@@ -19,10 +19,10 @@ pub struct Sandbox {
 const CREDENTIAL_DIRS: [&str; 5] = [".ssh", ".gnupg", ".aws", ".kube", ".docker"];
 
 impl Sandbox {
-    /// The worktree plus the scratch space a build needs. Anything else is a
-    /// read, and the model is told when a write lands outside.
+    /// The worktree, its git dirs (a lane's index lives in the trunk's), and build scratch.
     pub fn for_workspace(cwd: &Path, home: &Path, session_dir: Option<&Path>) -> Self {
         let mut writable = vec![cwd.to_path_buf()];
+        writable.extend(yi_permission::git_dirs(cwd));
         if let Some(dir) = session_dir {
             writable.push(dir.to_path_buf());
         }

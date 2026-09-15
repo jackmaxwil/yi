@@ -4,9 +4,13 @@ use std::path::PathBuf;
 use yi_permission::{
     CatastrophicContext, ConfigRule, ConfigRuleAction, Decision, Hold, HoldSource, ParseOutcome,
     PermissionMode, SessionRules, ToolCall, canonical_command_identity, command_reads_credentials,
-    decide, is_catastrophic, lexical_normalize, parse_command,
+    decide, git_dirs, is_catastrophic, lexical_normalize, parse_command,
 };
 use yi_types::permission::{RuleDecision, RuleKind, SessionPermissionState};
+
+#[path = "../../types/tests/support/scratch.rs"]
+mod scratch;
+use scratch::Scratch;
 
 type TestResult = Result<(), Box<dyn Error>>;
 
@@ -14,7 +18,7 @@ fn context() -> CatastrophicContext {
     CatastrophicContext {
         home_dir: Some(PathBuf::from("/home/user")),
         working_dir: Some(PathBuf::from("/home/user/project")),
-        workspace_git: Some(PathBuf::from("/home/user/project/.git")),
+        workspace_git: vec![PathBuf::from("/home/user/project/.git")],
     }
 }
 
@@ -493,5 +497,79 @@ fn auto_reads_a_command_segment_by_segment() -> TestResult {
     assert!(matches!(auto(&unreadable), Decision::Contain { .. }));
     let unknown = bash_call("just check", "canonical");
     assert!(matches!(auto(&unknown), Decision::Contain { .. }));
+    Ok(())
+}
+
+/// A trunk checkout with one linked worktree, laid out by hand: `git worktree add` writes
+/// exactly these files, and the reader must follow them without spawning git.
+fn linked_layout(
+    root: &std::path::Path,
+    relative: bool,
+) -> Result<(PathBuf, PathBuf), Box<dyn Error>> {
+    let common = root.join("trunk/.git");
+    let gitdir = common.join("worktrees/wt");
+    std::fs::create_dir_all(&gitdir)?;
+    std::fs::write(common.join("HEAD"), "ref: refs/heads/main\n")?;
+    std::fs::write(gitdir.join("HEAD"), "ref: refs/heads/feature\n")?;
+    std::fs::write(gitdir.join("commondir"), "../..\n")?;
+    let tree = root.join("wt");
+    std::fs::create_dir_all(tree.join("src"))?;
+    let pointer = if relative {
+        "gitdir: ../trunk/.git/worktrees/wt\n".to_owned()
+    } else {
+        format!("gitdir: {}\n", gitdir.display())
+    };
+    std::fs::write(tree.join(".git"), pointer)?;
+    Ok((tree, common))
+}
+
+#[test]
+fn git_dirs_follow_a_worktree_pointer_to_its_common_dir() -> TestResult {
+    for relative in [false, true] {
+        let root = Scratch::new("yi-permission-gitdirs")?;
+        let (tree, common) = linked_layout(&root, relative)?;
+        let gitdir = common.join("worktrees/wt");
+        let found = git_dirs(&tree.join("src"));
+        assert_eq!(
+            found,
+            vec![lexical_normalize(&gitdir), lexical_normalize(&common)],
+            "relative pointer: {relative}"
+        );
+        assert_eq!(
+            git_dirs(&root.join("trunk")),
+            vec![lexical_normalize(&common)],
+            "a primary checkout's git dir is its own common dir"
+        );
+    }
+    let bare = Scratch::new("yi-permission-gitdirs-none")?;
+    assert!(git_dirs(&bare).is_empty(), "no checkout, no git dirs");
+    Ok(())
+}
+
+#[test]
+fn rm_rf_of_a_linked_worktrees_common_dir_is_denied_in_every_mode() -> TestResult {
+    let root = Scratch::new("yi-permission-common-rm")?;
+    let (tree, common) = linked_layout(&root, false)?;
+    let context = CatastrophicContext::detect(&tree);
+    let session = SessionRules::new();
+    for target in [
+        common.clone(),
+        common.join("worktrees/wt"),
+        common.join("objects"),
+    ] {
+        let command = format!("rm -rf {}", target.display());
+        let call = bash_call(&command, "canonical");
+        for mode in [
+            PermissionMode::Ask,
+            PermissionMode::Auto,
+            PermissionMode::Yolo,
+        ] {
+            let decision = decide(&call, mode, &[], &session, &[], &context);
+            assert!(
+                matches!(decision, Decision::Deny { .. }),
+                "{command} in {mode:?}: {decision:?}"
+            );
+        }
+    }
     Ok(())
 }
