@@ -1437,7 +1437,7 @@ fn a_user_op_is_recorded_with_its_user_citation() -> TestResult {
     assert!(yi_runtime::fetch::user_inputs(&session)?.is_empty());
 
     let confirming = Confirmer {
-        broker: broker_with(AskOutcome::AllowAlways)?,
+        broker: broker_with(AskOutcome::AllowAlways(0))?,
         store: Arc::clone(&session),
     };
     let seen_revision = store.read(&id)?.touched.0;

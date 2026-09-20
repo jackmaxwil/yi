@@ -191,7 +191,7 @@ impl PermissionBroker {
             .map_or(AskOutcome::Reject, |asker| asker(ask));
         let _ = self.events.send(AgentEvent::PermissionResolved {
             tool_call_id,
-            allowed: matches!(outcome, AskOutcome::AllowOnce | AskOutcome::AllowAlways),
+            allowed: matches!(outcome, AskOutcome::AllowOnce | AskOutcome::AllowAlways(_)),
         });
         outcome
     }
