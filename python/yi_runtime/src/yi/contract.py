@@ -127,10 +127,6 @@ class Contract:
     threshold: int = 1000
     min_coverage: int = 1000
 
-    @property
-    def needs_output(self) -> bool:
-        return any(item.kind == "schema" for item in self.items)
-
     async def render(self, contract_class: str, fetch: Any) -> tuple[dict, list[dict]]:
         """The wire contract and the blobs it names; ``fetch`` reads a ``local://`` url."""
         blobs: list[dict] = []

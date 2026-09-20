@@ -92,6 +92,20 @@ class Plans(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((run.outcome, todo._doc["state"]), ("failed", "failed"))
         self.assertIn("done refused", todo._doc["cause"])
 
+    async def test_a_verdict_that_judges_no_product_leaves_the_attempt_alone(self) -> None:
+        """Dies with the control: fail on every refusal and an abstained todo is failed."""
+        for outcome, child, state in (("abstain", "finished", "running"), (None, "needs_you", "blocked")):
+            with self.subTest(outcome or child):
+                host = FakeHost()
+                plan = await Plan.create("ship it")
+                todo = await plan.todo(key="t", delegate=Writer(), accept=contract(cmd("true", critical=True)))
+                if outcome is not None:
+                    host.verdicts[todo.label] = outcome
+                host.children[f"{plan.id}/t"] = child
+                run = await plan.run(budget=5)
+                self.assertEqual((run.outcome, todo._doc["state"]), ("unresolved", state))
+                yi.plan._RUNS.clear()
+
     async def test_duplicate_run_calls_attach_or_refuse(self) -> None:
         host = FakeHost()
         plan = await Plan.create("ship it")

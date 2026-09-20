@@ -142,5 +142,24 @@ async fn program_records_source_before_the_first_effect() -> Fallible {
     let at = |kind: &str| kinds.iter().position(|op| op == kind);
     assert!(at("program") < at("spawn_intent"), "{kinds:?}");
     assert!(!dir.join("never-run").exists() && !std::path::Path::new("never-run").exists());
+
+    // A crash between the commit and the append. Dies with the control: heal after the
+    // record is built and `program_hash` names a file one cell short.
+    std::fs::remove_file(&path)?;
+    let second = "print('two')";
+    let source = ArtifactRef {
+        digest: Digest::of(second.as_bytes()),
+        length: u64::try_from(second.len())?,
+        ..source
+    };
+    let args = json!({"cell_id": "cell-2", "source_ref": serde_json::to_value(&source)?});
+    let blob = json!([{"media_type": "text/x-python", "text": second}]);
+    let healed = op(&registry, "r6", "program", args, blob).await?;
+    assert_eq!(healed["ok"], true, "{healed}");
+    let text = std::fs::read_to_string(&path)?;
+    assert_eq!(text.matches("# --- cell ").count(), 2, "{text}");
+    let journal = store.journal(&id).read()?;
+    let last = journal.records.last().ok_or("no record")?;
+    assert_eq!(last.program_hash, Some(Digest::of(text.as_bytes())));
     Ok(())
 }
