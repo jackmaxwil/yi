@@ -67,9 +67,27 @@ impl DaemonClient {
         }
         Err("stream ended before the response".into())
     }
+
+    /// Every frame up to and including a response, so a notification the worker sent before
+    /// answering is part of the evidence rather than something the reader skipped.
+    fn request_with_notifications(
+        &mut self,
+        id: &str,
+        method: &str,
+        params: Value,
+    ) -> Result<Vec<Value>, Box<dyn Error>> {
+        let frame = json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params});
+        serde_json::to_writer(&mut self.stream, &frame)?;
+        self.stream.write_all(b"\n")?;
+        self.read_until(|frame| frame["id"] == id)
+    }
 }
 
 fn spawn_daemon(dir: &Path) -> Result<(Child, PathBuf), Box<dyn Error>> {
+    spawn_daemon_in(dir, None)
+}
+
+fn spawn_daemon_in(dir: &Path, home: Option<&Path>) -> Result<(Child, PathBuf), Box<dyn Error>> {
     let socket = dir.join("yi.sock");
     #[expect(
         clippy::disallowed_methods,
@@ -88,6 +106,7 @@ fn spawn_daemon(dir: &Path) -> Result<(Child, PathBuf), Box<dyn Error>> {
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
+        .envs(home.map(|home| ("HOME", home.to_path_buf())))
         .spawn()?;
     let deadline = Instant::now() + Duration::from_secs(5);
     while !socket.exists() {
@@ -692,4 +711,68 @@ fn shutdown_stops_the_daemon_and_its_worker() -> TestResult {
     let _ = daemon.kill();
     let _ = daemon.wait();
     outcome
+}
+
+fn git_in(dir: &Path, args: &[&str]) -> Result<String, Box<dyn Error>> {
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "the fixture repository is built with the real git the worker will claim a lane from"
+    )]
+    let output = Command::new("git")
+        .args(args)
+        .current_dir(dir)
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .output()?;
+    if !output.status.success() {
+        return Err(format!("git {args:?}: {}", String::from_utf8_lossy(&output.stderr)).into());
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
+}
+
+/// D208: a worker speaks the moment it attaches, which is before its `session/new` response
+/// creates the daemon's entry — so the first thing it says, where the session runs, was
+/// dropped and the console painted the launch root for the whole session.
+#[test]
+fn the_daemon_delivers_the_workdir_the_worker_named_at_attach() -> TestResult {
+    let dir = Scratch::new("yi-serve-workdir")?;
+    let home = dir.home()?;
+    let root = dir.join("project");
+    std::fs::create_dir_all(&root)?;
+    git_in(&root, &["init", "-q", "-b", "main"])?;
+    git_in(
+        &root,
+        &[
+            "-c",
+            "user.email=t@t",
+            "-c",
+            "user.name=t",
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            "base",
+        ],
+    )?;
+    let (mut daemon, socket) = spawn_daemon_in(&dir, Some(&home))?;
+    let mut client = DaemonClient::connect(&socket)?;
+    client.request("1", "initialize", json!({"protocolVersion": 2}))?;
+    let frames = client.request_with_notifications(
+        "2",
+        "session/new",
+        json!({"cwd": root.display().to_string()}),
+    )?;
+    let workdir = frames
+        .iter()
+        .filter(|frame| frame["method"] == "session/update")
+        .map(|frame| &frame["params"]["update"])
+        .find(|update| update["sessionUpdate"] == "_yi/workdir")
+        .ok_or_else(|| format!("no _yi/workdir reached the client: {frames:#?}"))?;
+    assert!(
+        workdir["cwd"]
+            .as_str()
+            .is_some_and(|cwd| cwd.contains(".yi/lanes/")),
+        "the client is told the lane, not the launch root: {workdir}"
+    );
+    let _ = daemon.kill();
+    Ok(())
 }

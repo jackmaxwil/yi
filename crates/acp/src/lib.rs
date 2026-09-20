@@ -359,6 +359,7 @@ impl AcpState {
             seen: HashSet::new(),
             last_goal: Value::Null,
             last_workdir: Value::Null,
+            launch_cwd: self.cwd.clone(),
         };
         parent.watch_workdir();
         let forwarder = tokio::spawn(forward_parent(events, parent));

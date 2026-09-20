@@ -145,6 +145,16 @@ pub fn append(messages: &[AgentMessage], block: &str) -> Vec<AgentMessage> {
     out
 }
 
+/// What the turn says about the machine: os, arch, shell, and where yi runs (D209).
+pub fn platform_line(shell: &str) -> String {
+    format!(
+        "platform: {} {}{shell} · host {}",
+        std::env::consts::OS,
+        std::env::consts::ARCH,
+        crate::host::facts().line()
+    )
+}
+
 pub fn hook(
     session: &AgentSession,
     wiring: &RuntimeWiring,
@@ -202,12 +212,7 @@ pub fn hook(
             })
             .map(|name| format!(" · shell {name}"))
             .unwrap_or_default();
-        lines.push(format!(
-            "platform: {} {}{shell} · host {}",
-            std::env::consts::OS,
-            std::env::consts::ARCH,
-            crate::host::facts().line()
-        ));
+        lines.push(platform_line(&shell));
         let (model, effort) = settings();
         let mode = broker
             .as_ref()

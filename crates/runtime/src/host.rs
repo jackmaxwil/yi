@@ -26,6 +26,8 @@ const RUNTIMES: [(&str, &str); 5] = [
     ("docker", "docker"),
     ("lxc", "lxc"),
 ];
+const SSH_VARS: [&str; 3] = ["SSH_CONNECTION", "SSH_CLIENT", "SSH_TTY"];
+
 /// Azure stamps every VM with this asset tag; its vendor string is Hyper-V's.
 const AZURE_TAG: &str = "7783-7084-3265-9085-8269-3286-77";
 
@@ -122,7 +124,7 @@ pub fn probe_at(root: &Path, env: &dyn Fn(&str) -> Option<String>) -> HostFacts 
             })
             .or_else(|| flagged.then(|| "a hypervisor".to_owned())),
         cloud,
-        ssh: ["SSH_CONNECTION", "SSH_CLIENT", "SSH_TTY"]
+        ssh: SSH_VARS
             .iter()
             .any(|key| env(key).is_some_and(|value| !value.is_empty())),
         wsl: read(root, "proc/sys/kernel/osrelease")
@@ -130,32 +132,31 @@ pub fn probe_at(root: &Path, env: &dyn Fn(&str) -> Option<String>) -> HostFacts 
     }
 }
 
-/// Probed once; macOS keeps its hypervisor answer in a sysctl, so that spawn rides here.
-pub fn facts() -> &'static HostFacts {
-    static FACTS: std::sync::OnceLock<HostFacts> = std::sync::OnceLock::new();
-    FACTS.get_or_init(|| {
-        let mut facts = probe_at(Path::new("/"), &|key| std::env::var(key).ok());
-        if facts.vm.is_none() && cfg!(target_os = "macos") && macos_guest() {
-            facts.vm = Some("a hypervisor".to_owned());
-        }
-        facts
-    })
+/// The machine, probed once; the ssh fact is this process's own and is read every time, since
+/// a daemon outlives the client that attached to it.
+pub fn facts() -> HostFacts {
+    static MACHINE: std::sync::OnceLock<HostFacts> = std::sync::OnceLock::new();
+    let mut facts = MACHINE
+        .get_or_init(|| {
+            let mut facts = probe_at(Path::new("/"), &|key| std::env::var(key).ok());
+            if facts.vm.is_none() && cfg!(target_os = "macos") && macos_guest() {
+                facts.vm = Some("a hypervisor".to_owned());
+            }
+            facts
+        })
+        .clone();
+    facts.ssh = SSH_VARS
+        .iter()
+        .any(|key| std::env::var(key).is_ok_and(|value| !value.is_empty()));
+    facts
 }
 
 fn macos_guest() -> bool {
-    let cancelled: yi_tools::CancelFlag = std::sync::Arc::new(|| false);
-    yi_tools::run_or_background(
-        "/usr/sbin/sysctl -n kern.hv_vmm_present",
-        Path::new("/"),
-        &cancelled,
-        None,
-        std::time::Duration::from_secs(2),
-        None,
-    )
-    .ok()
-    .and_then(|run| match run {
-        yi_tools::Run::Finished(capture) => Some(capture.stdout),
-        _ => None,
-    })
-    .is_some_and(|out| out.trim() == "1")
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    let cancelled: yi_tools::CancelFlag =
+        std::sync::Arc::new(move || std::time::Instant::now() >= deadline);
+    let mut sysctl = yi_tools::command("/usr/sbin/sysctl");
+    sysctl.args(["-n", "kern.hv_vmm_present"]);
+    yi_tools::run_captured(sysctl, None, &cancelled, 64)
+        .is_ok_and(|capture| capture.stdout.trim() == "1")
 }

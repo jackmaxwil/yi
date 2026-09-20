@@ -1,17 +1,17 @@
 {
-  "acp": 2539,
+  "acp": 2550,
   "ai": 4715,
-  "cli": 3978,
+  "cli": 3981,
   "console": 7479,
   "context": 1767,
   "kernel": 3811,
   "loop": 1273,
   "mcp-cli": 2469,
   "orb": 1398,
-  "permission": 1684,
-  "runtime": 29077,
+  "permission": 1753,
+  "runtime": 29086,
   "session": 1755,
-  "tools": 12140,
+  "tools": 12161,
   "tui": 12357,
   "types": 5265
 }
