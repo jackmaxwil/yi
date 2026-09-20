@@ -526,7 +526,26 @@ async fn a_child_kernels_plan_op_is_refused_beyond_view() -> TestResult {
             .is_some_and(|text| text.contains("only the plan owner")),
         "{stepped:?}"
     );
-    let file = PlanStore::open(dir.to_path_buf())?.read(&PlanId::new("parents")?)?;
+    // Dies with the control: drop the owner check in `store_artifacts` and a child writes
+    // a blob into its parent's plan, whatever the op it rides does.
+    let blob = "a child's bytes";
+    let smuggled = plan_op(
+        &registry,
+        serde_json::json!({"request_id": "r3", "op": "view", "args": {},
+            "artifacts": [{"media_type": "text/plain", "text": blob}]}),
+    )
+    .await?;
+    assert_eq!(smuggled["ok"], serde_json::json!(false), "{smuggled:?}");
+    let id = PlanId::new("parents")?;
+    let store = PlanStore::open(dir.to_path_buf())?;
+    assert!(
+        store
+            .artifacts(&id)
+            .get(&yi_types::plan::canonical::Digest::of(blob.as_bytes()))
+            .is_err(),
+        "only the owner stores artifacts"
+    );
+    let file = store.read(&id)?;
     assert!(
         matches!(file.todos[0].state, TodoState::Running { .. }),
         "a child's done must not land"

@@ -158,8 +158,10 @@ impl PlanEngine {
         let root = root_of(&id)?;
         let mut txn = self.begin(&root, actor, request, expected, false)?;
         let version = txn.state.plan(&id)?.version.0;
+        // Invariant: the export is healed before the record is built, so `program_hash` names
+        // the file this cell is appended to and not one a crash left a cell short.
+        self.export(&id, version, &txn.records)?;
         if let Some(replayed) = self.replay(&txn, &op)? {
-            self.export(&id, version, &txn.records)?;
             return Ok(replayed);
         }
         self.check_revision(&txn, &id, expected)?;

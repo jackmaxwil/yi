@@ -180,6 +180,8 @@ class Todo:
 
     @property
     def key(self) -> str:
+        # ponytail: the key rides the label (`key: text`) because TodoSpec has no field for one
+        # and thirty-five construction sites; give it a field when a second surface needs keys.
         head = self.label.split(": ", 1)[0]
         return head if KEY.match(head) else self.label
 
@@ -374,6 +376,8 @@ class Plan:
         user settles it with ``yi plan repair``); an inline todo whose coroutine
         died with its kernel is settled by ``todo.fail(cause)`` and ``todo.retry()``.
         """
+        # ponytail: the host's findings arrive as notice prose, so this matches their prefix;
+        # read a field instead once `repair` answers with its findings typed.
         out = []
         for todo in self.todos:
             doc = todo._doc
@@ -598,14 +602,17 @@ class Run:
                 await self.plan._op("done", {"label": todo.label, "output": url}, artifacts=[blob])
         except PlanError as refusal:
             self.refusals[todo.key] = refusal
-            if isinstance(refusal, Refused):
+            # Invariant: only a verdict on the product fails the attempt; an abstention is an
+            # infrastructure failure and an escalation is a question (plan section 6.3).
+            if isinstance(refusal, Refused) and refusal.verdict.get("outcome") == "fail":
                 await todo.fail(f"done refused: {refusal}"[:500])
 
     async def settle(self) -> list[Todo]:
         """Wait until an active attempt ends, then complete or fail it through the host.
 
         A finished child or a returned coroutine goes to ``done`` (the contract
-        decides), a failed one to ``fail``; a stuck child is waited on.
+        decides), a failed one to ``fail``; a stuck child is waited on, and one
+        the host cannot vouch for blocks its todo on you.
 
             settled = await run.settle()
         """
@@ -641,6 +648,10 @@ class Run:
                     await self._complete(todo, answer and answer.get("json", answer.get("text")))
                 elif state == "failed":
                     await todo.fail(f"child {todo.child} failed")
+                else:
+                    # Invariant: a child the host cannot vouch for is a decision, never a
+                    # silent drop; `needs_you` and an unregistered name both land here.
+                    await todo.block("user", f"child {todo.child} is {state or 'not registered'}")
                 settled.append(todo)
         return settled
 

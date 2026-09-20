@@ -123,11 +123,14 @@ class FakeHost:
         elif op == "done":
             if todo["state"] != "running":
                 return refusal("illegal_step", f"done is illegal for {todo['label']}")
+            outcome = self.verdicts.get(todo["label"], "pass")
             if todo.get("contract"):
-                if self.verdicts.get(todo["label"], "pass") != "pass":
-                    return refusal("refused", "done refused", verdict={"outcome": "fail", "items": []})
+                if outcome != "pass":
+                    return refusal("refused", "done refused", verdict={"outcome": outcome, "items": []})
                 todo["resolution"] = "verified_done"
             todo["state"], todo["output"] = "done", args.get("output")
+        elif op == "block":
+            todo["state"], todo["on"], todo["note"] = "blocked", args["on"], args["note"]
         elif op == "fail":
             todo["state"], todo["cause"] = "failed", args["cause"]
         elif op == "retry":
