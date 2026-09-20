@@ -788,3 +788,51 @@ fn two_sessions_on_one_worker_hold_two_lanes() -> Result<(), Box<dyn Error>> {
     client.finish()?;
     Ok(())
 }
+
+/// D208: the console painted the root it launched in for a session that ran in a lane, so the
+/// status row named the wrong tree and branch for the whole session.
+#[test]
+fn attach_names_the_lane_path_not_the_launch_root() -> Result<(), Box<dyn Error>> {
+    let dir = temp_dir("workdir-update")?;
+    git_in(&dir, &["init", "-q", "-b", "main"])?;
+    git_in(
+        &dir,
+        &[
+            "-c",
+            "user.email=t@t",
+            "-c",
+            "user.name=t",
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            "base",
+        ],
+    )?;
+    let mut client = AcpClient::spawn(&dir)?;
+    client.request("1", "initialize", json!({"protocolVersion": 2}))?;
+    let frames = client.request(
+        "2",
+        "session/new",
+        json!({"cwd": dir.display().to_string(), "mcpServers": []}),
+    )?;
+    let workdir = frames
+        .iter()
+        .filter(|frame| frame["method"] == "session/update")
+        .map(|frame| &frame["params"]["update"])
+        .find(|update| update["sessionUpdate"] == "_yi/workdir")
+        .ok_or_else(|| format!("no _yi/workdir update in {frames:#?}"))?;
+    let cwd = workdir["cwd"].as_str().unwrap_or_default().to_owned();
+    assert!(
+        cwd.contains(".yi/lanes/"),
+        "the workdir update names the lane, not the launch root: {cwd}"
+    );
+    assert!(
+        workdir["lane"]
+            .as_str()
+            .is_some_and(|lane| lane.contains("⎇ lane")),
+        "the update carries the row label: {workdir}"
+    );
+    client.finish()?;
+    Ok(())
+}

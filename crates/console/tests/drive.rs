@@ -538,6 +538,42 @@ fn resume_replays_and_prompt_streams() -> TestResult {
     )
 }
 
+fn resume_alpha_on_a_lane(frame: &Value) -> Vec<Value> {
+    let mut frames = resume_alpha(frame);
+    frames.insert(
+        0,
+        update(
+            "s-alpha",
+            json!({
+                "sessionUpdate": "_yi/workdir",
+                "cwd": "/home/user/.yi/lanes/897d6e91/1",
+                "lane": "yi ⎇ lane 1",
+            }),
+        ),
+    );
+    frames
+}
+
+/// D208: the row named the root the console opened, for a session that ran in a lane.
+#[test]
+fn the_status_row_follows_the_workers_lane() -> TestResult {
+    run(
+        "workdir",
+        vec![
+            Step::Expect("initialize", init_reply),
+            Step::Expect("session/list", two_session_list),
+            Step::Expect("session/list", empty_list),
+            Step::Expect("session/resume", resume_alpha_on_a_lane),
+            Step::Expect("_yi/seen", seen_ok),
+        ],
+        "wait-frame 5000 s-alpha\n\
+         key enter\n\
+         wait-frame 5000 replayed world\n\
+         wait-frame 5000 ⎇ lane 1\n\
+         quit\n",
+    )
+}
+
 #[test]
 fn prompt_rejected_while_daemon_unreachable() -> TestResult {
     // No listener at all: the client keeps retrying and the composer submit
