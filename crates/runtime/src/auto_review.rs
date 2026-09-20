@@ -284,5 +284,6 @@ pub fn ask_text(ask: &ReviewedAsk) -> crate::permission::PermissionAsk<'_> {
         description: &ask.description,
         patch: ask.patch.as_deref(),
         changes: &ask.targets,
+        grants: &ask.grants,
     }
 }

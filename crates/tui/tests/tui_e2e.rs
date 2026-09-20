@@ -763,7 +763,7 @@ fn the_approval_prompt_renders_its_diff_as_a_diff() -> TestResult {
         "+    match tool.trim() {",
     ]
     .join("\n");
-    let view = ApprovalView::new("write".to_owned(), description);
+    let view = ApprovalView::new("write".to_owned(), description, Vec::new());
     let theme = Theme::new(ColorTier::TrueColor, true);
     let rendered = flat_lines(&view.lines(80, &theme));
     let joined = rendered.join("\n");
@@ -789,6 +789,53 @@ fn the_approval_prompt_renders_its_diff_as_a_diff() -> TestResult {
     assert!(
         !joined.contains("--- a/"),
         "the git path headers repeat the title and cost two rows:\n{joined}"
+    );
+    Ok(())
+}
+
+/// "Always allow" names what it keeps: one option per grant the broker offers, and the choice
+/// carries which one.
+#[test]
+fn an_approval_offers_one_always_option_per_grant() -> TestResult {
+    use yi_tui::approval::{ApprovalView, AskChoice};
+    use yi_tui::keymap::{KeyCodeValue, SingleKey};
+    use yi_tui::popup::BottomView;
+
+    let grants = vec![
+        "edits under crates/tui/src".to_owned(),
+        "edits anywhere in this tree".to_owned(),
+    ];
+    let mut view = ApprovalView::new(
+        "write requires permission".to_owned(),
+        "write x".to_owned(),
+        grants.clone(),
+    );
+    let theme = Theme::new(ColorTier::TrueColor, true);
+    let joined = flat_lines(&view.lines(80, &theme)).join("\n");
+    for option in [
+        "Allow once",
+        "Always allow edits under crates/tui/src",
+        "Always allow edits anywhere in this tree",
+        "Reject",
+    ] {
+        assert!(joined.contains(option), "{option} missing:\n{joined}");
+    }
+    let key = |code| SingleKey {
+        code,
+        ctrl: false,
+        alt: false,
+        shift: false,
+    };
+    view.handle_key(&key(KeyCodeValue::Right));
+    view.handle_key(&key(KeyCodeValue::Right));
+    view.handle_key(&key(KeyCodeValue::Enter));
+    assert_eq!(view.outcome, Some(AskChoice::AllowAlways(1)));
+    let mut quick = ApprovalView::new("write".to_owned(), "write x".to_owned(), grants);
+    quick.handle_key(&key(KeyCodeValue::Char('a')));
+    assert_eq!(
+        quick.outcome,
+        Some(AskChoice::AllowAlways(0)),
+        "`a` keeps the narrowest grant"
     );
     Ok(())
 }

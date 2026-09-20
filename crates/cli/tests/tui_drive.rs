@@ -473,9 +473,8 @@ fn a_paced_type_step_still_honours_the_deadline() -> TestResult {
     Ok(())
 }
 
-#[cfg(target_os = "macos")]
 /// One assistant message per bash command, then a closing text reply, as `--faux` reads them.
-fn cassette_lines(commands: &[&str], reply: &str) -> String {
+fn cassette_lines(calls: &[(&str, serde_json::Value)], reply: &str) -> String {
     let message = |content: serde_json::Value, stop: &str| {
         serde_json::json!({
             "role": "assistant", "content": content,
@@ -486,12 +485,12 @@ fn cassette_lines(commands: &[&str], reply: &str) -> String {
         })
         .to_string()
     };
-    let mut lines: Vec<String> = commands
+    let mut lines: Vec<String> = calls
         .iter()
         .enumerate()
-        .map(|(index, command)| {
+        .map(|(index, (tool, arguments))| {
             message(
-                serde_json::json!([{"type": "toolCall", "id": format!("call-{index}"), "name": "bash", "arguments": {"command": command}}]),
+                serde_json::json!([{"type": "toolCall", "id": format!("call-{index}"), "name": tool, "arguments": arguments}]),
                 "toolUse",
             )
         })
@@ -501,6 +500,10 @@ fn cassette_lines(commands: &[&str], reply: &str) -> String {
         "stop",
     ));
     lines.join("\n") + "\n"
+}
+
+fn bash(command: &str) -> (&'static str, serde_json::Value) {
+    ("bash", serde_json::json!({ "command": command }))
 }
 
 #[cfg(target_os = "macos")]
@@ -582,7 +585,7 @@ fn a_lane_session_commits_contained() -> TestResult {
     )?;
     let command = "touch lane.txt && git add -A && git -c user.email=yi@example.com -c user.name=yi commit -q -m lane";
     let cassette = dir.join("cassette.jsonl");
-    std::fs::write(&cassette, cassette_lines(&[command], "committed"))?;
+    std::fs::write(&cassette, cassette_lines(&[bash(command)], "committed"))?;
     let keys = dir.join("script.keys");
     std::fs::write(&keys, "wait-idle 30000\nquit\n")?;
     let frames = dir.join("frames");
@@ -647,7 +650,10 @@ fn a_reshaped_retry_of_a_refused_program_reaches_the_approval_view() -> TestResu
     let first = format!("mkdir {}", outside.0.join("a").display());
     let second = format!("mkdir {} && ls", outside.0.join("b").display());
     let cassette = dir.join("cassette.jsonl");
-    std::fs::write(&cassette, cassette_lines(&[&first, &second], "gave up"))?;
+    std::fs::write(
+        &cassette,
+        cassette_lines(&[bash(&first), bash(&second)], "gave up"),
+    )?;
     let keys = dir.join("script.keys");
     std::fs::write(
         &keys,
@@ -694,6 +700,81 @@ fn a_reshaped_retry_of_a_refused_program_reaches_the_approval_view() -> TestResu
     assert!(
         !outside.0.join("a").exists() && !outside.0.join("b").exists(),
         "neither directory may exist: the first was contained, the second rejected"
+    );
+    Ok(())
+}
+
+/// D207: "Always allow" kept a rule keyed on the whole call, patch body and all, so the next
+/// edit in the same directory asked again.
+#[test]
+fn an_always_allowed_directory_edits_without_a_second_prompt() -> TestResult {
+    let dir = Scratch::new("yi-tui-grant")?;
+    let home = dir.home()?;
+    let write = |path: &str, text: &str| {
+        (
+            "write",
+            serde_json::json!({ "path": path, "content": text }),
+        )
+    };
+    let cassette = dir.join("cassette.jsonl");
+    std::fs::write(
+        &cassette,
+        cassette_lines(
+            &[
+                write("notes/one.md", "first\n"),
+                write("notes/two.md", "second\n"),
+            ],
+            "both written",
+        ),
+    )?;
+    let keys = dir.join("script.keys");
+    // The second write may not ask: if it does, nothing answers it and the drive never idles.
+    std::fs::write(
+        &keys,
+        "wait-frame 30000 Always allow\nkey a\nwait-idle 30000\nquit\n",
+    )?;
+    let frames = dir.join("frames");
+
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "the drive contract is the spawned binary's headless mode; tests must run the real process"
+    )]
+    let output = Command::new(env!("CARGO_BIN_EXE_yi"))
+        .args([
+            "tui",
+            "--headless",
+            "--confirm",
+            "--model",
+            "faux/faux-1",
+            "--faux",
+            &cassette.display().to_string(),
+            "--session-dir",
+            &dir.join("sessions").display().to_string(),
+            "--keys",
+            &keys.display().to_string(),
+            "--frames",
+            &frames.display().to_string(),
+            "write the notes",
+        ])
+        .current_dir(&*dir)
+        .env("HOME", &home)
+        .output()?;
+    let mut all_frames = String::new();
+    for entry in std::fs::read_dir(&frames)?.filter_map(Result::ok) {
+        all_frames.push_str(&std::fs::read_to_string(entry.path())?);
+    }
+    assert!(
+        output.status.success(),
+        "the second write must not ask: {}\n{all_frames}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        all_frames.contains("Always allow edits under notes"),
+        "the prompt names the directory the grant covers:\n{all_frames}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(dir.join("notes/two.md"))?,
+        "second\n"
     );
     Ok(())
 }

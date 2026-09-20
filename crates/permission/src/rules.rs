@@ -214,3 +214,116 @@ fn validate(state: &SessionPermissionState) -> Result<(), RuleStateError> {
     }
     Ok(())
 }
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Grant {
+    pub kind: RuleKind,
+    pub canonical: String,
+    pub label: String,
+}
+
+fn dir_identity(dir: &std::path::Path) -> String {
+    let mut out = String::new();
+    write_identity_field(&mut out, "yi-permission-state-v2");
+    write_identity_field(&mut out, "dir");
+    write_identity_field(&mut out, &dir.to_string_lossy());
+    out
+}
+
+fn scope_identity(scope: &str, cwd: &std::path::Path) -> String {
+    let mut out = String::new();
+    write_identity_field(&mut out, "yi-permission-state-v2");
+    write_identity_field(&mut out, "scope");
+    write_identity_field(&mut out, scope);
+    write_identity_field(&mut out, &cwd.to_string_lossy());
+    out
+}
+
+fn tree_writes(
+    call: &crate::ToolCall<'_>,
+    context: &crate::CatastrophicContext,
+) -> Option<(std::path::PathBuf, Vec<std::path::PathBuf>)> {
+    let workspace = crate::lexical_normalize(context.working_dir.as_deref()?);
+    let eligible = call.command.is_none() && call.in_workspace && !call.targets.is_empty();
+    let targets = call
+        .targets
+        .iter()
+        .map(|target| crate::catastrophic::resolve(target, context))
+        .collect::<Vec<_>>();
+    (eligible && targets.iter().all(|target| target.starts_with(&workspace)))
+        .then_some((workspace, targets))
+}
+
+/// The answers "always allow" can mean for this call, narrowest first.
+pub fn grants(call: &crate::ToolCall<'_>, context: &crate::CatastrophicContext) -> Vec<Grant> {
+    if let Some((workspace, targets)) = tree_writes(call, context) {
+        let tree = Grant {
+            kind: RuleKind::FileMutation,
+            canonical: dir_identity(&workspace),
+            label: "edits anywhere in this tree".to_owned(),
+        };
+        let parents = targets.iter().filter_map(|target| target.parent());
+        let common = parents.reduce(|shared, next| {
+            shared
+                .ancestors()
+                .find(|ancestor| next.starts_with(ancestor))
+                .unwrap_or(&workspace)
+        });
+        return match common.and_then(|dir| dir.strip_prefix(&workspace).ok().map(|rel| (dir, rel)))
+        {
+            Some((dir, relative)) if !relative.as_os_str().is_empty() => vec![
+                Grant {
+                    kind: RuleKind::FileMutation,
+                    canonical: dir_identity(dir),
+                    label: format!("edits under {}", relative.display()),
+                },
+                tree,
+            ],
+            _ => vec![tree],
+        };
+    }
+    if let (Some(command), Some(cwd)) = (call.command, context.working_dir.as_deref())
+        && let Some(scope) = crate::safety::grant_scope(command)
+    {
+        return vec![Grant {
+            kind: RuleKind::Command,
+            canonical: scope_identity(&scope, cwd),
+            label: format!("`{scope}` in this tree"),
+        }];
+    }
+    vec![Grant {
+        kind: call.rule_kind,
+        canonical: call.canonical.to_owned(),
+        label: match call.command {
+            Some(_) => "this exact command",
+            None => "this exact call",
+        }
+        .to_owned(),
+    }]
+}
+
+impl SessionRules {
+    /// A grant narrower than the exact call: a directory above every target, or one verb.
+    pub fn scoped_allow(
+        &self,
+        call: &crate::ToolCall<'_>,
+        context: &crate::CatastrophicContext,
+    ) -> bool {
+        let allowed =
+            |kind, canonical: &str| self.decision_for(kind, canonical) == Some(RuleDecision::Allow);
+        if let Some((workspace, targets)) = tree_writes(call, context) {
+            return targets.iter().all(|target| {
+                target
+                    .ancestors()
+                    .skip(1)
+                    .take_while(|ancestor| ancestor.starts_with(&workspace))
+                    .any(|ancestor| allowed(RuleKind::FileMutation, &dir_identity(ancestor)))
+            });
+        }
+        match (call.command, context.working_dir.as_deref()) {
+            (Some(command), Some(cwd)) => crate::safety::grant_scope(command)
+                .is_some_and(|scope| allowed(RuleKind::Command, &scope_identity(&scope, cwd))),
+            _ => false,
+        }
+    }
+}

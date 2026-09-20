@@ -169,6 +169,11 @@ pub fn decide(
                 reason: format!("denied by session rule for {}", call.display),
             };
         }
+        None if session_rules.scoped_allow(call, catastrophic_context) => {
+            return Decision::Allow {
+                reason: "allowed by a session grant".to_owned(),
+            };
+        }
         None => {}
     }
 

@@ -294,21 +294,31 @@ fn permission_bridge_writes_the_request_and_maps_the_selected_outcome() -> TestR
             let _ = sender.send(json!({
                 "jsonrpc": "2.0",
                 "id": id,
-                "result": {"outcome": {"outcome": "selected", "optionId": "allow_always"}},
+                "result": {"outcome": {"outcome": "selected", "optionId": "allow_always_1"}},
             }));
         }
     });
     let asker = yi_acp::bridge_asker("s1".to_owned(), sink, Arc::clone(&pending));
     let changes = [std::path::PathBuf::from("/repo/src/lib.rs")];
+    let grant = |label: &str| yi_runtime::Grant {
+        kind: yi_types::permission::RuleKind::FileMutation,
+        canonical: label.to_owned(),
+        label: label.to_owned(),
+    };
+    let grants = [
+        grant("edits under src"),
+        grant("edits anywhere in this tree"),
+    ];
     let outcome = asker(&yi_runtime::PermissionAsk {
         title: "write requires permission",
         description: "overwrite /repo/src/lib.rs",
         patch: Some("--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -1 +1 @@\n-old\n+new\n"),
         changes: &changes,
+        grants: &grants,
     });
     assert!(
-        matches!(outcome, yi_runtime::AskOutcome::AllowAlways),
-        "a selected allow_always option must map onto AskOutcome::AllowAlways"
+        matches!(outcome, yi_runtime::AskOutcome::AllowAlways(1)),
+        "allow_always_1 must keep the second grant, got {outcome:?}"
     );
     let log = seen.lock().map_err(|error| error.to_string())?;
     let request = log
@@ -328,6 +338,21 @@ fn permission_bridge_writes_the_request_and_maps_the_selected_outcome() -> TestR
         "C7: the T13 patch is structured content, not prose in the description: {request}"
     );
     assert_eq!(request["params"]["options"][0]["kind"], "allow_once");
+    let names: Vec<&str> = request["params"]["options"]
+        .as_array()
+        .ok_or("options")?
+        .iter()
+        .filter_map(|option| option["name"].as_str())
+        .collect();
+    assert_eq!(
+        names,
+        [
+            "Allow once",
+            "Always allow edits under src",
+            "Always allow edits anywhere in this tree",
+            "Reject"
+        ]
+    );
     assert!(
         pending
             .lock()
