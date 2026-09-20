@@ -517,3 +517,27 @@ fn lenient_segments(command: &str) -> Vec<Vec<String>> {
     segments.retain(|argv| !argv.is_empty());
     segments
 }
+
+/// The one verb a grant may name: readable, nothing destructive or networked, one unproven scope.
+pub(crate) fn grant_scope(command: &str) -> Option<String> {
+    let Parsed::Segments(segments) = parse(command) else {
+        return None;
+    };
+    let mut scopes = Vec::new();
+    for argv in &segments {
+        let argv0 = argv.first()?;
+        if argv0.contains('=') || argv0.starts_with('\u{0}') {
+            return None;
+        }
+        match classify(argv) {
+            Class::Destructive | Class::Egress => return None,
+            Class::Unknown => scopes.extend(scope(argv)),
+            Class::Safe => {}
+        }
+    }
+    scopes.dedup();
+    match scopes.as_slice() {
+        [only] => Some(only.clone()),
+        _ => None,
+    }
+}

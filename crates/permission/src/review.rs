@@ -63,6 +63,7 @@ pub struct ReviewedAsk {
     pub display: String,
     pub canonical: String,
     pub kind: RuleKind,
+    pub grants: Vec<crate::Grant>,
     /// The reviewer's own words. Stored because a re-issue has to quote the
     /// same refusal the first denial did, not the policy line underneath it.
     pub evidence: String,
