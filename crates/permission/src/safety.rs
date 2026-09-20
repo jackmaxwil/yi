@@ -546,6 +546,9 @@ fn lenient_segments(command: &str) -> Vec<Vec<String>> {
     segments
 }
 
+/// Options that move a command's tree or repository, and so its blast radius, elsewhere.
+const ESCAPES_THE_TREE: [&str; 5] = ["--git-dir", "--work-tree", "-C", "--directory", "--chdir"];
+
 /// The one verb a grant may name: readable, nothing destructive or networked, one unproven scope.
 pub(crate) fn grant_scope(command: &str) -> Option<String> {
     let Parsed::Segments(segments) = parse(command) else {
@@ -554,7 +557,15 @@ pub(crate) fn grant_scope(command: &str) -> Option<String> {
     let mut scopes = Vec::new();
     for argv in &segments {
         let argv0 = argv.first()?;
-        if argv0.contains('=') || argv0.starts_with('\u{0}') {
+        // A `./python3` is a file the model can write, and `-C` moves the tree (D207).
+        if argv0.contains('=')
+            || argv0.starts_with('\u{0}')
+            || argv0.contains('/')
+            || argv
+                .iter()
+                .skip(1)
+                .any(|token| ESCAPES_THE_TREE.iter().any(|flag| token.starts_with(flag)))
+        {
             return None;
         }
         match classify(argv) {
