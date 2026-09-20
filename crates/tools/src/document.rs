@@ -688,6 +688,7 @@ fn command_for(
     let mut command = if Sandbox::available() {
         let mut sandbox = Sandbox::for_workspace(dir, &documents.home, None);
         sandbox.writable = vec![dir.to_path_buf()];
+        sandbox.deny_write = Vec::new();
         let (program, wrapped) = sandbox.wrap(&python, &[]);
         let mut command = crate::process::command(program);
         command.args(wrapped);

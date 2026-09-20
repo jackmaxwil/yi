@@ -441,24 +441,40 @@ pub fn verdict(command: &str) -> Verdict {
     }
 }
 
+/// Shell words a lenient split leaves behind; none of them is a program.
+const KEYWORDS: [&str; 12] = [
+    "case", "do", "done", "elif", "else", "esac", "fi", "for", "in", "then", "until", "while",
+];
+/// Shell words a command can hide behind, and words that open a header naming no command.
+const OPENERS: [&str; 6] = ["do", "done", "else", "esac", "fi", "then"];
+const HEADERS: [&str; 6] = ["case", "elif", "for", "if", "until", "while"];
+
 const VERB_PROGRAMS: [&str; 16] = [
     "brew", "bun", "cargo", "docker", "gem", "git", "go", "just", "make", "npm", "pip", "pip3",
     "pnpm", "rustup", "uv", "yarn",
 ];
 
 fn scope(argv: &[String]) -> Option<String> {
-    let argv: Vec<String> = argv
-        .iter()
-        .skip_while(|token| token.contains('=') && !token.starts_with('-'))
-        .cloned()
-        .collect();
-    let name = program(argv.first()?.trim_start_matches('\u{0}'));
-    if PASSTHROUGH.binary_search(&name).is_ok() {
-        return scope(&argv[1..]);
+    let mut argv: &[String] = argv;
+    // A wrapper runs another program, so the scope is that program, not `timeout` or `nice`.
+    while let Some(first) = argv.first() {
+        let raw = first.trim_start_matches('\u{0}');
+        let token = program(raw);
+        let wrapper =
+            PASSTHROUGH.binary_search(&token).is_ok() || matches!(token, "timeout" | "env");
+        let carried = raw.starts_with('-')
+            || raw.contains('=')
+            || raw.chars().all(|character| character.is_ascii_digit())
+            || KEYWORDS.contains(&token);
+        match wrapper || carried {
+            true => argv = argv.get(1..)?,
+            false => break,
+        }
     }
+    let name = program(argv.first()?.trim_start_matches('\u{0}'));
     let verb = match name {
-        "git" => git_subcommand(&argv),
-        name if VERB_PROGRAMS.binary_search(&name).is_ok() => subcommand(&argv),
+        "git" => git_subcommand(argv),
+        name if VERB_PROGRAMS.binary_search(&name).is_ok() => subcommand(argv),
         _ => None,
     };
     Some(match verb {
@@ -514,6 +530,18 @@ fn lenient_segments(command: &str) -> Vec<Vec<String>> {
             }
         }
     }
-    segments.retain(|argv| !argv.is_empty());
+    // `for f in *` is a header naming no program; `do ./x` is one behind a shell word.
+    for argv in &mut segments {
+        while argv
+            .first()
+            .is_some_and(|first| OPENERS.contains(&program(first)))
+        {
+            argv.remove(0);
+        }
+    }
+    segments.retain(|argv| {
+        argv.first()
+            .is_some_and(|first| !HEADERS.contains(&program(first)))
+    });
     segments
 }
