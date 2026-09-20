@@ -62,6 +62,12 @@ except Exception as _yi_rlm_error:
             return await self.run(prompt, **kwargs)
 
     rlm = _YiMissingRlm()
+
+# Imported here so its pre_run_cell hook sees every later cell's source (plan section 8.3).
+try:
+    import yi
+except Exception:
+    pass
 "#;
 
 const SKILL_WRAPPER_CODE: &str = r#"

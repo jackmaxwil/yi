@@ -442,6 +442,7 @@ async def plan_op(
     plan: str | None = None,
     request_id: str | None = None,
     expected_revision: int | None = None,
+    artifacts: list[dict[str, str]] | None = None,
 ) -> dict[str, Any]:
     """Run one op against the host's plan engine and return its reply.
 
@@ -452,7 +453,9 @@ async def plan_op(
     the op if the plan moved under you. Pass your own ``request_id`` to retry
     as the same request; without one each call is minted a new id and is a
     new request. Read ``ok`` in the reply: a refusal is data, not an
-    exception.
+    exception; ``plan`` is the plan as it stands. ``artifacts`` are
+    ``{media_type, text}`` blobs stored in the plan before the op applies,
+    which the op's args then name by sha256 (``help(yi)`` builds them).
 
         reply = await plan_op("view", {"full": True})
     """
@@ -462,6 +465,7 @@ async def plan_op(
         "expected_revision": expected_revision,
         "op": op,
         "args": args,
+        "artifacts": artifacts or None,
     }
     return await host_request("plan.op", {k: v for k, v in payload.items() if v is not None})
 
@@ -876,9 +880,15 @@ class _RLMCallable:
         plan: str | None = None,
         request_id: str | None = None,
         expected_revision: int | None = None,
+        artifacts: list[dict[str, str]] | None = None,
     ) -> dict[str, Any]:
         return await plan_op(
-            op, args, plan=plan, request_id=request_id, expected_revision=expected_revision
+            op,
+            args,
+            plan=plan,
+            request_id=request_id,
+            expected_revision=expected_revision,
+            artifacts=artifacts,
         )
 
     async def interrupt(self, target: str | RLMSubagent) -> dict[str, Any]:

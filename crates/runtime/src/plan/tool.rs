@@ -83,6 +83,7 @@ fn known_keys(kind: OpKind) -> &'static [&'static str] {
         OpKind::Submit => &["op", "plan", "label", "todo", "attempt", "output"],
         OpKind::Resolve => &["op", "plan", "label", "todo", "attempt", "resolution"],
         OpKind::Accept => &["op", "plan", "label", "todo", "note", "output"],
+        OpKind::Program => &["op", "plan", "cell_id", "source_ref"],
     }
 }
 
@@ -276,6 +277,8 @@ from_arg!(
     Reconciliation,
     Resolve,
     yi_types::plan::op::Choice,
+    yi_types::plan::op::CellId,
+    yi_types::plan::canonical::ArtifactRef,
 );
 
 fn opt<T: FromArg>(
@@ -427,6 +430,10 @@ fn parse_op(args: &Map<String, Value>) -> Result<Op, ArgError> {
             label: label(args, kind)?,
             note: need(args, kind, "note")?,
             output: opt(args, kind, "output")?,
+        },
+        OpKind::Program => Op::Program {
+            cell_id: need(args, kind, "cell_id")?,
+            source_ref: need(args, kind, "source_ref")?,
         },
     })
 }

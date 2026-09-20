@@ -1987,34 +1987,68 @@ F1-F4:** the decision recorded. Activation without value sends the work back
 to the mechanism or the evaluation; F0a and any independently proven fix may
 land on their own evidence.
 
-### F1a · The `yi` library: plans as programs, explicit resume (D-next-5; extends D166)
+### F1a · The `yi` library: plans as programs, explicit resume (D211, landed 0.270.0; extends D166)
 
 **Files.** `python/yi_runtime/src/yi/{__init__,plan,contract,roles}.py`,
-`pyproject.toml`, `python/yi_runtime/tests/test_yi_{plan,help,idempotent,resume}.py`,
-`crates/runtime/src/plan/ops.rs` (`Op::Program { cell_id, source_ref }`;
-the source artifact), `crates/runtime/tests/ext_e2e.rs:350` (`yi.`, `plan.`),
-`scripts/guardrails/check_prompt_examples.py:11-12`.
+`pyproject.toml`, `python/yi_runtime/tests/test_yi_{plan,help,idempotent,resume}.py`
+and `tests/fake_host.py`, `crates/types/src/plan/op.rs` (`Op::Program { cell_id,
+source_ref }`), `crates/runtime/src/plan/program.rs` (the record and the export),
+`crates/runtime/src/plan/request.rs` (the typed reply, the `artifacts` rider),
+`crates/runtime/src/fetch/schemes.rs` (`plan://<id>/artifacts/<sha256>`),
+`crates/runtime/src/kernel.rs` (the prelude imports `yi`),
+`crates/runtime/tests/ext_e2e.rs` (`yi.`, `plan.`),
+`scripts/guardrails/check_prompt_examples.py`.
 
 | control | test (tier) |
 |---|---|
-| `todo` is idempotent by key and refuses drift | `test_yi_idempotent::a_rerun_cell_writes_nothing_and_a_changed_spec_is_refused` (T0, a fake `host_request`) |
-| a retried `create` is one plan | `test_yi_plan::a_retried_create_request_is_the_same_plan` (T0) |
-| source is recorded before the first effect and never replayed | `plan_store::program_records_source_before_the_first_effect` (T0); `kernel_data_surface::resume_after_a_kernel_death_reuses_results_and_replays_no_cell` (T2, real kernel, a delegate counting spawns) |
-| an unknown external activity stays unresolved | `test_yi_resume::unknown_external_activity_remains_unresolved` (T0) |
-| a second `run` attaches or refuses | `test_yi_plan::duplicate_run_calls_attach_or_refuse` (T0) |
+| `todo` is idempotent by key and refuses drift | `test_yi_idempotent::test_a_rerun_cell_writes_nothing_and_a_changed_spec_is_refused` (T0, a fake `host_request`) |
+| a retried `create` is one plan | `test_yi_plan::test_a_retried_create_request_is_the_same_plan` (T0) |
+| source is recorded before the first effect and never replayed | `plan_program::program_records_source_before_the_first_effect` (T0, through `plan.op`); `test_yi_plan::test_a_cell_is_recorded_once_before_its_first_effect` (T0); `kernel_data_surface::resume_after_a_kernel_death_reuses_results_and_replays_no_cell` (T2, real kernel, a delegate counting spawns) |
+| an unknown external activity stays unresolved | `test_yi_resume::test_unknown_external_activity_remains_unresolved` (T0) |
+| a second `run` attaches or refuses | `test_yi_plan::test_duplicate_run_calls_attach_or_refuse` (T0) |
 | an inline output gets a valid artifact id | `kernel_data_surface::an_inline_todo_completes_with_a_host_minted_artifact` (T2) |
-| every public name documents itself with a valid example | `test_yi_help::every_name_in_all_has_a_docstring_with_a_valid_example` (T0; sync and async alike) |
+| every public name documents itself with a valid example | `test_yi_help::test_every_name_in_all_has_a_docstring_with_a_valid_example` (T0; sync and async alike) |
 | the prompt gates know the new names | `ext_e2e::fragment_examples_name_real_kernel_apis` (T0, extended) |
 
-**LOC.** python +650, yi-runtime +90, tests +250. Memo: `growth +740: the
-yi library (plans as programs) and the source record`. **Issue.** "F1a the
-yi library". **Row.** "Plans are programs: the `yi` library opens, attaches
-to or resumes a plan, declares idempotent todos with contracts, runs one
-scheduler under a lease, and records its cells as an audit artifact
-(D-next-5, extends D166; Closes #<n>)". **ADR.** "D-next-5: plans are
-programs in the kernel; source is recorded, never replayed". **Exit.** the
-§8.2 example runs end to end on the faux provider with a stub delegate; the
-kernel-death journey passes. **Kernel-dead path.** unchanged from F0.
+**LOC.** python +1,080, yi-runtime, yi-types and yi-kernel +344, tests +850 (Rust 400, Python 450). Memo: `growth
++344: the source record, the typed `plan.op` reply and its artifacts`. **Issue.**
+"F1a the yi library" (#454). **Row.** "Plans are programs: the `yi` library opens,
+attaches to or resumes a plan, declares idempotent todos with contracts, runs one
+scheduler under a lease, and records its cells as an audit artifact (D211,
+extends D166; Closes #454)". **ADR.** "D211: plans are programs in the kernel;
+source is recorded, never replayed". **Exit.** the §8.2 example runs end to end
+on a real kernel with a stub delegate, and the kernel-death journey passes (one
+test, `resume_after_a_kernel_death_…`; no provider is reached, because a stub
+delegate spawns no child). **Kernel-dead path.** unchanged from F0.
+
+As landed, against §8 and §5.4. The tree had three gaps the design assumed closed,
+and F1a closes them at the host boundary rather than around it. (1) `plan.op`
+answered with rendered text only, so the reply now carries `plan` (the typed
+document with `ready` and `finished`), `notices`, and on a refusal the engine's own
+`kind` and a refused `done`'s `verdict`; the three-code `code` is unchanged. (2) No
+surface but a test could put a criterion into a plan's artifact store, so `plan.op`
+takes `artifacts` (`{media_type, text}`, owner only, capped in count and bytes,
+stored under the store's own digest before the op applies); the builders and the
+source record name their blobs by sha256 computed in Python with the shared
+canonical rule, and an op citing a digest the store lacks is refused. A builder's
+`local://` input is frozen when the todo is declared, not at `start`. (3) No url
+named a stored blob, so `plan://<id>/artifacts/<sha256>` serves one, which is the
+host-minted id of an inline product and of a child's answer that a `schema` item
+needs. A todo's `key` lives in its label (`key: label text`, the key alone when no
+label is given): `TodoSpec` has thirty-five construction sites and no field for
+it, and the label is already unique per plan; a renamed label is `SpecDrift`. The
+scheduler lease is the owner kernel's (`_RUNS`), so it dies with the kernel, which
+is what resume needs; a lease in the store is F2b's. `programHash` is set on the
+`program` record alone (the sha256 `program.py` has once that cell is appended);
+other records keep null rather than pay a file hash per op. The export is appended
+after the commit and any journaled cell it lacks is appended by the next record,
+so a crash between the two heals without a rewrite. `Plan.create` makes its plan
+before it can record into it, so the cell's record is that plan's second. The
+venv identity hashed `src/rlm` alone, so an edit to `yi` would have run a stale
+wheel; it hashes `src` now (`crates/kernel/src/bootstrap.rs`). Not
+built: a marker for a cell that later raised (the record stands either way), a
+token budget, automatic transport retry beyond the one host error that leaves a
+commit unknown, and `judge`, `shapes`, `mail`, `recipes/` (F3a, F1b, F2a).
 
 ### F1b · Two shapes: `fork_join` and `scatter` (D-next-6)
 

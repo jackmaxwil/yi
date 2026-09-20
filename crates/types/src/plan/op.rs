@@ -4,9 +4,12 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use super::canonical::ArtifactRef;
 use super::doc::{AgentId, BlockedOn, Delegation, GoalText, Todo, TodoLabel, TodoStateName};
 use super::ledger::{AttemptId, EffectId};
 use crate::url::Url;
+
+text_id!(CellId, "cell id");
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum OpKind {
@@ -32,6 +35,7 @@ pub enum OpKind {
     Submit,
     Resolve,
     Accept,
+    Program,
 }
 
 /// The kinds a model may call, in the tool schema's order; the administrative kinds below
@@ -39,7 +43,7 @@ pub enum OpKind {
 pub const MODEL_OPS: usize = 15;
 
 /// Every kind, in wire order; the parser reads this list and the schema its first `MODEL_OPS`.
-pub const ALL_OPS: [OpKind; 22] = [
+pub const ALL_OPS: [OpKind; 23] = [
     OpKind::Set,
     OpKind::Init,
     OpKind::Append,
@@ -62,6 +66,7 @@ pub const ALL_OPS: [OpKind; 22] = [
     OpKind::Submit,
     OpKind::Resolve,
     OpKind::Accept,
+    OpKind::Program,
 ];
 
 pub fn op_name(op: OpKind) -> &'static str {
@@ -88,6 +93,7 @@ pub fn op_name(op: OpKind) -> &'static str {
         OpKind::Submit => "submit",
         OpKind::Resolve => "resolve",
         OpKind::Accept => "accepted_by_user",
+        OpKind::Program => "program",
     }
 }
 
@@ -243,6 +249,12 @@ pub enum Op {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         output: Option<Url>,
     },
+    /// One kernel cell's source, recorded as an artifact before the cell's first effect
+    /// (plan section 5.4); an audit record, never an input to recovery.
+    Program {
+        cell_id: CellId,
+        source_ref: ArtifactRef,
+    },
 }
 
 impl Op {
@@ -269,7 +281,8 @@ impl Op {
             | Self::View { .. }
             | Self::FuseReset
             | Self::Repair { .. }
-            | Self::Import { .. } => None,
+            | Self::Import { .. }
+            | Self::Program { .. } => None,
         }
     }
 
@@ -297,6 +310,7 @@ impl Op {
             Self::Submit { .. } => OpKind::Submit,
             Self::Resolve { .. } => OpKind::Resolve,
             Self::Accept { .. } => OpKind::Accept,
+            Self::Program { .. } => OpKind::Program,
         }
     }
 

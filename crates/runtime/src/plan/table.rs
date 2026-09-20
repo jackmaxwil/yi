@@ -119,7 +119,7 @@ pub fn step(from: &TodoState, op: OpKind) -> Option<TodoStateName> {
 pub(super) fn check_plan_state(plan: &Plan, op: OpKind) -> Result<(), PlanOpError> {
     let allowed = match &plan.state {
         PlanState::Active => true,
-        PlanState::Done => matches!(op, OpKind::View | OpKind::Retry),
+        PlanState::Done => matches!(op, OpKind::View | OpKind::Retry | OpKind::Program),
         PlanState::Superseded { .. } | PlanState::Abandoned | PlanState::Other(_) => {
             matches!(op, OpKind::View)
         }
@@ -389,7 +389,7 @@ mod tests {
 
     type TestResult = Result<(), Box<dyn std::error::Error>>;
 
-    const OPS: [OpKind; 22] = ALL_OPS;
+    const OPS: [OpKind; 23] = ALL_OPS;
 
     fn named_states() -> Result<Vec<(TodoStateName, TodoState)>, Box<dyn std::error::Error>> {
         Ok(vec![
@@ -520,7 +520,8 @@ mod tests {
                             | OpKind::Reconcile
                             | OpKind::Submit
                             | OpKind::Resolve
-                            | OpKind::Accept => None,
+                            | OpKind::Accept
+                            | OpKind::Program => None,
                         };
                         assert_eq!(step(&state, op), expected, "{name} x {op:?}");
                     }

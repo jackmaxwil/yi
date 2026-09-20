@@ -174,6 +174,23 @@ impl Resolver {
                 let text = PlanStore::render(&plan).map_err(|error| backend(error.to_string()))?;
                 return Ok((text, "plan-file".to_owned()));
             }
+            // A blob by digest (a recorded product or source); no todo slug carries a slash.
+            if let Some(hex) = slug.and_then(|slug| slug.strip_prefix("artifacts/")) {
+                let bytes = format!("{}{hex}", yi_types::plan::canonical::DIGEST_PREFIX)
+                    .try_into()
+                    .map_err(|error: yi_types::plan::canonical::DigestError| error.to_string())
+                    .and_then(|digest| {
+                        let blobs = store.artifacts(&id);
+                        blobs.get(&digest).map_err(|error| error.to_string())
+                    })
+                    .map_err(|what| FetchError::NotFound {
+                        url: url.to_string(),
+                        what,
+                    })?;
+                let text = String::from_utf8(bytes)
+                    .map_err(|_| backend("the artifact is not UTF-8 text".to_owned()))?;
+                return Ok((text, "plan-artifact".to_owned()));
+            }
             (plan, None)
         };
         let Some(slug) = slug else {
