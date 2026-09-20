@@ -472,3 +472,133 @@ fn a_paced_type_step_still_honours_the_deadline() -> TestResult {
     );
     Ok(())
 }
+
+#[cfg(target_os = "macos")]
+/// A scratch dir under cargo's target tmp, removed on drop like [`Scratch`].
+struct TargetScratch(std::path::PathBuf);
+
+#[cfg(target_os = "macos")]
+impl TargetScratch {
+    fn new(name: &str) -> std::io::Result<Self> {
+        let dir = std::path::Path::new(env!("CARGO_TARGET_TMPDIR"))
+            .join(format!("{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir)?;
+        Ok(Self(dir))
+    }
+}
+
+#[cfg(target_os = "macos")]
+impl Drop for TargetScratch {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn git_in(dir: &std::path::Path, args: &[&str]) -> Result<String, Box<dyn Error>> {
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "the fixture repository is built with the real git the session will run"
+    )]
+    let output = Command::new("git")
+        .args(args)
+        .current_dir(dir)
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .output()?;
+    if !output.status.success() {
+        return Err(format!("git {args:?}: {}", String::from_utf8_lossy(&output.stderr)).into());
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
+}
+
+/// The incident (D205): a lane's index lives in the trunk's git dir, outside the tree, so a
+/// contained `git add` failed on `index.lock`. The real binary runs the commit contained here.
+#[cfg(target_os = "macos")]
+#[test]
+fn a_lane_session_commits_contained() -> TestResult {
+    let dir = Scratch::new("yi-tui-lane-commit")?;
+    let home = dir.home()?;
+    // Outside tmp: every tmp root is writable, which would hide the trunk's git dir.
+    let trunk = TargetScratch::new("yi-tui-lane-commit")?;
+    let project = trunk.0.join("project");
+    std::fs::create_dir_all(&project)?;
+    git_in(&project, &["init", "-q", "-b", "main"])?;
+    std::fs::write(project.join("README.md"), "trunk\n")?;
+    git_in(&project, &["add", "README.md"])?;
+    git_in(
+        &project,
+        &[
+            "-c",
+            "user.email=yi@example.com",
+            "-c",
+            "user.name=yi",
+            "commit",
+            "-q",
+            "-m",
+            "init",
+        ],
+    )?;
+    let command = "touch lane.txt && git add -A && git -c user.email=yi@example.com -c user.name=yi commit -q -m lane";
+    let call = serde_json::json!({
+        "role": "assistant",
+        "content": [{"type": "toolCall", "id": "call-1", "name": "bash", "arguments": {"command": command}}],
+        "api": "faux", "provider": "faux", "model": "faux-1",
+        "usage": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0, "totalTokens": 0,
+                  "cost": {"input": 0.0, "output": 0.0, "cacheRead": 0.0, "cacheWrite": 0.0, "total": 0.0}},
+        "stopReason": "toolUse", "timestamp": 0
+    });
+    let mut done = call.clone();
+    done["content"] = serde_json::json!([{"type": "text", "text": "committed"}]);
+    done["stopReason"] = serde_json::json!("stop");
+    let cassette = dir.join("cassette.jsonl");
+    std::fs::write(&cassette, format!("{call}\n{done}\n"))?;
+    let keys = dir.join("script.keys");
+    std::fs::write(&keys, "wait-idle 30000\nquit\n")?;
+    let frames = dir.join("frames");
+
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "the drive contract is the spawned binary's headless mode; tests must run the real process"
+    )]
+    let output = Command::new(env!("CARGO_BIN_EXE_yi"))
+        .args([
+            "tui",
+            "--headless",
+            "--lanes",
+            "--model",
+            "faux/faux-1",
+            "--faux",
+            &cassette.display().to_string(),
+            "--session-dir",
+            &dir.join("sessions").display().to_string(),
+            "--keys",
+            &keys.display().to_string(),
+            "--frames",
+            &frames.display().to_string(),
+            "commit it",
+        ])
+        .current_dir(&project)
+        .env("HOME", &home)
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .output()?;
+    assert!(
+        output.status.success(),
+        "drive run must exit 0: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let mut all_frames = String::new();
+    for entry in std::fs::read_dir(&frames)?.filter_map(Result::ok) {
+        all_frames.push_str(&std::fs::read_to_string(entry.path())?);
+    }
+    assert!(
+        !all_frames.contains("Operation not permitted") && all_frames.contains("committed"),
+        "the contained commit must run to the final reply: {all_frames}"
+    );
+    let subjects = git_in(&project, &["log", "--all", "--format=%s"])?;
+    assert!(
+        subjects.lines().any(|subject| subject == "lane"),
+        "the lane's commit must reach the shared object store: {subjects}"
+    );
+    Ok(())
+}

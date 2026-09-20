@@ -50,7 +50,7 @@ pub struct CatastrophicContext {
     pub working_dir: Option<PathBuf>,
     /// The workspace `.git` directory (design M10 addition): denied in every
     /// mode including yolo — losing it loses the undo story for everything.
-    pub workspace_git: Option<PathBuf>,
+    pub workspace_git: Vec<PathBuf>,
 }
 
 impl CatastrophicContext {
@@ -58,9 +58,72 @@ impl CatastrophicContext {
         Self {
             home_dir: home_dir(),
             working_dir: Some(cwd.to_path_buf()),
-            workspace_git: Some(cwd.join(".git")),
+            workspace_git: workspace_git(cwd),
         }
     }
+}
+
+/// A linked worktree's real git dirs sit outside it; `rm` may name them as typed or resolved.
+fn workspace_git(cwd: &Path) -> Vec<PathBuf> {
+    let mut dirs = vec![cwd.join(".git")];
+    for dir in git_dirs(cwd) {
+        if let Ok(resolved) = dir.canonicalize() {
+            dirs.push(resolved);
+        }
+        dirs.push(dir);
+    }
+    dirs.dedup();
+    dirs
+}
+
+const POINTER_MAX_BYTES: u64 = 4096;
+
+fn read_pointer(path: &Path) -> Option<String> {
+    use std::io::Read;
+    let mut text = String::new();
+    std::fs::File::open(path)
+        .and_then(|file| file.take(POINTER_MAX_BYTES).read_to_string(&mut text))
+        .ok()?;
+    Some(text.trim().to_owned())
+}
+
+/// `[git dir]`, or `[worktree git dir, common dir]` for a linked worktree; file reads only.
+pub fn git_dirs(cwd: &Path) -> Vec<PathBuf> {
+    let Some(dot_git) = cwd
+        .ancestors()
+        .map(|dir| dir.join(".git"))
+        .find(|git| git.exists())
+    else {
+        return Vec::new();
+    };
+    if dot_git.is_dir() {
+        return vec![lexical_normalize(&dot_git)];
+    }
+    let Some(target) = read_pointer(&dot_git)
+        .as_deref()
+        .and_then(|text| text.strip_prefix("gitdir: "))
+        .map(PathBuf::from)
+    else {
+        return Vec::new();
+    };
+    let base = dot_git.parent().unwrap_or(cwd);
+    let Some(gitdir) = git_dir_at(&base.join(target)) else {
+        return Vec::new();
+    };
+    let common = read_pointer(&gitdir.join("commondir"))
+        .and_then(|common| git_dir_at(&gitdir.join(common)))
+        .unwrap_or_else(|| gitdir.clone());
+    let mut dirs = vec![gitdir];
+    if !dirs.contains(&common) {
+        dirs.push(common);
+    }
+    dirs
+}
+
+/// Checked, never believed: without this `gitdir: /` reads as a writable root (D205).
+fn git_dir_at(path: &Path) -> Option<PathBuf> {
+    let path = lexical_normalize(path);
+    path.join("HEAD").is_file().then_some(path)
 }
 
 fn home_dir() -> Option<PathBuf> {
@@ -138,11 +201,12 @@ pub fn is_catastrophic(path: &Path, context: &CatastrophicContext) -> bool {
     {
         return true;
     }
-    if let Some(git) = &context.workspace_git {
-        let git = lexical_normalize(git);
-        if path == git || path.starts_with(&git) {
-            return true;
-        }
+    if context
+        .workspace_git
+        .iter()
+        .any(|git| path.starts_with(lexical_normalize(git)))
+    {
+        return true;
     }
     let Some(home) = &context.home_dir else {
         return false;
@@ -194,8 +258,10 @@ pub(crate) fn read_is_catastrophic(path: &Path, context: &CatastrophicContext) -
     {
         return true;
     }
-    if let Some(git) = &context.workspace_git
-        && path.starts_with(lexical_normalize(git))
+    if context
+        .workspace_git
+        .iter()
+        .any(|git| path.starts_with(lexical_normalize(git)))
     {
         return true;
     }
@@ -219,22 +285,38 @@ pub fn command_reads_credentials(command: &str, context: &CatastrophicContext) -
         .map(|path| path.to_string_lossy().into_owned())
 }
 
+/// Wrappers that run another command: argv0 alone lets `nice rm -rf .git` past the belt (D205).
+const WRAPPERS: [&str; 9] = [
+    "doas", "env", "ionice", "nice", "stdbuf", "sudo", "time", "timeout", "xargs",
+];
+
+/// Skipping a wrapper's flags and values can only widen the denial, never narrow it.
+fn runs_destructive(command: &str) -> bool {
+    let tokens = command
+        .split_whitespace()
+        .map(|token| token.rsplit('/').next().unwrap_or(token));
+    for token in tokens {
+        if DESTRUCTIVE_COMMANDS.contains(&token) {
+            return true;
+        }
+        let skippable = WRAPPERS.contains(&token)
+            || token.starts_with('-')
+            || token.contains('=')
+            || token.chars().all(|character| character.is_ascii_digit());
+        if !skippable {
+            return false;
+        }
+    }
+    false
+}
+
 /// A destructive verb sends every path-shaped token through the denylist. No
 /// shell-parsing cleverness (D15): this is a belt over the path-based checks.
 pub fn command_targets_catastrophic(
     command: &str,
     context: &CatastrophicContext,
 ) -> Option<String> {
-    let mut tokens = command.split_whitespace();
-    let verb = tokens.next()?;
-    let verb = verb.rsplit('/').next().unwrap_or(verb);
-    let destructive = DESTRUCTIVE_COMMANDS.contains(&verb)
-        || (verb == "sudo"
-            && command
-                .split_whitespace()
-                .nth(1)
-                .is_some_and(|second| DESTRUCTIVE_COMMANDS.contains(&second)));
-    if !destructive {
+    if !runs_destructive(command) {
         return None;
     }
     for token in command.split_whitespace().skip(1) {

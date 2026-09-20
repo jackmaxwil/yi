@@ -12,17 +12,28 @@ pub const SEATBELT: &str = "/usr/bin/sandbox-exec";
 pub struct Sandbox {
     pub writable: Vec<PathBuf>,
     pub deny_read: Vec<PathBuf>,
+    /// Paths inside a writable root that host code runs or reads back (D205).
+    pub deny_write: Vec<PathBuf>,
 }
 
 /// Credential stores, matching the paths the permission layer already refuses
 /// to destroy or read.
 const CREDENTIAL_DIRS: [&str; 5] = [".ssh", ".gnupg", ".aws", ".kube", ".docker"];
 
+/// A git dir's escape hatches: `hooks` and `config` run under the host's next git, and the
+/// pointers are what the next sandbox policy is built from.
+const HOST_RUN_BY_GIT: [&str; 4] = ["hooks", "config", "commondir", "gitdir"];
+
 impl Sandbox {
-    /// The worktree plus the scratch space a build needs. Anything else is a
-    /// read, and the model is told when a write lands outside.
+    /// The worktree, its git dirs (a lane's index lives in the trunk's), and build scratch.
     pub fn for_workspace(cwd: &Path, home: &Path, session_dir: Option<&Path>) -> Self {
         let mut writable = vec![cwd.to_path_buf()];
+        let git_dirs = yi_permission::git_dirs(cwd);
+        let deny_write = git_dirs
+            .iter()
+            .flat_map(|dir| HOST_RUN_BY_GIT.iter().map(|leaf| dir.join(leaf)))
+            .collect();
+        writable.extend(git_dirs);
         if let Some(dir) = session_dir {
             writable.push(dir.to_path_buf());
         }
@@ -32,6 +43,7 @@ impl Sandbox {
         Self {
             writable,
             deny_read: CREDENTIAL_DIRS.iter().map(|dir| home.join(dir)).collect(),
+            deny_write,
         }
     }
 
@@ -43,6 +55,9 @@ impl Sandbox {
     /// and resolved: macOS `/tmp` and `/var` are symlinks and the kernel checks the target.
     pub fn params(&self) -> Vec<(String, PathBuf)> {
         let mut params = Vec::new();
+        for (index, path) in self.deny_write.iter().enumerate() {
+            params.push((format!("DENY_WRITE_{index}"), resolve_aliases(path)));
+        }
         for (index, root) in self.deny_read.iter().enumerate() {
             params.push((format!("DENY_READ_{index}"), root.clone()));
             params.push((format!("DENY_READ_{index}_RESOLVED"), resolve_aliases(root)));
@@ -115,6 +130,11 @@ impl Sandbox {
             allows.push(format!("(subpath (param \"{key}\"))"));
             anchors.push(format!(
                 "(deny file-write-unlink (require-all (literal (param \"{key}\")) (vnode-type DIRECTORY)))"
+            ));
+        }
+        for index in 0..self.deny_write.len() {
+            anchors.push(format!(
+                "(deny file-write* (subpath (param \"DENY_WRITE_{index}\")))"
             ));
         }
         format!(
