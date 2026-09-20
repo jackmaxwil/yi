@@ -495,10 +495,12 @@ impl Supervisor {
                     None => {
                         let mut entry = SessionEntry::new(request_root, Some(client));
                         entry.name = name;
-                        self.sessions.insert(session_id, entry);
+                        self.sessions.insert(session_id.clone(), entry);
                     }
                 }
                 self.persist();
+                // Anything the worker said between attaching and answering waited for this.
+                self.flush_parked(&session_id, client);
             }
             if let Some(map) = frame.as_object_mut() {
                 map.insert("id".to_owned(), original);
@@ -527,6 +529,11 @@ impl Supervisor {
             .and_then(Value::as_str)
             .map(str::to_owned);
         let Some(entry) = self.sessions.get_mut(&session_id) else {
+            // A worker speaks at attach, before its `session/new` response makes this entry.
+            let queue = self.parked.entry(session_id).or_default();
+            if queue.len() < PARKED_MAX {
+                queue.push(frame);
+            }
             return;
         };
         let transition = state.is_some();

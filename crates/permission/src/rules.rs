@@ -254,6 +254,18 @@ fn tree_writes(
         .then_some((workspace, targets))
 }
 
+fn exact_call(call: &crate::ToolCall<'_>) -> Grant {
+    Grant {
+        kind: call.rule_kind,
+        canonical: call.canonical.to_owned(),
+        label: match call.command {
+            Some(_) => "this exact command",
+            None => "this exact call",
+        }
+        .to_owned(),
+    }
+}
+
 /// The answers "always allow" can mean for this call, narrowest first.
 pub fn grants(call: &crate::ToolCall<'_>, context: &crate::CatastrophicContext) -> Vec<Grant> {
     if let Some((workspace, targets)) = tree_writes(call, context) {
@@ -279,7 +291,9 @@ pub fn grants(call: &crate::ToolCall<'_>, context: &crate::CatastrophicContext) 
                 },
                 tree,
             ],
-            _ => vec![tree],
+            // At the tree root the only directory above the target is the tree itself, and a
+            // surface's narrowest choice must never be the whole repository (D207).
+            _ => vec![exact_call(call), tree],
         };
     }
     if let (Some(command), Some(cwd)) = (call.command, context.working_dir.as_deref())
@@ -291,15 +305,7 @@ pub fn grants(call: &crate::ToolCall<'_>, context: &crate::CatastrophicContext) 
             label: format!("`{scope}` in this tree"),
         }];
     }
-    vec![Grant {
-        kind: call.rule_kind,
-        canonical: call.canonical.to_owned(),
-        label: match call.command {
-            Some(_) => "this exact command",
-            None => "this exact call",
-        }
-        .to_owned(),
-    }]
+    vec![exact_call(call)]
 }
 
 impl SessionRules {

@@ -107,15 +107,23 @@ pub fn git_dirs(cwd: &Path) -> Vec<PathBuf> {
         return Vec::new();
     };
     let base = dot_git.parent().unwrap_or(cwd);
-    let gitdir = lexical_normalize(&base.join(target));
+    let Some(gitdir) = git_dir_at(&base.join(target)) else {
+        return Vec::new();
+    };
     let common = read_pointer(&gitdir.join("commondir"))
-        .map(|common| lexical_normalize(&gitdir.join(common)))
+        .and_then(|common| git_dir_at(&gitdir.join(common)))
         .unwrap_or_else(|| gitdir.clone());
     let mut dirs = vec![gitdir];
     if !dirs.contains(&common) {
         dirs.push(common);
     }
     dirs
+}
+
+/// Checked, never believed: without this `gitdir: /` reads as a writable root (D205).
+fn git_dir_at(path: &Path) -> Option<PathBuf> {
+    let path = lexical_normalize(path);
+    path.join("HEAD").is_file().then_some(path)
 }
 
 fn home_dir() -> Option<PathBuf> {
@@ -277,22 +285,38 @@ pub fn command_reads_credentials(command: &str, context: &CatastrophicContext) -
         .map(|path| path.to_string_lossy().into_owned())
 }
 
+/// Wrappers that run another command: argv0 alone lets `nice rm -rf .git` past the belt (D205).
+const WRAPPERS: [&str; 9] = [
+    "doas", "env", "ionice", "nice", "stdbuf", "sudo", "time", "timeout", "xargs",
+];
+
+/// Skipping a wrapper's flags and values can only widen the denial, never narrow it.
+fn runs_destructive(command: &str) -> bool {
+    let tokens = command
+        .split_whitespace()
+        .map(|token| token.rsplit('/').next().unwrap_or(token));
+    for token in tokens {
+        if DESTRUCTIVE_COMMANDS.contains(&token) {
+            return true;
+        }
+        let skippable = WRAPPERS.contains(&token)
+            || token.starts_with('-')
+            || token.contains('=')
+            || token.chars().all(|character| character.is_ascii_digit());
+        if !skippable {
+            return false;
+        }
+    }
+    false
+}
+
 /// A destructive verb sends every path-shaped token through the denylist. No
 /// shell-parsing cleverness (D15): this is a belt over the path-based checks.
 pub fn command_targets_catastrophic(
     command: &str,
     context: &CatastrophicContext,
 ) -> Option<String> {
-    let mut tokens = command.split_whitespace();
-    let verb = tokens.next()?;
-    let verb = verb.rsplit('/').next().unwrap_or(verb);
-    let destructive = DESTRUCTIVE_COMMANDS.contains(&verb)
-        || (verb == "sudo"
-            && command
-                .split_whitespace()
-                .nth(1)
-                .is_some_and(|second| DESTRUCTIVE_COMMANDS.contains(&second)));
-    if !destructive {
+    if !runs_destructive(command) {
         return None;
     }
     for token in command.split_whitespace().skip(1) {

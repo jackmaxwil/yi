@@ -67,7 +67,10 @@ pub fn run_tui_command(args: &Args, initial_prompt: Option<String>) -> i32 {
         .lane()
         .and_then(|lane| lane.path())
         .unwrap_or_else(|| effective_cwd(args));
-    let lane = session.lane().and_then(|lane| lane.row_label());
+    let lane = session
+        .lane()
+        .and_then(|lane| lane.row())
+        .map(|(_, row)| row);
     let options = yi_tui::TuiOptions {
         model: model.clone(),
         session_name: session_name.clone(),
