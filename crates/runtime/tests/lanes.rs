@@ -1530,6 +1530,29 @@ mod accept {
         Ok(())
     }
 
+    // Dies with the accepting road skipping `mark` in `reap_leaving` (acceptance.rs): the host
+    // reads the child as holding an undisposed worktree and refuses the reap `done` runs, after
+    // the integration is already published.
+    #[test]
+    fn an_accepted_worktree_tells_the_host_its_branch_is_kept() -> TestResult {
+        let rig = Rig::new("f0d-accept-mark")?;
+        let parent = rig.fixture_repo(Dirt::Clean)?;
+        let bench = bench(&rig, parent.clone(), "yi/cand-green")?;
+        bench.submit()?;
+        bench.done()?;
+        assert!(
+            bench.kinds()?.contains(&KIND_ACCEPTED.to_owned()),
+            "the candidate was accepted"
+        );
+        assert_eq!(
+            bench.child.disposed.lock().map_err(|_| "poisoned")?[..],
+            [Choice::Retained],
+            "the host is told the accepted branch is kept, so its reap settles the lane"
+        );
+        assert!(matches!(bench.state()?, TodoState::Done { .. }));
+        Ok(())
+    }
+
     // Dies with the `Merge::Conflict` arm of `integrate` (acceptance.rs): return the git error
     // instead and the lane drops through `Drop` with no record naming the branch.
     #[test]
