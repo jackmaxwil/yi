@@ -107,6 +107,7 @@ async fn an_unknown_command_runs_contained_then_asks() -> TestResult {
     let sandbox = yi_tools::Sandbox {
         writable: vec![project.clone()],
         deny_read: Vec::new(),
+        deny_write: Vec::new(),
     };
     let broker = Arc::new(
         PermissionBroker::new(
