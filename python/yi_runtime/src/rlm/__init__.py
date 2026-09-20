@@ -67,14 +67,16 @@ class RLMSpawnHandle:
         so the host blocks instead of the kernel polling, and no other waiter
         can steal this child's update. The deadline is wall clock, and a
         child no longer registered with the parent (``delete_subagent``
-        reaps it) raises immediately instead of waiting to the deadline.
+        reaps it) raises immediately instead of waiting to the deadline, and
+        so does a child the host reports ``stuck``.
         """
         _check_schema(schema)
         loop = asyncio.get_running_loop()
         deadline = loop.time() + timeout
         cursor: int | None = None
         while True:
-            remaining = deadline - loop.time()
+            # Float rounding can put `(now + timeout) - now` an ulp past `timeout`.
+            remaining = min(timeout, deadline - loop.time())
             if remaining <= 0:
                 break
             reply = await wait(timeout=remaining, cursor=cursor)
@@ -89,6 +91,13 @@ class RLMSpawnHandle:
                 raise RuntimeError(
                     f"child {self.name} ({self.rlm_child_id}) is no longer registered with "
                     "the parent; rlm.delete_subagent reaps a child and its answer with it"
+                )
+            if state == "stuck":
+                notes = reply.get("notes")
+                note = notes.get(self.name) if isinstance(notes, dict) else None
+                raise RuntimeError(
+                    f"child {self.name} is stuck ({note or 'no progress in its records'}); "
+                    "rlm.send it a nudge, rlm.interrupt it, or call result() again to keep waiting"
                 )
             if state in ("finished", "failed", "needs_you"):
                 try:
@@ -345,16 +354,18 @@ async def list_subagents() -> list[RLMSubagent]:
     return [_subagent_from_payload(entry) for entry in entries]
 
 
-async def delete_subagent(target: str | RLMSubagent) -> RLMSubagent:
+async def delete_subagent(target: str | RLMSubagent | RLMSpawnHandle) -> RLMSubagent:
     """Delete one running or retained direct child from the current parent session."""
-    if isinstance(target, RLMSubagent):
+    if isinstance(target, (RLMSubagent, RLMSpawnHandle)):
         selector = target.rlm_child_id
     elif isinstance(target, str):
         selector = target.strip()
         if not selector:
             raise ValueError("target must not be empty")
     else:
-        raise TypeError(f"target must be str or RLMSubagent, got {type(target).__name__}")
+        raise TypeError(
+            f"target must be str, RLMSubagent or RLMSpawnHandle, got {type(target).__name__}"
+        )
     payload = await host_request("rlm.delete_subagent", {"target": selector})
     return _subagent_from_payload(payload.get("subagent"), "rlm.delete_subagent")
 
@@ -839,7 +850,7 @@ class _RLMCallable:
     async def list_subagents(self) -> list[RLMSubagent]:
         return await list_subagents()
 
-    async def delete_subagent(self, target: str | RLMSubagent) -> RLMSubagent:
+    async def delete_subagent(self, target: str | RLMSubagent | RLMSpawnHandle) -> RLMSubagent:
         return await delete_subagent(target)
 
     async def send(self, target: str | RLMSubagent, message: str, followup: bool = False) -> dict[str, Any]:

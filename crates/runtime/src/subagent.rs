@@ -12,6 +12,8 @@ use crate::mailbox::{ParentLink, WAIT_MAX_MS, message_params};
 use crate::provider::{available_models, resolve_model};
 use crate::session::AgentSession;
 
+mod build;
+
 pub const DEFAULT_MAX_DEPTH: u8 = 1;
 // A completed child holds its slot until closed: the cap forces the parent to
 // reap with rlm.delete_subagent instead of leaking children (design B2).
@@ -19,6 +21,8 @@ pub const DEFAULT_MAX_CHILDREN: usize = 8;
 /// live sessions across the whole family, so a deeper fan-out cannot multiply (D165).
 pub const FAMILY_CAP: usize = 16;
 pub const PARENT_NAME: &str = "parent";
+/// The cause a cut-short run carries on its terminal update and in the parent's notice.
+pub(crate) const INTERRUPTED: &str = "interrupted";
 
 pub(crate) struct ChildRecord {
     pub(crate) session_name: String,
@@ -51,6 +55,8 @@ pub(crate) struct ChildRecord {
 pub(crate) struct Children {
     records: HashMap<String, ChildRecord>,
     pub(crate) epoch: u64,
+    /// Names whose child is being built outside the lock; each holds a slot and its name.
+    building: Vec<String>,
 }
 
 impl Children {
@@ -80,7 +86,7 @@ impl std::ops::DerefMut for Children {
 }
 
 impl ChildRecord {
-    fn update(&self, child_id: &str) -> ChildUpdate {
+    pub(crate) fn update(&self, child_id: &str) -> ChildUpdate {
         ChildUpdate {
             id: ChildId(child_id.to_owned()),
             name: self.session_name.clone(),
@@ -519,7 +525,9 @@ impl SubagentHost {
                             host.publish(&child_id);
                         }
                     }
-                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                        host.refold(&child_id);
+                    }
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                 }
             }
@@ -589,63 +597,47 @@ impl SubagentHost {
         let (session_dir, child_id) = self.create_child_dir(&self.options.parent_session_dir)?;
         let session_name =
             requested_name.unwrap_or_else(|| default_session_name(&prompt, &child_id));
+        let reserved = self.reserve(&session_name, &session_dir)?;
+        let (worktree, lane_permit) = match isolation {
+            Isolation::None => (None, None),
+            Isolation::Worktree => {
+                let (lane, permit) = self.claim_child_lane(&child_id)?;
+                (Some(lane), Some(permit))
+            }
+        };
+        let child = (self.options.factory)(ChildBuild {
+            model: model.clone(),
+            thinking: Some(thinking.unwrap_or(parent_effort)),
+            session_dir: &session_dir,
+            cwd: worktree.as_ref().map(|lane| lane.path()),
+            link: ParentLink {
+                child_name: session_name.clone(),
+                host: Arc::downgrade(self),
+            },
+            wall,
+        })?;
+        // Invariant: a child that runs unrecorded leaves nothing to read
+        // when it fails, so a transcript it cannot open refuses the spawn.
+        let cwd = worktree
+            .as_ref()
+            .map_or(self.options.cwd.as_path(), |lane| lane.path());
+        yi_session::create_flat_session(session_dir.clone(), cwd.to_string_lossy())
+            .and_then(|store| child.attach_store(store))
+            .map_err(|error| error.to_string())?;
+        if fork != Fork::None {
+            let seed = seed_for_fork(
+                &(self.options.parent_messages)(),
+                fork,
+                child.model().context_window,
+            );
+            child.seed_messages(seed);
+        }
+        let session = Arc::new(child);
         {
             let mut children = self
                 .children
                 .lock()
                 .map_err(|_| "subagent state poisoned")?;
-            if children.len() >= self.options.max_children {
-                let _ = std::fs::remove_dir_all(&session_dir);
-                return Err(format!(
-                    "RLM child limit reached ({} children retained); rlm.delete_subagent a finished child first",
-                    self.options.max_children
-                ));
-            }
-            if children
-                .values()
-                .any(|record| record.session_name == session_name)
-            {
-                let _ = std::fs::remove_dir_all(&session_dir);
-                return Err(format!(
-                    "Agent session name \"{session_name}\" is already taken at depth {}",
-                    self.options.depth.saturating_add(1)
-                ));
-            }
-            let (worktree, lane_permit) = match isolation {
-                Isolation::None => (None, None),
-                Isolation::Worktree => {
-                    let (lane, permit) = self.claim_child_lane(&child_id)?;
-                    (Some(lane), Some(permit))
-                }
-            };
-            let child = (self.options.factory)(ChildBuild {
-                model: model.clone(),
-                thinking: Some(thinking.unwrap_or(parent_effort)),
-                session_dir: &session_dir,
-                cwd: worktree.as_ref().map(|lane| lane.path()),
-                link: ParentLink {
-                    child_name: session_name.clone(),
-                    host: Arc::downgrade(self),
-                },
-                wall,
-            })?;
-            // Invariant: a child that runs unrecorded leaves nothing to read
-            // when it fails, so a transcript it cannot open refuses the spawn.
-            let cwd = worktree
-                .as_ref()
-                .map_or(self.options.cwd.as_path(), |lane| lane.path());
-            yi_session::create_flat_session(session_dir.clone(), cwd.to_string_lossy())
-                .and_then(|store| child.attach_store(store))
-                .map_err(|error| error.to_string())?;
-            if fork != Fork::None {
-                let seed = seed_for_fork(
-                    &(self.options.parent_messages)(),
-                    fork,
-                    child.model().context_window,
-                );
-                child.seed_messages(seed);
-            }
-            let session = Arc::new(child);
             children.insert(
                 child_id.clone(),
                 ChildRecord {
@@ -668,18 +660,26 @@ impl SubagentHost {
                 },
             );
             children.touch(&child_id);
-            self.watch(child_id.clone(), &session);
-            let host = Arc::clone(self);
-            let task_child_id = child_id.clone();
-            let task_name = session_name.clone();
-            let task_prompt = prompt.clone();
-            // Invariant: the spawn reply resolves at admission, and blocking here
-            // would abort the turn whose cell awaits it.
-            tokio::spawn(async move {
-                host.run_child(task_child_id, task_name, task_prompt, context, session)
-                    .await;
-            });
         }
+        drop(reserved);
+        self.watch(child_id.clone(), &session);
+        let host = Arc::clone(self);
+        let task_child_id = child_id.clone();
+        let task_name = session_name.clone();
+        // Invariant: the spawn reply resolves at admission, and blocking here
+        // would abort the turn whose cell awaits it.
+        let requested = session.abort_epoch();
+        tokio::spawn(async move {
+            host.run_child(
+                task_child_id,
+                task_name,
+                prompt,
+                context,
+                session,
+                requested,
+            )
+            .await;
+        });
         self.publish(&child_id);
         let mut reply = Map::new();
         reply.insert("rlm_child_id".to_owned(), Value::String(child_id));
@@ -706,34 +706,64 @@ impl SubagentHost {
         prompt: String,
         context: Option<String>,
         session: Arc<AgentSession>,
+        requested: u64,
     ) {
         // Invariant: scope rides the first user message, never a trusted block.
         let content = match context {
             Some(block) => format!("[task from parent]\n\n{block}\n\n{prompt}"),
             None => format!("[task from parent]\n\n{prompt}"),
         };
-        let outcome = session.prompt(&content);
+        let outcome =
+            session.prompt_requested(crate::session::user_message(&content), Some(requested));
         let mut error = outcome.err().map(|error| error.to_string());
         if error.is_none() {
             session.wait_idle().await;
-            error = session.messages().iter().rev().find_map(|message| {
-                if let AgentMessage::Assistant {
+            // An aborted run is not a finished one: its cause reads `interrupted`.
+            let messages = session.messages();
+            let last = messages
+                .iter()
+                .rev()
+                .find(|message| matches!(message, AgentMessage::Assistant { .. }));
+            error = match last {
+                Some(AgentMessage::Assistant {
                     stop_reason: StopReason::Error,
                     error_message,
                     ..
-                } = message
-                {
-                    Some(
-                        error_message
-                            .clone()
-                            .unwrap_or_else(|| "child run ended with an error".to_owned()),
-                    )
-                } else {
-                    None
-                }
-            });
+                }) => Some(
+                    error_message
+                        .clone()
+                        .unwrap_or_else(|| "child run ended with an error".to_owned()),
+                ),
+                Some(AgentMessage::Assistant {
+                    stop_reason: StopReason::Aborted,
+                    ..
+                }) => Some(INTERRUPTED.to_owned()),
+                _ => None,
+            };
         }
 
+        let status = if error.is_some() {
+            ChildStatus::Error
+        } else {
+            ChildStatus::Completed
+        };
+        // A retired child has no record left: `retire` already published its terminal update,
+        // so a second one, a notice or a bill would only echo a closed slot.
+        let mut retired = true;
+        let mut replied = false;
+        if let Ok(mut children) = self.children.lock()
+            && let Some(record) = children.get_mut(&child_id)
+        {
+            record.status = status;
+            record.activity = ChildActivity::Waiting;
+            record.error = error.clone();
+            replied = record.replied;
+            retired = false;
+            children.touch(&child_id);
+        }
+        if retired {
+            return;
+        }
         if error.is_none() {
             for message in session.messages() {
                 if let AgentMessage::Assistant {
@@ -745,35 +775,15 @@ impl SubagentHost {
                 }
             }
         }
-
-        let status = if error.is_some() {
-            ChildStatus::Error
-        } else {
-            ChildStatus::Completed
-        };
-        // A reaped child has no record left; its product was already promoted,
-        // so the terminal notice would only echo a closed slot.
-        let mut reaped = true;
-        let mut replied = false;
-        if let Ok(mut children) = self.children.lock()
-            && let Some(record) = children.get_mut(&child_id)
-        {
-            record.status = status;
-            record.activity = ChildActivity::Waiting;
-            record.error = error.clone();
-            replied = record.replied;
-            reaped = false;
-            children.touch(&child_id);
-        }
-        if reaped {
-            return;
-        }
         self.publish(&child_id);
         // Terminal notices reach the parent as user-role host status, never as
         // something that can read as user instructions from the child.
         // a child that ended on `ask_user` is asking its parent, not finishing (D165).
         let question = crate::family::pending_question(&session.messages());
         let notice = match (&error, question) {
+            (Some(error), _) if error == INTERRUPTED => {
+                format!("[subagent {session_name} ({child_id}) interrupted]")
+            }
             (Some(error), _) => format!("[subagent {session_name} ({child_id}) failed]\n{error}"),
             (None, Some(question)) => format!(
                 "[subagent {session_name} ({child_id}) asks: {question}]\nanswer with rlm.send(\"{session_name}\", \"…\", followup=True)"
@@ -925,34 +935,7 @@ impl SubagentHost {
     }
 
     pub fn delete(&self, target: &str) -> Result<Map<String, Value>, String> {
-        let mut children = self
-            .children
-            .lock()
-            .map_err(|_| "subagent state poisoned")?;
-        let key = Self::key_of(&children, target)?;
-        // A worktree goes only through a recorded disposition: merge, discard, or the
-        // engine's dispose seam, never a delete that drops the only copy of its work.
-        if let Some(record) = children.get(&key)
-            && let Some(tree) = &record.worktree
-            && record.disposition.is_none()
-        {
-            return Err(format!(
-                "child \"{target}\" holds the worktree {}; merge or discard it first",
-                tree.path().display()
-            ));
-        }
-        let Some(record) = children.remove(&key) else {
-            return Err(format!("No RLM child matches \"{target}\""));
-        };
-        children.touch(&key);
-        drop(children);
-        if record.status == ChildStatus::Running {
-            record.session.abort();
-        }
-        Self::dispose_child_kernel(&record.session);
-        // A lane that cannot settle goes back on the record with its slot, and the delete fails.
-        let (mut record, settled) = self.settle_or_restore(&key, record)?;
-        drop(record.lane_permit.take());
+        let (key, record, settled) = self.retire(target)?;
         let mut reply = Map::new();
         reply.insert("subagent".to_owned(), child_entry(&key, &record));
         if let Some((choice, candidate)) = settled {

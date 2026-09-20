@@ -10,6 +10,7 @@ use yi_tui::input::handle_terminal_event;
 use yi_tui::{AskChoice, AskRequest, Command, Reply, TuiOptions, UiEvent};
 use yi_types::acp::{AcpExtensionUpdate, AcpPermissionParams, AcpSessionResult};
 use yi_types::entry::Entry;
+use yi_types::subagent::{ChildStatus, ChildUpdate};
 
 use super::port::{
     Config, Decoded, PortRequest, RemotePort, Replay, config_of, decode, option_for,
@@ -20,6 +21,28 @@ use crate::layout::PaneId;
 use crate::model::{Chat, PaneContent, PendingAsk, SessionId, SessionRow};
 
 const ORB_ID_BASE: u32 = 7800;
+
+const CHILD_ROW_CAP: usize = 32;
+
+/// A child first heard of at its end (retired before this console saw it run) gets no row;
+/// a full cache gives up its oldest finished row, never the new one.
+fn keep_child_row(rows: &mut Vec<ChildUpdate>, child: &ChildUpdate) {
+    if let Some(slot) = rows.iter_mut().find(|row| row.id == child.id) {
+        *slot = child.clone();
+        return;
+    }
+    if child.status != ChildStatus::Running {
+        return;
+    }
+    if rows.len() >= CHILD_ROW_CAP {
+        let oldest_finished = rows
+            .iter()
+            .position(|row| row.status != ChildStatus::Running)
+            .unwrap_or(0);
+        rows.remove(oldest_finished);
+    }
+    rows.push(child.clone());
+}
 
 fn orb_ids(pane: PaneId) -> [u32; 2] {
     let base = ORB_ID_BASE.saturating_add(pane.raw().saturating_mul(2));
@@ -158,16 +181,7 @@ impl App {
             }
             Decoded::Config(config) => self.apply_config(id, &config, true),
             Decoded::Child(child) => {
-                let rows = self.state.children.entry(id.clone()).or_default();
-                match rows.iter().position(|row| row.id == child.id) {
-                    Some(at) => {
-                        if let Some(slot) = rows.get_mut(at) {
-                            *slot = child.clone();
-                        }
-                    }
-                    None if rows.len() < 32 => rows.push(child.clone()),
-                    None => {}
-                }
+                keep_child_row(self.state.children.entry(id.clone()).or_default(), &child);
                 self.fan_out(id, || UiEvent::ChildUpdates(vec![child.clone()]));
             }
             Decoded::Other => {}
@@ -543,5 +557,52 @@ impl App {
                 self.note("not connected — prompt not sent");
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use yi_types::subagent::{ChildActivity, ChildId};
+
+    fn update(id: usize, status: ChildStatus) -> ChildUpdate {
+        ChildUpdate {
+            id: ChildId(format!("sub-{id}")),
+            name: format!("child {id}"),
+            status,
+            activity: ChildActivity::Waiting,
+            tool_use_count: 0,
+            token_count: 0,
+            answer_preview: None,
+            error: None,
+        }
+    }
+
+    /// Guards the row cache: row thirty-three was dropped without a word, and a child retired
+    /// before the console saw it run was given a row nothing would ever update again.
+    #[test]
+    fn a_child_first_seen_at_its_end_gets_no_row_and_row_thirty_three_is_kept() {
+        let mut rows = Vec::new();
+        keep_child_row(&mut rows, &update(99, ChildStatus::Error));
+        assert!(
+            rows.is_empty(),
+            "a retired stranger leaves no row: {rows:?}"
+        );
+        for id in 0..CHILD_ROW_CAP {
+            keep_child_row(&mut rows, &update(id, ChildStatus::Running));
+        }
+        keep_child_row(&mut rows, &update(5, ChildStatus::Completed));
+        assert_eq!(rows.len(), CHILD_ROW_CAP, "an update replaces its own row");
+        keep_child_row(&mut rows, &update(32, ChildStatus::Running));
+        assert_eq!(rows.len(), CHILD_ROW_CAP);
+        assert!(
+            rows.iter().any(|row| row.id.as_str() == "sub-32"),
+            "{rows:?}"
+        );
+        assert!(
+            !rows.iter().any(|row| row.id.as_str() == "sub-5"),
+            "the finished row made way, not a running one: {rows:?}"
+        );
+        assert!(rows.iter().any(|row| row.id.as_str() == "sub-0"));
     }
 }

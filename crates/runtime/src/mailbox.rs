@@ -2,10 +2,13 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use serde_json::{Map, Value, json};
+use yi_types::event::AgentEvent;
 use yi_types::message::{AgentMessage, UserContent};
 use yi_types::subagent::{ChildResult, Discovery};
 
-use crate::subagent::{ChildStatus, PARENT_NAME, SubagentHost, last_assistant_text};
+use crate::subagent::{
+    ChildRecord, ChildStatus, INTERRUPTED, PARENT_NAME, SubagentHost, last_assistant_text,
+};
 
 pub(crate) const WAIT_MIN_MS: u64 = 1_000;
 pub(crate) const WAIT_MAX_MS: u64 = 300_000;
@@ -15,6 +18,13 @@ const CONTEXT_MAX_KEYS: usize = 8;
 const CONTEXT_VALUE_CAP: usize = 4_096;
 const CONTEXT_TOTAL_CAP: usize = 16_384;
 const RESULT_TAIL_CHARS: usize = 2_000;
+
+/// A removed record with its key and how its lane settled.
+pub(crate) type Retired = (
+    String,
+    ChildRecord,
+    Option<(yi_types::plan::op::Choice, crate::lane::settle::Candidate)>,
+);
 /// Invariant: every row can run an ancestor check inside the parent's own `rlm.result` call,
 /// so the list is capped: a degenerate child buys one refusal, not unbounded checks.
 const MAX_DISCOVERIES: usize = 16;
@@ -502,15 +512,26 @@ impl SubagentHost {
             })
     }
 
-    /// Invariant: promotion runs at reap whatever the outcome, so the last product reaches
-    /// the owner's transcript before the slot frees and no live child dangles.
-    pub fn reap(&self, target: &str) -> Result<Harvest, String> {
-        let (key, record) = {
+    /// Invariant: the one way a record leaves `children`, so every removal publishes one
+    /// terminal update; a run it cut short reads `interrupted`, never finished.
+    pub(crate) fn retire(&self, target: &str) -> Result<Retired, String> {
+        let (key, mut record) = {
             let mut children = self
                 .children
                 .lock()
                 .map_err(|_| "subagent state poisoned")?;
             let key = Self::key_of(&children, target)?;
+            // A worktree goes only through a recorded disposition: merge, discard, or the
+            // engine's dispose seam, never a removal that drops the only copy of its work.
+            if let Some(record) = children.get(&key)
+                && let Some(tree) = &record.worktree
+                && record.disposition.is_none()
+            {
+                return Err(format!(
+                    "child \"{target}\" holds the worktree {}; merge or discard it first",
+                    tree.path().display()
+                ));
+            }
             let record = children
                 .remove(&key)
                 .ok_or_else(|| format!("No RLM child matches \"{target}\""))?;
@@ -519,11 +540,23 @@ impl SubagentHost {
         };
         if record.status == ChildStatus::Running {
             record.session.abort();
+            record.status = ChildStatus::Error;
+            record.error.get_or_insert_with(|| INTERRUPTED.to_owned());
         }
         SubagentHost::dispose_child_kernel(&record.session);
-        // The lane settles under the choice the engine journaled before this reap; a lane
-        // that cannot settle goes back on the record with its slot, and the reap fails.
-        let (record, _settled) = self.settle_or_restore(&key, record)?;
+        // The lane settles under the choice journaled before this removal; a lane that cannot
+        // settle goes back on the record with its slot, and the removal fails.
+        let (mut record, settled) = self.settle_or_restore(&key, record)?;
+        drop(record.lane_permit.take());
+        let update = record.update(&key);
+        let _ = self.options.events.send(AgentEvent::ChildUpdate { update });
+        Ok((key, record, settled))
+    }
+
+    /// Invariant: promotion runs at reap whatever the outcome, so the last product reaches
+    /// the owner's transcript before the slot frees and no live child dangles.
+    pub fn reap(&self, target: &str) -> Result<Harvest, String> {
+        let (_key, record, _settled) = self.retire(target)?;
         let answer = last_assistant_text(&record.session.messages());
         let body = match (&record.error, &answer) {
             (Some(error), Some(answer)) => {
