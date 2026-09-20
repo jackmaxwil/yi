@@ -440,3 +440,108 @@ pub fn verdict(command: &str) -> Verdict {
         None => Verdict::Allow,
     }
 }
+
+/// Shell words a lenient split leaves behind; none of them is a program.
+const KEYWORDS: [&str; 12] = [
+    "case", "do", "done", "elif", "else", "esac", "fi", "for", "in", "then", "until", "while",
+];
+/// Shell words a command can hide behind, and words that open a header naming no command.
+const OPENERS: [&str; 6] = ["do", "done", "else", "esac", "fi", "then"];
+const HEADERS: [&str; 6] = ["case", "elif", "for", "if", "until", "while"];
+
+const VERB_PROGRAMS: [&str; 16] = [
+    "brew", "bun", "cargo", "docker", "gem", "git", "go", "just", "make", "npm", "pip", "pip3",
+    "pnpm", "rustup", "uv", "yarn",
+];
+
+fn scope(argv: &[String]) -> Option<String> {
+    let mut argv: &[String] = argv;
+    // A wrapper runs another program, so the scope is that program, not `timeout` or `nice`.
+    while let Some(first) = argv.first() {
+        let raw = first.trim_start_matches('\u{0}');
+        let token = program(raw);
+        let wrapper =
+            PASSTHROUGH.binary_search(&token).is_ok() || matches!(token, "timeout" | "env");
+        let carried = raw.starts_with('-')
+            || raw.contains('=')
+            || raw.chars().all(|character| character.is_ascii_digit())
+            || KEYWORDS.contains(&token);
+        match wrapper || carried {
+            true => argv = argv.get(1..)?,
+            false => break,
+        }
+    }
+    let name = program(argv.first()?.trim_start_matches('\u{0}'));
+    let verb = match name {
+        "git" => git_subcommand(argv),
+        name if VERB_PROGRAMS.binary_search(&name).is_ok() => subcommand(argv),
+        _ => None,
+    };
+    Some(match verb {
+        Some(verb) => format!("{name} {verb}"),
+        None => name.to_owned(),
+    })
+}
+
+/// Scopes a sandbox refusal is remembered by; lenient, since a scope only turns contain into ask.
+pub fn refused_scopes(command: &str) -> Vec<String> {
+    let segments = match parse(command) {
+        Parsed::Segments(segments) => segments,
+        Parsed::Unparsed => lenient_segments(command),
+    };
+    let reader = |argv: &&Vec<String>| {
+        argv.first()
+            .is_some_and(|argv0| SAFE.binary_search(&program(argv0)).is_ok())
+    };
+    let tiers: [Vec<&Vec<String>>; 3] = [
+        segments
+            .iter()
+            .filter(|argv| classify(argv) != Class::Safe)
+            .collect(),
+        segments.iter().filter(|argv| !reader(argv)).collect(),
+        segments.iter().collect(),
+    ];
+    let mut scopes: Vec<String> = tiers
+        .into_iter()
+        .find(|tier| !tier.is_empty())
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|argv| scope(argv))
+        .collect();
+    scopes.dedup();
+    scopes
+}
+
+fn lenient_segments(command: &str) -> Vec<Vec<String>> {
+    let mut segments = vec![Vec::new()];
+    let mut tokens = command.split_whitespace();
+    while let Some(token) = tokens.next() {
+        if matches!(token, "&&" | "||" | "|" | ";" | "&") {
+            segments.push(Vec::new());
+        } else if matches!(token, ">" | ">>" | "<") {
+            tokens.next();
+        } else if !token.contains('>') && !token.starts_with('<') {
+            let word = token.trim_matches(['(', ')', '$', '`', ';']);
+            if let Some(argv) = segments.last_mut().filter(|_| !word.is_empty()) {
+                argv.push(word.to_owned());
+            }
+            if token.ends_with(';') {
+                segments.push(Vec::new());
+            }
+        }
+    }
+    // `for f in *` is a header naming no program; `do ./x` is one behind a shell word.
+    for argv in &mut segments {
+        while argv
+            .first()
+            .is_some_and(|first| OPENERS.contains(&program(first)))
+        {
+            argv.remove(0);
+        }
+    }
+    segments.retain(|argv| {
+        argv.first()
+            .is_some_and(|first| !HEADERS.contains(&program(first)))
+    });
+    segments
+}

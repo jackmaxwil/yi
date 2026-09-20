@@ -610,6 +610,7 @@ impl Tool for BashTool {
             && let Some(hint) = crate::sandbox::denial_hint(
                 capture.exit_code,
                 &format!("{}{}", capture.stdout, capture.stderr),
+                command,
             )
         {
             sections.push(hint);

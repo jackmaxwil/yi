@@ -193,7 +193,7 @@ fn temp_roots() -> Vec<PathBuf> {
 
 /// Seatbelt reports a denial as an ordinary errno, so the caller cannot know it was the
 /// sandbox: a non-zero exit that is no known shell failure, plus output naming a denial.
-pub fn denial_hint(exit_code: Option<i32>, output: &str) -> Option<String> {
+pub fn denial_hint(exit_code: Option<i32>, output: &str, command: &str) -> Option<String> {
     const QUICK_REJECT: [i32; 3] = [2, 126, 127];
     const KEYWORDS: [&str; 5] = [
         "operation not permitted",
@@ -210,8 +210,13 @@ pub fn denial_hint(exit_code: Option<i32>, output: &str) -> Option<String> {
     if !KEYWORDS.iter().any(|needle| lower.contains(needle)) {
         return None;
     }
-    Some(
-        "next: the sandbox refused this (writes stay in the working tree, egress is off); running the same command again asks the user instead of containing it"
-            .to_owned(),
-    )
+    let scopes: Vec<String> = yi_permission::refused_scopes(command)
+        .iter()
+        .map(|scope| format!("`{scope}`"))
+        .collect();
+    let needs = if scopes.len() == 1 { "needs" } else { "need" };
+    Some(format!(
+        "next: the sandbox refused this (a contained run writes only the working tree, its git dirs and tmp, and has no network); {} now {needs} permission: the next call using it asks instead of running contained, and is refused where nobody can answer",
+        scopes.join(", ")
+    ))
 }
