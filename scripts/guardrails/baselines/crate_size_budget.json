@@ -1,5 +1,5 @@
 {
-  "acp": 2518,
+  "acp": 2517,
   "ai": 4715,
   "cli": 3980,
   "console": 7440,
@@ -8,10 +8,10 @@
   "loop": 1273,
   "mcp-cli": 2469,
   "orb": 1398,
-  "permission": 1684,
+  "permission": 1736,
   "runtime": 28901,
   "session": 1755,
-  "tools": 12140,
+  "tools": 12161,
   "tui": 12345,
   "types": 5265
 }
