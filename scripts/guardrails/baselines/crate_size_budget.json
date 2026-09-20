@@ -8,10 +8,10 @@
   "loop": 1273,
   "mcp-cli": 2469,
   "orb": 1398,
-  "permission": 1464,
+  "permission": 1488,
   "runtime": 28896,
   "session": 1755,
-  "tools": 12134,
+  "tools": 12155,
   "tui": 12324,
   "types": 5265
 }
