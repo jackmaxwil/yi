@@ -144,6 +144,12 @@ impl App {
                 }
                 self.dirty = true;
             }
+            Decoded::Workdir { cwd, lane } => {
+                for chat in self.state.chats_mut(id) {
+                    chat.app.set_workdir(cwd.clone(), lane.clone());
+                }
+                self.dirty = true;
+            }
             Decoded::Todo(todos) => {
                 for chat in self.state.chats_mut(id) {
                     chat.port.set_todos(todos.clone());
