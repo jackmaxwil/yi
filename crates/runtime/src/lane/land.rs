@@ -371,6 +371,19 @@ impl LaneHandle {
         ))
     }
 
+    /// The row's name for this tree: the checkout and the slot, never the pool's hash (D143).
+    pub fn row_label(&self) -> Option<String> {
+        let guard = self.lane.lock().ok()?;
+        let lane = guard.as_ref()?;
+        let repo = lane
+            .pool()
+            .repo()
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        Some(format!("{repo} ⎇ lane {}", lane.slot()))
+    }
+
     pub fn slot(&self) -> Option<super::SlotIndex> {
         self.lane.lock().ok()?.as_ref().map(Lane::slot)
     }

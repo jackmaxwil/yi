@@ -69,6 +69,7 @@ pub(crate) struct Parent {
     pub(crate) children: JoinSet<()>,
     pub(crate) seen: HashSet<String>,
     pub(crate) last_goal: Value,
+    pub(crate) last_workdir: Value,
 }
 
 impl Parent {
@@ -101,6 +102,22 @@ impl Parent {
         }
     }
 
+    pub(crate) fn watch_workdir(&mut self) {
+        let lane = self.session.lane();
+        let workdir = match lane.as_ref().and_then(|lane| lane.path()) {
+            Some(path) => serde_json::json!({
+                "cwd": path.to_string_lossy(),
+                "lane": lane.as_ref().and_then(|lane| lane.row_label()),
+            }),
+            None => Value::Null,
+        };
+        if workdir != self.last_workdir && !workdir.is_null() {
+            self.last_workdir = workdir.clone();
+            let fields = workdir.as_object().cloned().unwrap_or_default();
+            self.forward.emit(extension("_yi/workdir", fields));
+        }
+    }
+
     fn reduce(&mut self, event: &AgentEvent) {
         self.forward.event(event);
         for update in to_updates(event, &mut self.ids) {
@@ -110,7 +127,10 @@ impl Parent {
             AgentEvent::ChildUpdate { .. } => self.adopt_children(),
             AgentEvent::MessageEnd { .. }
             | AgentEvent::ToolExecutionEnd { .. }
-            | AgentEvent::AgentEnd { .. } => self.watch_goal(),
+            | AgentEvent::AgentEnd { .. } => {
+                self.watch_goal();
+                self.watch_workdir();
+            }
             _ => {}
         }
     }
