@@ -147,6 +147,10 @@ pub enum Decoded {
     Todo(Option<TodoList>),
     Config(Config),
     Child(ChildUpdate),
+    Workdir {
+        cwd: String,
+        lane: Option<String>,
+    },
     Other,
 }
 
@@ -222,6 +226,10 @@ pub fn decode(extension: &AcpExtensionUpdate) -> Result<Decoded, Malformed> {
             };
             Ok(Decoded::Replay(Box::new(replay), entries))
         }
+        "_yi/workdir" => Ok(Decoded::Workdir {
+            cwd: string(&fields, "cwd").ok_or(Malformed)?,
+            lane: string(&fields, "lane"),
+        }),
         "_yi/goal" => Ok(Decoded::Goal(fields.get("goal").and_then(goal_view))),
         "_yi/todo" => Ok(Decoded::Todo(fields.get("list").and_then(|value| {
             serde_json::from_value::<TodoList>(value.clone()).ok()
@@ -302,6 +310,7 @@ mod todo_tests {
 #[cfg(test)]
 mod ask_tests {
     use super::*;
+    use yi_types::acp::AcpExtensionUpdate;
 
     fn option(id: &str, name: &str, kind: AcpPermissionOptionKind) -> AcpPermissionOption {
         AcpPermissionOption {
@@ -309,6 +318,30 @@ mod ask_tests {
             name: name.to_owned(),
             kind,
         }
+    }
+
+    #[test]
+    fn a_workdir_update_decodes_path_and_lane() {
+        let update = AcpExtensionUpdate {
+            session_update: "_yi/workdir".to_owned(),
+            fields: [
+                (
+                    "cwd".to_owned(),
+                    serde_json::json!("/home/user/.yi/lanes/abc/1"),
+                ),
+                ("lane".to_owned(), serde_json::json!("project ⎇ lane 1")),
+            ]
+            .into_iter()
+            .collect(),
+        };
+        let decoded = decode(&update);
+        let named = matches!(
+            decoded,
+            Ok(Decoded::Workdir { ref cwd, ref lane })
+                if cwd == "/home/user/.yi/lanes/abc/1"
+                    && lane.as_deref() == Some("project ⎇ lane 1")
+        );
+        assert!(named, "the update carries the lane path and its row label");
     }
 
     #[test]

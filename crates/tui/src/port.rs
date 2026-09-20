@@ -561,3 +561,15 @@ impl App {
         self.logo_phase != self.logo_target || self.logo_target > 0.0
     }
 }
+
+impl crate::app::App {
+    pub fn set_workdir(&mut self, cwd: String, lane: Option<String>) {
+        if self.options.cwd == cwd && self.options.lane == lane {
+            return;
+        }
+        self.branch = git_branch(&cwd);
+        self.options.cwd = cwd;
+        self.options.lane = lane;
+        self.scheduler.request();
+    }
+}

@@ -69,6 +69,8 @@ pub(crate) struct Parent {
     pub(crate) children: JoinSet<()>,
     pub(crate) seen: HashSet<String>,
     pub(crate) last_goal: Value,
+    pub(crate) last_workdir: Value,
+    pub(crate) launch_cwd: std::path::PathBuf,
 }
 
 impl Parent {
@@ -101,6 +103,24 @@ impl Parent {
         }
     }
 
+    pub(crate) fn watch_workdir(&mut self) {
+        // A released lane hands the session back: say so, or the row names a lane that is gone.
+        let workdir = match self.session.lane().and_then(|lane| lane.row()) {
+            Some((path, row)) => {
+                serde_json::json!({ "cwd": path.to_string_lossy(), "lane": row })
+            }
+            None => serde_json::json!({
+                "cwd": self.launch_cwd.to_string_lossy(),
+                "lane": Value::Null,
+            }),
+        };
+        if workdir != self.last_workdir {
+            self.last_workdir = workdir.clone();
+            let fields = workdir.as_object().cloned().unwrap_or_default();
+            self.forward.emit(extension("_yi/workdir", fields));
+        }
+    }
+
     fn reduce(&mut self, event: &AgentEvent) {
         self.forward.event(event);
         for update in to_updates(event, &mut self.ids) {
@@ -110,7 +130,10 @@ impl Parent {
             AgentEvent::ChildUpdate { .. } => self.adopt_children(),
             AgentEvent::MessageEnd { .. }
             | AgentEvent::ToolExecutionEnd { .. }
-            | AgentEvent::AgentEnd { .. } => self.watch_goal(),
+            | AgentEvent::AgentEnd { .. } => {
+                self.watch_goal();
+                self.watch_workdir();
+            }
             _ => {}
         }
     }

@@ -345,7 +345,7 @@ impl AcpState {
         }
         let events = session.subscribe();
         let context_window = session.model().context_window;
-        let parent = Parent {
+        let mut parent = Parent {
             forward: Forward {
                 session_id: session_id.clone(),
                 child: None,
@@ -358,7 +358,10 @@ impl AcpState {
             children: JoinSet::new(),
             seen: HashSet::new(),
             last_goal: Value::Null,
+            last_workdir: Value::Null,
+            launch_cwd: self.cwd.clone(),
         };
+        parent.watch_workdir();
         let forwarder = tokio::spawn(forward_parent(events, parent));
         self.sessions.insert(
             session_id.clone(),
