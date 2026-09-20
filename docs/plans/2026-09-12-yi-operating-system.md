@@ -2008,6 +2008,7 @@ source_ref }`), `crates/runtime/src/plan/program.rs` (the record and the export)
 | a second `run` attaches or refuses | `test_yi_plan::test_duplicate_run_calls_attach_or_refuse` (T0) |
 | a verdict that judged no product leaves the attempt alone, and a child the host cannot vouch for blocks on the user | `test_yi_plan::test_a_verdict_that_judges_no_product_leaves_the_attempt_alone` (T0) |
 | only the plan owner stores artifacts | `plan_e2e::a_child_kernels_plan_op_is_refused_beyond_view` (T1, extended) |
+| a child that asked you something is collected, never raised | `test_yi_plan::test_a_child_asking_you_something_is_collected_not_raised` (T0) |
 | an inline output gets a valid artifact id | `kernel_data_surface::an_inline_todo_completes_with_a_host_minted_artifact` (T2) |
 | every public name documents itself with a valid example | `test_yi_help::test_every_name_in_all_has_a_docstring_with_a_valid_example` (T0; sync and async alike) |
 | the prompt gates know the new names | `ext_e2e::fragment_examples_name_real_kernel_apis` (T0, extended) |
