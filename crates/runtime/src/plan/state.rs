@@ -573,7 +573,8 @@ pub fn leaving_running(
         | Op::Import { .. }
         | Op::Reconcile { .. }
         | Op::Submit { .. }
-        | Op::Resolve { .. } => Vec::new(),
+        | Op::Resolve { .. }
+        | Op::Program { .. } => Vec::new(),
     })
 }
 
@@ -647,6 +648,7 @@ pub fn apply_op(
         Op::Init { .. } | Op::View { .. } | Op::Import { .. } => {
             return Err(PlanOpError::NotJournaled { op: kind });
         }
+        Op::Program { .. } => {}
         Op::Append { todos } => append_todos(state.plan_mut(id)?, todos.clone())?,
         Op::Drop { label, .. } => {
             step_todo(state.plan_mut(id)?, label, OpKind::Drop, decided, |_| {

@@ -24,6 +24,7 @@ pub mod loop_coupling;
 pub mod ops;
 pub mod output;
 pub mod probe;
+pub mod program;
 pub mod recovery;
 pub mod request;
 pub mod snapshot;

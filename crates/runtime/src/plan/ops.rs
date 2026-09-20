@@ -230,6 +230,8 @@ pub enum PlanOpError {
     },
     #[error("{label:?} is not running by {agent}; an agent submits for its own attempt only")]
     NotRunningBy { label: TodoLabel, agent: String },
+    #[error("program refused: {detail}")]
+    Program { detail: String },
     #[error("import refused: {0}")]
     Import(#[from] super::import::ImportError),
     #[error("record did not serialize: {0}")]
@@ -298,6 +300,7 @@ impl PlanOpError {
             Self::Verification { .. } => "verification",
             Self::WrongAttempt { .. } => "wrong_attempt",
             Self::NotRunningBy { .. } => "not_running_by",
+            Self::Program { .. } => "program",
             Self::Import(_) => "import",
             Self::Serialize(_) | Self::Canonical(_) => "serialize",
             Self::Reduce(_) => "reduce",
@@ -554,6 +557,9 @@ impl PlanEngine {
                     rows,
                 };
                 self.framed(Some(opened.plan.id), &actor, set, request, None)
+            }
+            program @ Op::Program { .. } => {
+                self.program(plan, &actor, program, request, expected_revision)
             }
             other => self.framed(plan, &actor, other, request, expected_revision),
         }
@@ -927,6 +933,15 @@ impl PlanEngine {
                 .record
                 .extra
                 .insert("effect_id".to_owned(), Value::String(effect.to_string()));
+        }
+        if let Op::Program {
+            cell_id,
+            source_ref,
+        } = op
+        {
+            let at = record.record.at;
+            record.program_hash =
+                Some(self.program_hash(id, plan.version.0, cell_id, source_ref, at)?);
         }
         if matches!(op, Op::FuseReset) {
             let prior = txn.state.plan(&txn.root)?.spawns().get();

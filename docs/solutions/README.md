@@ -187,5 +187,6 @@ when it changes rather than editing them by hand.
 - [D194](adr/d194.md) - completion is verified by the kernel on every path against a frozen attempt
 - [D195](adr/d195.md) - a worktree todo is done only when its candidate and its integration both...
 - [D210](adr/d210.md) - one exit, one terminal update
+- [D211](adr/d211.md) - plans are programs in the kernel; source is recorded, never replayed
 
 D36-D51, D72, D73 and D74 have no ADR yet; ARCHITECTURE.md is the record for those rows.

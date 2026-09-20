@@ -157,12 +157,12 @@ fn service_with(mut registry: HostRegistry) -> Arc<KernelService> {
 
 async fn cell(
     service: &Arc<KernelService>,
-    code: &'static str,
+    code: &str,
 ) -> Result<yi_tools::KernelCellOutcome, String> {
-    let service = Arc::clone(service);
+    let (service, code) = (Arc::clone(service), code.to_owned());
     tokio::task::spawn_blocking(move || {
         let cancelled: CancelFlag = Arc::new(|| false);
-        KernelBridge::execute_cell(service.as_ref(), code, &cancelled)
+        KernelBridge::execute_cell(service.as_ref(), &code, &cancelled)
     })
     .await
     .map_err(|error| error.to_string())?
@@ -250,5 +250,231 @@ async fn the_plan_skill_is_gone_and_plan_op_answers() -> TestResult {
         outcome.result.stderr
     );
     service.dispose().await;
+    Ok(())
+}
+
+/// A stub delegate that counts its spawns; `alive` is what the host can vouch for.
+#[derive(Default)]
+struct Kids {
+    spawns: std::sync::atomic::AtomicUsize,
+    alive: std::sync::atomic::AtomicBool,
+    finished: std::sync::atomic::AtomicBool,
+}
+
+impl Delegate for Kids {
+    fn spawn(
+        &self,
+        _at: &yi_types::plan::doc::TodoAddr,
+        _delegation: &yi_types::plan::doc::Delegation,
+    ) -> Result<yi_types::plan::doc::AgentId, String> {
+        self.spawns
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        yi_types::plan::doc::AgentId::new("kid").map_err(|error| error.to_string())
+    }
+
+    fn reap(
+        &self,
+        _agent: &yi_types::plan::doc::AgentId,
+        _supplied: &[yi_types::url::Url],
+    ) -> Result<Option<yi_types::url::Url>, String> {
+        Ok(None)
+    }
+
+    fn follow_up(&self, _dispatched: &[yi_types::plan::doc::TodoLabel], _held: usize) {}
+}
+
+impl yi_runtime::plan::recovery::Liveness for Kids {
+    fn alive(&self, _agent: &yi_types::plan::doc::AgentId) -> Option<bool> {
+        Some(self.alive.load(std::sync::atomic::Ordering::SeqCst))
+    }
+}
+
+/// The real engine over a scratch store and workspace, behind `plan.op`, with `rlm.wait`
+/// answering for the stub child; one service per call, so a second call is a new kernel.
+struct PlanRig {
+    dir: Scratch,
+    store: PlanStore,
+    engine: Arc<PlanEngine>,
+    kids: Arc<Kids>,
+}
+
+impl PlanRig {
+    fn new(name: &str) -> Result<Self, Box<dyn Error>> {
+        let dir = Scratch::new(name)?;
+        let (plans, workspace) = (dir.join("plans"), dir.join("ws"));
+        std::fs::create_dir_all(&workspace)?;
+        let store = PlanStore::open(plans.clone())?;
+        let kids = Arc::new(Kids::default());
+        let resolver =
+            yi_runtime::fetch::Resolver::new(workspace.clone(), yi_runtime::Wall::default())
+                .with_plans_dir(plans);
+        let engine = PlanEngine::new(store.clone(), kids.clone())
+            .with_cwd(workspace)
+            .with_output_resolve(Arc::new(resolver))
+            .with_liveness(kids.clone());
+        Ok(Self {
+            dir,
+            store,
+            engine: Arc::new(engine),
+            kids,
+        })
+    }
+
+    fn kernel(&self) -> Arc<KernelService> {
+        let mut registry = HostRegistry::default();
+        yi_runtime::plan::request::register(Arc::clone(&self.engine), Actor::Owner, &mut registry);
+        let kids = Arc::clone(&self.kids);
+        registry.register("rlm.wait", move |_payload| {
+            let kids = Arc::clone(&kids);
+            Box::pin(async move {
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                let finished = kids.finished.load(std::sync::atomic::Ordering::SeqCst);
+                let state = if finished { "finished" } else { "running" };
+                let reply = serde_json::json!({"cursor": 1, "changed": [], "states": {"kid": state}, "notes": {}});
+                reply.as_object().cloned().ok_or_else(|| "reply".to_owned())
+            })
+        });
+        service_with(registry)
+    }
+}
+
+/// The plan section 8.2 program, with a stub delegate for the writer. `{mark}` is a file the
+/// inline todo appends to, so a second execution of it is visible from outside the kernel.
+const PROGRAM: &str = r#"
+from yi import Plan, Writer, contract, cmd, schema
+async def freeze_surface():
+    with open(MARK, "a") as handle:
+        handle.write("ran\n")
+    return {"flags": ["--size"]}
+async def declare(plan):
+    freeze = await plan.todo(key="freeze", label="freeze the CLI surface", run=freeze_surface,
+        accept=contract(schema({"type": "object", "required": ["flags"]}, critical=True)))
+    await plan.todo(key="tests", label="write the test suite", after=[freeze],
+        delegate=Writer(isolation=None), accept=contract(cmd("true", critical=True)))
+"#;
+
+impl PlanRig {
+    /// Runs `PROGRAM` and then `tail` as one cell of a fresh or a given kernel.
+    async fn run(
+        &self,
+        service: &Arc<KernelService>,
+        tail: &str,
+    ) -> Result<String, Box<dyn Error>> {
+        let mark = self.dir.join("mark");
+        let code = format!("MARK = {:?}\n{PROGRAM}\n{tail}", mark.display().to_string());
+        let outcome = cell(service, &code).await?;
+        Ok(format!(
+            "{}\n{}",
+            outcome.result.stdout, outcome.result.stderr
+        ))
+    }
+
+    fn plan(&self) -> Result<yi_types::plan::doc::Plan, Box<dyn Error>> {
+        Ok(self
+            .store
+            .read(&yi_types::plan::doc::PlanId::new("ship-logrotate-lite")?)?)
+    }
+}
+
+const CREATE: &str = "plan = await Plan.create('ship logrotate-lite', request_id='create-01')\nawait declare(plan)\n";
+
+/// Dies with the control: return the value without `submit` and the schema item has no
+/// product; mint the url from the label and the fetch finds no blob behind it.
+#[tokio::test]
+#[ignore = "tier-2 journey: `just journeys`"]
+async fn an_inline_todo_completes_with_a_host_minted_artifact() -> TestResult {
+    let rig = PlanRig::new("yi-kernel-inline-artifact")?;
+    let service = rig.kernel();
+    let tail = format!(
+        "{CREATE}r = await plan.run(budget=4)\nprint('outcome', r.outcome, await r.status())"
+    );
+    let printed = rig.run(&service, &tail).await?;
+    service.dispose().await;
+    let plan = rig.plan()?;
+    let freeze = plan.todos.first().ok_or("no todo")?;
+    let yi_types::plan::doc::TodoState::Done {
+        output: Some(output),
+        resolution,
+    } = &freeze.state
+    else {
+        return Err(format!(
+            "the inline todo must verify and complete: {:?}\n{printed}",
+            freeze.state
+        )
+        .into());
+    };
+    assert_eq!(
+        *resolution,
+        Some(yi_types::plan::contract::Resolution::VerifiedDone)
+    );
+    let product = br#"{"flags":["--size"]}"#;
+    let digest = yi_types::plan::canonical::Digest::of(product);
+    assert_eq!(
+        output.to_string(),
+        format!("plan://{}/artifacts/{}", plan.id, digest.hex())
+    );
+    assert_eq!(rig.store.artifacts(&plan.id).get(&digest)?, product);
+    Ok(())
+}
+
+/// The exit journey: the section 8.2 program on a real kernel, the kernel killed mid-plan, and
+/// a second kernel resuming. Dies with the control: replay the recorded cell, restart the
+/// running todo, or re-run the done one, and the mark file or the spawn count says so.
+#[tokio::test]
+#[ignore = "tier-2 journey: `just journeys`"]
+async fn resume_after_a_kernel_death_reuses_results_and_replays_no_cell() -> TestResult {
+    use std::sync::atomic::Ordering;
+    let rig = PlanRig::new("yi-kernel-resume")?;
+    let first = rig.kernel();
+    let tail = format!(
+        "{CREATE}r = await plan.run(budget=4)\nprint('outcome', r.outcome, await r.status())"
+    );
+    let printed = rig.run(&first, &tail).await?;
+    assert!(
+        printed.contains("outcome unresolved"),
+        "the child is still running: {printed}"
+    );
+    first.dispose().await;
+    assert_eq!(rig.kids.spawns.load(Ordering::SeqCst), 1, "{printed}");
+
+    let records = rig.store.journal(&rig.plan()?.id).read()?.records;
+    let at = |kind: &str| records.iter().position(|record| record.record.op == kind);
+    assert_eq!(
+        at("program"),
+        Some(1),
+        "the cell is recorded right behind the init it made"
+    );
+    assert!(at("program") < at("start"), "and before the first effect");
+    let program = std::fs::read_to_string(rig.store.plan_dir(&rig.plan()?.id).join("program.py"))?;
+    assert_eq!(
+        program.matches("await plan.run(budget=4)").count(),
+        1,
+        "{program}"
+    );
+
+    rig.kids.alive.store(true, Ordering::SeqCst);
+    rig.kids.finished.store(true, Ordering::SeqCst);
+    let second = rig.kernel();
+    let tail = "plan = await Plan.resume('ship-logrotate-lite')\nawait declare(plan)\nprint('unresolved', plan.unresolved)\nr = await plan.run(budget=20)\nprint('outcome', r.outcome, await r.status())";
+    let printed = rig.run(&second, tail).await?;
+    second.dispose().await;
+    assert!(
+        printed.contains("unresolved []"),
+        "a live child is reconnected: {printed}"
+    );
+    assert!(printed.contains("outcome verified_success"), "{printed}");
+    assert_eq!(
+        rig.kids.spawns.load(Ordering::SeqCst),
+        1,
+        "resume spawns nothing again"
+    );
+    assert_eq!(
+        std::fs::read_to_string(rig.dir.join("mark"))?,
+        "ran\n",
+        "the done todo ran once"
+    );
+    assert!(rig.plan()?.finished());
+    let program = std::fs::read_to_string(rig.store.plan_dir(&rig.plan()?.id).join("program.py"))?;
+    assert_eq!(program.matches("# --- cell ").count(), 2, "{program}");
     Ok(())
 }
