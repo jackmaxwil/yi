@@ -2006,12 +2006,14 @@ source_ref }`), `crates/runtime/src/plan/program.rs` (the record and the export)
 | source is recorded before the first effect and never replayed | `plan_program::program_records_source_before_the_first_effect` (T0, through `plan.op`); `test_yi_plan::test_a_cell_is_recorded_once_before_its_first_effect` (T0); `kernel_data_surface::resume_after_a_kernel_death_reuses_results_and_replays_no_cell` (T2, real kernel, a delegate counting spawns) |
 | an unknown external activity stays unresolved | `test_yi_resume::test_unknown_external_activity_remains_unresolved` (T0) |
 | a second `run` attaches or refuses | `test_yi_plan::test_duplicate_run_calls_attach_or_refuse` (T0) |
+| a verdict that judged no product leaves the attempt alone, and a child the host cannot vouch for blocks on the user | `test_yi_plan::test_a_verdict_that_judges_no_product_leaves_the_attempt_alone` (T0) |
+| only the plan owner stores artifacts | `plan_e2e::a_child_kernels_plan_op_is_refused_beyond_view` (T1, extended) |
 | an inline output gets a valid artifact id | `kernel_data_surface::an_inline_todo_completes_with_a_host_minted_artifact` (T2) |
 | every public name documents itself with a valid example | `test_yi_help::test_every_name_in_all_has_a_docstring_with_a_valid_example` (T0; sync and async alike) |
 | the prompt gates know the new names | `ext_e2e::fragment_examples_name_real_kernel_apis` (T0, extended) |
 
-**LOC.** python +1,080, yi-runtime, yi-types and yi-kernel +344, tests +850 (Rust 400, Python 450). Memo: `growth
-+344: the source record, the typed `plan.op` reply and its artifacts`. **Issue.**
+**LOC.** python +1,080, yi-runtime, yi-types and yi-kernel +346, tests +890 (Rust 440, Python 450). Memo: `growth
++346: the source record, the typed `plan.op` reply and its artifacts`. **Issue.**
 "F1a the yi library" (#454). **Row.** "Plans are programs: the `yi` library opens,
 attaches to or resumes a plan, declares idempotent todos with contracts, runs one
 scheduler under a lease, and records its cells as an audit artifact (D211,
@@ -2041,8 +2043,9 @@ scheduler lease is the owner kernel's (`_RUNS`), so it dies with the kernel, whi
 is what resume needs; a lease in the store is F2b's. `programHash` is set on the
 `program` record alone (the sha256 `program.py` has once that cell is appended);
 other records keep null rather than pay a file hash per op. The export is appended
-after the commit and any journaled cell it lacks is appended by the next record,
-so a crash between the two heals without a rewrite. `Plan.create` makes its plan
+after the commit, and the next `program` heals any cell it lacks before its own
+record is built, so a crash between the two heals without a rewrite and the hash
+still names the file the cell is appended to. `Plan.create` makes its plan
 before it can record into it, so the cell's record is that plan's second. The
 venv identity hashed `src/rlm` alone, so an edit to `yi` would have run a stale
 wheel; it hashes `src` now (`crates/kernel/src/bootstrap.rs`). Not
