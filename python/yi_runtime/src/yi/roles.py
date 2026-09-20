@@ -1,8 +1,11 @@
 """Roles: who executes a delegated todo, and the wall it runs behind."""
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass
 from typing import Any
+
+import rlm
 
 
 def _pruned(value: dict) -> dict:
@@ -111,3 +114,31 @@ def Reader(
         context=tuple(partition),
         note=note,
     )
+
+
+async def verify_quotes(quotes: Any) -> list[dict[str, Any]]:
+    """Keep the quotes whose ``text`` is on line ``line`` of ``url``, each with the digest it was read at.
+
+    Each url is fetched once through ``rlm.fetch``; a quote that is malformed,
+    cites a page that cannot be fetched, or is not on its line is dropped. A
+    kept quote proves provenance, not that it supports the answer.
+
+        kept = await verify_quotes([{"url": "local://docs/api.md", "line": 12, "text": "rotate(size)"}])
+    """
+    pages: dict[str, str | None] = {}
+    kept = []
+    for quote in quotes if isinstance(quotes, list) else []:
+        try:
+            url, line, text = quote["url"], int(quote["line"]), quote["text"].strip()
+        except (AttributeError, KeyError, TypeError, ValueError):
+            continue
+        if url not in pages:
+            try:
+                pages[url] = await rlm.fetch(url, as_text=True)
+            except (RuntimeError, TypeError):
+                pages[url] = None
+        page = pages[url]
+        lines = (page or "").splitlines()
+        if text and 0 < line <= len(lines) and text in lines[line - 1]:
+            kept.append({**quote, "digest": "sha256:" + hashlib.sha256(page.encode("utf-8")).hexdigest()})
+    return kept

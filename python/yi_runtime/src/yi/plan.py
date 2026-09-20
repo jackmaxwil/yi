@@ -274,9 +274,10 @@ class Todo:
 
             sub = await todo.decompose([{"key": "parse"}, {"key": "emit", "after": ["parse"]}])
         """
-        specs, blobs = [], []
+        specs, blobs, among = [], [], {}
         for spec in todos:
-            wire, more, _ = await self.plan._spec(**spec)
+            wire, more, key = await self.plan._spec(**spec, among=among)
+            among[key] = wire["label"]
             specs.append(wire)
             blobs.extend(more)
         await self.plan._op("decompose", {"label": self.label, "todos": specs}, artifacts=blobs)
@@ -452,12 +453,14 @@ class Plan:
         delegate: Role | None = None,
         accept: Contract | None = None,
         run: Callable[[], Awaitable[Any]] | None = None,
+        among: dict[str, str] | None = None,
     ) -> tuple[dict, list[dict], str]:
         if not isinstance(key, str) or not KEY.match(key):
             raise ValueError(f"key {key!r} must match {KEY.pattern}")
         if run is not None and (delegate is not None or not callable(run)):
             raise TypeError("run= takes an async function, and an inline todo has no delegate")
-        edges = [self[item].label if isinstance(item, str) else item.label for item in after]
+        # A sub-plan's todos name each other before any of them exists: `among` is that batch.
+        edges = [item.label if isinstance(item, Todo) else (among or {}).get(item) or self[item].label for item in after]
         contract, blobs = None, []
         if accept is not None:
             contract_class = delegate.contract_class if delegate else "inline"

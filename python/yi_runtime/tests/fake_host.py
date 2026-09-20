@@ -1,17 +1,30 @@
 """A stand-in for the host's `plan.op`, `rlm.wait`, `rlm.result` and `fetch` requests.
 
 It keeps the rules the `yi` library leans on (request ids replay, one open plan,
-edges gate `start`, a contract freezes at `start` and decides at `done`) and none
-of the engine's depth; the T2 journeys in `kernel_data_surface.rs` run the real one.
+edges gate `start`, a contract freezes at `start` and decides at `done`, the step
+table, the admission count, the retry cap, `wait` with a cursor) and none of the
+engine's depth; the T2 journeys in `kernel_data_surface.rs` run the real one.
 """
 from __future__ import annotations
 
 import asyncio
+import collections
 import copy
 import hashlib
 import json
 
 import rlm
+
+
+# The engine's step table (`table.rs`), for the ops a shape issues on its own.
+LEGAL = {
+    "done": ("running",),
+    "fail": ("running",),
+    "block": ("pending", "running"),
+    "unblock": ("blocked",),
+    "retry": ("failed",),
+    "drop": ("pending", "blocked"),
+}
 
 
 def refusal(kind: str, message: str, code: str = "refused", **extra) -> dict:
@@ -30,6 +43,12 @@ class FakeHost:
         self.notices: list[str] = []
         self.files: dict[str, str] = {}
         self.spawns = 0
+        self.slots: int | None = None
+        self.retry_cap = 8
+        self.starts: list[str] = []
+        self.requests: collections.Counter = collections.Counter()
+        self.waits: list[tuple[int | None, list[str]]] = []
+        self.changes: list[tuple[str, str]] = []
         rlm.host_request = self.request
 
     def ops(self) -> list[str]:
@@ -37,11 +56,17 @@ class FakeHost:
 
     async def request(self, kind: str, payload: dict | None = None) -> dict:
         payload = payload or {}
+        self.requests[kind] += 1
         if kind == "plan.op":
             return self.plan_op(payload)
         if kind == "rlm.wait":
             await asyncio.sleep(0.01)
-            return {"cursor": 1, "changed": [], "states": dict(self.children), "notes": {}}
+            # Each caller's cursor is its own place in the change log; nobody drains it.
+            latest = dict(self.changes)
+            self.changes += [item for item in self.children.items() if latest.get(item[0]) != item[1]]
+            changed = sorted({name for name, _ in self.changes[payload.get("cursor") or 0 :]})
+            self.waits.append((payload.get("cursor"), changed))
+            return {"cursor": len(self.changes), "changed": changed, "states": dict(self.children), "notes": {}}
         if kind == "rlm.result":
             answer = self.results[payload["target"]]
             if isinstance(answer, Exception):
@@ -51,7 +76,11 @@ class FakeHost:
             self.children[payload["target"]] = "failed"
             return {}
         if kind == "fetch":
-            return {"text": self.files[payload["url"]]}
+            url = payload["url"]
+            text = self.files.get(url, self.blobs.get("sha256:" + url.rsplit("/", 1)[-1]))
+            if text is None:
+                raise RuntimeError(f"{url}: not found")
+            return {"text": text}
         raise AssertionError(f"unexpected host request {kind}")
 
     def plan_op(self, payload: dict) -> dict:
@@ -104,14 +133,25 @@ class FakeHost:
         return self.view(plan)
 
     def step(self, op: str, args: dict, plan: dict, todo: dict | None) -> dict | None:
+        if op in LEGAL and todo["state"] not in LEGAL[op]:
+            return refusal("illegal_step", f"{op} is illegal for {todo['label']} while {todo['state']}")
         if op == "program":
             if args["source_ref"]["digest"] not in self.blobs:
                 return refusal("program", "the source is not in the store")
         elif op == "append":
             plan["todos"] += [{**spec, "state": "pending", "attempt": 1} for spec in args["todos"]]
         elif op == "start":
-            if todo["label"] not in self.view(plan)["plan"]["ready"]:
+            self.starts.append(todo["label"])
+            ready = self.view(plan)["plan"]["ready"]
+            if todo["label"] not in ready:
                 return refusal("illegal_step", f"start is illegal for {todo['label']}")
+            # `table.rs` admit: a delegated todo starts only from the first free slots of the ready list.
+            if todo.get("delegation") and self.slots is not None:
+                by = {item["label"]: item for item in plan["todos"]}
+                queue = [label for label in ready if by[label].get("delegation")]
+                free = self.slots - sum(1 for item in plan["todos"] if item["state"] == "running" and item.get("delegation"))
+                if queue.index(todo["label"]) >= free:
+                    return refusal("admission", f"{todo['label']} waits for a slot; {max(free, 0)} free")
             for item in (todo.get("contract") or {}).get("items", []):
                 for ref in next(iter(item["decider"].values())).values():
                     if isinstance(ref, dict) and ref["digest"] not in self.blobs:
@@ -124,8 +164,6 @@ class FakeHost:
         elif op == "submit":
             todo["submitted"] = args["output"]
         elif op == "done":
-            if todo["state"] != "running":
-                return refusal("illegal_step", f"done is illegal for {todo['label']}")
             outcome = self.verdicts.get(todo["label"], "pass")
             if todo.get("contract"):
                 if outcome != "pass":
@@ -137,6 +175,8 @@ class FakeHost:
         elif op == "fail":
             todo["state"], todo["cause"] = "failed", args["cause"]
         elif op == "retry":
+            if todo["attempt"] > self.retry_cap:
+                return refusal("retries_exhausted", f"{todo['label']} spent its {self.retry_cap} retries")
             todo["state"], todo["attempt"] = "pending", todo["attempt"] + 1
         elif op == "drop":
             todo["state"] = "abandoned"
