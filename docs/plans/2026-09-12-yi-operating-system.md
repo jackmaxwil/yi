@@ -11,9 +11,9 @@ status:  planned 2026-09-12; revised 2026-09-13 after an external review (§0).
 tree:    0.244.0 (docs/ARCHITECTURE.md:4), last decision row D190 (:146);
          D169-D171 are in the log (:164-166) and under docs/solutions/adr/.
          Every D below is a D-next placeholder; claim against the header at
-         land time (.ruler/090-workflow.md:3-7). #378 claims D191 and
-         0.245.0, so F0a claims D192 and 0.246.0 unless something lands
-         first.
+         land time (.ruler/090-workflow.md:3-7). #378 still claims D191;
+         main reached 0.264.0 while F0a-F0d were in flight, so on the
+         rebase they claim D192-D195 and 0.265.0-0.268.0.
          Worktree HEAD ee336f6f, 394 commits past 2d1d7aae; anchors re-
          verified 2026-09-13 (§2 at 2d1d7aae, §2.1 at ee336f6f, the tree
          wins where they differ).
