@@ -106,6 +106,18 @@ class Plans(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual((run.outcome, todo._doc["state"]), ("unresolved", state))
                 yi.plan._RUNS.clear()
 
+    async def test_a_child_asking_you_something_is_collected_not_raised(self) -> None:
+        """Dies with the control: hand `rlm.result` a `needs_you` child once and it raises."""
+        host = FakeHost()
+        plan = await Plan.create("ship it")
+        todo = await plan.todo(key="t", delegate=Writer(), accept=contract(cmd("true", critical=True)))
+        await todo.start()
+        child = f"{plan.id}/t"
+        host.children[child] = "needs_you"
+        host.results[child] = RuntimeError(f"{child} is still running")
+        asyncio.get_running_loop().call_later(0.05, host.results.__setitem__, child, {"text": "done"})
+        self.assertEqual(await todo.result(timeout=5), {"text": "done"})
+
     async def test_duplicate_run_calls_attach_or_refuse(self) -> None:
         host = FakeHost()
         plan = await Plan.create("ship it")

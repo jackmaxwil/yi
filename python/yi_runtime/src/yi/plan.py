@@ -285,7 +285,8 @@ class Todo:
     async def result(self, schema: dict | None = None, timeout: float = 540.0) -> dict[str, Any]:
         """Wait for this todo's child and return its answer (``rlm.result``).
 
-        A child the host calls stuck is still waited on: one long tool call is not a failure.
+        A child the host calls stuck is still waited on: one long tool call is not a
+        failure, and neither is one that asked you something and kept working.
 
             answer = await todo.result(timeout=120)
         """
@@ -301,7 +302,12 @@ class Todo:
             if state is None:
                 raise PlanError(f"child {child} is not registered with this session")
             if state in ("finished", "failed", "needs_you"):
-                return await rlm.result(child, schema=schema)
+                try:
+                    return await rlm.result(child, schema=schema)
+                except RuntimeError as error:
+                    # needs_you also names a child still running with a question for you.
+                    if state != "needs_you" or "still running" not in str(error):
+                        raise
         raise TimeoutError(f"child {child} did not finish within {timeout}s")
 
     async def cancel(self) -> "Todo":

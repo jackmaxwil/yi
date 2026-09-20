@@ -43,7 +43,10 @@ class FakeHost:
             await asyncio.sleep(0.01)
             return {"cursor": 1, "changed": [], "states": dict(self.children), "notes": {}}
         if kind == "rlm.result":
-            return self.results[payload["target"]]
+            answer = self.results[payload["target"]]
+            if isinstance(answer, Exception):
+                raise answer
+            return answer
         if kind == "rlm.interrupt":
             self.children[payload["target"]] = "failed"
             return {}
