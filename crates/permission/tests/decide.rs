@@ -573,3 +573,76 @@ fn rm_rf_of_a_linked_worktrees_common_dir_is_denied_in_every_mode() -> TestResul
     }
     Ok(())
 }
+
+/// A pointer is repository data, and repository data is not a grant: a `.git` file that names
+/// `/` would otherwise make the whole filesystem a sandbox writable root.
+#[test]
+fn git_dirs_refuse_a_pointer_that_is_not_a_git_dir() -> TestResult {
+    let root = Scratch::new("yi-permission-pointer")?;
+    let (tree, common) = linked_layout(&root, false)?;
+    let gitdir = common.join("worktrees/wt");
+    for pointer in [
+        "gitdir: /\n".to_owned(),
+        "gitdir: /etc\n".to_owned(),
+        "gitdir: ../../../../../../..\n".to_owned(),
+        format!("gitdir: {}\n", root.join("not-a-git-dir").display()),
+    ] {
+        std::fs::write(tree.join(".git"), &pointer)?;
+        assert_eq!(git_dirs(&tree), Vec::<PathBuf>::new(), "{pointer:?}");
+    }
+    std::fs::write(tree.join(".git"), format!("gitdir: {}\n", gitdir.display()))?;
+    for common_text in ["/\n", "../../../../../..\n", "/etc\n"] {
+        std::fs::write(gitdir.join("commondir"), common_text)?;
+        assert_eq!(
+            git_dirs(&tree),
+            vec![lexical_normalize(&gitdir)],
+            "a commondir that names no git dir leaves the worktree's own: {common_text:?}"
+        );
+    }
+    Ok(())
+}
+
+/// A wrapper is not a disguise: the belt reads what the wrapper runs, or `nice rm -rf .git`
+/// walks past a denial the literal spelling gets (D205).
+#[test]
+fn a_wrapped_destructive_command_is_denied_in_every_mode() -> TestResult {
+    let root = Scratch::new("yi-permission-wrapped")?;
+    let (tree, common) = linked_layout(&root, false)?;
+    let context = CatastrophicContext::detect(&tree);
+    let session = SessionRules::new();
+    for command in [
+        format!("nice -n 5 rm -rf {}", common.display()),
+        format!("stdbuf -o0 rm -rf {}", common.display()),
+        format!("timeout 30 rm -rf {}", common.display()),
+        format!("env GIT_DIR=x rm -rf {}", common.display()),
+        format!("ionice -c 3 nice rm -rf {}", common.display()),
+        format!("/usr/bin/time rm -rf {}", common.display()),
+    ] {
+        let call = bash_call(&command, "canonical");
+        for mode in [
+            PermissionMode::Ask,
+            PermissionMode::Auto,
+            PermissionMode::Yolo,
+        ] {
+            let decision = decide(&call, mode, &[], &session, &[], &context);
+            assert!(
+                matches!(decision, Decision::Deny { .. }),
+                "{command} in {mode:?}: {decision:?}"
+            );
+        }
+    }
+    // A wrapper around something harmless is still judged on what it runs.
+    let harmless = bash_call("nice -n 5 ls -la", "canonical");
+    assert!(!matches!(
+        decide(
+            &harmless,
+            PermissionMode::Auto,
+            &[],
+            &session,
+            &[],
+            &context
+        ),
+        Decision::Deny { .. }
+    ));
+    Ok(())
+}
