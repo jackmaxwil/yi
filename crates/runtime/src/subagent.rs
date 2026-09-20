@@ -633,6 +633,9 @@ impl SubagentHost {
             child.seed_messages(seed);
         }
         let session = Arc::new(child);
+        // Invariant: read before the record is listed, so every abort a client can ask for
+        // from here on carries a later epoch and admission cannot clear it.
+        let requested = session.abort_epoch();
         {
             let mut children = self
                 .children
@@ -668,7 +671,6 @@ impl SubagentHost {
         let task_name = session_name.clone();
         // Invariant: the spawn reply resolves at admission, and blocking here
         // would abort the turn whose cell awaits it.
-        let requested = session.abort_epoch();
         tokio::spawn(async move {
             host.run_child(
                 task_child_id,
