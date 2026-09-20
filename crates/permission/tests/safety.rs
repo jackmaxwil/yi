@@ -1,6 +1,6 @@
 use std::error::Error;
 
-use yi_permission::{Class, Parsed, Verdict, classify, parse, verdict};
+use yi_permission::{Class, Parsed, Verdict, classify, parse, refused_scopes, verdict};
 
 type TestResult = Result<(), Box<dyn Error>>;
 
@@ -375,4 +375,37 @@ fn git_global_options_do_not_become_the_subcommand() -> TestResult {
         assert_eq!(classify(&argv(command)[0]), expected, "{command:?}");
     }
     Ok(())
+}
+
+/// What a sandbox refusal is remembered by: the program and its verb, so a retry that adds
+/// `&& git status | wc -l` is still the refused `git worktree`.
+#[test]
+fn scope_names_program_and_subcommand() {
+    let cases: [(&str, &[&str]); 14] = [
+        ("git worktree add ../wt br", &["git worktree"]),
+        ("git -C ../wt add -A", &["git add"]),
+        ("CARGO_TARGET_DIR=/t cargo nextest run", &["cargo nextest"]),
+        ("./scripts/adr.py 5", &["adr.py"]),
+        ("mkdir /outside/a && ls", &["mkdir"]),
+        ("cd /x && cargo fmt 2>&1 | head", &["cargo fmt"]),
+        (
+            "git worktree add -b b ../wt origin/main && git -C ../wt status --porcelain | wc -l",
+            &["git worktree"],
+        ),
+        (
+            "python3 scripts/guardrails/check_crate_size.py --update > log",
+            &["python3"],
+        ),
+        ("printf x > /outside/file", &["printf"]),
+        // A wrapper is not the program: remembering `timeout` poisons every later timeout and
+        // forgets the command that was actually refused (D206).
+        ("timeout 30 ./flaky.sh", &["flaky.sh"]),
+        ("nice -n 5 ./flaky.sh", &["flaky.sh"]),
+        ("env FOO=1 ./flaky.sh", &["flaky.sh"]),
+        ("ionice -c 3 nice cargo fmt", &["cargo fmt"]),
+        ("for f in *; do ./x $f; done", &["x"]),
+    ];
+    for (command, expected) in cases {
+        assert_eq!(refused_scopes(command), expected, "{command:?}");
+    }
 }

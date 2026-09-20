@@ -22,4 +22,4 @@ pub use rules::{
     ConfigRule, ConfigRuleAction, PathGlob, RuleStateError, SessionRules,
     canonical_command_identity, canonical_tool_identity,
 };
-pub use safety::{Class, Parsed, Verdict, classify, parse, verdict};
+pub use safety::{Class, Parsed, Verdict, classify, parse, refused_scopes, verdict};
