@@ -1402,10 +1402,10 @@ Readers bound to stable partitions (`deny_read` of every other partition,
 (the owner, or one writer child), rounds: the lead asks a question; each
 reader answers `{"answer": str | null, "quotes": [{"url", "line", "text"}]}`;
 a null answer is an abstention and is dropped; `roles.verify_quotes` fetches
-each `url#L<line>` through `rlm.fetch`, pins the fetched digest, and drops
+each cited `url` through `rlm.fetch` and reads line `<line>` from it, pins the fetched digest, and drops
 any quote whose text does not match and any answer whose every quote was
 dropped; the lead sees only what survived; rounds continue until the lead
-commits (`lead.commit(answer)`) or `SCATTER_MAX_ROUNDS` (3, a lever). A
+commits (the lead function returns `{"commit": answer}`) or `SCATTER_MAX_ROUNDS` (3, a lever). A
 verified quote proves provenance, not entailment: an answer with no
 supporting quote abstains, and correctly copied irrelevant text does not
 validate a claim; the lead's commit is its own reasoning. ParSer's shape:
@@ -2054,31 +2054,71 @@ built: a marker for a cell that later raised (the record stands either way), a
 token budget, automatic transport retry beyond the one host error that leaves a
 commit unknown, and `judge`, `shapes`, `mail`, `recipes/` (F3a, F1b, F2a).
 
-### F1b · Two shapes: `fork_join` and `scatter` (D-next-6)
+### F1b · Two shapes: `fork_join` and `scatter` (D212, landed 0.271.0)
 
 **Files.** `python/yi_runtime/src/yi/shapes.py`, `roles.py` (`verify_quotes`),
+`plan.py` (`decompose` resolves edges among its own batch),
 `python/yi_runtime/tests/programs/{typo-fix,campaign,arc-game}.py` (the
-walkthrough fixtures as programs), `test_yi_shapes.py`.
+walkthrough fixtures as programs), `test_yi_shapes.py`, `tests/fake_host.py`,
+`crates/runtime/tests/{plan_e2e,plan_walkthrough,kernel_data_surface}.rs`.
 
 | control | test (tier) |
 |---|---|
-| geometry refused before any start | `test_yi_shapes::a_fork_join_with_a_shared_write_set_is_refused_with_every_problem_named` (T0) |
-| over-admission refused while order is the shape's | `test_yi_shapes::fork_join_retries_a_refused_start_and_never_reorders_the_kernel` (T0, fake host counting refusals) |
-| restart intensity bounds retries and respects the step table | `test_yi_shapes::one_for_one_stops_after_max_within_window` (T0); `plan_e2e::a_shape_cannot_retry_a_done_or_drop_a_running_todo` (T1) |
-| concurrent waiters keep their own cursors | `test_yi_shapes::the_scheduler_and_the_model_wait_without_stealing_updates` (T0) |
-| a reader's uncited or unverifiable quote is dropped at the seam | `test_yi_shapes::scatter_drops_an_unverifiable_quote_before_the_lead_sees_it` (T0) |
-| abstentions are dropped and rounds are bounded | `test_yi_shapes::scatter_ends_at_max_rounds_without_a_commit` (T0) |
+| geometry refused before any start | `test_yi_shapes::test_a_fork_join_with_a_shared_write_set_is_refused_with_every_problem_named`, `test_yi_shapes::test_a_scatter_with_shared_partitions_or_no_lead_is_refused` (T0) |
+| over-admission refused while order is the shape's | `test_yi_shapes::test_fork_join_retries_a_refused_start_and_never_reorders_the_kernel` (T0, fake host counting refusals; the same run shows a module-level shape attaching to itself) |
+| restart intensity bounds retries and respects the step table | `test_yi_shapes::test_one_for_one_stops_after_max_within_window` (T0, the window and the engine's retry refusal both); `plan_e2e::a_shape_cannot_retry_a_done_or_drop_a_running_todo` (T1) |
+| concurrent waiters keep their own cursors | `test_yi_shapes::test_the_scheduler_and_the_model_wait_without_stealing_updates` (T0) |
+| a reader's uncited or unverifiable quote is dropped at the seam | `test_yi_shapes::test_scatter_drops_an_unverifiable_quote_before_the_lead_sees_it` (T0) |
+| abstentions are dropped and rounds are bounded | `test_yi_shapes::test_scatter_ends_at_max_rounds_without_a_commit` (T0) |
 | the fixtures agree as programs and as JSON | `plan_walkthrough::a_program_and_its_json_fixture_reach_the_same_plan_json` (T2) |
-| scatter is measured against direct retrieval | a paired journey row on the same tasks (T3, user-run) |
+| both shapes hold against the real admission, step table and verifier | `kernel_data_surface::both_shapes_schedule_under_the_real_admission_and_step_table` (T2, added) |
+| the overhead against the direct path is counted | `test_yi_shapes::test_both_shapes_do_useful_work_and_the_overhead_is_counted` (T0, added) |
+| scatter is measured against direct retrieval | a paired journey row on the same tasks (T3, user-run; not run in this stage) |
 
 **LOC.** python +420, tests +250. Memo: `growth +420: two shapes and the
 quote seam`. **Row.** "Two shapes ship as library schedulers under the
 engine's admission and step table: fork_join over isolated writers and
 readers, and scatter with readers bound to partitions and quotes verified
 against the archive; four more are specified with their prerequisites
-(D-next-6; Closes #<n>)". **ADR.** "D-next-6: shapes are schedulers in user
+(D212; Closes #455)". **ADR.** "D212: shapes are schedulers in user
 space". **Exit.** independently useful work through both shapes with the
 overhead reported against the direct path.
+
+As landed, against sections 8.5 and 8.6. Python +278, tests +655 (Rust 317, Python
+338 with the three programs), no Rust `src` line. Overhead, counted in host
+requests on the fake host: fork_join over two writers is 9 against the 4 ops sent
+by hand (one `repair`, three views and one `wait` on top, none of them journaled);
+scatter over two readers and a lead is 18 against 2 direct fetches (seven ops, four
+reads, one `wait`, two `rlm.result`, four fetches). The shapes take no arguments
+(`MAX_RESTARTS`, `RESTART_WINDOW` and `SCATTER_MAX_ROUNDS` are module levers), so
+each is a module-level function and the lease's identity check attaches a second
+`plan.run(shape=fork_join)` to the first. fork_join refuses an inline todo as well
+as a writer outside a worktree, since both write the owner's workspace. Its restart
+window is kernel-local; the durable bound is the engine's `RETRY_CAP`, whose
+`retries_exhausted` refusal ends the restarts and stays in `run.refusals`. The
+section 6.3 cap counts refused verdicts per attempt (`done.rs` `refused_verdicts`),
+and the scheduler sends one `done` per attempt, so a retrying shape never reaches
+it; a todo the engine did block is never retried, because only `failed` is. The
+scatter lead is the plan's one inline todo, `async def lead(answers, number)`
+returning `{"commit": answer}` or `{"ask": question}` (there is no `lead` object to
+call `commit` on), and its product is `{"answer", "rounds"}` because a bare string
+is stored as text and a `schema` item finds no JSON in it. A later round declares
+`<reader>-r<n>` todos with the reader's delegation and contract and the question as
+the note; a failed reader is retried and dropped, the two legal steps from `failed`
+to `abandoned`, so the plan can still finish. `verify_quotes` fetches each cited
+url once and reads the line from it: the host's line fragment needs the tag
+(`#L<a>-<b>@<tag>`) a reader does not have. `shapes.ANSWER` types only `quotes`,
+because the host's schema subset has no union type for a nullable `answer`. A
+program reaches its fixture's JSON on the projection the two surfaces share: every
+plan's todos in order (a program's key is the fixture's label in lower case), their
+states, edges, attempts, retries and whether they are delegated, and the committed
+transitions in journal order; the fixture's refused steps, `reorder` and `add_edge`
+are its own, and the library has no surface for the last two. Found on the way and
+fixed: `Todo.decompose` looked a sibling edge up in the parent plan and raised, so
+its own docstring example failed. Not built: a writer child as the scatter lead, a
+check that a quote's url lies inside its reader's partition (the wall is
+cooperative, section 7.6), `rest_for_one` and `one_for_all`, and the four later
+shapes.
 
 ### F1c · Paged recall through `fetch` (D-next-7; extends D164)
 

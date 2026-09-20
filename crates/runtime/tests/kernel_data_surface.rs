@@ -478,3 +478,137 @@ async fn resume_after_a_kernel_death_reuses_results_and_replays_no_cell() -> Tes
     assert_eq!(program.matches("# --- cell ").count(), 2, "{program}");
     Ok(())
 }
+
+/// A delegate whose children are named for their todos, with the names it spawned.
+#[derive(Default)]
+struct Crew(std::sync::Mutex<Vec<String>>);
+
+impl Delegate for Crew {
+    fn spawn(
+        &self,
+        at: &yi_types::plan::doc::TodoAddr,
+        _delegation: &yi_types::plan::doc::Delegation,
+    ) -> Result<yi_types::plan::doc::AgentId, String> {
+        let slug = yi_types::plan::doc::PlanId::slug(at.todo.as_str());
+        let name = slug.map_err(|error| error.to_string())?.to_string();
+        self.0.lock().map_err(|_| "poisoned")?.push(name.clone());
+        yi_types::plan::doc::AgentId::new(name).map_err(|error| error.to_string())
+    }
+
+    fn reap(
+        &self,
+        _agent: &yi_types::plan::doc::AgentId,
+        _supplied: &[yi_types::url::Url],
+    ) -> Result<Option<yi_types::url::Url>, String> {
+        Ok(None)
+    }
+
+    fn follow_up(&self, _dispatched: &[yi_types::plan::doc::TodoLabel], _held: usize) {}
+}
+
+/// Both shapes in one cell: three readers under fork_join, then a scatter whose lead asks twice.
+const SHAPES: &str = r#"
+from yi import Plan, Reader, contract, schema, fork_join, scatter, shapes
+answer = contract(schema(shapes.ANSWER, critical=True))
+plan = await Plan.create("fork then join", request_id="fork")
+for key in ("a", "b", "c"):
+    await plan.todo(key=key, delegate=Reader(partition=[f"local://docs/{key}.md"]), accept=answer)
+r = await plan.run(shape=fork_join, budget=20)
+print("fork_join", r.outcome, r.refusals)
+plan = await Plan.create("which module rotates by size", request_id="scatter")
+for key in ("api", "cli"):
+    await plan.todo(key=key, delegate=Reader(partition=[f"local://docs/{key}.md"]), accept=answer)
+async def lead(answers, number):
+    print("round", number, [(a["reader"], [q["text"] for q in a["quotes"]]) for a in answers])
+    return {"ask": "and by age?"} if number == 1 else {"commit": answers[0]["answer"]}
+await plan.todo(key="lead", run=lead, accept=contract(schema({"type": "object", "required": ["answer"]}, critical=True)))
+r = await plan.run(shape=scatter, budget=20)
+print("scatter", r.outcome, r.refusals, [(t.key, t._doc["state"]) for t in plan.todos])
+"#;
+
+/// The F1b journey: the library's shapes against the real `admit`, step table and verifier.
+/// Dies with the control: start past a refused todo and the width-one engine refuses again,
+/// out of order; hand the lead an unverified quote and round one names the `cli` reader.
+#[tokio::test]
+#[ignore = "tier-2 journey: `just journeys`"]
+async fn both_shapes_schedule_under_the_real_admission_and_step_table() -> TestResult {
+    let dir = Scratch::new("yi-kernel-shapes")?;
+    let (plans, workspace) = (dir.join("plans"), dir.join("ws"));
+    std::fs::create_dir_all(workspace.join("docs"))?;
+    std::fs::write(workspace.join("docs/api.md"), "usage\nrotate(size)\n")?;
+    let crew = Arc::new(Crew::default());
+    let resolver = Arc::new(
+        yi_runtime::fetch::Resolver::new(workspace.clone(), yi_runtime::Wall::default())
+            .with_plans_dir(plans.clone()),
+    );
+    let store = PlanStore::open(plans)?;
+    let engine = PlanEngine::new(store.clone(), crew.clone())
+        .with_cwd(workspace)
+        .with_output_resolve(resolver.clone())
+        .with_width(std::num::NonZeroUsize::MIN);
+    let mut registry = HostRegistry::default();
+    yi_runtime::plan::request::register(Arc::new(engine), Actor::Owner, &mut registry);
+    let reply = |value: serde_json::Value| value.as_object().cloned().ok_or("reply".to_owned());
+    let spawned = Arc::clone(&crew);
+    registry.register("rlm.wait", move |_payload| {
+        let spawned = Arc::clone(&spawned);
+        Box::pin(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            let names = spawned.0.lock().map_err(|_| "poisoned")?.clone();
+            let states: serde_json::Map<_, _> = names
+                .into_iter()
+                .map(|name| (name, serde_json::json!("finished")))
+                .collect();
+            reply(serde_json::json!({"cursor": 1, "changed": [], "states": states, "notes": {}}))
+        })
+    });
+    registry.register("rlm.result", move |payload| {
+        Box::pin(async move {
+            // The `cli` readers cite a line the archive does not have.
+            let invented = payload.get("target").and_then(serde_json::Value::as_str);
+            let line = if invented.is_some_and(|name| name.starts_with("cli")) { 1 } else { 2 };
+            let quote = serde_json::json!({"url": "local://docs/api.md", "line": line, "text": "rotate(size)"});
+            reply(serde_json::json!({"text": "", "json": {"answer": "rotate()", "quotes": [quote]}}))
+        })
+    });
+    registry.register("fetch", move |payload| {
+        let resolver = Arc::clone(&resolver);
+        Box::pin(async move {
+            let url = payload.get("url").and_then(serde_json::Value::as_str);
+            let url: yi_types::url::Url = url.ok_or("url")?.parse().map_err(|_| "url")?;
+            let fetched = resolver.fetch(&url).map_err(|error| error.to_string())?;
+            reply(serde_json::json!({"text": fetched.text}))
+        })
+    });
+    let service = service_with(registry);
+    let outcome = cell(&service, SHAPES).await?;
+    service.dispose().await;
+    let printed = format!("{}\n{:?}", outcome.result.stdout, outcome.result.error);
+    assert!(
+        printed.contains("fork_join verified_success {}"),
+        "{printed}"
+    );
+    let fork = store.journal(&yi_types::plan::doc::PlanId::slug("fork then join")?);
+    let starts: Vec<String> = fork
+        .read()?
+        .records
+        .iter()
+        .filter(|record| record.record.op == "start")
+        .filter_map(|record| record.record.todo.as_ref().map(ToString::to_string))
+        .collect();
+    assert_eq!(
+        starts,
+        ["a", "b", "b", "c", "c"],
+        "one slot: each refused start is journaled, asked again, and never overtaken"
+    );
+    assert!(
+        printed.contains("round 1 [('api', ['rotate(size)'])]"),
+        "{printed}"
+    );
+    assert!(
+        printed.contains("round 2 [('api-r2', ['rotate(size)'])]"),
+        "{printed}"
+    );
+    assert!(printed.contains("scatter verified_success {}"), "{printed}");
+    Ok(())
+}

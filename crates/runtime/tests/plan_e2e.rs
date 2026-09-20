@@ -692,3 +692,44 @@ async fn expected_revision_is_compared_on_the_plan_the_op_names() -> TestResult 
     assert_eq!(store.read(&PlanId::new("alpha")?)?.touched, TouchCount(3));
     Ok(())
 }
+
+/// Guards the step table against a library scheduler (plan section 8.5): the ops a restart
+/// strategy is tempted by are refused as `illegal_step` through `plan.op`, and the states stand.
+#[tokio::test]
+async fn a_shape_cannot_retry_a_done_or_drop_a_running_todo() -> TestResult {
+    let dir = Scratch::new("yi-plan-op-shape-steps")?;
+    let engine = Arc::new(
+        PlanEngine::new(PlanStore::open(dir.to_path_buf())?, Arc::new(Named))
+            .with_width(std::num::NonZeroUsize::MIN.saturating_add(1)),
+    );
+    let mut registry = HostRegistry::default();
+    yi_runtime::plan::request::register(Arc::clone(&engine), Actor::Owner, &mut registry);
+    let op = |request: &str, op: &str, label: &str| serde_json::json!({"request_id": request, "op": op, "args": {"label": label}});
+    let init = serde_json::json!({"request_id": "i", "op": "init", "args": {
+        "goal": "fork and join", "todos": [{"label": "finished"}, {"label": "busy"}]}});
+    assert_eq!(plan_op(&registry, init).await?["ok"], true);
+    for (request, step, label) in [
+        ("s1", "start", "finished"),
+        ("d1", "done", "finished"),
+        ("s2", "start", "busy"),
+    ] {
+        let reply = plan_op(&registry, op(request, step, label)).await?;
+        assert_eq!(reply["ok"], true, "{reply:?}");
+    }
+    for (request, step, label) in [("r1", "retry", "finished"), ("x1", "drop", "busy")] {
+        let reply = plan_op(&registry, op(request, step, label)).await?;
+        assert_eq!(reply["ok"], false, "{step} {label}: {reply:?}");
+        assert_eq!(reply["refusal"]["kind"], "illegal_step", "{reply:?}");
+    }
+    let file = PlanStore::open(dir.to_path_buf())?.read(&PlanId::slug("fork and join")?)?;
+    let state = |label: &str| -> Result<TodoState, Box<dyn Error>> {
+        Ok(file
+            .todo(&TodoLabel::new(label)?)
+            .ok_or("todo")?
+            .state
+            .clone())
+    };
+    assert!(matches!(state("finished")?, TodoState::Done { .. }));
+    assert!(matches!(state("busy")?, TodoState::Running { .. }));
+    Ok(())
+}
