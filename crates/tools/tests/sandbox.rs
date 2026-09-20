@@ -133,6 +133,7 @@ fn a_contained_command_writes_only_where_the_policy_says() -> TestResult {
     let sandbox = Sandbox {
         writable: vec![project.clone()],
         deny_read: vec![home.join(".ssh")],
+        deny_write: Vec::new(),
     };
 
     let (code, output) = run("echo contained > inside.txt", &project, Some(&sandbox))?;
@@ -167,6 +168,7 @@ fn a_contained_command_reads_the_tree_but_not_the_keys() -> TestResult {
     let sandbox = Sandbox {
         writable: vec![project.clone()],
         deny_read: vec![home.join(".ssh")],
+        deny_write: Vec::new(),
     };
 
     let ordinary = format!("cat {}", home.join("notes.md").display());
@@ -287,5 +289,45 @@ fn a_contained_git_commit_succeeds_in_a_linked_worktree() -> TestResult {
         "a contained commit in a lane must succeed: {output}"
     );
     assert_eq!(git(&lane, &["log", "-1", "--format=%s"])?, "lane");
+    Ok(())
+}
+
+/// A hook and a config are code git runs on the host, outside any sandbox: making the git dirs
+/// writable must not hand a contained command a way out of the sandbox (D205).
+#[cfg(target_os = "macos")]
+#[test]
+fn a_contained_command_cannot_write_a_hook_or_the_config() -> TestResult {
+    if !Sandbox::available() {
+        return Ok(());
+    }
+    let (root, _project, home) = workspace("hooks")?;
+    let (trunk, lane) = linked_worktree(&root)?;
+    let mut sandbox = Sandbox::for_workspace(&lane, &home, None);
+    let scratch = root.canonicalize()?;
+    sandbox.writable.retain(|writable| {
+        writable
+            .canonicalize()
+            .is_ok_and(|resolved| resolved.starts_with(&scratch))
+            || writable == Path::new("/private/tmp")
+    });
+    let common = trunk.join(".git");
+    for target in [
+        common.join("hooks/post-commit"),
+        common.join("config"),
+        common.join("worktrees/lane/commondir"),
+    ] {
+        let command = format!("printf x >> {}", target.display());
+        let (code, output) = run(&command, &lane, Some(&sandbox))?;
+        assert_ne!(
+            code,
+            0,
+            "{} must stay out of reach: {output}",
+            target.display()
+        );
+    }
+    // The point of the grant is still met: the index and refs are writable.
+    std::fs::write(lane.join("change.txt"), "from the lane\n")?;
+    let (code, output) = run("git add -A", &lane, Some(&sandbox))?;
+    assert_eq!(code, 0, "a contained `git add` still works: {output}");
     Ok(())
 }

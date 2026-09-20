@@ -381,7 +381,7 @@ fn git_global_options_do_not_become_the_subcommand() -> TestResult {
 /// `&& git status | wc -l` is still the refused `git worktree`.
 #[test]
 fn scope_names_program_and_subcommand() {
-    let cases: [(&str, &[&str]); 9] = [
+    let cases: [(&str, &[&str]); 14] = [
         ("git worktree add ../wt br", &["git worktree"]),
         ("git -C ../wt add -A", &["git add"]),
         ("CARGO_TARGET_DIR=/t cargo nextest run", &["cargo nextest"]),
@@ -397,6 +397,13 @@ fn scope_names_program_and_subcommand() {
             &["python3"],
         ),
         ("printf x > /outside/file", &["printf"]),
+        // A wrapper is not the program: remembering `timeout` poisons every later timeout and
+        // forgets the command that was actually refused (D206).
+        ("timeout 30 ./flaky.sh", &["flaky.sh"]),
+        ("nice -n 5 ./flaky.sh", &["flaky.sh"]),
+        ("env FOO=1 ./flaky.sh", &["flaky.sh"]),
+        ("ionice -c 3 nice cargo fmt", &["cargo fmt"]),
+        ("for f in *; do ./x $f; done", &["x"]),
     ];
     for (command, expected) in cases {
         assert_eq!(refused_scopes(command), expected, "{command:?}");
