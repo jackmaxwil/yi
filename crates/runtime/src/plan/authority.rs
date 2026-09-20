@@ -128,8 +128,11 @@ fn confirmed(
         description: &description,
         patch: None,
         changes: &[],
+        // No standing grant for an administrative op: D193 wants a confirmed
+        // channel per op, so "always" here is the one answer, not a rule kept.
+        grants: &[],
     });
-    if !matches!(answer, AskOutcome::AllowOnce | AskOutcome::AllowAlways) {
+    if !matches!(answer, AskOutcome::AllowOnce | AskOutcome::AllowAlways(_)) {
         return Err(SubmitError::Declined {
             op,
             plan: current.id,
