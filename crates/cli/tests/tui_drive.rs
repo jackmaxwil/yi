@@ -502,6 +502,7 @@ fn cassette_lines(calls: &[(&str, serde_json::Value)], reply: &str) -> String {
     lines.join("\n") + "\n"
 }
 
+#[cfg(target_os = "macos")]
 fn bash(command: &str) -> (&'static str, serde_json::Value) {
     ("bash", serde_json::json!({ "command": command }))
 }
