@@ -807,6 +807,13 @@ fn doctor_reports_and_repairs_what_it_may() -> TestResult {
         lines.iter().any(|l| l.starts_with("ok    home")),
         "{lines:?}"
     );
+    // D209: where yi runs decides what a contained command and a placement can reach.
+    assert!(
+        lines
+            .iter()
+            .any(|l| l.starts_with("ok    host") && l.len() > "ok    host".len() + 2),
+        "the doctor names the host environment: {lines:?}"
+    );
     let fixed = workspace.yi_env(&["doctor", "--fix"], NO_KERNEL)?;
     let lines = doctor_lines(&fixed);
     assert!(
@@ -833,6 +840,7 @@ fn doctor_reports_and_repairs_what_it_may() -> TestResult {
     assert_eq!(
         names,
         [
+            "host",
             "home",
             "config",
             "catalog",

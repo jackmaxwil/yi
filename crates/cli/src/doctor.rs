@@ -40,7 +40,8 @@ struct Site {
 type Check = fn(&Site) -> Finding;
 
 /// The rows, in the order a reader wants them: what the process is, then what it owns.
-const ROWS: [(&str, Check); 9] = [
+const ROWS: [(&str, Check); 10] = [
+    ("host", host_environment),
     ("home", home_absolute),
     ("config", config_parses),
     ("catalog", catalog_age),
@@ -51,6 +52,11 @@ const ROWS: [(&str, Check); 9] = [
     ("daemon-ledger", ledger_roots_exist),
     ("lanes", lanes_consistent),
 ];
+
+/// Never a failure: where yi runs decides what a contained command and a placement can reach.
+fn host_environment(_site: &Site) -> Finding {
+    ok(yi_runtime::host::facts().line())
+}
 
 fn home_absolute(site: &Site) -> Finding {
     if site.home.is_absolute() {

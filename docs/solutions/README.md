@@ -181,5 +181,6 @@ when it changes rather than editing them by hand.
 - [D206](adr/d206.md) - a sandbox refusal is remembered by program and verb, not by text
 - [D207](adr/d207.md) - "always allow" keeps a grant, not the call
 - [D208](adr/d208.md) - the status row names the tree the session runs in, not the root its client...
+- [D209](adr/d209.md) - yi reads where it runs and says so
 
 D36-D51, D72, D73 and D74 have no ADR yet; ARCHITECTURE.md is the record for those rows.

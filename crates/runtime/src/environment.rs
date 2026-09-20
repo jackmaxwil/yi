@@ -203,9 +203,10 @@ pub fn hook(
             .map(|name| format!(" · shell {name}"))
             .unwrap_or_default();
         lines.push(format!(
-            "platform: {} {}{shell}",
+            "platform: {} {}{shell} · host {}",
             std::env::consts::OS,
-            std::env::consts::ARCH
+            std::env::consts::ARCH,
+            crate::host::facts().line()
         ));
         let (model, effort) = settings();
         let mode = broker
