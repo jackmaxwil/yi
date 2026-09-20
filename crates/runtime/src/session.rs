@@ -762,19 +762,6 @@ impl AgentSession {
         (self.heartbeat_hook())(message, yi_types::schedule::DeliveryMode::Steer);
     }
 
-    pub fn abort(&self) {
-        self.shared.signal.fire();
-    }
-
-    pub async fn wait_idle(&self) {
-        loop {
-            if self.status() == Status::Idle {
-                return;
-            }
-            self.shared.idle.notified().await;
-        }
-    }
-
     /// Returns at admission; the run streams in a spawned task (R6).
     pub fn prompt(&self, text: &str) -> Result<(), SessionError> {
         self.prompt_message(user_message(text))
@@ -783,6 +770,16 @@ impl AgentSession {
     /// Starts an idle session's turn without re-wrapping the message as plain
     /// user text.
     pub fn prompt_message(&self, prompt: AgentMessage) -> Result<(), SessionError> {
+        self.prompt_requested(prompt, None)
+    }
+
+    /// `requested` is [`Self::abort_epoch`] read when the run was asked for, so an abort fired
+    /// between the request and admission still stops it.
+    pub fn prompt_requested(
+        &self,
+        prompt: AgentMessage,
+        requested: Option<u64>,
+    ) -> Result<(), SessionError> {
         if self.status() == Status::Idle {
             start_ext(&self.shared, &prompt_text(&prompt));
         }
@@ -794,7 +791,7 @@ impl AgentSession {
             compactor: self.compactor.clone(),
             on_compacted: self.on_compacted.lock().ok().and_then(|slot| slot.clone()),
         };
-        Self::spawn_run(parts, prompt)
+        Self::spawn_run(parts, prompt, requested)
     }
 
     /// Wakes an idle session without `&self`; model, effort and tools are read at run start.
@@ -809,7 +806,7 @@ impl AgentSession {
             compactor: self.compactor.clone(),
             on_compacted: self.on_compacted.lock().ok().and_then(|slot| slot.clone()),
         };
-        Arc::new(move |prompt| Self::spawn_run(parts.clone(), prompt))
+        Arc::new(move |prompt| Self::spawn_run(parts.clone(), prompt, None))
     }
 
     /// Invariant: pre-first-turn only (B5) — mid-run it races the appending turn.
@@ -819,7 +816,11 @@ impl AgentSession {
         }
     }
 
-    fn spawn_run(parts: RunParts, prompt: AgentMessage) -> Result<(), SessionError> {
+    fn spawn_run(
+        parts: RunParts,
+        prompt: AgentMessage,
+        requested: Option<u64>,
+    ) -> Result<(), SessionError> {
         {
             let Ok(mut status) = parts.shared.status.lock() else {
                 return Err(SessionError::Busy);
@@ -831,7 +832,7 @@ impl AgentSession {
         }
         // Incident: nothing cleared the session-wide signal, so the first abort aborted every
         // later turn. Reading the epoch at admission still stops one hit before the spawn.
-        let admitted_epoch = parts.shared.signal.epoch();
+        let admitted_epoch = requested.unwrap_or_else(|| parts.shared.signal.epoch());
         let RunParts {
             shared,
             provider,

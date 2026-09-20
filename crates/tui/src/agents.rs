@@ -252,6 +252,15 @@ impl crate::app::App {
         Some(crate::pycell::preview(code)).filter(|line| !line.is_empty())
     }
 
+    /// That cell's call id: the one cell a finished card waits on before it commits.
+    pub(crate) fn spawning_call(&self) -> Option<String> {
+        self.live_tools
+            .iter()
+            .rev()
+            .find(|tool| tool.name == "ipython" && tool.status != ToolStatus::Done)
+            .map(|tool| tool.call_id.clone())
+    }
+
     /// The host's `interrupt` ends a run by aborting the child's own session, which the App
     /// already holds; the record it keeps besides that is the host's either way.
     pub fn stop_child(&mut self, child_id: &str) {

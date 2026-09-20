@@ -39,6 +39,24 @@ fn take_queued(queue: &std::sync::Mutex<Vec<AgentMessage>>, message: &AgentMessa
 }
 
 impl AgentSession {
+    pub fn abort(&self) {
+        self.shared.signal.fire();
+    }
+
+    /// The interrupt's epoch, read when a run is requested for [`Self::prompt_requested`].
+    pub fn abort_epoch(&self) -> u64 {
+        self.shared.signal.epoch()
+    }
+
+    pub async fn wait_idle(&self) {
+        loop {
+            if self.status() == Status::Idle {
+                return;
+            }
+            self.shared.idle.notified().await;
+        }
+    }
+
     pub fn ext_hook(&self) -> ExtHook {
         let shared = Arc::clone(&self.shared);
         Arc::new(move |event| dispatch_ext(&shared, &event))

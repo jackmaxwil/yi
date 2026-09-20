@@ -2060,7 +2060,7 @@ rule 3 names the program; `identity.md` names `yi`. `request_budget`
 `--update` in its own commit named in the row. Tests: `prompts.rs` (every
 identifier defined in its example), `ext_e2e::fragment_examples_name_real_kernel_apis`.
 
-### F1e · Every child exit is published once, and clients reconcile (D-next-7b; extends D165)
+### F1e · Every child exit is published once, and clients reconcile (D210, landed 0.269.0; extends D165)
 
 Added 2026-09-20 from the child lifecycle audit. Anchors are by symbol; the
 tree wins over any line number. Root cause: a child's lifecycle lives in
@@ -2128,6 +2128,15 @@ Repairs, smallest first, each its own commit inside the stage:
     record wins over the folded stream when they disagree (precedence:
     `ChildUpdate`, then roster, then raw stream).
 
+As landed: `retire` publishes for every removal, so `run_child` stays silent on a
+missing record (repair 2's second publish would have made two); repair 5 reserves
+the name and slot in a `building` list rather than a placeholder record, so a
+failed build has nothing to retire; repair 6 holds a finished card only behind
+the one cell it was born under, which keeps the pair test's ordering; repair 8's
+poll was already gone at F0a, so the handle gained the `stuck` raise alone; a
+roster-rule test, `tui_e2e::a_card_the_roster_stopped_listing_ends_as_gone`, was
+added for repair 3.
+
 Not in this stage (YAGNI until F2b needs them): a new `ChildStatus` variant,
 moving the environment hook's git probes off the runtime thread (measure
 first; `spawn_blocking` if the lag tests show starvation), splitting
@@ -2135,16 +2144,16 @@ first; `spawn_blocking` if the lag tests show starvation), splitting
 
 | control | test (tier) |
 |---|---|
-| every exit publishes exactly one terminal update with a machine-readable cause | `recursion_e2e::every_exit_publishes_one_terminal_update` (T1; parameterised over complete, error, interrupt, delete while running, delete after end, reap, deadline; subscribes to the parent bus, never polls `host.list()`) |
+| every exit publishes exactly one terminal update with a machine-readable cause | `recursion_e2e::every_exit_publishes_one_terminal_update` (T1; parameterised over complete, error, interrupt, delete while running, delete after end and reap; the deadline fires the same interrupt signal and `set_deadline` is crate-private, so it has no road of its own; subscribes to the parent bus, never polls `host.list()`) |
 | a client view equals a projection of the host's records | `subagent_fuzz::no_card_runs_without_a_record` (T0; sequences of spawn, finish, interrupt, delete, reap and injected lag, the `plan_fuzz.rs` pattern) |
 | a lagged forwarder survives and surfaces the gap | `tui_e2e::a_forwarder_survives_a_capacity_four_bus` (T1) |
 | delete before the first poll leaves no zombie run and bills nothing | `recursion_e2e::a_child_deleted_before_its_first_poll_never_runs` (T1) |
 | a late subscriber still shows the last tool | `tui_e2e::a_card_adopted_after_the_first_tool_event_names_it` (T1) |
-| the kernel delete journey leaves no live card and tells the parent why | `tui_e2e::a_kernel_cell_that_spawns_and_deletes_leaves_no_live_card` (T2; `h = await rlm.run(...); await rlm.delete_subagent(h)`, then render) |
+| the kernel delete journey leaves no live card and tells the parent why | `tui_e2e::a_kernel_cell_that_spawns_and_deletes_leaves_no_live_card` (T1, the client half: spawn and delete under a live cell, the bus alone ends the card, then render) and `recursion_e2e::a_kernel_cell_that_spawns_and_deletes_tells_why` (T2, a real kernel runs `h = await rlm.run(...); await rlm.delete_subagent(h)`; yi-tui has no road to the kernel bridge without a new dev-dependency) |
 | a finished card commits while an `ipython` cell is live | `tui_e2e::a_finished_card_commits_under_a_live_cell` (T1) |
-| spawn does not hold the roster lock across the build | `subagent::states_answers_while_a_child_is_being_built` (T0, a factory that blocks on a channel) |
+| spawn does not hold the roster lock across the build | `subagent_fuzz::states_answers_while_a_child_is_being_built` (T0, a factory that blocks on a channel) |
 | a blocked handle sees stuck | `test_rlm_handle::result_surfaces_a_stuck_state_from_wait` (T0, fake host) |
-| the console drops a gone row and keeps accepting past the cap | `console chat::a_retired_child_leaves_the_roster_and_row_thirty_three_is_kept` (T0) |
+| the console drops a gone row and keeps accepting past the cap | `console chat::tests::a_child_first_seen_at_its_end_gets_no_row_and_row_thirty_three_is_kept` (T0; without a protocol change the console cannot tell a retired child from a retained one, so the rule is that a child first heard of at its end gets no row) |
 
 **LOC.** yi-runtime +140, yi-tui +90 −30, yi-console +25, python +15 −30,
 tests +420. Memo: `growth +240: every child exit is published and clients

@@ -70,6 +70,8 @@ struct Harness {
 }
 
 struct HarnessOptions {
+    /// The child's one reply ends on a provider error instead of an answer.
+    child_errors: bool,
     depth: u8,
     max_depth: u8,
     child_answer: &'static str,
@@ -84,6 +86,7 @@ struct HarnessOptions {
 
 fn harness(depth: u8, max_depth: u8, child_answer: &'static str) -> std::io::Result<Harness> {
     harness_with(HarnessOptions {
+        child_errors: false,
         depth,
         max_depth,
         child_answer,
@@ -141,6 +144,7 @@ fn assistant_count(messages: &[AgentMessage]) -> usize {
 
 fn harness_with(options: HarnessOptions) -> std::io::Result<Harness> {
     let HarnessOptions {
+        child_errors,
         depth,
         max_depth,
         child_answer,
@@ -193,6 +197,12 @@ fn harness_with(options: HarnessOptions) -> std::io::Result<Harness> {
                 script.push(faux_assistant_message(
                     vec![yi_ai::faux::faux_tool_call("call-1", "bash", args)],
                     StopReason::ToolUse,
+                ));
+            }
+            if child_errors {
+                script.push(faux_assistant_message(
+                    vec![faux_text(child_answer)],
+                    StopReason::Error,
                 ));
             }
             script.push(child_reply(child_answer));
@@ -354,6 +364,7 @@ async fn collect_updates(
 #[tokio::test]
 async fn child_updates_ride_the_parent_bus_with_counts_and_activity() -> TestResult {
     let harness = harness_with(HarnessOptions {
+        child_errors: false,
         depth: 0,
         max_depth: 1,
         child_answer: "swept the logs",
@@ -803,6 +814,7 @@ fn git_repo(label: &str) -> Result<Scratch, Box<dyn Error>> {
 async fn a_worktree_child_gets_its_own_checkout_and_hands_it_back() -> TestResult {
     let repo = git_repo("merge")?;
     let harness = harness_with(HarnessOptions {
+        child_errors: false,
         depth: 0,
         max_depth: 1,
         child_answer: "isolated",
@@ -873,6 +885,7 @@ async fn a_worktree_child_gets_its_own_checkout_and_hands_it_back() -> TestResul
 async fn discarding_a_worktree_throws_the_branch_away() -> TestResult {
     let repo = git_repo("discard")?;
     let harness = harness_with(HarnessOptions {
+        child_errors: false,
         depth: 0,
         max_depth: 1,
         child_answer: "discarded",
@@ -1376,6 +1389,7 @@ fn discovery_texts(harness: &Harness) -> Vec<String> {
 async fn a_discovery_the_runtime_cannot_adjudicate_holds_the_result_back() -> TestResult {
     let cwd = Scratch::new("yi-adjudication-no-plan")?;
     let harness = harness_with(HarnessOptions {
+        child_errors: false,
         depth: 0,
         max_depth: 1,
         child_answer: ONE_DISCOVERY,
@@ -1412,6 +1426,7 @@ async fn a_high_row_that_cannot_reach_the_ledger_holds_the_result_back() -> Test
     let cwd = Scratch::new("yi-adjudication-no-ledger")?;
     write_canonical_plan(&cwd, &[("t1", "exit 4")])?;
     let harness = harness_with(HarnessOptions {
+        child_errors: false,
         depth: 0,
         max_depth: 1,
         child_answer: ONE_DISCOVERY,
@@ -1472,6 +1487,7 @@ async fn criticality_is_derived_by_re_running_the_ancestors_check() -> TestResul
     let cwd = Scratch::new("yi-adjudication-criticality")?;
     write_canonical_plan(&cwd, &[("t1", "exit 4"), ("t2", "true")])?;
     let harness = harness_with(HarnessOptions {
+        child_errors: false,
         depth: 0,
         max_depth: 1,
         child_answer: TWO_DISCOVERIES,
@@ -1661,6 +1677,7 @@ async fn concurrent_notices_preserve_updates_and_coalesce_wakes() -> TestResult 
     parent.use_tools(yi_tools::builtin_tools(), std::env::temp_dir(), None);
     let parent = Arc::new(parent);
     let harness = harness_with(HarnessOptions {
+        child_errors: false,
         depth: 0,
         max_depth: 1,
         child_answer: "done",
@@ -1859,5 +1876,215 @@ async fn late_wait_observes_already_completed_child() -> TestResult {
     );
     assert_eq!(late["changed"], json!(["early"]), "{late:?}");
     assert_eq!(late["states"]["early"], json!("finished"));
+    Ok(())
+}
+
+/// One exit, by the road named: what the parent bus must carry for it.
+async fn exit_updates(road: &str) -> Result<(Vec<ChildUpdate>, Vec<ChildUpdate>), Box<dyn Error>> {
+    let running = matches!(road, "interrupt" | "delete while running");
+    let harness = harness_with(HarnessOptions {
+        child_errors: road == "error",
+        depth: 0,
+        max_depth: 1,
+        child_answer: "the answer",
+        tool_command: running.then_some("sleep 30"),
+        cwd: None,
+        wake_parent: None,
+    })?;
+    let mut events = harness.events.subscribe();
+    let reply = harness
+        .host
+        .spawn("work".to_owned(), kwargs(&[("name", "exiting")]))
+        .map_err(|error| error.to_string())?;
+    let child_id = reply["rlm_child_id"].as_str().ok_or("no id")?.to_owned();
+    let mut seen = Vec::new();
+    if running {
+        // Held inside its `sleep`: the bus says so before the exit is asked for.
+        while !seen
+            .last()
+            .is_some_and(|update: &ChildUpdate| update.activity == ChildActivity::Executing)
+        {
+            let event =
+                tokio::time::timeout(std::time::Duration::from_secs(20), events.recv()).await??;
+            if let AgentEvent::ChildUpdate { update } = event {
+                assert_eq!(update.status, ChildStatus::Running, "{road}: ended early");
+                seen.push(update);
+            }
+        }
+    } else {
+        seen = collect_updates(&mut events).await;
+    }
+    match road {
+        "interrupt" => drop(harness.host.interrupt("exiting")?),
+        "delete while running" | "delete after end" => drop(harness.host.delete("exiting")?),
+        "reap" => drop(harness.host.reap("exiting")?),
+        _ => {}
+    }
+    // The bus alone, never `host.list()`: what arrives once the exit was asked for.
+    let mut after = Vec::new();
+    while let Ok(Ok(event)) =
+        tokio::time::timeout(std::time::Duration::from_millis(700), events.recv()).await
+    {
+        if let AgentEvent::ChildUpdate { update } = event {
+            after.push(update);
+        }
+    }
+    seen.retain(|update| update.id.as_str() == child_id);
+    after.retain(|update| update.id.as_str() == child_id);
+    Ok((seen, after))
+}
+
+/// Guards the terminal update: a removal took the record without a publish, and the run it cut
+/// short then found no record and skipped its own, so a client's card ran forever.
+#[tokio::test]
+async fn every_exit_publishes_one_terminal_update() -> TestResult {
+    let roads = [
+        ("complete", ChildStatus::Completed, None),
+        (
+            "error",
+            ChildStatus::Error,
+            Some("child run ended with an error"),
+        ),
+        ("interrupt", ChildStatus::Error, Some("interrupted")),
+        (
+            "delete while running",
+            ChildStatus::Error,
+            Some("interrupted"),
+        ),
+        ("delete after end", ChildStatus::Completed, None),
+        ("reap", ChildStatus::Completed, None),
+    ];
+    for (road, status, cause) in roads {
+        let (before, after) = exit_updates(road).await?;
+        let asked = !matches!(road, "complete" | "error");
+        let terminal: Vec<&ChildUpdate> = before
+            .iter()
+            .chain(&after)
+            .filter(|update| update.status != ChildStatus::Running)
+            .collect();
+        assert!(!terminal.is_empty(), "{road}: no terminal update at all");
+        for update in &terminal {
+            assert_eq!(
+                (update.status, update.error.as_deref()),
+                (status, cause),
+                "{road}: one machine-readable cause, never two stories: {terminal:?}"
+            );
+        }
+        if asked {
+            let told = after
+                .iter()
+                .filter(|update| update.status != ChildStatus::Running)
+                .count();
+            assert!(
+                told >= 1,
+                "{road}: the exit itself published nothing: {after:?}"
+            );
+            if road == "delete while running" {
+                assert_eq!(
+                    told, 1,
+                    "the record is gone, so nothing may follow: {after:?}"
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Guards the abort-before-first-poll race: admission read the interrupt's epoch after the
+/// delete had moved it, cleared the abort, and a child with no record ran to the end unseen.
+#[tokio::test]
+async fn a_child_deleted_before_its_first_poll_never_runs() -> TestResult {
+    let marker = Scratch::new("yi-zombie")?;
+    let ran = marker.join("ran");
+    let command: &'static str = Box::leak(format!("touch {}", ran.display()).into_boxed_str());
+    let harness = harness_with(HarnessOptions {
+        child_errors: false,
+        depth: 0,
+        max_depth: 1,
+        child_answer: "done",
+        tool_command: Some(command),
+        cwd: None,
+        wake_parent: None,
+    })?;
+    // No await between the two: the child's run task has not been polled once.
+    harness
+        .host
+        .spawn("work".to_owned(), kwargs(&[("name", "zombie")]))
+        .map_err(|error| error.to_string())?;
+    harness.host.delete("zombie")?;
+    tokio::time::sleep(std::time::Duration::from_millis(1_500)).await;
+    assert!(!ran.exists(), "the deleted child ran its tool call anyway");
+    assert_eq!(harness.attributed.load(Ordering::SeqCst), 0, "it billed");
+    let notices = harness.notices.lock().map_err(|e| e.to_string())?.clone();
+    assert!(
+        notices.is_empty(),
+        "a retired child tells nothing: {notices:?}"
+    );
+    Ok(())
+}
+
+/// Guards the kernel delete journey on a real kernel: `delete_subagent` refused the handle
+/// `rlm.run` had just returned, and a removal it did make published nothing to any client.
+#[tokio::test]
+async fn a_kernel_cell_that_spawns_and_deletes_tells_why() -> TestResult {
+    let harness = harness_with(HarnessOptions {
+        child_errors: false,
+        depth: 0,
+        max_depth: 1,
+        child_answer: "never reached",
+        tool_command: Some("sleep 30"),
+        cwd: None,
+        wake_parent: None,
+    })?;
+    let mut events = harness.events.subscribe();
+    let mut registry = HostRegistry::default();
+    registry.register_mcp_stubs();
+    harness.host.register(&mut registry);
+    let service = Arc::new(KernelService::new(KernelServiceOptions {
+        cwd: std::env::temp_dir(),
+        home: std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .unwrap_or_default(),
+        session_dir: Some(harness.root.to_path_buf()),
+        family_dir: None,
+        host: Arc::new(registry),
+        on_restore: None,
+        sandbox: None,
+        snapshot_key: None,
+        cell_ceiling: None,
+    }));
+    let cancelled: yi_tools::CancelFlag = Arc::new(|| false);
+    let cell = tokio::task::spawn_blocking({
+        let service = Arc::clone(&service);
+        move || {
+            yi_tools::KernelBridge::execute_cell(
+                service.as_ref(),
+                "h = await rlm.run('hold on', name='doomed')\nd = await rlm.delete_subagent(h)\nprint(d.session_name, d.status)",
+                &cancelled,
+            )
+        }
+    })
+    .await??;
+    assert!(
+        cell.result.stdout.contains("doomed error"),
+        "the delete takes the handle and says the run did not finish: {} {}",
+        cell.result.stdout,
+        cell.result.stderr
+    );
+    let mut last = None;
+    while let Ok(Ok(event)) =
+        tokio::time::timeout(std::time::Duration::from_millis(700), events.recv()).await
+    {
+        if let AgentEvent::ChildUpdate { update } = event {
+            last = Some(update);
+        }
+    }
+    let last = last.ok_or("the bus carried no update for the child")?;
+    assert_eq!(
+        (last.status, last.error.as_deref()),
+        (ChildStatus::Error, Some("interrupted")),
+        "the last word on the bus is the exit, with its cause: {last:?}"
+    );
+    assert!(harness.host.children_view().is_empty());
     Ok(())
 }
