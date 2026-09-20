@@ -2060,6 +2060,102 @@ rule 3 names the program; `identity.md` names `yi`. `request_budget`
 `--update` in its own commit named in the row. Tests: `prompts.rs` (every
 identifier defined in its example), `ext_e2e::fragment_examples_name_real_kernel_apis`.
 
+### F1e · Every child exit is published once, and clients reconcile (D-next-7b; extends D165)
+
+Added 2026-09-20 from the child lifecycle audit. Anchors are by symbol; the
+tree wins over any line number. Root cause: a child's lifecycle lives in
+three places (the host's record map, the event bus, each client's cache) with
+no shared transition, and the two removal paths (`SubagentHost::delete`,
+`SubagentHost::reap`) take the record away without a `publish`. `run_child`
+then finds no record, takes the `reaped` early return and skips the terminal
+update too. A TUI card frozen at `Running` is never committed and never
+dropped; `rlm.delete_subagent` before a child's first event mints one such
+card per call. This stage is a bug fix and lands on its own evidence,
+independent of the F0e decision (§11 F0e, last sentence).
+
+**Files.** `crates/runtime/src/subagent.rs` (`retire`, `run_child`, `spawn`,
+`watch`), `crates/runtime/src/mailbox.rs` (`reap`), `crates/loop/src/interrupt.rs`
+and `crates/runtime/src/session.rs` (the abort-before-first-poll race),
+`crates/tui/src/app.rs` (`sync_children`, both forwarders,
+`commit_finished_tasks`, the stop command), `crates/tui/src/cell.rs`
+("starting"), `crates/console/src/app/chat.rs` (row cache),
+`python/yi_runtime/src/rlm/__init__.py` (`RLMSpawnHandle.result`).
+
+Repairs, smallest first, each its own commit inside the stage:
+
+1. One `retire(key)` helper that both `delete` and `reap` call: remove the
+   record under the lock, then send a final `ChildUpdate` built from the
+   removed record with its status forced off `Running` (`Error` if it held
+   one, else `Completed`). The TUI's existing `reduce_child_update` and
+   `commit_finished_tasks` then clear the card; no protocol change. `reap`
+   gains `delete`'s worktree refusal (through F0d's `take_settled_worktree`),
+   so the two paths differ only in keeping the transcript.
+2. An aborted run is not `Completed`: `run_child` maps an interrupted stop
+   reason to `error: "interrupted"` and publishes the terminal update even
+   when the record is already gone (built from the fields it holds). The
+   parent's notice says interrupted, never finished.
+3. `sync_children` reconciles: keep a task only if it is in the roster or
+   already finished; a task absent from the roster and still `Running` is
+   marked finished with cause "gone" and committed. This heals every silence
+   below, including a dead forwarder.
+4. Both TUI forwarders (`while let Ok(event) = events.recv().await`, parent
+   bus and child bus) handle `RecvError::Lagged` the way `crates/acp/src/forward.rs`
+   does: report the gap and keep going; only `Closed` ends the loop. The
+   host's own `watch` task does the same and re-reads the record's counters
+   from the session after a gap, so a missed `ToolExecutionEnd` cannot leave
+   activity on `Executing`.
+5. `spawn` releases the `children` lock before `child_factory` and
+   `attach_runtime`: reserve the name and the slot under the lock (a
+   placeholder record), build the child unlocked, then fill the record; a
+   failed build removes the placeholder through `retire`.
+6. The `ipython`-not-Done gate in `commit_finished_tasks` becomes an ordering
+   hint: a finished card commits at once, placed after its spawning cell when
+   that cell is still live. A lost cell-end event can no longer hold every
+   card.
+7. Abort before the first poll: `spawn_run` admission must not clear an abort
+   fired after the run was requested. `reset_if_epoch` compares against the
+   epoch captured when the run was requested, not the one read at admission;
+   a deleted child never starts. The usage attribution loop in `run_child`
+   moves after the record check so a retired child bills nothing further.
+8. `RLMSpawnHandle.result` waits through the cursored `rlm.wait` (F0a), which
+   returns states, so a parent blocked on a handle sees `stuck` and
+   `needs_you`; the `list_subagents` poll is deleted.
+9. The console row cache removes a row on a terminal update for an absent
+   child and, past 32 rows, evicts the oldest finished row rather than
+   dropping the new one silently.
+10. "starting" is drawn only until the first roster snapshot; after it the
+    card shows the host record's activity, and `answer_preview` from the
+    record wins over the folded stream when they disagree (precedence:
+    `ChildUpdate`, then roster, then raw stream).
+
+Not in this stage (YAGNI until F2b needs them): a new `ChildStatus` variant,
+moving the environment hook's git probes off the runtime thread (measure
+first; `spawn_blocking` if the lag tests show starvation), splitting
+`SubagentHost`.
+
+| control | test (tier) |
+|---|---|
+| every exit publishes exactly one terminal update with a machine-readable cause | `recursion_e2e::every_exit_publishes_one_terminal_update` (T1; parameterised over complete, error, interrupt, delete while running, delete after end, reap, deadline; subscribes to the parent bus, never polls `host.list()`) |
+| a client view equals a projection of the host's records | `subagent_fuzz::no_card_runs_without_a_record` (T0; sequences of spawn, finish, interrupt, delete, reap and injected lag, the `plan_fuzz.rs` pattern) |
+| a lagged forwarder survives and surfaces the gap | `tui_e2e::a_forwarder_survives_a_capacity_four_bus` (T1) |
+| delete before the first poll leaves no zombie run and bills nothing | `recursion_e2e::a_child_deleted_before_its_first_poll_never_runs` (T1) |
+| a late subscriber still shows the last tool | `tui_e2e::a_card_adopted_after_the_first_tool_event_names_it` (T1) |
+| the kernel delete journey leaves no live card and tells the parent why | `tui_e2e::a_kernel_cell_that_spawns_and_deletes_leaves_no_live_card` (T2; `h = await rlm.run(...); await rlm.delete_subagent(h)`, then render) |
+| a finished card commits while an `ipython` cell is live | `tui_e2e::a_finished_card_commits_under_a_live_cell` (T1) |
+| spawn does not hold the roster lock across the build | `subagent::states_answers_while_a_child_is_being_built` (T0, a factory that blocks on a channel) |
+| a blocked handle sees stuck | `test_rlm_handle::result_surfaces_a_stuck_state_from_wait` (T0, fake host) |
+| the console drops a gone row and keeps accepting past the cap | `console chat::a_retired_child_leaves_the_roster_and_row_thirty_three_is_kept` (T0) |
+
+**LOC.** yi-runtime +140, yi-tui +90 −30, yi-console +25, python +15 −30,
+tests +420. Memo: `growth +240: every child exit is published and clients
+reconcile against the roster`. **Issue.** "F1e child exits are published".
+**Row.** "A child's removal, abort and every other exit publish one terminal
+update; the TUI and console reconcile against the roster, survive bus lag and
+no longer hold finished cards behind a live cell (D-next-7b, extends D165;
+Closes #<n>)". **ADR.** "D-next-7b: one exit, one terminal update". **Exit.**
+the kernel delete journey renders no live card; the fuzz holds over 10,000
+sequences.
+
 ### F2a · Envelopes and the durable inbox (D-next-8; extends D165)
 
 **Files.** `crates/types/src/mail.rs` (new), `mailbox.rs:65-160` (route
@@ -2081,6 +2177,13 @@ receipts, the durable inbox and request/reply`. Row: "Messages are
 envelopes with kinds, receipts, per-pair order and a durable inbox; a request
 awaits its reply (D-next-8, extends D165; Closes #<n>)". ADR: "D-next-8:
 messages are envelopes".
+
+Added 2026-09-20 (child lifecycle audit). `rlm.send` without `followup=True`
+reaches `follow_up_message`, and an idle or finished child never drains that
+queue while the receipt says "queued". The receipt is decided after the
+delivery attempt: `queued` only when a live turn will drain it, else `woken`
+(the idle child is started on it) or `inboxed`. Test:
+`mailbox::a_send_to_an_idle_child_is_woken_or_inboxed_never_queued` (T0).
 
 ### F2b · Leases: deadline inheritance, revoke, abort, parent close; capabilities shrink (D-next-9)
 
@@ -2111,6 +2214,26 @@ holds`. Row: "A child holds a lease drawn from its parent; revoke has a
 grace and a visible repossession record; walls shrink hereditarily and holds
 compile down at spawn (D-next-9; Closes #<n>)". ADR: "D-next-9: leases and
 visible revocation".
+
+Added 2026-09-20 (child lifecycle audit; builds on F1e). (a) One typed
+terminal state replaces F1e's forced status: `ChildExit { Completed, Failed
+{ class }, Interrupted, Reaped, Repossessed }` in `crates/types/src/subagent.rs`
+(schemas.lock `--update`), with `class` a closed set (refused spawn, provider,
+kernel death, red check, deadline); `ChildUpdate.status`, `MemberState` and
+the terminal notice are all derived from it by one function, so the TUI and
+the model cannot disagree. "Admitted, not started" becomes a `MemberState`
+(`queued`) set at admission and cleared at the first poll. (b) `ChildRecord`
+gets one transition function; `fold_event`, `run_child`, `deliver_to_parent`
+and `take_pending` call it instead of writing fields. (c) `stuck` is read from
+a typed loop signal, not from `custom_type` string matches. (d) The TUI stop
+command goes through the host's `interrupt` (then `revoke`), never
+`child.session.abort()`; `ChildView` stops handing out the session for
+control. (e) `SubagentHost` sheds the roster and lifecycle into
+`crates/runtime/src/family.rs` only as far as the file cap forces it; no new
+crate. Tests: `subagent::status_state_and_notice_derive_from_one_exit` (T0);
+`recursion_e2e::a_tui_stop_is_a_host_interrupt` (T1);
+`family::stuck_reads_the_typed_signal` (T0). LOC yi-types +40, yi-runtime
++120 −60, yi-tui +10.
 
 ### F3a · The judge tier (D-next-10)
 
