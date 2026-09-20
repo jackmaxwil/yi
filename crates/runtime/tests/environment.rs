@@ -288,17 +288,31 @@ fn the_files_line_lists_the_top_level_and_caps_at_twenty() -> TestResult {
 /// The model is told where it runs: a laptop, a container, a VM, an ssh session.
 #[test]
 fn the_platform_line_names_the_host() -> TestResult {
-    let block = yi_runtime::environment::render(&[format!(
-        "platform: {} {} · host {}",
-        std::env::consts::OS,
-        std::env::consts::ARCH,
-        yi_runtime::host::facts().line()
-    )]);
-    assert!(block.contains(" · host "), "{block}");
-    let line = yi_runtime::host::facts().line();
+    let line = yi_runtime::environment::platform_line(" · shell zsh");
+    let facts = yi_runtime::host::facts();
     assert!(
-        !line.is_empty() && !line.contains("  "),
-        "the host clause is one readable phrase: {line:?}"
+        line.starts_with(&format!(
+            "platform: {} {}",
+            std::env::consts::OS,
+            std::env::consts::ARCH
+        )),
+        "{line}"
+    );
+    assert!(
+        line.ends_with(&format!(" · host {}", facts.line())),
+        "the clause the model reads is the probe's own answer: {line}"
+    );
+    // An ssh session is the client's fact, not the daemon's, so it is read per call.
+    unsafe { std::env::set_var("SSH_CONNECTION", "203.0.113.4 22 203.0.113.9 22") };
+    let attached = yi_runtime::host::facts();
+    unsafe { std::env::remove_var("SSH_CONNECTION") };
+    assert!(
+        attached.ssh && attached.line().contains("over ssh"),
+        "{attached:?}"
+    );
+    assert!(
+        !yi_runtime::host::facts().ssh,
+        "and it stops being true when the client leaves"
     );
     Ok(())
 }

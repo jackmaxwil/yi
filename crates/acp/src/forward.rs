@@ -70,6 +70,7 @@ pub(crate) struct Parent {
     pub(crate) seen: HashSet<String>,
     pub(crate) last_goal: Value,
     pub(crate) last_workdir: Value,
+    pub(crate) launch_cwd: std::path::PathBuf,
 }
 
 impl Parent {
@@ -103,15 +104,17 @@ impl Parent {
     }
 
     pub(crate) fn watch_workdir(&mut self) {
-        let lane = self.session.lane();
-        let workdir = match lane.as_ref().and_then(|lane| lane.path()) {
-            Some(path) => serde_json::json!({
-                "cwd": path.to_string_lossy(),
-                "lane": lane.as_ref().and_then(|lane| lane.row_label()),
+        // A released lane hands the session back: say so, or the row names a lane that is gone.
+        let workdir = match self.session.lane().and_then(|lane| lane.row()) {
+            Some((path, row)) => {
+                serde_json::json!({ "cwd": path.to_string_lossy(), "lane": row })
+            }
+            None => serde_json::json!({
+                "cwd": self.launch_cwd.to_string_lossy(),
+                "lane": Value::Null,
             }),
-            None => Value::Null,
         };
-        if workdir != self.last_workdir && !workdir.is_null() {
+        if workdir != self.last_workdir {
             self.last_workdir = workdir.clone();
             let fields = workdir.as_object().cloned().unwrap_or_default();
             self.forward.emit(extension("_yi/workdir", fields));

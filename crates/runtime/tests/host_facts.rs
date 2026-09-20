@@ -47,10 +47,29 @@ fn host_probe_reads_container_vm_cloud_ssh_and_wsl() -> TestResult {
     assert!(facts.ssh);
     assert_eq!(facts.line(), "docker container, over ssh");
 
-    let cgroup = Scratch::new("yi-host-cgroup")?;
-    write(&cgroup, "proc/1/cgroup", "0::/kubepods/besteffort/pod123\n")?;
-    let facts = probe_at(&cgroup, &env(&[("KUBERNETES_SERVICE_HOST", "203.0.113.1")]));
-    assert_eq!(facts.container.as_deref(), Some("kubernetes"));
+    for (cgroup_text, expected) in [
+        ("0::/kubepods/besteffort/pod123\n", "kubernetes"),
+        ("0::/system.slice/docker-abc.scope\n", "docker"),
+        ("0::/machine.slice/libpod-abc.scope\n", "podman"),
+        ("0::/system.slice/containerd.service\n", "containerd"),
+        ("0::/lxc/mybox\n", "lxc"),
+    ] {
+        let cgroup = Scratch::new("yi-host-cgroup")?;
+        write(&cgroup, "proc/1/cgroup", cgroup_text)?;
+        assert_eq!(
+            probe_at(&cgroup, &env(&[])).container.as_deref(),
+            Some(expected),
+            "{cgroup_text:?}"
+        );
+    }
+    let k8s = Scratch::new("yi-host-k8s")?;
+    assert_eq!(
+        probe_at(&k8s, &env(&[("KUBERNETES_SERVICE_HOST", "203.0.113.1")]))
+            .container
+            .as_deref(),
+        Some("kubernetes"),
+        "the service host names it even where no cgroup is readable"
+    );
 
     let podman = Scratch::new("yi-host-podman")?;
     write(&podman, "run/.containerenv", "")?;
@@ -93,9 +112,14 @@ fn host_probe_reads_container_vm_cloud_ssh_and_wsl() -> TestResult {
         "proc/sys/kernel/osrelease",
         "5.15.0-microsoft-standard-WSL2\n",
     )?;
+    write(&wsl, "proc/cpuinfo", "flags\t: fpu vme hypervisor lm\n")?;
     let facts = probe_at(&wsl, &env(&[]));
     assert!(facts.wsl);
-    assert_eq!(facts.line(), "wsl");
+    assert_eq!(
+        facts.line(),
+        "vm (a hypervisor), wsl",
+        "WSL2 runs under a hypervisor and says so"
+    );
 
     let hypervisor = Scratch::new("yi-host-flag")?;
     write(
