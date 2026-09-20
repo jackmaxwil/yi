@@ -2129,13 +2129,16 @@ Repairs, smallest first, each its own commit inside the stage:
     `ChildUpdate`, then roster, then raw stream).
 
 As landed: `retire` publishes for every removal, so `run_child` stays silent on a
-missing record (repair 2's second publish would have made two); repair 5 reserves
+missing record (repair 2's second publish would have made two) and a removal after
+the child's own exit repeats that terminal update rather than contradicting it; repair 5 reserves
 the name and slot in a `building` list rather than a placeholder record, so a
 failed build has nothing to retire; repair 6 holds a finished card only behind
 the one cell it was born under, which keeps the pair test's ordering; repair 8's
 poll was already gone at F0a, so the handle gained the `stuck` raise alone; a
 roster-rule test, `tui_e2e::a_card_the_roster_stopped_listing_ends_as_gone`, was
-added for repair 3.
+added for repair 3. Repair 1's refusal also reaches the plan engine's own reap, so
+the accepting road of `done` marks the published branch retained before it reaps
+(`lanes::accept::an_accepted_worktree_tells_the_host_its_branch_is_kept`).
 
 Not in this stage (YAGNI until F2b needs them): a new `ChildStatus` variant,
 moving the environment hook's git probes off the runtime thread (measure
@@ -2144,7 +2147,7 @@ first; `spawn_blocking` if the lag tests show starvation), splitting
 
 | control | test (tier) |
 |---|---|
-| every exit publishes exactly one terminal update with a machine-readable cause | `recursion_e2e::every_exit_publishes_one_terminal_update` (T1; parameterised over complete, error, interrupt, delete while running, delete after end and reap; the deadline fires the same interrupt signal and `set_deadline` is crate-private, so it has no road of its own; subscribes to the parent bus, never polls `host.list()`) |
+| every exit publishes exactly one terminal update with a machine-readable cause | `recursion_e2e::every_exit_publishes_one_terminal_update` (T1; parameterised over complete, error, interrupt, delete while running, delete after end and reap; a session deadline ends the turn after it settles, so a child out of clock leaves by the `complete` road, and `set_deadline` is crate-private; subscribes to the parent bus, never polls `host.list()`) |
 | a client view equals a projection of the host's records | `subagent_fuzz::no_card_runs_without_a_record` (T0; sequences of spawn, finish, interrupt, delete, reap and injected lag, the `plan_fuzz.rs` pattern) |
 | a lagged forwarder survives and surfaces the gap | `tui_e2e::a_forwarder_survives_a_capacity_four_bus` (T1) |
 | delete before the first poll leaves no zombie run and bills nothing | `recursion_e2e::a_child_deleted_before_its_first_poll_never_runs` (T1) |
