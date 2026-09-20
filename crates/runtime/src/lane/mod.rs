@@ -144,40 +144,12 @@ fn read_bounded(path: &Path) -> Result<String, LaneError> {
     Ok(text)
 }
 
-/// The git dir of `cwd`'s checkout: a `.git` directory, or the worktree's `gitdir:` pointer.
-fn git_dir(cwd: &Path) -> Result<PathBuf, LaneError> {
-    let mut dir = cwd.to_path_buf();
-    let dot_git = loop {
-        let candidate = dir.join(".git");
-        if candidate.exists() {
-            break candidate;
-        }
-        if !dir.pop() {
-            return Err(LaneError::NotARepo(cwd.to_path_buf()));
-        }
-    };
-    if !dot_git.is_file() {
-        return Ok(dot_git);
-    }
-    let pointer = read_bounded(&dot_git)?;
-    let target = pointer
-        .trim()
-        .strip_prefix("gitdir: ")
-        .ok_or(LaneError::Head {
-            path: dot_git.clone(),
-            reason: "no gitdir pointer",
-        })?;
-    let target = PathBuf::from(target);
-    let target = if target.is_absolute() {
-        target
-    } else {
-        dot_git.parent().unwrap_or(cwd).join(target)
-    };
-    target.canonicalize().map_err(io_error(&target))
-}
-
 pub fn head(cwd: &Path) -> Result<Head, LaneError> {
-    let path = git_dir(cwd)?.join("HEAD");
+    let path = yi_permission::git_dirs(cwd)
+        .into_iter()
+        .next()
+        .ok_or_else(|| LaneError::NotARepo(cwd.to_path_buf()))?
+        .join("HEAD");
     let text = read_bounded(&path)?;
     let text = text.trim();
     if let Some(name) = text.strip_prefix("ref: refs/heads/") {

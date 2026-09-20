@@ -201,7 +201,8 @@ after it never ran. Output that ends before the command you expected is
 a chain that stopped, not a tool that truncated.
 
 Inside auto mode an unprovable command runs contained: no network, no
-socket bind, writes only under the working tree and tmp. A test that
+socket bind, writes only under the working tree, its git directories, and
+tmp. A test that
 binds a socket or reaches the network fails there for that reason. The
 failure is about where you ran it; the repository's CI is where the
 answer lives.

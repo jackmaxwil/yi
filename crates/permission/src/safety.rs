@@ -2,6 +2,7 @@
 pub enum Class {
     Safe,
     Destructive,
+    Egress,
     Unknown,
 }
 
@@ -230,8 +231,29 @@ fn subcommand(argv: &[String]) -> Option<&str> {
         .find(|token| !token.starts_with('-'))
 }
 
+const GIT_VALUED_OPTIONS: [&str; 6] = [
+    "--config-env",
+    "--git-dir",
+    "--namespace",
+    "--work-tree",
+    "-C",
+    "-c",
+];
+
+pub(crate) fn git_subcommand(argv: &[String]) -> Option<&str> {
+    let mut tokens = argv.iter().skip(1).map(String::as_str);
+    while let Some(token) = tokens.next() {
+        if GIT_VALUED_OPTIONS.contains(&token) {
+            tokens.next();
+        } else if !token.starts_with('-') {
+            return Some(token);
+        }
+    }
+    None
+}
+
 fn git_class(argv: &[String]) -> Class {
-    let Some(subcommand) = subcommand(argv) else {
+    let Some(subcommand) = git_subcommand(argv) else {
         return Class::Safe;
     };
     let flags = flags(argv);
@@ -256,6 +278,12 @@ fn git_class(argv: &[String]) -> Class {
     };
     if destructive {
         return Class::Destructive;
+    }
+    if matches!(
+        subcommand,
+        "clone" | "fetch" | "ls-remote" | "pull" | "push" | "submodule"
+    ) {
+        return Class::Egress;
     }
     if GIT_READ.binary_search(&subcommand).is_ok() {
         return Class::Safe;
@@ -385,6 +413,14 @@ pub fn verdict(command: &str) -> Verdict {
                     reason: format!(
                         "`{}` is destructive; it cannot be undone by a checkpoint",
                         argv.first().map_or("", String::as_str)
+                    ),
+                };
+            }
+            Class::Egress => {
+                return Verdict::Ask {
+                    reason: format!(
+                        "`git {}` needs the network; a contained run has none",
+                        git_subcommand(argv).unwrap_or_default()
                     ),
                 };
             }
