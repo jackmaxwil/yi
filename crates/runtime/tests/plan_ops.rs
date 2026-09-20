@@ -50,7 +50,7 @@
 //! | test | tier | helpers | what it pins | the control it dies with |
 //! |---|---|---|---|---|
 //! | `failed_unmerged_task_can_preserve_or_discard_and_finish` | T1 | `rig`, `planned`, `cmd_contract`, `contracted` with `Isolation::Worktree`, `start`, `done`, `kinds`, `todo_of` | The same failed worktree todo, run twice: once finishing with `Retained` and once with `Discarded`. Both reach a terminal state, both journal a `disposition` record before the slot is free, both leave `kept` resolving, and neither journals an `accepted` or moves the parent. The choice rides the op, not a default. | `step_todo`'s reap on every exit from `Running` (`ops.rs:699-708`) taking the disposition path instead of dropping the lane. Drop it and the only way to finish a failed worktree todo is a merge, which is the pressure that makes a model merge a branch it knows is red. |
-//! | `full_worker_capacity_does_not_deadlock_verification` | T0 | `Capacity::for_slots(DEFAULT_SLOTS)`, `DEFAULT_MAX_CHILDREN` | Every worker a parent may retain asks for a checkout of its own, at the product's constants: the worker share of the lane pool runs out before the parent's child cap does, the lanes it refuses are the verification reserve, and with the share full a verification still reserves. Both counters end at zero. The live half, a worktree todo accepted while the engine's own worker share is held to its cap, is `lanes::full_worker_capacity_does_not_deadlock_verification` (T1). | Verification capacity being reserved separately from worker slots (section 7.6). Charge verification against the worker share and the workers a parent retains occupy every lane their own verification needs, so the plan stops with every todo running and nothing able to finish. |
+//! | `full_worker_capacity_does_not_deadlock_verification` | T0 | `Capacity::for_slots` over `DEFAULT_MAX_CHILDREN` lanes | Every worker a parent may retain asks for a checkout of its own, at the product's constants: the worker share of the lane pool runs out before the parent's child cap does, the lanes it refuses are the verification reserve, and with the share full a verification still reserves. Both counters end at zero. The live half, a worktree todo accepted while the engine's own worker share is held to its cap, is `lanes::full_worker_capacity_does_not_deadlock_verification` (T1). | Verification capacity being reserved separately from worker slots (section 7.6). Charge verification against the worker share and the workers a parent retains occupy every lane their own verification needs, so the plan stops with every todo running and nothing able to finish. |
 //! | `a_worktree_child_cannot_be_marked_done_before_acceptance` | T0 | `rig`, `planned`, `cmd_contract`, `contracted` with `Isolation::Worktree`, `start`, `done`, `refused`, `todo_of`, `kinds` | `done` before the candidate is submitted is refused and the todo stays `Running`; `done` after `candidate_verified` but before `integration_verified` is refused the same way and journals no `accepted`; `fail` is legal at every one of those points and takes the disposition path. The refusal names the phase that is missing. | `done` being legal only at the accept phase, tested from the records rather than from whether a lane is held. Test the lane and a todo whose lane was already taken looks acceptable, which is exactly the state a merge-less reap leaves behind. |
 
 #[path = "../../types/tests/support/scratch.rs"]
@@ -1563,7 +1563,6 @@ mod contracts {
     use serde_json::{Value, json};
     use yi_kernel::client::HostHandlers;
     use yi_runtime::HostRegistry;
-    use yi_runtime::lane::DEFAULT_SLOTS;
     use yi_runtime::plan::authority::{Confirmer, Submission, SubmitError, submit};
     use yi_runtime::plan::capacity::{Capacity, Purpose};
     use yi_runtime::plan::journal::{Journal, RealFs};
@@ -3458,7 +3457,10 @@ mod contracts {
     // half is `lanes::full_worker_capacity_does_not_deadlock_verification`.
     #[test]
     fn full_worker_capacity_does_not_deadlock_verification() -> TestResult {
-        let capacity = Capacity::for_slots(DEFAULT_SLOTS);
+        // D203 took `DEFAULT_SLOTS` past the child cap, so the share only runs out in a
+        // pool the parent's own children can fill; that pool is the child cap itself.
+        let slots = u8::try_from(DEFAULT_MAX_CHILDREN)?;
+        let capacity = Capacity::for_slots(slots);
         let share = usize::from(capacity.cap(Purpose::Worker));
         // Every worker the parent may retain asks for a checkout of its own. The share runs
         // out first, and it runs out one lane short of the pool: that lane is the reserve.
@@ -3484,7 +3486,7 @@ mod contracts {
         );
         assert_eq!(
             usize::from(capacity.cap(Purpose::Verification)),
-            usize::from(DEFAULT_SLOTS) - share,
+            usize::from(slots) - share,
             "the lanes the workers did not get are the verification's"
         );
         // With every worker lane held, the verification a retained worker's own candidate
