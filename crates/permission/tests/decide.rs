@@ -3,8 +3,9 @@ use std::path::PathBuf;
 
 use yi_permission::{
     CatastrophicContext, ConfigRule, ConfigRuleAction, Decision, Hold, HoldSource, ParseOutcome,
-    PermissionMode, SessionRules, ToolCall, canonical_command_identity, command_reads_credentials,
-    decide, git_dirs, is_catastrophic, lexical_normalize, parse_command,
+    PermissionMode, SessionRules, ToolCall, canonical_command_identity, canonical_tool_identity,
+    command_reads_credentials, decide, git_dirs, grants, is_catastrophic, lexical_normalize,
+    parse_command,
 };
 use yi_types::permission::{RuleDecision, RuleKind, SessionPermissionState};
 
@@ -574,6 +575,294 @@ fn rm_rf_of_a_linked_worktrees_common_dir_is_denied_in_every_mode() -> TestResul
     Ok(())
 }
 
+/// The canonical carries the whole arguments JSON in the broker, patch and all, so two edits
+/// of different files are two identities — as they are here.
+fn edit_canonical(targets: &[PathBuf]) -> String {
+    canonical_tool_identity(
+        "edit",
+        &targets
+            .iter()
+            .map(|target| target.display().to_string())
+            .collect::<Vec<_>>()
+            .join(","),
+    )
+}
+
+fn edit_call<'a>(targets: &'a [PathBuf], in_workspace: bool, canonical: &'a str) -> ToolCall<'a> {
+    ToolCall {
+        tool_name: "edit",
+        reads_only: false,
+        irreversible: true,
+        in_workspace,
+        rule_kind: RuleKind::StructuredTool,
+        canonical,
+        display: "edit file",
+        targets,
+        command: None,
+    }
+}
+
+fn ask_mode(call: &ToolCall<'_>, session: &SessionRules) -> Decision {
+    decide(call, PermissionMode::Ask, &[], session, &[], &context())
+}
+
+fn grant(session: &mut SessionRules, call: &ToolCall<'_>, index: usize) -> TestResult {
+    let offered = grants(call, &context());
+    let chosen = offered.get(index).ok_or("no such grant")?;
+    session.insert(
+        chosen.kind,
+        &chosen.canonical,
+        &chosen.label,
+        RuleDecision::Allow,
+    )?;
+    Ok(())
+}
+
+#[test]
+fn grants_offer_the_target_dir_then_the_tree_root() -> TestResult {
+    let targets = [PathBuf::from("/home/user/project/crates/tui/src/app.rs")];
+    let labels: Vec<String> = grants(
+        &edit_call(&targets, true, &edit_canonical(&targets)),
+        &context(),
+    )
+    .into_iter()
+    .map(|grant| grant.label)
+    .collect();
+    assert_eq!(
+        labels,
+        ["edits under crates/tui/src", "edits anywhere in this tree"]
+    );
+    let command = "git worktree add ../a b";
+    let canonical = canonical_command_identity(command, "/home/user/project");
+    let labels: Vec<String> = grants(&bash_call(command, &canonical), &context())
+        .into_iter()
+        .map(|grant| grant.label)
+        .collect();
+    assert_eq!(labels, ["`git worktree` in this tree"]);
+    let canonical = canonical_command_identity("rm -rf build", "/home/user/project");
+    let labels: Vec<String> = grants(&bash_call("rm -rf build", &canonical), &context())
+        .into_iter()
+        .map(|grant| grant.label)
+        .collect();
+    assert_eq!(labels, ["this exact command"]);
+    Ok(())
+}
+
+#[test]
+fn a_directory_grant_allows_later_edits_beneath_it_only() -> TestResult {
+    let mut session = SessionRules::new();
+    let first = [PathBuf::from("/home/user/project/crates/tui/src/app.rs")];
+    grant(
+        &mut session,
+        &edit_call(&first, true, &edit_canonical(&first)),
+        0,
+    )?;
+    let sibling = [PathBuf::from("/home/user/project/crates/tui/src/render.rs")];
+    let nested = [PathBuf::from(
+        "/home/user/project/crates/tui/src/app/port.rs",
+    )];
+    for targets in [&sibling, &nested] {
+        let decision = ask_mode(
+            &edit_call(targets, true, &edit_canonical(targets)),
+            &session,
+        );
+        assert!(
+            matches!(decision, Decision::Allow { .. }),
+            "{targets:?}: {decision:?}"
+        );
+    }
+    let above = [PathBuf::from("/home/user/project/crates/tui/Cargo.toml")];
+    let decision = ask_mode(&edit_call(&above, true, &edit_canonical(&above)), &session);
+    assert!(matches!(decision, Decision::Ask { .. }), "{decision:?}");
+    Ok(())
+}
+
+#[test]
+fn a_tree_grant_never_reaches_outside_the_workspace() -> TestResult {
+    let mut session = SessionRules::new();
+    let first = [PathBuf::from("/home/user/project/src/main.rs")];
+    grant(
+        &mut session,
+        &edit_call(&first, true, &edit_canonical(&first)),
+        1,
+    )?;
+    let inside = [PathBuf::from("/home/user/project/docs/notes.md")];
+    assert!(matches!(
+        ask_mode(
+            &edit_call(&inside, true, &edit_canonical(&inside)),
+            &session
+        ),
+        Decision::Allow { .. }
+    ));
+    let outside = [PathBuf::from("/home/user/other/src/main.rs")];
+    let decision = ask_mode(
+        &edit_call(&outside, false, &edit_canonical(&outside)),
+        &session,
+    );
+    assert!(matches!(decision, Decision::Ask { .. }), "{decision:?}");
+    Ok(())
+}
+
+#[test]
+fn a_scope_grant_allows_the_same_subcommand_with_other_arguments() -> TestResult {
+    let mut session = SessionRules::new();
+    let cwd = "/home/user/project";
+    let first = "git worktree add ../a b";
+    let canonical = canonical_command_identity(first, cwd);
+    grant(&mut session, &bash_call(first, &canonical), 0)?;
+    let again = "git worktree add -b other ../c origin/main";
+    let canonical = canonical_command_identity(again, cwd);
+    let decision = ask_mode(&bash_call(again, &canonical), &session);
+    assert!(matches!(decision, Decision::Allow { .. }), "{decision:?}");
+    let other = "git commit -m x";
+    let canonical = canonical_command_identity(other, cwd);
+    let decision = ask_mode(&bash_call(other, &canonical), &session);
+    assert!(matches!(decision, Decision::Ask { .. }), "{decision:?}");
+    Ok(())
+}
+
+#[test]
+fn a_scope_grant_never_covers_destructive_unparsed_or_env_prefixed_commands() -> TestResult {
+    let mut session = SessionRules::new();
+    let cwd = "/home/user/project";
+    let first = "git worktree add ../a b";
+    let canonical = canonical_command_identity(first, cwd);
+    grant(&mut session, &bash_call(first, &canonical), 0)?;
+    for command in [
+        "git worktree add ../c d && rm -rf build",
+        "git worktree add $(pwd)/c d",
+        "GIT_DIR=/elsewhere git worktree add ../c d",
+        "git worktree add ../c d > log.txt",
+    ] {
+        let canonical = canonical_command_identity(command, cwd);
+        let decision = ask_mode(&bash_call(command, &canonical), &session);
+        assert!(
+            !matches!(decision, Decision::Allow { .. }),
+            "{command}: {decision:?}"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn catastrophic_and_configured_deny_still_beat_a_grant() -> TestResult {
+    let mut session = SessionRules::new();
+    let first = [PathBuf::from("/home/user/project/src/main.rs")];
+    grant(
+        &mut session,
+        &edit_call(&first, true, &edit_canonical(&first)),
+        1,
+    )?;
+    let git = [PathBuf::from("/home/user/project/.git/config")];
+    let decision = ask_mode(&edit_call(&git, true, &edit_canonical(&git)), &session);
+    assert!(matches!(decision, Decision::Deny { .. }), "{decision:?}");
+
+    let cwd = "/home/user/project";
+    let command = "git worktree add ../a b";
+    let canonical = canonical_command_identity(command, cwd);
+    grant(&mut session, &bash_call(command, &canonical), 0)?;
+    let config = vec![
+        ConfigRule::new("bash", "*worktree*", ConfigRuleAction::Deny).map_err(|e| e.to_string())?,
+    ];
+    let decision = decide(
+        &bash_call(command, &canonical),
+        PermissionMode::Ask,
+        &config,
+        &session,
+        &[],
+        &context(),
+    );
+    assert!(matches!(decision, Decision::Deny { .. }), "{decision:?}");
+    Ok(())
+}
+
+/// A grant's label says "in this tree"; the rule has to mean it. A program named by path, a
+/// wrapper, or a later `-C` out of the tree are all ways the promise was broken (D207).
+#[test]
+fn a_scope_grant_keeps_the_promise_its_label_makes() -> TestResult {
+    let mut session = SessionRules::new();
+    let cwd = "/home/user/project";
+    let first = "git worktree add ../a b";
+    let canonical = canonical_command_identity(first, cwd);
+    grant(&mut session, &bash_call(first, &canonical), 0)?;
+    for command in [
+        "git -C /home/user/other-repo worktree remove --force /home/user/precious",
+        "git --git-dir=/home/user/other-repo/.git worktree remove ../x",
+        "git -C ../.. worktree remove --force x",
+    ] {
+        let canonical = canonical_command_identity(command, cwd);
+        let decision = ask_mode(&bash_call(command, &canonical), &session);
+        assert!(
+            !matches!(decision, Decision::Allow { .. }),
+            "a grant may not follow a command out of the tree: {command}: {decision:?}"
+        );
+    }
+
+    // A program named by path is a file in the tree, which the model can write; the grant is
+    // for the program on PATH, never for `./python3`.
+    let mut session = SessionRules::new();
+    let first = "python3 scripts/build.py";
+    let canonical = canonical_command_identity(first, cwd);
+    grant(&mut session, &bash_call(first, &canonical), 0)?;
+    for command in ["./python3 evil.py", "/tmp/evil/python3 evil.py"] {
+        let canonical = canonical_command_identity(command, cwd);
+        let decision = ask_mode(&bash_call(command, &canonical), &session);
+        assert!(
+            !matches!(decision, Decision::Allow { .. }),
+            "{command}: {decision:?}"
+        );
+    }
+
+    // A wrapper is never the grant: `timeout` would otherwise cover everything it can run.
+    let labels: Vec<String> = grants(
+        &bash_call(
+            "timeout 600 make test",
+            &canonical_command_identity("timeout 600 make test", cwd),
+        ),
+        &context(),
+    )
+    .into_iter()
+    .map(|grant| grant.label)
+    .collect();
+    assert_eq!(
+        labels,
+        ["`make test` in this tree"],
+        "the wrapper is not the scope"
+    );
+    Ok(())
+}
+
+/// A file at the tree root offered only the tree, so `a` — the narrowest choice a surface
+/// shows — silently granted the whole repository (D207).
+#[test]
+fn a_root_level_edit_offers_the_exact_call_before_the_tree() -> TestResult {
+    let targets = [PathBuf::from("/home/user/project/README.md")];
+    let labels: Vec<String> = grants(
+        &edit_call(&targets, true, &edit_canonical(&targets)),
+        &context(),
+    )
+    .into_iter()
+    .map(|grant| grant.label)
+    .collect();
+    assert_eq!(labels, ["this exact call", "edits anywhere in this tree"]);
+
+    let mut session = SessionRules::new();
+    grant(
+        &mut session,
+        &edit_call(&targets, true, &edit_canonical(&targets)),
+        0,
+    )?;
+    let elsewhere = [PathBuf::from("/home/user/project/.github/workflows/ci.yml")];
+    let decision = ask_mode(
+        &edit_call(&elsewhere, true, &edit_canonical(&elsewhere)),
+        &session,
+    );
+    assert!(
+        matches!(decision, Decision::Ask { .. }),
+        "the narrowest grant on a root-level file is that call, not the repository: {decision:?}"
+    );
+    Ok(())
+}
 /// A pointer is repository data, and repository data is not a grant: a `.git` file that names
 /// `/` would otherwise make the whole filesystem a sandbox writable root.
 #[test]
@@ -601,7 +890,6 @@ fn git_dirs_refuse_a_pointer_that_is_not_a_git_dir() -> TestResult {
     }
     Ok(())
 }
-
 /// A wrapper is not a disguise: the belt reads what the wrapper runs, or `nice rm -rf .git`
 /// walks past a denial the literal spelling gets (D205).
 #[test]

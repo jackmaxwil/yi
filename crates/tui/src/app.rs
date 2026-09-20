@@ -30,6 +30,7 @@ use yi_orb::OrbState;
 pub struct AskRequest {
     pub title: String,
     pub description: String,
+    pub grants: Vec<String>,
     pub reply: Sender<AskChoice>,
 }
 
@@ -351,7 +352,7 @@ impl App {
 
     pub fn open_approval(&mut self, ask: AskRequest) {
         self.bottom = Some(Bottom::Approval(
-            ApprovalView::new(ask.title, ask.description),
+            ApprovalView::new(ask.title, ask.description, ask.grants),
             ask.reply,
         ));
         self.scheduler.request();

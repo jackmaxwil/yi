@@ -9,15 +9,9 @@ use crate::wrap::wrap_line;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AskChoice {
     AllowOnce,
-    AllowAlways,
+    AllowAlways(usize),
     Reject,
 }
-
-const OPTIONS: [(AskChoice, &str); 3] = [
-    (AskChoice::AllowOnce, "Allow once"),
-    (AskChoice::AllowAlways, "Allow always"),
-    (AskChoice::Reject, "Reject"),
-];
 
 /// Diff rows the prompt shows. The permission layer already cuts the patch at 40
 /// (`cut_preview`); this second cut sizes the view to a 24-row screen beside the transcript.
@@ -30,15 +24,33 @@ pub struct ApprovalView {
     pub description: String,
     pub selected: usize,
     pub outcome: Option<AskChoice>,
+    options: Vec<(AskChoice, String)>,
 }
 
 impl ApprovalView {
-    pub fn new(title: String, description: String) -> Self {
+    pub fn new(title: String, description: String, grants: Vec<String>) -> Self {
+        let always: Vec<(AskChoice, String)> = match grants.is_empty() {
+            true => vec![(AskChoice::AllowAlways(0), "Always allow".to_owned())],
+            false => grants
+                .iter()
+                .enumerate()
+                .map(|(index, grant)| {
+                    (
+                        AskChoice::AllowAlways(index),
+                        format!("Always allow {grant}"),
+                    )
+                })
+                .collect(),
+        };
+        let mut options = vec![(AskChoice::AllowOnce, "Allow once".to_owned())];
+        options.extend(always);
+        options.push((AskChoice::Reject, "Reject".to_owned()));
         Self {
             title,
             description,
             selected: 0,
             outcome: None,
+            options,
         }
     }
 }
@@ -98,7 +110,7 @@ impl BottomView for ApprovalView {
             )));
         }
         let mut options = Vec::new();
-        for (i, (_, label)) in OPTIONS.iter().enumerate() {
+        for (i, (_, label)) in self.options.iter().enumerate() {
             let style = if i == self.selected {
                 Style::default()
                     .fg(theme.accent)
@@ -109,7 +121,15 @@ impl BottomView for ApprovalView {
             let marker = if i == self.selected { "›" } else { " " };
             options.push(Span::styled(format!(" {marker} {label}  "), style));
         }
-        out.push(Line::from(options));
+        let wide = options
+            .iter()
+            .map(|span| span.content.chars().count())
+            .sum::<usize>()
+            > width;
+        match wide {
+            true => out.extend(options.into_iter().map(Line::from)),
+            false => out.push(Line::from(options)),
+        }
         out
     }
 
@@ -120,13 +140,13 @@ impl BottomView for ApprovalView {
                 PopupResult::Open
             }
             KeyCodeValue::Right | KeyCodeValue::Down | KeyCodeValue::Tab => {
-                if self.selected + 1 < OPTIONS.len() {
+                if self.selected + 1 < self.options.len() {
                     self.selected += 1;
                 }
                 PopupResult::Open
             }
             KeyCodeValue::Enter => {
-                self.outcome = OPTIONS.get(self.selected).map(|(choice, _)| *choice);
+                self.outcome = self.options.get(self.selected).map(|(choice, _)| *choice);
                 PopupResult::Close
             }
             KeyCodeValue::Esc => {
@@ -138,7 +158,7 @@ impl BottomView for ApprovalView {
                 PopupResult::Close
             }
             KeyCodeValue::Char('a') => {
-                self.outcome = Some(AskChoice::AllowAlways);
+                self.outcome = Some(AskChoice::AllowAlways(0));
                 PopupResult::Close
             }
             KeyCodeValue::Char('n') => {

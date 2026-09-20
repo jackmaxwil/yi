@@ -30,6 +30,7 @@ pub fn run_tui_command(args: &Args, initial_prompt: Option<String>) -> i32 {
             let request = yi_tui::AskRequest {
                 title: ask.title.to_owned(),
                 description: ask.text(),
+                grants: ask.grants.iter().map(|grant| grant.label.clone()).collect(),
                 reply: reply_tx,
             };
             if ask_tx.send(request).is_err() {
@@ -37,7 +38,9 @@ pub fn run_tui_command(args: &Args, initial_prompt: Option<String>) -> i32 {
             }
             match reply_rx.recv() {
                 Ok(yi_tui::AskChoice::AllowOnce) => yi_runtime::AskOutcome::AllowOnce,
-                Ok(yi_tui::AskChoice::AllowAlways) => yi_runtime::AskOutcome::AllowAlways,
+                Ok(yi_tui::AskChoice::AllowAlways(index)) => {
+                    yi_runtime::AskOutcome::AllowAlways(index)
+                }
                 _ => yi_runtime::AskOutcome::Reject,
             }
         });

@@ -308,6 +308,7 @@ impl App {
         else {
             return;
         };
+        let grants = crate::app::port::grant_labels(&params.options);
         let (tx, rx) = std::sync::mpsc::channel();
         chat.ask = Some(PendingAsk {
             request_id,
@@ -319,6 +320,7 @@ impl App {
             description: params
                 .description
                 .unwrap_or_else(|| "the agent asks for permission".to_owned()),
+            grants,
             reply: tx,
         }));
         self.dirty = true;

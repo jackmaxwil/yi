@@ -88,7 +88,7 @@ pub use yi_ai::faux;
 pub use yi_context::{Bytes, SourceBudgets, Truncated};
 pub use yi_loop::ExecutionMode;
 pub use yi_permission::{
-    Class, ConfigRule, ConfigRuleAction, Decision, PermissionMode, Verdict, mode_fragment,
+    Class, ConfigRule, ConfigRuleAction, Decision, Grant, PermissionMode, Verdict, mode_fragment,
 };
 pub use yi_session as session_store;
 pub use yi_tools::{

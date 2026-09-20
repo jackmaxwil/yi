@@ -179,5 +179,6 @@ when it changes rather than editing them by hand.
 - [D204](adr/d204.md) - the todo block is a numbered list the HUD builds from the `TodoList`, not...
 - [D205](adr/d205.md) - git runs inside the sandbox, and the real git dirs are protected
 - [D206](adr/d206.md) - a sandbox refusal is remembered by program and verb, not by text
+- [D207](adr/d207.md) - "always allow" keeps a grant, not the call
 
 D36-D51, D72, D73 and D74 have no ADR yet; ARCHITECTURE.md is the record for those rows.
