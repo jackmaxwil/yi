@@ -78,6 +78,39 @@ pub fn negotiate(protocol_version: u64) -> Result<u16, String> {
 
 type PendingAsks = Arc<Mutex<HashMap<String, std::sync::mpsc::Sender<Value>>>>;
 
+/// Grant 0 keeps the `allow_always` id, so a client that knows one always-option still works.
+fn permission_options(grants: &[yi_runtime::Grant]) -> Vec<AcpPermissionOption> {
+    let always = grants
+        .iter()
+        .enumerate()
+        .map(|(index, grant)| AcpPermissionOption {
+            option_id: match index {
+                0 => "allow_always".to_owned(),
+                _ => format!("allow_always_{index}"),
+            },
+            name: format!("Always allow {}", grant.label),
+            kind: AcpPermissionOptionKind::AllowAlways,
+        });
+    let bare = grants.is_empty().then(|| AcpPermissionOption {
+        option_id: "allow_always".to_owned(),
+        name: "Always allow".to_owned(),
+        kind: AcpPermissionOptionKind::AllowAlways,
+    });
+    std::iter::once(AcpPermissionOption {
+        option_id: "allow_once".to_owned(),
+        name: "Allow once".to_owned(),
+        kind: AcpPermissionOptionKind::AllowOnce,
+    })
+    .chain(always)
+    .chain(bare)
+    .chain(std::iter::once(AcpPermissionOption {
+        option_id: "reject_once".to_owned(),
+        name: "Reject".to_owned(),
+        kind: AcpPermissionOptionKind::RejectOnce,
+    }))
+    .collect()
+}
+
 /// Written synchronously BEFORE blocking, with the stdin reader thread routing the response
 /// into the std channel, so a current-thread runtime cannot deadlock waiting on itself.
 pub fn bridge_asker(session_id: String, sink: LineSink, pending: PendingAsks) -> Asker {
@@ -99,23 +132,7 @@ pub fn bridge_asker(session_id: String, sink: LineSink, pending: PendingAsks) ->
             session_id: session_id.clone(),
             title: ask.title.to_owned(),
             description: Some(ask.description.to_owned()),
-            options: vec![
-                AcpPermissionOption {
-                    option_id: "allow_once".to_owned(),
-                    name: "Allow once".to_owned(),
-                    kind: AcpPermissionOptionKind::AllowOnce,
-                },
-                AcpPermissionOption {
-                    option_id: "allow_always".to_owned(),
-                    name: "Always allow".to_owned(),
-                    kind: AcpPermissionOptionKind::AllowAlways,
-                },
-                AcpPermissionOption {
-                    option_id: "reject_once".to_owned(),
-                    name: "Reject".to_owned(),
-                    kind: AcpPermissionOptionKind::RejectOnce,
-                },
-            ],
+            options: permission_options(ask.grants),
             content: ask.patch.map(|patch| {
                 vec![yi_types::acp::AcpToolContent::Diff {
                     changes: ask
@@ -149,8 +166,11 @@ pub fn bridge_asker(session_id: String, sink: LineSink, pending: PendingAsks) ->
         match serde_json::from_value::<AcpPermissionOutcome>(outcome) {
             Ok(AcpPermissionOutcome::Selected { option_id }) => match option_id.as_str() {
                 "allow_once" => AskOutcome::AllowOnce,
-                "allow_always" => AskOutcome::AllowAlways,
-                _ => AskOutcome::Reject,
+                "allow_always" => AskOutcome::AllowAlways(0),
+                other => other
+                    .strip_prefix("allow_always_")
+                    .and_then(|index| index.parse().ok())
+                    .map_or(AskOutcome::Reject, AskOutcome::AllowAlways),
             },
             _ => AskOutcome::Reject,
         }

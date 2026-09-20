@@ -15,7 +15,7 @@ use yi_types::permission::{RuleDecision, RuleKind};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AskOutcome {
     AllowOnce,
-    AllowAlways,
+    AllowAlways(usize),
     Reject,
 }
 
@@ -26,6 +26,7 @@ pub struct PermissionAsk<'a> {
     pub description: &'a str,
     pub patch: Option<&'a str>,
     pub changes: &'a [PathBuf],
+    pub grants: &'a [yi_permission::Grant],
 }
 
 impl PermissionAsk<'_> {
@@ -295,6 +296,7 @@ impl PermissionBroker {
             &self.context,
         );
         drop(session_rules);
+        let grants = yi_permission::grants(&call, &self.context);
         match decision {
             Decision::Allow { reason } => CallOutcome {
                 allowed: true,
@@ -317,6 +319,7 @@ impl PermissionBroker {
                         description: &format!("{reason}: {display}"),
                         patch: preview,
                         changes: &targets,
+                        grants: &grants,
                     },
                     Reviewed {
                         reviewable: true,
@@ -345,6 +348,7 @@ impl PermissionBroker {
                     description: &description,
                     patch: preview,
                     changes: &targets,
+                    grants: &grants,
                 },
                 Reviewed {
                     reviewable,
@@ -452,6 +456,7 @@ impl PermissionBroker {
                     display: display.to_owned(),
                     canonical: canonical.to_owned(),
                     kind: rule_kind,
+                    grants: ask.grants.to_vec(),
                     evidence: reason.clone(),
                 };
                 let request = self.open_request(action, stored);
@@ -566,20 +571,16 @@ impl PermissionBroker {
         });
         let outcome = asker(&ask);
         let verdict = match outcome {
-            AskOutcome::AllowOnce | AskOutcome::AllowAlways => UserVerdict::Approved,
+            AskOutcome::AllowOnce | AskOutcome::AllowAlways(_) => UserVerdict::Approved,
             AskOutcome::Reject => UserVerdict::Denied,
         };
-        if outcome == AskOutcome::AllowAlways {
-            let _cap_is_soft = self
-                .session_rules
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .insert(
-                    stored.kind,
-                    &stored.canonical,
-                    &stored.display,
-                    RuleDecision::Allow,
-                );
+        if let AskOutcome::AllowAlways(index) = outcome {
+            self.keep_grant(
+                stored.grants.get(index),
+                stored.kind,
+                &stored.canonical,
+                &stored.display,
+            );
         }
         let _request_was_found_above = self
             .ledger
@@ -591,6 +592,24 @@ impl PermissionBroker {
             allowed: verdict == UserVerdict::Approved,
         });
         crate::auto_review::resolution_text(&stored.display, verdict)
+    }
+
+    fn keep_grant(
+        &self,
+        grant: Option<&yi_permission::Grant>,
+        kind: RuleKind,
+        canonical: &str,
+        display: &str,
+    ) {
+        let (kind, canonical, label) = match grant {
+            Some(grant) => (grant.kind, grant.canonical.as_str(), grant.label.as_str()),
+            None => (kind, canonical, display),
+        };
+        let _cap_is_soft = self
+            .session_rules
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(kind, canonical, label, RuleDecision::Allow);
     }
 
     /// A long patch is cut: the prompt is a decision aid, not the file.
@@ -633,18 +652,13 @@ impl PermissionBroker {
                 };
             }
         };
-        let allowed = matches!(outcome, AskOutcome::AllowOnce | AskOutcome::AllowAlways);
+        let allowed = matches!(outcome, AskOutcome::AllowOnce | AskOutcome::AllowAlways(_));
         let _ = self.events.send(AgentEvent::PermissionResolved {
             tool_call_id: tool_call_id.to_owned(),
             allowed,
         });
-        if outcome == AskOutcome::AllowAlways {
-            let mut session_rules = self
-                .session_rules
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            let _cap_is_soft =
-                session_rules.insert(rule_kind, canonical, display, RuleDecision::Allow);
+        if let AskOutcome::AllowAlways(index) = outcome {
+            self.keep_grant(ask.grants.get(index), rule_kind, canonical, display);
         }
         if allowed {
             CallOutcome {

@@ -41,6 +41,7 @@ fn ask(display: &str, canonical: &str) -> ReviewedAsk {
         display: display.to_owned(),
         canonical: canonical.to_owned(),
         kind: RuleKind::Command,
+        grants: Vec::new(),
         evidence: "the reviewer refused".to_owned(),
     }
 }
