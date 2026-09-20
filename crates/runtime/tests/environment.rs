@@ -284,3 +284,21 @@ fn the_files_line_lists_the_top_level_and_caps_at_twenty() -> TestResult {
     assert!(files_line(&empty).is_none(), "an empty dir has no line");
     Ok(())
 }
+
+/// The model is told where it runs: a laptop, a container, a VM, an ssh session.
+#[test]
+fn the_platform_line_names_the_host() -> TestResult {
+    let block = yi_runtime::environment::render(&[format!(
+        "platform: {} {} · host {}",
+        std::env::consts::OS,
+        std::env::consts::ARCH,
+        yi_runtime::host::facts().line()
+    )]);
+    assert!(block.contains(" · host "), "{block}");
+    let line = yi_runtime::host::facts().line();
+    assert!(
+        !line.is_empty() && !line.contains("  "),
+        "the host clause is one readable phrase: {line:?}"
+    );
+    Ok(())
+}
