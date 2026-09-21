@@ -25,6 +25,21 @@ fn legal_ops() -> String {
         .join(", ")
 }
 
+/// What the caller evidently meant, per argument: F0e sessions sent prose or a bare path as
+/// `output`, and a todo spec without its `spec`, against a schema text they had not read (#472).
+fn field_hint(field: &str) -> &'static str {
+    match field {
+        "output" => {
+            "; output is a url of the product (tree://<child>/<path> or file:///abs/path), omitted when there is none, and a check's output line belongs to the todo tool's evidence"
+        }
+        "todos" | "delegation" => {
+            "; a todo is {label, after?, delegation?: {spec: {role?, isolation?}, accept: {command: \"...\"}}}"
+        }
+        "evidence" => "; evidence is the todo tool's field, done takes output (a url) or nothing",
+        _ => "",
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum ArgError {
     #[error("op is required; legal ops are {}", legal_ops())]
@@ -33,7 +48,7 @@ pub enum ArgError {
     UnknownOp { got: String },
     #[error("{} requires the {field:?} argument", op_name(*op))]
     Missing { op: OpKind, field: &'static str },
-    #[error("{} argument {field:?} is malformed: {cause}", op_name(*op))]
+    #[error("{} argument {field:?} is malformed: {cause}{}", op_name(*op), field_hint(field))]
     Malformed {
         op: OpKind,
         field: &'static str,
@@ -51,11 +66,17 @@ pub enum ArgError {
     TooDeep { line: usize, max: usize },
     #[error("actor is not an argument; the surface a request arrives on fixes its principal")]
     ActorArg,
-    #[error("{} does not take {key:?}; its arguments are {legal}", op_name(*op))]
+    #[error("{} does not take {key:?}; its arguments are {legal}{}", op_name(*op), field_hint(key))]
     UnknownKey {
         op: OpKind,
         key: String,
         legal: String,
+    },
+    #[error("set line {line}: label is {chars} chars, the cap is {max}")]
+    LabelTooLong {
+        line: usize,
+        chars: usize,
+        max: usize,
     },
 }
 
@@ -148,9 +169,18 @@ fn parse_checklist(list: &str) -> Result<Vec<SetRow>, ArgError> {
                 max: CHECKLIST_DEPTH,
             });
         }
-        let label = TodoLabel::new(label).map_err(|cause| ArgError::Checklist {
-            line,
-            text: cause.to_string(),
+        // Incident: one F0e session shortened a label three times and never got under 80,
+        // because the headline said the row was not a checklist row (#472).
+        let label = TodoLabel::new(label).map_err(|cause| match cause {
+            yi_types::plan::doc::DocError::LabelTooLong { label, max } => ArgError::LabelTooLong {
+                line,
+                chars: label.chars().count(),
+                max,
+            },
+            cause => ArgError::Checklist {
+                line,
+                text: cause.to_string(),
+            },
         })?;
         let todo = Todo {
             label,

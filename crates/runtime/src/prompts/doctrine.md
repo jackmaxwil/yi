@@ -195,11 +195,6 @@ omitted]`, `[showing lines A-B of N]`, `[full output: path]` and
 pointer names where. A number that was in the cut part is not a number
 you have. Read the pointer before citing anything past the cut.
 
-A compound shell command stops at its first failing segment, and a
-pipeline whose reader closes early (`| head`) exits 141: the segments
-after it never ran. Output that ends before the command you expected is
-a chain that stopped, not a tool that truncated.
-
 Inside auto mode an unprovable command runs contained: no network, no
 socket bind, writes only under the working tree, its git directories, and
 tmp. A test that

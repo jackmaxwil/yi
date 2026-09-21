@@ -207,8 +207,30 @@ pub fn unleak(args: &Map<String, Value>) -> Cow<'_, Map<String, Value>> {
     fixed
 }
 
+/// Incident: four F0e `done` calls wrote `{"done": "t3", …}`; for an op whose one argument is
+/// the item that has a single reading, so it becomes `op` plus `id` (#474).
+pub fn unkey_op(args: &Map<String, Value>) -> Cow<'_, Map<String, Value>> {
+    const ID_OPS: [&str; 6] = ["start", "done", "drop", "block", "unblock", "rm"];
+    if args.contains_key("op") || named(args).is_some() {
+        return Cow::Borrowed(args);
+    }
+    let found = args.iter().find_map(|(key, value)| {
+        let op = ID_OPS.iter().find(|op| **op == key.as_str())?;
+        Some((*op, value.as_str()?.to_owned()))
+    });
+    let Some((op, id)) = found else {
+        return Cow::Borrowed(args);
+    };
+    let mut fixed = args.clone();
+    fixed.remove(op);
+    fixed.insert("op".to_owned(), Value::String(op.to_owned()));
+    fixed.insert("id".to_owned(), Value::String(id));
+    Cow::Owned(fixed)
+}
+
 pub fn parse_op(args: &Map<String, Value>) -> Result<Op, ArgError> {
-    let args = &unleak(args);
+    let unleaked = unleak(args);
+    let args = &unkey_op(&unleaked);
     let op = string(args, "op")
         .or_else(|| infer_op(args).map(str::to_owned))
         .ok_or(ArgError::NoOp)?;

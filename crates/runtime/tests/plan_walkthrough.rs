@@ -13,7 +13,7 @@ use yi_kernel::client::HostHandlers;
 use yi_runtime::HostRegistry;
 use yi_runtime::plan::loop_coupling::{StopPosture, gate, stop_posture};
 use yi_runtime::plan::ops::{
-    Actor, Delegate, Op, OpRequest, Outcome, PlanEngine, PlanOpError, TodoSpec, dispatch_width,
+    Actor, Delegate, Op, OpRequest, Outcome, PlanEngine, PlanOpError, TodoSpec,
 };
 use yi_runtime::plan::store::PlanStore;
 use yi_runtime::todo::coupling::Cycle;
@@ -31,13 +31,12 @@ const FIXTURE_STEMS: [&str; 3] = [
     "typo-fix-never-opens-a-plan",
 ];
 
-const FIXTURE_KEYS: [&str; 11] = [
+const FIXTURE_KEYS: [&str; 10] = [
     "id",
     "description",
     "decisions",
     "prompt",
     "eagerInit",
-    "cores",
     "width",
     "goal",
     "plan",
@@ -777,30 +776,18 @@ fn build_engine(
     doc: &Map<String, Value>,
     store: &PlanStore,
     stub: &Arc<Stub>,
-    failures: &mut Vec<String>,
 ) -> Fallible<PlanEngine> {
     let engine = PlanEngine::new(store.clone(), stub.clone());
-    let Some(raw) = doc.get("cores") else {
-        if doc.get("width").is_some() {
-            return Err("fixture pins width without cores".into());
-        }
+    // The width no longer follows the host (#468), so a fixture pins it directly and the
+    // default rule is asserted in plan_ops::width_is_the_family_cap_not_the_host.
+    let Some(raw) = doc.get("width") else {
         return Ok(engine);
     };
-    let cores = raw
+    let width = raw
         .as_u64()
-        .ok_or_else(|| "cores is not an integer".to_owned())?;
-    let cores =
-        NonZeroUsize::new(usize::try_from(cores)?).ok_or_else(|| "cores is zero".to_owned())?;
-    let width = dispatch_width(cores);
-    if let Some(raw) = doc.get("width") {
-        cmp_u64(
-            "[fixture]",
-            "width",
-            raw,
-            u64::try_from(width.get())?,
-            failures,
-        )?;
-    }
+        .ok_or_else(|| "width is not an integer".to_owned())?;
+    let width =
+        NonZeroUsize::new(usize::try_from(width)?).ok_or_else(|| "width is zero".to_owned())?;
     Ok(engine.with_width(width))
 }
 
@@ -826,7 +813,7 @@ fn run_fixture(stem: &str) -> Fallible<()> {
         ));
     }
     let mut nudge = Cycle::default();
-    let engine = build_engine(doc, &store, &stub, &mut failures)?;
+    let engine = build_engine(doc, &store, &stub)?;
     let steps = require(doc, "steps", "fixture")?
         .as_array()
         .ok_or_else(|| "steps is not an array".to_owned())?;
@@ -1078,13 +1065,8 @@ async fn replay_through_plan_op(stem: &str) -> Fallible<()> {
     let tool_stub = Arc::new(Stub::default());
     let request_stub = Arc::new(Stub::default());
     let mut failures = Vec::new();
-    let tool_engine = build_engine(doc, &tool_store, &tool_stub, &mut failures)?;
-    let request_engine = Arc::new(build_engine(
-        doc,
-        &request_store,
-        &request_stub,
-        &mut failures,
-    )?);
+    let tool_engine = build_engine(doc, &tool_store, &tool_stub)?;
+    let request_engine = Arc::new(build_engine(doc, &request_store, &request_stub)?);
     let mut registries: std::collections::HashMap<String, HostRegistry> =
         std::collections::HashMap::new();
     let steps = require(doc, "steps", "fixture")?
@@ -1264,11 +1246,11 @@ async fn a_program_and_its_json_fixture_reach_the_same_plan_json() -> Fallible<(
             fixtures_dir().join(format!("{stem}.json")),
         )?)?;
         let doc = object(&doc, "fixture")?;
-        let mut failures = Vec::new();
+        let failures: Vec<String> = Vec::new();
         let json_dir = Scratch::new(&format!("yi-plan-program-json-{program}"))?;
         let json_store = PlanStore::open(json_dir.to_path_buf())?;
         let stub = Arc::new(Stub::default());
-        let engine = build_engine(doc, &json_store, &stub, &mut failures)?;
+        let engine = build_engine(doc, &json_store, &stub)?;
         let steps = require(doc, "steps", "fixture")?
             .as_array()
             .ok_or("steps is not an array")?;
@@ -1299,7 +1281,7 @@ async fn a_program_and_its_json_fixture_reach_the_same_plan_json() -> Fallible<(
 
         let cell_dir = Scratch::new(&format!("yi-plan-program-cell-{program}"))?;
         let cell_store = PlanStore::open(cell_dir.to_path_buf())?;
-        let engine = build_engine(doc, &cell_store, &Arc::new(Stub::default()), &mut failures)?;
+        let engine = build_engine(doc, &cell_store, &Arc::new(Stub::default()))?;
         let mut registry = HostRegistry::default();
         yi_runtime::plan::request::register(Arc::new(engine), Actor::Owner, &mut registry);
         registry.register_mcp_stubs();

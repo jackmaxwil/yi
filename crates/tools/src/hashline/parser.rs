@@ -537,7 +537,8 @@ impl Executor {
             }
             return Err(format!(
                 "line {}: anchor line {} is already targeted by another hunk on line {previous_line}. \
-Issue ONE hunk per range; payload is only the final desired content, never a before/after pair.",
+Issue ONE hunk per range; payload is only the final desired content, never a before/after pair. \
+A CUT over the same lines as a PUT is one PUT over that range carrying the final body.",
                 hunk.line_num,
                 first_overlap.unwrap_or(0)
             ));
