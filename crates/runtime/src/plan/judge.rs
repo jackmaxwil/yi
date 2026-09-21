@@ -60,10 +60,11 @@ impl Evidence {
         Self { url, text, hash }
     }
 
-    /// A quote is backed when this juror's own log holds a whole read of the address at the
-    /// frozen hash and the quoted line is that line. Provenance, never entailment.
+    /// Backed when this juror's own log holds a whole read of the address at the frozen hash
+    /// and the quoted line is that line. A blank line decides nothing, so it backs nothing.
     fn backs(&self, quote: &Quote, rows: &[FetchRecord]) -> bool {
-        quote.url == self.url
+        !quote.text.trim().is_empty()
+            && quote.url == self.url
             && rows
                 .iter()
                 .any(|row| row.url == self.url && row.hash == self.hash)
@@ -290,6 +291,7 @@ impl Jury {
                     Ok(()) => self.vote(&name, &evidence, until),
                     Err(refusal) => Ok((Vote::Abstain, clip(&refusal))),
                 };
+                let fabricated = read.is_err();
                 let (vote, reason) = read.unwrap_or_else(|quote| {
                     unbacked = Some(quote.clone());
                     (Vote::Abstain, quote)
@@ -298,6 +300,7 @@ impl Jury {
                     model: selector_of(model),
                     vote,
                     reason,
+                    unbacked: fabricated,
                 }
             })
             .collect();

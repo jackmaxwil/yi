@@ -619,6 +619,9 @@ pub struct JurorLine {
     pub model: String,
     pub vote: Vote,
     pub reason: String,
+    /// Set by the quote check, never read off `reason`, which is the juror's own text.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub unbacked: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

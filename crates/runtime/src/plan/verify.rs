@@ -20,6 +20,7 @@ use crate::goal::run_check_in;
 /// Retries of an item the host failed to spawn, backing off this many ms per attempt.
 const ABSTAIN_RETRIES: u32 = 2;
 const ABSTAIN_BACKOFF_MS: u64 = 100;
+const PAST_DEADLINE: &str = "the verification deadline passed before this item ran";
 
 /// The judge tier (`judge.rs`). A verifier built without one abstains every judge item.
 pub trait Judge: Send + Sync {
@@ -230,6 +231,15 @@ impl Verifier {
         let mut lines = Vec::with_capacity(contract.items.len());
         let mut reproducible = true;
         for item in &contract.items {
+            // Ahead of every decider, so a jury is never seated for an item with no time left.
+            if Instant::now() >= whole {
+                lines.push(ItemLine {
+                    id: item.id.clone(),
+                    verdict: abstain(PAST_DEADLINE),
+                    jurors: Vec::new(),
+                });
+                continue;
+            }
             if let (Decider::Judge { .. }, Some(judge)) = (&item.decider, &self.judge) {
                 let (verdict, jurors) = match &snapshot.jury {
                     Some(seat) if seat.juries > JUDGE_CAP_PER_TODO => (escalated(item), Vec::new()),
@@ -288,9 +298,6 @@ impl Verifier {
         whole: Instant,
         reproducible: &mut bool,
     ) -> ItemVerdict {
-        if Instant::now() >= whole {
-            return abstain("the verification deadline passed before this item ran");
-        }
         match &item.decider {
             Decider::Cmd {
                 checker,
