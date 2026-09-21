@@ -2415,8 +2415,8 @@ crate. Tests: `subagent::status_state_and_notice_derive_from_one_exit` (T0);
 `family::stuck_reads_the_typed_signal` (T0). LOC yi-types +40, yi-runtime
 +120 −60, yi-tui +10.
 
-As landed (0.275.0, D215). Measured growth is +972 Rust `src` lines (yi-types 146,
-yi-runtime 821) and 23 of Python. Where the landing differs from sections 7.4 to 7.6
+As landed (0.275.0, D215). Measured growth is +1032 Rust `src` lines (yi-types 146,
+yi-runtime 881, 60 of them the review pass) and 23 of Python. Where the landing differs from sections 7.4 to 7.6
 and the rows above:
 
 - One test is renamed: the attached half of the hold test asserts that the question
@@ -2425,7 +2425,11 @@ and the rows above:
   root's surface; a `request` envelope to the parent would be a second road to the same
   answer. `gate::compile_ask` is the detached half, and the broker's no-asker arm reads
   its refusal from it. The spawn refusal for a brief that names a walled path is not
-  built: a brief is free text, and matching paths in it is a heuristic, not a control.
+  built. The `context` the section means is a `Delegation`'s list of URLs, which is
+  structured and could be checked, but the effective wall is computed in `spawn`, which
+  is handed kwargs and never the delegation, so the check needs the URLs plumbed to the
+  one place that knows the parent's wall; F3a owns it. Until then the wall still refuses
+  the read at the fetch seam, one call later than the plan asks for.
 - The lease journal is the parent's own transcript (`custom{lease}` entries: `revoked`,
   `repossessed`, `returned`), not `ops.jsonl`: a lease exists without a plan. Three
   tests were added beside the table: `a_cancel_ends_the_run_at_its_next_message_boundary`,
@@ -2436,12 +2440,29 @@ and the rows above:
   terminal update published. The revocation itself is journaled before the `cancel` is
   sent, which is what a restart resumes from. After a restart the child's process is
   gone, so the resume completes the record and tells the parent; a worktree it held is
-  an orphan lane the pool already knows how to reap, and the notice says so.
+  an orphan lane the pool already knows how to reap, and the record's disposition says
+  `pending` with that as its reason, because nothing settled it. The resume reads the
+  journal oldest first, so a `repossessed` line closes the `revoked` line before it.
+- The plan journal's `Disposition::RepossessionPending`, reserved in F0d, is still
+  unwritten. A repossessed worktree child leaves the roster, so the engine reads a child
+  it cannot vouch for and blocks its todo on the user; the disposition is journaled when
+  that todo leaves `Running` through `fail` or `drop`, from the refs its `submit`
+  recorded. Writing it from the repossession itself needs a road from the host into the
+  engine's journal that no delegate has; F3a owns it.
 - `RepossessionPending` is a `MemberState` (`repossession_pending`) over a record whose
   exit is still absent; the timer's job retries it on every wake.
 - `lease.deadline_ms` is optional: a root with no `--deadline` has no clock to lease.
   Tokens are reserved and accounted, and returned at reap; nothing ends a run for
   spending past its reservation yet, and a parent's own turns are not debited here.
+  A root holds no token grant either, since no CLI flag sets one, so the refusal binds
+  a grandchild against what its own parent drew and never a root's first child. Both
+  spawn roads draw: `rlm.run` from `tokens`, the engine's dispatch from
+  `SpawnSpec.budget`, which is no longer only a line in the brief.
+- A child's `failure` envelope is a verdict on its work, not the end of its run. It
+  files no exit while the run is live: the record carries it as a phase, `wait` reports
+  `failed` at once, and the run's own ending turns it into `Failed { red_check }`. Filing
+  the exit there instead would publish a terminal update mid-run, breaking F1e's one
+  ending per run, and would let a revoked child read as ended and dodge its grace.
 - Stopping a run is `abort` and a bounded join (10 s); `abort` already kills bash and
   interrupts the kernel cell. No separate process-group kill was added.
 - `close` is called where a parent's end is an event the process survives (ACP's session
@@ -2451,7 +2472,7 @@ and the rows above:
   has none until the kernel-dead path reports it.
 - Audit item (e): `fold_event`, `preview`, `update` and the new transition moved to
   `subagent/record.rs`, the lease and the two stop registrations to `lease.rs`;
-  `subagent.rs` stands at 1,122 lines
+  `subagent.rs` stands at 1,130 lines
   and `session.rs` at 1,198. Nothing else was shed.
 
 ### F3a · The judge tier (D-next-10)
