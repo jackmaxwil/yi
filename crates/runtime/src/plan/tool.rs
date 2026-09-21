@@ -36,6 +36,11 @@ fn field_hint(field: &str) -> &'static str {
             "; a todo is {label, after?, delegation?: {spec: {role?, isolation?}, accept: {command: \"...\"}}}"
         }
         "evidence" => "; evidence is the todo tool's field, done takes output (a url) or nothing",
+        // Incident: three worktree children quoted the attempt nine times between them; the
+        // refusal named the wanted type without saying it was the todo's own counter.
+        "attempt" => {
+            "; attempt is a bare integer, the attempt this todo is on, and 1 unless it was retried"
+        }
         _ => "",
     }
 }
