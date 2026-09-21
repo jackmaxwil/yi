@@ -7,13 +7,19 @@ the fixture `crates/runtime/tests/levers.rs` holds equal to the compiled default
 `levers/floors.json` the capability floor per task class.
 
     python3 evals/levers.py --selfcheck
+    python3 evals/levers.py compare --lever plan.width_max --value 4 --runner './score.sh'
+    python3 evals/levers.py grid --knob plan.width_max=4,12 --knob todo.nudge_work=8,16 \\
+        --runner './score.sh' --max-runs 30
+
+The runner is the owner's: it is called as `<runner> <overrides.json> <task>...`, exports
+`YI_LEVERS=<overrides.json>` to the runs it starts, and prints one JSON row per trial.
 
 A trial row is the shape `evals/axes.py` scores: `task`, `reward`, `input`, `cacheRead`,
 `output`, `costUsd`, `wallSec`. A lever change passes two gates (section 10.3): every
 class stays within `tolerance` of its floor, and at least one of cost, tokens and wall
 improves on the baseline; among the candidates that pass, only the nondominated survive.
 """
-import argparse, json, pathlib, re, sys
+import argparse, itertools, json, math, pathlib, re, shlex, statistics, subprocess, sys, tempfile
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "evals/graph"))
@@ -21,6 +27,7 @@ from refine import Refused, names  # noqa: E402
 
 LEVERS = ROOT / "evals/levers"
 EFFICIENCY = ("costUsd", "tokens", "wallSec")
+MAX_KNOBS, MAX_RUNS, CONFIDENCE = 5, 40, 0.95
 SCATTER = ROOT / "python/yi_runtime/src/yi/shapes.py"
 
 
@@ -131,17 +138,153 @@ def fit_rows(rows, split):
     return rows
 
 
+def candidate(overrides, listed):
+    """Refused before anything is paid for, by the rules `Levers::load` applies to the same
+    file: a lever the manifest lists, marked tunable, an integer inside its range."""
+    for name, value in overrides.items():
+        row = listed.get(name)
+        if row is None:
+            raise Refused(f"unknown lever {name}")
+        if row["tunable"] is not True:
+            raise Refused(f"{name} is not tunable: {row['why']}")
+        if not isinstance(value, int) or isinstance(value, bool) or not row["min"] <= value <= row["max"]:
+            raise Refused(f"{name} wants an integer in {row['min']}..{row['max']}, not {value!r}")
+    return overrides
+
+
+def interval(differences, confidence=CONFIDENCE):
+    """The sign test inverted: an order-statistic interval for the median paired difference.
+    It assumes only that the pairs are independent, which is what a handful of paired runs
+    can support; a bootstrap over so few pairs is too narrow and a t interval assumes a
+    normal spread that token counts do not have. `confidence` is what the interval really
+    covers: with fewer than six pairs no interval reaches 0.95, and the number says so."""
+    ordered, n = sorted(differences), len(differences)
+    if not n:
+        raise Refused("no paired rows to compare")
+    rank, tail = 0, 0.0
+    for below in range(n):
+        more = tail + math.comb(n, below) / 2 ** n
+        if more > (1 - confidence) / 2:
+            break
+        rank, tail = below + 1, more
+    low, high = (ordered[rank - 1], ordered[n - rank]) if rank else (ordered[0], ordered[-1])
+    return {"median": statistics.median(ordered), "low": low, "high": high, "pairs": n,
+            "confidence": round(1 - 2 * tail if rank else 1 - 2 * 0.5 ** n, 4)}
+
+
+def per_task(rows):
+    """One number per task and metric for a single run: the sums a pair is the difference of."""
+    out = {}
+    for row in rows:
+        mine = out.setdefault(row["task"], dict.fromkeys(EFFICIENCY + ("reward",), 0))
+        mine["tokens"] += sum((row.get(k) or 0) for k in ("input", "cacheRead", "output"))
+        for key in ("costUsd", "wallSec", "reward"):
+            mine[key] += row.get(key) or 0
+    return out
+
+
+def judge(baseline, runs, floors):
+    """A candidate's verdict against the baseline it was paired with, run for run. It is
+    `better` only when both gates pass and a whole efficiency interval, at the confidence
+    asked for, lies below zero; a median alone is never a win."""
+    pairs = [(per_task(base), per_task(mine)) for base, mine in zip(baseline, runs)]
+    intervals = {key: interval([mine[task][key] - base[task][key]
+                                for base, mine in pairs for task in base if task in mine])
+                 for key in EFFICIENCY + ("reward",)}
+    flat = [row for run in runs for row in run]
+    reason = gate(measure([row for run in baseline for row in run], floors), measure(flat, floors), floors)
+    won = any(intervals[k]["high"] < 0 and intervals[k]["confidence"] >= CONFIDENCE for k in EFFICIENCY)
+    verdict = "better" if won and not reason else "inconclusive"
+    if reason and reason != "no_efficiency_gain":
+        verdict = "rejected"
+    return {"verdict": verdict, "reason": reason, "intervals": intervals, "measured": measure(flat, floors)}
+
+
+def grid(knobs, tasks, run, floors, listed, k=3, max_runs=MAX_RUNS):
+    """Every point of a small grid against one baseline, paired by repetition and interleaved
+    so drift in the provider lands on both sides. Bounded before it starts: at most
+    `MAX_KNOBS` knobs, and `(points + 1) * k` runs may not pass `max_runs`. No model is fitted
+    over the points (section 10.4): each is judged on its own pairs, then the nondominated
+    among the ones that passed survive. `run(overrides, tasks)` is the only thing that costs."""
+    if not 1 <= len(knobs) <= MAX_KNOBS:
+        raise Refused(f"a grid takes 1 to {MAX_KNOBS} knobs, not {len(knobs)}")
+    points = [candidate(dict(zip(knobs, values)), listed) for values in itertools.product(*knobs.values())]
+    points = [point for point in points if any(listed[name]["default"] != value for name, value in point.items())]
+    planned = (len(points) + 1) * k
+    if not points or k < 1:
+        raise Refused("nothing to run: every point is the defaults, or k is below 1")
+    if planned > max_runs:
+        raise Refused(f"{len(points)} points at k={k} is {planned} runs; the bound is {max_runs}")
+    stray = sorted(set(tasks) - set(classes(floors)))
+    if stray:
+        raise Refused(f"task {stray[0]!r} has no class in floors.json")
+    baseline, runs = [], [[] for _ in points]
+    for repetition in range(k):
+        order = [None, *range(len(points))]
+        for index in order if repetition % 2 == 0 else reversed(order):
+            rows = run({} if index is None else points[index], tasks)
+            (baseline if index is None else runs[index]).append(rows)
+    judged = [dict(judge(baseline, mine, floors), levers=point) for point, mine in zip(points, runs)]
+    passed = {json.dumps(row["levers"], sort_keys=True): row["measured"] for row in judged if not row["reason"]}
+    return {"spend": {"runs": planned, "trials": sum(len(rows) for rows in baseline + sum(runs, []))},
+            "points": judged, "survivors": survivors(passed)}
+
+
+def compare(lever, value, tasks, run, floors, listed, k=3):
+    """One knob, one value, paired with the baseline: a grid of one point."""
+    return grid({lever: [value]}, tasks, run, floors, listed, k=k, max_runs=2 * k)
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--selfcheck", action="store_true", help="hold the manifest, the fixture and the floors together")
+    verbs = parser.add_subparsers(dest="verb")
+    for verb in ("compare", "grid"):
+        sub = verbs.add_parser(verb)
+        sub.add_argument("--runner", required=True, help="the owner's scoring command; this file starts no model")
+        sub.add_argument("--group", choices=("development", "validation"), default="development",
+                         help="validation is selection: say so in the ledger row")
+        sub.add_argument("--k", type=int, default=3)
+        if verb == "compare":
+            sub.add_argument("--lever", required=True)
+            sub.add_argument("--value", type=int, required=True)
+        else:
+            sub.add_argument("--knob", action="append", required=True, help="name=v1,v2")
+            sub.add_argument("--max-runs", type=int, default=MAX_RUNS)
     args = parser.parse_args(argv)
+    if args.verb:
+        return search(args)
     if not args.selfcheck:
-        parser.error("nothing to do; pass --selfcheck")
+        parser.error("nothing to do; pass --selfcheck, compare or grid")
     found = selfcheck()
     for line in found:
         print(line, file=sys.stderr)
     print(f"levers: {len(manifest())} listed, {sum(1 for r in manifest().values() if r['tunable'])} tunable")
     return 1 if found else 0
+
+
+def search(args):
+    def run(overrides, tasks):
+        with tempfile.NamedTemporaryFile("w", suffix=".json") as sink:
+            json.dump(overrides, sink)
+            sink.flush()
+            done = subprocess.run([*shlex.split(args.runner), sink.name, *tasks],
+                                  capture_output=True, text=True, check=True)
+        return [json.loads(line) for line in done.stdout.splitlines() if line.strip()]
+
+    tasks, floors, listed = read("split.json")[args.group], read("floors.json"), manifest()
+    try:
+        if args.verb == "compare":
+            result = compare(args.lever, args.value, tasks, run, floors, listed, k=args.k)
+        else:
+            knobs = {name: [int(v) for v in values.split(",")]
+                     for name, values in (knob.split("=", 1) for knob in args.knob)}
+            result = grid(knobs, tasks, run, floors, listed, k=args.k, max_runs=args.max_runs)
+    except (Refused, ValueError) as refusal:
+        print(f"refused: {refusal}", file=sys.stderr)
+        return 2
+    print(json.dumps(dict(result, group=args.group), sort_keys=True))
+    return 0
 
 
 if __name__ == "__main__":

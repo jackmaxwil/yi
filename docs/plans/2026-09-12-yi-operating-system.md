@@ -2741,7 +2741,7 @@ section 10.3 name benchmark tasks and wait for the owner, as the split does. The
 file's hash rides the fingerprint's mode in `evals/run.py` (section 10.6); the harbor adapter
 does not carry `YI_LEVERS` into its container yet. Not run: any paid comparison.
 
-### F4d · Controlled comparisons over three to five knobs (part of D-next-14)
+### F4d · Controlled comparisons over three to five knobs (part of D220, landed 0.282.0)
 
 `levers.py compare` (paired baseline and candidate over one knob) and
 `levers.py grid` (a bounded grid over the chosen knobs, every run counted in
@@ -2751,6 +2751,18 @@ the search spend); tests on synthetic rows: `a_comparison_reports_its_interval`,
 Gaussian process (§0 R12, §10.4); a later optimizer is its own proposal with
 the data to justify it. Paid runs are the user's; each promotion is a ledger
 row and a changelog row naming it.
+
+As landed (0.282.0, #466; no Rust `src` line). `compare` is a grid of one point, so both
+share the pairing (by repetition, interleaved), the bound (`(points + 1) * k` runs against
+`--max-runs`, refused before anything runs) and the spend count. The interval is the sign
+test inverted, an order-statistic interval for the median paired difference per task,
+printed with the confidence its pair count supports: a bootstrap over a handful of pairs
+is too narrow and a t interval assumes a spread token counts do not have. A point is
+`better` only when both F4c gates pass and a whole efficiency interval lies below zero at
+0.95. The runner is an injected callable in tests and the owner's argv on the command
+line, called as `<runner> <overrides.json> <task>...`; exporting `YI_LEVERS` to the runs is
+the runner's business. `fit_rows` stays a library gate: nothing here fits anything, so no
+command calls it yet. Not run: any paid comparison.
 
 ### Deferred (seams only)
 
