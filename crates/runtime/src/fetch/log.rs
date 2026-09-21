@@ -47,6 +47,12 @@ impl FetchLog {
                 Some(payload),
             );
         }
+        self.remember(url, record);
+    }
+
+    /// Invariant: [`Self::record`] without the session row, for a read of the very listing
+    /// that row would grow: a paged walk must not chase the entries it writes (D213).
+    pub(crate) fn remember(&self, url: &Url, record: FetchRecord) {
         let key = base_of(url);
         let mut state = self.lock();
         match state.records.iter().position(|(base, _)| *base == key) {

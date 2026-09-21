@@ -164,6 +164,19 @@ fn a_capped_read_names_the_next_offset_and_the_next_page_continues_it() -> TestR
     Ok(())
 }
 
+/// The listing a walk reads is the listing the walk grows, so a page of one entry used to
+/// stay one entry behind the end for ever: a paged read of this session's own history
+/// appends no log row, and the pages rebuild exactly the listing the walk started from.
+#[test]
+fn a_walk_of_this_sessions_own_history_ends_at_a_limit_of_one() -> TestResult {
+    let (_workspace, resolver, _store) = paged_workspace()?;
+    for url in ["history://main", "history://main/since/0"] {
+        let walked = walk(&resolver, url, 1, "\n")?;
+        assert_eq!(resolver.fetch(&url.parse()?)?.text, walked, "{url}");
+    }
+    Ok(())
+}
+
 /// A byte offset is the caller's arithmetic, so it can land inside a character: the page is
 /// still text, the walk still ends, and from a boundary the pages rebuild the file exactly.
 #[test]
