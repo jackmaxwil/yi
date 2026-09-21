@@ -1,0 +1,81 @@
+Quillfen Water Cooperative
+INCIDENT REVIEW IR-2031-09
+Stage: PRELIMINARY
+Site: Eastmere Intake
+
+Occurred: 2031-08-14. Severity as assessed at this stage: 2.
+
+Summary
+-------
+
+Flooding on the lane to Tolland Sluice delayed the delivery by a day; no cost was
+incurred by the cooperative. Oona Farrow thanked the field crews for covering the
+holiday rota at short notice.
+
+Timeline
+--------
+
+  06:08  alarm received in the control room
+  06:17  supply restored
+  06:50  crew dispatched
+  07:00  alarm received in the control room
+  07:05  standby plant started
+  07:35  supply restored
+
+Findings
+--------
+
+Vegetation clearance around the wet well ladder at Tolland Sluice was completed and
+the area photographed for the asset record. the asset planning group will coordinate
+with Ansel Brightwater on the training calendar, which currently shows 27 open places.
+A minor oil weep from the duty pump at Eastmere Intake was cleaned up and a drip tray
+fitted pending the next service. The contractor's method statement for work at Pike
+Hollow was reviewed by the networks team and returned with 4 comments.
+
+Root cause
+----------
+
+Operator error: the duty operator acknowledged the alarm and did not act on it.
+
+Recommendations
+---------------
+
+1. Give operators refresher training on alarm response.
+
+Annex A. Housekeeping
+---------------------
+
+Vegetation clearance around the duty pump at Pike Hollow was completed and the area
+photographed for the asset record. Mirela Stanck confirmed that spares for the
+telemetry outstation are held at the central store and that the reorder level is 35
+units. the finance office will coordinate with Lucan Marsh on the training calendar,
+which currently shows 32 open places. Vegetation clearance around the sample tap at
+Osier Bank was completed and the area photographed for the asset record.
+
+A walkdown of Harrow Weir found the signage faded; replacement boards have been
+ordered under the routine budget. No complaints were received from neighbours of Low
+Fennick during the works, and the liaison log has been closed. It was noted that
+access to Osier Bank remains difficult after heavy rain and that the track will be
+regraded when crews allow. No complaints were received from neighbours of Brackwater
+Lock during the works, and the liaison log has been closed. Flooding on the lane to
+Osier Bank delayed the delivery by a day; no cost was incurred by the cooperative.
+
+the safety committee reminded everyone that permits for confined spaces must be closed
+out the same day. Bram Ketteridge thanked the safety committee for covering the
+holiday rota at short notice. The draft drawing register for Pike Hollow is 9 percent
+complete and will be issued once the as-built survey is checked.
+
+Annex B. Routine matters
+------------------------
+
+Bram Ketteridge raised the question of lone working at Eastmere Intake and was
+referred to the existing guidance held by the field crews. Vegetation clearance around
+the inlet screen at Low Fennick was completed and the area photographed for the asset
+record. An energy audit of Tolland Sluice suggested that running the level sensor off-
+peak would reduce cost without affecting service.
+
+Hollis Wray confirmed that spares for the control panel are held at the central store
+and that the reorder level is 39 units. Dov Callender noted that the calibration
+certificate for the telemetry outstation expires next quarter and has booked the
+visit. Vegetation clearance around the penstock actuator at Brackwater Lock was
+completed and the area photographed for the asset record.

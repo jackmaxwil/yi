@@ -1,0 +1,120 @@
+[
+ {
+  "id": "merge-two",
+  "args": [
+   "base.ini",
+   "host.ini"
+  ],
+  "stdin": "",
+  "files": {
+   "base.ini": "# site defaults\nname = orchard\nroot = /srv/${name}\n\n[paths]\ndata = ${root}/data      ; where things live\nlogs = ${paths.data}/logs\ntmp = \"/tmp/${name} scratch\"\n\n[service.web]\nport = 8080\nurl = http://${host}:${port}/   # host comes from global\nflags = --fast \\\n        --safe \\\n        --quiet\nmotd = 'literal ${name} costs $5'\n",
+   "host.ini": "host = web-01.internal\n[service.web]\nport = 9090\nflags += --verbose\n!unset motd\n[paths]\n!unset tmp\ncache = ${data}/cache#1\n"
+  },
+  "exit": 0,
+  "stdout": "[global]\nhost = web-01.internal\nname = orchard\nroot = /srv/orchard\n\n[paths]\ncache = \"/srv/orchard/data/cache#1\"\ndata = /srv/orchard/data\nlogs = /srv/orchard/data/logs\n\n[service.web]\nflags = --fast --safe --quiet --verbose\nport = 9090\nurl = http://web-01.internal:9090/\n",
+  "files_after": {
+   "base.ini": "# site defaults\nname = orchard\nroot = /srv/${name}\n\n[paths]\ndata = ${root}/data      ; where things live\nlogs = ${paths.data}/logs\ntmp = \"/tmp/${name} scratch\"\n\n[service.web]\nport = 8080\nurl = http://${host}:${port}/   # host comes from global\nflags = --fast \\\n        --safe \\\n        --quiet\nmotd = 'literal ${name} costs $5'\n",
+   "host.ini": "host = web-01.internal\n[service.web]\nport = 9090\nflags += --verbose\n!unset motd\n[paths]\n!unset tmp\ncache = ${data}/cache#1\n"
+  }
+ },
+ {
+  "id": "order-matters",
+  "args": [
+   "host.ini",
+   "base.ini"
+  ],
+  "stdin": "",
+  "files": {
+   "base.ini": "# site defaults\nname = orchard\nroot = /srv/${name}\n\n[paths]\ndata = ${root}/data      ; where things live\nlogs = ${paths.data}/logs\ntmp = \"/tmp/${name} scratch\"\n\n[service.web]\nport = 8080\nurl = http://${host}:${port}/   # host comes from global\nflags = --fast \\\n        --safe \\\n        --quiet\nmotd = 'literal ${name} costs $5'\n",
+   "host.ini": "host = web-01.internal\n[service.web]\nport = 9090\nflags += --verbose\n!unset motd\n[paths]\n!unset tmp\ncache = ${data}/cache#1\n"
+  },
+  "exit": 0,
+  "stdout": "[global]\nhost = web-01.internal\nname = orchard\nroot = /srv/orchard\n\n[paths]\ncache = \"/srv/orchard/data/cache#1\"\ndata = /srv/orchard/data\nlogs = /srv/orchard/data/logs\ntmp = /tmp/orchard scratch\n\n[service.web]\nflags = --fast --safe --quiet\nmotd = literal ${name} costs $5\nport = 8080\nurl = http://web-01.internal:8080/\n",
+  "files_after": {
+   "base.ini": "# site defaults\nname = orchard\nroot = /srv/${name}\n\n[paths]\ndata = ${root}/data      ; where things live\nlogs = ${paths.data}/logs\ntmp = \"/tmp/${name} scratch\"\n\n[service.web]\nport = 8080\nurl = http://${host}:${port}/   # host comes from global\nflags = --fast \\\n        --safe \\\n        --quiet\nmotd = 'literal ${name} costs $5'\n",
+   "host.ini": "host = web-01.internal\n[service.web]\nport = 9090\nflags += --verbose\n!unset motd\n[paths]\n!unset tmp\ncache = ${data}/cache#1\n"
+  }
+ },
+ {
+  "id": "set-and-get",
+  "args": [
+   "--set",
+   "global.name=grove",
+   "--get",
+   "paths.logs",
+   "base.ini",
+   "host.ini"
+  ],
+  "stdin": "",
+  "files": {
+   "base.ini": "# site defaults\nname = orchard\nroot = /srv/${name}\n\n[paths]\ndata = ${root}/data      ; where things live\nlogs = ${paths.data}/logs\ntmp = \"/tmp/${name} scratch\"\n\n[service.web]\nport = 8080\nurl = http://${host}:${port}/   # host comes from global\nflags = --fast \\\n        --safe \\\n        --quiet\nmotd = 'literal ${name} costs $5'\n",
+   "host.ini": "host = web-01.internal\n[service.web]\nport = 9090\nflags += --verbose\n!unset motd\n[paths]\n!unset tmp\ncache = ${data}/cache#1\n"
+  },
+  "exit": 0,
+  "stdout": "/srv/grove/data/logs\n",
+  "files_after": {
+   "base.ini": "# site defaults\nname = orchard\nroot = /srv/${name}\n\n[paths]\ndata = ${root}/data      ; where things live\nlogs = ${paths.data}/logs\ntmp = \"/tmp/${name} scratch\"\n\n[service.web]\nport = 8080\nurl = http://${host}:${port}/   # host comes from global\nflags = --fast \\\n        --safe \\\n        --quiet\nmotd = 'literal ${name} costs $5'\n",
+   "host.ini": "host = web-01.internal\n[service.web]\nport = 9090\nflags += --verbose\n!unset motd\n[paths]\n!unset tmp\ncache = ${data}/cache#1\n"
+  }
+ },
+ {
+  "id": "undefined",
+  "args": [
+   "base.ini"
+  ],
+  "stdin": "",
+  "files": {
+   "base.ini": "# site defaults\nname = orchard\nroot = /srv/${name}\n\n[paths]\ndata = ${root}/data      ; where things live\nlogs = ${paths.data}/logs\ntmp = \"/tmp/${name} scratch\"\n\n[service.web]\nport = 8080\nurl = http://${host}:${port}/   # host comes from global\nflags = --fast \\\n        --safe \\\n        --quiet\nmotd = 'literal ${name} costs $5'\n"
+  },
+  "exit": 4,
+  "stdout": "",
+  "files_after": {
+   "base.ini": "# site defaults\nname = orchard\nroot = /srv/${name}\n\n[paths]\ndata = ${root}/data      ; where things live\nlogs = ${paths.data}/logs\ntmp = \"/tmp/${name} scratch\"\n\n[service.web]\nport = 8080\nurl = http://${host}:${port}/   # host comes from global\nflags = --fast \\\n        --safe \\\n        --quiet\nmotd = 'literal ${name} costs $5'\n"
+  }
+ },
+ {
+  "id": "cycle",
+  "args": [
+   "a.ini"
+  ],
+  "stdin": "",
+  "files": {
+   "a.ini": "[x]\na = ${b}\nb = ${c}/1\nc = ${x.a}\n"
+  },
+  "exit": 3,
+  "stdout": "",
+  "files_after": {
+   "a.ini": "[x]\na = ${b}\nb = ${c}/1\nc = ${x.a}\n"
+  }
+ },
+ {
+  "id": "syntax",
+  "args": [
+   "a.ini"
+  ],
+  "stdin": "",
+  "files": {
+   "a.ini": "[x]\nthis is not an assignment\n"
+  },
+  "exit": 2,
+  "stdout": "",
+  "files_after": {
+   "a.ini": "[x]\nthis is not an assignment\n"
+  }
+ },
+ {
+  "id": "quoting-out",
+  "args": [
+   "a.ini"
+  ],
+  "stdin": "",
+  "files": {
+   "a.ini": "[x]\nempty =\nspaced = \"  padded  \"\nhash = \"a # b\"\nplain = a#b\ntab = \"one\\ttwo\"\ndollar = cost $$5 and $x\n"
+  },
+  "exit": 0,
+  "stdout": "[x]\ndollar = cost $5 and $x\nempty = \"\"\nhash = \"a # b\"\nplain = \"a#b\"\nspaced = \"  padded  \"\ntab = \"one\\ttwo\"\n",
+  "files_after": {
+   "a.ini": "[x]\nempty =\nspaced = \"  padded  \"\nhash = \"a # b\"\nplain = a#b\ntab = \"one\\ttwo\"\ndollar = cost $$5 and $x\n"
+  }
+ }
+]
