@@ -537,7 +537,15 @@ def _kernel_local_name(url: str) -> str | None:
     return variable
 
 
-async def fetch(url: str, *, as_text: bool = False) -> Any:
+class Page(str):
+    """One page of a paged ``fetch``: the text, and where the next page starts (None at the end)."""
+
+    next_offset: int | None = None
+
+
+async def fetch(
+    url: str, *, as_text: bool = False, offset: int | None = None, limit: int | None = None
+) -> Any:
     """Read one addressable URL; a URL names a noun, so a fetch never writes.
 
     ``kernel://<var>`` and ``kernel://main/<var>`` in the plan owner's kernel
@@ -545,6 +553,10 @@ async def fetch(url: str, *, as_text: bool = False) -> Any:
     round trip. Every other URL — ``local://``, ``plan://``, ``history://``,
     ``checkpoint://``, ``mcp://``, another agent's ``kernel://`` — is resolved
     by the host and returns text. Batch reads with ``asyncio.gather``.
+
+    ``offset`` and ``limit`` page a read: bytes of ``local://``, entries of
+    ``history://``, chars of another agent's ``kernel://`` repr. A paged read
+    returns a ``Page``, a str whose ``next_offset`` continues it until None.
     """
     if not isinstance(url, str) or not url:
         raise TypeError("url must be a non-empty str")
@@ -559,8 +571,9 @@ async def fetch(url: str, *, as_text: bool = False) -> Any:
         return namespace[name]
     # D164: another member's kernel:// returns the object itself (its kernel dills it into
     # the family dir); text on request, or when the host has no family dir to dill into.
-    want_object = url.startswith("kernel://") and not as_text
-    reply = await host_request("fetch", {"url": url, "object": want_object})
+    paged = {key: value for key, value in (("offset", offset), ("limit", limit)) if value is not None}
+    want_object = url.startswith("kernel://") and not as_text and not paged
+    reply = await host_request("fetch", {"url": url, "object": want_object, **paged})
     path = reply.get("path")
     if want_object and isinstance(path, str):
         with open(path, "rb") as handle:
@@ -568,6 +581,9 @@ async def fetch(url: str, *, as_text: bool = False) -> Any:
     text = reply.get("text")
     if not isinstance(text, str):
         raise RuntimeError(f"fetch of {url} returned no text")
+    if paged:
+        text = Page(text)
+        text.next_offset = reply.get("next_offset")
     return text
 
 
@@ -833,8 +849,8 @@ class _RLMCallable:
     async def run(self, prompt: str, **kwargs: Any) -> RLMSpawnHandle:
         return await run(prompt, **kwargs)
 
-    async def fetch(self, url: str, *, as_text: bool = False) -> Any:
-        return await fetch(url, as_text=as_text)
+    async def fetch(self, url: str, **options: Any) -> Any:
+        return await fetch(url, **options)
 
     def put(self, name: str, obj: Any) -> dict[str, Any]:
         return put(name, obj)

@@ -205,6 +205,24 @@ async fn a_live_kernel_fetches_its_own_variables_and_runs_bash_handles() -> Test
         killed.result.stdout,
         killed.result.stderr
     );
+    // D213: a huge limit is clamped to the cell's cap, in chars, and the last page names no next.
+    cell(&service, "long = 'é' * 9000").await?;
+    let long = yi_runtime::kernel::VariableName::parse("long")?;
+    let mut seen = Vec::new();
+    for offset in [0, 8192, 9002] {
+        let page = yi_runtime::fetch::Page {
+            offset,
+            limit: usize::MAX,
+        };
+        let (text, next) = service
+            .read_variable(&long, Some(page))
+            .await?
+            .ok_or("long")?;
+        seen.push((text.chars().count(), next));
+    }
+    assert_eq!(seen, [(8192, Some(8192)), (810, None), (0, None)]);
+    let (whole, next) = service.read_variable(&long, None).await?.ok_or("long")?;
+    assert!(whole.ends_with("[... truncated: 8192 of 9002 chars ...]") && next.is_none());
     service.dispose().await;
     Ok(())
 }

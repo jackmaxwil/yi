@@ -10,7 +10,12 @@ pub(crate) fn py_literal(value: &str) -> String {
     Value::String(value.to_owned()).to_string()
 }
 
-pub(crate) fn read_variable_code(name: &VariableName) -> String {
+/// Invariant: a page never widens the cell's reply past [`VARIABLE_MAX_CHARS`] (D213).
+pub(crate) fn read_variable_code(name: &VariableName, page: Option<crate::fetch::Page>) -> String {
+    let start = page.map_or(0, |page| page.offset);
+    let limit = page.map_or(VARIABLE_MAX_CHARS, |page| {
+        page.limit.min(VARIABLE_MAX_CHARS)
+    });
     format!(
         r#"def _yi_read_variable():
     import builtins as _b, json
@@ -26,7 +31,7 @@ pub(crate) fn read_variable_code(name: &VariableName) -> String {
         return
     try:
         text = _b.repr(ns[name])
-        payload = json.dumps({{"found": True, "chars": _b.len(text), "text": text[:{limit}]}})
+        payload = json.dumps({{"found": True, "chars": _b.len(text), "text": text[{start}:{end}]}})
     except _b.BaseException as exc:
         payload = json.dumps({{"found": True, "error": _b.repr(exc)}})
     _b.print({marker} + payload)
@@ -38,7 +43,7 @@ finally:
     del _yi_read_variable"#,
         name = py_literal(name.as_str()),
         marker = py_literal(VARIABLE_MARKER),
-        limit = VARIABLE_MAX_CHARS,
+        end = start.saturating_add(limit),
     )
 }
 
