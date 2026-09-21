@@ -2144,15 +2144,29 @@ is cooperative and `deny_read` is paths where a partition is urls; the seam is
 the binding. Also not built: a writer child as the scatter lead, `rest_for_one`
 and `one_for_all`, and the four later shapes.
 
-### F1c · Paged recall through `fetch` (D-next-7; extends D164)
+### F1c · Paged recall through `fetch` (D213, landed 0.272.0; extends D164)
 
 `fetch` payload gains `offset` and `limit` (bytes for `local://`, entries
-for `history://`, chars for `kernel://` past `VARIABLE_MAX_CHARS` 8,192,
-`kernel.rs:670`); the reply carries `next_offset` or null. Files:
-`wiring.rs:209`, `fetch/schemes.rs` (three resolvers), `rlm/__init__.py:466`.
+for `history://`, chars for `kernel://` past `VARIABLE_MAX_CHARS` 8,192 in
+`kernel.rs`); a paged reply carries `next_offset` or null, and a request
+naming neither key is answered key for key as before. Files: `wiring.rs` (the
+`fetch` host request), `fetch/mod.rs` (`Page`, `fetch_page`, `into_reply`),
+`fetch/schemes.rs` (three resolvers), `rlm/__init__.py` (`fetch`, `Page`).
 Tests: `fetch_session::a_capped_read_names_the_next_offset_and_the_next_page_continues_it`
-(T1). LOC yi-runtime +90, python +10. Row: "`fetch` pages: a capped read
-names the next offset (D-next-7, extends D164; Closes #<n>)".
+(T1) and three edge tests beside it. Row: "`fetch` pages: a capped read names
+the next offset (D213, extends D164; Closes #456)".
+
+**As landed.** LOC yi-runtime +126 against 90, python +16 against 10. Decided
+at the edges: a zero, negative or fractional number is refused, never
+clamped; a huge limit is the rest (a `kernel://` page clamps to the cell's
+cap); an offset past the end is an empty last page; a byte offset inside a
+UTF-8 sequence still serves text and `next_offset` always advances. A page is
+refused on `history://<agent>/tail/N`, which the plan did not foresee: every
+fetch appends its own log row, so a tail window slides under the walk. Follow-up,
+not built: `roles.verify_quotes` could read a cited line's neighbourhood
+instead of the whole page, but the digest it pins is the whole page's sha256
+and a page's digest is not interchangeable with it in a stored quote, so that
+needs a digest rule of its own.
 
 ### F1d · The working model speaks `yi` (no D-row; amends D166's text)
 

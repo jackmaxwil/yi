@@ -225,6 +225,7 @@ fn wire_fetch(
             let url: yi_types::url::Url = raw
                 .parse()
                 .map_err(|error: yi_types::url::UrlError| format!("{raw}: {error}"))?;
+            let page = crate::fetch::Page::from_payload(&payload)?;
             // a family member asks for the object; the owner dills it to the family dir (D164).
             if payload.get("object").and_then(Value::as_bool) == Some(true) {
                 let dump = Arc::clone(&resolver);
@@ -241,16 +242,11 @@ fn wire_fetch(
                 reply.insert("bytes".to_owned(), Value::from(bytes));
                 return Ok(reply);
             }
-            let fetched = tokio::task::spawn_blocking(move || resolver.fetch(&url))
+            let fetched = tokio::task::spawn_blocking(move || resolver.fetch_page(&url, page))
                 .await
                 .map_err(|error| format!("fetch task failed: {error}"))?
                 .map_err(|error| error.to_string())?;
-            let mut reply = Map::new();
-            reply.insert("url".to_owned(), Value::String(fetched.url.to_string()));
-            reply.insert("text".to_owned(), Value::String(fetched.text));
-            reply.insert("hash".to_owned(), Value::String(fetched.hash));
-            reply.insert("servedBy".to_owned(), Value::String(fetched.served_by));
-            Ok(reply)
+            Ok(fetched.into_reply(page.is_some()))
         })
     });
     register_history_grep(registry, session.store_handle());

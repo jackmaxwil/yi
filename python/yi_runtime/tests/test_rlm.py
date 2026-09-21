@@ -244,6 +244,23 @@ class BlackboardTests(unittest.IsolatedAsyncioTestCase):
         with mock.patch.object(rlm, "host_request", text_host_request):
             self.assertEqual(await rlm.fetch("kernel://main/df", as_text=True), "[4, 5]")
 
+    async def test_a_paged_fetch_sends_only_the_keys_it_was_given_and_carries_the_next_offset(self) -> None:
+        calls: list[dict] = []
+
+        async def fake_host_request(kind, payload):
+            calls.append(payload)
+            return {"text": "ab", "next_offset": 2 if "limit" in payload else None}
+
+        with mock.patch.object(rlm, "host_request", fake_host_request):
+            whole = await rlm.fetch("local://notes.md")
+            page = await rlm.fetch("kernel://sub-1/df", limit=2)
+            last = await rlm.fetch("local://notes.md", offset=2)
+        self.assertEqual((type(whole), whole), (str, "ab"))
+        self.assertEqual((page, page.next_offset, last.next_offset), ("ab", 2, None))
+        self.assertEqual(calls[0], {"url": "local://notes.md", "object": False})
+        self.assertEqual(calls[1], {"url": "kernel://sub-1/df", "object": False, "limit": 2})
+        self.assertEqual(calls[2], {"url": "local://notes.md", "object": False, "offset": 2})
+
 
 class StatusTests(unittest.IsolatedAsyncioTestCase):
     async def test_status_reads_the_member_list_and_filters_by_name(self) -> None:

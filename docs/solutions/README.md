@@ -189,5 +189,6 @@ when it changes rather than editing them by hand.
 - [D210](adr/d210.md) - one exit, one terminal update
 - [D211](adr/d211.md) - plans are programs in the kernel; source is recorded, never replayed
 - [D212](adr/d212.md) - shapes are schedulers in user space
+- [D213](adr/d213.md) - a read has pages and the unit is the listing's own
 
 D36-D51, D72, D73 and D74 have no ADR yet; ARCHITECTURE.md is the record for those rows.
