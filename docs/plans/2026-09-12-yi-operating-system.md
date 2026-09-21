@@ -1397,9 +1397,11 @@ failure it fixes named in the row.
 
 ### 8.6 Scatter
 
-Readers bound to stable partitions (`deny_read` of every other partition,
-`deny_write=["."]`, `roles.Reader(partition=…)`; cooperative, §7.6), a lead
-(the owner, or one writer child), rounds: the lead asks a question; each
+Readers bound to stable partitions (`roles.Reader(partition=…)`, which builds
+`deny_write=["."]` and passes a caller's own `deny_read` through; a wall is
+cooperative, §7.6, and `deny_read` is paths where a partition is urls, so what
+actually binds a reader to its partition is the quote seam below, not its wall),
+a lead (the owner, or one writer child), rounds: the lead asks a question; each
 reader answers `{"answer": str | null, "quotes": [{"url", "line", "text"}]}`;
 a null answer is an abstention and is dropped; `roles.verify_quotes` fetches
 each cited `url` through `rlm.fetch` and reads line `<line>` from it, pins the fetched digest, and drops
@@ -2126,8 +2128,11 @@ contents; and the campaign fixture's `reorder` and `add_edge`, which the library
 no surface for and whose generation that fixture's `supersede` closes before the
 comparison reads the store. Found on the way and fixed: `Todo.decompose` looked a
 sibling edge up in the parent plan and raised, so its own docstring example failed.
-Not built: a writer child as the scatter lead, `rest_for_one` and `one_for_all`, and
-the four later shapes.
+Not built, and section 8.6 corrected to say so: `Reader` derives no `deny_read` from
+the partition, and scatter does not either, because a wall is cooperative and
+`deny_read` is paths where a partition is urls; the seam is the binding. Also not
+built: a writer child as the scatter lead, `rest_for_one` and `one_for_all`, and the
+four later shapes.
 
 ### F1c · Paged recall through `fetch` (D-next-7; extends D164)
 
