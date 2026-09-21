@@ -63,7 +63,7 @@ fn brief(at: &TodoAddr, delegation: &Delegation) -> String {
     // child that submitting is its only road, and a child without one has nothing to submit.
     if matches!(delegation.spec.isolation, Some(Isolation::Worktree)) {
         lines.push(format!(
-            "When that check passes, submit your work: `plan.op {{\"op\": \"submit\", \"plan\": \"{}\", \"label\": {:?}, \"attempt\": <n>, \"output\": \"<url>\"}}`, or `await todo.submit(product)` from a kernel cell. Your worktree is accepted only through that record.",
+            "When that check passes, submit your work with the plan tool: {{\"op\": \"submit\", \"plan\": \"{}\", \"label\": {:?}, \"attempt\": 1, \"output\": \"<url of the product>\"}}, where attempt is a bare integer and 1 unless this todo was retried. Your worktree is accepted only through that record.",
             at.plan,
             at.todo.as_str()
         ));
@@ -755,7 +755,8 @@ mod tests {
         delegation.spec.isolation = Some(Isolation::Worktree);
         let worktree = brief(&at, &delegation);
         assert!(worktree.contains("\"op\": \"submit\""), "{worktree}");
-        assert!(worktree.contains("todo.submit("), "{worktree}");
+        // Incident: `<n>` was quoted as a string nine times; a literal integer is not (#469).
+        assert!(worktree.contains("\"attempt\": 1"), "{worktree}");
         assert!(
             worktree.contains("accepted only through that record"),
             "{worktree}"
