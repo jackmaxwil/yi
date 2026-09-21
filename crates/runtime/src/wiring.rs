@@ -759,7 +759,12 @@ fn wire_compacted(
             let file = handle
                 .as_ref()
                 .and_then(|store| yi_session::lock_session(store).file_path().cloned());
-            notice(&crate::affordance::compacted(file.as_deref()));
+            let kept = if file.is_some() {
+                "session_on_disk"
+            } else {
+                "session_in_memory"
+            };
+            notice(&crate::affordance::next("compact.run", &[kept], ""));
             crate::advisor::note_last_compaction(advisor.as_deref(), handle.as_ref());
             tokio::spawn(async move {
                 if let Some(text) = service.sync_after_compaction().await {

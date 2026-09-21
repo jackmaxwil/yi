@@ -202,38 +202,28 @@ pub fn checklist(list: &TodoList) -> Vec<String> {
     out
 }
 
-fn moves(item: &TodoItem) -> String {
-    let name = name(item);
-    match item.state {
-        TodoStateName::Running => {
-            format!(
-                "done {name} evidence=`<command>` <output line> · block {name} on user · drop {name} <reason>"
-            )
-        }
-        TodoStateName::Pending => format!("start {name} · drop {name} <reason>"),
-        TodoStateName::Blocked => format!("unblock {name} · drop {name} <reason>"),
-        _ => String::new(),
-    }
+fn moves(item: &TodoItem) -> Option<String> {
+    let state = format!("todo_state({})", item.state.as_str());
+    let facts = crate::affordance::Facts {
+        holds: &[state.as_str()],
+        name: &name(item),
+        cap: 1,
+    };
+    crate::affordance::render(crate::affordance::shipped(), super::tool::NAME, &facts).pop()
 }
 
 pub fn next_lines(list: &TodoList) -> Vec<String> {
-    let mut out = Vec::new();
-    if let Some(running) = list.running() {
-        out.push(format!("next: {}", moves(running)));
-    }
-    for item in list
+    let mut out: Vec<String> = list.running().and_then(moves).into_iter().collect();
+    let pending = list
         .items()
         .filter(|item| item.state == TodoStateName::Pending)
-        .take(NEXT_LINES.saturating_sub(out.len()))
-    {
-        out.push(format!("next: {}", moves(item)));
-    }
-    if out.is_empty()
-        && let Some(blocked) = list
+        .take(NEXT_LINES.saturating_sub(out.len()));
+    out.extend(pending.filter_map(moves));
+    if out.is_empty() {
+        let blocked = list
             .items()
-            .find(|item| item.state == TodoStateName::Blocked)
-    {
-        out.push(format!("next: {}", moves(blocked)));
+            .find(|item| item.state == TodoStateName::Blocked);
+        out.extend(blocked.and_then(moves));
     }
     out
 }

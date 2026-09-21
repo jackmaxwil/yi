@@ -10,6 +10,7 @@ pub mod entry;
 pub mod event;
 pub mod fetch;
 pub mod goal;
+pub mod graph;
 pub mod harness;
 pub mod kernel;
 pub mod lane;

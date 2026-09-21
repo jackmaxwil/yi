@@ -60,7 +60,8 @@ pub(super) fn handle(
 ) -> Map<String, Value> {
     let reply = serde_json::json!({
         "rlm_child_id": key,
-        "next": crate::affordance::spawned(name),
+        // A service is admitted through the same spawn, so both requests localize at `rlm.run`.
+        "next": crate::affordance::next("rlm.run", &["child_state(running)"], name),
         "name": name,
         "session_dir": session_dir.to_string_lossy(),
         "model": format!("{}/{}", model.provider, model.id),
