@@ -1397,7 +1397,7 @@ isolation: writers get worktrees, readers declared output artifacts.
 | pipeline | later; needs downstream attempt invalidation | edges form one path | the path | rest_for_one | the owner runs `done` per stage |
 | map_reduce | later; needs immutable producer outputs and a schema-validating reduce activity | N maps with one contract, one reduce `after` all | maps, then reduce | one_for_one on maps | the reduce is an inline todo |
 | tournament | later; needs per-candidate verification, one integration winner, legal loser cleanup | N todos with identical contract on one goal | all at once | none | the first passing candidate's acceptance |
-| pod | F3b, as the recipe `yi/recipes/review_pod.py`; a calibrated findings contract is still owed | ≥ 2 first passes plus one arbiter `cmd` todo | passes, then the arbiter | one_for_all on the passes | the arbiter's cmd |
+| pod | F3b, as the recipe `yi/recipes/review_pod.py`; a calibrated findings contract is still owed | ≥ 2 first passes plus one arbiter `cmd` todo | passes, then the arbiter | one_for_one, bounded (`_schedule`'s); one_for_all on the passes is still owed | the arbiter's cmd |
 
 Each later shape is its own PR with the prerequisite landed first and a
 failure it fixes named in the row.
@@ -2556,8 +2556,8 @@ an `example` set; the pod's verdict is the arbiter's, the readers' findings
 are evidence attached to the todo's `note`. Tests: `test_yi_shapes::a_pod_verdict_is_the_arbiters_command_not_a_reader`
 (T0); a journey `review_pod_on_the_fixture_repo` (T2). LOC python +200.
 
-As landed (0.277.0, D217, #461). Python +121 against 200, no Rust `src` line; tests +57
-of Python and the journey in `kernel_data_surface.rs`, whose rig moved into a `crewed`
+As landed (0.277.0, D217, #461, and the review fix on top of it). Python +128 against 200,
+no Rust `src` line; tests +62 of Python and the journey in `kernel_data_surface.rs`, whose rig moved into a `crewed`
 helper the F1b journey shares. The T0 test carries the unittest prefix,
 `test_a_pod_verdict_is_the_arbiters_command_not_a_reader`, and a geometry test sits beside
 it, `test_a_pod_without_a_code_arbiter_or_distinct_briefs_is_refused`.
@@ -2590,13 +2590,17 @@ respawn keeps the name and the inbox; `status()` shows `service: true`;
 (`fetch/mod.rs:190-200`). Tests: `recursion_e2e::a_service_respawns_under_its_name_and_keeps_its_inbox`
 (T1). LOC yi-runtime +140, python +40.
 
-As landed (0.278.0, D218, #462). Measured growth is +355 Rust `src` lines (yi-runtime 349
-against 140, yi-types 6) and 22 of Python against 40. What the estimate did not price: a
-service lives in turns mail wakes, which no `run_child` watches, so a second road reads
-those endings; the lease is returned and drawn again under the roster lock; attach or
-refuse; and the `rlm.service` registration. Tests beside the named one, all
+As landed (0.278.0, D218, #462, and the review fixes on top of it). Measured growth is +414
+Rust `src` lines (yi-runtime 408 against 140, yi-types 6) and 24 of Python against 40. What
+the estimate did not price: a service lives in turns mail wakes, which no `run_child`
+watches, so a second road reads those endings; the lease is settled and drawn again under
+the roster lock, and journaled off it; the stopped mark is read again after the build;
+attach or refuse; and the `rlm.service` registration. Tests beside the named one, all
 `recursion_e2e` (T1): `a_service_out_of_restarts_or_lease_ends_failed_and_says_so`,
+`a_service_the_parent_cannot_relend_ends_failed_and_says_so`,
 `a_woken_crash_respawns_and_a_parent_close_ends_a_service_for_good`,
+`a_service_revoked_while_its_next_run_is_built_never_comes_back`,
+`a_respawned_service_is_billed_from_its_own_first_turn`,
 `a_service_is_outside_the_worker_cap_and_under_the_depth_limit`.
 
 - A respawn reuses the record: the new session is attached to the same session store and
@@ -2606,8 +2610,17 @@ refuse; and the `rlm.service` registration. Tests beside the named one, all
   therefore loads its predecessor's transcript, and its brief opens with a line naming the
   incarnation and the cause.
 - `restart` is the intensity: how many respawns are allowed inside ten minutes
-  (`RESTART_WINDOW_MS`), default 3, 0 for none. Only a provider error and a dead kernel
+  (`RESTART_WINDOW_MS`), default 3, 0 for none, and `MAX_RESTARTS` (ten) is the most a
+  caller may ask for, refused and never clamped. Only a provider error and a dead kernel
   respawn; a deadline does not, because a fresh lease on expiry would undo the lease.
+- The build is the one stretch a respawn holds no lock across, so the stopped mark is read
+  again under the roster lock after it, and a service a `revoke` or a `close` stopped while
+  its next run was being built ends `Failed` with that as the reason; the session that build
+  produced has its kernel disposed rather than dropped, as the dead incarnation's does.
+- Each incarnation is billed for its own turns: `ChildRecord.billed_from` is the kept
+  transcript's length at the respawn, and `refold` and the lease return both count from it,
+  so a lagged watch cannot charge a predecessor's turns to the successor's lease and a
+  provider error's unknown usage stops spending reservations after the one it ended.
 - `ChildRecord.juror` became `Standing { Worker, Juror, Service }`. A service is outside
   the worker cap and sends no notice for an idle turn; it is under the depth limit, the
   family cap, the lease and the wall, and takes no verification seat.
@@ -2618,11 +2631,11 @@ refuse; and the `rlm.service` registration. Tests beside the named one, all
   the same refusal one step earlier.
 - Deliberate stops: `delete_subagent` removes the record, `revoke` and `close` mark the
   service stopped (`close` reaches an idle service too, which holds no run to revoke). The
-  `revoke` mark has no test of its own: a revoked first run ends `Interrupted`, which
-  never respawns, so the mark only matters for a provider error inside the grace.
+  `revoke` mark is tested where it is the only thing that can act: a crash whose respawn is
+  already building, in `a_service_revoked_while_its_next_run_is_built_never_comes_back`.
 - Not built: the health `cmd` and shutdown contract of section 6.2's service row, a
-  service in a worktree (refused by name), adoption after a host restart (counts and
-  incarnations restart with the host), and an exact token bill across a lagged watch.
+  service in a worktree (refused by name), and adoption after a host restart (counts and
+  incarnations restart with the host).
 
 ### F4a · The procedural graph replaces affordance strings (D-next-13)
 
