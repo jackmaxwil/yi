@@ -74,6 +74,15 @@ impl Ask {
 }
 
 impl SubagentHost {
+    /// Walls only shrink: a child's is its own under everything this host is walled by.
+    pub(crate) fn wall_for(
+        &self,
+        kwargs: &Map<String, Value>,
+    ) -> Result<crate::wall::Wall, String> {
+        let grant = self.grant.lock().map_err(|_| "lease state poisoned")?;
+        Ok(crate::wall::Wall::from_kwargs(kwargs, &self.options.cwd)?.under(&grant.wall))
+    }
+
     /// The wall and tokens this host was itself granted; a root holds neither.
     pub fn set_grant(&self, wall: crate::wall::Wall, tokens: Option<u64>) {
         if let Ok(mut grant) = self.grant.lock() {

@@ -192,5 +192,6 @@ when it changes rather than editing them by hand.
 - [D213](adr/d213.md) - a read has pages and the unit is the listing's own
 - [D214](adr/d214.md) - messages are envelopes, written to the receiver's inbox before anything is...
 - [D215](adr/d215.md) - a child ends on one typed exit and holds a lease drawn from its parent
+- [D216](adr/d216.md) - the judge tier is an envelope
 
 D36-D51, D72, D73 and D74 have no ADR yet; ARCHITECTURE.md is the record for those rows.

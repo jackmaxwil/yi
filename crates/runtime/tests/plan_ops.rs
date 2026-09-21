@@ -1574,7 +1574,8 @@ mod contracts {
     use yi_runtime::{AskOutcome, Asker, PermissionAsk, PermissionBroker, PermissionMode};
     use yi_types::plan::canonical::{ArtifactRef, Digest};
     use yi_types::plan::contract::{
-        Contract, Outcome as VerdictOutcome, Resolution, Verdict, VerificationToken,
+        Contract, ContractItem, ItemVerdict, JurorLine, Outcome as VerdictOutcome, Resolution,
+        Verdict, VerificationToken, Vote,
     };
     use yi_types::plan::doc::{AttemptId, Isolation};
     use yi_types::plan::ledger::JournalRecord;
@@ -1613,6 +1614,14 @@ mod contracts {
         name: &str,
         hook: Option<yi_runtime::plan::ops::VerifyHook>,
     ) -> Result<Rig, Box<dyn Error>> {
+        rig_verified(name, hook, Verifier::new(20_000))
+    }
+
+    fn rig_verified(
+        name: &str,
+        hook: Option<yi_runtime::plan::ops::VerifyHook>,
+        verifier: Verifier,
+    ) -> Result<Rig, Box<dyn Error>> {
         let temp = Scratch::new(name)?;
         let store = PlanStore::open(temp.join("plans"))?;
         let ws = temp.join("ws");
@@ -1622,7 +1631,7 @@ mod contracts {
             .with_width(width(4)?)
             .with_output_resolve(serve.clone())
             .with_cwd(ws.clone())
-            .with_verifier(Verifier::new(20_000));
+            .with_verifier(verifier);
         if let Some(hook) = hook {
             engine = engine.with_verify_hook(hook);
         }
@@ -2074,7 +2083,7 @@ mod contracts {
             matches!(at_set, Err(PlanOpError::Invalid { .. })),
             "{at_set:?}"
         );
-        // A judge item never stands alone, and is refused at declaration until F3a.
+        // A judge item never stands alone: a live decider (F3a), and still below every floor.
         let judged: Contract = serde_json::from_value(json!({
             "class": "writer",
             "items": [{"id": "taste", "critical": true, "weight": 100,
@@ -2655,6 +2664,98 @@ mod contracts {
             (block.record.from.clone(), block.record.to.clone()),
             (Some(TodoStateName::Running), Some(TodoStateName::Blocked))
         );
+        Ok(())
+    }
+
+    /// A jury that never settles: it counts its sittings and abstains with one juror's line.
+    struct HungJury(AtomicU32);
+
+    impl yi_runtime::plan::verify::Judge for HungJury {
+        fn judge(
+            &self,
+            _item: &ContractItem,
+            snapshot: &yi_runtime::plan::verify::Snapshot<'_>,
+            _until: std::time::Instant,
+        ) -> (ItemVerdict, Vec<JurorLine>) {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            let seated = snapshot.jury.as_ref().map(|seat| seat.permit.purpose());
+            let line = JurorLine {
+                model: "openrouter/z-ai/glm-5.3-flash".to_owned(),
+                vote: Vote::Abstain,
+                reason: format!("seated under {seated:?}"),
+            };
+            let reason = "no quorum".to_owned();
+            (ItemVerdict::Abstain { reason }, vec![line])
+        }
+    }
+
+    // Dies with the `JUDGE_CAP_PER_TODO` arm in `Verifier::run`, with `juries` counting the
+    // journal's requests, and with the escalation arm of `refuse`'s cap: without them an item no
+    // jury can settle convenes juries for ever, or waits three more refusals to reach anyone.
+    #[test]
+    fn the_fourth_jury_on_one_todo_escalates_to_the_user() -> TestResult {
+        let jury = Arc::new(HungJury(AtomicU32::new(0)));
+        let verifier = Verifier::new(20_000).with_judge(jury.clone());
+        let rig = rig_verified("yi-f3a-jury-cap", None, verifier)?;
+        let plan = planned()?;
+        let artifacts = rig.store.artifacts(&plan);
+        let rubric = artifacts.put(b"it reads well", "text/markdown", &rig.store.nonce())?;
+        let essay = artifacts.put(b"an essay", "text/markdown", &rig.store.nonce())?;
+        let mut contract =
+            serde_json::to_value(cmd_contract(&rig.store, &plan, "true", "writer")?)?;
+        contract["items"]
+            .as_array_mut()
+            .ok_or("items")?
+            .push(json!({
+                "id": "taste", "critical": false, "weight": 1,
+                "decider": {"judge": {"rubric": rubric, "evidence": [essay], "policy": {"n": 3}}}
+            }));
+        init(
+            &rig.engine,
+            vec![contracted("land it", serde_json::from_value(contract)?)?],
+        )?;
+        start(&rig.engine, &plan, "land it")?;
+        for sitting in 1..=3 {
+            let verdict = refused(done(&rig.engine, &plan, "land it", None))?;
+            assert_eq!(
+                verdict.outcome,
+                VerdictOutcome::Abstain,
+                "sitting {sitting}"
+            );
+            let taste = verdict.items.get(1).ok_or("the judged line")?;
+            assert_eq!(taste.jurors.len(), 1, "the juror's line rides the verdict");
+            assert!(taste.jurors[0].reason.contains("Verification"), "{taste:?}");
+        }
+        let journal = Journal::open(rig.store.journal_path(&plan), Arc::new(RealFs));
+        let sat = journal.read()?.records.pop().ok_or("the third refusal")?;
+        assert_eq!(
+            sat.record.extra.get("jurors"),
+            Some(&json!({"pass": 0, "fail": 0, "abstain": 1, "unbacked": 0})),
+            "the session's record counts the votes; the lines stay in the journal"
+        );
+        let todo = todo_of(&rig.store, &plan, "land it")?;
+        assert!(
+            matches!(todo.state, TodoState::Running { .. }),
+            "{:?}",
+            todo.state
+        );
+        assert_eq!(rig.engine.capacity().held(Purpose::Verification), 0);
+
+        let verdict = refused(done(&rig.engine, &plan, "land it", None))?;
+        assert_eq!(verdict.outcome, VerdictOutcome::Escalate);
+        assert_eq!(jury.0.load(Ordering::SeqCst), 3, "no fourth jury sits");
+        let todo = todo_of(&rig.store, &plan, "land it")?;
+        assert!(
+            matches!(&todo.state, TodoState::Blocked { on: BlockedOn::User, note } if note.contains("juries")),
+            "{:?}",
+            todo.state
+        );
+        let tail: Vec<String> = kinds(&rig.store, &plan)?
+            .into_iter()
+            .rev()
+            .take(2)
+            .collect();
+        assert_eq!(tail, ["block", "done_refused"]);
         Ok(())
     }
 

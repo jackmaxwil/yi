@@ -16,7 +16,9 @@ use crate::ext::sanitize;
 use crate::kernel::{VariableName, VariableReadError};
 use crate::wall::Wall;
 
-pub use log::{FetchLog, PinError, Relevance, TerminalRecordError, relevance_of};
+pub use log::{
+    FetchLog, PinError, Relevance, TerminalRecordError, as_served, relevance_of, rows_of,
+};
 pub use yi_types::fetch::{FETCH_ENTRY_TYPE, FetchRecord};
 
 pub const KERNEL_MISSING: &str =

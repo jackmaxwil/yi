@@ -406,7 +406,7 @@ table already accepts (`doc.rs:78-79`), and the capsule manifest format
 | D-next-7 | paged recall through `fetch` | extends D164 | F1c |
 | D-next-8 | messages are envelopes with kinds, receipts, per-pair order and a durable inbox | extends D165 | F2a |
 | D-next-9 | a child holds a lease drawn from its parent; revoke has a grace and a repossession record | new | F2b |
-| D-next-10 | a judged contract item is a walled reader of another model family answering a fixed schema, aggregated in Rust | new | F3a |
+| D-next-10 (D216) | a judged contract item is a walled reader of another model family answering a fixed schema, aggregated in Rust | new | F3a |
 | D-next-11 | a review pod is readers plus a code arbiter | extends D-next-10 | F3b |
 | D-next-12 | a service is a child with a stable address | extends D165 | F3c |
 | D-next-13 | the procedural graph replaces hand-maintained affordance strings; frozen online, evolved offline under a held-out gate with rejection memory | amends the affordance rows (D139's ladder stays) | F4a/F4b |
@@ -716,7 +716,8 @@ sha256 of `program.py` at the time of the op or null; `verdict` is present on
 record. Record kinds that appear only in the journal: `done_refused` (§6.5),
 `verification_requested` and `verification_stale` (§6.3), `spawn_intent` and
 `spawn_result`, `import` (§5.5), `fuse_reset`, `reconciled`, `accepted_by_user`,
-`program` (§8.3), `revoke` and `repossession` (§7.4), `judge` (§6.4).
+`program` (§8.3), `revoke` and `repossession` (§7.4). F3a landed no `judge` kind:
+a juror's line rides the verdict of the `done` or `done_refused` record (§6.4).
 The append itself, in `har-io`'s terms: one `write_all` of the
 newline-terminated record, then `sync_data` on the journal file (the commit
 point; a failure here acknowledges nothing and the partial line is the torn
@@ -853,7 +854,7 @@ pub enum Decider {
     Cmd { checker: ArtifactRef, timeout_ms: u64 },                 // a frozen manifest: command, cwd policy, protected files
     Schema { schema: ArtifactRef },                                 // validates this attempt's output artifact
     Example { cases: ArtifactRef, runner: ArtifactRef, timeout_ms: u64 },
-    Judge { rubric: ArtifactRef, evidence: Vec<ArtifactRef>, policy: JuryPolicy },   // refused at declaration until F3a
+    Judge { rubric: ArtifactRef, evidence: Vec<ArtifactRef>, policy: JuryPolicy },   // a jury of one or three (F3a)
 }
 pub enum ItemVerdict { Pass, Fail { detail: String }, Abstain { reason: String }, Escalate { question: String } }
 pub enum Outcome { Pass, Fail, Abstain, Escalate }
@@ -924,8 +925,9 @@ to satisfy the floor is the failure MAST names (specification failures,
 (§6.3); a `done` whose contract or criteria digest differs is refused
 `ContractDrift { label }`; the road back is `retry` (a new attempt with a new
 freeze) or `supersede`. A `judge` item on a plan whose kernel is dead is
-`Abstain { reason: "no kernel" }`, never a pass; before F3a every `judge`
-item is refused at declaration.
+never a pass: a juror reads its evidence through `fetch`, so one that cannot
+fetch cannot quote and abstains by the quote rule (F3a landed no `no kernel`
+reason of its own). Before F3a every `judge` item was refused at declaration.
 
 ### 6.3 The done path, in order
 
@@ -944,7 +946,7 @@ plan.op{done, request_id, expected_revision}  (tool, host request, or CLI)
         schema  → validate_product over the attempt's output artifact bytes (ops.rs:810-838, hoisted);
                   an unserved product or schema is a refusal, never skipped (today :836-838 skips)
         example → the runner over each case (§6.5)
-        judge   → F3a; until then the item is refused at declaration
+        judge   → the jury of §6.4 (F3a); a path that seats no jury abstains the item
   5  re-acquire the lease, re-read, compare the whole token: attempt, version, contract, criteria,
         output digest, snapshot, integration generation
         mismatch → commit verification_stale, refuse; not a product failure, no refusal charged
@@ -986,14 +988,14 @@ checks twice or charge two refusals.
 
 | field | value |
 |---|---|
-| spawn | `SubagentHost::spawn` with `wall = { deny_write: ["."], deny_url: ["history://<owner>", "kernel://<owner>", "tree://<owner>", "family://"] }` (`deny_url` is a prefix list, `wall.rs:13,64`; `deny_read` is paths), `isolation: none`, `check: none`; cooperative, as every wall is (`wall.rs:114-115`), and the verdict says so |
-| model | `find_models` (`subagent.rs:1012`) filtered to a recorded model identity whose vendor segment differs from the owner's (`openrouter/z-ai/glm-5.3-flash` → `z-ai`), a weak heuristic for independent errors, stated as such; none available → `Abstain { "no other family" }`, never the owner's model |
+| spawn | `SubagentHost::spawn_seated` with `wall = { deny_write: ["."], deny_url: [every scheme but `local://`] }` (as landed: whole schemes, which needs no owner name and covers `agent://` and `plan://` too; `deny_url` is a prefix list, `deny_read` is paths), `isolation: none`, `check: none`, no `fork`, no `context`; cooperative, as every wall is, so what refuses a source that is not evidence is the quote check |
+| model | the registry (`subagent/models.rs`, where `find_models` now lives) filtered to a recorded model identity whose vendor segment differs from the owner's (`openrouter/z-ai/glm-5.3-flash` → `z-ai`), a weak heuristic for independent errors, stated as such; as landed the owners are the host's own model and the selector the plan spawned the todo's child with, the candidates are models on the host's provider or on one whose key is set, cheapest input first; none available → `Abstain { "no other family" }`, never the owner's model |
 | brief | the rubric, the evidence artifact ids, the fixed schema, and nothing else: no owner transcript, no author, no prior verdict; evidence is served through `fetch` under the wall, never inlined |
-| schema | `{"verdict": "pass\|fail\|abstain", "reason": string, "quotes": [{"url": string, "line": integer, "text": string}]}`, validated at `rlm.result` (`mailbox.rs:338` path); anything else abstains (`auto_review.rs:62-81` is the pattern) |
-| quote check | every quote's `url` must be backed by the judge's own fetch log (`fetch/log.rs:82,167`) and its `text` must match the fetched line at the fetched digest; any miss → the item is `Abstain { "unbacked quote" }`; a matching quote proves provenance, not entailment |
+| schema | `{"verdict": "pass\|fail\|abstain", "reason": string, "quotes": [{"url": string, "line": integer, "text": string}]}`, parsed strictly as `JurorAnswer` from the retired juror's last answer (as landed: `rlm.result` is the kernel's road and would promote the answer into the owner's transcript, so the jury reads the record itself); anything else abstains, and so does a decided vote that quotes nothing (`auto_review.rs:62-81` is the pattern) |
+| quote check | every quote's `url` must be one of the item's evidence addresses and be backed by the judge's own fetch log (`fetch::rows_of` over its transcript) at the frozen artifact's hash, and its `text` must match that line; any miss → the item is `Abstain { "unbacked quote ..." }`; as landed the hash is the whole file's, so a fragment or paged read backs nothing; a matching quote proves provenance, not entailment |
 | jury | `policy.n` children in parallel with a predeclared quorum: for n = 3, at least two decided votes, two `pass` → `Pass`, two `fail` → `Fail`, anything else `Abstain`; n = 1 is labelled single-judge; pass and fail quorums are validated disjoint for other n |
-| bounds | `JUDGE_CAP_PER_TODO` 3 per plan version (`todo.juries`), then `Escalate`; jury size, judge cost and concurrent model requests count against the root's budgets and against the family cap 16 and the parent cap 8; verification capacity is reserved so eight retained workers cannot starve their own judges (§7.6) |
-| record | one `judge` line per juror in `ops.jsonl` with the model identity, the verdict and the reasons; the item verdict aggregates in Rust; calibration (false accepts, false refusals, coverage, cost) on an independently labelled set precedes default use |
+| bounds | `JUDGE_CAP_PER_TODO` 3 per plan version, then `Escalate`, which blocks the todo on the user at once; as landed the count is derived from the journal's `verification_requested` records and there is no `todo.juries` field; a juror draws a lease from the owner and counts against the family cap 16; it sits above the parent cap 8 and the depth limit under the `Purpose::Verification` permit the done path reserves, one jury at a time, so eight retained workers cannot starve their own judges (§7.6) |
+| record | one line per juror with the model identity, the vote and the reason, carried as `jurors` on the item's line of the verdict the `done` or `done_refused` record journals (as landed: no `judge` record kind of its own); the item verdict aggregates in Rust; calibration (false accepts, false refusals, coverage, cost) on an independently labelled set precedes default use |
 
 ### 6.5 Every completion path, the `done_refused` record, the examples runner
 
@@ -1668,7 +1670,7 @@ legacy metric and is never summed with the record-derived one.
 | F0d | candidate, integration and acceptance records; dispositions |
 | F1 | source records linked to plan requests (`program_cells`), scheduler lease and shape records (`shape_runs`), `spec_drift` |
 | F2 | envelopes by kind, receipts by state, `revocations`, `repossessions`, cancel latency (due vs observed), `requests_timed_out` |
-| F3 | `judge` records by outcome, quorum outcomes, `escalations`, `quotes_dropped` |
+| F3 | juror votes by outcome (`juror_pass`, `juror_fail`, `juror_abstain`, from the record's `jurors` counts), quorum outcomes and escalations (the `verdict_*` signals), `quotes_dropped` |
 | F4 | tokens per solved task against the baseline; `graph_version` in the session header; `levers_hash` in the config fingerprint |
 
 ### 10.7 The F0e run
@@ -1882,7 +1884,7 @@ assertion-keyword refusal), `skills/yi/session-mining/extract.py`,
 **Signatures.**
 
 ```rust
-pub struct Verifier { timeout_ms: u64, judge: Option<Arc<dyn Judge>> }                       // judge is None until F3a
+pub struct Verifier { timeout_ms: u64, judge: Option<Arc<dyn Judge>> }                       // F3a wires the jury in
 impl Verifier { pub fn run(&self, token: &VerificationToken, contract: &Contract, snapshot: &Snapshot) -> Verdict }
 pub enum PlanOpError { … Refused { label: TodoLabel, verdict: Verdict }, Stale { label: TodoLabel, token: VerificationToken },
     ContractDrift { label: TodoLabel }, AcceptanceUnavailable { label: TodoLabel } }
@@ -2428,8 +2430,9 @@ and the rows above:
   built. The `context` the section means is a `Delegation`'s list of URLs, which is
   structured and could be checked, but the effective wall is computed in `spawn`, which
   is handed kwargs and never the delegation, so the check needs the URLs plumbed to the
-  one place that knows the parent's wall; F3a owns it. Until then the wall still refuses
-  the read at the fetch seam, one call later than the plan asks for.
+  one place that knows the parent's wall. F3a built it on the engine's spawn road: the
+  delegate asks the host for the effective wall (`wall_for`, which `spawn` shares) and
+  refuses a delegation whose `context` that wall denies.
 - The lease journal is the parent's own transcript (`custom{lease}` entries: `revoked`,
   `repossessed`, `returned`), not `ops.jsonl`: a lease exists without a plan. Three
   tests were added beside the table: `a_cancel_ends_the_run_at_its_next_message_boundary`,
@@ -2448,7 +2451,10 @@ and the rows above:
   it cannot vouch for and blocks its todo on the user; the disposition is journaled when
   that todo leaves `Running` through `fail` or `drop`, from the refs its `submit`
   recorded. Writing it from the repossession itself needs a road from the host into the
-  engine's journal that no delegate has; F3a owns it.
+  engine's journal that no delegate has. F3a did not build it: the road it opened runs
+  the other way, from the engine's verifier into the host, and a repossession fires on
+  the probe loop's timer with no engine transaction open, so the write needs its own
+  request into the engine and a stage that owns it.
 - `RepossessionPending` is a `MemberState` (`repossession_pending`) over a record whose
   exit is still absent; the timer's job retries it on every wake, at the loop's one second
   floor while a probe is in flight and at its idle poll otherwise. One reference is not
@@ -2479,7 +2485,7 @@ and the rows above:
   `subagent.rs` stands at 1,130 lines
   and `session.rs` at 1,198. Nothing else was shed.
 
-### F3a · The judge tier (D-next-10)
+### F3a · The judge tier (D216, landed 0.276.0; extends D194, D215)
 
 **Files.** `crates/runtime/src/plan/judge.rs` (new: the envelope of §6.4),
 `verify.rs` (`Judge` bound), `subagent.rs:1012` (`find_models` filter by
@@ -2495,12 +2501,39 @@ family), `fetch/log.rs:82,167` (quote check), `extract.py`.
 | one pass and two abstentions abstain under the n = 3 quorum | `judge::one_pass_and_two_abstentions_abstain` (T0) |
 | instructions inside the evidence change nothing | `judge::evidence_carrying_instructions_is_data` (T1, the `auto_review.md:5-9` rule) |
 | a full worker set still gets its jury | `judge::full_capacity_still_adjudicates_through_the_reservation` (T1) |
-| a judged item never stands alone | covered by F0c's floor test; re-asserted for a live `judge` decider in `Contract::validate` (T0) |
+| a judged item never stands alone | covered by F0c's floor test; re-asserted for a live `judge` decider in `Contract::validate` (T0): `contract::validate_enforces_the_floors_and_a_judge_never_stands_alone` |
+| a brief naming context its wall denies is refused (handed down by F2b, §7.6) | `judge::a_brief_naming_context_its_wall_denies_is_refused` (T0) |
 
 LOC yi-runtime +320. Memo: `growth +320: the judge envelope`. Row: "A judged
 contract item is a walled reader of another model family answering a fixed
 schema, its quotes checked against its fetch log, aggregated in Rust
 (D-next-10; Closes #<n>)". ADR: "D-next-10: the judge tier is an envelope".
+
+As landed (0.276.0, D216, #460). Measured growth is +578 Rust `src` lines (yi-runtime
+534 against 320, yi-types 44) and 7 of Python. The tests are `tests/judge.rs`, so
+`judge::` names that file; the F0c floor test was renamed
+`validate_enforces_the_floors_and_a_judge_never_stands_alone`. What the estimate did not
+price: the seat (the verification permit carried from the done path through `Snapshot`
+into `spawn_seated`), the jury count and the escalation arm in `done.rs`, the juror lines
+with their session-visible counts, and F2b's context refusal.
+
+- The cap lives in `Verifier::run`, not in the jury, so the engine's test drives it with
+  a stub `Judge` and no host. An `Escalate` outcome blocks the todo on the user on that
+  refusal; before F3a nothing produced one.
+- `find_models` moved to `subagent/models.rs` beside `family_of` and `other_families`
+  rather than gaining a filter argument; `subagent.rs` is 6 lines smaller.
+- `extract.py` reads `jurors` counts from the `done` and `done_refused` session records
+  as `juror_pass`, `juror_fail`, `juror_abstain` and `quotes_dropped`; quorum outcomes
+  and escalations were already `verdict_*`.
+- Not built. A jury on the worktree paths: `submit`'s candidate check and the staging
+  check pass no seat, so a judged item abstains there; one jury on each would spend two
+  of a todo's three on a single submit, which wants a decision about which check the
+  jury belongs to. A `judge(...)` builder in the `yi` library: a judged item is declared
+  through the contract's JSON, and §6.4 puts calibration before default use. A `judge`
+  record kind and a `todo.juries` field (both derived instead). A fragment or paged read
+  as backing for a quote. A configured judge model. `Disposition::RepossessionPending`
+  (see F2b's list). Calibration on a labelled set, which §6.4 requires before a judged
+  item is used by default, has not been run.
 
 ### F3b · Review pod with a code arbiter (D-next-11)
 

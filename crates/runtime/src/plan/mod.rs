@@ -19,6 +19,7 @@ pub mod dispatch;
 pub mod done;
 pub mod import;
 pub mod journal;
+pub mod judge;
 pub mod ledger;
 pub mod loop_coupling;
 pub mod ops;

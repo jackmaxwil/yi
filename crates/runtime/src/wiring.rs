@@ -361,16 +361,17 @@ fn wire_plan_request(
         .with_op_sink(ops)
         .with_liveness(liveness)
         .with_cwd(cwd.clone());
-    // A verification never outlives the run (D177): the verifier reads the session's deadline
-    // as well as its own clock, and so does every lane settle the host runs.
+    // This session's host seats the juries (plan section 6.4). A verification never outlives
+    // the run (D177): the verifier and every lane settle read the session's deadline too.
+    let mut verifier = crate::plan::verify::Verifier::new(crate::goal::DEFAULT_CHECK_TIMEOUT_MS)
+        .with_judge(Arc::new(crate::plan::judge::Jury::new(Arc::clone(host))));
     if let Some(deadline) = session.deadline()
         && let Some(ends) = deadline.started.checked_add(deadline.total)
     {
-        let verifier = crate::plan::verify::Verifier::new(crate::goal::DEFAULT_CHECK_TIMEOUT_MS)
-            .with_deadline(ends);
-        engine = engine.with_verifier(verifier);
+        verifier = verifier.with_deadline(ends);
         host.set_deadline(Some(ends));
     }
+    engine = engine.with_verifier(verifier);
     // The staging and verification checkouts come from the lane pool, split with the host's
     // workers over one object (sections 6.6 and 7.6); no repository, no worktree children.
     if let Ok(pool) = crate::lane::Pool::open(&wiring.home, &cwd, wiring.lane_slots) {
