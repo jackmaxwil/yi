@@ -524,6 +524,64 @@ impl Delegate for Crew {
     fn follow_up(&self, _dispatched: &[yi_types::plan::doc::TodoLabel], _held: usize) {}
 }
 
+/// The real engine at width one behind `plan.op`, over a `Crew` whose children all finish
+/// (a name starting `fails` never comes back) and answer what `said` gives their name.
+fn crewed(
+    plans: PathBuf,
+    workspace: PathBuf,
+    fails: &'static str,
+    said: fn(&str) -> serde_json::Value,
+) -> Result<(Arc<KernelService>, PlanStore), Box<dyn Error>> {
+    let crew = Arc::new(Crew::default());
+    let resolver = Arc::new(
+        yi_runtime::fetch::Resolver::new(workspace.clone(), yi_runtime::Wall::default())
+            .with_plans_dir(plans.clone()),
+    );
+    let store = PlanStore::open(plans)?;
+    let engine = PlanEngine::new(store.clone(), crew.clone())
+        .with_cwd(workspace)
+        .with_output_resolve(resolver.clone())
+        .with_width(std::num::NonZeroUsize::MIN);
+    let mut registry = HostRegistry::default();
+    yi_runtime::plan::request::register(Arc::new(engine), Actor::Owner, &mut registry);
+    let reply = |value: serde_json::Value| value.as_object().cloned().ok_or("reply".to_owned());
+    registry.register("rlm.wait", move |_payload| {
+        let spawned = Arc::clone(&crew);
+        Box::pin(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            let names = spawned.0.lock().map_err(|_| "poisoned")?.clone();
+            let states: serde_json::Map<_, _> = names
+                .into_iter()
+                .map(|name| {
+                    let state = if name.starts_with(fails) {
+                        "failed"
+                    } else {
+                        "finished"
+                    };
+                    (name, serde_json::json!(state))
+                })
+                .collect();
+            reply(serde_json::json!({"cursor": 1, "changed": [], "states": states, "notes": {}}))
+        })
+    });
+    registry.register("rlm.result", move |payload| {
+        Box::pin(async move {
+            let name = payload.get("target").and_then(serde_json::Value::as_str);
+            reply(serde_json::json!({"text": "", "json": said(name.unwrap_or_default())}))
+        })
+    });
+    registry.register("fetch", move |payload| {
+        let resolver = Arc::clone(&resolver);
+        Box::pin(async move {
+            let url = payload.get("url").and_then(serde_json::Value::as_str);
+            let url: yi_types::url::Url = url.ok_or("url")?.parse().map_err(|_| "url")?;
+            let fetched = resolver.fetch(&url).map_err(|error| error.to_string())?;
+            reply(serde_json::json!({"text": fetched.text}))
+        })
+    });
+    Ok((service_with(registry), store))
+}
+
 /// Both shapes in one cell: three readers under fork_join, then a scatter whose lead asks twice.
 const SHAPES: &str = r#"
 from yi import Plan, Reader, contract, schema, fork_join, scatter, shapes
@@ -556,64 +614,19 @@ async fn both_shapes_schedule_under_the_real_admission_and_step_table() -> TestR
     std::fs::create_dir_all(workspace.join("docs"))?;
     std::fs::write(workspace.join("docs/api.md"), "usage\nrotate(size)\n")?;
     std::fs::write(workspace.join("docs/cli.md"), "flags\n--age DAYS\n")?;
-    let crew = Arc::new(Crew::default());
-    let resolver = Arc::new(
-        yi_runtime::fetch::Resolver::new(workspace.clone(), yi_runtime::Wall::default())
-            .with_plans_dir(plans.clone()),
-    );
-    let store = PlanStore::open(plans)?;
-    let engine = PlanEngine::new(store.clone(), crew.clone())
-        .with_cwd(workspace)
-        .with_output_resolve(resolver.clone())
-        .with_width(std::num::NonZeroUsize::MIN);
-    let mut registry = HostRegistry::default();
-    yi_runtime::plan::request::register(Arc::new(engine), Actor::Owner, &mut registry);
-    let reply = |value: serde_json::Value| value.as_object().cloned().ok_or("reply".to_owned());
-    let spawned = Arc::clone(&crew);
-    registry.register("rlm.wait", move |_payload| {
-        let spawned = Arc::clone(&spawned);
-        Box::pin(async move {
-            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-            let names = spawned.0.lock().map_err(|_| "poisoned")?.clone();
-            // The `web` readers never come back, so the shape settles a failed reader for real.
-            let states: serde_json::Map<_, _> = names
-                .into_iter()
-                .map(|name| {
-                    let state = if name.starts_with("web") {
-                        "failed"
-                    } else {
-                        "finished"
-                    };
-                    (name, serde_json::json!(state))
-                })
-                .collect();
-            reply(serde_json::json!({"cursor": 1, "changed": [], "states": states, "notes": {}}))
-        })
-    });
-    registry.register("rlm.result", move |payload| {
-        Box::pin(async move {
-            // A `cli` reader cites a line its own page does not have, and one that is right but
-            // sits in the `api` reader's partition; both go before the lead sees the answer.
-            let invented = payload.get("target").and_then(serde_json::Value::as_str);
-            let good = serde_json::json!({"url": "local://docs/api.md", "line": 2, "text": "rotate(size)"});
-            let quotes = if invented.is_some_and(|name| name.starts_with("cli")) {
-                serde_json::json!([{"url": "local://docs/cli.md", "line": 1, "text": "--age DAYS"}, good])
-            } else {
-                serde_json::json!([good])
-            };
-            reply(serde_json::json!({"text": "", "json": {"answer": "rotate()", "quotes": quotes}}))
-        })
-    });
-    registry.register("fetch", move |payload| {
-        let resolver = Arc::clone(&resolver);
-        Box::pin(async move {
-            let url = payload.get("url").and_then(serde_json::Value::as_str);
-            let url: yi_types::url::Url = url.ok_or("url")?.parse().map_err(|_| "url")?;
-            let fetched = resolver.fetch(&url).map_err(|error| error.to_string())?;
-            reply(serde_json::json!({"text": fetched.text}))
-        })
-    });
-    let service = service_with(registry);
+    // The `web` readers never come back, so the shape settles a failed reader for real. A `cli`
+    // reader cites a line its own page does not have, and one that is right but sits in the
+    // `api` reader's partition; both go before the lead sees the answer.
+    let (service, store) = crewed(plans, workspace, "web", |name| {
+        let good =
+            serde_json::json!({"url": "local://docs/api.md", "line": 2, "text": "rotate(size)"});
+        let quotes = if name.starts_with("cli") {
+            serde_json::json!([{"url": "local://docs/cli.md", "line": 1, "text": "--age DAYS"}, good])
+        } else {
+            serde_json::json!([good])
+        };
+        serde_json::json!({"answer": "rotate()", "quotes": quotes})
+    })?;
     let outcome = cell(&service, SHAPES).await?;
     service.dispose().await;
     let printed = format!("{}\n{:?}", outcome.result.stdout, outcome.result.error);
@@ -646,6 +659,78 @@ async fn both_shapes_schedule_under_the_real_admission_and_step_table() -> TestR
     assert!(
         printed.contains("('web', 'abandoned')") && printed.contains("('web-r2', 'abandoned')"),
         "a failed reader is retried and dropped on the real step table: {printed}"
+    );
+    Ok(())
+}
+
+/// A pod whose readers block and whose command is green, then one whose readers are clean and
+/// whose command is red, over `fixtures/plans/worktree/repo.sh`.
+const POD: &str = r#"
+from yi import Plan, Writer, cmd, review_pod
+from yi.recipes.review_pod import declare
+for goal, check in (("review the launcher", "grep -q 'subcommands: list' rotate.sh"), ("review it again", "grep -q compress rotate.sh")):
+    plan = await Plan.create(goal, request_id=goal.replace(" ", "-"))
+    await declare(plan, ["local://rotate.sh"], cmd(check, critical=True), arbiter=Writer(isolation=None))
+    r = await plan.run(shape=review_pod, budget=20)
+    print(goal, r.outcome, [(t.key, t._doc["state"]) for t in plan.todos])
+    print(plan["arbiter-r2"]._doc["delegation"]["note"])
+"#;
+
+/// The F3b journey: the pod recipe against the real step table and the real `cmd` verifier.
+/// Dies with the control: let a finding vote and the first pod fails or the second passes; skip
+/// the quote seam and the invented finding is in the arbiter's note.
+#[tokio::test]
+#[ignore = "tier-2 journey: `just journeys`"]
+async fn review_pod_on_the_fixture_repo() -> TestResult {
+    let dir = Scratch::new("yi-kernel-pod")?;
+    let script =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/plans/worktree/repo.sh");
+    let built = yi_tools::command("sh")
+        .arg(script)
+        .arg(dir.join("repo"))
+        .output()?;
+    assert!(
+        built.status.success(),
+        "{}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    let (service, store) = crewed(dir.join("plans"), dir.join("repo/parent"), "-", |name| {
+        let quote = |line: u32, text: &str| serde_json::json!([{"url": "local://rotate.sh", "line": line, "text": text}]);
+        match name {
+            "read-correctness" => {
+                serde_json::json!({"answer": "BLOCKER: the launcher is a stub", "quotes": quote(4, "the launcher is a stub")})
+            }
+            "read-tests" => {
+                serde_json::json!({"answer": "BLOCKER: nothing is tested", "quotes": quote(1, "def test_")})
+            }
+            _ => serde_json::json!({"answer": null, "quotes": []}),
+        }
+    })?;
+    let outcome = cell(&service, POD).await?;
+    service.dispose().await;
+    let printed = format!("{}\n{:?}", outcome.result.stdout, outcome.result.error);
+    assert!(
+        printed.contains("review the launcher verified_success"),
+        "{printed}"
+    );
+    assert!(printed.contains("review it again failed"), "{printed}");
+    assert!(
+        printed.contains("read-correctness: BLOCKER: the launcher is a stub [local://rotate.sh:4]")
+            && printed.contains("read-tests: no backed finding")
+            && !printed.contains("nothing is tested"),
+        "{printed}"
+    );
+    let plan = store.read(&yi_types::plan::doc::PlanId::slug("review the launcher")?)?;
+    use yi_types::plan::doc::TodoStateName::{Abandoned, Done};
+    let states: Vec<_> = plan
+        .todos
+        .iter()
+        .map(|todo| yi_types::plan::doc::TodoStateName::of(&todo.state))
+        .collect();
+    assert_eq!(
+        states,
+        [Done, Done, Done, Abandoned, Done],
+        "the declared arbiter ran as its issue"
     );
     Ok(())
 }

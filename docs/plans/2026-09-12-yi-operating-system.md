@@ -407,7 +407,7 @@ table already accepts (`doc.rs:78-79`), and the capsule manifest format
 | D-next-8 | messages are envelopes with kinds, receipts, per-pair order and a durable inbox | extends D165 | F2a |
 | D-next-9 | a child holds a lease drawn from its parent; revoke has a grace and a repossession record | new | F2b |
 | D-next-10 (D216) | a judged contract item is a walled reader of another model family answering a fixed schema, aggregated in Rust | new | F3a |
-| D-next-11 | a review pod is readers plus a code arbiter | extends D-next-10 | F3b |
+| D-next-11 (D217) | a review pod is readers plus a code arbiter | extends D-next-10 | F3b |
 | D-next-12 | a service is a child with a stable address | extends D165 | F3c |
 | D-next-13 | the procedural graph replaces hand-maintained affordance strings; frozen online, evolved offline under a held-out gate with rejection memory | amends the affordance rows (D139's ladder stays) | F4a/F4b |
 | D-next-14 | the kernel's constants are levers with floors and two gates; the sweep never reads the held-out split | extends D140 | F4c/F4d |
@@ -1397,7 +1397,7 @@ isolation: writers get worktrees, readers declared output artifacts.
 | pipeline | later; needs downstream attempt invalidation | edges form one path | the path | rest_for_one | the owner runs `done` per stage |
 | map_reduce | later; needs immutable producer outputs and a schema-validating reduce activity | N maps with one contract, one reduce `after` all | maps, then reduce | one_for_one on maps | the reduce is an inline todo |
 | tournament | later; needs per-candidate verification, one integration winner, legal loser cleanup | N todos with identical contract on one goal | all at once | none | the first passing candidate's acceptance |
-| pod | later; needs a calibrated findings contract and an arbiter with an independently meaningful check | ≥ 2 first passes plus one arbiter `cmd` todo | passes, then the arbiter | one_for_all on the passes | the arbiter's cmd |
+| pod | F3b, as the recipe `yi/recipes/review_pod.py`; a calibrated findings contract is still owed | ≥ 2 first passes plus one arbiter `cmd` todo | passes, then the arbiter | one_for_all on the passes | the arbiter's cmd |
 
 Each later shape is its own PR with the prerequisite landed first and a
 failure it fixes named in the row.
@@ -2548,13 +2548,39 @@ with their session-visible counts, and F2b's context refusal.
   in the verdict, none is silent, and the owner of all three is F3b, which is where a pod
   records who read what.
 
-### F3b · Review pod with a code arbiter (D-next-11)
+### F3b · Review pod with a code arbiter (D217, landed 0.277.0; extends D212, D216)
 
 `yi/recipes/review_pod.py`: N readers with distinct briefs (correctness,
 tests, scope) and one arbiter todo whose contract is a `cmd` (the checker) or
 an `example` set; the pod's verdict is the arbiter's, the readers' findings
 are evidence attached to the todo's `note`. Tests: `test_yi_shapes::a_pod_verdict_is_the_arbiters_command_not_a_reader`
 (T0); a journey `review_pod_on_the_fixture_repo` (T2). LOC python +200.
+
+As landed (0.277.0, D217, #461). Python +121 against 200, no Rust `src` line; tests +57
+of Python and the journey in `kernel_data_surface.rs`, whose rig moved into a `crewed`
+helper the F1b journey shares. The T0 test carries the unittest prefix,
+`test_a_pod_verdict_is_the_arbiters_command_not_a_reader`, and a geometry test sits beside
+it, `test_a_pod_without_a_code_arbiter_or_distinct_briefs_is_refused`.
+
+- The recipe is `declare` plus a module-level `review_pod(plan, run)` built on
+  `shapes._schedule`, `_survivor` and `_asked`; there is no third scheduler. A finding is
+  scatter's `ANSWER` (one answer and its quotes), so it passes the same quote seam, bound
+  to the reader's own partition; a null answer is "nothing found".
+- "Attached to the todo's `note`" is the delegation's note, and no op rewrites a declared
+  todo, so the arbiter is issued again once the readers settle, as `<key>-r2` (scatter's
+  round naming), with the findings in `delegation.note` inside the 1 KiB `InlineNote` cap
+  and each reader's whole answer as a `context` url; the declared arbiter is dropped. The
+  arbiter is therefore a delegated todo: an inline or an owner-run one has no delegation to
+  carry a note.
+- The arbiter is started once and never retried, and geometry refuses a `judge` item on it,
+  so a pod spends no jury and issues one verification per arbiter.
+- Not built: one_for_all on the passes (readers get `_schedule`'s one_for_one, and a reader
+  that stays failed is dropped and named "no backed finding"); a calibrated findings
+  contract; and the record of which model a reader ran on that F3a's limits hand to this
+  stage. The recipe sees only the role's declared `model` and `rlm.result` carries none, so
+  that record needs the host's spawn result to name the model, which is a wire change this
+  stage did not make. F3a's other two limits (a `plans.dir` outside the cwd, a grant
+  smaller than three juror leases) are untouched by a pod, which seats no jury.
 
 ### F3c · Services with stable addresses (D-next-12)
 

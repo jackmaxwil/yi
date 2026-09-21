@@ -8,7 +8,8 @@ import unittest
 import rlm
 import yi.plan
 from fake_host import FakeHost
-from yi import Geometry, Plan, Reader, Writer, cmd, contract, fork_join, scatter, schema, shapes
+from yi import Geometry, Plan, Reader, Writer, cmd, contract, fork_join, review_pod, scatter, schema, shapes
+from yi.recipes.review_pod import BRIEFS, declare
 
 GREEN = contract(cmd("true", critical=True))
 COMMITTED = contract(schema({"type": "object", "required": ["answer"]}, critical=True))
@@ -194,6 +195,60 @@ class Shapes(unittest.IsolatedAsyncioTestCase):
         for name in ("a and b share local://docs", "a declares no answer schema", "exactly one lead"):
             self.assertIn(name, problems)
         self.assertEqual(host.starts, [])
+
+    async def pod(self, said: dict[str, dict], verdict: str) -> tuple[FakeHost, Plan, str]:
+        """A declared pod over the archive whose readers say `said` and whose command says `verdict`."""
+        host = FakeHost()
+        plan = await Plan.create("review the rotate change")
+        await declare(plan, ["local://docs"], cmd("make -s check", critical=True), arbiter=Writer(isolation=None))
+        host.files.update(ARCHIVE)
+        for key in BRIEFS:
+            child = f"{plan.id}/read-{key}"
+            host.children[child] = "finished"
+            host.results[child] = {"text": "", "json": said.get(key, {"answer": None, "quotes": []})}
+        host.children[f"{plan.id}/arbiter-r2"] = "finished"
+        host.verdicts["arbiter-r2"] = verdict
+        return host, plan, (await plan.run(shape=review_pod, budget=30)).outcome
+
+    async def test_a_pod_verdict_is_the_arbiters_command_not_a_reader(self) -> None:
+        """Dies with the control: let a finding vote and the blocked pod fails or the clean one passes;
+        skip the quote seam and the invented finding reaches the arbiter's note."""
+        api = next(iter(ARCHIVE))
+        blocker = {"answer": "BLOCKER: rotate ignores age", "quotes": [quote(api, 2, "rotate(size)")]}
+        invented = {"answer": "BLOCKER: no tests at all", "quotes": [quote(api, 1, "def test_")]}
+        host, plan, outcome = await self.pod({"correctness": blocker, "tests": invented}, "pass")
+        self.assertEqual(outcome, "verified_success", "two blockers and a green command: the command decides")
+        delegation = plan["arbiter-r2"]._doc["delegation"]
+        self.assertIn("read-correctness: BLOCKER: rotate ignores age [local://docs/api.md:2]", delegation["note"])
+        self.assertIn("read-tests: no backed finding", delegation["note"])
+        self.assertNotIn("no tests at all", delegation["note"])
+        self.assertEqual(delegation["context"], [plan[f"read-{key}"]._doc["output"] for key in BRIEFS])
+        self.assertEqual(plan["arbiter"]._doc["state"], "abandoned", "the declared arbiter ran as its issue")
+        self.assertEqual(host.starts.count("arbiter-r2"), 1)
+
+        host, plan, outcome = await self.pod({}, "fail")
+        self.assertEqual(outcome, "failed", "three clean readers and a red command: the command decides")
+        dones = [args["label"] for op, args in host.journal if op == "done"]
+        self.assertEqual((host.starts.count("arbiter-r2"), dones.count("arbiter-r2")), (1, 0), "verified once, never retried")
+
+    async def test_a_pod_without_a_code_arbiter_or_distinct_briefs_is_refused(self) -> None:
+        """Dies with the control: a judged arbiter, or readers sharing one brief, would start."""
+        host = FakeHost()
+        plan = await Plan.create("review it")
+        answer = contract(schema(shapes.ANSWER, critical=True))
+        for key in ("one", "two"):
+            await plan.todo(key=key, delegate=Reader(partition=["local://docs"], note="read it"), accept=answer)
+        await plan.todo(key="arbiter", delegate=Writer(), accept=GREEN)
+        items = host.plans[plan.id]["todos"][-1]["contract"]["items"]
+        items[0]["critical"] = False
+        items.append({"id": "taste", "critical": False, "weight": 1, "decider": {"judge": {}}})
+        with self.assertRaises(Geometry) as refused:
+            await plan.run(shape=review_pod, budget=5)
+        problems = "; ".join(refused.exception.problems)
+        for name in ("a brief of its own", "needs a critical cmd or example", "carries a judge item"):
+            self.assertIn(name, problems)
+        self.assertEqual(host.starts, [])
+
 
     async def test_both_shapes_do_useful_work_and_the_overhead_is_counted(self) -> None:
         """The exit measure: host requests through a shape against the same ops sent by hand."""

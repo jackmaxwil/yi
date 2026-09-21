@@ -154,8 +154,11 @@ def _scatter_geometry(plan: Plan) -> tuple[list[Todo], Todo]:
     return readers, leads[0]
 
 
-async def _asked(plan: Plan, reader: Todo, number: int, question: str | None) -> Todo:
-    """The reader's todo for this round: itself in the first, a sibling declared once after."""
+async def _asked(plan: Plan, reader: Todo, number: int, question: str | None, context: list = ()) -> Todo:
+    """The reader's todo for this round: itself in the first, a sibling declared once after.
+
+    ``context`` is added to the sibling's own; a pod hands its arbiter the readers' answers so.
+    """
     if number == 1:
         return reader
     key = f"{reader.key}-r{number}"
@@ -167,7 +170,11 @@ async def _asked(plan: Plan, reader: Todo, number: int, question: str | None) ->
     # may hold no newline; the lead writes the question and it rides the delegation's note.
     wire = {
         "label": key,
-        "delegation": {**doc["delegation"], "note": question},
+        "delegation": {
+            **doc["delegation"],
+            "note": question,
+            "context": [*doc["delegation"].get("context", []), *context],
+        },
         "contract": doc.get("contract"),
     }
     await plan._op("append", {"todos": [_pruned(wire)]})
