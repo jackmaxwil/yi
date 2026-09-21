@@ -575,6 +575,7 @@ mod tests {
             token_count: 0,
             answer_preview: None,
             error: None,
+            exit: None,
         }
     }
 

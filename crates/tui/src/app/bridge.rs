@@ -117,13 +117,11 @@ pub(crate) fn spawn_runtime_bridge(
                             crate::port::slash_off_thread(&driver_session, line, &reply_tx);
                         }
                         Command::StopChild(child_id) => {
-                            if let Some(child) = crate::port::child_of(&driver_host, &child_id) {
-                                child.session.abort();
-                            }
+                            let _a_gone_child_is_stopped = driver_host.interrupt(&child_id);
                         }
                         Command::ChildHistory(child_id) => {
                             if let Some(child) = crate::port::child_of(&driver_host, &child_id) {
-                                let entries = crate::port::branch_of(&child.session);
+                                let entries = crate::port::branch_in(child.session.store());
                                 let _ = reply_tx.send(UiEvent::Reply(
                                     crate::port::Reply::ChildHistory { child_id, entries },
                                 ));

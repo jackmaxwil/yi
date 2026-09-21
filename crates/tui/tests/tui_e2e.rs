@@ -2153,8 +2153,9 @@ fn a_card_adopted_after_the_first_tool_event_names_it() -> TestResult {
             token_count: 40,
             answer_preview: None,
             error: None,
+            exit: None,
         },
-        session,
+        session: yi_runtime::ChildFeed::of(session),
     }];
     let mut app = app();
     app.sync_children(&roster);

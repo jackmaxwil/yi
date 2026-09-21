@@ -261,16 +261,13 @@ impl crate::app::App {
             .map(|tool| tool.call_id.clone())
     }
 
-    /// The host's `interrupt` ends a run by aborting the child's own session, which the App
-    /// already holds; the record it keeps besides that is the host's either way.
+    /// A stop is the host's `interrupt`, asked for through the driver: the App holds a
+    /// child's feed, never a handle that could end its run behind the host's record.
     pub fn stop_child(&mut self, child_id: &str) {
-        let Some(state) = self.tasks.get(child_id) else {
+        if !self.tasks.contains_key(child_id) {
             return;
-        };
-        match &state.session {
-            Some(session) => session.abort(),
-            None => self.pending_stop = Some(child_id.to_owned()),
         }
+        self.pending_stop = Some(child_id.to_owned());
         self.commit_cell(&Cell::Notice {
             text: format!("stopped {child_id}"),
         });

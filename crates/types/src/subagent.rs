@@ -27,6 +27,38 @@ impl ChildStatus {
     }
 }
 
+/// Why a run failed, as a closed set a client can branch on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FailClass {
+    RefusedSpawn,
+    Provider,
+    KernelDeath,
+    RedCheck,
+    Deadline,
+}
+
+/// How a child's run ended. The wire status, the member state and the parent's notice are
+/// all read from this one value, so no two surfaces tell different stories of one exit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ChildExit {
+    Completed,
+    Failed { class: FailClass },
+    Interrupted,
+    Reaped,
+    Repossessed,
+}
+
+/// The loop's own word that it re-drove a run, carried as `signal` beside a record's data.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LoopSignal {
+    RepeatBreak,
+    LengthRedrive,
+    LetGo,
+}
+
 /// What the child is doing right now, as opposed to how its run ended.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -75,4 +107,7 @@ pub struct ChildUpdate {
     pub answer_preview: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    /// Absent while the child runs, and from a host older than the typed exit.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exit: Option<ChildExit>,
 }

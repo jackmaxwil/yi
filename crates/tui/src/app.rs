@@ -100,7 +100,7 @@ pub struct TaskState {
     pub(crate) finished: Option<Instant>,
     /// The call id of the kernel cell running when the child appeared, if one was.
     pub(crate) born_under: Option<String>,
-    pub(crate) session: Option<Arc<AgentSession>>,
+    pub(crate) session: Option<yi_runtime::ChildFeed>,
 }
 
 pub struct App {

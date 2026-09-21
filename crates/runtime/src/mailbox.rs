@@ -9,7 +9,7 @@ use yi_types::subagent::{ChildResult, Discovery};
 
 use crate::mail::{Desk, Draft};
 use crate::subagent::{
-    ChildRecord, ChildStatus, INTERRUPTED, PARENT_NAME, SubagentHost, last_assistant_text,
+    ChildExit, ChildRecord, INTERRUPTED, PARENT_NAME, Step, SubagentHost, last_assistant_text,
 };
 
 pub(crate) const WAIT_MIN_MS: u64 = 1_000;
@@ -253,8 +253,8 @@ impl SubagentHost {
         if let Ok(mut children) = self.children.lock()
             && let Ok(key) = Self::key_of(&children, from)
             && let Some(record) = children.get_mut(&key)
+            && record.step(Step::Replied)
         {
-            record.replied = true;
             children.touch(&key);
         }
         let envelope = desk.seal(from, PARENT_NAME, draft);
@@ -343,7 +343,10 @@ impl SubagentHost {
         if let Ok(children) = self.children.lock() {
             let mut names: Vec<(&str, &'static str)> = children
                 .values()
-                .map(|record| (record.session_name.as_str(), record.status.as_str()))
+                .map(|record| {
+                    let status = crate::family::read_exit(record.exit).status;
+                    (record.session_name.as_str(), status.as_str())
+                })
                 .collect();
             names.sort_unstable();
             agents.extend(
@@ -440,7 +443,7 @@ impl SubagentHost {
             let record = children
                 .get(&key)
                 .ok_or_else(|| format!("No RLM child matches \"{target}\""))?;
-            if record.status == ChildStatus::Running {
+            if record.exit.is_none() {
                 return Err(format!("child \"{target}\" is still running"));
             }
             if let Some(error) = &record.error {
@@ -603,10 +606,13 @@ impl SubagentHost {
             children.touch(&key);
             (key, record)
         };
-        if record.status == ChildStatus::Running {
+        if record.exit.is_none() {
             record.session.abort();
-            record.status = ChildStatus::Error;
-            record.error.get_or_insert_with(|| INTERRUPTED.to_owned());
+            let cause = record
+                .error
+                .take()
+                .unwrap_or_else(|| INTERRUPTED.to_owned());
+            record.step(Step::Exit(ChildExit::Reaped, Some(cause)));
         }
         SubagentHost::dispose_child_kernel(&record.session);
         // The lane settles under the choice journaled before this removal; a lane that cannot
@@ -648,7 +654,7 @@ impl SubagentHost {
             display: true,
             details: Some(json!({
                 "child": name,
-                "status": record.status.as_str(),
+                "status": crate::family::read_exit(record.exit).status.as_str(),
                 "error": record.error,
             })),
             timestamp: yi_session::now_ms(),

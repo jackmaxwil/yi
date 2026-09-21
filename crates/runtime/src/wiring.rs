@@ -1,8 +1,6 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use crate::subagent::ChildStatus;
-
 use serde_json::{Map, Value};
 use yi_types::model::Model;
 
@@ -443,11 +441,7 @@ fn wire_plan_engine(
                 children
                     .children
                     .lock()
-                    .map(|children| {
-                        children
-                            .values()
-                            .any(|child| child.status == ChildStatus::Running)
-                    })
+                    .map(|children| children.values().any(|child| child.exit.is_none()))
                     .unwrap_or(false)
             }),
             inner,

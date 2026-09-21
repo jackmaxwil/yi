@@ -648,7 +648,7 @@ class Run:
             states = reply.get("states") or {}
             for todo in children:
                 state = states.get(todo.child)
-                if state in ("running", "stuck"):
+                if state in ("queued", "running", "stuck"):
                     continue
                 self.active.pop(todo.label)
                 if state == "finished":
