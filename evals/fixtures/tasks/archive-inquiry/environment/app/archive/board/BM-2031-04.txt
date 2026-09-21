@@ -1,0 +1,108 @@
+Quillfen Water Cooperative
+MINUTES OF THE BOARD, meeting BM-2031-04
+Held: 2031-04-18
+Present: Hollis Wray, Ysolde Quint, Petra Vosk, Bram Ketteridge, Lucan Marsh, Ansel Brightwater
+Apologies: Mirela Stanck
+
+1. Minutes of the previous meeting
+----------------------------------
+
+The minutes of the previous meeting were agreed as a true record, subject to any
+correction recorded below.
+
+2. Capital programme
+--------------------
+
+Bram Ketteridge confirmed that spares for the surge vessel are held at the central
+store and that the reorder level is 37 units. A minor oil weep from the flow meter at
+Low Fennick was cleaned up and a drip tray fitted pending the next service.
+
+The board noted the capital programme report without resolution.
+
+3. Operations report
+--------------------
+
+Flooding on the lane to Tolland Sluice delayed the delivery by a day; no cost was
+incurred by the cooperative. Flooding on the lane to Osier Bank delayed the delivery
+by a day; no cost was incurred by the cooperative. The draft drawing register for
+Brackwater Lock is 37 percent complete and will be issued once the as-built survey is
+checked. the networks team will coordinate with Hollis Wray on the training calendar,
+which currently shows 8 open places.
+
+Bram Ketteridge presented a short paper on sensor drift and recommended a comparison
+check at Brackwater Lock every 16 weeks. A minor oil weep from the wet well ladder at
+Pike Hollow was cleaned up and a drip tray fitted pending the next service. The
+contractor's method statement for work at Eastmere Intake was reviewed by the asset
+planning group and returned with 26 comments.
+
+Annex A. Follow-up from the last period
+---------------------------------------
+
+Ansel Brightwater raised the question of lone working at Eastmere Intake and was
+referred to the existing guidance held by the safety committee. The handover notes
+between shifts were sampled by the control room and found complete in all but 2 cases.
+Sampling results for the quarter were within the expected band at every point except
+one, which is being resampled.
+
+Annex B. Routine matters
+------------------------
+
+Vegetation clearance around the duty pump at Merrow Basin was completed and the area
+photographed for the asset record. The draft drawing register for Eastmere Intake is
+37 percent complete and will be issued once the as-built survey is checked. No
+complaints were received from neighbours of Eastmere Intake during the works, and the
+liaison log has been closed. A walkdown of Low Fennick found the signage faded;
+replacement boards have been ordered under the routine budget. Members of the control
+room asked for the seasonal demand figures to be circulated before the next meeting.
+
+Sampling results for the quarter were within the expected band at every point except
+one, which is being resampled. Hollis Wray raised the question of lone working at
+Harrow Weir and was referred to the existing guidance held by the asset planning
+group. Petra Vosk presented a short paper on sensor drift and recommended a comparison
+check at Low Fennick every 5 weeks.
+
+Annex C. Correspondence
+-----------------------
+
+Ysolde Quint confirmed that spares for the surge vessel are held at the central store
+and that the reorder level is 15 units. Oona Farrow thanked the finance office for
+covering the holiday rota at short notice. Ansel Brightwater raised the question of
+lone working at Eastmere Intake and was referred to the existing guidance held by the
+networks team. Ansel Brightwater reported that the duty pump at Pike Hollow had been
+inspected and found serviceable, with minor wear noted on the seals.
+
+Ysolde Quint reported that the standby pump at Low Fennick had been inspected and
+found serviceable, with minor wear noted on the seals. the finance office reminded
+everyone that permits for confined spaces must be closed out the same day. Oona Farrow
+thanked the control room for covering the holiday rota at short notice.
+
+Petra Vosk thanked the safety committee for covering the holiday rota at short notice.
+Hollis Wray reported that the control panel at Merrow Basin had been inspected and
+found serviceable, with minor wear noted on the seals. A walkdown of Pike Hollow found
+the signage faded; replacement boards have been ordered under the routine budget.
+
+Annex D. Stores and spares
+--------------------------
+
+The stores count showed 3 discrepancies, all traced to items issued to vans without a
+ticket. A walkdown of Osier Bank found the signage faded; replacement boards have been
+ordered under the routine budget. It was noted that access to Harrow Weir remains
+difficult after heavy rain and that the track will be regraded when crews allow.
+
+Sampling results for the quarter were within the expected band at every point except
+one, which is being resampled. A walkdown of Osier Bank found the signage faded;
+replacement boards have been ordered under the routine budget. Members of the safety
+committee asked for the seasonal demand figures to be circulated before the next
+meeting. Vegetation clearance around the wet well ladder at Low Fennick was completed
+and the area photographed for the asset record. Ansel Brightwater reported that the
+duty pump at Tolland Sluice had been inspected and found serviceable, with minor wear
+noted on the seals.
+
+Lucan Marsh presented a short paper on sensor drift and recommended a comparison check
+at Osier Bank every 31 weeks. The telemetry link to Low Fennick dropped twice in the
+period; both outages were under 34 minutes and no alarms were missed. A minor oil weep
+from the surge vessel at Cindergate Station was cleaned up and a drip tray fitted
+pending the next service. Tamsin Orrel presented a short paper on sensor drift and
+recommended a comparison check at Harrow Weir every 25 weeks. An energy audit of
+Merrow Basin suggested that running the level sensor off-peak would reduce cost
+without affecting service.

@@ -1,0 +1,97 @@
+Quillfen Water Cooperative
+CHANGE RECORD CR-0258
+Title: Alarm priority reshuffle
+Site: Cindergate Station
+Requested by: Tamsin Orrel
+Implemented: 2031-08-27
+
+Outcome: ROLLED BACK
+
+Description
+-----------
+
+Petra Vosk presented a short paper on sensor drift and recommended a comparison check
+at Harrow Weir every 2 weeks. the control room reminded everyone that permits for
+confined spaces must be closed out the same day.
+
+The change was rolled back on the day after implementation when the expected
+improvement did not appear.
+
+Risk and rollback plan
+----------------------
+
+The rollback plan was rehearsed on the test rig beforehand.
+
+An energy audit of Osier Bank suggested that running the control panel off-peak would
+reduce cost without affecting service. The handover notes between shifts were sampled
+by the safety committee and found complete in all but 16 cases.
+
+Verification
+------------
+
+Vegetation clearance around the standby pump at Osier Bank was completed and the area
+photographed for the asset record. A walkdown of Low Fennick found the signage faded;
+replacement boards have been ordered under the routine budget. Vegetation clearance
+around the penstock actuator at Cindergate Station was completed and the area
+photographed for the asset record. An energy audit of Pike Hollow suggested that
+running the duty pump off-peak would reduce cost without affecting service.
+
+Annex A. Stores and spares
+--------------------------
+
+The draft drawing register for Tolland Sluice is 27 percent complete and will be
+issued once the as-built survey is checked. Petra Vosk noted that the calibration
+certificate for the inlet screen expires next quarter and has booked the visit.
+Sampling results for the quarter were within the expected band at every point except
+one, which is being resampled.
+
+The contractor's method statement for work at Brackwater Lock was reviewed by the
+asset planning group and returned with 4 comments. It was noted that access to
+Eastmere Intake remains difficult after heavy rain and that the track will be regraded
+when crews allow. Ansel Brightwater thanked the networks team for covering the holiday
+rota at short notice. The telemetry link to Harrow Weir dropped twice in the period;
+both outages were under 37 minutes and no alarms were missed. Bram Ketteridge
+confirmed that spares for the penstock actuator are held at the central store and that
+the reorder level is 17 units.
+
+Annex B. Correspondence
+-----------------------
+
+The draft drawing register for Pike Hollow is 39 percent complete and will be issued
+once the as-built survey is checked. Ansel Brightwater raised the question of lone
+working at Brackwater Lock and was referred to the existing guidance held by the
+safety committee. Oona Farrow confirmed that spares for the wet well ladder are held
+at the central store and that the reorder level is 31 units.
+
+Annex C. Follow-up from the last period
+---------------------------------------
+
+The telemetry link to Pike Hollow dropped twice in the period; both outages were under
+38 minutes and no alarms were missed. The telemetry link to Tolland Sluice dropped
+twice in the period; both outages were under 19 minutes and no alarms were missed. A
+walkdown of Pike Hollow found the signage faded; replacement boards have been ordered
+under the routine budget.
+
+Annex D. Any other business
+---------------------------
+
+No complaints were received from neighbours of Pike Hollow during the works, and the
+liaison log has been closed. A minor oil weep from the control panel at Brackwater
+Lock was cleaned up and a drip tray fitted pending the next service. Flooding on the
+lane to Cindergate Station delayed the delivery by a day; no cost was incurred by the
+cooperative. the control room reminded everyone that permits for confined spaces must
+be closed out the same day. The contractor's method statement for work at Tolland
+Sluice was reviewed by the asset planning group and returned with 32 comments.
+
+An energy audit of Cindergate Station suggested that running the flow meter off-peak
+would reduce cost without affecting service. the field crews will coordinate with
+Hollis Wray on the training calendar, which currently shows 8 open places. The
+contractor's method statement for work at Brackwater Lock was reviewed by the control
+room and returned with 35 comments.
+
+A minor oil weep from the duty pump at Cindergate Station was cleaned up and a drip
+tray fitted pending the next service. Vegetation clearance around the penstock
+actuator at Tolland Sluice was completed and the area photographed for the asset
+record. Lucan Marsh noted that the calibration certificate for the duty pump expires
+next quarter and has booked the visit. It was noted that access to Osier Bank remains
+difficult after heavy rain and that the track will be regraded when crews allow.

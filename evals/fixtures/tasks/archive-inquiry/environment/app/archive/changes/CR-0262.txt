@@ -1,0 +1,128 @@
+Quillfen Water Cooperative
+CHANGE RECORD CR-0262
+Title: Operator refresher training schedule
+Site: Eastmere Intake
+Requested by: Tamsin Orrel
+Implemented: 2031-09-02
+
+Outcome: COMPLETED
+
+Description
+-----------
+
+Bram Ketteridge raised the question of lone working at Eastmere Intake and was
+referred to the existing guidance held by the safety committee. Vegetation clearance
+around the inlet screen at Cindergate Station was completed and the area photographed
+for the asset record.
+
+Implements the recommendation of the preliminary review of IR-2031-09 that operators
+be given refresher training.
+
+Risk and rollback plan
+----------------------
+
+A rollback was prepared but was not needed.
+
+Tamsin Orrel raised the question of lone working at Pike Hollow and was referred to
+the existing guidance held by the safety committee. Ansel Brightwater noted that the
+calibration certificate for the inlet screen expires next quarter and has booked the
+visit.
+
+Verification
+------------
+
+Sampling results for the quarter were within the expected band at every point except
+one, which is being resampled. Lucan Marsh thanked the networks team for covering the
+holiday rota at short notice. The contractor's method statement for work at Harrow
+Weir was reviewed by the control room and returned with 8 comments. Sampling results
+for the quarter were within the expected band at every point except one, which is
+being resampled.
+
+Annex A. Stores and spares
+--------------------------
+
+Hollis Wray noted that the calibration certificate for the dosing skid expires next
+quarter and has booked the visit. Members of the safety committee asked for the
+seasonal demand figures to be circulated before the next meeting. Petra Vosk reported
+that the standby pump at Eastmere Intake had been inspected and found serviceable,
+with minor wear noted on the seals. Members of the field crews asked for the seasonal
+demand figures to be circulated before the next meeting.
+
+Annex B. Stores and spares
+--------------------------
+
+Dov Callender reported that the sample tap at Tolland Sluice had been inspected and
+found serviceable, with minor wear noted on the seals. No complaints were received
+from neighbours of Low Fennick during the works, and the liaison log has been closed.
+Lucan Marsh reported that the penstock actuator at Osier Bank had been inspected and
+found serviceable, with minor wear noted on the seals. The stores count showed 34
+discrepancies, all traced to items issued to vans without a ticket. No complaints were
+received from neighbours of Osier Bank during the works, and the liaison log has been
+closed.
+
+The handover notes between shifts were sampled by the networks team and found complete
+in all but 35 cases. Lucan Marsh noted that the calibration certificate for the wet
+well ladder expires next quarter and has booked the visit. The handover notes between
+shifts were sampled by the finance office and found complete in all but 8 cases. An
+energy audit of Harrow Weir suggested that running the control panel off-peak would
+reduce cost without affecting service.
+
+the finance office reminded everyone that permits for confined spaces must be closed
+out the same day. The draft drawing register for Osier Bank is 38 percent complete and
+will be issued once the as-built survey is checked. A walkdown of Eastmere Intake
+found the signage faded; replacement boards have been ordered under the routine
+budget. Members of the asset planning group asked for the seasonal demand figures to
+be circulated before the next meeting.
+
+Annex C. Training and rota
+--------------------------
+
+Dov Callender presented a short paper on sensor drift and recommended a comparison
+check at Brackwater Lock every 27 weeks. The handover notes between shifts were
+sampled by the safety committee and found complete in all but 31 cases. It was noted
+that access to Merrow Basin remains difficult after heavy rain and that the track will
+be regraded when crews allow. No complaints were received from neighbours of Pike
+Hollow during the works, and the liaison log has been closed. No complaints were
+received from neighbours of Tolland Sluice during the works, and the liaison log has
+been closed.
+
+The draft drawing register for Merrow Basin is 13 percent complete and will be issued
+once the as-built survey is checked. Bram Ketteridge reported that the telemetry
+outstation at Cindergate Station had been inspected and found serviceable, with minor
+wear noted on the seals. Hollis Wray raised the question of lone working at Osier Bank
+and was referred to the existing guidance held by the control room. The draft drawing
+register for Tolland Sluice is 4 percent complete and will be issued once the as-built
+survey is checked.
+
+Annex D. Stores and spares
+--------------------------
+
+Members of the finance office asked for the seasonal demand figures to be circulated
+before the next meeting. The stores count showed 2 discrepancies, all traced to items
+issued to vans without a ticket. The draft drawing register for Low Fennick is 26
+percent complete and will be issued once the as-built survey is checked. No complaints
+were received from neighbours of Merrow Basin during the works, and the liaison log
+has been closed. A minor oil weep from the surge vessel at Merrow Basin was cleaned up
+and a drip tray fitted pending the next service.
+
+Annex E. Site notes
+-------------------
+
+The draft drawing register for Cindergate Station is 11 percent complete and will be
+issued once the as-built survey is checked. Ansel Brightwater confirmed that spares
+for the inlet screen are held at the central store and that the reorder level is 31
+units. The stores count showed 2 discrepancies, all traced to items issued to vans
+without a ticket.
+
+Members of the safety committee asked for the seasonal demand figures to be circulated
+before the next meeting. The handover notes between shifts were sampled by the control
+room and found complete in all but 9 cases. The stores count showed 34 discrepancies,
+all traced to items issued to vans without a ticket.
+
+Oona Farrow noted that the calibration certificate for the standby pump expires next
+quarter and has booked the visit. Tamsin Orrel presented a short paper on sensor drift
+and recommended a comparison check at Tolland Sluice every 23 weeks. Bram Ketteridge
+presented a short paper on sensor drift and recommended a comparison check at Low
+Fennick every 23 weeks. The handover notes between shifts were sampled by the asset
+planning group and found complete in all but 36 cases. The handover notes between
+shifts were sampled by the field crews and found complete in all but 22 cases.

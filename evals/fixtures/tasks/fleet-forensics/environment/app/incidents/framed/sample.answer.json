@@ -1,0 +1,20 @@
+{
+ "0107": {
+  "first_over": null,
+  "frames": 19,
+  "lost": 0,
+  "max_temp": -156
+ },
+ "010e": {
+  "first_over": null,
+  "frames": 20,
+  "lost": 1,
+  "max_temp": -163
+ },
+ "0115": {
+  "first_over": null,
+  "frames": 18,
+  "lost": 2,
+  "max_temp": 780
+ }
+}

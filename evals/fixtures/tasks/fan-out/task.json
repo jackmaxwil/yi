@@ -1,0 +1,6 @@
+{
+  "id": "fan-out",
+  "dryReward": 0,
+  "timeoutSec": 900,
+  "note": "faux never edits, so neither deliverable lands"
+}

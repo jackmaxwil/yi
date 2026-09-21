@@ -1,0 +1,83 @@
+Quillfen Water Cooperative
+CHANGE RECORD CR-0279
+Title: Install standby generator
+Site: Low Fennick
+Requested by: Mirela Stanck
+Implemented: not implemented
+
+Outcome: DEFERRED
+
+Description
+-----------
+
+Tamsin Orrel confirmed that spares for the sample tap are held at the central store
+and that the reorder level is 10 units. The contractor's method statement for work at
+Osier Bank was reviewed by the finance office and returned with 38 comments.
+
+The installation of a standby generator at Low Fennick is deferred to the 2032
+programme. No work was done in 2031.
+
+Risk and rollback plan
+----------------------
+
+A rollback was prepared but was not needed.
+
+An energy audit of Harrow Weir suggested that running the level sensor off-peak would
+reduce cost without affecting service. Hollis Wray confirmed that spares for the
+sample tap are held at the central store and that the reorder level is 33 units.
+
+Verification
+------------
+
+A minor oil weep from the sample tap at Pike Hollow was cleaned up and a drip tray
+fitted pending the next service. The stores count showed 35 discrepancies, all traced
+to items issued to vans without a ticket. the safety committee reminded everyone that
+permits for confined spaces must be closed out the same day. Sampling results for the
+quarter were within the expected band at every point except one, which is being
+resampled. No complaints were received from neighbours of Low Fennick during the
+works, and the liaison log has been closed.
+
+Annex A. Site notes
+-------------------
+
+Dov Callender confirmed that spares for the dosing skid are held at the central store
+and that the reorder level is 22 units. Lucan Marsh raised the question of lone
+working at Tolland Sluice and was referred to the existing guidance held by the field
+crews. the safety committee reminded everyone that permits for confined spaces must be
+closed out the same day.
+
+The stores count showed 11 discrepancies, all traced to items issued to vans without a
+ticket. Ansel Brightwater raised the question of lone working at Pike Hollow and was
+referred to the existing guidance held by the control room. The handover notes between
+shifts were sampled by the finance office and found complete in all but 11 cases. It
+was noted that access to Osier Bank remains difficult after heavy rain and that the
+track will be regraded when crews allow.
+
+No complaints were received from neighbours of Low Fennick during the works, and the
+liaison log has been closed. the asset planning group will coordinate with Tamsin
+Orrel on the training calendar, which currently shows 32 open places. Members of the
+safety committee asked for the seasonal demand figures to be circulated before the
+next meeting.
+
+Annex B. Training and rota
+--------------------------
+
+The stores count showed 15 discrepancies, all traced to items issued to vans without a
+ticket. Mirela Stanck confirmed that spares for the sample tap are held at the central
+store and that the reorder level is 3 units. A walkdown of Osier Bank found the
+signage faded; replacement boards have been ordered under the routine budget. Petra
+Vosk confirmed that spares for the sample tap are held at the central store and that
+the reorder level is 33 units.
+
+The telemetry link to Harrow Weir dropped twice in the period; both outages were under
+22 minutes and no alarms were missed. No complaints were received from neighbours of
+Low Fennick during the works, and the liaison log has been closed. A walkdown of
+Eastmere Intake found the signage faded; replacement boards have been ordered under
+the routine budget.
+
+A minor oil weep from the penstock actuator at Osier Bank was cleaned up and a drip
+tray fitted pending the next service. The stores count showed 36 discrepancies, all
+traced to items issued to vans without a ticket. Vegetation clearance around the
+standby pump at Low Fennick was completed and the area photographed for the asset
+record. A walkdown of Osier Bank found the signage faded; replacement boards have been
+ordered under the routine budget.
