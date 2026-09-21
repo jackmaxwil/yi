@@ -9,8 +9,8 @@ use serde_json::Value;
 use yi_types::plan::canonical::Digest;
 pub use yi_types::plan::contract::{Case, CheckerManifest, Cwd, MANIFEST_FORMAT};
 use yi_types::plan::contract::{
-    Contract, ContractItem, Decider, ItemLine, ItemVerdict, JUDGE_CAP_PER_TODO, JurorLine, Verdict,
-    VerificationToken, aggregate,
+    Contract, ContractItem, Decider, ItemLine, ItemVerdict, JurorLine, Verdict, VerificationToken,
+    aggregate,
 };
 
 use super::artifact::Artifacts;
@@ -144,9 +144,10 @@ fn abstain(reason: impl Into<String>) -> ItemVerdict {
 
 /// The jury cap (plan section 6.4): past it no jury sits, and the item is the user's question.
 fn escalated(item: &ContractItem) -> ItemVerdict {
+    let cap = crate::levers::get().plan_judge_cap;
     ItemVerdict::Escalate {
         question: format!(
-            "{JUDGE_CAP_PER_TODO} juries sat on this todo without settling item {}; accept it, fail it or change its contract",
+            "{cap} juries sat on this todo without settling item {}; accept it, fail it or change its contract",
             item.id
         ),
     }
@@ -242,7 +243,9 @@ impl Verifier {
             }
             if let (Decider::Judge { .. }, Some(judge)) = (&item.decider, &self.judge) {
                 let (verdict, jurors) = match &snapshot.jury {
-                    Some(seat) if seat.juries > JUDGE_CAP_PER_TODO => (escalated(item), Vec::new()),
+                    Some(seat) if seat.juries > crate::levers::get().plan_judge_cap => {
+                        (escalated(item), Vec::new())
+                    }
                     _ => judge.judge(item, snapshot, whole),
                 };
                 let id = item.id.clone();

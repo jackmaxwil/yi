@@ -31,6 +31,7 @@ TASK_TIMEOUT_SEC = 28800
 
 # OpenRouter's provider object for a routing A/B, as JSON; never `YI_*`, the harness's name.
 ROUTING_ENV = "EVAL_ROUTING"
+LEVERS_ENV = "YI_LEVERS"
 
 
 def with_budget(instruction, deadline_sec):
@@ -64,6 +65,13 @@ def routing_label(environ):
     if routing is None:
         return ""
     return "+routing" + json.dumps(routing, sort_keys=True, separators=(",", ":"))
+
+
+def levers_label(environ):
+    """The override file's hash as it rides the fingerprint's mode (plan section 10.6): two runs
+    under different levers are different configs. The binary reads the file, never this."""
+    path = environ.get(LEVERS_ENV)
+    return "+levers" + hashlib.sha256(open(path, "rb").read()).hexdigest()[:12] if path else ""
 
 
 KERNEL_ROWS = ("kernel-toolchain", "kernel-boot")

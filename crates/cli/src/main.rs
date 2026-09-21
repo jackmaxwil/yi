@@ -462,6 +462,11 @@ fn build_session(
         .map(std::path::PathBuf::from)
         .unwrap_or_default();
     let session_dir = default_session_dir(args);
+    yi_runtime::levers::init(args.deadline.is_some()).map_err(|reason| Refused {
+        code: 1,
+        reason,
+        class: yi_types::telemetry::ErrorClass::RefusalConfig,
+    })?;
     let (lane, pool) = match claim_lane(args, &home, session_id) {
         Ok(claimed) => claimed,
         Err(message) => {

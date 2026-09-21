@@ -354,8 +354,11 @@ pub trait OpSink: Send + Sync {
     fn record(&self, record: PlanOpRecord) -> Result<(), String>;
 }
 
+pub const WIDTH_MAX: usize = 8;
+
 pub fn dispatch_width(cores: NonZeroUsize) -> NonZeroUsize {
-    NonZeroUsize::new(cores.get().saturating_sub(1).clamp(1, 8)).unwrap_or(NonZeroUsize::MIN)
+    let max = crate::levers::get().plan_width_max;
+    NonZeroUsize::new(cores.get().saturating_sub(1).clamp(1, max)).unwrap_or(NonZeroUsize::MIN)
 }
 
 #[derive(Debug, Default)]

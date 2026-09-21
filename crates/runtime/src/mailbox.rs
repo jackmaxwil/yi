@@ -16,8 +16,8 @@ pub(crate) const WAIT_MIN_MS: u64 = 1_000;
 pub(crate) const WAIT_MAX_MS: u64 = 300_000;
 const WAIT_POLL_MS: u64 = 100;
 
-const CONTEXT_MAX_KEYS: usize = 8;
-const CONTEXT_VALUE_CAP: usize = 4_096;
+pub(crate) const CONTEXT_MAX_KEYS: usize = 8;
+pub(crate) const CONTEXT_VALUE_CAP: usize = 4_096;
 pub(crate) const CONTEXT_TOTAL_CAP: usize = 16_384;
 const RESULT_TAIL_CHARS: usize = 2_000;
 
@@ -32,7 +32,7 @@ pub(crate) type Commit<'a> =
     dyn Fn(&ChildRecord, Option<&crate::lane::settle::Candidate>) -> Result<(), String> + 'a;
 /// Invariant: every row can run an ancestor check inside the parent's own `rlm.result` call,
 /// so the list is capped: a degenerate child buys one refusal, not unbounded checks.
-const MAX_DISCOVERIES: usize = 16;
+pub(crate) const MAX_DISCOVERIES: usize = 16;
 
 fn clamp(text: &str, cap: usize) -> String {
     if text.chars().count() <= cap {

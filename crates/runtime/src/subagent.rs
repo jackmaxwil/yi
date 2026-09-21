@@ -600,7 +600,10 @@ impl SubagentHost {
         kwargs: Map<String, Value>,
         standing: Standing,
     ) -> Result<Map<String, Value>, String> {
-        let juror = matches!(standing, Standing::Juror);
+        let (juror, family_cap) = (
+            matches!(standing, Standing::Juror),
+            crate::levers::get().family_cap,
+        );
         require_kwargs(&kwargs)?;
         let requested_name = optional_string(&kwargs, "name")?;
         let fork = parse_fork(&kwargs)?;
@@ -615,9 +618,9 @@ impl SubagentHost {
                 "fork=all inherits the parent's model and thinking; drop the override".to_owned(),
             );
         }
-        if (self.options.family_live)() >= FAMILY_CAP {
+        if (self.options.family_live)() >= family_cap {
             return Err(format!(
-                "the family holds {FAMILY_CAP} live sessions; reap one with rlm.delete_subagent before spawning"
+                "the family holds {family_cap} live sessions; reap one with rlm.delete_subagent before spawning"
             ));
         }
         if !juror && self.options.depth >= self.options.max_depth {

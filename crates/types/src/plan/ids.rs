@@ -336,7 +336,7 @@ impl Spawns {
         self.0 == 0
     }
 
-    pub fn get(self) -> u32 {
+    pub const fn get(self) -> u32 {
         self.0
     }
 }

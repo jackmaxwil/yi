@@ -217,7 +217,11 @@ pub fn next_lines(list: &TodoList) -> Vec<String> {
     let pending = list
         .items()
         .filter(|item| item.state == TodoStateName::Pending)
-        .take(NEXT_LINES.saturating_sub(out.len()));
+        .take(
+            crate::levers::get()
+                .graph_next_lines
+                .saturating_sub(out.len()),
+        );
     out.extend(pending.filter_map(moves));
     if out.is_empty() {
         let blocked = list

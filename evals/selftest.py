@@ -22,6 +22,7 @@ ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT / "adapters"))
 sys.path.insert(0, str(ROOT / "drivers"))
 sys.path.insert(0, str(ROOT / "graph"))
+sys.path.insert(0, str(ROOT / "tests"))
 sys.path.insert(0, str(ROOT))
 
 import orient_census  # noqa: E402
@@ -32,6 +33,7 @@ import atif  # noqa: E402
 import axes  # noqa: E402
 import yi_usage  # noqa: E402
 import test_refine  # noqa: E402
+import test_levers  # noqa: E402
 
 FIXTURES = ROOT / "fixtures"
 EVENTS = FIXTURES / "ask_events.jsonl"
@@ -520,8 +522,19 @@ def check_graph_refiner():
     assert result.testsRun >= 5 and result.wasSuccessful(), report.getvalue()
 
 
+def check_levers():
+    """D220: the manifest, the shared default fixture and the floors agree, and the gates hold."""
+    report = io.StringIO()
+    suite = unittest.defaultTestLoader.loadTestsFromModule(test_levers)
+    result = unittest.TextTestRunner(stream=report).run(suite)
+    assert result.testsRun >= 5 and result.wasSuccessful(), report.getvalue()
+    environ = {yi_usage.LEVERS_ENV: str(ROOT / "levers" / "default.json")}
+    assert yi_usage.levers_label({}) == "" and len(yi_usage.levers_label(environ)) == len("+levers") + 12
+
+
 CHECKS = (
     check_graph_refiner,
+    check_levers,
     check_cost_cap,
     check_orient_census,
     check_rule_fires,
