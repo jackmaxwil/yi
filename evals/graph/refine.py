@@ -14,7 +14,7 @@ The runner is the owner's: it is called as `<runner> <graph.json> <task>...`
 and prints one JSON row per trial (`task`, `reward`, `input`, `cacheRead`,
 `output`, the shape `evals/axes.py` scores). This file never starts a model.
 """
-import argparse, hashlib, json, pathlib, shlex, subprocess, sys, tempfile, time
+import argparse, hashlib, json, pathlib, re, shlex, subprocess, sys, tempfile, time
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 GRAPH = ROOT / "crates/runtime/src/prompts/graph.json"
@@ -39,6 +39,8 @@ PREDICATES = {
     "session_in_memory": "",
 }
 EDGE_KEYS = {"from", "relation", "to", "condition", "guidance", "pitfalls", "weight"}
+# A task id is letters, digits and the three joiners ids use; everything else separates two.
+TOKEN = re.compile(r"[^0-9A-Za-z_.-]+")
 
 
 class Refused(Exception):
@@ -151,17 +153,28 @@ def score(rows):
             "tokensPerSolved": round(tokens / len(solved)) if solved else None}
 
 
-def worse(candidate, current):
-    """Ties pass. A graph that solves nothing has no price per solved task, which is not a lower one."""
+def worse(candidate, current, guidance_bytes):
+    """Ties pass. With nothing solved on either side there is no price per solved task, so
+    section 9.8 stands alone: bytes that bought no pass have not paid for themselves."""
     if candidate["passed"] < current["passed"]:
         return "held_out_passes_dropped"
     if candidate["tokensPerSolved"] is None and current["tokensPerSolved"] is None:
-        return None
+        return "guidance_bytes_unpaid" if guidance_bytes > 0 else None
     if candidate["tokensPerSolved"] is None or (
             current["tokensPerSolved"] is not None
             and candidate["tokensPerSolved"] > current["tokensPerSolved"]):
         return "tokens_per_solved_rose"
     return None
+
+
+def names(line, held_out):
+    """Tokens, not substrings: a task id written with a JSON escape decodes back to its
+    letters, and an id that sits inside a longer word is not a reference to the task."""
+    try:
+        text = json.dumps(json.loads(line), ensure_ascii=False)
+    except json.JSONDecodeError:
+        text = line
+    return sorted(set(TOKEN.split(text)) & set(held_out))
 
 
 def read_proposals(path, split):
@@ -171,7 +184,7 @@ def read_proposals(path, split):
     for number, line in enumerate(pathlib.Path(path).read_text().splitlines(), 1):
         if not line.strip():
             continue
-        named = [task for task in held_out if task in line]
+        named = names(line, held_out)
         if named:
             raise Refused(f"{path}:{number} names the held-out task {named[0]!r}")
         edits.append(json.loads(line))
@@ -221,7 +234,7 @@ def refine(graph, edits, split, run, config, rejected_path=REJECTED, verbs=None,
             verdicts.append(reject(edit, "fit_passes_dropped", scores))
             continue
         scores["heldOut"] = score(run(candidate, split["validation"]))
-        reason = worse(scores["heldOut"], current["heldOut"])
+        reason = worse(scores["heldOut"], current["heldOut"], scores["guidanceBytes"])
         if reason:
             verdicts.append(reject(edit, reason, scores))
             continue
@@ -267,6 +280,9 @@ def main(argv=None):
         print(json.dumps(verdict, sort_keys=True))
     if args.write and any(v["verdict"] == "promoted" for v in verdicts):
         GRAPH.write_text(dump(graph))
+        # The Rust goldens pin the bytes today's graph renders; a promotion is a prompt change.
+        print(f"wrote {GRAPH.relative_to(ROOT)}: run `cargo test -p yi-runtime --test affordance`"
+              " and re-pin the goldens deliberately before committing", file=sys.stderr)
     return 0
 
 
