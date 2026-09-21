@@ -120,7 +120,11 @@ class Shapes(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(mine["cursor"], len(host.changes) - 1, "and the model's cursor is its own")
 
     async def test_scatter_drops_an_unverifiable_quote_before_the_lead_sees_it(self) -> None:
-        """Dies with the control: hand the lead the raw answers and the invented quote arrives."""
+        """Dies with the control: hand the lead the raw answers and the invented quote arrives.
+
+        Invariant: the three ways a quote fails are one seam: a wrong line, a page that will not
+        fetch, and a page outside the partition the reader was bound to, which the owner can read.
+        """
         host = FakeHost()
         plan = await Plan.create("which module rotates by size?")
         api, cli = ARCHIVE
@@ -128,7 +132,10 @@ class Shapes(unittest.IsolatedAsyncioTestCase):
             plan,
             host,
             {
-                "api": {"answer": "rotate()", "quotes": [quote(api, 2, "rotate(size)"), quote(api, 1, "rotate(age)")]},
+                "api": {
+                    "answer": "rotate()",
+                    "quotes": [quote(api, 2, "rotate(size)"), quote(api, 1, "rotate(age)"), quote(cli, 2, "--age DAYS")],
+                },
                 "cli": {"answer": "the --size flag", "quotes": [quote(cli, 2, "--size BYTES"), quote("local://nope", 1, "x")]},
             },
         )
@@ -143,7 +150,7 @@ class Shapes(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(run.outcome, "verified_success", await run.status())
         self.assertEqual([answer["reader"] for answer in seen[0]], ["api"], "an answer with no surviving quote is gone")
         kept = seen[0][0]["quotes"]
-        self.assertEqual([item["text"] for item in kept], ["rotate(size)"])
+        self.assertEqual([item["text"] for item in kept], ["rotate(size)"], "a wrong line and another partition both go")
         self.assertTrue(kept[0]["digest"].startswith("sha256:"), "a kept quote pins what was fetched")
         self.assertEqual(product(host, plan["lead"]), '{"answer":"rotate()","rounds":1}')
 
@@ -152,11 +159,11 @@ class Shapes(unittest.IsolatedAsyncioTestCase):
         shapes.SCATTER_MAX_ROUNDS = 2
         host = FakeHost()
         plan = await Plan.create("which module rotates by size?")
-        api = next(iter(ARCHIVE))
+        api, cli = ARCHIVE
         await readers(plan, host, {"api": {"answer": None, "quotes": [quote(api, 1, "usage")]}, "cli": None})
-        for key in ("api-r2", "cli-r2"):
+        for key, cited in (("api-r2", quote(api, 1, "usage")), ("cli-r2", quote(cli, 1, "flags"))):
             host.children[f"{plan.id}/{key}"] = "finished"
-            host.results[f"{plan.id}/{key}"] = {"text": "", "json": {"answer": "yes", "quotes": [quote(api, 1, "usage")]}}
+            host.results[f"{plan.id}/{key}"] = {"text": "", "json": {"answer": "yes", "quotes": [cited]}}
         rounds = []
 
         async def lead(answers: list, number: int) -> dict:

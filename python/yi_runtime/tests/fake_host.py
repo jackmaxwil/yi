@@ -19,6 +19,7 @@ import rlm
 # The engine's step table (`table.rs`), for the ops a shape issues on its own.
 LEGAL = {
     "done": ("running",),
+    "decompose": ("running",),
     "fail": ("running",),
     "block": ("pending", "running"),
     "unblock": ("blocked",),
@@ -140,6 +141,15 @@ class FakeHost:
                 return refusal("program", "the source is not in the store")
         elif op == "append":
             plan["todos"] += [{**spec, "state": "pending", "attempt": 1} for spec in args["todos"]]
+        elif op == "decompose":
+            todo["subplan"] = f"{plan['plan']}.{todo['label']}"
+            self.plans[todo["subplan"]] = {
+                "plan": todo["subplan"],
+                "goal": todo["label"],
+                "touched": 1,
+                "state": "active",
+                "todos": [{**spec, "state": "pending", "attempt": 1} for spec in args["todos"]],
+            }
         elif op == "start":
             self.starts.append(todo["label"])
             ready = self.view(plan)["plan"]["ready"]

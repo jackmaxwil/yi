@@ -12,6 +12,11 @@ def _pruned(value: dict) -> dict:
     return {key: item for key, item in value.items() if item not in (None, [], {}, ())}
 
 
+def _inside(url: str, root: str) -> bool:
+    """True when ``url`` is ``root`` itself or an entry under it; a partition is a prefix."""
+    return url == root or url.startswith(root.rstrip("/") + "/")
+
+
 @dataclass(frozen=True)
 class Role:
     """A spawn spec plus a wall; build one with ``Writer`` or ``Reader``."""
@@ -116,14 +121,18 @@ def Reader(
     )
 
 
-async def verify_quotes(quotes: Any) -> list[dict[str, Any]]:
+async def verify_quotes(quotes: Any, within: Any = ()) -> list[dict[str, Any]]:
     """Keep the quotes whose ``text`` is on line ``line`` of ``url``, each with the digest it was read at.
 
     Each url is fetched once through ``rlm.fetch``; a quote that is malformed,
-    cites a page that cannot be fetched, or is not on its line is dropped. A
-    kept quote proves provenance, not that it supports the answer.
+    cites a page that cannot be fetched, or is not on its line is dropped. Give
+    ``within`` a reader's partition and a quote citing anything else is dropped
+    unread, since the wall that bound the reader is cooperative and the owner
+    fetches with the owner's own reach. A kept quote proves provenance, not that
+    it supports the answer.
 
-        kept = await verify_quotes([{"url": "local://docs/api.md", "line": 12, "text": "rotate(size)"}])
+        kept = await verify_quotes([{"url": "local://docs/api.md", "line": 12, "text": "rotate(size)"}],
+                                   within=["local://docs"])
     """
     pages: dict[str, str | None] = {}
     kept = []
@@ -131,6 +140,8 @@ async def verify_quotes(quotes: Any) -> list[dict[str, Any]]:
         try:
             url, line, text = quote["url"], int(quote["line"]), quote["text"].strip()
         except (AttributeError, KeyError, TypeError, ValueError):
+            continue
+        if within and not any(_inside(url, root) for root in within):
             continue
         if url not in pages:
             try:
