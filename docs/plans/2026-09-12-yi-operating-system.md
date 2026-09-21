@@ -408,7 +408,7 @@ table already accepts (`doc.rs:78-79`), and the capsule manifest format
 | D-next-9 | a child holds a lease drawn from its parent; revoke has a grace and a repossession record | new | F2b |
 | D-next-10 (D216) | a judged contract item is a walled reader of another model family answering a fixed schema, aggregated in Rust | new | F3a |
 | D-next-11 (D217) | a review pod is readers plus a code arbiter | extends D-next-10 | F3b |
-| D-next-12 | a service is a child with a stable address | extends D165 | F3c |
+| D-next-12 (D218) | a service is a child with a stable address | extends D165 | F3c |
 | D-next-13 | the procedural graph replaces hand-maintained affordance strings; frozen online, evolved offline under a held-out gate with rejection memory | amends the affordance rows (D139's ladder stays) | F4a/F4b |
 | D-next-14 | the kernel's constants are levers with floors and two gates; the sweep never reads the held-out split | extends D140 | F4c/F4d |
 
@@ -1072,7 +1072,7 @@ today moves.
 Rust (`crates/types/src/mail.rs`, new; schemas.lock `--update`):
 
 ```rust
-pub struct Envelope { pub id: MailId, pub from: String, pub from_incarnation: u32, pub to: String,
+pub struct Envelope { pub id: MailId, pub from: String, pub from_incarnation: Option<u32> /* None: no service; F3c */, pub to: String,
     pub to_incarnation: Option<u32> /* None: whoever holds the address */, pub kind: Kind,
     pub conversation: MailId, pub in_reply_to: Option<MailId>, pub seq: u64, pub sent_at: u64,
     pub deadline_ms: Option<u64>, pub body: String, pub reference: Option<Url> }
@@ -2349,7 +2349,7 @@ landing differs from sections 7.1 to 7.3:
   read that could race the turn's end. `request`, `reply`, `failure` and `cancel`
   wake, through the one admission that settles it.
 - `from_incarnation` and `to_incarnation` are not on the envelope: no name is
-  respawned before F3c, which adds them with the thing they distinguish.
+  respawned before F3c, which adds them with the thing they distinguish. (F3c added them, D218.)
 - `presented_at` is not a second custom record: the presented message is the
   transcript's own entry and carries the envelope, id included, in `details`, so
   an inbox entry with no such message is the inspectable, unpresented item.
@@ -2582,13 +2582,47 @@ it, `test_a_pod_without_a_code_arbiter_or_distinct_briefs_is_refused`.
   stage did not make. F3a's other two limits (a `plans.dir` outside the cwd, a grant
   smaller than three juror leases) are untouched by a pod, which seats no jury.
 
-### F3c · Services with stable addresses (D-next-12)
+### F3c · Services with stable addresses (D218, landed 0.278.0; extends D165, D214, D215, D216)
 
 `rlm.service(name, brief, restart=…)`: a child whose name is reserved; a
 respawn keeps the name and the inbox; `status()` shows `service: true`;
 `history://<name>` spans respawns through the kept transcript chain
 (`fetch/mod.rs:190-200`). Tests: `recursion_e2e::a_service_respawns_under_its_name_and_keeps_its_inbox`
 (T1). LOC yi-runtime +140, python +40.
+
+As landed (0.278.0, D218, #462). Measured growth is +355 Rust `src` lines (yi-runtime 349
+against 140, yi-types 6) and 22 of Python against 40. What the estimate did not price: a
+service lives in turns mail wakes, which no `run_child` watches, so a second road reads
+those endings; the lease is returned and drawn again under the roster lock; attach or
+refuse; and the `rlm.service` registration. Tests beside the named one, all
+`recursion_e2e` (T1): `a_service_out_of_restarts_or_lease_ends_failed_and_says_so`,
+`a_woken_crash_respawns_and_a_parent_close_ends_a_service_for_good`,
+`a_service_is_outside_the_worker_cap_and_under_the_depth_limit`.
+
+- A respawn reuses the record: the new session is attached to the same session store and
+  `Step::Respawn` clears the exit, so the name is never free, the inbox is the same file,
+  `history://<name>` is one chain with no change to `fetch/mod.rs` or `kept_transcript`,
+  and no terminal update is published for a run that was respawned. The respawned session
+  therefore loads its predecessor's transcript, and its brief opens with a line naming the
+  incarnation and the cause.
+- `restart` is the intensity: how many respawns are allowed inside ten minutes
+  (`RESTART_WINDOW_MS`), default 3, 0 for none. Only a provider error and a dead kernel
+  respawn; a deadline does not, because a fresh lease on expiry would undo the lease.
+- `ChildRecord.juror` became `Standing { Worker, Juror, Service }`. A service is outside
+  the worker cap and sends no notice for an idle turn; it is under the depth limit, the
+  family cap, the lease and the wall, and takes no verification seat.
+- Section 7.1's `from_incarnation: u32` landed as `Option<u32>` like `to_incarnation`, so
+  an envelope between members that are no service is byte for byte what F2a wrote. The
+  waiter carries no incarnation (section 7.3 asks for one): the respawn retires every
+  waiter on the name through `drop_respondent` before the successor can reply, which is
+  the same refusal one step earlier.
+- Deliberate stops: `delete_subagent` removes the record, `revoke` and `close` mark the
+  service stopped (`close` reaches an idle service too, which holds no run to revoke). The
+  `revoke` mark has no test of its own: a revoked first run ends `Interrupted`, which
+  never respawns, so the mark only matters for a provider error inside the grace.
+- Not built: the health `cmd` and shutdown contract of section 6.2's service row, a
+  service in a worktree (refused by name), adoption after a host restart (counts and
+  incarnations restart with the host), and an exact token bill across a lagged watch.
 
 ### F4a · The procedural graph replaces affordance strings (D-next-13)
 

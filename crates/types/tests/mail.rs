@@ -9,6 +9,15 @@ fn an_envelope_round_trips_in_the_wire_spelling_the_inbox_stores() -> TestResult
     assert_eq!(parsed.kind, Kind::Request);
     assert_eq!(parsed.in_reply_to, None);
     assert_eq!(serde_json::to_string(&parsed)?, wire);
+    // An inbox written before services carries no incarnation, and still parses as it was.
+    assert_eq!(
+        (parsed.from_incarnation, parsed.to_incarnation),
+        (None, None)
+    );
+    let addressed = wire.replace(r#""to":"tests","#, r#""to":"tests","toIncarnation":2,"#);
+    let parsed: Envelope = serde_json::from_str(&addressed)?;
+    assert_eq!(parsed.to_incarnation, Some(2));
+    assert_eq!(serde_json::to_string(&parsed)?, addressed);
     Ok(())
 }
 

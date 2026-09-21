@@ -288,6 +288,20 @@ class StatusTests(unittest.IsolatedAsyncioTestCase):
             await rlm.revoke("d", grace_s=1.5, reason="out of scope")
         self.assertEqual(sent, [("rlm.revoke", {"target": "d", "grace_ms": 1500, "reason": "out of scope"})])
 
+    async def test_service_sends_its_name_brief_and_restart_intensity(self) -> None:
+        sent = []
+
+        async def fake_host_request(kind, payload):
+            sent.append((kind, payload))
+            return {"rlm_child_id": "sub-1", "name": "index", "session_dir": "/tmp/s", "model": "faux/faux-1"}
+
+        with mock.patch.object(rlm, "host_request", fake_host_request):
+            handle = await rlm.service("index", "serve the index", restart=1, tokens=500)
+            with self.assertRaises(ValueError):
+                await rlm.service("index", "serve the index", restart=-1)
+        self.assertEqual(handle.name, "index")
+        wanted = {"name": "index", "prompt": "serve the index", "restart": 1, "kwargs": {"tokens": 500}}
+        self.assertEqual(sent, [("rlm.service", wanted)])
 
 
 class PlanOpTests(unittest.IsolatedAsyncioTestCase):

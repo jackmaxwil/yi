@@ -100,7 +100,7 @@ impl SubagentHost {
         }
     }
 
-    fn lease_now(&self) -> u64 {
+    pub(crate) fn lease_now(&self) -> u64 {
         let clock = self.grant.lock().ok().and_then(|grant| grant.clock.clone());
         clock.map_or_else(yi_session::now_ms, |clock| clock())
     }
@@ -222,6 +222,7 @@ impl SubagentHost {
             && let Some(record) = children.get_mut(&key)
         {
             record.lease = lease;
+            record.standing.stop();
             children.touch(&key);
         }
         let cancel = Draft::of(Kind::Cancel, reason);
@@ -271,7 +272,11 @@ impl SubagentHost {
         let live: Vec<(String, u64)> = self
             .children
             .lock()
-            .map(|children| {
+            .map(|mut children| {
+                // An idle service has no run to revoke; the close still ends it for good.
+                children
+                    .values_mut()
+                    .for_each(|record| record.standing.stop());
                 children
                     .values()
                     .filter(|record| record.exit.is_none() && record.lease.revoked.is_none())

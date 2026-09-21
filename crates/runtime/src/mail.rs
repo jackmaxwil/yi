@@ -129,7 +129,13 @@ impl Desk {
         MailId(format!("{from}-{}", self.minted))
     }
 
-    pub(crate) fn seal(&mut self, from: &str, to: &str, draft: &Draft) -> Envelope {
+    /// `between` is the sender's and the receiver's incarnation, read off the registry.
+    pub(crate) fn seal(
+        &mut self,
+        (from, to): (&str, &str),
+        between: (Option<u32>, Option<u32>),
+        draft: &Draft,
+    ) -> Envelope {
         let id = draft.id.clone().unwrap_or_else(|| self.mint(from));
         let seq = self
             .seqs
@@ -144,7 +150,9 @@ impl Desk {
                 .unwrap_or_else(|| id.clone()),
             id,
             from: from.to_owned(),
+            from_incarnation: between.0,
             to: to.to_owned(),
+            to_incarnation: between.1,
             kind: draft.kind,
             in_reply_to: draft.reply_to.clone(),
             seq: *seq,
@@ -211,6 +219,9 @@ pub(crate) fn inbox(store: &yi_session::SharedSession, envelope: &Envelope) -> R
 pub(crate) fn present(envelope: &Envelope) -> AgentMessage {
     let Envelope { id, from, body, .. } = envelope;
     let mut tag = format!("<agent_message from=\"{from}\"");
+    if let Some(incarnation) = envelope.from_incarnation {
+        tag.push_str(&format!(" incarnation=\"{incarnation}\""));
+    }
     if envelope.kind != Kind::Inform {
         tag.push_str(&format!(" kind=\"{}\" id=\"{id}\"", envelope.kind.as_str()));
     }

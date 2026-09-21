@@ -292,6 +292,25 @@ async def run(prompt: str, **kwargs: Any) -> RLMSpawnHandle:
     return _spawn_handle_from_payload(payload)
 
 
+async def service(name: str, brief: str, restart: int = 3, **kwargs: Any) -> RLMSpawnHandle:
+    """Start a service: a child whose ``name`` is its address for as long as this session lives.
+
+    It idles between turns and ``send`` or ``request`` wakes it. A run that crashes (a provider
+    error, a dead kernel) is respawned under the same name with its transcript and inbox kept
+    and a fresh lease, at most ``restart`` times in ten minutes; past that, or when the parent
+    has no lease left to draw, it reads ``failed`` and the notice says why. The same ``name``
+    and ``brief`` again attach to the running service; ``delete_subagent``, ``revoke`` and the
+    parent's close end it for good. ``status()`` shows ``service`` and ``incarnation``; a
+    message carries the incarnation it was addressed to. ``kwargs`` are ``run``'s, less
+    ``name`` and ``isolation``.
+    """
+    if not isinstance(restart, int) or restart < 0:
+        raise ValueError("restart is how many respawns are allowed in ten minutes: 0 or more")
+    kwargs = _resolve_context(kwargs)
+    payload = {"name": name, "prompt": brief, "restart": restart, "kwargs": kwargs}
+    return _spawn_handle_from_payload(await host_request("rlm.service", payload))
+
+
 def _model_from_payload(payload: Any) -> RLMModel:
     if not isinstance(payload, dict):
         raise RuntimeError("rlm.find_models returned an invalid model entry")
@@ -900,6 +919,9 @@ class _RLMCallable:
 
     async def run(self, prompt: str, **kwargs: Any) -> RLMSpawnHandle:
         return await run(prompt, **kwargs)
+
+    async def service(self, name: str, brief: str, restart: int = 3, **kwargs: Any) -> RLMSpawnHandle:
+        return await service(name, brief, restart, **kwargs)
 
     async def fetch(self, url: str, **options: Any) -> Any:
         return await fetch(url, **options)

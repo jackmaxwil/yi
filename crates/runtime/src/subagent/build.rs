@@ -2,7 +2,13 @@ use std::path::Path;
 
 use yi_types::message::{AgentMessage, Content};
 
-use super::{ChildActivity, SubagentHost};
+use super::{ChildActivity, ChildBuild, Standing, SubagentHost};
+use crate::mailbox::ParentLink;
+use crate::provider::resolve_model;
+use yi_types::model::{Effort, Model};
+
+/// What a build is made from, read off the spawn's kwargs: the model, the effort, the wall.
+pub(super) type Cast = (Model, Effort, crate::wall::Wall);
 
 /// Dropped, it frees the name and the slot a build reserved, whether the build landed or not.
 pub(super) struct Reservation<'a> {
@@ -26,16 +32,17 @@ impl SubagentHost {
         session_name: &str,
         session_dir: &Path,
         ask: &crate::lease::Ask,
-        juror: bool,
+        capped: bool,
     ) -> Result<(Reservation<'_>, yi_types::lease::Lease), String> {
         let mut children = self
             .children
             .lock()
             .map_err(|_| "subagent state poisoned")?;
-        // Jurors sit in the verification reserve (plan section 7.6): they neither fill the
-        // worker cap nor are refused by it, so a full worker set still gets its jury.
-        let workers = children.values().filter(|record| !record.juror).count();
-        let refusal = if !juror
+        // Jurors sit in the verification reserve (plan section 7.6) and a service is never
+        // reaped while it serves: neither fills the worker cap nor is refused by it.
+        let worker = |record: &&super::ChildRecord| matches!(record.standing, Standing::Worker);
+        let workers = children.values().filter(worker).count();
+        let refusal = if capped
             && workers.saturating_add(children.building.len()) >= self.options.max_children
         {
             Some(format!(
@@ -69,6 +76,72 @@ impl SubagentHost {
             name: session_name.to_owned(),
         };
         Ok((reservation, lease))
+    }
+
+    pub(super) fn cast(
+        &self,
+        kwargs: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<Cast, String> {
+        let thinking = super::optional_string(kwargs, "thinking")?
+            .map(|level| level.parse::<Effort>())
+            .transpose()
+            .map_err(|error| error.to_string())?;
+        let (parent_model, parent_effort) = (self.options.defaults)();
+        let model = match super::optional_string(kwargs, "model")? {
+            None => parent_model,
+            Some(selector) => {
+                let (provider, id) = selector.split_once('/').ok_or_else(|| {
+                    format!("model selector must be provider/model, got {selector}")
+                })?;
+                resolve_model(provider, id)
+                    .ok_or_else(|| format!("no model matches selector {selector}"))?
+            }
+        };
+        let wall = self.wall_for(kwargs)?;
+        Ok((model, thinking.unwrap_or(parent_effort), wall))
+    }
+
+    /// Invariant: a child that runs unrecorded leaves nothing to read when it fails, so a
+    /// transcript it cannot open refuses the build. `kept` is a respawned service's own.
+    pub(super) fn build(
+        self: &std::sync::Arc<Self>,
+        (model, thinking, wall): Cast,
+        name: &str,
+        session_dir: &Path,
+        cwd: Option<&Path>,
+        lease: &yi_types::lease::Lease,
+        kept: Option<yi_session::SharedSession>,
+    ) -> Result<crate::session::AgentSession, String> {
+        let clock = lease
+            .deadline_ms
+            .map(|ends| std::time::Duration::from_millis(ends.saturating_sub(lease.granted_at)));
+        let child = (self.options.factory)(ChildBuild {
+            model,
+            thinking: Some(thinking),
+            session_dir,
+            cwd,
+            link: ParentLink {
+                child_name: name.to_owned(),
+                host: std::sync::Arc::downgrade(self),
+            },
+            wall,
+            deadline: clock,
+            tokens: lease.tokens,
+        })?;
+        if let Some(clock) = clock {
+            child.set_deadline(clock);
+        }
+        let root = cwd.unwrap_or(self.options.cwd.as_path());
+        let store = match kept {
+            Some(store) => Ok(store),
+            None => {
+                yi_session::create_flat_session(session_dir.to_path_buf(), root.to_string_lossy())
+            }
+        };
+        store
+            .and_then(|store| child.attach_store(store))
+            .map_err(|error| error.to_string())?;
+        Ok(child)
     }
 
     /// A lagged watch missed events, so the counters are read again from the session itself
