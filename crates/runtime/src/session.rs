@@ -749,11 +749,14 @@ impl AgentSession {
         self.follow_up_message(user_message(text));
     }
 
-    /// B13 `send`: queued for the next turn, never starting one.
-    pub fn follow_up_message(&self, message: AgentMessage) {
+    /// B13 `send`: queued for the next turn, never starting one; true when a turn was running
+    /// to drain it. The status is held across the push, so the answer never races its end.
+    pub fn follow_up_message(&self, message: AgentMessage) -> bool {
+        let status = self.shared.status.lock();
         if let Ok(mut queue) = self.shared.follow_up.lock() {
             queue.push(message);
         }
+        status.is_ok_and(|status| *status == Status::Running)
     }
 
     /// B13 `followup`: true when it started an idle session's turn, false when a running

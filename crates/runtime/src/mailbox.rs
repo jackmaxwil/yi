@@ -319,14 +319,14 @@ impl SubagentHost {
                     Delivery::Queued
                 }
             }
-            Some(record) if record.session.status() == crate::session::Status::Running => {
-                (record.session.wake_idle_hook())(message);
-                Delivery::Queued
-            }
-            // A plain send never starts a turn: the next one presents it.
+            // A plain send never starts a turn: a live one drains the queue at its own
+            // boundary, and otherwise the next turn anyone starts presents it.
             Some(record) => {
-                record.session.follow_up_message(message);
-                Delivery::Inboxed
+                if record.session.follow_up_message(message) {
+                    Delivery::Queued
+                } else {
+                    Delivery::Inboxed
+                }
             }
             None => Delivery::Inboxed,
         };
