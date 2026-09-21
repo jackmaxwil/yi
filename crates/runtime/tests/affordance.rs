@@ -98,3 +98,71 @@ fn an_affordance_is_appended_to_the_last_text_block() -> TestResult {
     assert_eq!(text, "no output\nnext: try grep");
     Ok(())
 }
+
+const SPAWNED: &str = "next: await rlm.wait(120) blocks until this child reports; rlm.send('porter', 'line') steers it";
+const COROUTINE_LEAK: &str = "next: an un-awaited coroutine ran nothing; rlm.run and handle.result are async, so write h = await rlm.run(...) then await h.result()";
+const METHOD_AWAITED: &str = "next: rlm.run is a method, not a coroutine — call it: h = await rlm.run('…'), then r = await h.result()";
+const LISTING_NAME: &str =
+    "next: list_subagents() entries expose session_name; RLMSpawnHandle.name is the spawn handle";
+const CHILD_FINISHED: &str = "next: await rlm.result('porter', schema=…) validates the answer host-side; the child stays addressable for follow-ups";
+const GRID_EMPTY: &str = "next: an empty grid answer means it cannot prove the relationship, not that the code is absent; grep to close the gap";
+const COMPACTED_ON_DISK: &str = "next: the window holds a summary plus recent turns; compact.recall(\"needle\") then rlm.fetch(\"history://<id>/<entry>\") pulls what the summary cites as (#entry)";
+const COMPACTED_IN_MEMORY: &str = "next: the window holds a summary plus recent turns; compact.recall(\"needle\") pulls entry ids the summary cites as (#entry)";
+
+fn todo_lines(checklist: &str) -> Result<Vec<String>, Box<dyn Error>> {
+    Ok(yi_runtime::todo::text::next_lines(
+        &yi_runtime::todo::text::parse(checklist)?,
+    ))
+}
+
+/// The golden strings are the bytes the producers rendered before the graph
+/// existed; tool results are model-facing, so a moved byte is a changed prompt.
+#[test]
+fn every_line_rendered_today_renders_from_the_graph() -> TestResult {
+    assert_eq!(affordance::spawned("porter"), SPAWNED);
+    assert_eq!(
+        affordance::spawned("it's {name}"),
+        SPAWNED.replace("porter", "it's {name}")
+    );
+    assert_eq!(affordance::coroutine_leak(), COROUTINE_LEAK);
+    assert_eq!(affordance::method_awaited(), METHOD_AWAITED);
+    assert_eq!(affordance::listing_name(), LISTING_NAME);
+    assert_eq!(affordance::child_finished("porter"), CHILD_FINISHED);
+    assert_eq!(affordance::grid_empty().as_deref(), Some(GRID_EMPTY));
+    assert_eq!(
+        affordance::compacted(Some(Path::new("/tmp/sessions/s.jsonl"))),
+        COMPACTED_ON_DISK
+    );
+    assert_eq!(affordance::compacted(None), COMPACTED_IN_MEMORY);
+    assert_eq!(
+        affordance::call_template(
+            "grep",
+            &json!({"properties": {"pattern": {"type": "string"}}, "required": ["pattern"]}),
+            &Map::new()
+        ),
+        "next: call grep as {\"pattern\":\"<string>\"}"
+    );
+
+    assert_eq!(
+        todo_lines("- [>] t1 ship\n- [ ] t2 test\n- [ ] \"{name}\"\n- [ ] t4 late\n- [!] t5 held")?,
+        [
+            "next: done t1 evidence=`<command>` <output line> · block t1 on user · drop t1 <reason>",
+            "next: start t2 · drop t2 <reason>",
+            "next: start \"\\\"{name}\\\"\" · drop \"\\\"{name}\\\"\" <reason>",
+        ]
+    );
+    assert_eq!(
+        todo_lines("- [ ] a\n- [ ] b\n- [ ] c\n- [ ] d")?,
+        [
+            "next: start \"a\" · drop \"a\" <reason>",
+            "next: start \"b\" · drop \"b\" <reason>",
+            "next: start \"c\" · drop \"c\" <reason>",
+        ]
+    );
+    assert_eq!(
+        todo_lines("- [x] t1 shipped\n- [!] t2 held\n- [!] t3 held too")?,
+        ["next: unblock t2 · drop t2 <reason>"]
+    );
+    assert_eq!(todo_lines("- [x] t1 shipped\n- [-] t2 cut")?, [""; 0]);
+    Ok(())
+}
