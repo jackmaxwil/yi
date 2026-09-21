@@ -72,7 +72,11 @@ struct Harness {
     /// One per build, oldest first: 1 ends that child's first reply on a provider error, 2 its
     /// second; a build that finds none answers.
     faults: Arc<Mutex<std::collections::VecDeque<u8>>>,
+    /// Run once, inside the next build: the window a respawn holds no lock in.
+    during_build: BuildHook,
 }
+
+type BuildHook = Arc<Mutex<Option<Box<dyn FnOnce() + Send>>>>;
 
 struct HarnessOptions {
     /// The child's one reply ends on a provider error instead of an answer.
@@ -183,6 +187,8 @@ fn harness_with(options: HarnessOptions) -> std::io::Result<Harness> {
     let parent_source = Arc::clone(&parent);
     let faults: Arc<Mutex<std::collections::VecDeque<u8>>> = Arc::default();
     let fault_source = Arc::clone(&faults);
+    let during_build: BuildHook = Arc::default();
+    let hook_source = Arc::clone(&during_build);
     let host = Arc::new(SubagentHost::new(SubagentHostOptions {
         depth,
         max_depth,
@@ -195,6 +201,10 @@ fn harness_with(options: HarnessOptions) -> std::io::Result<Harness> {
         factory: Arc::new(move |build: yi_runtime::ChildBuild<'_>| {
             if let Ok(mut slot) = cwd_sink.lock() {
                 *slot = build.cwd.map(std::path::Path::to_path_buf);
+            }
+            let hook = hook_source.lock().ok().and_then(|mut slot| slot.take());
+            if let Some(hook) = hook {
+                hook();
             }
             let provider = Arc::new(ProviderStream::new(None, None));
             let mut script = Vec::new();
@@ -282,6 +292,7 @@ fn harness_with(options: HarnessOptions) -> std::io::Result<Harness> {
         store,
         root,
         faults,
+        during_build,
     })
 }
 
@@ -1217,6 +1228,7 @@ async fn a_service_respawns_under_its_name_and_keeps_its_inbox() -> TestResult {
         wake_parent: None,
     })?;
     harness.faults.lock().map_err(|_| "poisoned")?.push_back(1);
+    let mut updates = harness.events.subscribe();
     let brief = "serve the index".to_owned();
     let handle = harness
         .host
@@ -1302,6 +1314,72 @@ async fn a_service_respawns_under_its_name_and_keeps_its_inbox() -> TestResult {
         !told.contains("index"),
         "a respawn and an idle service are no ending: {told}"
     );
+    // A card the crash committed out of the chrome would never come back as incarnation 2.
+    while let Ok(AgentEvent::ChildUpdate { update }) = updates.try_recv() {
+        assert_ne!(
+            (update.status, update.error.is_some()),
+            (ChildStatus::Error, true),
+            "a respawned run published an ending: {update:?}"
+        );
+    }
+    Ok(())
+}
+
+/// The stop lands in the one window a respawn holds no lock in, between the draw and the
+/// record taking the new session. Dies with the control: read the mark only before the build
+/// and a revoked service comes back as incarnation 2.
+#[tokio::test]
+async fn a_service_revoked_while_its_next_run_is_built_never_comes_back() -> TestResult {
+    let harness = harness(0, 1, "serving")?;
+    harness.faults.lock().map_err(|_| "poisoned")?.push_back(1);
+    harness
+        .host
+        .service("index", "serve".to_owned(), Map::new(), 3)?;
+    let host = Arc::downgrade(&harness.host);
+    *harness.during_build.lock().map_err(|_| "poisoned")? = Some(Box::new(move || {
+        if let Some(host) = host.upgrade() {
+            let _the_dead_run_may_refuse_the_cancel = host.revoke("index", 30_000, "enough");
+        }
+    }));
+    assert!(
+        serves(&harness, "index", 1, "failed").await,
+        "{:?}",
+        service_row(&harness, "index")
+    );
+    let told = harness.notices.lock().map_err(|_| "poisoned")?.join("\n");
+    assert!(
+        told.contains("not respawned: it was stopped while its next run was being built"),
+        "{told}"
+    );
+    Ok(())
+}
+
+/// Dies with the control: bill the kept transcript whole and the crashed run's unknown usage
+/// spends the successor's reservation too, leaving the parent nothing to lend.
+#[tokio::test]
+async fn a_respawned_service_is_billed_from_its_own_first_turn() -> TestResult {
+    let harness = harness(0, 1, "serving")?;
+    harness
+        .host
+        .set_grant(yi_runtime::Wall::default(), Some(1_000));
+    harness.faults.lock().map_err(|_| "poisoned")?.push_back(1);
+    let mut asked = Map::new();
+    asked.insert("tokens".to_owned(), Value::from(400));
+    harness
+        .host
+        .service("index", "serve".to_owned(), asked, 3)?;
+    assert!(
+        serves(&harness, "index", 2, "finished").await,
+        "{:?}",
+        service_row(&harness, "index")
+    );
+    harness.host.reap("index")?;
+    // The crashed run spent its own 400 whole, on usage it could not report; the successor
+    // spends only the 120 of its own turn, so 480 of the 1,000 are still there to lend.
+    let mut big = Map::new();
+    big.insert("tokens".to_owned(), Value::from(400));
+    big.insert("name".to_owned(), Value::String("after".to_owned()));
+    harness.host.spawn("work".to_owned(), big)?;
     Ok(())
 }
 
@@ -1353,6 +1431,35 @@ async fn a_service_out_of_restarts_or_lease_ends_failed_and_says_so() -> TestRes
         told.contains("not respawned: the parent's own deadline has passed"),
         "{told}"
     );
+
+    Ok(())
+}
+
+/// A crash on a turn that reported no usage spends the whole reservation, so the parent has
+/// nothing left for the next incarnation. Dies with the control: mint the lease instead of
+/// drawing it and the service comes back on tokens nobody holds.
+#[tokio::test]
+async fn a_service_the_parent_cannot_relend_ends_failed_and_says_so() -> TestResult {
+    let harness = harness(0, 1, "serving")?;
+    harness
+        .host
+        .set_grant(yi_runtime::Wall::default(), Some(200));
+    harness.faults.lock().map_err(|_| "poisoned")?.push_back(1);
+    let mut asked = Map::new();
+    asked.insert("tokens".to_owned(), Value::from(200));
+    harness
+        .host
+        .service("index", "serve".to_owned(), asked, 3)?;
+    assert!(
+        serves(&harness, "index", 1, "failed").await,
+        "{:?}",
+        service_row(&harness, "index")
+    );
+    let told = harness.notices.lock().map_err(|_| "poisoned")?.join("\n");
+    assert!(
+        told.contains("not respawned: tokens asks for 200 and the parent has 0"),
+        "{told}"
+    );
     Ok(())
 }
 
@@ -1398,6 +1505,10 @@ async fn a_service_is_outside_the_worker_cap_and_under_the_depth_limit() -> Test
     let lane = kwargs(&[("isolation", "worktree")]);
     let walled = harness.host.service("index", "serve".to_owned(), lane, 3);
     assert!(walled.is_err_and(|refusal| refusal.contains("parent's tree")));
+    let greedy = harness
+        .host
+        .service("index", "serve".to_owned(), Map::new(), 99);
+    assert!(greedy.is_err_and(|refusal| refusal.contains("nothing is clamped")));
     harness
         .host
         .service("index", "serve".to_owned(), Map::new(), 3)?;

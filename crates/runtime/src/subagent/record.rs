@@ -80,6 +80,12 @@ impl ChildRecord {
         self.token_count
     }
 
+    /// The turns this incarnation is billed and counted for: a respawned service keeps its
+    /// predecessor's transcript, which was already charged to the lease that ended with it.
+    pub(crate) fn billable<'a>(&self, messages: &'a [AgentMessage]) -> &'a [AgentMessage] {
+        messages.get(self.billed_from..).unwrap_or_default()
+    }
+
     pub(crate) fn update(&self, child_id: &str) -> ChildUpdate {
         ChildUpdate {
             id: ChildId(child_id.to_owned()),
@@ -121,7 +127,7 @@ impl ChildRecord {
                 self.phase = Phase::Queued;
                 (self.exit, self.error, self.replied) = (None, None, false);
                 // The lease was returned on the last incarnation's count and drawn again.
-                self.token_count = 0;
+                (self.token_count, self.tool_use_count) = (0, 0);
                 self.activity = ChildActivity::Waiting;
                 true
             }

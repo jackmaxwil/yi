@@ -52,6 +52,9 @@ pub(crate) struct ChildRecord {
     pub(crate) lease: yi_types::lease::Lease,
     pub(crate) parent_close: yi_types::lease::ParentClose,
     activity: ChildActivity,
+    /// Where this incarnation's own turns start in the kept transcript: 0 for every child but
+    /// a respawned service, whose predecessor's turns were billed to the lease that ended.
+    pub(crate) billed_from: usize,
     tool_use_count: u64,
     token_count: u64,
     answer_preview: Option<String>,
@@ -671,6 +674,7 @@ impl SubagentHost {
                     lease,
                     parent_close: ask.parent_close,
                     activity: ChildActivity::Waiting,
+                    billed_from: 0,
                     tool_use_count: 0,
                     token_count: 0,
                     answer_preview: None,

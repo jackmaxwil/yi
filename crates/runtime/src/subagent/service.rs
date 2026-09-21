@@ -12,6 +12,8 @@ use super::{Step, SubagentHost};
 /// OTP's intensity: restarts are counted inside this window, and past `max` it stays failed.
 const RESTART_WINDOW_MS: u64 = 600_000;
 const DEFAULT_RESTARTS: u64 = 3;
+/// The ceiling on the intensity a caller may ask for: past this a crash loop is the bound.
+const MAX_RESTARTS: usize = 10;
 
 /// Why a record stands outside the worker cap and the owner's lifecycle notice, if it does.
 pub(crate) enum Standing {
@@ -85,6 +87,12 @@ impl SubagentHost {
                 "rlm.service needs a name of its own: it is the service's address".to_owned(),
             );
         }
+        if restart > MAX_RESTARTS {
+            let window = RESTART_WINDOW_MS / 1_000;
+            return Err(format!(
+                "restart asks for {restart} respawns and this host allows {MAX_RESTARTS} within {window} s; nothing is clamped, ask for less"
+            ));
+        }
         if super::parse_isolation(&kwargs)? == super::Isolation::Worktree {
             return Err("a service runs in the parent's tree: a respawn has no lane to settle the last incarnation's worktree into".to_owned());
         }
@@ -131,7 +139,7 @@ impl SubagentHost {
         );
         let cause = error.clone().unwrap_or_default();
         let refused = |why: String| Some((exit, Some(format!("{cause}; not respawned: {why}"))));
-        let (name, prompt, kwargs, dir, store, lease, next) = {
+        let (name, prompt, kwargs, dir, store, lease, next, settled) = {
             let Ok(mut children) = self.children.lock() else {
                 return Some((exit, error));
             };
@@ -158,9 +166,13 @@ impl SubagentHost {
             let next = service.incarnation.saturating_add(1);
             let (name, dir) = (record.session_name.clone(), record.session_dir.clone());
             let store = record.session.store();
-            // The dead incarnation's lease goes back before the next is drawn against it.
-            self.return_lease(record);
+            // The dead incarnation's lease is settled before the next is drawn against it;
+            // its journal line is written once the roster lock is back down.
+            let settled = self.settle_lease(record);
             record.lease.tokens = None;
+            // Invariant: the kept transcript was charged to the lease that ended with it, so
+            // the next incarnation is billed from where its own turns begin.
+            record.billed_from = record.session.messages().len();
             let ask = crate::lease::Ask::from_kwargs(&kwargs);
             let lease = match ask.and_then(|ask| self.draw(&children, &name, &ask)) {
                 Ok(lease) => lease,
@@ -169,8 +181,9 @@ impl SubagentHost {
             if let Some(record) = children.get_mut(key) {
                 record.lease = lease.clone();
             }
-            (name, prompt, kwargs, dir, store, lease, next)
+            (name, prompt, kwargs, dir, store, lease, next, settled)
         };
+        self.journal_settled(settled);
         let built = self
             .cast(&kwargs)
             .and_then(|cast| self.build(cast, &name, &dir, None, &lease, store));
@@ -179,16 +192,36 @@ impl SubagentHost {
             Err(why) => return refused(why),
         };
         let requested = session.abort_epoch();
-        {
-            let mut children = self.children.lock().ok()?;
+        let dead = {
+            let Ok(mut children) = self.children.lock() else {
+                Self::dispose_child_kernel(&session);
+                return None;
+            };
+            // Invariant: a stop the owner asked for while the build ran wins. The record is
+            // read again here because nothing held it between the draw and now.
+            let stopped = match children.get(key).map(|record| &record.standing) {
+                Some(Standing::Service(service)) => service.stopped,
+                Some(_) => true,
+                None => {
+                    Self::dispose_child_kernel(&session);
+                    return None;
+                }
+            };
+            if stopped {
+                Self::dispose_child_kernel(&session);
+                return refused("it was stopped while its next run was being built".to_owned());
+            }
             let record = children.get_mut(key)?;
-            record.session = Arc::clone(&session);
+            let dead = std::mem::replace(&mut record.session, Arc::clone(&session));
             if let Standing::Service(service) = &mut record.standing {
                 service.incarnation = next;
             }
             record.step(Step::Respawn);
             children.touch(key);
-        }
+            dead
+        };
+        // The crashed run's kernel has no one left to read it, and nothing else disposes it.
+        Self::dispose_child_kernel(&dead);
         // A request parked on the dead incarnation is refused by name, never answered by this one.
         if let Ok(mut desk) = self.mail.lock() {
             desk.drop_respondent(&name, "respawned");

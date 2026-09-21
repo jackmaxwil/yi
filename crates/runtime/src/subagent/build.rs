@@ -153,7 +153,7 @@ impl SubagentHost {
             // ponytail: `messages` trails a live turn, so counters only ever move up here.
             let messages = record.session.messages();
             let mut fresh = (0_u64, 0_u64);
-            for message in &messages {
+            for message in record.billable(&messages) {
                 if let AgentMessage::Assistant { usage, content, .. } = message {
                     let calls = content
                         .iter()
