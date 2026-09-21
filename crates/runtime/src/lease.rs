@@ -420,7 +420,12 @@ impl SubagentHost {
                 lease: lease.clone(),
                 at: self.lease_now(),
                 kept: kept.into_iter().collect(),
-                disposition: Disposition::Settled,
+                // Nothing settled here: the host that held the lane died with the child.
+                disposition: Disposition::Pending {
+                    reason:
+                        "the host restarted inside the grace; a worktree it held is an orphan lane"
+                            .to_owned(),
+                },
             }))?;
             (self.options.notice)(&format!(
                 "[child {} repossessed: its revocation was completed after a restart; any worktree it held is an orphan lane]",

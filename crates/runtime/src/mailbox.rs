@@ -260,11 +260,7 @@ impl SubagentHost {
             let mut moved = record.step(Step::Replied);
             if draft.kind == Kind::Failure {
                 // The child's own verdict on its work: `wait` reports it failed from here on.
-                let class = yi_types::subagent::FailClass::RedCheck;
-                moved |= record.step(Step::Exit(
-                    ChildExit::Failed { class },
-                    Some(draft.text.clone()),
-                ));
+                moved |= record.step(Step::Failed(draft.text.clone()));
             }
             if moved {
                 children.touch(&key);
@@ -644,11 +640,8 @@ impl SubagentHost {
             children.touch(&key);
             (key, record)
         };
-        // A child that failed by its own `failure` message may still hold a live turn.
-        if !matches!(record.exit, Some(ChildExit::Completed)) {
-            record.session.abort();
-        }
         if record.exit.is_none() {
+            record.session.abort();
             // A lane refusal stays the cause of a plain removal; a repossession names itself.
             let cause = match exit {
                 ChildExit::Reaped => record

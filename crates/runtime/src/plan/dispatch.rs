@@ -78,7 +78,10 @@ fn brief(at: &TodoAddr, delegation: &Delegation) -> String {
         ));
     }
     if let Some(budget) = &delegation.spec.budget {
-        lines.push(format!("Token budget (advisory): {}", budget.0));
+        lines.push(format!(
+            "Token budget (reserved, not enforced): {}",
+            budget.0
+        ));
     }
     if let Some(note) = &delegation.note {
         lines.push(note.as_str().to_owned());
@@ -111,6 +114,11 @@ fn kwargs_of(agent: &AgentId, delegation: &Delegation) -> Result<Map<String, Val
     }
     if let Some(policy) = &delegation.spec.parent_close {
         kwargs.insert("parent_close".to_owned(), serde_json::json!(policy));
+    }
+    // Plan section 7.4: a lease is drawn at every spawn road, so the spec's budget is the
+    // engine's ask against the parent's own, refused with both numbers rather than clamped.
+    if let Some(budget) = &delegation.spec.budget {
+        kwargs.insert("tokens".to_owned(), Value::from(budget.0));
     }
     // Plan section 7.6: the spec's wall rides the spawn kwargs the host already reads, so a
     // plan-dispatched reader is walled at the same cooperative seams as an `rlm.run` child.
@@ -693,6 +701,25 @@ mod tests {
         delegation.spec.wall = None;
         let bare = kwargs_of(&AgentId::new("reader-2")?, &delegation)?;
         assert!(!bare.contains_key("deny_write") && !bare.contains_key("deny_url"));
+        Ok(())
+    }
+
+    /// Dies with the budget block in `kwargs_of`: leave it out of the kwargs and the engine's
+    /// own spawn road mints tokens the parent never held, whatever `rlm.run` is refused.
+    #[test]
+    fn kwargs_draw_the_specs_budget_as_the_childs_lease() -> TestResult {
+        let mut delegation = delegated("read the docs")?.delegation.ok_or("delegated")?;
+        delegation.spec.budget = Some(yi_types::plan::doc::TokenBudget(4_000));
+        let kwargs = kwargs_of(&AgentId::new("reader-1")?, &delegation)?;
+        assert_eq!(kwargs["tokens"], serde_json::json!(4_000));
+        let ask = crate::lease::Ask::from_kwargs(&kwargs)?;
+        assert_eq!(
+            ask.tokens,
+            Some(4_000),
+            "the host reads the key it is handed"
+        );
+        delegation.spec.budget = None;
+        assert!(!kwargs_of(&AgentId::new("reader-2")?, &delegation)?.contains_key("tokens"));
         Ok(())
     }
 

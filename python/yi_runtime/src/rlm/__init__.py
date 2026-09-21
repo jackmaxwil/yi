@@ -429,11 +429,14 @@ async def status(name: str | None = None) -> list[dict[str, Any]]:
     """Every child's state as its own records show it (D165).
 
     Each entry is ``{name, state, note, tools, tokens, idle_s, worktree}`` with ``state``
-    one of ``queued`` (admitted, not yet started), ``running``, ``finished``, ``failed``,
+    one of ``queued`` (admitted, not yet started), ``running``, ``finished``, ``failed``
+    (its run ended badly, or it sent you a ``failure`` of its own while still running),
     ``needs_you`` (it ended on ``ask_user`` or blocked a todo on you: answer with
-    ``send(name, text, followup=True)``) and
+    ``send(name, text, followup=True)``),
     ``stuck`` (a repeat break, a length re-drive at rung two or more, a let-go
-    intercept, or five idle minutes; ``note`` names which). ``name`` keeps one.
+    intercept, or five idle minutes; ``note`` names which) and ``repossession_pending``
+    (``revoke`` took its lease back but the stop, settle or record failed; everything it
+    held is kept and the host retries). ``name`` keeps one.
     """
     payload = await host_request("rlm.status", {})
     members = payload.get("members")

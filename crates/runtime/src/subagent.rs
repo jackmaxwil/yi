@@ -80,6 +80,11 @@ impl Children {
             .fold(0, u64::saturating_add)
     }
 
+    /// A build whose record is listed: its reservation is the record's from here on.
+    pub(crate) fn release_build(&mut self, name: &str) {
+        self.building.retain(|(held, _)| held != name);
+    }
+
     /// A reaped record still moves the epoch, so an older cursor wakes and re-reads `states`.
     pub(crate) fn touch(&mut self, key: &str) -> u64 {
         self.epoch = self.epoch.saturating_add(1);
@@ -679,6 +684,9 @@ impl SubagentHost {
                     session: Arc::clone(&session),
                 },
             );
+            // The record now carries the lease: a build still listed would reserve it twice,
+            // and a spawn racing this one would be refused tokens nobody holds.
+            children.release_build(&session_name);
             children.touch(&child_id);
         }
         drop(reserved);

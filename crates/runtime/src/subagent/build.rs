@@ -13,7 +13,7 @@ pub(super) struct Reservation<'a> {
 impl Drop for Reservation<'_> {
     fn drop(&mut self) {
         if let Ok(mut children) = self.host.children.lock() {
-            children.building.retain(|(name, _)| *name != self.name);
+            children.release_build(&self.name);
         }
     }
 }

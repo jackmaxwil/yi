@@ -37,12 +37,13 @@ impl MemberState {
     }
 }
 
-/// Where a record with no exit stands: admitted and not yet polled, live, or held by a
-/// repossession that has not finished.
+/// Where a record with no exit stands: admitted and not yet polled, live, told by the child
+/// itself that its work failed, or held by a repossession that has not finished.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Phase {
     Queued,
     Live,
+    Failed,
     Repossessing,
     Pending,
 }
@@ -171,6 +172,9 @@ pub fn state_from_records(
             None => (MemberState::Finished, None, idle_s),
         },
         MemberState::Running if phase == Phase::Queued => (MemberState::Queued, None, idle_s),
+        MemberState::Running if phase == Phase::Failed => {
+            (MemberState::Failed, error.map(cut), idle_s)
+        }
         MemberState::Running if phase == Phase::Pending => {
             (MemberState::RepossessionPending, error.map(cut), idle_s)
         }
