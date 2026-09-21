@@ -8,8 +8,7 @@ use std::time::Duration;
 use serde_json::{Value, json};
 use yi_types::plan::canonical::Digest;
 use yi_types::plan::contract::{
-    DONE_REFUSAL_CAP, Decider, ItemVerdict, Outcome as ContractOutcome, Resolution, Verdict,
-    VerificationToken, Vote,
+    Decider, ItemVerdict, Outcome as ContractOutcome, Resolution, Verdict, VerificationToken, Vote,
 };
 use yi_types::plan::doc::{BlockedOn, Plan, PlanId, TodoLabel, TodoState, TouchCount};
 use yi_types::plan::ledger::{AttemptId, EffectId, JournalRecord, RequestId};
@@ -565,7 +564,8 @@ impl PlanEngine {
         let refused = refused_verdicts(&txn.records, label, prepared.token.attempt);
         // A jury cap reached is a question for the user at once, not after three more refusals.
         let escalated = verdict.outcome == ContractOutcome::Escalate;
-        let capped = (escalated || refused >= DONE_REFUSAL_CAP)
+        let refusal_cap = crate::levers::get().plan_done_refusal_cap;
+        let capped = (escalated || refused >= refusal_cap)
             && txn
                 .state
                 .plan(&prepared.id)?
@@ -581,7 +581,7 @@ impl PlanEngine {
                 format!("a verdict escalated to you: {}", verdict.lines())
             } else {
                 format!(
-                    "{DONE_REFUSAL_CAP} refused verdicts; the last: {}",
+                    "{refusal_cap} refused verdicts; the last: {}",
                     verdict.lines()
                 )
             };

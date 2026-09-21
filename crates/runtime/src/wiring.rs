@@ -6,9 +6,7 @@ use yi_types::model::Model;
 
 use crate::mailbox::{ParentLink, register_child_messaging};
 use crate::session::AgentSession;
-use crate::subagent::{
-    ChildBuild, ChildFactory, DEFAULT_MAX_CHILDREN, SubagentHost, SubagentHostOptions,
-};
+use crate::subagent::{ChildBuild, ChildFactory, SubagentHost, SubagentHostOptions};
 
 /// A child is a fresh session: it runs its own extensions against its own cwd
 /// and shares the universal cached prefix with its parent.
@@ -695,7 +693,7 @@ fn subagent_host(
     Arc::new(SubagentHost::new(SubagentHostOptions {
         depth: wiring.depth,
         max_depth: wiring.max_depth,
-        max_children: DEFAULT_MAX_CHILDREN,
+        max_children: crate::levers::get().family_max_children,
         parent_session_dir: wiring.rlm_dir.clone(),
         defaults: session.settings_handle(),
         factory,

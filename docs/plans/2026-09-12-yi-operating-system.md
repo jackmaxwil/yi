@@ -2708,7 +2708,7 @@ thirteen-task slice of section 10.4 is benchmark data and stays out of the split
 the owner decides how it is named there. `graph.json` is kept in the writer's one-line-per-edge
 form. Not run: any real scoring.
 
-### F4c · Levers manifest, floors, the two gates (D-next-14; extends D140)
+### F4c · Levers manifest, floors, the two gates (D220, landed 0.281.0; extends D140)
 
 `crates/runtime/src/levers.rs`, `evals/levers/{levers.json,default.json,floors.json,split.json}`,
 `evals/levers.py`, `env_vars.json` (`YI_LEVERS`, own `Ratchet:` commit).
@@ -2723,6 +2723,23 @@ form. Not run: any real scoring.
 
 LOC yi-runtime +240 (the struct, the reads at each constant), evals +400.
 Memo: `growth +240: the kernel's constants read through one Levers struct`.
+
+As landed (0.281.0, #465; src +178). The tree won over section 10.1's table: `plan.nudge_cap`,
+`todo.artifact_steer_turn` and `todo.artifact_cap` no longer exist (D182) and are not listed,
+`loop.cut_stop_at` is 6 and `lane.slots` is 255 (grow on demand). 45 levers are listed and 25
+are tunable; the other 20 carry a `why`: the two fuses, the six mail caps, the ladder's height
+(three rung texts), the jury size (a contract rule), `family.depth`, `lane.slots` and
+`advisor.cadence` (config keys already), and the constants of yi-loop, yi-tools and
+`shapes.py`, which no `Levers` read reaches; wiring one of those is its own change. `Levers` is
+a process-wide `OnceLock` read through `levers::get()`, not a `RuntimeWiring` field: the reads
+sit in pure methods (`Cycle::work`, `Rung::delay`, `Features::route`) that hold no wiring, and
+one process runs one configuration. The tree had no eval-mode flag, so eval mode is the flag
+both runners already pass and no default sets, `--deadline`. The manifest's ranges live in
+Rust too, since the loader cannot read `evals/` at run time; `levers::the_manifest_matches`
+holds the two equal. `floors.json` carries the `fixtures` class only: the first-cut classes of
+section 10.3 name benchmark tasks and wait for the owner, as the split does. The override
+file's hash rides the fingerprint's mode in `evals/run.py` (section 10.6); the harbor adapter
+does not carry `YI_LEVERS` into its container yet. Not run: any paid comparison.
 
 ### F4d · Controlled comparisons over three to five knobs (part of D-next-14)
 

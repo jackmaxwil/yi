@@ -40,8 +40,9 @@ impl Rung {
     /// Incident: `checked_shl` refuses only a shift of 64 or more, so rungs 62
     /// and 63 shifted every bit out and read as a zero-second delay.
     pub fn delay(self) -> Duration {
-        let seconds = FIRST_DELAY.as_secs() << self.0.min(SATURATED_SHIFT);
-        Duration::from_secs(seconds.min(MAX_DELAY.as_secs()))
+        let levers = crate::levers::get();
+        let seconds = levers.plan_probe_first_s << self.0.min(SATURATED_SHIFT);
+        Duration::from_secs(seconds.min(levers.plan_probe_max_s))
     }
 
     pub fn next(self) -> Self {
@@ -251,7 +252,7 @@ impl ProbeLadder {
         };
         let entry = pending.entry(slot.to_owned()).or_insert_with(|| Pending {
             rung: Rung::default(),
-            due: now.checked_add(FIRST_DELAY).unwrap_or(now),
+            due: now.checked_add(Rung::default().delay()).unwrap_or(now),
         });
         entry.due <= now
     }
@@ -273,7 +274,8 @@ impl ProbeLadder {
             && let Some(entry) = pending.get_mut(slot)
         {
             entry.rung = entry.rung.next();
-            entry.due = now.checked_add(MAX_DELAY).unwrap_or(now);
+            let max = Duration::from_secs(crate::levers::get().plan_probe_max_s);
+            entry.due = now.checked_add(max).unwrap_or(now);
         }
         self.say(format!(
             "external block {label} carries no probe, so nothing can clear it \

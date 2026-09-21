@@ -98,7 +98,7 @@ class Refiner(unittest.TestCase):
             with self.assertRaisesRegex(refine.Refused, task):
                 refine.read_proposals(proposals, dict(SPLIT, final=["a-final-task"]))
         # An id hidden by a JSON escape is still the id; an id inside a longer word is not.
-        escaped = json.dumps(dict(ADD, rationale="this is what seen-red wanted")).replace("s", "\\u0073")
+        escaped = json.dumps(dict(ADD, rationale="this is what it wanted, seen-red.")).replace("s", "\\u0073")
         proposals.write_text(escaped + "\n")
         with self.assertRaisesRegex(refine.Refused, "seen-red"):
             refine.read_proposals(proposals, SPLIT)

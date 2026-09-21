@@ -182,7 +182,11 @@ pub fn state_from_records(
             if let Some((state, note)) = recent.iter().find_map(signal_of) {
                 return (state, Some(note), idle_s);
             }
-            if now_ms.saturating_sub(newest) >= STUCK_IDLE_MS {
+            if now_ms.saturating_sub(newest)
+                >= crate::levers::get()
+                    .family_stuck_idle_s
+                    .saturating_mul(1000)
+            {
                 return (MemberState::Stuck, Some(format!("idle {idle_s}s")), idle_s);
             }
             (MemberState::Running, None, idle_s)

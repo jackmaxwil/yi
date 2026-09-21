@@ -10,7 +10,7 @@ use yi_types::todo::{
 
 use super::{DEFAULT_PHASE, Op, TodoStore, text, tool};
 use crate::goal::StoreHandle;
-use crate::plan::loop_coupling::gate::{ENUMERATED_ITEMS_MIN, eager_init, enumerated};
+use crate::plan::loop_coupling::gate::{eager_init, enumerated};
 use crate::session::{AgentSession, InterceptStopFn, PromptChoiceFn, TurnCoupling, TurnObserveFn};
 
 pub const NUDGE_CUSTOM_TYPE: &str = "todo_nudge";
@@ -58,8 +58,9 @@ impl Cycle {
     }
 
     pub fn work(&mut self, landed: u32) -> bool {
+        let levers = crate::levers::get();
         self.work = self.work.saturating_add(landed);
-        if self.work >= gate::NUDGE_WORK && self.nudges < gate::NUDGE_CAP_PER_CYCLE {
+        if self.work >= levers.todo_nudge_work && self.nudges < levers.todo_nudge_cap {
             self.nudges = self.nudges.saturating_add(1);
             self.work = 0;
             return true;
@@ -78,7 +79,8 @@ impl Cycle {
         } else {
             0
         };
-        if self.quiet_turns < gate::QUIET_TURNS || self.closed_nudged.as_deref() == Some(closed_key)
+        if self.quiet_turns < crate::levers::get().todo_quiet_turns
+            || self.closed_nudged.as_deref() == Some(closed_key)
         {
             return false;
         }
@@ -89,7 +91,7 @@ impl Cycle {
 
     pub fn first_list(&mut self, landed: u32) -> bool {
         self.work = self.work.saturating_add(landed);
-        if self.first_listed || self.work < gate::FIRST_LIST_WORK {
+        if self.first_listed || self.work < crate::levers::get().todo_first_list_work {
             return false;
         }
         self.first_listed = true;
@@ -98,7 +100,7 @@ impl Cycle {
     }
 
     pub fn intercept(&mut self, fingerprint: &str) -> Option<u8> {
-        if self.intercepts >= gate::INTERCEPT_CAP_PER_CYCLE {
+        if self.intercepts >= crate::levers::get().todo_intercept_cap {
             return None;
         }
         let unchanged = self.last_fingerprint.as_deref() == Some(fingerprint);
@@ -117,7 +119,7 @@ impl Cycle {
     }
 
     pub fn empty_stop(&mut self) -> bool {
-        if self.empties >= gate::EMPTY_STOP_CAP {
+        if self.empties >= crate::levers::get().todo_empty_stop_cap {
             return false;
         }
         self.empties = self.empties.saturating_add(1);
@@ -202,7 +204,7 @@ pub fn prelude_text(list: &TodoList) -> String {
 pub fn first_list_text() -> String {
     format!(
         "{} changes have landed with no todo list. `init` the list naming what remains, batched with your next call.",
-        gate::FIRST_LIST_WORK
+        crate::levers::get().todo_first_list_work
     )
 }
 
@@ -218,7 +220,7 @@ pub fn seed(todos: &TodoStore, prompt: &str) -> bool {
             items.push(item);
         }
     }
-    if items.len() < ENUMERATED_ITEMS_MIN {
+    if items.len() < crate::levers::get().plan_enumerated_min {
         return false;
     }
     let Ok(phase) = PhaseName::new(DEFAULT_PHASE) else {

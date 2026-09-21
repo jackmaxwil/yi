@@ -333,7 +333,7 @@ def run_live(args):
     if args.task:
         specs = [spec for spec in specs if spec.name in set(args.task)]
     suite = f"live@{_capture(['git', '-C', str(ROOT), 'rev-parse', '--short', 'HEAD'])}"
-    mode = "live" + yi_usage.routing_label(os.environ)
+    mode = "live" + yi_usage.routing_label(os.environ) + yi_usage.levers_label(os.environ)
     fingerprint = yi_usage.config_fingerprint(_capture([args.binary, "--version"]), args.model, mode, suite)
     rows, spent, budget_hit = [], 0.0, False
     for task_dir in specs:
@@ -434,7 +434,7 @@ def main(argv=None):
         return report(errors, 0)
 
     suite = f"fixtures@{_capture(['git', '-C', str(ROOT), 'rev-parse', '--short', 'HEAD'])}"
-    mode = (f"yolo+{args.variant}" if args.variant else "yolo") + yi_usage.routing_label(os.environ)
+    mode = (f"yolo+{args.variant}" if args.variant else "yolo") + yi_usage.routing_label(os.environ) + yi_usage.levers_label(os.environ)
     fingerprint = yi_usage.config_fingerprint(
         _capture([args.binary, "--version"]), args.model, mode, suite
     )

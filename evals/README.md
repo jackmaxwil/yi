@@ -13,6 +13,7 @@ run.py                     task runner over `yi ask --json`, scored by each task
 record.py                  session JSONL -> behavior cassette (J3), redacted at record time
 graph/refine.py            offline refiner for the procedural graph (D219): proposals in, a held-out gate, rejection memory
 levers/split.json          the development, validation and final task groups; a proposal may name only development tasks
+levers.py                  the levers manifest, floors and the two gates (D220): `--selfcheck` holds levers/{levers,default,floors}.json together
 fixtures/                  a recorded faux transcript, a v4 session file, and the runner's tasks
 ```
 

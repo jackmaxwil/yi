@@ -270,7 +270,7 @@ impl PlanService {
             plans_dir: default_plans_dir(),
             deliver,
             stale: Mutex::new(StaleTracker::default()),
-            stale_turns: DEFAULT_STALE_TURNS,
+            stale_turns: crate::levers::get().plan_stale_turns,
             on_change: Mutex::new(None),
             engine: std::sync::OnceLock::new(),
         }
