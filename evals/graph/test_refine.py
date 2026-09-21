@@ -70,6 +70,19 @@ class Refiner(unittest.TestCase):
         self.assertEqual((verdict["verdict"], verdict["reason"]), ("rejected", "tokens_per_solved_rose"))
         self.assertGreater(verdict["scores"]["guidanceBytes"], 0)
 
+        # Nothing solved on either side prices no token, so added bytes have paid for nothing.
+        def solves_nothing(_graph, tasks):
+            return [{"task": task, "reward": 0, "input": 1000, "cacheRead": 0, "output": 0}
+                    for task in tasks]
+
+        none = dict(CONFIG, protocol="synthetic-none")
+        _, (verdict,) = self.refine([ADD], solves_nothing, none)
+        self.assertEqual((verdict["verdict"], verdict["reason"]), ("rejected", "guidance_bytes_unpaid"))
+        self.assertIsNone(verdict["scores"]["heldOut"]["tokensPerSolved"])
+        # The same zero-zero tie without the bytes is a tie, and a tie is accepted.
+        _, (verdict,) = self.refine([DROP], solves_nothing, none)
+        self.assertEqual((verdict["verdict"], verdict["scores"]["heldOut"]["passed"]), ("promoted", 0))
+
         # The development tasks filter first, and a candidate that fails them never sees the held-out ones.
         run = Runner(flaw=has(ADD), task="edit-file")
         _, (verdict,) = self.refine([ADD], run, dict(CONFIG, protocol="synthetic-two"))
@@ -84,6 +97,15 @@ class Refiner(unittest.TestCase):
             proposals.write_text(json.dumps(REWORD) + "\n" + json.dumps(leaked) + "\n")
             with self.assertRaisesRegex(refine.Refused, task):
                 refine.read_proposals(proposals, dict(SPLIT, final=["a-final-task"]))
+        # An id hidden by a JSON escape is still the id; an id inside a longer word is not.
+        escaped = json.dumps(dict(ADD, rationale="this is what seen-red wanted")).replace("s", "\\u0073")
+        proposals.write_text(escaped + "\n")
+        with self.assertRaisesRegex(refine.Refused, "seen-red"):
+            refine.read_proposals(proposals, SPLIT)
+        innocent = dict(ADD, rationale="an unseen-redness in the development rows, or a search-looper")
+        proposals.write_text(json.dumps(innocent) + "\n")
+        self.assertEqual(refine.read_proposals(proposals, SPLIT), [innocent])
+
         named = dict(ADD, rationale=f"seen in {SPLIT['development'][0]}")
         proposals.write_text(json.dumps(named) + "\n")
         self.assertEqual(refine.read_proposals(proposals, SPLIT), [named], "a development task may inform a proposal")
