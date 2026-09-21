@@ -138,18 +138,28 @@ fn with_plan(options: &Options, id: Option<&str>, run: impl FnOnce(&Plan) -> i32
             return 1;
         }
     };
+    // Invariant: a root this pass could not read is named rather than counted as absent, so
+    // a refused plan says why instead of reading as an empty directory.
+    let mut refused = None;
     let chosen = match id {
         Some(name) => PlanId::new(name).ok(),
-        None => store.roots().ok().and_then(|roots| {
-            roots.into_iter().find(|id| {
-                store
-                    .read(id)
-                    .is_ok_and(|plan| plan.state == PlanState::Active)
-            })
-        }),
+        None => store
+            .roots()
+            .unwrap_or_default()
+            .into_iter()
+            .find(|id| match store.read(id) {
+                Ok(plan) => plan.state == PlanState::Active,
+                Err(error) => {
+                    refused.get_or_insert(error);
+                    false
+                }
+            }),
     };
     let Some(chosen) = chosen else {
-        eprintln!("error: no plan is open under {}", dir(options).display());
+        match refused {
+            Some(error) => eprintln!("error: {error}"),
+            None => eprintln!("error: no plan is open under {}", dir(options).display()),
+        }
         return 1;
     };
     match store.read(&chosen) {
