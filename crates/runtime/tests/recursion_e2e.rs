@@ -2687,6 +2687,15 @@ async fn revoke_delivers_cancel_then_repossesses_after_grace_with_the_record_fir
     assert!(family.host.expire().await.is_empty());
     assert_eq!(family.state_of("held").as_deref(), Some("running"));
 
+    // Dies with `ChildRecord::running`: a child that files its own exit by declaring failure
+    // reads `failed` and its turn keeps writing, so `exit` alone buys it out of its grace.
+    let mut own = Map::new();
+    own.insert("target".to_owned(), json!("parent"));
+    own.insert("message".to_owned(), json!("I gave up"));
+    own.insert("kind".to_owned(), json!("failure"));
+    family.host.send("held", &own)?;
+    assert_eq!(family.state_of("held").as_deref(), Some("failed"));
+
     // The grace is over, and the record cannot be written: nothing is released or published.
     ticks.store(1_030_000, Ordering::SeqCst);
     family.unplugged.store(true, Ordering::SeqCst);
@@ -2745,6 +2754,14 @@ async fn revoke_delivers_cancel_then_repossesses_after_grace_with_the_record_fir
 async fn restart_during_grace_completes_the_repossession() -> TestResult {
     use yi_types::lease::LeaseRecord;
     let (root, family, _ticks) = leased("yi-lease-restart", "sleep 30", None).await?;
+    // One lease finished before the restart, so the resume must read the journal oldest first:
+    // newest first and its `revoked` line outlives the `repossessed` that answered it.
+    family
+        .host
+        .spawn("hold".to_owned(), kwargs(&[("name", "earlier")]))?;
+    executing(&family).await?;
+    family.host.revoke("earlier", 0, "scope changed")?;
+    assert_eq!(family.host.expire().await, ["earlier"]);
     family
         .host
         .spawn("hold".to_owned(), kwargs(&[("name", "held")]))?;
@@ -2760,9 +2777,23 @@ async fn restart_during_grace_completes_the_repossession() -> TestResult {
         "nothing live is left to stop"
     );
     let journal = next.journal();
-    assert!(
-        matches!(&journal[..], [LeaseRecord::Revoked(_), LeaseRecord::Repossessed(done)] if done.lease.holder == "held"),
-        "the first expiry after a restart completes the record: {journal:?}"
+    let holders: Vec<(&str, &str)> = journal
+        .iter()
+        .map(|record| match record {
+            LeaseRecord::Revoked(lease) => ("revoked", lease.holder.as_str()),
+            LeaseRecord::Repossessed(done) => ("repossessed", done.lease.holder.as_str()),
+            LeaseRecord::Returned(back) => ("returned", back.lease.holder.as_str()),
+        })
+        .collect();
+    assert_eq!(
+        holders,
+        [
+            ("revoked", "earlier"),
+            ("repossessed", "earlier"),
+            ("revoked", "held"),
+            ("repossessed", "held"),
+        ],
+        "the first expiry after a restart completes only the open record"
     );
     let told = next.notices.lock().map_err(|_| "poisoned")?.clone();
     assert!(

@@ -26,10 +26,12 @@
 //! | `done_naming_an_output_the_integration_never_saw_is_stale` | T1 | `Rig::fixture_repo`, `Bench::done_as`, the bench's `Serve` | `done` naming another output than the candidate submitted is refused stale with a `verification_stale` record, charges no refusal, and leaves the attempt at its verified integration; `done` naming nothing accepts the submitted output. | Section 6.3 step 5 at the accept phase: the token recomputed under the lease and compared whole. Skip it and a product the checks never saw is recorded `VerifiedDone`. |
 //! | `full_worker_capacity_does_not_deadlock_verification` | T1 | `Rig::fixture_repo`, `PlanEngine::capacity` | With the engine's own worker share held to its cap, a worktree todo still submits, verifies and is accepted, and the run ends with no verification permit and no slot held. | `Purpose::Verification` being its own counter (capacity.rs). Charge the checks against the worker share and a parent whose workers hold every worker lane cannot verify the candidate any of them submits. |
 //!
-//! `a_repossessed_worktree_keeps_its_work_on_its_branch` is F2b and is not written here.
-//! Its record shape is already pinned: `fixtures/plans/journal/acceptance.jsonl` carries a
-//! `repossession_pending` disposition with `slot_released` false, so F2b adds the path and
-//! not the vocabulary.
+//! `a_repossessed_worktree_keeps_its_work_on_its_branch` landed with F2b (D215) at the end of
+//! this file, against the lease journal on the parent's transcript. The plan journal's own
+//! `Disposition::RepossessionPending` is still unwritten: a repossessed worktree todo reaches
+//! the plan as a child the host cannot vouch for, blocks on the user, and records its
+//! disposition through `fail` or `drop` as any other non-accept exit does. Writing it from
+//! the repossession needs a road from the host into the engine's journal, which F3a owns.
 
 #[path = "../../types/tests/support/scratch.rs"]
 mod scratch;

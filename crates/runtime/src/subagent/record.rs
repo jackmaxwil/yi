@@ -48,10 +48,19 @@ pub(crate) enum Step<'a> {
     Started,
     Replied,
     Held(String),
+    /// The child's own verdict on its work, which its run's ending then carries.
+    Failed(String),
     /// A repossession owns the ending from here: the run's own exit is mute.
     Repossess,
     Pending(String),
     Exit(ChildExit, Option<String>),
+}
+
+/// A child's own `failure` is the only producer of this class so far (D215).
+fn red_check() -> ChildExit {
+    ChildExit::Failed {
+        class: yi_types::subagent::FailClass::RedCheck,
+    }
 }
 
 pub(super) fn preview(text: &str) -> String {
@@ -101,6 +110,8 @@ impl ChildRecord {
             Step::Pending(reason) => {
                 self.phase = Phase::Pending;
                 self.exit = None;
+                // Its run was stopped: a card left mid-tool would show work nothing is doing.
+                self.activity = ChildActivity::Waiting;
                 self.error = Some(reason);
                 true
             }
@@ -109,17 +120,29 @@ impl ChildRecord {
                 self.error = Some(reason);
                 true
             }
+            // Invariant: a verdict is not an ending, so a live run keeps its absent exit: one
+            // run publishes one ending, and no child declares itself out of its own grace.
+            Step::Failed(text) => {
+                self.error = Some(text);
+                match self.exit {
+                    None => self.phase = Phase::Failed,
+                    Some(_) => self.exit = Some(red_check()),
+                }
+                true
+            }
             Step::Exit(exit, _)
                 if exit != ChildExit::Repossessed
                     && matches!(self.phase, Phase::Repossessing | Phase::Pending) =>
             {
                 false
             }
-            // A child that sent its own `failure` stays failed when its turn then ends.
-            Step::Exit(ChildExit::Completed, _)
-                if matches!(self.exit, Some(ChildExit::Failed { .. })) =>
-            {
-                false
+            // A child that sent its own `failure` ends failed, whatever its last turn looked
+            // like; its own words stay the cause.
+            Step::Exit(ChildExit::Completed, _) if self.phase == Phase::Failed => {
+                self.phase = Phase::Live;
+                self.exit = Some(red_check());
+                self.activity = ChildActivity::Waiting;
+                true
             }
             Step::Exit(exit, error) => {
                 self.phase = Phase::Live;
