@@ -67,27 +67,27 @@ fn facts_of(tool: &str, command: &str, output: &yi_tools::ToolOutput) -> Vec<Str
         .details
         .get("errorKind")
         .and_then(Value::as_str);
-    let mut holds = vec![match (output.is_error, kind) {
-        (true, Some(kind)) => format!("result_error({kind})"),
-        (true, None) => "result_error(tool_error)".to_owned(),
-        (false, _) => "result_ok".to_owned(),
+    let kind = kind.unwrap_or(yi_types::event::ToolErrorKind::ToolError.as_str());
+    let mut holds = vec![match output.is_error {
+        true => format!("{}({kind})", yi_types::graph::RESULT_ERROR),
+        false => yi_types::graph::RESULT_OK.to_owned(),
     }];
     if tool == "bash"
         && command.trim_start().starts_with("grid ")
         && (body.is_empty() || body.lines().count() <= 1 && body.contains("exit code"))
     {
-        holds.push("grid_answer_empty".to_owned());
+        holds.push(yi_types::graph::GRID_ANSWER_EMPTY.to_owned());
     }
     // ponytail: CPython 3.11-3.13 wording; add a second needle if a venv rewords it.
     let needle = if text.contains("<coroutine object ") {
-        Some("coroutine_unawaited")
+        Some(yi_types::graph::COROUTINE_UNAWAITED)
     } else if text.contains("can't be used in 'await' expression") {
-        Some("method_awaited")
+        Some(yi_types::graph::METHOD_AWAITED)
     } else if text.contains("AttributeError")
         && text.contains("RLMSubagent")
         && text.contains("'name'")
     {
-        Some("listing_name_missed")
+        Some(yi_types::graph::LISTING_NAME_MISSED)
     } else {
         None
     };

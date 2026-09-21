@@ -815,7 +815,11 @@ impl SubagentHost {
                 };
                 format!(
                     "[subagent {session_name} ({child_id}) {verb}{silent}]\nLast answer: {answer}\n{}",
-                    crate::affordance::next("rlm.run", &["child_state(finished)"], session_name)
+                    crate::affordance::next(
+                        "rlm.run",
+                        &[yi_types::graph::CHILD_FINISHED],
+                        session_name
+                    )
                 )
             }
             (ChildExit::Failed { .. }, _) => format!(
