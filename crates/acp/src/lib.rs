@@ -689,7 +689,7 @@ impl AcpState {
                     .find(|child| child.update.id == child_id)
                     .ok_or((INVALID_PARAMS, format!("unknown child {}", child_id.0)))?;
                 if method == "_yi/child_abort" {
-                    child.session.abort();
+                    let _stopped = handle.host.interrupt(&child_id.0);
                     return Ok(json!({}));
                 }
                 let store = child

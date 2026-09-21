@@ -26,7 +26,7 @@ impl Deadline {
 
     /// No turn starts in the last `STOP_MARGIN`; a short budget (a 120 s fixture) keeps
     /// three quarters of itself instead of one turn.
-    pub(super) fn winding_down(self) -> bool {
+    pub(crate) fn winding_down(self) -> bool {
         self.passed(STOP_MARGIN.min(self.total / 4))
     }
 }

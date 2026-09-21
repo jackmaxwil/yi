@@ -92,6 +92,19 @@ class Plans(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((run.outcome, todo._doc["state"]), ("failed", "failed"))
         self.assertIn("done refused", todo._doc["cause"])
 
+    async def test_a_queued_child_is_waited_on(self) -> None:
+        """Dies with the control: read `queued` as unknown and an admitted child blocks its todo on you."""
+        host = FakeHost()
+        plan = await Plan.create("ship it")
+        todo = await plan.todo(key="tests", delegate=Writer(), accept=contract(cmd("true", critical=True)))
+        host.children[f"{plan.id}/tests"] = "queued"
+        run = await plan.run(budget=30, detach=True)
+        await asyncio.sleep(0.1)
+        self.assertEqual((await run.status())["states"], {"tests": "running"}, "queued is not a decision")
+        host.children[f"{plan.id}/tests"] = "finished"
+        await run
+        self.assertEqual((run.outcome, todo._doc["state"]), ("verified_success", "done"))
+
     async def test_a_verdict_that_judges_no_product_leaves_the_attempt_alone(self) -> None:
         """Dies with the control: fail on every refusal and an abstained todo is failed."""
         for outcome, child, state in (("abstain", "finished", "running"), (None, "needs_you", "blocked")):

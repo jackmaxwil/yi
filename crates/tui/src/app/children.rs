@@ -1,7 +1,6 @@
-use std::sync::Arc;
 use std::time::Instant;
 
-use yi_runtime::{AgentSession, ChildStatus, ChildUpdate};
+use yi_runtime::{ChildFeed, ChildStatus, ChildUpdate};
 use yi_types::message::{AgentMessage, Content};
 
 use super::{App, TaskState};
@@ -14,8 +13,8 @@ const GONE: &str = "gone";
 
 /// The last tool a child called, read from its own transcript: a client that subscribed after
 /// the event still names it.
-fn last_tool_of(session: &AgentSession) -> Option<String> {
-    crate::port::branch_of(session)
+fn last_tool_of(session: &ChildFeed) -> Option<String> {
+    crate::port::branch_in(session.store())
         .iter()
         .rev()
         .find_map(|entry| match entry {
@@ -45,7 +44,7 @@ impl App {
     /// that the roster no longer lists ends as `gone`, which heals every lost update.
     pub fn sync_children(&mut self, children: &[yi_runtime::ChildView]) {
         for child in children {
-            self.adopt(&child.update, Some(Arc::clone(&child.session)));
+            self.adopt(&child.update, Some(child.session.clone()));
             let Some(state) = self.tasks.get_mut(child.update.id.as_str()) else {
                 continue;
             };
@@ -76,6 +75,7 @@ impl App {
                 token_count: state.cell.tokens,
                 answer_preview: None,
                 error: Some(GONE.to_owned()),
+                exit: None,
             })
             .collect();
         for update in &gone {
@@ -84,7 +84,7 @@ impl App {
     }
 
     /// A child seen for the first time gets its task cell; every sighting updates it.
-    pub fn adopt(&mut self, update: &ChildUpdate, session: Option<Arc<AgentSession>>) {
+    pub fn adopt(&mut self, update: &ChildUpdate, session: Option<ChildFeed>) {
         let id = update.id.as_str().to_owned();
         if !self.tasks.contains_key(&id) {
             self.task_order.push(id.clone());

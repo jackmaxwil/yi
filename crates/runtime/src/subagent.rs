@@ -4,9 +4,10 @@ use std::sync::{Arc, Mutex};
 
 use serde_json::{Map, Value, json};
 use yi_types::event::AgentEvent;
-use yi_types::message::{AgentMessage, Content, StopReason, Usage};
+use yi_types::message::{AgentMessage, StopReason, Usage};
 use yi_types::model::{Effort, Model};
-pub use yi_types::subagent::{ChildActivity, ChildId, ChildStatus, ChildUpdate};
+use yi_types::subagent::FailClass;
+pub use yi_types::subagent::{ChildActivity, ChildExit, ChildId, ChildStatus, ChildUpdate};
 
 use crate::mail::Draft;
 use crate::mailbox::{ParentLink, timeout_of};
@@ -14,6 +15,10 @@ use crate::provider::{available_models, resolve_model};
 use crate::session::AgentSession;
 
 mod build;
+mod record;
+pub use record::ChildFeed;
+pub(crate) use record::Step;
+use record::preview;
 
 pub const DEFAULT_MAX_DEPTH: u8 = 1;
 // A completed child holds its slot until closed: the cap forces the parent to
@@ -37,7 +42,12 @@ pub(crate) struct ChildRecord {
     /// Dispatched by the plan engine: its worktree goes through `submit` or a journaled
     /// disposition, never the kernel's merge or discard.
     pub(crate) managed: bool,
-    pub(crate) status: ChildStatus,
+    /// `None` while the run is live; every status, state and notice is read from it.
+    pub(crate) exit: Option<ChildExit>,
+    /// Admitted and not yet polled: cleared by the run's first step.
+    pub(crate) queued: bool,
+    /// Set under the lock before a repossession stops the run, so the run's own exit is mute.
+    pub(crate) repossessing: bool,
     activity: ChildActivity,
     tool_use_count: u64,
     token_count: u64,
@@ -86,26 +96,11 @@ impl std::ops::DerefMut for Children {
     }
 }
 
-impl ChildRecord {
-    pub(crate) fn update(&self, child_id: &str) -> ChildUpdate {
-        ChildUpdate {
-            id: ChildId(child_id.to_owned()),
-            name: self.session_name.clone(),
-            status: self.status,
-            activity: self.activity,
-            tool_use_count: self.tool_use_count,
-            token_count: self.token_count,
-            answer_preview: self.answer_preview.clone(),
-            error: self.error.clone(),
-        }
-    }
-}
-
-/// The session handle is event-stream and store access, not control.
+/// The feed is event-stream and store access; control goes through the host.
 #[derive(Clone)]
 pub struct ChildView {
     pub update: ChildUpdate,
-    pub session: Arc<AgentSession>,
+    pub session: ChildFeed,
 }
 
 pub struct ChildBuild<'a> {
@@ -379,7 +374,7 @@ fn child_entry(child_id: &str, record: &ChildRecord) -> Value {
         "session_id": Value::Null,
         "session_name": record.session_name,
         "session_dir": record.session_dir.to_string_lossy(),
-        "status": record.status.as_str(),
+        "status": crate::family::read_exit(record.exit).status.as_str(),
     })
 }
 
@@ -400,54 +395,38 @@ pub(crate) fn last_assistant_text(messages: &[AgentMessage]) -> Option<String> {
     })
 }
 
-fn preview(text: &str) -> String {
-    let compact = text.split_whitespace().collect::<Vec<_>>().join(" ");
-    if compact.chars().count() > 240 {
-        let capped: String = compact.chars().take(240).collect();
-        format!("{capped}…")
-    } else {
-        compact
-    }
-}
-
-/// `false` means nothing a client can see moved, so nothing is published.
-fn fold_event(record: &mut ChildRecord, event: &AgentEvent) -> bool {
-    match event {
-        AgentEvent::ToolExecutionStart { .. } => {
-            record.tool_use_count = record.tool_use_count.saturating_add(1);
-            record.activity = ChildActivity::Executing;
-            true
-        }
-        AgentEvent::ToolExecutionEnd { .. } => {
-            record.activity = ChildActivity::Writing;
-            true
-        }
-        AgentEvent::MessageStart {
-            message: AgentMessage::Assistant { .. },
-        } => {
-            record.activity = ChildActivity::Writing;
-            true
-        }
-        AgentEvent::MessageEnd {
-            message: AgentMessage::Assistant { usage, content, .. },
-        } => {
-            let tokens = u64::try_from(usage.total_tokens).unwrap_or(0);
-            record.token_count = record.token_count.saturating_add(tokens);
-            record.activity = ChildActivity::Waiting;
-            let text: String = content
-                .iter()
-                .filter_map(|block| match block {
-                    Content::Text { text, .. } => Some(text.as_str()),
-                    _ => None,
-                })
-                .collect::<Vec<_>>()
-                .join("\n");
-            if !text.is_empty() {
-                record.answer_preview = Some(preview(&text));
-            }
-            true
-        }
-        _ => false,
+/// How a settled run ended, read off its last assistant message; a run the deadline stopped
+/// mid-task ends on a tool call nobody ran.
+fn exit_of(session: &AgentSession) -> (ChildExit, Option<String>) {
+    let messages = session.messages();
+    let last = messages.iter().rev().find_map(|message| match message {
+        AgentMessage::Assistant {
+            stop_reason,
+            error_message,
+            ..
+        } => Some((stop_reason, error_message)),
+        _ => None,
+    });
+    let out_of_clock = session.deadline().is_some_and(|clock| clock.winding_down());
+    match last {
+        Some((StopReason::Error, message)) => (
+            ChildExit::Failed {
+                class: FailClass::Provider,
+            },
+            Some(
+                message
+                    .clone()
+                    .unwrap_or_else(|| "child run ended with an error".to_owned()),
+            ),
+        ),
+        Some((StopReason::Aborted, _)) => (ChildExit::Interrupted, Some(INTERRUPTED.to_owned())),
+        Some((StopReason::ToolUse, _)) if out_of_clock => (
+            ChildExit::Failed {
+                class: FailClass::Deadline,
+            },
+            Some("the deadline ended the run before its task did".to_owned()),
+        ),
+        _ => (ChildExit::Completed, None),
     }
 }
 
@@ -487,7 +466,7 @@ impl SubagentHost {
                     .iter()
                     .map(|(id, record)| ChildView {
                         update: record.update(id),
-                        session: Arc::clone(&record.session),
+                        session: ChildFeed::of(Arc::clone(&record.session)),
                     })
                     .collect();
                 view.sort_by(|left, right| left.update.id.cmp(&right.update.id));
@@ -521,7 +500,7 @@ impl SubagentHost {
                             .and_then(|mut children| {
                                 children
                                     .get_mut(&child_id)
-                                    .map(|record| fold_event(record, &event))
+                                    .map(|record| record.step(Step::Event(&event)))
                             })
                             .unwrap_or(false);
                         if moved {
@@ -653,7 +632,9 @@ impl SubagentHost {
                     lane_permit,
                     disposition: None,
                     managed: false,
-                    status: ChildStatus::Running,
+                    exit: None,
+                    queued: true,
+                    repossessing: false,
                     activity: ChildActivity::Waiting,
                     tool_use_count: 0,
                     token_count: 0,
@@ -718,58 +699,37 @@ impl SubagentHost {
             Some(block) => format!("[task from parent]\n\n{block}\n\n{prompt}"),
             None => format!("[task from parent]\n\n{prompt}"),
         };
-        let outcome =
-            session.prompt_requested(crate::session::user_message(&content), Some(requested));
-        let mut error = outcome.err().map(|error| error.to_string());
-        if error.is_none() {
-            session.wait_idle().await;
-            // An aborted run is not a finished one: its cause reads `interrupted`.
-            let messages = session.messages();
-            let last = messages
-                .iter()
-                .rev()
-                .find(|message| matches!(message, AgentMessage::Assistant { .. }));
-            error = match last {
-                Some(AgentMessage::Assistant {
-                    stop_reason: StopReason::Error,
-                    error_message,
-                    ..
-                }) => Some(
-                    error_message
-                        .clone()
-                        .unwrap_or_else(|| "child run ended with an error".to_owned()),
-                ),
-                Some(AgentMessage::Assistant {
-                    stop_reason: StopReason::Aborted,
-                    ..
-                }) => Some(INTERRUPTED.to_owned()),
-                _ => None,
-            };
-        }
-
-        let status = if error.is_some() {
-            ChildStatus::Error
-        } else {
-            ChildStatus::Completed
-        };
-        // A retired child has no record left: `retire` already published its terminal update,
-        // so a second one, a notice or a bill would only echo a closed slot.
-        let mut retired = true;
-        let mut replied = false;
         if let Ok(mut children) = self.children.lock()
             && let Some(record) = children.get_mut(&child_id)
+            && record.step(Step::Started)
         {
-            record.status = status;
-            record.activity = ChildActivity::Waiting;
-            record.error = error.clone();
-            replied = record.replied;
-            retired = false;
             children.touch(&child_id);
         }
-        if retired {
-            return;
+        let outcome =
+            session.prompt_requested(crate::session::user_message(&content), Some(requested));
+        let mut ended = outcome.err().map(|error| {
+            let class = FailClass::RefusedSpawn;
+            (ChildExit::Failed { class }, Some(error.to_string()))
+        });
+        if ended.is_none() {
+            session.wait_idle().await;
+            ended = Some(exit_of(&session));
         }
-        if error.is_none() {
+        let (exit, error) = ended.unwrap_or((ChildExit::Completed, None));
+        // A retired child has no record left: `retire` already published its terminal update,
+        // so a second one, a notice or a bill would only echo a closed slot.
+        let mut replied = None;
+        if let Ok(mut children) = self.children.lock()
+            && let Some(record) = children.get_mut(&child_id)
+            && record.step(Step::Exit(exit, error.clone()))
+        {
+            replied = Some(record.replied);
+            children.touch(&child_id);
+        }
+        let Some(replied) = replied else {
+            return;
+        };
+        if exit == ChildExit::Completed {
             for message in session.messages() {
                 if let AgentMessage::Assistant {
                     stop_reason, usage, ..
@@ -785,15 +745,12 @@ impl SubagentHost {
         // something that can read as user instructions from the child.
         // a child that ended on `ask_user` is asking its parent, not finishing (D165).
         let question = crate::family::pending_question(&session.messages());
-        let notice = match (&error, question) {
-            (Some(error), _) if error == INTERRUPTED => {
-                format!("[subagent {session_name} ({child_id}) interrupted]")
-            }
-            (Some(error), _) => format!("[subagent {session_name} ({child_id}) failed]\n{error}"),
-            (None, Some(question)) => format!(
+        let verb = crate::family::read_exit(Some(exit)).verb;
+        let notice = match (exit, question) {
+            (ChildExit::Completed, Some(question)) => format!(
                 "[subagent {session_name} ({child_id}) asks: {question}]\nanswer with rlm.send(\"{session_name}\", \"…\", followup=True)"
             ),
-            (None, None) => {
+            (ChildExit::Completed, None) => {
                 let answer = last_assistant_text(&session.messages())
                     .map(|text| preview(&text))
                     .unwrap_or_else(|| "(no final answer text)".to_owned());
@@ -803,10 +760,15 @@ impl SubagentHost {
                     "; it sent you no message"
                 };
                 format!(
-                    "[subagent {session_name} ({child_id}) finished{silent}]\nLast answer: {answer}\n{}",
+                    "[subagent {session_name} ({child_id}) {verb}{silent}]\nLast answer: {answer}\n{}",
                     crate::affordance::child_finished(&session_name)
                 )
             }
+            (ChildExit::Failed { .. }, _) => format!(
+                "[subagent {session_name} ({child_id}) {verb}]\n{}",
+                error.unwrap_or_default()
+            ),
+            _ => format!("[subagent {session_name} ({child_id}) {verb}]"),
         };
         (self.options.notice)(&notice);
     }
@@ -826,7 +788,7 @@ impl SubagentHost {
                             .map(|store| crate::family::recent_entries(&store))
                             .unwrap_or_default();
                         let (state, note, idle_s) = crate::family::state_from_records(
-                            record.status,
+                            (record.exit, record.queued),
                             record.error.as_deref(),
                             &record.session.messages(),
                             &recent,

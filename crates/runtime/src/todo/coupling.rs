@@ -626,17 +626,25 @@ pub struct Options {
     pub inner: Option<TurnCoupling>,
 }
 
+/// The ladder's last rung: the family reads its typed signal as `stuck`.
+const LET_GO: &str = "let go";
+
 fn record_intercept(store: &StoreHandle, rung: u8, reason: &str, fingerprint: &str, total: u32) {
     let Some(session) = store() else {
         return;
     };
+    let mut extra = serde_json::Map::new();
+    if reason == LET_GO {
+        let signal = yi_types::subagent::LoopSignal::LetGo;
+        extra.insert("signal".to_owned(), serde_json::json!(signal));
+    }
     let record = TodoInterceptRecord {
         at: yi_session::now_ms(),
         rung,
         reason: reason.to_owned(),
         fingerprint: fingerprint.to_owned(),
         cycle_total: total,
-        extra: serde_json::Map::new(),
+        extra,
     };
     let Ok(payload) = serde_json::to_value(&record) else {
         return;
@@ -857,7 +865,7 @@ pub fn coupling(session: &AgentSession, todos: Arc<TodoStore>, options: Options)
             }
             let fingerprint = list.fingerprint();
             let Some(rung) = cycle.intercept(&fingerprint) else {
-                record_intercept(&store, cycle.rung, "let go", &fingerprint, cycle.intercepts);
+                record_intercept(&store, cycle.rung, LET_GO, &fingerprint, cycle.intercepts);
                 return None;
             };
             record_intercept(&store, rung, "open", &fingerprint, cycle.intercepts);

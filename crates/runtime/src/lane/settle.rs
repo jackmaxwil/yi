@@ -9,7 +9,7 @@ pub use yi_types::plan::acceptance::{Conflict, Published, Quiescence};
 use yi_types::plan::op::Choice;
 
 use super::{BranchName, ClaimBase, GIT_TIMEOUT_MS, Head, Lane, LaneError, Pool, Sha, capture};
-use crate::subagent::{ChildRecord, ChildStatus, SubagentHost};
+use crate::subagent::{ChildRecord, SubagentHost};
 
 /// The jobs registry's answer for `root`: every backgrounded command still running under
 /// the lane path. A child's foreground command has returned by the time it can ask.
@@ -678,7 +678,9 @@ impl SubagentHost {
         match Self::settle_lane(&mut record.worktree, record.disposition, self.deadline()) {
             Ok(settled) => Ok((record, settled)),
             Err(reason) => {
-                record.error = Some(format!("its lane is held: {reason}"));
+                record.step(crate::subagent::Step::Held(format!(
+                    "its lane is held: {reason}"
+                )));
                 if let Ok(mut children) = self.children.lock() {
                     children.insert(key.to_owned(), record);
                     children.touch(key);
@@ -800,7 +802,7 @@ impl SubagentHost {
                 "child \"{target}\" was dispatched by the plan: its worktree is accepted through plan.op submit and done, or disposed by fail or drop, never merged here"
             ));
         }
-        if record.status == ChildStatus::Running {
+        if record.exit.is_none() {
             return Err(format!(
                 "child \"{target}\" is still running; wait for it before touching its worktree"
             ));

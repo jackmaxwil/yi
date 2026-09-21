@@ -426,8 +426,9 @@ async def status(name: str | None = None) -> list[dict[str, Any]]:
     """Every child's state as its own records show it (D165).
 
     Each entry is ``{name, state, note, tools, tokens, idle_s, worktree}`` with ``state``
-    one of ``running``, ``finished``, ``failed``, ``needs_you`` (it ended on ``ask_user``
-    or blocked a todo on you: answer with ``send(name, text, followup=True)``) and
+    one of ``queued`` (admitted, not yet started), ``running``, ``finished``, ``failed``,
+    ``needs_you`` (it ended on ``ask_user`` or blocked a todo on you: answer with
+    ``send(name, text, followup=True)``) and
     ``stuck`` (a repeat break, a length re-drive at rung two or more, a let-go
     intercept, or five idle minutes; ``note`` names which). ``name`` keeps one.
     """

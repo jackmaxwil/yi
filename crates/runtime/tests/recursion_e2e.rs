@@ -660,7 +660,7 @@ async fn finished(harness: &Harness, name: &str) -> Result<(), String> {
 }
 
 /// A child whose first turn a two-second tool call holds open, returned once it is running.
-async fn busy_child() -> Result<(Harness, Arc<AgentSession>), Box<dyn Error>> {
+async fn busy_child() -> Result<(Harness, yi_runtime::ChildFeed), Box<dyn Error>> {
     let harness = harness_with(HarnessOptions {
         child_errors: false,
         depth: 0,
@@ -2395,6 +2395,40 @@ async fn every_exit_publishes_one_terminal_update() -> TestResult {
             }
         }
     }
+    Ok(())
+}
+
+/// Dies with the stop road: a client that aborts the child's session itself leaves the host's
+/// record to guess, and the feed a client holds has no abort to call. The TUI sends the id.
+#[tokio::test]
+async fn a_tui_stop_is_a_host_interrupt() -> TestResult {
+    let (harness, _feed) = busy_child().await?;
+    let mut events = harness.events.subscribe();
+    let id = harness.host.children_view()[0].update.id.clone();
+    harness.host.interrupt(id.as_str())?;
+    let ended = loop {
+        let event = tokio::time::timeout(std::time::Duration::from_secs(20), events.recv()).await;
+        if let AgentEvent::ChildUpdate { update } = event??
+            && update.status != ChildStatus::Running
+        {
+            break update;
+        }
+    };
+    assert_eq!(ended.exit, Some(yi_types::subagent::ChildExit::Interrupted));
+    assert_eq!(
+        (ended.status, ended.error.as_deref()),
+        (ChildStatus::Error, Some("interrupted"))
+    );
+    assert_eq!(harness.host.status()["members"][0]["state"], "failed");
+    for _ in 0..POLL_ATTEMPTS {
+        if !harness.notices.lock().map_err(|_| "poisoned")?.is_empty() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(POLL_INTERVAL_MS)).await;
+    }
+    let notices = harness.notices.lock().map_err(|_| "poisoned")?.clone();
+    assert_eq!(notices.len(), 1, "{notices:?}");
+    assert!(notices[0].ends_with("interrupted]"), "{notices:?}");
     Ok(())
 }
 
