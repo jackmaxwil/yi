@@ -142,6 +142,9 @@ def run_task(task_dir, binary, model, out=None):
             str(sessions),
             "--deadline",
             str(spec.get("timeoutSec", 600)),
+            # The binary reads YI_LEVERS only under this flag, and only a harness passes
+            # it (D220); an older binary that has no flag never sees it either.
+            *(["--eval"] if os.environ.get(yi_usage.LEVERS_ENV) else []),
             prompt,
         ]
         timed_out = False

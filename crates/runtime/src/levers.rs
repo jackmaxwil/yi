@@ -141,10 +141,16 @@ impl Levers {
 
 static LEVERS: OnceLock<Levers> = OnceLock::new();
 
-/// Once per process, before the first session: an eval run is one that carries `--deadline`,
-/// the flag both eval runners pass and no default sets.
+/// Once per process, from `build_session`'s first statement, before a session exists and
+/// so before any lever is read: an eval run is one that carries `--eval`, a harness's flag.
 pub fn init(eval: bool) -> Result<(), String> {
-    let levers = Levers::load(eval, || std::env::var_os(ENV))?;
+    let path = eval.then(|| std::env::var_os(ENV)).flatten();
+    let levers = Levers::load(eval, || path.clone())?;
+    // Invariant: a run that is not on the defaults says so once, on stderr and never in a
+    // model-facing byte, so no measurement is read as the shipped configuration.
+    if let Some(path) = path.filter(|_| levers != Levers::DEFAULT) {
+        eprintln!("levers: this run reads {}", Path::new(&path).display());
+    }
     LEVERS.get_or_init(|| levers);
     Ok(())
 }

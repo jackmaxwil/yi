@@ -11,23 +11,29 @@ the fixture `crates/runtime/tests/levers.rs` holds equal to the compiled default
     python3 evals/levers.py grid --knob plan.width_max=4,12 --knob todo.nudge_work=8,16 \\
         --runner './score.sh' --max-runs 30
 
-The runner is the owner's: it is called as `<runner> <overrides.json> <task>...`, exports
-`YI_LEVERS=<overrides.json>` to the runs it starts, and prints one JSON row per trial.
+The runner is the owner's: it is called as `<runner> <overrides.json> <task>...` with
+`YI_LEVERS=<overrides.json>` in its environment (this process's own is untouched), and
+prints one JSON row per trial. The binary reads that file only under `yi ask --eval`.
 
 A trial row is the shape `evals/axes.py` scores: `task`, `reward`, `input`, `cacheRead`,
 `output`, `costUsd`, `wallSec`. A lever change passes two gates (section 10.3): every
 class stays within `tolerance` of its floor, and at least one of cost, tokens and wall
 improves on the baseline; among the candidates that pass, only the nondominated survive.
 """
-import argparse, itertools, json, math, pathlib, re, shlex, statistics, subprocess, sys, tempfile
+import argparse, itertools, json, math, os, pathlib, re, shlex, statistics, subprocess, sys, tempfile
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "evals/graph"))
+sys.path.insert(0, str(ROOT / "evals/adapters"))
 from refine import Refused, names  # noqa: E402
+from yi_usage import LEVERS_ENV  # noqa: E402
 
 LEVERS = ROOT / "evals/levers"
 EFFICIENCY = ("costUsd", "tokens", "wallSec")
 MAX_KNOBS, MAX_RUNS, CONFIDENCE = 5, 40, 0.95
+# The pairs an interval needs before it can reach CONFIDENCE at all: the whole-sample
+# interval covers 1 - 2 / 2**n, so five pairs buy 0.9375 and no more.
+MIN_PAIRS = math.ceil(math.log2(2 / (1 - CONFIDENCE)))
 SCATTER = ROOT / "python/yi_runtime/src/yi/shapes.py"
 
 
@@ -35,13 +41,24 @@ def read(name):
     return json.loads((LEVERS / name).read_text())
 
 
+def value(row, key):
+    """One metric of one trial row. A missing one is zero; a string, a boolean, a NaN or an
+    infinity is refused, because a gate cannot compare what does not order: a NaN reward
+    compares false against its floor and would pass a gate by not being a number."""
+    got = row.get(key) or 0
+    if isinstance(got, bool) or not isinstance(got, (int, float)) or not math.isfinite(got):
+        raise Refused(f"task {row.get('task')!r} reports {key}={got!r}, which is not a number")
+    return got
+
+
 def manifest():
     return {row["name"]: row for row in read("levers.json")["levers"]}
 
 
-def selfcheck():
-    """Every problem found, as one line each; an empty list is a pass."""
-    rows, default, floors, split = read("levers.json")["levers"], read("default.json"), read("floors.json"), read("split.json")
+def selfcheck(load=read):
+    """Every problem found, as one line each; an empty list is a pass. `load` is the reader,
+    so a test can hand this a doctored manifest and watch each lint fire."""
+    rows, default, floors, split = load("levers.json")["levers"], load("default.json"), load("floors.json"), load("split.json")
     found = [f"{name} is listed twice" for name in {r["name"] for r in rows}
              if sum(1 for r in rows if r["name"] == name) > 1]
     if [r["name"] for r in rows] != list(default):
@@ -86,13 +103,14 @@ def measure(rows, floors):
     for name in sorted({of[row["task"]] for row in rows}):
         mine = [row for row in rows if of[row["task"]] == name]
         tasks = {row["task"] for row in mine}
-        solved = {row["task"] for row in mine if (row.get("reward") or 0) > 0}
+        solved = {row["task"] for row in mine if value(row, "reward") > 0}
         capability[name] = {"pass": len(solved) / len(tasks),
-                            "reward": sum(row.get("reward") or 0 for row in mine) / len(mine)}
-    tokens = sum((row.get(k) or 0) for row in rows for k in ("input", "cacheRead", "output"))
+                            "reward": sum(value(row, "reward") for row in mine) / len(mine)}
+    tokens = sum(value(row, k) for row in rows for k in ("input", "cacheRead", "output"))
     return {"capability": capability, "tokens": tokens,
-            "costUsd": sum(row.get("costUsd") or 0 for row in rows),
-            "wallSec": sum(row.get("wallSec") or 0 for row in rows)}
+            "tasks": sorted({row["task"] for row in rows}),
+            "costUsd": sum(value(row, "costUsd") for row in rows),
+            "wallSec": sum(value(row, "wallSec") for row in rows)}
 
 
 def gate(baseline, candidate, floors):
@@ -105,6 +123,11 @@ def gate(baseline, candidate, floors):
             return f"below_floor:{name}"
     if set(baseline["capability"]) - set(candidate["capability"]):
         return "class_not_run:" + sorted(set(baseline["capability"]) - set(candidate["capability"]))[0]
+    # A pass rate is over the tasks that ran, so dropping the hard one raises it: a task the
+    # baseline ran and the candidate did not is a missing row, never a saving.
+    missing = sorted(set(baseline["tasks"]) - set(candidate["tasks"]))
+    if missing:
+        return f"task_not_run:{missing[0]}"
     if not any(candidate[k] < baseline[k] for k in EFFICIENCY):
         return "no_efficiency_gain"
     return None
@@ -128,8 +151,9 @@ def survivors(measured):
 
 
 def fit_rows(rows, split):
-    """The rows a proposal may be fitted on. Refused whole when any row names a held-out
-    task, by token as `refine.names` reads one: the fit never sees validation or final."""
+    """The guard a later fit would have to pass, and nothing more: no command here fits
+    anything (section 10.4 forbids it until the data justifies a model). Refused whole when
+    any row names a held-out task, by token as `refine.names` reads one."""
     held_out = split["validation"] + split["final"]
     for number, row in enumerate(rows, 1):
         named = names(json.dumps(row), held_out)
@@ -177,16 +201,29 @@ def per_task(rows):
     out = {}
     for row in rows:
         mine = out.setdefault(row["task"], dict.fromkeys(EFFICIENCY + ("reward",), 0))
-        mine["tokens"] += sum((row.get(k) or 0) for k in ("input", "cacheRead", "output"))
+        mine["tokens"] += sum(value(row, k) for k in ("input", "cacheRead", "output"))
         for key in ("costUsd", "wallSec", "reward"):
-            mine[key] += row.get(key) or 0
+            mine[key] += value(row, key)
     return out
 
 
+def by_task(pairs, key):
+    """The median paired difference per task, printed beside the pooled interval: the pooled
+    one is over the runs that were made, and repetitions of one task are not independent
+    draws across tasks, so a per-task column is what says where a saving came from."""
+    out = {}
+    for base, mine in pairs:
+        for task in base:
+            if task in mine:
+                out.setdefault(task, []).append(mine[task][key] - base[task][key])
+    return {task: statistics.median(values) for task, values in sorted(out.items())}
+
+
 def judge(baseline, runs, floors):
-    """A candidate's verdict against the baseline it was paired with, run for run. It is
-    `better` only when both gates pass and a whole efficiency interval, at the confidence
-    asked for, lies below zero; a median alone is never a win."""
+    """A candidate's verdict against the baseline it was paired with, run for run: a pair is
+    one (task, repetition), so the interval is over the runs that were made and says nothing
+    about a task nobody ran. It is `better` only when both gates pass and a whole efficiency
+    interval, at the confidence asked for, lies below zero; a median alone is never a win."""
     pairs = [(per_task(base), per_task(mine)) for base, mine in zip(baseline, runs)]
     intervals = {key: interval([mine[task][key] - base[task][key]
                                 for base, mine in pairs for task in base if task in mine])
@@ -197,7 +234,9 @@ def judge(baseline, runs, floors):
     verdict = "better" if won and not reason else "inconclusive"
     if reason and reason != "no_efficiency_gain":
         verdict = "rejected"
-    return {"verdict": verdict, "reason": reason, "intervals": intervals, "measured": measure(flat, floors)}
+    return {"verdict": verdict, "reason": reason, "intervals": intervals,
+            "per_task": {key: by_task(pairs, key) for key in EFFICIENCY + ("reward",)},
+            "measured": measure(flat, floors)}
 
 
 def grid(knobs, tasks, run, floors, listed, k=3, max_runs=MAX_RUNS):
@@ -218,6 +257,10 @@ def grid(knobs, tasks, run, floors, listed, k=3, max_runs=MAX_RUNS):
     stray = sorted(set(tasks) - set(classes(floors)))
     if stray:
         raise Refused(f"task {stray[0]!r} has no class in floors.json")
+    if k * len(tasks) < MIN_PAIRS:
+        print(f"note: {k} repetitions over {len(tasks)} tasks is {k * len(tasks)} pairs, and an "
+              f"interval needs {MIN_PAIRS} to reach {CONFIDENCE}: no point here can be better",
+              file=sys.stderr)
     baseline, runs = [], [[] for _ in points]
     for repetition in range(k):
         order = [None, *range(len(points))]
@@ -268,7 +311,10 @@ def search(args):
         with tempfile.NamedTemporaryFile("w", suffix=".json") as sink:
             json.dump(overrides, sink)
             sink.flush()
+            # Outside the repo, gone when the point is done, and named to the child through
+            # both its argv and its environment; this process's own is untouched.
             done = subprocess.run([*shlex.split(args.runner), sink.name, *tasks],
+                                  env={**os.environ, LEVERS_ENV: sink.name},
                                   capture_output=True, text=True, check=True)
         return [json.loads(line) for line in done.stdout.splitlines() if line.strip()]
 

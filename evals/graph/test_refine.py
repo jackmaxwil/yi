@@ -102,6 +102,10 @@ class Refiner(unittest.TestCase):
         proposals.write_text(escaped + "\n")
         with self.assertRaisesRegex(refine.Refused, "seen-red"):
             refine.read_proposals(proposals, SPLIT)
+        for punctuated in ("(seen-red)", "seen-red; the other", 'said "seen-red"', "seen-red -- the slow one"):
+            proposals.write_text(json.dumps(dict(ADD, rationale=punctuated)) + "\n")
+            with self.assertRaisesRegex(refine.Refused, "seen-red"):
+                refine.read_proposals(proposals, SPLIT)
         innocent = dict(ADD, rationale="an unseen-redness in the development rows, or a search-looper")
         proposals.write_text(json.dumps(innocent) + "\n")
         self.assertEqual(refine.read_proposals(proposals, SPLIT), [innocent])

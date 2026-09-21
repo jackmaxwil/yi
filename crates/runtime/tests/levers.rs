@@ -96,7 +96,13 @@ fn an_override_is_applied_whole_or_refused_with_its_reason() -> Result<(), Box<d
         (r#"{"plan.width_max": 0}"#, "integer in 1..=16, not 0"),
         (r#"{"plan.width_max": 4.5}"#, "integer in 1..=16, not 4.5"),
         (r#"{"plan.width_max": "4"}"#, "integer in 1..=16, not \"4\""),
+        (r#"{"plan.width_max": null}"#, "integer in 1..=16, not null"),
+        (
+            r#"{"plan.width_max": 99999999999999999999}"#,
+            "integer in 1..=16, not 1e+20",
+        ),
         ("[]", "invalid type"),
+        ("", "EOF while parsing"),
     ] {
         let path = overrides("refused", text)?;
         let refused = load(&path).err().ok_or(format!("{text} was accepted"))?;
@@ -106,5 +112,12 @@ fn an_override_is_applied_whole_or_refused_with_its_reason() -> Result<(), Box<d
         );
         std::fs::remove_file(path)?;
     }
+    // A path that is not a readable UTF-8 file is the same refusal, not silent defaults.
+    let binary = overrides("binary", "")?;
+    std::fs::write(&binary, [0xff, 0xfe])?;
+    let refused = load(&binary).err().ok_or("non-UTF-8 bytes were read")?;
+    assert!(refused.contains("UTF-8"), "{refused}");
+    std::fs::remove_file(binary)?;
+    assert!(load(&std::env::temp_dir()).is_err(), "a directory was read");
     Ok(())
 }
