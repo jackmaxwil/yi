@@ -195,5 +195,6 @@ when it changes rather than editing them by hand.
 - [D216](adr/d216.md) - the judge tier is an envelope
 - [D217](adr/d217.md) - a review pod is readers plus a code arbiter
 - [D218](adr/d218.md) - a service is a child with a stable address
+- [D219](adr/d219.md) - the host's next-step lines are a procedural graph the binary carries
 
 D36-D51, D72, D73 and D74 have no ADR yet; ARCHITECTURE.md is the record for those rows.

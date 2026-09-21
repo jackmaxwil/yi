@@ -409,7 +409,7 @@ table already accepts (`doc.rs:78-79`), and the capsule manifest format
 | D-next-10 (D216) | a judged contract item is a walled reader of another model family answering a fixed schema, aggregated in Rust | new | F3a |
 | D-next-11 (D217) | a review pod is readers plus a code arbiter | extends D-next-10 | F3b |
 | D-next-12 (D218) | a service is a child with a stable address | extends D165 | F3c |
-| D-next-13 | the procedural graph replaces hand-maintained affordance strings; frozen online, evolved offline under a held-out gate with rejection memory | amends the affordance rows (D139's ladder stays) | F4a/F4b |
+| D-next-13 (D219) | the procedural graph replaces hand-maintained affordance strings; frozen online, evolved offline under a held-out gate with rejection memory | amends the affordance rows (D139's ladder stays) | F4a/F4b |
 | D-next-14 | the kernel's constants are levers with floors and two gates; the sweep never reads the held-out split | extends D140 | F4c/F4d |
 
 ### 3.6 The completion invariant and the authority rule
@@ -1477,7 +1477,9 @@ Nodes are Yi's verbs: every registered tool name, every plan op as
 
 ### 9.2 Conditions are a closed predicate set
 
-`enum Predicate` in `affordance.rs`, evaluated on facts the renderer already
+`Predicate` in `crates/types/src/graph.rs` (as landed: a string parsed against
+the closed table `PREDICATES`, plus the states the migrated producers branch
+on, F4a), evaluated on facts the renderer already
 holds at the seam (`tools.rs:305-308` appends the lines): `always`,
 `result_ok`, `result_error(ToolErrorKind)` (`event.rs:177-185`),
 `output_capped`, `todo_open`, `plan_ready_nonempty`,
@@ -2641,7 +2643,7 @@ attach or refuse; and the `rlm.service` registration. Tests beside the named one
   service in a worktree (refused by name), and adoption after a host restart (counts and
   incarnations restart with the host).
 
-### F4a · The procedural graph replaces affordance strings (D-next-13)
+### F4a · The procedural graph replaces affordance strings (D219, landed 0.279.0)
 
 **Files.** `crates/types/src/graph.rs` (new), `crates/runtime/src/prompts/graph.json`
 (new), `affordance.rs` (renderer; stays under 300 lines), `todo/text.rs:204-230`
@@ -2658,6 +2660,25 @@ attach or refuse; and the `rlm.service` registration. Tests beside the named one
 
 LOC yi-types +90, yi-runtime +260 −80. Memo: `growth +270: the procedural
 graph and its renderer; the affordance strings became data`.
+
+As landed (0.279.0, D219, #463). Measured growth is +207 Rust `src` lines against 270:
+yi-types 180 against 90, yi-runtime 27 net against 180 (121 added, 94 deleted). The tree
+settled four things this section left open. The predicate set lives in
+`crates/types/src/graph.rs` as the table `PREDICATES`, and `Predicate` is a string that
+parses only against it, so an unknown condition fails where the graph is parsed and
+`graph::an_unknown_predicate_fails_to_parse` is a yi-types test; the host asserts the
+predicates that hold as facts (`Facts.holds`) and the renderer compares names, which is
+why `MemberState`, a runtime type, never had to move. The old producers branched on
+states section 9.2's list did not name, so the closed set gained `todo_state(...)`,
+`coroutine_unawaited`, `method_awaited`, `listing_name_missed`, `grid_answer_empty`,
+`session_on_disk` and `session_in_memory`; `spawned` and `child_finished` became
+`child_state(running)` and `child_state(finished)` on `rlm.run`, because two `always`
+edges on one node would have rendered both lines where one rendered before. The todo
+producer localizes at the tool (its lines are the same after every op) and renders one
+item at a time, so the cap of three stays `NEXT_LINES` in `next_lines`. The seven string
+builders and the `moves` match were dead once the goldens passed from the graph and are
+deleted; section 12's value row is still owed before the graph is more than an
+equivalent. Seven predicates are vocabulary no seam asserts yet (the row lists them).
 
 ### F4b · The offline refiner with rejection memory (part of D-next-13)
 

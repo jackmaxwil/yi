@@ -57,31 +57,44 @@ fn result_text(result: &yi_types::event::ToolResult) -> String {
         .join("\n")
 }
 
-fn grid_note(tool: &str, command: &str, result: &yi_types::event::ToolResult) -> Option<String> {
-    if tool != "bash" || !command.trim_start().starts_with("grid ") {
-        return None;
-    }
-    let text = result_text(result);
+/// The predicates that hold after this call; the needles are the states the old
+/// producers branched on, and one ipython needle wins, in the order they were tried.
+fn facts_of(tool: &str, command: &str, output: &yi_tools::ToolOutput) -> Vec<String> {
+    let text = result_text(&output.result);
     let body = text.trim();
-    (body.is_empty() || body.lines().count() <= 1 && body.contains("exit code"))
-        .then(crate::affordance::grid_empty)
-        .flatten()
-}
-
-fn ipython_note(tool: &str, result: &yi_types::event::ToolResult) -> Option<String> {
-    if tool != "ipython" {
-        return None;
-    }
-    let text = result_text(result);
-    if text.contains("<coroutine object ") {
-        return Some(crate::affordance::coroutine_leak());
+    let kind = output
+        .result
+        .details
+        .get("errorKind")
+        .and_then(Value::as_str);
+    let mut holds = vec![match (output.is_error, kind) {
+        (true, Some(kind)) => format!("result_error({kind})"),
+        (true, None) => "result_error(tool_error)".to_owned(),
+        (false, _) => "result_ok".to_owned(),
+    }];
+    if tool == "bash"
+        && command.trim_start().starts_with("grid ")
+        && (body.is_empty() || body.lines().count() <= 1 && body.contains("exit code"))
+    {
+        holds.push("grid_answer_empty".to_owned());
     }
     // ponytail: CPython 3.11-3.13 wording; add a second needle if a venv rewords it.
-    if text.contains("can't be used in 'await' expression") {
-        return Some(crate::affordance::method_awaited());
+    let needle = if text.contains("<coroutine object ") {
+        Some("coroutine_unawaited")
+    } else if text.contains("can't be used in 'await' expression") {
+        Some("method_awaited")
+    } else if text.contains("AttributeError")
+        && text.contains("RLMSubagent")
+        && text.contains("'name'")
+    {
+        Some("listing_name_missed")
+    } else {
+        None
+    };
+    if let Some(needle) = needle.filter(|_| tool == "ipython") {
+        holds.push(needle.to_owned());
     }
-    (text.contains("AttributeError") && text.contains("RLMSubagent") && text.contains("'name'"))
-        .then(crate::affordance::listing_name)
+    holds
 }
 
 /// T19 tee target: the home root, never the user's working tree.
@@ -293,10 +306,15 @@ impl AgentTool for ToolAdapter {
                     {
                         broker.note_containment_failure(&command);
                     }
-                    if let Some(line) = grid_note(&name, &command, &output.result) {
-                        crate::affordance::append(&mut output.result, &line);
-                    }
-                    if let Some(line) = ipython_note(&name, &output.result) {
+                    let holds = facts_of(&name, &command, &output);
+                    let facts = crate::affordance::Facts {
+                        holds: &holds.iter().map(String::as_str).collect::<Vec<_>>(),
+                        name: "",
+                        cap: crate::affordance::TOOL_LINES,
+                    };
+                    for line in
+                        crate::affordance::render(crate::affordance::shipped(), &name, &facts)
+                    {
                         crate::affordance::append(&mut output.result, &line);
                     }
                     let text = result_text(&output.result);
