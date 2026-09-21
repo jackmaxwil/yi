@@ -1,0 +1,62 @@
+{
+  "version": 1,
+  "scenarios": [
+    {
+      "id": "write-then-edit",
+      "road": "#473 write mints the edit tag and never shows it, so the model invents one",
+      "prompt": "In the current directory, write a file `stats.py` holding a function `mean(xs)` that returns the arithmetic mean of a list of numbers, and a `__main__` block printing `mean([1,2,3])`. Then edit exactly one line of that file so the function returns 0.0 for an empty list instead of raising. Run it once to show it works. Do not rewrite the whole file for the second step: use the edit tool.",
+      "timeoutSec": 420,
+      "seed": {},
+      "clean": {"files": ["stats.py"], "noRefusalsFrom": ["edit"]}
+    },
+    {
+      "id": "long-todo-label",
+      "road": "#474 a todo the renderer cut at 80 chars cannot be named back",
+      "prompt": "Set up a todo list with exactly these three items, verbatim:\n- `gateway`: trace the root failure behind an alert in an interleaved multi-process log file\n- `billing`: reconcile the ledger against the daily settlement export\n- `quota`: report the first daily quota breach per account\nThen do the first item's work in miniature: write a file `gateway.md` with one sentence saying what such a trace would need. Then mark that first todo done with evidence, naming it by its label rather than its id.",
+      "timeoutSec": 420,
+      "seed": {},
+      "clean": {"files": ["gateway.md"], "noRefusalsFrom": ["todo"]}
+    },
+    {
+      "id": "process-substitution",
+      "road": "#476 the bash tool spawns sh, so process substitution is a syntax error",
+      "prompt": "Compare a.json and b.json by their pretty-printed forms without writing any temporary file: use one shell command with process substitution. Then write the differing key name alone into `diff.txt`.",
+      "timeoutSec": 420,
+      "seed": {"a.json": "{\"b\": 2, \"a\": 1}\n", "b.json": "{\"a\": 1, \"b\": 3}\n"},
+      "clean": {"files": ["diff.txt"], "noRefusalsFrom": ["bash"]}
+    },
+    {
+      "id": "child-json-answer",
+      "road": "#475 a child's fenced JSON answer is refused as text",
+      "prompt": "Spawn one child agent with rlm.run and ask it to read notes.txt and answer with JSON matching the schema {\"type\":\"object\",\"properties\":{\"lines\":{\"type\":\"integer\"},\"topic\":{\"type\":\"string\"}},\"required\":[\"lines\",\"topic\"]}. Collect its answer with that schema and write the JSON you got into `answer.json`.",
+      "timeoutSec": 600,
+      "seed": {"notes.txt": "the parser handles quotas\nthe ledger is reconciled nightly\n"},
+      "clean": {"files": ["answer.json"], "noRefusalsFrom": []}
+    },
+    {
+      "id": "plan-fanout",
+      "road": "#468 #469 #470 dispatch width, the submit a child is never told about, and who must act",
+      "prompt": "Open a plan with three independent todos, each delegated to a worktree child: 'alpha' writes alpha.txt holding the word alpha, 'beta' writes beta.txt holding beta, 'gamma' writes gamma.txt holding gamma. Start them, then accept one of them through the plan. Report at the end how many were dispatched at once and how many were held.",
+      "timeoutSec": 900,
+      "seed": {},
+      "clean": {"files": [], "noRefusalsFrom": []}
+    },
+    {
+      "id": "plan-width-lever",
+      "road": "#468 plan.width_max must be able to raise the width on a small host",
+      "prompt": "Open a plan with two independent todos, each delegated to a worktree child: 'one' writes one.txt holding the word one, 'two' writes two.txt holding two. Report the exact text of the plan dispatch notice you receive, verbatim, then stop. Do not start any todo and do not do the work yourself.",
+      "timeoutSec": 300,
+      "seed": {},
+      "levers": {"plan.width_max": 1},
+      "clean": {"files": [], "noRefusalsFrom": ["plan"]}
+    },
+    {
+      "id": "awkward-calls",
+      "road": "#472 a refusal names the rule and not the caller's own mistake",
+      "prompt": "Update cfg.json so n is 2. Then add a todo item called `verify cfg` and mark it done with evidence. Then read cfg.json back to confirm.",
+      "timeoutSec": 420,
+      "seed": {"cfg.json": "{\"n\": 1}\n"},
+      "clean": {"files": ["cfg.json"], "noRefusalsFrom": ["edit", "todo"]}
+    }
+  ]
+}

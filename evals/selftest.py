@@ -30,6 +30,7 @@ import rule_fires  # noqa: E402
 import record  # noqa: E402
 import tb21_cost  # noqa: E402
 import atif  # noqa: E402
+import surface  # noqa: E402
 import axes  # noqa: E402
 import yi_usage  # noqa: E402
 import test_refine  # noqa: E402
@@ -514,6 +515,36 @@ def check_rule_fires():
     assert report["comment_fp"] == 2, report
 
 
+def check_surface():
+    """The tool-surface loop's schema and its census, with no binary and no key:
+    every scenario parses, a malformed one is refused by name, and the per-tool
+    counts come off the extractor's own store."""
+    assert surface.main(["--selfcheck", "--model", "faux/faux-1"]) == 0
+    roads = {scenario["id"]: scenario["road"] for scenario in surface.load_scenarios()}
+    assert len(roads) >= 6, roads
+    with tempfile.TemporaryDirectory() as directory:
+        broken = Path(directory) / "scenarios.json"
+        broken.write_text(json.dumps({"scenarios": [{"id": "x", "road": "r", "prompt": "p"}]}))
+        try:
+            surface.load_scenarios(broken)
+            raise AssertionError("a scenario missing timeoutSec, seed and clean was admitted")
+        except ValueError as error:
+            assert "missing" in str(error), error
+        store = Path(directory) / "mining"
+        store.mkdir()
+        (store / "mu.jsonl").write_text(json.dumps(
+            {"sessionId": "s1", "file": "a.jsonl", "toolCalls": {"byTool": {"edit": 4, "bash": 1}}}) + "\n")
+        (store / "issues.jsonl").write_text(json.dumps(
+            {"tool": "edit", "count": 3, "state": "NEW", "sessions": ["s1"],
+             "example": "hash #A1B2 is not from this session", "resolution": {"pivot": 1, "unresolved": 2}}) + "\n")
+        counts = surface.census(store)
+        assert counts["calls"] == {"bash": 1, "edit": 4}, counts
+        assert counts["refusals"] == {"edit": 3} and counts["rate"]["edit"] == 0.75, counts
+        text = surface.report([], store, Path(directory))
+        # The verdict is a human's; the runner prints the blank and never fills it.
+        assert "correct? ____" in text and "recovered 1, unresolved 2" in text, text
+
+
 def check_graph_refiner():
     """D219: the refiner's gates on synthetic rows, and the fixture Rust judges too."""
     report = io.StringIO()
@@ -533,6 +564,7 @@ def check_levers():
 
 
 CHECKS = (
+    check_surface,
     check_graph_refiner,
     check_levers,
     check_cost_cap,
