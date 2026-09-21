@@ -12,6 +12,8 @@ from yi import Geometry, Plan, Reader, Writer, cmd, contract, fork_join, scatter
 
 GREEN = contract(cmd("true", critical=True))
 COMMITTED = contract(schema({"type": "object", "required": ["answer"]}, critical=True))
+# What a real lead asks: longer than a label may be, and more than one line of it.
+ASKED = "is rotation by age supported anywhere in the flag surface,\nand if so under which name?"
 ARCHIVE = {"local://docs/api.md": "usage\nrotate(size) rotates by size\n", "local://docs/cli.md": "flags\n--age DAYS\n"}
 
 
@@ -155,7 +157,11 @@ class Shapes(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(product(host, plan["lead"]), '{"answer":"rotate()","rounds":1}')
 
     async def test_scatter_ends_at_max_rounds_without_a_commit(self) -> None:
-        """Dies with the control: loop while the lead keeps asking and the rounds never end."""
+        """Dies with the control: loop while the lead keeps asking and the rounds never end.
+
+        Invariant: the lead writes the question, so it rides the note and never the label, which
+        the host caps at eighty characters and refuses a newline in.
+        """
         shapes.SCATTER_MAX_ROUNDS = 2
         host = FakeHost()
         plan = await Plan.create("which module rotates by size?")
@@ -168,14 +174,14 @@ class Shapes(unittest.IsolatedAsyncioTestCase):
 
         async def lead(answers: list, number: int) -> dict:
             rounds.append((number, [answer["reader"] for answer in answers]))
-            return {"ask": "is rotation by age supported?"}
+            return {"ask": ASKED}
 
         await plan.todo(key="lead", run=lead)
         run = await plan.run(shape=scatter, budget=30)
         self.assertEqual(rounds, [(1, []), (2, ["api-r2", "cli-r2"])], "an abstention and a failed reader are dropped")
         self.assertEqual(plan["lead"]._doc["cause"], "no commit within 2 rounds")
         self.assertEqual((run.outcome, plan["cli"]._doc["state"], host.spawns), ("failed", "abandoned", 4))
-        self.assertEqual(plan["api-r2"]._doc["delegation"]["note"], "is rotation by age supported?")
+        self.assertEqual(plan["api-r2"]._doc["delegation"]["note"], ASKED, "the question rides the note")
 
     async def test_a_scatter_with_shared_partitions_or_no_lead_is_refused(self) -> None:
         host = FakeHost()

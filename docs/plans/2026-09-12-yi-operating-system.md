@@ -2111,7 +2111,10 @@ returning `{"commit": answer}` or `{"ask": question}` (there is no `lead` object
 call `commit` on), and its product is `{"answer", "rounds"}` because a bare string
 is stored as text and a `schema` item finds no JSON in it. A later round declares
 `<reader>-r<n>` todos with the reader's delegation and contract and the question as
-the note; a failed reader is retried and dropped, the two legal steps from `failed`
+the note, and the key alone as the label, because a `TodoLabel` is eighty characters
+and no newline while the lead writes the question (the review found the round-two
+declaration refused on any question a real lead would ask, and the fake host now
+holds the label rule); a failed reader is retried and dropped, the two legal steps from `failed`
 to `abandoned`, so the plan can still finish, and the T2 journey settles one that way
 on the real step table. `verify_quotes` fetches each cited url once and reads the
 line from it: the host's line fragment needs the tag (`#L<a>-<b>@<tag>`) a reader
