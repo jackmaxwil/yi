@@ -34,6 +34,8 @@
 #[path = "../../types/tests/support/scratch.rs"]
 mod scratch;
 use scratch::Scratch;
+#[path = "support/family.rs"]
+mod support;
 
 use std::error::Error;
 use std::path::{Path, PathBuf};
@@ -925,6 +927,7 @@ mod accept {
                 isolation: Some(Isolation::Worktree),
                 budget: None,
                 wall: None,
+                parent_close: None,
                 extra: serde_json::Map::new(),
             },
             accept: Check::Command("true".to_owned()),
@@ -1933,4 +1936,41 @@ mod accept {
         assert_eq!(held(&bench.pool)?, 0);
         Ok(())
     }
+}
+
+/// Dies with the `Retained` choice `repossess` sets before it settles: discard instead, or drop
+/// the lane unsettled, and a revoked child's uncommitted work goes with its checkout.
+#[tokio::test]
+async fn a_repossessed_worktree_keeps_its_work_on_its_branch() -> TestResult {
+    let rig = Rig::new("repossess")?;
+    let store = support::memory_store("lanes-repossess");
+    let hold = Some("echo unsaved > draft.txt; sleep 30");
+    let family = support::family(rig.root.to_path_buf(), rig.repo.clone(), store, hold);
+    let mut asked = serde_json::Map::new();
+    asked.insert("name".to_owned(), "writer".into());
+    asked.insert("isolation".to_owned(), "worktree".into());
+    family.host.spawn("write a draft".to_owned(), asked)?;
+    let tree = family.host.cwd_of("writer").ok_or("no worktree")?;
+    for _ in 0..400 {
+        if tree.join("draft.txt").exists() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+    }
+    family.host.revoke("writer", 0, "scope changed")?;
+    assert_eq!(family.host.expire().await, ["writer"]);
+    let journal = family.journal();
+    let Some(yi_types::lease::LeaseRecord::Repossessed(record)) = journal.last() else {
+        return Err(format!("no repossession record: {journal:?}").into());
+    };
+    let kept: Vec<String> = record.kept.iter().map(ToString::to_string).collect();
+    let branch = kept
+        .iter()
+        .find_map(|url| url.strip_prefix("branch://"))
+        .ok_or("the record names no branch")?;
+    assert_eq!(
+        git(&rig.repo, &["show", &format!("{branch}:draft.txt")])?,
+        "unsaved"
+    );
+    Ok(())
 }

@@ -37,7 +37,7 @@ fn child_factory(wiring: RuntimeWiring) -> Arc<ChildFactory> {
             schema_instruction: None,
             context_window: child.model().context_window,
         }));
-        attach_runtime(
+        let host = attach_runtime(
             &mut child,
             RuntimeWiring {
                 depth: wiring.depth.saturating_add(1),
@@ -45,10 +45,12 @@ fn child_factory(wiring: RuntimeWiring) -> Arc<ChildFactory> {
                 cwd: child_cwd,
                 parent_link: Some(build.link),
                 wall: build.wall,
+                deadline: build.deadline,
                 kernel_prewarm: false,
                 ..wiring.clone()
             },
         );
+        host.set_grant(child.wall(), build.tokens);
         Ok(child)
     })
 }
@@ -417,13 +419,32 @@ fn wire_plan_engine(
     session.set_todos(Arc::clone(&todos));
     let inner = (wiring.depth == 0).then(|| {
         let children = Arc::clone(host);
-        crate::plan::probe::spawn(Arc::new(
+        let leased = Arc::clone(host);
+        let ladder = Arc::new(
             crate::plan::probe::ProbeLadder::new(engine, plans_dir.to_path_buf(), probe_deliver)
                 .with_children(
                     Arc::new(move || children.states()),
                     lifecycle_notice(session),
-                ),
-        ));
+                )
+                .with_leases(Arc::new(move || {
+                    let host = Arc::clone(&leased);
+                    tokio::spawn(async move { host.expire().await });
+                })),
+        );
+        // A grace rides the loop's own due-time set, so an earlier one interrupts its sleep.
+        let timer = Arc::clone(&ladder);
+        host.set_lease_clock(
+            None,
+            Some(Arc::new(move |grace| {
+                timer.wake_at(
+                    timer
+                        .now()
+                        .checked_add(grace)
+                        .unwrap_or_else(|| timer.now()),
+                );
+            })),
+        );
+        crate::plan::probe::spawn(ladder);
         crate::plan::loop_coupling::coupling(
             session,
             crate::plan::loop_coupling::CouplingOptions {
@@ -559,6 +580,7 @@ pub fn attach_runtime(session: &mut AgentSession, mut wiring: RuntimeWiring) -> 
         });
     }
     let host = subagent_host(session, &wiring, &plans_dir);
+    host.set_grant(wiring.wall.clone(), None);
     host.register(&mut registry);
     session.set_environment(crate::environment::hook(
         session,

@@ -186,6 +186,8 @@ struct SessionHandle {
 impl Drop for SessionHandle {
     fn drop(&mut self) {
         self.forwarder.abort();
+        // Each running child is revoked under its own `parent_close`, its work kept.
+        let _revoked = self.host.close();
         self.session.dispose_kernel();
     }
 }

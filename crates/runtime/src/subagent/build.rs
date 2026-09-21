@@ -13,7 +13,7 @@ pub(super) struct Reservation<'a> {
 impl Drop for Reservation<'_> {
     fn drop(&mut self) {
         if let Ok(mut children) = self.host.children.lock() {
-            children.building.retain(|name| *name != self.name);
+            children.building.retain(|(name, _)| *name != self.name);
         }
     }
 }
@@ -25,7 +25,8 @@ impl SubagentHost {
         &self,
         session_name: &str,
         session_dir: &Path,
-    ) -> Result<Reservation<'_>, String> {
+        ask: &crate::lease::Ask,
+    ) -> Result<(Reservation<'_>, yi_types::lease::Lease), String> {
         let mut children = self
             .children
             .lock()
@@ -40,7 +41,7 @@ impl SubagentHost {
         } else if children
             .values()
             .map(|record| &record.session_name)
-            .chain(&children.building)
+            .chain(children.building.iter().map(|(name, _)| name))
             .any(|name| name == session_name)
         {
             Some(format!(
@@ -50,15 +51,20 @@ impl SubagentHost {
         } else {
             None
         };
-        if let Some(refusal) = refusal {
+        let lease = match refusal {
+            None => self.draw(&children, session_name, ask),
+            Some(refusal) => Err(refusal),
+        };
+        let lease = lease.inspect_err(|_| {
             let _ = std::fs::remove_dir_all(session_dir);
-            return Err(refusal);
-        }
-        children.building.push(session_name.to_owned());
-        Ok(Reservation {
+        })?;
+        let tokens = lease.tokens.unwrap_or(0);
+        children.building.push((session_name.to_owned(), tokens));
+        let reservation = Reservation {
             host: self,
             name: session_name.to_owned(),
-        })
+        };
+        Ok((reservation, lease))
     }
 
     /// A lagged watch missed events, so the counters are read again from the session itself

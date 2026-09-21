@@ -379,6 +379,7 @@ fn delegated(label: &str) -> Result<yi_runtime::plan::ops::TodoSpec, Box<dyn Err
                 isolation: None,
                 budget: None,
                 wall: None,
+                parent_close: None,
                 extra: serde_json::Map::new(),
             },
             accept: yi_types::plan::doc::Check::Command("true".to_owned()),

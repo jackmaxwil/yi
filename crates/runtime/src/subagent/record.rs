@@ -3,6 +3,7 @@ use yi_types::message::{AgentMessage, Content};
 use yi_types::subagent::ChildExit;
 
 use super::{ChildActivity, ChildId, ChildRecord, ChildUpdate};
+use crate::family::Phase;
 use crate::session::AgentSession;
 
 /// A child's session as a reader holds it: its events, transcript, model and status. It has
@@ -47,6 +48,9 @@ pub(crate) enum Step<'a> {
     Started,
     Replied,
     Held(String),
+    /// A repossession owns the ending from here: the run's own exit is mute.
+    Repossess,
+    Pending(String),
     Exit(ChildExit, Option<String>),
 }
 
@@ -61,6 +65,10 @@ pub(super) fn preview(text: &str) -> String {
 }
 
 impl ChildRecord {
+    pub(crate) fn token_count(&self) -> u64 {
+        self.token_count
+    }
+
     pub(crate) fn update(&self, child_id: &str) -> ChildUpdate {
         ChildUpdate {
             id: ChildId(child_id.to_owned()),
@@ -79,15 +87,42 @@ impl ChildRecord {
     /// client can see moved; an exit is refused while a repossession owns the ending.
     pub(crate) fn step(&mut self, step: Step<'_>) -> bool {
         match step {
-            Step::Started => std::mem::take(&mut self.queued),
+            Step::Started => {
+                let queued = self.phase == Phase::Queued;
+                if queued {
+                    self.phase = Phase::Live;
+                }
+                queued
+            }
+            Step::Repossess => {
+                self.phase = Phase::Repossessing;
+                false
+            }
+            Step::Pending(reason) => {
+                self.phase = Phase::Pending;
+                self.exit = None;
+                self.error = Some(reason);
+                true
+            }
             Step::Replied => !std::mem::replace(&mut self.replied, true),
             Step::Held(reason) => {
                 self.error = Some(reason);
                 true
             }
-            Step::Exit(..) if self.repossessing => false,
+            Step::Exit(exit, _)
+                if exit != ChildExit::Repossessed
+                    && matches!(self.phase, Phase::Repossessing | Phase::Pending) =>
+            {
+                false
+            }
+            // A child that sent its own `failure` stays failed when its turn then ends.
+            Step::Exit(ChildExit::Completed, _)
+                if matches!(self.exit, Some(ChildExit::Failed { .. })) =>
+            {
+                false
+            }
             Step::Exit(exit, error) => {
-                self.queued = false;
+                self.phase = Phase::Live;
                 self.exit = Some(exit);
                 self.activity = ChildActivity::Waiting;
                 self.error = error;

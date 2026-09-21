@@ -109,6 +109,9 @@ fn kwargs_of(agent: &AgentId, delegation: &Delegation) -> Result<Map<String, Val
     if let Check::Command(command) = &delegation.accept {
         kwargs.insert("check".to_owned(), Value::String(command.clone()));
     }
+    if let Some(policy) = &delegation.spec.parent_close {
+        kwargs.insert("parent_close".to_owned(), serde_json::json!(policy));
+    }
     // Plan section 7.6: the spec's wall rides the spawn kwargs the host already reads, so a
     // plan-dispatched reader is walled at the same cooperative seams as an `rlm.run` child.
     if let Some(wall) = &delegation.spec.wall {
@@ -484,6 +487,7 @@ mod tests {
                     isolation: None,
                     budget: None,
                     wall: None,
+                    parent_close: None,
                     extra: Map::new(),
                 },
                 accept: Check::Command("true".to_owned()),

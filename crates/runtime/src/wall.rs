@@ -60,6 +60,16 @@ impl Wall {
         })
     }
 
+    /// Hereditary shrink (plan section 7.6): everything the parent is denied, the child is
+    /// denied too, whatever its own spawn asked for.
+    #[must_use]
+    pub fn under(mut self, parent: &Self) -> Self {
+        self.deny_write.extend(parent.deny_write.iter().cloned());
+        self.deny_read.extend(parent.deny_read.iter().cloned());
+        self.deny_url.extend(parent.deny_url.iter().cloned());
+        self
+    }
+
     pub fn is_empty(&self) -> bool {
         self.deny_write.is_empty() && self.deny_read.is_empty() && self.deny_url.is_empty()
     }
