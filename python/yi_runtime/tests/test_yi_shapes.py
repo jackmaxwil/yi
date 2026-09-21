@@ -226,6 +226,11 @@ class Shapes(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(plan["arbiter"]._doc["state"], "abandoned", "the declared arbiter ran as its issue")
         self.assertEqual(host.starts.count("arbiter-r2"), 1)
 
+        host, plan, outcome = await self.pod({"scope": {"answer": "x" * 4000, "quotes": [quote(api, 2, "rotate(size)")]}}, "pass")
+        note = plan["arbiter-r2"]._doc["delegation"]["note"]
+        self.assertLessEqual(len(note.encode("utf-8")), 1024, "the host's InlineNote cap")
+        self.assertIn("[cut at 1024 bytes", note, "a finding cut in half never passes for whole")
+
         host, plan, outcome = await self.pod({}, "fail")
         self.assertEqual(outcome, "failed", "three clean readers and a red command: the command decides")
         dones = [args["label"] for op, args in host.journal if op == "done"]

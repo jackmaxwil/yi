@@ -80,7 +80,14 @@ def _evidence(findings: list[tuple[Todo, dict[str, Any] | None]]) -> str:
     for todo, found in findings:
         cited = ", ".join(f"{quote['url']}:{quote['line']}" for quote in (found or {}).get("quotes", []))
         lines.append(f"{todo.key}: {found['answer']} [{cited}]" if found else f"{todo.key}: no backed finding")
-    return "\n".join(lines).encode("utf-8")[:NOTE_MAX].decode("utf-8", errors="ignore")
+    body = "\n".join(lines).encode("utf-8")
+    if len(body) <= NOTE_MAX:
+        return body.decode("utf-8")
+    # A finding cut in half reads as a different finding, so the cut says so and the whole
+    # answer is one fetch away in the context urls.
+    said = f"\n[cut at {NOTE_MAX} bytes; every reader's whole answer is in this todo's context]"
+    room = NOTE_MAX - len(said.encode("utf-8"))
+    return body[:room].decode("utf-8", errors="ignore") + said
 
 
 async def review_pod(plan: Plan, run: Run) -> None:
