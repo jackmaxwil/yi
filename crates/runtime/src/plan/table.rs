@@ -570,6 +570,7 @@ mod tests {
                 isolation: None,
                 budget: None,
                 wall: None,
+                parent_close: None,
                 extra: Map::new(),
             },
             accept: Check::Stated("it works".to_owned()),

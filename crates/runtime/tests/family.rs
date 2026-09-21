@@ -18,14 +18,14 @@ use std::sync::{Arc, Mutex};
 use serde_json::{Map, json};
 use yi_ai::faux::{faux_assistant_message, faux_text, faux_tool_call};
 use yi_runtime::family::{
-    MemberState, MemberView, STUCK_IDLE_MS, StuckLatch, children_line, compact_entry,
+    MemberState, MemberView, Phase, STUCK_IDLE_MS, StuckLatch, children_line, compact_entry,
     recent_entries, state_from_records,
 };
 use yi_types::message::{AgentMessage, StopReason, UserContent};
 use yi_types::subagent::{ChildExit, FailClass};
 
-const LIVE: (Option<ChildExit>, bool) = (None, false);
-const DONE: (Option<ChildExit>, bool) = (Some(ChildExit::Completed), false);
+const LIVE: (Option<ChildExit>, Phase) = (None, Phase::Live);
+const DONE: (Option<ChildExit>, Phase) = (Some(ChildExit::Completed), Phase::Live);
 
 type TestResult = Result<(), Box<dyn Error>>;
 
@@ -78,7 +78,7 @@ fn a_child_that_ended_on_ask_user_needs_you() -> TestResult {
                 Some(ChildExit::Failed {
                     class: FailClass::Provider
                 }),
-                false
+                Phase::Live
             ),
             Some("boom"),
             &[],
@@ -167,7 +167,7 @@ fn stuck_reads_the_typed_signal() -> TestResult {
             "{name} {details}"
         );
     }
-    let (state, _, _) = state_from_records((None, true), None, &[], &[], now);
+    let (state, _, _) = state_from_records((None, Phase::Queued), None, &[], &[], now);
     assert_eq!(state, MemberState::Queued, "admitted, not yet polled");
     Ok(())
 }

@@ -1,6 +1,8 @@
 #[path = "../../types/tests/support/scratch.rs"]
 mod scratch;
 use scratch::Scratch;
+#[path = "support/family.rs"]
+mod support;
 
 use std::error::Error;
 use std::path::PathBuf;
@@ -1733,6 +1735,7 @@ fn write_canonical_plan(cwd: &std::path::Path, todos: &[(&str, &str)]) -> TestRe
                         isolation: None,
                         budget: None,
                         wall: None,
+                        parent_close: None,
                         extra: Map::new(),
                     },
                     accept: Check::Command((*check).to_owned()),
@@ -2400,7 +2403,8 @@ async fn every_exit_publishes_one_terminal_update() -> TestResult {
 
 /// Pins what a parent's end did to its children before leases (plan section 7.4): nothing. The
 /// run task holds the host, so a child outlives every handle its parent dropped, runs to its
-/// own end unbounded and reports to a parent that is gone. `parent_close` replaces this.
+/// own end unbounded and reports to a parent that is gone. A dropped handle still does that;
+/// `close` is the control, and its default is pinned below.
 #[tokio::test]
 async fn children_at_parent_close_today() -> TestResult {
     let (harness, feed) = busy_child().await?;
@@ -2432,6 +2436,24 @@ async fn children_at_parent_close_today() -> TestResult {
     assert!(
         told.iter().any(|text| text.contains("finished")),
         "{told:?}"
+    );
+
+    // The default since leases: a close revokes each live child with the thirty second grace.
+    let (harness, _feed) = busy_child().await?;
+    assert_eq!(harness.host.close(), ["busy"]);
+    let journaled =
+        yi_session::lock_session(&harness.store).find_entries(&yi_session::EntryQuery {
+            custom_type: Some("lease".to_owned()),
+            ..yi_session::EntryQuery::default()
+        })?;
+    let text = serde_json::to_string(&journaled)?;
+    assert!(
+        text.contains(r#""graceMs":30000"#) && text.contains("the parent closed"),
+        "{text}"
+    );
+    assert!(
+        harness.host.close().is_empty(),
+        "a revoked child is not revoked twice"
     );
     Ok(())
 }
@@ -2566,5 +2588,329 @@ async fn a_kernel_cell_that_spawns_and_deletes_tells_why() -> TestResult {
         "the last word on the bus is the exit, with its cause: {last:?}"
     );
     assert!(harness.host.children_view().is_empty());
+    Ok(())
+}
+
+type Ticks = Arc<std::sync::atomic::AtomicU64>;
+
+/// A family whose one child holds its turn open on `hold`, with the lease clock in hand.
+async fn leased(
+    label: &str,
+    hold: &'static str,
+    cwd: Option<PathBuf>,
+) -> Result<(Scratch, support::Family, Ticks), Box<dyn Error>> {
+    let root = Scratch::new(label)?;
+    let store = support::memory_store(label);
+    let cwd = cwd.unwrap_or_else(std::env::temp_dir);
+    let family = support::family(root.to_path_buf(), cwd, store, Some(hold));
+    let ticks: Ticks = Arc::new(std::sync::atomic::AtomicU64::new(1_000_000));
+    let clock = Arc::clone(&ticks);
+    let now = Arc::new(move || clock.load(Ordering::SeqCst));
+    family.host.set_lease_clock(Some(now), None);
+    Ok((root, family, ticks))
+}
+
+async fn executing(family: &support::Family) -> Result<(), Box<dyn Error>> {
+    for _ in 0..POLL_ATTEMPTS {
+        let views = family.host.children_view();
+        if views
+            .first()
+            .is_some_and(|view| view.update.activity == ChildActivity::Executing)
+        {
+            return Ok(());
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(POLL_INTERVAL_MS)).await;
+    }
+    Err("the child never reached its tool".into())
+}
+
+fn terminal(events: &mut tokio::sync::broadcast::Receiver<AgentEvent>) -> Vec<ChildUpdate> {
+    let mut ended = Vec::new();
+    while let Ok(event) = events.try_recv() {
+        if let AgentEvent::ChildUpdate { update } = event
+            && update.status != ChildStatus::Running
+        {
+            ended.push(update);
+        }
+    }
+    ended
+}
+
+/// Dies with the order in `revoke` and `retire_as`: send the cancel before the journal write,
+/// or publish before the repossession record commits, and a crash between the two leaves a
+/// child told to stop, or reported gone, with nothing on record saying why.
+#[tokio::test]
+async fn revoke_delivers_cancel_then_repossesses_after_grace_with_the_record_first() -> TestResult {
+    use yi_types::lease::{Disposition, LeaseRecord};
+    let (_root, family, ticks) = leased("yi-lease-revoke", "sleep 30", None).await?;
+    let graces: Arc<Mutex<Vec<u64>>> = Arc::default();
+    let seen = Arc::clone(&graces);
+    let timer = Arc::new(move |grace: std::time::Duration| {
+        if let Ok(mut seen) = seen.lock() {
+            seen.push(u64::try_from(grace.as_millis()).unwrap_or(0));
+        }
+    });
+    family.host.set_lease_clock(None, Some(timer));
+    family
+        .host
+        .spawn("hold".to_owned(), kwargs(&[("name", "held")]))?;
+    executing(&family).await?;
+    let mut events = family.events.subscribe();
+
+    let reply = family.host.revoke("held", 30_000, "scope changed")?;
+    assert_eq!(
+        state_of(&reply),
+        "queued",
+        "the cancel reached a live turn: {reply:?}"
+    );
+    assert_eq!(graces.lock().map_err(|_| "poisoned")?[..], [30_000]);
+    let journal = family.journal();
+    let [LeaseRecord::Revoked(lease)] = &journal[..] else {
+        return Err(format!("the revocation is journaled first: {journal:?}").into());
+    };
+    assert_eq!(
+        lease.revoked.as_ref().map(|revoked| revoked.at),
+        Some(1_000_000)
+    );
+    let inbox = family.host.transcript("held").ok_or("no transcript")?;
+    let cancel = serde_json::to_string(&yi_runtime::family::recent_entries(&inbox))?;
+    assert!(cancel.contains(r#""kind":"cancel""#), "{cancel}");
+    let sent = family.host.route("parent", "held", "more work", true)?;
+    assert_eq!(
+        state_of(&sent),
+        "inboxed",
+        "a revoked child is admitted no new work"
+    );
+
+    // Inside the grace nothing is taken, however often the timer's job runs.
+    ticks.store(1_029_999, Ordering::SeqCst);
+    assert!(family.host.expire().await.is_empty());
+    assert_eq!(family.state_of("held").as_deref(), Some("running"));
+
+    // The grace is over, and the record cannot be written: nothing is released or published.
+    ticks.store(1_030_000, Ordering::SeqCst);
+    family.unplugged.store(true, Ordering::SeqCst);
+    assert!(family.host.expire().await.is_empty());
+    assert!(
+        terminal(&mut events).is_empty(),
+        "no record, so no clean report"
+    );
+    assert_eq!(
+        family.state_of("held").as_deref(),
+        Some("repossession_pending")
+    );
+
+    family.unplugged.store(false, Ordering::SeqCst);
+    let asked = std::time::Instant::now();
+    assert_eq!(family.host.expire().await, ["held"]);
+    assert!(
+        asked.elapsed() < std::time::Duration::from_secs(5),
+        "the latency is observed"
+    );
+    let journal = family.journal();
+    let Some(LeaseRecord::Repossessed(record)) = journal.get(1) else {
+        return Err(format!("no repossession record: {journal:?}").into());
+    };
+    assert_eq!(record.disposition, Disposition::Settled);
+    assert_eq!(
+        record
+            .kept
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>(),
+        ["history://held"]
+    );
+    let ended = terminal(&mut events);
+    assert_eq!(
+        ended.len(),
+        1,
+        "one terminal update, after the record: {ended:?}"
+    );
+    assert_eq!(
+        ended[0].exit,
+        Some(yi_types::subagent::ChildExit::Repossessed)
+    );
+    assert_eq!(ended[0].error.as_deref(), Some("repossessed"));
+    assert!(!family.host.holds("held"), "the record is released last");
+    assert!(
+        family.host.kept_transcript("held").is_some(),
+        "its history stays readable"
+    );
+    Ok(())
+}
+
+/// Dies with `resume_revocations`: without it a host that restarts inside a grace forgets the
+/// revocation, and the journal says a child was told to stop and never says what became of it.
+#[tokio::test]
+async fn restart_during_grace_completes_the_repossession() -> TestResult {
+    use yi_types::lease::LeaseRecord;
+    let (root, family, _ticks) = leased("yi-lease-restart", "sleep 30", None).await?;
+    family
+        .host
+        .spawn("hold".to_owned(), kwargs(&[("name", "held")]))?;
+    executing(&family).await?;
+    family.host.revoke("held", 30_000, "scope changed")?;
+    family.host.interrupt("held")?;
+    let store = family.store.clone();
+    drop(family);
+
+    let next = support::family(root.to_path_buf(), std::env::temp_dir(), store, None);
+    assert!(
+        next.host.expire().await.is_empty(),
+        "nothing live is left to stop"
+    );
+    let journal = next.journal();
+    assert!(
+        matches!(&journal[..], [LeaseRecord::Revoked(_), LeaseRecord::Repossessed(done)] if done.lease.holder == "held"),
+        "the first expiry after a restart completes the record: {journal:?}"
+    );
+    let told = next.notices.lock().map_err(|_| "poisoned")?.clone();
+    assert!(
+        told.iter().any(|text| text.contains("held repossessed")),
+        "{told:?}"
+    );
+    assert_eq!(
+        next.host.resume_revocations()?,
+        Vec::<String>::new(),
+        "completed once"
+    );
+    Ok(())
+}
+
+/// Dies with the restore in `retire_as` and `leave_pending`: report the child gone when its
+/// lane would not settle and the only copy of its work is a checkout nothing points at.
+#[tokio::test]
+async fn a_failed_settle_reports_repossession_pending_with_references_kept() -> TestResult {
+    use yi_types::lease::LeaseRecord;
+    let repo = git_repo("lease-pending")?;
+    let hold = "echo kept > work.txt; sleep 30";
+    let (_root, family, _ticks) =
+        leased("yi-lease-pending", hold, Some(repo.to_path_buf())).await?;
+    let asked = kwargs(&[("name", "walled"), ("isolation", "worktree")]);
+    family.host.spawn("hold".to_owned(), asked)?;
+    executing(&family).await?;
+    let mut events = family.events.subscribe();
+    family.host.revoke("walled", 0, "scope changed")?;
+
+    // A settle past the run's own end is refused, and the lane stays where it is.
+    family.host.set_deadline(Some(std::time::Instant::now()));
+    assert!(family.host.expire().await.is_empty());
+    assert!(
+        terminal(&mut events).is_empty(),
+        "never a clean report: nothing is published"
+    );
+    assert_eq!(
+        family.state_of("walled").as_deref(),
+        Some("repossession_pending")
+    );
+    let tree = family
+        .host
+        .cwd_of("walled")
+        .ok_or("the record lost its worktree")?;
+    assert_eq!(std::fs::read_to_string(tree.join("work.txt"))?, "kept\n");
+    assert_eq!(
+        family.journal().len(),
+        1,
+        "only the revocation is on record"
+    );
+
+    // The cause removed, the next run of the timer's job finishes it.
+    family.host.set_deadline(None);
+    assert_eq!(family.host.expire().await, ["walled"]);
+    let journal = family.journal();
+    let Some(LeaseRecord::Repossessed(record)) = journal.last() else {
+        return Err(format!("no repossession record: {journal:?}").into());
+    };
+    let kept: Vec<String> = record.kept.iter().map(ToString::to_string).collect();
+    assert!(
+        kept.iter().any(|url| url.starts_with("branch://")),
+        "{kept:?}"
+    );
+    assert_eq!(terminal(&mut events).len(), 1);
+    Ok(())
+}
+
+/// Dies with the cancel flag (`Shared::winding_down`) and the `cancelled` arm of `exit_of`:
+/// without them a cancel is one more message, the run goes on to its answer, and reads finished.
+#[tokio::test]
+async fn a_cancel_ends_the_run_at_its_next_message_boundary() -> TestResult {
+    let (_root, family, ticks) = leased("yi-lease-cancel", "sleep 1", None).await?;
+    family
+        .host
+        .spawn("hold".to_owned(), kwargs(&[("name", "polite")]))?;
+    executing(&family).await?;
+    family.host.revoke("polite", 60_000, "scope changed")?;
+    assert!(
+        family.reaches("polite", "failed").await,
+        "{:?}",
+        family.state_of("polite")
+    );
+    let view = family
+        .host
+        .children_view()
+        .pop()
+        .ok_or("the record is kept")?;
+    assert_eq!(
+        view.update.exit,
+        Some(yi_types::subagent::ChildExit::Interrupted)
+    );
+    assert_eq!(view.update.error.as_deref(), Some("cancelled"));
+    let answered = view.session.messages().iter().any(|message| {
+        matches!(
+            message,
+            AgentMessage::Assistant {
+                stop_reason: StopReason::Stop,
+                ..
+            }
+        )
+    });
+    assert!(!answered, "no request followed the cancelled turn");
+    ticks.store(2_000_000, Ordering::SeqCst);
+    assert!(
+        family.host.expire().await.is_empty(),
+        "it stopped inside its grace"
+    );
+    assert!(
+        family.host.holds("polite"),
+        "so its record is the parent's to reap"
+    );
+    Ok(())
+}
+
+/// Dies with `Desk::drop_respondent`: without it a request to a child that was then removed
+/// waits out its whole timeout and blames the clock.
+#[tokio::test]
+async fn a_terminated_respondent_refuses_its_waiters_by_name() -> TestResult {
+    let (harness, _feed) = busy_child().await?;
+    let host = Arc::clone(&harness.host);
+    let asking =
+        tokio::spawn(async move { host.request("parent", "busy", "which suite?", 60_000).await });
+    for _ in 0..POLL_ATTEMPTS {
+        if !inbox_of(&harness, "busy")?.is_empty() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(POLL_INTERVAL_MS)).await;
+    }
+    harness.host.delete("busy")?;
+    let waited = tokio::time::timeout(std::time::Duration::from_secs(5), asking).await;
+    let refused = waited??.err().ok_or("a removed child answered")?;
+    assert!(refused.contains("\"busy\" was reaped"), "{refused}");
+    Ok(())
+}
+
+/// Dies with the `Kind::Failure` arm of `deliver_to_parent`: without it a child that said it
+/// failed reads `finished` the moment its turn ends.
+#[tokio::test]
+async fn a_failure_from_a_child_reads_failed_in_wait() -> TestResult {
+    let harness = harness(0, 1, "done")?;
+    finished(&harness, "sorry").await?;
+    let mut payload = Map::new();
+    payload.insert("target".to_owned(), json!("parent"));
+    payload.insert("message".to_owned(), json!("the fixture is missing"));
+    payload.insert("kind".to_owned(), json!("failure"));
+    harness.host.send("sorry", &payload)?;
+    let waited = harness.host.wait(1_000, None).await;
+    assert_eq!(waited["states"]["sorry"], json!("failed"), "{waited:?}");
+    assert_eq!(waited["notes"]["sorry"], json!("the fixture is missing"));
     Ok(())
 }

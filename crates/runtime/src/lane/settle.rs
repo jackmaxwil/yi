@@ -678,15 +678,18 @@ impl SubagentHost {
         match Self::settle_lane(&mut record.worktree, record.disposition, self.deadline()) {
             Ok(settled) => Ok((record, settled)),
             Err(reason) => {
-                record.step(crate::subagent::Step::Held(format!(
-                    "its lane is held: {reason}"
-                )));
-                if let Ok(mut children) = self.children.lock() {
-                    children.insert(key.to_owned(), record);
-                    children.touch(key);
-                }
+                self.restore(key, record, &format!("its lane is held: {reason}"));
                 Err(reason)
             }
+        }
+    }
+
+    /// A removal that could not finish puts the record back under its key, the cause on it.
+    pub(crate) fn restore(&self, key: &str, mut record: ChildRecord, cause: &str) {
+        record.step(crate::subagent::Step::Held(cause.to_owned()));
+        if let Ok(mut children) = self.children.lock() {
+            children.insert(key.to_owned(), record);
+            children.touch(key);
         }
     }
 

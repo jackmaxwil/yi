@@ -67,6 +67,7 @@ struct Shared {
     telemetry: Mutex<Option<Arc<crate::telemetry::Telemetry>>>,
     todos: Mutex<Option<Arc<crate::todo::TodoStore>>>,
     deadline: OnceLock<Deadline>,
+    cancelled: std::sync::atomic::AtomicBool,
 }
 
 pub type PromptChoiceFn =
@@ -165,6 +166,7 @@ impl AgentSession {
                 on_turn_end: Mutex::new(None),
                 coupling: Mutex::new(None),
                 deadline: OnceLock::new(),
+                cancelled: false.into(),
             }),
             config,
             provider,
@@ -895,9 +897,8 @@ impl AgentSession {
             wire_queues_and_coupling(&mut config, &shared, &prompt);
             wire_environment(&mut config, &shared).await;
             // Not the interrupt: the turn in flight ends and settles, and no request follows.
-            if let Some(deadline) = shared.deadline.get().copied() {
-                config.should_stop_after_turn = Some(Box::new(move |_| deadline.winding_down()));
-            }
+            let stop = Arc::clone(&shared);
+            config.should_stop_after_turn = Some(Box::new(move |_| stop.winding_down()));
             let emit_shared = Arc::clone(&shared);
             let emit_compactor = compactor.clone();
             let mut emit = move |event: AgentEvent| {

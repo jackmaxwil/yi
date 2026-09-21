@@ -277,6 +277,17 @@ class StatusTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(await rlm.status(), members)
             self.assertEqual(await rlm.status("d"), [members[1]])
 
+    async def test_revoke_sends_the_grace_in_milliseconds(self) -> None:
+        sent = []
+
+        async def fake_host_request(kind, payload):
+            sent.append((kind, payload))
+            return {"revoked": payload["target"]}
+
+        with mock.patch.object(rlm, "host_request", fake_host_request):
+            await rlm.revoke("d", grace_s=1.5, reason="out of scope")
+        self.assertEqual(sent, [("rlm.revoke", {"target": "d", "grace_ms": 1500, "reason": "out of scope"})])
+
 
 
 class PlanOpTests(unittest.IsolatedAsyncioTestCase):

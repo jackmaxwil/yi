@@ -2365,7 +2365,7 @@ landing differs from sections 7.1 to 7.3:
   kinds, and the list of outstanding conversations after a parent restart. One
   bound landed: a sender holds at most sixteen waiting requests.
 
-### F2b · Leases: deadline inheritance, revoke, abort, parent close; capabilities shrink (D-next-9)
+### F2b · Leases: deadline inheritance, revoke, abort, parent close; capabilities shrink (D215, landed 0.275.0; extends D165, D210, D214)
 
 **Files.** `crates/types/src/lease.rs` (new), `crates/runtime/src/lease.rs`
 (new: the timer job on the probe tick, repossession), `subagent.rs:470-495`
@@ -2384,7 +2384,7 @@ at reap), `lane/mod.rs:939-955` (`Lane::settle()` hoisted), `gate.rs:120-124`
 | a lease is drawn, never minted | `subagent::a_spawn_asking_past_the_parents_deadline_or_tokens_is_refused_with_both_numbers` (T0) |
 | a revoke reaches the child and its repossession record lands before termination | `recursion_e2e::revoke_delivers_cancel_then_repossesses_after_grace_with_the_record_first` (T1, clock injected) |
 | uncommitted work survives repossession | `lanes::a_repossessed_worktree_keeps_its_work_on_its_branch` (T1) |
-| a hold-shaped rule on a detached child compiles to deny or a queued question | `gate::a_detached_childs_ask_compiles_to_deny_and_an_attached_ones_to_a_request` (T0) |
+| a hold-shaped rule on a detached child compiles to deny; an attached one stays a question | `gate::a_detached_childs_ask_compiles_to_deny_and_an_attached_ones_stays_a_question` (T0) |
 | walls only shrink | `subagent::a_child_cannot_spawn_with_a_smaller_wall_than_its_parent` (T0) |
 | the lease returns at reap | `plan_ledger::reap_records_the_unspent_lease` (T0) |
 
@@ -2414,6 +2414,45 @@ crate. Tests: `subagent::status_state_and_notice_derive_from_one_exit` (T0);
 `recursion_e2e::a_tui_stop_is_a_host_interrupt` (T1);
 `family::stuck_reads_the_typed_signal` (T0). LOC yi-types +40, yi-runtime
 +120 −60, yi-tui +10.
+
+As landed (0.275.0, D215). Measured growth is +972 Rust `src` lines (yi-types 146,
+yi-runtime 821) and 23 of Python. Where the landing differs from sections 7.4 to 7.6
+and the rows above:
+
+- One test is renamed: the attached half of the hold test asserts that the question
+  stands, so it is `..._and_an_attached_ones_stays_a_question`. Every child shares its
+  family's one `PermissionBroker`, so an attached child's `Ask` already reaches the
+  root's surface; a `request` envelope to the parent would be a second road to the same
+  answer. `gate::compile_ask` is the detached half, and the broker's no-asker arm reads
+  its refusal from it. The spawn refusal for a brief that names a walled path is not
+  built: a brief is free text, and matching paths in it is a heuristic, not a control.
+- The lease journal is the parent's own transcript (`custom{lease}` entries: `revoked`,
+  `repossessed`, `returned`), not `ops.jsonl`: a lease exists without a plan. Three
+  tests were added beside the table: `a_cancel_ends_the_run_at_its_next_message_boundary`,
+  `a_terminated_respondent_refuses_its_waiters_by_name` and
+  `a_failure_from_a_child_reads_failed_in_wait` (all `recursion_e2e`, T1).
+- "Record first" is the order inside `retire_as`: the run is stopped and joined, the lane
+  settles, the `Repossession` is journaled, and only then is the record released and the
+  terminal update published. The revocation itself is journaled before the `cancel` is
+  sent, which is what a restart resumes from. After a restart the child's process is
+  gone, so the resume completes the record and tells the parent; a worktree it held is
+  an orphan lane the pool already knows how to reap, and the notice says so.
+- `RepossessionPending` is a `MemberState` (`repossession_pending`) over a record whose
+  exit is still absent; the timer's job retries it on every wake.
+- `lease.deadline_ms` is optional: a root with no `--deadline` has no clock to lease.
+  Tokens are reserved and accounted, and returned at reap; nothing ends a run for
+  spending past its reservation yet, and a parent's own turns are not debited here.
+- Stopping a run is `abort` and a bounded join (10 s); `abort` already kills bash and
+  interrupts the kernel cell. No separate process-group kill was added.
+- `close` is called where a parent's end is an event the process survives (ACP's session
+  handle drop). The CLI and TUI exit paths end the process and are unchanged.
+- `Failed { class }`: `refused_spawn`, `provider` and `deadline` have producers in
+  `run_child`; a child's own `failure` envelope is filed as `red_check`; `kernel_death`
+  has none until the kernel-dead path reports it.
+- Audit item (e): `fold_event`, `preview`, `update` and the new transition moved to
+  `subagent/record.rs`, the lease and the two stop registrations to `lease.rs`;
+  `subagent.rs` stands at 1,122 lines
+  and `session.rs` at 1,198. Nothing else was shed.
 
 ### F3a · The judge tier (D-next-10)
 

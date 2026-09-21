@@ -151,6 +151,7 @@ fn delegation() -> Delegation {
             isolation: None,
             budget: None,
             wall: None,
+            parent_close: None,
             extra: Map::new(),
         },
         accept: Check::Command("true".to_owned()),

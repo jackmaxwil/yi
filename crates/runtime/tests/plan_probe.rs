@@ -529,3 +529,58 @@ async fn two_registered_due_times_both_wake_the_loop() -> TestResult {
     );
     Ok(())
 }
+
+/// Dies with where `wake_once` runs the lease job (probe.rs): put it behind the in-flight
+/// check, or on the probe's own thread, and a cancel's grace ends only when a slow probe does.
+#[tokio::test]
+async fn a_revoke_due_time_wakes_the_loop_past_a_slow_probe() -> TestResult {
+    let (rig, ladder) = rig()?;
+    open(&rig, "wait for the deploy", Some("false"))?;
+    let start = *rig.clock.lock().map_err(|_| "poisoned")?;
+    assert!(
+        ladder.tick(start).is_empty(),
+        "the slot is armed one rung out"
+    );
+    let (probing, release) = (
+        Arc::new(AtomicBool::new(false)),
+        Arc::new(AtomicBool::new(false)),
+    );
+    let (entered, released) = (Arc::clone(&probing), Arc::clone(&release));
+    let expiries = Arc::new(AtomicU32::new(0));
+    let counted = Arc::clone(&expiries);
+    let ladder = Arc::new(
+        ladder
+            .with_run(Arc::new(move |_command: &str| {
+                entered.store(true, Ordering::SeqCst);
+                while !released.load(Ordering::SeqCst) {
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                Err("still deploying".to_owned())
+            }))
+            .with_leases(Arc::new(move || {
+                counted.fetch_add(1, Ordering::SeqCst);
+            })),
+    );
+    *rig.clock.lock().map_err(|_| "poisoned")? = start + FIRST_DELAY;
+    ladder.wake_at(start + FIRST_DELAY);
+    spawn(Arc::clone(&ladder));
+    let held = observed(|| probing.load(Ordering::SeqCst), Duration::from_secs(5)).await;
+    assert!(held.is_some(), "the probe is in flight and will not return");
+
+    // A revoke registers its grace's due time now, mid-probe and mid-sleep.
+    let before = expiries.load(Ordering::SeqCst);
+    let due = start + FIRST_DELAY + Duration::from_secs(5);
+    *rig.clock.lock().map_err(|_| "poisoned")? = due;
+    ladder.wake_at(due);
+    let latency = observed(
+        || expiries.load(Ordering::SeqCst) > before,
+        Duration::from_secs(4),
+    )
+    .await;
+    let still_probing = !release.swap(true, Ordering::SeqCst);
+    assert!(
+        latency.is_some() && still_probing,
+        "the lease job ran on the due time while the probe was still out (observed {latency:?})"
+    );
+    Ok(())
+}

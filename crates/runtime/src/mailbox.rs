@@ -27,6 +27,9 @@ pub(crate) type Retired = (
     ChildRecord,
     Option<(yi_types::plan::op::Choice, crate::lane::settle::Candidate)>,
 );
+/// What `retire_as` runs between a settled lane and the record's release.
+pub(crate) type Commit<'a> =
+    dyn Fn(&ChildRecord, Option<&crate::lane::settle::Candidate>) -> Result<(), String> + 'a;
 /// Invariant: every row can run an ancestor check inside the parent's own `rlm.result` call,
 /// so the list is capped: a degenerate child buys one refusal, not unbounded checks.
 const MAX_DISCOVERIES: usize = 16;
@@ -253,9 +256,19 @@ impl SubagentHost {
         if let Ok(mut children) = self.children.lock()
             && let Ok(key) = Self::key_of(&children, from)
             && let Some(record) = children.get_mut(&key)
-            && record.step(Step::Replied)
         {
-            children.touch(&key);
+            let mut moved = record.step(Step::Replied);
+            if draft.kind == Kind::Failure {
+                // The child's own verdict on its work: `wait` reports it failed from here on.
+                let class = yi_types::subagent::FailClass::RedCheck;
+                moved |= record.step(Step::Exit(
+                    ChildExit::Failed { class },
+                    Some(draft.text.clone()),
+                ));
+            }
+            if moved {
+                children.touch(&key);
+            }
         }
         let envelope = desk.seal(from, PARENT_NAME, draft);
         if let Some(store) = (self.options.store)() {
@@ -312,6 +325,20 @@ impl SubagentHost {
         let wakes = draft.followup || !matches!(envelope.kind, Kind::Inform | Kind::Progress);
         let state = match record {
             _ if envelope.kind == Kind::Progress => Delivery::Inboxed,
+            // A revoked child is admitted no new work; its inbox still keeps the message.
+            Some(record) if record.lease.revoked.is_some() && envelope.kind != Kind::Cancel => {
+                Delivery::Inboxed
+            }
+            // A cancel starts no turn: the flag ends a live one at its next message boundary,
+            // and the word comes back from the push that settled it, never a status read.
+            Some(record) if envelope.kind == Kind::Cancel => {
+                record.session.cancel();
+                if record.session.follow_up_message(message) {
+                    Delivery::Queued
+                } else {
+                    Delivery::Inboxed
+                }
+            }
             Some(record) if wakes => {
                 if record.session.deliver(message) {
                     Delivery::Woken
@@ -583,6 +610,17 @@ impl SubagentHost {
     /// Invariant: the one way a record leaves `children`, so every removal publishes one
     /// terminal update; a run it cut short reads `interrupted`, never finished.
     pub(crate) fn retire(&self, target: &str) -> Result<Retired, String> {
+        self.retire_as(target, ChildExit::Reaped, &|_, _| Ok(()))
+    }
+
+    /// `commit` runs once the lane has settled and before anything is released or published;
+    /// its refusal puts the record back, so a repossession's record is never second.
+    pub(crate) fn retire_as(
+        &self,
+        target: &str,
+        exit: ChildExit,
+        commit: &Commit<'_>,
+    ) -> Result<Retired, String> {
         let (key, mut record) = {
             let mut children = self
                 .children
@@ -606,21 +644,39 @@ impl SubagentHost {
             children.touch(&key);
             (key, record)
         };
-        if record.exit.is_none() {
+        // A child that failed by its own `failure` message may still hold a live turn.
+        if !matches!(record.exit, Some(ChildExit::Completed)) {
             record.session.abort();
-            let cause = record
-                .error
-                .take()
-                .unwrap_or_else(|| INTERRUPTED.to_owned());
-            record.step(Step::Exit(ChildExit::Reaped, Some(cause)));
+        }
+        if record.exit.is_none() {
+            // A lane refusal stays the cause of a plain removal; a repossession names itself.
+            let cause = match exit {
+                ChildExit::Reaped => record
+                    .error
+                    .take()
+                    .unwrap_or_else(|| INTERRUPTED.to_owned()),
+                other => crate::family::read_exit(Some(other)).verb.to_owned(),
+            };
+            record.step(Step::Exit(exit, Some(cause)));
         }
         SubagentHost::dispose_child_kernel(&record.session);
         // The lane settles under the choice journaled before this removal; a lane that cannot
         // settle goes back on the record with its slot, and the removal fails.
         let (mut record, settled) = self.settle_or_restore(&key, record)?;
+        if let Err(reason) = commit(&record, settled.as_ref().map(|(_, candidate)| candidate)) {
+            self.restore(&key, record, &reason);
+            return Err(reason);
+        }
         drop(record.lane_permit.take());
+        self.return_lease(&record);
         let update = record.update(&key);
         let _ = self.options.events.send(AgentEvent::ChildUpdate { update });
+        if let Ok(mut desk) = self.mail.lock() {
+            desk.drop_respondent(
+                &record.session_name,
+                crate::family::read_exit(record.exit).verb,
+            );
+        }
         Ok((key, record, settled))
     }
 
@@ -732,6 +788,7 @@ mod tests {
                         isolation: None,
                         budget: None,
                         wall: None,
+                        parent_close: None,
                         extra: Map::new(),
                     },
                     accept: Check::Command(check.to_owned()),

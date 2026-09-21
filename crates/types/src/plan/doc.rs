@@ -195,6 +195,9 @@ pub struct SpawnSpec {
     pub budget: Option<TokenBudget>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub wall: Option<WallSpec>,
+    /// Absent is the default, a terminate with the default grace (plan section 7.4).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_close: Option<crate::lease::ParentClose>,
     #[serde(flatten)]
     pub extra: Map<String, Value>,
 }

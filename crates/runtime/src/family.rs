@@ -19,6 +19,8 @@ pub enum MemberState {
     Failed,
     NeedsYou,
     Stuck,
+    /// A revoked child whose stop, settle or record failed; everything it held is kept.
+    RepossessionPending,
 }
 
 impl MemberState {
@@ -30,8 +32,19 @@ impl MemberState {
             Self::Failed => "failed",
             Self::NeedsYou => "needs_you",
             Self::Stuck => "stuck",
+            Self::RepossessionPending => "repossession_pending",
         }
     }
+}
+
+/// Where a record with no exit stands: admitted and not yet polled, live, or held by a
+/// repossession that has not finished.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Phase {
+    Queued,
+    Live,
+    Repossessing,
+    Pending,
 }
 
 /// One exit read three ways: the wire status, the member state and the notice's verb.
@@ -144,7 +157,7 @@ fn timestamp_of(entry: &Entry) -> u64 {
 /// blocked a todo on the user, `stuck` when the loop or the coupling re-drove it in its last
 /// records or nothing moved for [`STUCK_IDLE_MS`]; the note names which.
 pub fn state_from_records(
-    (exit, queued): (Option<ChildExit>, bool),
+    (exit, phase): (Option<ChildExit>, Phase),
     error: Option<&str>,
     messages: &[AgentMessage],
     recent: &[Entry],
@@ -157,7 +170,10 @@ pub fn state_from_records(
             Some(question) => (MemberState::NeedsYou, Some(question), idle_s),
             None => (MemberState::Finished, None, idle_s),
         },
-        MemberState::Running if queued => (MemberState::Queued, None, idle_s),
+        MemberState::Running if phase == Phase::Queued => (MemberState::Queued, None, idle_s),
+        MemberState::Running if phase == Phase::Pending => {
+            (MemberState::RepossessionPending, error.map(cut), idle_s)
+        }
         MemberState::Running => {
             if let Some((state, note)) = recent.iter().find_map(signal_of) {
                 return (state, Some(note), idle_s);
@@ -216,6 +232,7 @@ pub fn children_line(views: &[MemberView]) -> Option<String> {
         (MemberState::Failed, "failed"),
         (MemberState::NeedsYou, "needs you"),
         (MemberState::Stuck, "stuck"),
+        (MemberState::RepossessionPending, "repossession pending"),
     ];
     let parts: Vec<String> = groups
         .iter()

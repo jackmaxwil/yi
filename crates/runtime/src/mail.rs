@@ -38,6 +38,14 @@ impl Draft {
         }
     }
 
+    /// A message the host itself sends for a lease: a `cancel` down, a `failure` up.
+    pub(crate) fn of(kind: Kind, text: &str) -> Self {
+        Self {
+            kind,
+            ..Self::plain(text, false)
+        }
+    }
+
     pub(crate) fn from_payload(payload: &Map<String, Value>) -> Result<(String, Self), String> {
         let text_of = |key: &str| payload.get(key).and_then(Value::as_str);
         let target = text_of("target").unwrap_or_default().to_owned();
@@ -101,7 +109,7 @@ impl Draft {
 struct Waiter {
     sender: String,
     respondent: String,
-    reply: oneshot::Sender<Envelope>,
+    reply: oneshot::Sender<Result<Envelope, String>>,
 }
 
 /// The host's mail state under one lock, held across a whole routing so that the order `seq`
@@ -159,7 +167,26 @@ impl Desk {
                 && waiter.sender == envelope.to
         });
         if answers && let Some(waiter) = self.waiters.remove(id) {
-            let _the_requester_may_have_timed_out = waiter.reply.send(envelope.clone());
+            let _the_requester_may_have_timed_out = waiter.reply.send(Ok(envelope.clone()));
+        }
+    }
+}
+
+impl Desk {
+    /// A terminated respondent answers nothing, so its waiters are refused at once with the
+    /// termination named; a timeout would say the wrong thing a long time later.
+    pub(crate) fn drop_respondent(&mut self, respondent: &str, how: &str) {
+        let ids: Vec<MailId> = self
+            .waiters
+            .iter()
+            .filter(|(_, waiter)| waiter.respondent == respondent)
+            .map(|(id, _)| id.clone())
+            .collect();
+        for id in ids {
+            if let Some(waiter) = self.waiters.remove(&id) {
+                let refusal = format!("\"{respondent}\" was {how} before it replied to {id}");
+                let _the_requester_may_be_gone = waiter.reply.send(Err(refusal));
+            }
         }
     }
 }
@@ -259,7 +286,12 @@ impl SubagentHost {
         };
         let mut sent = self.route_mail(from, target, &draft)?;
         let wait = std::time::Duration::from_millis(timeout_ms);
-        let Ok(Ok(answer)) = tokio::time::timeout(wait, reply).await else {
+        let answer = match tokio::time::timeout(wait, reply).await {
+            Ok(Ok(Ok(answer))) => Some(answer),
+            Ok(Ok(Err(terminated))) => return Err(terminated),
+            _ => None,
+        };
+        let Some(answer) = answer else {
             return Err(format!(
                 "no reply to {id} from \"{respondent}\" within {timeout_ms} ms; the request stays in its inbox, and a late reply lands in history without resolving this call"
             ));

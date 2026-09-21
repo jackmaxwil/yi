@@ -281,6 +281,9 @@ async def run(prompt: str, **kwargs: Any) -> RLMSpawnHandle:
     serialized into its brief and nothing else of this namespace reaches it.
     ``check`` makes it a protocol child — it owes a ``{"value": …, "discoveries":
     […]}`` answer, and ``result`` withholds that answer while the check is red.
+    ``deadline_s`` and ``tokens`` are the child's lease, drawn from this session's own: an
+    ask past what is left here is refused with both numbers, never clamped. ``parent_close``
+    is ``"terminate"`` (default, 30 s grace) or ``"request_cancel"``; work is kept either way.
     """
     if not isinstance(prompt, str):
         raise TypeError(f"prompt must be str, got {type(prompt).__name__}")
@@ -506,6 +509,19 @@ async def plan_op(
 async def interrupt(target: "str | RLMSubagent") -> dict[str, Any]:
     """End a child's run and keep its record (``delete_subagent`` reaps instead)."""
     return await host_request("rlm.interrupt", {"target": _worktree_target(target)})
+
+
+async def revoke(
+    target: "str | RLMSubagent", *, grace_s: float = 30, reason: str = ""
+) -> dict[str, Any]:
+    """Take a running child's lease back: it is sent a ``cancel`` and has ``grace_s`` to stop.
+
+    A child still running when the grace ends is repossessed: its run is stopped, its
+    worktree's work is kept on its branch, the record lands in this session's history and
+    ``wait`` stops listing it. One that stops in time keeps its record for ``result``.
+    """
+    payload = {"target": _worktree_target(target), "grace_ms": int(grace_s * 1000), "reason": reason}
+    return await host_request("rlm.revoke", payload)
 
 
 async def result(
@@ -948,6 +964,11 @@ class _RLMCallable:
     async def interrupt(self, target: str | RLMSubagent) -> dict[str, Any]:
         return await interrupt(target)
 
+    async def revoke(
+        self, target: str | RLMSubagent, *, grace_s: float = 30, reason: str = ""
+    ) -> dict[str, Any]:
+        return await revoke(target, grace_s=grace_s, reason=reason)
+
     async def result(
         self, target: str | RLMSubagent, *, schema: dict[str, Any] | None = None
     ) -> dict[str, Any]:
@@ -996,6 +1017,7 @@ __all__ = [
     "harness",
     "host_request",
     "interrupt",
+    "revoke",
     "list_agents",
     "list_subagents",
     "merge_worktree",

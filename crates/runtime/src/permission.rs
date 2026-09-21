@@ -670,12 +670,15 @@ impl PermissionBroker {
                     tool_call_id: tool_call_id.to_owned(),
                     allowed: false,
                 });
+                let asked = yi_permission::Decision::Ask {
+                    title: ask.title.to_owned(),
+                    description: rendered,
+                    reviewable: false,
+                };
                 return CallOutcome {
                     allowed: false,
                     contained: false,
-                    reason: format!(
-                        "Permission required but no interactive surface is available. {rendered} Run with --yolo, or add an allow rule for this call."
-                    ),
+                    reason: crate::gate::Report::reason_of(&crate::gate::compile_ask(asked, false)),
                 };
             }
         };

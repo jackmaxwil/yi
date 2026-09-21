@@ -4,6 +4,8 @@
 #[path = "../../types/tests/support/scratch.rs"]
 mod scratch;
 use scratch::Scratch;
+#[path = "support/family.rs"]
+mod support;
 
 use std::error::Error;
 use std::sync::{Arc, Mutex};
@@ -324,5 +326,42 @@ fn the_plan_directive_leads_whatever_slash_compact_asked_for() -> TestResult {
         .find("keep the auth trace")
         .ok_or("the one-shot half survives")?;
     assert!(ledger < asked, "the caller's own words come last: {merged}");
+    Ok(())
+}
+
+/// Dies with `return_lease` at the record's release: keep the reservation after the reap and a
+/// parent's budget only ever shrinks, so its third child is refused tokens nobody holds.
+#[tokio::test]
+async fn reap_records_the_unspent_lease() -> TestResult {
+    use yi_types::lease::LeaseRecord;
+    let root = Scratch::new("yi-lease-return")?;
+    let store = support::memory_store("lease-return");
+    let family = support::family(root.to_path_buf(), std::env::temp_dir(), store, None);
+    family
+        .host
+        .set_grant(yi_runtime::Wall::default(), Some(5_000));
+    let spawn = |name: &str, tokens: u64| {
+        let mut asked = serde_json::Map::new();
+        asked.insert("name".to_owned(), name.into());
+        asked.insert("tokens".to_owned(), tokens.into());
+        family.host.spawn("work".to_owned(), asked)
+    };
+    spawn("first", 4_000)?;
+    assert!(family.reaches("first", "finished").await);
+    assert!(
+        spawn("early", 4_000).is_err(),
+        "a finished child still holds its lease"
+    );
+    family.host.reap("first")?;
+    let journal = family.journal();
+    let [LeaseRecord::Returned(back)] = &journal[..] else {
+        return Err(format!("the reap records the lease once: {journal:?}").into());
+    };
+    assert_eq!((back.spent, back.unspent), (120, Some(3_880)));
+    let refused = spawn("greedy", 4_881)
+        .err()
+        .ok_or("spent tokens were leased again")?;
+    assert!(refused.contains("4880 of its 5000"), "{refused}");
+    spawn("second", 4_880)?;
     Ok(())
 }

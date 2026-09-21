@@ -44,10 +44,9 @@ pub(crate) struct ChildRecord {
     pub(crate) managed: bool,
     /// `None` while the run is live; every status, state and notice is read from it.
     pub(crate) exit: Option<ChildExit>,
-    /// Admitted and not yet polled: cleared by the run's first step.
-    pub(crate) queued: bool,
-    /// Set under the lock before a repossession stops the run, so the run's own exit is mute.
-    pub(crate) repossessing: bool,
+    pub(crate) phase: crate::family::Phase,
+    pub(crate) lease: yi_types::lease::Lease,
+    pub(crate) parent_close: yi_types::lease::ParentClose,
     activity: ChildActivity,
     tool_use_count: u64,
     token_count: u64,
@@ -66,11 +65,21 @@ pub(crate) struct ChildRecord {
 pub(crate) struct Children {
     records: HashMap<String, ChildRecord>,
     pub(crate) epoch: u64,
-    /// Names whose child is being built outside the lock; each holds a slot and its name.
-    building: Vec<String>,
+    /// Children being built outside the lock; each holds a slot, its name and its tokens.
+    building: Vec<(String, u64)>,
 }
 
 impl Children {
+    /// Tokens out on lease: every record still held, and every build in flight.
+    pub(crate) fn reserved(&self) -> u64 {
+        let held = self
+            .records
+            .values()
+            .filter_map(|record| record.lease.tokens);
+        held.chain(self.building.iter().map(|(_, tokens)| *tokens))
+            .fold(0, u64::saturating_add)
+    }
+
     /// A reaped record still moves the epoch, so an older cursor wakes and re-reads `states`.
     pub(crate) fn touch(&mut self, key: &str) -> u64 {
         self.epoch = self.epoch.saturating_add(1);
@@ -111,6 +120,9 @@ pub struct ChildBuild<'a> {
     pub cwd: Option<&'a Path>,
     pub link: ParentLink,
     pub wall: crate::wall::Wall,
+    /// The child's lease: its own clock and the tokens its own children may draw on.
+    pub deadline: Option<std::time::Duration>,
+    pub tokens: Option<u64>,
 }
 
 pub type ChildFactory = dyn Fn(ChildBuild<'_>) -> Result<AgentSession, String> + Send + Sync;
@@ -159,6 +171,8 @@ pub struct SubagentHost {
     /// under a `sub-*` directory no session repo scans, so it is kept by name here.
     pub(crate) reaped: Mutex<HashMap<String, yi_session::SharedSession>>,
     pub(crate) mail: Mutex<crate::mail::Desk>,
+    /// Lock order: `mail`, then `children`, then `grant`, then a session store.
+    pub(crate) grant: Mutex<crate::lease::Grant>,
 }
 
 impl SubagentHost {
@@ -339,6 +353,9 @@ fn require_kwargs(kwargs: &Map<String, Value>) -> Result<(), String> {
                     | "deny_url"
                     | "context"
                     | "check"
+                    | "deadline_s"
+                    | "tokens"
+                    | "parent_close"
             )
         })
         .collect();
@@ -395,8 +412,8 @@ pub(crate) fn last_assistant_text(messages: &[AgentMessage]) -> Option<String> {
     })
 }
 
-/// How a settled run ended, read off its last assistant message; a run the deadline stopped
-/// mid-task ends on a tool call nobody ran.
+/// How a settled run ended, read off its last assistant message; a run a cancel or the
+/// deadline stopped at a message boundary ends on a tool call with no request after it.
 fn exit_of(session: &AgentSession) -> (ChildExit, Option<String>) {
     let messages = session.messages();
     let last = messages.iter().rev().find_map(|message| match message {
@@ -420,6 +437,9 @@ fn exit_of(session: &AgentSession) -> (ChildExit, Option<String>) {
             ),
         ),
         Some((StopReason::Aborted, _)) => (ChildExit::Interrupted, Some(INTERRUPTED.to_owned())),
+        Some((StopReason::ToolUse, _)) if session.cancelled() => {
+            (ChildExit::Interrupted, Some("cancelled".to_owned()))
+        }
         Some((StopReason::ToolUse, _)) if out_of_clock => (
             ChildExit::Failed {
                 class: FailClass::Deadline,
@@ -439,6 +459,7 @@ impl SubagentHost {
             children: Mutex::new(Children::default()),
             reaped: Mutex::new(HashMap::new()),
             mail: Mutex::default(),
+            grant: Mutex::default(),
         }
     }
 
@@ -547,7 +568,10 @@ impl SubagentHost {
         let isolation = parse_isolation(&kwargs)?;
         let check = optional_string(&kwargs, "check")?;
         let context = crate::mailbox::context_block(&kwargs)?;
-        let wall = crate::wall::Wall::from_kwargs(&kwargs, &self.options.cwd)?;
+        let ask = crate::lease::Ask::from_kwargs(&kwargs)?;
+        // Walls only shrink: the child's is its own under everything this host is walled by.
+        let wall = crate::wall::Wall::from_kwargs(&kwargs, &self.options.cwd)?
+            .under(&self.grant.lock().map_err(|_| "lease state poisoned")?.wall);
         if fork == Fork::All && (requested_model.is_some() || thinking.is_some()) {
             return Err(
                 "fork=all inherits the parent's model and thinking; drop the override".to_owned(),
@@ -579,7 +603,10 @@ impl SubagentHost {
         let (session_dir, child_id) = self.create_child_dir(&self.options.parent_session_dir)?;
         let session_name =
             requested_name.unwrap_or_else(|| default_session_name(&prompt, &child_id));
-        let reserved = self.reserve(&session_name, &session_dir)?;
+        let (reserved, lease) = self.reserve(&session_name, &session_dir, &ask)?;
+        let clock = lease
+            .deadline_ms
+            .map(|ends| std::time::Duration::from_millis(ends.saturating_sub(lease.granted_at)));
         let (worktree, lane_permit) = match isolation {
             Isolation::None => (None, None),
             Isolation::Worktree => {
@@ -597,7 +624,12 @@ impl SubagentHost {
                 host: Arc::downgrade(self),
             },
             wall,
+            deadline: clock,
+            tokens: lease.tokens,
         })?;
+        if let Some(clock) = clock {
+            child.set_deadline(clock);
+        }
         // Invariant: a child that runs unrecorded leaves nothing to read
         // when it fails, so a transcript it cannot open refuses the spawn.
         let cwd = worktree
@@ -633,8 +665,9 @@ impl SubagentHost {
                     disposition: None,
                     managed: false,
                     exit: None,
-                    queued: true,
-                    repossessing: false,
+                    phase: crate::family::Phase::Queued,
+                    lease,
+                    parent_close: ask.parent_close,
                     activity: ChildActivity::Waiting,
                     tool_use_count: 0,
                     token_count: 0,
@@ -788,7 +821,7 @@ impl SubagentHost {
                             .map(|store| crate::family::recent_entries(&store))
                             .unwrap_or_default();
                         let (state, note, idle_s) = crate::family::state_from_records(
-                            (record.exit, record.queued),
+                            (record.exit, record.phase),
                             record.error.as_deref(),
                             &record.session.messages(),
                             &recent,
@@ -969,18 +1002,7 @@ impl SubagentHost {
             let host = Arc::clone(&host);
             Box::pin(async move { Ok(host.wait(timeout, cursor).await) })
         });
-        let host = Arc::clone(self);
-        registry.register("rlm.interrupt", move |payload| {
-            let target = payload
-                .get("target")
-                .and_then(Value::as_str)
-                .map(str::to_owned);
-            let host = Arc::clone(&host);
-            Box::pin(async move {
-                let target = target.ok_or("rlm.interrupt requires a target")?;
-                host.interrupt(&target)
-            })
-        });
+        self.register_stops(registry);
         let host = Arc::clone(self);
         registry.register("rlm.result", move |payload| {
             let target = payload

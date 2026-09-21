@@ -16,6 +16,7 @@ pub mod kernel;
 mod kernel_doctor;
 mod kernel_variables;
 pub mod lane;
+pub mod lease;
 mod mail;
 pub mod mailbox;
 pub mod memory;

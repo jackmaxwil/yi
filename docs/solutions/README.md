@@ -191,5 +191,6 @@ when it changes rather than editing them by hand.
 - [D212](adr/d212.md) - shapes are schedulers in user space
 - [D213](adr/d213.md) - a read has pages and the unit is the listing's own
 - [D214](adr/d214.md) - messages are envelopes, written to the receiver's inbox before anything is...
+- [D215](adr/d215.md) - a child ends on one typed exit and holds a lease drawn from its parent
 
 D36-D51, D72, D73 and D74 have no ADR yet; ARCHITECTURE.md is the record for those rows.
