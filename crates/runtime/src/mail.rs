@@ -147,14 +147,16 @@ impl Desk {
         }
     }
 
-    /// Invariant: only a reply from the respondent the request named resolves its waiter, and
-    /// the removal is the one retirement; any other reply is history and nothing more.
+    /// Invariant: only a reply from the respondent the request named, addressed back to the
+    /// sender that asked, resolves a waiter; any other reply is history and nothing more.
     pub(crate) fn resolve(&mut self, envelope: &Envelope) {
         let Some(id) = envelope.in_reply_to.as_ref() else {
             return;
         };
         let answers = self.waiters.get(id).is_some_and(|waiter| {
-            envelope.kind == Kind::Reply && waiter.respondent == envelope.from
+            envelope.kind == Kind::Reply
+                && waiter.respondent == envelope.from
+                && waiter.sender == envelope.to
         });
         if answers && let Some(waiter) = self.waiters.remove(id) {
             let _the_requester_may_have_timed_out = waiter.reply.send(envelope.clone());

@@ -6,12 +6,6 @@ use crate::url::Url;
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct MailId(pub String);
 
-impl MailId {
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
 impl std::fmt::Display for MailId {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter.write_str(&self.0)
