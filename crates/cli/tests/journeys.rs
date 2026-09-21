@@ -368,6 +368,15 @@ fn a_hand_written_plan_lints_resolves_and_answers_why() -> TestResult {
         indexed.contains("Wire the adapter through the staging seam"),
         "the reverse index is the same data: {indexed}"
     );
+
+    // Last, because it breaks the plan: a checkpoint that cannot be read is a damaged plan,
+    // and an unnamed verb says which one rather than reporting an empty directory.
+    std::fs::write(plans.join("ship-the-widget/plan.json"), "{ not json")?;
+    let damaged = journey.refused(&["plan", "lint"])?;
+    assert!(
+        damaged.contains("ship-the-widget"),
+        "an unreadable root is named, not counted as absent: {damaged}"
+    );
     journey.reclaim();
     Ok(())
 }
