@@ -2162,19 +2162,30 @@ clamped; a huge limit is the rest (a `kernel://` page clamps to the cell's
 cap); an offset past the end is an empty last page; a byte offset inside a
 UTF-8 sequence still serves text and `next_offset` always advances. A page is
 refused on `history://<agent>/tail/N`, which the plan did not foresee: every
-fetch appends its own log row, so a tail window slides under the walk. Follow-up,
-not built: `roles.verify_quotes` could read a cited line's neighbourhood
-instead of the whole page, but the digest it pins is the whole page's sha256
-and a page's digest is not interchangeable with it in a stored quote, so that
-needs a digest rule of its own.
+fetch appends its own log row, so a tail window slides under the walk.
+Follow-up, not built: `roles.verify_quotes` could read a cited line's
+neighbourhood instead of the whole page, but the digest it pins is the whole
+page's sha256 and a page's digest is not interchangeable with it in a stored
+quote, so that needs a digest rule of its own.
 
-### F1d · The working model speaks `yi` (no D-row; amends D166's text)
+### F1d · The working model speaks `yi` (no D-row, landed 0.273.0; amends D166's text)
 
 `orchestrate.md` examples become `yi` programs (about the same bytes: the
 fan-out and writer examples shrink; `help(yi)` named once); `doctrine.md`
 rule 3 names the program; `identity.md` names `yi`. `request_budget`
 `--update` in its own commit named in the row. Tests: `prompts.rs` (every
 identifier defined in its example), `ext_e2e::fragment_examples_name_real_kernel_apis`.
+
+**As landed.** The reader fan-out is a `scatter` plan and the writer example
+a `fork_join` plan; a reader's question rides `Reader(note=)`, because the
+host's brief carries the label, role, acceptance, context and note and a label
+is eighty characters. Bytes: `orchestrate.md` 8,144 to 7,993, `doctrine.md`
+21,770 to 21,765, `identity.md` unchanged at 5,628; the request budget 48,187
+to 48,182. One control was added: `test_prompt_programs.py` runs every block
+of a fragment that imports `yi` against the fake host to `verified_success`,
+which is what "would actually run" means short of a real kernel. `prompts.rs`
+reads `shapes.ANSWER` as an attribute, not a constant the block owes, and
+prices a run's `budget=` against the cell ceiling (both examples say `"8m"`).
 
 ### F1e · Every child exit is published once, and clients reconcile (D210, landed 0.269.0; extends D165)
 

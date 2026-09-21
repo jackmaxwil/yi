@@ -54,54 +54,50 @@ large task reaches for before any plan exists. Writers when tasks are
 independent (no shared files, no dep edges) and each is big enough to
 justify a child session; parallel writers need separate worktrees.
 
+A plan you hand out is a `yi` program in the kernel: todos with a
+delegate and a contract, run by a shape; `help(yi)` has the rest. The host
+admits, spawns, verifies at `done` and merges a worktree; read
+`run.outcome`, and keep `budget` under the cell's ten minutes.
+
 A reader brief is one question, the places to look, what not to conclude,
-and the findings shape. Every claim carries the quoted line; open the
+and the findings shape. `scatter` binds each reader to a partition and
+hands your `lead` only answers whose quoted lines it found there; open a
 cited line yourself before building on it.
 
-    FINDINGS = {"type": "object", "required": ["findings"],
-                "properties": {"findings": {"type": "array", "items": {
-                    "type": "object", "required": ["path", "line", "claim", "evidence"],
-                    "properties": {"path": {"type": "string"}, "line": {"type": "integer"},
-                                   "claim": {"type": "string"}, "evidence": {"type": "string"}}}}}}
-    areas = {"auth": "crates/auth/**", "storage": "crates/store/**", "cli": "crates/cli/**"}
-    readers, findings = {}, {}
-    for name, scope in areas.items():
-        readers[name] = await rlm.run(
-            f"Read {scope} only. Question: where is a session token minted, stored and checked? "
-            f"Report JSON matching FINDINGS: one finding per site, `evidence` is the quoted line.",
-            name=f"read-{name}", deny_write=["."])
-    while readers:
-        for name in (await rlm.wait(120))["updated"]:
-            r = await readers.pop(name).result(schema=FINDINGS, timeout=420)
-            findings[name] = r["json"]["findings"]
-            await rlm.delete_subagent(name)
+    from yi import Plan, Reader, contract, schema, scatter, shapes
+    areas = {"auth": "local://crates/auth", "storage": "local://crates/store", "cli": "local://crates/cli"}
+    plan = await Plan.create("map the session token")
+    for name, root in areas.items():
+        ask = "Where is a session token minted, stored and checked? Quote each line; conclude nothing."
+        await plan.todo(key=name, delegate=Reader(partition=[root], note=ask),
+                        accept=contract(schema(shapes.ANSWER, critical=True)))
+    async def lead(answers, number):
+        return {"commit": answers} if answers else {"ask": "Quote the line that mints it."}
+    await plan.todo(key="lead", run=lead, accept=contract(schema({"type": "object"}, critical=True)))
+    run = await plan.run(shape=scatter, budget="8m")
 
 A writer brief is decision-complete: the task's title, acceptance, and
-check verbatim; exact files in and out of scope; binding constraints; how
-to report (a JSON shape with named keys; blockers as facts, not
-questions). A child is a persistent session, not a stateless call: it can
-send you a line mid-run, and you can message it again after it reports.
+check verbatim; exact files in and out of scope; binding constraints;
+blockers reported as facts, not questions. The check is the todo's
+contract, so `done` runs it, not the child. A child is a persistent
+session, not a stateless call: it can send you a line mid-run, and you can
+message it again after it reports.
 
-    SCHEMA = {"type": "object", "required": ["outcome", "files", "check"],
-              "properties": {"outcome": {"type": "string"},
-                             "files": {"type": "array", "items": {"type": "string"}},
-                             "check": {"type": "string"}}}
-    brief = """Port crates/foo to the new API.
-    Acceptance: `cargo test -p foo` exits 0.
-    Scope: crates/foo/** only; do not touch crates/bar.
-    Report as JSON: {"outcome": one line, "files": changed paths, "check": the command you ran and its last line}."""
-    h = await rlm.run(brief, name="foo", isolation="worktree", context_keys=["api_notes"])
-    moved = await rlm.wait(120)
-    r = await h.result(schema=SCHEMA, timeout=420)
-    await rlm.merge_worktree("foo")
-    await rlm.delete_subagent("foo")
+    from yi import Plan, Writer, contract, cmd, fork_join
+    plan = await Plan.create("port foo and bar to the new API")
+    for name in ("foo", "bar"):
+        brief = f"Port crates/{name} to the new API. Scope: crates/{name}/** only. Read kernel://main/api_notes."
+        await plan.todo(key=name, delegate=Writer(deny_write=["docs/"], note=brief),
+                        accept=contract(cmd(f"cargo test -p {name}", critical=True)))
+    run = await plan.run(shape=fork_join, budget="8m")
+    print(run.outcome, run.refusals)
 
-Fan out by spawning all, then one `rlm.wait` loop until every handle
-resolves, eight at a time, reaping readers as they land. `fork` only hands
-a child a thread it must continue; a fresh brief beats inherited context
-for independent work. Pass `deny_write` on the acceptance instrument so a
-child reports a mismatch instead of editing the standard. While children
-run, keep working the tasks you kept.
+A shape starts what is ready up to the host's admission count and settles
+children as they land; a second `plan.run` with the same shape attaches to
+the first. `fork` only hands a child a thread it must continue; a fresh
+brief beats inherited context for independent work. Pass `deny_write` on
+the acceptance instrument so a child reports a mismatch instead of editing
+the standard. While children run, keep working the tasks you kept.
 
 Context reaches a child four ways: `context_keys` for what you computed
 (the brief), `kernel://main/<var>` for what is live, `family://<name>`
