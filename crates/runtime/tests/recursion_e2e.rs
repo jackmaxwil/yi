@@ -983,10 +983,16 @@ async fn request_returns_the_matching_reply_and_times_out_without_one() -> TestR
     harness
         .host
         .send("bystander", &reply("not mine to answer"))?;
+    let elsewhere = [
+        ("target", "bystander"),
+        ("message", "meant for a sibling"),
+        ("reply_to", "parent-1"),
+    ];
+    harness.host.send("oracle", &kwargs(&elsewhere))?;
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     assert!(
         !asking.is_finished(),
-        "only the respondent the request named resolves it"
+        "only the named respondent, answering the sender that asked, resolves a request"
     );
     harness.host.send("oracle", &reply("the fetch suite"))?;
     let answer = asking.await??;
@@ -1010,7 +1016,7 @@ async fn request_returns_the_matching_reply_and_times_out_without_one() -> TestR
         &kwargs(&[
             ("target", "parent"),
             ("message", "late"),
-            ("reply_to", "parent-4"),
+            ("reply_to", "parent-5"),
         ]),
     )?;
     let inbox = harness.inbox.lock().map_err(|_| "poisoned")?.clone();
