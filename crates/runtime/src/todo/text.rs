@@ -203,7 +203,7 @@ pub fn checklist(list: &TodoList) -> Vec<String> {
 }
 
 fn moves(item: &TodoItem) -> Option<String> {
-    let state = format!("todo_state({})", item.state.as_str());
+    let state = format!("{}({})", yi_types::graph::TODO_STATE, item.state.as_str());
     let facts = crate::affordance::Facts {
         holds: &[state.as_str()],
         name: &name(item),

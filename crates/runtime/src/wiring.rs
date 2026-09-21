@@ -759,10 +759,9 @@ fn wire_compacted(
             let file = handle
                 .as_ref()
                 .and_then(|store| yi_session::lock_session(store).file_path().cloned());
-            let kept = if file.is_some() {
-                "session_on_disk"
-            } else {
-                "session_in_memory"
+            let kept = match file.is_some() {
+                true => yi_types::graph::SESSION_ON_DISK,
+                false => yi_types::graph::SESSION_IN_MEMORY,
             };
             notice(&crate::affordance::next("compact.run", &[kept], ""));
             crate::advisor::note_last_compaction(advisor.as_deref(), handle.as_ref());

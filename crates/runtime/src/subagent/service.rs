@@ -61,7 +61,7 @@ pub(super) fn handle(
     let reply = serde_json::json!({
         "rlm_child_id": key,
         // A service is admitted through the same spawn, so both requests localize at `rlm.run`.
-        "next": crate::affordance::next("rlm.run", &["child_state(running)"], name),
+        "next": crate::affordance::next("rlm.run", &[yi_types::graph::CHILD_RUNNING], name),
         "name": name,
         "session_dir": session_dir.to_string_lossy(),
         "model": format!("{}/{}", model.provider, model.id),

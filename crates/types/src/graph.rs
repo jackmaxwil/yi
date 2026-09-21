@@ -10,33 +10,48 @@ pub const MAX_GUIDANCE_BYTES: usize = 160;
 pub const MAX_PITFALLS: usize = 3;
 pub const MAX_PITFALL_BYTES: usize = 120;
 
+/// Invariant: a fact a seam asserts is spelled once here and the table below admits that same
+/// spelling, so a mistyped fact cannot compile into a line that silently never fires.
+pub const RESULT_OK: &str = "result_ok";
+pub const RESULT_ERROR: &str = "result_error";
+pub const TODO_STATE: &str = "todo_state";
+pub const CHILD_STATE: &str = "child_state";
+pub const CHILD_RUNNING: &str = "child_state(running)";
+pub const CHILD_FINISHED: &str = "child_state(finished)";
+pub const COROUTINE_UNAWAITED: &str = "coroutine_unawaited";
+pub const METHOD_AWAITED: &str = "method_awaited";
+pub const LISTING_NAME_MISSED: &str = "listing_name_missed";
+pub const GRID_ANSWER_EMPTY: &str = "grid_answer_empty";
+pub const SESSION_ON_DISK: &str = "session_on_disk";
+pub const SESSION_IN_MEMORY: &str = "session_in_memory";
+
 /// The closed predicate set: a name, and the space-separated arguments it takes one of.
 /// Invariant: the host asserts these as facts at a seam; no model evaluates one.
 pub const PREDICATES: &[(&str, &str)] = &[
     ("always", ""),
-    ("result_ok", ""),
+    (RESULT_OK, ""),
     (
-        "result_error",
+        RESULT_ERROR,
         "denied not_found invalid_args aborted stale_tag noop_loop tool_error",
     ),
     ("output_capped", ""),
     ("todo_open", ""),
-    ("todo_state", "running pending blocked"),
+    (TODO_STATE, "running pending blocked"),
     ("plan_ready_nonempty", ""),
     (
-        "child_state",
+        CHILD_STATE,
         "queued running finished failed needs_you stuck repossession_pending",
     ),
     ("blocked_on", "user child external"),
     ("worktree_unmerged", ""),
     ("done_refused", ""),
     ("inbox_nonempty", ""),
-    ("coroutine_unawaited", ""),
-    ("method_awaited", ""),
-    ("listing_name_missed", ""),
-    ("grid_answer_empty", ""),
-    ("session_on_disk", ""),
-    ("session_in_memory", ""),
+    (COROUTINE_UNAWAITED, ""),
+    (METHOD_AWAITED, ""),
+    (LISTING_NAME_MISSED, ""),
+    (GRID_ANSWER_EMPTY, ""),
+    (SESSION_ON_DISK, ""),
+    (SESSION_IN_MEMORY, ""),
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

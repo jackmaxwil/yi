@@ -3,7 +3,9 @@ use std::error::Error;
 use std::path::Path;
 
 use serde_json::{Value, json};
-use yi_types::graph::{Edge, Graph, PREDICATES, Predicate};
+use yi_types::event::ToolErrorKind;
+use yi_types::graph::{self, Edge, Graph, PREDICATES, Predicate};
+use yi_types::plan::doc::TodoStateName;
 
 fn edge(condition: &str) -> Result<Edge, serde_json::Error> {
     serde_json::from_value(json!({"from": "read", "relation": "then", "to": "grep",
@@ -39,6 +41,44 @@ fn an_unknown_predicate_fails_to_parse() -> Result<(), serde_json::Error> {
     ] {
         assert!(edge(unknown).is_err(), "{unknown:?} parsed");
         assert!(Predicate::try_from(unknown.to_owned()).is_err());
+    }
+    Ok(())
+}
+
+/// Invariant: a seam spells its fact with one of these constants, so a typo is caught here
+/// rather than by a line that silently stops firing. The two the seams compose an argument
+/// onto are composed the same way, from the same constant.
+#[test]
+fn every_fact_a_seam_asserts_parses() -> Result<(), String> {
+    let mut facts = vec![
+        graph::RESULT_OK.to_owned(),
+        graph::CHILD_RUNNING.to_owned(),
+        graph::CHILD_FINISHED.to_owned(),
+        graph::COROUTINE_UNAWAITED.to_owned(),
+        graph::METHOD_AWAITED.to_owned(),
+        graph::LISTING_NAME_MISSED.to_owned(),
+        graph::GRID_ANSWER_EMPTY.to_owned(),
+        graph::SESSION_ON_DISK.to_owned(),
+        graph::SESSION_IN_MEMORY.to_owned(),
+    ];
+    let kinds = [
+        ToolErrorKind::Denied,
+        ToolErrorKind::NotFound,
+        ToolErrorKind::InvalidArgs,
+        ToolErrorKind::Aborted,
+        ToolErrorKind::StaleTag,
+        ToolErrorKind::NoopLoop,
+        ToolErrorKind::ToolError,
+    ];
+    facts.extend(kinds.map(|kind| format!("{}({})", graph::RESULT_ERROR, kind.as_str())));
+    let states = [
+        TodoStateName::Running,
+        TodoStateName::Pending,
+        TodoStateName::Blocked,
+    ];
+    facts.extend(states.map(|state| format!("{}({})", graph::TODO_STATE, state.as_str())));
+    for fact in facts {
+        Predicate::try_from(fact)?;
     }
     Ok(())
 }
