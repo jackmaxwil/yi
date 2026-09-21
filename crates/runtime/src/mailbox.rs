@@ -253,10 +253,12 @@ impl SubagentHost {
         from: &str,
         draft: &Draft,
     ) -> Result<Value, String> {
+        let mut incarnation = None;
         if let Ok(mut children) = self.children.lock()
             && let Ok(key) = Self::key_of(&children, from)
             && let Some(record) = children.get_mut(&key)
         {
+            incarnation = record.standing.incarnation();
             let mut moved = record.step(Step::Replied);
             if draft.kind == Kind::Failure {
                 // The child's own verdict on its work: `wait` reports it failed from here on.
@@ -266,7 +268,7 @@ impl SubagentHost {
                 children.touch(&key);
             }
         }
-        let envelope = desk.seal(from, PARENT_NAME, draft);
+        let envelope = desk.seal((from, PARENT_NAME), (incarnation, None), draft);
         if let Some(store) = (self.options.store)() {
             crate::mail::inbox(&store, &envelope)?;
         }
@@ -314,7 +316,12 @@ impl SubagentHost {
                 }
             ));
         };
-        let envelope = desk.seal(from, name, draft);
+        let incarnation_of = |name: &str| {
+            let key = Self::key_of(&children, name).ok()?;
+            children.get(&key)?.standing.incarnation()
+        };
+        let between = (incarnation_of(from), incarnation_of(name));
+        let envelope = desk.seal((from, name), between, draft);
         crate::mail::inbox(&store, &envelope)?;
         desk.resolve(&envelope);
         let message = crate::mail::present(&envelope);

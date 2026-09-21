@@ -69,6 +69,9 @@ struct Harness {
     entries: Arc<Mutex<Vec<AgentMessage>>>,
     store: yi_session::SharedSession,
     root: Scratch,
+    /// One per build, oldest first: 1 ends that child's first reply on a provider error, 2 its
+    /// second; a build that finds none answers.
+    faults: Arc<Mutex<std::collections::VecDeque<u8>>>,
 }
 
 struct HarnessOptions {
@@ -178,6 +181,8 @@ fn harness_with(options: HarnessOptions) -> std::io::Result<Harness> {
     let store_handle = store.clone();
     let parent: Arc<Mutex<Vec<AgentMessage>>> = Arc::new(Mutex::new(Vec::new()));
     let parent_source = Arc::clone(&parent);
+    let faults: Arc<Mutex<std::collections::VecDeque<u8>>> = Arc::default();
+    let fault_source = Arc::clone(&faults);
     let host = Arc::new(SubagentHost::new(SubagentHostOptions {
         depth,
         max_depth,
@@ -201,13 +206,18 @@ fn harness_with(options: HarnessOptions) -> std::io::Result<Harness> {
                     StopReason::ToolUse,
                 ));
             }
-            if child_errors {
-                script.push(faux_assistant_message(
-                    vec![faux_text(child_answer)],
-                    StopReason::Error,
-                ));
+            let fault = fault_source
+                .lock()
+                .ok()
+                .and_then(|mut faults| faults.pop_front());
+            let error = faux_assistant_message(vec![faux_text(child_answer)], StopReason::Error);
+            if child_errors || fault == Some(1) {
+                script.push(error.clone());
             }
             script.push(child_reply(child_answer));
+            if fault == Some(2) {
+                script.push(error);
+            }
             // A second scripted reply so a B13 followup has a turn to run.
             script.push(child_reply(child_answer));
             provider.queue_faux(script);
@@ -271,6 +281,7 @@ fn harness_with(options: HarnessOptions) -> std::io::Result<Harness> {
         entries,
         store,
         root,
+        faults,
     })
 }
 
@@ -1170,6 +1181,236 @@ async fn a_child_that_messaged_its_parent_finishes_without_the_silent_note() -> 
         "a child that reported is not told it stayed silent: {}",
         notices[0]
     );
+    Ok(())
+}
+
+fn service_row(harness: &Harness, name: &str) -> Value {
+    let status = harness.host.status();
+    let members = status["members"].as_array().cloned().unwrap_or_default();
+    let found = members.into_iter().find(|member| member["name"] == name);
+    found.unwrap_or_default()
+}
+
+async fn serves(harness: &Harness, name: &str, incarnation: u64, state: &str) -> bool {
+    for _ in 0..POLL_ATTEMPTS {
+        let row = service_row(harness, name);
+        if row["incarnation"] == incarnation && row["state"] == state {
+            return true;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(POLL_INTERVAL_MS)).await;
+    }
+    false
+}
+
+/// F3c. Dies with the control: retire the crashed record and the name is free for `rlm.run`
+/// and the inbox is a new file; keep the waiter and incarnation 2 answers a request put to 1;
+/// drop the stamps and nothing in the kept inbox says whose conversation a message was.
+#[tokio::test]
+async fn a_service_respawns_under_its_name_and_keeps_its_inbox() -> TestResult {
+    let harness = harness_with(HarnessOptions {
+        child_errors: false,
+        depth: 0,
+        max_depth: 1,
+        child_answer: "serving",
+        tool_command: Some("sleep 1"),
+        cwd: None,
+        wake_parent: None,
+    })?;
+    harness.faults.lock().map_err(|_| "poisoned")?.push_back(1);
+    let brief = "serve the index".to_owned();
+    let handle = harness
+        .host
+        .service("index", brief.clone(), Map::new(), 3)?;
+    assert!(serves(&harness, "index", 1, "running").await);
+    assert_eq!(service_row(&harness, "index")["service"], true);
+
+    let first = harness
+        .host
+        .route("parent", "index", "for the first", false)?;
+    assert_eq!(first["receipts"][0]["target"], "index");
+    let host = Arc::clone(&harness.host);
+    let parked = tokio::spawn(async move { host.request("parent", "index", "ping", 8_000).await });
+    let taken = harness
+        .host
+        .spawn("an ordinary child".to_owned(), kwargs(&[("name", "index")]));
+    assert!(taken.is_err_and(|refusal| refusal.contains("already taken")));
+    // The kernel's road: `rlm.service` on the registry, which is what `rlm.service(...)` sends.
+    use yi_kernel::client::HostHandlers as _;
+    let mut registry = yi_runtime::HostRegistry::default();
+    harness.host.register(&mut registry);
+    let payload = serde_json::json!({"name": "index", "prompt": brief, "restart": 3, "kwargs": {}});
+    let asked = registry.dispatch(
+        "rlm.service",
+        payload.as_object().cloned().ok_or("payload")?,
+    );
+    let again = asked.ok_or("rlm.service is not registered")?.await?;
+    assert_eq!(
+        (&again["rlm_child_id"], &again["attached"]),
+        (&handle["rlm_child_id"], &Value::Bool(true)),
+        "the same brief attaches"
+    );
+    let other = harness
+        .host
+        .service("index", "serve something else".to_owned(), Map::new(), 3);
+    assert!(other.is_err_and(|refusal| refusal.contains("another brief")));
+
+    assert!(
+        serves(&harness, "index", 2, "finished").await,
+        "{:?}",
+        service_row(&harness, "index")
+    );
+    let refused = parked.await?.err().unwrap_or_default();
+    assert!(
+        refused.contains("\"index\" was respawned before it replied"),
+        "{refused}"
+    );
+    assert_eq!(
+        harness.host.children_view().len(),
+        1,
+        "a respawn never duplicates"
+    );
+    harness
+        .host
+        .route("parent", "index", "for the second", false)?;
+    let inbox = inbox_of(&harness, "index")?;
+    let addressed = |body: &str, incarnation: u32| {
+        let stamp = format!("\"toIncarnation\":{incarnation}");
+        inbox
+            .iter()
+            .any(|entry| entry.contains(body) && entry.contains(&stamp))
+    };
+    assert!(
+        addressed("for the first", 1) && addressed("ping", 1),
+        "{inbox:?}"
+    );
+    assert!(addressed("for the second", 2), "{inbox:?}");
+
+    let desk =
+        yi_runtime::fetch::SessionTranscripts::new(Arc::clone(&harness.host), None, &harness.root);
+    let resolver =
+        yi_runtime::fetch::Resolver::new(harness.root.to_path_buf(), yi_runtime::Wall::default())
+            .with_transcripts(Arc::new(desk));
+    let history = resolver.fetch(&"history://index".parse()?)?.text;
+    assert_eq!(
+        history.matches("serve the index").count(),
+        2,
+        "one chain, both runs: {history}"
+    );
+    assert!(history.contains("[incarnation 2 of service"), "{history}");
+    let told = harness.notices.lock().map_err(|_| "poisoned")?.join("\n");
+    assert!(
+        !told.contains("index"),
+        "a respawn and an idle service are no ending: {told}"
+    );
+    Ok(())
+}
+
+/// Dies with the control: drop the intensity and the third crash respawns; clamp the lease
+/// and a parent out of clock still gets a fresh incarnation.
+#[tokio::test]
+async fn a_service_out_of_restarts_or_lease_ends_failed_and_says_so() -> TestResult {
+    let harness = harness(0, 1, "serving")?;
+    harness
+        .faults
+        .lock()
+        .map_err(|_| "poisoned")?
+        .extend([1, 1]);
+    harness
+        .host
+        .service("index", "serve".to_owned(), Map::new(), 1)?;
+    assert!(
+        serves(&harness, "index", 2, "failed").await,
+        "{:?}",
+        service_row(&harness, "index")
+    );
+    let told = harness.notices.lock().map_err(|_| "poisoned")?.join("\n");
+    assert!(
+        told.contains("not respawned: 1 restarts within 600 s are spent"),
+        "{told}"
+    );
+
+    let harness = harness_with(HarnessOptions {
+        child_errors: true,
+        depth: 0,
+        max_depth: 1,
+        child_answer: "serving",
+        tool_command: Some("sleep 1"),
+        cwd: None,
+        wake_parent: None,
+    })?;
+    harness
+        .host
+        .service("index", "serve".to_owned(), Map::new(), 3)?;
+    assert!(serves(&harness, "index", 1, "running").await);
+    harness.host.set_deadline(Some(std::time::Instant::now()));
+    assert!(
+        serves(&harness, "index", 1, "failed").await,
+        "{:?}",
+        service_row(&harness, "index")
+    );
+    let told = harness.notices.lock().map_err(|_| "poisoned")?.join("\n");
+    assert!(
+        told.contains("not respawned: the parent's own deadline has passed"),
+        "{told}"
+    );
+    Ok(())
+}
+
+/// Dies with the control: leave woken turns unread and the first half never reaches
+/// incarnation 2; let a close leave the service standing and the second half does.
+#[tokio::test]
+async fn a_woken_crash_respawns_and_a_parent_close_ends_a_service_for_good() -> TestResult {
+    for closes in [false, true] {
+        let harness = harness(0, 1, "serving")?;
+        harness.faults.lock().map_err(|_| "poisoned")?.push_back(2);
+        harness
+            .host
+            .service("index", "serve".to_owned(), Map::new(), 3)?;
+        assert!(serves(&harness, "index", 1, "finished").await);
+        if closes {
+            harness.host.close();
+        }
+        harness.host.route("parent", "index", "wake up", true)?;
+        let (incarnation, state) = if closes {
+            (1, "failed")
+        } else {
+            (2, "finished")
+        };
+        let row = service_row(&harness, "index");
+        assert!(
+            serves(&harness, "index", incarnation, state).await,
+            "{closes}: {row:?}"
+        );
+    }
+    Ok(())
+}
+
+/// Dies with the control: count a service as a worker and the eighth child is refused; seat
+/// it like a juror and a leaf host spawns one past its depth.
+#[tokio::test]
+async fn a_service_is_outside_the_worker_cap_and_under_the_depth_limit() -> TestResult {
+    let leaf = harness(1, 1, "serving")?;
+    let deep = leaf
+        .host
+        .service("index", "serve".to_owned(), Map::new(), 3);
+    assert!(deep.is_err_and(|refusal| refusal.contains("depth limit")));
+    let harness = harness(0, 1, "serving")?;
+    let lane = kwargs(&[("isolation", "worktree")]);
+    let walled = harness.host.service("index", "serve".to_owned(), lane, 3);
+    assert!(walled.is_err_and(|refusal| refusal.contains("parent's tree")));
+    harness
+        .host
+        .service("index", "serve".to_owned(), Map::new(), 3)?;
+    for number in 0..8 {
+        let name = format!("worker-{number}");
+        harness
+            .host
+            .spawn("work".to_owned(), kwargs(&[("name", &name)]))?;
+    }
+    let ninth = harness
+        .host
+        .spawn("work".to_owned(), kwargs(&[("name", "worker-8")]));
+    assert!(ninth.is_err_and(|refusal| refusal.contains("child limit")));
     Ok(())
 }
 

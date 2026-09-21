@@ -54,6 +54,8 @@ pub(crate) enum Step<'a> {
     Repossess,
     Pending(String),
     Exit(ChildExit, Option<String>),
+    /// A service's next incarnation took the record: the run before it is no ending.
+    Respawn,
 }
 
 /// A child's own `failure` is the only producer of this class so far (D215).
@@ -113,6 +115,14 @@ impl ChildRecord {
                 // Its run was stopped: a card left mid-tool would show work nothing is doing.
                 self.activity = ChildActivity::Waiting;
                 self.error = Some(reason);
+                true
+            }
+            Step::Respawn => {
+                self.phase = Phase::Queued;
+                (self.exit, self.error, self.replied) = (None, None, false);
+                // The lease was returned on the last incarnation's count and drawn again.
+                self.token_count = 0;
+                self.activity = ChildActivity::Waiting;
                 true
             }
             Step::Replied => !std::mem::replace(&mut self.replied, true),

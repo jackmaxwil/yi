@@ -44,7 +44,13 @@ impl Kind {
 pub struct Envelope {
     pub id: MailId,
     pub from: String,
+    /// Which run of a service under its name sent or is addressed, counted from one and
+    /// filled by the host: `None` from a member that is no service, and to whoever holds `to`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from_incarnation: Option<u32>,
     pub to: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub to_incarnation: Option<u32>,
     pub kind: Kind,
     pub conversation: MailId,
     #[serde(default, skip_serializing_if = "Option::is_none")]
