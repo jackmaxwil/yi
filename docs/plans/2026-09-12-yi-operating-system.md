@@ -2333,14 +2333,17 @@ delivery attempt: `queued` only when a live turn will drain it, else `woken`
 As landed (0.274.0, D214). The three receipt tests filed above under `mailbox::`
 live in `recursion_e2e`: a receipt of `queued` needs a child whose turn is held
 open, and that faux child already exists there, so they are T1. Measured growth is
-+463 Rust `src` lines (yi-types 83, yi-runtime 380) and 82 of Python. Where the
++462 Rust `src` lines (yi-types 77, yi-runtime 385) and 82 of Python. Where the
 landing differs from sections 7.1 to 7.3:
 
 - A plain `inform` starts no turn unless `followup=True`, as `rlm.send` always
   documented and section 7.2's last paragraph says; the table's "wakes: yes" for
   `inform` holds for the followup spelling. To an idle or finished child a plain
   send answers `inboxed` and also waits on the follow-up queue, so the next turn
-  anyone starts presents it. `request`, `reply`, `failure` and `cancel` wake.
+  anyone starts presents it; mid-turn it answers `queued`, and that word is read
+  under the session's status lock as the message is pushed, never from a status
+  read that could race the turn's end. `request`, `reply`, `failure` and `cancel`
+  wake, through the one admission that settles it.
 - `from_incarnation` and `to_incarnation` are not on the envelope: no name is
   respawned before F3c, which adds them with the thing they distinguish.
 - `presented_at` is not a second custom record: the presented message is the
@@ -2353,7 +2356,9 @@ landing differs from sections 7.1 to 7.3:
   never told the name its family knows it by; `yi.mail.inbox()` defaults to it.
 - A message to the parent keeps the receipt word `delivered`: the report hook
   queues or starts the parent's turn and returns nothing, and it has nine
-  constructors. The envelope is still inboxed first.
+  constructors. The envelope is still inboxed first. This is the shape, not a
+  deferral: section 7.3's three words describe a receipt for a child, and no
+  later stage is on the hook to widen the hook's signature for a fourth.
 - Left to the stages that need them: the cancel flag in the child's loop and
   `failed` from a `failure` envelope (F2b), `progress` into `status().note`,
   progress coalescing, a bound on inbox growth, reserved capacity for control
