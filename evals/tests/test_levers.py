@@ -53,5 +53,70 @@ class Gates(unittest.TestCase):
         self.assertEqual(levers.selfcheck(), [])
 
 
+class Search(unittest.TestCase):
+    """A synthetic runner: a run under `knob` spends `saves(repetition)` fewer tokens a task."""
+
+    def runner(self, saves, reward=1, knob="plan.width_max"):
+        self.calls = []
+
+        def run(overrides, tasks):
+            self.calls.append(dict(overrides))
+            turn = sum(1 for call in self.calls if call == overrides) - 1
+            moved = overrides.get(knob, 8) != 8
+            spent = 1000 - (saves(turn) if moved else 0)
+            return rows({task: reward if moved else 1 for task in tasks}, tokens=spent,
+                        cost=spent / 1000, wall=spent / 100)
+        return run
+
+    def compare(self, run, value=4, tasks=("alpha", "beta", "gamma"), k=3, lever="plan.width_max"):
+        return levers.compare(lever, value, list(tasks), run, FLOORS, levers.manifest(), k=k)
+
+    def test_a_comparison_reports_its_interval(self):
+        result = self.compare(self.runner(lambda turn: 100 + 10 * turn))
+        point, = result["points"]
+        tokens = point["intervals"]["tokens"]
+        self.assertEqual((point["verdict"], point["reason"], point["levers"]), ("better", None, {"plan.width_max": 4}))
+        self.assertEqual((tokens["pairs"], tokens["low"], tokens["median"], tokens["high"]), (9, -120, -110, -100))
+        self.assertGreaterEqual(tokens["confidence"], 0.95)
+        self.assertEqual(result["spend"], {"runs": 6, "trials": 18})
+        self.assertEqual(self.calls, [{}, {"plan.width_max": 4}, {"plan.width_max": 4}, {}, {}, {"plan.width_max": 4}])
+        # Two pairs that both saved tokens are a point estimate, not a win: the interval covers 0.5.
+        thin, = self.compare(self.runner(lambda turn: 100), tasks=("alpha", "beta"), k=1)["points"]
+        self.assertEqual((thin["verdict"], thin["intervals"]["tokens"]["confidence"]), ("inconclusive", 0.5))
+        noisy, = self.compare(self.runner(lambda turn: (300, -100, -150)[turn]))["points"]
+        self.assertEqual(noisy["verdict"], "inconclusive")
+        self.assertLess(noisy["intervals"]["tokens"]["low"], 0)
+        self.assertGreater(noisy["intervals"]["tokens"]["high"], 0)
+        failing, = self.compare(self.runner(lambda turn: 500, reward=0))["points"]
+        self.assertEqual((failing["verdict"], failing["reason"]), ("rejected", "below_floor:code"))
+
+    def test_a_grid_refuses_a_knob_marked_not_tunable(self):
+        run, listed = self.runner(lambda turn: 100), levers.manifest()
+        with self.assertRaisesRegex(levers.Refused, "plan.spawn_cap is not tunable: a fuse"):
+            levers.grid({"plan.width_max": [4], "plan.spawn_cap": [32]}, ["alpha"], run, FLOORS, listed)
+        with self.assertRaisesRegex(levers.Refused, "is 15 runs; the bound is 12"):
+            levers.grid({"plan.width_max": [2, 4], "todo.nudge_work": [8, 16]}, ["alpha"], run, FLOORS, listed, max_runs=12)
+        with self.assertRaisesRegex(levers.Refused, "1 to 5 knobs"):
+            levers.grid({name: [row["min"]] for name, row in list(listed.items())[:6]}, ["alpha"], run, FLOORS, listed)
+        with self.assertRaisesRegex(levers.Refused, "'omega' has no class"):
+            levers.grid({"plan.width_max": [4]}, ["omega"], run, FLOORS, listed)
+        self.assertEqual(self.calls, [], "a refused grid spends nothing")
+        result = levers.grid({"plan.width_max": [4, 8], "todo.nudge_work": [12, 16]}, ["alpha", "beta", "gamma"],
+                             run, FLOORS, listed, k=2)
+        self.assertEqual(len(result["points"]), 3, "the point that is all defaults is the baseline, not a candidate")
+        self.assertEqual((result["spend"]["runs"], len(self.calls)), (8, 8))
+        self.assertEqual(len(result["survivors"]), 2, "the two points that move the knob tie; the third saved nothing")
+
+    def test_a_candidate_outside_its_range_is_refused(self):
+        run = self.runner(lambda turn: 100)
+        for value, lever in ((17, "plan.width_max"), (0, "plan.width_max"), (True, "plan.width_max"),
+                             (4.5, "plan.width_max"), (4, "plan.width_maxx")):
+            with self.assertRaisesRegex(levers.Refused, "integer in 1..16|unknown lever"):
+                self.compare(run, value=value, lever=lever)
+        with self.assertRaisesRegex(levers.Refused, "every point is the defaults"):
+            self.compare(run, value=8)
+        self.assertEqual(self.calls, [])
+
+
 if __name__ == "__main__":
     unittest.main()
