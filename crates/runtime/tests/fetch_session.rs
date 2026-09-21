@@ -170,10 +170,27 @@ fn a_capped_read_names_the_next_offset_and_the_next_page_continues_it() -> TestR
 #[test]
 fn a_walk_of_this_sessions_own_history_ends_at_a_limit_of_one() -> TestResult {
     let (_workspace, resolver, _store) = paged_workspace()?;
-    for url in ["history://main", "history://main/since/0"] {
+    let inbox = "history://self/since/0/custom/note";
+    for url in [
+        "history://main",
+        "history://main/since/0",
+        "history://self",
+        inbox,
+    ] {
         let walked = walk(&resolver, url, 1, "\n")?;
         assert_eq!(resolver.fetch(&url.parse()?)?.text, walked, "{url}");
     }
+    let notes = resolver.fetch(&inbox.parse()?)?.text;
+    assert_eq!(
+        notes.lines().count(),
+        5,
+        "custom/<type> keeps that type alone: {notes}"
+    );
+    let one: yi_types::url::Url = "history://self/custom/note/custom/note".parse()?;
+    assert!(
+        resolver.fetch(&one).is_err(),
+        "a filter on a single entry is refused"
+    );
     Ok(())
 }
 

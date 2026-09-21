@@ -121,8 +121,18 @@ impl AgentSession {
         Arc::new(move |message| {
             let shared = Arc::clone(&shared);
             let run = Arc::clone(&run);
+            // Queued here and not in the task, so two messages to one turn keep their order.
+            let running = shared
+                .status
+                .lock()
+                .is_ok_and(|status| *status == Status::Running);
+            let mut queued = running
+                && shared
+                    .follow_up
+                    .lock()
+                    .map(|mut pending| pending.push(message.clone()))
+                    .is_ok();
             tokio::spawn(async move {
-                let mut queued = false;
                 loop {
                     // Armed before the status read: `notify_waiters` stores no permit.
                     let idle = shared.idle.notified();

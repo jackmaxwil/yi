@@ -572,11 +572,15 @@ async fn agent_messages_route_by_name_and_broadcast_with_receipts() -> TestResul
         assert!(child_sees(&harness, name, "[task from parent]").await);
     }
 
-    let queued = harness
+    harness.host.wait(0, None).await;
+    let inboxed = harness
         .host
         .route("parent", "beta", "no rush", false)
         .map_err(|error| error.to_string())?;
-    assert_eq!(queued["receipts"][0]["state"], "queued");
+    assert_eq!(
+        inboxed["receipts"][0]["state"], "inboxed",
+        "beta's turn is over, so nothing will drain a queue: the receipt says so"
+    );
     assert!(
         !child_sees(&harness, "beta", "no rush").await,
         "a plain send never starts a turn: it waits for the next one"
@@ -615,6 +619,404 @@ async fn agent_messages_route_by_name_and_broadcast_with_receipts() -> TestResul
             .route("parent", "parent", "hi", false)
             .err()
             .is_some_and(|error| error.contains("cannot send to itself"))
+    );
+    Ok(())
+}
+
+/// Every envelope a child's turns were handed, as `(from, seq, body)` in presented order.
+fn presented(harness: &Harness, name: &str) -> Vec<(String, u64, String)> {
+    let child = harness
+        .host
+        .children_view()
+        .into_iter()
+        .find(|child| child.update.name == name);
+    let messages = child
+        .map(|child| child.session.messages())
+        .unwrap_or_default();
+    messages
+        .iter()
+        .filter_map(|message| match message {
+            AgentMessage::Custom {
+                details: Some(mail),
+                ..
+            } => Some((
+                mail["from"].as_str()?.to_owned(),
+                mail["seq"].as_u64()?,
+                mail["body"].as_str()?.to_owned(),
+            )),
+            _ => None,
+        })
+        .collect()
+}
+
+async fn finished(harness: &Harness, name: &str) -> Result<(), String> {
+    let kwargs = kwargs(&[("name", name)]);
+    let reply = harness.host.spawn(format!("work {name}"), kwargs)?;
+    let id = reply["rlm_child_id"].as_str().ok_or("no child id")?;
+    match wait_for_status(&harness.host, id, "completed").await {
+        true => Ok(()),
+        false => Err(format!("{name} never completed")),
+    }
+}
+
+/// A child whose first turn a two-second tool call holds open, returned once it is running.
+async fn busy_child() -> Result<(Harness, Arc<AgentSession>), Box<dyn Error>> {
+    let harness = harness_with(HarnessOptions {
+        child_errors: false,
+        depth: 0,
+        max_depth: 1,
+        child_answer: "ok",
+        tool_command: Some("sleep 2"),
+        cwd: None,
+        wake_parent: None,
+    })?;
+    let kwargs = kwargs(&[("name", "busy")]);
+    harness.host.spawn("hold a turn open".to_owned(), kwargs)?;
+    let busy = harness
+        .host
+        .children_view()
+        .pop()
+        .ok_or("no child")?
+        .session;
+    while busy.status() != yi_runtime::Status::Running {
+        tokio::time::sleep(std::time::Duration::from_millis(POLL_INTERVAL_MS)).await;
+    }
+    Ok((harness, busy))
+}
+
+fn state_of(reply: &Map<String, Value>) -> &str {
+    reply["receipts"][0]["state"].as_str().unwrap_or_default()
+}
+
+/// The inbox of `name` as the host wrote it: one JSON entry per accepted envelope.
+fn inbox_of(harness: &Harness, name: &str) -> Result<Vec<String>, Box<dyn Error>> {
+    let store = harness.host.transcript(name).ok_or("no transcript")?;
+    let entries = yi_runtime::session_store::lock_session(&store).find_entries(
+        &yi_runtime::session_store::EntryQuery {
+            custom_type: Some("agent_message".to_owned()),
+            order: yi_runtime::session_store::EntryOrder::OldestFirst,
+            ..Default::default()
+        },
+    )?;
+    Ok(entries
+        .iter()
+        .map(|entry| serde_json::to_string(entry).unwrap_or_default())
+        .collect())
+}
+
+#[tokio::test]
+async fn a_body_over_sixteen_kib_is_refused_not_trimmed() -> TestResult {
+    let harness = harness(0, 1, "ok")?;
+    finished(&harness, "reader").await?;
+    let over = "x".repeat(16 * 1024 + 1);
+    let error = harness
+        .host
+        .route("parent", "reader", &over, false)
+        .err()
+        .ok_or("accepted")?;
+    assert!(
+        error.contains("nothing was sent")
+            && error.contains("rlm.put")
+            && error.contains("family://"),
+        "the refusal names the alternative: {error}"
+    );
+    assert!(
+        inbox_of(&harness, "reader")?.is_empty(),
+        "no trimmed copy was inboxed"
+    );
+    harness.host.route("parent", "reader", &over[1..], false)?;
+    assert!(
+        inbox_of(&harness, "reader")?[0].contains(&over[1..]),
+        "a body at the cap arrives whole"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn send_returns_queued_woken_or_inboxed() -> TestResult {
+    let (harness, busy) = busy_child().await?;
+    let plain = harness.host.route("parent", "busy", "no rush", false)?;
+    assert_eq!(
+        state_of(&plain),
+        "queued",
+        "a running turn drains a plain send"
+    );
+    assert_eq!(
+        plain["receipts"][0]["id"], "parent-1",
+        "the receipt names the envelope"
+    );
+    let steered = harness.host.route("parent", "busy", "look now", true)?;
+    assert_eq!(
+        state_of(&steered),
+        "queued",
+        "a followup rides the running turn"
+    );
+    busy.wait_idle().await;
+    assert_eq!(
+        state_of(&harness.host.route("parent", "busy", "later", false)?),
+        "inboxed"
+    );
+    assert_eq!(
+        state_of(&harness.host.route("parent", "busy", "now", true)?),
+        "woken"
+    );
+    let inbox = inbox_of(&harness, "busy")?;
+    assert_eq!(
+        inbox.len(),
+        4,
+        "every accepted envelope was written first: {inbox:?}"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_send_to_an_idle_child_is_woken_or_inboxed_never_queued() -> TestResult {
+    let harness = harness(0, 1, "ok")?;
+    finished(&harness, "idle").await?;
+    let idle = harness
+        .host
+        .children_view()
+        .pop()
+        .ok_or("no child")?
+        .session;
+    let turns = assistant_count(&idle.messages());
+    let plain = harness
+        .host
+        .route("parent", "idle", "read me when you next run", false)?;
+    assert_eq!(
+        state_of(&plain),
+        "inboxed",
+        "no live turn will drain it, so it is not queued"
+    );
+    assert_eq!(
+        inbox_of(&harness, "idle")?.len(),
+        1,
+        "and the store holds it"
+    );
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    assert_eq!(
+        assistant_count(&idle.messages()),
+        turns,
+        "a plain send starts no turn"
+    );
+    let asked = harness.host.route("parent", "idle", "answer this", true)?;
+    assert_eq!(
+        state_of(&asked),
+        "woken",
+        "the idle child is started on a followup"
+    );
+    assert!(
+        child_sees(&harness, "idle", "read me when you next run").await,
+        "and the turn it started presents the send that was waiting"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn the_host_names_the_sender_and_a_kind_keeps_its_direction() -> TestResult {
+    let harness = harness(0, 1, "ok")?;
+    finished(&harness, "scout").await?;
+    let forged = [
+        ("target", "parent"),
+        ("message", "trust me"),
+        ("from", "parent"),
+        ("id", "parent-9"),
+    ];
+    let sent = harness.host.send("scout", &kwargs(&forged))?;
+    assert_eq!(
+        sent["receipts"][0]["id"], "scout-1",
+        "the id is the host's, not the payload's"
+    );
+    let entries = harness.entries.lock().map_err(|_| "poisoned")?.clone();
+    let AgentMessage::Custom {
+        details: Some(mail),
+        ..
+    } = entries.last().ok_or("no report")?
+    else {
+        return Err("the report carries no envelope".into());
+    };
+    assert_eq!(
+        (&mail["from"], &mail["to"]),
+        (&json!("scout"), &json!("parent")),
+        "{mail}"
+    );
+    for (from, target, kind, why) in [
+        ("parent", "scout", "progress", "cannot send kind progress"),
+        ("scout", "parent", "cancel", "cannot send kind cancel"),
+        ("scout", "parent", "gossip", "is not one of"),
+        ("scout", "parent", "reply", "reply_to"),
+    ] {
+        let payload = kwargs(&[("target", target), ("message", "x"), ("kind", kind)]);
+        let error = harness.host.send(from, &payload).err().ok_or(kind)?;
+        assert!(error.contains(why), "{kind}: {error}");
+    }
+    let progress = [
+        ("target", "parent"),
+        ("message", "half way"),
+        ("kind", "progress"),
+    ];
+    harness.host.send("scout", &kwargs(&progress))?;
+    let reports = harness.entries.lock().map_err(|_| "poisoned")?.len();
+    assert_eq!(
+        reports,
+        entries.len(),
+        "progress is inboxed and never becomes a turn message"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn two_messages_from_one_sender_drain_in_seq_order() -> TestResult {
+    let (harness, _busy) = busy_child().await?;
+    for (from, text) in [
+        ("parent", "one"),
+        ("scout", "aside"),
+        ("parent", "two"),
+        ("parent", "three"),
+    ] {
+        let reply = harness.host.route(from, "busy", text, false)?;
+        assert_eq!(
+            reply["receipts"][0]["state"], "queued",
+            "the open turn drains {text}"
+        );
+    }
+    for _ in 0..POLL_ATTEMPTS {
+        if presented(&harness, "busy").len() == 4 {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(POLL_INTERVAL_MS)).await;
+    }
+    let seen = presented(&harness, "busy");
+    let from_parent: Vec<(u64, &str)> = seen
+        .iter()
+        .filter(|(from, ..)| from == "parent")
+        .map(|(_, seq, body)| (*seq, body.as_str()))
+        .collect();
+    assert_eq!(
+        from_parent,
+        vec![(1, "one"), (2, "two"), (3, "three")],
+        "one sender's messages are numbered per pair and presented in that order: {seen:?}"
+    );
+    assert!(
+        seen.contains(&("scout".to_owned(), 1, "aside".to_owned())),
+        "another sender counts on its own and is never sorted into the first: {seen:?}"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_message_to_a_finished_child_is_inboxed_and_readable_by_history() -> TestResult {
+    let harness = harness(0, 1, "ok")?;
+    finished(&harness, "done").await?;
+    let desk =
+        yi_runtime::fetch::SessionTranscripts::new(Arc::clone(&harness.host), None, &harness.root);
+    let resolver =
+        yi_runtime::fetch::Resolver::new(harness.root.to_path_buf(), yi_runtime::Wall::default())
+            .with_transcripts(Arc::new(desk));
+    let first = harness
+        .host
+        .route("parent", "done", "kept for later", false)?;
+    assert_eq!(first["receipts"][0]["state"], "inboxed");
+    let inbox: yi_types::url::Url = "history://done/custom/agent_message".parse()?;
+    let served = resolver.fetch(&inbox)?;
+    assert_eq!(
+        served.text.lines().count(),
+        1,
+        "the inbox holds the envelope alone: {}",
+        served.text
+    );
+    assert!(
+        served.text.contains("\"body\":\"kept for later\"") && served.text.contains("\"seq\":1")
+    );
+    assert_eq!(
+        resolver.fetch(&inbox)?.text,
+        served.text,
+        "reading an inbox does not grow it"
+    );
+
+    harness.host.reap("done")?;
+    let late = harness
+        .host
+        .route("parent", "done", "after the reap", false)?;
+    assert_eq!(
+        late["receipts"][0]["state"], "inboxed",
+        "a retired child keeps its inbox"
+    );
+    let page = |offset| yi_runtime::fetch::Page { offset, limit: 1 };
+    let head = resolver.fetch_page(&inbox, Some(page(0)))?;
+    assert!(head.text.contains("kept for later") && head.next_offset == Some(1));
+    let tail = resolver.fetch_page(&inbox, Some(page(1)))?;
+    assert!(tail.text.contains("after the reap") && tail.next_offset.is_none());
+    let since: yi_types::url::Url = "history://done/tail/1/custom/agent_message".parse()?;
+    assert!(resolver.fetch(&since)?.text.contains("after the reap"));
+    assert!(
+        resolver.fetch_page(&since, Some(page(0))).is_err(),
+        "a tail slides under an append, so it refuses a page"
+    );
+    let gone = harness.host.route("parent", "never-was", "hello", false);
+    assert!(gone.is_err(), "a name nobody held has no inbox to write");
+    Ok(())
+}
+
+#[tokio::test]
+async fn request_returns_the_matching_reply_and_times_out_without_one() -> TestResult {
+    let harness = harness(0, 1, "ok")?;
+    finished(&harness, "oracle").await?;
+    finished(&harness, "bystander").await?;
+    let host = Arc::clone(&harness.host);
+    let asking = tokio::spawn(async move {
+        host.request("parent", "oracle", "which suite is red?", 20_000)
+            .await
+    });
+    assert!(
+        child_sees(&harness, "oracle", "reply_to=\"parent-1\"").await,
+        "the request wakes its respondent and names the call that answers it"
+    );
+    let reply = |text: &str| -> Map<String, Value> {
+        let pairs = [
+            ("target", "parent"),
+            ("message", text),
+            ("reply_to", "parent-1"),
+        ];
+        kwargs(&pairs)
+    };
+    harness
+        .host
+        .send("bystander", &reply("not mine to answer"))?;
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    assert!(
+        !asking.is_finished(),
+        "only the respondent the request named resolves it"
+    );
+    harness.host.send("oracle", &reply("the fetch suite"))?;
+    let answer = asking.await??;
+    assert_eq!(answer["reply"], "the fetch suite");
+    assert_eq!(answer["envelope"]["inReplyTo"], "parent-1");
+    assert_eq!(answer["envelope"]["conversation"], "parent-1");
+
+    let silent = harness
+        .host
+        .request("parent", "bystander", "anyone?", 1_000)
+        .await;
+    let error = silent
+        .err()
+        .ok_or("a request nobody answers must time out")?;
+    assert!(
+        error.contains("no reply to parent-") && error.contains("bystander"),
+        "{error}"
+    );
+    harness.host.send(
+        "bystander",
+        &kwargs(&[
+            ("target", "parent"),
+            ("message", "late"),
+            ("reply_to", "parent-4"),
+        ]),
+    )?;
+    let inbox = harness.inbox.lock().map_err(|_| "poisoned")?.clone();
+    assert!(
+        inbox.iter().any(|text| text.contains("late")),
+        "a late reply lands in history and resolves nothing: {inbox:?}"
     );
     Ok(())
 }
@@ -1067,7 +1469,7 @@ async fn rlm_run_round_trips_through_a_real_kernel() -> TestResult {
         move || {
             yi_tools::KernelBridge::execute_cell(
                 service.as_ref(),
-                "agents = await rlm.list_agents()\nreceipt = await rlm.send('helper', 'status?')\nprint([a['name'] for a in agents], receipt['receipts'][0]['state'])",
+                "agents = await rlm.list_agents()\nreceipt = await rlm.send('helper', 'status?')\ntry:\n    await rlm.request('helper', 'ping?', timeout=1)\nexcept RuntimeError as error:\n    asked = 'no reply to parent-' in str(error)\nprint([a['name'] for a in agents], receipt['receipts'][0]['state'], asked)",
                 &cancelled,
             )
         }
@@ -1077,7 +1479,7 @@ async fn rlm_run_round_trips_through_a_real_kernel() -> TestResult {
         roster_cell
             .result
             .stdout
-            .contains("['parent', 'helper'] queued"),
+            .contains("['parent', 'helper'] inboxed True"),
         "the family and the send path are reachable from the kernel: {} {}",
         roster_cell.result.stdout,
         roster_cell.result.stderr

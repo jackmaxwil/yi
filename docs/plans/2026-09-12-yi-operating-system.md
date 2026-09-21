@@ -2300,7 +2300,7 @@ Closes #<n>)". **ADR.** "D-next-7b: one exit, one terminal update". **Exit.**
 the kernel delete journey renders no live card; the fuzz holds over 10,000
 sequences.
 
-### F2a · Envelopes and the durable inbox (D-next-8; extends D165)
+### F2a · Envelopes and the durable inbox (D214, landed 0.274.0; extends D165)
 
 **Files.** `crates/types/src/mail.rs` (new), `mailbox.rs:65-160` (route
 builds an envelope; seq counters), `mailbox.rs:217-226` (deliver writes the
@@ -2312,9 +2312,10 @@ receipts; keeps `mailbox.rs` under the cap), `fetch/schemes.rs:30-44,179`
 |---|---|
 | per-pair order holds | `recursion_e2e::two_messages_from_one_sender_drain_in_seq_order` (T1) |
 | the inbox is durable | `recursion_e2e::a_message_to_a_finished_child_is_inboxed_and_readable_by_history` (T1) |
-| the body cap refuses and names the alternative | `mailbox::a_body_over_sixteen_kib_is_refused_not_trimmed` (T0) |
+| the body cap refuses and names the alternative | `recursion_e2e::a_body_over_sixteen_kib_is_refused_not_trimmed` (T1) |
 | request resolves on its reply and times out otherwise | `recursion_e2e::request_returns_the_matching_reply_and_times_out_without_one` (T1) |
-| a receipt states what the host did | `mailbox::send_returns_queued_woken_or_inboxed` (T0) |
+| a receipt states what the host did | `recursion_e2e::send_returns_queued_woken_or_inboxed` (T1) |
+| the host names the sender, and a kind keeps its direction | `recursion_e2e::the_host_names_the_sender_and_a_kind_keeps_its_direction` (T1) |
 
 LOC yi-types +80, yi-runtime +260, python +90. Memo: `growth +430: envelopes,
 receipts, the durable inbox and request/reply`. Row: "Messages are
@@ -2327,7 +2328,37 @@ reaches `follow_up_message`, and an idle or finished child never drains that
 queue while the receipt says "queued". The receipt is decided after the
 delivery attempt: `queued` only when a live turn will drain it, else `woken`
 (the idle child is started on it) or `inboxed`. Test:
-`mailbox::a_send_to_an_idle_child_is_woken_or_inboxed_never_queued` (T0).
+`recursion_e2e::a_send_to_an_idle_child_is_woken_or_inboxed_never_queued` (T1).
+
+As landed (0.274.0, D214). The three receipt tests filed above under `mailbox::`
+live in `recursion_e2e`: a receipt of `queued` needs a child whose turn is held
+open, and that faux child already exists there, so they are T1. Measured growth is
++463 Rust `src` lines (yi-types 83, yi-runtime 380) and 82 of Python. Where the
+landing differs from sections 7.1 to 7.3:
+
+- A plain `inform` starts no turn unless `followup=True`, as `rlm.send` always
+  documented and section 7.2's last paragraph says; the table's "wakes: yes" for
+  `inform` holds for the followup spelling. To an idle or finished child a plain
+  send answers `inboxed` and also waits on the follow-up queue, so the next turn
+  anyone starts presents it. `request`, `reply`, `failure` and `cancel` wake.
+- `from_incarnation` and `to_incarnation` are not on the envelope: no name is
+  respawned before F3c, which adds them with the thing they distinguish.
+- `presented_at` is not a second custom record: the presented message is the
+  transcript's own entry and carries the envelope, id included, in `details`, so
+  an inbox entry with no such message is the inspectable, unpresented item.
+- The id is `<sender>-<n>` with `n` counted per host, so it is unique across
+  recipients; `seq` is the per-pair counter. Both restart with the host, as its
+  children do.
+- `history://self/...` names the reader's own transcript, because a child is
+  never told the name its family knows it by; `yi.mail.inbox()` defaults to it.
+- A message to the parent keeps the receipt word `delivered`: the report hook
+  queues or starts the parent's turn and returns nothing, and it has nine
+  constructors. The envelope is still inboxed first.
+- Left to the stages that need them: the cancel flag in the child's loop and
+  `failed` from a `failure` envelope (F2b), `progress` into `status().note`,
+  progress coalescing, a bound on inbox growth, reserved capacity for control
+  kinds, and the list of outstanding conversations after a parent restart. One
+  bound landed: a sender holds at most sixteen waiting requests.
 
 ### F2b · Leases: deadline inheritance, revoke, abort, parent close; capabilities shrink (D-next-9)
 

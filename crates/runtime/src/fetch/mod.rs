@@ -171,6 +171,10 @@ impl KernelVariables for KernelServiceMap {
     }
 }
 
+/// The reader's own transcript in a `history://` address, for a member that was never told
+/// the name its family knows it by.
+pub(crate) const SELF: &str = "self";
+
 pub struct SessionTranscripts {
     host: Arc<crate::subagent::SubagentHost>,
     sessions_dir: Option<PathBuf>,
@@ -446,8 +450,9 @@ impl Resolver {
     /// A `history://` read of this session's own transcript, whose log row lands in the
     /// listing it just served.
     fn pages_own_history(&self, url: &Url) -> bool {
+        let agent = url.path().split('/').next();
         matches!(url.scheme(), Scheme::History)
-            && self.session_agent() == url.path().split('/').next()
+            && (agent == Some(SELF) || self.session_agent() == agent)
     }
 
     /// [`Self::fetch`] through one [`Page`]; the hash and the log row are the page's own.

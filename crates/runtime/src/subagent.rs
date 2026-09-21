@@ -8,7 +8,8 @@ use yi_types::message::{AgentMessage, Content, StopReason, Usage};
 use yi_types::model::{Effort, Model};
 pub use yi_types::subagent::{ChildActivity, ChildId, ChildStatus, ChildUpdate};
 
-use crate::mailbox::{ParentLink, WAIT_MAX_MS, message_params};
+use crate::mail::Draft;
+use crate::mailbox::{ParentLink, timeout_of};
 use crate::provider::{available_models, resolve_model};
 use crate::session::AgentSession;
 
@@ -162,6 +163,7 @@ pub struct SubagentHost {
     /// Invariant: a reap pin names `history://<child>`, and a child's file lives
     /// under a `sub-*` directory no session repo scans, so it is kept by name here.
     pub(crate) reaped: Mutex<HashMap<String, yi_session::SharedSession>>,
+    pub(crate) mail: Mutex<crate::mail::Desk>,
 }
 
 impl SubagentHost {
@@ -457,6 +459,7 @@ impl SubagentHost {
             deadline: Mutex::new(None),
             children: Mutex::new(Children::default()),
             reaped: Mutex::new(HashMap::new()),
+            mail: Mutex::default(),
         }
     }
 
@@ -979,11 +982,17 @@ impl SubagentHost {
     pub fn register(self: &Arc<Self>, registry: &mut crate::kernel::HostRegistry) {
         let host = Arc::clone(self);
         registry.register("agent_message.send", move |payload| {
-            let (target, text, followup) = message_params(&payload);
+            let reply = host.send(PARENT_NAME, &payload);
+            Box::pin(async move { reply })
+        });
+        let host = Arc::clone(self);
+        registry.register("agent_message.request", move |payload| {
             let host = Arc::clone(&host);
             Box::pin(async move {
-                let text = text.ok_or("agent_message.send requires a message")?;
-                host.route(PARENT_NAME, &target, &text, followup)
+                let (target, draft) = Draft::from_payload(&payload)?;
+                let timeout = timeout_of(&payload);
+                host.request(PARENT_NAME, &target, &draft.text, timeout)
+                    .await
             })
         });
         let host = Arc::clone(self);
@@ -993,10 +1002,7 @@ impl SubagentHost {
         });
         let host = Arc::clone(self);
         registry.register("rlm.wait", move |payload| {
-            let timeout = payload
-                .get("timeout_ms")
-                .and_then(Value::as_u64)
-                .unwrap_or(WAIT_MAX_MS);
+            let timeout = timeout_of(&payload);
             let cursor = payload.get("cursor").and_then(Value::as_u64);
             let host = Arc::clone(&host);
             Box::pin(async move { Ok(host.wait(timeout, cursor).await) })
