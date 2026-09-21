@@ -2590,8 +2590,8 @@ respawn keeps the name and the inbox; `status()` shows `service: true`;
 (`fetch/mod.rs:190-200`). Tests: `recursion_e2e::a_service_respawns_under_its_name_and_keeps_its_inbox`
 (T1). LOC yi-runtime +140, python +40.
 
-As landed (0.278.0, D218, #462, and the review fixes on top of it). Measured growth is +414
-Rust `src` lines (yi-runtime 408 against 140, yi-types 6) and 24 of Python against 40. What
+As landed (0.278.0, D218, #462, and the review fixes on top of it). Measured growth is +430
+Rust `src` lines (yi-runtime 424 against 140, yi-types 6) and 24 of Python against 40. What
 the estimate did not price: a service lives in turns mail wakes, which no `run_child`
 watches, so a second road reads those endings; the lease is settled and drawn again under
 the roster lock, and journaled off it; the stopped mark is read again after the build;
@@ -2613,6 +2613,10 @@ attach or refuse; and the `rlm.service` registration. Tests beside the named one
   (`RESTART_WINDOW_MS`), default 3, 0 for none, and `MAX_RESTARTS` (ten) is the most a
   caller may ask for, refused and never clamped. Only a provider error and a dead kernel
   respawn; a deadline does not, because a fresh lease on expiry would undo the lease.
+- `turn_ended` lets one reader at a time out on a service's run: mail can start a turn on a
+  run that already crashed, and two readers of that one crash would end it twice, on two
+  leases and two incarnations. The race needs two `AgentEnd`s inside one crash window, which
+  the harness cannot schedule, so the guard has no test of its own.
 - The build is the one stretch a respawn holds no lock across, so the stopped mark is read
   again under the roster lock after it, and a service a `revoke` or a `close` stopped while
   its next run was being built ends `Failed` with that as the reason; the session that build
