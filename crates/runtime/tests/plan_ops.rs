@@ -2667,7 +2667,8 @@ mod contracts {
         Ok(())
     }
 
-    /// A jury that never settles: it counts its sittings and abstains with one juror's line.
+    /// A jury that never settles: it counts its sittings and abstains with one juror's line,
+    /// whose reason claims the phrase the quote check writes while its flag says otherwise.
     struct HungJury(AtomicU32);
 
     impl yi_runtime::plan::verify::Judge for HungJury {
@@ -2682,7 +2683,8 @@ mod contracts {
             let line = JurorLine {
                 model: "openrouter/z-ai/glm-5.3-flash".to_owned(),
                 vote: Vote::Abstain,
-                reason: format!("seated under {seated:?}"),
+                reason: format!("unbacked quote: seated under {seated:?}"),
+                unbacked: false,
             };
             let reason = "no quorum".to_owned();
             (ItemVerdict::Abstain { reason }, vec![line])
@@ -2690,8 +2692,8 @@ mod contracts {
     }
 
     // Dies with the `JUDGE_CAP_PER_TODO` arm in `Verifier::run`, with `juries` counting the
-    // journal's requests, and with the escalation arm of `refuse`'s cap: without them an item no
-    // jury can settle convenes juries for ever, or waits three more refusals to reach anyone.
+    // journal's requests, with the escalation arm of `refuse`'s cap and its own note, and with
+    // `juror_votes` reading the check's flag rather than a reason a juror writes.
     #[test]
     fn the_fourth_jury_on_one_todo_escalates_to_the_user() -> TestResult {
         let jury = Arc::new(HungJury(AtomicU32::new(0)));
@@ -2731,7 +2733,7 @@ mod contracts {
         assert_eq!(
             sat.record.extra.get("jurors"),
             Some(&json!({"pass": 0, "fail": 0, "abstain": 1, "unbacked": 0})),
-            "the session's record counts the votes; the lines stay in the journal"
+            "the votes are counted off the check's flag, never a juror's reason"
         );
         let todo = todo_of(&rig.store, &plan, "land it")?;
         assert!(
@@ -2746,7 +2748,8 @@ mod contracts {
         assert_eq!(jury.0.load(Ordering::SeqCst), 3, "no fourth jury sits");
         let todo = todo_of(&rig.store, &plan, "land it")?;
         assert!(
-            matches!(&todo.state, TodoState::Blocked { on: BlockedOn::User, note } if note.contains("juries")),
+            matches!(&todo.state, TodoState::Blocked { on: BlockedOn::User, note }
+                if note.contains("juries") && !note.contains("refused verdicts")),
             "{:?}",
             todo.state
         );

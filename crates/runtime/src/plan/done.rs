@@ -575,13 +575,20 @@ impl PlanEngine {
                 });
         if capped {
             txn.request = txn.derived("block")?;
+            // An escalation arrives on its own refusal, so its note names the verdict that
+            // asked for the user rather than a count of refusals that never happened.
+            let note = if escalated {
+                format!("a verdict escalated to you: {}", verdict.lines())
+            } else {
+                format!(
+                    "{DONE_REFUSAL_CAP} refused verdicts; the last: {}",
+                    verdict.lines()
+                )
+            };
             let block = Op::Block {
                 label: label.clone(),
                 on: BlockedOn::User,
-                note: format!(
-                    "{DONE_REFUSAL_CAP} refused verdicts; the last: {}",
-                    verdict.lines()
-                ),
+                note,
             };
             self.transact(txn, &prepared.id, &prepared.root, &block)?;
         }
@@ -628,9 +635,7 @@ impl Drop for Workspace {
 pub(super) fn juror_votes(verdict: &Verdict) -> Option<Value> {
     let lines: Vec<_> = verdict.items.iter().flat_map(|item| &item.jurors).collect();
     let count = |vote| lines.iter().filter(|line| line.vote == vote).count();
-    let unbacked = lines
-        .iter()
-        .filter(|line| line.reason.starts_with("unbacked quote"));
+    let unbacked = lines.iter().filter(|line| line.unbacked);
     (!lines.is_empty()).then(|| {
         json!({"pass": count(Vote::Pass), "fail": count(Vote::Fail),
                "abstain": count(Vote::Abstain), "unbacked": unbacked.count()})

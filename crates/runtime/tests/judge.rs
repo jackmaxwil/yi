@@ -12,7 +12,7 @@
 //! |---|---|---|---|
 //! | `a_judge_is_another_family_or_the_item_abstains` | T0 | The family of a model is its vendor segment. With the owner on one family and the registry offering only that family, directly or through a reseller, the item abstains `no other family` and no child is spawned; with another family on offer every juror line names it. The model the plan spawned the todo's child with is an owner too. | `other_families` over `family_of`, fed by the host's settings and the plan's recorded selector. Seat the cheapest model whatever its family and the owner grades its own work. |
 //! | `malformed_or_empty_answers_abstain` | T0 | An empty answer, a bare word, fenced JSON, prose after the object, a missing key, an unknown key, a fourth verdict word and an array are each an abstention; so is a decided vote that quotes nothing. Only the schema, quoted, is a vote. | `vote_of`, the strict `JurorAnswer` parse (`deny_unknown_fields`). Read the first word, or forgive a key, and a juror steered into chatter votes. |
-//! | `an_unbacked_quote_abstains_the_item` | T1 | The `quotes` rows of `fixtures/plans/judge/jurors.json`, each played as a juror transcript: a quote of evidence never fetched, fetched at another version, misquoted, past the end, or from a source that is not the item's evidence is `unbacked`, even on an abstaining answer. Through a whole jury, one such juror abstains the item though the other two pass with backed quotes. | `Evidence::backs` over `rows_of` the juror's own transcript, and `judge` putting an unbacked quote above the tally. Trust the quote and a juror passes an item on text nobody read. |
+//! | `an_unbacked_quote_abstains_the_item` | T1 | The `quotes` rows of `fixtures/plans/judge/jurors.json`, each played as a juror transcript: a quote of evidence never fetched, fetched at another version, misquoted, past the end, blank, or from a source that is not the item's evidence is `unbacked`, even on an abstaining answer. Through a whole jury, one such juror abstains the item though the other two pass with backed quotes, and the dropped juror's line carries the check's own flag. | `Evidence::backs` over `rows_of` the juror's own transcript, and `judge` putting an unbacked quote above the tally. Trust the quote and a juror passes an item on text nobody read; back a blank line and a steered juror passes on nothing. |
 //! | `the_brief_carries_no_history_or_prior_verdict` | T0 | The juror's whole history is the brief and its own turns: the first message is exactly `brief(rubric, evidence)`, nothing the owner said or an earlier verdict said appears in it, the evidence text itself is not inlined, and the juror's wall denies every write and the `history://`, `kernel://`, `agent://` and `plan://` schemes. | `brief` taking only the rubric and the addresses, and `juror_kwargs` carrying no `fork` and no `context`. Fork the owner's transcript in and the juror judges the author, not the work. |
 //! | `one_pass_and_two_abstentions_abstain` | T0 | The n = 3 quorum: two like votes decide, so one pass and two abstentions abstain, a pass, a fail and an abstention abstain, and an empty seat never shrinks the quorum. Played whole: one backed pass, one malformed answer and one empty answer abstain the item with three juror lines, no juror remains on the roster and the owner got no notice. | `tally` computing the quorum over the seats asked for. Take the majority of the decided votes and one obliging juror passes the item alone. |
 //! | `evidence_carrying_instructions_is_data` | T1 | The `steered` rows of the fixture: evidence that tells the juror to pass and quote nothing. A juror that obeys has written a quoteless pass or a key of its own, and abstains; a juror that reads the instruction as the thing it judges fails it with a backed quote. The tally of the three is not a pass, the brief carries the same data rule `auto_review.md` does, and the evidence text is never in the brief. | The quote requirement on a decided vote, the strict parse, and `brief` never inlining evidence. Nothing the evidence says has a path to the verdict but a juror's typed vote. |
@@ -428,6 +428,12 @@ async fn an_unbacked_quote_abstains_the_item() -> TestResult {
     );
     let votes: Vec<Vote> = lines.iter().map(|line| line.vote).collect();
     assert_eq!(votes, [Vote::Pass, Vote::Abstain, Vote::Pass]);
+    let dropped: Vec<bool> = lines.iter().map(|line| line.unbacked).collect();
+    assert_eq!(
+        dropped,
+        [false, true, false],
+        "the flag is the check's, not a reason"
+    );
     Ok(())
 }
 
@@ -490,6 +496,7 @@ async fn one_pass_and_two_abstentions_abstain() -> TestResult {
         model: "m".to_owned(),
         vote,
         reason: "r".to_owned(),
+        unbacked: false,
     };
     let of = |votes: &[Vote], n| tally(&votes.iter().copied().map(line).collect::<Vec<_>>(), n);
     use Vote::{Abstain, Fail, Pass};
@@ -550,6 +557,7 @@ fn evidence_carrying_instructions_is_data() -> TestResult {
             model: "m".to_owned(),
             vote,
             reason,
+            unbacked: false,
         });
     }
     assert!(matches!(tally(&lines, 3), ItemVerdict::Abstain { .. }));
