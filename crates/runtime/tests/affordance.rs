@@ -229,7 +229,7 @@ fn the_shipped_graph_passes_every_structural_check() -> TestResult {
         "the scan reads multi-line calls"
     );
     let graph = affordance::shipped();
-    assert_eq!(graph.version, 1, "an unparsable graph falls back to empty");
+    assert_ne!(graph.version, 0, "an unparsable graph falls back to empty");
     let verbs = verbs.iter().map(String::as_str).collect();
     assert_eq!(graph.check(&verbs), Ok(()));
     Ok(())

@@ -15,11 +15,13 @@ import shlex
 import subprocess
 import sys
 import tempfile
+import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT / "adapters"))
 sys.path.insert(0, str(ROOT / "drivers"))
+sys.path.insert(0, str(ROOT / "graph"))
 sys.path.insert(0, str(ROOT))
 
 import orient_census  # noqa: E402
@@ -29,6 +31,7 @@ import tb21_cost  # noqa: E402
 import atif  # noqa: E402
 import axes  # noqa: E402
 import yi_usage  # noqa: E402
+import test_refine  # noqa: E402
 
 FIXTURES = ROOT / "fixtures"
 EVENTS = FIXTURES / "ask_events.jsonl"
@@ -509,7 +512,16 @@ def check_rule_fires():
     assert report["comment_fp"] == 2, report
 
 
+def check_graph_refiner():
+    """D219: the refiner's gates on synthetic rows, and the fixture Rust judges too."""
+    report = io.StringIO()
+    suite = unittest.defaultTestLoader.loadTestsFromModule(test_refine)
+    result = unittest.TextTestRunner(stream=report).run(suite)
+    assert result.testsRun >= 5 and result.wasSuccessful(), report.getvalue()
+
+
 CHECKS = (
+    check_graph_refiner,
     check_cost_cap,
     check_orient_census,
     check_rule_fires,

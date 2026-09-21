@@ -2680,12 +2680,25 @@ builders and the `moves` match were dead once the goldens passed from the graph 
 deleted; section 12's value row is still owed before the graph is more than an
 equivalent. Seven predicates are vocabulary no seam asserts yet (the row lists them).
 
-### F4b · The offline refiner with rejection memory (part of D-next-13)
+### F4b · The offline refiner with rejection memory (part of D219, landed 0.280.0)
 
 `evals/graph/refine.py`, `evals/fixtures/graph/{proposals-sample.jsonl,
 rejected.jsonl}`, `evals/levers/split.json` (shared with F4c). Tests (stdlib
 unittest under `evals/`, run by `selftest.py`): `a_graph_edit_that_drops_the_held_out_score_is_rejected_and_remembered`;
 `a_proposal_naming_a_held_out_task_is_refused`; `a_structurally_invalid_edit_never_reaches_a_run`.
+
+As landed (0.280.0, #464; no Rust `src` line). The scoring run is an injected callable:
+`refine(graph, edits, split, run, config)` in tests, the owner's `--runner` command on the
+command line, so `refine.py` itself starts nothing; section 9.5's `ab.py` and the paid slice
+are what a runner wraps. The development tasks filter before the held-out tasks are touched
+(`fit_passes_dropped`), which keeps held-out accesses to candidates that earned one. The
+refusal of section 9.6 covers validation as well as final tasks. The two rule sets are held
+together by `evals/fixtures/graph/structural.json`, judged by `graph::the_shared_fixture_is_judged_alike_on_both_sides`
+and by the Python test of the same name. `split.json` is drawn over the seven synthetic
+tasks of `evals/fixtures/tasks` (development four, validation three, final empty); the
+thirteen-task slice of section 10.4 is benchmark data and stays out of the split file until
+the owner decides how it is named there. `graph.json` is kept in the writer's one-line-per-edge
+form. Not run: any real scoring.
 
 ### F4c · Levers manifest, floors, the two gates (D-next-14; extends D140)
 

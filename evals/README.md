@@ -11,6 +11,8 @@ adapters/yi_pier/agent.py    pier BaseInstalledAgent subclass (+ install spec, a
 selftest.py                dry run: no docker, no API, no keys, no harness
 run.py                     task runner over `yi ask --json`, scored by each task's reward.sh
 record.py                  session JSONL -> behavior cassette (J3), redacted at record time
+graph/refine.py            offline refiner for the procedural graph (D219): proposals in, a held-out gate, rejection memory
+levers/split.json          the development, validation and final task groups; a proposal may name only development tasks
 fixtures/                  a recorded faux transcript, a v4 session file, and the runner's tasks
 ```
 
