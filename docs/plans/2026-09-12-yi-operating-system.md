@@ -2090,7 +2090,7 @@ against the archive; four more are specified with their prerequisites
 space". **Exit.** independently useful work through both shapes with the
 overhead reported against the direct path.
 
-As landed, against sections 8.5 and 8.6. Python +290, tests +707 (Rust 342, Python
+As landed, against sections 8.5 and 8.6. Python +290, tests +772 (Rust 407, Python
 365 with the three programs), no Rust `src` line. Overhead, counted in host
 requests on the fake host: fork_join over two writers is 9 against the 4 ops sent
 by hand (one `repair`, three views and one `wait` on top, none of them journaled);
