@@ -158,6 +158,16 @@ class Plans(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(status["states"], {"inline": "failed", "child": "failed", "later": "pending"})
         self.assertEqual(host.children[f"{plan.id}/child"], "failed", "the child was interrupted")
 
+    async def test_decompose_resolves_an_edge_among_its_own_batch(self) -> None:
+        """Dies with the control: look a sibling up in the parent plan and the docstring example raises."""
+        FakeHost()
+        plan = await Plan.create("ship it")
+        rotation = await plan.todo(key="rotation")
+        await rotation.start()
+        sub = await rotation.decompose([{"key": "parse"}, {"key": "emit", "after": ["parse"]}])
+        self.assertEqual([todo.key for todo in sub.todos], ["parse", "emit"])
+        self.assertEqual(sub["emit"]._doc["after"], ["parse"], "a sibling edge names the batch, not the parent plan")
+
 
 if __name__ == "__main__":
     unittest.main()

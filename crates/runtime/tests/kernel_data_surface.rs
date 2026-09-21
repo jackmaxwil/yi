@@ -516,7 +516,7 @@ for key in ("a", "b", "c"):
 r = await plan.run(shape=fork_join, budget=20)
 print("fork_join", r.outcome, r.refusals)
 plan = await Plan.create("which module rotates by size", request_id="scatter")
-for key in ("api", "cli"):
+for key in ("api", "cli", "web"):
     await plan.todo(key=key, delegate=Reader(partition=[f"local://docs/{key}.md"]), accept=answer)
 async def lead(answers, number):
     print("round", number, [(a["reader"], [q["text"] for q in a["quotes"]]) for a in answers])
@@ -527,8 +527,9 @@ print("scatter", r.outcome, r.refusals, [(t.key, t._doc["state"]) for t in plan.
 "#;
 
 /// The F1b journey: the library's shapes against the real `admit`, step table and verifier.
-/// Dies with the control: start past a refused todo and the width-one engine refuses again,
-/// out of order; hand the lead an unverified quote and round one names the `cli` reader.
+/// Dies with the control: start past a refused todo and the width-one engine refuses again, out
+/// of order; hand the lead an unverified or out-of-partition quote and round one names `cli`;
+/// leave a failed reader failed and the plan cannot reach `verified_success`.
 #[tokio::test]
 #[ignore = "tier-2 journey: `just journeys`"]
 async fn both_shapes_schedule_under_the_real_admission_and_step_table() -> TestResult {
@@ -536,6 +537,7 @@ async fn both_shapes_schedule_under_the_real_admission_and_step_table() -> TestR
     let (plans, workspace) = (dir.join("plans"), dir.join("ws"));
     std::fs::create_dir_all(workspace.join("docs"))?;
     std::fs::write(workspace.join("docs/api.md"), "usage\nrotate(size)\n")?;
+    std::fs::write(workspace.join("docs/cli.md"), "flags\n--age DAYS\n")?;
     let crew = Arc::new(Crew::default());
     let resolver = Arc::new(
         yi_runtime::fetch::Resolver::new(workspace.clone(), yi_runtime::Wall::default())
@@ -555,20 +557,33 @@ async fn both_shapes_schedule_under_the_real_admission_and_step_table() -> TestR
         Box::pin(async move {
             tokio::time::sleep(std::time::Duration::from_millis(20)).await;
             let names = spawned.0.lock().map_err(|_| "poisoned")?.clone();
+            // The `web` readers never come back, so the shape settles a failed reader for real.
             let states: serde_json::Map<_, _> = names
                 .into_iter()
-                .map(|name| (name, serde_json::json!("finished")))
+                .map(|name| {
+                    let state = if name.starts_with("web") {
+                        "failed"
+                    } else {
+                        "finished"
+                    };
+                    (name, serde_json::json!(state))
+                })
                 .collect();
             reply(serde_json::json!({"cursor": 1, "changed": [], "states": states, "notes": {}}))
         })
     });
     registry.register("rlm.result", move |payload| {
         Box::pin(async move {
-            // The `cli` readers cite a line the archive does not have.
+            // A `cli` reader cites a line its own page does not have, and one that is right but
+            // sits in the `api` reader's partition; both go before the lead sees the answer.
             let invented = payload.get("target").and_then(serde_json::Value::as_str);
-            let line = if invented.is_some_and(|name| name.starts_with("cli")) { 1 } else { 2 };
-            let quote = serde_json::json!({"url": "local://docs/api.md", "line": line, "text": "rotate(size)"});
-            reply(serde_json::json!({"text": "", "json": {"answer": "rotate()", "quotes": [quote]}}))
+            let good = serde_json::json!({"url": "local://docs/api.md", "line": 2, "text": "rotate(size)"});
+            let quotes = if invented.is_some_and(|name| name.starts_with("cli")) {
+                serde_json::json!([{"url": "local://docs/cli.md", "line": 1, "text": "--age DAYS"}, good])
+            } else {
+                serde_json::json!([good])
+            };
+            reply(serde_json::json!({"text": "", "json": {"answer": "rotate()", "quotes": quotes}}))
         })
     });
     registry.register("fetch", move |payload| {
@@ -610,5 +625,9 @@ async fn both_shapes_schedule_under_the_real_admission_and_step_table() -> TestR
         "{printed}"
     );
     assert!(printed.contains("scatter verified_success {}"), "{printed}");
+    assert!(
+        printed.contains("('web', 'abandoned')") && printed.contains("('web-r2', 'abandoned')"),
+        "a failed reader is retried and dropped on the real step table: {printed}"
+    );
     Ok(())
 }

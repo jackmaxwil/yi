@@ -14,7 +14,7 @@ from typing import Any
 import rlm
 
 from .plan import Plan, PlanError, Run, Todo, _pruned
-from .roles import verify_quotes
+from .roles import _inside, verify_quotes
 
 # OTP's restart intensity for fork_join: at most MAX_RESTARTS within RESTART_WINDOW seconds.
 MAX_RESTARTS = 3
@@ -139,7 +139,7 @@ def _scatter_geometry(plan: Plan) -> tuple[list[Todo], Todo]:
             problems.append(f"reader {todo.key} is bound to no partition")
         for url in partition:
             for other, key in bound.items():
-                if url == other or url.startswith(other.rstrip("/") + "/") or other.startswith(url.rstrip("/") + "/"):
+                if _inside(url, other) or _inside(other, url):
                     problems.append(f"readers {key} and {todo.key} share {url}")
         bound.update(dict.fromkeys(partition, todo.key))
         items = (todo._doc.get("contract") or {}).get("items", [])
@@ -173,10 +173,11 @@ async def _asked(plan: Plan, reader: Todo, number: int, question: str | None) ->
 
 
 async def _survivor(todo: Todo) -> dict[str, Any] | None:
-    """A reader's answer with the quotes the archive bears out, or None when it is dropped.
+    """A reader's answer with the quotes its own partition bears out, or None when it is dropped.
 
-    Invariant: the lead never sees an abstention, a failed reader, or an answer none of
-    whose quotes verified; a failed reader's todo is abandoned so the plan can still finish.
+    Invariant: the lead never sees an abstention, a failed reader, an answer none of whose
+    quotes verified, or a quote from outside the partition this reader was bound to; a failed
+    reader's todo is abandoned so the plan can still finish.
     """
     if todo._doc["state"] == "failed":
         try:
@@ -192,7 +193,7 @@ async def _survivor(todo: Todo) -> dict[str, Any] | None:
         return None
     if not isinstance(said, dict) or said.get("answer") is None:
         return None
-    quotes = await verify_quotes(said.get("quotes"))
+    quotes = await verify_quotes(said.get("quotes"), _delegation(todo).get("context") or ())
     return {"reader": todo.key, "answer": said["answer"], "quotes": quotes} if quotes else None
 
 
@@ -203,9 +204,9 @@ async def scatter(plan: Plan, run: Run) -> None:
     critical=True)``, and one lead as an inline todo: ``async def lead(answers,
     number)`` returning ``{"commit": answer}`` or ``{"ask": question}``. The lead
     sees only ``{"reader", "answer", "quotes"}`` whose quotes ``verify_quotes``
-    found in the archive. A commit becomes the lead todo's product,
-    ``{"answer", "rounds"}``, and goes to ``done``; ``SCATTER_MAX_ROUNDS`` rounds
-    without one fail the lead.
+    found on the cited line inside that reader's own partition. A commit becomes
+    the lead todo's product, ``{"answer", "rounds"}``, and goes to ``done``;
+    ``SCATTER_MAX_ROUNDS`` rounds without one fail the lead.
 
         run = await plan.run(shape=scatter, budget="20m")
     """

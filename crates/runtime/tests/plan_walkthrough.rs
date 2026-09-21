@@ -1189,9 +1189,15 @@ async fn every_fixture_replays_identically_through_plan_op() -> Fallible<()> {
     Ok(())
 }
 
-/// What a fixture and its program are compared on: every plan's todos in order (labels by
-/// slug, since a program's key is the label in lower case), and the committed transitions in
-/// journal order. Refused steps are the fixture's own, so `refusals` and `touched` are not.
+/// What a fixture and its program are compared on: every plan's state and version, its todos in
+/// order (labels by slug, since a program's key is the label in lower case) with their edges,
+/// attempt, retries, whether they are delegated and what a done one output, and the committed
+/// transitions in journal order.
+///
+/// What is not: `refusals` and `touched`, because the fixture's refused steps are its own; the
+/// text of a cause or a block note; a delegation's or a contract's contents; and the campaign
+/// fixture's `reorder` and `add_edge`, which the library has no surface for and whose generation
+/// its `supersede` closes before this reads the store.
 fn reached(store: &PlanStore) -> Fallible<Vec<String>> {
     const TRANSITIONS: [&str; 9] = [
         "start",
@@ -1215,8 +1221,12 @@ fn reached(store: &PlanStore) -> Fallible<Vec<String>> {
         ));
         for todo in &plan.todos {
             let after: Vec<String> = todo.after.iter().map(slug).collect::<Result<_, _>>()?;
+            let output = match &todo.state {
+                TodoState::Done { output, .. } => output.as_ref().map(ToString::to_string),
+                _ => None,
+            };
             lines.push(format!(
-                "  {} {} after {after:?} attempt {} retries {} delegated {}",
+                "  {} {} after {after:?} attempt {} retries {} delegated {} output {output:?}",
                 slug(&todo.label)?,
                 todo_state_tag(&todo.state),
                 todo.attempt.get(),

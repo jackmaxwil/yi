@@ -1403,7 +1403,8 @@ Readers bound to stable partitions (`deny_read` of every other partition,
 reader answers `{"answer": str | null, "quotes": [{"url", "line", "text"}]}`;
 a null answer is an abstention and is dropped; `roles.verify_quotes` fetches
 each cited `url` through `rlm.fetch` and reads line `<line>` from it, pins the fetched digest, and drops
-any quote whose text does not match and any answer whose every quote was
+any quote citing a url outside the reader's own partition, any quote whose text
+does not match and any answer whose every quote was
 dropped; the lead sees only what survived; rounds continue until the lead
 commits (the lead function returns `{"commit": answer}`) or `SCATTER_MAX_ROUNDS` (3, a lever). A
 verified quote proves provenance, not entailment: an answer with no
@@ -2068,7 +2069,7 @@ walkthrough fixtures as programs), `test_yi_shapes.py`, `tests/fake_host.py`,
 | over-admission refused while order is the shape's | `test_yi_shapes::test_fork_join_retries_a_refused_start_and_never_reorders_the_kernel` (T0, fake host counting refusals; the same run shows a module-level shape attaching to itself) |
 | restart intensity bounds retries and respects the step table | `test_yi_shapes::test_one_for_one_stops_after_max_within_window` (T0, the window and the engine's retry refusal both); `plan_e2e::a_shape_cannot_retry_a_done_or_drop_a_running_todo` (T1) |
 | concurrent waiters keep their own cursors | `test_yi_shapes::test_the_scheduler_and_the_model_wait_without_stealing_updates` (T0) |
-| a reader's uncited or unverifiable quote is dropped at the seam | `test_yi_shapes::test_scatter_drops_an_unverifiable_quote_before_the_lead_sees_it` (T0) |
+| a reader's uncited, unverifiable or out-of-partition quote is dropped at the seam | `test_yi_shapes::test_scatter_drops_an_unverifiable_quote_before_the_lead_sees_it` (T0); `kernel_data_surface::both_shapes_schedule_under_the_real_admission_and_step_table` (T2, the same two drops over a real archive) |
 | abstentions are dropped and rounds are bounded | `test_yi_shapes::test_scatter_ends_at_max_rounds_without_a_commit` (T0) |
 | the fixtures agree as programs and as JSON | `plan_walkthrough::a_program_and_its_json_fixture_reach_the_same_plan_json` (T2) |
 | both shapes hold against the real admission, step table and verifier | `kernel_data_surface::both_shapes_schedule_under_the_real_admission_and_step_table` (T2, added) |
@@ -2084,8 +2085,8 @@ against the archive; four more are specified with their prerequisites
 space". **Exit.** independently useful work through both shapes with the
 overhead reported against the direct path.
 
-As landed, against sections 8.5 and 8.6. Python +278, tests +655 (Rust 317, Python
-338 with the three programs), no Rust `src` line. Overhead, counted in host
+As landed, against sections 8.5 and 8.6. Python +290, tests +707 (Rust 342, Python
+365 with the three programs), no Rust `src` line. Overhead, counted in host
 requests on the fake host: fork_join over two writers is 9 against the 4 ops sent
 by hand (one `repair`, three views and one `wait` on top, none of them journaled);
 scatter over two readers and a lead is 18 against 2 direct fetches (seven ops, four
@@ -2105,20 +2106,28 @@ call `commit` on), and its product is `{"answer", "rounds"}` because a bare stri
 is stored as text and a `schema` item finds no JSON in it. A later round declares
 `<reader>-r<n>` todos with the reader's delegation and contract and the question as
 the note; a failed reader is retried and dropped, the two legal steps from `failed`
-to `abandoned`, so the plan can still finish. `verify_quotes` fetches each cited
-url once and reads the line from it: the host's line fragment needs the tag
-(`#L<a>-<b>@<tag>`) a reader does not have. `shapes.ANSWER` types only `quotes`,
-because the host's schema subset has no union type for a nullable `answer`. A
-program reaches its fixture's JSON on the projection the two surfaces share: every
-plan's todos in order (a program's key is the fixture's label in lower case), their
-states, edges, attempts, retries and whether they are delegated, and the committed
-transitions in journal order; the fixture's refused steps, `reorder` and `add_edge`
-are its own, and the library has no surface for the last two. Found on the way and
-fixed: `Todo.decompose` looked a sibling edge up in the parent plan and raised, so
-its own docstring example failed. Not built: a writer child as the scatter lead, a
-check that a quote's url lies inside its reader's partition (the wall is
-cooperative, section 7.6), `rest_for_one` and `one_for_all`, and the four later
-shapes.
+to `abandoned`, so the plan can still finish, and the T2 journey settles one that way
+on the real step table. `verify_quotes` fetches each cited url once and reads the
+line from it: the host's line fragment needs the tag (`#L<a>-<b>@<tag>`) a reader
+does not have, so a large page is read whole until F1c's paged `fetch` lands. It
+also takes the reader's partition and drops a quote citing anything else unread:
+the wall that bound the reader is cooperative (section 7.6) and the owner fetches
+with the owner's own reach, so a reader could otherwise answer for a partition it
+was never given, or for a page outside the archive, and the disjointness geometry
+checks before the first start would mean nothing afterwards. `shapes.ANSWER` types
+only `quotes`, because the host's schema subset has no union type for a nullable
+`answer`. A program reaches its fixture's JSON on the projection the two surfaces
+share: every plan's state and version, its todos in order (a program's key is the
+fixture's label in lower case), their states, edges, attempts, retries, whether they
+are delegated and what a done one output, and the committed transitions in journal
+order. Not compared: `refusals` and `touched`, since the fixture's refused steps are
+its own; the text of a cause or a block note; a delegation's or a contract's
+contents; and the campaign fixture's `reorder` and `add_edge`, which the library has
+no surface for and whose generation that fixture's `supersede` closes before the
+comparison reads the store. Found on the way and fixed: `Todo.decompose` looked a
+sibling edge up in the parent plan and raised, so its own docstring example failed.
+Not built: a writer child as the scatter lead, `rest_for_one` and `one_for_all`, and
+the four later shapes.
 
 ### F1c · Paged recall through `fetch` (D-next-7; extends D164)
 
