@@ -168,13 +168,22 @@ fn measure(mut served: Vec<String>, supplied: &[Url]) -> Relevance {
     }
 }
 
-/// M3 over a transcript rather than a live log: a child's fetches are durable
-/// custom entries, so the owner measures its own supply after the child is gone.
-pub fn relevance_of(session: &yi_session::SharedSession, supplied: &[Url]) -> Relevance {
+/// A workspace file's text and hash exactly as `local://` serves them whole, so a blob named
+/// by digest can be matched against the row a read of it left.
+pub fn as_served(raw: &str) -> (String, String) {
+    use yi_tools::hashline::normalize::{normalize_to_lf, strip_bom};
+    let text = normalize_to_lf(strip_bom(raw).text);
+    let hash = super::content_hash(&text);
+    (text, hash)
+}
+
+/// The fetch rows a transcript carries: a child's fetches are durable custom entries, so
+/// they outlive the child and answer "was this read, and at which hash" after it is gone.
+pub fn rows_of(session: &yi_session::SharedSession) -> Vec<FetchRecord> {
     let entries = yi_session::lock_session(session)
         .find_entries(&yi_session::EntryQuery::default())
         .unwrap_or_default();
-    let served = entries
+    entries
         .iter()
         .filter_map(|entry| {
             let yi_types::entry::Entry::Custom {
@@ -190,6 +199,14 @@ pub fn relevance_of(session: &yi_session::SharedSession, supplied: &[Url]) -> Re
             }
             serde_json::from_value::<FetchRecord>(data.clone()).ok()
         })
+        .collect()
+}
+
+/// M3 over a transcript rather than a live log: the owner measures its own supply after the
+/// child is gone.
+pub fn relevance_of(session: &yi_session::SharedSession, supplied: &[Url]) -> Relevance {
+    let served = rows_of(session)
+        .into_iter()
         .filter_map(|record| record.url.parse::<Url>().ok())
         .map(|url| base_of(&url))
         .collect();

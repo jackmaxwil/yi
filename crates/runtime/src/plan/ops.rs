@@ -927,6 +927,9 @@ impl PlanEngine {
         }
         if let Some(verdict) = &txn.verdict {
             record.verdict = Some(serde_json::to_value(verdict)?);
+            if let Some(votes) = super::done::juror_votes(verdict) {
+                record.record.extra.insert("jurors".to_owned(), votes);
+            }
         }
         if let Some(effect) = &txn.effect {
             record

@@ -271,6 +271,7 @@ SIGNAL_NAMES = (
     "candidate_submitted", "candidate_verified", "integration_prepared", "integration_verified",
     "integration_stale", "accepted", "disposition_retained", "disposition_discarded",
     "disposition_merge_failed", "disposition_repossession_pending",
+    "juror_pass", "juror_fail", "juror_abstain", "quotes_dropped",
 )
 
 # The outcome word plan.op's refusal detail names (contract.rs Outcome::Display), read back out
@@ -485,6 +486,12 @@ def signals(entries):
     frozen_at, refused_frozen = {}, {}
     for record in plan_op_records:
         op, label = record.get("op"), record.get("todo")
+        # A judged item's jurors by vote (plan section 6.4), on the `done` or `done_refused`
+        # record that carried its verdict; `unbacked` is the quote check dropping a juror.
+        jurors = record.get("jurors") or {}
+        for vote in ("pass", "fail", "abstain"):
+            out[f"juror_{vote}"] += jurors.get(vote, 0)
+        out["quotes_dropped"] += jurors.get("unbacked", 0)
         if op == "start" and label:
             frozen_at[label] = record.get("contract_hash")
         elif op == "verification_requested":

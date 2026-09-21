@@ -11,10 +11,11 @@ pub use yi_types::subagent::{ChildActivity, ChildExit, ChildId, ChildStatus, Chi
 
 use crate::mail::Draft;
 use crate::mailbox::{ParentLink, timeout_of};
-use crate::provider::{available_models, resolve_model};
+use crate::provider::resolve_model;
 use crate::session::AgentSession;
 
 mod build;
+pub mod models;
 mod record;
 pub use record::ChildFeed;
 pub(crate) use record::Step;
@@ -42,6 +43,9 @@ pub(crate) struct ChildRecord {
     /// Dispatched by the plan engine: its worktree goes through `submit` or a journaled
     /// disposition, never the kernel's merge or discard.
     pub(crate) managed: bool,
+    /// Seated by the judge tier under the verification reserve: outside the worker cap, and
+    /// its ending is the jury's to read, never a notice to the owner it judges.
+    pub(crate) juror: bool,
     /// `None` while the run is live; every status, state and notice is read from it.
     pub(crate) exit: Option<ChildExit>,
     pub(crate) phase: crate::family::Phase,
@@ -562,6 +566,19 @@ impl SubagentHost {
         prompt: String,
         kwargs: Map<String, Value>,
     ) -> Result<Map<String, Value>, String> {
+        self.spawn_seated(prompt, kwargs, None)
+    }
+
+    /// [`Self::spawn`], or a juror's seat when `seat` holds the verification reserve: a leaf
+    /// above the worker cap and the depth limit, still under the family cap and the lease.
+    pub(crate) fn spawn_seated(
+        self: &Arc<Self>,
+        prompt: String,
+        kwargs: Map<String, Value>,
+        seat: Option<&crate::plan::capacity::Permit>,
+    ) -> Result<Map<String, Value>, String> {
+        let juror =
+            seat.is_some_and(|seat| seat.purpose() == crate::plan::capacity::Purpose::Verification);
         require_kwargs(&kwargs)?;
         let requested_name = optional_string(&kwargs, "name")?;
         let requested_model = optional_string(&kwargs, "model")?;
@@ -574,9 +591,7 @@ impl SubagentHost {
         let check = optional_string(&kwargs, "check")?;
         let context = crate::mailbox::context_block(&kwargs)?;
         let ask = crate::lease::Ask::from_kwargs(&kwargs)?;
-        // Walls only shrink: the child's is its own under everything this host is walled by.
-        let wall = crate::wall::Wall::from_kwargs(&kwargs, &self.options.cwd)?
-            .under(&self.grant.lock().map_err(|_| "lease state poisoned")?.wall);
+        let wall = self.wall_for(&kwargs)?;
         if fork == Fork::All && (requested_model.is_some() || thinking.is_some()) {
             return Err(
                 "fork=all inherits the parent's model and thinking; drop the override".to_owned(),
@@ -587,7 +602,7 @@ impl SubagentHost {
                 "the family holds {FAMILY_CAP} live sessions; reap one with rlm.delete_subagent before spawning"
             ));
         }
-        if self.options.depth >= self.options.max_depth {
+        if !juror && self.options.depth >= self.options.max_depth {
             return Err(format!(
                 "RLM recursion depth limit reached (RLM_DEPTH={}, RLM_MAX_DEPTH={})",
                 self.options.depth, self.options.max_depth
@@ -608,7 +623,7 @@ impl SubagentHost {
         let (session_dir, child_id) = self.create_child_dir(&self.options.parent_session_dir)?;
         let session_name =
             requested_name.unwrap_or_else(|| default_session_name(&prompt, &child_id));
-        let (reserved, lease) = self.reserve(&session_name, &session_dir, &ask)?;
+        let (reserved, lease) = self.reserve(&session_name, &session_dir, &ask, juror)?;
         let clock = lease
             .deadline_ms
             .map(|ends| std::time::Duration::from_millis(ends.saturating_sub(lease.granted_at)));
@@ -669,6 +684,7 @@ impl SubagentHost {
                     lane_permit,
                     disposition: None,
                     managed: false,
+                    juror,
                     exit: None,
                     phase: crate::family::Phase::Queued,
                     lease,
@@ -764,10 +780,10 @@ impl SubagentHost {
             && let Some(record) = children.get_mut(&child_id)
             && record.step(Step::Exit(exit, error.clone()))
         {
-            replied = Some(record.replied);
+            replied = Some((record.replied, record.juror));
             children.touch(&child_id);
         }
-        let Some(replied) = replied else {
+        let Some((replied, juror)) = replied else {
             return;
         };
         if exit == ChildExit::Completed {
@@ -782,6 +798,9 @@ impl SubagentHost {
             }
         }
         self.publish(&child_id);
+        if juror {
+            return;
+        }
         // Terminal notices reach the parent as user-role host status, never as
         // something that can read as user instructions from the child.
         // a child that ended on `ask_user` is asking its parent, not finishing (D165).
@@ -955,31 +974,6 @@ impl SubagentHost {
             reply.insert("disposition".to_owned(), Value::Object(disposition));
         }
         Ok(reply)
-    }
-
-    pub fn find_models(query: &str, limit: usize) -> Map<String, Value> {
-        let needle = query.to_lowercase();
-        let models: Vec<Value> = available_models()
-            .into_iter()
-            .filter(|model| {
-                needle.is_empty()
-                    || model.id.to_lowercase().contains(&needle)
-                    || model.name.to_lowercase().contains(&needle)
-                    || model.provider.to_lowercase().contains(&needle)
-            })
-            .take(limit)
-            .map(|model| {
-                json!({
-                    "provider": model.provider,
-                    "id": model.id,
-                    "name": model.name,
-                    "selector": format!("{}/{}", model.provider, model.id),
-                })
-            })
-            .collect();
-        let mut reply = Map::new();
-        reply.insert("models".to_owned(), Value::Array(models));
-        reply
     }
 
     pub fn register(self: &Arc<Self>, registry: &mut crate::kernel::HostRegistry) {

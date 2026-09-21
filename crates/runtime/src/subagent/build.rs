@@ -26,13 +26,17 @@ impl SubagentHost {
         session_name: &str,
         session_dir: &Path,
         ask: &crate::lease::Ask,
+        juror: bool,
     ) -> Result<(Reservation<'_>, yi_types::lease::Lease), String> {
         let mut children = self
             .children
             .lock()
             .map_err(|_| "subagent state poisoned")?;
-        let refusal = if children.len().saturating_add(children.building.len())
-            >= self.options.max_children
+        // Jurors sit in the verification reserve (plan section 7.6): they neither fill the
+        // worker cap nor are refused by it, so a full worker set still gets its jury.
+        let workers = children.values().filter(|record| !record.juror).count();
+        let refusal = if !juror
+            && workers.saturating_add(children.building.len()) >= self.options.max_children
         {
             Some(format!(
                 "RLM child limit reached ({} children retained); rlm.delete_subagent a finished child first",

@@ -21,8 +21,8 @@
 //!
 //! Not here. `floor_of` is data and is checked by `Plan::validate()` at `init`, `append`,
 //! `retry` and `supersede`, so the writer and reader floors are pinned from
-//! `plan_ops.rs`, where a plan exists to validate. The `Judge` decider is refused at
-//! declaration until F3a, so no row below aggregates one.
+//! `plan_ops.rs`, where a plan exists to validate. A `Judge` item's verdict is the jury's
+//! tally (`plan/judge.rs`), so by the time it aggregates it is an item verdict like any other.
 
 use std::error::Error;
 
@@ -141,6 +141,7 @@ fn aggregate_never_panics_for_any_item_set() -> TestResult {
         Ok(ItemLine {
             id: ItemId::new(id)?,
             verdict: ItemVerdict::Pass,
+            jurors: Vec::new(),
         })
     };
     assert!(matches!(
@@ -312,7 +313,7 @@ fn rule_6_score_meets_the_threshold_or_fails() -> TestResult {
 }
 
 #[test]
-fn validate_enforces_the_floors_and_refuses_a_judge() -> TestResult {
+fn validate_enforces_the_floors_and_a_judge_never_stands_alone() -> TestResult {
     let schema_only = Contract {
         class: ContractClass::Writer,
         items: vec![ContractItem {
@@ -361,9 +362,36 @@ fn validate_enforces_the_floors_and_refuses_a_judge() -> TestResult {
         threshold: Permille::FULL,
         min_coverage: Permille::FULL,
     };
+    // Beside a critical behavioural item a live judge is declared; alone it meets no floor,
+    // whatever class asks and however critical it says it is.
+    judge.validate()?;
+    let taste = judge.items.get(1).ok_or("the judge item")?;
+    for class in [
+        ContractClass::Writer,
+        ContractClass::Reader,
+        ContractClass::Inline,
+    ] {
+        let alone = Contract {
+            class,
+            items: vec![ContractItem {
+                critical: true,
+                ..taste.clone()
+            }],
+            ..judge.clone()
+        };
+        assert!(matches!(alone.validate(), Err(ContractError::Floor { .. })));
+    }
+    let mut crowd = judge.clone();
+    if let Some(ContractItem {
+        decider: Decider::Judge { policy, .. },
+        ..
+    }) = crowd.items.get_mut(1)
+    {
+        policy.n = 2;
+    }
     assert!(matches!(
-        judge.validate(),
-        Err(ContractError::JudgeUnavailable { .. })
+        crowd.validate(),
+        Err(ContractError::JurySize { n: 2, .. })
     ));
     let dup = Contract {
         class: ContractClass::Writer,

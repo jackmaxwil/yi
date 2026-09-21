@@ -280,8 +280,19 @@ impl Delegate for SessionDelegate {
 
     fn spawn(&self, at: &TodoAddr, delegation: &Delegation) -> Result<AgentId, String> {
         let agent = child_name(at)?;
-        self.host
-            .spawn(brief(at, delegation), kwargs_of(&agent, delegation)?)?;
+        let kwargs = kwargs_of(&agent, delegation)?;
+        // Plan section 7.6: a brief whose own wall denies its context is refused here, with
+        // the denial as evidence, not one fetch later inside a child that cannot do its job.
+        let wall = self.host.wall_for(&kwargs)?;
+        let cwd = &self.host.options.cwd;
+        if let Some(denied) = delegation
+            .context
+            .iter()
+            .find_map(|url| wall.check_url(url, cwd))
+        {
+            return Err(format!("the brief names context its wall denies. {denied}"));
+        }
+        self.host.spawn(brief(at, delegation), kwargs)?;
         // Its worktree goes through `submit` or a journaled disposition: the kernel's merge
         // and discard are refused for a child the engine dispatched.
         self.host.mark_managed(agent.as_str())?;

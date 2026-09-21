@@ -17,6 +17,9 @@ pub const ITEMS_MAX: usize = 16;
 /// Refused verdicts on one todo before it steps to `Blocked { on: User }`.
 pub const DONE_REFUSAL_CAP: u32 = 3;
 
+/// Juries convened on one todo per plan version; the next judged item escalates to the user.
+pub const JUDGE_CAP_PER_TODO: u32 = 3;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ContractError {
     NoItems,
@@ -27,8 +30,9 @@ pub enum ContractError {
     DuplicateItem {
         id: ItemId,
     },
-    JudgeUnavailable {
+    JurySize {
         id: ItemId,
+        n: u8,
     },
     ServiceUnavailable,
     Floor {
@@ -57,9 +61,9 @@ impl std::fmt::Display for ContractError {
                 )
             }
             Self::DuplicateItem { id } => write!(formatter, "contract item {id} is declared twice"),
-            Self::JudgeUnavailable { id } => write!(
+            Self::JurySize { id, n } => write!(
                 formatter,
-                "contract item {id} is a judge; judge items are refused at declaration until the judge tier lands"
+                "contract item {id} asks a jury of {n}; a jury is 1 (single-judge) or 3 (two votes decide)"
             ),
             Self::ServiceUnavailable => write!(
                 formatter,
@@ -232,7 +236,7 @@ pub enum Decider {
         runner: ArtifactRef,
         timeout_ms: u64,
     },
-    /// Refused at declaration until F3a.
+    /// A jury of walled readers of another model family (plan section 6.4).
     Judge {
         rubric: ArtifactRef,
         evidence: Vec<ArtifactRef>,
@@ -278,7 +282,7 @@ pub struct Contract {
 
 impl Contract {
     /// # Errors
-    /// No items, over the cap, a duplicate id, a judge or service, or a class below its floor.
+    /// No items, too many, a duplicate id, an undeclared jury size, a service, a floor unmet.
     pub fn validate(&self) -> Result<(), ContractError> {
         if self.items.is_empty() {
             return Err(ContractError::NoItems);
@@ -297,9 +301,13 @@ impl Contract {
                 });
             }
             seen.push(&item.id);
-            if matches!(item.decider, Decider::Judge { .. }) {
-                return Err(ContractError::JudgeUnavailable {
+            // A quorum is predeclared per size. A judge never meets a floor below: alone, it fails.
+            if let Decider::Judge { policy, .. } = &item.decider
+                && !matches!(policy.n, 1 | 3)
+            {
+                return Err(ContractError::JurySize {
                     id: item.id.clone(),
+                    n: policy.n,
                 });
             }
         }
@@ -579,10 +587,46 @@ impl VerificationToken {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Vote {
+    Pass,
+    Fail,
+    Abstain,
+}
+
+/// The one answer a juror may give (plan section 6.4), parsed strictly: an unknown key, a
+/// missing one or a fourth verdict word is not an answer.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct JurorAnswer {
+    pub verdict: Vote,
+    pub reason: String,
+    pub quotes: Vec<Quote>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Quote {
+    pub url: String,
+    pub line: usize,
+    pub text: String,
+}
+
+/// One juror of a judged item: the model the host seated, its vote and its stated reason.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct JurorLine {
+    pub model: String,
+    pub vote: Vote,
+    pub reason: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ItemLine {
     pub id: ItemId,
     pub verdict: ItemVerdict,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub jurors: Vec<JurorLine>,
 }
 
 #[must_use]
