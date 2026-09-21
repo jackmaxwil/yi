@@ -25,7 +25,7 @@ fn render_history(
     entry_id: Option<&str>,
     page: Option<Page>,
 ) -> Paged {
-    // A page counts entries that stay put: `tail/N` slides as every fetch appends its log row.
+    // A page counts entries that stay put: `tail/N` is anchored at the end, so an append slides it.
     if page.is_some() && entry_id.is_some_and(|id| !id.starts_with("since/")) {
         return Err(FetchError::BadAddress {
             url: url.to_string(),

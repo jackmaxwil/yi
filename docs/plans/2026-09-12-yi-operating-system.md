@@ -2156,13 +2156,18 @@ Tests: `fetch_session::a_capped_read_names_the_next_offset_and_the_next_page_con
 (T1) and three edge tests beside it. Row: "`fetch` pages: a capped read names
 the next offset (D213, extends D164; Closes #456)".
 
-**As landed.** LOC yi-runtime +126 against 90, python +16 against 10. Decided
-at the edges: a zero, negative or fractional number is refused, never
-clamped; a huge limit is the rest (a `kernel://` page clamps to the cell's
-cap); an offset past the end is an empty last page; a byte offset inside a
-UTF-8 sequence still serves text and `next_offset` always advances. A page is
-refused on `history://<agent>/tail/N`, which the plan did not foresee: every
-fetch appends its own log row, so a tail window slides under the walk.
+**As landed.** LOC yi-runtime +148 against 90 (+22 of it from the review),
+python +16 against 10. Decided at the edges: a zero, negative or fractional
+number is refused, never clamped; a huge limit is the rest (a `kernel://` page
+clamps to the cell's cap); an offset past the end is an empty last page; a byte
+offset inside a UTF-8 sequence still serves text and `next_offset` always
+advances. A page is refused on `history://<agent>/tail/N`, which the plan did
+not foresee: the window is anchored at the end of a growing listing, so any
+append slides it. Found by the review: a walk of the reading session's own
+history never ended at a limit of one, because each page appended the fetch-log
+row the next page then read, so a paged read of it now records in memory alone
+(`FetchLog::remember`); and a page named beside D164's `object` was dropped
+without a word, and is refused.
 Follow-up, not built: `roles.verify_quotes` could read a cited line's
 neighbourhood instead of the whole page, but the digest it pins is the whole
 page's sha256 and a page's digest is not interchangeable with it in a stored
