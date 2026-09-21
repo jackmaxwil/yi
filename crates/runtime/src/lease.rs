@@ -163,14 +163,20 @@ impl SubagentHost {
     /// Invariant: the reservation comes back exactly once, as the record leaves. A turn that
     /// reported no usage is an unknown spend: the whole reservation stays spent.
     pub(crate) fn return_lease(&self, record: &ChildRecord) {
+        self.journal_settled(self.settle_lease(record));
+    }
+
+    /// The accounting half of [`Self::return_lease`], and all of it a caller may run under the
+    /// roster lock: the line it hands back is journaled once that lock is down.
+    pub(crate) fn settle_lease(&self, record: &ChildRecord) -> Option<LeaseRecord> {
         if record.lease.tokens.is_none() && record.lease.revoked.is_none() {
-            return;
+            return None;
         }
         let reserved = record.lease.tokens.unwrap_or(0);
         let spent = record.token_count();
-        let unknown = record.session.messages().iter().any(|message| {
-            matches!(message, AgentMessage::Assistant { usage, .. } if usage.total_tokens == 0)
-        });
+        let unknown = record.billable(&record.session.messages()).iter().any(
+            |message| matches!(message, AgentMessage::Assistant { usage, .. } if usage.total_tokens == 0),
+        );
         let unspent = (!unknown && reserved > 0).then(|| reserved.saturating_sub(spent));
         if let Ok(mut grant) = self.grant.lock() {
             grant.spent = grant
@@ -179,13 +185,19 @@ impl SubagentHost {
         }
         // A repossession's own record already carries the lease; a second line would reopen it.
         if record.exit == Some(ChildExit::Repossessed) {
-            return;
+            return None;
         }
-        let _a_failed_write_never_blocks_a_reap = self.journal(&LeaseRecord::Returned(Returned {
+        Some(LeaseRecord::Returned(Returned {
             lease: record.lease.clone(),
             spent,
             unspent,
-        }));
+        }))
+    }
+
+    pub(crate) fn journal_settled(&self, settled: Option<LeaseRecord>) {
+        if let Some(record) = settled {
+            let _a_failed_write_never_blocks_a_reap = self.journal(&record);
+        }
     }
 
     /// `rlm.revoke`: the revocation is journaled, then a `cancel` reaches the child, then the

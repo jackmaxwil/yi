@@ -220,7 +220,11 @@ pub(crate) fn present(envelope: &Envelope) -> AgentMessage {
     let Envelope { id, from, body, .. } = envelope;
     let mut tag = format!("<agent_message from=\"{from}\"");
     if let Some(incarnation) = envelope.from_incarnation {
-        tag.push_str(&format!(" incarnation=\"{incarnation}\""));
+        tag.push_str(&format!(" from_incarnation=\"{incarnation}\""));
+    }
+    // A kept transcript outlives the incarnation it was written to, which reads it again.
+    if let Some(incarnation) = envelope.to_incarnation {
+        tag.push_str(&format!(" to_incarnation=\"{incarnation}\""));
     }
     if envelope.kind != Kind::Inform {
         tag.push_str(&format!(" kind=\"{}\" id=\"{id}\"", envelope.kind.as_str()));

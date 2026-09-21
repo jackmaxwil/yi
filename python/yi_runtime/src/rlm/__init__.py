@@ -297,8 +297,10 @@ async def service(name: str, brief: str, restart: int = 3, **kwargs: Any) -> RLM
 
     It idles between turns and ``send`` or ``request`` wakes it. A run that crashes (a provider
     error, a dead kernel) is respawned under the same name with its transcript and inbox kept
-    and a fresh lease, at most ``restart`` times in ten minutes; past that, or when the parent
-    has no lease left to draw, it reads ``failed`` and the notice says why. The same ``name``
+    and a fresh lease, at most ``restart`` times in ten minutes (the host refuses more than ten
+    and counts them in memory, so a restarted host starts the count over); past that, or when
+    the parent has no lease left to draw, it reads ``failed`` and the notice says why. Each
+    incarnation is billed for its own turns only. The same ``name``
     and ``brief`` again attach to the running service; ``delete_subagent``, ``revoke`` and the
     parent's close end it for good. ``status()`` shows ``service`` and ``incarnation``; a
     message carries the incarnation it was addressed to. ``kwargs`` are ``run``'s, less
