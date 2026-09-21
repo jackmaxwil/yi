@@ -1522,7 +1522,12 @@ once.
 
 An edit is promoted into `graph.json` when the held-out pass count is not
 lower than the current graph's (ties accepted, the paper's rule) and the
-token total per solved task is not higher; else it is appended to
+token total per solved task is not higher (as landed, F4b: the fit split
+filters first, so an edit that drops a development pass is rejected as
+`fit_passes_dropped` and never spends a held-out run, and a tie in which
+neither graph solves anything prices no token, so §9.8's rule stands alone
+there and rendered bytes that bought no pass are `guidance_bytes_unpaid`);
+else it is appended to
 `evals/fixtures/graph/rejected.jsonl` as `{editHash, baseVersion, protocol,
 model, reason, scores, at}`; the refiner refuses the same edit against the
 same base graph, protocol and model configuration, and treats an older
@@ -2691,8 +2696,11 @@ As landed (0.280.0, #464; no Rust `src` line). The scoring run is an injected ca
 `refine(graph, edits, split, run, config)` in tests, the owner's `--runner` command on the
 command line, so `refine.py` itself starts nothing; section 9.5's `ab.py` and the paid slice
 are what a runner wraps. The development tasks filter before the held-out tasks are touched
-(`fit_passes_dropped`), which keeps held-out accesses to candidates that earned one. The
-refusal of section 9.6 covers validation as well as final tasks. The two rule sets are held
+(`fit_passes_dropped`), which keeps held-out accesses to candidates that earned one. A tie in
+which neither graph solves anything prices no token, so section 9.8's byte rule decides it
+(`guidance_bytes_unpaid`). The refusal of section 9.6 covers validation as well as final
+tasks, and reads the decoded line by token, so a JSON escape hides no id and an id inside a
+longer word refuses nothing. The two rule sets are held
 together by `evals/fixtures/graph/structural.json`, judged by `graph::the_shared_fixture_is_judged_alike_on_both_sides`
 and by the Python test of the same name. `split.json` is drawn over the seven synthetic
 tasks of `evals/fixtures/tasks` (development four, validation three, final empty); the
