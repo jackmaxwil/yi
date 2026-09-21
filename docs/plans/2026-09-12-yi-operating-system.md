@@ -957,7 +957,9 @@ plan.op{done, request_id, expected_revision}  (tool, host request, or CLI)
         item's line; this attempt's refused verdicts == DONE_REFUSAL_CAP (3) → the todo steps
         Blocked { on: User, note } as its own committed transition (the human inbox). The count is
         per attempt (`done.rs` refused_verdicts), so a retry opens a fresh one and RETRY_CAP is the
-        only durable bound on a scheduler that retries a failed todo (§8.5)
+        only durable bound on a scheduler that retries a failed todo (§8.5). An Escalate outcome
+        blocks on its own refusal without waiting for the count, and its note names the
+        escalation rather than a refusal tally (F3a, §6.4)
 ```
 
 The lease is released around step 4 because a command may run ten minutes
@@ -992,10 +994,10 @@ checks twice or charge two refusals.
 | model | the registry (`subagent/models.rs`, where `find_models` now lives) filtered to a recorded model identity whose vendor segment differs from the owner's (`openrouter/z-ai/glm-5.3-flash` → `z-ai`), a weak heuristic for independent errors, stated as such; as landed the owners are the host's own model and the selector the plan spawned the todo's child with, the candidates are models on the host's provider or on one whose key is set, cheapest input first; none available → `Abstain { "no other family" }`, never the owner's model |
 | brief | the rubric, the evidence artifact ids, the fixed schema, and nothing else: no owner transcript, no author, no prior verdict; evidence is served through `fetch` under the wall, never inlined |
 | schema | `{"verdict": "pass\|fail\|abstain", "reason": string, "quotes": [{"url": string, "line": integer, "text": string}]}`, parsed strictly as `JurorAnswer` from the retired juror's last answer (as landed: `rlm.result` is the kernel's road and would promote the answer into the owner's transcript, so the jury reads the record itself); anything else abstains, and so does a decided vote that quotes nothing (`auto_review.rs:62-81` is the pattern) |
-| quote check | every quote's `url` must be one of the item's evidence addresses and be backed by the judge's own fetch log (`fetch::rows_of` over its transcript) at the frozen artifact's hash, and its `text` must match that line; any miss → the item is `Abstain { "unbacked quote ..." }`; as landed the hash is the whole file's, so a fragment or paged read backs nothing; a matching quote proves provenance, not entailment |
+| quote check | every quote's `url` must be one of the item's evidence addresses and be backed by the judge's own fetch log (`fetch::rows_of` over its transcript) at the frozen artifact's hash, and its `text` must match that line, which a blank line never does; any miss → the item is `Abstain { "unbacked quote ..." }` and the dropped juror's line carries the check's own `unbacked` flag, never a prefix of the reason the juror wrote; as landed the hash is the whole file's, so a fragment or paged read backs nothing; a matching quote proves provenance, not entailment |
 | jury | `policy.n` children in parallel with a predeclared quorum: for n = 3, at least two decided votes, two `pass` → `Pass`, two `fail` → `Fail`, anything else `Abstain`; n = 1 is labelled single-judge; pass and fail quorums are validated disjoint for other n |
 | bounds | `JUDGE_CAP_PER_TODO` 3 per plan version, then `Escalate`, which blocks the todo on the user at once; as landed the count is derived from the journal's `verification_requested` records and there is no `todo.juries` field; a juror draws a lease from the owner and counts against the family cap 16; it sits above the parent cap 8 and the depth limit under the `Purpose::Verification` permit the done path reserves, one jury at a time, so eight retained workers cannot starve their own judges (§7.6) |
-| record | one line per juror with the model identity, the vote and the reason, carried as `jurors` on the item's line of the verdict the `done` or `done_refused` record journals (as landed: no `judge` record kind of its own); the item verdict aggregates in Rust; calibration (false accepts, false refusals, coverage, cost) on an independently labelled set precedes default use |
+| record | one line per juror with the model identity, the vote, the reason and whether the quote check dropped it, carried as `jurors` on the item's line of the verdict the `done` or `done_refused` record journals (as landed: no `judge` record kind of its own); the item verdict aggregates in Rust; calibration (false accepts, false refusals, coverage, cost) on an independently labelled set precedes default use |
 
 ### 6.5 Every completion path, the `done_refused` record, the examples runner
 
@@ -2518,8 +2520,10 @@ into `spawn_seated`), the jury count and the escalation arm in `done.rs`, the ju
 with their session-visible counts, and F2b's context refusal.
 
 - The cap lives in `Verifier::run`, not in the jury, so the engine's test drives it with
-  a stub `Judge` and no host. An `Escalate` outcome blocks the todo on the user on that
-  refusal; before F3a nothing produced one.
+  a stub `Judge` and no host, beside the whole-verification deadline, which is read once
+  ahead of every decider so that no jury is seated for an item with no time left. An
+  `Escalate` outcome blocks the todo on the user on that refusal, under a note of its own;
+  before F3a nothing produced one.
 - `find_models` moved to `subagent/models.rs` beside `family_of` and `other_families`
   rather than gaining a filter argument; `subagent.rs` is 6 lines smaller.
 - `extract.py` reads `jurors` counts from the `done` and `done_refused` session records
@@ -2534,6 +2538,15 @@ with their session-visible counts, and F2b's context refusal.
   as backing for a quote. A configured judge model. `Disposition::RepossessionPending`
   (see F2b's list). Calibration on a labelled set, which §6.4 requires before a judged
   item is used by default, has not been run.
+- Limits a deployment reaches before any of that. A `plans.dir` outside the cwd puts the
+  evidence blobs outside the tree a juror reads, so every judged item abstains there; a
+  host whose own grant is smaller than three juror leases of 100,000 tokens has a seat
+  refused and abstains by quorum; and a todo the plan holds no delegation for, which is
+  every todo the owner ran itself or spawned by hand, contributes no owner beyond the
+  host's own model, because nothing records the model a child actually executed on
+  (`spawn_result` carries the agent name only). Each abstains or narrows with its reason
+  in the verdict, none is silent, and the owner of all three is F3b, which is where a pod
+  records who read what.
 
 ### F3b · Review pod with a code arbiter (D-next-11)
 
