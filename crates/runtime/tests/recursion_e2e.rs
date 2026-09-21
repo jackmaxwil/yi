@@ -2398,6 +2398,44 @@ async fn every_exit_publishes_one_terminal_update() -> TestResult {
     Ok(())
 }
 
+/// Pins what a parent's end did to its children before leases (plan section 7.4): nothing. The
+/// run task holds the host, so a child outlives every handle its parent dropped, runs to its
+/// own end unbounded and reports to a parent that is gone. `parent_close` replaces this.
+#[tokio::test]
+async fn children_at_parent_close_today() -> TestResult {
+    let (harness, feed) = busy_child().await?;
+    let Harness { host, notices, .. } = harness;
+    drop(host);
+    assert_eq!(
+        feed.status(),
+        yi_runtime::Status::Running,
+        "the drop stopped nothing"
+    );
+    feed.wait_idle().await;
+    let answered = feed.messages().iter().any(|message| {
+        matches!(
+            message,
+            AgentMessage::Assistant {
+                stop_reason: StopReason::Stop,
+                ..
+            }
+        )
+    });
+    assert!(answered, "the orphan ran to its own end");
+    for _ in 0..POLL_ATTEMPTS {
+        if !notices.lock().map_err(|_| "poisoned")?.is_empty() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(POLL_INTERVAL_MS)).await;
+    }
+    let told = notices.lock().map_err(|_| "poisoned")?.clone();
+    assert!(
+        told.iter().any(|text| text.contains("finished")),
+        "{told:?}"
+    );
+    Ok(())
+}
+
 /// Dies with the stop road: a client that aborts the child's session itself leaves the host's
 /// record to guess, and the feed a client holds has no abort to call. The TUI sends the id.
 #[tokio::test]
