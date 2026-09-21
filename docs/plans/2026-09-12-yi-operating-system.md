@@ -950,9 +950,12 @@ plan.op{done, request_id, expected_revision}  (tool, host request, or CLI)
         mismatch → commit verification_stale, refuse; not a product failure, no refusal charged
   6  Pass and the token current → commit the verdict and the transition Done { VerifiedDone } as one record;
         a worktree todo passes through §6.6's acceptance first
-     Fail | Abstain | Escalate → commit done_refused { verdict }, bump todo.refusals (an explicit event),
-        return the refusal with every item's line; refusals == DONE_REFUSAL_CAP (3) → the todo steps
-        Blocked { on: User, note } as its own committed transition (the human inbox)
+     Fail | Abstain | Escalate → commit done_refused { verdict }, bump todo.refusals (an explicit
+        event over the todo's life, which nothing reads for the cap), return the refusal with every
+        item's line; this attempt's refused verdicts == DONE_REFUSAL_CAP (3) → the todo steps
+        Blocked { on: User, note } as its own committed transition (the human inbox). The count is
+        per attempt (`done.rs` refused_verdicts), so a retry opens a fresh one and RETRY_CAP is the
+        only durable bound on a scheduler that retries a failed todo (§8.5)
 ```
 
 The lease is released around step 4 because a command may run ten minutes
@@ -2069,7 +2072,7 @@ walkthrough fixtures as programs), `test_yi_shapes.py`, `tests/fake_host.py`,
 |---|---|
 | geometry refused before any start | `test_yi_shapes::test_a_fork_join_with_a_shared_write_set_is_refused_with_every_problem_named`, `test_yi_shapes::test_a_scatter_with_shared_partitions_or_no_lead_is_refused` (T0) |
 | over-admission refused while order is the shape's | `test_yi_shapes::test_fork_join_retries_a_refused_start_and_never_reorders_the_kernel` (T0, fake host counting refusals; the same run shows a module-level shape attaching to itself) |
-| restart intensity bounds retries and respects the step table | `test_yi_shapes::test_one_for_one_stops_after_max_within_window` (T0, the window and the engine's retry refusal both); `plan_e2e::a_shape_cannot_retry_a_done_or_drop_a_running_todo` (T1) |
+| restart intensity bounds retries and respects the step table | `test_yi_shapes::test_one_for_one_stops_after_max_within_window` (T0, the window and the engine's retry refusal both); `plan_e2e::a_shape_cannot_retry_a_done_or_drop_a_running_todo` (T1); `plan_ops::a_retry_opens_a_fresh_refusal_count_so_only_retry_cap_bounds_a_scheduler` (T0, added: the section 6.3 cap is per attempt, so `RETRY_CAP` is the durable bound) |
 | concurrent waiters keep their own cursors | `test_yi_shapes::test_the_scheduler_and_the_model_wait_without_stealing_updates` (T0) |
 | a reader's uncited, unverifiable or out-of-partition quote is dropped at the seam | `test_yi_shapes::test_scatter_drops_an_unverifiable_quote_before_the_lead_sees_it` (T0); `kernel_data_surface::both_shapes_schedule_under_the_real_admission_and_step_table` (T2, the same two drops over a real archive) |
 | abstentions are dropped and rounds are bounded | `test_yi_shapes::test_scatter_ends_at_max_rounds_without_a_commit` (T0) |
@@ -2099,9 +2102,10 @@ each is a module-level function and the lease's identity check attaches a second
 as a writer outside a worktree, since both write the owner's workspace. Its restart
 window is kernel-local; the durable bound is the engine's `RETRY_CAP`, whose
 `retries_exhausted` refusal ends the restarts and stays in `run.refusals`. The
-section 6.3 cap counts refused verdicts per attempt (`done.rs` `refused_verdicts`),
-and the scheduler sends one `done` per attempt, so a retrying shape never reaches
-it; a todo the engine did block is never retried, because only `failed` is. The
+section 6.3 cap counts refused verdicts per attempt (`done.rs` `refused_verdicts`;
+`todo.refusals` is a lifetime event counter nothing reads for the cap, which is what
+section 6.3 step 6 used to read as, and it says the per-attempt rule now), and the
+scheduler sends one `done` per attempt, so a retrying shape never reaches it; a todo the engine did block is never retried, because only `failed` is. The
 scatter lead is the plan's one inline todo, `async def lead(answers, number)`
 returning `{"commit": answer}` or `{"ask": question}` (there is no `lead` object to
 call `commit` on), and its product is `{"answer", "rounds"}` because a bare string
