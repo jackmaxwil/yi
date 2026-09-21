@@ -1,5 +1,5 @@
 """The levers gates on synthetic rows: no model, no network, no paid run."""
-import pathlib, sys, unittest
+import contextlib, io, pathlib, sys, unittest
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 import levers  # noqa: E402
@@ -49,8 +49,35 @@ class Gates(unittest.TestCase):
         with self.assertRaisesRegex(levers.Refused, "'omega' has no class"):
             measured({"alpha": 1, "omega": 1})
 
+    def test_a_row_that_does_not_order_or_is_missing_is_refused(self):
+        baseline = measured({"alpha": 1, "beta": 1, "gamma": 1})
+        for broken in (float("nan"), float("inf"), "1.0", True):
+            bad = [{"task": "alpha", "reward": broken}]
+            with self.assertRaisesRegex(levers.Refused, "which is not a number"):
+                levers.measure(bad, FLOORS)
+            with self.assertRaisesRegex(levers.Refused, "which is not a number"):
+                levers.per_task(bad)
+        # A candidate that ran the easy task of a class only would pass the floor by not
+        # having been asked the hard one.
+        partial = levers.measure(rows({"alpha": 1}, cost=0.1) + rows({"gamma": 1}), FLOORS)
+        self.assertEqual(levers.gate(baseline, partial, FLOORS), "task_not_run:beta")
+
     def test_the_shipped_manifest_passes_its_selfcheck(self):
         self.assertEqual(levers.selfcheck(), [])
+
+    def test_a_lever_that_is_not_tunable_without_a_why_is_named(self):
+        def load(name):
+            doc = levers.read(name)
+            if name == "levers.json":
+                for row in doc["levers"]:
+                    if row["tunable"] is False:
+                        del row["why"]
+                        break
+            return doc
+
+        found = levers.selfcheck(load)
+        self.assertEqual(len(found), 1, found)
+        self.assertIn("a lever that is not tunable says why", found[0])
 
 
 class Search(unittest.TestCase):
@@ -80,9 +107,14 @@ class Search(unittest.TestCase):
         self.assertGreaterEqual(tokens["confidence"], 0.95)
         self.assertEqual(result["spend"], {"runs": 6, "trials": 18})
         self.assertEqual(self.calls, [{}, {"plan.width_max": 4}, {"plan.width_max": 4}, {}, {}, {"plan.width_max": 4}])
-        # Two pairs that both saved tokens are a point estimate, not a win: the interval covers 0.5.
-        thin, = self.compare(self.runner(lambda turn: 100), tasks=("alpha", "beta"), k=1)["points"]
+        self.assertEqual(sorted(point["per_task"]["tokens"]), ["alpha", "beta", "gamma"],
+                         "the saving is reported per task as well as pooled")
+        # Two pairs that both saved tokens are a point estimate, not a win: the interval
+        # covers 0.5, and the run says so before it spends anything.
+        with contextlib.redirect_stderr(io.StringIO()) as said:
+            thin, = self.compare(self.runner(lambda turn: 100), tasks=("alpha", "beta"), k=1)["points"]
         self.assertEqual((thin["verdict"], thin["intervals"]["tokens"]["confidence"]), ("inconclusive", 0.5))
+        self.assertIn(f"an interval needs {levers.MIN_PAIRS} to reach 0.95", said.getvalue())
         noisy, = self.compare(self.runner(lambda turn: (300, -100, -150)[turn]))["points"]
         self.assertEqual(noisy["verdict"], "inconclusive")
         self.assertLess(noisy["intervals"]["tokens"]["low"], 0)

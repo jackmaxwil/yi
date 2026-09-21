@@ -383,6 +383,46 @@ fn a_broken_config_file_fails_instead_of_reading_as_absent() -> TestResult {
     Ok(())
 }
 
+/// Invariant: the levers override rides an eval harness's own `--eval`, so the variable
+/// alone is inert in a user's run, `--deadline` or not, and a refused file stops the run
+/// before any model call (D220).
+#[test]
+fn yi_levers_is_read_only_under_the_eval_flag() -> TestResult {
+    let workspace = Workspace::new("levers")?;
+    let out_of_range = workspace.project().join("wide.json");
+    std::fs::write(&out_of_range, r#"{"plan.width_max": 99}"#)?;
+    let wide = out_of_range.display().to_string();
+    let refused = workspace.yi_env(
+        &["ask", "--model", "faux/faux-1", "--eval", "hi"],
+        &[("YI_LEVERS", wide.as_str())],
+    )?;
+    assert_eq!(refused.status.code(), Some(1));
+    let reason = String::from_utf8_lossy(&refused.stderr).into_owned();
+    assert!(
+        reason.contains("plan.width_max wants an integer in 1..=16, not 99")
+            && reason.contains("refusal:config"),
+        "{reason}"
+    );
+    for extra in [&[][..], &["--deadline", "600"][..]] {
+        let mut args = vec!["ask", "--model", "faux/faux-1"];
+        args.extend_from_slice(extra);
+        args.push("hi");
+        let ran = workspace.yi_env(&args, &[("YI_LEVERS", wide.as_str())])?;
+        let said = String::from_utf8_lossy(&ran.stderr).into_owned();
+        assert!(!said.contains("YI_LEVERS"), "the file was read: {said}");
+        assert!(!said.contains("levers:"), "the run was overridden: {said}");
+    }
+    let narrow = workspace.project().join("narrow.json");
+    std::fs::write(&narrow, r#"{"plan.width_max": 4}"#)?;
+    let announced = workspace.yi_env(
+        &["ask", "--model", "faux/faux-1", "--eval", "hi"],
+        &[("YI_LEVERS", narrow.display().to_string().as_str())],
+    )?;
+    let banner = String::from_utf8_lossy(&announced.stderr).into_owned();
+    assert!(banner.contains("levers: this run reads"), "{banner}");
+    Ok(())
+}
+
 /// `yi gate` is the dry run: the same decision the tool seam would make, with
 /// the exit code carrying it for a script and `--json` for a reader.
 #[test]

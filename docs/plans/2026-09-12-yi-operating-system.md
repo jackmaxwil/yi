@@ -1717,7 +1717,7 @@ T3 paid. Kernel-dead path named per stage. File placement respects the
 1,200-line cap (§2 B21): new behaviour goes in new files where the host file
 is within 150 lines of the cap.
 
-### F0a · `plan.op` is one request over the engine, and a child's lifecycle wakes its parent (D-next-1; extends D137, D165)
+### F0a · `plan.op` is one request over the engine, and a child's lifecycle wakes its parent (D192, landed 0.265.0; extends D137, D165)
 
 **Scope.** One host request sharing the tool's parser and engine; the
 dangling plan skill deleted in the same PR; race-safe lifecycle delivery
@@ -1777,7 +1777,7 @@ path.** untouched. **Rollback.** unregister one name and restore the one
 line at `wiring.rs:603`; persisted deliveries are never discarded by the
 revert.
 
-### F0b · The plan store is a journal with a typed checkpoint; recovery reconstructs; authority is a channel (D-next-2; amends D97, D105; carries D26, D53)
+### F0b · The plan store is a journal with a typed checkpoint; recovery reconstructs; authority is a channel (D193, landed 0.266.0; amends D97, D105; carries D26, D53)
 
 **Design gate before source.** The record schema of §5.3, the commit
 protocol, the crash matrix, the request and effect identities, the import
@@ -1872,7 +1872,7 @@ original files are untouched by import; a compatible binary reads format 1;
 downgrading an executed format-2 root needs the export path, not a
 `git checkout` of views.
 
-### F0c · done is verified on every completion path (D-next-3; retires D77's fields)
+### F0c · done is verified on every completion path (D194, landed 0.267.0; retires D77's fields)
 
 **Scope.** §6.1-6.5 without the judge (`judge` items refused at
 declaration); the contract on the todo; attempts; the verification token;
@@ -1947,7 +1947,7 @@ generated state-machine trace shows no `VerifiedDone` without a `Pass`.
 path for one release; verified records are never downgraded to the
 unchecked path while claiming equivalence.
 
-### F0d · Worktree results are accepted, and failures are cleaned up without merging (D-next-4)
+### F0d · Worktree results are accepted, and failures are cleaned up without merging (D195, landed 0.268.0)
 
 **Scope.** §6.6: candidate submission, candidate and integration checks,
 serialized publication with a generation check, explicit dispositions,
@@ -2716,7 +2716,7 @@ form. Not run: any real scoring.
 | control | test (tier) |
 |---|---|
 | both sides agree | `levers::the_default_fixture_equals_the_compiled_defaults` (T0) and `levers.py --selfcheck` |
-| eval mode only | `levers::without_yi_levers_the_defaults_are_used_and_the_file_is_never_read` (T0); `levers::yi_levers_set_outside_eval_mode_is_ignored` (T0) |
+| eval mode only | `levers::without_yi_levers_the_defaults_are_used_and_the_file_is_never_read` (T0); `levers::yi_levers_set_outside_eval_mode_is_ignored` (T0); `cli_surfaces::yi_levers_is_read_only_under_the_eval_flag` (T1) |
 | a lever that improves cost by failing the floor is rejected | `evals/tests/test_levers.py::a_cheaper_candidate_below_the_floor_is_rejected_with_its_class` (T0) |
 | survivors are nondominated | `test_levers.py::a_dominated_candidate_is_not_a_survivor` (T0) |
 | the held-out split never enters the fit | `test_levers.py::fit_refuses_rows_that_name_a_held_out_task` (T0) |
@@ -2724,7 +2724,7 @@ form. Not run: any real scoring.
 LOC yi-runtime +240 (the struct, the reads at each constant), evals +400.
 Memo: `growth +240: the kernel's constants read through one Levers struct`.
 
-As landed (0.281.0, #465; src +178). The tree won over section 10.1's table: `plan.nudge_cap`,
+As landed (0.281.0, #465; src +191 after the review). The tree won over section 10.1's table: `plan.nudge_cap`,
 `todo.artifact_steer_turn` and `todo.artifact_cap` no longer exist (D182) and are not listed,
 `loop.cut_stop_at` is 6 and `lane.slots` is 255 (grow on demand). 45 levers are listed and 25
 are tunable; the other 20 carry a `why`: the two fuses, the six mail caps, the ladder's height
@@ -2733,13 +2733,18 @@ are tunable; the other 20 carry a `why`: the two fuses, the six mail caps, the l
 `shapes.py`, which no `Levers` read reaches; wiring one of those is its own change. `Levers` is
 a process-wide `OnceLock` read through `levers::get()`, not a `RuntimeWiring` field: the reads
 sit in pure methods (`Cycle::work`, `Rung::delay`, `Features::route`) that hold no wiring, and
-one process runs one configuration. The tree had no eval-mode flag, so eval mode is the flag
-both runners already pass and no default sets, `--deadline`. The manifest's ranges live in
+one process runs one configuration; `levers::init` runs from `build_session`'s first statement,
+before the session exists, so no constant is read on both sides of it. The tree had no eval-mode
+flag and no existing flag means "a harness launched me" (`--deadline` is a user feature F2b
+leases inherit), so the review added `--eval`, which does nothing but let `YI_LEVERS` be read:
+the variable alone is inert, `evals/run.py` passes the flag when the variable is set, and a run
+that is not on the defaults names the file once on stderr. The manifest's ranges live in
 Rust too, since the loader cannot read `evals/` at run time; `levers::the_manifest_matches`
 holds the two equal. `floors.json` carries the `fixtures` class only: the first-cut classes of
 section 10.3 name benchmark tasks and wait for the owner, as the split does. The override
-file's hash rides the fingerprint's mode in `evals/run.py` (section 10.6); the harbor adapter
-does not carry `YI_LEVERS` into its container yet. Not run: any paid comparison.
+file's canonical hash rides the fingerprint's mode in `evals/run.py` (section 10.6); the harbor
+adapter carries neither the variable nor the flag into its container yet. Not run: any paid
+comparison.
 
 ### F4d · Controlled comparisons over three to five knobs (part of D220, landed 0.282.0)
 
@@ -2760,9 +2765,13 @@ printed with the confidence its pair count supports: a bootstrap over a handful 
 is too narrow and a t interval assumes a spread token counts do not have. A point is
 `better` only when both F4c gates pass and a whole efficiency interval lies below zero at
 0.95. The runner is an injected callable in tests and the owner's argv on the command
-line, called as `<runner> <overrides.json> <task>...`; exporting `YI_LEVERS` to the runs is
-the runner's business. `fit_rows` stays a library gate: nothing here fits anything, so no
-command calls it yet. Not run: any paid comparison.
+line, called as `<runner> <overrides.json> <task>...` with `YI_LEVERS` naming the same file
+in its environment, this process's own untouched. `fit_rows` stays the guard a later fit would have to pass: nothing here
+fits anything, so no command calls it. The review added the per-task medians beside the pooled
+interval (repetitions of one task are not independent draws across tasks), a note before the
+spend when the pairs cannot reach 0.95, a refusal of a trial metric that does not order (a NaN
+reward would pass a floor by not being a number) and of a candidate that skipped a task the
+baseline ran, and `YI_LEVERS` in the runner's own environment. Not run: any paid comparison.
 
 ### Deferred (seams only)
 

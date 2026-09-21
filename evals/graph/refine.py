@@ -169,12 +169,13 @@ def worse(candidate, current, guidance_bytes):
 
 def names(line, held_out):
     """Tokens, not substrings: a task id written with a JSON escape decodes back to its
-    letters, an id that ends a sentence is still the id, and one inside a longer word is not."""
+    letters, an id a joiner ends (a sentence's full stop, a dash before a gloss) is still
+    the id, and one inside a longer word is not."""
     try:
         text = json.dumps(json.loads(line), ensure_ascii=False)
     except json.JSONDecodeError:
         text = line
-    return sorted({token.strip(".") for token in TOKEN.split(text)} & set(held_out))
+    return sorted({token.strip(".-") for token in TOKEN.split(text)} & set(held_out))
 
 
 def read_proposals(path, split):

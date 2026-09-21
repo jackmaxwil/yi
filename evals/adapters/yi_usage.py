@@ -68,10 +68,16 @@ def routing_label(environ):
 
 
 def levers_label(environ):
-    """The override file's hash as it rides the fingerprint's mode (plan section 10.6): two runs
-    under different levers are different configs. The binary reads the file, never this."""
+    """The override's hash as it rides the fingerprint's mode (plan section 10.6): two runs
+    under different levers are different configs, and two under the same levers are one
+    config however the file was spelled, so the hash is of the canonical object. The binary
+    reads the file, never this."""
     path = environ.get(LEVERS_ENV)
-    return "+levers" + hashlib.sha256(open(path, "rb").read()).hexdigest()[:12] if path else ""
+    if not path:
+        return ""
+    with open(path, "rb") as handle:
+        canonical = json.dumps(json.loads(handle.read()), sort_keys=True, separators=(",", ":"))
+    return "+levers" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:12]
 
 
 KERNEL_ROWS = ("kernel-toolchain", "kernel-boot")
