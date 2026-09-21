@@ -16,6 +16,8 @@ import json
 import rlm
 
 
+# `TodoLabel::new` (`ids.rs`): 80 characters, and a newline is refused.
+LABEL_MAX = 80
 # The engine's step table (`table.rs`), for the ops a shape issues on its own.
 LEGAL = {
     "done": ("running",),
@@ -136,6 +138,9 @@ class FakeHost:
     def step(self, op: str, args: dict, plan: dict, todo: dict | None) -> dict | None:
         if op in LEGAL and todo["state"] not in LEGAL[op]:
             return refusal("illegal_step", f"{op} is illegal for {todo['label']} while {todo['state']}")
+        for spec in args.get("todos") or []:
+            if len(spec["label"]) > LABEL_MAX or "\n" in spec["label"]:
+                return refusal("label", f"{spec['label'][:40]!r}… is not a legal todo label")
         if op == "program":
             if args["source_ref"]["digest"] not in self.blobs:
                 return refusal("program", "the source is not in the store")

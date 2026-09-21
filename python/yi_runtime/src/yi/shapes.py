@@ -163,8 +163,10 @@ async def _asked(plan: Plan, reader: Todo, number: int, question: str | None) ->
     if held is not None:
         return held
     doc = reader._doc
+    # Invariant: the key alone is the label, because a label is capped at 80 characters and
+    # may hold no newline; the lead writes the question and it rides the delegation's note.
     wire = {
-        "label": f"{key}: {question}"[:120],
+        "label": key,
         "delegation": {**doc["delegation"], "note": question},
         "contract": doc.get("contract"),
     }
