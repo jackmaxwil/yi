@@ -549,14 +549,32 @@ async def revoke(
 
 
 async def result(
-    target: "str | RLMSubagent", *, schema: dict[str, Any] | None = None
+    target: "str | RLMSubagent",
+    *,
+    schema: dict[str, Any] | None = None,
+    timeout: float | None = None,
 ) -> dict[str, Any]:
-    """A finished child's answer as data, checked against ``schema`` host-side."""
+    """A finished child's answer as data, checked against ``schema`` host-side.
+
+    ``timeout`` waits that many seconds for a child that is still running, as
+    ``RLMSpawnHandle.result`` does; omitted, a running child raises at once.
+    """
     _check_schema(schema)
     payload: dict[str, Any] = {"target": _worktree_target(target)}
     if schema is not None:
         payload["schema"] = schema
-    return await host_request("rlm.result", payload)
+    if timeout is None:
+        return await host_request("rlm.result", payload)
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    while True:
+        try:
+            return await host_request("rlm.result", payload)
+        except RuntimeError as error:
+            remaining = min(timeout, deadline - loop.time())
+            if remaining <= 0 or "still running" not in str(error):
+                raise
+        await wait(timeout=remaining)
 
 
 def _worktree_target(target: "str | RLMSubagent") -> str:

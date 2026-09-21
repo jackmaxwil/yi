@@ -440,6 +440,25 @@ impl SubagentHost {
         (children.epoch, moved)
     }
 
+    // Incident: nine of twelve F0e "text, not JSON" refusals were a valid object inside a
+    // fenced block, so one fence line and any trailer are framing, not the answer (#475).
+    fn json_answer(text: &str) -> Option<Value> {
+        let body = text.trim();
+        let body = match body.strip_prefix("```") {
+            Some(rest) => rest
+                .split_once('\n')
+                .map_or(rest, |(_, body)| body)
+                .trim_end()
+                .trim_end_matches("```")
+                .trim(),
+            None => body,
+        };
+        serde_json::Deserializer::from_str(body)
+            .into_iter::<Value>()
+            .next()?
+            .ok()
+    }
+
     /// B13 interrupt: ends the run and keeps the record, unlike delete.
     pub fn interrupt(&self, target: &str) -> Result<Map<String, Value>, String> {
         let mut children = self
@@ -485,7 +504,7 @@ impl SubagentHost {
                 last_assistant_text(&record.session.messages()).unwrap_or_default(),
             )
         };
-        let json = serde_json::from_str::<Value>(text.trim()).ok();
+        let json = Self::json_answer(&text);
         if let Some(schema) = schema {
             let schema = crate::schema::Schema::from_value(schema.clone())
                 .map_err(|error| format!("child \"{target}\" schema rejected: {error}"))?;
@@ -637,7 +656,7 @@ impl SubagentHost {
                 && record.disposition.is_none()
             {
                 return Err(format!(
-                    "child \"{target}\" holds the worktree {}; merge or discard it first",
+                    "child \"{target}\" holds the worktree {}; rlm.merge_worktree(\"{target}\") or rlm.discard_worktree(\"{target}\") first",
                     tree.path().display()
                 ));
             }

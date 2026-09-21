@@ -197,5 +197,6 @@ when it changes rather than editing them by hand.
 - [D218](adr/d218.md) - a service is a child with a stable address
 - [D219](adr/d219.md) - the host's next-step lines are a procedural graph the binary carries
 - [D220](adr/d220.md) - the kernel's constants are read through one struct, and only an eval run may...
+- [D221](adr/d221.md) - the bash tool's interpreter is `bash` where `bash` resolves and the plan's...
 
 D36-D51, D72, D73 and D74 have no ADR yet; ARCHITECTURE.md is the record for those rows.

@@ -37,6 +37,17 @@ const CHILD_SUFFIX_MAX: u32 = 9_999;
 /// (8) of `Reaped.last` urls the host mints as `history://<agent>`; the commit seal backstops.
 const REAP_ENVELOPE_BYTES: usize = 8 * 1024;
 
+/// The legal move a refusal named the rule for and not the road to: F0e sessions repeated
+/// `done` on three sibling pending todos in a row because nothing said what to do (#472).
+fn illegal_hint(op: OpKind, from: &TodoStateName) -> &'static str {
+    match (op, from) {
+        (OpKind::Done, TodoStateName::Pending) => {
+            "; start it first (with a delegation, start hands it to a child), or resend set with the row marked \"- [x]\" for a todo carrying no contract"
+        }
+        _ => "",
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Actor {
     Owner,
@@ -68,15 +79,15 @@ pub struct Outcome {
 
 #[derive(Debug, thiserror::Error)]
 pub enum PlanOpError {
-    #[error("no plan is open; init opens one")]
+    #[error("no plan is open; add goal to this set to open one, or init")]
     NoPlan,
-    #[error("plan {id} already exists and is open")]
+    #[error("plan {id} already exists and is open; Plan.attach({id:?}) resumes it")]
     PlanExists { id: PlanId },
     #[error("no todo labelled {label:?} in plan {plan}")]
     UnknownLabel { plan: PlanId, label: TodoLabel },
     #[error("only the plan owner may {op:?}; propose to the owner instead")]
     NotOwner { op: OpKind },
-    #[error("{} is illegal for todo {label} in state {from}", op_name(*op))]
+    #[error("{} is illegal for todo {label} in state {from}{}", op_name(*op), illegal_hint(*op, from))]
     IllegalStep {
         label: TodoLabel,
         from: TodoStateName,
@@ -356,9 +367,12 @@ pub trait OpSink: Send + Sync {
 
 pub const WIDTH_MAX: usize = 8;
 
-pub fn dispatch_width(cores: NonZeroUsize) -> NonZeroUsize {
-    let max = crate::levers::get().plan_width_max;
-    NonZeroUsize::new(cores.get().saturating_sub(1).clamp(1, max)).unwrap_or(NonZeroUsize::MIN)
+/// Invariant: a delegated child waits on a network model, not on a core, so the bound is what
+/// bounds children, the family cap and the lever, and never the host's cores (#468).
+pub fn dispatch_width() -> NonZeroUsize {
+    let levers = crate::levers::get();
+    NonZeroUsize::new(levers.family_max_children.min(levers.plan_width_max))
+        .unwrap_or(NonZeroUsize::MIN)
 }
 
 #[derive(Debug, Default)]
@@ -424,12 +438,11 @@ pub struct PlanEngine {
 
 impl PlanEngine {
     pub fn new(store: PlanStore, delegate: Arc<dyn Delegate>) -> Self {
-        let cores = std::thread::available_parallelism().unwrap_or(NonZeroUsize::MIN);
         let snapshotter = Arc::new(TreeHash::excluding(store.dir()));
         Self {
             store,
             delegate,
-            width: dispatch_width(cores),
+            width: dispatch_width(),
             output_resolve: None,
             op_sink: None,
             liveness: Arc::new(recovery::Unknown),

@@ -221,11 +221,20 @@ fn an_engine_init_on_a_fresh_directory_publishes_the_gitignore() -> TestResult {
 }
 
 #[test]
-fn width_clamps_low_and_high() -> TestResult {
-    assert_eq!(dispatch_width(width(1)?).get(), 1);
-    assert_eq!(dispatch_width(width(2)?).get(), 1);
-    assert_eq!(dispatch_width(width(9)?).get(), 8);
-    assert_eq!(dispatch_width(width(64)?).get(), 8);
+fn width_is_the_family_cap_not_the_host() -> TestResult {
+    // This replaces width_clamps_low_and_high, which pinned width(1) = 1 and width(2) = 1.
+    // That rule made fan-out unavailable in a 2-core container, which is every machine the
+    // evals and CI run on, and no lever could raise it (#468). The width now measures what
+    // actually bounds delegated children, and never the host's cores.
+    let levers = yi_runtime::levers::get();
+    assert_eq!(
+        dispatch_width().get(),
+        levers.family_max_children.min(levers.plan_width_max)
+    );
+    assert!(
+        dispatch_width().get() > 1,
+        "a small host must still admit fan-out"
+    );
     Ok(())
 }
 
@@ -1556,6 +1565,132 @@ fn a_ninth_delegated_start_is_refused_by_the_engine_with_the_count() -> TestResu
 
 // ---------------------------------------------------------------------------------------------
 // F0c: completion is verified on every path.
+
+/// Incident: every one of these refusals named the rule it enforced and not the move the
+/// caller evidently wanted, and F0e sessions repeated the same call up to three times (#472).
+mod refusals {
+    use super::*;
+    use yi_runtime::plan::tool::PlanTool;
+    use yi_tools::{Tool, ToolContext};
+
+    fn refusal(tool: &PlanTool, args: serde_json::Value) -> String {
+        let input = args.as_object().cloned().unwrap_or_default();
+        let output = tool.execute(input, &ToolContext::new(std::env::temp_dir()));
+        assert!(output.is_error, "the call was admitted: {output:?}");
+        output
+            .result
+            .content
+            .iter()
+            .map(|content| match content {
+                yi_types::message::Content::Text { text, .. } => text.clone(),
+                _ => String::new(),
+            })
+            .collect()
+    }
+
+    fn tool() -> Result<(Scratch, PlanTool), Box<dyn Error>> {
+        let (temp, _store, _stub, engine) = harness(2)?;
+        Ok((temp, PlanTool::new(Arc::new(engine), Actor::Owner)))
+    }
+
+    #[test]
+    fn done_on_a_pending_todo_names_the_legal_move() -> TestResult {
+        let (_temp, tool) = tool()?;
+        let opened = tool.execute(
+            serde_json::json!({"op": "init", "goal": "ship it", "todos": [{"label": "tablefmt"}]})
+                .as_object()
+                .cloned()
+                .unwrap_or_default(),
+            &ToolContext::new(std::env::temp_dir()),
+        );
+        assert!(!opened.is_error, "{opened:?}");
+        let text = refusal(
+            &tool,
+            serde_json::json!({"op": "done", "label": "tablefmt"}),
+        );
+        assert!(text.contains("in state pending"), "{text}");
+        assert!(text.contains("start it first"), "{text}");
+        assert!(text.contains("- [x]"), "{text}");
+        Ok(())
+    }
+
+    #[test]
+    fn a_prose_output_names_the_url_shapes_and_the_evidence_field() -> TestResult {
+        let (_temp, tool) = tool()?;
+        let text = refusal(
+            &tool,
+            serde_json::json!({
+                "op": "done",
+                "label": "patchfuzz",
+                "output": "python3 check.py patchfuzz -> ok 8 of 8 public cases pass",
+            }),
+        );
+        assert!(text.contains("output is a url of the product"), "{text}");
+        assert!(text.contains("file:///abs/path"), "{text}");
+        assert!(text.contains("todo tool's evidence"), "{text}");
+        Ok(())
+    }
+
+    #[test]
+    fn an_over_long_set_label_is_measured_not_called_a_bad_row() -> TestResult {
+        let (_temp, tool) = tool()?;
+        let long = "gateway: root failure, causal chain, blast radius from an interleaved log (check: python3 /app/check.py gateway)";
+        let text = refusal(
+            &tool,
+            serde_json::json!({"op": "set", "goal": "ship it", "list": format!("- [ ] {long}\n")}),
+        );
+        assert!(
+            text.contains(&format!(
+                "label is {} chars, the cap is 80",
+                long.chars().count()
+            )),
+            "{text}"
+        );
+        assert!(!text.contains("is not a checklist row"), "{text}");
+        Ok(())
+    }
+
+    #[test]
+    fn a_set_with_no_open_plan_names_goal() -> TestResult {
+        let (_temp, tool) = tool()?;
+        let text = refusal(
+            &tool,
+            serde_json::json!({"op": "set", "list": "- [ ] one\n"}),
+        );
+        assert!(text.contains("add goal to this set to open one"), "{text}");
+        Ok(())
+    }
+
+    /// Three F0e trials lost a turn to this cap with briefs of 1428, 1490 and 1777 bytes; the
+    /// cap stays, because a plan of forty noted delegations has a frontmatter budget (#471).
+    #[test]
+    fn an_over_long_inline_note_names_the_artifact_road() -> TestResult {
+        let (_temp, tool) = tool()?;
+        let opened = tool.execute(
+            serde_json::json!({"op": "init", "goal": "ship it", "todos": [{"label": "seam"}]})
+                .as_object()
+                .cloned()
+                .unwrap_or_default(),
+            &ToolContext::new(std::env::temp_dir()),
+        );
+        assert!(!opened.is_error, "{opened:?}");
+        let brief = "x".repeat(1490);
+        let text = refusal(
+            &tool,
+            serde_json::json!({
+                "op": "append",
+                "todos": [{
+                    "label": "gateway",
+                    "delegation": {"spec": {}, "accept": {"command": "true"}, "note": brief},
+                }],
+            }),
+        );
+        assert!(text.contains("1490 bytes exceeds 1024"), "{text}");
+        assert!(text.contains("artifact"), "{text}");
+        assert!(text.contains("context"), "{text}");
+        Ok(())
+    }
+}
 
 mod contracts {
     use super::*;

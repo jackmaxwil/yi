@@ -59,6 +59,15 @@ fn brief(at: &TodoAddr, delegation: &Delegation) -> String {
         lines.push(format!("Role: {role}"));
     }
     lines.push(accept_line(&delegation.accept));
+    // Incident: candidate_submitted was zero across 105 F0e sessions; nothing told a worktree
+    // child that submitting is its only road, and a child without one has nothing to submit.
+    if matches!(delegation.spec.isolation, Some(Isolation::Worktree)) {
+        lines.push(format!(
+            "When that check passes, submit your work: `plan.op {{\"op\": \"submit\", \"plan\": \"{}\", \"label\": {:?}, \"attempt\": <n>, \"output\": \"<url>\"}}`, or `await todo.submit(product)` from a kernel cell. Your worktree is accepted only through that record.",
+            at.plan,
+            at.todo.as_str()
+        ));
+    }
     if let Some(output) = &delegation.output {
         lines.push(format!(
             "Answer with JSON matching the schema at {}",
@@ -335,12 +344,17 @@ impl Delegate for SessionDelegate {
         if dispatched.is_empty() {
             text.push_str("no todo became dispatchable");
         } else {
+            // Incident: two F0e parents read "ready to start" as work the host had already
+            // started, and waited on children that did not exist (#470).
             let labels: Vec<&str> = dispatched.iter().map(TodoLabel::as_str).collect();
-            text.push_str(&format!("ready to start: {}", labels.join(", ")));
+            text.push_str(&format!(
+                "admissible now: {}; you start each one (plan op start, or await plan.run(...))",
+                labels.join(", ")
+            ));
         }
         if held > 0 {
             text.push_str(&format!(
-                " — {held} ready todo(s) held behind the dispatch width"
+                "; {held} more ready and held behind the dispatch width"
             ));
         }
         (self.deliver)(
@@ -692,6 +706,71 @@ mod tests {
 
     /// Dies with the wall block in `kwargs_of`: drop it and a plan-dispatched reader spawns
     /// with the parent's whole capability set (plan section 7.6).
+    /// Incident: nine of twelve F0e "text, not JSON" refusals were a valid object inside a
+    /// fenced block, and the parent had no road past them (#475).
+    #[tokio::test]
+    async fn a_fenced_json_answer_validates_against_a_schema() -> TestResult {
+        let schema = serde_json::json!({
+            "type": "object",
+            "properties": {"outcome": {"type": "string"}},
+            "required": ["outcome"],
+        });
+        let fenced = rig("```json\n{\"outcome\": \"the quota parser lands\"}\n```")?;
+        fenced.host.spawn(
+            "work".to_owned(),
+            Map::from_iter([("name".to_owned(), Value::String("quota".to_owned()))]),
+        )?;
+        assert!(wait_done(&fenced.host).await, "child never completed");
+        let reply = fenced.host.result("quota", Some(&schema))?;
+        assert_eq!(
+            reply["json"]["outcome"],
+            Value::String("the quota parser lands".to_owned())
+        );
+
+        // Prose is still refused, with its text attached: there is nothing to read as JSON.
+        let prose = rig("the quota parser lands")?;
+        prose.host.spawn(
+            "work".to_owned(),
+            Map::from_iter([("name".to_owned(), Value::String("prose".to_owned()))]),
+        )?;
+        assert!(wait_done(&prose.host).await, "child never completed");
+        let refused = prose
+            .host
+            .result("prose", Some(&schema))
+            .err()
+            .ok_or("prose was admitted as JSON")?;
+        assert!(refused.contains("text, not JSON"), "{refused}");
+        Ok(())
+    }
+
+    /// Incident: candidate_submitted was zero across 105 F0e sessions, so no delegated
+    /// worktree todo ever reached done; the brief never named the submit verb (#469).
+    #[test]
+    fn a_worktree_brief_names_the_submit_verb() -> TestResult {
+        let at = TodoAddr {
+            plan: PlanId::new("ship-the-thing")?,
+            todo: TodoLabel::new("gateway")?,
+        };
+        let mut delegation = delegated("gateway")?.delegation.ok_or("delegated")?;
+        delegation.spec.isolation = Some(Isolation::Worktree);
+        let worktree = brief(&at, &delegation);
+        assert!(worktree.contains("\"op\": \"submit\""), "{worktree}");
+        assert!(worktree.contains("todo.submit("), "{worktree}");
+        assert!(
+            worktree.contains("accepted only through that record"),
+            "{worktree}"
+        );
+        assert!(worktree.contains("\"gateway\""), "{worktree}");
+
+        // A child with no worktree has no product to hand over, so the line would be noise.
+        for isolation in [None, Some(Isolation::None)] {
+            delegation.spec.isolation = isolation;
+            let inline = brief(&at, &delegation);
+            assert!(!inline.contains("submit"), "{inline}");
+        }
+        Ok(())
+    }
+
     #[test]
     fn kwargs_carry_the_wall() -> TestResult {
         let mut delegation = delegated("read the docs")?.delegation.ok_or("delegated")?;
@@ -782,7 +861,8 @@ mod tests {
                 message,
                 AgentMessage::Custom { content: UserContent::Text(text), .. }
                     if text.contains("cut the seam")
-                        && text.contains("3 ready todo(s) held behind the dispatch width")
+                        && text.contains("you start each one")
+                        && text.contains("3 more ready and held behind the dispatch width")
             )
         });
         assert!(carried, "the nudge names the slice and the held count");

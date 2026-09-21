@@ -1004,7 +1004,10 @@ impl std::fmt::Display for DocError {
                 )
             }
             Self::NoteTooLong { bytes, max } => {
-                write!(formatter, "inline note of {bytes} bytes exceeds {max}")
+                write!(
+                    formatter,
+                    "inline note of {bytes} bytes exceeds {max}; put the brief in an artifact and name its url in the delegation's context"
+                )
             }
             Self::ProbeEmpty => write!(formatter, "probe command is empty"),
             Self::ProbeNewline { probe } => {

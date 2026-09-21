@@ -1,4 +1,3 @@
-use std::num::NonZeroUsize;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -172,8 +171,7 @@ fn with_plan(options: &Options, id: Option<&str>, run: impl FnOnce(&Plan) -> i32
 }
 
 fn lint(plan: &Plan, options: &Options) -> i32 {
-    let cores = std::thread::available_parallelism().unwrap_or(NonZeroUsize::MIN);
-    let findings = ledger::lint(plan, dispatch_width(cores).get());
+    let findings = ledger::lint(plan, dispatch_width().get());
     if options.json {
         let rows: Vec<serde_json::Value> = findings
             .iter()
