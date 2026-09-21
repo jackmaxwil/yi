@@ -2450,7 +2450,11 @@ and the rows above:
   recorded. Writing it from the repossession itself needs a road from the host into the
   engine's journal that no delegate has; F3a owns it.
 - `RepossessionPending` is a `MemberState` (`repossession_pending`) over a record whose
-  exit is still absent; the timer's job retries it on every wake.
+  exit is still absent; the timer's job retries it on every wake, at the loop's one second
+  floor while a probe is in flight and at its idle poll otherwise. One reference is not
+  carried across a retry: a journal write that fails after the lane has already settled
+  leaves the record without its lane, so the retry's `kept` names only the transcript. The
+  branch itself is kept, and `yi lanes` still finds it as an orphan.
 - `lease.deadline_ms` is optional: a root with no `--deadline` has no clock to lease.
   Tokens are reserved and accounted, and returned at reap; nothing ends a run for
   spending past its reservation yet, and a parent's own turns are not debited here.
