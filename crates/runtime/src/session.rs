@@ -756,10 +756,14 @@ impl AgentSession {
         }
     }
 
-    /// B13 `followup`: delivered into a running turn at its next boundary, or
-    /// starting one when the session is idle.
-    pub fn deliver(&self, message: AgentMessage) {
-        (self.heartbeat_hook())(message, yi_types::schedule::DeliveryMode::Steer);
+    /// B13 `followup`: true when it started an idle session's turn, false when a running
+    /// turn takes it at its next boundary. Admission decides, so the answer is what happened.
+    pub fn deliver(&self, message: AgentMessage) -> bool {
+        let started = (self.run_handle())(message.clone()).is_ok();
+        if !started {
+            self.steer_message(message);
+        }
+        started
     }
 
     /// Returns at admission; the run streams in a spawned task (R6).

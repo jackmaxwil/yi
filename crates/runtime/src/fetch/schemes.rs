@@ -25,6 +25,14 @@ fn render_history(
     entry_id: Option<&str>,
     page: Option<Page>,
 ) -> Paged {
+    // `custom/<type>` closes any listing and keeps that custom type alone: an inbox (D214).
+    let (entry_id, custom) = match entry_id.and_then(|selector| selector.rsplit_once("custom/")) {
+        Some((head, custom)) if head.is_empty() || head.ends_with('/') => {
+            let head = head.trim_end_matches('/');
+            ((!head.is_empty()).then_some(head), Some(custom))
+        }
+        _ => (entry_id, None),
+    };
     // A page counts entries that stay put: `tail/N` is anchored at the end, so an append slides it.
     if page.is_some() && entry_id.is_some_and(|id| !id.starts_with("since/")) {
         return Err(FetchError::BadAddress {
@@ -46,6 +54,15 @@ fn render_history(
         message,
     };
     let store = yi_session::lock_session(session);
+    let all = |custom_type: Option<&str>| {
+        store
+            .find_entries(&EntryQuery {
+                custom_type: custom_type.map(str::to_owned),
+                order: EntryOrder::OldestFirst,
+                ..EntryQuery::default()
+            })
+            .map_err(|error| backend(error.to_string()))
+    };
     // `tail/N` is the last N entries compact, `since/S` everything after sequence S (D165).
     let window = entry_id
         .and_then(|selector| selector.split_once('/'))
@@ -53,12 +70,12 @@ fn render_history(
         .and_then(|(kind, raw)| raw.parse::<u64>().ok().map(|number| (kind, number)));
     match (entry_id, window) {
         (_, Some((kind, number))) => {
-            let entries = store
-                .find_entries(&EntryQuery {
-                    order: EntryOrder::OldestFirst,
-                    ..EntryQuery::default()
-                })
-                .map_err(|error| backend(error.to_string()))?;
+            let entries = all(custom)?;
+            // A filtered listing is read for its data, which the compact line drops.
+            let line = |entry: &yi_types::entry::Entry| match custom {
+                Some(_) => serde_json::to_string(entry).unwrap_or_default(),
+                None => crate::family::compact_entry(entry),
+            };
             let kept: Vec<String> = match kind {
                 "tail" => entries
                     .iter()
@@ -67,16 +84,21 @@ fn render_history(
                     .collect::<Vec<_>>()
                     .into_iter()
                     .rev()
-                    .map(crate::family::compact_entry)
+                    .map(line)
                     .collect(),
                 _ => entries
                     .iter()
                     .filter(|entry| entry.seq() > number)
-                    .map(crate::family::compact_entry)
+                    .map(line)
                     .collect(),
             };
             paged(kept, format!("session-{kind}"))
         }
+        (Some(_), None) if custom.is_some() => Err(FetchError::BadAddress {
+            url: url.to_string(),
+            detail: "custom/<type> filters a listing: the whole one, tail/<n> or since/<seq>"
+                .to_owned(),
+        }),
         (Some(id), None) => {
             let entry = store.entry(id).ok_or_else(|| FetchError::NotFound {
                 url: url.to_string(),
@@ -87,12 +109,7 @@ fn render_history(
             Ok((text, "session-entry".to_owned(), None))
         }
         (None, None) => {
-            let entries = store
-                .find_entries(&EntryQuery {
-                    order: EntryOrder::OldestFirst,
-                    ..EntryQuery::default()
-                })
-                .map_err(|error| backend(error.to_string()))?;
+            let entries = all(custom)?;
             let lines = entries
                 .iter()
                 .map(serde_json::to_string)
@@ -268,9 +285,9 @@ impl Resolver {
         })
     }
 
-    /// One address space: this session, then a live child, then the corpus.
+    /// One address space: this session (by its name or as `self`), a live child, the corpus.
     pub(super) fn transcript_of(&self, agent: &str) -> Option<yi_session::SharedSession> {
-        if self.session_agent() == Some(agent) {
+        if agent == super::SELF || self.session_agent() == Some(agent) {
             return self.session_store();
         }
         self.transcripts()

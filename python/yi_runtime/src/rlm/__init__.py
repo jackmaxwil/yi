@@ -370,19 +370,51 @@ async def delete_subagent(target: str | RLMSubagent | RLMSpawnHandle) -> RLMSuba
     return _subagent_from_payload(payload.get("subagent"), "rlm.delete_subagent")
 
 
-async def send(target: "str | RLMSubagent", message: str, followup: bool = False) -> dict[str, Any]:
-    """Send one agent message; ``followup=True`` also starts the target's turn.
-
-    ``target`` is an agent name, ``"parent"``, or ``"all"``. A broadcast returns
-    one receipt per target rather than failing whole on the first bad one.
-    """
+def _mail(target: "str | RLMSubagent", message: str, **options: Any) -> dict[str, Any]:
     if not isinstance(message, str) or not message:
         raise ValueError("message must be a non-empty str")
     selector = target if isinstance(target, str) else target.session_name
-    return await host_request(
-        "agent_message.send",
-        {"target": selector, "message": message, "followup": bool(followup)},
-    )
+    sent = {key: value for key, value in options.items() if value is not None}
+    return {"target": selector, "message": message, **sent}
+
+
+async def send(
+    target: "str | RLMSubagent",
+    message: str,
+    followup: bool = False,
+    *,
+    reply_to: str | None = None,
+    kind: str | None = None,
+    ref: str | None = None,
+    conversation: str | None = None,
+    deadline_ms: int | None = None,
+) -> dict[str, Any]:
+    """Send one agent message; ``followup=True`` also starts the target's turn.
+
+    ``target`` is an agent name, ``"parent"``, or ``"all"``. A broadcast returns
+    one receipt per target rather than failing whole on the first bad one. Each
+    receipt is ``{target, id, state}`` and ``state`` says what the host did once
+    the message was in the target's inbox: ``queued`` (a running turn will take
+    it), ``woken`` (a turn was started on it) or ``inboxed`` (it waits in the
+    store; nothing is running to read it). ``reply_to=<id>`` answers a request.
+    ``kind`` is ``inform`` (the default), ``progress``, ``failure`` or ``cancel``.
+    A body over 16 KiB is refused, never trimmed: ``put`` it and pass
+    ``ref="family://<name>"``.
+    """
+    options = {"reply_to": reply_to, "kind": kind, "ref": ref}
+    options.update(conversation=conversation, deadline_ms=deadline_ms)
+    return await host_request("agent_message.send", _mail(target, message, followup=bool(followup), **options))
+
+
+async def request(target: "str | RLMSubagent", message: str, timeout: float = 300.0) -> dict[str, Any]:
+    """Send a request and wait for its reply; an idle target is started on it.
+
+    Returns ``{reply, envelope, receipts}``: the reply's text, its whole envelope
+    and the request's receipt. Only the target's own
+    ``send(sender, text, reply_to=<id>)`` resolves it. RuntimeError when no reply
+    came within ``timeout`` seconds; a late reply still lands in your history.
+    """
+    return await host_request("agent_message.request", _mail(target, message, timeout_ms=int(timeout * 1000)))
 
 
 async def followup(target: "str | RLMSubagent", message: str) -> dict[str, Any]:
@@ -873,11 +905,16 @@ class _RLMCallable:
     async def delete_subagent(self, target: str | RLMSubagent | RLMSpawnHandle) -> RLMSubagent:
         return await delete_subagent(target)
 
-    async def send(self, target: str | RLMSubagent, message: str, followup: bool = False) -> dict[str, Any]:
-        return await send(target, message, followup)
+    async def send(
+        self, target: str | RLMSubagent, message: str, followup: bool = False, **options: Any
+    ) -> dict[str, Any]:
+        return await send(target, message, followup, **options)
 
     async def followup(self, target: str | RLMSubagent, message: str) -> dict[str, Any]:
         return await followup(target, message)
+
+    async def request(self, target: str | RLMSubagent, message: str, timeout: float = 300.0) -> dict[str, Any]:
+        return await request(target, message, timeout)
 
     async def list_agents(self) -> list[dict[str, Any]]:
         return await list_agents()
@@ -962,6 +999,7 @@ __all__ = [
     "list_subagents",
     "merge_worktree",
     "plan_op",
+    "request",
     "result",
     "rlm",
     "run",

@@ -13,6 +13,7 @@ pub mod goal;
 pub mod harness;
 pub mod kernel;
 pub mod lane;
+pub mod mail;
 pub mod mcp;
 pub mod message;
 pub mod model;

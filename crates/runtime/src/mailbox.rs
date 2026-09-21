@@ -3,9 +3,11 @@ use std::sync::Arc;
 
 use serde_json::{Map, Value, json};
 use yi_types::event::AgentEvent;
+use yi_types::mail::{Delivery, Kind, Receipt};
 use yi_types::message::{AgentMessage, UserContent};
 use yi_types::subagent::{ChildResult, Discovery};
 
+use crate::mail::{Desk, Draft};
 use crate::subagent::{
     ChildRecord, ChildStatus, INTERRUPTED, PARENT_NAME, SubagentHost, last_assistant_text,
 };
@@ -16,7 +18,7 @@ const WAIT_POLL_MS: u64 = 100;
 
 const CONTEXT_MAX_KEYS: usize = 8;
 const CONTEXT_VALUE_CAP: usize = 4_096;
-const CONTEXT_TOTAL_CAP: usize = 16_384;
+pub(crate) const CONTEXT_TOTAL_CAP: usize = 16_384;
 const RESULT_TAIL_CHARS: usize = 2_000;
 
 /// A removed record with its key and how its lane settled.
@@ -64,41 +66,15 @@ pub(crate) fn context_block(kwargs: &Map<String, Value>) -> Result<Option<String
     Ok(Some(block))
 }
 
-/// Invariant: an agent's words reach another agent inside this envelope and
-/// never as bare user text — provenance the model can see (B6 hardening).
-fn envelope(from: &str, text: &str) -> String {
-    format!("<agent_message from=\"{from}\">\n{text}\n</agent_message>")
-}
-
-fn agent_message(from: &str, text: &str) -> AgentMessage {
-    AgentMessage::Custom {
-        custom_type: "agent_message".to_owned(),
-        content: yi_types::message::UserContent::Text(envelope(from, text)),
-        display: true,
-        details: None,
-        timestamp: yi_session::now_ms(),
-    }
-}
-
 fn receipt(target: &str, state: &str) -> Value {
     json!({"target": target, "state": state})
 }
 
-pub(crate) fn message_params(payload: &Map<String, Value>) -> (String, Option<String>, bool) {
-    let target = payload
-        .get("target")
-        .and_then(Value::as_str)
-        .unwrap_or_default()
-        .to_owned();
-    let text = payload
-        .get("message")
-        .and_then(Value::as_str)
-        .map(str::to_owned);
-    let followup = payload
-        .get("followup")
-        .and_then(Value::as_bool)
-        .unwrap_or(false);
-    (target, text, followup)
+pub(crate) fn timeout_of(payload: &Map<String, Value>) -> u64 {
+    payload
+        .get("timeout_ms")
+        .and_then(Value::as_u64)
+        .unwrap_or(WAIT_MAX_MS)
 }
 
 /// The child half of B6: a name is looked for locally, then in the family.
@@ -110,16 +86,35 @@ pub fn register_child_messaging(
     let sender = link.clone();
     let own = Arc::clone(local);
     registry.register("agent_message.send", move |payload| {
-        let (target, text, followup) = message_params(&payload);
+        let parsed = Draft::from_payload(&payload);
         let sender = sender.clone();
         let own = Arc::clone(&own);
         Box::pin(async move {
-            let text = text.ok_or("agent_message.send requires a message")?;
+            let (target, draft) = parsed?;
             if matches!(target.as_str(), "parent" | "all") {
-                return sender.send(&target, &text, followup);
+                return sender.send_mail(&target, &draft);
             }
-            own.route(PARENT_NAME, &target, &text, followup)
-                .or_else(|_| sender.send(&target, &text, followup))
+            own.route_mail(PARENT_NAME, &target, &draft)
+                .or_else(|_| sender.send_mail(&target, &draft))
+        })
+    });
+    let (sender, own) = (link.clone(), Arc::clone(local));
+    registry.register("agent_message.request", move |payload| {
+        let parsed = Draft::from_payload(&payload);
+        let timeout = timeout_of(&payload);
+        let sender = sender.clone();
+        let own = Arc::clone(&own);
+        Box::pin(async move {
+            let (target, draft) = parsed?;
+            // A name this child holds is its own child; any other is the family's to find.
+            if target != "parent" && own.holds(&target) {
+                return own
+                    .request(PARENT_NAME, &target, &draft.text, timeout)
+                    .await;
+            }
+            let host = sender.host.upgrade().ok_or("the parent session is gone")?;
+            host.request(&sender.child_name, &target, &draft.text, timeout)
+                .await
         })
     });
     registry.register("agent_message.list_agents", move |_payload| {
@@ -143,11 +138,15 @@ impl ParentLink {
         text: &str,
         followup: bool,
     ) -> Result<Map<String, Value>, String> {
+        self.send_mail(target, &Draft::plain(text, followup))
+    }
+
+    fn send_mail(&self, target: &str, draft: &Draft) -> Result<Map<String, Value>, String> {
         let host = self
             .host
             .upgrade()
             .ok_or_else(|| "the parent session is gone".to_owned())?;
-        host.route(&self.child_name, target, text, followup)
+        host.route_mail(&self.child_name, target, draft)
     }
 
     pub fn roster(&self) -> Map<String, Value> {
@@ -159,14 +158,34 @@ impl ParentLink {
 }
 
 impl SubagentHost {
-    /// B6 routing, one seam for all three directions: a child reaches its
-    /// parent or a named sibling, the parent reaches one child or `all`.
     pub fn route(
         &self,
         from: &str,
         target: &str,
         text: &str,
         followup: bool,
+    ) -> Result<Map<String, Value>, String> {
+        self.route_mail(from, target, &Draft::plain(text, followup))
+    }
+
+    /// `agent_message.send` for a sender the registry fixed: the payload names the target,
+    /// the message and its kind, never who sent it.
+    pub fn send(
+        &self,
+        from: &str,
+        payload: &Map<String, Value>,
+    ) -> Result<Map<String, Value>, String> {
+        let (target, draft) = Draft::from_payload(payload)?;
+        self.route_mail(from, &target, &draft)
+    }
+
+    /// B6 routing, one seam for all three directions: a child reaches its
+    /// parent or a named sibling, the parent reaches one child or `all`.
+    pub(crate) fn route_mail(
+        &self,
+        from: &str,
+        target: &str,
+        draft: &Draft,
     ) -> Result<Map<String, Value>, String> {
         if target.trim().is_empty() {
             return Err(
@@ -176,19 +195,13 @@ impl SubagentHost {
         if target == from {
             return Err(format!("agent \"{from}\" cannot send to itself"));
         }
-        match target {
-            "parent" => {
-                if from == PARENT_NAME {
-                    return Err("the parent has no parent to message".to_owned());
-                }
-                self.deliver_to_parent(from, text);
-                let mut reply = Map::new();
-                reply.insert(
-                    "receipts".to_owned(),
-                    json!([receipt("parent", "delivered")]),
-                );
-                Ok(reply)
+        draft.admit(from)?;
+        let mut desk = self.mail.lock().map_err(|_| "mail state poisoned")?;
+        let receipts = match target {
+            "parent" if from == PARENT_NAME => {
+                return Err("the parent has no parent to message".to_owned());
             }
+            "parent" => vec![self.deliver_to_parent(&mut desk, from, draft)?],
             "all" => {
                 let names: Vec<String> = self
                     .children
@@ -202,29 +215,41 @@ impl SubagentHost {
                     })
                     .unwrap_or_default();
                 // allSettled: one unreachable target never voids the fan-out.
-                let receipts: Vec<Value> = names
+                names
                     .iter()
-                    .map(
-                        |name| match self.deliver_to_child(from, name, text, followup) {
-                            Ok(state) => receipt(name, state),
-                            Err(error) => receipt(name, &error),
-                        },
-                    )
-                    .collect();
-                let mut reply = Map::new();
-                reply.insert("receipts".to_owned(), Value::Array(receipts));
-                Ok(reply)
+                    .map(|name| {
+                        self.deliver_to_child(&mut desk, from, name, draft)
+                            .unwrap_or_else(|error| receipt(name, &error))
+                    })
+                    .collect()
             }
-            name => {
-                let state = self.deliver_to_child(from, name, text, followup)?;
-                let mut reply = Map::new();
-                reply.insert("receipts".to_owned(), json!([receipt(name, state)]));
-                Ok(reply)
-            }
-        }
+            name => vec![self.deliver_to_child(&mut desk, from, name, draft)?],
+        };
+        let mut reply = Map::new();
+        reply.insert("receipts".to_owned(), Value::Array(receipts));
+        Ok(reply)
     }
 
-    fn deliver_to_parent(&self, from: &str, text: &str) {
+    /// The name a member answers to, so a waiter keyed on it matches the reply's `from`.
+    pub(crate) fn member_name(&self, target: &str) -> String {
+        self.children
+            .lock()
+            .ok()
+            .and_then(|children| {
+                let key = Self::key_of(&children, target).ok()?;
+                Some(children.get(&key)?.session_name.clone())
+            })
+            .unwrap_or_else(|| target.to_owned())
+    }
+
+    /// The parent's turn is the report hook's to queue or start, and the hook says nothing
+    /// back, so this receipt keeps the word it always carried.
+    fn deliver_to_parent(
+        &self,
+        desk: &mut Desk,
+        from: &str,
+        draft: &Draft,
+    ) -> Result<Value, String> {
         if let Ok(mut children) = self.children.lock()
             && let Ok(key) = Self::key_of(&children, from)
             && let Some(record) = children.get_mut(&key)
@@ -232,45 +257,85 @@ impl SubagentHost {
             record.replied = true;
             children.touch(&key);
         }
-        (self.options.report)(agent_message(from, text));
+        let envelope = desk.seal(from, PARENT_NAME, draft);
+        if let Some(store) = (self.options.store)() {
+            crate::mail::inbox(&store, &envelope)?;
+        }
+        desk.resolve(&envelope);
+        if envelope.kind != Kind::Progress {
+            (self.options.report)(crate::mail::present(&envelope));
+        }
+        let mut row = receipt(PARENT_NAME, "delivered");
+        row["id"] = Value::String(envelope.id.0);
+        Ok(row)
     }
 
+    /// Invariant: the receipt is read off the delivery attempt: `queued` where a running turn
+    /// will drain it, `woken` where this send started the turn, `inboxed` where neither.
     fn deliver_to_child(
         &self,
+        desk: &mut Desk,
         from: &str,
         target: &str,
-        text: &str,
-        followup: bool,
-    ) -> Result<&'static str, String> {
+        draft: &Draft,
+    ) -> Result<Value, String> {
         let children = self
             .children
             .lock()
             .map_err(|_| "subagent state poisoned".to_owned())?;
-        let key = Self::key_of(&children, target).map_err(|_| {
+        let record = Self::key_of(&children, target)
+            .ok()
+            .and_then(|key| children.get(&key));
+        let (name, store) = match record {
+            Some(record) => (record.session_name.as_str(), record.session.store()),
+            // A reaped child's chain is kept (D210), and that is where its inbox lives.
+            None => (target, self.kept_transcript(target)),
+        };
+        let Some(store) = store else {
             let known: Vec<&str> = children
                 .values()
                 .map(|record| record.session_name.as_str())
                 .collect();
-            format!(
+            return Err(format!(
                 "no agent named \"{target}\"; known children: {}",
                 if known.is_empty() {
                     "(none)".to_owned()
                 } else {
                     known.join(", ")
                 }
-            )
-        })?;
-        let record = children
-            .get(&key)
-            .ok_or_else(|| format!("no agent named \"{target}\""))?;
-        let message = agent_message(from, text);
-        if followup {
-            record.session.deliver(message);
-            Ok("delivered")
-        } else {
-            record.session.follow_up_message(message);
-            Ok("queued")
-        }
+            ));
+        };
+        let envelope = desk.seal(from, name, draft);
+        crate::mail::inbox(&store, &envelope)?;
+        desk.resolve(&envelope);
+        let message = crate::mail::present(&envelope);
+        let wakes = draft.followup || !matches!(envelope.kind, Kind::Inform | Kind::Progress);
+        let state = match record {
+            _ if envelope.kind == Kind::Progress => Delivery::Inboxed,
+            Some(record) if wakes => {
+                if record.session.deliver(message) {
+                    Delivery::Woken
+                } else {
+                    Delivery::Queued
+                }
+            }
+            Some(record) if record.session.status() == crate::session::Status::Running => {
+                (record.session.wake_idle_hook())(message);
+                Delivery::Queued
+            }
+            // A plain send never starts a turn: the next one presents it.
+            Some(record) => {
+                record.session.follow_up_message(message);
+                Delivery::Inboxed
+            }
+            None => Delivery::Inboxed,
+        };
+        let row = Receipt {
+            target: name.to_owned(),
+            id: envelope.id,
+            state,
+        };
+        serde_json::to_value(row).map_err(|error| error.to_string())
     }
 
     pub fn roster(&self) -> Map<String, Value> {
