@@ -26,6 +26,7 @@
 //! | `product_repair_passes_under_unchanged_criteria` | T1 | The red-then-green pair: the first product fails the frozen checker and `done` is refused with a recorded verdict; the product is repaired and the same frozen checker passes it. Every verdict in the run carries the same contract and criteria digest and a different output digest, which is the whole claim, and the todo's refusal counter still reads 1 after the pass. | The criteria being frozen at `start` and the refusal leaving the todo where it was. Let the contract be rewritten between attempts and the fixture still goes green while proving nothing, which is the specification failure this pair exists to make visible. Fixture: `fixtures/plans/contracts/writer-cmd-red-then-green.json`. |
 //! | `inline_task_output_validates_product_not_sidecar` | T0 | An inline todo's contract runs against the product itself, not against a note, a summary or a sidecar file the same turn wrote. The inline floor is the writer or reader floor of its declared role; running the work inline is not an exemption from it. | The output artifact being the one the token names. Let an inline todo nominate any artifact and the cheapest passing move is to write a sidecar that satisfies the schema, which is the reward-hacking shape the floors exist against. |
 //! | `the_third_refusal_blocks_the_todo_on_user_as_a_recorded_transition` | T0 | Three refused verdicts on one todo step it to `Blocked { on: User }` as its own committed transition with its own record, so the human inbox learns about it from the journal and not from a counter someone has to read. Stale and infrastructure abstentions do not count toward the three. | The counter bump being an explicit event and the cap being a transition rather than a return value. Make the cap a refusal text and a model retries forever; count stale verdicts and a slow checker walks a healthy todo into the inbox. |
+//! | `a_retry_opens_a_fresh_refusal_count_so_only_retry_cap_bounds_a_scheduler` | T0 | The section 6.3 cap counts the refused verdicts of one attempt, not of the todo: two refusals, a `fail` and a `retry`, then two more, leave the todo running with four journaled refusals and no `block`. `todo.refusals` is the lifetime event counter and is never what the cap reads, so `RETRY_CAP` is the only durable bound on a scheduler that retries a failed todo (D212). | The `attempt` filter in `refused_verdicts`. Drop it and the third refusal of a todo's life parks every retrying shape in the human inbox, whichever attempt it belongs to. |
 //! | `accept_records_accepted_by_user_never_verified_done` | T1 | The user's acceptance is its own op: refused to the owner, confirmed through `authority::submit` as the CLI and the console do, recorded as `accepted_by_user` with the citation as its actor, and landing `Done { AcceptedByUser }` with no `pass` verdict anywhere. | `check_actor` refusing the owner and `Actor::User` being minted only by the confirmed path. Let the owner accept and a model closes what its checker refused; write `VerifiedDone` here and the report cannot tell a checked todo from a waved-through one. |
 //! | `a_stated_only_todo_needs_an_item_or_a_user` | T0 | A todo whose only requirement is a stated acceptance is refused `done` on the owner's word; it completes once a decidable item is added and passes, or once a user accepts it. | `needs_resolution` counting a stated-only delegation. Drop it and "it works" is a contract again, the failure D77 was retired for. |
 //! | `done_on_an_uncontracted_worktree_todo_is_refused_as_unavailable` | T0 | `done` on a worktree todo with no contract is refused `AcceptanceUnavailable` and the todo stays `Running`; worktree acceptance is F0d, and no completion path frees a slot through a merge-less reap before it lands. | The worktree refusal sitting in `prepare` above the contract branch. Leave it inside `evidence` and the uncontracted todo takes the plain path, reaps the child and drops the lane with no disposition. |
@@ -2652,6 +2653,66 @@ mod contracts {
         assert_eq!(
             (block.record.from.clone(), block.record.to.clone()),
             (Some(TodoStateName::Running), Some(TodoStateName::Blocked))
+        );
+        Ok(())
+    }
+
+    // Dies with the `attempt` filter in `refused_verdicts`: count the todo's lifetime refusals
+    // and every retrying scheduler walks a healthy todo into the human inbox instead of RETRY_CAP.
+    #[test]
+    fn a_retry_opens_a_fresh_refusal_count_so_only_retry_cap_bounds_a_scheduler() -> TestResult {
+        let rig = rig("yi-f0c-cap-attempt", None)?;
+        let plan = planned()?;
+        init(
+            &rig.engine,
+            vec![contracted(
+                "land it",
+                cmd_contract(&rig.store, &plan, "exit 1", "writer")?,
+            )?],
+        )?;
+        for attempt in 1..=2 {
+            start(&rig.engine, &plan, "land it")?;
+            for call in 1..=2 {
+                // A fresh product each time, or the second `done` replays the settled verdict free.
+                rig.serve.set(
+                    "local://out.txt",
+                    Some(&format!("product {attempt}.{call}")),
+                );
+                let verdict =
+                    refused(done(&rig.engine, &plan, "land it", Some("local://out.txt")))?;
+                assert_eq!(verdict.outcome, VerdictOutcome::Fail);
+            }
+            let todo = todo_of(&rig.store, &plan, "land it")?;
+            assert!(
+                matches!(todo.state, TodoState::Running { .. }),
+                "attempt {attempt} of two refusals must not block: {:?}",
+                todo.state
+            );
+            rig.engine.apply(at(
+                &plan,
+                Op::Fail {
+                    label: TodoLabel::new("land it")?,
+                    cause: "the shape settles a refused done".to_owned(),
+                    disposition: None,
+                },
+            ))?;
+            rig.engine.apply(at(
+                &plan,
+                Op::Retry {
+                    label: TodoLabel::new("land it")?,
+                    delegation: None,
+                },
+            ))?;
+        }
+        let todo = todo_of(&rig.store, &plan, "land it")?;
+        assert_eq!(
+            todo.refusals, 4,
+            "the lifetime counter is an event, not the cap"
+        );
+        assert_eq!(todo.retries, RetryCount(2));
+        assert!(
+            !kinds(&rig.store, &plan)?.iter().any(|kind| kind == "block"),
+            "four refusals across two attempts must never reach the section 6.3 cap"
         );
         Ok(())
     }
