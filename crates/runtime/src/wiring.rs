@@ -228,6 +228,11 @@ fn wire_fetch(
             let page = crate::fetch::Page::from_payload(&payload)?;
             // a family member asks for the object; the owner dills it to the family dir (D164).
             if payload.get("object").and_then(Value::as_bool) == Some(true) {
+                if page.is_some() {
+                    return Err(
+                        "fetch pages text; drop \"object\" to page a kernel:// read".to_owned()
+                    );
+                }
                 let dump = Arc::clone(&resolver);
                 let (path, bytes) = tokio::task::spawn_blocking(move || dump.dump_kernel(&url))
                     .await

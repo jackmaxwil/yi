@@ -443,18 +443,29 @@ impl Resolver {
         self.fetch_page(url, None)
     }
 
+    /// A `history://` read of this session's own transcript, whose log row lands in the
+    /// listing it just served.
+    fn pages_own_history(&self, url: &Url) -> bool {
+        matches!(url.scheme(), Scheme::History)
+            && self.session_agent() == url.path().split('/').next()
+    }
+
     /// [`Self::fetch`] through one [`Page`]; the hash and the log row are the page's own.
     pub fn fetch_page(&self, url: &Url, page: Option<Page>) -> Result<Fetched, FetchError> {
         let (text, served_by, next_offset) = self.resolve(url, page)?;
         let hash = content_hash(&text);
-        self.log.record(
-            url,
-            FetchRecord {
-                url: url.to_string(),
-                hash: hash.clone(),
-                served_by: served_by.clone(),
-            },
-        );
+        let record = FetchRecord {
+            url: url.to_string(),
+            hash: hash.clone(),
+            served_by: served_by.clone(),
+        };
+        // Invariant: a paged read of this session's own history appends no row, or each page
+        // would lengthen the listing by one and the walk would never reach its end (D213).
+        if page.is_some() && self.pages_own_history(url) {
+            self.log.remember(url, record);
+        } else {
+            self.log.record(url, record);
+        }
         Ok(Fetched {
             url: url.clone(),
             text,
