@@ -2090,57 +2090,59 @@ against the archive; four more are specified with their prerequisites
 space". **Exit.** independently useful work through both shapes with the
 overhead reported against the direct path.
 
-As landed, against sections 8.5 and 8.6. Python +290, tests +772 (Rust 407, Python
-365 with the three programs), no Rust `src` line. Overhead, counted in host
-requests on the fake host: fork_join over two writers is 9 against the 4 ops sent
-by hand (one `repair`, three views and one `wait` on top, none of them journaled);
-scatter over two readers and a lead is 18 against 2 direct fetches (seven ops, four
-reads, one `wait`, two `rlm.result`, four fetches). The shapes take no arguments
-(`MAX_RESTARTS`, `RESTART_WINDOW` and `SCATTER_MAX_ROUNDS` are module levers), so
-each is a module-level function and the lease's identity check attaches a second
-`plan.run(shape=fork_join)` to the first. fork_join refuses an inline todo as well
-as a writer outside a worktree, since both write the owner's workspace. Its restart
-window is kernel-local; the durable bound is the engine's `RETRY_CAP`, whose
-`retries_exhausted` refusal ends the restarts and stays in `run.refusals`. The
-section 6.3 cap counts refused verdicts per attempt (`done.rs` `refused_verdicts`;
-`todo.refusals` is a lifetime event counter nothing reads for the cap, which is what
-section 6.3 step 6 used to read as, and it says the per-attempt rule now), and the
-scheduler sends one `done` per attempt, so a retrying shape never reaches it; a
-todo the engine did block is never retried, because only `failed` is. The
-scatter lead is the plan's one inline todo, `async def lead(answers, number)`
-returning `{"commit": answer}` or `{"ask": question}` (there is no `lead` object to
-call `commit` on), and its product is `{"answer", "rounds"}` because a bare string
-is stored as text and a `schema` item finds no JSON in it. A later round declares
-`<reader>-r<n>` todos with the reader's delegation and contract and the question as
-the note, and the key alone as the label, because a `TodoLabel` is eighty characters
-and no newline while the lead writes the question (the review found the round-two
+As landed, against sections 8.5 and 8.6. Python +290, tests +772 (Rust 407,
+Python 365 with the three programs), no Rust `src` line. Overhead, counted in
+host requests on the fake host: fork_join over two writers is 9 against the 4
+ops sent by hand (one `repair`, three views and one `wait` on top, none of them
+journaled); scatter over two readers and a lead is 18 against 2 direct fetches
+(seven ops, four reads, one `wait`, two `rlm.result`, four fetches). The shapes
+take no arguments (`MAX_RESTARTS`, `RESTART_WINDOW` and `SCATTER_MAX_ROUNDS` are
+module levers), so each is a module-level function and the lease's identity
+check attaches a second `plan.run(shape=fork_join)` to the first. fork_join
+refuses an inline todo as well as a writer outside a worktree, since both write
+the owner's workspace. Its restart window is kernel-local; the durable bound is
+the engine's `RETRY_CAP`, whose `retries_exhausted` refusal ends the restarts
+and stays in `run.refusals`. The section 6.3 cap counts refused verdicts per
+attempt (`done.rs` `refused_verdicts`; `todo.refusals` is a lifetime event
+counter nothing reads for the cap, which is what section 6.3 step 6 used to read
+as, and it says the per-attempt rule now), and the scheduler sends one `done`
+per attempt, so a retrying shape never reaches it; a todo the engine did block
+is never retried, because only `failed` is. The scatter lead is the plan's one
+inline todo, `async def lead(answers, number)` returning `{"commit": answer}` or
+`{"ask": question}` (there is no `lead` object to call `commit` on), and its
+product is `{"answer", "rounds"}` because a bare string is stored as text and a
+`schema` item finds no JSON in it. A later round declares `<reader>-r<n>` todos
+with the reader's delegation and contract and the question as the note, and the
+key alone as the label, because a `TodoLabel` is eighty characters and no
+newline while the lead writes the question (the review found the round-two
 declaration refused on any question a real lead would ask, and the fake host now
-holds the label rule); a failed reader is retried and dropped, the two legal steps
-from `failed` to `abandoned`, so the plan can still finish, and the T2 journey
-settles one that way on the real step table. `verify_quotes` fetches each cited
-url once and reads the line from it: the host's line fragment needs the tag
-(`#L<a>-<b>@<tag>`) a reader does not have, so a large page is read whole until F1c's paged `fetch` lands. It
-also takes the reader's partition and drops a quote citing anything else unread:
-the wall that bound the reader is cooperative (section 7.6) and the owner fetches
-with the owner's own reach, so a reader could otherwise answer for a partition it
-was never given, or for a page outside the archive, and the disjointness geometry
-checks before the first start would mean nothing afterwards. `shapes.ANSWER` types
-only `quotes`, because the host's schema subset has no union type for a nullable
-`answer`. A program reaches its fixture's JSON on the projection the two surfaces
-share: every plan's state and version, its todos in order (a program's key is the
-fixture's label in lower case), their states, edges, attempts, retries, whether they
-are delegated and what a done one output, and the committed transitions in journal
-order. Not compared: `refusals` and `touched`, since the fixture's refused steps are
-its own; the text of a cause or a block note; a delegation's or a contract's
-contents; and the campaign fixture's `reorder` and `add_edge`, which the library has
-no surface for and whose generation that fixture's `supersede` closes before the
-comparison reads the store. Found on the way and fixed: `Todo.decompose` looked a
-sibling edge up in the parent plan and raised, so its own docstring example failed.
-Not built, and section 8.6 corrected to say so: `Reader` derives no `deny_read` from
-the partition, and scatter does not either, because a wall is cooperative and
-`deny_read` is paths where a partition is urls; the seam is the binding. Also not
-built: a writer child as the scatter lead, `rest_for_one` and `one_for_all`, and the
-four later shapes.
+holds the label rule); a failed reader is retried and dropped, the two legal
+steps from `failed` to `abandoned`, so the plan can still finish, and the T2
+journey settles one that way on the real step table. `verify_quotes` fetches
+each cited url once and reads the line from it: the host's line fragment needs
+the tag (`#L<a>-<b>@<tag>`) a reader does not have, so a large page is read
+whole until F1c's paged `fetch` lands. It also takes the reader's partition and
+drops a quote citing anything else unread: the wall that bound the reader is
+cooperative (section 7.6) and the owner fetches with the owner's own reach, so a
+reader could otherwise answer for a partition it was never given, or for a page
+outside the archive, and the disjointness geometry checks before the first start
+would mean nothing afterwards. `shapes.ANSWER` types only `quotes`, because the
+host's schema subset has no union type for a nullable `answer`. A program
+reaches its fixture's JSON on the projection the two surfaces share: every
+plan's state and version, its todos in order (a program's key is the fixture's
+label in lower case), their states, edges, attempts, retries, whether they are
+delegated and what a done one output, and the committed transitions in journal
+order. Not compared: `refusals` and `touched`, since the fixture's refused steps
+are its own; the text of a cause or a block note; a delegation's or a contract's
+contents; and the campaign fixture's `reorder` and `add_edge`, which the library
+has no surface for and whose generation that fixture's `supersede` closes before
+the comparison reads the store. Found on the way and fixed: `Todo.decompose`
+looked a sibling edge up in the parent plan and raised, so its own docstring
+example failed. Not built, and section 8.6 corrected to say so: `Reader` derives
+no `deny_read` from the partition, and scatter does not either, because a wall
+is cooperative and `deny_read` is paths where a partition is urls; the seam is
+the binding. Also not built: a writer child as the scatter lead, `rest_for_one`
+and `one_for_all`, and the four later shapes.
 
 ### F1c · Paged recall through `fetch` (D-next-7; extends D164)
 
