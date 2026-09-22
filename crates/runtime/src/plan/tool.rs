@@ -801,6 +801,7 @@ mod tests {
                 }
                 let parsed = request(&Actor::Owner, &input);
                 assert!(parsed.is_ok(), "{name}: {:?}", parsed.err());
+                assert!(templated(&input).is_ok(), "{name}: {:?}", templated(&input));
                 // The CLI reads one line: the same args must parse to the same request.
                 let mut line = name.to_owned();
                 if let Some(plan) = step.get("plan").and_then(Value::as_str) {
@@ -823,6 +824,37 @@ mod tests {
             }
         }
         assert!(seen > 30, "only {seen} fixture ops exercised");
+        Ok(())
+    }
+
+    /// The call a repeated refusal prints back, parsed by the parser that refused it.
+    fn templated(args: &Map<String, Value>) -> Result<(), String> {
+        let line = crate::affordance::call_template("plan", &schema(), args);
+        let shape = line
+            .strip_prefix(&format!("{}call plan as ", crate::affordance::NEXT))
+            .ok_or_else(|| format!("no template in {line}"))?;
+        let Ok(Value::Object(shape)) = serde_json::from_str::<Value>(shape) else {
+            return Err(format!("{shape} is not an object"));
+        };
+        request(&Actor::Owner, &shape)
+            .map(|_| ())
+            .map_err(|error| format!("{shape:?}: {error}"))
+    }
+
+    /// Incident: the template printed a submit without `attempt`, a key the flat schema does not
+    /// name, so the surface taught the one call its own parser refuses (#478).
+    #[test]
+    fn a_submit_template_carries_the_attempt_its_parser_needs() -> Fallible {
+        let Value::Object(args) = json!({
+            "op": "submit",
+            "plan": "three-independent-one-file-writes-alpha",
+            "label": "gamma",
+            "attempt": 1,
+            "output": "local://gamma.txt"
+        }) else {
+            return Err("case is not an object".into());
+        };
+        templated(&args)?;
         Ok(())
     }
 
