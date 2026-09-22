@@ -78,8 +78,8 @@ impl Phase {
     /// The record `done` is still missing from this phase; `None` once accept is legal.
     pub fn missing(self) -> Option<&'static str> {
         match self {
-            Self::Unsubmitted => Some(KIND_CANDIDATE_SUBMITTED),
-            Self::Submitted => Some(KIND_CANDIDATE_VERIFIED),
+            Self::Unsubmitted => Some("a candidate_submitted record on this attempt"),
+            Self::Submitted => Some("a candidate_verified record on this attempt"),
             // A verified candidate whose integration never landed, or landed unverified, is
             // prepared again by `done`; nothing is missing from it (section 6.6 row three).
             Self::CandidateVerified
@@ -375,7 +375,7 @@ impl PlanEngine {
     pub fn with_lanes(self, lanes: Pool) -> Self {
         let capacity = Capacity::for_slots(lanes.slots());
         Self {
-            lanes: Some(lanes),
+            lanes: lanes.into(),
             capacity,
             ..self
         }
@@ -408,12 +408,6 @@ impl PlanEngine {
         self.capacity
             .reserve_within(Purpose::Verification, self.reserve_until())
             .map_err(|error| verification(label, error.to_string()))
-    }
-
-    pub(super) fn pool(&self, label: &TodoLabel) -> Result<&Pool, PlanOpError> {
-        self.lanes
-            .as_ref()
-            .ok_or_else(|| verification(label, "no lane pool is attached to the engine"))
     }
 
     /// Invariant: a read that fails is an error, never `false`, so a worktree todo never takes

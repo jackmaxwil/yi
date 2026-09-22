@@ -232,6 +232,7 @@ pub fn coupling(session: &AgentSession, options: CouplingOptions) -> TurnCouplin
         on_prompt,
         on_turn,
         intercept_stop,
+        waiting: None,
     }
 }
 

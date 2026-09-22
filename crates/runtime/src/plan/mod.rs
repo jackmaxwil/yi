@@ -15,6 +15,7 @@ pub mod acceptance;
 pub mod artifact;
 pub mod authority;
 pub mod capacity;
+pub mod declare;
 pub mod dispatch;
 pub mod done;
 pub mod finish;

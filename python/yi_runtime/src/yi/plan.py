@@ -481,13 +481,14 @@ class Plan:
         if accept is not None:
             contract_class = delegate.contract_class if delegate else "inline"
             contract, blobs = await accept.render(contract_class, lambda url: rlm.fetch(url, as_text=True))
+        delegation, noted = delegate.note_blobs() if delegate else (None, [])
         wire = {
             "label": f"{key}: {label}" if label else key,
             "after": edges,
-            "delegation": delegate.delegation() if delegate else None,
+            "delegation": delegation,
             "contract": contract,
         }
-        return _pruned(wire), blobs, key
+        return _pruned(wire), blobs + noted, key
 
     async def todo(self, key: str, label: str | None = None, **spec: Any) -> Todo:
         """Declare a todo once: ``after``, ``delegate``, ``accept`` and ``run`` say what it is.

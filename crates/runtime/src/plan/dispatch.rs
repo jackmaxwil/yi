@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use serde_json::{Map, Value};
 use yi_types::message::{AgentMessage, UserContent};
+use yi_types::plan::canonical::DIGEST_PREFIX;
 use yi_types::plan::doc::{AgentId, Check, Delegation, Isolation, TodoAddr, TodoLabel};
 use yi_types::schedule::DeliveryMode;
 use yi_types::url::Url;
@@ -83,6 +84,15 @@ fn brief(at: &TodoAddr, delegation: &Delegation) -> String {
     }
     if let Some(note) = &delegation.note {
         lines.push(note.as_str().to_owned());
+    }
+    let whole = delegation.extra.get(super::declare::NOTE_REF);
+    if let Some(hex) =
+        whole.and_then(|note| note.get("digest")?.as_str()?.strip_prefix(DIGEST_PREFIX))
+    {
+        lines.push(format!(
+            "The whole note: read plan://{}/artifacts/{hex}",
+            at.plan
+        ));
     }
     lines.join("\n")
 }
@@ -260,6 +270,10 @@ impl PlanEngine {
 }
 
 impl Delegate for SessionDelegate {
+    fn finishes(&self) -> bool {
+        self.host.finished.lock().is_ok_and(|slot| slot.is_some())
+    }
+
     fn candidate(&self, agent: &AgentId) -> Result<Option<crate::lane::settle::Held>, String> {
         if !self.host.holds(agent.as_str()) {
             return Ok(None);
@@ -576,12 +590,16 @@ mod tests {
             1,
             "the engine starts it with no owner op"
         );
-        let refused = rig.engine.apply(owner(Op::Start {
+        let noted = rig.engine.apply(owner(Op::Start {
             label: TodoLabel::new("cut the seam")?,
-        }));
+        }))?;
         assert!(
-            matches!(refused, Err(PlanOpError::IllegalStep { .. })),
-            "the owner has nothing left to start: {refused:?}"
+            noted
+                .notices
+                .iter()
+                .any(|line| line.starts_with("nothing to do: the engine starts")),
+            "the owner has nothing left to start: {:?}",
+            noted.notices
         );
         assert!(wait_done(&rig.host).await, "child never completed");
         let out = rig.engine.apply(owner(Op::Done {
@@ -932,6 +950,89 @@ mod tests {
             assert!(brief.contains("Execute todo \"gateway\""), "{brief}");
             assert!(!brief.contains("submit"), "{brief}");
         }
+        Ok(())
+    }
+
+    /// Dies with the brief dropping the stored note: the child reads the head alone.
+    #[test]
+    fn an_over_cap_note_is_linked_from_the_brief() -> TestResult {
+        let at = TodoAddr {
+            plan: PlanId::new("ship-the-thing")?,
+            todo: TodoLabel::new("quota")?,
+        };
+        let mut delegation = delegated("quota")?.delegation.ok_or("delegated")?;
+        let hex = "ab".repeat(32);
+        delegation.extra.insert(
+            super::super::declare::NOTE_REF.to_owned(),
+            serde_json::json!({"digest": format!("sha256:{hex}"), "media_type": "text/markdown", "length": 2000}),
+        );
+        let brief = brief(&at, &delegation);
+        assert!(
+            brief.contains(&format!("read plan://ship-the-thing/artifacts/{hex}")),
+            "{brief}"
+        );
+        Ok(())
+    }
+
+    /// Dies with `busy` reading only the children's exits: the child has ended while the engine
+    /// still settles its finish, and `yi ask` would end the run before the acceptance lands.
+    #[tokio::test]
+    async fn the_host_stays_busy_until_the_finish_settles() -> TestResult {
+        let rig = hooked(vec![reply("the seam is cut and holds")])?;
+        let out = rig.engine.apply(owner(Op::Init {
+            goal: GoalText::new("ship the widget")?,
+            todos: vec![delegated("cut the seam")?],
+        }))?;
+        let label = TodoLabel::new("cut the seam")?;
+        for _ in 0..400 {
+            let busy = rig.host.busy();
+            let read = rig.engine.store().read(&out.plan.id)?;
+            let running = matches!(
+                read.todo(&label).map(|todo| &todo.state),
+                Some(TodoState::Running { .. })
+            );
+            assert!(busy || !running, "idle while the todo is still running");
+            if !busy {
+                return Ok(());
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        Err("the host never went idle".into())
+    }
+
+    /// Dies with the cursor dropped: a wait with none read epoch 0 and returned at once, so a
+    /// parent looping on `rlm.wait(300)` spun and the repeat breaker ended its session.
+    #[tokio::test]
+    async fn a_wait_with_no_cursor_blocks_until_something_moves() -> TestResult {
+        use yi_kernel::client::HostHandlers;
+        let rig = rig("the seam is cut")?;
+        let mut registry = crate::kernel::HostRegistry::default();
+        rig.host.register(&mut registry);
+        rig.engine.apply(owner(Op::Init {
+            goal: GoalText::new("ship the widget")?,
+            todos: vec![delegated("cut the seam")?],
+        }))?;
+        assert!(wait_done(&rig.host).await, "child never completed");
+        let payload = serde_json::json!({"timeout_ms": 1000});
+        let payload = payload.as_object().cloned().ok_or("payload")?;
+        let started = std::time::Instant::now();
+        registry
+            .dispatch("rlm.wait", payload.clone())
+            .ok_or("rlm.wait")?
+            .await?;
+        assert!(
+            started.elapsed().as_millis() < 900,
+            "the first wait sees the family now"
+        );
+        let started = std::time::Instant::now();
+        registry
+            .dispatch("rlm.wait", payload)
+            .ok_or("rlm.wait")?
+            .await?;
+        assert!(
+            started.elapsed().as_millis() >= 900,
+            "nothing moved, so it waited"
+        );
         Ok(())
     }
 

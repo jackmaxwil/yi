@@ -1,4 +1,5 @@
 mod log;
+mod read;
 mod schemes;
 
 use std::path::{Path, PathBuf};
@@ -19,6 +20,7 @@ use crate::wall::Wall;
 pub use log::{
     FetchLog, PinError, Relevance, TerminalRecordError, as_served, relevance_of, rows_of,
 };
+pub use read::route_urls;
 pub use yi_types::fetch::{FETCH_ENTRY_TYPE, FetchRecord};
 
 pub const KERNEL_MISSING: &str =

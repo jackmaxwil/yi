@@ -120,6 +120,22 @@ class Plans(unittest.IsolatedAsyncioTestCase):
         todo = await plan.todo(key="apart", delegate=Writer(accept=contract(cmd("true", critical=True))))
         self.assertEqual(todo._doc["contract"]["class"], "writer", "the role's accept is the todo's contract")
 
+    async def test_a_writer_takes_a_plain_command_and_stores_a_long_note(self) -> None:
+        """Dies with `Writer(accept=str)` refused, or an over-cap note sent whole for the host to refuse."""
+        host = FakeHost()
+        plan = await Plan.create("ship it")
+        note = "Parse the ledger. " * 100
+        writer = Writer(accept="grep -qx alpha alpha.txt", note=note)
+        todo = await plan.todo(key="quota", delegate=writer)
+        self.assertTrue(todo._doc["contract"]["items"][0]["critical"])
+        self.assertTrue(any('"command":"grep -qx alpha alpha.txt"' in text for text in host.blobs.values()))
+        delegation = todo._doc["delegation"]
+        self.assertLessEqual(len(delegation["note"].encode()), 1024)
+        self.assertIn(note, host.blobs.values(), "the whole note is in the plan's store")
+        self.assertTrue(delegation["note_ref"]["digest"].startswith("sha256:"))
+        again = await plan.todo(key="quota", delegate=writer)
+        self.assertEqual(again.label, todo.label, "the same declaration is no drift")
+
     async def test_a_red_verdict_fails_the_attempt_through_the_engine_and_a_stuck_child_is_waited_on(self) -> None:
         """Dies with the control: send `done` from the settle and the library re-runs the verifier
         the engine already ran, once per pass, for as long as the todo stays running."""

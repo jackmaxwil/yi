@@ -187,6 +187,7 @@ pub struct SubagentHost {
     /// Lock order: `mail`, then `children`, then `grant`, then a session store.
     pub(crate) grant: Mutex<crate::lease::Grant>,
     pub(crate) finished: Mutex<Option<Arc<FinishFn>>>,
+    pub(crate) settling: std::sync::atomic::AtomicUsize,
 }
 
 impl SubagentHost {
@@ -475,6 +476,7 @@ impl SubagentHost {
             mail: Mutex::default(),
             grant: Mutex::default(),
             finished: Mutex::new(None),
+            settling: std::sync::atomic::AtomicUsize::new(0),
         }
     }
 
@@ -1015,11 +1017,19 @@ impl SubagentHost {
             Box::pin(async move { Ok(reply) })
         });
         let host = Arc::clone(self);
+        let seen = Arc::new(std::sync::atomic::AtomicU64::new(0));
         registry.register("rlm.wait", move |payload| {
             let timeout = timeout_of(&payload);
+            let kept = seen.load(std::sync::atomic::Ordering::Relaxed);
             let cursor = payload.get("cursor").and_then(Value::as_u64);
-            let host = Arc::clone(&host);
-            Box::pin(async move { Ok(host.wait(timeout, cursor).await) })
+            let cursor = cursor.or((kept > 0).then_some(kept));
+            let (host, seen) = (Arc::clone(&host), Arc::clone(&seen));
+            Box::pin(async move {
+                let reply = host.wait(timeout, cursor).await;
+                let epoch = reply.get("cursor").and_then(Value::as_u64).unwrap_or(0);
+                seen.fetch_max(epoch, std::sync::atomic::Ordering::Relaxed);
+                Ok(reply)
+            })
         });
         self.register_stops(registry);
         self.register_service(registry);

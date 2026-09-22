@@ -82,6 +82,7 @@ pub struct TurnCoupling {
     pub on_prompt: Arc<PromptChoiceFn>,
     pub on_turn: Arc<TurnObserveFn>,
     pub intercept_stop: Arc<InterceptStopFn>,
+    pub waiting: Option<Arc<dyn Fn() -> bool + Send + Sync>>,
 }
 
 /// The start hook captures the tree the turn is about to change, the end hook
@@ -1072,6 +1073,7 @@ fn wire_queues_and_coupling(config: &mut LoopConfig, shared: &Arc<Shared>, promp
         }));
         let intercept = Arc::clone(&coupling.intercept_stop);
         config.intercept_stop = Some(Box::new(move |snapshot| intercept(snapshot)));
+        config.waiting = coupling.waiting;
     }
 }
 

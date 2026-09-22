@@ -7,7 +7,9 @@ from typing import Any
 
 import rlm
 
-from .contract import Contract
+from .contract import Contract, cmd, contract, freeze
+
+NOTE_MAX_BYTES = 1024
 
 
 def _pruned(value: dict) -> dict:
@@ -35,6 +37,20 @@ class Role:
     context: tuple = ()
     note: str | None = None
     accept: Contract | None = None
+
+    def note_blobs(self) -> tuple[dict[str, Any], list[dict]]:
+        """The wire delegation and the blob of a note over the cap, stored the way the host stores it."""
+        wire = self.delegation()
+        data = (self.note or "").encode()
+        if len(data) <= NOTE_MAX_BYTES:
+            return wire, []
+        cut = NOTE_MAX_BYTES - 64
+        while cut > 0 and data[cut] & 0xC0 == 0x80:
+            cut -= 1
+        ref, blob = freeze(self.note or "", "text/markdown")
+        wire["note"] = data[:cut].decode() + "... (the whole note is linked below)"
+        wire["note_ref"] = ref
+        return wire, [blob]
 
     def delegation(self) -> dict[str, Any]:
         """The wire delegation, spelled the way the host writes it back."""
@@ -66,7 +82,7 @@ class Role:
 
 
 def Writer(
-    accept: Contract,
+    accept: Contract | str,
     *,
     isolation: str | None = "worktree",
     deny_write: tuple | list = (),
@@ -80,10 +96,13 @@ def Writer(
 
     ``accept`` is the todo's contract: a writer's candidate is accepted against
     it, so a worktree writer cannot be declared without one. It needs a critical
-    ``cmd`` or ``example`` item, since a writer is judged by behavior.
+    ``cmd`` or ``example`` item, since a writer is judged by behavior. A plain
+    string is that one critical command: ``Writer(accept="make -s check")``.
 
         delegate = Writer(accept=contract(cmd("pytest -q tests/", critical=True)), deny_write=["docs/"])
     """
+    if isinstance(accept, str):
+        accept = contract(cmd(accept, critical=True))
     return Role(
         "writer",
         "writer",
