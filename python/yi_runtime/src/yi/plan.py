@@ -271,7 +271,9 @@ class Todo:
     async def retry(self, delegate: Role | None = None) -> "Todo":
         """Open a new attempt after a failure, optionally with another delegate.
 
-            await todo.retry(delegate=Writer(model="strong"))
+        The todo keeps its contract; a new delegate's ``accept`` is not read here.
+
+            await todo.retry(delegate=Writer(accept=contract(cmd("make -s check", critical=True)), model="strong"))
         """
         return await self._op("retry", delegation=delegate.delegation() if delegate else None)
 
@@ -467,6 +469,10 @@ class Plan:
             raise TypeError("run= takes an async function, and an inline todo has no delegate")
         # A sub-plan's todos name each other before any of them exists: `among` is that batch.
         edges = [item.label if isinstance(item, Todo) else (among or {}).get(item) or self[item].label for item in after]
+        if accept is None and delegate is not None:
+            accept = delegate.accept
+        if accept is None and delegate is not None and delegate.isolation == "worktree":
+            raise TypeError("a worktree Writer needs accept=")
         contract, blobs = None, []
         if accept is not None:
             contract_class = delegate.contract_class if delegate else "inline"
@@ -484,10 +490,11 @@ class Plan:
 
         The same declaration again returns the handle and writes nothing; a
         changed one raises ``SpecDrift`` and writes nothing. ``run=`` names an
-        async function executed in this kernel; ``delegate=`` a child's role.
+        async function executed in this kernel; ``delegate=`` a child's role,
+        whose ``accept`` is the contract unless ``accept=`` names another.
 
             tests = await plan.todo(key="tests", label="write the test suite", after=["freeze"],
-                delegate=Writer(), accept=contract(cmd("pytest -q tests/", critical=True)))
+                delegate=Writer(accept=contract(cmd("pytest -q tests/", critical=True))))
         """
         wire, blobs, key = await self._spec(key, label, **spec)
         for _ in range(2):

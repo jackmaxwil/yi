@@ -7,6 +7,8 @@ from typing import Any
 
 import rlm
 
+from .contract import Contract
+
 
 def _pruned(value: dict) -> dict:
     return {key: item for key, item in value.items() if item not in (None, [], {}, ())}
@@ -32,6 +34,7 @@ class Role:
     deny_url: tuple = ()
     context: tuple = ()
     note: str | None = None
+    accept: Contract | None = None
 
     def delegation(self) -> dict[str, Any]:
         """The wire delegation, spelled the way the host writes it back."""
@@ -63,6 +66,7 @@ class Role:
 
 
 def Writer(
+    accept: Contract,
     *,
     isolation: str | None = "worktree",
     deny_write: tuple | list = (),
@@ -74,10 +78,11 @@ def Writer(
 ) -> Role:
     """A child that changes files, in its own worktree unless told otherwise.
 
-    Its contract needs a critical ``cmd`` or ``example`` item: a writer is
-    judged by behavior.
+    ``accept`` is the todo's contract: a writer's candidate is accepted against
+    it, so a worktree writer cannot be declared without one. It needs a critical
+    ``cmd`` or ``example`` item, since a writer is judged by behavior.
 
-        delegate = Writer(deny_write=["docs/"])
+        delegate = Writer(accept=contract(cmd("pytest -q tests/", critical=True)), deny_write=["docs/"])
     """
     return Role(
         "writer",
@@ -89,6 +94,7 @@ def Writer(
         deny_write=tuple(deny_write),
         context=tuple(context),
         note=note,
+        accept=accept,
     )
 
 

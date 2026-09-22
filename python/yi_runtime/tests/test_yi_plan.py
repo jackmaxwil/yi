@@ -90,8 +90,10 @@ class Plans(unittest.IsolatedAsyncioTestCase):
             key="tests",
             label="write the test suite",
             after=[freeze],
-            delegate=Writer(isolation="worktree", deny_write=["docs/"]),
-            accept=contract(cmd("pytest -q tests/", critical=True), schema(REPORT, critical=True)),
+            delegate=Writer(
+                accept=contract(cmd("pytest -q tests/", critical=True), schema(REPORT, critical=True)),
+                deny_write=["docs/"],
+            ),
         )
         child = f"{plan.id}/tests"
         host.children[child] = "finished"
@@ -103,10 +105,25 @@ class Plans(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(todo._doc["output"].startswith(f"plan://{plan.id}/artifacts/"), todo._doc)
         self.assertIn('{"passed":12}', host.blobs.values())
 
+    async def test_a_writer_without_accept_is_refused_before_the_host(self) -> None:
+        """A worktree writer with no contract never reaches the host: the library refuses it first."""
+        host = FakeHost()
+        plan = await Plan.create("ship it")
+        with self.assertRaises(TypeError):
+            Writer()
+        with self.assertRaises(TypeError) as refused:
+            await plan.todo(key="tests", delegate=Writer(accept=None))
+        self.assertEqual(str(refused.exception), "a worktree Writer needs accept=")
+        self.assertEqual(host.ops(), ["init"], "nothing was sent")
+        inline = await plan.todo(key="inline", delegate=Writer(accept=None, isolation=None))
+        self.assertNotIn("contract", inline._doc, "an inline writer may still run on the owner's word")
+        todo = await plan.todo(key="apart", delegate=Writer(accept=contract(cmd("true", critical=True))))
+        self.assertEqual(todo._doc["contract"]["class"], "writer", "the role's accept is the todo's contract")
+
     async def test_a_refused_done_fails_the_attempt_and_a_stuck_child_is_waited_on(self) -> None:
         host = FakeHost()
         plan = await Plan.create("ship it")
-        todo = await plan.todo(key="tests", delegate=Writer(), accept=contract(cmd("false", critical=True)))
+        todo = await plan.todo(key="tests", delegate=Writer(accept=contract(cmd("false", critical=True))))
         host.verdicts[todo.label] = "fail"
         host.children[f"{plan.id}/tests"] = "stuck"
         run = await plan.run(budget=30, detach=True)
@@ -121,7 +138,7 @@ class Plans(unittest.IsolatedAsyncioTestCase):
         """Dies with the control: read `queued` as unknown and an admitted child blocks its todo on you."""
         host = FakeHost()
         plan = await Plan.create("ship it")
-        todo = await plan.todo(key="tests", delegate=Writer(), accept=contract(cmd("true", critical=True)))
+        todo = await plan.todo(key="tests", delegate=Writer(accept=contract(cmd("true", critical=True))))
         host.children[f"{plan.id}/tests"] = "queued"
         run = await plan.run(budget=30, detach=True)
         await asyncio.sleep(0.1)
@@ -136,7 +153,7 @@ class Plans(unittest.IsolatedAsyncioTestCase):
             with self.subTest(outcome or child):
                 host = FakeHost()
                 plan = await Plan.create("ship it")
-                todo = await plan.todo(key="t", delegate=Writer(), accept=contract(cmd("true", critical=True)))
+                todo = await plan.todo(key="t", delegate=Writer(accept=contract(cmd("true", critical=True))))
                 if outcome is not None:
                     host.verdicts[todo.label] = outcome
                 host.children[f"{plan.id}/t"] = child
@@ -148,7 +165,7 @@ class Plans(unittest.IsolatedAsyncioTestCase):
         """Dies with the control: hand `rlm.result` a `needs_you` child once and it raises."""
         host = FakeHost()
         plan = await Plan.create("ship it")
-        todo = await plan.todo(key="t", delegate=Writer(), accept=contract(cmd("true", critical=True)))
+        todo = await plan.todo(key="t", delegate=Writer(accept=contract(cmd("true", critical=True))))
         await todo.start()
         child = f"{plan.id}/t"
         host.children[child] = "needs_you"
@@ -159,7 +176,7 @@ class Plans(unittest.IsolatedAsyncioTestCase):
     async def test_duplicate_run_calls_attach_or_refuse(self) -> None:
         host = FakeHost()
         plan = await Plan.create("ship it")
-        await plan.todo(key="tests", delegate=Writer(), accept=contract(cmd("true", critical=True)))
+        await plan.todo(key="tests", delegate=Writer(accept=contract(cmd("true", critical=True))))
         first = await plan.run(budget=30, detach=True)
         second = await plan.run(budget=30, detach=True)
         self.assertIs(second, first, "the same shape attaches to the running scheduler")
@@ -187,8 +204,8 @@ class Plans(unittest.IsolatedAsyncioTestCase):
             await asyncio.sleep(3600)
 
         await plan.todo(key="inline", run=forever)
-        await plan.todo(key="child", delegate=Writer(), accept=contract(cmd("true", critical=True)))
-        await plan.todo(key="later", after=["child"], delegate=Writer(), accept=contract(cmd("true", critical=True)))
+        await plan.todo(key="child", delegate=Writer(accept=contract(cmd("true", critical=True))))
+        await plan.todo(key="later", after=["child"], delegate=Writer(accept=contract(cmd("true", critical=True))))
         run = await plan.run(detach=True)
         await started.wait()
         status = await run.stop(scope="cancel_active")

@@ -5,6 +5,7 @@ use yi_types::plan::doc::{
     AgentId, Plan, PlanIssue, PlanState, RetryCount, Todo, TodoLabel, TodoState, TodoStateName,
     terminal_durability,
 };
+use yi_types::plan::op::UNCONTRACTED_WORKTREE;
 use yi_types::url::{Durability, Url};
 
 use super::ops::{Actor, OWNER_AGENT, Op, PlanOpError, TodoSpec};
@@ -250,28 +251,9 @@ pub fn admit(plan: &Plan, label: &TodoLabel, slots: usize) -> Result<(), Refusal
     }
 }
 
+/// The shape alone. The declaration rule of plan section 6.6 is the parse of a `TodoSpec`, so a
+/// stored document and an import are read as they were written; `retry` alone re-checks it.
 pub(super) fn validate_plan(plan: &Plan) -> Result<(), PlanOpError> {
-    // Invariant: a worktree todo completes only through the acceptance of a contracted
-    // candidate (plan section 6.6), so the uncontracted shape is refused where it is declared.
-    if let Some(todo) = plan
-        .todos
-        .iter()
-        .find(|todo| super::acceptance::is_worktree(todo) && todo.contract.is_none())
-    {
-        return Err(PlanOpError::Contract {
-            label: todo.label.clone(),
-            detail: "a worktree delegation needs a `contract`, which its candidate is accepted \
-                     against (plan section 6.6); the delegation's `accept` is the child's brief, \
-                     not a contract"
-                .to_owned(),
-        });
-    }
-    validate_shape(plan)
-}
-
-/// The shape alone, which is what an import of a legacy document is held to: history is read
-/// as it was written, and section 6.6 binds the declarations made since.
-pub(super) fn validate_shape(plan: &Plan) -> Result<(), PlanOpError> {
     let mut issues = plan.validate();
     match issues.drain(..).next() {
         None => Ok(()),
@@ -285,6 +267,17 @@ pub(super) fn validate_shape(plan: &Plan) -> Result<(), PlanOpError> {
             | PlanIssue::Contract { .. }),
         ) => Err(PlanOpError::Invalid { issue }),
     }
+}
+
+/// A `retry` swaps a delegation onto a todo the parse never saw beside its contract.
+pub(super) fn check_contracted(todo: &Todo) -> Result<(), PlanOpError> {
+    if super::acceptance::is_worktree(todo) && todo.contract.is_none() {
+        return Err(PlanOpError::Contract {
+            label: todo.label.clone(),
+            detail: UNCONTRACTED_WORKTREE.to_owned(),
+        });
+    }
+    Ok(())
 }
 
 pub(super) fn locate_step(

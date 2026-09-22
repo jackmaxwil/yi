@@ -16,8 +16,8 @@ use yi_types::plan::op::{Op, Reaped, Reconciliation, Resolution, Resolve, SetRow
 
 use super::ops::{OWNER_AGENT, PlanOpError};
 use super::table::{
-    OpKind, add_edge, append_todos, charge_retry, check_plan_state, check_terminal, locate_step,
-    new_todo, reorder_todos, step, validate_plan, validate_shape,
+    OpKind, add_edge, append_todos, charge_retry, check_contracted, check_plan_state,
+    check_terminal, locate_step, new_todo, reorder_todos, step, validate_plan,
 };
 
 pub const KIND_IMPORT: &str = "import";
@@ -334,9 +334,7 @@ pub fn apply(state: &mut RootState, record: &JournalRecord) -> Result<(), Reduce
                 .and_then(|value| {
                     serde_json::from_value(value).map_err(|e| bad_args(e.to_string()))
                 })?;
-            // Invariant: an import is read as it was written, so the reduce holds a legacy
-            // document to the shape alone, exactly as `import` itself does.
-            validate_shape(&plan).map_err(failed)?;
+            validate_plan(&plan).map_err(failed)?;
             state.plans.insert(plan.id.clone(), plan.unmarked());
         }
         KIND_SPAWN_INTENT => {
@@ -941,7 +939,7 @@ fn apply_retry(
     todo.extra.remove(SUBMITTED_KEY);
     if let Some(replacement) = delegation {
         todo.delegation = Some(replacement.clone());
-        return validate_plan(plan);
+        return check_contracted(todo);
     }
     Ok(())
 }

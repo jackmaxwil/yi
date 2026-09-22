@@ -13,7 +13,7 @@ use super::ops::{
     SetRow, TodoSpec,
 };
 use super::table::{ALL_OPS, OpKind, op_name};
-use yi_types::plan::op::MODEL_OPS;
+use yi_types::plan::op::{MODEL_OPS, SpecError, TodoSpecRepr};
 
 const WINDOW: usize = 8;
 
@@ -61,6 +61,8 @@ pub enum ArgError {
     },
     #[error("{} todo {index} is not an object", op_name(*op))]
     TodoShape { op: OpKind, index: usize },
+    #[error(transparent)]
+    Spec(#[from] SpecError),
     #[error(
         "set line {line} is not a checklist row (`- [ ] label`, `- [>] label`, `- [x] label`; two spaces nest): {text:?}"
     )]
@@ -356,13 +358,13 @@ fn todo_specs(args: &Map<String, Value>, op: OpKind) -> Result<Vec<TodoSpec>, Ar
             return Err(ArgError::TodoShape { op, index });
         };
         refuse_unknown(spec, op, &TODO_SPEC_KEYS)?;
-        specs.push(TodoSpec {
+        specs.push(TodoSpec::try_from(TodoSpecRepr {
             label: need(spec, op, "label")?,
             after: opt(spec, op, "after")?.unwrap_or_default(),
             delegation: opt(spec, op, "delegation")?,
             contract: opt(spec, op, "contract")?,
             children: Vec::new(),
-        });
+        })?);
     }
     Ok(specs)
 }
@@ -1036,6 +1038,58 @@ mod tests {
         assert!(
             matches!(request(&child, &through_cli), Err(ArgError::ActorArg)),
             "the CLI line carries the key into the same refusal"
+        );
+        Ok(())
+    }
+
+    /// Dies with the `try_from` on `TodoSpec`: build the fields straight and an uncontracted
+    /// worktree todo lands through `init`, `append`, `decompose` and `supersede` on both roads.
+    #[test]
+    fn an_uncontracted_worktree_todo_is_refused_by_the_parse_on_every_declaring_op() -> Fallible {
+        let bare = json!({"label": "build it apart", "delegation": {
+            "spec": {"role": "writer", "isolation": "worktree"},
+            "accept": {"stated": "the contract decides"}
+        }});
+        for (op, extra) in [
+            ("init", json!({"goal": "ship it"})),
+            ("append", json!({})),
+            ("decompose", json!({"label": "parent"})),
+            ("supersede", json!({"reason": "again"})),
+        ] {
+            let mut args = extra.as_object().cloned().unwrap_or_default();
+            args.insert("op".to_owned(), Value::String(op.to_owned()));
+            args.insert("todos".to_owned(), json!([bare.clone()]));
+            let parsed = parse_op(&args);
+            assert!(
+                matches!(&parsed, Err(ArgError::Spec(_))),
+                "{op} parsed the uncontracted shape: {parsed:?}"
+            );
+            let text = parsed
+                .err()
+                .map(|error| error.to_string())
+                .unwrap_or_default();
+            assert!(
+                text.starts_with("todo build it apart: a worktree delegation needs a `contract`"),
+                "{text}"
+            );
+            let refusal = super::super::request::refusal_of(&Actor::Owner, &args);
+            assert_eq!(
+                refusal["refusal"]["code"],
+                json!("bad_args"),
+                "{op}: {refusal:?}"
+            );
+        }
+        let mut args = Map::new();
+        args.insert("op".to_owned(), Value::String("append".to_owned()));
+        args.insert(
+            "todos".to_owned(),
+            json!([{"label": "build it here", "delegation": {
+                "spec": {"role": "writer"}, "accept": {"stated": "the contract decides"}
+            }}]),
+        );
+        assert!(
+            parse_op(&args).is_ok(),
+            "an inline delegation needs no contract"
         );
         Ok(())
     }
