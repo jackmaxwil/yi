@@ -140,6 +140,7 @@ pub struct ChildBuild<'a> {
 pub type ChildFactory = dyn Fn(ChildBuild<'_>) -> Result<AgentSession, String> + Send + Sync;
 pub type NoticeFn = dyn Fn(&str) + Send + Sync;
 pub type AttributeFn = dyn Fn(&Usage) + Send + Sync;
+pub type FinishFn = dyn Fn(String, ChildExit, Option<String>) -> bool + Send + Sync;
 
 pub struct SubagentHostOptions {
     pub depth: u8,
@@ -185,6 +186,7 @@ pub struct SubagentHost {
     pub(crate) mail: Mutex<crate::mail::Desk>,
     /// Lock order: `mail`, then `children`, then `grant`, then a session store.
     pub(crate) grant: Mutex<crate::lease::Grant>,
+    pub(crate) finished: Mutex<Option<Arc<FinishFn>>>,
 }
 
 impl SubagentHost {
@@ -472,6 +474,7 @@ impl SubagentHost {
             reaped: Mutex::new(HashMap::new()),
             mail: Mutex::default(),
             grant: Mutex::default(),
+            finished: Mutex::new(None),
         }
     }
 
@@ -800,6 +803,16 @@ impl SubagentHost {
         // something that can read as user instructions from the child.
         // a child that ended on `ask_user` is asking its parent, not finishing (D165).
         let question = crate::family::pending_question(&session.messages());
+        let taken = match exit {
+            ChildExit::Completed if question.is_some() || service => false,
+            ChildExit::Completed | ChildExit::Failed { .. } | ChildExit::Interrupted => {
+                self.finish_taken(session_name, exit, error.clone())
+            }
+            ChildExit::Reaped | ChildExit::Repossessed => false,
+        };
+        if taken {
+            return;
+        }
         let verb = crate::family::read_exit(Some(exit)).verb;
         let notice = match (exit, question) {
             (ChildExit::Completed, Some(question)) => format!(

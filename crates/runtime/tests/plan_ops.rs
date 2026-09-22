@@ -366,6 +366,103 @@ fn a_blocked_todo_is_not_started() -> TestResult {
     Ok(())
 }
 
+/// Refuses the first `fail_first` spawns, as a host whose `rlm.run` children fill it does.
+struct Flaky {
+    fail_first: u32,
+    tried: AtomicU32,
+}
+
+impl Delegate for Flaky {
+    fn spawn(&self, _at: &TodoAddr, _delegation: &Delegation) -> Result<AgentId, String> {
+        let tried = self.tried.fetch_add(1, Ordering::SeqCst);
+        if tried < self.fail_first {
+            return Err("RLM child limit reached".to_owned());
+        }
+        AgentId::new(format!("child-{tried}")).map_err(|error| error.to_string())
+    }
+
+    fn reap(&self, _agent: &AgentId, _supplied: &[Url]) -> Result<Option<Url>, String> {
+        Ok(None)
+    }
+}
+
+/// Dies with every recordable refusal cached for the attempt (schedule.rs): a spawn the host
+/// refused once for a full roster is never tried again, and the todo stays pending forever.
+#[test]
+fn a_transient_spawn_failure_is_tried_again_by_the_next_op() -> TestResult {
+    let temp = Scratch::new("yi-plan-ops-flaky")?;
+    let flaky = Arc::new(Flaky {
+        fail_first: 1,
+        tried: AtomicU32::new(0),
+    });
+    let engine = PlanEngine::new(PlanStore::open(temp.to_path_buf())?, flaky.clone());
+    let out = init(&engine, vec![delegated_spec("delegated job")?])?;
+    assert!(out.spawned.is_empty(), "{:?}", out.spawned);
+    let seen = engine.apply(at(&out.plan.id, Op::View { full: false }))?;
+    assert_eq!(
+        seen.notices,
+        [
+            "the engine could not start \"delegated job\": could not spawn a child at ship-the-widget-end-to-end/delegated job: RLM child limit reached"
+        ],
+        "a caller reads the engine's refusal, not an idle todo"
+    );
+    let out = engine.apply(at(
+        &out.plan.id,
+        Op::Append {
+            todos: vec![spec("write the notes")?],
+        },
+    ))?;
+    assert_eq!(out.spawned.len(), 1, "the next op tries the start again");
+    assert_eq!(flaky.tried.load(Ordering::SeqCst), 2);
+    Ok(())
+}
+
+/// Dies with `raced` unread in `settle` (ops.rs): a start another pass got to first journals
+/// an engine refusal and charges the running todo for it.
+#[test]
+fn a_raced_engine_start_journals_nothing() -> TestResult {
+    let (_temp, store, _stub, engine) = harness(8)?;
+    let out = init(&engine, vec![delegated_spec("delegated job")?])?;
+    let before = store.journal(&out.plan.id).read()?.records.len();
+    let raced = engine.apply(OpRequest {
+        plan: Some(out.plan.id.clone()),
+        actor: Actor::Engine,
+        op: Op::Start {
+            label: label("delegated job")?,
+        },
+        request_id: None,
+        expected_revision: None,
+    });
+    assert!(
+        matches!(raced, Err(PlanOpError::IllegalStep { .. })),
+        "{raced:?}"
+    );
+    assert_eq!(store.journal(&out.plan.id).read()?.records.len(), before);
+    let todo = store.read(&out.plan.id)?;
+    assert_eq!(
+        todo.todo(&label("delegated job")?)
+            .ok_or("missing")?
+            .refusals,
+        0
+    );
+    Ok(())
+}
+
+/// Dies with `standing` unread in `view` (ops.rs): a script cannot tell a todo the width holds
+/// from one the engine was refused, and reads every idle todo as waiting on a slot.
+#[test]
+fn a_view_names_the_todos_the_width_holds() -> TestResult {
+    let (_temp, _store, _stub, engine) = harness(1)?;
+    let out = init(
+        &engine,
+        vec![delegated_spec("first job")?, delegated_spec("second job")?],
+    )?;
+    let seen = engine.apply(at(&out.plan.id, Op::View { full: false }))?;
+    assert_eq!(seen.held, [label("second job")?]);
+    assert!(seen.notices.is_empty(), "{:?}", seen.notices);
+    Ok(())
+}
+
 #[test]
 fn fuse_refuses_at_cap_and_survives_supersede() -> TestResult {
     let (_temp, store, _stub, engine) = harness(8)?;

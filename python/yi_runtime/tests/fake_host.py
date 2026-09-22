@@ -3,8 +3,8 @@
 It keeps the rules the `yi` library leans on (request ids replay, one open plan,
 edges gate `start`, a contract freezes at `start` and decides at `done`, the step
 table, the admission count, the engine starting admitted delegated todos after every
-op, the retry cap, `wait` with a cursor) and none of the engine's depth; the T2
-journeys in `kernel_data_surface.rs` run the real one.
+op and finishing one whose child ended, the retry cap, `wait` with a cursor) and none
+of the engine's depth; the T2 journeys in `kernel_data_surface.rs` run the real one.
 """
 from __future__ import annotations
 
@@ -50,7 +50,14 @@ class FakeHost:
         self.slots: int | None = None
         self.retry_cap = 8
         self.starts: list[str] = []
-        self.refused: set[tuple[str, str, int]] = set()
+        self.refused: dict[tuple[str, str, int], str] = {}
+        self.finished: set[tuple[str, str, int]] = set()
+        # The engine's own finish ops, apart from the journal of what the library sent.
+        self.engine_ops: list[tuple[str, dict]] = []
+        # Every op the library sent, refused or not.
+        self.sent: list[str] = []
+        # Labels whose start the engine is refused, with the reason the host gives.
+        self.unstartable: dict[str, str] = {}
         self.requests: collections.Counter = collections.Counter()
         self.waits: list[tuple[int | None, list[str]]] = []
         self.changes: list[tuple[str, str]] = []
@@ -66,6 +73,9 @@ class FakeHost:
             return self.plan_op(payload)
         if kind == "rlm.wait":
             await asyncio.sleep(0.01)
+            # The engine takes a child's end before a waiter reads it: a set-up that marks a
+            # child finished at declaration is finished when the run first waits, not sooner.
+            self.finish()
             # Each caller's cursor is its own place in the change log; nobody drains it.
             latest = dict(self.changes)
             self.changes += [item for item in self.children.items() if latest.get(item[0]) != item[1]]
@@ -90,6 +100,7 @@ class FakeHost:
 
     def plan_op(self, payload: dict) -> dict:
         op, args, request_id = payload["op"], payload.get("args") or {}, payload["request_id"]
+        self.sent.append(op)
         identity = json.dumps([op, args], sort_keys=True)
         if request_id in self.replies:
             seen, reply = self.replies[request_id]
@@ -120,12 +131,46 @@ class FakeHost:
                 key = (plan["plan"], label, todo["attempt"])
                 if not todo.get("delegation") or key in self.refused or self.held(plan, todo) is not None:
                     continue
-                if self.step("start", {"label": label}, plan, todo) is None:
+                refused = self.step("start", {"label": label}, plan, todo)
+                if refused is None:
                     plan["touched"] += 1
                     self.journal.append(("start", {"label": label}))
                 else:
-                    self.refused.add(key)
+                    self.refused[key] = f'the engine could not start "{label}": {refused["refusal"]["message"]}'
             self.view(plan)
+
+    def finish(self) -> None:
+        """`finish.rs`: a delegated todo whose child ended is the engine's: submitted and done,
+        failed on a red verdict or a failed child, left running on any other verdict."""
+        for plan in list(self.plans.values()):
+            for todo in plan["todos"]:
+                child, key = todo.get("by"), (plan["plan"], todo["label"], todo["attempt"])
+                ended = self.children.get(child) in ("finished", "failed")
+                if todo["state"] != "running" or not todo.get("delegation") or not ended or key in self.finished:
+                    continue
+                self.finished.add(key)
+                if self.children[child] == "failed":
+                    self.engine("fail", {"label": todo["label"], "cause": f"child {child} failed"}, plan, todo)
+                    continue
+                answer = self.results.get(child)
+                said = answer.get("json", answer.get("text", "")) if isinstance(answer, dict) else ""
+                text = said if isinstance(said, str) else json.dumps(said, sort_keys=True, separators=(",", ":"))
+                digest = hashlib.sha256(text.encode()).hexdigest()
+                self.blobs["sha256:" + digest] = text
+                if not todo.get("submitted"):
+                    self.engine("submit", {"label": todo["label"], "output": f"plan://{plan['plan']}/artifacts/{digest}"}, plan, todo)
+                refused = self.engine("done", {"label": todo["label"], "output": todo["submitted"]}, plan, todo)
+                if refused is not None and refused["refusal"]["verdict"]["outcome"] == "fail":
+                    self.engine("fail", {"label": todo["label"], "cause": "contract refused: the verdict was fail"}, plan, todo)
+        self.dispatch()
+
+    def engine(self, op: str, args: dict, plan: dict, todo: dict) -> dict | None:
+        """One op as the engine, kept apart so a test reads what the library itself sent."""
+        refused = self.step(op, args, plan, todo)
+        if refused is None:
+            plan["touched"] += 1
+            self.engine_ops.append((op, copy.deepcopy(args)))
+        return refused
 
     def held(self, plan: dict, todo: dict) -> int | None:
         """`table.rs` admit: None when a ready todo may start, else the free slots it waits on."""
@@ -144,7 +189,12 @@ class FakeHost:
             for todo in plan["todos"]
             if todo["state"] == "pending" and set(todo.get("after", [])) <= cleared
         ]
-        return {"ok": True, "revision": plan["touched"], "text": "", "plan": plan, "notices": notices or []}
+        by = {todo["label"]: todo for todo in plan["todos"]}
+        queue = [label for label in plan["ready"] if by[label].get("delegation")]
+        running = sum(1 for todo in plan["todos"] if todo["state"] == "running" and todo.get("delegation"))
+        held = [] if self.slots is None else queue[max(self.slots - running, 0) :]
+        said = [text for (at, label, attempt), text in self.refused.items() if at == plan["plan"] and label in queue and by[label]["attempt"] == attempt]
+        return {"ok": True, "revision": plan["touched"], "text": "", "plan": plan, "held": held, "notices": said if notices is None else notices}
 
     def apply(self, op: str, args: dict, plan_id: str | None, expected: int | None) -> dict:
         if op == "init":
@@ -194,6 +244,8 @@ class FakeHost:
             ready = self.view(plan)["plan"]["ready"]
             if todo["label"] not in ready:
                 return refusal("illegal_step", f"start is illegal for {todo['label']}")
+            if todo["label"] in self.unstartable:
+                return refusal("contract", self.unstartable[todo["label"]])
             free = self.held(plan, todo)
             if free is not None:
                 return refusal("admission", f"{todo['label']} waits for a slot; {free} free")

@@ -285,6 +285,7 @@ fn answer(engine: &PlanEngine, actor: &Actor, payload: Payload) -> Map<String, V
                 super::plan_json(&outcome.plan).unwrap_or(Value::Null),
             );
             reply.insert("notices".to_owned(), json!(outcome.notices));
+            reply.insert("held".to_owned(), json!(outcome.held));
             reply
         }
         Err(error) => {

@@ -104,8 +104,10 @@ async def review_pod(plan: Plan, run: Run) -> None:
     """
     readers, arbiter = _geometry(plan)
     # The declared arbiter is the issue's template: held, or the engine starts it without findings.
+    # It waits on a reader, not on the user: a user block would ask the owner a question nobody posed.
     if arbiter._doc["state"] == "pending":
-        await arbiter.block("user", f"the pod issues it as {arbiter.key}-r2 with the findings")
+        reader = readers[0]
+        await arbiter.block({"child": reader.child or reader.key}, f"the pod issues it as {arbiter.key}-r2 with the findings")
     await _schedule(plan, run, {todo.label for todo in readers}, restart=True)
     if run.over:
         return

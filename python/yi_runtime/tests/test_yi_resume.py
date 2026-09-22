@@ -19,7 +19,7 @@ class Resume(unittest.IsolatedAsyncioTestCase):
 
         # The kernel died: no scheduler, no handles, and the host cannot show the child alive.
         yi.plan._RUNS.clear()
-        host.children[f"{plan.id}/deploy"] = "failed"
+        host.children.pop(f"{plan.id}/deploy")
         host.notices = [f"{plan.id}/deploy needs reconciliation: child cannot be shown alive"]
         written = list(host.journal)
 

@@ -224,6 +224,8 @@ class Shapes(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("no tests at all", delegation["note"])
         self.assertEqual(delegation["context"], [plan[f"read-{key}"]._doc["output"] for key in BRIEFS])
         self.assertEqual(plan["arbiter"]._doc["state"], "abandoned", "the declared arbiter ran as its issue")
+        held = [args["on"] for op, args in host.journal if op == "block" and args["label"] == "arbiter"]
+        self.assertEqual(held, [{"child": plan["read-correctness"].child}], "held on a reader, never on the user")
         self.assertEqual(host.starts.count("arbiter-r2"), 1)
 
         host, plan, outcome = await self.pod({"scope": {"answer": "x" * 4000, "quotes": [quote(api, 2, "rotate(size)")]}}, "pass")
@@ -262,8 +264,8 @@ class Shapes(unittest.IsolatedAsyncioTestCase):
         await writers(plan, host, "a", "b")
         before = sum(host.requests.values())
         self.assertEqual((await plan.run(shape=fork_join, budget=30)).outcome, "verified_success")
-        shaped, direct = sum(host.requests.values()) - before, 2 * 2
-        self.assertEqual((shaped, direct), (9, 4), "fork_join: a repair, three views and a wait over two starts and two dones")
+        shaped, direct = sum(host.requests.values()) - before, 2
+        self.assertEqual((shaped, direct), (9, 2), "fork_join: a repair, seven views and a wait over a wait and a view; the engine steps both")
 
         host = FakeHost()
         plan = await Plan.create("which module rotates by size?")
@@ -279,7 +281,7 @@ class Shapes(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await plan.run(shape=scatter, budget=30)).outcome, "verified_success")
         self.assertEqual(json.loads(product(host, plan["lead"]))["answer"], ["api", "cli"])
         shaped, direct = sum(host.requests.values()) - before, len(ARCHIVE)
-        self.assertEqual((shaped, direct), (18, 2), "scatter: seven ops, four reads, a wait, two results and four fetches")
+        self.assertEqual((shaped, direct), (16, 2), "scatter: seven ops, four reads, a wait and four fetches")
 
 
 if __name__ == "__main__":
