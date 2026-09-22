@@ -28,7 +28,7 @@ def product(host: FakeHost, todo) -> str:
 
 async def writers(plan: Plan, host: FakeHost, *keys: str, state: str = "finished") -> None:
     for key in keys:
-        await plan.todo(key=key, delegate=Writer(), accept=GREEN)
+        await plan.todo(key=key, delegate=Writer(accept=GREEN))
         host.children[f"{plan.id}/{key}"] = state
 
 
@@ -55,8 +55,8 @@ class Shapes(unittest.IsolatedAsyncioTestCase):
         """Dies with the control: check after the first start, or stop at the first problem."""
         host = FakeHost()
         plan = await Plan.create("ship it")
-        await plan.todo(key="man", delegate=Writer(isolation=None), accept=GREEN)
-        await plan.todo(key="tests", after=["man"], delegate=Writer(isolation=None), accept=GREEN)
+        await plan.todo(key="man", delegate=Writer(accept=GREEN, isolation=None))
+        await plan.todo(key="tests", after=["man"], delegate=Writer(accept=GREEN, isolation=None))
 
         async def notes() -> None:
             return None
@@ -200,7 +200,7 @@ class Shapes(unittest.IsolatedAsyncioTestCase):
         """A declared pod over the archive whose readers say `said` and whose command says `verdict`."""
         host = FakeHost()
         plan = await Plan.create("review the rotate change")
-        await declare(plan, ["local://docs"], cmd("make -s check", critical=True), arbiter=Writer(isolation=None))
+        await declare(plan, ["local://docs"], cmd("make -s check", critical=True), arbiter=Writer(accept=contract(cmd("make -s check", critical=True)), isolation=None))
         host.files.update(ARCHIVE)
         for key in BRIEFS:
             child = f"{plan.id}/read-{key}"
@@ -243,7 +243,7 @@ class Shapes(unittest.IsolatedAsyncioTestCase):
         answer = contract(schema(shapes.ANSWER, critical=True))
         for key in ("one", "two"):
             await plan.todo(key=key, delegate=Reader(partition=["local://docs"], note="read it"), accept=answer)
-        await plan.todo(key="arbiter", delegate=Writer(), accept=GREEN)
+        await plan.todo(key="arbiter", delegate=Writer(accept=GREEN))
         items = host.plans[plan.id]["todos"][-1]["contract"]["items"]
         items[0]["critical"] = False
         items.append({"id": "taste", "critical": False, "weight": 1, "decider": {"judge": {}}})

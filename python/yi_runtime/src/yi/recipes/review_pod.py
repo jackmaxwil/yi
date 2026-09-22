@@ -37,7 +37,7 @@ async def declare(plan: Plan, subject: list | tuple, check: Item | Contract, arb
         for key, brief in BRIEFS.items()
     ]
     accept = check if isinstance(check, Contract) else contract(check)
-    return await plan.todo(key="arbiter", after=passes, delegate=arbiter or Writer(), accept=accept)
+    return await plan.todo(key="arbiter", after=passes, delegate=arbiter or Writer(accept=accept), accept=accept)
 
 
 def _geometry(plan: Plan) -> tuple[list[Todo], Todo]:

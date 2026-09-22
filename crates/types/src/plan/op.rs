@@ -5,7 +5,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use super::canonical::ArtifactRef;
-use super::doc::{AgentId, BlockedOn, Delegation, GoalText, Todo, TodoLabel, TodoStateName};
+use super::doc::{
+    AgentId, BlockedOn, Delegation, GoalText, Isolation, Todo, TodoLabel, TodoStateName,
+};
 use super::ledger::{AttemptId, EffectId};
 use crate::url::Url;
 
@@ -97,7 +99,22 @@ pub fn op_name(op: OpKind) -> &'static str {
     }
 }
 
+/// Invariant: a worktree todo completes only through the acceptance of a contracted candidate
+/// (plan section 6.6), so the uncontracted shape is refused where it is declared.
+pub const UNCONTRACTED_WORKTREE: &str = "a worktree delegation needs a `contract`, which its \
+                                         candidate is accepted against (plan section 6.6); the \
+                                         delegation's `accept` is the child's brief, not a contract";
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum SpecError {
+    #[error("todo {}: {UNCONTRACTED_WORKTREE}", label.as_str())]
+    UncontractedWorktree { label: TodoLabel },
+}
+
+/// A declaration: every op that adds a todo carries one, and the parse refuses the shape no op
+/// could complete. A stored [`Todo`] is read as it was written and stays permissive.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(try_from = "TodoSpecRepr")]
 pub struct TodoSpec {
     pub label: TodoLabel,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -108,6 +125,41 @@ pub struct TodoSpec {
     pub contract: Option<super::contract::Contract>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub children: Vec<Todo>,
+}
+
+/// The fields of a [`TodoSpec`] before the declaration rule is applied.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct TodoSpecRepr {
+    pub label: TodoLabel,
+    #[serde(default)]
+    pub after: Vec<TodoLabel>,
+    #[serde(default)]
+    pub delegation: Option<Delegation>,
+    #[serde(default)]
+    pub contract: Option<super::contract::Contract>,
+    #[serde(default)]
+    pub children: Vec<Todo>,
+}
+
+impl TryFrom<TodoSpecRepr> for TodoSpec {
+    type Error = SpecError;
+
+    fn try_from(repr: TodoSpecRepr) -> Result<Self, Self::Error> {
+        let worktree = repr
+            .delegation
+            .as_ref()
+            .is_some_and(|delegation| delegation.spec.isolation == Some(Isolation::Worktree));
+        if worktree && repr.contract.is_none() {
+            return Err(SpecError::UncontractedWorktree { label: repr.label });
+        }
+        Ok(Self {
+            label: repr.label,
+            after: repr.after,
+            delegation: repr.delegation,
+            contract: repr.contract,
+            children: repr.children,
+        })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

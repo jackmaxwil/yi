@@ -368,7 +368,7 @@ async def declare(plan):
     freeze = await plan.todo(key="freeze", label="freeze the CLI surface", run=freeze_surface,
         accept=contract(schema({"type": "object", "required": ["flags"]}, critical=True)))
     await plan.todo(key="tests", label="write the test suite", after=[freeze],
-        delegate=Writer(isolation=None), accept=contract(cmd("true", critical=True)))
+        delegate=Writer(accept=contract(cmd("true", critical=True)), isolation=None))
 "#;
 
 impl PlanRig {
@@ -666,11 +666,11 @@ async fn both_shapes_schedule_under_the_real_admission_and_step_table() -> TestR
 /// A pod whose readers block and whose command is green, then one whose readers are clean and
 /// whose command is red, over `fixtures/plans/worktree/repo.sh`.
 const POD: &str = r#"
-from yi import Plan, Writer, cmd, review_pod
+from yi import Plan, Writer, cmd, contract, review_pod
 from yi.recipes.review_pod import declare
 for goal, check in (("review the launcher", "grep -q 'subcommands: list' rotate.sh"), ("review it again", "grep -q compress rotate.sh")):
     plan = await Plan.create(goal, request_id=goal.replace(" ", "-"))
-    await declare(plan, ["local://rotate.sh"], cmd(check, critical=True), arbiter=Writer(isolation=None))
+    await declare(plan, ["local://rotate.sh"], cmd(check, critical=True), arbiter=Writer(accept=contract(cmd(check, critical=True)), isolation=None))
     r = await plan.run(shape=review_pod, budget=20)
     print(goal, r.outcome, [(t.key, t._doc["state"]) for t in plan.todos])
     print(plan["arbiter-r2"]._doc["delegation"]["note"])

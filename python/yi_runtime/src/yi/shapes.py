@@ -116,7 +116,7 @@ async def fork_join(plan: Plan, run: Run) -> None:
         if todo.label in plan._inline:
             problems.append(f"{todo.key} is inline and writes this kernel's workspace; delegate it")
         elif not _reads_only(todo) and _delegation(todo).get("spec", {}).get("isolation") != "worktree":
-            problems.append(f"{todo.key} writes the shared workspace; use Writer(isolation='worktree') or a Reader")
+            problems.append(f"{todo.key} writes the shared workspace; use a worktree Writer or a Reader")
     if problems:
         raise Geometry("fork_join", problems)
     await _schedule(plan, run, {todo.label for todo in mine}, restart=True)
