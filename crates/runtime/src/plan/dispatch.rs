@@ -67,6 +67,11 @@ fn brief(at: &TodoAddr, delegation: &Delegation) -> String {
             at.plan,
             at.todo.as_str()
         ));
+        lines.push(format!(
+            "From a kernel cell `from yi import Plan; p = await Plan.attach({:?}); await p[{:?}].submit(product)` mints that url for you.",
+            at.plan.as_str(),
+            at.todo.as_str()
+        ));
     }
     if let Some(output) = &delegation.output {
         lines.push(format!(
@@ -762,6 +767,13 @@ mod tests {
             "{worktree}"
         );
         assert!(worktree.contains("\"gateway\""), "{worktree}");
+        // Incident: the library road the brief names is the one a child may take: #478 let a
+        // child store the product of the attempt it submits, so `submit` mints the url.
+        assert!(
+            worktree.contains("from yi import Plan; p = await Plan.attach")
+                && worktree.contains("await p[\"gateway\"].submit(product)"),
+            "{worktree}"
+        );
 
         // A child with no worktree has no product to hand over, so the line would be noise.
         for isolation in [None, Some(Isolation::None)] {

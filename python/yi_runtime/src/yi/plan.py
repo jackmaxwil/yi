@@ -135,7 +135,13 @@ async def _record(plan_id: str) -> None:
     if cell is None or plan_id in cell["plans"] or not cell["source"].strip():
         return
     ref, blob = freeze(cell["source"], SOURCE_TYPE)
-    await _send("program", {"cell_id": cell["id"], "source_ref": ref}, plan=plan_id, artifacts=[blob])
+    try:
+        await _send("program", {"cell_id": cell["id"], "source_ref": ref}, plan=plan_id, artifacts=[blob])
+    except PlanError as refusal:
+        # A child's cells are its own session's, never the plan's program: the host takes the
+        # record from the owner alone, so a submitting child records nothing and stops asking.
+        if refusal.code != "not_owner":
+            raise
     cell["plans"].add(plan_id)
 
 

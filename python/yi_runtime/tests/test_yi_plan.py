@@ -5,7 +5,7 @@ import asyncio
 import unittest
 
 import yi.plan
-from fake_host import FakeHost
+from fake_host import FakeHost, refusal
 from yi import Plan, PlanError, RunActive, Writer, cmd, contract, in_order, schema
 
 REPORT = {"type": "object", "required": ["passed"]}
@@ -47,6 +47,31 @@ class Plans(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(host.ops().count("program"), 1, "a cell that only reads records nothing")
         await plan["a"].start()
         self.assertEqual(host.ops()[-2:], ["program", "start"], "the record precedes the effect")
+
+    async def test_a_child_records_no_cell_and_still_submits_its_product(self) -> None:
+        """The submitting agent is a child by construction, so the library road must be its own."""
+
+        class ChildHost(FakeHost):
+            def plan_op(self, payload: dict) -> dict:
+                if payload["op"] == "program":
+                    return refusal("not_owner", "only the plan owner stores artifacts", "not_owner")
+                return super().plan_op(payload)
+
+        host = ChildHost()
+        plan = await Plan.create("ship the seam end to end")
+        await plan.todo(key="cut", label="cut the release")
+        await plan["cut"].start()
+
+        class Cell:
+            raw_cell = "await plan['cut'].submit({'passed': 12})\n"
+
+        yi.plan._on_cell(Cell)
+        url = await plan["cut"].submit({"passed": 12})
+        self.assertEqual(host.ops()[-1], "submit", host.ops())
+        self.assertNotIn("program", host.ops(), "a child records no cell in its parent's program")
+        self.assertTrue(url.startswith(f"plan://{plan.id}/artifacts/"), url)
+        self.assertIn('{"passed":12}', host.blobs.values())
+        self.assertEqual(host.journal[-1][1]["attempt"], 1)
 
     async def test_the_example_runs_end_to_end(self) -> None:
         host = FakeHost()

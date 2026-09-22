@@ -57,6 +57,14 @@
       "timeoutSec": 420,
       "seed": {"cfg.json": "{\"n\": 1}\n"},
       "clean": {"files": ["cfg.json"], "noRefusalsFrom": ["edit", "todo"]}
+    },
+    {
+      "id": "plan-child-submit",
+      "road": "#478 a dispatched child is told to submit and neither submit road is open to it",
+      "prompt": "Open a plan with exactly one todo, delegated to a worktree child: 'alpha' writes a file alpha.txt holding the word alpha. Start it, wait for that child to finish, then complete that todo through the plan. Report the todo's final state and the exact text of any refusal you met.",
+      "timeoutSec": 900,
+      "seed": {},
+      "clean": {"files": [], "noRefusalsFrom": []}
     }
   ]
 }

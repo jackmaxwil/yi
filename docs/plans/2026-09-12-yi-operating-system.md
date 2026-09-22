@@ -2024,7 +2024,7 @@ source_ref }`), `crates/runtime/src/plan/program.rs` (the record and the export)
 | an unknown external activity stays unresolved | `test_yi_resume::test_unknown_external_activity_remains_unresolved` (T0) |
 | a second `run` attaches or refuses | `test_yi_plan::test_duplicate_run_calls_attach_or_refuse` (T0) |
 | a verdict that judged no product leaves the attempt alone, and a child the host cannot vouch for blocks on the user | `test_yi_plan::test_a_verdict_that_judges_no_product_leaves_the_attempt_alone` (T0) |
-| only the plan owner stores artifacts | `plan_e2e::a_child_kernels_plan_op_is_refused_beyond_view` (T1, extended) |
+| only the plan owner stores artifacts, and since D222 the child submitting its own running attempt | `plan_e2e::a_child_kernels_plan_op_is_refused_beyond_view` (T1, extended); `plan_e2e::a_child_stores_the_product_of_the_attempt_it_submits` (T1) |
 | a child that asked you something is collected, never raised | `test_yi_plan::test_a_child_asking_you_something_is_collected_not_raised` (T0) |
 | an inline output gets a valid artifact id | `kernel_data_surface::an_inline_todo_completes_with_a_host_minted_artifact` (T2) |
 | every public name documents itself with a valid example | `test_yi_help::test_every_name_in_all_has_a_docstring_with_a_valid_example` (T0; sync and async alike) |
@@ -2047,7 +2047,8 @@ answered with rendered text only, so the reply now carries `plan` (the typed
 document with `ready` and `finished`), `notices`, and on a refusal the engine's own
 `kind` and a refused `done`'s `verdict`; the three-code `code` is unchanged. (2) No
 surface but a test could put a criterion into a plan's artifact store, so `plan.op`
-takes `artifacts` (`{media_type, text}`, owner only, capped in count and bytes,
+takes `artifacts` (`{media_type, text}`, the owner's, or one blob from the child
+submitting its own running attempt since D222, capped in count and bytes,
 stored under the store's own digest before the op applies); the builders and the
 source record name their blobs by sha256 computed in Python with the shared
 canonical rule, and an op citing a digest the store lacks is refused. A builder's

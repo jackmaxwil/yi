@@ -473,6 +473,92 @@ async fn a_child_may_submit_only_for_its_own_attempt() -> TestResult {
     Ok(())
 }
 
+/// Incident: `Todo.submit(artifact)` sends its product as a blob, and the artifacts rider took
+/// the owner alone, so the one agent a submit is for could not make the documented call (#478).
+#[tokio::test]
+async fn a_child_stores_the_product_of_the_attempt_it_submits() -> TestResult {
+    let dir = Scratch::new("yi-plan-op-product")?;
+    let engine = Arc::new(
+        PlanEngine::new(PlanStore::open(dir.to_path_buf())?, Arc::new(Named))
+            .with_width(std::num::NonZeroUsize::MIN.saturating_add(1)),
+    );
+    let owner = |op: yi_runtime::plan::ops::Op| yi_runtime::plan::ops::OpRequest {
+        plan: None,
+        actor: Actor::Owner,
+        op,
+        request_id: None,
+        expected_revision: None,
+    };
+    engine.apply(owner(yi_runtime::plan::ops::Op::Init {
+        goal: GoalText::new("ship the seam end to end")?,
+        todos: vec![delegated("cut")?, delegated("ship")?],
+    }))?;
+    for label in ["cut", "ship"] {
+        engine.apply(owner(yi_runtime::plan::ops::Op::Start {
+            label: TodoLabel::new(label)?,
+        }))?;
+    }
+    let id = PlanId::slug("ship the seam end to end")?;
+    let mut registry = HostRegistry::default();
+    yi_runtime::plan::request::register(
+        Arc::clone(&engine),
+        Actor::Child(yi_types::plan::doc::AgentId::new("cut")?),
+        &mut registry,
+    );
+    let product = "{\"passed\":12}";
+    let digest = yi_types::plan::canonical::Digest::of(product.as_bytes());
+    let url = format!("plan://{id}/artifacts/{}", digest.hex());
+    let blob = serde_json::json!({"media_type": "application/json", "text": product});
+    let send = |request: &str, op: &str, args: serde_json::Value, blobs: serde_json::Value| serde_json::json!({"request_id": request, "op": op, "artifacts": blobs, "args": args});
+    let submitting = |label: &str| serde_json::json!({"label": label, "attempt": 1, "output": url});
+    let own = plan_op(
+        &registry,
+        send("p1", "submit", submitting("cut"), serde_json::json!([blob])),
+    )
+    .await?;
+    assert_eq!(own["ok"], serde_json::json!(true), "{own:?}");
+    assert_eq!(
+        PlanStore::open(dir.to_path_buf())?
+            .artifacts(&id)
+            .get(&digest)?,
+        product.as_bytes(),
+        "the child's product is not in the plan store"
+    );
+    // Every other blob write a non-owner can try: another todo's attempt, a batch beside the
+    // product, and an op that is not a submit at all.
+    for (request, op, args, blobs) in [
+        (
+            "p2",
+            "submit",
+            submitting("ship"),
+            serde_json::json!([blob]),
+        ),
+        (
+            "p3",
+            "submit",
+            submitting("cut"),
+            serde_json::json!([blob, blob]),
+        ),
+        (
+            "p4",
+            "done",
+            serde_json::json!({"label": "cut", "output": url}),
+            serde_json::json!([blob]),
+        ),
+    ] {
+        let refused = plan_op(&registry, send(request, op, args, blobs)).await?;
+        assert_eq!(refused["ok"], serde_json::json!(false), "{refused:?}");
+        assert_eq!(refused["refusal"]["code"], serde_json::json!("not_owner"));
+        assert!(
+            refused["refusal"]["message"]
+                .as_str()
+                .is_some_and(|text| text.starts_with("only the plan owner stores artifacts")),
+            "{refused:?}"
+        );
+    }
+    Ok(())
+}
+
 /// Guards `check_actor`'s child arm: let `Actor::Child` past `View` and the `done` below
 /// lands on the parent's plan.
 #[tokio::test]

@@ -145,21 +145,55 @@ fn code_of(error: &PlanToolError) -> &'static str {
     }
 }
 
+const OWNER_ONLY: &str = "only the plan owner stores artifacts";
+
+/// Invariant: a child writes one blob and only as the product of the attempt it is submitting,
+/// on a todo this plan already says it is running; the digest stays the store's.
+fn own_product(
+    engine: &PlanEngine,
+    actor: &Actor,
+    id: &PlanId,
+    op: &Op,
+    artifacts: &[(String, String)],
+) -> Result<(), String> {
+    let (Actor::Child(agent), Op::Submit { label, attempt, .. }) = (actor, op) else {
+        return Err(OWNER_ONLY.to_owned());
+    };
+    if artifacts.len() != 1 {
+        return Err(format!(
+            "{OWNER_ONLY}; a submit carries the one product it cites"
+        ));
+    }
+    let plan = engine.store().read(id).map_err(|error| error.to_string())?;
+    let running = plan.todo(label).is_some_and(|todo| {
+        todo.attempt == *attempt
+            && matches!(&todo.state, yi_types::plan::doc::TodoState::Running { by } if by == agent)
+    });
+    if !running {
+        return Err(format!(
+            "{OWNER_ONLY}; {label:?} is not running by {agent} on attempt {}",
+            attempt.get()
+        ));
+    }
+    Ok(())
+}
+
 /// Invariant: only the owner writes blobs, into a plan that already exists, and the store names
 /// each by its own digest: an op that cites a digest the bytes do not have finds nothing.
 fn store_artifacts(
     engine: &PlanEngine,
     actor: &Actor,
     plan: Option<PlanId>,
+    op: &Op,
     artifacts: &[(String, String)],
 ) -> Result<(), String> {
     if artifacts.is_empty() {
         return Ok(());
     }
-    if *actor != Actor::Owner {
-        return Err("only the plan owner stores artifacts".to_owned());
-    }
     let id = engine.resolve(plan).map_err(|error| error.to_string())?;
+    if *actor != Actor::Owner {
+        own_product(engine, actor, &id, op, artifacts)?;
+    }
     let store = engine.store();
     for (media_type, text) in artifacts {
         store
@@ -224,10 +258,17 @@ fn answer(engine: &PlanEngine, actor: &Actor, payload: Payload) -> Map<String, V
     if guarded(&request.op) {
         request.expected_revision = expected_revision.map(TouchCount);
     }
-    if let Err(message) = store_artifacts(engine, actor, plan.clone(), &artifacts) {
-        return refusal(&request_id, None, "bad_args", message);
-    }
     let op = request.op.clone();
+    if let Err(message) = store_artifacts(engine, actor, plan.clone(), &op, &artifacts) {
+        // The rider refuses the principal, not the arguments, so a caller that may not write
+        // blobs reads the same code the step table gives it and can stop asking.
+        let code = if message.starts_with(OWNER_ONLY) {
+            "not_owner"
+        } else {
+            "bad_args"
+        };
+        return refusal(&request_id, None, code, message);
+    }
     match engine.apply(request) {
         Ok(outcome) => {
             let mut reply = Map::new();

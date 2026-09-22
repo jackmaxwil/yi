@@ -90,6 +90,11 @@ pub fn call_template(tool: &str, schema: &Value, arguments: &Map<String, Value>)
             shape.insert(key.clone(), value);
         }
     }
+    // Incident: the plan schema names no `attempt`, so a submit template printed without it and
+    // the parser refused the very call the surface had just shown (#478).
+    for (key, value) in arguments {
+        shape.entry(key.clone()).or_insert_with(|| value.clone());
+    }
     let rendered = serde_json::to_string(&Value::Object(shape)).unwrap_or_else(|_| "{}".to_owned());
     format!("{NEXT}call {tool} as {rendered}")
 }
