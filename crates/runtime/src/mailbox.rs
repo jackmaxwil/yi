@@ -442,7 +442,7 @@ impl SubagentHost {
 
     // Incident: nine of twelve F0e "text, not JSON" refusals were a valid object inside a
     // fenced block, so one fence line and any trailer are framing, not the answer (#475).
-    fn json_answer(text: &str) -> Option<Value> {
+    pub(crate) fn json_answer(text: &str) -> Option<Value> {
         let body = text.trim();
         let body = match body.strip_prefix("```") {
             Some(rest) => rest
