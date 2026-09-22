@@ -281,3 +281,37 @@ fn a_page_the_host_cannot_honour_is_refused_not_clamped() -> TestResult {
     }
     Ok(())
 }
+
+/// Dies with the read tool's `offset` and `limit` dropped for a url: a `history://` read
+/// through `read` returns the whole listing whatever window the model asked for.
+#[test]
+fn a_url_read_through_the_read_tool_keeps_its_window() -> Result<(), Box<dyn Error>> {
+    let (workspace, resolver, _store) = paged_workspace()?;
+    let window = read(&resolver, "history://main", 1, 1)?;
+    let mut tools: Vec<Arc<dyn yi_tools::Tool>> = yi_tools::builtin_tools()
+        .into_iter()
+        .filter(|tool| tool.name() == "read")
+        .collect();
+    yi_runtime::fetch::route_urls(&mut tools, &Arc::new(resolver));
+    let tool = tools.first().ok_or("no read tool")?;
+    let mut input = serde_json::Map::new();
+    input.insert("path".to_owned(), "history://main".into());
+    input.insert("offset".to_owned(), 2.into());
+    input.insert("limit".to_owned(), 1.into());
+    let output = tool.execute(input, &yi_tools::ToolContext::new(workspace.to_path_buf()));
+    let text: String = output
+        .result
+        .content
+        .iter()
+        .filter_map(|content| match content {
+            yi_types::message::Content::Text { text, .. } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect();
+    let next = window.1.ok_or("the listing has more than one entry")?;
+    assert_eq!(
+        text,
+        format!("{}\n[more from offset {}]", window.0, next + 1)
+    );
+    Ok(())
+}

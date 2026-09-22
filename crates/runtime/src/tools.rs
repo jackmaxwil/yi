@@ -20,6 +20,7 @@ pub struct ToolAdapter {
     rules: Option<Arc<crate::rules::RuleEngine>>,
     wall: crate::wall::Wall,
     ext: Option<crate::session::ExtHook>,
+    check: Option<Arc<crate::plan::covers::WriteCheck>>,
     rejections: std::sync::Mutex<std::collections::BTreeMap<String, u32>>,
 }
 
@@ -119,6 +120,7 @@ impl ToolAdapter {
             rules: None,
             wall: crate::wall::Wall::default(),
             ext: None,
+            check: None,
             rejections: std::sync::Mutex::new(std::collections::BTreeMap::new()),
         }
     }
@@ -136,6 +138,11 @@ impl ToolAdapter {
 
     pub fn with_wall(mut self, wall: crate::wall::Wall) -> Self {
         self.wall = wall;
+        self
+    }
+
+    pub fn with_check(mut self, check: Option<Arc<crate::plan::covers::WriteCheck>>) -> Self {
+        self.check = check;
         self
     }
 
@@ -207,6 +214,7 @@ impl AgentTool for ToolAdapter {
         let rules = self.rules.clone();
         let wall = self.wall.clone();
         let ext = self.ext.clone();
+        let check = self.check.clone();
         let call_id = tool_call_id.to_owned();
         Box::pin(async move {
             if let Some(ext) = &ext {
@@ -218,8 +226,7 @@ impl AgentTool for ToolAdapter {
                         .map(|path| yi_permission::resolve_target(path, &context.cwd)),
                 });
             }
-            // User rules gate before permission: a matching eligible gate rule
-            // denies once with the rule body as evidence (D26 shape).
+            // User rules gate before permission: a matching gate rule denies with its body.
             let args_json = serde_json::to_string(&args).unwrap_or_default();
             if let Some(rules) = &rules
                 && let Some(denial) = rules.check_tool(tool.name(), &args_json)
@@ -292,6 +299,9 @@ impl AgentTool for ToolAdapter {
                 .and_then(Value::as_str)
                 .unwrap_or_default()
                 .to_owned();
+            let written = (tool.kind_for(&args) == yi_tools::ToolKind::Write)
+                .then(|| crate::permission::extract_targets(&name, &args, &context.cwd));
+            let cwd = context.cwd.clone();
             let output = tokio::task::spawn_blocking(move || tool.execute(args, &context)).await;
             match output {
                 Ok(mut output) => {
@@ -316,6 +326,12 @@ impl AgentTool for ToolAdapter {
                         crate::affordance::render(crate::affordance::shipped(), &name, &facts)
                     {
                         crate::affordance::append(&mut output.result, &line);
+                    }
+                    if let (Some(check), Some(written), false) = (check, written, output.is_error) {
+                        let verdict = tokio::task::spawn_blocking(move || check(&written, &cwd));
+                        if let Ok(Some(line)) = verdict.await {
+                            crate::affordance::append(&mut output.result, &line);
+                        }
                     }
                     let text = result_text(&output.result);
                     if let Some(rules) = &rules {

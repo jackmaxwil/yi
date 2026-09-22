@@ -107,8 +107,8 @@ fn todo_of(todo: &mut Map<String, Value>, blobs: &mut Vec<Blob>) -> Result<(), S
     if todo.get("contract").is_none_or(Value::is_null)
         && let Some(command) = worktree_command(todo)
     {
-        let item =
-            json!({"id": "accept", "critical": true, "weight": 1, "decider": {"cmd": command}});
+        let cmd = json!({"checker": command, "timeout_ms": crate::goal::DEFAULT_CHECK_TIMEOUT_MS});
+        let item = json!({"id": "accept", "critical": true, "weight": 1, "decider": {"cmd": cmd}});
         todo.insert(
             "contract".to_owned(),
             json!({"class": "writer", "items": [item]}),
@@ -179,6 +179,11 @@ impl PlanEngine {
             .todo(label)
             .filter(|_| plan.state == PlanState::Active)?;
         todo.delegation.as_ref()?;
+        if let TodoState::Running { by } = &todo.state
+            && self.liveness.alive(by) == Some(false)
+        {
+            return None;
+        }
         let intent = family.intent_for(&id, label);
         if intent.is_some_and(|(_, intent)| intent.outcome == super::state::IntentOutcome::Pending)
         {
@@ -207,7 +212,11 @@ impl PlanEngine {
             return answer;
         }
         let mut outcome = self.apply_once(request)?;
-        self.keep(&outcome, blobs)?;
+        if let Err(error) = self.keep(&outcome, blobs) {
+            outcome.notices.push(format!(
+                "the op is recorded, but a checker or note it names was not stored: {error}"
+            ));
+        }
         if dispatches {
             self.dispatch_ready(&mut outcome);
         }

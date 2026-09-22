@@ -420,7 +420,7 @@ fn protecting(
     }
 }
 
-fn run_cmd(manifest: &CheckerManifest, root: &Path, deadline: Instant) -> ItemVerdict {
+pub(super) fn run_cmd(manifest: &CheckerManifest, root: &Path, deadline: Instant) -> ItemVerdict {
     let capture = match run_check_in(
         &manifest.workdir(root),
         &manifest.command,

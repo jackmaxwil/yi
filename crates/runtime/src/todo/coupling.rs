@@ -750,6 +750,7 @@ fn prompt_hook(
         if let Ok(mut cycle) = cycle.lock() {
             cycle.prompt_claims_impossible = claims_impossible(text);
         }
+        todos.resync();
         let list = todos.list();
         let open = list.progress().open.saturating_add(list.progress().blocked) > 0;
         let mirrored = super::mirror::plan_of(&list).is_some();

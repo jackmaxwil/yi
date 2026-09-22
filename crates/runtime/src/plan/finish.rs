@@ -294,7 +294,14 @@ impl SubagentHost {
     }
 }
 
-struct Settling(Arc<SubagentHost>);
+pub(crate) struct Settling(Arc<SubagentHost>);
+
+impl Settling {
+    pub(crate) fn hold(host: &Arc<SubagentHost>) -> Self {
+        host.settling.fetch_add(1, Ordering::SeqCst);
+        Self(Arc::clone(host))
+    }
+}
 
 impl Drop for Settling {
     fn drop(&mut self) {
@@ -320,8 +327,7 @@ pub fn install(host: &Arc<SubagentHost>, engine: &Arc<PlanEngine>, deliver: Deli
             return false;
         };
         let deliver = Arc::clone(&deliver);
-        host.settling.fetch_add(1, Ordering::SeqCst);
-        let settling = Settling(Arc::clone(&host));
+        let settling = Settling::hold(&host);
         drop(runtime.spawn_blocking(move || {
             let held = (exit == ChildExit::Completed)
                 .then(|| host.held_back(&agent, held.verified))

@@ -360,6 +360,8 @@ fn wire_plan_request(
     let mut ops: Arc<dyn crate::plan::ops::OpSink> =
         Arc::new(crate::plan::ledger::SessionOpSink(session.store_handle()));
     if wiring.depth == 0 {
+        todos.set_resync(crate::todo::mirror::Mirror::resync(store.clone()));
+        todos.resync();
         ops = Arc::new(crate::todo::mirror::Mirror {
             inner: ops,
             todos: Arc::clone(&todos),

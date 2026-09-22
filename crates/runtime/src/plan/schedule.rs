@@ -5,11 +5,14 @@ use std::sync::{Mutex, PoisonError};
 
 use serde_json::Value;
 use yi_types::plan::canonical::canonical_digest;
-use yi_types::plan::doc::{Plan, PlanId, PlanState, Todo, TodoLabel};
+use yi_types::plan::doc::{Plan, PlanId, PlanState, Todo, TodoLabel, TodoState};
+use yi_types::plan::ledger::JournalRecord;
 
 use super::artifact::Artifacts;
-use super::ops::{Actor, Delta, Op, OpRequest, Outcome, PlanEngine, PlanOpError, admitted};
-use super::state::{IntentOutcome, RootState, reduce, root_of};
+use super::ops::{
+    Actor, Delta, ENGINE_AGENT, Op, OpRequest, Outcome, PlanEngine, PlanOpError, admitted,
+};
+use super::state::{IntentOutcome, KIND_DONE_REFUSED, RootState, reduce, root_of};
 use super::table::ready_labels;
 
 /// Invariant: only a contract refusal (per criteria stored) or a fuse refusal is kept.
@@ -227,6 +230,37 @@ impl PlanEngine {
                 ));
             }
         }
+        notices.extend(
+            plan.todos
+                .iter()
+                .filter_map(|todo| left_to_owner(plan, todo, &records)),
+        );
         (held, notices)
     }
+}
+
+fn left_to_owner(plan: &Plan, todo: &Todo, records: &[JournalRecord]) -> Option<String> {
+    if todo.delegation.is_none() || !matches!(todo.state, TodoState::Running { .. }) {
+        return None;
+    }
+    let last = records.iter().rev().find(|record| {
+        record.record.plan == plan.id
+            && record.record.todo.as_ref() == Some(&todo.label)
+            && record.attempt == Some(todo.attempt)
+            && record.record.actor == ENGINE_AGENT
+    })?;
+    let detail = if last.record.op == KIND_DONE_REFUSED {
+        let outcome = last
+            .verdict
+            .as_ref()
+            .and_then(|verdict| verdict.get("outcome"));
+        format!("its verdict was {}", outcome.and_then(Value::as_str)?)
+    } else {
+        let refusal = last.record.extra.get("refusal")?;
+        refusal.get("detail").and_then(Value::as_str)?.to_owned()
+    };
+    Some(format!(
+        "the engine left {:?} running: {detail}",
+        todo.label.as_str()
+    ))
 }

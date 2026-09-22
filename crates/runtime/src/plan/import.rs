@@ -6,8 +6,8 @@ use std::path::{Path, PathBuf};
 use serde_json::Value;
 use yi_types::plan::canonical::ArtifactRef;
 use yi_types::plan::doc::{
-    DocError, LEGACY_PLAN_FORMAT, NOTE_MAX_BYTES, Note, Plan, PlanId, PlanParseError, Resolution,
-    Todo, TodoState,
+    DocError, LEGACY_PLAN_FORMAT, NOTE_MAX_BYTES, Note, Plan, PlanId, PlanParseError, PlanState,
+    Resolution, Todo, TodoState,
 };
 use yi_types::url::{Scheme, Url};
 
@@ -328,6 +328,17 @@ impl PlanEngine {
         super::table::validate_plan(&read.plan)?;
         let id = read.plan.id.clone();
         let root = root_of(&id)?;
+        if read.plan.state == PlanState::Active
+            && let Some(open) = self.store.roots()?.into_iter().find(|other| {
+                *other != root
+                    && self
+                        .store
+                        .read(other)
+                        .is_ok_and(|plan| plan.state == PlanState::Active)
+            })
+        {
+            return Err(PlanOpError::PlanExists { id: open });
+        }
         let op = Op::Import {
             source: source.clone(),
         };

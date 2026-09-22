@@ -148,6 +148,7 @@ fn mirrored(dir: &Scratch) -> Result<(AgentSession, Arc<TodoStore>, PlanEngine),
         None,
     )?;
     let store = PlanStore::open(dir.to_path_buf())?;
+    todos.set_resync(Mirror::resync(store.clone()));
     let mirror = Mirror {
         inner: Arc::new(Nothing),
         todos: Arc::clone(&todos),
@@ -363,5 +364,78 @@ async fn a_plan_opened_through_the_tool_is_the_sessions_todo_list() -> TestResul
     let list = session.todos().ok_or("no todo store")?.list();
     assert!(plan_of(&list).is_some(), "{list:?}");
     assert_eq!(text::header(&list), "Todos 0/2");
+    Ok(())
+}
+
+// Dies with the resync in `apply_as`: the list keeps the finished plan's lock and every todo op
+// is refused `Mirrored` naming a plan that is done.
+#[test]
+fn a_list_whose_plan_another_engine_finished_is_released() -> TestResult {
+    let dir = Scratch::new("yi-todo-mirror-released")?;
+    let (_session, todos, _engine) = mirrored(&dir)?;
+    let cli = PlanEngine::new(PlanStore::open(dir.to_path_buf())?, Arc::new(Child));
+    cli.apply(owner(Op::Drop {
+        label: TodoLabel::new("gate")?,
+        disposition: None,
+    }))?;
+    cli.apply(owner(Op::Fail {
+        label: TodoLabel::new("delegated job")?,
+        cause: "closed from the command line".to_owned(),
+        disposition: None,
+    }))?;
+    assert!(plan_of(&todos.list()).is_some(), "no op reached the mirror");
+    todos.apply(
+        TodoOp::Init {
+            phases: vec![(PhaseName::new("Next")?, vec![TodoItem::from_text("after")?])],
+        },
+        None,
+    )?;
+    let list = todos.list();
+    assert_eq!(plan_of(&list), None);
+    assert_eq!(
+        list.items()
+            .map(|item| item.label.to_string())
+            .collect::<Vec<_>>(),
+        ["after"]
+    );
+    Ok(())
+}
+
+// Dies with an id looked up by label across the whole list: `cli > tests` takes the id of
+// `api > tests` on the next projection, and two items answer to one id.
+#[test]
+fn a_child_label_under_two_parents_keeps_two_ids() -> TestResult {
+    let dir = Scratch::new("yi-todo-mirror-children")?;
+    let (_session, todos, engine) = mirrored(&dir)?;
+    let parent = |label: &str| -> Result<TodoSpec, Box<dyn Error>> {
+        let mut parent = spec(label, false)?;
+        parent.children = vec![serde_json::from_value(
+            json!({"label": "tests", "state": "pending"}),
+        )?];
+        Ok(parent)
+    };
+    engine.apply(owner(Op::Append {
+        todos: vec![parent("api")?, parent("cli")?],
+    }))?;
+    let first = ids(&todos);
+    engine.apply(owner(Op::Start {
+        label: TodoLabel::new("gate")?,
+    }))?;
+    let again = ids(&todos);
+    let tests: Vec<&String> = again
+        .iter()
+        .filter(|(_, label, _)| label == "tests")
+        .map(|(id, _, _)| id)
+        .collect();
+    assert_eq!(tests.len(), 2);
+    assert_ne!(tests[0], tests[1], "{again:?}");
+    let ids_of = |rows: &[(String, String, TodoStateName)]| -> Vec<String> {
+        rows.iter().map(|(id, _, _)| id.clone()).collect()
+    };
+    assert_eq!(
+        ids_of(&again),
+        ids_of(&first),
+        "a projection keeps every id"
+    );
     Ok(())
 }

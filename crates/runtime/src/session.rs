@@ -535,6 +535,7 @@ impl AgentSession {
                     )
                     .with_auto_background(auto_background)
                     .with_rules(self.rules_engine())
+                    .with_check(crate::plan::covers::write_check(self.plan_service()))
                     .with_wall(self.wall())
                     .with_extensions(Some(self.ext_hook())),
                 ) as Arc<dyn yi_loop::AgentTool>
@@ -777,8 +778,7 @@ impl AgentSession {
         self.prompt_message(user_message(text))
     }
 
-    /// Starts an idle session's turn without re-wrapping the message as plain
-    /// user text.
+    /// Starts an idle session's turn without re-wrapping the message as plain user text.
     pub fn prompt_message(&self, prompt: AgentMessage) -> Result<(), SessionError> {
         self.prompt_requested(prompt, None)
     }

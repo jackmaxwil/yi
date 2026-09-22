@@ -2352,6 +2352,8 @@ mod contracts {
             };
         }
         claimed.id = PlanId::new("ship-it-clone")?;
+        // A clone whose every todo is done is a finished plan; an open one is refused beside this.
+        claimed.state = PlanState::Done;
         let clone_dir = rig.ws.join("clone/ship-it-clone");
         std::fs::create_dir_all(&clone_dir)?;
         std::fs::write(clone_dir.join("plan.json"), PlanStore::render(&claimed)?)?;
@@ -4178,6 +4180,186 @@ mod contracts {
         drop(held);
         assert_eq!(capacity.held(Purpose::Worker), 0);
         assert_eq!(capacity.held(Purpose::Verification), 0);
+        Ok(())
+    }
+
+    /// An inline todo started by the owner whose contract covers `src/*.rs` and runs `command`.
+    fn covered_rig(name: &str, command: &str) -> Result<(Rig, PlanId, PathBuf), Box<dyn Error>> {
+        let rig = rig(name, None)?;
+        let plan = planned()?;
+        let mut contract = cmd_contract(&rig.store, &plan, command, "inline")?;
+        contract.covers = vec!["src/*.rs".to_owned()];
+        init(&rig.engine, vec![contracted("alpha", contract)?])?;
+        start(&rig.engine, &plan, "alpha")?;
+        let lib = rig.ws.join("src/lib.rs");
+        std::fs::create_dir_all(rig.ws.join("src"))?;
+        Ok((rig, plan, lib))
+    }
+
+    // Dies with the check slot in tools.rs or `preview`'s debounce: no hook and the write
+    // result carries no verdict; no debounce and the unchanged save runs the checker twice.
+    #[tokio::test]
+    async fn a_covered_write_runs_the_cmd_item_and_debounces() -> TestResult {
+        let (rig, _plan, lib) =
+            covered_rig("yi-g4-debounce", "echo ran >> ../runs; test -f src/ok")?;
+        let runs = || {
+            std::fs::read_to_string(rig.ws.join("../runs")).map_or(0, |text| text.lines().count())
+        };
+        let engine = Arc::clone(&rig.engine);
+        let check: Arc<yi_runtime::plan::covers::WriteCheck> =
+            Arc::new(move |paths, cwd| engine.preview(&Actor::Owner, paths, cwd));
+        let adapter = yi_runtime::tools::ToolAdapter::new(
+            Arc::new(yi_tools::WriteTool::default()),
+            rig.ws.clone(),
+            Arc::new(|| false),
+            None,
+        )
+        .with_check(Some(check));
+        let mut args = Map::new();
+        args.insert("path".to_owned(), json!("src/lib.rs"));
+        args.insert("content".to_owned(), json!("fn a() {}\n"));
+        let signal = yi_loop::interrupt::InterruptSignal::default();
+        let written = yi_loop::AgentTool::execute(&adapter, "call-1", args, &signal).await;
+        let text = serde_json::to_string(&written.result.content)?;
+        assert!(
+            text.contains("contract \\\"alpha\\\" check: fail: exit 1"),
+            "{text}"
+        );
+        assert_eq!(runs(), 1);
+        let again = rig
+            .engine
+            .preview(&Actor::Owner, std::slice::from_ref(&lib), &rig.ws);
+        assert!(again.is_some_and(|line| line.starts_with("contract \"alpha\" check: fail")));
+        assert_eq!(runs(), 1, "an unchanged save runs nothing");
+        std::fs::write(rig.ws.join("src/ok"), "")?;
+        std::fs::write(&lib, "fn b() {}\n")?;
+        let green = rig.engine.preview(&Actor::Owner, &[lib], &rig.ws);
+        assert_eq!(green.as_deref(), Some("contract \"alpha\" check: pass"));
+        assert_eq!(runs(), 2);
+        Ok(())
+    }
+
+    // Dies with `covered`'s glob filter: match every path and all three writes get a line.
+    #[test]
+    fn an_uncovered_write_gets_no_line() -> TestResult {
+        let (rig, _plan, lib) = covered_rig("yi-g4-uncovered", "exit 0")?;
+        let nested = rig.ws.join("src/deep/mod.rs");
+        let readme = rig.ws.join("README.md");
+        let outside = rig.ws.join("../src/lib.rs");
+        for path in [&lib, &nested, &readme, &outside] {
+            std::fs::create_dir_all(path.parent().ok_or("parent")?)?;
+            std::fs::write(path, "x")?;
+        }
+        for path in [nested, readme, outside] {
+            let line = rig
+                .engine
+                .preview(&Actor::Owner, std::slice::from_ref(&path), &rig.ws);
+            assert_eq!(line, None, "{}", path.display());
+        }
+        let covered = rig.engine.preview(&Actor::Owner, &[lib], &rig.ws);
+        assert_eq!(covered.as_deref(), Some("contract \"alpha\" check: pass"));
+        Ok(())
+    }
+
+    // Dies with the `Running { by }` filter in `preview`: read every running todo and the
+    // first child sees the second child's red verdict and the owner's.
+    #[test]
+    fn a_child_sees_only_its_own_todos_verdict() -> TestResult {
+        let rig = rig("yi-g4-child", None)?;
+        let plan = planned()?;
+        let covering = |command: &str| -> Result<Contract, Box<dyn Error>> {
+            let mut contract = cmd_contract(&rig.store, &plan, command, "inline")?;
+            contract.covers = vec!["*.txt".to_owned()];
+            Ok(contract)
+        };
+        let mut alpha = delegated_spec("alpha")?;
+        alpha.contract = Some(covering("exit 0")?);
+        let mut beta = delegated_spec("beta")?;
+        beta.contract = Some(covering("exit 1")?);
+        init(
+            &rig.engine,
+            vec![alpha, beta, contracted("gamma", covering("exit 3")?)?],
+        )?;
+        start(&rig.engine, &plan, "gamma")?;
+        let child = |label: &str| -> Result<Actor, Box<dyn Error>> {
+            match todo_of(&rig.store, &plan, label)?.state {
+                TodoState::Running { by } => Ok(Actor::Child(by)),
+                other => Err(format!("{label} is {other:?}, not started by the engine").into()),
+            }
+        };
+        let note = rig.ws.join("note.txt");
+        std::fs::write(&note, "x")?;
+        let written = [note];
+        let alpha = rig.engine.preview(&child("alpha")?, &written, &rig.ws);
+        assert_eq!(alpha.as_deref(), Some("contract \"alpha\" check: pass"));
+        let beta = rig.engine.preview(&child("beta")?, &written, &rig.ws);
+        assert!(
+            beta.as_deref()
+                .is_some_and(|line| line.starts_with("contract \"beta\" check: fail: exit 1")),
+            "{beta:?}"
+        );
+        let owner = rig.engine.preview(&Actor::Owner, &written, &rig.ws);
+        assert!(
+            owner
+                .as_deref()
+                .is_some_and(|line| line.starts_with("contract \"gamma\" check: fail: exit 3")),
+            "{owner:?}"
+        );
+        Ok(())
+    }
+
+    // Dies with a preview that goes through `done`: the journal gains a
+    // `verification_requested` and a verdict, and the todo's refusal count moves.
+    #[test]
+    fn a_preview_writes_no_journal_record() -> TestResult {
+        let (rig, plan, lib) = covered_rig("yi-g4-journal", "exit 1")?;
+        std::fs::write(&lib, "x")?;
+        let before = kinds(&rig.store, &plan)?;
+        let line = rig.engine.preview(&Actor::Owner, &[lib], &rig.ws);
+        assert!(line.is_some_and(|line| line.contains("check: fail")));
+        assert_eq!(kinds(&rig.store, &plan)?, before);
+        assert_eq!(todo_of(&rig.store, &plan, "alpha")?.refusals, 0);
+        Ok(())
+    }
+
+    // Dies with `left` in schedule.rs: the view names nothing, and the library cannot tell a
+    // finish still in flight from one that left the todo to the owner.
+    #[test]
+    fn a_finish_the_engine_left_running_is_named_by_view() -> TestResult {
+        let rig = rig_verified("yi-g3-left", None, Verifier::new(1))?;
+        let plan = planned()?;
+        let mut alpha = delegated_spec("alpha")?;
+        alpha.contract = Some(cmd_contract(&rig.store, &plan, "sleep 5", "inline")?);
+        init(&rig.engine, vec![alpha])?;
+        let child = match todo_of(&rig.store, &plan, "alpha")?.state {
+            TodoState::Running { by } => by,
+            other => return Err(format!("alpha is {other:?}, not started").into()),
+        };
+        let view = |engine: &PlanEngine| engine.apply(at(&plan, Op::View { full: true }));
+        assert!(
+            view(&rig.engine)?.notices.is_empty(),
+            "a live child is left to nobody"
+        );
+        let product = format!(
+            "plan://{plan}/artifacts/{}",
+            Digest::of(b"the product").hex()
+        );
+        rig.serve.set(&product, Some("the product"));
+        let said = rig.engine.finish_child(
+            child.as_str(),
+            yi_types::subagent::ChildExit::Completed,
+            None,
+            Some("the product".to_owned()),
+        );
+        assert!(
+            said.as_deref()
+                .is_some_and(|line| line.contains("not accepted")),
+            "{said:?}"
+        );
+        assert_eq!(
+            view(&rig.engine)?.notices,
+            ["the engine left \"alpha\" running: its verdict was abstain"]
+        );
         Ok(())
     }
 }

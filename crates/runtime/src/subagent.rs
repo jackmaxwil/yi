@@ -771,6 +771,8 @@ impl SubagentHost {
         let Some((exit, error)) = self.respawn(child_id, exit, error) else {
             return;
         };
+        // Invariant: held from before the exit is visible, so `busy` never reads a gap.
+        let _settling = crate::plan::finish::Settling::hold(self);
         // A retired child has no record left: `retire` already published its terminal update,
         // so a second one, a notice or a bill would only echo a closed slot.
         let (mut replied, mut juror) = (None, false);
@@ -1021,13 +1023,15 @@ impl SubagentHost {
         registry.register("rlm.wait", move |payload| {
             let timeout = timeout_of(&payload);
             let kept = seen.load(std::sync::atomic::Ordering::Relaxed);
-            let cursor = payload.get("cursor").and_then(Value::as_u64);
-            let cursor = cursor.or((kept > 0).then_some(kept));
+            let given = payload.get("cursor").and_then(Value::as_u64);
+            let cursor = given.or((kept > 0).then_some(kept));
             let (host, seen) = (Arc::clone(&host), Arc::clone(&seen));
             Box::pin(async move {
                 let reply = host.wait(timeout, cursor).await;
                 let epoch = reply.get("cursor").and_then(Value::as_u64).unwrap_or(0);
-                seen.fetch_max(epoch, std::sync::atomic::Ordering::Relaxed);
+                if given.is_none() {
+                    seen.fetch_max(epoch, std::sync::atomic::Ordering::Relaxed);
+                }
                 Ok(reply)
             })
         });

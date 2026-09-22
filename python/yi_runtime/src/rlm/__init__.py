@@ -73,7 +73,9 @@ class RLMSpawnHandle:
         _check_schema(schema)
         loop = asyncio.get_running_loop()
         deadline = loop.time() + timeout
-        cursor: int | None = None
+        # Invariant: a bare wait resumes from the model's last bare wait, which may already
+        # have seen this child finish; cursor 0 reads the family as it stands now.
+        cursor = 0
         while True:
             # Float rounding can put `(now + timeout) - now` an ulp past `timeout`.
             remaining = min(timeout, deadline - loop.time())

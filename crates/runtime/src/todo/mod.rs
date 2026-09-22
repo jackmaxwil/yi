@@ -157,11 +157,14 @@ struct State {
     touched: u64,
 }
 
+pub type ResyncFn = dyn Fn(&TodoList) -> Option<TodoList> + Send + Sync;
+
 pub struct TodoStore {
     state: Mutex<State>,
     store: StoreHandle,
     actor: String,
     on_change: Mutex<Vec<ChangeHook>>,
+    resync: Mutex<Option<Arc<ResyncFn>>>,
 }
 
 pub struct Applied {
@@ -178,6 +181,7 @@ impl TodoStore {
             store,
             actor: actor.into(),
             on_change: Mutex::new(Vec::new()),
+            resync: Mutex::new(None),
         });
         this.rehydrate();
         this
@@ -186,6 +190,24 @@ impl TodoStore {
     pub fn on_change(&self, hook: ChangeHook) {
         if let Ok(mut hooks) = self.on_change.lock() {
             hooks.push(hook);
+        }
+    }
+
+    pub fn set_resync(&self, resync: Arc<ResyncFn>) {
+        if let Ok(mut slot) = self.resync.lock() {
+            *slot = Some(resync);
+        }
+    }
+
+    /// Re-reads a mirrored list's plan: another engine, or a crash before the replace, moved it.
+    pub fn resync(&self) {
+        let list = self.list();
+        if mirror::plan_of(&list).is_none() {
+            return;
+        }
+        let resync = self.resync.lock().ok().and_then(|slot| slot.clone());
+        if let Some(fresh) = resync.and_then(|resync| resync(&list)) {
+            self.replace(fresh, mirror::ENGINE_ACTOR);
         }
     }
 
@@ -228,6 +250,7 @@ impl TodoStore {
         expected_touched: Option<u64>,
         actor: &str,
     ) -> Result<Applied, TodoError> {
+        self.resync();
         let mut state = self.state.lock().map_err(|_| TodoError::Empty)?;
         if let Some(sent) = expected_touched
             && sent != state.touched

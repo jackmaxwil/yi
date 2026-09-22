@@ -974,10 +974,18 @@ fn act_import(case: &mut Case, serial: u8, slots: &[usize]) -> Result<(), TestCa
     std::fs::write(case.dir.join("ws").join(format!("{id}.md")), &document).map_err(fail)?;
     let source: Url = format!("local://{id}.md").parse().map_err(fail)?;
     let existed = case.store.list().map_err(fail)?.contains(&id);
+    let open = case.store.roots().map_err(fail)?.into_iter().any(|root| {
+        root != id
+            && case
+                .store
+                .read(&root)
+                .is_ok_and(|plan| plan.state == PlanState::Active)
+    });
     let result = case.apply(owner(None, Op::Import { source }), Bump::ReadOnly)?;
     match result {
         Ok(_) => {
             proptest::prop_assert!(!existed, "the live root {id} was imported over");
+            proptest::prop_assert!(!open, "{id} was imported active beside an open plan");
             let digest = Digest::of(document.as_bytes());
             let named = format!("artifact:{digest}");
             let genesis = case
@@ -1001,9 +1009,11 @@ fn act_import(case: &mut Case, serial: u8, slots: &[usize]) -> Result<(), TestCa
             proptest::prop_assert_eq!(blob, document.into_bytes(), "the artifact is the original");
         }
         Err(error) => {
+            let said = error.to_string();
             proptest::prop_assert!(
-                existed && error.to_string().contains("already format 2"),
-                "import of {id} (existed: {existed}) refused: {error}"
+                existed && said.contains("already format 2")
+                    || open && said.contains("already exists and is open"),
+                "import of {id} (existed: {existed}, open: {open}) refused: {error}"
             );
         }
     }

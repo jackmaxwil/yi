@@ -23,6 +23,16 @@ pub struct Mirror {
     pub store: PlanStore,
 }
 
+impl Mirror {
+    pub fn resync(store: PlanStore) -> Arc<super::ResyncFn> {
+        Arc::new(move |current| {
+            let plan = doc::PlanId::new(plan_of(current)?).ok()?;
+            let root = crate::plan::state::root_of(&plan).ok()?;
+            Some(projected(&store.read(&root).ok()?, current))
+        })
+    }
+}
+
 impl OpSink for Mirror {
     fn record(&self, record: PlanOpRecord) -> Result<(), String> {
         let root = crate::plan::state::root_of(&record.plan).map_err(|error| error.to_string())?;
@@ -43,12 +53,9 @@ fn blocked_on(on: &doc::BlockedOn) -> BlockedOn {
     }
 }
 
-fn row(todo: &Todo, plan: &Plan, current: &TodoList) -> TodoItem {
+fn row(todo: &Todo, plan: &Plan, was: Option<&TodoItem>) -> TodoItem {
     let mut item = TodoItem::pending(todo.label.clone());
-    item.id = current
-        .items()
-        .find(|seen| seen.label == todo.label)
-        .and_then(|seen| seen.id.clone());
+    item.id = was.and_then(|seen| seen.id.clone());
     item.state = TodoStateName::of(&todo.state);
     match &todo.state {
         TodoState::Blocked { on, note } => {
@@ -82,11 +89,20 @@ pub fn projected(plan: &Plan, current: &TodoList) -> TodoList {
         .todos
         .iter()
         .map(|todo| {
-            let mut item = row(todo, plan, current);
+            let was = current
+                .phases
+                .iter()
+                .flat_map(|phase| &phase.items)
+                .find(|seen| seen.label == todo.label);
+            let mut item = row(todo, plan, was);
             item.children = todo
                 .children
                 .iter()
-                .map(|child| row(child, plan, current))
+                .map(|child| {
+                    let seen = was
+                        .and_then(|was| was.children.iter().find(|seen| seen.label == child.label));
+                    row(child, plan, seen)
+                })
                 .collect();
             item
         })
