@@ -4,11 +4,25 @@ use serde_json::{Map, Value};
 use yi_tools::{Tool, ToolContext, ToolKind, ToolOutput, error_output, text_output};
 use yi_types::url::Url;
 
-use super::Resolver;
+use super::{Page, Resolver};
 
 struct UrlRead {
     inner: Arc<dyn Tool>,
     resolver: Arc<Resolver>,
+}
+
+fn page(input: &Map<String, Value>) -> Option<Page> {
+    let number = |key: &str| {
+        input
+            .get(key)
+            .and_then(Value::as_u64)
+            .and_then(|n| usize::try_from(n).ok())
+    };
+    let (offset, limit) = (number("offset"), number("limit"));
+    (offset.is_some() || limit.is_some()).then(|| Page {
+        offset: offset.unwrap_or(1).saturating_sub(1),
+        limit: limit.filter(|limit| *limit > 0).unwrap_or(usize::MAX),
+    })
 }
 
 fn address(input: &Map<String, Value>) -> Option<&str> {
@@ -49,9 +63,21 @@ impl Tool for UrlRead {
         let fetched = raw
             .parse::<Url>()
             .map_err(|error| format!("{raw}: {error}"))
-            .and_then(|url| self.resolver.fetch(&url).map_err(|error| error.to_string()));
+            .and_then(|url| {
+                let page = page(&input);
+                self.resolver
+                    .fetch_page(&url, page)
+                    .map_err(|error| error.to_string())
+            });
         match fetched {
-            Ok(fetched) => text_output(fetched.text),
+            Ok(fetched) => match fetched.next_offset {
+                Some(next) => text_output(format!(
+                    "{}\n[more from offset {}]",
+                    fetched.text,
+                    next.saturating_add(1)
+                )),
+                None => text_output(fetched.text),
+            },
             Err(message) => error_output(message),
         }
     }

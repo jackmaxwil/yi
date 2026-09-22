@@ -543,6 +543,30 @@ fn batch_signature(message: &AgentMessage) -> Option<String> {
     )
 }
 
+fn waits_only(message: &AgentMessage) -> bool {
+    let calls = extract_tool_calls(message);
+    let waits = |code: &str| {
+        code.lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty() && !line.starts_with('#'))
+            .all(|line| {
+                ["wait(", "sleep(", "result(", "print("]
+                    .iter()
+                    .any(|call| line.contains(call))
+            })
+    };
+    !calls.is_empty()
+        && calls.iter().all(|call| match call.name.as_str() {
+            "ipython" => call
+                .arguments
+                .get("code")
+                .and_then(Value::as_str)
+                .is_some_and(waits),
+            "plan" => call.arguments.get("op").and_then(Value::as_str) == Some("view"),
+            _ => false,
+        })
+}
+
 /// A third copy in six turns, the last three all repeats, is sent back once; six end the run.
 fn repeat_break() -> AgentMessage {
     AgentMessage::Custom {
@@ -793,7 +817,8 @@ pub async fn run_loop<S: StreamFn>(
             // a clean turn ends the error streak: the next error gets its own retry
             stream_retries = 0;
 
-            let waiting = config.waiting.as_ref().is_some_and(|live| live());
+            let waiting =
+                config.waiting.as_ref().is_some_and(|live| live()) && waits_only(&message);
             let repeats = match batch_signature(&message).filter(|_| !waiting) {
                 Some(batch) => {
                     if recent.len() >= REPEAT_WINDOW {

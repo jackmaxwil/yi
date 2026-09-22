@@ -58,6 +58,9 @@ pub(super) fn run(args: &Args) -> i32 {
         None => None,
     };
     let lane = session.lane();
+    let ends = args
+        .deadline
+        .and_then(|secs| std::time::Instant::now().checked_add(Duration::from_secs(secs)));
     let code = runtime.block_on(async move {
         if session
             .prompt_message(yi_runtime::session::user_input(&prompt))
@@ -66,10 +69,14 @@ pub(super) fn run(args: &Args) -> i32 {
             eprintln!("error: session busy");
             return 1;
         }
-        stream(&session, &host, json, schema.as_ref()).await
+        stream(&session, &host, json, schema.as_ref(), ends).await
     });
     release_lane(lane.as_deref());
     code
+}
+
+fn holds(working: bool, ends: Option<std::time::Instant>) -> bool {
+    working && ends.is_none_or(|at| std::time::Instant::now() < at)
 }
 
 /// Incident: the run ended with plan children live; one's finish wakes the owner, so it waits.
@@ -78,6 +85,7 @@ async fn stream(
     host: &yi_runtime::SubagentHost,
     json: bool,
     schema: Option<&yi_runtime::schema::Schema>,
+    ends: Option<std::time::Instant>,
 ) -> i32 {
     let mut events = session.subscribe();
     let (mut answer, mut exit) = (String::new(), 0);
@@ -86,7 +94,7 @@ async fn stream(
         let next = if holding {
             match tokio::time::timeout(HOLD_POLL, events.recv()).await {
                 Ok(next) => next,
-                Err(_) if host.busy() || session.status() != Status::Idle => continue,
+                Err(_) if holds(host.busy() || session.status() != Status::Idle, ends) => continue,
                 Err(_) => {
                     ended = true;
                     break;
@@ -149,4 +157,15 @@ async fn stream(
         println!();
     }
     exit
+}
+
+#[cfg(test)]
+mod tests {
+    /// Dies with the deadline unread: a finish that never settles holds `yi ask` open forever.
+    #[test]
+    fn a_hold_ends_at_the_deadline() {
+        assert!(super::holds(true, None));
+        assert!(!super::holds(true, Some(std::time::Instant::now())));
+        assert!(!super::holds(false, None));
+    }
 }

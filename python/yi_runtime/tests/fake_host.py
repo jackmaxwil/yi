@@ -52,6 +52,9 @@ class FakeHost:
         self.starts: list[str] = []
         self.refused: dict[tuple[str, str, int], str] = {}
         self.finished: set[tuple[str, str, int]] = set()
+        # Waits a todo's finish is still in flight for, and the finishes that left a todo running.
+        self.lag: dict[str, int] = {}
+        self.left: dict[tuple[str, str, int], str] = {}
         # The engine's own finish ops, apart from the journal of what the library sent.
         self.engine_ops: list[tuple[str, dict]] = []
         # Every op the library sent, refused or not.
@@ -148,6 +151,9 @@ class FakeHost:
                 ended = self.children.get(child) in ("finished", "failed")
                 if todo["state"] != "running" or not todo.get("delegation") or not ended or key in self.finished:
                     continue
+                if self.lag.get(todo["label"], 0) > 0:
+                    self.lag[todo["label"]] -= 1
+                    continue
                 self.finished.add(key)
                 if self.children[child] == "failed":
                     self.engine("fail", {"label": todo["label"], "cause": f"child {child} failed"}, plan, todo)
@@ -160,8 +166,11 @@ class FakeHost:
                 if not todo.get("submitted"):
                     self.engine("submit", {"label": todo["label"], "output": f"plan://{plan['plan']}/artifacts/{digest}"}, plan, todo)
                 refused = self.engine("done", {"label": todo["label"], "output": todo["submitted"]}, plan, todo)
-                if refused is not None and refused["refusal"]["verdict"]["outcome"] == "fail":
+                outcome = refused and refused["refusal"]["verdict"]["outcome"]
+                if outcome == "fail":
                     self.engine("fail", {"label": todo["label"], "cause": "contract refused: the verdict was fail"}, plan, todo)
+                elif outcome:
+                    self.left[key] = f'the engine left "{todo["label"]}" running: its verdict was {outcome}'
         self.dispatch()
 
     def engine(self, op: str, args: dict, plan: dict, todo: dict) -> dict | None:
@@ -194,6 +203,7 @@ class FakeHost:
         running = sum(1 for todo in plan["todos"] if todo["state"] == "running" and todo.get("delegation"))
         held = [] if self.slots is None else queue[max(self.slots - running, 0) :]
         said = [text for (at, label, attempt), text in self.refused.items() if at == plan["plan"] and label in queue and by[label]["attempt"] == attempt]
+        said += [text for (at, label, attempt), text in self.left.items() if at == plan["plan"] and by[label]["attempt"] == attempt and by[label]["state"] == "running"]
         return {"ok": True, "revision": plan["touched"], "text": "", "plan": plan, "held": held, "notices": said if notices is None else notices}
 
     def apply(self, op: str, args: dict, plan_id: str | None, expected: int | None) -> dict:
@@ -262,6 +272,8 @@ class FakeHost:
             todo["submitted"] = args["output"]
         elif op == "done":
             outcome = self.verdicts.get(todo["label"], "pass")
+            if isinstance(outcome, list):
+                outcome = outcome.pop(0) if len(outcome) > 1 else outcome[0]
             if todo.get("contract"):
                 if outcome != "pass":
                     return refusal("refused", "done refused", verdict={"outcome": outcome, "items": []})

@@ -2011,11 +2011,14 @@ async fn unparsed_call_markup_ends_the_turn_as_an_error() -> Result<(), Box<dyn 
 #[tokio::test]
 async fn a_repeated_batch_while_launched_work_is_live_is_a_wait() {
     let mut arguments = Map::new();
-    arguments.insert("word".to_owned(), json!("wait"));
+    arguments.insert(
+        "code".to_owned(),
+        json!("r = await rlm.wait(300)\nprint(r)"),
+    );
     let mut script: Vec<_> = (0..8)
         .map(|_| {
             faux_assistant_message(
-                vec![faux_tool_call("c", "echo", arguments.clone())],
+                vec![faux_tool_call("c", "ipython", arguments.clone())],
                 StopReason::ToolUse,
             )
         })
@@ -2055,5 +2058,48 @@ async fn a_repeated_batch_while_launched_work_is_live_is_a_wait() {
     assert_eq!(
         answers, 9,
         "every wait ran and the run ended on its own answer"
+    );
+}
+
+/// Dies with every batch exempt while a child is live: a parent repeating a failing call for
+/// twenty minutes beside its children is never stopped.
+#[tokio::test]
+async fn a_repeated_call_that_is_not_a_wait_is_broken_while_work_is_live() {
+    let mut arguments = Map::new();
+    arguments.insert("word".to_owned(), json!("make check"));
+    let script: Vec<_> = (0..8)
+        .map(|_| {
+            faux_assistant_message(
+                vec![faux_tool_call("c", "echo", arguments.clone())],
+                StopReason::ToolUse,
+            )
+        })
+        .collect();
+    let stream = Scripted::new(script);
+    let mut context = LoopContext {
+        system_prompt: String::new(),
+        messages: Vec::new(),
+        tools: vec![Arc::new(EchoTool)],
+    };
+    let mut config = LoopConfig::new(faux_model());
+    config.waiting = Some(Arc::new(|| true));
+    let signal = InterruptSignal::default();
+    let (_events, mut emit) = collector();
+    let collected = run_loop(
+        &mut context,
+        vec![user("go")],
+        &config,
+        &signal,
+        &mut emit,
+        &stream,
+    )
+    .await;
+    let breaks = collected
+        .iter()
+        .filter(|message| matches!(message, AgentMessage::Custom { custom_type, .. } if custom_type == yi_loop::REPEAT_BREAK_CUSTOM_TYPE))
+        .count();
+    assert_eq!(
+        breaks, 1,
+        "a repeat that is not a wait is steered as before"
     );
 }

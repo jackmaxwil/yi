@@ -57,8 +57,7 @@ impl Flight {
     }
 }
 
-/// How long a `done` waits for a lease another `done` in this process holds around its own
-/// step 1 or 5 before giving up; every other op keeps the store's refuse-at-once rule.
+/// How long a `done` waits for a lease another `done` in this process holds at step 1 or 5.
 const LEASE_WAIT: Duration = Duration::from_secs(10);
 const LEASE_POLL: Duration = Duration::from_millis(20);
 /// The grace past the verifier's own deadline before another process's claim counts as dead.

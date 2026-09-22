@@ -136,6 +136,7 @@ fn aggregate_never_panics_for_any_item_set() -> TestResult {
         items: vec![item("a", true, 10)?, item("b", false, 10)?],
         threshold: Permille::FULL,
         min_coverage: Permille::FULL,
+        covers: Vec::new(),
     };
     let line = |id: &str| -> Result<ItemLine, Box<dyn Error>> {
         Ok(ItemLine {
@@ -326,6 +327,7 @@ fn validate_enforces_the_floors_and_a_judge_never_stands_alone() -> TestResult {
         }],
         threshold: Permille::FULL,
         min_coverage: Permille::FULL,
+        covers: Vec::new(),
     };
     assert!(matches!(
         schema_only.validate(),
@@ -361,6 +363,7 @@ fn validate_enforces_the_floors_and_a_judge_never_stands_alone() -> TestResult {
         ],
         threshold: Permille::FULL,
         min_coverage: Permille::FULL,
+        covers: Vec::new(),
     };
     // Beside a critical behavioural item a live judge is declared; alone it meets no floor,
     // whatever class asks and however critical it says it is.
@@ -398,6 +401,7 @@ fn validate_enforces_the_floors_and_a_judge_never_stands_alone() -> TestResult {
         items: vec![item("same", true, 1)?, item("same", false, 1)?],
         threshold: Permille::FULL,
         min_coverage: Permille::FULL,
+        covers: Vec::new(),
     };
     assert!(matches!(
         dup.validate(),
@@ -420,5 +424,28 @@ fn validate_enforces_the_floors_and_a_judge_never_stands_alone() -> TestResult {
         serde_json::to_value(fail())?,
         serde_json::json!({"fail": {"detail": "exit 1"}})
     );
+    Ok(())
+}
+
+/// G4: `covers` is new, so a contract frozen before it must digest as it did then.
+#[test]
+fn a_contract_without_covers_keeps_its_digest() -> TestResult {
+    let wire = serde_json::json!({
+        "class": "writer",
+        "items": [{"id": "suite", "critical": true, "weight": 100,
+                   "decider": {"cmd": {"checker": {"digest": Digest::of(b"x").to_string(),
+                   "media_type": "application/json", "length": 1}, "timeout_ms": 10}}}]
+    });
+    let plain: Contract = serde_json::from_value(wire.clone())?;
+    assert!(plain.covers.is_empty());
+    assert_eq!(
+        plain.digest()?.to_string(),
+        "sha256:b77f682f47c6fa45260882b688c04249c9bb170d2b7796ecf4923513ea39792a"
+    );
+    let mut covered = wire;
+    covered["covers"] = serde_json::json!(["src/*.rs"]);
+    let covered: Contract = serde_json::from_value(covered)?;
+    assert_eq!(covered.covers, ["src/*.rs"]);
+    assert_ne!(covered.digest()?, plain.digest()?);
     Ok(())
 }

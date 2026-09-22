@@ -5,6 +5,7 @@ PYTHONPATH=python/yi_runtime/src python3 -m unittest discover -q -s python/yi_ru
 """
 from __future__ import annotations
 
+import asyncio
 import pathlib
 import unittest
 from unittest import mock
@@ -38,7 +39,28 @@ class HandleTests(unittest.IsolatedAsyncioTestCase):
         ):
             with self.assertRaisesRegex(RuntimeError, "stuck .same bash call 6 times."):
                 await handle.result(timeout=5.0)
-        self.assertEqual(calls, [None, 1], "it kept its own cursor until the state turned")
+        self.assertEqual(calls, [0, 1], "it kept its own cursor until the state turned")
+
+    async def test_a_fresh_waiter_on_a_finished_child_answers_at_once(self) -> None:
+        """Dies with the control: start the wait with no cursor and the host resumes it from the
+        model's last bare wait, which already saw the child finish, so it blocks to its timeout."""
+        handle = rlm.RLMSpawnHandle(
+            rlm_child_id="sub-1", name="n", session_dir=pathlib.Path("/tmp"), model="faux/faux-1"
+        )
+        seen_by_the_model = 3
+
+        async def host_wait(timeout: float, cursor: int | None = None) -> dict:
+            since = seen_by_the_model if cursor is None else cursor
+            if since >= seen_by_the_model:
+                await asyncio.sleep(timeout)
+            return {"cursor": 3, "changed": [], "states": {"n": "finished"}, "notes": {}}
+
+        async def collected(*args, **kwargs) -> dict:
+            return {"text": "done"}
+
+        with mock.patch.object(rlm, "wait", host_wait), mock.patch.object(rlm, "result", collected):
+            answer = await asyncio.wait_for(handle.result(timeout=5.0), timeout=1.0)
+        self.assertEqual(answer, {"text": "done"})
 
 
 if __name__ == "__main__":

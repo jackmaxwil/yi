@@ -102,8 +102,20 @@ class Shapes(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((run.outcome, run.refusals["red"].kind), ("failed", "retries_exhausted"))
         self.assertEqual(plan["red"]._doc["attempt"], 5, "no retry past the refusal")
 
+    async def test_a_finish_still_in_flight_is_waited_on_and_its_refusal_retried(self) -> None:
+        """Dies with the control: collect a finished child the engine has not stepped once another
+        child's end wakes the wait, and `a`'s red verdict lands after it, so it is never retried."""
+        host = FakeHost()
+        plan = await Plan.create("ship it")
+        await writers(plan, host, "a", "b")
+        host.verdicts["a"] = ["fail", "pass"]
+        host.lag["a"] = 3
+        run = await plan.run(shape=fork_join, budget=30)
+        self.assertEqual(run.outcome, "verified_success", await run.status())
+        self.assertEqual(host.starts.count("a"), 2, "the red verdict is retried once the engine lands it")
+
     async def test_the_scheduler_and_the_model_wait_without_stealing_updates(self) -> None:
-        """Dies with the control: wait without the run's own cursor and its waits all start at None."""
+        """Dies with the control: wait without the run's own cursor and its waits are all bare."""
         host = FakeHost()
         plan = await Plan.create("ship it")
         await writers(plan, host, "a", "b", state="running")
@@ -116,10 +128,11 @@ class Shapes(unittest.IsolatedAsyncioTestCase):
         host.children[f"{plan.id}/b"] = "finished"
         await run
         self.assertEqual(run.outcome, "verified_success")
-        cursors = [cursor for cursor, _ in host.waits if cursor != 0]
-        self.assertEqual(cursors[0], None)
-        self.assertEqual(cursors[1:], sorted(cursors[1:]), "the scheduler resumes from its own last reply")
-        self.assertGreater(cursors[-1], 0)
+        cursors = [cursor for cursor, _ in host.waits]
+        self.assertEqual(cursors[0], 0, "the scheduler's first wait reads the family as it stands")
+        later = [cursor for cursor in cursors[1:] if cursor != 0]
+        self.assertEqual(later, sorted(later), "the scheduler resumes from its own last reply")
+        self.assertGreater(later[-1], 0)
         self.assertEqual(mine["cursor"], len(host.changes) - 1, "and the model's cursor is its own")
 
     async def test_scatter_drops_an_unverifiable_quote_before_the_lead_sees_it(self) -> None:

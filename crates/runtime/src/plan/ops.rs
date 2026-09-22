@@ -30,7 +30,7 @@ use super::verify::Verifier;
 use yi_types::plan::op::Reaped;
 
 pub(super) const OWNER_AGENT: &str = "main";
-const ENGINE_AGENT: &str = "engine";
+pub(super) const ENGINE_AGENT: &str = "engine";
 
 const CHILD_SUFFIX_MAX: u32 = 9_999;
 
@@ -445,6 +445,7 @@ pub struct PlanEngine {
     /// The pool's slots split between workers and verification (plan section 7.6).
     pub(super) capacity: Arc<super::capacity::Capacity>,
     pub(super) refused: super::schedule::Refused,
+    pub(super) previewed: super::covers::Previewed,
 }
 
 impl PlanEngine {
@@ -466,6 +467,7 @@ impl PlanEngine {
             lane_home: None,
             capacity: super::capacity::Capacity::for_slots(crate::lane::DEFAULT_SLOTS),
             refused: super::schedule::Refused::default(),
+            previewed: super::covers::Previewed::default(),
         }
     }
 

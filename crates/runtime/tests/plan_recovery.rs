@@ -451,6 +451,23 @@ fn a_checkpoint_without_its_journal_is_named_and_adopted_by_import() -> TestResu
     let unnamed = rig.engine.apply(owner(Op::View { full: false }))?;
     assert_eq!(unnamed.plan.id, opened.plan.id);
     let source: Url = format!("local://{}", rig.store.path(&rig.id).display()).parse()?;
+    let beside = rig.engine.apply(owner(Op::Import {
+        source: source.clone(),
+    }));
+    assert!(
+        matches!(&beside, Err(PlanOpError::PlanExists { id }) if *id == opened.plan.id),
+        "an active adoption beside the open plan is refused naming it: {beside:?}"
+    );
+    rig.engine.apply(OpRequest {
+        plan: Some(opened.plan.id.clone()),
+        actor: Actor::Owner,
+        op: Op::Drop {
+            label: TodoLabel::new("again")?,
+            disposition: None,
+        },
+        request_id: None,
+        expected_revision: None,
+    })?;
     let adopted = rig.engine.apply(owner(Op::Import { source }))?;
     assert_eq!(adopted.plan.id, rig.id);
     let plan = rig.store.read(&rig.id)?;

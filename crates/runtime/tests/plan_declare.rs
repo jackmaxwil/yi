@@ -323,3 +323,92 @@ fn an_op_waits_out_a_short_lease_hold() -> TestResult {
     release.join().map_err(|_| "release panicked")?;
     Ok(())
 }
+
+/// Dies with the accept item left at the manifest default: `cargo test` taking ninety seconds
+/// abstains on every finish while the brief promises its exit 0.
+#[test]
+fn an_accept_command_keeps_the_check_timeout() -> TestResult {
+    let rig = rig("accept-timeout")?;
+    let plan = opened(
+        &rig,
+        json!([{"label": "beta", "delegate": {"isolation": "worktree", "spec": {}},
+                "accept": {"command": "cargo test"}}]),
+    )?;
+    let contract = todo_of(&plan, "beta")?
+        .contract
+        .clone()
+        .ok_or("no contract")?;
+    let Some(Decider::Cmd {
+        checker,
+        timeout_ms,
+    }) = contract.items.first().map(|item| &item.decider)
+    else {
+        return Err("not a cmd item".into());
+    };
+    assert_eq!(*timeout_ms, 600_000);
+    let manifest = CheckerManifest::parse(&rig.store.artifacts(&plan.id).get(&checker.digest)?)?;
+    assert_eq!(manifest.timeout_ms, 600_000);
+    Ok(())
+}
+
+struct Gone;
+
+impl yi_runtime::plan::recovery::Liveness for Gone {
+    fn alive(&self, _agent: &AgentId) -> Option<bool> {
+        Some(false)
+    }
+}
+
+/// Dies with the standing answered for a child the host no longer holds: its finish never
+/// comes, and the owner's own step is swallowed every time.
+#[test]
+fn an_owner_step_on_a_todo_whose_child_is_gone_takes_the_normal_road() -> TestResult {
+    let rig = rig("gone")?;
+    let engine = Arc::new(
+        PlanEngine::new(rig.store.clone(), Arc::new(Stub::default())).with_liveness(Arc::new(Gone)),
+    );
+    let gone = Rig {
+        tool: PlanTool::new(Arc::clone(&engine), Actor::Owner),
+        engine,
+        ..rig
+    };
+    opened(
+        &gone,
+        json!([{"label": "alpha", "delegation": {"spec": {}, "accept": {"command": "true"}}}]),
+    )?;
+    let (_refused, text) = call(&gone, json!({"op": "done", "label": "alpha"}));
+    assert!(
+        !text.contains("the engine accepts delegated todos"),
+        "{text}"
+    );
+    Ok(())
+}
+
+/// Dies with the blob store's error returned after the commit: the op is journaled, the
+/// scheduling pass is skipped, and a retried init is refused as a plan that exists.
+#[test]
+fn a_blob_that_cannot_be_stored_leaves_the_op_recorded_and_scheduled() -> TestResult {
+    let rig = rig("blob")?;
+    let plan = opened(&rig, json!([{"label": "first"}]))?;
+    std::fs::write(
+        rig.store.plan_dir(&plan.id).join("artifacts"),
+        "not a directory",
+    )?;
+    let (refused, text) = call(
+        &rig,
+        json!({"op": "append", "todos": [{
+            "label": "second",
+            "delegation": {"spec": {}, "accept": {"command": "true"}},
+            "contract": {"class": "inline", "items": [
+                {"id": "check", "critical": true, "weight": 1, "decider": {"cmd": "true"}}
+            ]},
+        }]}),
+    );
+    assert!(!refused, "{text}");
+    assert!(text.contains("was not stored"), "{text}");
+    assert!(
+        text.contains("could not start"),
+        "the scheduling pass ran: {text}"
+    );
+    Ok(())
+}

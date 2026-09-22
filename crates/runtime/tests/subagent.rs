@@ -211,3 +211,67 @@ async fn a_child_cannot_spawn_with_a_smaller_wall_than_its_parent() -> TestResul
     assert_eq!(built[1].wall.deny_url, ["plan://", "kernel://"]);
     Ok(())
 }
+
+/// Dies with `seen` advanced by every reply: the run loop's own cursor moves the model's bare
+/// one past a child it never saw, so its next bare wait blocks to the cap on a finished child.
+#[tokio::test]
+async fn a_cursor_carrying_wait_leaves_the_bare_cursor_alone() -> TestResult {
+    use yi_kernel::client::HostHandlers;
+    let (_root, family) = family("yi-wait-cursor")?;
+    let mut registry = yi_runtime::HostRegistry::default();
+    family.host.register(&mut registry);
+    let wait = |cursor: Option<u64>| {
+        let mut payload = kwargs(&[("timeout_ms", json!(1_000))]);
+        if let Some(cursor) = cursor {
+            payload.insert("cursor".to_owned(), json!(cursor));
+        }
+        registry.dispatch("rlm.wait", payload)
+    };
+    family
+        .host
+        .spawn("work".to_owned(), kwargs(&[("name", json!("a"))]))?;
+    assert!(family.reaches("a", "finished").await);
+    let bare = wait(None).ok_or("rlm.wait")?.await?;
+    let epoch = bare["cursor"].as_u64().ok_or("cursor")?;
+    family
+        .host
+        .spawn("work".to_owned(), kwargs(&[("name", json!("b"))]))?;
+    assert!(family.reaches("b", "finished").await);
+    wait(Some(epoch)).ok_or("rlm.wait")?.await?;
+    let started = Instant::now();
+    let again = wait(None).ok_or("rlm.wait")?.await?;
+    assert!(
+        started.elapsed() < Duration::from_millis(900),
+        "b moved since the bare waiter last looked"
+    );
+    assert!(
+        again["changed"]
+            .as_array()
+            .is_some_and(|names| names.iter().any(|name| name.as_str() == Some("b"))),
+        "{again:?}"
+    );
+    Ok(())
+}
+
+/// Dies with `settling` bumped inside the finish hook: between the exit and the hook `busy`
+/// reads false, and `yi ask` ends before the finish reaches the owner.
+#[tokio::test]
+async fn a_finishing_child_keeps_the_host_busy_from_its_exit() -> TestResult {
+    let (_root, family) = family("yi-settling-gap")?;
+    let seen: std::sync::Arc<std::sync::Mutex<Vec<bool>>> = std::sync::Arc::default();
+    let (host, told) = (std::sync::Arc::downgrade(&family.host), seen.clone());
+    let hook: std::sync::Arc<yi_runtime::subagent::FinishFn> =
+        std::sync::Arc::new(move |_name, _exit, _error| {
+            if let (Some(host), Ok(mut told)) = (host.upgrade(), told.lock()) {
+                told.push(host.busy());
+            }
+            false
+        });
+    family.host.set_finished(hook);
+    family
+        .host
+        .spawn("work".to_owned(), kwargs(&[("name", json!("a"))]))?;
+    assert!(family.reaches("a", "finished").await);
+    assert_eq!(*seen.lock().map_err(|_| "poisoned")?, [true]);
+    Ok(())
+}

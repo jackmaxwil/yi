@@ -303,7 +303,7 @@ class Todo:
         if child is None:
             raise PlanError(f"todo {self.key!r} has no child; only a running delegated todo does")
         loop = asyncio.get_running_loop()
-        deadline, cursor = loop.time() + timeout, None
+        deadline, cursor = loop.time() + timeout, 0
         while (remaining := deadline - loop.time()) > 0:
             reply = await rlm.wait(timeout=min(remaining, WAIT_SECONDS), cursor=cursor)
             cursor = reply.get("cursor", cursor)
@@ -585,7 +585,8 @@ class Run:
         self._stop = asyncio.Event()
         self._cancelled = False
         self._waiting: asyncio.Task | None = None
-        self._cursor: int | None = None
+        # Cursor 0, not a bare wait: the model's own bare waits may have seen a child end already.
+        self._cursor = 0
         self._task: asyncio.Task | None = None
 
     def __await__(self):
@@ -681,12 +682,11 @@ class Run:
                 todo = self.active[label]
                 now = await todo.state()
                 if now == "running" and state in ("finished", "failed"):
-                    # Invariant: the engine steps a finished child within one round; still running
-                    # after it, the engine left it to you and told you why, so it is collected.
-                    attempt = (label, todo._doc.get("attempt"))
-                    if attempt not in self._left:
-                        self._left.add(attempt)
+                    # Invariant: a finish can outlast a wait, so only the engine's own word that
+                    # it left the todo to you collects it; a finish in flight is waited on.
+                    if not any(f'the engine left "{label}" running' in note for note in self.plan._standing):
                         continue
+                    self._left.add((label, todo._doc.get("attempt")))
                 elif now == "running":
                     # Invariant: a child the host cannot vouch for is a decision, never a
                     # silent drop; `needs_you` and an unregistered name both land here.
