@@ -1617,7 +1617,12 @@ async fn a_worktree_child_gets_its_own_checkout_and_hands_it_back() -> TestResul
             .host
             .delete("mutator")
             .err()
-            .is_some_and(|error| error.contains("merge or discard it first")),
+            // The refusal names the two calls that do it; naming only the rule cost four
+            // F0e sessions a turn apiece (#475).
+            .is_some_and(|error| {
+                error.contains("rlm.merge_worktree(\"mutator\")")
+                    && error.contains("rlm.discard_worktree(\"mutator\")")
+            }),
         "reaping a child with unmerged work must refuse, not drop the tree"
     );
     let merged = harness
