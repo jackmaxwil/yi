@@ -44,7 +44,7 @@
             "label": "Write the test suite",
             "after": ["Freeze the CLI argument surface"],
             "delegation": {
-              "spec": { "role": "coder", "effort": "med", "isolation": "worktree" },
+              "spec": { "role": "coder", "effort": "med" },
               "accept": { "command": "pytest -q tests/" },
               "context": ["plan://ship-logrotate-lite-with-a-packaged/freeze-the-cli-argument-surface"],
               "output": { "schema": "local://.yi/schemas/test_report.json" }

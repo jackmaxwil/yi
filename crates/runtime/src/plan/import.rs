@@ -325,7 +325,7 @@ impl PlanEngine {
         request: RequestId,
     ) -> Result<Outcome, PlanOpError> {
         let read = read(&self.cwd, source)?;
-        super::table::validate_plan(&read.plan)?;
+        super::table::validate_shape(&read.plan)?;
         let id = read.plan.id.clone();
         let root = root_of(&id)?;
         let op = Op::Import {

@@ -251,6 +251,27 @@ pub fn admit(plan: &Plan, label: &TodoLabel, slots: usize) -> Result<(), Refusal
 }
 
 pub(super) fn validate_plan(plan: &Plan) -> Result<(), PlanOpError> {
+    // Invariant: a worktree todo completes only through the acceptance of a contracted
+    // candidate (plan section 6.6), so the uncontracted shape is refused where it is declared.
+    if let Some(todo) = plan
+        .todos
+        .iter()
+        .find(|todo| super::acceptance::is_worktree(todo) && todo.contract.is_none())
+    {
+        return Err(PlanOpError::Contract {
+            label: todo.label.clone(),
+            detail: "a worktree delegation needs a `contract`, which its candidate is accepted \
+                     against (plan section 6.6); the delegation's `accept` is the child's brief, \
+                     not a contract"
+                .to_owned(),
+        });
+    }
+    validate_shape(plan)
+}
+
+/// The shape alone, which is what an import of a legacy document is held to: history is read
+/// as it was written, and section 6.6 binds the declarations made since.
+pub(super) fn validate_shape(plan: &Plan) -> Result<(), PlanOpError> {
     let mut issues = plan.validate();
     match issues.drain(..).next() {
         None => Ok(()),

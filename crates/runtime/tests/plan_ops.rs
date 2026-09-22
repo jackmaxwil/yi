@@ -29,12 +29,12 @@
 //! | `a_retry_opens_a_fresh_refusal_count_so_only_retry_cap_bounds_a_scheduler` | T0 | The section 6.3 cap counts the refused verdicts of one attempt, not of the todo: two refusals, a `fail` and a `retry`, then two more, leave the todo running with four journaled refusals and no `block`. `todo.refusals` is the lifetime event counter and is never what the cap reads, so `RETRY_CAP` is the only durable bound on a scheduler that retries a failed todo (D212). | The `attempt` filter in `refused_verdicts`. Drop it and the third refusal of a todo's life parks every retrying shape in the human inbox, whichever attempt it belongs to. |
 //! | `accept_records_accepted_by_user_never_verified_done` | T1 | The user's acceptance is its own op: refused to the owner, confirmed through `authority::submit` as the CLI and the console do, recorded as `accepted_by_user` with the citation as its actor, and landing `Done { AcceptedByUser }` with no `pass` verdict anywhere. | `check_actor` refusing the owner and `Actor::User` being minted only by the confirmed path. Let the owner accept and a model closes what its checker refused; write `VerifiedDone` here and the report cannot tell a checked todo from a waved-through one. |
 //! | `a_stated_only_todo_needs_an_item_or_a_user` | T0 | A todo whose only requirement is a stated acceptance is refused `done` on the owner's word; it completes once a decidable item is added and passes, or once a user accepts it. | `needs_resolution` counting a stated-only delegation. Drop it and "it works" is a contract again, the failure D77 was retired for. |
-//! | `done_on_an_uncontracted_worktree_todo_is_refused_as_unavailable` | T0 | `done` on a worktree todo with no contract is refused `AcceptanceUnavailable` and the todo stays `Running`; worktree acceptance is F0d, and no completion path frees a slot through a merge-less reap before it lands. | The worktree refusal sitting in `prepare` above the contract branch. Leave it inside `evidence` and the uncontracted todo takes the plain path, reaps the child and drops the lane with no disposition. |
+//! | `a_worktree_delegation_with_no_contract_is_refused_where_it_is_declared` | T0 | A worktree delegation carrying no contract is refused on `init`, on `append` and on the `retry` that swaps one in; the same declaration with a contract lands. A worktree todo is accepted against its contract (section 6.6), so without one it could be declared and never submitted or completed. | The worktree check in `validate_plan`. Drop it and the shape is declarable on every road and dead on all of them, which is what both dogfood owners wrote. |
 //! | `a_leftover_open_effect_does_not_hide_the_live_verification` | T0 | With an older `verification_requested` on the same todo left open under another token, two concurrent `done` calls still share one effect: the checker runs once, one refusal is charged, and the journal holds the leftover plus one live effect. | The token in `pending_verification`'s search. Match on the label alone and the oldest open effect is found first, the token filter drops it, and each call mints its own effect, runs the checker and charges a refusal. |
 //! | `a_checker_that_writes_into_the_workspace_still_passes` | T0 | A passing checker that appends to a file in its working directory lands `Done { VerifiedDone }` and the checkout is untouched: the checker runs in a materialization of the step 1 tree (`workspace_of(snapshot)`, section 6.3 step 4), never in the live checkout. | The materialization in `run_verifier`. Run the checker in the checkout and `pytest` writing a cache moves the tree step 5 re-captures, so it refuses its own pass as stale on every call. |
 //! | `a_workspace_edited_during_the_check_is_stale` | T0 | A checkout edited while the checker runs (a concurrent agent or the user) is refused `Stale` with `the workspace changed`, charging nothing: step 5 captures the workspace afresh and compares it with the token, as it does the attempt, version, digests and output. | The re-capture in step 5 (`evidence` in done.rs takes no frozen snapshot). Hand the step 1 id back in and the comparison passes by construction, so a tree that no longer exists lands `VerifiedDone`. |
 //! | `an_abstained_verification_is_rerun_not_replayed` | T0 | A verification that abstained for an infrastructure reason (a verifier deadline of 1 ms) is run again by the next `done` for the same token and passes, with no refusal charged at either point. | The `Fail \| Escalate` match on the settled verdict in `prepare` (done.rs). Replay every settled outcome and one abstention refuses a correct product forever without running the checker, and the cap never blocks it either. |
-//! | `set_cannot_complete_a_worktree_todo` | T0 | A `[x]` row for a worktree todo is refused `AcceptanceUnavailable` exactly as `done` is, and the todo stays `Running` with its child and lane; every completion of a worktree todo waits on F0d. | The worktree test in `completion_of` (state.rs), the validator `set`, `reconcile` and `accept` share with `done`. Keep it in `prepare` alone and `set` completes the todo `done` refuses, reaping nothing. |
+//! | `set_cannot_complete_a_worktree_todo` | T0 | A `[x]` row for a contracted worktree todo is refused `AcceptanceUnavailable` exactly as `done` is, and the todo stays `Running` with its child and lane; a worktree todo completes only through acceptance. | The worktree test in `completion_of` (state.rs), the validator `set`, `reconcile` and `accept` share with `done`. Keep it in `prepare` alone and `set` completes the todo `done` refuses, reaping nothing. |
 //! | `a_verbose_refusal_still_journals_under_the_record_cap` | T0 | A refusal whose six item tails would not fit the 64 KiB record once escaped still lands as `done_refused`: the journaled item details are clipped, the refusal is charged and the effect is settled. | `fitted` rehearsing the record under the cap before the commit. Commit unrehearsed and `seal` refuses the line, so the caller sees a store error, nothing is charged and the next `done` re-runs the same checker into the same wall. |
 //! | `import_marks_legacy_success_unverified` | T0 | An imported format-1 todo whose `Check::Stated` says a child called it done lands as `LegacyUnverified`, displayed as history and never as new evidence, and a later `set` asking `done` on the plan's remaining todo is refused all the same. | `Resolution` having three members. Read `LegacyUnverified` as `VerifiedDone` and one import launders a year of unchecked claims into verified work; drop the member and the history the user asked to keep is lost. Fixture: `fixtures/plans/contracts/legacy-stated-unverified.json`. |
 //!
@@ -42,8 +42,8 @@
 //! worktree todo was refused `AcceptanceUnavailable` on every completion path, and these
 //! three rows replace that refusal with the accept phase. They live in the same `contracts`
 //! module and use its helpers, so the helper column names what each turns on;
-//! `done_on_an_uncontracted_worktree_todo_is_refused_as_unavailable` and
-//! `set_cannot_complete_a_worktree_todo` stay as they are, because an uncontracted worktree
+//! `a_worktree_delegation_with_no_contract_is_refused_where_it_is_declared` and
+//! `set_cannot_complete_a_worktree_todo` stay beside them, because an uncontracted worktree
 //! todo has nothing to accept and `set` still may not author `Done`. These rows run over
 //! the `Stub` delegate and seeded records, no repository; the live acceptance rows, against
 //! `fixtures/plans/worktree/repo.sh`, are in `lanes.rs`.
@@ -3221,27 +3221,67 @@ mod contracts {
         Ok(())
     }
 
-    // Dies with the worktree refusal in `prepare` (done.rs), above the contract branch: move it
-    // back into `evidence` and an uncontracted worktree todo completes through a merge-less reap.
+    // Dies with the worktree check in `validate_plan` (table.rs): drop it and the shape is
+    // declarable on every road, and acceptance then has no contract to accept a candidate
+    // against, so the todo can never be submitted and never completed.
     #[test]
-    fn done_on_an_uncontracted_worktree_todo_is_refused_as_unavailable() -> TestResult {
-        let rig = rig("yi-f0c-worktree-plain", None)?;
-        let mut spec = delegated_spec("build it apart")?;
-        if let Some(delegation) = &mut spec.delegation {
+    fn a_worktree_delegation_with_no_contract_is_refused_where_it_is_declared() -> TestResult {
+        let rig = rig("yi-f0c-worktree-declare", None)?;
+        let plan = planned()?;
+        let mut apart = delegated_spec("build it apart")?;
+        if let Some(delegation) = &mut apart.delegation {
             delegation.spec.isolation = Some(Isolation::Worktree);
         }
-        init(&rig.engine, vec![spec])?;
-        let plan = planned()?;
-        start(&rig.engine, &plan, "build it apart")?;
-        let refused = done(&rig.engine, &plan, "build it apart", None);
+        let refused = init(&rig.engine, vec![apart.clone()]);
         assert!(
-            matches!(refused, Err(PlanOpError::AcceptanceUnavailable { .. })),
+            matches!(refused, Err(PlanOpError::Contract { .. })),
             "{refused:?}"
         );
-        assert!(matches!(
-            todo_of(&rig.store, &plan, "build it apart")?.state,
-            TodoState::Running { .. }
+        init(&rig.engine, vec![spec("hold the plan open")?])?;
+        let appended = rig.engine.apply(at(
+            &plan,
+            Op::Append {
+                todos: vec![apart.clone()],
+            },
         ));
+        assert!(
+            matches!(appended, Err(PlanOpError::Contract { .. })),
+            "{appended:?}"
+        );
+        // With a contract the same declaration lands, which is the road the refusal names.
+        apart.contract = Some(cmd_contract(&rig.store, &plan, "true", "writer")?);
+        rig.engine.apply(at(
+            &plan,
+            Op::Append {
+                todos: vec![apart.clone()],
+            },
+        ))?;
+        assert!(
+            todo_of(&rig.store, &plan, "build it apart")?
+                .contract
+                .is_some()
+        );
+        // A retry swapping a worktree delegation onto an uncontracted todo is the same shape.
+        start(&rig.engine, &plan, "hold the plan open")?;
+        rig.engine.apply(at(
+            &plan,
+            Op::Fail {
+                label: label("hold the plan open")?,
+                cause: "needs its own tree".to_owned(),
+                disposition: None,
+            },
+        ))?;
+        let retried = rig.engine.apply(at(
+            &plan,
+            Op::Retry {
+                label: label("hold the plan open")?,
+                delegation: apart.delegation.map(Box::new),
+            },
+        ));
+        assert!(
+            matches!(retried, Err(PlanOpError::Contract { .. })),
+            "{retried:?}"
+        );
         Ok(())
     }
 
@@ -3463,12 +3503,13 @@ mod contracts {
     #[test]
     fn set_cannot_complete_a_worktree_todo() -> TestResult {
         let rig = rig("yi-f0c-worktree-set", None)?;
+        let plan = planned()?;
         let mut spec = delegated_spec("build it apart")?;
         if let Some(delegation) = &mut spec.delegation {
             delegation.spec.isolation = Some(Isolation::Worktree);
         }
+        spec.contract = Some(cmd_contract(&rig.store, &plan, "true", "writer")?);
         init(&rig.engine, vec![spec.clone()])?;
-        let plan = planned()?;
         start(&rig.engine, &plan, "build it apart")?;
         let refused = rig.engine.apply(at(
             &plan,

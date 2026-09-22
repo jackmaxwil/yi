@@ -196,7 +196,7 @@ pub enum PlanOpError {
     )]
     ContractDrift { label: TodoLabel },
     #[error(
-        "done for {label:?} refused: a worktree todo completes only through the acceptance of its contracted candidate (plan section 6.6)"
+        "done for {label:?} refused: a worktree todo completes only through the acceptance of its contracted candidate (plan section 6.6); one with no `contract` takes it from a `set` row (a delegation `accept` is not a contract) and then `submit` the candidate, and `fail` or `drop` takes the disposition road"
     )]
     AcceptanceUnavailable { label: TodoLabel },
     #[error("done for {label:?} refused at phase {phase}: no {missing} record on this attempt")]
