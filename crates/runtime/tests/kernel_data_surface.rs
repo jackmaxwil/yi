@@ -129,8 +129,6 @@ impl Delegate for NoChildren {
     ) -> Result<Option<yi_types::url::Url>, String> {
         Ok(None)
     }
-
-    fn follow_up(&self, _dispatched: &[yi_types::plan::doc::TodoLabel], _held: usize) {}
 }
 
 fn service() -> Arc<KernelService> {
@@ -297,8 +295,6 @@ impl Delegate for Kids {
     ) -> Result<Option<yi_types::url::Url>, String> {
         Ok(None)
     }
-
-    fn follow_up(&self, _dispatched: &[yi_types::plan::doc::TodoLabel], _held: usize) {}
 }
 
 impl yi_runtime::plan::recovery::Liveness for Kids {
@@ -520,8 +516,6 @@ impl Delegate for Crew {
     ) -> Result<Option<yi_types::url::Url>, String> {
         Ok(None)
     }
-
-    fn follow_up(&self, _dispatched: &[yi_types::plan::doc::TodoLabel], _held: usize) {}
 }
 
 /// The real engine at width one behind `plan.op`, over a `Crew` whose children all finish

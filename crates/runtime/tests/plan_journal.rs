@@ -113,8 +113,6 @@ impl Delegate for Stub {
     fn reap(&self, _agent: &AgentId, _supplied: &[Url]) -> Result<Option<Url>, String> {
         Ok(None)
     }
-
-    fn follow_up(&self, _dispatched: &[TodoLabel], _held: usize) {}
 }
 
 fn spec(text: &str) -> Result<TodoSpec, Box<dyn Error>> {

@@ -852,8 +852,6 @@ mod accept {
             Ok(None)
         }
 
-        fn follow_up(&self, _dispatched: &[TodoLabel], _held: usize) {}
-
         fn candidate(&self, _agent: &AgentId) -> Result<Option<Held>, String> {
             let candidate = self.candidate.lock().map_err(|_| "poisoned")?.clone();
             Ok(candidate.map(|candidate| Held {
@@ -938,7 +936,7 @@ mod accept {
             note: None,
             extra: serde_json::Map::new(),
         };
-        engine.apply(OpRequest {
+        let opened = engine.apply(OpRequest {
             plan: None,
             actor: Actor::Owner,
             op: Op::Init {
@@ -962,9 +960,10 @@ mod accept {
             parent,
             pool,
         };
-        bench.owner(Op::Start {
-            label: TodoLabel::new(LABEL)?,
-        })?;
+        // The engine starts the worktree todo with the init; no owner op spawns it.
+        if opened.spawned.len() != 1 {
+            return Err(format!("the engine did not start {LABEL}: {:?}", opened.notices).into());
+        }
         Ok(bench)
     }
 

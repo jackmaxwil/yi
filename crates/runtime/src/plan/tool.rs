@@ -648,6 +648,7 @@ fn render(outcome: &Outcome, full: bool, stepped: Option<&TodoLabel>) -> String 
     for url in &outcome.spawned {
         out.push(format!("spawned {url}"));
     }
+    out.extend(outcome.notices.iter().cloned());
     for url in &outcome.reaped {
         out.push(format!("reaped {url}"));
     }
@@ -717,7 +718,7 @@ impl Tool for PlanTool {
 
 /// Invariant: the request-prefix gate prices this tool through these two
 /// items rather than a live [`PlanTool`], so what is measured is what ships.
-pub const DESCRIPTION: &str = "The plan ledger. op=set with a markdown checklist (`- [ ] todo`, `- [>] running`, `- [x] done`, two spaces nest) is the whole list in one call: send it again to change anything. The other ops step single todos, hand one to a child, or park it. A todo is a unit of decision, not of iteration. Batch ops with real work; never call it alone. This is the delegation ledger, for work handed to children with checks and edges; the todo tool is the list. A todo moves pending, running, done in order: done on a pending todo and several done at once are refused.";
+pub const DESCRIPTION: &str = "The plan ledger. op=set with a markdown checklist (`- [ ] todo`, `- [>] running`, `- [x] done`, two spaces nest) is the whole list in one call: send it again to change anything. Declare todos with contracts and delegations; the engine starts, verifies and accepts delegated ones. done closes your own todos. A todo is a unit of decision, not of iteration. Batch ops with real work; never call it alone. This is the delegation ledger, for work handed to children with checks and edges; the todo tool is the list.";
 
 /// Invariant: a flat object, because one provider rebuilds the schema from `properties` and
 /// `required` alone, so a root `oneOf` would vanish there. No live state: cached prefix.
@@ -1112,7 +1113,5 @@ mod tests {
         ) -> Result<Option<Url>, String> {
             Ok(None)
         }
-
-        fn follow_up(&self, _dispatched: &[TodoLabel], _held: usize) {}
     }
 }

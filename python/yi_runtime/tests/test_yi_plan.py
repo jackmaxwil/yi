@@ -166,7 +166,7 @@ class Plans(unittest.IsolatedAsyncioTestCase):
         host = FakeHost()
         plan = await Plan.create("ship it")
         todo = await plan.todo(key="t", delegate=Writer(accept=contract(cmd("true", critical=True))))
-        await todo.start()
+        self.assertEqual(todo._doc["state"], "running", "the engine starts it at its declaration")
         child = f"{plan.id}/t"
         host.children[child] = "needs_you"
         host.results[child] = RuntimeError(f"{child} is still running")

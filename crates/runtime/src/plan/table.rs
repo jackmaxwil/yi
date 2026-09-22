@@ -148,6 +148,10 @@ pub(super) fn check_actor(actor: &Actor, op: &Op) -> Result<(), PlanOpError> {
         Actor::User(_) => true,
         Actor::Host => matches!(kind, OpKind::Unblock | OpKind::Reconcile),
         Actor::Child(_) => matches!(kind, OpKind::View | OpKind::Submit),
+        Actor::Engine => matches!(
+            kind,
+            OpKind::Start | OpKind::Submit | OpKind::Done | OpKind::Fail
+        ),
     };
     if allowed {
         Ok(())

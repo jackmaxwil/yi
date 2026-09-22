@@ -42,7 +42,7 @@ const REAP_ENVELOPE_BYTES: usize = 8 * 1024;
 fn illegal_hint(op: OpKind, from: &TodoStateName) -> &'static str {
     match (op, from) {
         (OpKind::Done, TodoStateName::Pending) => {
-            "; start it first (with a delegation, start hands it to a child), or resend set with the row marked \"- [x]\" for a todo carrying no contract"
+            "; start it first, or resend set with the row marked \"- [x]\" for a todo carrying no contract"
         }
         _ => "",
     }
@@ -54,6 +54,7 @@ pub enum Actor {
     Child(AgentId),
     User(Url),
     Host,
+    Engine,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -346,7 +347,10 @@ pub trait Delegate: Send + Sync {
     /// `supplied` is the delegation's context, so the seam that frees the child
     /// is also the one that can say how much of it the child ever read.
     fn reap(&self, agent: &AgentId, supplied: &[Url]) -> Result<Option<Url>, String>;
-    fn follow_up(&self, dispatched: &[TodoLabel], held: usize);
+    /// Invariant: a delegate with no session behind it (the CLI) never has the engine start.
+    fn hosts(&self) -> bool {
+        true
+    }
     /// A worktree child's candidate, committed on its branch with the child quiescent, read
     /// with nothing marked on the host; `None` when the host holds no lane for it.
     fn candidate(&self, agent: &AgentId) -> Result<Option<crate::lane::settle::Held>, String> {
@@ -434,6 +438,7 @@ pub struct PlanEngine {
     pub(super) lanes: Option<crate::lane::Pool>,
     /// The pool's slots split between workers and verification (plan section 7.6).
     pub(super) capacity: Arc<super::capacity::Capacity>,
+    pub(super) refused: super::schedule::Refused,
 }
 
 impl PlanEngine {
@@ -453,6 +458,7 @@ impl PlanEngine {
             in_flight: Mutex::new(super::done::InFlight::default()),
             lanes: None,
             capacity: super::capacity::Capacity::for_slots(crate::lane::DEFAULT_SLOTS),
+            refused: super::schedule::Refused::default(),
         }
     }
 
@@ -511,6 +517,17 @@ impl PlanEngine {
     }
 
     pub fn apply(&self, request: OpRequest) -> Result<Outcome, PlanOpError> {
+        let dispatches = self.delegate.hosts()
+            && !matches!(request.op, Op::View { .. })
+            && !matches!(request.actor, Actor::Child(_));
+        let mut outcome = self.apply_once(request)?;
+        if dispatches {
+            self.dispatch_ready(&mut outcome);
+        }
+        Ok(outcome)
+    }
+
+    pub(super) fn apply_once(&self, request: OpRequest) -> Result<Outcome, PlanOpError> {
         let OpRequest {
             plan,
             actor,
@@ -1041,9 +1058,6 @@ impl PlanEngine {
             .filter(|label| !now.contains(label))
             .cloned()
             .collect();
-        if !dispatched.is_empty() || !held.is_empty() {
-            self.delegate.follow_up(&dispatched, held.len());
-        }
         Ok(Outcome {
             plan: after,
             ready,
@@ -1109,7 +1123,7 @@ impl PlanEngine {
 }
 
 /// The ready labels `admit` does not refuse at `slots`; the rest are the held list.
-fn admitted(plan: &Plan, slots: usize) -> Vec<TodoLabel> {
+pub(super) fn admitted(plan: &Plan, slots: usize) -> Vec<TodoLabel> {
     ready_labels(plan)
         .into_iter()
         .filter(|label| admit(plan, label, slots).is_ok())
@@ -1122,6 +1136,7 @@ fn actor_word(actor: &Actor) -> String {
         Actor::Child(agent) => agent.as_str().to_owned(),
         Actor::User(citation) => citation.to_string(),
         Actor::Host => "host".to_owned(),
+        Actor::Engine => "engine".to_owned(),
     }
 }
 

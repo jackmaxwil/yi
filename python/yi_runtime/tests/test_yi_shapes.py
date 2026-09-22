@@ -68,10 +68,10 @@ class Shapes(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(problems), 4, problems)
         for name in ("at least two", "man writes", "tests writes", "notes is inline"):
             self.assertTrue(any(name in problem for problem in problems), (name, problems))
-        self.assertEqual((host.starts, host.spawns), ([], 0), "refused before any start")
+        self.assertEqual((host.starts, host.spawns), (["man"], 1), "the refusal starts nothing the engine did not")
 
-    async def test_fork_join_retries_a_refused_start_and_never_reorders_the_kernel(self) -> None:
-        """Dies with the control: skip past a refused start and `c` is asked for before `b` runs."""
+    async def test_the_engine_starts_in_plan_order_as_slots_free_and_never_tries_a_held_todo(self) -> None:
+        """Dies with the control: try a held todo and the starts repeat it; skip one and `c` runs before `b`."""
         host = FakeHost()
         host.slots = 1
         plan = await Plan.create("ship it")
@@ -80,7 +80,7 @@ class Shapes(unittest.IsolatedAsyncioTestCase):
         self.assertIs(await plan.run(shape=fork_join, detach=True), run, "a module-level shape attaches to itself")
         await run
         self.assertEqual(run.outcome, "verified_success", await run.status())
-        self.assertEqual(host.starts, ["a", "b", "b", "c", "c"], "each refusal is retried, nothing behind it is tried")
+        self.assertEqual(host.starts, ["a", "b", "c"], "each starts as a slot frees, and a held one is never tried")
         self.assertEqual([args["label"] for op, args in host.journal if op == "start"], ["a", "b", "c"])
         self.assertEqual(run.refusals, {})
 
@@ -194,7 +194,7 @@ class Shapes(unittest.IsolatedAsyncioTestCase):
         problems = " | ".join(refused.exception.problems)
         for name in ("a and b share local://docs", "a declares no answer schema", "exactly one lead"):
             self.assertIn(name, problems)
-        self.assertEqual(host.starts, [])
+        self.assertEqual(host.starts, ["a", "b"], "the engine's starts at declaration; the refused shape adds none")
 
     async def pod(self, said: dict[str, dict], verdict: str) -> tuple[FakeHost, Plan, str]:
         """A declared pod over the archive whose readers say `said` and whose command says `verdict`."""
@@ -252,7 +252,7 @@ class Shapes(unittest.IsolatedAsyncioTestCase):
         problems = "; ".join(refused.exception.problems)
         for name in ("a brief of its own", "needs a critical cmd or example", "carries a judge item"):
             self.assertIn(name, problems)
-        self.assertEqual(host.starts, [])
+        self.assertEqual(host.starts, ["one", "two", "arbiter"], "the engine's starts; the refused shape adds none")
 
 
     async def test_both_shapes_do_useful_work_and_the_overhead_is_counted(self) -> None:

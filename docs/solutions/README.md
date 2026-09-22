@@ -200,5 +200,6 @@ when it changes rather than editing them by hand.
 - [D221](adr/d221.md) - the bash tool's interpreter is `bash` where `bash` resolves and the plan's...
 - [D222](adr/d222.md) - a plan-dispatched child stores the product of the attempt it submits and...
 - [D223](adr/d223.md) - a worktree delegation without a contract cannot be declared
+- [D224](adr/d224.md) - the engine starts ready delegated todos
 
 D36-D51, D72, D73 and D74 have no ADR yet; ARCHITECTURE.md is the record for those rows.

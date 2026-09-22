@@ -93,8 +93,6 @@ impl Delegate for NoChildren {
     fn reap(&self, _agent: &AgentId, _supplied: &[Url]) -> Result<Option<Url>, String> {
         Ok(None)
     }
-
-    fn follow_up(&self, _dispatched: &[TodoLabel], _held: usize) {}
 }
 
 fn fixtures() -> PathBuf {
