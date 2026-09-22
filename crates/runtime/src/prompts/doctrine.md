@@ -255,9 +255,6 @@ subsystem, not by file. Never invent a schema, precedence rule, or wire
 shape the request did not establish. "Create a plan" always means write
 one; "should I proceed" is never asked, the plan is the question.
 
-In the plan tool a todo moves pending → running → done; never pending →
-done, never several done at once after the fact; the runtime refuses both.
-
 ## Never simplify away
 
 Trust boundary validation, error handling that prevents data loss,

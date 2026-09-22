@@ -15,7 +15,7 @@ use yi_runtime::plan::ops::{Actor, Delegate, PlanEngine};
 use yi_runtime::plan::program::PROGRAM_NAME;
 use yi_runtime::plan::store::PlanStore;
 use yi_types::plan::canonical::{ArtifactRef, Digest};
-use yi_types::plan::doc::{AgentId, Delegation, PlanId, TodoAddr, TodoLabel};
+use yi_types::plan::doc::{AgentId, Delegation, PlanId, TodoAddr};
 use yi_types::url::Url;
 
 type Fallible = Result<(), Box<dyn std::error::Error>>;
@@ -32,8 +32,6 @@ impl Delegate for Counting {
     fn reap(&self, _agent: &AgentId, _supplied: &[Url]) -> Result<Option<Url>, String> {
         Ok(None)
     }
-
-    fn follow_up(&self, _dispatched: &[TodoLabel], _held: usize) {}
 }
 
 const SOURCE: &str = "import os\nos.remove('never-run')\nplan = await Plan.create('ship it')";
@@ -62,7 +60,11 @@ async fn program_records_source_before_the_first_effect() -> Fallible {
     let mut registry = HostRegistry::default();
     yi_runtime::plan::request::register(Arc::clone(&engine), Actor::Owner, &mut registry);
     let worker = json!({"spec": {"role": "writer"}, "accept": {"stated": "it works"}});
-    let todos = json!([{"label": "build", "delegation": worker}]);
+    // Held behind an inline todo, so the engine's start is an effect of a later op.
+    let todos = json!([
+        {"label": "gate"},
+        {"label": "build", "after": ["gate"], "delegation": worker},
+    ]);
     let opened = op(
         &registry,
         "r1",
@@ -125,11 +127,20 @@ async fn program_records_source_before_the_first_effect() -> Fallible {
         &registry,
         "r5",
         "start",
-        json!({"label": "build"}),
+        json!({"label": "gate"}),
         json!([]),
     )
     .await?;
     assert_eq!(started["ok"], true, "{started}");
+    let cleared = op(
+        &registry,
+        "r5b",
+        "done",
+        json!({"label": "gate"}),
+        json!([]),
+    )
+    .await?;
+    assert_eq!(cleared["ok"], true, "{cleared}");
     assert_eq!(delegate.0.load(Ordering::SeqCst), 1);
     let kinds: Vec<String> = store
         .journal(&id)

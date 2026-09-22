@@ -2,8 +2,9 @@
 
 It keeps the rules the `yi` library leans on (request ids replay, one open plan,
 edges gate `start`, a contract freezes at `start` and decides at `done`, the step
-table, the admission count, the retry cap, `wait` with a cursor) and none of the
-engine's depth; the T2 journeys in `kernel_data_surface.rs` run the real one.
+table, the admission count, the engine starting admitted delegated todos after every
+op, the retry cap, `wait` with a cursor) and none of the engine's depth; the T2
+journeys in `kernel_data_surface.rs` run the real one.
 """
 from __future__ import annotations
 
@@ -49,6 +50,7 @@ class FakeHost:
         self.slots: int | None = None
         self.retry_cap = 8
         self.starts: list[str] = []
+        self.refused: set[tuple[str, str, int]] = set()
         self.requests: collections.Counter = collections.Counter()
         self.waits: list[tuple[int | None, list[str]]] = []
         self.changes: list[tuple[str, str]] = []
@@ -100,8 +102,40 @@ class FakeHost:
         reply = self.apply(op, args, payload.get("plan"), payload.get("expected_revision"))
         if reply["ok"] and op not in ("view", "repair"):
             self.journal.append((op, copy.deepcopy(args)))
+        if reply["ok"] and op != "view":
+            self.dispatch()
+            reply["revision"] = reply["plan"]["touched"]
+        if reply["ok"] and op not in ("view", "repair"):
             self.replies[request_id] = (identity, copy.deepcopy(reply))
         return copy.deepcopy(reply)
+
+    def dispatch(self) -> None:
+        """`schedule.rs`: after an op the engine starts each ready delegated todo admission lets
+        through; a held one is never tried, and a refused one is tried once per attempt."""
+        for plan in list(self.plans.values()):
+            if plan["state"] != "active":
+                continue
+            for label in self.view(plan)["plan"]["ready"]:
+                todo = next(item for item in plan["todos"] if item["label"] == label)
+                key = (plan["plan"], label, todo["attempt"])
+                if not todo.get("delegation") or key in self.refused or self.held(plan, todo) is not None:
+                    continue
+                if self.step("start", {"label": label}, plan, todo) is None:
+                    plan["touched"] += 1
+                    self.journal.append(("start", {"label": label}))
+                else:
+                    self.refused.add(key)
+            self.view(plan)
+
+    def held(self, plan: dict, todo: dict) -> int | None:
+        """`table.rs` admit: None when a ready todo may start, else the free slots it waits on."""
+        if not todo.get("delegation") or self.slots is None:
+            return None
+        ready = self.view(plan)["plan"]["ready"]
+        by = {item["label"]: item for item in plan["todos"]}
+        queue = [label for label in ready if by[label].get("delegation")]
+        free = self.slots - sum(1 for item in plan["todos"] if item["state"] == "running" and item.get("delegation"))
+        return None if queue.index(todo["label"]) < free else max(free, 0)
 
     def view(self, plan: dict, notices: list[str] | None = None) -> dict:
         cleared = {todo["label"] for todo in plan["todos"] if todo["state"] in ("done", "abandoned")}
@@ -160,13 +194,9 @@ class FakeHost:
             ready = self.view(plan)["plan"]["ready"]
             if todo["label"] not in ready:
                 return refusal("illegal_step", f"start is illegal for {todo['label']}")
-            # `table.rs` admit: a delegated todo starts only from the first free slots of the ready list.
-            if todo.get("delegation") and self.slots is not None:
-                by = {item["label"]: item for item in plan["todos"]}
-                queue = [label for label in ready if by[label].get("delegation")]
-                free = self.slots - sum(1 for item in plan["todos"] if item["state"] == "running" and item.get("delegation"))
-                if queue.index(todo["label"]) >= free:
-                    return refusal("admission", f"{todo['label']} waits for a slot; {max(free, 0)} free")
+            free = self.held(plan, todo)
+            if free is not None:
+                return refusal("admission", f"{todo['label']} waits for a slot; {free} free")
             for item in (todo.get("contract") or {}).get("items", []):
                 for ref in next(iter(item["decider"].values())).values():
                     if isinstance(ref, dict) and ref["digest"] not in self.blobs:
@@ -195,6 +225,9 @@ class FakeHost:
             todo["state"], todo["attempt"] = "pending", todo["attempt"] + 1
         elif op == "drop":
             todo["state"] = "abandoned"
+        elif op == "add_edge":
+            waits = next(item for item in plan["todos"] if item["label"] == args["todo"])
+            waits["after"] = [*waits.get("after", []), args["after"]]
         else:
             raise AssertionError(f"the fake host has no op {op}")
         return None

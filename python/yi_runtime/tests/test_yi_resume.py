@@ -15,7 +15,7 @@ class Resume(unittest.IsolatedAsyncioTestCase):
         accept = contract(cmd("true", critical=True))
         await plan.todo(key="deploy", delegate=Writer(accept=accept))
         await plan.todo(key="announce", after=["deploy"], delegate=Writer(accept=accept))
-        await plan["deploy"].start()
+        self.assertEqual(plan["deploy"]._doc["state"], "running", "the engine started it")
 
         # The kernel died: no scheduler, no handles, and the host cannot show the child alive.
         yi.plan._RUNS.clear()

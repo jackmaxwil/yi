@@ -325,8 +325,6 @@ impl Delegate for NoChildren {
     ) -> Result<Option<yi_types::url::Url>, String> {
         Ok(None)
     }
-
-    fn follow_up(&self, _dispatched: &[TodoLabel], _held: usize) {}
 }
 
 async fn plan_op(
@@ -362,8 +360,6 @@ impl Delegate for Named {
     ) -> Result<Option<yi_types::url::Url>, String> {
         Ok(None)
     }
-
-    fn follow_up(&self, _dispatched: &[TodoLabel], _held: usize) {}
 }
 
 fn delegated(label: &str) -> Result<yi_runtime::plan::ops::TodoSpec, Box<dyn Error>> {
@@ -413,11 +409,6 @@ async fn a_child_may_submit_only_for_its_own_attempt() -> TestResult {
         goal: GoalText::new("ship the seam end to end")?,
         todos: vec![delegated("cut")?, delegated("ship")?],
     }))?;
-    for label in ["cut", "ship"] {
-        engine.apply(owner(yi_runtime::plan::ops::Op::Start {
-            label: TodoLabel::new(label)?,
-        }))?;
-    }
     let mut registry = HostRegistry::default();
     yi_runtime::plan::request::register(
         Arc::clone(&engine),
@@ -493,11 +484,6 @@ async fn a_child_stores_the_product_of_the_attempt_it_submits() -> TestResult {
         goal: GoalText::new("ship the seam end to end")?,
         todos: vec![delegated("cut")?, delegated("ship")?],
     }))?;
-    for label in ["cut", "ship"] {
-        engine.apply(owner(yi_runtime::plan::ops::Op::Start {
-            label: TodoLabel::new(label)?,
-        }))?;
-    }
     let id = PlanId::slug("ship the seam end to end")?;
     let mut registry = HostRegistry::default();
     yi_runtime::plan::request::register(

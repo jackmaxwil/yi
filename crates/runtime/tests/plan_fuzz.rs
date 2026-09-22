@@ -363,8 +363,6 @@ impl Delegate for Stub {
             Err(_) => Err("poisoned".to_owned()),
         }
     }
-
-    fn follow_up(&self, _dispatched: &[TodoLabel], _held: usize) {}
 }
 
 /// `expected` mirrors what the engine may legally have changed: touched moves
@@ -479,11 +477,28 @@ impl Case {
         Ok(total)
     }
 
+    fn engine_starts(&self) -> Result<HashMap<String, u64>, TestCaseError> {
+        let mut starts = HashMap::new();
+        for root in self.store.roots().map_err(fail)? {
+            for record in self.store.journal(&root).read().map_err(fail)?.records {
+                if record.record.actor == "engine"
+                    && record.record.op == "start"
+                    && !record.record.extra.contains_key("refusal")
+                {
+                    let count = starts.entry(record.record.plan.to_string()).or_insert(0);
+                    *count = u64::saturating_add(*count, 1);
+                }
+            }
+        }
+        Ok(starts)
+    }
+
     fn apply(
         &mut self,
         request: OpRequest,
         bump: Bump,
     ) -> Result<Result<Outcome, PlanOpError>, TestCaseError> {
+        let before = self.engine_starts()?;
         let result = self.engine.apply(request);
         if let Ok(outcome) = &result {
             self.check_outcome(outcome, !matches!(bump, Bump::ReadOnly))?;
@@ -505,6 +520,15 @@ impl Case {
             }
             if let Some(sub) = &outcome.subplan {
                 self.expected.insert(sub.to_string(), (1, 1));
+            }
+        }
+        // The engine's own starts after an op are applied ops too, one touch on their plan.
+        for (id, count) in self.engine_starts()? {
+            let started = count.saturating_sub(before.get(&id).copied().unwrap_or(0));
+            if started > 0
+                && let Some(entry) = self.expected.get_mut(&id)
+            {
+                entry.0 = entry.0.saturating_add(started);
             }
         }
         Ok(result)

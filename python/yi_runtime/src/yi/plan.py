@@ -221,7 +221,7 @@ class Todo:
         return self
 
     async def start(self) -> "Todo":
-        """Step to running; a delegated todo's child is spawned by the host.
+        """Step your own todo to running; the engine starts a delegated one itself.
 
             await todo.start()
         """
@@ -598,15 +598,20 @@ class Run:
     async def launch(self, todo: Todo) -> PlanError | None:
         """Start one todo; returns the host's refusal instead of raising it.
 
-        A refusal of kind ``admission`` means wait for a slot and try again.
+        The engine starts a delegated todo once admission lets it, so launching one
+        adopts it; a refusal of kind ``admission`` means wait for a slot and try again.
 
             refusal = await run.launch(plan["tests"])
         """
-        try:
-            await todo.start()
-        except PlanError as refusal:
-            self.refusals[todo.key] = refusal
-            return refusal
+        if todo._doc.get("delegation"):
+            if await todo.state() != "running":
+                return PlanError(f"{todo.key} waits on the dispatch width", {"code": "admission"})
+        else:
+            try:
+                await todo.start()
+            except PlanError as refusal:
+                self.refusals[todo.key] = refusal
+                return refusal
         self.active[todo.label] = todo
         inline = self.plan._inline.get(todo.label)
         if inline is not None:
@@ -741,7 +746,7 @@ class Run:
 
 
 async def in_order(plan: Plan, run: Run) -> None:
-    """The default shape: start what is ready in plan order, settle, repeat.
+    """The default shape: settle what the engine starts, start ready ``run=`` todos, repeat.
 
     The host's admission count bounds the width; a todo with neither a
     delegate nor ``run=`` is the owner's own and is left alone.
@@ -751,13 +756,16 @@ async def in_order(plan: Plan, run: Run) -> None:
     while not run.over:
         await plan.refresh()
         unresolved = {todo.label for todo in plan.unresolved}
+        for todo in plan.todos:
+            if todo.child and todo.label not in run.active and todo.label not in unresolved:
+                await run.launch(todo)
         for todo in plan.ready():
             mine = todo._doc.get("delegation") or todo.label in plan._inline
             if not mine or todo.key in run.refusals or todo.label in unresolved:
                 continue
             refusal = await run.launch(todo)
             if refusal is not None and refusal.kind == "admission":
-                del run.refusals[todo.key]
+                run.refusals.pop(todo.key, None)
                 break
         if not run.active:
             return

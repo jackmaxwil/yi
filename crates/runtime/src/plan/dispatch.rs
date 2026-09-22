@@ -343,36 +343,6 @@ impl Delegate for SessionDelegate {
         }
         Ok(harvest.produced.then_some(trace))
     }
-
-    fn follow_up(&self, dispatched: &[TodoLabel], held: usize) {
-        let mut text = String::from("plan dispatch: ");
-        if dispatched.is_empty() {
-            text.push_str("no todo became dispatchable");
-        } else {
-            // Incident: two F0e parents read "ready to start" as work the host had already
-            // started, and waited on children that did not exist (#470).
-            let labels: Vec<&str> = dispatched.iter().map(TodoLabel::as_str).collect();
-            text.push_str(&format!(
-                "admissible now: {}; you start each one (plan op start, or await plan.run(...))",
-                labels.join(", ")
-            ));
-        }
-        if held > 0 {
-            text.push_str(&format!(
-                "; {held} more ready and held behind the dispatch width"
-            ));
-        }
-        (self.deliver)(
-            AgentMessage::Custom {
-                custom_type: "plan_dispatch".to_owned(),
-                content: UserContent::Text(text),
-                display: true,
-                details: None,
-                timestamp: yi_session::now_ms(),
-            },
-            DeliveryMode::Steer,
-        );
-    }
 }
 
 #[cfg(test)]
@@ -443,7 +413,6 @@ mod tests {
         host: Arc<SubagentHost>,
         pins: Arc<FetchLog>,
         reports: Arc<Mutex<Vec<AgentMessage>>>,
-        delivered: Arc<Mutex<Vec<AgentMessage>>>,
         cwd: Scratch,
     }
 
@@ -478,16 +447,10 @@ mod tests {
             plans_dir: root.join(crate::plan::PLANS_DIR),
             family_live: Arc::new(|| 0),
         }));
-        let delivered: Arc<Mutex<Vec<AgentMessage>>> = Arc::new(Mutex::new(Vec::new()));
-        let deliver_sink = Arc::clone(&delivered);
         let pins = Arc::new(FetchLog::new());
         let delegate = Arc::new(SessionDelegate::new(
             Arc::clone(&host),
-            Arc::new(move |message, _mode| {
-                if let Ok(mut sink) = deliver_sink.lock() {
-                    sink.push(message);
-                }
-            }),
+            Arc::new(|_message, _mode| {}),
             Arc::clone(&pins),
         ));
         let engine = PlanEngine::new(PlanStore::open(root.join("plans"))?, delegate)
@@ -497,7 +460,6 @@ mod tests {
             host,
             pins,
             reports,
-            delivered,
             cwd: root,
         })
     }
@@ -577,16 +539,18 @@ mod tests {
             goal: GoalText::new("ship the widget")?,
             todos: vec![delegated("cut the seam")?],
         }))?;
-        assert_eq!(out.dispatched, vec![TodoLabel::new("cut the seam")?]);
-        let follow = texts(&rig.delivered);
-        assert!(
-            follow.iter().any(|text| text.contains("cut the seam")),
-            "the follow-up names the dispatchable slice: {follow:?}"
+        assert_eq!(
+            out.spawned.len(),
+            1,
+            "the engine starts it with no owner op"
         );
-        let out = rig.engine.apply(owner(Op::Start {
+        let refused = rig.engine.apply(owner(Op::Start {
             label: TodoLabel::new("cut the seam")?,
-        }))?;
-        assert_eq!(out.spawned.len(), 1);
+        }));
+        assert!(
+            matches!(refused, Err(PlanOpError::IllegalStep { .. })),
+            "the owner has nothing left to start: {refused:?}"
+        );
         assert!(wait_done(&rig.host).await, "child never completed");
         let out = rig.engine.apply(owner(Op::Done {
             label: TodoLabel::new("cut the seam")?,
@@ -640,9 +604,6 @@ mod tests {
             goal: GoalText::new("ship the widget")?,
             todos: vec![delegated("cut the seam")?],
         }))?;
-        rig.engine.apply(owner(Op::Start {
-            label: TodoLabel::new("cut the seam")?,
-        }))?;
         assert!(wait_done(&rig.host).await, "child never completed");
         let delegate = SessionDelegate::new(
             Arc::clone(&rig.host),
@@ -675,9 +636,6 @@ mod tests {
         rig.engine.apply(owner(Op::Init {
             goal: GoalText::new("land the patch")?,
             todos: vec![delegated("write the patch")?],
-        }))?;
-        rig.engine.apply(owner(Op::Start {
-            label: TodoLabel::new("write the patch")?,
         }))?;
         assert!(wait_done(&rig.host).await, "child never completed");
         let out = rig.engine.apply(owner(Op::Fail {
@@ -826,62 +784,6 @@ mod tests {
         Ok(())
     }
 
-    #[tokio::test]
-    async fn the_follow_up_wakes_an_idle_owner_and_names_the_held_count() -> TestResult {
-        let owner_session = faux_session(&["picking up the dispatched todo"]);
-        let deliver = owner_session.heartbeat_hook();
-        let root = Scratch::new("yi-dispatch-idle")?;
-        let (events, _keep) = tokio::sync::broadcast::channel(16);
-        let host = Arc::new(SubagentHost::new(SubagentHostOptions {
-            depth: 0,
-            max_depth: 1,
-            max_children: 8,
-            parent_session_dir: root.join("children"),
-            plans_dir: root.join(crate::plan::PLANS_DIR),
-            family_live: Arc::new(|| 0),
-            cwd: root.to_path_buf(),
-            home: std::env::temp_dir(),
-            lane_slots: 1,
-            defaults: Arc::new(|| (faux_model(), yi_types::model::Effort::Medium)),
-            factory: Arc::new(|_build| Err("no child in this test".to_owned())),
-            notice: Arc::new(|_text: &str| {}),
-            events,
-            parent_messages: Arc::new(Vec::new),
-            report: Arc::new(|_message| {}),
-            attribute: Arc::new(|_usage| {}),
-            store: Arc::new(|| None),
-        }));
-        let delegate = SessionDelegate::new(host, deliver, Arc::new(FetchLog::new()));
-        delegate.follow_up(&[TodoLabel::new("cut the seam")?], 3);
-        let mut woke = false;
-        for _ in 0..400 {
-            let replied = owner_session
-                .messages()
-                .iter()
-                .any(|message| matches!(message, AgentMessage::Assistant { .. }));
-            if replied {
-                woke = true;
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
-        }
-        assert!(
-            woke,
-            "an idle owner must be woken by the follow-up, not polled"
-        );
-        let carried = owner_session.messages().iter().any(|message| {
-            matches!(
-                message,
-                AgentMessage::Custom { content: UserContent::Text(text), .. }
-                    if text.contains("cut the seam")
-                        && text.contains("you start each one")
-                        && text.contains("3 more ready and held behind the dispatch width")
-            )
-        });
-        assert!(carried, "the nudge names the slice and the held count");
-        Ok(())
-    }
-
     /// Guards `wiring::lifecycle_notice`: restore `session.notice_hook()` there and the
     /// child's finish only queues a steer for a turn nobody starts.
     #[tokio::test]
@@ -948,12 +850,9 @@ mod tests {
     #[tokio::test]
     async fn a_held_child_is_alive_and_an_unknown_one_is_not() -> TestResult {
         let rig = rig("the seam holds")?;
-        rig.engine.apply(owner(Op::Init {
+        let out = rig.engine.apply(owner(Op::Init {
             goal: GoalText::new("ship the widget")?,
             todos: vec![delegated("cut the seam")?],
-        }))?;
-        let out = rig.engine.apply(owner(Op::Start {
-            label: TodoLabel::new("cut the seam")?,
         }))?;
         let spawned = out.spawned.first().ok_or("nothing spawned")?;
         let child = AgentId::new(spawned.path())?;

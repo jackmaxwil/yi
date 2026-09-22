@@ -2,7 +2,8 @@
 
 A shape checks the plan's geometry before its first ``start`` and then only
 chooses what to ask the host for next. Admission, the step table and ``done``
-stay the host's: a refused start is asked again, a refused retry is final.
+stay the host's: the engine starts delegated todos and the shape settles them,
+a refused start is asked again, a refused retry is final.
 """
 from __future__ import annotations
 
@@ -65,6 +66,9 @@ async def _schedule(plan: Plan, run: Run, labels: set[str], restart: bool = Fals
         held = {todo.label for todo in plan.unresolved}
         for key in [key for key, refusal in run.refusals.items() if refusal.kind == "admission"]:
             del run.refusals[key]
+        for todo in plan.todos:
+            if todo.label in labels and todo.child and todo.label not in run.active and todo.label not in held:
+                await run.launch(todo)
         for todo in [] if spent else plan.ready():
             if todo.label not in labels or todo.key in run.refusals or todo.label in held:
                 continue
@@ -185,15 +189,8 @@ async def _survivor(todo: Todo) -> dict[str, Any] | None:
     """A reader's answer with the quotes its own partition bears out, or None when it is dropped.
 
     Invariant: the lead never sees an abstention, a failed reader, an answer none of whose
-    quotes verified, or a quote from outside the partition this reader was bound to; a failed
-    reader's todo is abandoned so the plan can still finish.
+    quotes verified, or a quote from outside the partition this reader was bound to.
     """
-    if todo._doc["state"] == "failed":
-        try:
-            await todo.retry()
-            await todo._op("drop")
-        except PlanError:
-            pass
     if todo._doc["state"] != "done" or not todo._doc.get("output"):
         return None
     try:
@@ -204,6 +201,23 @@ async def _survivor(todo: Todo) -> dict[str, Any] | None:
         return None
     quotes = await verify_quotes(said.get("quotes"), _delegation(todo).get("context") or ())
     return {"reader": todo.key, "answer": said["answer"], "quotes": quotes} if quotes else None
+
+
+async def _abandon(todos: list[Todo], hold: Todo) -> None:
+    """Drop each failed todo so the plan finishes as ``hold`` decides, not as a reader failed.
+
+    Invariant: ``retry`` hands a delegated todo straight back to the engine, so an edge on
+    ``hold``, still open, keeps it pending until the ``drop`` lands.
+    """
+    for todo in todos:
+        if todo._doc["state"] != "failed":
+            continue
+        try:
+            await todo.plan._op("add_edge", {"todo": todo.label, "after": hold.label})
+            await todo.retry()
+            await todo._op("drop")
+        except PlanError:
+            pass
 
 
 async def scatter(plan: Plan, run: Run) -> None:
@@ -230,6 +244,7 @@ async def scatter(plan: Plan, run: Run) -> None:
             cause = "stopped before the lead committed"
             break
         answers = [answer for todo in batch if (answer := await _survivor(todo))]
+        await _abandon(batch, lead)
         try:
             said = await ask(answers, number) or {}
         except Exception as error:

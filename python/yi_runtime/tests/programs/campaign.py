@@ -25,14 +25,12 @@ tests = await plan.todo(
 )
 await plan.todo(key="repackage-the-tarball-from-the-finished-build", after=[stub, rotation, tests])
 
-await manpage.start()
 await stub.start()
 await stub.done("local://dist/logrotate-lite.tar.gz")
 await freeze.start()
 await freeze.done("kernel://main/cli_surface")
 await manpage.fail("the child documented the flags it invented rather than the frozen surface")
 flag = await plan.todo(key="handle-the-compressed-rotation-flag", after=[rotation])
-await tests.start()
 await rotation.start()
 sub = await rotation.decompose(
     [{"key": "rotate-on-a-size-threshold"}, {"key": "rotate-on-an-age-threshold", "after": ["rotate-on-a-size-threshold"]}]

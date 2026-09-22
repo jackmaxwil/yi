@@ -182,6 +182,7 @@ impl ProbeLadder {
     /// at the first rung; a probe is cheap and is not the runaway the spawn fuse guards.
     pub fn tick(&self, now: Instant) -> Vec<Verdict> {
         self.take_due(now);
+        self.engine.dispatch_ready_all();
         let mut verdicts = Vec::new();
         let mut live = Vec::new();
         for plan in self.plans() {

@@ -86,7 +86,6 @@ struct Stub {
     reaps: AtomicU32,
     fail_reap: AtomicBool,
     reap_last: Mutex<Option<Url>>,
-    follow: Mutex<Vec<(Vec<TodoLabel>, usize)>>,
 }
 
 impl Delegate for Stub {
@@ -103,12 +102,6 @@ impl Delegate for Stub {
         match self.reap_last.lock() {
             Ok(last) => Ok(last.clone()),
             Err(_) => Err("poisoned".to_owned()),
-        }
-    }
-
-    fn follow_up(&self, dispatched: &[TodoLabel], held: usize) {
-        if let Ok(mut log) = self.follow.lock() {
-            log.push((dispatched.to_vec(), held));
         }
     }
 }
@@ -248,18 +241,30 @@ fn backpressure_holds_a_delegated_todo_pending() -> TestResult {
             delegated_spec("second child job")?,
         ],
     )?;
-    assert_eq!(out.dispatched, vec![label("first child job")?]);
-    assert_eq!(out.held, vec![label("second child job")?]);
-    let out = engine.apply(owner(Op::Start {
-        label: label("first child job")?,
-    }))?;
+    // The engine starts what admission lets through with no owner op; the rest is held.
+    assert!(
+        out.dispatched.is_empty(),
+        "a started todo is spawned, not dispatchable"
+    );
     assert_eq!(out.spawned.len(), 1);
     assert_eq!(out.held, vec![label("second child job")?]);
+    let first = out
+        .plan
+        .todo(&label("first child job")?)
+        .ok_or("todo missing")?;
+    assert!(matches!(first.state, TodoState::Running { .. }));
     let file = store.read(&out.plan.id)?;
     let held = file
         .todo(&label("second child job")?)
         .ok_or("held todo missing")?;
     assert_eq!(held.state, TodoState::Pending);
+    let refused = engine.apply(owner(Op::Start {
+        label: label("first child job")?,
+    }));
+    assert!(
+        matches!(refused, Err(PlanOpError::IllegalStep { .. })),
+        "the owner has nothing left to start: {refused:?}"
+    );
     // Backpressure is a refusal, not an ordering hint: the held todo cannot take the
     // occupied slot even when its start is asked for by name.
     let refused = engine.apply(owner(Op::Start {
@@ -288,24 +293,109 @@ fn backpressure_holds_a_delegated_todo_pending() -> TestResult {
             resolution: None,
         }
     );
-    // The freed slot admits the todo that was held.
-    let out = engine.apply(owner(Op::Start {
-        label: label("second child job")?,
-    }))?;
+    // The freed slot starts the todo that was held, inside the same op.
     assert_eq!(out.spawned.len(), 1);
     assert_eq!(out.plan.spawns().get(), 2);
+    let second = out
+        .plan
+        .todo(&label("second child job")?)
+        .ok_or("todo missing")?;
+    assert!(matches!(second.state, TodoState::Running { .. }));
+    Ok(())
+}
+
+/// Dies with `Actor::Engine` in `actor_word`: journal the engine's start as the owner's and
+/// the record cannot tell a start nobody asked for from one the model made.
+#[test]
+fn an_engine_start_is_journaled_as_engine() -> TestResult {
+    let (_temp, store, _stub, engine) = harness(8)?;
+    let out = init(&engine, vec![delegated_spec("delegated job")?])?;
+    let records = store.journal(&out.plan.id).read()?.records;
+    let actors: Vec<(&str, &str)> = records
+        .iter()
+        .map(|record| (record.record.op.as_str(), record.record.actor.as_str()))
+        .collect();
+    assert_eq!(
+        actors,
+        vec![
+            ("init", "main"),
+            ("spawn_intent", "engine"),
+            ("spawn_result", "engine"),
+            ("start", "engine"),
+        ]
+    );
+    Ok(())
+}
+
+/// Block is the hold and unblock the release: a blocked delegated todo whose edge clears is
+/// not started, and the unblock starts it in the same op.
+#[test]
+fn a_blocked_todo_is_not_started() -> TestResult {
+    let (_temp, _store, stub, engine) = harness(8)?;
+    let mut gated = delegated_spec("delegated job")?;
+    gated.after = vec![label("gate")?];
+    init(&engine, vec![spec("gate")?, gated])?;
+    engine.apply(owner(Op::Block {
+        label: label("delegated job")?,
+        on: BlockedOn::User,
+        note: "hold it until the design is agreed".to_owned(),
+    }))?;
+    engine.apply(owner(Op::Start {
+        label: label("gate")?,
+    }))?;
+    let out = engine.apply(owner(Op::Done {
+        label: label("gate")?,
+        output: None,
+    }))?;
+    assert!(out.spawned.is_empty(), "{:?}", out.spawned);
+    let held = out
+        .plan
+        .todo(&label("delegated job")?)
+        .ok_or("todo missing")?;
+    assert!(matches!(held.state, TodoState::Blocked { .. }));
+    assert_eq!(stub.next.load(Ordering::SeqCst), 0);
+    let out = engine.apply(owner(Op::Unblock {
+        label: label("delegated job")?,
+    }))?;
+    assert_eq!(out.spawned.len(), 1, "the release starts it");
+    let released = out
+        .plan
+        .todo(&label("delegated job")?)
+        .ok_or("todo missing")?;
+    assert!(matches!(released.state, TodoState::Running { .. }));
     Ok(())
 }
 
 #[test]
 fn fuse_refuses_at_cap_and_survives_supersede() -> TestResult {
     let (_temp, store, _stub, engine) = harness(8)?;
-    let out = init(&engine, vec![delegated_spec("delegated job")?])?;
+    let mut gated = delegated_spec("delegated job")?;
+    gated.after = vec![label("gate")?];
+    let out = init(&engine, vec![spec("gate")?, gated])?;
     let mut file = store.read(&out.plan.id)?;
     while file.spawns() < SPAWN_CAP {
         file.charge_spawn();
     }
     store.write(&file)?;
+    engine.apply(owner(Op::Start {
+        label: label("gate")?,
+    }))?;
+    let out = engine.apply(owner(Op::Done {
+        label: label("gate")?,
+        output: None,
+    }))?;
+    assert!(
+        out.notices
+            .iter()
+            .any(|notice| notice.contains("delegated job") && notice.contains("spawn ceiling")),
+        "the engine's refused start is the op's notice: {:?}",
+        out.notices
+    );
+    let todo = out
+        .plan
+        .todo(&label("delegated job")?)
+        .ok_or("todo missing")?;
+    assert_eq!(todo.state, TodoState::Pending);
     let refused = engine.apply(owner(Op::Start {
         label: label("delegated job")?,
     }));
@@ -321,13 +411,13 @@ fn fuse_refuses_at_cap_and_survives_supersede() -> TestResult {
         todos: vec![delegated_spec("replacement job")?],
     }))?;
     assert_eq!(out.plan.spawns(), SPAWN_CAP);
-    let refused = engine.apply(owner(Op::Start {
-        label: label("replacement job")?,
-    }));
-    assert!(matches!(
-        refused,
-        Err(PlanOpError::SpawnCeilingExhausted { .. })
-    ));
+    assert!(
+        out.notices
+            .iter()
+            .any(|notice| notice.contains("replacement job") && notice.contains("spawn ceiling")),
+        "{:?}",
+        out.notices
+    );
     Ok(())
 }
 
@@ -335,9 +425,6 @@ fn fuse_refuses_at_cap_and_survives_supersede() -> TestResult {
 fn supersede_is_atomic_when_a_reap_fails() -> TestResult {
     let (_temp, store, stub, engine) = harness(8)?;
     let out = init(&engine, vec![delegated_spec("delegated job")?])?;
-    engine.apply(owner(Op::Start {
-        label: label("delegated job")?,
-    }))?;
     stub.fail_reap.store(true, Ordering::SeqCst);
     let refused = engine.apply(owner(Op::Supersede {
         reason: "rethink".to_owned(),
@@ -357,9 +444,6 @@ fn supersede_is_atomic_when_a_reap_fails() -> TestResult {
 fn ephemeral_urls_are_refused_in_terminal_records() -> TestResult {
     let (_temp, _store, stub, engine) = harness(8)?;
     init(&engine, vec![delegated_spec("delegated job")?])?;
-    engine.apply(owner(Op::Start {
-        label: label("delegated job")?,
-    }))?;
     let refused = engine.apply(owner(Op::Done {
         label: label("delegated job")?,
         output: Some("agent://somewhere/live".parse::<Url>()?),
@@ -489,6 +573,30 @@ fn mutation_is_owner_gated_and_unblock_is_open_to_user_and_host() -> TestResult 
         }
         other => return Err(format!("expected owner refusal, got {other:?}").into()),
     }
+    let engine_may = |op: Op| {
+        engine.apply(OpRequest {
+            plan: None,
+            actor: Actor::Engine,
+            op,
+            request_id: None,
+            expected_revision: None,
+        })
+    };
+    let refused = engine_may(Op::Append {
+        todos: vec![spec("engine job")?],
+    });
+    assert!(
+        matches!(refused, Err(PlanOpError::NotOwner { .. })),
+        "the engine steps todos and never edits the cut: {refused:?}"
+    );
+    let started = engine_may(Op::Start {
+        label: label("first job")?,
+    })?;
+    let todo = started
+        .plan
+        .todo(&label("first job")?)
+        .ok_or("todo missing")?;
+    assert!(matches!(todo.state, TodoState::Running { .. }));
     engine.apply(owner(Op::Block {
         label: label("first job")?,
         on: BlockedOn::User,
@@ -521,13 +629,11 @@ fn a_sub_plan_dispatch_charges_the_root_fuse() -> TestResult {
         todos: vec![delegated_spec("small piece")?],
     }))?;
     let sub_id = out.subplan.ok_or("no sub-plan opened")?;
-    let out = engine.apply(at(
-        &sub_id,
-        Op::Start {
-            label: label("small piece")?,
-        },
-    ))?;
-    assert_eq!(out.spawned.len(), 1);
+    assert_eq!(
+        out.spawned.len(),
+        1,
+        "the engine starts the sub-plan's delegated todo"
+    );
     assert_eq!(store.read(&root_id)?.spawns().get(), 1);
     assert!(store.read(&sub_id)?.spawns().is_zero());
     let refused = engine.apply(at(
@@ -550,9 +656,6 @@ fn blocking_a_running_delegated_todo_reaps_the_child() -> TestResult {
         &engine,
         vec![delegated_spec("first job")?, delegated_spec("second job")?],
     )?;
-    engine.apply(owner(Op::Start {
-        label: label("first job")?,
-    }))?;
     let out = engine.apply(owner(Op::Block {
         label: label("first job")?,
         on: BlockedOn::User,
@@ -560,6 +663,7 @@ fn blocking_a_running_delegated_todo_reaps_the_child() -> TestResult {
     }))?;
     assert_eq!(out.reaped.len(), 1, "the block exit from Running must reap");
     assert_eq!(stub.reaps.load(Ordering::SeqCst), 1);
+    assert_eq!(out.spawned.len(), 1, "the freed slot starts the held todo");
     let file = store.read(&out.plan.id)?;
     let blocked = file.todo(&label("first job")?).ok_or("todo missing")?;
     assert!(matches!(blocked.state, TodoState::Blocked { .. }));
@@ -578,12 +682,6 @@ fn supersede_terminates_sub_plan_todos_and_frees_the_width() -> TestResult {
         todos: vec![delegated_spec("small piece")?],
     }))?;
     let sub_id = out.subplan.ok_or("no sub-plan opened")?;
-    engine.apply(at(
-        &sub_id,
-        Op::Start {
-            label: label("small piece")?,
-        },
-    ))?;
     if let Ok(mut last) = stub.reap_last.lock() {
         *last = Some("history://small-piece/e4".parse::<Url>()?);
     }
@@ -603,8 +701,8 @@ fn supersede_terminates_sub_plan_todos_and_frees_the_width() -> TestResult {
         other => return Err(format!("expected a terminal reaped todo, got {other:?}").into()),
     }
     assert_eq!(
-        out.dispatched,
-        vec![label("fresh job")?],
+        out.spawned.len(),
+        1,
         "the abandoned sub-plan must not hold a phantom width slot"
     );
     assert!(out.held.is_empty());
@@ -787,7 +885,7 @@ fn start_refuses_unmet_after_edges() -> TestResult {
     let follows = TodoSpec {
         label: label("second job")?,
         after: vec![label("first job")?],
-        delegation: None,
+        delegation: Some(delegation()),
         contract: None,
         children: Vec::new(),
     };
@@ -804,7 +902,25 @@ fn start_refuses_unmet_after_edges() -> TestResult {
     }
     let file = store.read(&out.plan.id)?;
     let second = file.todo(&label("second job")?).ok_or("todo missing")?;
-    assert_eq!(second.state, TodoState::Pending);
+    assert_eq!(
+        second.state,
+        TodoState::Pending,
+        "the engine left it waiting too"
+    );
+    engine.apply(owner(Op::Start {
+        label: label("first job")?,
+    }))?;
+    let out = engine.apply(owner(Op::Done {
+        label: label("first job")?,
+        output: None,
+    }))?;
+    assert_eq!(
+        out.spawned.len(),
+        1,
+        "the cleared edge starts it in the same op"
+    );
+    let second = out.plan.todo(&label("second job")?).ok_or("todo missing")?;
+    assert!(matches!(second.state, TodoState::Running { .. }));
     Ok(())
 }
 
@@ -859,12 +975,6 @@ fn an_abandoned_sub_plan_is_not_drivable() -> TestResult {
         todos: vec![delegated_spec("small piece")?],
     }))?;
     let sub_id = out.subplan.ok_or("no sub-plan opened")?;
-    engine.apply(at(
-        &sub_id,
-        Op::Start {
-            label: label("small piece")?,
-        },
-    ))?;
     if let Ok(mut last) = stub.reap_last.lock() {
         *last = Some("history://small-piece/e4".parse::<Url>()?);
     }
@@ -1003,9 +1113,6 @@ fn a_declared_output_is_validated_against_its_schema() -> TestResult {
             children: Vec::new(),
         }],
     )?;
-    engine.apply(owner(Op::Start {
-        label: label("write the report")?,
-    }))?;
     let refused = engine.apply(owner(Op::Done {
         label: label("write the report")?,
         output: Some("kernel://main/report".parse::<Url>()?),
@@ -1037,9 +1144,6 @@ fn a_product_that_satisfies_its_schema_completes() -> TestResult {
             children: Vec::new(),
         }],
     )?;
-    engine.apply(owner(Op::Start {
-        label: label("write the report")?,
-    }))?;
     let out = engine.apply(owner(Op::Done {
         label: label("write the report")?,
         output: Some("local://reports/final.json".parse::<Url>()?),
@@ -1072,9 +1176,6 @@ fn a_schema_that_is_not_json_refuses_the_done_naming_the_schema() -> TestResult 
             children: Vec::new(),
         }],
     )?;
-    engine.apply(owner(Op::Start {
-        label: label("write the report")?,
-    }))?;
     let refused = engine.apply(owner(Op::Done {
         label: label("write the report")?,
         output: Some("local://reports/final.json".parse::<Url>()?),
@@ -1095,9 +1196,6 @@ fn a_schema_that_is_not_json_refuses_the_done_naming_the_schema() -> TestResult 
 fn a_supersede_refused_on_its_new_cut_kills_no_child() -> TestResult {
     let (_temp, store, stub, engine) = harness(8)?;
     let out = init(&engine, vec![delegated_spec("delegated job")?])?;
-    engine.apply(owner(Op::Start {
-        label: label("delegated job")?,
-    }))?;
     let reaped_before = stub.reaps.load(Ordering::SeqCst);
     let refused = engine.apply(owner(Op::Supersede {
         reason: "rethink".to_owned(),
@@ -1134,9 +1232,6 @@ fn a_declared_output_must_resolve_at_done() -> TestResult {
             children: Vec::new(),
         }],
     )?;
-    engine.apply(owner(Op::Start {
-        label: label("write the report")?,
-    }))?;
     let unresolved = "local://nowhere/never-written.txt";
     let refused = engine.apply(owner(Op::Done {
         label: label("write the report")?,
@@ -1287,12 +1382,6 @@ fn fuse_reset_is_the_only_writer_that_lowers_spawns() -> TestResult {
         vec![delegated_spec("first job")?, delegated_spec("second job")?],
     )?;
     let id = out.plan.id.clone();
-    engine.apply(owner(Op::Start {
-        label: label("first job")?,
-    }))?;
-    engine.apply(owner(Op::Start {
-        label: label("second job")?,
-    }))?;
     assert_eq!(store.read(&id)?.spawns().get(), 2);
     let superseded = engine.apply(owner(Op::Supersede {
         reason: "the cut was wrong".to_owned(),
@@ -1345,7 +1434,9 @@ fn fuse_reset_is_the_only_writer_that_lowers_spawns() -> TestResult {
 #[test]
 fn a_pending_spawn_intent_refuses_a_second_start() -> TestResult {
     let (_temp, store, stub, engine) = harness(8)?;
-    let out = init(&engine, vec![delegated_spec("delegated job")?])?;
+    let mut gated = delegated_spec("delegated job")?;
+    gated.after = vec![label("gate")?];
+    let out = init(&engine, vec![spec("gate")?, gated])?;
     let id = out.plan.id.clone();
     let intent = store.journal(&id).read()?;
     let last = intent.records.last().ok_or("no init")?;
@@ -1361,12 +1452,41 @@ fn a_pending_spawn_intent_refuses_a_second_start() -> TestResult {
     let journal = store.journal(&id);
     let sealed = journal.seal(draft, Some(last))?;
     journal.append(&sealed)?;
+    let refusals = || -> Result<usize, Box<dyn Error>> {
+        Ok(store
+            .journal(&id)
+            .read()?
+            .records
+            .iter()
+            .filter(|record| record.record.extra.contains_key("refusal"))
+            .count())
+    };
+    engine.apply(owner(Op::Start {
+        label: label("gate")?,
+    }))?;
+    let out = engine.apply(owner(Op::Done {
+        label: label("gate")?,
+        output: None,
+    }))?;
+    assert!(
+        out.spawned.is_empty(),
+        "the engine skips the standing intent"
+    );
+    assert_eq!(refusals()?, 0, "and records no refusal for it");
     let refused = engine.apply(owner(Op::Start {
         label: label("delegated job")?,
     }));
     assert!(
         matches!(refused, Err(PlanOpError::NeedsReconciliation { .. })),
         "{refused:?}"
+    );
+    engine.apply(owner(Op::Append {
+        todos: vec![spec("later job")?],
+    }))?;
+    assert_eq!(
+        refusals()?,
+        1,
+        "the owner's start is the one refusal; later ops add none"
     );
     assert_eq!(stub.next.load(Ordering::SeqCst), 0, "nothing was spawned");
     assert_eq!(
@@ -1390,9 +1510,6 @@ fn a_user_op_is_recorded_with_its_user_citation() -> TestResult {
     let (temp, store, _stub, engine) = harness(8)?;
     let out = init(&engine, vec![delegated_spec("delegated job")?])?;
     let id = out.plan.id.clone();
-    engine.apply(owner(Op::Start {
-        label: label("delegated job")?,
-    }))?;
     assert_eq!(store.read(&id)?.spawns().get(), 1);
     std::fs::create_dir_all(temp.join("sessions"))?;
     let mut repo = JsonlRepo::new(temp.join("sessions"), temp.to_string_lossy().into_owned());
@@ -1501,9 +1618,6 @@ fn a_user_op_is_recorded_with_its_user_citation() -> TestResult {
 fn a_record_over_the_cap_is_refused_before_any_reap() -> TestResult {
     let (_temp, store, stub, engine) = harness(8)?;
     let out = init(&engine, vec![delegated_spec("delegated job")?])?;
-    engine.apply(owner(Op::Start {
-        label: label("delegated job")?,
-    }))?;
     let reaped_before = stub.reaps.load(Ordering::SeqCst);
     let refused = engine.apply(owner(Op::Supersede {
         reason: "x".repeat(70 * 1024),
@@ -1534,16 +1648,17 @@ fn a_record_over_the_cap_is_refused_before_any_reap() -> TestResult {
 /// eight is refused before any spawn intent, and nothing is silently held.
 #[test]
 fn a_ninth_delegated_start_is_refused_by_the_engine_with_the_count() -> TestResult {
-    let (_temp, _store, stub, engine) = harness(8)?;
+    let (_temp, store, stub, engine) = harness(8)?;
     let specs = (1..=9)
         .map(|index| delegated_spec(&format!("job {index}")))
         .collect::<Result<Vec<_>, _>>()?;
-    init(&engine, specs)?;
-    for index in 1..=8 {
-        engine.apply(owner(Op::Start {
-            label: label(&format!("job {index}"))?,
-        }))?;
-    }
+    let out = init(&engine, specs)?;
+    assert_eq!(
+        out.spawned.len(),
+        8,
+        "the engine starts the eight the width admits"
+    );
+    assert_eq!(out.held, vec![label("job 9")?]);
     let refused = engine.apply(owner(Op::Start {
         label: label("job 9")?,
     }));
@@ -1559,6 +1674,19 @@ fn a_ninth_delegated_start_is_refused_by_the_engine_with_the_count() -> TestResu
         stub.next.load(Ordering::SeqCst),
         8,
         "the refused start spawned"
+    );
+    let engine_refusals = store
+        .journal(&out.plan.id)
+        .read()?
+        .records
+        .iter()
+        .filter(|record| {
+            record.record.actor == "engine" && record.record.extra.contains_key("refusal")
+        })
+        .count();
+    assert_eq!(
+        engine_refusals, 0,
+        "a held todo is not tried, so nothing is refused"
     );
     Ok(())
 }
@@ -2258,7 +2386,6 @@ mod contracts {
         let schema = blob(&doc, "report-schema")?;
         rig.serve.set("local://schema/report.json", Some(&schema));
         rig.serve.set("kernel://main/build_report", None);
-        start(&rig.engine, &plan, "Build the tarball")?;
         let product = done(
             &rig.engine,
             &plan,
@@ -2282,7 +2409,6 @@ mod contracts {
         assert_eq!(todo.refusals, 0, "an unserved product charges nothing");
         rig.serve.set("local://build/docs.json", Some(&schema));
         rig.serve.set("kernel://main/report_schema", None);
-        start(&rig.engine, &plan, "Build the docs")?;
         let criterion = done(
             &rig.engine,
             &plan,
@@ -3080,8 +3206,9 @@ mod contracts {
         if let Some(delegation) = &mut later.delegation {
             delegation.accept = Check::Stated("the changelog is complete".to_owned());
         }
-        init(&rig.engine, vec![stated, later.clone()])?;
-        start(&rig.engine, &plan, "write the manpage")?;
+        // Held behind an inline todo, so the engine does not start it before its item exists.
+        later.after = vec![label("sign off")?];
+        init(&rig.engine, vec![stated, later.clone(), spec("sign off")?])?;
         let refused = done(&rig.engine, &plan, "write the manpage", None);
         assert!(
             matches!(refused, Err(PlanOpError::NoVerifiedCompletion { .. })),
@@ -3128,10 +3255,20 @@ mod contracts {
                         spec: later,
                         state: TodoStateName::Pending,
                     },
+                    SetRow {
+                        spec: spec("sign off")?,
+                        state: TodoStateName::Pending,
+                    },
                 ],
             },
         ))?;
-        start(&rig.engine, &plan, "write the changelog")?;
+        start(&rig.engine, &plan, "sign off")?;
+        let signed = done(&rig.engine, &plan, "sign off", None)?;
+        assert_eq!(
+            signed.spawned.len(),
+            1,
+            "the cleared edge starts the changelog"
+        );
         let verified = done(&rig.engine, &plan, "write the changelog", None)?;
         assert!(matches!(
             verified
@@ -3499,7 +3636,6 @@ mod contracts {
         }
         spec.contract = Some(cmd_contract(&rig.store, &plan, "true", "writer")?);
         init(&rig.engine, vec![spec.clone()])?;
-        start(&rig.engine, &plan, "build it apart")?;
         let refused = rig.engine.apply(at(
             &plan,
             Op::Set {
@@ -3638,7 +3774,6 @@ mod contracts {
                     cmd_contract(&rig.store, &plan, "true", "writer")?,
                 )?],
             )?;
-            start(&rig.engine, &plan, "build it apart")?;
             rig.engine.apply(at(
                 &plan,
                 Op::Fail {
@@ -3684,7 +3819,6 @@ mod contracts {
             &rig.engine,
             vec![worktree_spec("build it apart", contract.clone())?],
         )?;
-        start(&rig.engine, &plan, "build it apart")?;
         let refused = done(&rig.engine, &plan, "build it apart", None);
         assert!(
             matches!(

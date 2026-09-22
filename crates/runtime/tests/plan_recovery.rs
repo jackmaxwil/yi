@@ -45,12 +45,11 @@ use yi_types::url::Url;
 
 type TestResult = Result<(), Box<dyn Error>>;
 
-/// Counts every call: recovery must leave all three at zero.
+/// Counts every call: recovery must leave both at zero.
 #[derive(Default)]
 struct Watched {
     spawns: AtomicU32,
     reaps: AtomicU32,
-    follow_ups: AtomicU32,
 }
 
 impl Delegate for Watched {
@@ -63,10 +62,6 @@ impl Delegate for Watched {
         self.reaps.fetch_add(1, Ordering::SeqCst);
         Ok(None)
     }
-
-    fn follow_up(&self, _dispatched: &[TodoLabel], _held: usize) {
-        self.follow_ups.fetch_add(1, Ordering::SeqCst);
-    }
 }
 
 impl Watched {
@@ -74,7 +69,6 @@ impl Watched {
         self.spawns
             .load(Ordering::SeqCst)
             .saturating_add(self.reaps.load(Ordering::SeqCst))
-            .saturating_add(self.follow_ups.load(Ordering::SeqCst))
     }
 }
 
@@ -152,6 +146,10 @@ struct Rig {
 }
 
 fn rig(name: &str) -> Result<Rig, Box<dyn Error>> {
+    rig_with(name, vec![delegated("build it")?, plain("write it up")?])
+}
+
+fn rig_with(name: &str, todos: Vec<TodoSpec>) -> Result<Rig, Box<dyn Error>> {
     let dir = Scratch::new(&format!("yi-plan-recovery-{name}"))?;
     let store = PlanStore::open(dir.to_path_buf())?;
     let delegate = Arc::new(Watched::default());
@@ -159,7 +157,7 @@ fn rig(name: &str) -> Result<Rig, Box<dyn Error>> {
         .with_liveness(Arc::new(Dead));
     let out = engine.apply(owner(Op::Init {
         goal: GoalText::new("ship the seam end to end")?,
-        todos: vec![delegated("build it")?, plain("write it up")?],
+        todos,
     }))?;
     Ok(Rig {
         _dir: dir,
@@ -176,9 +174,6 @@ fn rig(name: &str) -> Result<Rig, Box<dyn Error>> {
 #[test]
 fn recovery_reduces_events_without_dispatching_effects() -> TestResult {
     let rig = rig("no-effects")?;
-    rig.engine.apply(owner(Op::Start {
-        label: TodoLabel::new("build it")?,
-    }))?;
     let decomposed = rig.engine.apply(owner(Op::Decompose {
         label: TodoLabel::new("build it")?,
         todos: vec![plain("measure")?],
@@ -245,7 +240,10 @@ fn recovery_reduces_events_without_dispatching_effects() -> TestResult {
 /// resolution opens a new attempt, and only then does a start spawn again.
 #[test]
 fn ambiguous_spawn_is_reconciled_not_reissued() -> TestResult {
-    let rig = rig("ambiguous")?;
+    // Held behind the inline todo, so the engine has not started it when the crash is staged.
+    let mut gated = delegated("build it")?;
+    gated.after = vec![TodoLabel::new("write it up")?];
+    let rig = rig_with("ambiguous", vec![gated, plain("write it up")?])?;
     let journal = rig.store.journal(&rig.id);
     let last = journal.read()?.records.pop().ok_or("no init record")?;
     let mut intent = last.clone();
@@ -279,6 +277,17 @@ fn ambiguous_spawn_is_reconciled_not_reissued() -> TestResult {
         0,
         "reconciled, not reissued"
     );
+    rig.engine.apply(owner(Op::Start {
+        label: TodoLabel::new("write it up")?,
+    }))?;
+    let cleared = rig.engine.apply(owner(Op::Done {
+        label: TodoLabel::new("write it up")?,
+        output: None,
+    }))?;
+    assert!(
+        cleared.spawned.is_empty(),
+        "the engine skips a standing intent"
+    );
     let refused = rig.engine.apply(owner(Op::Start {
         label: TodoLabel::new("build it")?,
     }));
@@ -306,11 +315,13 @@ fn ambiguous_spawn_is_reconciled_not_reissued() -> TestResult {
         .plan
         .todo(&TodoLabel::new("build it")?)
         .ok_or("todo missing")?;
-    assert_eq!(todo.state, TodoState::Pending);
+    assert!(
+        matches!(todo.state, TodoState::Running { .. }),
+        "the resolution frees the todo and the engine starts it: {:?}",
+        todo.state
+    );
     assert_eq!(todo.attempt.get(), 2, "a retry is a new attempt");
-    let started = rig.engine.apply(owner(Op::Start {
-        label: TodoLabel::new("build it")?,
-    }))?;
+    let started = resolved;
     assert_eq!(started.spawned.len(), 1);
     assert_eq!(
         rig.delegate.spawns.load(Ordering::SeqCst),
@@ -399,7 +410,7 @@ fn a_damaged_first_record_refuses_the_read_too() -> TestResult {
 /// read and a mutation, it does not block `init`, and `import` of the checkpoint adopts it.
 #[test]
 fn a_checkpoint_without_its_journal_is_named_and_adopted_by_import() -> TestResult {
-    let rig = rig("detached")?;
+    let rig = rig_with("detached", vec![plain("build it")?, plain("write it up")?])?;
     std::fs::remove_file(rig.store.journal_path(&rig.id))?;
     match rig.store.read(&rig.id) {
         Err(StoreError::JournalMissing { id, seq, .. }) => {
@@ -479,7 +490,7 @@ fn a_missing_sub_plan_is_missing_not_an_external_edit() -> TestResult {
 /// normally; policy, not the reader, decides what happens to the remnant.
 #[test]
 fn incomplete_tail_is_preserved_and_repaired_by_policy() -> TestResult {
-    let rig = rig("torn")?;
+    let rig = rig_with("torn", vec![plain("build it")?, plain("write it up")?])?;
     rig.engine.apply(owner(Op::Start {
         label: TodoLabel::new("write it up")?,
     }))?;
@@ -542,9 +553,6 @@ fn incomplete_tail_is_preserved_and_repaired_by_policy() -> TestResult {
 #[test]
 fn a_duplicate_spawn_intent_is_refused_by_the_reducer() -> TestResult {
     let rig = rig("duplicate-intent")?;
-    rig.engine.apply(owner(Op::Start {
-        label: TodoLabel::new("build it")?,
-    }))?;
     let journal = rig.store.journal(&rig.id);
     let records = journal.read()?.records;
     let intent = records

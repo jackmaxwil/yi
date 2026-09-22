@@ -12,7 +12,7 @@ from typing import Any
 from ..contract import Contract, Item, contract, schema
 from ..plan import Plan, Run, Todo
 from ..roles import Reader, Role, Writer
-from ..shapes import ANSWER, ROUND, Geometry, _asked, _delegation, _reads_only, _schedule, _survivor
+from ..shapes import ANSWER, ROUND, Geometry, _abandon, _asked, _delegation, _reads_only, _schedule, _survivor
 
 NOTE_MAX = 1024
 BRIEFS = {
@@ -103,12 +103,16 @@ async def review_pod(plan: Plan, run: Run) -> None:
         run = await plan.run(shape=review_pod, budget="30m")
     """
     readers, arbiter = _geometry(plan)
+    # The declared arbiter is the issue's template: held, or the engine starts it without findings.
+    if arbiter._doc["state"] == "pending":
+        await arbiter.block("user", f"the pod issues it as {arbiter.key}-r2 with the findings")
     await _schedule(plan, run, {todo.label for todo in readers}, restart=True)
     if run.over:
         return
     findings = [(todo, await _survivor(todo)) for todo in readers]
     outputs = [todo._doc["output"] for todo, _ in findings if todo._doc.get("output")]
     issued = await _asked(plan, arbiter, 2, _evidence(findings), outputs)
-    if arbiter._doc["state"] == "pending":
+    await _abandon(readers, issued)
+    if arbiter._doc["state"] in ("pending", "blocked"):
         await arbiter._op("drop")
     await _schedule(plan, run, {issued.label})
