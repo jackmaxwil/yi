@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 
 use serde_json::Value;
 use yi_types::plan::contract::{Decider, ItemVerdict, Outcome as ContractOutcome, Verdict};
@@ -273,10 +274,26 @@ impl SubagentHost {
             .map(|error| format!("its discoveries were held back: {error}"))
     }
 
+    pub fn busy(&self) -> bool {
+        let live = self
+            .children
+            .lock()
+            .map(|children| children.values().any(|child| child.exit.is_none()));
+        live.unwrap_or(false) || self.settling.load(Ordering::SeqCst) > 0
+    }
+
     fn answer_of(&self, name: &str) -> Option<String> {
         let children = self.children.lock().ok()?;
         let key = Self::key_of(&children, name).ok()?;
         last_assistant_text(&children.get(&key)?.session.messages())
+    }
+}
+
+struct Settling(Arc<SubagentHost>);
+
+impl Drop for Settling {
+    fn drop(&mut self) {
+        self.0.settling.fetch_sub(1, Ordering::SeqCst);
     }
 }
 
@@ -295,6 +312,8 @@ pub fn install(host: &Arc<SubagentHost>, engine: &Arc<PlanEngine>, deliver: Deli
             return false;
         }
         let deliver = Arc::clone(&deliver);
+        host.settling.fetch_add(1, Ordering::SeqCst);
+        let settling = Settling(Arc::clone(&host));
         drop(runtime.spawn_blocking(move || {
             let held = (exit == ChildExit::Completed)
                 .then(|| host.held_back(&agent))
@@ -312,6 +331,7 @@ pub fn install(host: &Arc<SubagentHost>, engine: &Arc<PlanEngine>, deliver: Deli
             if let Some(line) = engine.finish_child(&agent, exit, error, product) {
                 super::dispatch::say(&deliver, line);
             }
+            drop(settling);
         }));
         true
     }));

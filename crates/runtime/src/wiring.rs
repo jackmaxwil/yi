@@ -384,10 +384,10 @@ fn wire_plan_request(
     }
     engine = engine.with_verifier(verifier);
     // The staging and verification checkouts come from the lane pool, split with the host's
-    // workers over one object (sections 6.6 and 7.6); no repository, no worktree children.
-    if let Ok(pool) = crate::lane::Pool::open(&wiring.home, &cwd, wiring.lane_slots) {
-        engine = engine.with_lanes(pool).with_capacity(host.capacity());
-    }
+    // workers over one object (sections 6.6 and 7.6), opened at the first checkout needed.
+    engine = engine
+        .with_lane_home(wiring.home.clone(), wiring.lane_slots)
+        .with_capacity(host.capacity());
     // The verification snapshot is the shadow gitdir tree the turn checkpoints capture (plan
     // section 6.3); without git the engine hashes the workspace itself.
     if let Some(snapshotter) = crate::plan::snapshot::shadow_tree(&wiring.home, &cwd, plans_dir) {
@@ -483,13 +483,7 @@ fn wire_plan_engine(
         todos,
         crate::todo::coupling::Options {
             eager: crate::todo::coupling::Eager::Prelude,
-            children_running: Arc::new(move || {
-                children
-                    .children
-                    .lock()
-                    .map(|children| children.values().any(|child| child.exit.is_none()))
-                    .unwrap_or(false)
-            }),
+            children_running: Arc::new(move || children.busy()),
             inner,
         },
     );
@@ -637,7 +631,7 @@ pub fn attach_runtime(session: &mut AgentSession, mut wiring: RuntimeWiring) -> 
         &host,
         &mut registry,
         Arc::clone(&fetch_log),
-        resolver,
+        Arc::clone(&resolver),
     );
     let restore_notice = session.notice_hook();
     let service = Arc::new(crate::kernel::KernelService::new(
@@ -669,6 +663,7 @@ pub fn attach_runtime(session: &mut AgentSession, mut wiring: RuntimeWiring) -> 
         &service,
     );
     let mut tools = (wiring.tools)();
+    crate::fetch::route_urls(&mut tools, &resolver);
     tools.push(crate::kernel::ipython_tool(Arc::clone(&service)));
     crate::auto_review::wire(session, &wiring, &mut tools);
     let fetch_for_rules = Arc::clone(&fetch_log);

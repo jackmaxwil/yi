@@ -760,7 +760,17 @@ fn act_start(case: &mut Case, target: Target, slot: usize) -> Result<(), TestCas
         // never started, so the fuzzer holds it too.
         return Ok(());
     }
-    let _refused = case.apply(owner(plan, Op::Start { label: lbl }), Bump::Touch)?;
+    // An owner's start on a delegated todo only reads its standing: the engine starts it.
+    let delegated = case.read_target(&plan)?.is_some_and(|file| {
+        file.todo(&lbl)
+            .is_some_and(|todo| todo.delegation.is_some())
+    });
+    let bump = if delegated {
+        Bump::ReadOnly
+    } else {
+        Bump::Touch
+    };
+    let _refused = case.apply(owner(plan, Op::Start { label: lbl }), bump)?;
     Ok(())
 }
 

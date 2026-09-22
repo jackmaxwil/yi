@@ -793,7 +793,8 @@ pub async fn run_loop<S: StreamFn>(
             // a clean turn ends the error streak: the next error gets its own retry
             stream_retries = 0;
 
-            let repeats = match batch_signature(&message) {
+            let waiting = config.waiting.as_ref().is_some_and(|live| live());
+            let repeats = match batch_signature(&message).filter(|_| !waiting) {
                 Some(batch) => {
                     if recent.len() >= REPEAT_WINDOW {
                         recent.pop_front();

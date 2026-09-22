@@ -35,6 +35,9 @@ fn field_hint(field: &str) -> &'static str {
         "todos" | "delegation" => {
             "; a todo is {label, after?, delegation?: {spec: {role?, isolation?}, accept: {command: \"...\"}}}"
         }
+        "contract" => {
+            "; a contract is {class, items: [{id, critical, weight, decider: {cmd: \"shell command\"}}]}, or omit it and a worktree delegation's accept {command} is its contract"
+        }
         "evidence" => "; evidence is the todo tool's field, done takes output (a url) or nothing",
         // Incident: three worktree children quoted the attempt nine times between them; the
         // refusal named the wanted type without saying it was the todo's own counter.
@@ -73,6 +76,8 @@ pub enum ArgError {
     TooDeep { line: usize, max: usize },
     #[error("actor is not an argument; the surface a request arrives on fixes its principal")]
     ActorArg,
+    #[error("{0}")]
+    Declared(String),
     #[error("{} does not take {key:?}; its arguments are {legal}{}", op_name(*op), field_hint(key))]
     UnknownKey {
         op: OpKind,
@@ -475,6 +480,14 @@ fn parse_op(args: &Map<String, Value>) -> Result<Op, ArgError> {
     })
 }
 
+pub(super) fn declared(
+    actor: &Actor,
+    args: &Map<String, Value>,
+) -> Result<(OpRequest, Vec<super::declare::Blob>), ArgError> {
+    let (args, blobs) = super::declare::normalize(args).map_err(ArgError::Declared)?;
+    Ok((request(actor, &args)?, blobs))
+}
+
 /// Invariant: the principal is a channel, never a string (§3.6): `actor` is refused, never read.
 pub(super) fn request(actor: &Actor, args: &Map<String, Value>) -> Result<OpRequest, ArgError> {
     if args.contains_key("actor") {
@@ -674,9 +687,9 @@ impl PlanTool {
     }
 
     fn run(&self, args: &Map<String, Value>) -> Result<String, PlanToolError> {
-        let request = request(&self.actor, args)?;
+        let (request, blobs) = declared(&self.actor, args)?;
         let op = request.op.clone();
-        let outcome = self.engine.apply(request)?;
+        let outcome = self.engine.apply_with(request, &blobs)?;
         Ok(render_outcome(&op, &outcome))
     }
 }
@@ -703,7 +716,7 @@ impl Tool for PlanTool {
     }
 
     fn validate(&self, input: &Map<String, Value>) -> Result<(), String> {
-        request(&self.actor, input)
+        declared(&self.actor, input)
             .map(|_| ())
             .map_err(|error| error.to_string())
     }

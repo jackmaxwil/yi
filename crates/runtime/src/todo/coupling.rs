@@ -836,6 +836,7 @@ pub fn coupling(session: &AgentSession, todos: Arc<TodoStore>, options: Options)
         })
     };
 
+    let waiting: Arc<dyn Fn() -> bool + Send + Sync> = Arc::clone(&children_running);
     let intercept_stop: Arc<InterceptStopFn> = {
         let cycle = Arc::clone(&cycle);
         let todos = Arc::clone(&todos);
@@ -887,6 +888,7 @@ pub fn coupling(session: &AgentSession, todos: Arc<TodoStore>, options: Options)
         on_prompt,
         on_turn,
         intercept_stop,
+        waiting: Some(waiting),
     }
 }
 

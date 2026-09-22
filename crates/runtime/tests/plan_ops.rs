@@ -175,6 +175,14 @@ fn owner(op: Op) -> OpRequest {
     }
 }
 
+/// The engine's own step: an owner's start on a delegated todo only reads its standing.
+fn as_engine(op: Op) -> OpRequest {
+    OpRequest {
+        actor: Actor::Engine,
+        ..owner(op)
+    }
+}
+
 fn at(plan: &PlanId, op: Op) -> OpRequest {
     OpRequest {
         plan: Some(plan.clone()),
@@ -258,16 +266,17 @@ fn backpressure_holds_a_delegated_todo_pending() -> TestResult {
         .todo(&label("second child job")?)
         .ok_or("held todo missing")?;
     assert_eq!(held.state, TodoState::Pending);
-    let refused = engine.apply(owner(Op::Start {
+    let noted = engine.apply(owner(Op::Start {
         label: label("first child job")?,
-    }));
+    }))?;
     assert!(
-        matches!(refused, Err(PlanOpError::IllegalStep { .. })),
-        "the owner has nothing left to start: {refused:?}"
+        noted.notices[0].starts_with("nothing to do: the engine starts delegated todos"),
+        "the owner has nothing left to start: {:?}",
+        noted.notices
     );
     // Backpressure is a refusal, not an ordering hint: the held todo cannot take the
     // occupied slot even when its start is asked for by name.
-    let refused = engine.apply(owner(Op::Start {
+    let refused = engine.apply(as_engine(Op::Start {
         label: label("second child job")?,
     }));
     match refused {
@@ -517,7 +526,7 @@ fn fuse_refuses_at_cap_and_survives_supersede() -> TestResult {
         .todo(&label("delegated job")?)
         .ok_or("todo missing")?;
     assert_eq!(todo.state, TodoState::Pending);
-    let refused = engine.apply(owner(Op::Start {
+    let refused = engine.apply(as_engine(Op::Start {
         label: label("delegated job")?,
     }));
     match refused {
@@ -1011,7 +1020,7 @@ fn start_refuses_unmet_after_edges() -> TestResult {
         children: Vec::new(),
     };
     let out = init(&engine, vec![spec("first job")?, follows])?;
-    let refused = engine.apply(owner(Op::Start {
+    let refused = engine.apply(as_engine(Op::Start {
         label: label("second job")?,
     }));
     match refused {
@@ -1173,7 +1182,11 @@ fn a_plan_whose_last_todo_failed_stays_reachable_unnamed() -> TestResult {
         label: label("only job")?,
         output: None,
     }))?;
-    let refused = engine.apply(owner(Op::View { full: false }));
+    let finished = engine.apply(owner(Op::View { full: false }))?;
+    assert_eq!(finished.plan.state, PlanState::Done, "view still shows it");
+    let refused = engine.apply(owner(Op::Append {
+        todos: vec![spec("late job")?],
+    }));
     assert!(
         matches!(refused, Err(PlanOpError::NoPlan)),
         "a genuinely finished plan must never be resurrected: {refused:?}"
@@ -1594,7 +1607,7 @@ fn a_pending_spawn_intent_refuses_a_second_start() -> TestResult {
         "the engine skips the standing intent"
     );
     assert_eq!(refusals()?, 0, "and records no refusal for it");
-    let refused = engine.apply(owner(Op::Start {
+    let refused = engine.apply(as_engine(Op::Start {
         label: label("delegated job")?,
     }));
     assert!(
@@ -1606,8 +1619,8 @@ fn a_pending_spawn_intent_refuses_a_second_start() -> TestResult {
     }))?;
     assert_eq!(
         refusals()?,
-        1,
-        "the owner's start is the one refusal; later ops add none"
+        0,
+        "a start the repair road owns journals no refusal, and later ops add none"
     );
     assert_eq!(stub.next.load(Ordering::SeqCst), 0, "nothing was spawned");
     assert_eq!(
@@ -1780,7 +1793,7 @@ fn a_ninth_delegated_start_is_refused_by_the_engine_with_the_count() -> TestResu
         "the engine starts the eight the width admits"
     );
     assert_eq!(out.held, vec![label("job 9")?]);
-    let refused = engine.apply(owner(Op::Start {
+    let refused = engine.apply(as_engine(Op::Start {
         label: label("job 9")?,
     }));
     match refused {
@@ -1911,9 +1924,9 @@ mod refusals {
     }
 
     /// Three F0e trials lost a turn to this cap with briefs of 1428, 1490 and 1777 bytes; the
-    /// cap stays, because a plan of forty noted delegations has a frontmatter budget (#471).
+    /// cap stays for the plan (#471), and an over-cap note goes to the plan's store instead.
     #[test]
-    fn an_over_long_inline_note_names_the_artifact_road() -> TestResult {
+    fn an_over_long_inline_note_is_stored_and_linked() -> TestResult {
         let (_temp, tool) = tool()?;
         let opened = tool.execute(
             serde_json::json!({"op": "init", "goal": "ship it", "todos": [{"label": "seam"}]})
@@ -1924,19 +1937,20 @@ mod refusals {
         );
         assert!(!opened.is_error, "{opened:?}");
         let brief = "x".repeat(1490);
-        let text = refusal(
-            &tool,
+        let appended = tool.execute(
             serde_json::json!({
                 "op": "append",
                 "todos": [{
                     "label": "gateway",
                     "delegation": {"spec": {}, "accept": {"command": "true"}, "note": brief},
                 }],
-            }),
+            })
+            .as_object()
+            .cloned()
+            .unwrap_or_default(),
+            &ToolContext::new(std::env::temp_dir()),
         );
-        assert!(text.contains("1490 bytes exceeds 1024"), "{text}");
-        assert!(text.contains("artifact"), "{text}");
-        assert!(text.contains("context"), "{text}");
+        assert!(!appended.is_error, "{appended:?}");
         Ok(())
     }
 }
@@ -4026,7 +4040,7 @@ mod contracts {
             matches!(
                 &refused,
                 Err(PlanOpError::PhaseMissing { phase, missing, .. })
-                    if *phase == "unsubmitted" && *missing == "candidate_submitted"
+                    if *phase == "unsubmitted" && missing.starts_with("a candidate_submitted record")
             ),
             "{refused:?}"
         );

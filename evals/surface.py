@@ -111,6 +111,11 @@ def run_scenario(scenario, binary, model, out, cap_usd=None, spent=0.0):
             target = workspace / relative
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text(body)
+        # A worktree delegation spawns only in a repository, so the workspace is one.
+        for git in (["init", "-q", "-b", "main"], ["add", "-A"],
+                    ["-c", "user.name=s", "-c", "user.email=s@example.invalid",
+                     "commit", "-q", "--allow-empty", "-m", "seed"]):
+            subprocess.run(["git", *git], cwd=workspace, check=True)
         sessions = keep / "sessions"
         events = keep / "events.jsonl"
         environment = {"HOME": home}

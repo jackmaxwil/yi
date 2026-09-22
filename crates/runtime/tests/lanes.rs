@@ -152,6 +152,38 @@ fn a_claim_branches_a_slot_and_leaves_the_trunk_untouched() -> TestResult {
     Ok(())
 }
 
+/// Incident: a child's candidate commit swept the `__pycache__` its checker run left behind.
+#[test]
+fn a_candidate_commit_leaves_build_output_out() -> TestResult {
+    let rig = Rig::new("pycache")?;
+    let lane = rig.pool(2)?.claim("s-py", ClaimBase::Main)?;
+    std::fs::create_dir_all(lane.path().join("pkg/__pycache__"))?;
+    std::fs::write(
+        lane.path().join("pkg/__pycache__/mod.cpython-312.pyc"),
+        "bytecode",
+    )?;
+    let base = git(lane.path(), &["rev-parse", "HEAD"])?;
+    let noise_only = lane.candidate(&quiet(), None)?;
+    assert_eq!(
+        noise_only.commit.as_str(),
+        base,
+        "build output alone commits nothing"
+    );
+    std::fs::write(lane.path().join("pkg/mod.py"), "x = 1\n")?;
+    let candidate = lane.candidate(&quiet(), None)?;
+    let files = git(
+        lane.path(),
+        &[
+            "show",
+            "--name-only",
+            "--format=",
+            candidate.commit.as_str(),
+        ],
+    )?;
+    assert_eq!(files, "pkg/mod.py");
+    Ok(())
+}
+
 #[test]
 fn a_full_pool_refuses_with_the_count_it_holds() -> TestResult {
     let rig = Rig::new("full")?;

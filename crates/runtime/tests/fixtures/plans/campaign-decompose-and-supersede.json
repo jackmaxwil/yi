@@ -90,7 +90,7 @@
       "op": "start",
       "actor": "agent://main",
       "args": { "label": "Write the manpage" },
-      "expect": { "ok": false, "error": "illegal" }
+      "expect": { "ok": true, "version": 1, "touched": 2, "spawns": 1 }
     },
     {
       "op": "start",
@@ -280,7 +280,7 @@
       "op": "start",
       "actor": "agent://main",
       "args": { "label": "Write the test suite" },
-      "expect": { "ok": false, "error": "illegal" }
+      "expect": { "ok": true, "version": 1, "touched": 11 }
     },
     {
       "op": "start",

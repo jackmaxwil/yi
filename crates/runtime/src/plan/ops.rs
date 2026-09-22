@@ -201,7 +201,7 @@ pub enum PlanOpError {
         "done for {label:?} refused: a worktree todo completes only through the acceptance of its contracted candidate (plan section 6.6); one with no `contract` takes it from a `set` row (a delegation `accept` is not a contract) and then `submit` the candidate, and `fail` or `drop` takes the disposition road"
     )]
     AcceptanceUnavailable { label: TodoLabel },
-    #[error("done for {label:?} refused at phase {phase}: no {missing} record on this attempt")]
+    #[error("done for {label:?} refused at phase {phase}: it needs {missing}")]
     PhaseMissing {
         label: TodoLabel,
         phase: &'static str,
@@ -352,6 +352,9 @@ pub trait Delegate: Send + Sync {
     fn hosts(&self) -> bool {
         true
     }
+    fn finishes(&self) -> bool {
+        false
+    }
     /// A worktree child's candidate, committed on its branch with the child quiescent, read
     /// with nothing marked on the host; `None` when the host holds no lane for it.
     fn candidate(&self, agent: &AgentId) -> Result<Option<crate::lane::settle::Held>, String> {
@@ -437,7 +440,8 @@ pub struct PlanEngine {
     pub(super) snapshotter: Arc<dyn Snapshotter>,
     pub(super) verify_hook: Option<VerifyHook>,
     pub(super) in_flight: Mutex<super::done::InFlight>,
-    pub(super) lanes: Option<crate::lane::Pool>,
+    pub(super) lanes: std::sync::OnceLock<crate::lane::Pool>,
+    pub(super) lane_home: Option<(PathBuf, u8)>,
     /// The pool's slots split between workers and verification (plan section 7.6).
     pub(super) capacity: Arc<super::capacity::Capacity>,
     pub(super) refused: super::schedule::Refused,
@@ -458,7 +462,8 @@ impl PlanEngine {
             snapshotter,
             verify_hook: None,
             in_flight: Mutex::new(super::done::InFlight::default()),
-            lanes: None,
+            lanes: std::sync::OnceLock::new(),
+            lane_home: None,
             capacity: super::capacity::Capacity::for_slots(crate::lane::DEFAULT_SLOTS),
             refused: super::schedule::Refused::default(),
         }
@@ -519,14 +524,7 @@ impl PlanEngine {
     }
 
     pub fn apply(&self, request: OpRequest) -> Result<Outcome, PlanOpError> {
-        let dispatches = self.delegate.hosts()
-            && !matches!(request.op, Op::View { .. })
-            && !matches!(request.actor, Actor::Child(_));
-        let mut outcome = self.apply_once(request)?;
-        if dispatches {
-            self.dispatch_ready(&mut outcome);
-        }
-        Ok(outcome)
+        self.apply_with(request, &[])
     }
 
     pub(super) fn apply_once(&self, request: OpRequest) -> Result<Outcome, PlanOpError> {
@@ -567,7 +565,7 @@ impl PlanEngine {
             }
             _ => {}
         }
-        let _lease = self.store.lease()?;
+        let _lease = self.lease_waiting()?;
         match op {
             Op::Init { goal, todos } => self.init(goal, todos, &actor, request),
             Op::Import { source } => self.import(&source, &actor, request),
@@ -691,7 +689,9 @@ impl PlanEngine {
     }
 
     pub(super) fn view(&self, plan: Option<PlanId>, _full: bool) -> Result<Outcome, PlanOpError> {
-        let id = self.resolve(plan)?;
+        let id = self
+            .resolve(plan)
+            .or_else(|error| self.latest().ok_or(error))?;
         let plan = self.store.read(&id)?;
         let ready = ready_labels(&plan);
         let (held, notices) = self.standing(&plan);

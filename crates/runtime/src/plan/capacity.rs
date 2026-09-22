@@ -172,9 +172,35 @@ impl Drop for Permit {
     }
 }
 
+impl super::ops::PlanEngine {
+    pub fn with_lane_home(self, home: std::path::PathBuf, slots: u8) -> Self {
+        Self {
+            lane_home: Some((home, slots)),
+            ..self
+        }
+    }
+
+    pub(super) fn pool(
+        &self,
+        label: &yi_types::plan::doc::TodoLabel,
+    ) -> Result<&crate::lane::Pool, super::ops::PlanOpError> {
+        use super::acceptance::verification;
+        if let Some(pool) = self.lanes.get() {
+            return Ok(pool);
+        }
+        let no_pool = || verification(label, "no lane pool is attached to the engine");
+        let (home, slots) = self.lane_home.as_ref().ok_or_else(no_pool)?;
+        let pool = crate::lane::Pool::open(home, &self.cwd, *slots)
+            .map_err(|error| verification(label, error.to_string()))?;
+        Ok(self.lanes.get_or_init(|| pool))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use yi_types::plan::doc::{AgentId, Delegation, TodoAddr, TodoLabel};
+    use yi_types::url::Url;
 
     type TestResult = Result<(), Box<dyn std::error::Error>>;
 
@@ -230,5 +256,38 @@ mod tests {
         let capacity = Capacity::for_slots(1);
         assert_eq!(capacity.cap(Purpose::Worker), 1);
         assert_eq!(capacity.cap(Purpose::Verification), 1);
+    }
+
+    struct NoChildren;
+
+    impl super::super::ops::Delegate for NoChildren {
+        fn spawn(&self, _at: &TodoAddr, _delegation: &Delegation) -> Result<AgentId, String> {
+            Err("no children here".to_owned())
+        }
+
+        fn reap(&self, _agent: &AgentId, _supplied: &[Url]) -> Result<Option<Url>, String> {
+            Ok(None)
+        }
+    }
+
+    /// Dies with the pool opened only at construction: a repository initialised after the
+    /// engine was built never gets a checkout, and its candidates are never verified.
+    #[test]
+    fn the_lane_pool_opens_at_the_first_checkout_that_needs_it() -> TestResult {
+        let root = crate::scratch::Scratch::new("yi-capacity-lazy-pool")?;
+        let work = root.join("work");
+        std::fs::create_dir_all(&work)?;
+        let store = super::super::store::PlanStore::open(root.join("plans"))?;
+        let engine = super::super::ops::PlanEngine::new(store, Arc::new(NoChildren))
+            .with_cwd(work.clone())
+            .with_lane_home(root.join("home"), 2);
+        let label = TodoLabel::new("alpha")?;
+        assert!(engine.pool(&label).is_err(), "no repository yet");
+        crate::lane::git(&work, &["init", "-q"])?;
+        assert!(
+            engine.pool(&label).is_ok(),
+            "the repository appeared mid-session"
+        );
+        Ok(())
     }
 }
