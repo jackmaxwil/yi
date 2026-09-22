@@ -67,7 +67,6 @@ pub enum ArgError {
     },
 }
 
-/// The call a refused argument was reaching for, spelled out so the retry lands.
 fn example(op: &str) -> &'static str {
     match op {
         "set" => r###"{"op": "set", "list": "## Phase\n- [ ] first task\n- [ ] second task"}"###,

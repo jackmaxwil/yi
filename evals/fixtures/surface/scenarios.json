@@ -39,7 +39,7 @@
       "prompt": "Open a plan with three independent todos, each delegated to a worktree child: 'alpha' writes alpha.txt holding the word alpha, 'beta' writes beta.txt holding beta, 'gamma' writes gamma.txt holding gamma. Start them, then accept one of them through the plan. Report at the end how many were dispatched at once and how many were held.",
       "timeoutSec": 900,
       "seed": {},
-      "clean": {"files": [], "noRefusalsFrom": []}
+      "clean": {"files": [], "noRefusalsFrom": ["todo"]}
     },
     {
       "id": "plan-width-lever",

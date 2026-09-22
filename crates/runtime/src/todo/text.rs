@@ -169,6 +169,7 @@ pub fn suffix(item: &TodoItem) -> String {
         }
         (TodoStateName::Blocked, Some(on), None) => format!(" (blocked on {})", on.as_str()),
         (TodoStateName::Abandoned, _, Some(note)) => format!(" (dropped: {note})"),
+        (TodoStateName::Failed, _, Some(note)) => format!(" (failed: {note})"),
         _ => String::new(),
     }
 }
@@ -213,6 +214,9 @@ fn moves(item: &TodoItem) -> Option<String> {
 }
 
 pub fn next_lines(list: &TodoList) -> Vec<String> {
+    if super::mirror::plan_of(list).is_some() {
+        return Vec::new();
+    }
     let mut out: Vec<String> = list.running().and_then(moves).into_iter().collect();
     let pending = list
         .items()

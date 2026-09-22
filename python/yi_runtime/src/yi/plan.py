@@ -579,6 +579,7 @@ class Run:
         self.outcome: str | None = None
         self.refusals: dict[str, PlanError] = {}
         self.active: dict[str, Todo] = {}
+        self._left: set[tuple[str, Any]] = set()
         self._deadline = None if budget is None else asyncio.get_running_loop().time() + budget
         self._stop = asyncio.Event()
         self._cancelled = False
@@ -609,6 +610,8 @@ class Run:
             refusal = await run.launch(plan["tests"])
         """
         if todo._doc.get("delegation"):
+            if (todo.label, todo._doc.get("attempt")) in self._left:
+                return PlanError(f"the engine left {todo.key} running for you", {"code": "left"})
             if await todo.state() != "running":
                 if todo.label in self.plan._held or todo.label not in self.plan._doc.get("ready", []):
                     return PlanError(f"{todo.key} waits on the dispatch width", {"code": "admission"})
@@ -677,9 +680,13 @@ class Run:
                 todo = self.active[label]
                 now = await todo.state()
                 if now == "running" and state in ("finished", "failed"):
-                    # The engine is stepping it, or it told you why it left it running.
-                    continue
-                if now == "running":
+                    # Invariant: the engine steps a finished child within one round; still running
+                    # after it, the engine left it to you and told you why, so it is collected.
+                    attempt = (label, todo._doc.get("attempt"))
+                    if attempt not in self._left:
+                        self._left.add(attempt)
+                        continue
+                elif now == "running":
                     # Invariant: a child the host cannot vouch for is a decision, never a
                     # silent drop; `needs_you` and an unregistered name both land here.
                     await todo.block("user", f"child {child} is {state or 'not registered'}")

@@ -731,6 +731,27 @@ mod tests {
         Ok(())
     }
 
+    /// Dies with the finish skipping the delegation's accept command (finish.rs `held_back`):
+    /// the engine's `done` completes an uncontracted todo whose check is red.
+    #[tokio::test]
+    async fn a_red_accept_command_fails_the_finish() -> TestResult {
+        let rig = hooked(vec![reply("the seam is cut")])?;
+        let mut spec = delegated("cut the seam")?;
+        if let Some(delegation) = spec.delegation.as_mut() {
+            delegation.accept = Check::Command("false".to_owned());
+        }
+        let out = rig.engine.apply(owner(Op::Init {
+            goal: GoalText::new("ship the widget")?,
+            todos: vec![spec],
+        }))?;
+        let todo = settled(&rig, &out.plan.id, "cut the seam").await?;
+        let TodoState::Failed { cause, .. } = &todo.state else {
+            return Err(format!("expected Failed, got {:?}", todo.state).into());
+        };
+        assert!(cause.starts_with("its check is red"), "{cause}");
+        Ok(())
+    }
+
     /// Dies with the `(Completed, None)` arm of `conclude` skipping the finish hook: the child
     /// ends, its todo stays running, and only an owner `done` could complete it.
     #[tokio::test]

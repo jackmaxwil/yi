@@ -202,5 +202,6 @@ when it changes rather than editing them by hand.
 - [D223](adr/d223.md) - a worktree delegation without a contract cannot be declared
 - [D224](adr/d224.md) - the engine starts ready delegated todos
 - [D225](adr/d225.md) - a plan child's finish is its submission and its acceptance
+- [D226](adr/d226.md) - with a plan open the session todo list is the plan's view
 
 D36-D51, D72, D73 and D74 have no ADR yet; ARCHITECTURE.md is the record for those rows.

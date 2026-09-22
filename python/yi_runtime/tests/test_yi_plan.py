@@ -152,7 +152,8 @@ class Plans(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((run.outcome, todo._doc["state"]), ("verified_success", "done"))
 
     async def test_a_verdict_that_judges_no_product_leaves_the_attempt_alone(self) -> None:
-        """Dies with the control: fail on every refusal and an abstained todo is failed."""
+        """Dies with the control: fail on every refusal and an abstained todo is failed; with no
+        budget, wait on a finished child the engine left running and the run never returns."""
         for outcome, child, state in (("abstain", "finished", "running"), (None, "needs_you", "blocked")):
             with self.subTest(outcome or child):
                 host = FakeHost()
@@ -161,7 +162,7 @@ class Plans(unittest.IsolatedAsyncioTestCase):
                 if outcome is not None:
                     host.verdicts[todo.label] = outcome
                 host.children[f"{plan.id}/t"] = child
-                run = await plan.run(budget=1)
+                run = await asyncio.wait_for(plan.run(), timeout=5)
                 self.assertEqual((run.outcome, todo._doc["state"]), ("unresolved", state))
                 self.assertNotIn("done", host.sent, "a verdict the engine left is never re-sent")
                 yi.plan._RUNS.clear()
