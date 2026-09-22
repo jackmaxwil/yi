@@ -345,7 +345,7 @@ impl Delegate for SessionDelegate {
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::*;
     use std::num::NonZeroUsize;
     use std::sync::Mutex;
@@ -388,7 +388,7 @@ mod tests {
         }
     }
 
-    fn reply(text: &str) -> AgentMessage {
+    pub(in crate::plan) fn reply(text: &str) -> AgentMessage {
         yi_ai::faux::faux_assistant_message(vec![yi_ai::faux::faux_text(text)], StopReason::Stop)
     }
 
@@ -410,7 +410,7 @@ mod tests {
         scripted(replies.iter().map(|text| reply(text)).collect())
     }
 
-    type Sink<T> = Arc<Mutex<Vec<T>>>;
+    pub(in crate::plan) type Sink<T> = Arc<Mutex<Vec<T>>>;
 
     fn sink<T: Send + 'static>() -> (Sink<T>, Arc<dyn Fn(T) + Send + Sync>) {
         let sink: Sink<T> = Arc::new(Mutex::new(Vec::new()));
@@ -423,16 +423,16 @@ mod tests {
         (sink, push)
     }
 
-    struct Rig {
-        engine: Arc<PlanEngine>,
-        host: Arc<SubagentHost>,
+    pub(in crate::plan) struct Rig {
+        pub(in crate::plan) engine: Arc<PlanEngine>,
+        pub(in crate::plan) host: Arc<SubagentHost>,
         pins: Arc<FetchLog>,
-        reports: Sink<AgentMessage>,
+        pub(in crate::plan) reports: Sink<AgentMessage>,
         /// The host's own lifecycle notices, which a child the engine took never sends.
         notices: Sink<String>,
         /// The engine's lines to the owner.
-        said: Sink<AgentMessage>,
-        cwd: Scratch,
+        pub(in crate::plan) said: Sink<AgentMessage>,
+        pub(in crate::plan) cwd: Scratch,
     }
 
     fn rig(child_answer: &'static str) -> Result<Rig, Box<dyn std::error::Error>> {
@@ -440,7 +440,9 @@ mod tests {
     }
 
     /// The root session's rig: the engine takes each finished plan child (D225).
-    fn hooked(script: Vec<AgentMessage>) -> Result<Rig, Box<dyn std::error::Error>> {
+    pub(in crate::plan) fn hooked(
+        script: Vec<AgentMessage>,
+    ) -> Result<Rig, Box<dyn std::error::Error>> {
         rig_of(script, true)
     }
 
@@ -490,7 +492,8 @@ mod tests {
         ));
         let engine = Arc::new(
             PlanEngine::new(PlanStore::open(root.join("plans"))?, delegate)
-                .with_width(NonZeroUsize::new(2).ok_or("width")?),
+                .with_width(NonZeroUsize::new(2).ok_or("width")?)
+                .with_cwd(root.to_path_buf()),
         );
         if finish {
             crate::plan::finish::install(
@@ -510,7 +513,7 @@ mod tests {
         })
     }
 
-    fn owner(op: Op) -> OpRequest {
+    pub(in crate::plan) fn owner(op: Op) -> OpRequest {
         OpRequest {
             plan: None,
             actor: Actor::Owner,
@@ -520,7 +523,7 @@ mod tests {
         }
     }
 
-    fn delegated(label: &str) -> Result<TodoSpec, Box<dyn std::error::Error>> {
+    pub(in crate::plan) fn delegated(label: &str) -> Result<TodoSpec, Box<dyn std::error::Error>> {
         Ok(TodoSpec {
             label: TodoLabel::new(label)?,
             after: Vec::new(),
@@ -561,7 +564,7 @@ mod tests {
         false
     }
 
-    fn texts(messages: &Arc<Mutex<Vec<AgentMessage>>>) -> Vec<String> {
+    pub(in crate::plan) fn texts(messages: &Arc<Mutex<Vec<AgentMessage>>>) -> Vec<String> {
         messages
             .lock()
             .map(|sink| {
@@ -681,7 +684,7 @@ mod tests {
     }
 
     /// The todo once the engine has stepped it and told the owner, polled from the store.
-    async fn settled(
+    pub(in crate::plan) async fn settled(
         rig: &Rig,
         plan: &PlanId,
         label: &str,

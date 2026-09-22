@@ -24,6 +24,7 @@ struct Held {
     phase: Option<Phase>,
     early: Option<Url>,
     json: bool,
+    verified: bool,
 }
 
 fn needs_json(todo: &Todo) -> bool {
@@ -98,6 +99,7 @@ impl PlanEngine {
                         .and_then(Value::as_str)
                         .and_then(|url| url.parse().ok()),
                     json: needs_json(todo),
+                    verified: is_worktree(todo) || todo.contract.is_some(),
                 });
             }
         }
@@ -257,18 +259,21 @@ impl SubagentHost {
         hook.is_some_and(|hook| hook(name.to_owned(), exit, error))
     }
 
-    fn held_back(&self, name: &str) -> Option<String> {
+    fn held_back(&self, name: &str, verified: bool) -> Option<String> {
         let check = {
             let children = self.children.lock().ok()?;
             let key = Self::key_of(&children, name).ok()?;
             children.get(&key)?.check.clone()?
         };
-        if let Err(evidence) = crate::goal::run_check(&check, crate::goal::DEFAULT_CHECK_TIMEOUT_MS)
-        {
+        let timeout = crate::goal::DEFAULT_CHECK_TIMEOUT_MS;
+        let red = (!verified)
+            .then(|| crate::goal::run_check_at(&check, Some(&self.options.cwd), timeout).err())
+            .flatten();
+        if let Some(evidence) = red {
             return Some(format!("its check is red: {evidence}"));
         }
-        let answer = self.answer_of(name)?;
-        let result = serde_json::from_str::<ChildResult>(answer.trim()).ok()?;
+        let answer = Self::json_answer(&self.answer_of(name)?)?;
+        let result = serde_json::from_value::<ChildResult>(answer).ok()?;
         self.route_discoveries(name, &result.discoveries)
             .err()
             .map(|error| format!("its discoveries were held back: {error}"))
@@ -308,15 +313,18 @@ pub fn install(host: &Arc<SubagentHost>, engine: &Arc<PlanEngine>, deliver: Deli
             return false;
         };
         // Invariant: a plan child is named `<plan>/<todo>`, so any other exit reads no journal.
-        if !agent.contains('/') || engine.locate(&agent).is_none() {
+        if !agent.contains('/') {
             return false;
         }
+        let Some(held) = engine.locate(&agent) else {
+            return false;
+        };
         let deliver = Arc::clone(&deliver);
         host.settling.fetch_add(1, Ordering::SeqCst);
         let settling = Settling(Arc::clone(&host));
         drop(runtime.spawn_blocking(move || {
             let held = (exit == ChildExit::Completed)
-                .then(|| host.held_back(&agent))
+                .then(|| host.held_back(&agent, held.verified))
                 .flatten();
             let (exit, error) = match held {
                 Some(reason) => (
@@ -335,4 +343,83 @@ pub fn install(host: &Arc<SubagentHost>, engine: &Arc<PlanEngine>, deliver: Deli
         }));
         true
     }));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::dispatch::tests::{delegated, hooked, owner, reply, settled, texts};
+    use super::super::ops::Op;
+    use yi_types::plan::doc::{Check, GoalText, TodoState};
+
+    type TestResult = Result<(), Box<dyn std::error::Error>>;
+
+    /// Dies with the accept command run in the process's own cwd: the marker is only in the
+    /// checkout the child worked in, so the todo fails "its check is red".
+    #[tokio::test]
+    async fn an_accept_command_runs_in_the_childs_checkout() -> TestResult {
+        let rig = hooked(vec![reply("the seam is cut")])?;
+        std::fs::write(rig.cwd.join("seam.marker"), "cut")?;
+        let mut spec = delegated("cut the seam")?;
+        if let Some(delegation) = spec.delegation.as_mut() {
+            delegation.accept = Check::Command("test -f seam.marker".to_owned());
+        }
+        let out = rig.engine.apply(owner(Op::Init {
+            goal: GoalText::new("ship the widget")?,
+            todos: vec![spec],
+        }))?;
+        let todo = settled(&rig, &out.plan.id, "cut the seam").await?;
+        assert!(
+            matches!(todo.state, TodoState::Done { .. }),
+            "{:?}",
+            todo.state
+        );
+        Ok(())
+    }
+
+    /// Dies with the accept command run beside a contract: the contract passes, the red accept
+    /// command fails the todo first, and the verifier never decides.
+    #[tokio::test]
+    async fn a_contracted_delegations_accept_command_is_not_run() -> TestResult {
+        let rig = hooked(vec![reply("the seam is cut")])?;
+        let args = serde_json::json!({"op": "init", "goal": "ship the widget", "todos": [{
+            "label": "cut the seam",
+            "delegation": {"spec": {"role": "worker"}, "accept": {"command": "false"}},
+            "contract": {"class": "inline", "items": [
+                {"id": "ok", "critical": true, "weight": 1, "decider": {"cmd": "true"}}
+            ]},
+        }]});
+        let args = args.as_object().cloned().ok_or("args")?;
+        let (request, blobs) =
+            super::super::tool::declared(&super::super::ops::Actor::Owner, &args)?;
+        let out = rig.engine.apply_with(request, &blobs)?;
+        let todo = settled(&rig, &out.plan.id, "cut the seam").await?;
+        assert!(
+            matches!(todo.state, TodoState::Done { .. }),
+            "{:?} {:?}",
+            todo.state,
+            texts(&rig.said)
+        );
+        Ok(())
+    }
+
+    /// Dies with the answer parsed as bare JSON: a fenced result's discoveries are dropped.
+    #[tokio::test]
+    async fn a_fenced_answer_still_routes_its_discoveries() -> TestResult {
+        let answer = "```json\n{\"value\": 1, \"discoveries\": [{\"text\": \"the ledger drifts\", \"fingerprint\": \"f1\"}]}\n```";
+        let rig = hooked(vec![reply(answer)])?;
+        let out = rig.engine.apply(owner(Op::Init {
+            goal: GoalText::new("ship the widget")?,
+            todos: vec![delegated("cut the seam")?],
+        }))?;
+        settled(&rig, &out.plan.id, "cut the seam").await?;
+        let reports = texts(&rig.reports);
+        assert!(
+            reports
+                .iter()
+                .any(|text| text.contains("deferred discovery")
+                    && text.contains("the ledger drifts")),
+            "{reports:?}"
+        );
+        Ok(())
+    }
 }
