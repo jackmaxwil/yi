@@ -319,7 +319,7 @@ fn wire_plan_request(
     registry: &mut crate::kernel::HostRegistry,
     log: Arc<crate::fetch::FetchLog>,
     resolver: Arc<crate::fetch::Resolver>,
-) -> Option<(Arc<crate::plan::ops::PlanEngine>, crate::plan::ops::Actor)> {
+) -> Option<PlanWiring> {
     // Invariant: a child's engine stands on its parent's host and checkout, since its `submit`
     // settles the lane the parent holds and integrates onto the parent's generation (6.6).
     let (actor, host, cwd) = if wiring.depth == 0 {
@@ -352,7 +352,20 @@ fn wire_plan_request(
         deliver,
         log,
     ));
-    let ops = Arc::new(crate::plan::ledger::SessionOpSink(session.store_handle()));
+    let todo_actor = wiring
+        .parent_link
+        .as_ref()
+        .map_or_else(|| "main".to_owned(), |link| link.child_name.clone());
+    let todos = crate::todo::TodoStore::new(session.store_handle(), todo_actor);
+    let mut ops: Arc<dyn crate::plan::ops::OpSink> =
+        Arc::new(crate::plan::ledger::SessionOpSink(session.store_handle()));
+    if wiring.depth == 0 {
+        ops = Arc::new(crate::todo::mirror::Mirror {
+            inner: ops,
+            todos: Arc::clone(&todos),
+            store: store.clone(),
+        });
+    }
     let liveness: Arc<dyn crate::plan::recovery::Liveness> = delegate.clone();
     let mut engine = crate::plan::ops::PlanEngine::new(store, delegate)
         .with_output_resolve(resolver)
@@ -382,8 +395,14 @@ fn wire_plan_request(
     }
     let engine = Arc::new(engine);
     crate::plan::request::register(Arc::clone(&engine), actor.clone(), registry);
-    Some((engine, actor))
+    Some((engine, actor, todos))
 }
+
+type PlanWiring = (
+    Arc<crate::plan::ops::PlanEngine>,
+    crate::plan::ops::Actor,
+    Arc<crate::todo::TodoStore>,
+);
 
 fn wire_plan_engine(
     session: &AgentSession,
@@ -391,9 +410,9 @@ fn wire_plan_engine(
     plans_dir: &Path,
     host: &Arc<SubagentHost>,
     tools: &mut Vec<Arc<dyn yi_tools::Tool>>,
-    plan: Option<(Arc<crate::plan::ops::PlanEngine>, crate::plan::ops::Actor)>,
+    plan: Option<PlanWiring>,
 ) {
-    let Some((engine, actor)) = plan else {
+    let Some((engine, actor, todos)) = plan else {
         return;
     };
     let probe_deliver: crate::goal::DeliverFn = {
@@ -407,11 +426,6 @@ fn wire_plan_engine(
         Arc::clone(&engine),
         actor,
     )));
-    let todo_actor = wiring
-        .parent_link
-        .as_ref()
-        .map_or_else(|| "main".to_owned(), |link| link.child_name.clone());
-    let todos = crate::todo::TodoStore::new(session.store_handle(), todo_actor);
     tools.push(Arc::new(crate::todo::tool::TodoTool::new(Arc::clone(
         &todos,
     ))));

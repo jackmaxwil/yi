@@ -448,6 +448,30 @@ fn a_raced_engine_start_journals_nothing() -> TestResult {
     Ok(())
 }
 
+/// Dies with the engine's carve-out read off the actor word (done.rs `admit`): a child named
+/// `engine` submits for another child's running todo.
+#[test]
+fn a_child_named_engine_is_not_the_engine() -> TestResult {
+    let (_temp, _store, _stub, engine) = harness(8)?;
+    let out = init(&engine, vec![delegated_spec("delegated job")?])?;
+    let submitted = engine.apply(OpRequest {
+        plan: Some(out.plan.id.clone()),
+        actor: Actor::Child(AgentId::new("engine")?),
+        op: Op::Submit {
+            label: label("delegated job")?,
+            attempt: yi_types::plan::doc::AttemptId::FIRST,
+            output: "local://out/job.json".parse()?,
+        },
+        request_id: None,
+        expected_revision: None,
+    });
+    assert!(
+        matches!(submitted, Err(PlanOpError::NotRunningBy { .. })),
+        "{submitted:?}"
+    );
+    Ok(())
+}
+
 /// Dies with `standing` unread in `view` (ops.rs): a script cannot tell a todo the width holds
 /// from one the engine was refused, and reads every idle todo as waiting on a slot.
 #[test]
@@ -3452,6 +3476,87 @@ mod contracts {
             "{refused:?}"
         );
         let _isolation = Isolation::None;
+        Ok(())
+    }
+
+    // Dies with the finish notice written off the refusal alone (finish.rs): the fourth jury
+    // escalated and blocked the todo on the user, and the owner is told it is still running.
+    #[test]
+    fn an_escalated_finish_tells_the_owner_the_todo_waits_on_them() -> TestResult {
+        let jury = Arc::new(HungJury(AtomicU32::new(0)));
+        let verifier = Verifier::new(20_000).with_judge(jury);
+        let rig = rig_verified("yi-g3-escalated-finish", None, verifier)?;
+        let plan = planned()?;
+        let artifacts = rig.store.artifacts(&plan);
+        let rubric = artifacts.put(b"it reads well", "text/markdown", &rig.store.nonce())?;
+        let essay = artifacts.put(b"an essay", "text/markdown", &rig.store.nonce())?;
+        let product = format!("plan://{plan}/artifacts/{}", essay.digest.hex());
+        rig.serve.set(&product, Some("an essay"));
+        let mut contract =
+            serde_json::to_value(cmd_contract(&rig.store, &plan, "true", "writer")?)?;
+        contract["items"]
+            .as_array_mut()
+            .ok_or("items")?
+            .push(json!({
+                "id": "taste", "critical": false, "weight": 1,
+                "decider": {"judge": {"rubric": rubric, "evidence": [essay], "policy": {"n": 3}}}
+            }));
+        let mut job = contracted("land it", serde_json::from_value(contract)?)?;
+        job.delegation = Some(delegation());
+        init(&rig.engine, vec![job])?;
+        let mut line = None;
+        for _ in 0..4 {
+            line = rig.engine.finish_child(
+                "child-0",
+                yi_types::subagent::ChildExit::Completed,
+                None,
+                Some("an essay".to_owned()),
+            );
+        }
+        let line = line.ok_or("the fourth finish said nothing")?;
+        assert!(
+            line.starts_with("plan: \"land it\" waits on you: a verdict escalated to you"),
+            "{line}"
+        );
+        Ok(())
+    }
+
+    // Dies with the refusal cache keyed on the contract digest alone (schedule.rs): a start
+    // refused for a checker not yet stored is never tried again once the owner stores it.
+    #[test]
+    fn a_start_refused_for_a_missing_criterion_is_tried_once_it_is_stored() -> TestResult {
+        let rig = rig("yi-f0c-late-criterion", None)?;
+        let elsewhere = PlanStore::open(rig._temp.join("elsewhere"))?;
+        let contract = cmd_contract(&elsewhere, &planned()?, "true", "writer")?;
+        let checker = contract
+            .criteria()
+            .first()
+            .map(|artifact| artifact.digest)
+            .ok_or("no criterion")?;
+        let mut job = delegated_spec("delegated job")?;
+        job.contract = Some(contract);
+        let opened = rig.engine.apply(owner(Op::Init {
+            goal: GoalText::new("ship the widget end to end")?,
+            todos: vec![job],
+        }))?;
+        assert!(opened.spawned.is_empty(), "the criterion is not stored yet");
+        let bytes = elsewhere.artifacts(&planned()?).get(&checker)?;
+        rig.store.artifacts(&opened.plan.id).put(
+            &bytes,
+            "application/vnd.yi.checker-manifest+json",
+            &rig.store.nonce(),
+        )?;
+        let out = rig.engine.apply(at(
+            &opened.plan.id,
+            Op::Append {
+                todos: vec![spec("write the notes")?],
+            },
+        ))?;
+        assert_eq!(
+            out.spawned.len(),
+            1,
+            "the stored criterion lets the start through"
+        );
         Ok(())
     }
 

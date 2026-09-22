@@ -7,11 +7,12 @@ use serde_json::Value;
 use yi_types::plan::canonical::canonical_digest;
 use yi_types::plan::doc::{Plan, PlanId, PlanState, Todo, TodoLabel};
 
+use super::artifact::Artifacts;
 use super::ops::{Actor, Delta, Op, OpRequest, Outcome, PlanEngine, PlanOpError, admitted};
 use super::state::{IntentOutcome, RootState, reduce, root_of};
 use super::table::ready_labels;
 
-/// Invariant: only a contract or fuse refusal is kept, keyed by its cause; the rest retry.
+/// Invariant: only a contract refusal (per criteria stored) or a fuse refusal is kept.
 #[derive(Default)]
 pub(super) struct Refused(Mutex<HashSet<String>>);
 
@@ -31,13 +32,28 @@ impl Refused {
     }
 }
 
-fn contract_key(id: &PlanId, todo: &Todo) -> String {
+fn contract_key(artifacts: &Artifacts, id: &PlanId, todo: &Todo) -> String {
     let digest = serde_json::to_value(&todo.contract)
         .ok()
         .and_then(|contract| canonical_digest(&contract).ok())
         .map(|digest| digest.hex())
         .unwrap_or_default();
-    format!("{id}/{}/{}/{digest}", todo.label, todo.attempt.get())
+    let stored: String = todo
+        .contract
+        .iter()
+        .flat_map(|contract| contract.criteria())
+        .map(
+            |artifact| match artifacts.path(&artifact.digest).is_file() {
+                true => '1',
+                false => '0',
+            },
+        )
+        .collect();
+    format!(
+        "{id}/{}/{}/{digest}/{stored}",
+        todo.label,
+        todo.attempt.get()
+    )
 }
 
 fn fuse_key(contract: &str, spent: u32) -> String {
@@ -160,7 +176,7 @@ impl PlanEngine {
                 if intent.is_some_and(|(_, intent)| intent.outcome == IntentOutcome::Pending) {
                     continue;
                 }
-                let contract = contract_key(id, todo);
+                let contract = contract_key(&self.store.artifacts(id), id, todo);
                 if self.refused.holds(&contract) || self.refused.holds(&fuse_key(&contract, spent))
                 {
                     continue;

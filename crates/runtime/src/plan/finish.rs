@@ -1,5 +1,3 @@
-//! A plan-dispatched child's finish is its submission and its acceptance (D225).
-
 use std::sync::Arc;
 
 use serde_json::Value;
@@ -7,12 +5,12 @@ use yi_types::plan::contract::{Decider, ItemVerdict, Outcome as ContractOutcome,
 use yi_types::plan::doc::{PlanId, PlanState, Todo, TodoAddr, TodoLabel, TodoState};
 use yi_types::plan::ledger::AttemptId;
 use yi_types::plan::op::Choice;
-use yi_types::subagent::ChildExit;
+use yi_types::subagent::{ChildExit, ChildResult, FailClass};
 use yi_types::url::Url;
 
 use super::acceptance::{Phase, is_worktree, phase_of};
 use super::ops::{Actor, Op, OpRequest, PlanEngine, PlanOpError, agent_url};
-use super::state::{SUBMITTED_KEY, reduce};
+use super::state::{SUBMITTED_KEY, reduce, root_of};
 use crate::goal::DeliverFn;
 use crate::subagent::{FinishFn, SubagentHost, last_assistant_text};
 
@@ -66,7 +64,11 @@ fn failed_items(verdict: &Verdict) -> String {
 impl PlanEngine {
     /// The todo `agent` runs in an active plan; `None` means a child `rlm.run` spawned.
     fn locate(&self, agent: &str) -> Option<Held> {
-        for root in self.store.roots().ok()? {
+        let roots = match agent.split_once('/') {
+            Some((plan, _)) => vec![root_of(&PlanId::new(plan).ok()?).ok()?],
+            None => self.store.roots().ok()?,
+        };
+        for root in roots {
             let Ok(reading) = self.store.journal(&root).read() else {
                 continue;
             };
@@ -174,6 +176,26 @@ impl PlanEngine {
         )
     }
 
+    fn left_notice(&self, held: &Held, refusal: &PlanOpError) -> Option<String> {
+        if matches!(
+            refusal,
+            PlanOpError::IllegalStep { .. } | PlanOpError::NotRunningBy { .. }
+        ) {
+            return None;
+        }
+        let label = held.label.as_str();
+        let plan = self.store.read(&held.plan).ok();
+        Some(
+            match plan.as_ref().and_then(|plan| plan.todo(&held.label)) {
+                Some(Todo {
+                    state: TodoState::Blocked { note, .. },
+                    ..
+                }) => format!("plan: {label:?} waits on you: {note}"),
+                _ => format!("plan: not accepted {label:?}, still running: {refusal}"),
+            },
+        )
+    }
+
     pub fn finish_child(
         &self,
         agent: &str,
@@ -205,14 +227,10 @@ impl PlanEngine {
             Err(refusal) => refusal,
         };
         let PlanOpError::Refused { verdict, .. } = &refusal else {
-            return Some(format!(
-                "plan: not accepted {label:?}, still running: {refusal}"
-            ));
+            return self.left_notice(&held, &refusal);
         };
         if verdict.outcome != ContractOutcome::Fail {
-            return Some(format!(
-                "plan: not accepted {label:?}, still running: {refusal}"
-            ));
+            return self.left_notice(&held, &refusal);
         }
         let items = failed_items(verdict);
         Some(
@@ -238,6 +256,23 @@ impl SubagentHost {
         hook.is_some_and(|hook| hook(name.to_owned(), exit, error))
     }
 
+    fn held_back(&self, name: &str) -> Option<String> {
+        let check = {
+            let children = self.children.lock().ok()?;
+            let key = Self::key_of(&children, name).ok()?;
+            children.get(&key)?.check.clone()?
+        };
+        if let Err(evidence) = crate::goal::run_check(&check, crate::goal::DEFAULT_CHECK_TIMEOUT_MS)
+        {
+            return Some(format!("its check is red: {evidence}"));
+        }
+        let answer = self.answer_of(name)?;
+        let result = serde_json::from_str::<ChildResult>(answer.trim()).ok()?;
+        self.route_discoveries(name, &result.discoveries)
+            .err()
+            .map(|error| format!("its discoveries were held back: {error}"))
+    }
+
     fn answer_of(&self, name: &str) -> Option<String> {
         let children = self.children.lock().ok()?;
         let key = Self::key_of(&children, name).ok()?;
@@ -255,11 +290,24 @@ pub fn install(host: &Arc<SubagentHost>, engine: &Arc<PlanEngine>, deliver: Deli
         let Ok(runtime) = tokio::runtime::Handle::try_current() else {
             return false;
         };
-        if engine.locate(&agent).is_none() {
+        // Invariant: a plan child is named `<plan>/<todo>`, so any other exit reads no journal.
+        if !agent.contains('/') || engine.locate(&agent).is_none() {
             return false;
         }
         let deliver = Arc::clone(&deliver);
         drop(runtime.spawn_blocking(move || {
+            let held = (exit == ChildExit::Completed)
+                .then(|| host.held_back(&agent))
+                .flatten();
+            let (exit, error) = match held {
+                Some(reason) => (
+                    ChildExit::Failed {
+                        class: FailClass::RedCheck,
+                    },
+                    Some(reason),
+                ),
+                None => (exit, error),
+            };
             let product = host.answer_of(&agent);
             if let Some(line) = engine.finish_child(&agent, exit, error, product) {
                 super::dispatch::say(&deliver, line);

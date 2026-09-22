@@ -1,0 +1,367 @@
+//! With a plan open the session todo list is the plan's view (D226): every committed plan op
+//! re-projects the plan into the list, and the todo tool refuses to step it.
+
+#[path = "../../types/tests/support/scratch.rs"]
+mod scratch;
+use scratch::Scratch;
+
+use std::error::Error;
+use std::sync::{Arc, Mutex};
+
+use serde_json::{Map, Value, json};
+use yi_ai::faux::{faux_assistant_message, faux_text, faux_tool_call};
+use yi_loop::{ExecutionMode, TurnSnapshot};
+use yi_runtime::plan::ops::{Actor, Delegate, Op, OpRequest, PlanEngine, TodoSpec};
+use yi_runtime::plan::store::PlanStore;
+use yi_runtime::todo::coupling::{Eager, Options, coupling};
+use yi_runtime::todo::mirror::{ENGINE_ACTOR, Mirror, plan_of};
+use yi_runtime::todo::{Op as TodoOp, TodoError, TodoStore, latest_record, text};
+use yi_runtime::{AgentSession, ProviderStream, SessionConfig};
+use yi_types::message::{AgentMessage, Attribution, StopReason, UserContent};
+use yi_types::model::{Model, ModelCost};
+use yi_types::plan::doc::{
+    AgentId, Check, Delegation, GoalText, SpawnSpec, TodoAddr, TodoLabel, TodoStateName,
+};
+use yi_types::todo::{PhaseName, TodoItem};
+use yi_types::url::Url;
+
+type TestResult = Result<(), Box<dyn Error>>;
+
+struct Child;
+
+impl Delegate for Child {
+    fn spawn(&self, _at: &TodoAddr, _delegation: &Delegation) -> Result<AgentId, String> {
+        AgentId::new("child-0").map_err(|error| error.to_string())
+    }
+
+    fn reap(&self, _agent: &AgentId, _supplied: &[Url]) -> Result<Option<Url>, String> {
+        Ok(None)
+    }
+}
+
+struct Nothing;
+
+impl yi_runtime::plan::ops::OpSink for Nothing {
+    fn record(&self, _record: yi_types::plan::ledger::PlanOpRecord) -> Result<(), String> {
+        Ok(())
+    }
+}
+
+fn faux_model() -> Model {
+    let zero = || serde_json::Number::from(0u64);
+    Model {
+        id: "faux-1".to_owned(),
+        name: "Faux".to_owned(),
+        api: "faux".to_owned(),
+        provider: "faux".to_owned(),
+        base_url: "http://localhost:0".to_owned(),
+        reasoning: false,
+        input: vec!["text".to_owned()],
+        cost: ModelCost {
+            input: zero(),
+            output: zero(),
+            cache_read: zero(),
+            cache_write: zero(),
+            tiers: None,
+        },
+        context_window: 128_000,
+        max_tokens: 16_384,
+        compat: None,
+        thinking_level_map: None,
+        headers: None,
+    }
+}
+
+fn session(provider: Arc<ProviderStream>) -> AgentSession {
+    AgentSession::new(
+        SessionConfig {
+            system_prompt: "sys".to_owned(),
+            model: faux_model(),
+            thinking_level: None,
+            tool_execution: ExecutionMode::Sequential,
+        },
+        provider,
+    )
+}
+
+fn memory_store() -> yi_session::SharedSession {
+    Arc::new(Mutex::new(yi_session::SessionStore::in_memory(
+        yi_session::SessionMetadata {
+            id: "mirror".to_owned(),
+            created_at: 0,
+            parent_session_id: None,
+            name: None,
+        },
+    )))
+}
+
+fn spec(text: &str, delegated: bool) -> Result<TodoSpec, Box<dyn Error>> {
+    let delegation = delegated.then(|| Delegation {
+        spec: SpawnSpec {
+            role: None,
+            model: None,
+            effort: None,
+            tools: Vec::new(),
+            isolation: None,
+            budget: None,
+            wall: None,
+            parent_close: None,
+            extra: Map::new(),
+        },
+        accept: Check::Command("true".to_owned()),
+        output: None,
+        context: Vec::new(),
+        note: None,
+        extra: Map::new(),
+    });
+    Ok(TodoSpec {
+        label: TodoLabel::new(text)?,
+        after: Vec::new(),
+        delegation,
+        contract: None,
+        children: Vec::new(),
+    })
+}
+
+fn owner(op: Op) -> OpRequest {
+    OpRequest {
+        plan: None,
+        actor: Actor::Owner,
+        op,
+        request_id: None,
+        expected_revision: None,
+    }
+}
+
+/// A session with its own list `first`, `gate`, and an engine whose sink is the mirror.
+fn mirrored(dir: &Scratch) -> Result<(AgentSession, Arc<TodoStore>, PlanEngine), Box<dyn Error>> {
+    let session = session(Arc::new(ProviderStream::new(None, None)));
+    session.attach_store(memory_store())?;
+    let todos = TodoStore::new(session.store_handle(), "main");
+    todos.apply(
+        TodoOp::Init {
+            phases: vec![(
+                PhaseName::new("Tasks")?,
+                vec![TodoItem::from_text("first")?, TodoItem::from_text("gate")?],
+            )],
+        },
+        None,
+    )?;
+    let store = PlanStore::open(dir.to_path_buf())?;
+    let mirror = Mirror {
+        inner: Arc::new(Nothing),
+        todos: Arc::clone(&todos),
+        store: store.clone(),
+    };
+    let engine = PlanEngine::new(store, Arc::new(Child)).with_op_sink(Arc::new(mirror));
+    engine.apply(owner(Op::Init {
+        goal: GoalText::new("ship the widget")?,
+        todos: vec![spec("gate", false)?, spec("delegated job", true)?],
+    }))?;
+    Ok((session, todos, engine))
+}
+
+fn ids(todos: &TodoStore) -> Vec<(String, String, TodoStateName)> {
+    todos
+        .list()
+        .items()
+        .map(|item| {
+            (
+                item.id
+                    .as_ref()
+                    .map(ToString::to_string)
+                    .unwrap_or_default(),
+                item.label.to_string(),
+                item.state.clone(),
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn a_plan_op_replaces_the_list_and_keeps_ids() -> TestResult {
+    let dir = Scratch::new("yi-todo-mirror-ids")?;
+    let (session, todos, engine) = mirrored(&dir)?;
+    let list = todos.list();
+    let plan = plan_of(&list).ok_or("the list names no plan")?.to_owned();
+    assert_eq!(list.phases.len(), 1);
+    assert_eq!(list.phases[0].name.as_str(), plan);
+    assert_eq!(
+        ids(&todos),
+        [
+            ("t2".to_owned(), "gate".to_owned(), TodoStateName::Pending),
+            (
+                "t3".to_owned(),
+                "delegated job".to_owned(),
+                TodoStateName::Running
+            ),
+        ],
+        "gate keeps its id, the new label takes the next one"
+    );
+    let running = list.items().nth(1).ok_or("no second item")?;
+    assert_eq!(running.extra.get("by"), Some(&json!("child-0")));
+    assert_eq!(running.extra.get("plan"), Some(&json!(plan)));
+    let record =
+        latest_record(&session.store_handle()().ok_or("no store")?).ok_or("no todo record")?;
+    assert_eq!(
+        (record.op.as_str(), record.actor.as_str()),
+        ("plan", ENGINE_ACTOR)
+    );
+    engine.apply(owner(Op::Start {
+        label: TodoLabel::new("gate")?,
+    }))?;
+    assert_eq!(
+        ids(&todos)[0],
+        ("t2".to_owned(), "gate".to_owned(), TodoStateName::Running)
+    );
+    assert_eq!(
+        text::header(&todos.list()),
+        "Todos 0/2 · running: gate",
+        "the environment's todo line carries the plan's counts"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_mirrored_item_refuses_start_with_the_plan_road() -> TestResult {
+    let dir = Scratch::new("yi-todo-mirror-refuse")?;
+    let (_session, todos, _engine) = mirrored(&dir)?;
+    let before = todos.list();
+    let refused = todos.apply(
+        TodoOp::Start {
+            label: TodoLabel::new("gate")?,
+        },
+        None,
+    );
+    let Err(error) = refused else {
+        return Err("start on a mirrored item must be refused".into());
+    };
+    assert!(matches!(error, TodoError::Mirrored { .. }), "{error}");
+    let text = error.to_string();
+    assert!(
+        text.contains("the plan tool changes it") && text.contains("the engine steps delegated"),
+        "{text}"
+    );
+    assert_eq!(todos.list(), before, "the refusal moves nothing");
+    assert!(todos.apply(TodoOp::View, None).is_ok(), "view passes");
+    assert!(
+        text::next_lines(&before).is_empty(),
+        "no todo-tool move is offered for a list the todo tool cannot step"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_mirrored_list_with_a_running_child_does_not_nag() -> TestResult {
+    let dir = Scratch::new("yi-todo-mirror-nag")?;
+    let (session, todos, _engine) = mirrored(&dir)?;
+    let hooks = coupling(
+        &session,
+        Arc::clone(&todos),
+        Options {
+            eager: Eager::Prelude,
+            children_running: Arc::new(|| false),
+            inner: None,
+        },
+    );
+    let prompt = AgentMessage::User {
+        content: UserContent::Text("Fix the parser, then add the test, and land it.".to_owned()),
+        attribution: Attribution::User,
+        timestamp: 0,
+    };
+    (hooks.on_prompt)(&prompt);
+    let stop = faux_assistant_message(vec![faux_text("waiting on the child")], StopReason::Stop);
+    let snapshot = TurnSnapshot {
+        message: &stop,
+        tool_results: &[],
+    };
+    assert!(
+        (hooks.intercept_stop)(&snapshot).is_none(),
+        "a stop over the plan's list is the plan coupling's to judge"
+    );
+    let edit = faux_assistant_message(
+        vec![faux_tool_call("c1", "edit", Map::new())],
+        StopReason::ToolUse,
+    );
+    let landed = [AgentMessage::ToolResult {
+        tool_call_id: "c1".to_owned(),
+        tool_name: "edit".to_owned(),
+        content: vec![faux_text("ok")],
+        details: None,
+        usage: None,
+        added_tool_names: None,
+        is_error: false,
+        timestamp: 0,
+    }];
+    for _ in 0..30 {
+        (hooks.on_turn)(&TurnSnapshot {
+            message: &edit,
+            tool_results: &landed,
+        });
+    }
+    assert_eq!(
+        session.pending_count(),
+        0,
+        "no prelude and no nudge names a todo op the list refuses"
+    );
+    Ok(())
+}
+
+/// Dies with the mirror unwired (wiring.rs): the session's list stays the owner's own and the
+/// environment block never shows the plan.
+#[tokio::test]
+async fn a_plan_opened_through_the_tool_is_the_sessions_todo_list() -> TestResult {
+    let root = Scratch::new("yi-todo-mirror-wired")?;
+    let provider = Arc::new(ProviderStream::new(None, None));
+    let mut args: Map<String, Value> = Map::new();
+    args.insert("op".to_owned(), json!("init"));
+    args.insert("goal".to_owned(), json!("ship the widget"));
+    args.insert(
+        "todos".to_owned(),
+        json!([{"label": "cut the seam"}, {"label": "wire it"}]),
+    );
+    provider.queue_faux(vec![
+        faux_assistant_message(
+            vec![faux_tool_call("c1", "plan", args)],
+            StopReason::ToolUse,
+        ),
+        faux_assistant_message(vec![faux_text("opened")], StopReason::Stop),
+    ]);
+    let mut session = session(Arc::clone(&provider));
+    session.attach_store(memory_store())?;
+    yi_runtime::attach_runtime(
+        &mut session,
+        yi_runtime::RuntimeWiring {
+            provider,
+            system_prompt: "sys".to_owned(),
+            tool_execution: ExecutionMode::Sequential,
+            cwd: root.to_path_buf(),
+            home: root.join("home"),
+            lane_slots: 1,
+            broker: None,
+            tools: Arc::new(yi_tools::builtin_tools),
+            depth: 0,
+            max_depth: 1,
+            rlm_dir: root.join("rlm"),
+            summarizer: None,
+            advisor: None,
+            auto_review: None,
+            plan_stale_turns: None,
+            plans_dir: Some(root.join("plans")),
+            parent_link: None,
+            wall: yi_runtime::Wall::default(),
+            auto_background: None,
+            deadline: None,
+            kernel_prewarm: false,
+            mcp_read: None,
+            sessions_dir: None,
+            kernels: yi_runtime::fetch::KernelServiceMap::new(),
+        },
+    );
+    session.prompt("open a plan")?;
+    session.wait_idle().await;
+    let list = session.todos().ok_or("no todo store")?.list();
+    assert!(plan_of(&list).is_some(), "{list:?}");
+    assert_eq!(text::header(&list), "Todos 0/2");
+    Ok(())
+}

@@ -9,6 +9,7 @@ use yi_types::todo::{
 use crate::goal::StoreHandle;
 
 pub mod coupling;
+pub mod mirror;
 pub mod text;
 pub mod tool;
 
@@ -142,6 +143,10 @@ pub enum TodoError {
         "the list changed since you last saw it (touched {now}, you sent {sent}); view it first"
     )]
     Stale { now: u64, sent: u64 },
+    #[error(
+        "the list is plan {plan}; the plan tool changes it (append, block, drop, start and done on your own todos; the engine steps delegated todos)"
+    )]
+    Mirrored { plan: String },
     #[error(transparent)]
     Doc(#[from] DocError),
 }
@@ -240,6 +245,11 @@ impl TodoStore {
                 changed: false,
             });
         }
+        if let Some(plan) = mirror::plan_of(&state.list) {
+            return Err(TodoError::Mirrored {
+                plan: plan.to_owned(),
+            });
+        }
         let before = state.list.clone();
         let mut list = before.clone();
         let label = op.label().cloned();
@@ -252,17 +262,36 @@ impl TodoStore {
         let touched = state.touched;
         drop(state);
         self.record(name, actor, label, touched, &list);
-        if let Ok(hooks) = self.on_change.lock() {
-            for hook in hooks.iter() {
-                hook(&list);
-            }
-        }
+        self.changed(&list);
         Ok(Applied {
             before,
             list,
             touched,
             changed: true,
         })
+    }
+
+    pub fn replace(&self, list: TodoList, actor: &str) {
+        let Ok(mut state) = self.state.lock() else {
+            return;
+        };
+        if state.list == list {
+            return;
+        }
+        state.list = list.clone();
+        state.touched = state.touched.saturating_add(1);
+        let touched = state.touched;
+        drop(state);
+        self.record("plan", actor, None, touched, &list);
+        self.changed(&list);
+    }
+
+    fn changed(&self, list: &TodoList) {
+        if let Ok(hooks) = self.on_change.lock() {
+            for hook in hooks.iter() {
+                hook(list);
+            }
+        }
     }
 
     fn record(

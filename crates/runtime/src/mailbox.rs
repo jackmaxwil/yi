@@ -555,7 +555,11 @@ impl SubagentHost {
 
     /// L5 criticality is derived, never declared: the ancestor todo is looked up, its check
     /// re-run, and only a red one is HIGH. Fails closed: an unadjudicable row holds the result.
-    fn route_discoveries(&self, child: &str, discoveries: &[Discovery]) -> Result<(), String> {
+    pub(crate) fn route_discoveries(
+        &self,
+        child: &str,
+        discoveries: &[Discovery],
+    ) -> Result<(), String> {
         let plan = if discoveries
             .iter()
             .any(|row| row.violates_check_of.is_some())

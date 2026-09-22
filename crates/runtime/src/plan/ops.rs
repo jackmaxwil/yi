@@ -30,7 +30,7 @@ use super::verify::Verifier;
 use yi_types::plan::op::Reaped;
 
 pub(super) const OWNER_AGENT: &str = "main";
-pub(super) const ENGINE_AGENT: &str = "engine";
+const ENGINE_AGENT: &str = "engine";
 
 const CHILD_SUFFIX_MAX: u32 = 9_999;
 
@@ -394,6 +394,7 @@ pub(super) struct Txn {
     pub(super) records: Vec<JournalRecord>,
     pub(super) journal: Journal,
     pub(super) actor: String,
+    pub(super) engine: bool,
     pub(super) request: RequestId,
     pub(super) expected: u64,
     /// The resolution a `done` in this transaction lands with; the done path decides it.
@@ -615,6 +616,7 @@ impl PlanEngine {
             records,
             journal: self.store.journal(root),
             actor: actor_word(actor),
+            engine: matches!(actor, Actor::Engine),
             request,
             expected: expected.map_or(0, |touched| touched.0),
             resolution: None,
@@ -824,7 +826,7 @@ impl PlanEngine {
         match self.transact(txn, id, root, op) {
             Ok(delta) => self.conclude(id, &txn.state, &before, delta),
             Err(error) => {
-                let raced = txn.actor == ENGINE_AGENT && super::schedule::raced(&error);
+                let raced = txn.engine && super::schedule::raced(&error);
                 if error.is_recordable() && !raced {
                     self.record_refusal(txn, id, op, &error);
                 }

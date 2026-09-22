@@ -693,7 +693,7 @@ pub(super) fn admit(
         Op::Submit { label, .. } => {
             if let Some(TodoState::Running { by }) = plan.todo(label).map(|todo| &todo.state)
                 && by.as_str() != txn.actor
-                && txn.actor != super::ops::ENGINE_AGENT
+                && !txn.engine
             {
                 return Err(PlanOpError::NotRunningBy {
                     label: label.clone(),
