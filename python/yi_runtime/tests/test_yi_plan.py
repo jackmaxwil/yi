@@ -120,7 +120,9 @@ class Plans(unittest.IsolatedAsyncioTestCase):
         todo = await plan.todo(key="apart", delegate=Writer(accept=contract(cmd("true", critical=True))))
         self.assertEqual(todo._doc["contract"]["class"], "writer", "the role's accept is the todo's contract")
 
-    async def test_a_refused_done_fails_the_attempt_and_a_stuck_child_is_waited_on(self) -> None:
+    async def test_a_red_verdict_fails_the_attempt_through_the_engine_and_a_stuck_child_is_waited_on(self) -> None:
+        """Dies with the control: send `done` from the settle and the library re-runs the verifier
+        the engine already ran, once per pass, for as long as the todo stays running."""
         host = FakeHost()
         plan = await Plan.create("ship it")
         todo = await plan.todo(key="tests", delegate=Writer(accept=contract(cmd("false", critical=True))))
@@ -132,7 +134,9 @@ class Plans(unittest.IsolatedAsyncioTestCase):
         host.children[f"{plan.id}/tests"] = "finished"
         await run
         self.assertEqual((run.outcome, todo._doc["state"]), ("failed", "failed"))
-        self.assertIn("done refused", todo._doc["cause"])
+        self.assertIn("contract refused", todo._doc["cause"])
+        self.assertEqual([op for op, _ in host.engine_ops], ["submit", "fail"])
+        self.assertFalse({"done", "submit", "fail"} & set(host.sent), "the library sent no step of its own")
 
     async def test_a_queued_child_is_waited_on(self) -> None:
         """Dies with the control: read `queued` as unknown and an admitted child blocks its todo on you."""
@@ -157,8 +161,9 @@ class Plans(unittest.IsolatedAsyncioTestCase):
                 if outcome is not None:
                     host.verdicts[todo.label] = outcome
                 host.children[f"{plan.id}/t"] = child
-                run = await plan.run(budget=5)
+                run = await plan.run(budget=1)
                 self.assertEqual((run.outcome, todo._doc["state"]), ("unresolved", state))
+                self.assertNotIn("done", host.sent, "a verdict the engine left is never re-sent")
                 yi.plan._RUNS.clear()
 
     async def test_a_child_asking_you_something_is_collected_not_raised(self) -> None:
@@ -172,6 +177,25 @@ class Plans(unittest.IsolatedAsyncioTestCase):
         host.results[child] = RuntimeError(f"{child} is still running")
         asyncio.get_running_loop().call_later(0.05, host.results.__setitem__, child, {"text": "done"})
         self.assertEqual(await todo.result(timeout=5), {"text": "done"})
+
+    async def test_an_engine_refusal_is_not_read_as_a_wait_for_a_slot(self) -> None:
+        """Dies with the control: read every idle delegated todo as `admission` and the shape stops
+        at it, the inline todo behind it never runs, and the engine's reason is lost."""
+        host = FakeHost()
+        host.unstartable["deploy"] = "criterion sha256:0 is not in the store"
+        plan = await Plan.create("ship it")
+        ran = []
+
+        async def notes() -> None:
+            ran.append("notes")
+
+        await plan.todo(key="deploy", delegate=Writer(accept=contract(cmd("true", critical=True))))
+        await plan.todo(key="notes", run=notes)
+        run = await plan.run(budget=5)
+        self.assertEqual(ran, ["notes"], "the todo behind the refused one runs")
+        refusal = run.refusals["deploy"]
+        self.assertEqual(refusal.kind, "not_started")
+        self.assertIn("criterion sha256:0 is not in the store", str(refusal))
 
     async def test_duplicate_run_calls_attach_or_refuse(self) -> None:
         host = FakeHost()
@@ -211,7 +235,8 @@ class Plans(unittest.IsolatedAsyncioTestCase):
         status = await run.stop(scope="cancel_active")
         self.assertEqual(status["outcome"], "cancelled")
         self.assertEqual(status["states"], {"inline": "failed", "child": "failed", "later": "pending"})
-        self.assertEqual(host.children[f"{plan.id}/child"], "failed", "the child was interrupted")
+        self.assertIn(("fail", {"label": "child", "cause": "cancelled"}), host.journal, "the fail reaps the child")
+        self.assertEqual(host.requests["rlm.interrupt"], 0, "no interrupt hands its end to the engine first")
 
     async def test_decompose_resolves_an_edge_among_its_own_batch(self) -> None:
         """Dies with the control: look a sibling up in the parent plan and the docstring example raises."""

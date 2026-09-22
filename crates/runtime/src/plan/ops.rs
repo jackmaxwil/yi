@@ -30,6 +30,7 @@ use super::verify::Verifier;
 use yi_types::plan::op::Reaped;
 
 pub(super) const OWNER_AGENT: &str = "main";
+pub(super) const ENGINE_AGENT: &str = "engine";
 
 const CHILD_SUFFIX_MAX: u32 = 9_999;
 
@@ -691,15 +692,16 @@ impl PlanEngine {
         let id = self.resolve(plan)?;
         let plan = self.store.read(&id)?;
         let ready = ready_labels(&plan);
+        let (held, notices) = self.standing(&plan);
         Ok(Outcome {
             plan,
             ready,
             dispatched: Vec::new(),
-            held: Vec::new(),
+            held,
             spawned: Vec::new(),
             reaped: Vec::new(),
             subplan: None,
-            notices: Vec::new(),
+            notices,
         })
     }
 
@@ -822,7 +824,8 @@ impl PlanEngine {
         match self.transact(txn, id, root, op) {
             Ok(delta) => self.conclude(id, &txn.state, &before, delta),
             Err(error) => {
-                if error.is_recordable() {
+                let raced = txn.actor == ENGINE_AGENT && super::schedule::raced(&error);
+                if error.is_recordable() && !raced {
                     self.record_refusal(txn, id, op, &error);
                 }
                 Err(error)
@@ -1136,7 +1139,7 @@ fn actor_word(actor: &Actor) -> String {
         Actor::Child(agent) => agent.as_str().to_owned(),
         Actor::User(citation) => citation.to_string(),
         Actor::Host => "host".to_owned(),
-        Actor::Engine => "engine".to_owned(),
+        Actor::Engine => ENGINE_AGENT.to_owned(),
     }
 }
 

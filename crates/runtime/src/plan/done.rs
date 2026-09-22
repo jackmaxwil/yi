@@ -681,8 +681,8 @@ fn refused_verdicts(records: &[JournalRecord], label: &TodoLabel, attempt: Attem
     u32::try_from(count).unwrap_or(u32::MAX)
 }
 
-/// The administrative completions (plan sections 3.6 and 5.6), checked before any effect: a
-/// `submit` is the running agent's own, and an `accept` lands as `AcceptedByUser`.
+/// Administrative completions (plan sections 3.6 and 5.6), checked before any effect: a `submit`
+/// is the running agent's own or the engine's for it; an `accept` lands as `AcceptedByUser`.
 pub(super) fn admit(
     txn: &Txn,
     plan: &Plan,
@@ -693,6 +693,7 @@ pub(super) fn admit(
         Op::Submit { label, .. } => {
             if let Some(TodoState::Running { by }) = plan.todo(label).map(|todo| &todo.state)
                 && by.as_str() != txn.actor
+                && txn.actor != super::ops::ENGINE_AGENT
             {
                 return Err(PlanOpError::NotRunningBy {
                     label: label.clone(),

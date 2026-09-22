@@ -16,7 +16,6 @@ use crate::subagent::SubagentHost;
 use yi_types::plan::doc::{DocError, PlanId, SPAWN_CAP, TodoState};
 use yi_types::plan::ledger::EffectId;
 
-/// [`super::ops::Delegate`] over the B-series host and the owner's Steer queue.
 pub struct SessionDelegate {
     host: Arc<SubagentHost>,
     deliver: DeliverFn,
@@ -48,7 +47,6 @@ fn accept_line(accept: &Check) -> String {
     }
 }
 
-/// Delegation fields the closed spawn kwargs cannot carry ride the prompt.
 fn brief(at: &TodoAddr, delegation: &Delegation) -> String {
     let mut lines = vec![format!(
         "Execute todo {:?} of plan {}.",
@@ -59,20 +57,6 @@ fn brief(at: &TodoAddr, delegation: &Delegation) -> String {
         lines.push(format!("Role: {role}"));
     }
     lines.push(accept_line(&delegation.accept));
-    // Incident: candidate_submitted was zero across 105 F0e sessions; nothing told a worktree
-    // child that submitting is its only road, and a child without one has nothing to submit.
-    if matches!(delegation.spec.isolation, Some(Isolation::Worktree)) {
-        lines.push(format!(
-            "When that check passes, submit your work with the plan tool: {{\"op\": \"submit\", \"plan\": \"{}\", \"label\": {:?}, \"attempt\": 1, \"output\": \"<url of the product>\"}}, where attempt is a bare integer and 1 unless this todo was retried. Your worktree is accepted only through that record.",
-            at.plan,
-            at.todo.as_str()
-        ));
-        lines.push(format!(
-            "From a kernel cell `from yi import Plan; p = await Plan.attach({:?}); await p[{:?}].submit(product)` mints that url for you.",
-            at.plan.as_str(),
-            at.todo.as_str()
-        ));
-    }
     if let Some(output) = &delegation.output {
         lines.push(format!(
             "Answer with JSON matching the schema at {}",
@@ -156,19 +140,17 @@ fn parse_url(rendered: String) -> Result<Url, String> {
         .map_err(|error| format!("{rendered}: {error}"))
 }
 
-impl SessionDelegate {
-    fn say(&self, text: String) {
-        (self.deliver)(
-            AgentMessage::Custom {
-                custom_type: "plan_relevance".to_owned(),
-                content: UserContent::Text(text),
-                display: true,
-                details: None,
-                timestamp: yi_session::now_ms(),
-            },
-            DeliveryMode::Steer,
-        );
-    }
+pub(super) fn say(deliver: &DeliverFn, text: String) {
+    deliver(
+        AgentMessage::Custom {
+            custom_type: "plan_relevance".to_owned(),
+            content: UserContent::Text(text),
+            display: true,
+            details: None,
+            timestamp: yi_session::now_ms(),
+        },
+        DeliveryMode::Steer,
+    );
 }
 
 /// The host holds a child from spawn to reap: not held means no live process, and a held
@@ -330,16 +312,19 @@ impl Delegate for SessionDelegate {
             .register_pin(&live, trace.clone())
             .map_err(|error| error.to_string())?;
         if let Some(measured) = measured {
-            self.say(format!(
-                "context relevance for {agent}: {} of {} supplied URLs were read{}",
-                measured.referenced,
-                measured.supplied,
-                if measured.unused.is_empty() {
-                    String::new()
-                } else {
-                    format!("; unread: {}", measured.unused.join(", "))
-                }
-            ));
+            say(
+                &self.deliver,
+                format!(
+                    "context relevance for {agent}: {} of {} supplied URLs were read{}",
+                    measured.referenced,
+                    measured.supplied,
+                    if measured.unused.is_empty() {
+                        String::new()
+                    } else {
+                        format!("; unread: {}", measured.unused.join(", "))
+                    }
+                ),
+            );
         }
         Ok(harvest.produced.then_some(trace))
     }
@@ -389,14 +374,13 @@ mod tests {
         }
     }
 
-    fn faux_session(replies: &[&str]) -> AgentSession {
+    fn reply(text: &str) -> AgentMessage {
+        yi_ai::faux::faux_assistant_message(vec![yi_ai::faux::faux_text(text)], StopReason::Stop)
+    }
+
+    fn scripted(script: Vec<AgentMessage>) -> AgentSession {
         let provider = Arc::new(crate::provider::ProviderStream::new(None, None));
-        for reply in replies {
-            provider.queue_faux(vec![yi_ai::faux::faux_assistant_message(
-                vec![yi_ai::faux::faux_text(reply)],
-                StopReason::Stop,
-            )]);
-        }
+        provider.queue_faux(script);
         AgentSession::new(
             SessionConfig {
                 system_prompt: "sys".to_owned(),
@@ -408,19 +392,54 @@ mod tests {
         )
     }
 
+    fn faux_session(replies: &[&str]) -> AgentSession {
+        scripted(replies.iter().map(|text| reply(text)).collect())
+    }
+
+    type Sink<T> = Arc<Mutex<Vec<T>>>;
+
+    fn sink<T: Send + 'static>() -> (Sink<T>, Arc<dyn Fn(T) + Send + Sync>) {
+        let sink: Sink<T> = Arc::new(Mutex::new(Vec::new()));
+        let writer = Arc::clone(&sink);
+        let push = Arc::new(move |item: T| {
+            if let Ok(mut items) = writer.lock() {
+                items.push(item);
+            }
+        });
+        (sink, push)
+    }
+
     struct Rig {
-        engine: PlanEngine,
+        engine: Arc<PlanEngine>,
         host: Arc<SubagentHost>,
         pins: Arc<FetchLog>,
-        reports: Arc<Mutex<Vec<AgentMessage>>>,
+        reports: Sink<AgentMessage>,
+        /// The host's own lifecycle notices, which a child the engine took never sends.
+        notices: Sink<String>,
+        /// The engine's lines to the owner.
+        said: Sink<AgentMessage>,
         cwd: Scratch,
     }
 
     fn rig(child_answer: &'static str) -> Result<Rig, Box<dyn std::error::Error>> {
+        rig_of(vec![reply(child_answer)], false)
+    }
+
+    /// The root session's rig: the engine takes each finished plan child (D225).
+    fn hooked(script: Vec<AgentMessage>) -> Result<Rig, Box<dyn std::error::Error>> {
+        rig_of(script, true)
+    }
+
+    fn rig_of(script: Vec<AgentMessage>, finish: bool) -> Result<Rig, Box<dyn std::error::Error>> {
         let root = Scratch::new("yi-dispatch-rig")?;
         let (events, _keep) = tokio::sync::broadcast::channel(64);
-        let reports: Arc<Mutex<Vec<AgentMessage>>> = Arc::new(Mutex::new(Vec::new()));
-        let report_sink = Arc::clone(&reports);
+        let (reports, report) = sink();
+        let (notices, notice) = sink::<String>();
+        let (said, say) = sink();
+        let asks = script.iter().any(|message| {
+            crate::family::pending_question(std::slice::from_ref(message)).is_some()
+        });
+        let cwd = root.to_path_buf();
         let host = Arc::new(SubagentHost::new(SubagentHostOptions {
             depth: 0,
             max_depth: 1,
@@ -432,16 +451,18 @@ mod tests {
             defaults: Arc::new(|| (faux_model(), yi_types::model::Effort::Medium)),
             factory: Arc::new(move |build: ChildBuild<'_>| {
                 let _ = build;
-                Ok(faux_session(&[child_answer]))
+                let mut child = scripted(script.clone());
+                if asks {
+                    let ask: Arc<dyn yi_tools::Tool> =
+                        Arc::new(crate::auto_review::AskUserTool::new(None));
+                    child.use_tools(vec![ask], cwd.clone(), None);
+                }
+                Ok(child)
             }),
-            notice: Arc::new(|_text: &str| {}),
+            notice: Arc::new(move |text: &str| notice(text.to_owned())),
             events,
             parent_messages: Arc::new(Vec::new),
-            report: Arc::new(move |message| {
-                if let Ok(mut sink) = report_sink.lock() {
-                    sink.push(message);
-                }
-            }),
+            report: Arc::new(move |message| report(message)),
             attribute: Arc::new(|_usage| {}),
             store: Arc::new(|| None),
             plans_dir: root.join(crate::plan::PLANS_DIR),
@@ -453,13 +474,24 @@ mod tests {
             Arc::new(|_message, _mode| {}),
             Arc::clone(&pins),
         ));
-        let engine = PlanEngine::new(PlanStore::open(root.join("plans"))?, delegate)
-            .with_width(NonZeroUsize::new(2).ok_or("width")?);
+        let engine = Arc::new(
+            PlanEngine::new(PlanStore::open(root.join("plans"))?, delegate)
+                .with_width(NonZeroUsize::new(2).ok_or("width")?),
+        );
+        if finish {
+            crate::plan::finish::install(
+                &host,
+                &engine,
+                Arc::new(move |message, _mode| say(message)),
+            );
+        }
         Ok(Rig {
             engine,
             host,
             pins,
             reports,
+            notices,
+            said,
             cwd: root,
         })
     }
@@ -630,27 +662,55 @@ mod tests {
         Ok(())
     }
 
+    /// The todo once the engine has stepped it and told the owner, polled from the store.
+    async fn settled(
+        rig: &Rig,
+        plan: &PlanId,
+        label: &str,
+    ) -> Result<yi_types::plan::doc::Todo, Box<dyn std::error::Error>> {
+        let label = TodoLabel::new(label)?;
+        for _ in 0..400 {
+            let read = rig.engine.store().read(plan)?;
+            let todo = read.todo(&label).ok_or("todo missing")?;
+            if !texts(&rig.said).is_empty() && !matches!(todo.state, TodoState::Running { .. }) {
+                return Ok(todo.clone());
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
+        Err(format!("{label:?} never left running").into())
+    }
+
+    fn failing(text: &str, error: &str) -> AgentMessage {
+        let mut message = yi_ai::faux::faux_assistant_message(
+            vec![yi_ai::faux::faux_text(text)],
+            StopReason::Error,
+        );
+        if let AgentMessage::Assistant { error_message, .. } = &mut message {
+            *error_message = Some(error.to_owned());
+        }
+        message
+    }
+
+    /// Dies with the `Failed` arm of `conclude` skipping the finish hook: the todo stays
+    /// running under a child that ended, and the owner is never told.
     #[tokio::test]
     async fn a_failed_childs_last_product_survives_the_reap() -> TestResult {
-        let rig = rig("half a patch, then it went sideways")?;
-        rig.engine.apply(owner(Op::Init {
+        let rig = hooked(vec![failing(
+            "half a patch, then it went sideways",
+            "the provider hung up",
+        )])?;
+        let out = rig.engine.apply(owner(Op::Init {
             goal: GoalText::new("land the patch")?,
             todos: vec![delegated("write the patch")?],
         }))?;
-        assert!(wait_done(&rig.host).await, "child never completed");
-        let out = rig.engine.apply(owner(Op::Fail {
-            disposition: None,
-            label: TodoLabel::new("write the patch")?,
-            cause: "the probe disagreed".to_owned(),
-        }))?;
-        let todo = out
-            .plan
-            .todo(&TodoLabel::new("write the patch")?)
-            .ok_or("todo missing")?;
+        let todo = settled(&rig, &out.plan.id, "write the patch").await?;
         let TodoState::Failed { cause, last } = &todo.state else {
             return Err(format!("expected Failed, got {:?}", todo.state).into());
         };
-        assert_eq!(cause, "the probe disagreed");
+        assert_eq!(
+            cause, "the provider hung up",
+            "the engine fails it with the child's error"
+        );
         let last = last
             .clone()
             .ok_or("a child that produced work carries last")?;
@@ -664,7 +724,137 @@ mod tests {
             promoted.iter().any(|text| text.contains("half a patch")),
             "the failure path still promotes the last product: {promoted:?}"
         );
+        assert_eq!(
+            texts(&rig.said),
+            ["plan: failed \"write the patch\": the provider hung up"]
+        );
         Ok(())
+    }
+
+    /// Dies with the `(Completed, None)` arm of `conclude` skipping the finish hook: the child
+    /// ends, its todo stays running, and only an owner `done` could complete it.
+    #[tokio::test]
+    async fn an_inline_childs_finish_is_accepted_without_an_owner_op() -> TestResult {
+        let rig = hooked(vec![reply("the seam is cut and holds")])?;
+        let out = rig.engine.apply(owner(Op::Init {
+            goal: GoalText::new("ship the widget")?,
+            todos: vec![delegated("cut the seam")?],
+        }))?;
+        let id = out.plan.id.clone();
+        let todo = settled(&rig, &id, "cut the seam").await?;
+        let TodoState::Done {
+            output: Some(output),
+            ..
+        } = &todo.state
+        else {
+            return Err(format!("expected Done with a product, got {:?}", todo.state).into());
+        };
+        let digest = output
+            .to_string()
+            .strip_prefix(&format!("plan://{id}/artifacts/"))
+            .map(yi_types::plan::canonical::Digest::parse)
+            .ok_or_else(|| format!("{output} is not in the plan's store"))??;
+        let stored = rig.engine.store().artifacts(&id).get(&digest)?;
+        assert_eq!(
+            stored, b"the seam is cut and holds",
+            "the product is the child's answer"
+        );
+        assert_eq!(
+            texts(&rig.said),
+            [format!(
+                "plan: accepted \"cut the seam\" (agent://{id}/cut-the-seam)"
+            )]
+        );
+        let journal = rig.engine.store().journal(&id).read()?.records;
+        let actors: Vec<(&str, &str)> = journal
+            .iter()
+            .filter(|record| ["submit", "done"].contains(&record.record.op.as_str()))
+            .map(|record| (record.record.op.as_str(), record.record.actor.as_str()))
+            .collect();
+        assert_eq!(actors, [("submit", "engine"), ("done", "engine")]);
+        assert!(
+            texts(&rig.reports)
+                .iter()
+                .any(|text| text.contains("seam is cut")),
+            "the done reaps the child and promotes its transcript"
+        );
+        let notices = rig.notices.lock().map_err(|_| "poisoned")?.clone();
+        assert!(
+            notices.iter().all(|notice| !notice.contains("[subagent")),
+            "a child the engine took sends no second notice: {notices:?}"
+        );
+        Ok(())
+    }
+
+    /// Dies with the hook consulted on the asking arm (D165): a child waiting on its parent
+    /// would be submitted and accepted mid-question.
+    #[tokio::test]
+    async fn an_asking_child_is_not_submitted() -> TestResult {
+        let mut ask = Map::new();
+        ask.insert(
+            "question".to_owned(),
+            Value::String("which region?".to_owned()),
+        );
+        let rig = hooked(vec![yi_ai::faux::faux_assistant_message(
+            vec![yi_ai::faux::faux_tool_call("ask-1", "ask_user", ask)],
+            StopReason::ToolUse,
+        )])?;
+        rig.engine.apply(owner(Op::Init {
+            goal: GoalText::new("ship the widget")?,
+            todos: vec![delegated("cut the seam")?],
+        }))?;
+        let asked = wait_notice(&rig, "asks: which region?").await?;
+        assert!(asked.contains("rlm.send"), "{asked}");
+        let plan = rig.engine.apply(owner(Op::View { full: false }))?.plan;
+        let todo = plan
+            .todo(&TodoLabel::new("cut the seam")?)
+            .ok_or("todo missing")?;
+        assert!(
+            matches!(todo.state, TodoState::Running { .. }),
+            "{:?}",
+            todo.state
+        );
+        assert!(texts(&rig.said).is_empty(), "nothing was submitted");
+        Ok(())
+    }
+
+    /// Dies with `locate` answering for any agent: an `rlm.run` child would lose the finish
+    /// notice that is its only report.
+    #[tokio::test]
+    async fn an_rlm_run_child_is_not_a_plan_finish() -> TestResult {
+        let rig = hooked(vec![reply("the quota parser lands")])?;
+        rig.engine.apply(owner(Op::Init {
+            goal: GoalText::new("ship the widget")?,
+            todos: Vec::new(),
+        }))?;
+        rig.host.spawn(
+            "work".to_owned(),
+            Map::from_iter([("name".to_owned(), Value::String("quota".to_owned()))]),
+        )?;
+        let notice = wait_notice(&rig, "[subagent quota").await?;
+        assert!(notice.contains("the quota parser lands"), "{notice}");
+        assert!(
+            texts(&rig.said).is_empty(),
+            "no plan line for a child no todo runs"
+        );
+        Ok(())
+    }
+
+    async fn wait_notice(rig: &Rig, needle: &str) -> Result<String, Box<dyn std::error::Error>> {
+        for _ in 0..400 {
+            let found = rig
+                .notices
+                .lock()
+                .map_err(|_| "poisoned")?
+                .iter()
+                .find(|notice| notice.contains(needle))
+                .cloned();
+            if let Some(notice) = found {
+                return Ok(notice);
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
+        Err(format!("no notice with {needle:?}").into())
     }
 
     /// Dies with the wall block in `kwargs_of`: drop it and a plan-dispatched reader spawns
@@ -706,38 +896,20 @@ mod tests {
         Ok(())
     }
 
-    /// Incident: candidate_submitted was zero across 105 F0e sessions, so no delegated
-    /// worktree todo ever reached done; the brief never named the submit verb (#469).
+    /// The engine submits a child's finish (D225): a brief that named `submit` would have the
+    /// child race the engine for the one record.
     #[test]
-    fn a_worktree_brief_names_the_submit_verb() -> TestResult {
+    fn a_brief_never_names_submit() -> TestResult {
         let at = TodoAddr {
             plan: PlanId::new("ship-the-thing")?,
             todo: TodoLabel::new("gateway")?,
         };
         let mut delegation = delegated("gateway")?.delegation.ok_or("delegated")?;
-        delegation.spec.isolation = Some(Isolation::Worktree);
-        let worktree = brief(&at, &delegation);
-        assert!(worktree.contains("\"op\": \"submit\""), "{worktree}");
-        // Incident: `<n>` was quoted as a string nine times; a literal integer is not (#469).
-        assert!(worktree.contains("\"attempt\": 1"), "{worktree}");
-        assert!(
-            worktree.contains("accepted only through that record"),
-            "{worktree}"
-        );
-        assert!(worktree.contains("\"gateway\""), "{worktree}");
-        // Incident: the library road the brief names is the one a child may take: #478 let a
-        // child store the product of the attempt it submits, so `submit` mints the url.
-        assert!(
-            worktree.contains("from yi import Plan; p = await Plan.attach")
-                && worktree.contains("await p[\"gateway\"].submit(product)"),
-            "{worktree}"
-        );
-
-        // A child with no worktree has no product to hand over, so the line would be noise.
-        for isolation in [None, Some(Isolation::None)] {
+        for isolation in [None, Some(Isolation::None), Some(Isolation::Worktree)] {
             delegation.spec.isolation = isolation;
-            let inline = brief(&at, &delegation);
-            assert!(!inline.contains("submit"), "{inline}");
+            let brief = brief(&at, &delegation);
+            assert!(brief.contains("Execute todo \"gateway\""), "{brief}");
+            assert!(!brief.contains("submit"), "{brief}");
         }
         Ok(())
     }

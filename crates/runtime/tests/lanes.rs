@@ -811,6 +811,7 @@ mod accept {
     };
     use yi_types::plan::ledger::{AttemptId, JournalRecord, RequestId};
     use yi_types::plan::op::{Choice, TodoSpec};
+    use yi_types::subagent::ChildExit;
     use yi_types::url::Url;
 
     pub(super) const LABEL: &str = "add rotate";
@@ -1554,6 +1555,100 @@ mod accept {
             "the host is told the accepted branch is kept, so its reap settles the lane"
         );
         assert!(matches!(bench.state()?, TodoState::Done { .. }));
+        Ok(())
+    }
+
+    /// The child's finish as the host hands it over, with the answer it left.
+    fn finish(bench: &Bench) -> Option<String> {
+        bench.engine.finish_child(
+            "child-1",
+            ChildExit::Completed,
+            None,
+            Some("rotate is listed".to_owned()),
+        )
+    }
+
+    fn actors(bench: &Bench, kind: &str) -> Result<Vec<String>, Box<dyn Error>> {
+        Ok(bench
+            .records()?
+            .iter()
+            .filter(|record| record.record.op == kind)
+            .map(|record| record.record.actor.clone())
+            .collect())
+    }
+
+    // Dies with the submit step in `accept_finish` (finish.rs): the engine's `done` finds no
+    // candidate and the todo stays running under a child that ended.
+    #[test]
+    fn a_finished_worktree_child_is_accepted_without_an_owner_op() -> TestResult {
+        let rig = Rig::new("g2-accept")?;
+        let parent = rig.fixture_repo(Dirt::Clean)?;
+        let bench = bench(&rig, parent, "yi/cand-green")?;
+        let line = finish(&bench).ok_or("the engine did not take its own child")?;
+        assert!(
+            line.starts_with("plan: accepted \"add rotate\" (agent://"),
+            "{line}"
+        );
+        assert!(
+            matches!(bench.state()?, TodoState::Done { .. }),
+            "{:?}",
+            bench.state()?
+        );
+        assert_eq!(actors(&bench, KIND_CANDIDATE_SUBMITTED)?, ["engine"]);
+        assert_eq!(actors(&bench, KIND_ACCEPTED)?, ["engine"]);
+        assert!(
+            bench
+                .engine
+                .finish_child("child-1", ChildExit::Completed, None, None)
+                .is_none(),
+            "a todo no longer running is nobody's finish"
+        );
+        Ok(())
+    }
+
+    // Dies with the phase read in `locate` (finish.rs): a child that submitted its own
+    // candidate gets a second submission from the engine and a second verification.
+    #[test]
+    fn an_early_submit_is_accepted_at_the_finish_and_not_submitted_again() -> TestResult {
+        let rig = Rig::new("g2-early")?;
+        let parent = rig.fixture_repo(Dirt::Clean)?;
+        let bench = bench(&rig, parent, "yi/cand-green")?;
+        bench.submit()?;
+        let line = finish(&bench).ok_or("the engine did not take its own child")?;
+        assert!(line.starts_with("plan: accepted"), "{line}");
+        assert_eq!(actors(&bench, KIND_CANDIDATE_SUBMITTED)?, ["child-1"]);
+        assert_eq!(actors(&bench, KIND_ACCEPTED)?, ["engine"]);
+        Ok(())
+    }
+
+    // Dies with the `Fail` verdict arm of `finish_child` (finish.rs): a refused candidate
+    // leaves its todo running under a child that ended, and only an owner op moves it.
+    #[test]
+    fn a_red_contract_fails_the_todo_retained() -> TestResult {
+        let rig = Rig::new("g2-red")?;
+        let parent = rig.fixture_repo(Dirt::Clean)?;
+        let bench = bench(&rig, parent.clone(), "yi/cand-red")?;
+        let line = finish(&bench).ok_or("the engine did not take its own child")?;
+        assert!(
+            line.starts_with("plan: refused \"add rotate\": rotate-listed: "),
+            "{line}"
+        );
+        let TodoState::Failed { cause, .. } = bench.state()? else {
+            return Err(format!("expected Failed, got {:?}", bench.state()?).into());
+        };
+        assert!(
+            cause.starts_with("contract refused: rotate-listed: "),
+            "{cause}"
+        );
+        assert_eq!(
+            bench.child.disposed.lock().map_err(|_| "poisoned")?[..],
+            [Choice::Retained],
+            "the refused branch is kept for a retry to read"
+        );
+        assert!(
+            sha(&parent, "yi/cand-red").is_ok(),
+            "the candidate is still readable"
+        );
         Ok(())
     }
 

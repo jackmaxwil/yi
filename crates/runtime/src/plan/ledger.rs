@@ -50,6 +50,16 @@ pub fn records(session: &yi_session::SharedSession) -> Vec<PlanOpRecord> {
         .collect()
 }
 
+pub fn owned_roots(session: &yi_session::SharedSession) -> Vec<PlanId> {
+    let mut roots: Vec<PlanId> = records(session)
+        .iter()
+        .filter_map(|record| super::state::root_of(&record.plan).ok())
+        .collect();
+    roots.sort();
+    roots.dedup();
+    roots
+}
+
 /// One todo's time, from the transition timestamps and nothing else.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TodoOutcome {

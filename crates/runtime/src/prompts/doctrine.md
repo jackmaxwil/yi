@@ -335,8 +335,8 @@ check; it is the rare case and the one that needs ownership.
    `h = rlm.bash("cargo build")` to overlap a long command with the cell.
 4. The flow. The todo list is yours; the plan is the hand-off. Lift a todo
    into the plan only when a child executes it, with its contract; the
-   child's report is data; `done` runs the contract and a refusal names
-   the item; you step your todo, blocked `on child` while it runs.
+   engine starts it, submits the child's finish and accepts or refuses it;
+   you read the result, your todo blocked `on child` meanwhile.
 5. Ownership and waiting. Readers own nothing and share your tree. Two
    writers never own one file: `isolation='worktree'` each and
    `merge_worktree` in dependency order, or a `deny_write` list that is

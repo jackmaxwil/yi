@@ -201,5 +201,6 @@ when it changes rather than editing them by hand.
 - [D222](adr/d222.md) - a plan-dispatched child stores the product of the attempt it submits and...
 - [D223](adr/d223.md) - a worktree delegation without a contract cannot be declared
 - [D224](adr/d224.md) - the engine starts ready delegated todos
+- [D225](adr/d225.md) - a plan child's finish is its submission and its acceptance
 
 D36-D51, D72, D73 and D74 have no ADR yet; ARCHITECTURE.md is the record for those rows.

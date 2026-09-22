@@ -10,6 +10,7 @@ use yi_runtime::plan::ops::{Actor, Delegate, PlanEngine};
 use yi_runtime::plan::store::PlanStore;
 use yi_runtime::{HostRegistry, KernelService, KernelServiceOptions};
 use yi_tools::{CancelFlag, KernelBridge};
+use yi_types::subagent::ChildExit;
 
 type TestResult = Result<(), Box<dyn Error>>;
 
@@ -338,11 +339,21 @@ impl PlanRig {
         let mut registry = HostRegistry::default();
         yi_runtime::plan::request::register(Arc::clone(&self.engine), Actor::Owner, &mut registry);
         let kids = Arc::clone(&self.kids);
+        let engine = Arc::clone(&self.engine);
         registry.register("rlm.wait", move |_payload| {
             let kids = Arc::clone(&kids);
+            let engine = Arc::clone(&engine);
             Box::pin(async move {
                 tokio::time::sleep(std::time::Duration::from_millis(50)).await;
                 let finished = kids.finished.load(std::sync::atomic::Ordering::SeqCst);
+                // The host's finish hook, at the wait that reports the child's end.
+                if finished {
+                    tokio::task::spawn_blocking(move || {
+                        engine.finish_child("kid", ChildExit::Completed, None, Some("{}".to_owned()))
+                    })
+                    .await
+                    .map_err(|error| error.to_string())?;
+                }
                 let state = if finished { "finished" } else { "running" };
                 let reply = serde_json::json!({"cursor": 1, "changed": [], "states": {"kid": state}, "notes": {}});
                 reply.as_object().cloned().ok_or_else(|| "reply".to_owned())
@@ -519,7 +530,8 @@ impl Delegate for Crew {
 }
 
 /// The real engine at width one behind `plan.op`, over a `Crew` whose children all finish
-/// (a name starting `fails` never comes back) and answer what `said` gives their name.
+/// (a name starting `fails` fails) and answer what `said` gives their name, handed to the
+/// engine's finish at the wait that reports them, as the host's finish hook does.
 fn crewed(
     plans: PathBuf,
     workspace: PathBuf,
@@ -532,18 +544,35 @@ fn crewed(
             .with_plans_dir(plans.clone()),
     );
     let store = PlanStore::open(plans)?;
-    let engine = PlanEngine::new(store.clone(), crew.clone())
-        .with_cwd(workspace)
-        .with_output_resolve(resolver.clone())
-        .with_width(std::num::NonZeroUsize::MIN);
+    let engine = Arc::new(
+        PlanEngine::new(store.clone(), crew.clone())
+            .with_cwd(workspace)
+            .with_output_resolve(resolver.clone())
+            .with_width(std::num::NonZeroUsize::MIN),
+    );
     let mut registry = HostRegistry::default();
-    yi_runtime::plan::request::register(Arc::new(engine), Actor::Owner, &mut registry);
+    yi_runtime::plan::request::register(Arc::clone(&engine), Actor::Owner, &mut registry);
     let reply = |value: serde_json::Value| value.as_object().cloned().ok_or("reply".to_owned());
     registry.register("rlm.wait", move |_payload| {
         let spawned = Arc::clone(&crew);
+        let engine = Arc::clone(&engine);
         Box::pin(async move {
             tokio::time::sleep(std::time::Duration::from_millis(20)).await;
             let names = spawned.0.lock().map_err(|_| "poisoned")?.clone();
+            let ended = names.clone();
+            tokio::task::spawn_blocking(move || {
+                for name in ended {
+                    let (exit, error) = if name.starts_with(fails) {
+                        (ChildExit::Interrupted, Some("never came back".to_owned()))
+                    } else {
+                        (ChildExit::Completed, None)
+                    };
+                    let answer = Some(said(&name).to_string());
+                    let _told_the_owner = engine.finish_child(&name, exit, error, answer);
+                }
+            })
+            .await
+            .map_err(|error| error.to_string())?;
             let states: serde_json::Map<_, _> = names
                 .into_iter()
                 .map(|name| {
@@ -638,8 +667,8 @@ async fn both_shapes_schedule_under_the_real_admission_and_step_table() -> TestR
         .collect();
     assert_eq!(
         starts,
-        ["a", "b", "b", "c", "c"],
-        "one slot: each refused start is journaled, asked again, and never overtaken"
+        ["a", "b", "c"],
+        "one slot: each starts as the one before it is accepted, and a held one is never tried"
     );
     assert!(
         printed.contains("round 1 [('api', ['rotate(size)'])]"),

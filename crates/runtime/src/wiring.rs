@@ -417,6 +417,10 @@ fn wire_plan_engine(
     ))));
     session.set_todos(Arc::clone(&todos));
     let inner = (wiring.depth == 0).then(|| {
+        crate::plan::finish::install(host, &engine, {
+            let hook = session.heartbeat_hook();
+            Arc::new(move |message, mode| hook(message, mode))
+        });
         let children = Arc::clone(host);
         let leased = Arc::clone(host);
         let ladder = Arc::new(
@@ -428,7 +432,15 @@ fn wire_plan_engine(
                 .with_leases(Arc::new(move || {
                     let host = Arc::clone(&leased);
                     tokio::spawn(async move { host.expire().await });
-                })),
+                }))
+                .with_owned({
+                    let store = session.store_handle();
+                    Arc::new(move || {
+                        store()
+                            .map(|session| crate::plan::ledger::owned_roots(&session))
+                            .unwrap_or_default()
+                    })
+                }),
         );
         // A grace rides the loop's own due-time set, so an earlier one interrupts its sleep.
         let timer = Arc::clone(&ladder);
