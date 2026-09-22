@@ -939,6 +939,7 @@ fn apply_retry(
     todo.extra.remove(SUBMITTED_KEY);
     if let Some(replacement) = delegation {
         todo.delegation = Some(replacement.clone());
+        return validate_plan(plan);
     }
     Ok(())
 }
