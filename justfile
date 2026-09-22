@@ -50,6 +50,8 @@ guardrails:
 guardrails-fast:
     bash scripts/guardrails/check_guardrails.sh --fast
 
+# Serial on purpose: beside the dist build, nextest's first exec of 134 fresh test binaries
+# queued behind Gatekeeper's per-binary scan, and the gate took 116-302s where serial took 135-151s.
 check: lint guardrails test
 
 # --- Local CI: three tiers, run by the hooks in scripts/hooks ----------------
@@ -73,7 +75,9 @@ install-hooks:
     git config core.hooksPath scripts/hooks
     @echo "hooks installed: scripts/hooks"
 
-# Tier 1, every commit: source-only checks, no build and no suite.
+# Tier 1, every commit: source-only checks, no build and no suite. The three share nothing
+# but cargo's lock, so they overlap: 6-7s on an unchanged tree became 1.7s.
+[parallel]
 precommit: fmt-check clippy guardrails-fast
 
 # Tier 2, every push: the full gate, and nothing the gate itself regenerated.
