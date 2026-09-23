@@ -42,7 +42,12 @@ impl SubagentHost {
         // reaped while it serves: neither fills the worker cap nor is refused by it.
         let worker = |record: &&super::ChildRecord| matches!(record.standing, Standing::Worker);
         let workers = children.values().filter(worker).count();
-        let refusal = if capped
+        let reserved = [crate::plan::ops::OWNER_AGENT, "host"];
+        let refusal = if reserved.contains(&session_name) {
+            Some(format!(
+                "\"{session_name}\" is reserved: it names the plan's owner or host; pick another name"
+            ))
+        } else if capped
             && workers.saturating_add(children.building.len()) >= self.options.max_children
         {
             Some(format!(

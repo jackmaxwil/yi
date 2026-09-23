@@ -687,8 +687,21 @@ impl Tool for PlanTool {
         DESCRIPTION
     }
 
+    /// A child's schema adds `submit`, which its brief names; the owner's is the priced [`schema`].
     fn schema(&self) -> Value {
-        schema()
+        let mut schema = schema();
+        if let Actor::Child(_) = self.actor
+            && let Some(properties) = schema["properties"].as_object_mut()
+        {
+            if let Some(ops) = properties["op"]["enum"].as_array_mut() {
+                ops.push(json!("submit"));
+            }
+            properties.insert(
+                "attempt".to_owned(),
+                json!({"type": "integer", "description": "submit: the todo's attempt, 1 unless it was retried; output is the product's url"}),
+            );
+        }
+        schema
     }
 
     fn kind(&self) -> ToolKind {

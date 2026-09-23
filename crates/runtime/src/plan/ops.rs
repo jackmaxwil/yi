@@ -29,7 +29,7 @@ use super::table::{
 use super::verify::Verifier;
 use yi_types::plan::op::Reaped;
 
-pub(super) const OWNER_AGENT: &str = "main";
+pub(crate) const OWNER_AGENT: &str = "main";
 
 const CHILD_SUFFIX_MAX: u32 = 9_999;
 
@@ -199,7 +199,10 @@ pub enum PlanOpError {
         "done for {label:?} refused: a worktree todo completes only through the acceptance of its contracted candidate (plan section 6.6); one with no `contract` takes it from a `set` row (a delegation `accept` is not a contract) and then `submit` the candidate, and `fail` or `drop` takes the disposition road"
     )]
     AcceptanceUnavailable { label: TodoLabel },
-    #[error("done for {label:?} refused at phase {phase}: no {missing} record on this attempt")]
+    #[error(
+        "done for {label:?} refused at phase {phase}: no {missing} record on this attempt{}",
+        if *phase == "unsubmitted" { "; the child records one with op=submit" } else { "" }
+    )]
     PhaseMissing {
         label: TodoLabel,
         phase: &'static str,
@@ -389,6 +392,7 @@ pub(super) struct Txn {
     pub(super) records: Vec<JournalRecord>,
     pub(super) journal: Journal,
     pub(super) actor: String,
+    pub(super) principal: Actor,
     pub(super) request: RequestId,
     pub(super) expected: u64,
     /// The resolution a `done` in this transaction lands with; the done path decides it.
@@ -597,6 +601,7 @@ impl PlanEngine {
             records,
             journal: self.store.journal(root),
             actor: actor_word(actor),
+            principal: actor.clone(),
             request,
             expected: expected.map_or(0, |touched| touched.0),
             resolution: None,
@@ -1114,6 +1119,15 @@ fn admitted(plan: &Plan, slots: usize) -> Vec<TodoLabel> {
         .into_iter()
         .filter(|label| admit(plan, label, slots).is_ok())
         .collect()
+}
+
+/// Invariant: `by` is compared to the actor, not its word: a child named `main` is no owner.
+pub(super) fn runs(actor: &Actor, by: &AgentId) -> bool {
+    match actor {
+        Actor::Owner => by.as_str() == OWNER_AGENT,
+        Actor::Child(agent) => agent == by && agent.as_str() != OWNER_AGENT,
+        Actor::User(_) | Actor::Host => false,
+    }
 }
 
 fn actor_word(actor: &Actor) -> String {

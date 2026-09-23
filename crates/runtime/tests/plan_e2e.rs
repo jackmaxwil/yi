@@ -559,6 +559,58 @@ async fn a_child_stores_the_product_of_the_attempt_it_submits() -> TestResult {
     Ok(())
 }
 
+/// Dies with `ops::runs`: compare `Running { by }` to the actor's rendered word and a child
+/// named `main` submits, and stores a blob, on the attempt the owner runs inline.
+#[tokio::test]
+async fn a_child_named_main_is_not_the_owner_of_an_inline_todo() -> TestResult {
+    let dir = Scratch::new("yi-plan-op-main")?;
+    let engine = Arc::new(PlanEngine::new(
+        PlanStore::open(dir.to_path_buf())?,
+        Arc::new(Named),
+    ));
+    let owner = |op: yi_runtime::plan::ops::Op| yi_runtime::plan::ops::OpRequest {
+        plan: None,
+        actor: Actor::Owner,
+        op,
+        request_id: None,
+        expected_revision: None,
+    };
+    let inline = yi_runtime::plan::ops::TodoSpec {
+        delegation: None,
+        ..delegated("cut")?
+    };
+    engine.apply(owner(yi_runtime::plan::ops::Op::Init {
+        goal: GoalText::new("ship the seam end to end")?,
+        todos: vec![inline],
+    }))?;
+    engine.apply(owner(yi_runtime::plan::ops::Op::Start {
+        label: TodoLabel::new("cut")?,
+    }))?;
+    let id = PlanId::slug("ship the seam end to end")?;
+    let mut registry = HostRegistry::default();
+    let main = yi_types::plan::doc::AgentId::new("main")?;
+    yi_runtime::plan::request::register(Arc::clone(&engine), Actor::Child(main), &mut registry);
+    let product = "{\"forged\":true}";
+    let digest = yi_types::plan::canonical::Digest::of(product.as_bytes());
+    let url = format!("plan://{id}/artifacts/{}", digest.hex());
+    let args = serde_json::json!({"label": "cut", "attempt": 1, "output": url});
+    let blob = serde_json::json!([{"media_type": "application/json", "text": product}]);
+    for (request, blobs) in [("m1", blob), ("m2", serde_json::json!([]))] {
+        let payload = serde_json::json!({"request_id": request, "op": "submit", "args": args, "artifacts": blobs});
+        let refused = plan_op(&registry, payload).await?;
+        assert_eq!(refused["ok"], serde_json::json!(false), "{refused:?}");
+    }
+    let store = PlanStore::open(dir.to_path_buf())?;
+    assert!(
+        store.artifacts(&id).get(&digest).is_err(),
+        "no blob lands on the owner's attempt"
+    );
+    let cut = store.read(&id)?;
+    let cut = cut.todo(&TodoLabel::new("cut")?).ok_or("cut")?;
+    assert!(cut.extra.get("submitted").is_none(), "{cut:?}");
+    Ok(())
+}
+
 /// Guards `check_actor`'s child arm: let `Actor::Child` past `View` and the `done` below
 /// lands on the parent's plan.
 #[tokio::test]

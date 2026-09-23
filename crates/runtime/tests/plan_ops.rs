@@ -1593,6 +1593,22 @@ mod refusals {
         Ok((temp, PlanTool::new(Arc::new(engine), Actor::Owner)))
     }
 
+    /// Dies with the child arm of `PlanTool::schema`: a worktree brief names `submit`, and a
+    /// schema without it teaches `done`, which waits on the very record `submit` writes.
+    #[test]
+    fn a_childs_plan_schema_lists_submit_and_the_owners_does_not() -> TestResult {
+        let (_temp, _store, _stub, engine) = harness(2)?;
+        let engine = Arc::new(engine);
+        let ops = |actor: Actor| {
+            PlanTool::new(Arc::clone(&engine), actor).schema()["properties"]["op"]["enum"]
+                .to_string()
+        };
+        let child = Actor::Child(yi_types::plan::doc::AgentId::new("cut")?);
+        assert!(ops(child).contains("\"submit\""));
+        assert!(!ops(Actor::Owner).contains("\"submit\""));
+        Ok(())
+    }
+
     #[test]
     fn done_on_a_pending_todo_names_the_legal_move() -> TestResult {
         let (_temp, tool) = tool()?;
@@ -3704,6 +3720,15 @@ mod contracts {
                     if *phase == "unsubmitted" && *missing == "candidate_submitted"
             ),
             "{refused:?}"
+        );
+        let text = refused
+            .as_ref()
+            .err()
+            .map(ToString::to_string)
+            .unwrap_or_default();
+        assert!(
+            text.contains("op=submit"),
+            "the refusal names the call: {text}"
         );
         assert!(matches!(
             todo_of(&rig.store, &plan, "build it apart")?.state,

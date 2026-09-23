@@ -312,8 +312,8 @@ impl SubagentHost {
             .grant
             .lock()
             .is_ok_and(|mut grant| !std::mem::replace(&mut grant.resumed, true));
-        if first {
-            let _an_unreadable_journal_resumes_nothing = self.resume_revocations();
+        if first && let Err(reason) = self.resume_revocations() {
+            (self.options.notice)(&format!("[lease resume refused: {reason}]"));
         }
         let now = self.lease_now();
         let due: Vec<String> = self
@@ -333,7 +333,8 @@ impl SubagentHost {
         let mut repossessed = Vec::new();
         for key in due {
             match self.repossess(&key).await {
-                Ok(name) => repossessed.push(name),
+                Ok(Some(name)) => repossessed.push(name),
+                Ok(None) => {}
                 Err(reason) => self.leave_pending(&key, &reason),
             }
         }
@@ -353,13 +354,16 @@ impl SubagentHost {
 
     /// Invariant: nothing below the join runs while the run can still write, and the record
     /// with the kept references is journaled before the child's own record is released.
-    async fn repossess(self: &Arc<Self>, key: &str) -> Result<String, String> {
+    async fn repossess(self: &Arc<Self>, key: &str) -> Result<Option<String>, String> {
         let session = {
             let mut children = self
                 .children
                 .lock()
                 .map_err(|_| "subagent state poisoned")?;
             let record = children.get_mut(key).ok_or("the child is gone")?;
+            if record.exit.is_some() {
+                return Ok(None);
+            }
             record.step(Step::Repossess);
             record.disposition.get_or_insert(Choice::Retained);
             Arc::clone(&record.session)
@@ -404,7 +408,7 @@ impl SubagentHost {
         let failure = Draft::of(Kind::Failure, &text);
         let _the_record_is_already_journaled =
             self.route_mail(&record.session_name, "parent", &failure);
-        Ok(record.session_name)
+        Ok(Some(record.session_name))
     }
 
     /// After a restart during a grace: every journaled revocation with no repossession after
@@ -436,7 +440,11 @@ impl SubagentHost {
                 Ok(LeaseRecord::Returned(done)) => {
                     open.retain(|lease| lease.holder != done.lease.holder)
                 }
-                Err(_) => {}
+                Err(error) => {
+                    return Err(format!(
+                        "a lease record this build cannot read ({error}) may have closed an open lease, so none was completed past it"
+                    ));
+                }
             }
         }
         open.retain(|lease| !self.holds(&lease.holder));

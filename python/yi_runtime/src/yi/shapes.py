@@ -108,7 +108,7 @@ async def fork_join(plan: Plan, run: Run) -> None:
         if todo._doc["state"] != "abandoned" and (_delegation(todo) or todo.label in plan._inline)
     ]
     ready = {todo.label for todo in plan.ready()}
-    forked = [todo for todo in mine if todo.label in ready or todo._doc["state"] in ("running", "done")]
+    forked = [todo for todo in mine if todo.label in ready or todo._doc["state"] == "running"]
     problems = []
     if len(forked) < 2:
         problems.append(f"fork_join needs at least two todos that can run side by side; {len(forked)} found")
