@@ -1684,6 +1684,34 @@ mod accept {
         Ok(())
     }
 
+    // Dies with `left` read off a refusal record in schedule.rs: a merge conflict journals a
+    // disposition and no refusal, so `view` names nothing and the library waits forever.
+    #[test]
+    fn a_merge_conflict_at_the_finish_is_named_by_view() -> TestResult {
+        let rig = Rig::new("g4-left-conflict")?;
+        let parent = rig.fixture_repo(Dirt::Clean)?;
+        let bench = bench(&rig, parent, "yi/cand-conflict")?;
+        let line = finish(&bench).ok_or("the engine did not take its own child")?;
+        assert!(line.contains("not accepted"), "{line}");
+        assert!(matches!(bench.state()?, TodoState::Running { .. }));
+        let view = bench.owner(Op::View { full: true })?;
+        let left: Vec<&str> = view
+            .standing
+            .left
+            .iter()
+            .map(|(label, _)| label.as_str())
+            .collect();
+        assert_eq!(left, [LABEL], "{:?}", view.notices);
+        assert!(
+            view.notices.iter().any(|notice| notice
+                .starts_with("the engine left \"add rotate\" running: ")
+                && notice.contains("rotate.sh")),
+            "{:?}",
+            view.notices
+        );
+        Ok(())
+    }
+
     // Dies with the `Merge::Conflict` arm of `integrate` (acceptance.rs): return the git error
     // instead and the lane drops through `Drop` with no record naming the branch.
     #[test]

@@ -115,7 +115,8 @@ class Shapes(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(host.starts.count("a"), 2, "the red verdict is retried once the engine lands it")
 
     async def test_the_scheduler_and_the_model_wait_without_stealing_updates(self) -> None:
-        """Dies with the control: wait without the run's own cursor and its waits are all bare."""
+        """Dies with the control: wait without the run's own cursor and its waits are all bare;
+        wait from 0 again after the first and every wait answers at once, a busy poll."""
         host = FakeHost()
         plan = await Plan.create("ship it")
         await writers(plan, host, "a", "b", state="running")
@@ -130,9 +131,10 @@ class Shapes(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(run.outcome, "verified_success")
         cursors = [cursor for cursor, _ in host.waits]
         self.assertEqual(cursors[0], 0, "the scheduler's first wait reads the family as it stands")
-        later = [cursor for cursor in cursors[1:] if cursor != 0]
+        later = cursors[1:]
+        later.remove(0)  # the model's own wait above
+        self.assertNotIn(0, later, "only the scheduler's first wait reads from 0")
         self.assertEqual(later, sorted(later), "the scheduler resumes from its own last reply")
-        self.assertGreater(later[-1], 0)
         self.assertEqual(mine["cursor"], len(host.changes) - 1, "and the model's cursor is its own")
 
     async def test_scatter_drops_an_unverifiable_quote_before_the_lead_sees_it(self) -> None:

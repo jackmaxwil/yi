@@ -543,18 +543,29 @@ fn batch_signature(message: &AgentMessage) -> Option<String> {
     )
 }
 
+fn waits(code: &str) -> bool {
+    const HEADS: [&str; 3] = ["rlm.wait(", "asyncio.sleep(", ".result("];
+    const BLOCKS: &str = "for |async for |while |if |elif |else|try|except";
+    let mut waited = false;
+    for line in code.lines().map(str::trim) {
+        let head = HEADS.iter().any(|head| line.contains(head));
+        waited |= head;
+        let block = BLOCKS.split('|').any(|word| line.starts_with(word)) && line.ends_with(':');
+        let inert_print = line
+            .strip_prefix("print(")
+            .is_some_and(|inner| !inner.trim_end_matches(')').contains('('));
+        let quiet = line.is_empty()
+            || line.starts_with('#')
+            || ["break", "continue", "pass", "finally:"].contains(&line);
+        if !(head || block || inert_print || quiet) {
+            return false;
+        }
+    }
+    waited
+}
+
 fn waits_only(message: &AgentMessage) -> bool {
     let calls = extract_tool_calls(message);
-    let waits = |code: &str| {
-        code.lines()
-            .map(str::trim)
-            .filter(|line| !line.is_empty() && !line.starts_with('#'))
-            .all(|line| {
-                ["wait(", "sleep(", "result(", "print("]
-                    .iter()
-                    .any(|call| line.contains(call))
-            })
-    };
     !calls.is_empty()
         && calls.iter().all(|call| match call.name.as_str() {
             "ipython" => call

@@ -77,6 +77,7 @@ pub struct Outcome {
     pub reaped: Vec<Url>,
     pub subplan: Option<PlanId>,
     pub notices: Vec<String>,
+    pub standing: super::schedule::Standing,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -696,7 +697,7 @@ impl PlanEngine {
             .or_else(|error| self.latest().ok_or(error))?;
         let plan = self.store.read(&id)?;
         let ready = ready_labels(&plan);
-        let (held, notices) = self.standing(&plan);
+        let (held, standing) = self.standing(&plan);
         Ok(Outcome {
             plan,
             ready,
@@ -705,7 +706,8 @@ impl PlanEngine {
             spawned: Vec::new(),
             reaped: Vec::new(),
             subplan: None,
-            notices,
+            notices: standing.notices(),
+            standing,
         })
     }
 
@@ -777,6 +779,7 @@ impl PlanEngine {
                 "request {} was already applied as record {}; replayed",
                 txn.request, record.seq
             )],
+            standing: Default::default(),
         }))
     }
 
@@ -1074,6 +1077,7 @@ impl PlanEngine {
             reaped: delta.reaped,
             subplan: delta.subplan,
             notices: delta.notices,
+            standing: Default::default(),
         })
     }
 

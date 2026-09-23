@@ -622,7 +622,7 @@ impl PlanEngine {
 }
 
 /// The materialized tree a verification ran in, removed with the run whatever it decided.
-struct Workspace(std::path::PathBuf);
+pub(super) struct Workspace(pub(super) std::path::PathBuf);
 
 impl Drop for Workspace {
     fn drop(&mut self) {

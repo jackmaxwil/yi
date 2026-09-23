@@ -89,6 +89,7 @@ pub(crate) fn run_check_in(
     env_names: &[String],
     stdin: Option<Vec<u8>>,
     deadline: Instant,
+    stop: Option<&yi_tools::CancelFlag>,
 ) -> Result<yi_tools::CommandCapture, String> {
     let mut shell = yi_tools::command("/bin/sh");
     shell.arg("-c").arg(command).current_dir(cwd).env_clear();
@@ -101,7 +102,9 @@ pub(crate) fn run_check_in(
             shell.env(name, value);
         }
     }
-    let cancelled: yi_tools::CancelFlag = Arc::new(move || Instant::now() >= deadline);
+    let stop = stop.cloned();
+    let cancelled: yi_tools::CancelFlag =
+        Arc::new(move || Instant::now() >= deadline || stop.as_ref().is_some_and(|stop| stop()));
     yi_tools::run_captured(shell, stdin, &cancelled, yi_tools::OUTPUT_CAP)
 }
 

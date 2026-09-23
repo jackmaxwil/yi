@@ -969,6 +969,7 @@ mod tests {
             reaped: Vec::new(),
             subplan: None,
             notices: Vec::new(),
+            standing: Default::default(),
         };
         let windowed = render(&outcome, false, None);
         assert!(

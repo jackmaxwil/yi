@@ -347,9 +347,11 @@ class Plan:
     def __init__(self, doc: dict[str, Any], notices: list[str] | None = None) -> None:
         self._doc = doc
         self._notices = notices or []
-        # What the last view said the engine left standing: held by the width, or refused.
+        # What the last view said the engine left standing: held by the width, a start it was
+        # refused and a finish it left running, each by label with the engine's reason.
         self._held: list[str] = []
-        self._standing: list[str] = []
+        self._unstarted: dict[str, str] = {}
+        self._engine_left: dict[str, str] = {}
         self._inline: dict[str, Callable[[], Awaitable[Any]]] = {}
         self._tasks: dict[str, asyncio.Task] = {}
 
@@ -446,7 +448,8 @@ class Plan:
             await plan.refresh()
         """
         reply = await _send("view", {"full": True}, plan=self.id)
-        self._doc, self._held, self._standing = reply["plan"], reply.get("held") or [], reply.get("notices") or []
+        self._doc, self._held = reply["plan"], reply.get("held") or []
+        self._unstarted, self._engine_left = reply.get("unstarted") or {}, reply.get("left") or {}
         return self
 
     async def _op(self, op: str, args: dict | None = None, **kwargs: Any) -> dict[str, Any]:
@@ -617,8 +620,9 @@ class Run:
             if await todo.state() != "running":
                 if todo.label in self.plan._held or todo.label not in self.plan._doc.get("ready", []):
                     return PlanError(f"{todo.key} waits on the dispatch width", {"code": "admission"})
-                said = [note for note in self.plan._standing if f'could not start "{todo.label}"' in note]
-                refusal = PlanError(said[0] if said else f"the engine has not started {todo.key}", {"code": "not_started"})
+                said = self.plan._unstarted.get(todo.label)
+                message = f"the engine could not start {todo.key}: {said}" if said else f"the engine has not started {todo.key}"
+                refusal = PlanError(message, {"code": "not_started"})
                 self.refusals[todo.key] = refusal
                 return refusal
         else:
@@ -684,7 +688,7 @@ class Run:
                 if now == "running" and state in ("finished", "failed"):
                     # Invariant: a finish can outlast a wait, so only the engine's own word that
                     # it left the todo to you collects it; a finish in flight is waited on.
-                    if not any(f'the engine left "{label}" running' in note for note in self.plan._standing):
+                    if label not in self.plan._engine_left:
                         continue
                     self._left.add((label, todo._doc.get("attempt")))
                 elif now == "running":

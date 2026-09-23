@@ -214,6 +214,31 @@ class Plans(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(refusal.kind, "not_started")
         self.assertIn("criterion sha256:0 is not in the store", str(refusal))
 
+    async def test_what_the_engine_left_is_read_by_label_not_by_its_prose(self) -> None:
+        """Dies with the control: match the notice text and a label with a quote or a backslash,
+        which the engine writes escaped, is never found: the run waits out its budget on the
+        todo it was left and loses the reason a start was refused."""
+        label = 'ship "it" \\ now'
+        host = FakeHost()
+        host.unstartable[f"deploy: {label}"] = "criterion sha256:0 is not in the store"
+        plan = await Plan.create("ship it")
+        await plan.todo(key="deploy", label=label, delegate=Writer(accept=contract(cmd("true", critical=True))))
+
+        async def notes() -> None:
+            return None
+
+        await plan.todo(key="notes", run=notes)
+        run = await plan.run(budget=5)
+        self.assertIn("criterion sha256:0 is not in the store", str(run.refusals), run.refusals)
+        yi.plan._RUNS.clear()
+        host = FakeHost()
+        plan = await Plan.create("ship it")
+        todo = await plan.todo(key="t", label=label, delegate=Writer(accept=contract(cmd("true", critical=True))))
+        host.verdicts[todo.label] = "abstain"
+        host.children[f"{plan.id}/t"] = "finished"
+        run = await asyncio.wait_for(plan.run(), timeout=5)
+        self.assertEqual((run.outcome, todo._doc["state"]), ("unresolved", "running"))
+
     async def test_duplicate_run_calls_attach_or_refuse(self) -> None:
         host = FakeHost()
         plan = await Plan.create("ship it")

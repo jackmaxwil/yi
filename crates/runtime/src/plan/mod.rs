@@ -31,7 +31,7 @@ pub mod probe;
 pub mod program;
 pub mod recovery;
 pub mod request;
-mod schedule;
+pub mod schedule;
 pub mod snapshot;
 pub mod state;
 pub mod store;
