@@ -54,6 +54,10 @@ class FakeHost:
         self.finished: set[tuple[str, str, int]] = set()
         # Waits a todo's finish is still in flight for, and the finishes that left a todo running.
         self.lag: dict[str, int] = {}
+        # Seconds the engine takes to settle an ended child, on its own clock: a wait then
+        # blocks as the host's does, and a settle moves nothing a waiter sees.
+        self.settles_after: float | None = None
+        self.ended_at: dict[tuple[str, str, int], float] = {}
         self.left: dict[tuple[str, str, int], str] = {}
         # The engine's own finish ops, apart from the journal of what the library sent.
         self.engine_ops: list[tuple[str, dict]] = []
@@ -73,7 +77,11 @@ class FakeHost:
         payload = payload or {}
         self.requests[kind] += 1
         if kind == "plan.op":
+            if self.settles_after is not None:
+                self.finish()
             return self.plan_op(payload)
+        if kind == "rlm.wait" and self.settles_after is not None:
+            return await self.quiet_wait(payload)
         if kind == "rlm.wait":
             await asyncio.sleep(0.01)
             # The engine takes a child's end before a waiter reads it: a set-up that marks a
@@ -100,6 +108,19 @@ class FakeHost:
                 raise RuntimeError(f"{url}: not found")
             return {"text": text}
         raise AssertionError(f"unexpected host request {kind}")
+
+    async def quiet_wait(self, payload: dict) -> dict:
+        """`mailbox.rs` wait: it answers once a child moved past the cursor, or at the timeout."""
+        loop = asyncio.get_running_loop()
+        ends, cursor = loop.time() + payload["timeout_ms"] / 1000, payload.get("cursor") or 0
+        while True:
+            latest = dict(self.changes)
+            self.changes += [item for item in self.children.items() if latest.get(item[0]) != item[1]]
+            if len(self.changes) > cursor or loop.time() >= ends:
+                changed = sorted({name for name, _ in self.changes[cursor:]})
+                self.waits.append((payload.get("cursor"), changed))
+                return {"cursor": len(self.changes), "changed": changed, "states": dict(self.children), "notes": {}}
+            await asyncio.sleep(0.01)
 
     def plan_op(self, payload: dict) -> dict:
         op, args, request_id = payload["op"], payload.get("args") or {}, payload["request_id"]
@@ -154,6 +175,10 @@ class FakeHost:
                 if self.lag.get(todo["label"], 0) > 0:
                     self.lag[todo["label"]] -= 1
                     continue
+                if self.settles_after is not None:
+                    now = asyncio.get_running_loop().time()
+                    if now - self.ended_at.setdefault(key, now) < self.settles_after:
+                        continue
                 self.finished.add(key)
                 if self.children[child] == "failed":
                     self.engine("fail", {"label": todo["label"], "cause": f"child {child} failed"}, plan, todo)

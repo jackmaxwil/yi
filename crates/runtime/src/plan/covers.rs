@@ -34,6 +34,13 @@ pub fn write_check(service: Option<Arc<super::PlanService>>) -> Option<Arc<Write
     ))
 }
 
+fn preview_deadline(now: Instant, session: Option<Instant>) -> Instant {
+    let budget = now
+        .checked_add(Duration::from_millis(PREVIEW_BUDGET_MS))
+        .unwrap_or(now);
+    session.map_or(budget, |session| budget.min(session))
+}
+
 struct Tree {
     snapshotter: Arc<dyn Snapshotter>,
     id: Result<String, String>,
@@ -93,13 +100,7 @@ impl PlanEngine {
     }
 
     fn start_run<'a>(&self, cwd: &'a Path, cancel: &'a CancelFlag) -> Run<'a> {
-        let now = Instant::now();
-        let mut deadline = now
-            .checked_add(Duration::from_millis(PREVIEW_BUDGET_MS))
-            .unwrap_or(now);
-        if let Some(session) = self.verifier.deadline() {
-            deadline = deadline.min(session);
-        }
+        let deadline = preview_deadline(Instant::now(), self.verifier.deadline());
         let own =
             yi_permission::lexical_normalize(cwd) == yi_permission::lexical_normalize(&self.cwd);
         let snapshotter: Arc<dyn Snapshotter> = match &self.lane_home {
@@ -248,4 +249,20 @@ fn covers(contract: &Contract, paths: &[PathBuf], cwd: &Path) -> bool {
             .strip_prefix(&root)
             .is_ok_and(|relative| set.is_match(relative))
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::{Duration, Instant};
+
+    /// Dies with the budget moved: a minute of preview per write, and no more.
+    #[test]
+    fn a_preview_gets_one_minute_or_the_session_deadline() -> Result<(), &'static str> {
+        let now = Instant::now();
+        let minute = super::preview_deadline(now, None).duration_since(now);
+        assert_eq!(minute, Duration::from_secs(60));
+        let sooner = now.checked_add(Duration::from_secs(5)).ok_or("clock")?;
+        assert_eq!(super::preview_deadline(now, Some(sooner)), sooner);
+        Ok(())
+    }
 }

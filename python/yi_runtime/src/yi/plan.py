@@ -667,7 +667,7 @@ class Run:
             self._waiting = asyncio.ensure_future(rlm.wait(timeout=self._remaining(), cursor=self._cursor))
         stop = asyncio.ensure_future(self._stop.wait())
         waiters = [*tasks, stop, *([self._waiting] if self._waiting else [])]
-        # A reaped child moves nothing a wait sees, so its todo is re-read on a short poll.
+        # A reaped child, or one whose finish the engine has not settled, is re-read on a short poll.
         timeout = min(self._remaining(), REAPED_POLL) if self._reaped else self._remaining()
         done, _ = await asyncio.wait(waiters, timeout=timeout, return_when=asyncio.FIRST_COMPLETED)
         stop.cancel()
@@ -699,7 +699,7 @@ class Run:
                 # Invariant: the engine settles a delegated todo, so a finish in flight or a reaped
                 # child is waited on; only the engine's word that it left the todo collects it.
                 if state not in ("finished", "failed") or label not in self.plan._engine_left:
-                    self._reaped |= state is None
+                    self._reaped = True
                     continue
                 self._left.add((label, todo._doc.get("attempt")))
             self.active.pop(label)

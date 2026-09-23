@@ -74,8 +74,7 @@ pub(crate) struct Children {
     pub(crate) epoch: u64,
     /// Children being built outside the lock; each holds a slot, its name and its tokens.
     building: Vec<(String, u64)>,
-    /// Removed names with their last moves: a reap moves the epoch, and a cursor from before
-    /// a child's last move still reads it as moved once the record is gone.
+    /// Removed names at their reap's epoch: a cursor from before the reap reads them as moved.
     removed: std::collections::VecDeque<(String, u64)>,
     forgotten: u64,
 }
@@ -109,8 +108,7 @@ impl Children {
 
     pub(crate) fn take(&mut self, key: &str) -> Option<ChildRecord> {
         let record = self.records.remove(key)?;
-        let epoch = self.touch(key);
-        let moved = record.exit.map_or(epoch, |_| record.changed_at_epoch);
+        let moved = self.touch(key);
         if self.removed.len() >= REMOVED_KEPT
             && let Some((_, lost)) = self.removed.pop_front()
         {

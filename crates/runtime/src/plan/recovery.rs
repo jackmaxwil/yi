@@ -7,7 +7,7 @@ use yi_types::plan::ledger::{EffectId, JournalRecord};
 
 use super::journal::Damage;
 use super::ops::{Actor, Op, Outcome, PlanEngine, PlanOpError, Resolution};
-use super::state::{IntentOutcome, RootState, reduce, root_of};
+use super::state::{IntentOutcome, RootState, SUBMITTED_KEY, reduce, root_of};
 use super::store::{PlanStore, StoreError};
 use yi_types::plan::doc::TouchCount;
 use yi_types::plan::ledger::RequestId;
@@ -95,15 +95,19 @@ pub fn reconcile(state: &RootState, liveness: &dyn Liveness) -> Vec<Finding> {
             let effect = state
                 .intent_for(id, &todo.label)
                 .map(|(effect, _)| effect.clone());
+            let left = match todo.extra.get(SUBMITTED_KEY).and_then(|url| url.as_str()) {
+                Some(url) => format!("its submitted product {url}, which no done accepted"),
+                None => "no durable result".to_owned(),
+            };
             findings.push(Finding {
                 plan: id.clone(),
                 label: todo.label.clone(),
                 agent: Some(by.clone()),
                 effect,
                 evidence: match liveness.alive(by) {
-                    Some(false) => format!("child {by} has no live process and no durable result"),
+                    Some(false) => format!("child {by} has no live process and left {left}"),
                     Some(true) => String::new(),
-                    None => format!("child {by} cannot be shown alive and left no durable result"),
+                    None => format!("child {by} cannot be shown alive and left {left}"),
                 },
             });
         }
