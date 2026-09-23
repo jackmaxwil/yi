@@ -31,7 +31,8 @@ pub const KIND_DONE_REFUSED: &str = "done_refused";
 pub const KIND_VERIFICATION_STALE: &str = "verification_stale";
 use super::acceptance::{
     KIND_ACCEPTED, KIND_CANDIDATE_SUBMITTED, KIND_CANDIDATE_VERIFIED, KIND_DISPOSITION,
-    KIND_INTEGRATION_PREPARED, KIND_INTEGRATION_STALE, KIND_INTEGRATION_VERIFIED,
+    KIND_INTEGRATION_INTENT, KIND_INTEGRATION_PREPARED, KIND_INTEGRATION_STALE,
+    KIND_INTEGRATION_VERIFIED,
 };
 
 /// Who requested a verification and when: another process refuses a `done` for the same token
@@ -387,6 +388,7 @@ pub fn apply(state: &mut RootState, record: &JournalRecord) -> Result<(), Reduce
         }
         KIND_RECONCILED
         | KIND_CANDIDATE_SUBMITTED
+        | KIND_INTEGRATION_INTENT
         | KIND_INTEGRATION_PREPARED
         | KIND_INTEGRATION_STALE
         | KIND_DISPOSITION => {}

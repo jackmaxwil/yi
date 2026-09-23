@@ -4,7 +4,7 @@
 use std::marker::PhantomData;
 use std::sync::{Arc, PoisonError};
 
-use serde_json::json;
+use serde_json::{Value, json};
 use yi_types::plan::contract::{Outcome as ContractOutcome, Verdict, VerificationToken};
 use yi_types::plan::doc::{PlanId, TodoLabel, TodoState, TouchCount};
 use yi_types::plan::ledger::{EffectId, RequestId};
@@ -12,17 +12,18 @@ use yi_types::plan::ledger::{EffectId, RequestId};
 use std::path::Path;
 
 use super::acceptance::{
-    Call, Candidate, Contracted, KIND_CANDIDATE_SUBMITTED, KIND_CANDIDATE_VERIFIED, Submitted,
-    Verified, last_generation, verification,
+    Call, Candidate, Contracted, KIND_CANDIDATE_SUBMITTED, KIND_CANDIDATE_VERIFIED,
+    KIND_DISPOSITION, KIND_INTEGRATION_INTENT, KIND_INTEGRATION_PREPARED, Submitted, Verified,
+    last_generation, own, pin_of, verification,
 };
 use super::done::{Flight, Prepared};
-use super::ops::{Actor, Op, Outcome, PlanEngine, PlanOpError};
+use super::ops::{Actor, Op, Outcome, PlanEngine, PlanOpError, Txn};
 use super::output::OutputResolve;
 use super::state::{Decided, root_of};
 use super::table::{OpKind, check_plan_state};
 use super::verify::Snapshot;
 use crate::lane::Sha;
-use crate::lane::settle::generation_of;
+use crate::lane::settle::{drop_staging, generation_of};
 
 /// What step 1 of a `submit` established under the lease.
 struct SubmitRun {
@@ -315,8 +316,7 @@ impl PlanEngine {
         })))
     }
 
-    /// Steps 5 and 6 for the candidate, under the lease again: the verdict recorded as
-    /// `candidate_verified`, or the refusal charged.
+    /// Steps 5 and 6 under the lease again: `candidate_verified` recorded, or the refusal charged.
     fn settle_candidate(
         &self,
         run: &SubmitRun,
@@ -353,5 +353,40 @@ impl PlanEngine {
             Some((verdict, &run.effect)),
         )?;
         Ok(run.candidate.clone().verified(run.token.clone()))
+    }
+
+    /// Journals the staging session before `prepare` claims it; drops one a killed run left.
+    pub(super) fn stage_intent(
+        &self,
+        txn: &mut Txn,
+        id: &PlanId,
+        candidate: &Candidate<Verified>,
+        generation: u64,
+    ) -> Result<String, PlanOpError> {
+        let (label, attempt) = (&candidate.label, candidate.attempt);
+        let session = format!("stage-{}", self.store.nonce());
+        let mut args = json!({"label": label, "generation": generation, "staging": session});
+        let mut lost = None;
+        for record in txn.records.iter().filter(|r| own(r, id, label, attempt)) {
+            match record.record.op.as_str() {
+                KIND_INTEGRATION_INTENT => lost = record.args.get("staging").cloned(),
+                KIND_INTEGRATION_PREPARED | KIND_DISPOSITION => lost = None,
+                _ => {}
+            }
+        }
+        if let Some(Value::String(lost)) = lost {
+            let dropped = drop_staging(self.pool(label)?, &lost)
+                .map_err(|error| verification(label, error.to_string()));
+            args["abandoned"] = json!({"staging": lost, "pin": pin_of(&dropped)});
+        }
+        self.record(
+            txn,
+            id,
+            (label, attempt),
+            KIND_INTEGRATION_INTENT,
+            args,
+            None,
+        )?;
+        Ok(session)
     }
 }

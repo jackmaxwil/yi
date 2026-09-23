@@ -3,6 +3,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use serde_json::{Map, Value, json};
+use yi_runtime::Wall;
+use yi_runtime::fetch::Resolver;
 use yi_runtime::plan::authority::{Submission, Unhosted, cli_args, submit};
 use yi_runtime::plan::ledger::{self, Report};
 use yi_runtime::plan::ops::{Actor, PlanEngine, dispatch_width};
@@ -59,7 +61,11 @@ fn apply(line: &str, options: &Options) -> i32 {
         import_source(&mut args, options);
         let plans = dir(options);
         let store = PlanStore::open(plans.clone()).map_err(|error| error.to_string())?;
-        let mut engine = PlanEngine::new(store, Arc::new(Unhosted)).with_cwd(options.cwd.clone());
+        let resolver =
+            Resolver::new(options.cwd.clone(), Wall::default()).with_plans_dir(plans.clone());
+        let mut engine = PlanEngine::new(store, Arc::new(Unhosted))
+            .with_cwd(options.cwd.clone())
+            .with_output_resolve(Arc::new(resolver));
         // The same snapshot the session mints (plan section 6.5): a contracted `done` from the
         // CLI reads the shadow gitdir tree, not a walk of the whole workspace.
         if let Some(snapshotter) = std::env::var_os("HOME")
@@ -191,8 +197,7 @@ fn lint(plan: &Plan, options: &Options) -> i32 {
             None => println!("{}: {}", finding.rule, finding.detail),
         }
     }
-    // Advisory, never a verdict (D50): a lint that could fail a build would be
-    // a second adjudicator beside the step table.
+    // Advisory, never a verdict (D50): a failing lint would adjudicate beside the step table.
     0
 }
 

@@ -3,6 +3,16 @@
 
 use std::error::Error;
 use std::process::{Command, Output};
+use std::sync::Arc;
+
+use serde_json::Map;
+use yi_runtime::plan::ops::{Actor, Op, OpRequest, PlanEngine};
+use yi_runtime::plan::store::PlanStore;
+use yi_types::plan::doc::{
+    AgentId, Check, Delegation, GoalText, OutputSchema, SpawnSpec, TodoAddr, TodoLabel,
+};
+use yi_types::plan::op::TodoSpec;
+use yi_types::url::Url;
 
 #[path = "../../types/tests/support/scratch.rs"]
 mod scratch;
@@ -175,5 +185,89 @@ fn the_import_commands_the_store_prints_run_as_printed() -> TestResult {
     assert!(
         std::fs::read_to_string(plans.join(id).join("ops.jsonl"))?.contains(r#""op":"import""#)
     );
+    Ok(())
+}
+
+/// A session that has started a delegated todo: the child is a name, nothing runs.
+struct Hosted;
+
+impl yi_runtime::plan::ops::Delegate for Hosted {
+    fn spawn(&self, _at: &TodoAddr, _delegation: &Delegation) -> Result<AgentId, String> {
+        AgentId::new("writer").map_err(|error| error.to_string())
+    }
+
+    fn reap(&self, _agent: &AgentId, _supplied: &[Url]) -> Result<Option<Url>, String> {
+        Ok(None)
+    }
+
+    fn follow_up(&self, _dispatched: &[TodoLabel], _held: usize) {}
+}
+
+// Dies with the CLI engine's output resolver (cli/src/plan.rs): without it `yi plan done`
+// completes a declared-schema todo on a product nobody read, or refuses a sound one unserved.
+#[test]
+fn cli_done_validates_a_declared_output_schema() -> TestResult {
+    let root = Scratch::new("yi-plan-cli-schema")?;
+    let project = root.join("project");
+    std::fs::create_dir_all(&project)?;
+    root.home()?;
+    std::fs::write(
+        project.join("schema.json"),
+        r#"{"type":"object","required":["passed"],"properties":{"passed":{"type":"boolean"}}}"#,
+    )?;
+    std::fs::write(project.join("report.json"), r#"{"passed":"yes"}"#)?;
+    let store = PlanStore::open(project.join(".yi/plans"))?;
+    let engine = PlanEngine::new(store, Arc::new(Hosted));
+    let owner = |op| OpRequest {
+        plan: None,
+        actor: Actor::Owner,
+        op,
+        request_id: None,
+        expected_revision: None,
+    };
+    let label = TodoLabel::new("write the report")?;
+    let delegation = Delegation {
+        spec: SpawnSpec {
+            role: None,
+            model: None,
+            effort: None,
+            tools: Vec::new(),
+            isolation: None,
+            budget: None,
+            wall: None,
+            extra: Map::new(),
+        },
+        accept: Check::Command("true".to_owned()),
+        output: Some(OutputSchema {
+            schema: "local://schema.json".parse()?,
+            extra: Map::new(),
+        }),
+        context: Vec::new(),
+        note: None,
+        extra: Map::new(),
+    };
+    engine.apply(owner(Op::Init {
+        goal: GoalText::new("report the run")?,
+        todos: vec![TodoSpec {
+            label: label.clone(),
+            after: Vec::new(),
+            delegation: Some(delegation),
+            contract: None,
+            children: Vec::new(),
+        }],
+    }))?;
+    engine.apply(owner(Op::Start { label }))?;
+
+    let done = r#"{"label":"write the report","output":"local://report.json"}"#;
+    let refused = yi_plan(&root, &["done", done])?;
+    assert_ne!(refused.status.code(), Some(0), "{}", streams(&refused));
+    assert!(
+        streams(&refused).contains("expected boolean"),
+        "the schema was read: {}",
+        streams(&refused)
+    );
+    std::fs::write(project.join("report.json"), r#"{"passed":true}"#)?;
+    let accepted = yi_plan(&root, &["done", done])?;
+    assert_eq!(accepted.status.code(), Some(0), "{}", streams(&accepted));
     Ok(())
 }

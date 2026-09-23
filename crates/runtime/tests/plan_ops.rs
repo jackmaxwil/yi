@@ -1012,6 +1012,35 @@ fn a_declared_output_is_validated_against_its_schema() -> TestResult {
     Ok(())
 }
 
+// Dies with the no-resolver arm of `check_output`: answer `Ok(None)` there and a declared
+// schema completes on a product nobody read, as the CLI's engine once did.
+#[test]
+fn a_declared_output_with_no_resolver_is_refused() -> TestResult {
+    let (_temp, _store, _stub, engine) = harness(8)?;
+    init(
+        &engine,
+        vec![TodoSpec {
+            label: label("write the report")?,
+            after: Vec::new(),
+            delegation: Some(declaring("local://schemas/report.json")?),
+            contract: None,
+            children: Vec::new(),
+        }],
+    )?;
+    engine.apply(owner(Op::Start {
+        label: label("write the report")?,
+    }))?;
+    let refused = engine.apply(owner(Op::Done {
+        label: label("write the report")?,
+        output: Some("local://reports/final.json".parse::<Url>()?),
+    }));
+    assert!(
+        matches!(refused, Err(PlanOpError::UnservedOutput { .. })),
+        "{refused:?}"
+    );
+    Ok(())
+}
+
 #[test]
 fn a_product_that_satisfies_its_schema_completes() -> TestResult {
     let (_temp, _store, _stub, engine) = harness(8)?;
