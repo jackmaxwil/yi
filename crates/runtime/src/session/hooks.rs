@@ -249,6 +249,16 @@ impl AgentSession {
         })
     }
 
+    pub fn take_pending(&self) -> (Vec<AgentMessage>, Vec<AgentMessage>) {
+        let take = |queue: &std::sync::Mutex<Vec<AgentMessage>>| {
+            queue
+                .lock()
+                .map(|mut queue| std::mem::take(&mut *queue))
+                .unwrap_or_default()
+        };
+        (take(&self.shared.steer), take(&self.shared.follow_up))
+    }
+
     pub fn notice_hook(&self) -> Arc<dyn Fn(&str) + Send + Sync> {
         let shared = Arc::clone(&self.shared);
         Arc::new(move |text: &str| {

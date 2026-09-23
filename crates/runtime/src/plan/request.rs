@@ -148,8 +148,7 @@ fn code_of(error: &PlanToolError) -> &'static str {
 
 const OWNER_ONLY: &str = "only the plan owner stores artifacts";
 
-/// Invariant: a child writes one blob and only as the product of the attempt it is submitting,
-/// on a todo this plan already says it is running; the digest stays the store's.
+/// Invariant: a child writes one blob, the product of the attempt the plan says it is running.
 fn own_product(
     engine: &PlanEngine,
     actor: &Actor,
@@ -168,7 +167,7 @@ fn own_product(
     let plan = engine.store().read(id).map_err(|error| error.to_string())?;
     let running = plan.todo(label).is_some_and(|todo| {
         todo.attempt == *attempt
-            && matches!(&todo.state, yi_types::plan::doc::TodoState::Running { by } if by == agent)
+            && matches!(&todo.state, yi_types::plan::doc::TodoState::Running { by } if super::ops::runs(actor, by))
     });
     if !running {
         return Err(format!(

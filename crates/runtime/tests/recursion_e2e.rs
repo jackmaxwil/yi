@@ -1276,6 +1276,10 @@ async fn a_service_respawns_under_its_name_and_keeps_its_inbox() -> TestResult {
         refused.contains("\"index\" was respawned before it replied"),
         "{refused}"
     );
+    // Dies with the hand-off in `respawn`: the send the first run never drained is owed a turn.
+    let views = harness.host.children_view();
+    let texts = serde_json::to_string(&views.first().ok_or("no view")?.session.messages())?;
+    assert!(texts.contains("for the first"), "{texts}");
     assert_eq!(
         harness.host.children_view().len(),
         1,
@@ -1725,6 +1729,16 @@ async fn depth_limit_name_collision_slots_and_delete() -> TestResult {
             .is_some_and(|error| error.contains("\"twin\" is already taken at depth 1")),
         "duplicate names must be rejected"
     );
+    // Dies with the reserved names in `reserve`: `main` is the owner's inline agent.
+    for word in ["main", "host"] {
+        let reserved = harness
+            .host
+            .spawn("impostor".to_owned(), kwargs(&[("name", word)]));
+        assert!(
+            reserved.is_err_and(|error| error.contains("is reserved")),
+            "{word}"
+        );
+    }
 
     for index in 0..7 {
         harness
@@ -2608,7 +2622,11 @@ async fn a_delete_wakes_a_waiter_with_the_child_gone() -> TestResult {
         started.elapsed() < std::time::Duration::from_secs(5),
         "a delete wakes the waiter, not the deadline"
     );
-    assert_eq!(woken["changed"], json!([]), "{woken:?}");
+    assert_eq!(
+        woken["changed"],
+        json!(["gone"]),
+        "the reap is a named move: {woken:?}"
+    );
     assert!(
         woken["states"].get("gone").is_none(),
         "the reaped child is off the state map: {woken:?}"
@@ -3161,6 +3179,135 @@ async fn restart_during_grace_completes_the_repossession() -> TestResult {
         next.host.resume_revocations()?,
         Vec::<String>::new(),
         "completed once"
+    );
+    Ok(())
+}
+
+/// Dies with the refusal in `resume_revocations`: skip a lease line this build cannot read and
+/// the revocation it may have closed is completed again, a kept branch called an orphan.
+#[tokio::test]
+async fn a_lease_record_this_build_cannot_read_refuses_the_resume() -> TestResult {
+    use yi_types::lease::LeaseRecord;
+    let (root, family, _ticks) = leased("yi-lease-unknown", "sleep 30", None).await?;
+    family
+        .host
+        .spawn("hold".to_owned(), kwargs(&[("name", "held")]))?;
+    executing(&family).await?;
+    family.host.revoke("held", 30_000, "scope changed")?;
+    family.host.interrupt("held")?;
+    let newer = json!({"event": "forfeited", "lease": {"holder": "held", "parent": "parent", "grantedAt": 1}});
+    yi_session::lock_session(&family.store).append_custom("main", "lease", Some(newer))?;
+    let store = family.store.clone();
+    drop(family);
+
+    let next = support::family(root.to_path_buf(), std::env::temp_dir(), store, None);
+    assert!(next.host.expire().await.is_empty());
+    let journal = next.journal();
+    assert!(
+        !journal
+            .iter()
+            .any(|record| matches!(record, LeaseRecord::Repossessed(_))),
+        "no repossession is invented past a line it cannot read: {journal:?}"
+    );
+    let told = next.notices.lock().map_err(|_| "poisoned")?.clone();
+    assert!(
+        told.iter()
+            .any(|text| text.contains("lease resume refused")),
+        "{told:?}"
+    );
+    Ok(())
+}
+
+/// Dies with the exit check in `repossess`: `expire` reads its due list once, so a sibling
+/// whose run ends while the first is joined is repossessed too, on top of its own ending,
+/// and the journal closes that lease twice. This is also the expire-versus-conclude pin.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_child_that_ends_while_expire_joins_a_sibling_keeps_its_one_ending() -> TestResult {
+    use yi_types::lease::LeaseRecord;
+    let (_root, family, _ticks) = leased("yi-lease-race", "sleep 30", None).await?;
+    for name in ["a", "b"] {
+        family
+            .host
+            .spawn("hold".to_owned(), kwargs(&[("name", name)]))?;
+    }
+    for _ in 0..POLL_ATTEMPTS {
+        let views = family.host.children_view();
+        if views.len() == 2
+            && views
+                .iter()
+                .all(|view| view.update.activity == ChildActivity::Executing)
+        {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(POLL_INTERVAL_MS)).await;
+    }
+    for name in ["a", "b"] {
+        family.host.revoke(name, 0, "scope changed")?;
+    }
+    // `expire` runs on this thread; its second clock read is the first repossession's, after
+    // its join, and the other run ends there, after the due list was read. A read a child's
+    // own task makes, under the roster lock, is left alone.
+    let (reads, host) = (AtomicU32::new(0), Arc::downgrade(&family.host));
+    let expiring = std::thread::current().id();
+    let clock = Arc::new(move || {
+        if std::thread::current().id() == expiring
+            && reads.fetch_add(1, Ordering::SeqCst) == 1
+            && let Some(host) = host.upgrade()
+        {
+            for view in host.children_view() {
+                let _ = host.interrupt(&view.update.name);
+            }
+            for _ in 0..POLL_ATTEMPTS {
+                let views = host.children_view();
+                if views.iter().any(|view| view.update.exit.is_some()) {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(POLL_INTERVAL_MS));
+            }
+        }
+        1_000_000
+    });
+    family.host.set_lease_clock(Some(clock), None);
+    let mut events = family.events.subscribe();
+
+    let taken = family.host.expire().await;
+    let [first] = &taken[..] else {
+        return Err(format!("only the joined child is repossessed: {taken:?}").into());
+    };
+    let other = if first == "a" { "b" } else { "a" };
+    let ended = terminal(&mut events);
+    // A late event may republish an ending unchanged; what may not happen is a second one.
+    let exits = |name: &str| {
+        let mut seen: Vec<_> = ended
+            .iter()
+            .filter(|update| update.name == name)
+            .map(|update| update.exit)
+            .collect();
+        seen.dedup();
+        seen
+    };
+    let repossessed = Some(yi_types::subagent::ChildExit::Repossessed);
+    assert_eq!(exits(first), [repossessed], "{ended:?}");
+    assert_eq!(
+        exits(other),
+        [Some(yi_types::subagent::ChildExit::Interrupted)],
+        "{ended:?}"
+    );
+    family.host.delete(other)?;
+    let journal = family.journal();
+    let closing: Vec<(&str, &str)> = journal
+        .iter()
+        .filter_map(|record| match record {
+            LeaseRecord::Revoked(_) => None,
+            LeaseRecord::Repossessed(done) => Some(("repossessed", done.lease.holder.as_str())),
+            LeaseRecord::Returned(back) => Some(("returned", back.lease.holder.as_str())),
+        })
+        .map(|(kind, holder)| (kind, if holder == first { "first" } else { "other" }))
+        .collect();
+    assert_eq!(
+        closing,
+        [("repossessed", "first"), ("returned", "other")],
+        "each lease closes once"
     );
     Ok(())
 }

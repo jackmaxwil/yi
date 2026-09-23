@@ -70,6 +70,16 @@ class Shapes(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(any(name in problem for problem in problems), (name, problems))
         self.assertEqual((host.starts, host.spawns), (["man"], 1), "the refusal starts nothing the engine did not")
 
+    async def test_a_done_arm_is_not_one_of_the_two_that_run_side_by_side(self) -> None:
+        """Dies with the control: count a done todo and one ready writer passes as a fork."""
+        host = FakeHost()
+        plan = await Plan.create("ship it")
+        await writers(plan, host, "a", "b")
+        await plan["a"].done()
+        with self.assertRaises(Geometry) as refused:
+            await plan.run(shape=fork_join, budget=5)
+        self.assertIn("1 found", refused.exception.problems[0])
+
     async def test_the_engine_starts_in_plan_order_as_slots_free_and_never_tries_a_held_todo(self) -> None:
         """Dies with the control: try a held todo and the starts repeat it; skip one and `c` runs before `b`."""
         host = FakeHost()
@@ -98,6 +108,7 @@ class Shapes(unittest.IsolatedAsyncioTestCase):
         # Outside the window nothing counts, so the engine's own cap is what ends it, and it is obeyed.
         shapes.RESTART_WINDOW, host.retry_cap = 0.0, 4
         await plan["red"].retry()
+        await writers(plan, host, "blue")  # a done arm is not a side; a fork needs two to run
         run = await plan.run(shape=fork_join, budget=30)
         self.assertEqual((run.outcome, run.refusals["red"].kind), ("failed", "retries_exhausted"))
         self.assertEqual(plan["red"]._doc["attempt"], 5, "no retry past the refusal")

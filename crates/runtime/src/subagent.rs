@@ -831,9 +831,10 @@ impl SubagentHost {
         let question = crate::family::pending_question(&session.messages());
         let taken = match exit {
             ChildExit::Completed if question.is_some() || service => false,
-            ChildExit::Completed | ChildExit::Failed { .. } | ChildExit::Interrupted => {
-                self.finish_taken(session_name, exit, error.clone())
-            }
+            ChildExit::Completed
+            | ChildExit::Failed { .. }
+            | ChildExit::Interrupted
+            | ChildExit::Other => self.finish_taken(session_name, exit, error.clone()),
             ChildExit::Reaped | ChildExit::Repossessed => false,
         };
         if taken {
