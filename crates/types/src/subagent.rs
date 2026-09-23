@@ -36,6 +36,9 @@ pub enum FailClass {
     KernelDeath,
     RedCheck,
     Deadline,
+    /// A class a newer host named; the ending it rides on still reads as a failure.
+    #[serde(other)]
+    Other,
 }
 
 /// How a child's run ended. The wire status, the member state and the parent's notice are
@@ -44,10 +47,15 @@ pub enum FailClass {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ChildExit {
     Completed,
-    Failed { class: FailClass },
+    Failed {
+        class: FailClass,
+    },
     Interrupted,
     Reaped,
     Repossessed,
+    /// A kind a newer host named, decoded rather than failing the update that carries it.
+    #[serde(other)]
+    Other,
 }
 
 /// The loop's own word that it re-drove a run, carried as `signal` beside a record's data.

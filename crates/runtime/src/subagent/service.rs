@@ -224,7 +224,14 @@ impl SubagentHost {
             children.touch(key);
             dead
         };
-        // The crashed run's kernel has no one left to read it, and nothing else disposes it.
+        // A queued or woken receipt is owed a turn: what the dead run never drained moves on.
+        let (steers, follow_ups) = dead.take_pending();
+        for message in steers {
+            session.steer_message(message);
+        }
+        for message in follow_ups {
+            session.follow_up_message(message);
+        }
         Self::dispose_child_kernel(&dead);
         // A request parked on the dead incarnation is refused by name, never answered by this one.
         if let Ok(mut desk) = self.mail.lock() {

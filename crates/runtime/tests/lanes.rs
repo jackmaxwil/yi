@@ -826,8 +826,8 @@ mod accept {
     use yi_runtime::lane::settle::Candidate;
     use yi_runtime::plan::acceptance::{
         Candidate as Proven, KIND_ACCEPTED, KIND_CANDIDATE_SUBMITTED, KIND_DISPOSITION,
-        KIND_INTEGRATION_PREPARED, KIND_INTEGRATION_STALE, KIND_INTEGRATION_VERIFIED, Phase,
-        Quiescence, Verified, phase_of,
+        KIND_INTEGRATION_INTENT, KIND_INTEGRATION_PREPARED, KIND_INTEGRATION_STALE,
+        KIND_INTEGRATION_VERIFIED, Phase, Quiescence, Verified, phase_of,
     };
     use yi_runtime::plan::capacity::Purpose;
     use yi_runtime::plan::journal::{Journal, RealFs};
@@ -1338,6 +1338,110 @@ mod accept {
         assert!(matches!(bench.state()?, TodoState::Done { .. }));
         assert!(parent.join("NEWS.md").is_file());
         assert_eq!(held(&bench.pool)?, 0);
+        Ok(())
+    }
+
+    // Dies with the `found == integrated` arm in `try_publish` (acceptance.rs): a run killed
+    // after the publication and before `accepted` reads its own HEAD as a moved parent.
+    #[test]
+    fn a_publication_killed_before_its_record_is_accepted_by_the_next_done() -> TestResult {
+        let rig = Rig::new("f0d-publish-crash")?;
+        let parent = rig.fixture_repo(Dirt::Clean)?;
+        let bench = bench(&rig, parent.clone(), "yi/cand-green")?;
+        bench.submit()?;
+        let prepared = bench
+            .records()?
+            .into_iter()
+            .rev()
+            .find(|record| record.record.op == KIND_INTEGRATION_PREPARED)
+            .ok_or("no integration_prepared record")?;
+        let integrated = sha(
+            &parent,
+            prepared.args["integrated"].as_str().ok_or("integrated")?,
+        )?;
+        let base = sha(
+            &parent,
+            prepared.args["parent_base"].as_str().ok_or("base")?,
+        )?;
+        // The killed run's publication: the parent's ref moved and no record followed.
+        let branch = prepared.args["parent_branch"].as_str();
+        publish(&parent, &base, branch, &integrated, None)?;
+        bench.done()?;
+        let kinds = bench.kinds()?;
+        let count = |kind: &str| kinds.iter().filter(|k| k.as_str() == kind).count();
+        assert_eq!(count(KIND_INTEGRATION_STALE), 0, "{kinds:?}");
+        assert_eq!(count(KIND_INTEGRATION_PREPARED), 1, "{kinds:?}");
+        assert_eq!(kinds.last().map(String::as_str), Some(KIND_ACCEPTED));
+        assert!(matches!(bench.state()?, TodoState::Done { .. }));
+        assert_eq!(sha(&parent, "HEAD")?, integrated);
+        assert_eq!(
+            bench.stage_branches()?,
+            "",
+            "the pin went with the acceptance"
+        );
+        Ok(())
+    }
+
+    // Dies with `stage_intent` (submit.rs): a run killed holding its staging lane before
+    // `integration_prepared` leaves a slot and a branch no record names and no `done` frees.
+    #[test]
+    fn a_staging_lane_killed_before_its_record_is_dropped_by_the_next_done() -> TestResult {
+        let rig = Rig::new("f0d-stage-crash")?;
+        let parent = rig.fixture_repo(Dirt::Clean)?;
+        let bench = bench(&rig, parent.clone(), "yi/cand-green")?;
+        bench.submit()?;
+        let kinds = bench.kinds()?;
+        let at = |kind: &str| kinds.iter().position(|k| k.as_str() == kind);
+        assert!(
+            at(KIND_INTEGRATION_INTENT).is_some_and(|i| Some(i) < at(KIND_INTEGRATION_PREPARED)),
+            "the staging session is journaled before it is claimed: {kinds:?}"
+        );
+        let head = sha(&parent, "HEAD")?;
+        // A predecessor found the parent moved, journaled its staging session, claimed the
+        // lane, merged into it and died before `integration_prepared`.
+        seed(
+            &bench,
+            KIND_INTEGRATION_STALE,
+            json!({"label": LABEL, "expected": head.as_str(), "found": head.as_str(),
+                   "integrated": head.as_str()}),
+        )?;
+        seed(
+            &bench,
+            KIND_INTEGRATION_INTENT,
+            json!({"label": LABEL, "generation": 2, "staging": "stage-lost"}),
+        )?;
+        let lane = bench
+            .pool
+            .claim("stage-lost", ClaimBase::Commit(head.as_str().to_owned()))?;
+        git(
+            lane.path(),
+            &["merge", "-q", "--no-ff", "--no-edit", "yi/cand-green"],
+        )?;
+        let slot = lane.slot();
+        drop(lane);
+        orphan(&bench.pool, slot, "stage-lost")?;
+        bench.done()?;
+        assert_eq!(git(&parent, &["branch", "--list", "yi/stage-lost"])?, "");
+        assert!(
+            !bench
+                .pool
+                .list()?
+                .iter()
+                .any(|view| matches!(view, SlotView::Orphan { .. })),
+            "the killed run's slot is free"
+        );
+        let abandoned = bench
+            .records()?
+            .into_iter()
+            .rev()
+            .find(|record| record.record.op == KIND_INTEGRATION_INTENT)
+            .map(|record| record.args["abandoned"].clone())
+            .ok_or("no integration_intent record")?;
+        assert_eq!(
+            abandoned,
+            json!({"staging": "stage-lost", "pin": {"dropped": true}})
+        );
+        assert!(matches!(bench.state()?, TodoState::Done { .. }));
         Ok(())
     }
 

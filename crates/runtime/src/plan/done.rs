@@ -691,8 +691,8 @@ pub(super) fn admit(
     match op {
         Op::Submit { label, .. } => {
             if let Some(TodoState::Running { by }) = plan.todo(label).map(|todo| &todo.state)
-                && by.as_str() != txn.actor
-                && !txn.engine
+                && !matches!(txn.principal, Actor::Engine)
+                && !super::ops::runs(&txn.principal, by)
             {
                 return Err(PlanOpError::NotRunningBy {
                     label: label.clone(),

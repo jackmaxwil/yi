@@ -8,7 +8,9 @@ use serde_json::{Map, Value};
 pub use yi_types::plan::acceptance::{Conflict, Published, Quiescence};
 use yi_types::plan::op::Choice;
 
-use super::{BranchName, ClaimBase, GIT_TIMEOUT_MS, Head, Lane, LaneError, Pool, Sha, capture};
+use super::{
+    BranchName, ClaimBase, GIT_TIMEOUT_MS, Head, Lane, LaneError, Pool, Sha, SlotView, capture,
+};
 use crate::subagent::{ChildRecord, SubagentHost};
 
 /// The jobs registry's answer for `root`: every backgrounded command still running under
@@ -304,6 +306,29 @@ pub fn drop_integration_pin(pool: &Pool, integrated: &Sha) -> Result<(), LaneErr
     )?;
     for branch in refs.lines().map(str::trim).filter(|line| !line.is_empty()) {
         git_by(pool.repo(), &["branch", "-q", "-D", branch], None)?;
+    }
+    Ok(())
+}
+
+/// Frees the slot and deletes the branch of a staging lane whose merge no record names.
+pub fn drop_staging(pool: &Pool, session: &str) -> Result<(), LaneError> {
+    for view in pool.list()? {
+        if let SlotView::Orphan { slot, holder, .. } = view
+            && holder.session == session
+        {
+            pool.reap_left_by(slot, session)?;
+        }
+    }
+    let branch = BranchName::for_session(session)?;
+    let refname = format!("refs/heads/{branch}");
+    if git_by(
+        pool.repo(),
+        &["rev-parse", "--verify", "-q", &refname],
+        None,
+    )
+    .is_ok()
+    {
+        git_by(pool.repo(), &["branch", "-q", "-D", branch.as_str()], None)?;
     }
     Ok(())
 }

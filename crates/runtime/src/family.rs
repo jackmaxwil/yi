@@ -66,6 +66,7 @@ pub fn read_exit(exit: Option<ChildExit>) -> Reading {
         Some(ChildExit::Interrupted) => (ChildStatus::Error, MemberState::Failed, "interrupted"),
         Some(ChildExit::Reaped) => (ChildStatus::Error, MemberState::Failed, "reaped"),
         Some(ChildExit::Repossessed) => (ChildStatus::Error, MemberState::Failed, "repossessed"),
+        Some(ChildExit::Other) => (ChildStatus::Error, MemberState::Failed, "ended"),
     };
     Reading {
         status,
@@ -154,9 +155,8 @@ fn timestamp_of(entry: &Entry) -> u64 {
     }
 }
 
-/// The state a member's own newest records show: `needs_you` when it ended on `ask_user` or
-/// blocked a todo on the user, `stuck` when the loop or the coupling re-drove it in its last
-/// records or nothing moved for [`STUCK_IDLE_MS`]; the note names which.
+/// The state a member's newest records show: `needs_you` after `ask_user` or a todo blocked
+/// on the user, `stuck` after a re-drive in them or [`STUCK_IDLE_MS`] idle; the note says which.
 pub fn state_from_records(
     (exit, phase): (Option<ChildExit>, Phase),
     error: Option<&str>,

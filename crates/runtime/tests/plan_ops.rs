@@ -1264,6 +1264,35 @@ fn a_declared_output_is_validated_against_its_schema() -> TestResult {
     Ok(())
 }
 
+// Dies with the no-resolver arm of `check_output`: answer `Ok(None)` there and a declared
+// schema completes on a product nobody read, as the CLI's engine once did.
+#[test]
+fn a_declared_output_with_no_resolver_is_refused() -> TestResult {
+    let (_temp, _store, _stub, engine) = harness(8)?;
+    init(
+        &engine,
+        vec![TodoSpec {
+            label: label("write the report")?,
+            after: Vec::new(),
+            delegation: Some(declaring("local://schemas/report.json")?),
+            contract: None,
+            children: Vec::new(),
+        }],
+    )?;
+    engine.apply(owner(Op::Start {
+        label: label("write the report")?,
+    }))?;
+    let refused = engine.apply(owner(Op::Done {
+        label: label("write the report")?,
+        output: Some("local://reports/final.json".parse::<Url>()?),
+    }));
+    assert!(
+        matches!(refused, Err(PlanOpError::UnservedOutput { .. })),
+        "{refused:?}"
+    );
+    Ok(())
+}
+
 #[test]
 fn a_product_that_satisfies_its_schema_completes() -> TestResult {
     let (_temp, _store, _stub, engine) = harness(8)?;
@@ -1853,6 +1882,22 @@ mod refusals {
     fn tool() -> Result<(Scratch, PlanTool), Box<dyn Error>> {
         let (temp, _store, _stub, engine) = harness(2)?;
         Ok((temp, PlanTool::new(Arc::new(engine), Actor::Owner)))
+    }
+
+    /// Dies with the child arm of `PlanTool::schema`: the engine submits a child's work at its
+    /// finish, so the child's schema is `view` alone and the owner's never lists `submit`.
+    #[test]
+    fn a_childs_plan_schema_views_and_the_owners_lists_no_submit() -> TestResult {
+        let (_temp, _store, _stub, engine) = harness(2)?;
+        let engine = Arc::new(engine);
+        let ops = |actor: Actor| {
+            PlanTool::new(Arc::clone(&engine), actor).schema()["properties"]["op"]["enum"]
+                .to_string()
+        };
+        let child = Actor::Child(yi_types::plan::doc::AgentId::new("cut")?);
+        assert_eq!(ops(child), r#"["view"]"#);
+        assert!(!ops(Actor::Owner).contains("\"submit\""));
+        Ok(())
     }
 
     #[test]
@@ -4052,6 +4097,15 @@ mod contracts {
                     if *phase == "unsubmitted" && missing.starts_with("a candidate_submitted record")
             ),
             "{refused:?}"
+        );
+        let text = refused
+            .as_ref()
+            .err()
+            .map(ToString::to_string)
+            .unwrap_or_default();
+        assert!(
+            text.contains("op=submit"),
+            "the refusal names the call: {text}"
         );
         assert!(matches!(
             todo_of(&rig.store, &plan, "build it apart")?.state,
