@@ -222,9 +222,50 @@ fn a_plan_op_replaces_the_list_and_keeps_ids() -> TestResult {
     );
     assert_eq!(
         text::header(&todos.list()),
-        "Todos 0/3 · running: first",
-        "the environment's todo line carries the plan's counts"
+        "Todos 0/3 · running: gate",
+        "the environment's todo line carries the plan's counts and its running row"
     );
+    Ok(())
+}
+
+/// Dies with the projection built from a list read outside the store's lock: an owner-row
+/// write landing between that read and the replace is undone by the next plan op.
+#[test]
+fn a_plan_op_racing_an_owner_row_write_never_undoes_it() -> TestResult {
+    let dir = Scratch::new("yi-todo-mirror-race")?;
+    let (_session, todos, engine) = mirrored(&dir)?;
+    let (first, gate) = (TodoLabel::new("first")?, TodoLabel::new("gate")?);
+    let wide: Result<Vec<_>, _> = (0..250).map(|at| spec(&format!("s{at}"), false)).collect();
+    engine.apply(owner(Op::Append { todos: wide? }))?;
+    let stop = std::sync::atomic::AtomicBool::new(false);
+    let state_of = |todos: &TodoStore| {
+        let list = todos.list();
+        let item = list.items().find(|item| item.label == first).cloned();
+        item.map(|item| item.state)
+    };
+    let lost = std::thread::scope(|scope| {
+        scope.spawn(|| {
+            while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                let on = yi_types::plan::doc::BlockedOn::User;
+                let (label, note) = (gate.clone(), "wait".to_owned());
+                let _ = engine.apply(owner(Op::Block { label, on, note }));
+                let label = gate.clone();
+                let _ = engine.apply(owner(Op::Unblock { label }));
+            }
+        });
+        let mut lost = 0;
+        for _ in 0..100 {
+            let on = yi_types::todo::BlockedOn::User;
+            let (label, note) = (first.clone(), "wait".to_owned());
+            let blocked = todos.apply(TodoOp::Block { label, on, note }, None).is_ok();
+            lost += usize::from(!blocked || state_of(&todos) != Some(TodoStateName::Blocked));
+            let label = first.clone();
+            lost += usize::from(todos.apply(TodoOp::Unblock { label }, None).is_err());
+        }
+        stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        lost
+    });
+    assert_eq!(lost, 0, "an owner-row block was undone by a plan op");
     Ok(())
 }
 
@@ -491,6 +532,26 @@ fn an_owners_open_items_survive_the_plan_and_the_todo_tool_steps_them() -> TestR
         "{after:?}"
     );
     assert!(plan_of(&todos.list()).is_some());
+    Ok(())
+}
+
+/// Dies with `normalize` promoting an owner row while the plan owns the list: the unblocked
+/// `first` reads running again and the header names it over the plan's running child.
+#[test]
+fn an_owner_row_is_not_promoted_to_running_while_the_plan_is_open() -> TestResult {
+    let dir = Scratch::new("yi-todo-mirror-promote")?;
+    let (_session, todos, _engine) = mirrored(&dir)?;
+    let (label, note) = (TodoLabel::new("first")?, "wait".to_owned());
+    let on = yi_types::todo::BlockedOn::User;
+    todos.apply(TodoOp::Block { label, on, note }, None)?;
+    let label = TodoLabel::new("first")?;
+    todos.apply(TodoOp::Unblock { label }, None)?;
+    let rows = ids(&todos);
+    assert_eq!(rows[0].2, TodoStateName::Pending, "{rows:?}");
+    assert_eq!(
+        text::header(&todos.list()),
+        "Todos 0/3 · running: delegated job"
+    );
     Ok(())
 }
 

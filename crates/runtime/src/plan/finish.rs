@@ -10,7 +10,7 @@ use yi_types::subagent::{ChildExit, ChildResult, FailClass};
 use yi_types::url::Url;
 
 use super::acceptance::{Phase, is_worktree, phase_of};
-use super::ops::{Actor, ENGINE_AGENT, Op, OpRequest, PlanEngine, PlanOpError, agent_url};
+use super::ops::{Actor, ENGINE_AGENT, Op, OpRequest, Outcome, PlanEngine, PlanOpError, agent_url};
 use super::state::{KIND_LEFT, SUBMITTED_KEY, reduce, root_of};
 use crate::goal::DeliverFn;
 use crate::subagent::{FinishFn, SubagentHost, last_assistant_text};
@@ -65,6 +65,14 @@ fn failed_items(verdict: &Verdict) -> String {
 }
 
 impl PlanEngine {
+    fn names_plan(&self, agent: &str) -> bool {
+        let root = agent
+            .split_once('/')
+            .and_then(|(plan, _)| PlanId::new(plan).ok());
+        let root = root.and_then(|plan| root_of(&plan).ok());
+        root.is_some_and(|root| self.store.journal_path(&root).is_file())
+    }
+
     /// The todo `agent` runs in an active plan; `None` means a child `rlm.run` spawned.
     fn locate(&self, agent: &str) -> Option<Held> {
         let roots = match agent.split_once('/') {
@@ -114,7 +122,7 @@ impl PlanEngine {
         None
     }
 
-    fn step(&self, plan: &PlanId, op: Op) -> Result<(), PlanOpError> {
+    fn step(&self, plan: &PlanId, op: Op) -> Result<Outcome, PlanOpError> {
         self.apply(OpRequest {
             plan: Some(plan.clone()),
             actor: Actor::Engine,
@@ -122,7 +130,6 @@ impl PlanEngine {
             request_id: None,
             expected_revision: None,
         })
-        .map(drop)
     }
 
     fn store_product(&self, held: &Held, text: &str) -> Result<Url, PlanOpError> {
@@ -174,6 +181,7 @@ impl PlanEngine {
                 output: output.filter(|_| held.phase.is_none()),
             },
         )
+        .map(drop)
     }
 
     fn fail_finish(&self, held: &Held, cause: String) -> Result<(), PlanOpError> {
@@ -185,6 +193,7 @@ impl PlanEngine {
                 disposition: held.phase.map(|_| Choice::Retained),
             },
         )
+        .map(drop)
     }
 
     fn fail_and_retry(&self, held: &Held, said: String, cause: String, retry: bool) -> String {
@@ -199,8 +208,12 @@ impl PlanEngine {
             label: held.label.clone(),
             delegation: None,
         };
+        let unstarted = format!("the engine could not start {:?}", held.label.as_str());
         match self.step(&held.plan, again) {
-            Ok(()) => format!("{said}; the engine retried it once with that in the brief"),
+            Ok(out) => match out.notices.iter().find(|line| line.starts_with(&unstarted)) {
+                Some(notice) => format!("{said}; the engine retried it, and {notice}"),
+                None => format!("{said}; the engine retried it once with that in the brief"),
+            },
             Err(error) => format!("{said}; the engine's retry was refused: {error}"),
         }
     }
@@ -397,20 +410,23 @@ pub fn install(host: &Arc<SubagentHost>, engine: &Arc<PlanEngine>, deliver: Deli
             return false;
         };
         // Invariant: a plan child is named `<plan>/<todo>`, so any other exit reads no journal.
-        if !agent.contains('/') {
+        if !engine.names_plan(&agent) {
             return false;
         }
-        // Invariant: a start commits Running after its spawn, so an early end waits out its lease.
-        let held = engine.locate(&agent).or_else(|| {
-            drop(engine.lease_waiting().ok()?);
-            engine.locate(&agent)
-        });
-        let Some(held) = held else {
-            return false;
-        };
         let deliver = Arc::clone(&deliver);
         let settling = Settling::hold(&host);
         drop(runtime.spawn_blocking(move || {
+            // Invariant: a start commits Running after its spawn, so an early end waits out its lease.
+            let held = engine.locate(&agent).or_else(|| {
+                drop(engine.lease_waiting().ok()?);
+                engine.locate(&agent)
+            });
+            let Some(held) = held else {
+                let verb = crate::family::read_exit(Some(exit)).verb;
+                let line = format!("plan: {agent:?} {verb}, and no todo runs by it");
+                super::dispatch::say(&deliver, line);
+                return;
+            };
             let held = (exit == ChildExit::Completed)
                 .then(|| host.held_back(&agent, held.verified))
                 .flatten();
@@ -588,6 +604,75 @@ mod tests {
         ] {
             assert!(!kept.grep(told, 1).is_empty(), "the brief lacks {told:?}");
         }
+        Ok(())
+    }
+
+    /// Dies with the hook's lease wait on the child's own runtime thread: an early end parks
+    /// that runtime until the lease frees, and nothing else scheduled on it runs.
+    #[tokio::test]
+    async fn an_early_ends_lease_wait_leaves_the_runtime_running() -> TestResult {
+        let rig = hooked(vec![reply("done")])?;
+        let mut inline = delegated("write the notes")?;
+        inline.delegation = None;
+        let out = rig.engine.apply(owner(Op::Init {
+            goal: GoalText::new("ship the widget")?,
+            todos: vec![inline],
+        }))?;
+        let lease = rig.engine.store().lease()?;
+        let mut kwargs = serde_json::Map::new();
+        let name = format!("{}/stray", out.plan.id);
+        kwargs.insert("name".to_owned(), serde_json::Value::String(name));
+        rig.host.spawn("work".to_owned(), kwargs)?;
+        let started = std::time::Instant::now();
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        let parked = started.elapsed();
+        drop(lease);
+        assert!(parked < std::time::Duration::from_secs(2), "{parked:?}");
+        Ok(())
+    }
+
+    struct Once(std::sync::atomic::AtomicBool);
+
+    impl super::super::ops::Delegate for Once {
+        fn spawn(
+            &self,
+            _at: &yi_types::plan::doc::TodoAddr,
+            _delegation: &yi_types::plan::doc::Delegation,
+        ) -> Result<yi_types::plan::doc::AgentId, String> {
+            if self.0.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                return Err("RLM child limit reached".to_owned());
+            }
+            yi_types::plan::doc::AgentId::new("child-0").map_err(|error| error.to_string())
+        }
+
+        fn reap(
+            &self,
+            _agent: &yi_types::plan::doc::AgentId,
+            _supplied: &[yi_types::url::Url],
+        ) -> Result<Option<yi_types::url::Url>, String> {
+            Ok(None)
+        }
+    }
+
+    /// Dies with the retry's outcome dropped: its start was refused, and the owner was told
+    /// the engine retried it with the cause in the brief.
+    #[test]
+    fn a_retry_the_engine_could_not_start_says_so() -> TestResult {
+        let dir = crate::scratch::Scratch::new("yi-finish-unstarted")?;
+        let store = super::super::store::PlanStore::open(dir.to_path_buf())?;
+        let once = std::sync::Arc::new(Once(std::sync::atomic::AtomicBool::new(false)));
+        let engine = PlanEngine::new(store, once);
+        engine.apply(owner(Op::Init {
+            goal: GoalText::new("ship the widget")?,
+            todos: vec![delegated("cut the seam")?],
+        }))?;
+        let held = engine.locate("child-0").ok_or("child-0 runs nothing")?;
+        let said = engine.fail_and_retry(&held, "plan: failed".to_owned(), "x".to_owned(), true);
+        assert!(!said.contains("retried it once"), "{said}");
+        assert!(
+            said.contains("could not start \"cut the seam\"") && said.contains("limit reached"),
+            "{said}"
+        );
         Ok(())
     }
 
