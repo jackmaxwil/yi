@@ -3240,11 +3240,14 @@ async fn a_child_that_ends_while_expire_joins_a_sibling_keeps_its_one_ending() -
     for name in ["a", "b"] {
         family.host.revoke(name, 0, "scope changed")?;
     }
-    // The second clock read is the first repossession's, after its join: the other run ends
-    // there, in the window the due list was already read in.
+    // `expire` runs on this thread; its second clock read is the first repossession's, after
+    // its join, and the other run ends there, after the due list was read. A read a child's
+    // own task makes, under the roster lock, is left alone.
     let (reads, host) = (AtomicU32::new(0), Arc::downgrade(&family.host));
+    let expiring = std::thread::current().id();
     let clock = Arc::new(move || {
-        if reads.fetch_add(1, Ordering::SeqCst) == 1
+        if std::thread::current().id() == expiring
+            && reads.fetch_add(1, Ordering::SeqCst) == 1
             && let Some(host) = host.upgrade()
         {
             for view in host.children_view() {
@@ -3269,8 +3272,23 @@ async fn a_child_that_ends_while_expire_joins_a_sibling_keeps_its_one_ending() -
     };
     let other = if first == "a" { "b" } else { "a" };
     let ended = terminal(&mut events);
-    let endings = |name: &str| ended.iter().filter(|update| update.name == name).count();
-    assert_eq!((endings(first), endings(other)), (1, 1), "{ended:?}");
+    // A late event may republish an ending unchanged; what may not happen is a second one.
+    let exits = |name: &str| {
+        let mut seen: Vec<_> = ended
+            .iter()
+            .filter(|update| update.name == name)
+            .map(|update| update.exit)
+            .collect();
+        seen.dedup();
+        seen
+    };
+    let repossessed = Some(yi_types::subagent::ChildExit::Repossessed);
+    assert_eq!(exits(first), [repossessed], "{ended:?}");
+    assert_eq!(
+        exits(other),
+        [Some(yi_types::subagent::ChildExit::Interrupted)],
+        "{ended:?}"
+    );
     family.host.delete(other)?;
     let journal = family.journal();
     let closing: Vec<(&str, &str)> = journal
