@@ -331,6 +331,33 @@ async fn a_bare_wait_wakes_on_a_child_that_ended_and_was_reaped_unseen() -> Test
     Ok(())
 }
 
+/// Dies with `yi ask` holding on `busy`: a stuck or owner-spawned child kept a finished run open
+/// until its deadline, 1303 s after the last answer in the confirmation.
+#[tokio::test]
+async fn an_ended_owner_turn_waits_only_on_a_moving_plan_child() -> TestResult {
+    let root = scratch::Scratch::new("yi-ask-hold")?;
+    let store = support::memory_store("yi-ask-hold");
+    let family = support::family(
+        root.to_path_buf(),
+        std::env::temp_dir(),
+        store,
+        Some("sleep 3"),
+    );
+    family
+        .host
+        .spawn("work".to_owned(), kwargs(&[("name", json!("mine"))]))?;
+    assert!(family.host.busy());
+    assert!(!family.host.holds_owner(), "an rlm.run child holds nothing");
+    family
+        .host
+        .spawn("work".to_owned(), kwargs(&[("name", json!("plan/todo"))]))?;
+    assert!(
+        family.host.holds_owner(),
+        "a moving plan child holds the run"
+    );
+    Ok(())
+}
+
 /// Dies with `settling` bumped inside the finish hook: between the exit and the hook `busy`
 /// reads false, and `yi ask` ends before the finish reaches the owner.
 #[tokio::test]

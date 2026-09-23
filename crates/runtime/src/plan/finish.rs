@@ -377,6 +377,16 @@ impl SubagentHost {
         live.unwrap_or(false) || self.settling.load(Ordering::SeqCst) > 0
     }
 
+    /// A finish settling, or a plan child still moving; a stuck or owner-spawned child holds nothing.
+    pub fn holds_owner(&self) -> bool {
+        use crate::family::MemberState;
+        let moving = |view: &crate::family::MemberView| {
+            view.name.contains('/')
+                && matches!(view.state, MemberState::Running | MemberState::Queued)
+        };
+        self.settling.load(Ordering::SeqCst) > 0 || self.states().iter().any(moving)
+    }
+
     fn answer_of(&self, name: &str) -> Option<String> {
         let children = self.children.lock().ok()?;
         let key = Self::key_of(&children, name).ok()?;
@@ -455,7 +465,7 @@ mod tests {
     use super::super::ops::Op;
     use super::super::ops::PlanEngine;
     use super::install;
-    use yi_types::plan::doc::{Check, GoalText, TodoState};
+    use yi_types::plan::doc::{Check, GoalText, PlanState, TodoState};
 
     type TestResult = Result<(), Box<dyn std::error::Error>>;
 
@@ -607,8 +617,7 @@ mod tests {
         Ok(())
     }
 
-    /// Dies with the hook's lease wait on the child's own runtime thread: an early end parks
-    /// that runtime until the lease frees, and nothing else scheduled on it runs.
+    /// Dies with the hook's lease wait on the child's runtime thread: an early end parks it 10 s.
     #[tokio::test]
     async fn an_early_ends_lease_wait_leaves_the_runtime_running() -> TestResult {
         let rig = hooked(vec![reply("done")])?;
@@ -628,6 +637,35 @@ mod tests {
         let parked = started.elapsed();
         drop(lease);
         assert!(parked < std::time::Duration::from_secs(2), "{parked:?}");
+        Ok(())
+    }
+
+    /// Dies with open plans read alone: the engine closed the plan and `done` read "no plan is open".
+    #[tokio::test]
+    async fn an_owner_done_after_the_engine_closed_the_plan_names_the_acceptance() -> TestResult {
+        let rig = hooked(vec![reply("the seam is cut")])?;
+        let out = rig.engine.apply(owner(Op::Init {
+            goal: GoalText::new("ship the widget")?,
+            todos: vec![delegated("cut the seam")?],
+        }))?;
+        settled(&rig, &out.plan.id, "cut the seam").await?;
+        let label = yi_types::plan::doc::TodoLabel::new("cut the seam")?;
+        for _ in 0..200 {
+            if rig.engine.store().read(&out.plan.id)?.state != PlanState::Active {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        let said = rig.engine.apply(owner(Op::Done {
+            label,
+            output: None,
+        }))?;
+        assert!(
+            said.notices[0].starts_with("nothing to do: the engine accepts delegated todos")
+                && said.notices[0].contains("accepted"),
+            "{:?}",
+            said.notices
+        );
         Ok(())
     }
 
@@ -654,8 +692,7 @@ mod tests {
         }
     }
 
-    /// Dies with the retry's outcome dropped: its start was refused, and the owner was told
-    /// the engine retried it with the cause in the brief.
+    /// Dies with the retry's outcome dropped: a refused start still read "retried it once".
     #[test]
     fn a_retry_the_engine_could_not_start_says_so() -> TestResult {
         let dir = crate::scratch::Scratch::new("yi-finish-unstarted")?;
