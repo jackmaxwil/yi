@@ -412,3 +412,23 @@ fn a_blob_that_cannot_be_stored_leaves_the_op_recorded_and_scheduled() -> TestRe
     );
     Ok(())
 }
+
+/// Seven final-confirmation declarations wrote a stated accept on a worktree delegation and were
+/// told only that it needs a contract: the refusal names the command form that declares one.
+#[test]
+fn a_stated_worktree_accept_is_refused_with_the_command_road() -> TestResult {
+    let rig = rig("stated")?;
+    let (refused, text) = call(
+        &rig,
+        json!({"op": "init", "goal": "ship it", "todos": [{
+            "label": "alpha",
+            "delegation": {"spec": {"isolation": "worktree"}, "accept": {"stated": "alpha.txt holds alpha"}},
+        }]}),
+    );
+    assert!(refused, "{text}");
+    assert!(
+        text.contains(r#"{"command": "#) && text.contains("alpha"),
+        "{text}"
+    );
+    Ok(())
+}

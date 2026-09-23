@@ -94,6 +94,13 @@ fn brief(at: &TodoAddr, delegation: &Delegation) -> String {
             at.plan
         ));
     }
+    if let Some(Value::Array(told)) = delegation.extra.get(super::brief::KEY) {
+        lines.extend(told.iter().filter_map(Value::as_str).map(str::to_owned));
+    }
+    lines.push(
+        "When the work is done, end your turn with your answer; the engine takes it as your work."
+            .to_owned(),
+    );
     lines.join("\n")
 }
 
@@ -186,11 +193,17 @@ impl PlanEngine {
         let Some(todo) = plan.todo(label) else {
             return Ok(());
         };
-        let Some(delegation) = todo.delegation.clone() else {
+        let Some(mut delegation) = todo.delegation.clone() else {
             return Ok(());
         };
         if !matches!(todo.state, TodoState::Pending) {
             return Ok(());
+        }
+        let told = super::brief::lines(&self.store.artifacts(id), &txn.records, id, todo);
+        if !told.is_empty() {
+            delegation
+                .extra
+                .insert(super::brief::KEY.to_owned(), serde_json::json!(told));
         }
         let addr = TodoAddr {
             plan: id.clone(),
@@ -952,6 +965,10 @@ pub(super) mod tests {
             let brief = brief(&at, &delegation);
             assert!(brief.contains("Execute todo \"gateway\""), "{brief}");
             assert!(!brief.contains("submit"), "{brief}");
+            assert!(
+                brief.ends_with("the engine takes it as your work."),
+                "{brief}"
+            );
         }
         Ok(())
     }

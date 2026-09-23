@@ -396,6 +396,9 @@ fn wire_plan_request(
         engine = engine.with_snapshotter(snapshotter);
     }
     let engine = Arc::new(engine);
+    if wiring.depth == 0 {
+        todos.set_carry(crate::todo::mirror::carry(Arc::downgrade(&engine)));
+    }
     crate::plan::request::register(Arc::clone(&engine), actor.clone(), registry);
     Some((engine, actor, todos))
 }

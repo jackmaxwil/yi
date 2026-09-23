@@ -84,6 +84,10 @@ pub enum ArgError {
         key: String,
         legal: String,
     },
+    #[error(
+        "only the plan owner may {op}; your plan tool only views: end your turn with your answer and the engine takes it as your work"
+    )]
+    ChildViews { op: String },
     #[error("set line {line}: label is {chars} chars, the cap is {max}")]
     LabelTooLong {
         line: usize,
@@ -484,6 +488,12 @@ pub(super) fn declared(
     actor: &Actor,
     args: &Map<String, Value>,
 ) -> Result<(OpRequest, Vec<super::declare::Blob>), ArgError> {
+    if let (Actor::Child(_), Some(op)) = (actor, args.get("op").and_then(Value::as_str))
+        && !args.contains_key("actor")
+        && !matches!(op, "view" | "submit")
+    {
+        return Err(ArgError::ChildViews { op: op.to_owned() });
+    }
     let (args, blobs) = super::declare::normalize(args).map_err(ArgError::Declared)?;
     Ok((request(actor, &args)?, blobs))
 }
@@ -671,7 +681,7 @@ fn render(outcome: &Outcome, full: bool, stepped: Option<&TodoLabel>) -> String 
     out.join("\n")
 }
 
-pub(super) fn render_outcome(op: &Op, outcome: &Outcome) -> String {
+pub(crate) fn render_outcome(op: &Op, outcome: &Outcome) -> String {
     let full = matches!(op, Op::View { full: true });
     render(outcome, full, op.label())
 }
@@ -700,11 +710,24 @@ impl Tool for PlanTool {
     }
 
     fn description(&self) -> &str {
-        DESCRIPTION
+        match self.actor {
+            Actor::Child(_) => CHILD_DESCRIPTION,
+            _ => DESCRIPTION,
+        }
     }
 
     fn schema(&self) -> Value {
-        schema()
+        match self.actor {
+            Actor::Child(_) => json!({
+                "type": "object",
+                "properties": {
+                    "op": {"type": "string", "enum": ["view"]},
+                    "full": {"type": "boolean", "description": "every todo instead of counts plus the frontier"}
+                },
+                "required": ["op"]
+            }),
+            _ => schema(),
+        }
     }
 
     fn kind(&self) -> ToolKind {
@@ -733,6 +756,8 @@ impl Tool for PlanTool {
 /// items rather than a live [`PlanTool`], so what is measured is what ships.
 pub const DESCRIPTION: &str = "The plan ledger. op=set with a markdown checklist (`- [ ] todo`, `- [>] running`, `- [x] done`, two spaces nest) is the whole list in one call: send it again to change anything. Declare todos with contracts and delegations; the engine starts, verifies and accepts delegated ones. done closes your own todos. A todo is a unit of decision, not of iteration. Batch ops with real work; never call it alone. This is the delegation ledger, for work handed to children with checks and edges; the todo list shows it.";
 
+const CHILD_DESCRIPTION: &str = "The plan that dispatched you, read-only: op=view. When your work is done, end your turn with your answer; the engine takes it as your work and accepts or refuses it.";
+
 /// Invariant: a flat object, because one provider rebuilds the schema from `properties` and
 /// `required` alone, so a root `oneOf` would vanish there. No live state: cached prefix.
 pub fn schema() -> Value {
@@ -750,7 +775,7 @@ pub fn schema() -> Value {
                 "todos": {
                     "type": "array",
                     "items": {"type": "object"},
-                    "description": "init/append/decompose/supersede: [{label, after?: [label], delegation?: {spec: {role?, model?, effort?, isolation?}, accept: {command|stated}, context?: [url], output?: {schema: url}}, contract?: {class: writer|reader|inline, items: [{id, critical: bool, weight: 1..100, decider: {cmd: {checker: artifact, timeout_ms}} | {schema: {schema: artifact}} | {example: {cases: artifact, runner: artifact, timeout_ms}}}], threshold?: 1..1000, min_coverage?: 1..1000}}]. A delegation hands the todo to a child and its accept is mandatory; done runs the contract (an artifact is {digest, media_type, length} from the plan's store) and a todo without one completes unverified",
+                    "description": "init/append/decompose/supersede: [{label, after?: [label], delegation?: {spec: {role?, model?, effort?, isolation?}, accept: {command|stated}, context?: [url], output?: {schema: url}}, contract?: {class: writer|reader|inline, covers?: [glob], items: [{id, critical: bool, weight: 1..100, decider: {cmd: \"shell command\"} | {schema: {schema: artifact}} | {example: {cases: artifact, runner: artifact, timeout_ms}}}], threshold?: 1..1000, min_coverage?: 1..1000}}]. A delegation hands the todo to a child and its accept is mandatory; done runs the contract (an artifact is {digest, media_type, length}) and a todo without one completes unverified",
                     "minItems": 1
                 },
                 "label": {"type": "string", "description": "drop/block/unblock/start/done/fail/retry/decompose: the todo"},
@@ -1053,6 +1078,32 @@ mod tests {
         assert!(
             matches!(request(&child, &through_cli), Err(ArgError::ActorArg)),
             "the CLI line carries the key into the same refusal"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_childs_plan_tool_views_and_is_refused_before_the_parse() -> Fallible {
+        let dir = crate::scratch::Scratch::new("yi-plan-tool-child")?;
+        let store = super::super::store::PlanStore::open(dir.to_path_buf())?;
+        let engine = Arc::new(PlanEngine::new(store, Arc::new(NoChildren)));
+        let child = Actor::Child(yi_types::plan::doc::AgentId::new("helper")?);
+        let tool = PlanTool::new(engine, child.clone());
+        assert_eq!(tool.schema()["properties"]["op"]["enum"], json!(["view"]));
+        assert!(tool.description().contains("end your turn"));
+        let mut args = Map::new();
+        args.insert("op".to_owned(), Value::String("done".to_owned()));
+        let refusal = super::super::request::refusal_of(&child, &args);
+        assert_eq!(
+            refusal["refusal"]["code"],
+            json!("not_owner"),
+            "{refusal:?}"
+        );
+        assert!(
+            refusal["refusal"]["message"]
+                .as_str()
+                .is_some_and(|text| text.contains("end your turn")),
+            "{refusal:?}"
         );
         Ok(())
     }

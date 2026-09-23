@@ -2,7 +2,7 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
 use serde_json::{Value, json};
-use yi_types::plan::contract::{Decider, ItemVerdict, Outcome as ContractOutcome, Verdict};
+use yi_types::plan::contract::{Decider, ItemId, ItemVerdict, Outcome as ContractOutcome, Verdict};
 use yi_types::plan::doc::{PlanId, PlanState, Todo, TodoAddr, TodoLabel, TodoState};
 use yi_types::plan::ledger::{AttemptId, RequestId};
 use yi_types::plan::op::Choice;
@@ -10,7 +10,7 @@ use yi_types::subagent::{ChildExit, ChildResult, FailClass};
 use yi_types::url::Url;
 
 use super::acceptance::{Phase, is_worktree, phase_of};
-use super::ops::{Actor, Op, OpRequest, PlanEngine, PlanOpError, agent_url};
+use super::ops::{Actor, ENGINE_AGENT, Op, OpRequest, PlanEngine, PlanOpError, agent_url};
 use super::state::{KIND_LEFT, SUBMITTED_KEY, reduce, root_of};
 use crate::goal::DeliverFn;
 use crate::subagent::{FinishFn, SubagentHost, last_assistant_text};
@@ -25,6 +25,7 @@ struct Held {
     early: Option<Url>,
     json: bool,
     verified: bool,
+    schemas: Vec<ItemId>,
 }
 
 fn needs_json(todo: &Todo) -> bool {
@@ -100,6 +101,13 @@ impl PlanEngine {
                         .and_then(|url| url.parse().ok()),
                     json: needs_json(todo),
                     verified: is_worktree(todo) || todo.contract.is_some(),
+                    schemas: todo
+                        .contract
+                        .iter()
+                        .flat_map(|contract| &contract.items)
+                        .filter(|item| matches!(item.decider, Decider::Schema { .. }))
+                        .map(|item| item.id.clone())
+                        .collect(),
                 });
             }
         }
@@ -177,6 +185,39 @@ impl PlanEngine {
                 disposition: held.phase.map(|_| Choice::Retained),
             },
         )
+    }
+
+    fn fail_and_retry(&self, held: &Held, said: String, cause: String, retry: bool) -> String {
+        if let Err(error) = self.fail_finish(held, cause) {
+            self.leave(held, &error, &format!("its fail was refused: {error}"));
+            return format!("{said}; its fail was refused: {error}");
+        }
+        if !retry || self.retried(held) {
+            return said;
+        }
+        let again = Op::Retry {
+            label: held.label.clone(),
+            delegation: None,
+        };
+        match self.step(&held.plan, again) {
+            Ok(()) => format!("{said}; the engine retried it once with that in the brief"),
+            Err(error) => format!("{said}; the engine's retry was refused: {error}"),
+        }
+    }
+
+    fn retried(&self, held: &Held) -> bool {
+        let Some(reading) = root_of(&held.plan)
+            .ok()
+            .and_then(|root| self.store.journal(&root).read().ok())
+        else {
+            return true;
+        };
+        reading.records.iter().any(|record| {
+            record.record.op == "retry"
+                && record.record.actor == ENGINE_AGENT
+                && record.record.plan == held.plan
+                && record.record.todo.as_ref() == Some(&held.label)
+        })
     }
 
     fn leave(&self, held: &Held, refusal: &PlanOpError, detail: &str) -> bool {
@@ -260,6 +301,14 @@ impl PlanEngine {
             }
             Err(refusal) => refusal,
         };
+        if let PlanOpError::MergeFailed { paths, .. } = &refusal {
+            let cause = format!(
+                "its candidate conflicts with the parent at {}: the next attempt starts from the parent's current tree",
+                paths.join(", ")
+            );
+            let said = format!("plan: failed {label:?}: {cause}");
+            return Some(self.fail_and_retry(&held, said, cause, true));
+        }
         let PlanOpError::Refused { verdict, .. } = &refusal else {
             return self.left_notice(&held, &refusal);
         };
@@ -267,15 +316,11 @@ impl PlanEngine {
             return self.left_notice(&held, &refusal);
         }
         let items = failed_items(verdict);
-        Some(
-            match self.fail_finish(&held, format!("contract refused: {items}")) {
-                Ok(()) => format!("plan: refused {label:?}: {items}"),
-                Err(error) => {
-                    self.leave(&held, &error, &format!("its fail was refused: {error}"));
-                    format!("plan: refused {label:?}: {items}; its fail was refused: {error}")
-                }
-            },
-        )
+        let unparsed = verdict.items.iter().any(|line| {
+            matches!(line.verdict, ItemVerdict::Fail { .. }) && held.schemas.contains(&line.id)
+        });
+        let said = format!("plan: refused {label:?}: {items}");
+        Some(self.fail_and_retry(&held, said, format!("contract refused: {items}"), unparsed))
     }
 }
 
@@ -355,7 +400,12 @@ pub fn install(host: &Arc<SubagentHost>, engine: &Arc<PlanEngine>, deliver: Deli
         if !agent.contains('/') {
             return false;
         }
-        let Some(held) = engine.locate(&agent) else {
+        // Invariant: a start commits Running after its spawn, so an early end waits out its lease.
+        let held = engine.locate(&agent).or_else(|| {
+            drop(engine.lease_waiting().ok()?);
+            engine.locate(&agent)
+        });
+        let Some(held) = held else {
             return false;
         };
         let deliver = Arc::clone(&deliver);
@@ -387,6 +437,8 @@ pub fn install(host: &Arc<SubagentHost>, engine: &Arc<PlanEngine>, deliver: Deli
 mod tests {
     use super::super::dispatch::tests::{delegated, hooked, owner, reply, settled, texts};
     use super::super::ops::Op;
+    use super::super::ops::PlanEngine;
+    use super::install;
     use yi_types::plan::doc::{Check, GoalText, TodoState};
 
     type TestResult = Result<(), Box<dyn std::error::Error>>;
@@ -437,6 +489,105 @@ mod tests {
             todo.state,
             texts(&rig.said)
         );
+        Ok(())
+    }
+
+    struct Own(super::super::store::PlanStore);
+
+    impl super::super::output::OutputResolve for Own {
+        fn resolve(&self, url: &yi_types::url::Url) -> Result<Option<String>, String> {
+            let text = url.to_string();
+            let (plan, hex) = text
+                .strip_prefix("plan://")
+                .and_then(|rest| rest.split_once("/artifacts/"))
+                .ok_or("not a plan artifact")?;
+            let digest = yi_types::plan::canonical::Digest::parse(&format!("sha256:{hex}"))
+                .map_err(|error| error.to_string())?;
+            let plan = yi_types::plan::doc::PlanId::new(plan).map_err(|error| error.to_string())?;
+            let bytes = self
+                .0
+                .artifacts(&plan)
+                .get(&digest)
+                .map_err(|error| error.to_string())?;
+            Ok(Some(String::from_utf8_lossy(&bytes).into_owned()))
+        }
+    }
+
+    /// Dies with a schema refusal failing for good: ten final-confirmation readers answered prose.
+    #[tokio::test]
+    async fn a_prose_answer_to_a_schema_is_retried_once_with_the_schema_and_the_error() -> TestResult
+    {
+        let mut rig = hooked(vec![reply("I read every file; the findings are above.")])?;
+        let store = super::super::store::PlanStore::open(rig.cwd.join("read"))?;
+        let delegate = super::super::dispatch::SessionDelegate::new(
+            std::sync::Arc::clone(&rig.host),
+            std::sync::Arc::new(|_message, _mode| {}),
+            std::sync::Arc::new(crate::fetch::FetchLog::new()),
+        );
+        rig.engine = std::sync::Arc::new(
+            PlanEngine::new(store.clone(), std::sync::Arc::new(delegate))
+                .with_cwd(rig.cwd.to_path_buf())
+                .with_output_resolve(std::sync::Arc::new(Own(store))),
+        );
+        let said = std::sync::Arc::clone(&rig.said);
+        install(
+            &rig.host,
+            &rig.engine,
+            std::sync::Arc::new(move |message, _mode| {
+                if let Ok(mut said) = said.lock() {
+                    said.push(message);
+                }
+            }),
+        );
+        let schema = serde_json::json!({"type": "object", "required": ["findings"]});
+        let id = yi_types::plan::doc::PlanId::slug("read the archive")?;
+        let stored = rig.engine.store().artifacts(&id).put(
+            serde_json::to_string(&schema)?.as_bytes(),
+            "application/schema+json",
+            &rig.engine.store().nonce(),
+        )?;
+        let item = serde_json::json!({"id": "schema1", "critical": true, "weight": 1,
+            "decider": {"schema": {"schema": stored}}});
+        let args = serde_json::json!({"op": "init", "goal": "read the archive", "todos": [{
+            "label": "read board",
+            "delegation": {"spec": {"role": "reader"}, "accept": {"stated": "the findings"}},
+            "contract": {"class": "reader", "items": [item]},
+        }]});
+        let args = args.as_object().cloned().ok_or("args")?;
+        let (request, blobs) =
+            super::super::tool::declared(&super::super::ops::Actor::Owner, &args)?;
+        rig.engine.apply_with(request, &blobs)?;
+        let label = yi_types::plan::doc::TodoLabel::new("read board")?;
+        let mut last = None;
+        for _ in 0..400 {
+            let todo = rig.engine.store().read(&id)?.todo(&label).cloned();
+            if let Some(todo) = todo.filter(|todo| todo.attempt.get() == 2)
+                && let TodoState::Failed { last: trace, .. } = &todo.state
+            {
+                last = trace.clone();
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
+        let said = texts(&rig.said);
+        assert!(
+            said.iter().any(|line| line.contains("retried it once")),
+            "{said:?}"
+        );
+        let now = rig.engine.store().read(&id)?.todo(&label).cloned();
+        let agent = last.ok_or(format!("the second attempt never failed: {now:?} {said:?}"))?;
+        let kept = rig
+            .host
+            .kept_transcript(agent.to_string().trim_start_matches("history://"))
+            .ok_or("no kept transcript")?;
+        let kept = yi_session::lock_session(&kept);
+        for told in [
+            "Answer with only a JSON value",
+            "Schema: {",
+            "previous attempt failed: contract refused: schema1: answer contains no JSON value",
+        ] {
+            assert!(!kept.grep(told, 1).is_empty(), "the brief lacks {told:?}");
+        }
         Ok(())
     }
 

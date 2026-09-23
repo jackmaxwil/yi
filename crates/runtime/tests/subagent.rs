@@ -253,6 +253,46 @@ async fn a_cursor_carrying_wait_leaves_the_bare_cursor_alone() -> TestResult {
     Ok(())
 }
 
+/// Dies with a reap waking the bare waiter: the engine's reap of a child the model already saw
+/// finish moved the epoch and named no one, so `rlm.wait(300)` answered in 20 ms, four times.
+#[tokio::test]
+async fn a_bare_wait_sleeps_through_a_reap_while_a_child_runs() -> TestResult {
+    use yi_kernel::client::HostHandlers;
+    let root = scratch::Scratch::new("yi-wait-reap")?;
+    let store = support::memory_store("yi-wait-reap");
+    let family = support::family(
+        root.to_path_buf(),
+        std::env::temp_dir(),
+        store,
+        Some("sleep 3"),
+    );
+    let mut registry = yi_runtime::HostRegistry::default();
+    family.host.register(&mut registry);
+    let wait = || {
+        let payload = kwargs(&[("timeout_ms", json!(1_000))]);
+        registry.dispatch("rlm.wait", payload)
+    };
+    family
+        .host
+        .spawn("work".to_owned(), kwargs(&[("name", json!("a"))]))?;
+    assert!(family.reaches("a", "finished").await);
+    family
+        .host
+        .spawn("work".to_owned(), kwargs(&[("name", json!("b"))]))?;
+    wait().ok_or("rlm.wait")?.await?;
+    family.host.delete("a")?;
+    let started = Instant::now();
+    let again = wait().ok_or("rlm.wait")?.await?;
+    let named = again["changed"]
+        .as_array()
+        .is_some_and(|names| !names.is_empty());
+    assert!(
+        named || started.elapsed() >= Duration::from_millis(900),
+        "a reap alone woke the bare waiter while b runs: {again:?}"
+    );
+    Ok(())
+}
+
 /// Dies with `settling` bumped inside the finish hook: between the exit and the hook `busy`
 /// reads false, and `yi ask` ends before the finish reaches the owner.
 #[tokio::test]

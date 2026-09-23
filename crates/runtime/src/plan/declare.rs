@@ -56,6 +56,16 @@ fn worktree_command(todo: &Map<String, Value>) -> Option<String> {
     Some(delegation.pointer("/accept/command")?.as_str()?.to_owned())
 }
 
+fn stated_worktree(todo: &Map<String, Value>) -> bool {
+    todo.get("delegation").is_some_and(|delegation| {
+        delegation
+            .pointer("/spec/isolation")
+            .and_then(Value::as_str)
+            == Some("worktree")
+            && delegation.pointer("/accept/stated").is_some()
+    })
+}
+
 fn delegation_of(delegation: &mut Map<String, Value>, blobs: &mut Vec<Blob>) -> Result<(), String> {
     if let Some(isolation) = delegation.remove("isolation") {
         let spec = delegation.entry("spec").or_insert_with(|| json!({}));
@@ -104,9 +114,17 @@ fn todo_of(todo: &mut Map<String, Value>, blobs: &mut Vec<Blob>) -> Result<(), S
         }
         delegation_of(delegation, blobs)?;
     }
-    if todo.get("contract").is_none_or(Value::is_null)
-        && let Some(command) = worktree_command(todo)
-    {
+    let uncontracted = todo.get("contract").is_none_or(Value::is_null);
+    if uncontracted && stated_worktree(todo) {
+        let label = todo
+            .get("label")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        return Err(format!(
+            r#"todo {label}: a stated accept gives the engine nothing to run on a worktree child's checkout; write it as a command, {{"command": "<shell check>"}} (for example {{"command": "test -s out.txt"}}), or declare a `contract`"#
+        ));
+    }
+    if uncontracted && let Some(command) = worktree_command(todo) {
         let cmd = json!({"checker": command, "timeout_ms": crate::goal::DEFAULT_CHECK_TIMEOUT_MS});
         let item = json!({"id": "accept", "critical": true, "weight": 1, "decider": {"cmd": cmd}});
         todo.insert(

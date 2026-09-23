@@ -871,10 +871,15 @@ mod accept {
         path: PathBuf,
         pub(super) fail_reap: AtomicBool,
         pub(super) disposed: Mutex<Vec<Choice>>,
+        /// What each spawn was handed, the engine's brief lines included.
+        pub(super) briefs: Mutex<Vec<Delegation>>,
     }
 
     impl Delegate for Child {
-        fn spawn(&self, _at: &TodoAddr, _delegation: &Delegation) -> Result<AgentId, String> {
+        fn spawn(&self, _at: &TodoAddr, delegation: &Delegation) -> Result<AgentId, String> {
+            if let Ok(mut briefs) = self.briefs.lock() {
+                briefs.push(delegation.clone());
+            }
             AgentId::new("child-1").map_err(|error| error.to_string())
         }
 
@@ -945,6 +950,7 @@ mod accept {
             path: parent.clone(),
             fail_reap: AtomicBool::new(false),
             disposed: Mutex::new(Vec::new()),
+            briefs: Mutex::new(Vec::new()),
         });
         let engine = PlanEngine::new(store.clone(), child.clone())
             .with_cwd(parent.clone())
@@ -1684,31 +1690,44 @@ mod accept {
         Ok(())
     }
 
-    // Dies with `left` read off a refusal record in schedule.rs: a merge conflict journals a
-    // disposition and no refusal, so `view` names nothing and the library waits forever.
+    // Dies with the conflict left running (finish.rs): a retry was illegal and `done` answered
+    // "nothing to do", so the todo had no road; the engine fails it and retries it once.
     #[test]
-    fn a_merge_conflict_at_the_finish_is_named_by_view() -> TestResult {
-        let rig = Rig::new("g4-left-conflict")?;
+    fn a_merge_conflict_at_the_finish_fails_the_attempt_and_the_engine_retries_it() -> TestResult {
+        let rig = Rig::new("g5-conflict-retry")?;
         let parent = rig.fixture_repo(Dirt::Clean)?;
         let bench = bench(&rig, parent, "yi/cand-conflict")?;
         let line = finish(&bench).ok_or("the engine did not take its own child")?;
-        assert!(line.contains("not accepted"), "{line}");
-        assert!(matches!(bench.state()?, TodoState::Running { .. }));
-        let view = bench.owner(Op::View { full: true })?;
-        let left: Vec<&str> = view
-            .standing
-            .left
-            .iter()
-            .map(|(label, _)| label.as_str())
-            .collect();
-        assert_eq!(left, [LABEL], "{:?}", view.notices);
         assert!(
-            view.notices.iter().any(|notice| notice
-                .starts_with("the engine left \"add rotate\" running: ")
-                && notice.contains("rotate.sh")),
-            "{:?}",
-            view.notices
+            line.contains("conflicts with the parent at rotate.sh"),
+            "{line}"
         );
+        assert!(line.contains("retried it once"), "{line}");
+        let plan = bench.store.read(&bench.plan)?;
+        let todo = plan.todo(&TodoLabel::new(LABEL)?).ok_or("todo missing")?;
+        assert!(
+            matches!(todo.state, TodoState::Running { .. }),
+            "{:?}",
+            todo.state
+        );
+        assert_eq!(todo.attempt.get(), 2, "the engine dispatched a new attempt");
+        let briefs = bench.child.briefs.lock().map_err(|_| "poisoned")?;
+        let told = briefs
+            .last()
+            .and_then(|delegation| delegation.extra.get("brief_lines"))
+            .map(ToString::to_string)
+            .unwrap_or_default();
+        assert!(
+            told.contains("previous attempt failed") && told.contains("rotate.sh"),
+            "{told}"
+        );
+        drop(briefs);
+        let again = finish(&bench).ok_or("the engine did not take the second attempt")?;
+        assert!(
+            !again.contains("retried"),
+            "one retry, then the owner's: {again}"
+        );
+        assert!(matches!(bench.state()?, TodoState::Failed { .. }));
         Ok(())
     }
 

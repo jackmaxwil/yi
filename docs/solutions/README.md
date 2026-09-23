@@ -205,5 +205,6 @@ when it changes rather than editing them by hand.
 - [D226](adr/d226.md) - with a plan open the session todo list is the plan's view
 - [D227](adr/d227.md) - the shapes a parent writes are the declaration, and an owner's step on an...
 - [D228](adr/d228.md) - a contract's checker runs after every covered write
+- [D229](adr/d229.md) - the classes the final confirmation found are removed at their decision
 
 D36-D51, D72, D73 and D74 have no ADR yet; ARCHITECTURE.md is the record for those rows.

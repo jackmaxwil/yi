@@ -135,6 +135,7 @@ fn refusal(
 
 fn code_of(error: &PlanToolError) -> &'static str {
     match error {
+        PlanToolError::Arg(super::tool::ArgError::ChildViews { .. }) => "not_owner",
         PlanToolError::Arg(_) => "bad_args",
         PlanToolError::Op(
             error @ (PlanOpError::NotOwner { .. }
