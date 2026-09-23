@@ -21,7 +21,6 @@ pub(crate) const CONTEXT_VALUE_CAP: usize = 4_096;
 pub(crate) const CONTEXT_TOTAL_CAP: usize = 16_384;
 const RESULT_TAIL_CHARS: usize = 2_000;
 
-/// A removed record with its key and how its lane settled.
 pub(crate) type Retired = (
     String,
     ChildRecord,
@@ -390,8 +389,7 @@ impl SubagentHost {
         reply
     }
 
-    /// B13 wait with a per-caller cursor (§7.5): nothing shared is drained, so two waiters
-    /// never steal each other's updates; `updated` mirrors `changed` for one release.
+    /// B13 wait with a per-caller cursor (§7.5): nothing shared is drained, so no waiter steals.
     pub async fn wait(&self, timeout_ms: u64, cursor: Option<u64>) -> Map<String, Value> {
         self.wait_for(timeout_ms, cursor, false).await
     }
@@ -445,8 +443,11 @@ impl SubagentHost {
             .filter(|record| record.changed_at_epoch > since)
             .map(|record| record.session_name.clone())
             .collect();
+        let (gone, whole) = children.removed_since(since);
+        moved.extend(gone);
         moved.sort();
-        let live = children.values().any(|record| record.exit.is_none());
+        moved.dedup();
+        let live = whole && children.values().any(|record| record.exit.is_none());
         (children.epoch, moved, live)
     }
 
@@ -675,9 +676,8 @@ impl SubagentHost {
                 ));
             }
             let record = children
-                .remove(&key)
+                .take(&key)
                 .ok_or_else(|| format!("No RLM child matches \"{target}\""))?;
-            children.touch(&key);
             (key, record)
         };
         if record.exit.is_none() {
@@ -693,8 +693,7 @@ impl SubagentHost {
             record.step(Step::Exit(exit, Some(cause)));
         }
         SubagentHost::dispose_child_kernel(&record.session);
-        // The lane settles under the choice journaled before this removal; a lane that cannot
-        // settle goes back on the record with its slot, and the removal fails.
+        // The lane settles under the journaled choice; one that cannot restores the record.
         let (mut record, settled) = self.settle_or_restore(&key, record)?;
         if let Err(reason) = commit(&record, settled.as_ref().map(|(_, candidate)| candidate)) {
             self.restore(&key, record, &reason);

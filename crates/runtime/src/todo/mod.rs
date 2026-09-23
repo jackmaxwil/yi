@@ -233,13 +233,8 @@ impl TodoStore {
 
     /// Re-reads a mirrored list's plan: another engine, or a crash before the replace, moved it.
     pub fn resync(&self) {
-        let list = self.list();
-        if mirror::plan_of(&list).is_none() {
-            return;
-        }
-        let resync = self.resync.lock().ok().and_then(|slot| slot.clone());
-        if let Some(fresh) = resync.and_then(|resync| resync(&list)) {
-            self.replace(fresh, mirror::ENGINE_ACTOR);
+        if let Some(resync) = self.resync.lock().ok().and_then(|slot| slot.clone()) {
+            self.replace_with(|list| resync(list), mirror::ENGINE_ACTOR);
         }
     }
 
@@ -319,7 +314,7 @@ impl TodoStore {
         let name = op.name();
         step(&mut list, op)?;
         mint(&mut list);
-        normalize(&mut list);
+        normalize(&mut list, mirrored.is_none());
         if mirrored.is_some() {
             list = mirror::rejoin(&before, list);
         }
@@ -337,13 +332,14 @@ impl TodoStore {
         })
     }
 
-    pub fn replace(&self, list: TodoList, actor: &str) {
+    /// Invariant: projected from the list under the lock, so no owner-row write is undone.
+    pub fn replace_with(&self, project: impl FnOnce(&TodoList) -> Option<TodoList>, actor: &str) {
         let Ok(mut state) = self.state.lock() else {
             return;
         };
-        if state.list == list {
+        let Some(list) = project(&state.list).filter(|list| *list != state.list) else {
             return;
-        }
+        };
         state.list = list.clone();
         state.touched = state.touched.saturating_add(1);
         let touched = state.touched;
@@ -838,7 +834,8 @@ fn demote(item: &mut TodoItem, keep: &TodoLabel) {
     }
 }
 
-pub fn normalize(list: &mut TodoList) {
+/// `promote` is off while a plan owns the list: its rows are the running work, not the owner's.
+pub fn normalize(list: &mut TodoList, promote: bool) {
     let mut seen_running = false;
     for phase in &mut list.phases {
         for item in &mut phase.items {
@@ -848,7 +845,7 @@ pub fn normalize(list: &mut TodoList) {
             }
         }
     }
-    if seen_running {
+    if seen_running || !promote {
         return;
     }
     for phase in &mut list.phases {

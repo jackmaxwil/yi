@@ -74,7 +74,13 @@ pub(crate) struct Children {
     pub(crate) epoch: u64,
     /// Children being built outside the lock; each holds a slot, its name and its tokens.
     building: Vec<(String, u64)>,
+    /// Removed names with their last moves: a reap moves the epoch, and a cursor from before
+    /// a child's last move still reads it as moved once the record is gone.
+    removed: std::collections::VecDeque<(String, u64)>,
+    forgotten: u64,
 }
+
+const REMOVED_KEPT: usize = 64;
 
 impl Children {
     /// Tokens out on lease: every record still held, and every build in flight.
@@ -92,7 +98,6 @@ impl Children {
         self.building.retain(|(held, _)| held != name);
     }
 
-    /// A reaped record still moves the epoch, so an older cursor wakes and re-reads `states`.
     pub(crate) fn touch(&mut self, key: &str) -> u64 {
         self.epoch = self.epoch.saturating_add(1);
         let epoch = self.epoch;
@@ -100,6 +105,25 @@ impl Children {
             record.changed_at_epoch = epoch;
         }
         epoch
+    }
+
+    pub(crate) fn take(&mut self, key: &str) -> Option<ChildRecord> {
+        let record = self.records.remove(key)?;
+        let epoch = self.touch(key);
+        let moved = record.exit.map_or(epoch, |_| record.changed_at_epoch);
+        if self.removed.len() >= REMOVED_KEPT
+            && let Some((_, lost)) = self.removed.pop_front()
+        {
+            self.forgotten = self.forgotten.max(lost);
+        }
+        self.removed.push_back((record.session_name.clone(), moved));
+        Some(record)
+    }
+
+    pub(crate) fn removed_since(&self, since: u64) -> (Vec<String>, bool) {
+        let names = self.removed.iter().filter(|(_, moved)| *moved > since);
+        let names = names.map(|(name, _)| name.clone()).collect();
+        (names, since >= self.forgotten)
     }
 }
 

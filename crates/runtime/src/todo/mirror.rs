@@ -39,7 +39,7 @@ impl OpSink for Mirror {
         let recorded = self.inner.record(record);
         let plan = self.store.read(&root).map_err(|error| error.to_string())?;
         self.todos
-            .replace(projected(&plan, &self.todos.list()), ENGINE_ACTOR);
+            .replace_with(|current| Some(projected(&plan, current)), ENGINE_ACTOR);
         recorded
     }
 }

@@ -293,6 +293,44 @@ async fn a_bare_wait_sleeps_through_a_reap_while_a_child_runs() -> TestResult {
     Ok(())
 }
 
+/// Dies with a reap erasing the move it ends: `a` exits and is reaped between two bare waits
+/// while `b` runs, so the second read nothing, slept, and held the plan's notice on `a`.
+#[tokio::test]
+async fn a_bare_wait_wakes_on_a_child_that_ended_and_was_reaped_unseen() -> TestResult {
+    use yi_kernel::client::HostHandlers;
+    let root = scratch::Scratch::new("yi-wait-unseen")?;
+    let store = support::memory_store("yi-wait-unseen");
+    let family = support::family(
+        root.to_path_buf(),
+        std::env::temp_dir(),
+        store,
+        Some("sleep 3"),
+    );
+    let mut registry = yi_runtime::HostRegistry::default();
+    family.host.register(&mut registry);
+    let wait = || {
+        let payload = kwargs(&[("timeout_ms", json!(1_000))]);
+        registry.dispatch("rlm.wait", payload)
+    };
+    for name in ["a", "b"] {
+        let named = kwargs(&[("name", json!(name))]);
+        family.host.spawn("work".to_owned(), named)?;
+    }
+    wait().ok_or("rlm.wait")?.await?;
+    family.host.interrupt("a")?;
+    assert!(family.reaches("a", "failed").await);
+    family.host.delete("a")?;
+    let started = Instant::now();
+    let again = wait().ok_or("rlm.wait")?.await?;
+    assert!(
+        started.elapsed() < Duration::from_millis(900),
+        "a's end is news to this waiter: {again:?}"
+    );
+    let names = again["changed"].as_array().ok_or("changed")?;
+    assert!(names.contains(&json!("a")), "{again:?}");
+    Ok(())
+}
+
 /// Dies with `settling` bumped inside the finish hook: between the exit and the hook `busy`
 /// reads false, and `yi ask` ends before the finish reaches the owner.
 #[tokio::test]

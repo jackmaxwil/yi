@@ -511,7 +511,7 @@ async fn a_child_stores_the_product_of_the_attempt_it_submits() -> TestResult {
         "the child's product is not in the plan store"
     );
     // Every other blob write a non-owner can try: another todo's attempt, a batch beside the
-    // product, and an op that is not a submit at all, which authority refuses before any parse.
+    // product, an op past a view, which authority refuses before any parse, and a view.
     let stores = "only the plan owner stores artifacts";
     for (request, op, args, blobs, said) in [
         (
@@ -534,6 +534,13 @@ async fn a_child_stores_the_product_of_the_attempt_it_submits() -> TestResult {
             serde_json::json!({"label": "cut", "output": url}),
             serde_json::json!([blob]),
             "only the plan owner may done; your plan tool only views",
+        ),
+        (
+            "p5",
+            "view",
+            serde_json::json!({}),
+            serde_json::json!([blob]),
+            stores,
         ),
     ] {
         let refused = plan_op(&registry, send(request, op, args, blobs)).await?;
