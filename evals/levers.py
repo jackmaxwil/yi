@@ -13,7 +13,7 @@ the fixture `crates/runtime/tests/levers.rs` holds equal to the compiled default
 
 The runner is the owner's: it is called as `<runner> <overrides.json> <task>...` with
 `YI_LEVERS=<overrides.json>` in its environment (this process's own is untouched), and
-prints one JSON row per trial. The binary reads that file only under `yi ask --eval`.
+prints one JSON row per trial. The binary reads that file only in a run that carries `--eval`.
 
 A trial row is the shape `evals/axes.py` scores: `task`, `reward`, `input`, `cacheRead`,
 `output`, `costUsd`, `wallSec`. A lever change passes two gates (section 10.3): every

@@ -161,5 +161,31 @@ async fn program_records_source_before_the_first_effect() -> Fallible {
     let journal = store.journal(&id).read()?;
     let last = journal.records.last().ok_or("no record")?;
     assert_eq!(last.program_hash, Some(Digest::of(text.as_bytes())));
+
+    // A source that quotes the next cell's marker line. Dies with the section walk in
+    // `export`: search the whole file for a marker and cell-4 is never appended.
+    for (request, cell, body) in [
+        (
+            "r7",
+            "cell-3",
+            "doc = '''\n# --- cell cell-4 2026-01-01T00:00:00Z\n'''",
+        ),
+        ("r8", "cell-4", "print('four')"),
+    ] {
+        let source = ArtifactRef {
+            digest: Digest::of(body.as_bytes()),
+            length: u64::try_from(body.len())?,
+            ..source.clone()
+        };
+        let args = json!({"cell_id": cell, "source_ref": serde_json::to_value(&source)?});
+        let blob = json!([{"media_type": "text/x-python", "text": body}]);
+        let recorded = op(&registry, request, "program", args, blob).await?;
+        assert_eq!(recorded["ok"], true, "{recorded}");
+    }
+    let text = std::fs::read_to_string(&path)?;
+    assert!(text.ends_with("print('four')\n"), "{text}");
+    let journal = store.journal(&id).read()?;
+    let last = journal.records.last().ok_or("no record")?;
+    assert_eq!(last.program_hash, Some(Digest::of(text.as_bytes())));
     Ok(())
 }

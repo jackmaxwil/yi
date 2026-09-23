@@ -100,8 +100,8 @@ impl PlanEngine {
         Ok(Digest::of(text.as_bytes()))
     }
 
-    /// Appends every journaled cell the export lacks, so a crash between the commit and the
-    /// append is healed by the next record or the retried request, never by a rewrite.
+    /// Appends every journaled cell past those the file holds, walked over each cell's own bytes:
+    /// a crash between commit and append heals without a rewrite, and a quoted marker is source.
     fn export(
         &self,
         id: &PlanId,
@@ -109,15 +109,24 @@ impl PlanEngine {
         records: &[JournalRecord],
     ) -> Result<(), PlanOpError> {
         let mut text = self.program_text(id)?;
-        let mut added = String::new();
+        let (mut walked, mut added) = (0, String::new());
         for record in records {
             let Some((cell, digest)) = recorded(record, id) else {
                 continue;
             };
-            if text.contains(&header(&cell)) {
+            let source = self.source_of(id, &digest)?;
+            let rest = text.get(walked..).unwrap_or_default();
+            let rest = rest
+                .strip_prefix("# --- version ")
+                .and_then(|marked| marked.split_once('\n'))
+                .map_or(rest, |(_, after)| after);
+            let bare = section("", 1, &cell, record.record.at, &source);
+            if added.is_empty()
+                && let Some(after) = rest.strip_prefix(bare.as_str())
+            {
+                walked = text.len().saturating_sub(after.len());
                 continue;
             }
-            let source = self.source_of(id, &digest)?;
             let part = section(&text, version, &cell, record.record.at, &source);
             text.push_str(&part);
             added.push_str(&part);
