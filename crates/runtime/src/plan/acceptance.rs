@@ -29,6 +29,7 @@ use crate::lane::{Pool, Sha};
 
 pub const KIND_CANDIDATE_SUBMITTED: &str = "candidate_submitted";
 pub const KIND_CANDIDATE_VERIFIED: &str = "candidate_verified";
+pub const KIND_INTEGRATION_INTENT: &str = "integration_intent";
 pub const KIND_INTEGRATION_PREPARED: &str = "integration_prepared";
 pub const KIND_INTEGRATION_VERIFIED: &str = "integration_verified";
 /// A publication refused because the parent moved past the prepared generation.
@@ -111,7 +112,12 @@ pub(super) fn accepted_op(record: &JournalRecord) -> Result<Op, String> {
     Ok(Op::Done { label, output })
 }
 
-fn own(record: &JournalRecord, plan: &PlanId, label: &TodoLabel, attempt: AttemptId) -> bool {
+pub(super) fn own(
+    record: &JournalRecord,
+    plan: &PlanId,
+    label: &TodoLabel,
+    attempt: AttemptId,
+) -> bool {
     &record.record.plan == plan
         && record.record.todo.as_ref() == Some(label)
         && record.attempt == Some(attempt)
@@ -605,7 +611,7 @@ impl PlanEngine {
             let parent = generation_of(&self.cwd, deadline)
                 .map_err(|error| verification(&label, format!("parent checkout: {error}")))?;
             let pool = self.pool(&label)?;
-            let session = format!("stage-{}", self.store.nonce());
+            let session = self.stage_intent(&mut txn, id, &candidate, generation)?;
             let merged = prepare(pool, &session, &parent, &candidate.commit, deadline)
                 .map_err(|error| verification(&label, format!("prepare: {error}")))?;
             let staging = match merged {
@@ -890,7 +896,9 @@ impl PlanEngine {
         )
         .map_err(|error| verification(label, format!("publish: {error}")))?;
         let (at, how) = match published {
-            Publish::Published { at, how } => (at, how),
+            Publish::Published { at, how } => (at, Some(how)),
+            // Incident: a run killed between publish and `accepted` left HEAD at this integration.
+            Publish::Moved { found, .. } if found == integration.integrated => (found, None),
             Publish::Moved { expected, found } => {
                 // The pin goes with the stale integration; a deletion that fails is written
                 // into the record, never dropped, so a leaked `yi/stage-*` branch is visible.
@@ -1151,7 +1159,7 @@ impl PlanEngine {
 }
 
 /// What became of a staging pin, for the record that outlives it.
-fn pin_of(dropped: &Result<(), PlanOpError>) -> Value {
+pub(super) fn pin_of(dropped: &Result<(), PlanOpError>) -> Value {
     match dropped {
         Ok(()) => json!({"dropped": true}),
         Err(error) => json!({"dropped": false, "error": error.to_string()}),

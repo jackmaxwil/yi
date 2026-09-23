@@ -16,8 +16,7 @@ impl OutputResolve for crate::fetch::Resolver {
         use crate::fetch::FetchError;
         match self.fetch(url) {
             Ok(fetched) => Ok(Some(fetched.text)),
-            // Invariant: a missing reader is not a missing referent: a scheme
-            // this resolver has no backend for cannot adjudicate existence.
+            // Invariant: a scheme with no backend here cannot say the referent is missing.
             Err(FetchError::Unsupported { .. }) => Ok(None),
             Err(
                 error @ (FetchError::Denied { .. }
@@ -61,8 +60,8 @@ fn validate_product(
         .map_err(mismatch)
 }
 
-/// The product `done` requires when a schema or a contract needs it, validated when a resolver
-/// is attached; resolving to `Ok(None)` refuses rather than skips (plan section 6.3).
+/// The product `done` requires when a schema or a contract needs it; resolving to `Ok(None)`,
+/// or a declared schema with no resolver to read it, refuses rather than skips (section 6.3).
 pub(super) fn check_output(
     resolve: Option<&dyn OutputResolve>,
     plan: &Plan,
@@ -83,8 +82,17 @@ pub(super) fn check_output(
     if declared.is_none() && !contracted {
         return Ok(None);
     }
-    let (Some(resolve), Some(url)) = (resolve, output) else {
+    let Some(url) = output else {
         return Ok(None);
+    };
+    let Some(resolve) = resolve else {
+        return match declared {
+            Some(_) => Err(PlanOpError::UnservedOutput {
+                label: label.clone(),
+                url: url.clone(),
+            }),
+            None => Ok(None),
+        };
     };
     let product = resolve
         .resolve(url)
