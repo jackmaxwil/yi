@@ -1027,7 +1027,7 @@ impl SubagentHost {
             let cursor = given.or((kept > 0).then_some(kept));
             let (host, seen) = (Arc::clone(&host), Arc::clone(&seen));
             Box::pin(async move {
-                let reply = host.wait(timeout, cursor).await;
+                let reply = host.wait_for(timeout, cursor, given.is_none()).await;
                 let epoch = reply.get("cursor").and_then(Value::as_u64).unwrap_or(0);
                 if given.is_none() {
                     seen.fetch_max(epoch, std::sync::atomic::Ordering::Relaxed);

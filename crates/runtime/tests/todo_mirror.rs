@@ -185,11 +185,16 @@ fn a_plan_op_replaces_the_list_and_keeps_ids() -> TestResult {
     let (session, todos, engine) = mirrored(&dir)?;
     let list = todos.list();
     let plan = plan_of(&list).ok_or("the list names no plan")?.to_owned();
-    assert_eq!(list.phases.len(), 1);
-    assert_eq!(list.phases[0].name.as_str(), plan);
+    assert_eq!(
+        list.phases.len(),
+        2,
+        "the owner's own phase, then the plan's"
+    );
+    assert_eq!(list.phases[1].name.as_str(), plan);
     assert_eq!(
         ids(&todos),
         [
+            ("t1".to_owned(), "first".to_owned(), TodoStateName::Running),
             ("t2".to_owned(), "gate".to_owned(), TodoStateName::Pending),
             (
                 "t3".to_owned(),
@@ -199,7 +204,7 @@ fn a_plan_op_replaces_the_list_and_keeps_ids() -> TestResult {
         ],
         "gate keeps its id, the new label takes the next one"
     );
-    let running = list.items().nth(1).ok_or("no second item")?;
+    let running = list.items().nth(2).ok_or("no third item")?;
     assert_eq!(running.extra.get("by"), Some(&json!("child-0")));
     assert_eq!(running.extra.get("plan"), Some(&json!(plan)));
     let record =
@@ -212,12 +217,12 @@ fn a_plan_op_replaces_the_list_and_keeps_ids() -> TestResult {
         label: TodoLabel::new("gate")?,
     }))?;
     assert_eq!(
-        ids(&todos)[0],
+        ids(&todos)[1],
         ("t2".to_owned(), "gate".to_owned(), TodoStateName::Running)
     );
     assert_eq!(
         text::header(&todos.list()),
-        "Todos 0/2 · running: gate",
+        "Todos 0/3 · running: first",
         "the environment's todo line carries the plan's counts"
     );
     Ok(())
@@ -308,8 +313,8 @@ fn a_mirrored_list_with_a_running_child_does_not_nag() -> TestResult {
     Ok(())
 }
 
-/// Dies with the mirror unwired (wiring.rs): the session's list stays the owner's own and the
-/// environment block never shows the plan.
+/// Dies with the mirror or its carry unwired (wiring.rs): the session's list stays the owner's
+/// own, or the todo tool's done on the plan's item is refused.
 #[tokio::test]
 async fn a_plan_opened_through_the_tool_is_the_sessions_todo_list() -> TestResult {
     let root = Scratch::new("yi-todo-mirror-wired")?;
@@ -321,9 +326,17 @@ async fn a_plan_opened_through_the_tool_is_the_sessions_todo_list() -> TestResul
         "todos".to_owned(),
         json!([{"label": "cut the seam"}, {"label": "wire it"}]),
     );
+    let mut done: Map<String, Value> = Map::new();
+    done.insert("op".to_owned(), json!("done"));
+    done.insert("label".to_owned(), json!("cut the seam"));
+    done.insert("evidence".to_owned(), json!("`true` exit 0"));
     provider.queue_faux(vec![
         faux_assistant_message(
             vec![faux_tool_call("c1", "plan", args)],
+            StopReason::ToolUse,
+        ),
+        faux_assistant_message(
+            vec![faux_tool_call("c2", "todo", done)],
             StopReason::ToolUse,
         ),
         faux_assistant_message(vec![faux_text("opened")], StopReason::Stop),
@@ -363,7 +376,11 @@ async fn a_plan_opened_through_the_tool_is_the_sessions_todo_list() -> TestResul
     session.wait_idle().await;
     let list = session.todos().ok_or("no todo store")?.list();
     assert!(plan_of(&list).is_some(), "{list:?}");
-    assert_eq!(text::header(&list), "Todos 0/2");
+    assert_eq!(
+        text::header(&list),
+        "Todos 1/2",
+        "the todo tool's done reached the plan"
+    );
     Ok(())
 }
 
@@ -436,6 +453,80 @@ fn a_child_label_under_two_parents_keeps_two_ids() -> TestResult {
         ids_of(&again),
         ids_of(&first),
         "a projection keeps every id"
+    );
+    Ok(())
+}
+
+/// Twenty-one final-confirmation `todo done t1` calls named the owner's own list, which the
+/// plan's init had replaced: the owner's open items stay beside the plan with their ids.
+#[test]
+fn an_owners_open_items_survive_the_plan_and_the_todo_tool_steps_them() -> TestResult {
+    let dir = Scratch::new("yi-todo-mirror-own")?;
+    let (_session, todos, engine) = mirrored(&dir)?;
+    let first = ids(&todos);
+    assert_eq!(
+        first.first(),
+        Some(&("t1".to_owned(), "first".to_owned(), TodoStateName::Running)),
+        "{first:?}"
+    );
+    assert_eq!(
+        first.iter().filter(|(_, label, _)| label == "gate").count(),
+        1,
+        "an own item the plan declared is the plan's: {first:?}"
+    );
+    todos.apply(
+        TodoOp::Done {
+            target: yi_runtime::todo::Target::Label(TodoLabel::new("t1")?),
+            evidence: Some("`true` exit 0".to_owned()),
+        },
+        None,
+    )?;
+    engine.apply(owner(Op::Start {
+        label: TodoLabel::new("gate")?,
+    }))?;
+    let after = ids(&todos);
+    assert_eq!(
+        after.first(),
+        Some(&("t1".to_owned(), "first".to_owned(), TodoStateName::Done)),
+        "{after:?}"
+    );
+    assert!(plan_of(&todos.list()).is_some());
+    Ok(())
+}
+
+/// A `todo done` on the plan's own inline item is the plan op the owner meant, not a bounce.
+#[test]
+fn a_todo_done_on_an_inline_plan_item_is_carried_to_the_plan_tool() -> TestResult {
+    use yi_tools::{Tool, ToolContext};
+    let dir = Scratch::new("yi-todo-mirror-carry")?;
+    let (_session, todos, engine) = mirrored(&dir)?;
+    let engine = Arc::new(engine);
+    todos.set_carry(yi_runtime::todo::mirror::carry(Arc::downgrade(&engine)));
+    let tool = yi_runtime::todo::tool::TodoTool::new(Arc::clone(&todos));
+    let call = |args: Value| {
+        let output = tool.execute(
+            args.as_object().cloned().unwrap_or_default(),
+            &ToolContext::new(dir.to_path_buf()),
+        );
+        let text: String = output
+            .result
+            .content
+            .iter()
+            .map(|content| match content {
+                yi_types::message::Content::Text { text, .. } => text.clone(),
+                _ => String::new(),
+            })
+            .collect();
+        (output.is_error, text)
+    };
+    let (refused, text) = call(json!({"op": "done", "id": "t2", "evidence": "`true` exit 0"}));
+    assert!(!refused, "{text}");
+    let plan = engine.store().read(&engine.store().roots()?[0])?;
+    let gate = plan.todo(&TodoLabel::new("gate")?).ok_or("gate")?;
+    assert_eq!(
+        TodoStateName::of(&gate.state),
+        TodoStateName::Done,
+        "{text}"
     );
     Ok(())
 }

@@ -65,6 +65,14 @@
       "timeoutSec": 900,
       "seed": {},
       "clean": {"files": [], "noRefusalsFrom": []}
+    },
+    {
+      "id": "plan-covered-write",
+      "road": "#488 a covered write carries the contract checker's verdict",
+      "prompt": "Open a plan with exactly one todo, delegated to a worktree child: 'alpha' writes a file alpha.txt holding the word alpha. Give the todo this contract so every write the child makes to alpha.txt is checked: {\"class\": \"writer\", \"covers\": [\"alpha.txt\"], \"items\": [{\"id\": \"alpha\", \"critical\": true, \"weight\": 1, \"decider\": {\"cmd\": \"grep -qx alpha alpha.txt\"}}]}. The engine starts it and accepts the child's finish; wait until the plan shows the todo done or failed. Report the todo's final state and the exact text of any refusal you met.",
+      "timeoutSec": 900,
+      "seed": {},
+      "clean": {"files": [], "noRefusalsFrom": []}
     }
   ]
 }

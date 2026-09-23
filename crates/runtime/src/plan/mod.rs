@@ -14,6 +14,7 @@ use crate::goal::{DeliverFn, StoreHandle};
 pub mod acceptance;
 pub mod artifact;
 pub mod authority;
+mod brief;
 pub mod capacity;
 pub mod covers;
 pub mod declare;

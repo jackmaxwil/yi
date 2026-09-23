@@ -6,7 +6,7 @@ use yi_types::plan::ledger::PlanOpRecord;
 use yi_types::todo::{BlockedOn, PhaseName, TodoItem, TodoList, TodoPhase};
 
 use super::TodoStore;
-use crate::plan::ops::OpSink;
+use crate::plan::ops::{Actor, Op, OpRequest, OpSink, PlanEngine};
 use crate::plan::store::PlanStore;
 
 pub const ENGINE_ACTOR: &str = "engine";
@@ -79,6 +79,64 @@ fn row(todo: &Todo, plan: &Plan, was: Option<&TodoItem>) -> TodoItem {
     item
 }
 
+pub fn own(list: &TodoList) -> TodoList {
+    let mut own = list.clone();
+    for phase in &mut own.phases {
+        phase
+            .items
+            .retain(|item| !item.extra.contains_key(PLAN_KEY));
+    }
+    own.phases.retain(|phase| !phase.items.is_empty());
+    own.extra.remove(PLAN_KEY);
+    own
+}
+
+pub fn rejoin(mirrored: &TodoList, own: TodoList) -> TodoList {
+    let mut list = mirrored.clone();
+    list.phases.retain(|phase| {
+        phase
+            .items
+            .iter()
+            .any(|item| item.extra.contains_key(PLAN_KEY))
+    });
+    let plan = std::mem::replace(&mut list.phases, own.phases);
+    list.phases.extend(plan);
+    list.next_id = list.next_id.max(own.next_id);
+    list
+}
+
+pub fn carry(engine: std::sync::Weak<PlanEngine>) -> Arc<super::CarryFn> {
+    Arc::new(move |label, done, pending| {
+        let engine = engine.upgrade().ok_or("the plan engine is gone")?;
+        let apply = |op: Op| {
+            let request = OpRequest {
+                plan: None,
+                actor: Actor::Owner,
+                op: op.clone(),
+                request_id: None,
+                expected_revision: None,
+            };
+            engine
+                .apply(request)
+                .map(|outcome| crate::plan::tool::render_outcome(&op, &outcome))
+                .map_err(|error| error.to_string())
+        };
+        let start = Op::Start {
+            label: label.clone(),
+        };
+        if !done {
+            return apply(start);
+        }
+        if pending {
+            apply(start)?;
+        }
+        apply(Op::Done {
+            label: label.clone(),
+            output: None,
+        })
+    })
+}
+
 pub fn projected(plan: &Plan, current: &TodoList) -> TodoList {
     let Ok(name) =
         PhaseName::new(plan.id.as_str()).or_else(|_| PhaseName::new(super::DEFAULT_PHASE))
@@ -107,12 +165,18 @@ pub fn projected(plan: &Plan, current: &TodoList) -> TodoList {
             item
         })
         .collect();
+    let mut phases = own(current).phases;
+    for phase in &mut phases {
+        phase.items.retain(|item| plan.todo(&item.label).is_none());
+    }
+    phases.retain(|phase| !phase.items.is_empty());
+    phases.push(TodoPhase {
+        name,
+        items,
+        extra: serde_json::Map::new(),
+    });
     let mut list = TodoList {
-        phases: vec![TodoPhase {
-            name,
-            items,
-            extra: serde_json::Map::new(),
-        }],
+        phases,
         next_id: current.next_id,
         extra: serde_json::Map::new(),
     };

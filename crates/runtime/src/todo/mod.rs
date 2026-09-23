@@ -158,6 +158,7 @@ struct State {
 }
 
 pub type ResyncFn = dyn Fn(&TodoList) -> Option<TodoList> + Send + Sync;
+pub type CarryFn = dyn Fn(&TodoLabel, bool, bool) -> Result<String, String> + Send + Sync;
 
 pub struct TodoStore {
     state: Mutex<State>,
@@ -165,6 +166,7 @@ pub struct TodoStore {
     actor: String,
     on_change: Mutex<Vec<ChangeHook>>,
     resync: Mutex<Option<Arc<ResyncFn>>>,
+    carry: Mutex<Option<Arc<CarryFn>>>,
 }
 
 pub struct Applied {
@@ -182,6 +184,7 @@ impl TodoStore {
             actor: actor.into(),
             on_change: Mutex::new(Vec::new()),
             resync: Mutex::new(None),
+            carry: Mutex::new(None),
         });
         this.rehydrate();
         this
@@ -197,6 +200,35 @@ impl TodoStore {
         if let Ok(mut slot) = self.resync.lock() {
             *slot = Some(resync);
         }
+    }
+
+    pub fn set_carry(&self, carry: Arc<CarryFn>) {
+        if let Ok(mut slot) = self.carry.lock() {
+            *slot = Some(carry);
+        }
+    }
+
+    pub fn carry(&self, op: &Op) -> Option<Result<String, String>> {
+        let done = match op {
+            Op::Start { .. } => false,
+            Op::Done {
+                target: Target::Label(_),
+                ..
+            } => true,
+            _ => return None,
+        };
+        self.resync();
+        let list = self.list();
+        mirror::plan_of(&list)?;
+        let index = locate(&list, op.label()?.as_str()).ok()?;
+        let item = list.items().nth(index)?;
+        item.extra.get(mirror::PLAN_KEY)?;
+        let carry = self.carry.lock().ok()?.clone()?;
+        Some(carry(
+            &item.label,
+            done,
+            item.state == TodoStateName::Pending,
+        ))
     }
 
     /// Re-reads a mirrored list's plan: another engine, or a crash before the replace, moved it.
@@ -268,18 +300,29 @@ impl TodoStore {
                 changed: false,
             });
         }
-        if let Some(plan) = mirror::plan_of(&state.list) {
-            return Err(TodoError::Mirrored {
-                plan: plan.to_owned(),
-            });
-        }
         let before = state.list.clone();
-        let mut list = before.clone();
+        let mirrored = mirror::plan_of(&before).map(str::to_owned);
+        let mut list = match &mirrored {
+            Some(plan) => {
+                let own = mirror::own(&before);
+                if op
+                    .label()
+                    .is_none_or(|label| locate(&own, label.as_str()).is_err())
+                {
+                    return Err(TodoError::Mirrored { plan: plan.clone() });
+                }
+                own
+            }
+            None => before.clone(),
+        };
         let label = op.label().cloned();
         let name = op.name();
         step(&mut list, op)?;
         mint(&mut list);
         normalize(&mut list);
+        if mirrored.is_some() {
+            list = mirror::rejoin(&before, list);
+        }
         state.list = list.clone();
         state.touched = state.touched.saturating_add(1);
         let touched = state.touched;

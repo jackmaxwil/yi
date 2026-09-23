@@ -332,6 +332,8 @@ pub enum TodoToolError {
     Arg(#[from] ArgError),
     #[error(transparent)]
     Todo(#[from] TodoError),
+    #[error("{0}")]
+    Plan(String),
 }
 
 pub struct TodoTool {
@@ -350,6 +352,13 @@ impl TodoTool {
         } else {
             format!("(op inferred: {})\n", op.name())
         };
+        if let Some(carried) = self.store.carry(&op) {
+            let text = carried.map_err(TodoToolError::Plan)?;
+            return Ok(format!(
+                "{inferred}(the plan tool's {} on the plan's list)\n{text}",
+                op.name()
+            ));
+        }
         let expected = args.get("touched").and_then(Value::as_u64);
         let whole = matches!(op, Op::Set { .. } | Op::Init { .. });
         let applied = self.store.apply(op, expected)?;
