@@ -9,8 +9,10 @@ use yi_types::plan::doc::{Plan, PlanId, PlanState, Todo, TodoLabel, TodoState};
 use yi_types::plan::ledger::JournalRecord;
 
 use super::artifact::Artifacts;
-use super::ops::{Actor, Delta, Op, OpRequest, Outcome, PlanEngine, PlanOpError, admitted};
-use super::state::{IntentOutcome, KIND_LEFT, RootState, reduce, root_of};
+use super::ops::{
+    Actor, Delta, ENGINE_AGENT, Op, OpRequest, Outcome, PlanEngine, PlanOpError, admitted,
+};
+use super::state::{IntentOutcome, KIND_LEFT, RootState, SUBMITTED_KEY, reduce, root_of};
 use super::table::ready_labels;
 
 /// Invariant: only a contract refusal (per criteria stored) or a fuse refusal is kept.
@@ -121,10 +123,70 @@ impl PlanEngine {
         }
     }
 
+    pub(super) fn stranded(&self, outcome: &IntentOutcome) -> bool {
+        match outcome {
+            IntentOutcome::Pending => true,
+            IntentOutcome::Spawned { agent } => self.liveness.alive(agent) != Some(true),
+        }
+    }
+
+    /// Invariant: submit and done are two commits, so a submit whose child is gone is done here.
+    fn done_submitted(&self, root: &PlanId) -> Vec<Result<Outcome, Option<String>>> {
+        let Some(reading) = self.store.journal(root).read().ok() else {
+            return Vec::new();
+        };
+        let Ok(state) = reduce(&reading.records) else {
+            return Vec::new();
+        };
+        let mut out = Vec::new();
+        for (id, plan) in &state.plans {
+            for todo in plan
+                .todos
+                .iter()
+                .filter(|_| plan.state == PlanState::Active)
+            {
+                let TodoState::Running { by } = &todo.state else {
+                    continue;
+                };
+                let submitted = reading.records.iter().any(|record| {
+                    record.record.op == "submit"
+                        && record.record.actor == ENGINE_AGENT
+                        && record.record.plan == *id
+                        && record.record.todo.as_ref() == Some(&todo.label)
+                        && record.attempt == Some(todo.attempt)
+                });
+                let key = format!("{id}/{}/{}/submitted", todo.label, todo.attempt.get());
+                if !submitted || self.liveness.alive(by) != Some(false) || self.refused.holds(&key)
+                {
+                    continue;
+                }
+                self.refused.insert(key);
+                let output = todo.extra.get(SUBMITTED_KEY).and_then(Value::as_str);
+                let request = OpRequest {
+                    plan: Some(id.clone()),
+                    actor: Actor::Engine,
+                    op: Op::Done {
+                        label: todo.label.clone(),
+                        output: output.and_then(|url| url.parse().ok()),
+                    },
+                    request_id: None,
+                    expected_revision: None,
+                };
+                out.push(self.apply_once(request).map_err(|error| {
+                    let label = todo.label.as_str();
+                    (!raced(&error)).then(|| {
+                        format!("the engine could not complete {label:?} after its submit: {error}")
+                    })
+                }));
+            }
+        }
+        out
+    }
+
     fn start_ready(&self, root: &PlanId) -> Vec<Result<Outcome, Option<String>>> {
-        self.startable(root)
-            .into_iter()
-            .map(|todo| {
+        let done = self.done_submitted(root);
+        done.into_iter()
+            .chain(self.startable(root).into_iter().map(|todo| {
                 let request = OpRequest {
                     plan: Some(todo.plan),
                     actor: Actor::Engine,
@@ -148,7 +210,7 @@ impl PlanEngine {
                         todo.label.as_str()
                     ))
                 })
-            })
+            }))
             .collect()
     }
 
@@ -172,9 +234,9 @@ impl PlanEngine {
                 let Some(todo) = plan.todo(&label).filter(|todo| todo.delegation.is_some()) else {
                     continue;
                 };
-                // Invariant: a pending intent is repair's; a start would record the same refusal.
+                // Invariant: a stranded intent is repair's; a start would record the same refusal.
                 let intent = state.intent_for(id, &label);
-                if intent.is_some_and(|(_, intent)| intent.outcome == IntentOutcome::Pending) {
+                if intent.is_some_and(|(_, intent)| self.stranded(&intent.outcome)) {
                     continue;
                 }
                 let contract = contract_key(&self.store.artifacts(id), id, todo);

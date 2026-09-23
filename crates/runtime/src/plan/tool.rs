@@ -754,7 +754,7 @@ impl Tool for PlanTool {
 
 /// Invariant: the request-prefix gate prices this tool through these two
 /// items rather than a live [`PlanTool`], so what is measured is what ships.
-pub const DESCRIPTION: &str = "The plan ledger. op=set with a markdown checklist (`- [ ] todo`, `- [>] running`, `- [x] done`, two spaces nest) is the whole list in one call: send it again to change anything. Declare todos with contracts and delegations; the engine starts, verifies and accepts delegated ones. done closes your own todos. A todo is a unit of decision, not of iteration. Batch ops with real work; never call it alone. This is the delegation ledger, for work handed to children with checks and edges; the todo list shows it.";
+pub const DESCRIPTION: &str = "The plan ledger. op=set with a markdown checklist (`- [ ] todo`, `- [>] running`, `- [x] done`, two spaces nest) is the whole list in one call: send it again to change anything. Declare todos with contracts and delegations; the engine starts, verifies and accepts delegated ones. done closes your own todos. A todo is a unit of decision, not of iteration. Batch ops with real work; never call it alone. It is the delegation ledger; the todo list shows it.";
 
 const CHILD_DESCRIPTION: &str = "The plan that dispatched you, read-only: op=view. When your work is done, end your turn with your answer; the engine takes it as your work and accepts or refuses it.";
 
@@ -775,7 +775,7 @@ pub fn schema() -> Value {
                 "todos": {
                     "type": "array",
                     "items": {"type": "object"},
-                    "description": "init/append/decompose/supersede: [{label, after?: [label], delegation?: {spec: {role?, model?, effort?, isolation?}, accept: {command|stated}, context?: [url], output?: {schema: url}}, contract?: {class: writer|reader|inline, covers?: [glob], items: [{id, critical: bool, weight: 1..100, decider: {cmd: \"shell command\"} | {schema: {schema: artifact}} | {example: {cases: artifact, runner: artifact, timeout_ms}}}], threshold?: 1..1000, min_coverage?: 1..1000}}]. A delegation hands the todo to a child and its accept is mandatory; done runs the contract (an artifact is {digest, media_type, length}) and a todo without one completes unverified",
+                    "description": "init/append/decompose/supersede: [{label, after?: [label], delegation?: {spec: {role?, model?, effort?, isolation?}, accept: {command|stated}, context?: [url], output?: {schema: url}}, contract?: {class: writer|reader|inline, covers?: [glob], items: [{id, critical: bool, weight: 1..100, decider: {cmd: \"shell command\"} | {schema: {schema: artifact}} | {example: {cases: artifact, runner: artifact, timeout_ms}}}], threshold?: 1..1000, min_coverage?: 1..1000}}]. A delegation hands the todo to a child and its accept is mandatory; isolation worktree requires a contract; done runs the contract (an artifact is {digest, media_type, length})",
                     "minItems": 1
                 },
                 "label": {"type": "string", "description": "drop/block/unblock/start/done/fail/retry/decompose: the todo"},

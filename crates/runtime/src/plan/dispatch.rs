@@ -9,7 +9,7 @@ use yi_types::url::Url;
 
 use super::ops::{Delegate, Delta, PlanEngine, PlanOpError, Txn, agent_url};
 use super::recovery::Liveness;
-use super::state::{self, KIND_SPAWN_INTENT, KIND_SPAWN_RESULT};
+use super::state::{KIND_SPAWN_INTENT, KIND_SPAWN_RESULT};
 use super::store::draft;
 use crate::fetch::FetchLog;
 use crate::goal::DeliverFn;
@@ -211,16 +211,14 @@ impl PlanEngine {
         };
         let url = agent_url(&addr)?;
         if let Some((effect, intent)) = txn.state.intent_for(id, label) {
-            return match &intent.outcome {
-                state::IntentOutcome::Spawned { .. } => {
-                    delta.spawned.push(url);
-                    Ok(())
-                }
-                state::IntentOutcome::Pending => Err(PlanOpError::NeedsReconciliation {
+            if self.stranded(&intent.outcome) {
+                return Err(PlanOpError::NeedsReconciliation {
                     label: label.clone(),
                     effect: effect.clone(),
-                }),
-            };
+                });
+            }
+            delta.spawned.push(url);
+            return Ok(());
         }
         let spent = txn.state.plan(root)?.spawns();
         if spent >= SPAWN_CAP {

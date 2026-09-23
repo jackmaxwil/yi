@@ -588,3 +588,162 @@ fn a_duplicate_spawn_intent_is_refused_by_the_reducer() -> TestResult {
     }
     Ok(())
 }
+
+struct Alive;
+
+impl Liveness for Alive {
+    fn alive(&self, _agent: &AgentId) -> Option<bool> {
+        Some(true)
+    }
+}
+
+/// Dies with `startable` skipping only a pending intent: the engine's next pass took the dead
+/// child a crash left between `spawn_result` and `start`, and marked the todo running by it.
+#[test]
+fn a_spawn_whose_start_never_committed_is_left_to_repair() -> TestResult {
+    let mut gated = delegated("build it")?;
+    gated.after = vec![TodoLabel::new("write it up")?];
+    let rig = rig_with("spawned-unstarted", vec![gated, plain("write it up")?])?;
+    let journal = rig.store.journal(&rig.id);
+    let last = journal.read()?.records.pop().ok_or("no init record")?;
+    let mut staged = Vec::new();
+    for (op, args) in [
+        (
+            "spawn_intent",
+            serde_json::json!({"label": "build it", "attempt": 1, "effect_id": "e-crashed"}),
+        ),
+        (
+            "spawn_result",
+            serde_json::json!({"effect_id": "e-crashed", "agent": "child-dead"}),
+        ),
+    ] {
+        let mut record = last.clone();
+        record.record.op = op.to_owned();
+        record.record.todo = Some(TodoLabel::new("build it")?);
+        (record.record.from, record.record.to) = (None, None);
+        record.args = args;
+        record.request_id = RequestId::new(format!("r-1/{op}"))?;
+        record.attempt = Some(AttemptId::FIRST);
+        let sealed = journal.seal(record, Some(staged.last().unwrap_or(&last)))?;
+        journal.append(&sealed)?;
+        staged.push(sealed.record);
+    }
+    let found = recovery::run(&rig.store, &rig.id, &Dead)?.findings;
+    assert!(
+        found
+            .iter()
+            .any(|finding| finding.evidence.contains("the start never committed")),
+        "{found:?}"
+    );
+    rig.engine.apply(owner(Op::Start {
+        label: TodoLabel::new("write it up")?,
+    }))?;
+    rig.engine.apply(owner(Op::Done {
+        label: TodoLabel::new("write it up")?,
+        output: None,
+    }))?;
+    let todo = rig.store.read(&rig.id)?;
+    let todo = todo
+        .todo(&TodoLabel::new("build it")?)
+        .ok_or("todo missing")?;
+    assert_eq!(todo.state, TodoState::Pending, "no start by a dead child");
+    let refused = rig.engine.apply(owner(Op::Start {
+        label: TodoLabel::new("build it")?,
+    }));
+    assert!(
+        matches!(refused, Err(PlanOpError::NeedsReconciliation { .. })),
+        "{refused:?}"
+    );
+    let resolved = rig.engine.apply(user(Op::Repair {
+        resolutions: vec![Resolution {
+            label: TodoLabel::new("build it")?,
+            action: Resolve::Retry,
+        }],
+    })?)?;
+    assert_eq!(
+        resolved.spawned.len(),
+        1,
+        "repair frees it and one real spawn runs"
+    );
+    assert_eq!(rig.delegate.spawns.load(Ordering::SeqCst), 1);
+    Ok(())
+}
+
+/// Dies with the engine's submit and done left as two commits nothing completes: a crash between
+/// them stranded the todo running, and recovery said the child left no durable result.
+#[test]
+fn a_submit_the_engine_committed_is_done_by_the_next_pass() -> TestResult {
+    let mut spec = delegated("build it")?;
+    if let Some(delegation) = spec.delegation.as_mut() {
+        delegation.accept = Check::Command("true".to_owned());
+    }
+    let rig = rig_with("submitted-undone", vec![spec])?;
+    let label = TodoLabel::new("build it")?;
+    let output: Url = format!("plan://{}/artifacts/{}", rig.id, "a".repeat(64)).parse()?;
+    // The crash: the finish's own engine, whose child is still held, commits the submit and dies.
+    let live = PlanEngine::new(
+        rig.store.clone(),
+        Arc::clone(&rig.delegate) as Arc<dyn Delegate>,
+    )
+    .with_liveness(Arc::new(Alive));
+    live.apply(OpRequest {
+        plan: Some(rig.id.clone()),
+        actor: Actor::Engine,
+        op: Op::Submit {
+            label: label.clone(),
+            attempt: AttemptId::FIRST,
+            output: output.clone(),
+        },
+        request_id: None,
+        expected_revision: None,
+    })?;
+    let running = rig.store.read(&rig.id)?;
+    assert!(matches!(
+        running.todo(&label).map(|todo| &todo.state),
+        Some(TodoState::Running { .. })
+    ));
+    let found = recovery::run(&rig.store, &rig.id, &Dead)?.findings;
+    assert!(
+        found.iter().any(|finding| finding
+            .evidence
+            .contains(&format!("submitted product {output}"))),
+        "{found:?}"
+    );
+    rig.engine.dispatch_ready_in(std::slice::from_ref(&rig.id));
+    let after = rig.store.read(&rig.id)?;
+    assert!(
+        matches!(
+            after.todo(&label).map(|todo| &todo.state),
+            Some(TodoState::Done { output: Some(done), .. }) if *done == output
+        ),
+        "{:?}",
+        after.todo(&label)
+    );
+    Ok(())
+}
+
+/// Dies with `Unhosted::hosts` true: the CLI's engine tried every ready delegated todo after an
+/// op and journaled a failed spawn, with no session there to host the child.
+#[test]
+fn an_unhosted_engine_starts_nothing() -> TestResult {
+    let dir = Scratch::new("yi-plan-recovery-unhosted")?;
+    let store = PlanStore::open(dir.to_path_buf())?;
+    let engine = PlanEngine::new(
+        store.clone(),
+        Arc::new(yi_runtime::plan::authority::Unhosted),
+    );
+    let out = engine.apply(owner(Op::Init {
+        goal: GoalText::new("ship the seam end to end")?,
+        todos: vec![delegated("build it")?],
+    }))?;
+    engine.dispatch_ready_in(std::slice::from_ref(&out.plan.id));
+    let ops: Vec<String> = store
+        .journal(&out.plan.id)
+        .read()?
+        .records
+        .into_iter()
+        .map(|record| record.record.op)
+        .collect();
+    assert_eq!(ops, ["init"], "{:?}", out.notices);
+    Ok(())
+}

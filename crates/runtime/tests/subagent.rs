@@ -253,10 +253,11 @@ async fn a_cursor_carrying_wait_leaves_the_bare_cursor_alone() -> TestResult {
     Ok(())
 }
 
-/// Dies with a reap waking the bare waiter: the engine's reap of a child the model already saw
-/// finish moved the epoch and named no one, so `rlm.wait(300)` answered in 20 ms, four times.
+/// Dies with the reap recorded at the finish's epoch: the waiter had read `a` finish, so the reap
+/// was no news, and with `b` live the next bare wait slept to its timeout. The reap wakes it once,
+/// named: a wake naming no one answered `rlm.wait(300)` in 20 ms, four times.
 #[tokio::test]
-async fn a_bare_wait_sleeps_through_a_reap_while_a_child_runs() -> TestResult {
+async fn a_bare_wait_wakes_once_on_the_reap_of_a_child_it_saw_finish() -> TestResult {
     use yi_kernel::client::HostHandlers;
     let root = scratch::Scratch::new("yi-wait-reap")?;
     let store = support::memory_store("yi-wait-reap");
@@ -283,13 +284,15 @@ async fn a_bare_wait_sleeps_through_a_reap_while_a_child_runs() -> TestResult {
     family.host.delete("a")?;
     let started = Instant::now();
     let again = wait().ok_or("rlm.wait")?.await?;
-    let named = again["changed"]
-        .as_array()
-        .is_some_and(|names| !names.is_empty());
     assert!(
-        named || started.elapsed() >= Duration::from_millis(900),
-        "a reap alone woke the bare waiter while b runs: {again:?}"
+        started.elapsed() < Duration::from_millis(900),
+        "the reap is news: {again:?}"
     );
+    let names = again["changed"].as_array().ok_or("changed")?;
+    assert!(names.contains(&json!("a")), "{again:?}");
+    let later = wait().ok_or("rlm.wait")?.await?;
+    let names = later["changed"].as_array().ok_or("changed")?;
+    assert!(!names.contains(&json!("a")), "a reap wakes once: {later:?}");
     Ok(())
 }
 

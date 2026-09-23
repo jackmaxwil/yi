@@ -262,25 +262,23 @@ impl PlanEngine {
         true
     }
 
-    fn left_notice(&self, held: &Held, refusal: &PlanOpError) -> Option<String> {
+    fn left_notice(&self, held: &Held, refusal: &PlanOpError) -> String {
         let detail = match refusal {
             PlanOpError::Refused { verdict, .. } => format!("its verdict was {}", verdict.outcome),
             other => other.to_string(),
         };
-        if !self.leave(held, refusal, &detail) {
-            return None;
-        }
         let label = held.label.as_str();
+        if !self.leave(held, refusal, &detail) {
+            return format!("plan: {label:?} ended, and another op moved it first: {refusal}");
+        }
         let plan = self.store.read(&held.plan).ok();
-        Some(
-            match plan.as_ref().and_then(|plan| plan.todo(&held.label)) {
-                Some(Todo {
-                    state: TodoState::Blocked { note, .. },
-                    ..
-                }) => format!("plan: {label:?} waits on you: {note}"),
-                _ => format!("plan: not accepted {label:?}, still running: {refusal}"),
-            },
-        )
+        match plan.as_ref().and_then(|plan| plan.todo(&held.label)) {
+            Some(Todo {
+                state: TodoState::Blocked { note, .. },
+                ..
+            }) => format!("plan: {label:?} waits on you: {note}"),
+            _ => format!("plan: not accepted {label:?}, still running: {refusal}"),
+        }
     }
 
     pub fn finish_child(
@@ -323,10 +321,10 @@ impl PlanEngine {
             return Some(self.fail_and_retry(&held, said, cause, true));
         }
         let PlanOpError::Refused { verdict, .. } = &refusal else {
-            return self.left_notice(&held, &refusal);
+            return Some(self.left_notice(&held, &refusal));
         };
         if verdict.outcome != ContractOutcome::Fail {
-            return self.left_notice(&held, &refusal);
+            return Some(self.left_notice(&held, &refusal));
         }
         let items = failed_items(verdict);
         let unparsed = verdict.items.iter().any(|line| {
@@ -367,6 +365,14 @@ impl SubagentHost {
         self.route_discoveries(name, &result.discoveries)
             .err()
             .map(|error| format!("its discoveries were held back: {error}"))
+    }
+
+    fn settled(&self, name: &str) {
+        if let Ok(mut children) = self.children.lock()
+            && let Ok(key) = Self::key_of(&children, name)
+        {
+            children.touch(&key);
+        }
     }
 
     pub fn busy(&self) -> bool {
@@ -431,10 +437,10 @@ pub fn install(host: &Arc<SubagentHost>, engine: &Arc<PlanEngine>, deliver: Deli
                 drop(engine.lease_waiting().ok()?);
                 engine.locate(&agent)
             });
+            let verb = crate::family::read_exit(Some(exit)).verb;
+            let unheld = format!("plan: {agent:?} {verb}, and no todo runs by it");
             let Some(held) = held else {
-                let verb = crate::family::read_exit(Some(exit)).verb;
-                let line = format!("plan: {agent:?} {verb}, and no todo runs by it");
-                super::dispatch::say(&deliver, line);
+                super::dispatch::say(&deliver, unheld);
                 return;
             };
             let held = (exit == ChildExit::Completed)
@@ -450,9 +456,9 @@ pub fn install(host: &Arc<SubagentHost>, engine: &Arc<PlanEngine>, deliver: Deli
                 None => (exit, error),
             };
             let product = host.answer_of(&agent);
-            if let Some(line) = engine.finish_child(&agent, exit, error, product) {
-                super::dispatch::say(&deliver, line);
-            }
+            let line = engine.finish_child(&agent, exit, error, product);
+            super::dispatch::say(&deliver, line.unwrap_or(unheld));
+            host.settled(&agent);
             drop(settling);
         }));
         true
@@ -731,6 +737,52 @@ mod tests {
                     && text.contains("the ledger drifts")),
             "{reports:?}"
         );
+        Ok(())
+    }
+
+    /// Dies with the settle moving nothing: a finish the engine leaves running bumped no epoch,
+    /// so a wait from the child's end slept out its budget while the plan had already moved.
+    #[tokio::test]
+    async fn a_finish_the_engine_left_running_moves_the_family() -> TestResult {
+        let rig = hooked(vec![reply("the seam is cut")])?;
+        let mut spec = delegated("cut the seam")?;
+        if let Some(delegation) = spec.delegation.as_mut() {
+            delegation.accept = Check::Stated("it holds".to_owned());
+        }
+        rig.engine.apply(owner(Op::Init {
+            goal: GoalText::new("ship the widget")?,
+            todos: vec![spec],
+        }))?;
+        let lease = rig.engine.lease_waiting()?;
+        let completed = crate::subagent::ChildStatus::Completed;
+        let epoch = || rig.host.children.lock().map(|children| children.epoch);
+        let mut ended = None;
+        for _ in 0..400 {
+            if rig
+                .host
+                .children_view()
+                .iter()
+                .any(|child| child.update.status == completed)
+            {
+                ended = Some(epoch().map_err(|_| "poisoned")?);
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        drop(lease);
+        let ended = ended.ok_or("the child never ended")?;
+        for _ in 0..400 {
+            if !texts(&rig.said).is_empty() && !rig.host.busy() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        let said = texts(&rig.said);
+        assert!(
+            said.iter().any(|line| line.contains("not accepted")),
+            "{said:?}"
+        );
+        assert!(epoch().map_err(|_| "poisoned")? > ended, "{said:?}");
         Ok(())
     }
 }

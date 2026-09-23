@@ -3578,6 +3578,7 @@ mod contracts {
 
     // Dies with `check_contracted` (table.rs): `retry` swaps a delegation onto a todo the
     // parse never saw beside its contract, so a worktree without one lands and never completes.
+    // Dies with `TodoSpec`'s `try_from` too: every declaring op reads the shape through it.
     #[test]
     fn a_retry_swapping_in_an_uncontracted_worktree_delegation_is_refused() -> TestResult {
         let rig = rig("yi-f0c-worktree-retry", None)?;
@@ -3586,6 +3587,12 @@ mod contracts {
         if let Some(delegation) = &mut apart.delegation {
             delegation.spec.isolation = Some(Isolation::Worktree);
         }
+        let declared = serde_json::from_value::<TodoSpec>(serde_json::to_value(&apart)?);
+        let refused = declared.as_ref().map_err(ToString::to_string);
+        assert!(
+            refused.is_err_and(|error| error.contains(yi_types::plan::op::UNCONTRACTED_WORKTREE)),
+            "{declared:?}"
+        );
         let mut contracted = spec("build it later")?;
         contracted.contract = Some(cmd_contract(&rig.store, &plan, "true", "writer")?);
         init(&rig.engine, vec![spec("hold the plan open")?, contracted])?;

@@ -1,4 +1,4 @@
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use yi_runtime::Status;
 use yi_types::event::AgentEvent;
@@ -60,7 +60,7 @@ pub(super) fn run(args: &Args) -> i32 {
     let lane = session.lane();
     let ends = args
         .deadline
-        .and_then(|secs| std::time::Instant::now().checked_add(Duration::from_secs(secs)));
+        .and_then(|secs| Instant::now().checked_add(Duration::from_secs(secs)));
     let code = runtime.block_on(async move {
         if session
             .prompt_message(yi_runtime::session::user_input(&prompt))
@@ -75,35 +75,55 @@ pub(super) fn run(args: &Args) -> i32 {
     code
 }
 
-fn holds(working: bool, ends: Option<std::time::Instant>) -> bool {
-    working && ends.is_none_or(|at| std::time::Instant::now() < at)
+fn holds(working: bool, ends: Option<Instant>) -> bool {
+    working && ends.is_none_or(|at| Instant::now() < at)
 }
 
-/// Incident: a plan child's finish wakes the owner, so it waits, but only on what wakes it (#489).
+fn patience(holding: bool, ends: Option<Instant>) -> Option<Duration> {
+    let left = ends.map(|at| at.saturating_duration_since(Instant::now()));
+    match (holding, left) {
+        (true, left) => Some(left.map_or(HOLD_POLL, |left| left.min(HOLD_POLL))),
+        (false, left) => left,
+    }
+}
+
 async fn stream(
     session: &yi_runtime::AgentSession,
     host: &yi_runtime::SubagentHost,
     json: bool,
     schema: Option<&yi_runtime::schema::Schema>,
-    ends: Option<std::time::Instant>,
+    ends: Option<Instant>,
 ) -> i32 {
-    let mut events = session.subscribe();
+    let held = || host.holds_owner();
+    let working = || host.holds_owner() || session.status() != Status::Idle;
+    follow(session.subscribe(), [&held, &working], json, schema, ends).await
+}
+
+/// Incident: a plan child's finish wakes the owner, so it waits, but only on what wakes it (#489).
+async fn follow(
+    mut events: tokio::sync::broadcast::Receiver<AgentEvent>,
+    [held, working]: [&dyn Fn() -> bool; 2],
+    json: bool,
+    schema: Option<&yi_runtime::schema::Schema>,
+    ends: Option<Instant>,
+) -> i32 {
     let (mut answer, mut exit) = (String::new(), 0);
     let (mut holding, mut ended) = (false, false);
     loop {
-        let next = if holding {
-            match tokio::time::timeout(HOLD_POLL, events.recv()).await {
+        let next = match patience(holding, ends) {
+            None => events.recv().await,
+            Some(wait) if wait.is_zero() => {
+                ended = true;
+                break;
+            }
+            Some(wait) => match tokio::time::timeout(wait, events.recv()).await {
                 Ok(next) => next,
-                Err(_) if holds(host.holds_owner() || session.status() != Status::Idle, ends) => {
-                    continue;
-                }
+                Err(_) if holds(holding && working(), ends) => continue,
                 Err(_) => {
                     ended = true;
                     break;
                 }
-            }
-        } else {
-            events.recv().await
+            },
         };
         let event = match next {
             Ok(event) => event,
@@ -145,7 +165,7 @@ async fn stream(
                 holding = false;
                 answer.clear();
             }
-            AgentEvent::AgentEnd { .. } if host.holds_owner() => holding = true,
+            AgentEvent::AgentEnd { .. } if held() => holding = true,
             AgentEvent::AgentEnd { .. } => {
                 ended = true;
                 break;
@@ -163,11 +183,36 @@ async fn stream(
 
 #[cfg(test)]
 mod tests {
+    use std::time::{Duration, Instant};
+
+    use yi_types::event::AgentEvent;
+
     /// Dies with the deadline unread: a finish that never settles holds `yi ask` open forever.
     #[test]
     fn a_hold_ends_at_the_deadline() {
         assert!(super::holds(true, None));
-        assert!(!super::holds(true, Some(std::time::Instant::now())));
+        assert!(!super::holds(true, Some(Instant::now())));
         assert!(!super::holds(false, None));
+    }
+
+    /// Dies with the deadline read only while holding: a Steer's owner turn ran unbounded.
+    #[test]
+    fn a_steered_turn_past_the_deadline_ends_the_run() -> Result<(), Box<dyn std::error::Error>> {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?;
+        let (events, receiver) = tokio::sync::broadcast::channel(8);
+        events.send(AgentEvent::AgentEnd {
+            messages: Vec::new(),
+        })?;
+        events.send(AgentEvent::AgentStart)?;
+        let always = || true;
+        let ends = Instant::now().checked_add(Duration::from_millis(50));
+        let run = super::follow(receiver, [&always, &always], true, None, ends);
+        let ran =
+            runtime.block_on(async { tokio::time::timeout(Duration::from_secs(5), run).await });
+        assert_eq!(ran.ok(), Some(0), "the steered turn outlived the deadline");
+        drop(events);
+        Ok(())
     }
 }

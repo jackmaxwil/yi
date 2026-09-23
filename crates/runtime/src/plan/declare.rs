@@ -200,8 +200,7 @@ impl PlanEngine {
             return None;
         }
         let intent = family.intent_for(&id, label);
-        if intent.is_some_and(|(_, intent)| intent.outcome == super::state::IntentOutcome::Pending)
-        {
+        if intent.is_some_and(|(_, intent)| self.stranded(&intent.outcome)) {
             return None;
         }
         let note = format!(

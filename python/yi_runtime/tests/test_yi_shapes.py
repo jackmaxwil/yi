@@ -114,6 +114,16 @@ class Shapes(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(run.outcome, "verified_success", await run.status())
         self.assertEqual(host.starts.count("a"), 2, "the red verdict is retried once the engine lands it")
 
+    async def test_a_finish_the_engine_settles_later_is_read_on_a_short_poll(self) -> None:
+        """Dies with the short poll armed only for a reaped child: the wait already reported `a`
+        finished, nothing moves while the engine settles it, and the run sleeps out its budget."""
+        host = FakeHost()
+        host.settles_after = 0.3
+        plan = await Plan.create("ship it")
+        await writers(plan, host, "a", "b")
+        run = await asyncio.wait_for(plan.run(shape=fork_join, budget=30), timeout=5)
+        self.assertEqual(run.outcome, "verified_success", await run.status())
+
     async def test_the_scheduler_and_the_model_wait_without_stealing_updates(self) -> None:
         """Dies with the control: wait without the run's own cursor and its waits are all bare;
         wait from 0 again after the first and every wait answers at once, a busy poll."""
