@@ -1,17 +1,17 @@
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
-use serde_json::Value;
+use serde_json::{Value, json};
 use yi_types::plan::contract::{Decider, ItemVerdict, Outcome as ContractOutcome, Verdict};
 use yi_types::plan::doc::{PlanId, PlanState, Todo, TodoAddr, TodoLabel, TodoState};
-use yi_types::plan::ledger::AttemptId;
+use yi_types::plan::ledger::{AttemptId, RequestId};
 use yi_types::plan::op::Choice;
 use yi_types::subagent::{ChildExit, ChildResult, FailClass};
 use yi_types::url::Url;
 
 use super::acceptance::{Phase, is_worktree, phase_of};
 use super::ops::{Actor, Op, OpRequest, PlanEngine, PlanOpError, agent_url};
-use super::state::{SUBMITTED_KEY, reduce, root_of};
+use super::state::{KIND_LEFT, SUBMITTED_KEY, reduce, root_of};
 use crate::goal::DeliverFn;
 use crate::subagent::{FinishFn, SubagentHost, last_assistant_text};
 
@@ -179,11 +179,41 @@ impl PlanEngine {
         )
     }
 
-    fn left_notice(&self, held: &Held, refusal: &PlanOpError) -> Option<String> {
+    fn leave(&self, held: &Held, refusal: &PlanOpError, detail: &str) -> bool {
         if matches!(
             refusal,
             PlanOpError::IllegalStep { .. } | PlanOpError::NotRunningBy { .. }
         ) {
+            return false;
+        }
+        let journaled = || -> Option<()> {
+            let request = RequestId::new(format!("left-{}", self.store.request_nonce())).ok()?;
+            let _lease = self.lease_waiting().ok()?;
+            let mut txn = self
+                .begin(
+                    &root_of(&held.plan).ok()?,
+                    &Actor::Engine,
+                    request,
+                    None,
+                    false,
+                )
+                .ok()?;
+            let args = json!({"label": held.label, "detail": detail});
+            let who = (&held.label, held.attempt);
+            self.record(&mut txn, &held.plan, who, KIND_LEFT, args, None)
+                .ok()?;
+            self.store.checkpoint_family(&txn.state).ok().map(drop)
+        };
+        let _the_notice_still_names_it = journaled();
+        true
+    }
+
+    fn left_notice(&self, held: &Held, refusal: &PlanOpError) -> Option<String> {
+        let detail = match refusal {
+            PlanOpError::Refused { verdict, .. } => format!("its verdict was {}", verdict.outcome),
+            other => other.to_string(),
+        };
+        if !self.leave(held, refusal, &detail) {
             return None;
         }
         let label = held.label.as_str();
@@ -214,6 +244,7 @@ impl PlanEngine {
             return Some(match self.fail_finish(&held, cause.clone()) {
                 Ok(()) => format!("plan: failed {label:?}: {cause}"),
                 Err(refused) => {
+                    self.leave(&held, &refused, &format!("its fail was refused: {refused}"));
                     format!("plan: {label:?} ended ({cause}); its fail was refused: {refused}")
                 }
             });
@@ -240,6 +271,7 @@ impl PlanEngine {
             match self.fail_finish(&held, format!("contract refused: {items}")) {
                 Ok(()) => format!("plan: refused {label:?}: {items}"),
                 Err(error) => {
+                    self.leave(&held, &error, &format!("its fail was refused: {error}"));
                     format!("plan: refused {label:?}: {items}; its fail was refused: {error}")
                 }
             },

@@ -9,10 +9,8 @@ use yi_types::plan::doc::{Plan, PlanId, PlanState, Todo, TodoLabel, TodoState};
 use yi_types::plan::ledger::JournalRecord;
 
 use super::artifact::Artifacts;
-use super::ops::{
-    Actor, Delta, ENGINE_AGENT, Op, OpRequest, Outcome, PlanEngine, PlanOpError, admitted,
-};
-use super::state::{IntentOutcome, KIND_DONE_REFUSED, RootState, reduce, root_of};
+use super::ops::{Actor, Delta, Op, OpRequest, Outcome, PlanEngine, PlanOpError, admitted};
+use super::state::{IntentOutcome, KIND_LEFT, RootState, reduce, root_of};
 use super::table::ready_labels;
 
 /// Invariant: only a contract refusal (per criteria stored) or a fuse refusal is kept.
@@ -195,16 +193,16 @@ impl PlanEngine {
         out
     }
 
-    pub(super) fn standing(&self, plan: &Plan) -> (Vec<TodoLabel>, Vec<String>) {
+    pub(super) fn standing(&self, plan: &Plan) -> (Vec<TodoLabel>, Standing) {
         let Some((records, state)) = root_of(&plan.id).ok().and_then(|root| {
             let records = self.store.journal(&root).read().ok()?.records;
             let state = reduce(&records).ok()?;
             Some((records, state))
         }) else {
-            return (Vec::new(), Vec::new());
+            return (Vec::new(), Standing::default());
         };
         let now = admitted(plan, self.slots(&state));
-        let (mut held, mut notices) = (Vec::new(), Vec::new());
+        let (mut held, mut standing) = (Vec::new(), Standing::default());
         for label in ready_labels(plan) {
             if !now.contains(&label) {
                 held.push(label);
@@ -224,43 +222,50 @@ impl PlanEngine {
                     .and_then(Value::as_str)
             });
             if let Some(detail) = refusal {
-                notices.push(format!(
-                    "the engine could not start {:?}: {detail}",
-                    label.as_str()
-                ));
+                standing.unstarted.push((label, detail.to_owned()));
             }
         }
-        notices.extend(
-            plan.todos
-                .iter()
-                .filter_map(|todo| left_to_owner(plan, todo, &records)),
-        );
-        (held, notices)
+        standing.left = plan
+            .todos
+            .iter()
+            .filter_map(|todo| left_to_owner(plan, todo, &records))
+            .collect();
+        (held, standing)
     }
 }
 
-fn left_to_owner(plan: &Plan, todo: &Todo, records: &[JournalRecord]) -> Option<String> {
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Standing {
+    pub unstarted: Vec<(TodoLabel, String)>,
+    pub left: Vec<(TodoLabel, String)>,
+}
+
+impl Standing {
+    pub fn notices(&self) -> Vec<String> {
+        let unstarted = self.unstarted.iter().map(|(label, detail)| {
+            format!("the engine could not start {:?}: {detail}", label.as_str())
+        });
+        let left = self.left.iter().map(|(label, detail)| {
+            format!("the engine left {:?} running: {detail}", label.as_str())
+        });
+        unstarted.chain(left).collect()
+    }
+}
+
+fn left_to_owner(
+    plan: &Plan,
+    todo: &Todo,
+    records: &[JournalRecord],
+) -> Option<(TodoLabel, String)> {
     if todo.delegation.is_none() || !matches!(todo.state, TodoState::Running { .. }) {
         return None;
     }
-    let last = records.iter().rev().find(|record| {
+    let left = records.iter().rev().find(|record| {
         record.record.plan == plan.id
             && record.record.todo.as_ref() == Some(&todo.label)
             && record.attempt == Some(todo.attempt)
-            && record.record.actor == ENGINE_AGENT
+            && record.record.op == KIND_LEFT
     })?;
-    let detail = if last.record.op == KIND_DONE_REFUSED {
-        let outcome = last
-            .verdict
-            .as_ref()
-            .and_then(|verdict| verdict.get("outcome"));
-        format!("its verdict was {}", outcome.and_then(Value::as_str)?)
-    } else {
-        let refusal = last.record.extra.get("refusal")?;
-        refusal.get("detail").and_then(Value::as_str)?.to_owned()
-    };
-    Some(format!(
-        "the engine left {:?} running: {detail}",
-        todo.label.as_str()
-    ))
+    let detail = left.args.get("detail").and_then(Value::as_str)?;
+    Some((todo.label.clone(), detail.to_owned()))
 }

@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex};
 
 use serde_json::{Map, Value, json};
 use yi_types::plan::canonical::{Digest, canonical_digest};
-use yi_types::plan::doc::{PlanId, TouchCount};
+use yi_types::plan::doc::{PlanId, TodoLabel, TouchCount};
 use yi_types::plan::ledger::RequestId;
 
 use super::ops::{Actor, Op, PlanEngine, PlanOpError};
@@ -286,6 +286,17 @@ fn answer(engine: &PlanEngine, actor: &Actor, payload: Payload) -> Map<String, V
             );
             reply.insert("notices".to_owned(), json!(outcome.notices));
             reply.insert("held".to_owned(), json!(outcome.held));
+            let by_label = |pairs: &[(TodoLabel, String)]| {
+                let named = pairs
+                    .iter()
+                    .map(|(label, detail)| (label.to_string(), json!(detail)));
+                Value::Object(named.collect())
+            };
+            reply.insert("left".to_owned(), by_label(&outcome.standing.left));
+            reply.insert(
+                "unstarted".to_owned(),
+                by_label(&outcome.standing.unstarted),
+            );
             reply
         }
         Err(error) => {

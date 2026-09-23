@@ -29,6 +29,7 @@ pub const SUBMITTED_KEY: &str = "submitted";
 pub const KIND_VERIFICATION_REQUESTED: &str = "verification_requested";
 pub const KIND_DONE_REFUSED: &str = "done_refused";
 pub const KIND_VERIFICATION_STALE: &str = "verification_stale";
+pub const KIND_LEFT: &str = "left";
 use super::acceptance::{
     KIND_ACCEPTED, KIND_CANDIDATE_SUBMITTED, KIND_CANDIDATE_VERIFIED, KIND_DISPOSITION,
     KIND_INTEGRATION_PREPARED, KIND_INTEGRATION_STALE, KIND_INTEGRATION_VERIFIED,
@@ -389,6 +390,7 @@ pub fn apply(state: &mut RootState, record: &JournalRecord) -> Result<(), Reduce
         | KIND_CANDIDATE_SUBMITTED
         | KIND_INTEGRATION_PREPARED
         | KIND_INTEGRATION_STALE
+        | KIND_LEFT
         | KIND_DISPOSITION => {}
         // A verified candidate or integration settles the effect it names; the acceptance
         // record is the `done` transition with its body (plan section 6.6).

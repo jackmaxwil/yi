@@ -282,8 +282,8 @@ fn a_page_the_host_cannot_honour_is_refused_not_clamped() -> TestResult {
     Ok(())
 }
 
-/// Dies with the read tool's `offset` and `limit` dropped for a url: a `history://` read
-/// through `read` returns the whole listing whatever window the model asked for.
+/// Dies with `offset` and `limit` dropped for a url (the whole `history://` listing comes back),
+/// with the page's unit unnamed, or with `limit: 0` read as the rest of the listing.
 #[test]
 fn a_url_read_through_the_read_tool_keeps_its_window() -> Result<(), Box<dyn Error>> {
     let (workspace, resolver, _store) = paged_workspace()?;
@@ -298,20 +298,33 @@ fn a_url_read_through_the_read_tool_keeps_its_window() -> Result<(), Box<dyn Err
     input.insert("path".to_owned(), "history://main".into());
     input.insert("offset".to_owned(), 2.into());
     input.insert("limit".to_owned(), 1.into());
-    let output = tool.execute(input, &yi_tools::ToolContext::new(workspace.to_path_buf()));
-    let text: String = output
-        .result
-        .content
-        .iter()
-        .filter_map(|content| match content {
-            yi_types::message::Content::Text { text, .. } => Some(text.as_str()),
-            _ => None,
-        })
-        .collect();
+    let text_of = |input| {
+        let output = tool.execute(input, &yi_tools::ToolContext::new(workspace.to_path_buf()));
+        let text: String = output
+            .result
+            .content
+            .iter()
+            .filter_map(|content| match content {
+                yi_types::message::Content::Text { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        (text, output.is_error)
+    };
     let next = window.1.ok_or("the listing has more than one entry")?;
     assert_eq!(
-        text,
-        format!("{}\n[more from offset {}]", window.0, next + 1)
+        text_of(input.clone()).0,
+        format!(
+            "{}\n[more from offset {}; offset and limit count entries here]",
+            window.0,
+            next + 1
+        )
+    );
+    input.insert("limit".to_owned(), 0.into());
+    let (refused, is_error) = text_of(input);
+    assert!(
+        is_error && refused.contains("\"limit\" must be at least 1"),
+        "{refused}"
     );
     Ok(())
 }

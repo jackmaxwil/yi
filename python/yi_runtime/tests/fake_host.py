@@ -139,7 +139,7 @@ class FakeHost:
                     plan["touched"] += 1
                     self.journal.append(("start", {"label": label}))
                 else:
-                    self.refused[key] = f'the engine could not start "{label}": {refused["refusal"]["message"]}'
+                    self.refused[key] = refused["refusal"]["message"]
             self.view(plan)
 
     def finish(self) -> None:
@@ -170,7 +170,7 @@ class FakeHost:
                 if outcome == "fail":
                     self.engine("fail", {"label": todo["label"], "cause": "contract refused: the verdict was fail"}, plan, todo)
                 elif outcome:
-                    self.left[key] = f'the engine left "{todo["label"]}" running: its verdict was {outcome}'
+                    self.left[key] = f"its verdict was {outcome}"
         self.dispatch()
 
     def engine(self, op: str, args: dict, plan: dict, todo: dict) -> dict | None:
@@ -202,9 +202,13 @@ class FakeHost:
         queue = [label for label in plan["ready"] if by[label].get("delegation")]
         running = sum(1 for todo in plan["todos"] if todo["state"] == "running" and todo.get("delegation"))
         held = [] if self.slots is None else queue[max(self.slots - running, 0) :]
-        said = [text for (at, label, attempt), text in self.refused.items() if at == plan["plan"] and label in queue and by[label]["attempt"] == attempt]
-        said += [text for (at, label, attempt), text in self.left.items() if at == plan["plan"] and by[label]["attempt"] == attempt and by[label]["state"] == "running"]
-        return {"ok": True, "revision": plan["touched"], "text": "", "plan": plan, "held": held, "notices": said if notices is None else notices}
+        # `schedule.rs::Standing`: by label for the library, and the prose `{:?}` quotes for a reader.
+        unstarted = {label: text for (at, label, attempt), text in self.refused.items() if at == plan["plan"] and label in queue and by[label]["attempt"] == attempt}
+        left = {label: text for (at, label, attempt), text in self.left.items() if at == plan["plan"] and by[label]["attempt"] == attempt and by[label]["state"] == "running"}
+        said = [f"the engine could not start {json.dumps(label)}: {text}" for label, text in unstarted.items()]
+        said += [f"the engine left {json.dumps(label)} running: {text}" for label, text in left.items()]
+        reply = {"ok": True, "revision": plan["touched"], "text": "", "plan": plan, "held": held, "unstarted": unstarted, "left": left}
+        return {**reply, "notices": said if notices is None else notices}
 
     def apply(self, op: str, args: dict, plan_id: str | None, expected: int | None) -> dict:
         if op == "init":

@@ -322,7 +322,7 @@ impl Verifier {
                     deadline_after(Instant::now(), (*timeout_ms).min(manifest.timeout_ms))
                         .min(whole);
                 protecting(&manifest, snapshot.root, || {
-                    run_cmd(&manifest, snapshot.root, deadline)
+                    run_cmd(&manifest, snapshot.root, deadline, None)
                 })
             }
             Decider::Schema { schema } => run_schema(snapshot, schema),
@@ -399,7 +399,7 @@ fn protected_digests(manifest: &CheckerManifest, root: &Path) -> Vec<Option<Dige
 
 /// A check that changed a protected path fails the item rather than passing it
 /// (`fixtures/plans/contracts/contracts.md`): the paths are digested before and after.
-fn protecting(
+pub(super) fn protecting(
     manifest: &CheckerManifest,
     root: &Path,
     check: impl FnOnce() -> ItemVerdict,
@@ -420,13 +420,19 @@ fn protecting(
     }
 }
 
-pub(super) fn run_cmd(manifest: &CheckerManifest, root: &Path, deadline: Instant) -> ItemVerdict {
+pub(super) fn run_cmd(
+    manifest: &CheckerManifest,
+    root: &Path,
+    deadline: Instant,
+    stop: Option<&yi_tools::CancelFlag>,
+) -> ItemVerdict {
     let capture = match run_check_in(
         &manifest.workdir(root),
         &manifest.command,
         &manifest.env,
         None,
         deadline,
+        stop,
     ) {
         Ok(capture) => capture,
         Err(reason) => return abstain(reason),
@@ -526,6 +532,7 @@ fn run_case(
         &manifest.env,
         Some(input),
         deadline,
+        None,
     )
     .map_err(CaseError::Host)?;
     if capture.cancelled {

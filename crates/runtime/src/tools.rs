@@ -301,7 +301,7 @@ impl AgentTool for ToolAdapter {
                 .to_owned();
             let written = (tool.kind_for(&args) == yi_tools::ToolKind::Write)
                 .then(|| crate::permission::extract_targets(&name, &args, &context.cwd));
-            let cwd = context.cwd.clone();
+            let (cwd, cancel) = (context.cwd.clone(), Arc::clone(&context.cancelled));
             let output = tokio::task::spawn_blocking(move || tool.execute(args, &context)).await;
             match output {
                 Ok(mut output) => {
@@ -328,7 +328,8 @@ impl AgentTool for ToolAdapter {
                         crate::affordance::append(&mut output.result, &line);
                     }
                     if let (Some(check), Some(written), false) = (check, written, output.is_error) {
-                        let verdict = tokio::task::spawn_blocking(move || check(&written, &cwd));
+                        let verdict =
+                            tokio::task::spawn_blocking(move || check(&written, &cwd, &cancel));
                         if let Ok(Some(line)) = verdict.await {
                             crate::affordance::append(&mut output.result, &line);
                         }
