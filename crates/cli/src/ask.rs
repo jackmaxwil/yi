@@ -79,7 +79,7 @@ fn holds(working: bool, ends: Option<std::time::Instant>) -> bool {
     working && ends.is_none_or(|at| std::time::Instant::now() < at)
 }
 
-/// Incident: the run ended with plan children live; one's finish wakes the owner, so it waits.
+/// Incident: a plan child's finish wakes the owner, so it waits, but only on what wakes it (#489).
 async fn stream(
     session: &yi_runtime::AgentSession,
     host: &yi_runtime::SubagentHost,
@@ -94,7 +94,9 @@ async fn stream(
         let next = if holding {
             match tokio::time::timeout(HOLD_POLL, events.recv()).await {
                 Ok(next) => next,
-                Err(_) if holds(host.busy() || session.status() != Status::Idle, ends) => continue,
+                Err(_) if holds(host.holds_owner() || session.status() != Status::Idle, ends) => {
+                    continue;
+                }
                 Err(_) => {
                     ended = true;
                     break;
@@ -143,7 +145,7 @@ async fn stream(
                 holding = false;
                 answer.clear();
             }
-            AgentEvent::AgentEnd { .. } if host.busy() => holding = true,
+            AgentEvent::AgentEnd { .. } if host.holds_owner() => holding = true,
             AgentEvent::AgentEnd { .. } => {
                 ended = true;
                 break;

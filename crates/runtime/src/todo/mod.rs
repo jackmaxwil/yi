@@ -300,9 +300,11 @@ impl TodoStore {
         let mut list = match &mirrored {
             Some(plan) => {
                 let own = mirror::own(&before);
-                if op
-                    .label()
-                    .is_none_or(|label| locate(&own, label.as_str()).is_err())
+                let whole = matches!(op, Op::Set { .. } | Op::Init { .. } | Op::Append { .. });
+                if !whole
+                    && op
+                        .label()
+                        .is_none_or(|label| locate(&own, label.as_str()).is_err())
                 {
                     return Err(TodoError::Mirrored { plan: plan.clone() });
                 }
@@ -313,6 +315,19 @@ impl TodoStore {
         let label = op.label().cloned();
         let name = op.name();
         step(&mut list, op)?;
+        if mirrored.is_some() {
+            let planned: Vec<TodoId> = before
+                .items()
+                .filter(|item| item.extra.contains_key(mirror::PLAN_KEY))
+                .filter_map(|item| item.id.clone())
+                .collect();
+            list.for_each_mut(|item| {
+                if item.id.as_ref().is_some_and(|id| planned.contains(id)) {
+                    item.id = None;
+                }
+            });
+            list.next_id = list.next_id.max(before.next_id);
+        }
         mint(&mut list);
         normalize(&mut list, mirrored.is_none());
         if mirrored.is_some() {
@@ -497,7 +512,9 @@ fn locate(list: &TodoList, needle: &str) -> Result<usize, TodoError> {
     }
     if let Some((id, rest)) = bare.split_once(' ')
         && let Some(index) = items.iter().position(|item| {
-            item.label.as_str() == rest && item.id.as_ref().is_some_and(|own| own.as_str() == id)
+            let (label, rest) = (normalized(item.label.as_str()), normalized(rest));
+            let same = !rest.is_empty() && (label.starts_with(&rest) || rest.starts_with(&label));
+            same && item.id.as_ref().is_some_and(|own| own.as_str() == id)
         })
     {
         return Ok(index);

@@ -167,6 +167,21 @@ class Plans(unittest.IsolatedAsyncioTestCase):
         await run
         self.assertEqual((run.outcome, todo._doc["state"]), ("verified_success", "done"))
 
+    async def test_a_reaped_child_is_read_not_blocked(self) -> None:
+        """Dies with the control: block a running todo whose child the host no longer lists, and
+        the engine's accept, landing between the read and the block, refuses it (10 in one run)."""
+        host = FakeHost()
+        plan = await Plan.create("ship it")
+        todo = await plan.todo(key="t", delegate=Writer(accept=contract(cmd("true", critical=True))))
+        child = f"{plan.id}/t"
+        host.results[child] = {"text": "{}", "json": {}}
+        loop = asyncio.get_running_loop()
+        loop.call_later(0.05, host.children.pop, child)
+        loop.call_later(0.2, host.children.__setitem__, child, "finished")
+        run = await asyncio.wait_for(plan.run(budget=30), timeout=5)
+        self.assertEqual((run.outcome, todo._doc["state"]), ("verified_success", "done"))
+        self.assertNotIn("block", host.sent, "the library writes nothing on a todo the engine owns")
+
     async def test_a_verdict_that_judges_no_product_leaves_the_attempt_alone(self) -> None:
         """Dies with the control: fail on every refusal and an abstained todo is failed; with no
         budget, wait on a finished child the engine left running and the run never returns."""

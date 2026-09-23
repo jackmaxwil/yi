@@ -555,6 +555,48 @@ fn an_owner_row_is_not_promoted_to_running_while_the_plan_is_open() -> TestResul
     Ok(())
 }
 
+/// Dies with a whole-list op refused `Mirrored`: three confirmation `todo set`/`init` calls,
+/// made on the harness's own prelude after the plan opened, bounced off the plan's list.
+#[test]
+fn a_todo_set_or_init_under_a_plan_writes_the_owners_rows_beside_it() -> TestResult {
+    let dir = Scratch::new("yi-todo-mirror-set")?;
+    let (_session, todos, _engine) = mirrored(&dir)?;
+    let plan_rows = |todos: &TodoStore| {
+        let list = todos.list();
+        let rows: Vec<TodoItem> = list
+            .items()
+            .filter(|item| item.extra.contains_key("plan"))
+            .cloned()
+            .collect();
+        rows
+    };
+    let before = plan_rows(&todos);
+    todos.apply(
+        TodoOp::Set {
+            list: "- [ ] t2 wait for the plan\n- [ ] report".to_owned(),
+        },
+        None,
+    )?;
+    let phases = vec![(
+        PhaseName::new("Mine")?,
+        vec![TodoItem::from_text("verify it")?],
+    )];
+    todos.apply(TodoOp::Init { phases }, None)?;
+    assert_eq!(plan_rows(&todos), before, "the plan's rows never move");
+    let list = todos.list();
+    let ids: Vec<String> = list
+        .items()
+        .filter_map(|item| item.id.as_ref().map(ToString::to_string))
+        .collect();
+    let mut unique = ids.clone();
+    unique.sort();
+    unique.dedup();
+    assert_eq!(unique.len(), ids.len(), "{ids:?}");
+    assert!(list.items().any(|item| item.label.as_str() == "verify it"));
+    assert!(plan_of(&list).is_some());
+    Ok(())
+}
+
 /// A `todo done` on the plan's own inline item is the plan op the owner meant, not a bounce.
 #[test]
 fn a_todo_done_on_an_inline_plan_item_is_carried_to_the_plan_tool() -> TestResult {

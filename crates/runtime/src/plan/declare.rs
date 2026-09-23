@@ -3,7 +3,7 @@ use yi_types::plan::canonical::{ArtifactRef, Digest, canonical_bytes};
 use yi_types::plan::contract::MANIFEST_FORMAT;
 use yi_types::plan::ids::INLINE_NOTE_MAX_BYTES;
 
-use yi_types::plan::doc::{PlanId, PlanState, Todo, TodoState};
+use yi_types::plan::doc::{PlanId, PlanState, Todo, TodoLabel, TodoState};
 
 use super::ops::{Actor, Op, OpRequest, Outcome, PlanEngine, PlanOpError};
 
@@ -167,6 +167,7 @@ fn standing_of(todo: &Todo) -> String {
         }
         TodoState::Blocked { .. } => "blocked; unblock hands it back to the engine".to_owned(),
         TodoState::Failed { cause, .. } => format!("failed ({cause}); retry or fail are yours"),
+        TodoState::Done { .. } => "done: the engine accepted it".to_owned(),
         other => yi_types::plan::doc::TodoStateName::of(other).to_string(),
     }
 }
@@ -186,16 +187,12 @@ impl PlanEngine {
         let family = |root: &PlanId| self.family(root);
         let (id, family) = match &request.plan {
             Some(id) => (id.clone(), family(&super::state::root_of(id).ok()?)?),
-            None => self.store.roots().ok()?.into_iter().find_map(|root| {
-                let family = family(&root)?;
-                let open = family.plan(&root).ok()?.state == PlanState::Active;
-                open.then_some((root, family))
-            })?,
+            None => self.owner_root(label)?,
         };
         let plan = family.plan(&id).ok()?;
         let todo = plan
             .todo(label)
-            .filter(|_| plan.state == PlanState::Active)?;
+            .filter(|_| matches!(plan.state, PlanState::Active | PlanState::Done))?;
         todo.delegation.as_ref()?;
         if let TodoState::Running { by } = &todo.state
             && self.liveness.alive(by) == Some(false)
@@ -216,6 +213,28 @@ impl PlanEngine {
             outcome.notices.insert(0, note);
             outcome
         }))
+    }
+
+    /// With no plan open, the closed plan holding the label: the engine closes one at its last accept.
+    fn owner_root(&self, label: &TodoLabel) -> Option<(PlanId, super::state::RootState)> {
+        let mut closed = None;
+        for root in self.store.roots().ok()? {
+            let Some(family) = self.family(&root) else {
+                continue;
+            };
+            let Ok(plan) = family.plan(&root) else {
+                continue;
+            };
+            let delegated = plan
+                .todo(label)
+                .is_some_and(|todo| todo.delegation.is_some());
+            match plan.state {
+                PlanState::Active => return Some((root, family)),
+                PlanState::Done if delegated && closed.is_none() => closed = Some((root, family)),
+                _ => {}
+            }
+        }
+        closed
     }
 
     pub(super) fn apply_with(

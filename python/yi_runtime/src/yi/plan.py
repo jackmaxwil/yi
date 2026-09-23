@@ -19,6 +19,7 @@ KEY = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
 SOURCE_TYPE = "text/x-python"
 READ_ONLY = ("view", "repair")
 WAIT_SECONDS = 300.0
+REAPED_POLL = 0.5
 
 # The cell the kernel is executing: its id, its source as submitted, the plans it touched.
 _CELL: dict[str, Any] | None = None
@@ -588,6 +589,8 @@ class Run:
         self._stop = asyncio.Event()
         self._cancelled = False
         self._waiting: asyncio.Task | None = None
+        self._states: dict[str, str] = {}
+        self._reaped = False
         # Cursor 0, not a bare wait: the model's own bare waits may have seen a child end already.
         self._cursor = 0
         self._task: asyncio.Task | None = None
@@ -653,8 +656,8 @@ class Run:
 
         A returned coroutine goes to ``done`` (the contract decides), a raised one
         to ``fail``. The engine submits and accepts, refuses or fails a delegated
-        todo when its child ends, so the state is read, never written; a stuck
-        child is waited on, and one the host cannot vouch for blocks its todo on you.
+        todo when its child ends, so the state is read, never written; a stuck or
+        reaped child is waited on, and only a child asking you something blocks its todo.
 
             settled = await run.settle()
         """
@@ -664,7 +667,9 @@ class Run:
             self._waiting = asyncio.ensure_future(rlm.wait(timeout=self._remaining(), cursor=self._cursor))
         stop = asyncio.ensure_future(self._stop.wait())
         waiters = [*tasks, stop, *([self._waiting] if self._waiting else [])]
-        done, _ = await asyncio.wait(waiters, timeout=self._remaining(), return_when=asyncio.FIRST_COMPLETED)
+        # A reaped child moves nothing a wait sees, so its todo is re-read on a short poll.
+        timeout = min(self._remaining(), REAPED_POLL) if self._reaped else self._remaining()
+        done, _ = await asyncio.wait(waiters, timeout=timeout, return_when=asyncio.FIRST_COMPLETED)
         stop.cancel()
         settled = []
         for task in done & set(tasks):
@@ -678,25 +683,27 @@ class Run:
         if self._waiting in done:
             reply, self._waiting = self._waiting.result(), None
             self._cursor = reply.get("cursor", self._cursor)
-            states = reply.get("states") or {}
-            for label, child in children.items():
-                state = states.get(child)
-                if state in ("queued", "running", "stuck"):
+            self._states = reply.get("states") or {}
+        elif not self._reaped:
+            return settled
+        self._reaped = False
+        for label, child in children.items():
+            state = self._states.get(child)
+            if state in ("queued", "running", "stuck"):
+                continue
+            todo = self.active[label]
+            now = await todo.state()
+            if now == "running" and state == "needs_you":
+                await todo.block("user", f"child {child} is {state}")
+            elif now == "running":
+                # Invariant: the engine settles a delegated todo, so a finish in flight or a reaped
+                # child is waited on; only the engine's word that it left the todo collects it.
+                if state not in ("finished", "failed") or label not in self.plan._engine_left:
+                    self._reaped |= state is None
                     continue
-                todo = self.active[label]
-                now = await todo.state()
-                if now == "running" and state in ("finished", "failed"):
-                    # Invariant: a finish can outlast a wait, so only the engine's own word that
-                    # it left the todo to you collects it; a finish in flight is waited on.
-                    if label not in self.plan._engine_left:
-                        continue
-                    self._left.add((label, todo._doc.get("attempt")))
-                elif now == "running":
-                    # Invariant: a child the host cannot vouch for is a decision, never a
-                    # silent drop; `needs_you` and an unregistered name both land here.
-                    await todo.block("user", f"child {child} is {state or 'not registered'}")
-                self.active.pop(label)
-                settled.append(todo)
+                self._left.add((label, todo._doc.get("attempt")))
+            self.active.pop(label)
+            settled.append(todo)
         return settled
 
     async def _drive(self) -> "Run":
