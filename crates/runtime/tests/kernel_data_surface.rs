@@ -552,8 +552,9 @@ async fn an_inline_todo_completes_with_a_host_minted_artifact() -> TestResult {
 }
 
 /// The exit journey: the section 8.2 program on a real kernel, the kernel killed mid-plan, and
-/// a second kernel resuming. Dies with the control: replay the recorded cell, restart the
-/// running todo, or re-run the done one, and the mark file or the spawn count says so.
+/// a second kernel resuming and declaring the step after it. Dies with the control: replay the
+/// recorded cell, restart the running todo, or re-run the done one, and the mark file or the
+/// spawn count says so; record the new cell after its append, or not at all, and the journal does.
 #[tokio::test]
 #[ignore = "tier-2 journey: `just journeys`"]
 async fn resume_after_a_kernel_death_reuses_results_and_replays_no_cell() -> TestResult {
@@ -589,7 +590,9 @@ async fn resume_after_a_kernel_death_reuses_results_and_replays_no_cell() -> Tes
     rig.kids.alive.store(true, Ordering::SeqCst);
     rig.kids.finished.store(true, Ordering::SeqCst);
     let second = rig.kernel();
-    let tail = "plan = await Plan.resume('ship-logrotate-lite')\nawait declare(plan)\nprint('unresolved', plan.unresolved)\nr = await plan.run(budget=20)\nprint('outcome', r.outcome, await r.status())";
+    // The engine completes `tests` from its child's finish, so the owner's own op in this cell
+    // is declaring and running `package`, an inline step after it.
+    let tail = "plan = await Plan.resume('ship-logrotate-lite')\nawait declare(plan)\nprint('unresolved', plan.unresolved)\nasync def package():\n    return {'tarball': 'logrotate-lite.tgz'}\nawait plan.todo(key='package', after=['tests'], run=package, accept=contract(schema({'type': 'object', 'required': ['tarball']}, critical=True)))\nr = await plan.run(budget=20)\nprint('outcome', r.outcome, await r.status())";
     let printed = rig.run(&second, tail).await?;
     second.dispose().await;
     assert!(
@@ -610,12 +613,22 @@ async fn resume_after_a_kernel_death_reuses_results_and_replays_no_cell() -> Tes
     assert!(rig.plan()?.finished());
     let program = std::fs::read_to_string(rig.store.plan_dir(&rig.plan()?.id).join("program.py"))?;
     assert_eq!(program.matches("# --- cell ").count(), 2, "{program}");
+    let records = rig.store.journal(&rig.plan()?.id).read()?.records;
+    let last = |kind: &str| records.iter().rposition(|record| record.record.op == kind);
+    assert!(
+        last("program") < last("append"),
+        "the resumed cell is recorded before its first effect"
+    );
     Ok(())
 }
 
-/// A delegate whose children are named for their todos, with the names it spawned.
+/// A delegate whose children are named for their todos: the names it spawned, and those it
+/// holds from spawn to reap, as `SubagentHost::holds` does behind `SessionDelegate`.
 #[derive(Default)]
-struct Crew(std::sync::Mutex<Vec<String>>);
+struct Crew(
+    std::sync::Mutex<Vec<String>>,
+    std::sync::Mutex<std::collections::BTreeSet<String>>,
+);
 
 impl Delegate for Crew {
     fn spawn(
@@ -626,15 +639,27 @@ impl Delegate for Crew {
         let slug = yi_types::plan::doc::PlanId::slug(at.todo.as_str());
         let name = slug.map_err(|error| error.to_string())?.to_string();
         self.0.lock().map_err(|_| "poisoned")?.push(name.clone());
+        self.1.lock().map_err(|_| "poisoned")?.insert(name.clone());
         yi_types::plan::doc::AgentId::new(name).map_err(|error| error.to_string())
     }
 
     fn reap(
         &self,
-        _agent: &yi_types::plan::doc::AgentId,
+        agent: &yi_types::plan::doc::AgentId,
         _supplied: &[yi_types::url::Url],
     ) -> Result<Option<yi_types::url::Url>, String> {
+        self.1
+            .lock()
+            .map_err(|_| "poisoned")?
+            .remove(agent.as_str());
         Ok(None)
+    }
+}
+
+/// `SessionDelegate`'s liveness (`plan/dispatch.rs`): a held child is alive, finished or not.
+impl yi_runtime::plan::recovery::Liveness for Crew {
+    fn alive(&self, agent: &yi_types::plan::doc::AgentId) -> Option<bool> {
+        Some(self.1.lock().ok()?.contains(agent.as_str()))
     }
 }
 
@@ -657,6 +682,7 @@ fn crewed(
         PlanEngine::new(store.clone(), crew.clone())
             .with_cwd(workspace)
             .with_output_resolve(resolver.clone())
+            .with_liveness(crew.clone())
             .with_width(std::num::NonZeroUsize::MIN),
     );
     let mut registry = HostRegistry::default();
