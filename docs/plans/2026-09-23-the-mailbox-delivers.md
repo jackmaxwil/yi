@@ -107,6 +107,8 @@ Landed as 0.297.0 (D235, #499) from a paid confirmation of M1-M3 at 9f29fa88.
 - A receipt says when its message is presented.
 - Review fixes (#499): the seven findings of the read-only review, and the paid rerun at
   06a40d3e's reply-shape guesses, `done` with no id, and the fanout and steer scenarios.
+- A final confirmation at 2f516615 (14 of 16): `status(name)` returns one entry, a handle
+  has `state`, and the last word keeps a 30 s floor plus the shutdown and cuts a stream.
 
 ## Verification
 

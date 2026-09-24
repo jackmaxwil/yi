@@ -230,14 +230,19 @@ async fn run_once(parts: &RunParts, prompt: AgentMessage, admitted_epoch: u64) {
     wire_environment(&mut config, &shared);
     // Not the interrupt: the turn in flight ends and settles, and no request follows.
     let stop = Arc::clone(&shared);
-    config.should_stop_after_turn = Some(Box::new(move |_| stop.winding_down()));
+    config.should_stop_after_turn = Some(Box::new(move |_| {
+        stop.winding_down() || stop.last_word_due()
+    }));
     // Incident: the wind-down ended three confirmation runs on a tool call, with no answer.
     let clock = Arc::clone(&shared);
     config.last_word = Some(Box::new(move |_| {
         let cancelled = clock.cancelled.load(std::sync::atomic::Ordering::SeqCst);
         let out_of_time = clock.deadline.get().is_some_and(|at| at.winding_down());
+        let out_of_time = out_of_time || clock.last_word_due();
         (out_of_time && !cancelled).then(|| super::user_message(LAST_WORD))
     }));
+    let due = Arc::clone(&shared);
+    config.last_word_due = Some(Box::new(move || due.last_word_due()));
     let emit_shared = Arc::clone(&shared);
     let mut emit = move |event: AgentEvent| {
         emit_shared.time_turn(&event);

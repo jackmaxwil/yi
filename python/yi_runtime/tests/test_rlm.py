@@ -313,7 +313,23 @@ class StatusTests(unittest.IsolatedAsyncioTestCase):
 
         with mock.patch.object(rlm, "host_request", fake_host_request):
             self.assertEqual(await rlm.status(), members)
-            self.assertEqual(await rlm.status("d"), [members[1]])
+            self.assertEqual(await rlm.status("d"), members[1])
+            self.assertEqual((await rlm.status("d")).state, "needs_you")
+            with self.assertRaises(KeyError) as unknown:
+                await rlm.status("counter")
+        self.assertIn("'a', 'd'", str(unknown.exception))
+
+    async def test_a_handle_reads_its_state_from_the_host(self) -> None:
+        """Dies with no ``state`` on a spawn handle (the final confirmation's r2 fanout)."""
+
+        async def fake_host_request(kind, payload):
+            return {"members": [{"name": "n", "state": "running"}]}
+
+        with mock.patch.object(rlm, "host_request", fake_host_request):
+            self.assertEqual(await asyncio.to_thread(lambda: _handle().state), "running")
+            with self.assertRaises(AttributeError) as blocked:
+                _handle().state
+        self.assertIn("(await rlm.status('n')).state", str(blocked.exception))
 
     async def test_revoke_sends_the_grace_in_milliseconds(self) -> None:
         sent = []
@@ -430,6 +446,7 @@ class AwaitLaterTests(unittest.IsolatedAsyncioTestCase):
         c = rlm.status()
         stored = await c
         chosen = await (rlm.status("kid") if stored else rlm.status("nobody"))
+        chosen = [chosen]
         report = await rlm.bash(
             "printf hi"
         ).wait()

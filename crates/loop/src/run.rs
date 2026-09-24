@@ -558,6 +558,16 @@ struct TurnRequest<'a> {
     model: &'a Model,
     effort: Effort,
     tool_choice: Option<ToolChoice>,
+    watch: bool,
+}
+
+async fn due_now(due: Option<&(dyn Fn() -> bool + Send + Sync)>, watch: bool) {
+    let Some(due) = due.filter(|_| watch) else {
+        return std::future::pending().await;
+    };
+    while !due() {
+        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+    }
 }
 
 async fn stream_assistant_response<S: StreamFn>(
@@ -567,11 +577,12 @@ async fn stream_assistant_response<S: StreamFn>(
     signal: &InterruptSignal,
     emit: &mut (dyn FnMut(AgentEvent) + Send),
     stream: &S,
-) -> (AgentMessage, Option<Cut>) {
+) -> (AgentMessage, Option<Cut>, bool) {
     let TurnRequest {
         model,
         effort,
         tool_choice,
+        watch,
     } = turn;
     let mut messages = context.messages.clone();
     if let Some(transform) = &config.transform_context
@@ -598,12 +609,18 @@ async fn stream_assistant_response<S: StreamFn>(
     let mut final_message: Option<AgentMessage> = None;
     let mut budget = ReasoningBudget::default();
     let mut cut: Option<usize> = None;
+    let mut timed_out = false;
     loop {
         // The provider's stream takes no cancellation input, so this is a streaming answer's
         // only interrupt checkpoint; without it a tool-less turn ran to completion first.
         let event = tokio::select! {
             biased;
             () = signal.wait() => None,
+            () = due_now(config.last_word_due.as_deref(), watch) => {
+                timed_out = true;
+                signal.cut();
+                None
+            }
             event = receiver.recv() => event,
         };
         let Some(event) = event else {
@@ -661,7 +678,7 @@ async fn stream_assistant_response<S: StreamFn>(
         None => None,
     };
     let final_message = final_message.unwrap_or_else(|| {
-        if signal.is_fired() {
+        if signal.is_fired() || timed_out {
             aborted_message(
                 added_partial.then(|| context.messages.last()).flatten(),
                 model,
@@ -683,7 +700,7 @@ async fn stream_assistant_response<S: StreamFn>(
     emit(AgentEvent::MessageEnd {
         message: final_message.clone(),
     });
-    (final_message, cut)
+    (final_message, cut, timed_out)
 }
 
 pub async fn run_loop<S: StreamFn>(
@@ -748,13 +765,14 @@ pub async fn run_loop<S: StreamFn>(
             {
                 context.messages = compacted;
             }
-            let (message, cut) = stream_assistant_response(
+            let (message, cut, timed_out) = stream_assistant_response(
                 context,
                 config,
                 TurnRequest {
                     model: &current_model,
                     effort: current_effort,
                     tool_choice: tool_choice.take(),
+                    watch: !last_word_said,
                 },
                 signal,
                 emit,
@@ -765,6 +783,27 @@ pub async fn run_loop<S: StreamFn>(
             collected.push(message.clone());
 
             let reason = stop_reason_of(&message);
+            if timed_out {
+                emit(AgentEvent::TurnEnd {
+                    message: message.clone(),
+                    tool_results: Vec::new(),
+                });
+                let snapshot = TurnSnapshot {
+                    message: &message,
+                    tool_results: &[],
+                };
+                if let Some(word) = config.last_word.as_ref().and_then(|word| word(&snapshot)) {
+                    last_word_said = true;
+                    tool_choice = Some(ToolChoice::None);
+                    pending = vec![word];
+                    has_more_tool_calls = false;
+                    continue;
+                }
+                emit(AgentEvent::AgentEnd {
+                    messages: collected.clone(),
+                });
+                return collected;
+            }
             if reason == StopReason::Error
                 && stream_retries < STREAM_RETRY_AT
                 && nothing_delivered(&message)

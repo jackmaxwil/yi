@@ -215,6 +215,21 @@ class RLMSpawnHandle:
     model: str
     next: str = ""
 
+    @property
+    def state(self) -> str:
+        """This child's state now, asked of the host: ``(await rlm.status(name)).state``."""
+        read = status.__wrapped__(self.name)
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return asyncio.run(read).state
+        if not hasattr(loop, "_nest_patched"):
+            read.close()
+            raise AttributeError(
+                f"handle.state cannot block this loop; read (await rlm.status({self.name!r})).state"
+            )
+        return loop.run_until_complete(read).state
+
     def __repr__(self) -> str:
         head = (
             f"RLMSpawnHandle(name={self.name!r}, model={self.model!r}, "
@@ -664,7 +679,7 @@ async def followup(target: "str | RLMSubagent", message: str) -> dict[str, Any]:
 
 
 @_public
-async def status(name: str | None = None) -> list[dict[str, Any]]:
+async def status(name: str | None = None) -> "list[Reply] | Reply":
     """Every child's state as its own records show it (D165).
 
     Each entry is ``{name, state, note, tools, tokens, idle_s, worktree}`` with ``state``
@@ -675,20 +690,28 @@ async def status(name: str | None = None) -> list[dict[str, Any]]:
     ``stuck`` (a repeat break, a length re-drive at rung two or more, a let-go
     intercept, or five idle minutes; ``note`` names which) and ``repossession_pending``
     (``revoke`` took its lease back but the stop, settle or record failed; everything it
-    held is kept and the host retries). ``name`` keeps one. An entry reads by key or
-    attribute::
+    held is kept and the host retries). An entry reads by key or attribute. With
+    ``name`` it returns that one child's entry, and an unknown name raises KeyError
+    naming the children there are::
 
         for m in await rlm.status():
             print(m["name"], m.state)
+        if (await rlm.status("counter")).tools >= 1: ...
     """
     payload = await host_request("rlm.status", {} if name is None else {"name": name})
     members = payload.get("members")
     if not isinstance(members, list):
         raise RuntimeError("rlm.status returned an invalid member list")
-    if name is not None:
-        members = [member for member in members if member.get("name") == name]
     example = 'for m in await rlm.status(): print(m["name"], m.state)'
-    return [Reply(member, "rlm.status", example) if isinstance(member, dict) else member for member in members]
+    entries = [Reply(member, "rlm.status", example) for member in members if isinstance(member, dict)]
+    if name is None:
+        return entries
+    for entry in entries:
+        if entry.get("name") == name:
+            return entry
+    roster = (await host_request("rlm.status", {})).get("members") or []
+    known = ", ".join(repr(member.get("name")) for member in roster if isinstance(member, dict))
+    raise KeyError(f"no child named {name!r}; the children are: {known or 'none'}")
 
 
 @_public
