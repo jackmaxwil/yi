@@ -45,3 +45,30 @@ fn a_probe_error_does_not_mark_a_lock_stale() -> Result<(), Box<dyn std::error::
     assert!(dead, "a dead holder kept its lock");
     Ok(())
 }
+
+/// Parallel first boots on one HOME: every unpack answers with the whole tree, and a reader
+/// between them never finds it missing.
+#[test]
+fn parallel_first_boots_share_one_unpacked_runtime() -> Result<(), Box<dyn std::error::Error>> {
+    let home = Scratch::new("yi-kernel-unpack")?;
+    let root = home.join(".yi").join("python");
+    let outcomes: Vec<Result<std::path::PathBuf, String>> = std::thread::scope(|scope| {
+        let boots: Vec<_> = (0..8)
+            .map(|_| scope.spawn(|| yi_kernel::bootstrap::unpack_embedded_python(&home)))
+            .collect();
+        boots
+            .into_iter()
+            .map(|boot| boot.join().unwrap_or_else(|_| Err("panicked".to_owned())))
+            .collect()
+    });
+    for outcome in outcomes {
+        assert_eq!(outcome?, root);
+    }
+    assert!(root.join("yi_runtime").join("pyproject.toml").is_file());
+    let entries: Vec<String> = std::fs::read_dir(home.join(".yi"))?
+        .flatten()
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(entries, ["python"], "staging or lock left behind");
+    Ok(())
+}

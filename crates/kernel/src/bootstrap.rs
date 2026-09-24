@@ -202,11 +202,16 @@ fn replace_dir(staging: &Path, target: &Path) -> Result<(), String> {
 /// Writes the embedded runtime to `<home>/.yi/python`, whole or not at all: a sibling temp
 /// dir is filled and stamped, then renamed over whatever was there.
 pub fn unpack_embedded_python(home: &Path) -> Result<PathBuf, String> {
-    let data = miniz_oxide::inflate::decompress_to_vec_zlib(PYTHON_EMBED)
-        .map_err(|error| format!("embedded python archive: {error}"))?;
     let parent = home.join(".yi");
     std::fs::create_dir_all(&parent).map_err(|error| format!("{}: {error}", parent.display()))?;
     let target = parent.join("python");
+    // Incident: parallel first boots each replaced the tree while another hashed or installed it.
+    let _lock = acquire_bootstrap_lock(&target)?;
+    if home_tree_current(&target) {
+        return Ok(target);
+    }
+    let data = miniz_oxide::inflate::decompress_to_vec_zlib(PYTHON_EMBED)
+        .map_err(|error| format!("embedded python archive: {error}"))?;
     let staging = parent.join(format!("python.tmp-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&staging);
     let result = unpack_entries(&data, &staging)

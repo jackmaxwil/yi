@@ -14,7 +14,6 @@ use crate::kernel_variables::{dump_variable_code, parse_variable_reply, read_var
 
 pub type HostHandlerFn = dyn Fn(Map<String, Value>) -> HostFuture + Send + Sync;
 
-/// Registered by the runtime, dispatched by yi-kernel.
 #[derive(Default)]
 pub struct HostRegistry {
     handlers: HashMap<String, Arc<HostHandlerFn>>,
