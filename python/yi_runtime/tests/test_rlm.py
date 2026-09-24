@@ -359,50 +359,73 @@ class PlanOpTests(unittest.IsolatedAsyncioTestCase):
 KID = {"name": "kid", "state": "running"}
 
 
-class EitherWayTests(unittest.TestCase):
-    """U2: six of eight dogfood trials called rlm without await and got a coroutine that never ran."""
+class AwaitLaterTests(unittest.IsolatedAsyncioTestCase):
+    """D232's review: code that awaited an rlm coroutine later ran it early, then raised."""
 
-    def setUp(self) -> None:
-        self.calls: list[tuple[str, dict | None]] = []
+    async def asyncSetUp(self) -> None:
+        self.calls: list[str] = []
+        handle = {"rlm_child_id": "sub-1", "name": "kid", "session_dir": "/tmp", "model": "faux/faux-1"}
+        replies = {"rlm.run": handle, "exec.spawn": {"job_id": 1}, "exec.poll": {"running": False}}
+        replies["exec.release"] = {"exit_code": 0, "output": "hi"}
 
         async def fake_host_request(kind, payload=None):
-            self.calls.append((kind, payload))
-            return {"members": [KID]}
+            self.calls.append(kind)
+            await asyncio.sleep(payload["timeout_ms"] / 1000 if kind == "rlm.wait" else 0.05)
+            return replies.get(kind, {"members": [KID]})
 
         patcher = mock.patch.object(rlm, "host_request", fake_host_request)
         patcher.start()
         self.addCleanup(patcher.stop)
 
-    def test_an_unawaited_call_runs_where_its_value_is_used(self) -> None:
-        self.assertEqual(rlm.status(), [KID])
-        stored = rlm.status("kid")
-        self.assertEqual(stored, [KID])
-        self.assertEqual([member["name"] for member in rlm.status()], ["kid"])
-        rlm.send("kid", "sent bare")
-        self.assertEqual(self.calls[-1], ("agent_message.send", {"target": "kid", "message": "sent bare", "followup": False}))
+    async def test_collected_stored_and_conditional_calls_run_once_where_awaited(self) -> None:
+        cs = [rlm.send(name, "hello") for name in ("a", "b")]
+        self.assertEqual(self.calls, [])
+        await asyncio.gather(*cs)
+        gate = asyncio.Semaphore(1)
 
-    def test_an_awaited_returned_or_composed_call_is_still_a_coroutine(self) -> None:
-        async def main() -> tuple:
-            handed = (lambda: rlm.status())()
-            self.assertTrue(inspect.iscoroutine(handed))
-            waiting = asyncio.ensure_future(rlm.wait(1))
-            both = await asyncio.gather(rlm.status(), rlm.status("kid"))
-            return await rlm.status(), both, await waiting, await handed
+        async def bounded(coro):
+            async with gate:
+                return await coro
 
-        awaited, both, waited, handed = asyncio.run(main())
-        self.assertEqual((awaited, both, handed), ([KID], [[KID], [KID]], [KID]))
-        self.assertEqual(waited, {"members": [KID]})
+        handles = await asyncio.gather(*(bounded(rlm.run(prompt)) for prompt in ("x", "y")))
+        c = rlm.status()
+        stored = await c
+        chosen = await (rlm.status("kid") if stored else rlm.status("nobody"))
+        report = await rlm.bash(
+            "printf hi"
+        ).wait()
+        self.assertEqual([handle.name for handle in handles], ["kid", "kid"])
+        self.assertEqual((stored, chosen, report["output"]), ([KID], [KID], "hi"))
+        sends = ["agent_message.send"] * 2
+        self.assertEqual(self.calls[:6], [*sends, "rlm.run", "rlm.run", "rlm.status", "rlm.status"])
+
+    async def test_two_tasks_awaiting_stored_calls_do_not_wait_on_each_other(self) -> None:
+        loop = asyncio.get_running_loop()
+
+        async def quick() -> float:
+            started = loop.time()
+            c = rlm.status()
+            await c
+            return loop.time() - started
+
+        async def slow() -> None:
+            w = rlm.wait(1)
+            await w
+
+        took, _ = await asyncio.gather(quick(), slow())
+        self.assertLess(took, 0.5)
 
 
 class SurfaceTests(unittest.TestCase):
     """U3: the preloaded object had drifted from the module; now there is one list, ``__all__``."""
 
-    def test_every_public_function_is_in_all_and_help_and_callable_either_way(self) -> None:
+    def test_every_public_function_is_in_all_and_help_and_records_its_coroutine(self) -> None:
         # A sibling suite's fake host replaces host_request; only the package's own functions count.
         own = {name: value for name, value in vars(rlm).items() if inspect.isfunction(value) and value.__module__ == "rlm"}
         defined = {name for name in own if not name.startswith("_")}
         self.assertEqual(defined - set(rlm.__all__), set())
         self.assertEqual([name for name in rlm.__all__ if not hasattr(rlm, name)], [])
-        self.assertEqual([name for name in defined if inspect.iscoroutinefunction(own[name])], [])
+        bare = [name for name in defined if own[name] is inspect.unwrap(own[name]) and inspect.iscoroutinefunction(own[name])]
+        self.assertEqual(bare, [])
         text = pydoc.render_doc(rlm, renderer=pydoc.plaintext)
         self.assertEqual([name for name in sorted(defined) if f"{name}(" not in text], [])

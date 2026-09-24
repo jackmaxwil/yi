@@ -1,19 +1,16 @@
 """Yi's kernel-side runtime shim (module name `rlm`).
 
-Every call here works with or without ``await``. ``await rlm.status()``, a ``return``,
-or an asyncio call such as ``asyncio.gather`` gets the coroutine; anywhere else, as in
-``print(rlm.status())``, the call runs to completion on the kernel's loop and returns its value.
+Every call here returns a coroutine: ``await rlm.status()`` gets its value. A call the
+cell never awaits runs once after the cell, which prints its value with a note, so
+``print(rlm.status())`` shows a coroutine object and then, one line later, the value.
 """
 
 from __future__ import annotations
 
-import ast
 import asyncio
 import functools
 import inspect
-import itertools
 import json
-import linecache
 import os
 import sys
 import pathlib
@@ -40,86 +37,52 @@ except Exception:  # pragma: no cover - only available in kernels
 HOST_COMM_TARGET = "host.request"
 
 _PUBLIC: list[str] = []
-# The asyncio entry points that take a coroutine, by the name they are called under.
-_COMPOSERS = frozenset(
-    {"gather", "ensure_future", "create_task", "wait_for", "shield", "wait", "as_completed",
-     "run_coroutine_threadsafe", "run", "run_until_complete"}
-)
-_COROUTINE_ATTRS = frozenset({"__await__", "send", "throw", "close"})
-_PASS_THROUGH = (ast.Starred, ast.List, ast.Tuple, ast.Set, ast.keyword)
+_UNSETTLED: list[Any] = []
 
 
-@functools.lru_cache(maxsize=256)
-def _call_sites(filename: str) -> tuple[dict[tuple, ast.Call], dict[ast.AST, ast.AST]]:
-    try:
-        tree = ast.parse("".join(linecache.getlines(filename)))
-    except (SyntaxError, ValueError):
-        return {}, {}
-    parents = {child: node for node in ast.walk(tree) for child in ast.iter_child_nodes(node)}
-    calls = {
-        (node.lineno, node.end_lineno, node.col_offset, node.end_col_offset): node
-        for node in parents
-        if isinstance(node, ast.Call)
-    }
-    return calls, parents
+def _settle(*_: Any) -> None:
+    """IPython's post_run_cell hook: run each rlm coroutine the cell never started, once.
 
-
-def _hands_on_coroutine(frame: types.FrameType) -> bool:
-    """Whether the caller's syntax takes the coroutine itself rather than its value.
-
-    Invariant: a CALL instruction's position is its ast.Call span on 3.11-3.14, so the
-    site is read from the source; a site with no readable source keeps the coroutine.
+    Invariant: a coroutine that was started, or that a task owns, is never run here.
     """
-    code = frame.f_code
-    if not hasattr(code, "co_positions"):
-        return True
-    position = next(itertools.islice(code.co_positions(), frame.f_lasti // 2, None), None)
-    calls, parents = _call_sites(code.co_filename)
-    node = calls.get(position)
-    if node is None:
-        return True
-    parent = parents.get(node)
-    while isinstance(parent, _PASS_THROUGH) or (
-        isinstance(parent, (ast.ListComp, ast.SetComp, ast.GeneratorExp)) and parent.elt is node
-    ):
-        node, parent = parent, parents.get(parent)
-    if isinstance(parent, ast.Attribute):
-        return parent.attr in _COROUTINE_ATTRS
-    if isinstance(parent, ast.Call) and node is not parent.func:
-        return getattr(parent.func, "attr", getattr(parent.func, "id", None)) in _COMPOSERS
-    return isinstance(parent, (ast.Await, ast.Return, ast.Lambda, ast.Yield, ast.YieldFrom))
+    pending, _UNSETTLED[:] = _UNSETTLED[:], []
+    loop = asyncio.get_event_loop()
+    owned = {task.get_coro() for task in asyncio.all_tasks(loop)}
+    for coro in pending:
+        if inspect.getcoroutinestate(coro) != inspect.CORO_CREATED or coro in owned:
+            continue
+        name = coro.__qualname__
+        label = f"{name}()" if "." in name else f"rlm.{name}()"
+        try:
+            said = f"returned {loop.run_until_complete(coro)!r}"
+        except Exception as error:
+            said = f"raised {type(error).__name__}: {error}"
+        print(
+            f"{label} was not awaited, so the cell got a coroutine object, not its value; "
+            f"it ran once after the cell and {said}. Put `await` before the call to use it in the cell."
+        )
 
 
-def _complete(coro: Any) -> Any:
-    try:
-        loop = asyncio.get_running_loop()
-    except RuntimeError:
-        return asyncio.run(coro)
-    try:
-        import nest_asyncio
-
-        nest_asyncio.apply(loop)
-    except Exception as error:
-        coro.close()
-        raise RuntimeError(f"this loop cannot run a call to completion, so await it: {error}") from error
-    return loop.run_until_complete(coro)
-
-
-def _either_way(fn: Any) -> Any:
-    """``fn`` as a coroutine where the call site takes one, else its value, run now."""
+def _handed_out(fn: Any) -> Any:
+    """``fn`` still returns its coroutine; in a kernel the coroutine is recorded for ``_settle``."""
 
     @functools.wraps(fn)
     def call(*args: Any, **kwargs: Any) -> Any:
         coro = fn(*args, **kwargs)
-        return coro if _hands_on_coroutine(sys._getframe(1)) else _complete(coro)
+        shell = get_ipython() if get_ipython is not None else None
+        if shell is not None:
+            if _settle not in shell.events.callbacks["post_run_cell"]:
+                shell.events.register("post_run_cell", _settle)
+            _UNSETTLED.append(coro)
+        return coro
 
-    return call
+    return getattr(inspect, "markcoroutinefunction", lambda marked: marked)(call)
 
 
 def _public(fn: Any) -> Any:
-    """One function of the ``rlm`` surface: listed in ``__all__``, callable either way."""
+    """One function of the ``rlm`` surface: listed in ``__all__``, its coroutine recorded."""
     _PUBLIC.append(fn.__name__)
-    return _either_way(fn) if inspect.iscoroutinefunction(fn) else fn
+    return _handed_out(fn) if inspect.iscoroutinefunction(fn) else fn
 
 
 def _check_schema(schema: dict[str, Any] | None) -> None:
@@ -142,7 +105,7 @@ class RLMSpawnHandle:
         )
         return f"{head}\n{self.next}" if self.next else head
 
-    @_either_way
+    @_handed_out
     async def result(
         self,
         *,
@@ -205,7 +168,7 @@ class RLMSpawnHandle:
                     raise
         raise TimeoutError(f"child {self.name} did not finish within {timeout}s")
 
-    @_either_way
+    @_handed_out
     async def send(self, message: str, followup: bool = False) -> dict[str, Any]:
         return await send(self.name, message, followup)
 
@@ -916,7 +879,7 @@ class BashHandle:
             raise RuntimeError("exec.spawn returned an invalid job_id")
         return job
 
-    @_either_way
+    @_handed_out
     async def tail(self) -> str:
         """New output since the last ``tail``; a released job's output lives on its report."""
         if self._report is not None:
@@ -932,7 +895,7 @@ class BashHandle:
             return f"[... {dropped} bytes trimmed from the front ...]\n{text}"
         return text
 
-    @_either_way
+    @_handed_out
     async def poll(self) -> dict[str, Any]:
         """A snapshot — ``running``, ``exit_code``, ``killed`` — that never waits."""
         if self._report is not None:
@@ -943,14 +906,14 @@ class BashHandle:
             }
         return await host_request("exec.poll", {"job_id": await self._id()})
 
-    @_either_way
+    @_handed_out
     async def kill(self) -> dict[str, Any]:
         """Stop the job if it still runs, release it, and return the final report."""
         if self._report is None:
             await host_request("exec.kill", {"job_id": await self._id()})
         return await self.wait(poll=0.05)
 
-    @_either_way
+    @_handed_out
     async def wait(self, poll: float = 0.5) -> dict[str, Any]:
         """Wait for exit, release the host-side job, and return the final report."""
         while self._report is None:
@@ -1060,9 +1023,8 @@ harness = _harness_state
 
 
 class _CallableModule(types.ModuleType):
-    @_either_way
-    async def __call__(self, prompt: str, **kwargs: Any) -> RLMSpawnHandle:
-        return await run(prompt, **kwargs)
+    def __call__(self, prompt: str, **kwargs: Any) -> Any:
+        return run(prompt, **kwargs)
 
 
 sys.modules[__name__].__class__ = _CallableModule
