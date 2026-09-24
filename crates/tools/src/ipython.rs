@@ -12,6 +12,7 @@ use crate::tool::{
 pub struct KernelCellOutcome {
     pub result: ExecuteResult,
     pub kernel_restarted: bool,
+    pub notes: Vec<String>,
 }
 
 /// yi-runtime implements this over yi-kernel; yi-tools never depends on it.
@@ -123,9 +124,7 @@ pub fn cell_output(code: &str, outcome: KernelCellOutcome) -> ToolOutput {
     if result.status == ExecuteStatus::Aborted {
         sections.push("[cell aborted]".to_owned());
     }
-    if outcome.kernel_restarted {
-        sections.push("[IPython kernel was restarted; in-memory state was lost]".to_owned());
-    }
+    sections.extend(outcome.notes.iter().cloned());
     let text = if sections.is_empty() {
         "(no output)".to_owned()
     } else {

@@ -15,6 +15,14 @@ try:
 except Exception:
     pass
 
+# Incident: an interrupt queued its cancel on the loop without waking it, so a cell awaiting
+# a 30 s sleep outlived the busy window and the kernel was killed with its namespace.
+try:
+    import signal as _yi_signal
+    asyncio.get_event_loop().add_signal_handler(_yi_signal.SIGINT, lambda: None)
+except Exception:
+    pass
+
 try:
     import rlm
     import rlm.mcp as mcp
@@ -147,4 +155,18 @@ pub fn restore_notice_text(restore: &yi_types::kernel::KernelRestoreResult) -> S
     }
     lines.push("</ipython_state_restored>".to_owned());
     lines.join("\n")
+}
+
+pub fn restart_note(lost: Option<&[String]>) -> String {
+    match lost {
+        None => "[IPython kernel was restarted; in-memory state was lost]".to_owned(),
+        Some([]) => {
+            "[IPython kernel was restarted; every name it held is defined again]".to_owned()
+        }
+        Some(names) => format!(
+            "[IPython kernel was restarted; {} names lost: {}. Define them again before use]",
+            names.len(),
+            names.join(", ")
+        ),
+    }
 }

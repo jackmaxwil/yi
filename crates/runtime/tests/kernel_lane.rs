@@ -111,3 +111,71 @@ async fn a_second_cell_queues_behind_the_first_instead_of_interrupting_it() -> T
     );
     Ok(())
 }
+
+fn cancelled_after(delay: Duration) -> CancelFlag {
+    let at = Instant::now() + delay;
+    Arc::new(move || Instant::now() >= at)
+}
+
+fn text_of(output: &yi_tools::ToolOutput) -> String {
+    output
+        .result
+        .content
+        .iter()
+        .map(|content| match content {
+            yi_types::message::Content::Text { text, .. } => text.clone(),
+            _ => String::new(),
+        })
+        .collect()
+}
+
+/// The field shape: a cell polling with `await asyncio.sleep(30)`, cancelled by its caller.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "tier-2 journey: `just journeys`"]
+async fn a_cancelled_awaiting_cell_leaves_the_namespace_standing() -> TestResult {
+    let service = service();
+    let set = service
+        .execute_user_cell("keep = 42", &never_cancelled())
+        .await;
+    assert!(!set.is_error, "{:?}", set.result);
+    let poll = "import asyncio\nwhile True:\n    await asyncio.sleep(30)";
+    let stopped = service
+        .execute_user_cell(poll, &cancelled_after(Duration::from_secs(1)))
+        .await;
+    assert!(stopped.is_error, "{:?}", stopped.result);
+    let after = service
+        .execute_user_cell("print(keep)", &never_cancelled())
+        .await;
+    service.dispose().await;
+    assert_eq!(stdout_of(&after), "42\n", "{}", text_of(&after));
+    assert_eq!(after.result.details["kernelRestarted"], false);
+    Ok(())
+}
+
+/// A cell deaf to SIGINT outlives the busy window, so the kernel has to go.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "tier-2 journey: `just journeys`"]
+async fn a_forced_restart_names_what_it_lost_in_the_result_and_the_state() -> TestResult {
+    let service = service();
+    let set = service
+        .execute_user_cell("keep = 42\nalso = 7", &never_cancelled())
+        .await;
+    assert!(!set.is_error, "{:?}", set.result);
+    let deaf = "import signal, time\nsignal.signal(signal.SIGINT, signal.SIG_IGN)\ntime.sleep(60)";
+    let _ = service
+        .execute_user_cell(deaf, &cancelled_after(Duration::from_secs(1)))
+        .await;
+    let after = service
+        .execute_user_cell("print('fresh')", &never_cancelled())
+        .await;
+    let state = service.state();
+    service.dispose().await;
+    let text = text_of(&after);
+    assert_eq!(after.result.details["kernelRestarted"], true, "{text}");
+    assert!(
+        text.contains("[IPython kernel was restarted; 2 names lost: also, keep."),
+        "{text}"
+    );
+    assert!(state.contains("restarted; 2 names lost"), "{state}");
+    Ok(())
+}
