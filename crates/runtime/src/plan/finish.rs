@@ -386,16 +386,23 @@ impl SubagentHost {
         live.unwrap_or(false) || self.settling.load(Ordering::SeqCst) > 0
     }
 
-    /// A finish settling, or any child still moving or asking; a stuck child holds nothing.
+    /// A finish settling, or any child still moving or asking.
     pub fn holds_owner(&self) -> bool {
-        use crate::family::MemberState;
-        let moving = |view: &crate::family::MemberView| {
-            matches!(
-                view.state,
-                MemberState::Running | MemberState::Queued | MemberState::NeedsYou
-            )
-        };
-        self.settling.load(Ordering::SeqCst) > 0 || self.states().iter().any(moving)
+        self.settling.load(Ordering::SeqCst) > 0
+            || self
+                .states()
+                .iter()
+                .any(|view| holds(view, self.in_tool(&view.name)))
+    }
+
+    fn in_tool(&self, name: &str) -> bool {
+        self.children.lock().is_ok_and(|children| {
+            children.values().any(|record| {
+                record.session_name == name
+                    && record.activity == yi_types::subagent::ChildActivity::Executing
+                    && record.session.status() == crate::session::Status::Running
+            })
+        })
     }
 
     /// Held, a reap of `name` leaves its block here to ride the verdict; released, it comes back.
@@ -483,6 +490,20 @@ pub fn install(host: &Arc<SubagentHost>, engine: &Arc<PlanEngine>, deliver: Deli
         }));
         true
     }));
+}
+
+/// Invariant: a stuck child holds nothing unless only the idle clock stalled it mid tool call.
+fn holds(view: &crate::family::MemberView, in_tool: bool) -> bool {
+    use crate::family::MemberState;
+    let idle = view
+        .note
+        .as_deref()
+        .is_some_and(|note| note.starts_with("idle "));
+    match view.state {
+        MemberState::Running | MemberState::Queued | MemberState::NeedsYou => true,
+        MemberState::Stuck => idle && in_tool,
+        _ => false,
+    }
 }
 
 #[cfg(test)]
@@ -851,6 +872,22 @@ mod tests {
         drop(rig.host.wait(1_000, None).await);
         assert_eq!(counted(), 1, "a live child is waited on");
         Ok(())
+    }
+
+    #[test]
+    fn a_child_idle_inside_a_running_tool_still_holds_the_owner() {
+        let view = |note: &str| crate::family::MemberView {
+            name: "builder".to_owned(),
+            state: crate::family::MemberState::Stuck,
+            note: Some(note.to_owned()),
+            tools: 1,
+            tokens: 0,
+            idle_s: 400,
+            worktree: None,
+        };
+        assert!(super::holds(&view("idle 400s"), true));
+        assert!(!super::holds(&view("idle 400s"), false));
+        assert!(!super::holds(&view("repeat_break"), true));
     }
 
     /// Dies with the ask ending the child's run: it would be accepted mid-question.

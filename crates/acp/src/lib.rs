@@ -633,7 +633,7 @@ impl AcpState {
             "_yi/heartbeat" | "_yi/goal" | "_yi/tracked" | "_yi/kernel_execute"
             | "_yi/kernel_cancel" | "_yi/slash" => self.handle_extension(method, params),
             "_yi/steer" | "_yi/rewind" | "_yi/plan" | "_yi/todo" | "_yi/child_replay"
-            | "_yi/child_abort" => self.handle_control(method, params),
+            | "_yi/child_abort" | "_yi/child_answer" => self.handle_control(method, params),
             other => Err((METHOD_NOT_FOUND, format!("unknown method {other}"))),
         }
     }
@@ -681,6 +681,10 @@ impl AcpState {
                     .map_err(|error| (INVALID_PARAMS, error.to_string()))?;
                 let subplans = yi_runtime::plan::subplans_of(&plan, service.plans_dir());
                 Ok(json!({"plan": plan, "subplans": subplans}))
+            }
+            "_yi/child_answer" => {
+                let told = handle.host.answer_told(text("childId"), text("text"));
+                Ok(json!({ "text": told }))
             }
             "_yi/child_replay" | "_yi/child_abort" => {
                 let child_id = ChildId(text("childId").to_owned());

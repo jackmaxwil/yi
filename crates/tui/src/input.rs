@@ -179,6 +179,10 @@ pub(crate) fn handle_action(
                     handle_slash(app, &command);
                     return;
                 }
+                if let Some((child_id, _)) = app.reply_target() {
+                    let _ = cmd_tx.send(Command::Answer { child_id, text });
+                    return;
+                }
                 if app.running {
                     app.steering.push(text.clone());
                     let _ = cmd_tx.send(Command::Steer(text));

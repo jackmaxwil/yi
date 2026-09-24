@@ -147,7 +147,6 @@ fn parse_args() -> Result<Args, lexopt::Error> {
         && let Some(flag) = [
             ("--keys", keys.is_some()),
             ("--frames", frames.is_some()),
-            ("--faux", faux.is_some()),
             ("--record", record.is_some()),
             ("--snap", snap.is_some()),
         ]

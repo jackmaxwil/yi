@@ -78,7 +78,11 @@ mode rather than adding refusal text:
 - The cwd-less `goal::run_check` goes; the check runner takes the child's worktree or
   the session cwd from its record.
 
-## M3. One Python surface, and the human's view (items 8, 9)
+## M3. One Python surface, and the human's view (items 8, 9): done
+
+Item 8 landed as 0.294.0 (D232) and item 9 as 0.296.0 (D234, #498), with the M2 review's
+seven fixes. The human's answer and the parent's resolve the same request: the first wins
+and the other is refused by name.
 
 - Item 8, in parallel with M1: the `rlm` object's methods generated from the module's
   functions, and a sync form of every call when it is not awaited.

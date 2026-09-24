@@ -65,13 +65,15 @@ pub struct Envelope {
 }
 
 /// What the host did with an accepted envelope, every one written to the inbox first:
-/// `Queued` for a running turn to drain, `Woken` a turn started on it, `Inboxed` neither.
+/// `Queued` for a running turn to drain, `Woken` a turn started on it, `Inboxed` neither,
+/// `Answered` a reply the waiting request's call returned, which is never presented again.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Delivery {
     Queued,
     Woken,
     Inboxed,
+    Answered,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

@@ -445,10 +445,13 @@ fn wire_plan_engine(
         let leased = Arc::clone(host);
         let ladder = Arc::new(
             crate::plan::probe::ProbeLadder::new(engine, (plans_dir, &wiring.cwd), probe_deliver)
-                .with_children(
-                    Arc::new(move || children.states()),
-                    lifecycle_notice(session),
-                )
+                .with_children(Arc::new(move || children.states()), {
+                    let (notice, stalled) = (lifecycle_notice(session), Arc::clone(host));
+                    Arc::new(move |text: &str, news| {
+                        notice(text, news);
+                        stalled.publish_all();
+                    })
+                })
                 .with_leases(Arc::new(move || {
                     let host = Arc::clone(&leased);
                     tokio::spawn(async move { host.expire().await });

@@ -158,7 +158,8 @@ class ResultSignatureTests(unittest.IsolatedAsyncioTestCase):
                 await _handle().result(timeout=1.0)
 
     async def test_a_child_asking_its_parent_is_collected_not_timed_out(self) -> None:
-        """needs_you names a child that ended on ask_user (D165); its answer is collectable."""
+        """needs_you with no question pending names a todo the child blocked on you (D165); its
+        answer is collectable."""
 
         async def wait_needs_you(timeout: float, cursor: int | None = None) -> dict:
             return _wait_reply("needs_you")

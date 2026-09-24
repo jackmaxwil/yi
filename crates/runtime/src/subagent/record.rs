@@ -99,6 +99,7 @@ impl ChildRecord {
             answer_preview: self.answer_preview.clone(),
             error: self.error.clone(),
             exit: self.exit,
+            flag: None,
         }
     }
 
