@@ -10,7 +10,19 @@ FAST=0
 PY="${PY:-$(command -v python3.13 || command -v python3.12 || command -v python3.11 || command -v python3)}"
 "$PY" -c "import tomllib" 2>/dev/null || { echo "FAIL: $PY lacks tomllib (need python >= 3.11)"; exit 1; }
 FAILED=0
-run() { "$@" || FAILED=$((FAILED + 1)); }
+# Every gate reads the tree and none writes it, so they all run at once; `drain` prints each
+# one's output in launch order, so the report still reads most-legible-failure-first.
+OUT=$(mktemp -d)
+trap 'rm -rf "$OUT"' EXIT
+N=0
+run() { N=$((N + 1)); { "$@"; echo $? > "$OUT/$N.rc"; } > "$OUT/$N.out" 2>&1 & }
+drain() {
+  wait
+  for i in $(seq 1 "$N"); do
+    cat "$OUT/$i.out"
+    [ "$(cat "$OUT/$i.rc")" = 0 ] || FAILED=$((FAILED + 1))
+  done
+}
 
 run "$PY" scripts/guardrails/check_manifests.py
 run "$PY" scripts/guardrails/check_boundaries.py
@@ -72,7 +84,7 @@ run "$PY" scripts/guardrails/check_orphans.py --selfcheck
 run "$PY" scripts/guardrails/check_public_surface.py --selfcheck
 # Prose is not exempt: 1,485 comment lines are under ratchet, and the design docs
 # are the reference. Config and the domain-word allowlist live in .codespellrc.
-if command -v codespell >/dev/null; then run codespell; else echo "FAIL codespell (uv tool install codespell)"; FAILED=$((FAILED+1)); fi
+if command -v codespell >/dev/null; then run codespell; else run sh -c 'echo "FAIL codespell (uv tool install codespell)"; exit 1'; fi
 # binary_size and startup are the only two readers of target/dist/yi, and the
 # fat-LTO build that writes it is minutes, so this is where it is paid for
 # (D91): one branch decides whether either gate runs, and the build lives
@@ -80,27 +92,25 @@ if command -v codespell >/dev/null; then run codespell; else echo "FAIL codespel
 # target measures a different binary against it. D68: wall clock on a shared
 # runner is noise against a 5 ms budget. --fast skips both because one needs
 # the build and hyperfine is most of the other. Announced, never silent (9).
+# The build runs beside the other gates (target/dist is its own cargo lock); the
+# two gates that read it run after `drain`, so startup is timed on a quiet tree.
+DIST=0
 if [ "$FAST" -eq 1 ]; then
-  echo "skip binary_size (--fast: needs a dist build)"
-  echo "skip startup (--fast: hyperfine is most of the run)"
+  run echo "skip binary_size (--fast: needs a dist build)"
+  run echo "skip startup (--fast: hyperfine is most of the run)"
 elif [ -n "${CI:-}" ]; then
-  echo "skip binary_size (D70: baseline is macOS arm64; CI is another target)"
-  echo "skip startup (D68: a shared runner cannot measure a 5 ms budget)"
-  echo "skip build-dist (D91: nothing on CI reads target/dist/yi)"
-elif scripts/build_dist.sh; then
-  run "$PY" scripts/guardrails/check_binary_size.py
-  run "$PY" scripts/guardrails/check_startup.py
+  run echo "skip binary_size (D70: baseline is macOS arm64; CI is another target)"
+  run echo "skip startup (D68: a shared runner cannot measure a 5 ms budget)"
+  run echo "skip build-dist (D91: nothing on CI reads target/dist/yi)"
 else
-  # A stale target/dist/yi from an earlier build would pass both gates while
-  # measuring code nobody wrote, so a failed build fails them instead.
-  echo "FAIL dist build (binary_size and startup have nothing to measure)"
-  FAILED=$((FAILED + 1))
+  run scripts/build_dist.sh
+  DIST=$N
 fi
 # Growth is priced once per version, in the changelog row a landing writes last,
 # so asking it of every commit inside that landing only teaches people to ignore
 # it; --fast is the pre-commit hook and the full run is the push.
 if [ "$FAST" -eq 1 ]; then
-  echo "skip growth (--fast: a version's growth is priced at the push, not per commit)"
+  run echo "skip growth (--fast: a version's growth is priced at the push, not per commit)"
 else
   run "$PY" scripts/guardrails/check_growth.py
 fi
@@ -108,10 +118,22 @@ fi
 if [ "$FAST" -eq 0 ]; then
   run cargo doc --workspace --no-deps --document-private-items -q
 
-  if command -v cargo-machete >/dev/null; then run cargo machete crates; else echo "FAIL machete (cargo install cargo-machete)"; FAILED=$((FAILED+1)); fi
-  if command -v cargo-deny >/dev/null; then run cargo deny check -s; else echo "FAIL deny (cargo install cargo-deny)"; FAILED=$((FAILED+1)); fi
+  if command -v cargo-machete >/dev/null; then run cargo machete crates; else run sh -c 'echo "FAIL machete (cargo install cargo-machete)"; exit 1'; fi
+  if command -v cargo-deny >/dev/null; then run cargo deny check -s; else run sh -c 'echo "FAIL deny (cargo install cargo-deny)"; exit 1'; fi
 else
-  echo "skip doc/machete/deny (--fast)"
+  run echo "skip doc/machete/deny (--fast)"
+fi
+drain
+
+if [ "$DIST" -gt 0 ]; then
+  if [ "$(cat "$OUT/$DIST.rc")" = 0 ]; then
+    "$PY" scripts/guardrails/check_binary_size.py || FAILED=$((FAILED + 1))
+    "$PY" scripts/guardrails/check_startup.py || FAILED=$((FAILED + 1))
+  else
+    # A stale target/dist/yi from an earlier build would pass both gates while
+    # measuring code nobody wrote, so a failed build fails them instead.
+    echo "FAIL dist build (binary_size and startup have nothing to measure)"
+  fi
 fi
 
 echo "----"

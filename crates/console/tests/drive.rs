@@ -283,14 +283,12 @@ fn fixture_loop(listener: &UnixListener, script: Vec<Step>) -> Result<(), String
     Ok(())
 }
 
-/// Its Result surfaces through the join in `run`, so a protocol mismatch fails with evidence.
+/// Incident: bound inside the thread, the socket lost the race to a console that dialled
+/// first, and the join then waited on an accept until nextest killed the test at 60s.
 fn spawn_fixture(socket: PathBuf, script: Vec<Step>) -> JoinHandle<Result<(), String>> {
-    std::thread::spawn(move || {
-        let _ = std::fs::remove_file(&socket);
-        let listener =
-            UnixListener::bind(&socket).map_err(|error| format!("fixture bind: {error}"))?;
-        fixture_loop(&listener, script)
-    })
+    let _ = std::fs::remove_file(&socket);
+    let listener = UnixListener::bind(&socket).map_err(|error| format!("fixture bind: {error}"));
+    std::thread::spawn(move || fixture_loop(&listener?, script))
 }
 
 fn init_reply(frame: &Value) -> Vec<Value> {

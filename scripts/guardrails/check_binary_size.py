@@ -2,9 +2,9 @@
 """Dist binary size budget (13.6, D31: ratchets measure dist, never release)."""
 import json, sys, pathlib
 sys.path.insert(0, str(pathlib.Path(__file__).parent))
-from _common import ROOT, BASE, fail
+from _common import BASE, DIST_BIN, fail
 
-bin_path = ROOT / "target/dist/yi"
+bin_path = DIST_BIN
 if not bin_path.exists():
     fail([f"{bin_path} missing - run: cargo build --profile dist -p yi-cli"], "binary_size")
 size = bin_path.stat().st_size
