@@ -368,7 +368,7 @@ def run_live(args):
         except json.JSONDecodeError:
             rollup = {}
     counts = {status: sum(1 for row in rows if row["status"] == status) for status in ("pass", "fail", "inconclusive")}
-    record = {"suite": suite, "model": args.model, "configFp": fingerprint, "capUsd": args.cap_usd,
+    record = {"suite": suite, "model": args.model, "mode": mode, "configFp": fingerprint, "capUsd": args.cap_usd,
               "spentUsd": round(spent, 6), "budgetHit": budget_hit, "counts": counts, "rows": rows, "telemetry": rollup}
     (out / "run.json").write_text(json.dumps(record, indent=1, sort_keys=True))
     print(json.dumps({"out": str(out), "counts": counts, "spentUsd": record["spentUsd"]}, sort_keys=True))

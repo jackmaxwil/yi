@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""The live lane's memory: run records on the CI-owned `telemetry` branch, a baseline read
-from the last ten, and a verdict that names every band and ratchet a run breaks.
+"""The live lane's memory: run records on the CI-owned `telemetry` branch, a baseline read from
+the last ten of the same model and routing, and a verdict naming every band and ratchet it breaks.
 
-    live_ledger.py baseline                    -> baseline JSON on stdout (empty if no history)
+    live_ledger.py baseline RUN.json           -> baseline JSON of the runs like RUN (empty if none)
     live_ledger.py judge RUN.json BASELINE.json -> verdict JSON on stdout; exit 1 when red
     live_ledger.py append RUN.json SHA          -> commits runs/<utc>-<sha7>.json to `telemetry`
 
@@ -27,19 +27,30 @@ def git(*args, check=True):
     return subprocess.run(["git", *args], capture_output=True, text=True, check=check, env=GIT_ENV, timeout=120).stdout
 
 
-def history():
-    """The last records on the telemetry branch, newest first; none is not an error."""
+def kind(record):
+    """What a ratchet may compare across: the model and the routing. A record from before `mode`
+    was written ran on OpenRouter's default routing, which is plain `live`."""
+    return record.get("model"), record.get("mode", "live")
+
+
+def history(like):
+    """The last records on the telemetry branch that ran like `like`, newest first; none is not
+    an error. A new routing starts its own history rather than inheriting another's medians."""
     try:
         git("fetch", "--no-tags", "origin", f"{BRANCH}:refs/remotes/origin/{BRANCH}")
         names = sorted(git("ls-tree", "--name-only", f"origin/{BRANCH}", "runs/").split())
     except subprocess.CalledProcessError:
         return []
     records = []
-    for name in reversed(names[-LAST:]):
+    for name in reversed(names):
+        if len(records) == LAST:
+            break
         try:
-            records.append(json.loads(git("show", f"origin/{BRANCH}:{name}")))
+            record = json.loads(git("show", f"origin/{BRANCH}:{name}"))
         except (subprocess.CalledProcessError, json.JSONDecodeError):
             continue
+        if kind(record) == kind(like):
+            records.append(record)
     return records
 
 
@@ -150,6 +161,9 @@ def selfcheck():
     assert not skipped["red"] and skipped["findings"] == ["inconclusive: no key"]
     b = baseline_of([clean, slow, {"skipped": "x"}])
     assert b["runs"] == 2 and b["ttftP50Ms"] == 2150 and b["classes"] == []
+    pinned = {**clean, "model": "m", "mode": 'live+routing{"order":["x"]}'}
+    assert kind({"model": "m"}) == kind({"model": "m", "mode": "live"}), "an old record ran plain live"
+    assert kind(pinned) != kind({"model": "m"}), "a pinned run is never judged by unpinned medians"
     print("ok   live_ledger selfcheck")
 
 
@@ -157,8 +171,9 @@ def main(argv):
     if not argv or argv[0] == "--selfcheck":
         selfcheck(); return 0
     verb, rest = argv[0], argv[1:]
-    if verb == "baseline":
-        print(json.dumps(baseline_of(history()), sort_keys=True)); return 0
+    if verb == "baseline" and len(rest) == 1:
+        like = json.loads(pathlib.Path(rest[0]).read_text())
+        print(json.dumps(baseline_of(history(like)), sort_keys=True)); return 0
     if verb == "judge" and len(rest) == 2:
         record = json.loads(pathlib.Path(rest[0]).read_text())
         baseline = json.loads(pathlib.Path(rest[1]).read_text()) if pathlib.Path(rest[1]).is_file() else {}

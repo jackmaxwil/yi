@@ -322,9 +322,14 @@ posts `scripts/live_report.py run.json` as one PR comment; without the
 
 ### Verdicts and history
 
-`scripts/live_ledger.py baseline` reads the last ten `run.json` records from the
-`telemetry` branch — medians of ttft p50, cache hit rate and cost per scenario,
-plus every error class seen. `judge run.json baseline.json` names each band the
+`scripts/live_ledger.py baseline run.json` reads the last ten records from the
+`telemetry` branch with the run's model and mode (its `+routing{…}` label; a
+record written before `mode` was recorded counts as plain `live`) — medians of
+ttft p50, cache hit rate and cost per scenario, plus every error class seen.
+The three workflows that run the flash suite pin one upstream through
+`EVAL_ROUTING` (DeepInfra: Relace drops the whole cache on a prefix a few tokens
+past a 256-token page, and Sail Research's ttft p50 sat over the 3 s band), and
+`evals/selftest.py` holds them to one value. `judge run.json baseline.json` names each band the
 run breaks and each ratchet it loses; `live_report.py` prints the verdict at the
 top of the PR comment. Postmerge runs the suite on main and `append`s the record
 to the branch, so a PR is always judged against what main did last.
