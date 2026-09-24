@@ -279,17 +279,23 @@ async fn a_live_kernel_fetches_its_own_variables_and_runs_bash_handles() -> Test
     Ok(())
 }
 
-/// Six of eight dogfood trials called `rlm.status()` or `rlm.send(...)` without `await` and got
-/// a coroutine that never ran. Un-awaited, a call now runs where its value is used.
+/// Six of eight dogfood trials called `rlm.status()` or `rlm.send(...)` without `await`: such a
+/// call runs once after the cell, and every awaited form runs where it is awaited.
 #[tokio::test]
 #[ignore = "tier-2 journey: `just journeys`"]
-async fn a_live_kernel_answers_rlm_calls_with_or_without_await() -> TestResult {
+async fn a_live_kernel_runs_each_rlm_call_once_awaited_or_not() -> TestResult {
     let sent = Arc::new(std::sync::Mutex::new(Vec::new()));
     let mut registry = HostRegistry::default();
     registry.register("rlm.status", |_payload| {
         Box::pin(async {
             let reply = serde_json::json!({"members": [{"name": "kid", "state": "running"}]});
             reply.as_object().cloned().ok_or_else(|| "reply".to_owned())
+        })
+    });
+    registry.register("rlm.wait", |_payload| {
+        Box::pin(async {
+            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+            Ok(serde_json::Map::new())
         })
     });
     let seen = Arc::clone(&sent);
@@ -303,35 +309,51 @@ async fn a_live_kernel_answers_rlm_calls_with_or_without_await() -> TestResult {
     let outcome = cell(
         &service,
         concat!(
-            "import sys\n",
+            "import sys, time\n",
             "print('one', rlm is sys.modules['rlm'], fetch is rlm.fetch, bash is rlm.bash)\n",
             "print('bare', rlm.status())\n",
-            "s = rlm.status()\n",
-            "print('stored', s[0]['state'])\n",
             "rlm.send('kid', 'sent bare')\n",
-            "print('awaited', (await rlm.status())[0]['name'])\n",
-            "both = await asyncio.gather(rlm.status(), rlm.status('kid'))\n",
-            "print('gathered', len(both), len(both[1]))\n",
-            "for c in rlm.status():\n    await asyncio.sleep(0)\n    print('mixed', c['name'])\n",
-            "h = bash('printf hi')\nr = h.wait()\nprint('handle', r['exit_code'], r['output'])\n",
+            "cs = [rlm.send(n, 'gathered') for n in ('a', 'b')]\nawait asyncio.gather(*cs)\n",
+            "gate = asyncio.Semaphore(1)\n",
+            "async def bounded(c):\n    async with gate:\n        return await c\n",
+            "both = await asyncio.gather(*(bounded(rlm.status(n)) for n in ('kid', 'kid')))\n",
+            "print('bounded', len(both))\n",
+            "c = rlm.status()\nprint('stored', (await c)[0]['state'])\n",
+            "print('chosen', len(await (rlm.status('kid') if c else rlm.status('x'))))\n",
+            "r = await rlm.bash(\n    'printf hi'\n).wait()\nprint('handle', r['exit_code'], r['output'])\n",
+            "rlm.bash(\n    'printf lo'\n).wait()\n",
+            "async def quick():\n    t = time.monotonic()\n    s = rlm.status()\n    await s\n",
+            "    return time.monotonic() - t\n",
+            "async def slow():\n    w = rlm.wait(2)\n    await w\n",
+            "took, _ = await asyncio.gather(quick(), slow())\nprint('quick', took < 1)\n",
         ),
     )
     .await?;
     service.dispose().await;
     let printed = format!("{}\n{}", outcome.result.stdout, outcome.result.stderr);
+    let status = "[{'name': 'kid', 'state': 'running'}]";
     for line in [
         "one True True True",
-        "bare [{'name': 'kid', 'state': 'running'}]",
+        "bare <coroutine object status at 0x",
+        "bounded 2",
         "stored running",
-        "awaited kid",
-        "gathered 2 1",
-        "mixed kid",
+        "chosen 1",
         "handle 0 hi",
+        "quick True",
+        "rlm.send() was not awaited, so the cell got a coroutine object, not its value",
+        &format!(
+            "rlm.status() was not awaited, so the cell got a coroutine object, not its value; it ran once after the cell and returned {status}"
+        ),
+        "BashHandle.wait() was not awaited",
+        "'output': 'lo'",
     ] {
         assert!(printed.contains(line), "missing {line:?}: {printed}");
     }
+    assert!(!printed.contains("never awaited"), "{printed}");
     let sent = sent.lock().map_err(|error| error.to_string())?.clone();
-    assert_eq!(sent, [Some(serde_json::json!("sent bare"))], "{printed}");
+    let [a, b, bare] =
+        ["gathered", "gathered", "sent bare"].map(|text| Some(serde_json::json!(text)));
+    assert_eq!(sent, [a, b, bare], "{printed}");
     Ok(())
 }
 
