@@ -262,6 +262,36 @@ class BlackboardTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(ValueError):
             rlm.put("../escape", 1)
 
+    def test_a_put_that_fails_midway_leaves_the_previous_sidecar_whole(self) -> None:
+        # Incident: the sidecar was written in place, so ENOSPC mid-write left half a JSON file.
+        rlm.put("shard", 1)
+        before = (self.family / "shard.json").read_text()
+        real_open = open
+
+        class Full:
+            def __init__(self, handle):
+                self.handle = handle
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                self.handle.close()
+
+            def write(self, data):
+                self.handle.write(data[: len(data) // 2])
+                raise OSError(28, "No space left on device")
+
+        def filling(path, mode="r", *args, **kwargs):
+            handle = real_open(path, mode, *args, **kwargs)
+            return Full(handle) if ".json" in str(path) and "w" in mode else handle
+
+        with mock.patch("builtins.open", filling), mock.patch("io.open", filling):
+            with self.assertRaises(OSError):
+                rlm.put("shard", 2)
+        self.assertEqual(json.loads((self.family / "shard.json").read_text()), json.loads(before))
+        self.assertEqual(sorted(path.name for path in self.family.iterdir()), ["shard.dill", "shard.json"])
+
     async def test_a_kernel_object_fetch_undills_the_path_the_host_names(self) -> None:
         target = self.family / "main.df.dill"
         with open(target, "wb") as handle:

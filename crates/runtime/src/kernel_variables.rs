@@ -70,8 +70,14 @@ pub(crate) fn dump_variable_code(name: &VariableName, path: &Path) -> String {
         except _b.ImportError:
             import pickle as _ser
         os.makedirs(os.path.dirname(path), exist_ok=True)
-        with _b.open(path, "wb") as handle:
-            _ser.dump(ns[name], handle)
+        tmp = path + ".tmp-" + _b.str(os.getpid())
+        try:
+            with _b.open(tmp, "wb") as handle:
+                _ser.dump(ns[name], handle)
+            os.replace(tmp, path)
+        finally:
+            if os.path.exists(tmp):
+                os.remove(tmp)
         payload = json.dumps({{"found": True, "chars": os.path.getsize(path), "text": path}})
     except _b.BaseException as exc:
         payload = json.dumps({{"found": True, "error": _b.repr(exc)}})
