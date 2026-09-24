@@ -988,7 +988,7 @@ pub(super) mod tests {
 
     /// Dies with the cursor dropped: a wait with none read epoch 0 and reported the finished
     /// child again, so a parent looping on `rlm.wait(300)` saw news that was not new. With
-    /// nothing live the second wait returns at once, and says it is `settled` (M4).
+    /// nothing live, the second wait at that same state refuses and names it (M4).
     #[tokio::test]
     async fn a_wait_with_no_cursor_blocks_until_something_moves() -> TestResult {
         use yi_kernel::client::HostHandlers;
@@ -1014,13 +1014,11 @@ pub(super) mod tests {
         let again = registry
             .dispatch("rlm.wait", payload)
             .ok_or("rlm.wait")?
-            .await?;
+            .await;
         assert_eq!(
-            again["changed"],
-            serde_json::json!([]),
-            "nothing new: {again:?}"
+            again.err().as_deref(),
+            Some("the family is settled: nothing is running; stop waiting")
         );
-        assert_eq!(again["state"], "settled", "{again:?}");
         Ok(())
     }
 

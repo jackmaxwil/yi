@@ -41,12 +41,12 @@ enum Child {
     Holds(&'static str),
 }
 
-fn family(
-    parent: &Arc<AgentSession>,
-    kind: Child,
-) -> std::io::Result<(Scratch, Arc<SubagentHost>)> {
+type Family = (Scratch, Arc<SubagentHost>, yi_session::SharedSession);
+
+fn family(parent: &Arc<AgentSession>, kind: Child) -> std::io::Result<Family> {
     let root = Scratch::new("yi-requests")?;
     let store = support::memory_store("requests-parent");
+    let kept = store.clone();
     let host = Arc::new(SubagentHost::new(SubagentHostOptions {
         depth: 0,
         max_depth: 1,
@@ -105,7 +105,7 @@ fn family(
         plans_dir: root.join(".yi/plans"),
         family_live: Arc::new(|| 0),
     }));
-    Ok((root, host))
+    Ok((root, host, kept))
 }
 
 fn spawn(host: &Arc<SubagentHost>, name: &str) -> TestResult {
@@ -137,7 +137,7 @@ async fn a_request_left_open_is_chased_once_then_taken_from_the_final_text() -> 
         "The total is 5.",
         "Nothing more.",
     ];
-    let (_root, host) = family(&parent, Child::Says(lines))?;
+    let (_root, host, _store) = family(&parent, Child::Says(lines))?;
     spawn(&host, "tally")?;
     assert!(reaches(&host, "finished").await, "the brief's turn ends");
     let started = Instant::now();
@@ -148,23 +148,87 @@ async fn a_request_left_open_is_chased_once_then_taken_from_the_final_text() -> 
         started.elapsed()
     );
     assert_eq!(reply["envelope"]["answeredBy"], "final_text", "{reply:?}");
-    let child = host.children_view().pop().ok_or("no child")?;
-    let transcript = serde_json::to_string(&child.session.messages())?;
-    assert!(
-        transcript.contains("is still open and your turn ended without answering it"),
-        "one steer came before the final text was taken: {transcript}"
+    assert_eq!(
+        reply["envelope"]["body"], "Still nothing to add.",
+        "{reply:?}"
     );
+    let child = host.children_view().pop().ok_or("no child")?;
+    let steers = child
+        .session
+        .messages()
+        .iter()
+        .filter(|message| {
+            message
+                .plain_text()
+                .contains("is still open and your turn ended")
+        })
+        .count();
+    assert_eq!(steers, 1, "one steer came before the final text was taken");
+    Ok(())
+}
+
+/// Dies with a final text over the body cap refused and dropped: the requester waited out its
+/// timeout. The whole text is kept on the blackboard and its head travels with the ref.
+#[tokio::test]
+async fn a_final_text_over_the_body_cap_is_kept_whole_and_sent_by_ref() -> TestResult {
+    let parent = Arc::new(session((0..6).map(|_| said("noted")).collect()));
+    let long: &'static str = Box::leak("tally ".repeat(4_000).into_boxed_str());
+    let lines: &'static [&'static str] =
+        Box::leak(Box::new(["Ready.", "Nothing yet.", long, "Done."]));
+    let (root, host, _store) = family(&parent, Child::Says(lines))?;
+    spawn(&host, "tally")?;
+    assert!(reaches(&host, "finished").await, "the brief's turn ends");
+    let started = Instant::now();
+    let reply = host
+        .request("parent", "tally", "the total?", 20_000)
+        .await?;
+    assert!(
+        started.elapsed() < Duration::from_secs(10),
+        "{:?}",
+        started.elapsed()
+    );
+    let envelope = &reply["envelope"];
+    let id = envelope["inReplyTo"].as_str().ok_or("no id")?;
+    assert_eq!(
+        envelope["ref"],
+        format!("family://reply-{id}"),
+        "{envelope:?}"
+    );
+    let body = envelope["body"].as_str().unwrap_or_default();
+    assert!(
+        body.starts_with("tally tally") && body.contains("24000 bytes in all"),
+        "{body}"
+    );
+    let kept = std::fs::read_to_string(root.join(format!("family/reply-{id}.json")))?;
+    let kept: Value = serde_json::from_str(&kept)?;
+    assert_eq!(kept["text"], long);
     Ok(())
 }
 
 /// Dies with an ask answered by plain sends (`mbx-ask` round 3): four `rlm.send('asker', ...)`
-/// were queued as mail while the child waited out its question.
+/// were queued as mail while the child waited out its question. Dies too with a send meant
+/// as information taken as the answer to a question its sender was never shown.
 #[tokio::test]
-async fn a_plain_send_to_a_child_asking_its_one_question_answers_it() -> TestResult {
+async fn a_plain_send_answers_a_question_only_once_its_sender_was_shown_it() -> TestResult {
     let parent = Arc::new(session((0..4).map(|_| said("noted")).collect()));
-    let (_root, host) = family(&parent, Child::Asks)?;
+    let (_root, host, store) = family(&parent, Child::Asks)?;
     spawn(&host, "asker")?;
     assert!(reaches(&host, "needs_you").await, "the child asks");
+    let (id, ..) = host.open_requests().pop().ok_or("no question")?;
+    let inform = json!({"target": "asker", "message": "Also write tests."});
+    let sent = host.send("parent", inform.as_object().ok_or("inform")?)?;
+    let row = &sent["receipts"][0];
+    assert_ne!(row["state"], "answered", "{sent:?}");
+    let hint = row["hint"].as_str().unwrap_or_default();
+    assert!(hint.contains(&format!("reply_to=\"{id}\"")), "{sent:?}");
+    let shown = AgentMessage::Custom {
+        custom_type: "agent_message".to_owned(),
+        content: yi_types::message::UserContent::Text("Which file name?".to_owned()),
+        display: true,
+        details: Some(json!({"id": id})),
+        timestamp: 0,
+    };
+    yi_session::lock_session(&store).append_message("main", shown)?;
     let send = json!({"target": "asker", "message": "Use the file name greeting.txt."});
     let sent = host.send("parent", send.as_object().ok_or("send")?)?;
     assert_eq!(sent["receipts"][0]["state"], "answered", "{sent:?}");
@@ -179,42 +243,46 @@ async fn a_plain_send_to_a_child_asking_its_one_question_answers_it() -> TestRes
 }
 
 /// Dies with a wait blocked on a child asking its caller (`mbx-ask` round 3 waited 20, 60 and
-/// 90 s each time), and with a wait on a family with nothing live (`mbx-fanout`, 540 s).
+/// 90 s each time), and with a wait on a family with nothing live (`mbx-fanout`, 540 s). Dies
+/// too with a repeat of either spinning: the second wait at the same state refuses, naming it.
 #[tokio::test]
 async fn a_wait_returns_at_once_on_a_question_and_on_a_settled_family() -> TestResult {
     let parent = Arc::new(session((0..4).map(|_| said("noted")).collect()));
-    let (_root, host) = family(&parent, Child::Asks)?;
+    let (_root, host, _store) = family(&parent, Child::Asks)?;
     spawn(&host, "asker")?;
     assert!(reaches(&host, "needs_you").await, "the child asks");
-    let seen = host.wait(1_000, None).await;
-    let cursor = seen["cursor"].as_u64();
     let started = Instant::now();
-    let asks = host.wait(60_000, cursor).await;
-    assert!(
-        started.elapsed() < Duration::from_secs(2),
-        "{:?}",
-        started.elapsed()
-    );
+    let asks = host.wait(60_000, None).await?;
     assert_eq!(
         (&asks["state"], &asks["causes"]["asker"]),
         (&json!("asks"), &json!("asks"))
     );
-    let answer = json!({"target": "asker", "message": "notes.md"});
+    let again = host.wait(60_000, asks["cursor"].as_u64()).await;
+    let refused = again.err().unwrap_or_default();
+    assert!(
+        refused.starts_with("asker is asking you") && refused.contains("reply_to="),
+        "{refused}"
+    );
+    let (id, ..) = host.open_requests().pop().ok_or("no question")?;
+    let answer = json!({"target": "asker", "message": "notes.md", "reply_to": id});
     host.send("parent", answer.as_object().ok_or("answer")?)?;
     assert!(
         reaches(&host, "finished").await,
         "the answered child finishes"
     );
-    let cursor = host.wait(1_000, None).await["cursor"].as_u64();
-    let started = Instant::now();
-    let settled = host.wait(60_000, cursor).await;
+    let settled = host.wait(60_000, None).await?;
+    assert_eq!(settled["state"], "settled", "{settled:?}");
+    assert_eq!(settled["finished"], json!(["asker"]));
+    let again = host.wait(60_000, settled["cursor"].as_u64()).await;
+    assert_eq!(
+        again.err().as_deref(),
+        Some("the family is settled: nothing is running; stop waiting")
+    );
     assert!(
-        started.elapsed() < Duration::from_secs(2),
+        started.elapsed() < Duration::from_secs(10),
         "{:?}",
         started.elapsed()
     );
-    assert_eq!(settled["state"], "settled", "{settled:?}");
-    assert_eq!(settled["finished"], json!(["asker"]));
     Ok(())
 }
 
@@ -223,7 +291,7 @@ async fn a_wait_returns_at_once_on_a_question_and_on_a_settled_family() -> TestR
 #[tokio::test]
 async fn a_receipt_says_when_its_message_is_presented() -> TestResult {
     let parent = Arc::new(session((0..4).map(|_| said("noted")).collect()));
-    let (_root, host) = family(&parent, Child::Holds("sleep 2"))?;
+    let (_root, host, _store) = family(&parent, Child::Holds("sleep 2"))?;
     spawn(&host, "busy")?;
     assert!(reaches(&host, "running").await, "the child holds its turn");
     let busy = json!({"target": "busy", "message": "Include the word BANANA."});

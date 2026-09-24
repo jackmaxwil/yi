@@ -307,7 +307,9 @@ class Todo:
         loop = asyncio.get_running_loop()
         deadline, cursor = loop.time() + timeout, 0
         while (remaining := deadline - loop.time()) > 0:
-            reply = await rlm.wait(timeout=min(remaining, WAIT_SECONDS), cursor=cursor)
+            reply = await rlm._watch(min(remaining, WAIT_SECONDS), cursor)
+            if reply is None:
+                continue
             cursor = reply.get("cursor", cursor)
             state = (reply.get("states") or {}).get(child)
             if state is None:
@@ -325,7 +327,6 @@ class Todo:
                             f"child {child} {note}; answer it with rlm.send({child!r}, text, "
                             "reply_to=<that id>), then call result() again"
                         ) from error
-            await rlm._calm(reply, remaining)
         raise TimeoutError(f"child {child} did not finish within {timeout}s")
 
     async def cancel(self) -> "Todo":
@@ -673,7 +674,7 @@ class Run:
         tasks = {self.plan._tasks[label]: label for label in self.active if label in self.plan._tasks}
         children = {todo.label: todo.child for todo in self.active.values() if todo.child}
         if children and self._waiting is None:
-            self._waiting = asyncio.ensure_future(rlm.wait(timeout=self._remaining(), cursor=self._cursor))
+            self._waiting = asyncio.ensure_future(rlm._watch(self._remaining(), self._cursor))
         stop = asyncio.ensure_future(self._stop.wait())
         waiters = [*tasks, stop, *([self._waiting] if self._waiting else [])]
         # A reaped child, or one whose finish the engine has not settled, is re-read on a short poll.
@@ -689,9 +690,10 @@ class Run:
             else:
                 await self._complete(todo, task.result())
             settled.append(todo)
-        reply: dict[str, Any] = {}
         if self._waiting in done:
             reply, self._waiting = self._waiting.result(), None
+            if reply is None:
+                return settled
             self._cursor = reply.get("cursor", self._cursor)
             self._states = reply.get("states") or {}
             self._notes = reply.get("notes") or {}
@@ -717,8 +719,6 @@ class Run:
                 self._left.add((label, todo._doc.get("attempt")))
             self.active.pop(label)
             settled.append(todo)
-        if not settled:
-            await rlm._calm(reply, self._remaining())
         return settled
 
     async def _drive(self) -> "Run":

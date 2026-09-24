@@ -191,8 +191,7 @@ async fn run_once(parts: &RunParts, prompt: AgentMessage, admitted_epoch: u64) {
         .ok()
         .and_then(|slot| slot.clone());
     if let Some(hook) = hook {
-        // Snapshotting shells out to git; the turn waits for it but the
-        // runtime thread does not.
+        // Snapshotting shells out to git; the turn waits for it, the runtime thread does not.
         let _hook_failure_never_fails_a_turn = tokio::task::spawn_blocking(move || hook()).await;
     }
     let mut context = LoopContext {
@@ -241,6 +240,7 @@ async fn run_once(parts: &RunParts, prompt: AgentMessage, admitted_epoch: u64) {
     }));
     let emit_shared = Arc::clone(&shared);
     let mut emit = move |event: AgentEvent| {
+        emit_shared.time_turn(&event);
         if let AgentEvent::MessageEnd { message } = &event {
             if let AgentMessage::Assistant { usage, .. } = message {
                 if let Ok(mut last) = emit_shared.last_usage.lock() {

@@ -218,6 +218,7 @@ pub struct SubagentHost {
     pub(crate) settling: std::sync::atomic::AtomicUsize,
     pub(crate) harvests: Mutex<HashMap<String, Option<String>>>,
     pub(crate) waits: std::sync::atomic::AtomicU64,
+    pub(crate) told: Mutex<Option<(String, u64)>>,
 }
 
 impl SubagentHost {
@@ -440,6 +441,22 @@ fn child_entry(child_id: &str, record: &ChildRecord) -> Value {
     })
 }
 
+/// Invariant: a chase turn answers the request, never the brief, so its text is no answer.
+pub(crate) fn answer_text(messages: &[AgentMessage]) -> Option<String> {
+    let mut answer = None;
+    for message in messages.iter().rev() {
+        match message {
+            AgentMessage::Assistant { .. } if answer.is_none() => {
+                answer = last_assistant_text(std::slice::from_ref(message));
+            }
+            AgentMessage::User { .. } if crate::mail::is_chase(message) => answer = None,
+            AgentMessage::User { .. } | AgentMessage::Custom { .. } if answer.is_some() => break,
+            _ => {}
+        }
+    }
+    answer
+}
+
 pub(crate) fn last_assistant_text(messages: &[AgentMessage]) -> Option<String> {
     messages.iter().rev().find_map(|message| match message {
         AgentMessage::Assistant { content, .. } => {
@@ -471,6 +488,7 @@ impl SubagentHost {
             settling: std::sync::atomic::AtomicUsize::new(0),
             harvests: Mutex::default(),
             waits: std::sync::atomic::AtomicU64::new(0),
+            told: Mutex::new(None),
         }
     }
 
@@ -936,7 +954,7 @@ impl SubagentHost {
             let cursor = given.or((kept > 0).then_some(kept));
             let (host, seen) = (Arc::clone(&host), Arc::clone(&seen));
             Box::pin(async move {
-                let reply = host.wait_for(timeout, cursor, given.is_none()).await;
+                let reply = host.wait_for(timeout, cursor, given.is_none()).await?;
                 let epoch = reply.get("cursor").and_then(Value::as_u64).unwrap_or(0);
                 if given.is_none() {
                     seen.fetch_max(epoch, std::sync::atomic::Ordering::Relaxed);
