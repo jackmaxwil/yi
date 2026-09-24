@@ -85,18 +85,9 @@ const FENCE_ESCAPE: &str = "<\\<<";
 pub struct PromptState {
     slots: BTreeMap<Slot, String>,
     yard: BTreeMap<(Trust, String), String>,
-    nonce: String,
 }
 
 impl PromptState {
-    pub fn new(nonce: String) -> Self {
-        Self {
-            slots: BTreeMap::new(),
-            yard: BTreeMap::new(),
-            nonce,
-        }
-    }
-
     pub fn is_empty(&self) -> bool {
         self.slots.is_empty() && self.yard.is_empty()
     }
@@ -159,13 +150,14 @@ impl PromptState {
             if !out.is_empty() {
                 out.push_str("\n\n");
             }
+            // Invariant: the fence id is the text's own hash, which the text cannot contain, so
+            // two sessions over the same text share the bytes and the cache behind them.
+            let digest = crate::fetch::content_hash(text);
+            let id = digest.get(..16).unwrap_or(&digest);
             out.push_str(&format!(
-                "{FENCE_SENTINEL}yi-external {} source=\"{}\" trust=\"{}\">>>\n{}\n{FENCE_SENTINEL}end-yi-external {}>>>",
-                self.nonce,
+                "{FENCE_SENTINEL}yi-external {id} source=\"{}\" trust=\"{}\">>>\n{text}\n{FENCE_SENTINEL}end-yi-external {id}>>>",
                 sanitize(source),
                 trust.label(),
-                text,
-                self.nonce
             ));
         }
         out
@@ -184,18 +176,12 @@ impl PromptState {
                 json!({"trust": trust.label(), "source": source, "text": text})
             })
             .collect();
-        json!({"nonce": self.nonce, "slots": slots, "yard": yard})
+        json!({"slots": slots, "yard": yard})
     }
 
     pub fn restore(snapshot: &Value) -> Option<Self> {
-        let nonce = snapshot.get("nonce").and_then(Value::as_str)?.to_owned();
-        let mut state = Self::new(nonce);
-        for entry in snapshot
-            .get("slots")
-            .and_then(Value::as_array)
-            .into_iter()
-            .flatten()
-        {
+        let mut state = Self::default();
+        for entry in snapshot.get("slots").and_then(Value::as_array)? {
             let rank = entry
                 .get("rank")
                 .and_then(Value::as_str)
