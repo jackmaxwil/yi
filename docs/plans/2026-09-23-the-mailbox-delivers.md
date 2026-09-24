@@ -109,6 +109,9 @@ Landed as 0.297.0 (D235, #499) from a paid confirmation of M1-M3 at 9f29fa88.
   06a40d3e's reply-shape guesses, `done` with no id, and the fanout and steer scenarios.
 - A final confirmation at 2f516615 (14 of 16): `status(name)` returns one entry, a handle
   has `state`, and the last word keeps a 30 s floor plus the shutdown and cuts a stream.
+- A pre-merge review of 06a40d3e..97cd7be2 (four): a question read off `wait` or `status`
+  counts as shown, `followup` and `h.send` go out in call order, a retried provider error
+  exits 0, and the shutdown keeps its 10 s grace.
 
 ## Verification
 

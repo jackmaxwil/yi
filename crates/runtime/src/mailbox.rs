@@ -560,12 +560,15 @@ impl SubagentHost {
             .iter()
             .map(|(name, cause)| (name.clone(), Value::from(cause.as_str())))
             .collect();
+        let asking = self
+            .mail
+            .lock()
+            .map(|mut desk| {
+                desk.show_asking();
+                desk.asking()
+            })
+            .unwrap_or_default();
         if state == "asks" {
-            let asking = self
-                .mail
-                .lock()
-                .map(|desk| desk.asking())
-                .unwrap_or_default();
             for name in asking.into_keys() {
                 causes.insert(name, Value::from("asks"));
             }

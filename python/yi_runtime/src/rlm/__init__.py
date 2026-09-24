@@ -309,7 +309,7 @@ class RLMSpawnHandle:
 
     @_handed_out
     async def send(self, message: str, followup: bool = False) -> dict[str, Any]:
-        return await send(self.name, message, followup)
+        return await send.__wrapped__(self.name, message, followup)
 
 
 @dataclass(frozen=True)
@@ -675,7 +675,7 @@ async def receive(timeout: float = 300.0) -> list[dict[str, Any]]:
 @_public
 async def followup(target: "str | RLMSubagent", message: str) -> dict[str, Any]:
     """Send and start the target's turn if it is idle (delivered at a boundary if not)."""
-    return await send(target, message, followup=True)
+    return await send.__wrapped__(target, message, followup=True)
 
 
 @_public

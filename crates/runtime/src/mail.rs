@@ -120,6 +120,7 @@ struct Waiter {
     reply: oneshot::Sender<Result<Envelope, String>>,
     asked: String,
     opened: u64,
+    shown: bool,
 }
 
 /// Mail state under one lock held across a routing, so `seq` order is queue order.
@@ -222,16 +223,39 @@ impl Desk {
 }
 
 impl Desk {
-    fn only_request(&self, asker: &str, respondent: &str) -> Option<MailId> {
+    fn only_request(&self, asker: &str, respondent: &str) -> Option<(MailId, bool)> {
         let mut open = self
             .waiters
             .iter()
             .filter(|(_, waiter)| waiter.sender == asker && waiter.respondent == respondent);
-        let (id, _) = open.next()?;
-        open.next().is_none().then(|| id.clone())
+        let (id, waiter) = open.next()?;
+        open.next().is_none().then(|| (id.clone(), waiter.shown))
     }
 
     pub(crate) fn asking(&self) -> HashMap<String, String> {
+        self.oldest_asks()
+            .into_values()
+            .map(|(id, waiter)| {
+                let note = format!("asks {id}: {}", waiter.asked);
+                (waiter.sender.clone(), note)
+            })
+            .collect()
+    }
+
+    pub(crate) fn show_asking(&mut self) {
+        let ids: Vec<MailId> = self
+            .oldest_asks()
+            .into_values()
+            .map(|(id, _)| id.clone())
+            .collect();
+        for id in ids {
+            if let Some(waiter) = self.waiters.get_mut(&id) {
+                waiter.shown = true;
+            }
+        }
+    }
+
+    fn oldest_asks(&self) -> HashMap<&str, (&MailId, &Waiter)> {
         let mut oldest: HashMap<&str, (&MailId, &Waiter)> = HashMap::new();
         let asked = self
             .waiters
@@ -244,12 +268,6 @@ impl Desk {
             }
         }
         oldest
-            .into_values()
-            .map(|(id, waiter)| {
-                let note = format!("asks {id}: {}", waiter.asked);
-                (waiter.sender.clone(), note)
-            })
-            .collect()
     }
 
     /// A terminated respondent answers nothing, so its waiters are refused at once with the
@@ -462,6 +480,7 @@ impl SubagentHost {
                     .take(120)
                     .collect(),
                 opened: desk.minted,
+                shown: false,
             };
             desk.waiters.insert(id.clone(), waiter);
             (id, reply)
@@ -657,14 +676,14 @@ impl SubagentHost {
             .lock()
             .ok()
             .and_then(|desk| desk.only_request(&asker, from));
-        let Some(id) = open else {
+        let Some((id, shown)) = open else {
             return Ok(None);
         };
         let store = match from {
             PARENT_NAME => (self.options.store)(),
             sender => self.transcript(sender),
         };
-        if !store.is_some_and(|store| presented(&store, &id)) {
+        if !shown && !store.is_some_and(|store| presented(&store, &id)) {
             return Err(format!(
                 "\"{asker}\" has request {id} open to you, and this send does not answer it: answer with rlm.send(\"{asker}\", text, reply_to=\"{id}\")"
             ));
@@ -743,6 +762,7 @@ mod tests {
             reply,
             asked: format!("question {id}"),
             opened: desk.minted,
+            shown: false,
         };
         desk.waiters.insert(id.clone(), waiter);
         (id, answer)

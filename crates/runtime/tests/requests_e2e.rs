@@ -242,6 +242,22 @@ async fn a_plain_send_answers_a_question_only_once_its_sender_was_shown_it() -> 
     Ok(())
 }
 
+/// Dies with only a presented message counting as shown: a cell that read the question off
+/// `rlm.wait` and answered it plainly got a hint, and the child waited out its question.
+#[tokio::test]
+async fn a_plain_send_answers_a_question_its_sender_read_off_a_wait() -> TestResult {
+    let parent = Arc::new(session((0..4).map(|_| said("noted")).collect()));
+    let (_root, host, _store) = family(&parent, Child::Asks)?;
+    spawn(&host, "asker")?;
+    assert!(reaches(&host, "needs_you").await, "the child asks");
+    let asks = host.wait(60_000, None).await?;
+    assert_eq!(asks["state"], "asks", "{asks:?}");
+    let send = json!({"target": "asker", "message": "Use the file name greeting.txt."});
+    let sent = host.send("parent", send.as_object().ok_or("send")?)?;
+    assert_eq!(sent["receipts"][0]["state"], "answered", "{sent:?}");
+    Ok(())
+}
+
 /// Dies with a wait blocked on a child asking its caller (`mbx-ask` round 3 waited 20, 60 and
 /// 90 s each time), and with a wait on a family with nothing live (`mbx-fanout`, 540 s). Dies
 /// too with a repeat of either spinning: the second wait at the same state refuses, naming it.
