@@ -148,3 +148,64 @@ async fn a_parent_reads_a_variable_out_of_its_childs_kernel() -> TestResult {
     assert!(bytes > 0 && path.is_file(), "{path:?} {bytes}");
     Ok(())
 }
+
+/// Incident: a read of an agent mid-cell waited for the whole cell, up to the 600 s ceiling,
+/// then failed with an empty detail; its 5 s timer never raced the execution queue.
+#[tokio::test]
+async fn a_read_of_a_busy_kernel_gives_up_within_its_deadline() -> TestResult {
+    let root = Scratch::new("yi-kernel-busy-read")?;
+    let mut registry = yi_runtime::HostRegistry::default();
+    registry.register_mcp_stubs();
+    let service = Arc::new(yi_runtime::KernelService::new(
+        yi_runtime::KernelServiceOptions {
+            cwd: root.to_path_buf(),
+            home: std::env::var_os("HOME")
+                .map(PathBuf::from)
+                .ok_or("HOME is unset")?,
+            session_dir: None,
+            family_dir: None,
+            host: Arc::new(registry),
+            on_restore: None,
+            sandbox: None,
+            snapshot_key: None,
+            cell_ceiling: None,
+        },
+    ));
+    let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let run = |code: &'static str| {
+        let (service, stop) = (Arc::clone(&service), Arc::clone(&stop));
+        tokio::task::spawn_blocking(move || {
+            let cancelled: yi_tools::CancelFlag =
+                Arc::new(move || stop.load(std::sync::atomic::Ordering::SeqCst));
+            yi_tools::KernelBridge::execute_cell(service.as_ref(), code, &cancelled)
+        })
+    };
+    run("x = 1").await??;
+    let sleeper = run("import time\ntime.sleep(20)");
+    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+
+    let kernels = KernelServiceMap::new();
+    kernels.insert("main", &service);
+    let resolver =
+        Resolver::new(root.to_path_buf(), Wall::default()).with_kernel_variables(kernels);
+    let url: yi_types::url::Url = "kernel://main/x".parse()?;
+    let started = std::time::Instant::now();
+    let read = tokio::task::spawn_blocking(move || resolver.fetch(&url)).await?;
+    let waited = started.elapsed();
+    stop.store(true, std::sync::atomic::Ordering::SeqCst);
+    let _interrupted = sleeper.await?;
+    service.dispose().await;
+
+    let error = read
+        .err()
+        .ok_or("a read of a kernel mid-cell returned a value")?;
+    assert!(
+        waited < std::time::Duration::from_secs(8),
+        "the read waited {waited:?} for the running cell"
+    );
+    assert!(
+        error.to_string().contains("running a cell"),
+        "the read failed without saying why: {error}"
+    );
+    Ok(())
+}
