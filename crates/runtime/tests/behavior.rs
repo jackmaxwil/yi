@@ -301,6 +301,7 @@ fn goal_service(spec: &Value) -> Result<(Arc<GoalService>, yi_session::SharedSes
     let service = Arc::new(GoalService::new(
         Arc::new(move || Some(Arc::clone(&handle))),
         Arc::new(|_message, _mode: DeliveryMode| {}),
+        std::env::current_dir().map_err(|error| error.to_string())?,
     ));
     service.create(
         &need_str(spec, "objective")?,

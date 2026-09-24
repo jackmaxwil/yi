@@ -44,6 +44,14 @@ pub(super) fn push(queue: &mut VecDeque<Queued>, entry: Queued) {
     }
 }
 
+pub(super) fn take_mail(queue: &mut VecDeque<Queued>) -> Vec<AgentMessage> {
+    let (mail, rest) = std::mem::take(queue)
+        .into_iter()
+        .partition(|queued: &Queued| crate::mail::envelope_id(&queued.message).is_some());
+    *queue = rest;
+    mail.into_iter().map(|queued| queued.message).collect()
+}
+
 pub(super) fn drain(shared: &Shared) -> Vec<AgentMessage> {
     let taken = shared
         .steer

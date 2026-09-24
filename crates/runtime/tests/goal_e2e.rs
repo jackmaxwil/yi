@@ -78,6 +78,7 @@ fn service_with_plans() -> std::io::Result<(Scratch, Service)> {
                     queue.push(message);
                 }
             }),
+            root.to_path_buf(),
         )
         .with_plans_dir(root.join("plans")),
     );
@@ -215,7 +216,11 @@ async fn active_goal_continues_past_idle_until_a_failing_turn_blocks_it() -> Tes
     );
     let store = memory_store();
     session.attach_store(store.clone())?;
-    let service = attach_goal(&session, std::env::temp_dir().join(".yi/plans"));
+    let service = attach_goal(
+        &session,
+        std::env::temp_dir().join(".yi/plans"),
+        std::env::temp_dir(),
+    );
     service.create("keep going until proven done", None, None, None)?;
 
     session.prompt("start")?;

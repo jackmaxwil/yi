@@ -10,6 +10,16 @@ use crate::session::AgentSession;
 /// How a settled run ended, read off its last assistant message; a run a cancel or the
 /// deadline stopped at a message boundary ends on a tool call with no request after it.
 fn exit_of(session: &AgentSession) -> (ChildExit, Option<String>) {
+    if session
+        .kernel_service()
+        .is_some_and(|kernel| kernel.take_death())
+    {
+        let class = FailClass::KernelDeath;
+        return (
+            ChildExit::Failed { class },
+            Some("its kernel died under a cell".to_owned()),
+        );
+    }
     let messages = session.messages();
     let last = messages.iter().rev().find_map(|message| match message {
         AgentMessage::Assistant {
@@ -97,8 +107,6 @@ impl SubagentHost {
         // A retired child has no record left: `retire` already published its terminal update,
         // so a second one, a notice or a bill would only echo a closed slot.
         let messages = session.messages();
-        // a child that ended on `ask_user` is asking its parent, not finishing (D165).
-        let question = crate::family::pending_question(&messages);
         let (mut ended, mut juror) = (None, false);
         if let Ok(mut children) = self.children.lock()
             && let Some(record) = children.get_mut(child_id)
@@ -107,7 +115,7 @@ impl SubagentHost {
             let billed = std::mem::replace(&mut record.attributed, messages.len());
             if record.step(Step::Exit(exit, error.clone())) {
                 let service = matches!(record.standing, Standing::Service(_));
-                let (replied, cause) = (record.replied, Cause::ended(exit, question.is_some()));
+                let (replied, cause) = (record.replied, Cause::ended(exit));
                 juror = matches!(record.standing, Standing::Juror);
                 let epoch = children.touch(child_id, cause);
                 ended = Some((replied, service, billed, epoch));
@@ -135,7 +143,7 @@ impl SubagentHost {
             return;
         }
         let taken = match exit {
-            ChildExit::Completed if question.is_some() || service => false,
+            ChildExit::Completed if service => false,
             ChildExit::Completed
             | ChildExit::Failed { .. }
             | ChildExit::Interrupted
@@ -146,13 +154,10 @@ impl SubagentHost {
             return;
         }
         let verb = crate::family::read_exit(Some(exit)).verb;
-        let notice = match (exit, question) {
-            (ChildExit::Completed, Some(question)) => format!(
-                "[subagent {session_name} ({child_id}) asks: {question}]\nanswer with rlm.send(\"{session_name}\", \"…\", followup=True)"
-            ),
+        let notice = match exit {
             // An idle service has not ended: it waits on its inbox and there is nothing to reap.
-            (ChildExit::Completed, None) if service => return,
-            (ChildExit::Completed, None) => {
+            ChildExit::Completed if service => return,
+            ChildExit::Completed => {
                 let answer = last_assistant_text(&messages)
                     .map(|text| preview(&text))
                     .unwrap_or_else(|| "(no final answer text)".to_owned());
@@ -170,7 +175,7 @@ impl SubagentHost {
                     )
                 )
             }
-            (ChildExit::Failed { .. }, _) => format!(
+            ChildExit::Failed { .. } => format!(
                 "[subagent {session_name} ({child_id}) {verb}]\n{}",
                 error.unwrap_or_default()
             ),
@@ -182,7 +187,7 @@ impl SubagentHost {
     }
 
     /// Another run on a concluded record reads running again, and one reader concludes it.
-    pub(super) fn resume(self: &Arc<Self>, key: &str) {
+    pub(crate) fn resume(self: &Arc<Self>, key: &str) {
         let claimed = self.children.lock().ok().and_then(|mut children| {
             let record = children.get_mut(key).filter(|record| !record.concluding)?;
             record.concluding = true;

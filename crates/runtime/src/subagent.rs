@@ -490,8 +490,11 @@ impl SubagentHost {
         self.deadline.lock().ok().and_then(|slot| *slot)
     }
 
-    pub(crate) fn waited(&self) {
-        self.waits.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    /// Incident: a wait on an empty family exempted a repeated failing call from the breaker.
+    pub(crate) fn waited_on(&self, live: bool) {
+        if live || self.busy() {
+            self.waits.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
     }
 
     pub fn children_view(&self) -> Vec<ChildView> {
@@ -659,6 +662,9 @@ impl SubagentHost {
             child.seed_messages(seed);
         }
         let session = Arc::new(child);
+        if matches!(standing, Standing::Service(_)) {
+            service::watch_kernel(&session);
+        }
         // Invariant: read before the record is listed, so every abort a client can ask for
         // from here on carries a later epoch and admission cannot clear it.
         let requested = session.abort_epoch();
@@ -732,6 +738,11 @@ impl SubagentHost {
     /// every child's state as its own records show it (D165).
     pub fn states(&self) -> Vec<crate::family::MemberView> {
         let now = yi_session::now_ms();
+        let asking = self
+            .mail
+            .lock()
+            .map(|desk| desk.asking())
+            .unwrap_or_default();
         self.children
             .lock()
             .map(|children| {
@@ -743,13 +754,19 @@ impl SubagentHost {
                             .store()
                             .map(|store| crate::family::recent_entries(&store))
                             .unwrap_or_default();
-                        let (state, note, idle_s) = crate::family::state_from_records(
+                        let (mut state, mut note, idle_s) = crate::family::state_from_records(
                             (record.exit, record.phase),
                             record.error.as_deref(),
-                            &record.session.messages(),
                             &recent,
                             now,
                         );
+                        let asks = asking
+                            .get(&record.session_name)
+                            .filter(|_| record.exit.is_none());
+                        if let Some(asks) = asks {
+                            (state, note) =
+                                (crate::family::MemberState::NeedsYou, Some(asks.clone()));
+                        }
                         crate::family::MemberView {
                             name: record.session_name.clone(),
                             state,
@@ -771,10 +788,15 @@ impl SubagentHost {
     }
 
     pub fn status(&self) -> Map<String, Value> {
-        self.saw(None);
+        self.status_of(None)
+    }
+
+    fn status_of(&self, name: Option<&str>) -> Map<String, Value> {
+        self.saw(name);
         let members: Vec<Value> = self
             .states()
             .into_iter()
+            .filter(|view| name.is_none_or(|name| view.name == name))
             .map(|view| {
                 let incarnation = self.incarnation_of(&view.name);
                 json!({
@@ -958,8 +980,8 @@ impl SubagentHost {
             Box::pin(async move { Ok(reply) })
         });
         let host = Arc::clone(self);
-        registry.register("rlm.status", move |_payload| {
-            let reply = host.status();
+        registry.register("rlm.status", move |payload| {
+            let reply = host.status_of(payload.get("name").and_then(Value::as_str));
             Box::pin(async move { Ok(reply) })
         });
         let host = Arc::clone(self);

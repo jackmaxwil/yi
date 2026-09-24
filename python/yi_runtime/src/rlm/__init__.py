@@ -198,11 +198,16 @@ class RLMSpawnHandle:
                 try:
                     return await result(self.rlm_child_id, schema=schema)
                 except RuntimeError as error:
-                    # needs_you also names a running child blocked on the user; only a
-                    # child that ended asking its parent has an answer to collect.
-                    if state == "needs_you" and "still running" in str(error):
-                        continue
-                    raise
+                    # Another run can start between the wait and the read; it is waited on.
+                    if "still running" not in str(error):
+                        raise
+                    notes = reply.get("notes")
+                    note = notes.get(self.name) if isinstance(notes, dict) else None
+                    if isinstance(note, str) and note.startswith("asks "):
+                        raise RuntimeError(
+                            f"child {self.name} {note}; answer it with rlm.send({self.name!r}, "
+                            "text, reply_to=<that id>), then call result() again"
+                        ) from error
         raise TimeoutError(f"child {self.name} did not finish within {timeout}s")
 
     @_either_way
@@ -546,6 +551,22 @@ async def request(target: "str | RLMSubagent", message: str, timeout: float = 30
 
 
 @_public
+async def receive(timeout: float = 300.0) -> list[dict[str, Any]]:
+    """Block until mail for you arrives; returns every envelope not yet shown to you.
+
+    Envelopes come in send order, each ``{id, from, to, kind, conversation, inReplyTo,
+    seq, sentAt, body, ref}``; answer a ``request`` with ``send(env["from"], text,
+    reply_to=env["id"])``. What this returns is never presented to you again. An empty
+    list means ``timeout`` seconds passed; the host clamps it to 1 to 300 seconds.
+    """
+    payload = await host_request("rlm.receive", {"timeout_ms": int(timeout * 1000)})
+    envelopes = payload.get("envelopes")
+    if not isinstance(envelopes, list):
+        raise RuntimeError("rlm.receive returned an invalid envelope list")
+    return envelopes
+
+
+@_public
 async def followup(target: "str | RLMSubagent", message: str) -> dict[str, Any]:
     """Send and start the target's turn if it is idle (delivered at a boundary if not)."""
     return await send(target, message, followup=True)
@@ -558,14 +579,14 @@ async def status(name: str | None = None) -> list[dict[str, Any]]:
     Each entry is ``{name, state, note, tools, tokens, idle_s, worktree}`` with ``state``
     one of ``queued`` (admitted, not yet started), ``running``, ``finished``, ``failed``
     (its run ended badly, or it sent you a ``failure`` of its own while still running),
-    ``needs_you`` (it ended on ``ask_user`` or blocked a todo on you: answer with
-    ``send(name, text, followup=True)``),
+    ``needs_you`` (it waits on your answer, ``note`` reading ``asks <id>: <question>``:
+    reply with ``send(name, text, reply_to=id)``; or it blocked a todo on you),
     ``stuck`` (a repeat break, a length re-drive at rung two or more, a let-go
     intercept, or five idle minutes; ``note`` names which) and ``repossession_pending``
     (``revoke`` took its lease back but the stop, settle or record failed; everything it
     held is kept and the host retries). ``name`` keeps one.
     """
-    payload = await host_request("rlm.status", {})
+    payload = await host_request("rlm.status", {} if name is None else {"name": name})
     members = payload.get("members")
     if not isinstance(members, list):
         raise RuntimeError("rlm.status returned an invalid member list")
